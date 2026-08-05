@@ -13,7 +13,7 @@
 
 ## 架构
 
-`@wiswork/auth` 管理 OAuth 协议、会话状态和 Electron 主进程适配；renderer 只通过 typed IPC 获取非敏感状态。`@wiswork/ai-provider` 的 `wiswork` provider 复用 OpenAI-compatible streaming/chat 实现，服务 Key 只在主进程从 `WISWORK_MODEL_API_KEY` 读取。统一 Shell 注册深链并向所有编辑器提供共享登录状态；standalone 入口使用同一认证 bootstrap。
+`@wiswork/auth` 管理 OAuth 协议、会话状态和 Electron 主进程适配；renderer 只通过 typed IPC 获取非敏感状态。`@wiswork/ai-provider` 的 `wiswork` provider 复用 OpenAI-compatible streaming/chat 实现，服务 Key 只在主进程从 `WISWORK_MODEL_API_KEY` 读取。发布架构中仅统一 Shell 注册并处理 `wiswork` 协议，向所有编辑器提供共享登录状态；Docs/Sheets/Slides/PDF standalone 仅用于开发与组件测试，不注册协议，登录稳定返回 `auth_unavailable_in_standalone`。
 
 ## 全局约束
 

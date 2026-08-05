@@ -19,6 +19,7 @@ import {
   session,
   shell,
   webContents,
+  safeStorage,
 } from 'electron'
 import type { MenuItemConstructorOptions, NativeImage } from 'electron'
 import menuDocxIcon1x from './assets/menu-docx.png?asset'
@@ -27,6 +28,12 @@ import menuXlsxIcon1x from './assets/menu-xlsx.png?asset'
 import menuXlsxIcon2x from './assets/menu-xlsx@2x.png?asset'
 import menuPptxIcon1x from './assets/menu-pptx.png?asset'
 import menuPptxIcon2x from './assets/menu-pptx@2x.png?asset'
+import {
+  AuthError,
+  registerAuthProtocolRouting,
+  initializeElectronAuthRuntime,
+  extractCallbackUrl,
+} from '@wiswork/auth'
 import { createI18n, isLang, normalizeLang, setUiLang, type Lang } from '@wiswork/i18n'
 import {
   appMenuLabels,
@@ -41,9 +48,7 @@ import { ProjectStore } from '@wiswork/project-store'
 import {
   gskConvertPdfToDocx,
   gskLogin,
-  gskLoginStart,
   gskLoginInfo,
-  gskLogout,
   hasGskAuth,
   resolveGskEntry,
 } from '@wiswork/ai-search'
@@ -70,6 +75,7 @@ import {
   setDocsShellWindow,
   setDocsFileSavedHook,
   setSessionPathResolver,
+  setDocsAuthIpcSenderValidator,
   defaultSaveDir,
   uniquePathIn,
 } from '../../../docs/src/main/docs-main'
@@ -189,6 +195,13 @@ configurePdfRuntime({
   rendererUrl: process.env.PDF_RENDERER_URL,
   rendererFile: join(PDF_OUT, 'renderer', 'index.html'),
 })
+
+const authRuntime = initializeElectronAuthRuntime({
+  userDataPath: app.getPath('userData'),
+  safeStorage,
+  openExternal: (url) => shell.openExternal(url),
+})
+let accountLoginSender: Electron.WebContents | null = null
 
 // ---- UI language ----
 // Persisted in userData/app-settings.json so the editor modules can read the
@@ -1449,36 +1462,42 @@ function statEntries(paths: string[]): RecentEntry[] {
 }
 
 function registerHomeIpc(): void {
-  // Genspark account (gsk login state; to be upgraded to a signup/account system later)
-  ipcMain.handle(HOME_CHANNELS.accountStatus, async () => {
-    if (!hasGskAuth()) return { loggedIn: false }
-    const info = await gskLoginInfo()
-    return info ? { loggedIn: true, email: info.email } : { loggedIn: true }
-  })
-
-  // login progress is streamed to the requesting renderer; the auth URL is
-  // kept main-side so the "open manually" rescue never opens a renderer-supplied URL
+  const assertHomeAuthIpc = (event: Electron.IpcMainInvokeEvent, args: readonly unknown[]) => {
+    if (args.length !== 0) throw new Error('Invalid auth IPC payload.')
+    if (!shellWindow || event.sender !== shellWindow.webContents)
+      throw new Error('Untrusted IPC sender.')
+  }
   let pendingLoginUrl = ''
-  ipcMain.handle(HOME_CHANNELS.accountLogin, (event) => {
-    const sender = event.sender
-    pendingLoginUrl = ''
-    const send = (payload: AccountLoginEvent) => {
-      if (!sender.isDestroyed()) sender.send(HOME_CHANNELS.accountLoginEvent, payload)
+  ipcMain.handle(HOME_CHANNELS.accountStatus, (event, ...args: unknown[]) => {
+    assertHomeAuthIpc(event, args)
+    return authRuntime.client.getAccountStatus()
+  })
+  ipcMain.handle(HOME_CHANNELS.accountLogin, async (event, ...args: unknown[]) => {
+    assertHomeAuthIpc(event, args)
+    accountLoginSender = event.sender
+    const request = authRuntime.client.createAuthorizationRequest()
+    pendingLoginUrl = request.url
+    try {
+      await shell.openExternal(request.url)
+      if (!event.sender.isDestroyed())
+        event.sender.send(HOME_CHANNELS.accountLoginEvent, { phase: 'launched' })
+      return true
+    } catch {
+      if (!event.sender.isDestroyed())
+        event.sender.send(HOME_CHANNELS.accountLoginEvent, {
+          phase: 'error',
+          error: 'launch_failed',
+        })
+      return false
     }
-    const launched = gskLoginStart((progress) => {
-      if (progress.url) pendingLoginUrl = progress.url
-      send(progress)
-    })
-    if (launched) send({ phase: 'launched' })
-    return launched
   })
-
-  ipcMain.handle(HOME_CHANNELS.accountLoginOpenUrl, () => {
-    if (pendingLoginUrl) void shell.openExternal(pendingLoginUrl)
+  ipcMain.handle(HOME_CHANNELS.accountLoginOpenUrl, async (event, ...args: unknown[]) => {
+    assertHomeAuthIpc(event, args)
+    if (pendingLoginUrl) await shell.openExternal(pendingLoginUrl)
   })
-
-  ipcMain.handle(HOME_CHANNELS.accountLogout, async () => {
-    await gskLogout()
+  ipcMain.handle(HOME_CHANNELS.accountLogout, (event, ...args: unknown[]) => {
+    assertHomeAuthIpc(event, args)
+    return authRuntime.client.logout()
   })
 
   ipcMain.handle(HOME_CHANNELS.getAppVersion, (): string => app.getVersion())
@@ -2074,6 +2093,31 @@ function revealShellWindow(): void {
   shellWindow?.focus()
 }
 
+async function handleAuthDeepLink(input: string | readonly string[]): Promise<boolean> {
+  const callback = extractCallbackUrl(input)
+  if (!callback) return false
+  try {
+    await authRuntime.client.consumeCallback(callback)
+    if (accountLoginSender && !accountLoginSender.isDestroyed()) {
+      accountLoginSender.send(HOME_CHANNELS.accountLoginEvent, { phase: 'success' })
+    }
+  } catch (error) {
+    const code = error instanceof AuthError ? error.code : 'login_failed'
+    if (accountLoginSender && !accountLoginSender.isDestroyed()) {
+      accountLoginSender.send(HOME_CHANNELS.accountLoginEvent, { phase: 'error', error: code })
+    }
+  }
+  return true
+}
+
+registerAuthProtocolRouting({
+  registerProtocolClient: (protocol) => app.setAsDefaultProtocolClient(protocol),
+  onOpenUrl: (handler) => app.on('open-url', handler),
+  onSecondInstance: (handler) => app.on('second-instance', (_event, argv) => handler(argv)),
+  initialArgv: process.argv,
+  consume: (input) => handleAuthDeepLink(input),
+})
+
 // On macOS a file opened from Finder is not in argv; it arrives via the open-file event (before ready).
 // If another instance already holds the lock, this process exits, and the path must ride along in
 // the lock request's additionalData to the surviving instance — so the lock request is deferred
@@ -2089,6 +2133,10 @@ app.on('open-file', (event, filePath) => {
 })
 
 app.on('second-instance', (_event, argv, _cwd, additionalData) => {
+  if (extractCallbackUrl(argv)) {
+    revealShellWindow()
+    return
+  }
   const file =
     supportedFileIn(argv) ??
     unsupportedFileIn(argv) ??
@@ -2097,6 +2145,7 @@ app.on('second-instance', (_event, argv, _cwd, additionalData) => {
   if (!file || !openDocumentPath(file)) tabManager?.openHomeTab()
 })
 
+setDocsAuthIpcSenderValidator((senderId) => tabManager?.ownsWebContents(senderId) ?? false)
 installNavigationGuard(app)
 installContextMenu(app, () => contextMenuLabels(currentLang()))
 registerAiIpc()

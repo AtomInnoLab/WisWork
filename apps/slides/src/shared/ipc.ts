@@ -9,12 +9,9 @@
  */
 import type { RenderSlide } from '@wiswork/pptx-render'
 import type { SlideComment, SectionInfo } from '@wiswork/pptx-engine'
-import type {
-  AiSettings,
-  AiStreamChunk,
-  AiStreamRequest,
-  GenSparkAccountStatus,
-} from '@wiswork/ai-provider'
+import type { AiSettings, AiStreamChunk, AiStreamRequest } from '@wiswork/ai-provider'
+
+import type { AccountStatus } from '@wiswork/auth'
 
 export type { SlideComment, SectionInfo } from '@wiswork/pptx-engine'
 
@@ -26,7 +23,6 @@ export type {
   AiSettings,
   AiStreamChunk,
   AiStreamRequest,
-  GenSparkAccountStatus,
 } from '@wiswork/ai-provider'
 export { AI_PROVIDERS } from '@wiswork/ai-provider'
 export type { AgentToolCall, AgentToolDef } from '@wiswork/agent-core'
@@ -1285,10 +1281,11 @@ export interface SlidesApi {
   setAiSettings: (settings: AiSettings) => Promise<void>
   aiStream: (request: AiStreamRequest) => Promise<void>
   aiStreamCancel: (requestId: string) => Promise<void>
-  /** Genspark account status (gsk login state); with withEmail also fetches the email (needs a network request, slower) */
-  aiGskStatus: (withEmail?: boolean) => Promise<GenSparkAccountStatus>
-  /** Open the browser to log into Genspark (fire-and-forget; aiGskStatus turns logged-in once done) */
-  aiGskLogin: () => Promise<void>
+  /** Non-sensitive WisWork account status. */
+  aiAccountStatus: () => Promise<AccountStatus>
+  /** Open the system browser to sign in to WisWork (fire-and-forget; aiAccountStatus turns logged-in once done) */
+  aiAccountLogin: () => Promise<void>
+  aiAccountLogout: () => Promise<void>
   webSearch: (
     query: string,
     maxResults?: number,

@@ -41,17 +41,10 @@ import {
   type AiSettings,
   type AiStreamChunk,
   type AiStreamRequest,
-  type GenSparkAccountStatus,
   type LegacyAiSettings,
 } from '@wiswork/ai-provider'
-import {
-  gskApiKey,
-  gskLogin,
-  gskLoginInfo,
-  hasGskAuth,
-  webSearch,
-  imageSearch,
-} from '@wiswork/ai-search'
+import { AuthError, getElectronAuthRuntimeOrNull } from '@wiswork/auth'
+import { gskApiKey, webSearch, imageSearch } from '@wiswork/ai-search'
 import type {
   AttachmentAddResult,
   AttachmentImageResult,
@@ -1902,6 +1895,17 @@ export function configureDocsRuntime(config: DocsRuntimeConfig): void {
 }
 
 let mainWindow: BrowserWindow | null = null
+const trustedDocsSenderIds = new Set<number>()
+let authIpcSenderValidator = (senderId: number) => trustedDocsSenderIds.has(senderId)
+
+export function setDocsAuthIpcSenderValidator(validator: (senderId: number) => boolean): void {
+  authIpcSenderValidator = validator
+}
+
+function assertAuthIpc(event: IpcMainInvokeEvent, args: readonly unknown[]): void {
+  if (args.length !== 0) throw new Error('Invalid auth IPC payload.')
+  if (!authIpcSenderValidator(event.sender.id)) throw new Error('Untrusted IPC sender.')
+}
 let rendererReady = false
 let pendingOpenPath = findDocxPath(process.argv)
 /** documents queued for windows/tabs spawned via New Tab, keyed by webContents id */
@@ -2482,19 +2486,19 @@ export function registerAiIpc(): void {
     return settings
   })
 
-  // Genspark account (gsk login state): auth source for AI features; the frontend uses it to prompt login when logged out
-  ipcMain.handle(
-    'ai:gsk-status',
-    async (_event, withEmail?: boolean): Promise<GenSparkAccountStatus> => {
-      if (!hasGskAuth()) return { loggedIn: false }
-      if (!withEmail) return { loggedIn: true }
-      const info = await gskLoginInfo()
-      return info?.email ? { loggedIn: true, email: info.email } : { loggedIn: true }
-    },
-  )
-
-  ipcMain.handle('ai:gsk-login', () => {
-    gskLogin()
+  ipcMain.handle('auth:status', (event, ...args: unknown[]) => {
+    assertAuthIpc(event, args)
+    return getElectronAuthRuntimeOrNull()?.client.getAccountStatus() ?? { loggedIn: false }
+  })
+  ipcMain.handle('auth:login', (event, ...args: unknown[]) => {
+    assertAuthIpc(event, args)
+    const runtime = getElectronAuthRuntimeOrNull()
+    if (!runtime) throw new AuthError('auth_unavailable_in_standalone')
+    return runtime.beginLogin()
+  })
+  ipcMain.handle('auth:logout', (event, ...args: unknown[]) => {
+    assertAuthIpc(event, args)
+    return getElectronAuthRuntimeOrNull()?.client.logout()
   })
 
   ipcMain.handle('ai:set-settings', (_event, settings: AiSettings) => {
@@ -3491,6 +3495,7 @@ export function createDocsWindow(openPath?: string): BrowserWindow {
   }
   // captured up front: webContents is already destroyed inside the 'closed' handler
   const webContentsId = win.webContents.id
+  trustedDocsSenderIds.add(webContentsId)
   if (openPath) pendingWindowOpens.set(webContentsId, openPath)
 
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -3517,6 +3522,7 @@ export function createDocsWindow(openPath?: string): BrowserWindow {
     })
   })
   win.on('closed', () => {
+    trustedDocsSenderIds.delete(webContentsId)
     pendingWindowOpens.delete(webContentsId)
     dropDocWriter(webContentsId)
     // release any close-guard waiter still keyed on the gone webContents
@@ -3714,7 +3720,9 @@ export function createDocsView(openPath?: string): WebContentsView {
   }
   // view.webContents becomes undefined after destroy, so grab the id beforehand
   const wcId = view.webContents.id
+  trustedDocsSenderIds.add(wcId)
   view.webContents.once('destroyed', () => {
+    trustedDocsSenderIds.delete(wcId)
     pendingWindowOpens.delete(wcId)
     dropDocWriter(wcId)
     closeCheckWaiters.get(wcId)?.({ dirty: false, autoSave: false })

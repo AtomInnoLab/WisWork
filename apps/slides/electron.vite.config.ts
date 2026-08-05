@@ -9,10 +9,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 // avoids bundling stale implementations when node_modules links point elsewhere)
 const workspaceAlias = {
   // Subpath before the bare name: string aliases are prefix replacements
-  '@wiswork/pptx-engine/table-grid': resolve(
-    here,
-    '../../packages/pptx-engine/src/table-grid.ts',
-  ),
+  '@wiswork/pptx-engine/table-grid': resolve(here, '../../packages/pptx-engine/src/table-grid.ts'),
   '@wiswork/pptx-engine/background-promote': resolve(
     here,
     '../../packages/pptx-engine/src/background-promote.ts',
@@ -31,6 +28,7 @@ export default defineConfig({
     plugins: [
       externalizeDepsPlugin({
         exclude: [
+          '@wiswork/auth',
           '@wiswork/pptx-engine',
           '@wiswork/pptx-render',
           '@wiswork/ai-search',

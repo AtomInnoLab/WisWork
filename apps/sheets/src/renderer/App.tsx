@@ -872,7 +872,7 @@ export function App(): React.JSX.Element {
           // Signed-out failures get an inline sign-in button; detected via
           // gsk status rather than matching the localized error text
           void window.desktopApi
-            .aiGskStatus()
+            .aiAccountStatus()
             .then((status) => {
               if (status.loggedIn) return
               setChat((previous) => {

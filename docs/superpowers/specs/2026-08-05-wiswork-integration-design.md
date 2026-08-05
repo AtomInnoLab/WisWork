@@ -143,7 +143,7 @@
 
 - `@wiswork/auth`：URL 构造、state/PKCE、深链解析、重复回调、过期、刷新单飞、401 单次重试、加密存储失败和退出。
 - `@wiswork/ai-provider`：固定基址、主进程 Key、SSE 文本、tool calls、图片消息、非流式 fallback、401、超时和取消。
-- Electron IPC：token 不越过 preload，renderer 不能覆盖 URL/header，Shell 与 standalone app 行为一致。
+- Electron IPC：token 不越过 preload，renderer 不能覆盖 URL/header；仅 Shell 拥有 `wiswork` 协议，Docs/Sheets/Slides/PDF standalone 不注册协议且登录返回 `auth_unavailable_in_standalone`。
 - 品牌：扫描旧 scope、产品名、bundle ID、安装包名、更新变量和 Genspark 依赖；保留的历史迁移字符串必须有注释和允许列表。
 - 供应链：`npm install`、license/notices 生成与检查。
 - 仓库：完整 unit tests、typecheck、build:all、format check 与 diff check。

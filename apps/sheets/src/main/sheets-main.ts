@@ -53,18 +53,11 @@ import {
   type AiProviderId,
   type AiSettings,
   type AiStreamChunk,
-  type GenSparkAccountStatus,
   type LegacyAiSettings,
 } from '@wiswork/ai-provider'
 import { csvToXlsxBuffer, decodeCsvBuffer } from '../gateway/csv-import'
-import {
-  gskApiKey,
-  gskLogin,
-  gskLoginInfo,
-  hasGskAuth,
-  webSearch,
-  imageSearch,
-} from '@wiswork/ai-search'
+import { AuthError, getElectronAuthRuntimeOrNull } from '@wiswork/auth'
+import { gskApiKey, webSearch, imageSearch } from '@wiswork/ai-search'
 import { parseFileToText } from '@wiswork/file-parse'
 import type { CellEdit, SheetStructuralOps } from '../gateway/xlsx-gateway'
 import { readArchiveEntryText, saveWorkbookViaSidecar } from '../gateway/xlsx-package-io'
@@ -1058,6 +1051,11 @@ function sessionFor(event: IpcMainInvokeEvent): SheetsTabSession {
   return entry
 }
 
+function assertAuthIpc(event: IpcMainInvokeEvent, args: readonly unknown[]): void {
+  sessionFor(event)
+  if (args.length !== 0) throw new Error('Invalid auth IPC payload.')
+}
+
 function dialogParent(event: IpcMainInvokeEvent): BrowserWindow | undefined {
   return sheetsShellWindow ?? BrowserWindow.fromWebContents(event.sender) ?? undefined
 }
@@ -2023,20 +2021,19 @@ export function registerSheetsAiIpc(): void {
     return settings
   })
 
-  // Genspark account (gsk login state): the auth source for AI features; the
-  // frontend uses it to guide sign-in when logged out
-  ipcMain.handle(
-    IPC_CHANNELS.aiGskStatus,
-    async (_event, withEmail?: unknown): Promise<GenSparkAccountStatus> => {
-      if (!hasGskAuth()) return { loggedIn: false }
-      if (!withEmail) return { loggedIn: true }
-      const info = await gskLoginInfo()
-      return info?.email ? { loggedIn: true, email: info.email } : { loggedIn: true }
-    },
-  )
-
-  ipcMain.handle(IPC_CHANNELS.aiGskLogin, () => {
-    gskLogin()
+  ipcMain.handle(IPC_CHANNELS.aiAccountStatus, (event, ...args: unknown[]) => {
+    assertAuthIpc(event, args)
+    return getElectronAuthRuntimeOrNull()?.client.getAccountStatus() ?? { loggedIn: false }
+  })
+  ipcMain.handle(IPC_CHANNELS.aiAccountLogin, (event, ...args: unknown[]) => {
+    assertAuthIpc(event, args)
+    const runtime = getElectronAuthRuntimeOrNull()
+    if (!runtime) throw new AuthError('auth_unavailable_in_standalone')
+    return runtime.beginLogin()
+  })
+  ipcMain.handle(IPC_CHANNELS.aiAccountLogout, (event, ...args: unknown[]) => {
+    assertAuthIpc(event, args)
+    return getElectronAuthRuntimeOrNull()?.client.logout()
   })
 
   ipcMain.handle(IPC_CHANNELS.aiSetSettings, (event, input: unknown) => {
@@ -2757,6 +2754,14 @@ export function startSheetsStandalone(): void {
   if (!app.isPackaged && process.env.GENOFFICE_USER_DATA) {
     app.setPath('userData', process.env.GENOFFICE_USER_DATA)
   }
+  if (!app.requestSingleInstanceLock()) {
+    app.quit()
+    return
+  }
+  app.on('second-instance', () => {
+    mainWindow?.show()
+    mainWindow?.focus()
+  })
   void applyMainProcessProxy()
   app.whenReady().then(() => {
     setUiLang(normalizeLang(process.env.GENOFFICE_LANG ?? app.getLocale()))

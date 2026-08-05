@@ -100,6 +100,10 @@ export class TabManager {
     if (active?.view) active.view.setBounds(this.contentBounds())
   }
 
+  ownsWebContents(senderId: number): boolean {
+    return this.tabs.some((tab) => tab.view?.webContents.id === senderId)
+  }
+
   list(): TabSummary[] {
     return this.tabs.map((t) => ({
       id: t.id,

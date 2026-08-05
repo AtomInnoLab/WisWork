@@ -349,7 +349,7 @@ export function AiChatPanel({
                 {entry.loginRequired && (
                   <button
                     className="ai-login-btn"
-                    onClick={() => void window.desktopApi.aiGskLogin()}
+                    onClick={() => void window.desktopApi.aiAccountLogin()}
                   >
                     {t('aiGskLoginBtn')}
                   </button>

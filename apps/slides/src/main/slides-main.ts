@@ -3936,6 +3936,12 @@ export function startSlidesStandalone(): void {
     return
   }
 
+  app.on('second-instance', () => {
+    const win = BrowserWindow.getAllWindows()[0]
+    win?.show()
+    win?.focus()
+  })
+
   app.on('open-file', (event, path) => {
     event.preventDefault()
     if (app.isReady()) {

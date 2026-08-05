@@ -5,6 +5,7 @@
  * (image generation, media analysis, style templates).
  */
 import { app, ipcMain } from 'electron'
+import type { IpcMainInvokeEvent } from 'electron'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -16,9 +17,9 @@ import {
   type AiSettings,
   type AiStreamChunk,
   type AiStreamRequest,
-  type GenSparkAccountStatus,
   type LegacyAiSettings,
 } from '@wiswork/ai-provider'
+import { AuthError, getElectronAuthRuntimeOrNull } from '@wiswork/auth'
 import { fetchWithSsrfGuard } from '@wiswork/electron-utils'
 import {
   webSearch,
@@ -26,8 +27,6 @@ import {
   gskApiKey,
   gskGenerateImage,
   gskAnalyzeMedia,
-  gskLogin,
-  gskLoginInfo,
   hasGskAuth,
 } from '@wiswork/ai-search'
 import { addPicture } from '@wiswork/pptx-engine'
@@ -55,6 +54,11 @@ function writeJson(path: string, value: unknown): void {
 
 const activeAiStreams = new Map<string, AbortController>()
 
+function assertAuthIpc(event: IpcMainInvokeEvent, args: readonly unknown[]): void {
+  if (!sessions.has(event.sender.id)) throw new Error('Untrusted IPC sender.')
+  if (args.length !== 0) throw new Error('Invalid auth IPC payload.')
+}
+
 export function registerAiIpc(): void {
   ipcMain.handle('ai:get-settings', (): AiSettings => {
     const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(AI_SETTINGS_PATH(), {})
@@ -64,19 +68,19 @@ export function registerAiIpc(): void {
     return settings
   })
 
-  // Genspark account (gsk login state): the auth source for AI features; when logged out the frontend uses this to guide login
-  ipcMain.handle(
-    'ai:gsk-status',
-    async (_event, withEmail?: boolean): Promise<GenSparkAccountStatus> => {
-      if (!hasGskAuth()) return { loggedIn: false }
-      if (!withEmail) return { loggedIn: true }
-      const info = await gskLoginInfo()
-      return info?.email ? { loggedIn: true, email: info.email } : { loggedIn: true }
-    },
-  )
-
-  ipcMain.handle('ai:gsk-login', () => {
-    gskLogin()
+  ipcMain.handle('auth:status', (event, ...args: unknown[]) => {
+    assertAuthIpc(event, args)
+    return getElectronAuthRuntimeOrNull()?.client.getAccountStatus() ?? { loggedIn: false }
+  })
+  ipcMain.handle('auth:login', (event, ...args: unknown[]) => {
+    assertAuthIpc(event, args)
+    const runtime = getElectronAuthRuntimeOrNull()
+    if (!runtime) throw new AuthError('auth_unavailable_in_standalone')
+    return runtime.beginLogin()
+  })
+  ipcMain.handle('auth:logout', (event, ...args: unknown[]) => {
+    assertAuthIpc(event, args)
+    return getElectronAuthRuntimeOrNull()?.client.logout()
   })
 
   ipcMain.handle('ai:set-settings', (_event, settings: AiSettings) => {
@@ -176,6 +180,7 @@ export function registerAiIpc(): void {
 // never called; docs does not have these channels, so putting them in the wrong place raises
 // "No handler registered".
 export function registerSlidesOnlyAiIpc(): void {
+  ipcMain.handle('ai:gsk-capability-status', () => ({ available: hasGskAuth() }))
   // gsk (Genspark CLI) capabilities: AI image generation / media analysis. Returns an error prompt when not logged in.
   ipcMain.handle(
     'ai:generate-image',

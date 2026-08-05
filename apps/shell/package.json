@@ -16,9 +16,13 @@
     "dist:win": "electron-vite build && electron-builder --win"
   },
   "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.0.4",
     "@wiswork/agent-core": "*",
     "@wiswork/ai-provider": "*",
     "@wiswork/ai-search": "*",
+    "@wiswork/auth": "*",
     "@wiswork/docs": "*",
     "@wiswork/docx-engine": "*",
     "@wiswork/electron-utils": "*",
@@ -27,9 +31,6 @@
     "@wiswork/pptx-render": "*",
     "@wiswork/sheets": "*",
     "@wiswork/slides": "*",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.0.4",
     "electron": "^41.0.3",
     "electron-builder": "^26.0.12",
     "electron-updater": "^6.8.9",

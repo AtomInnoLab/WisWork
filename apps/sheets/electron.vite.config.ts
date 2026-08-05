@@ -10,6 +10,7 @@ export default defineConfig({
     plugins: [
       externalizeDepsPlugin({
         exclude: [
+          '@wiswork/auth',
           '@wiswork/ai-provider',
           '@wiswork/agent-core',
           '@wiswork/ai-search',

@@ -426,9 +426,6 @@ function AccountEntry() {
   const [loginError, setLoginError] = useState<
     'timeout' | 'launch' | 'network' | 'expired' | 'failed' | null
   >(null)
-  // auth URL reported by the login CLI — rescue entry when the browser did not open
-  const [authUrl, setAuthUrl] = useState<string | null>(null)
-  const [urlCopied, setUrlCopied] = useState(false)
   const loginDeadline = useRef(0)
   const [menuOpen, setMenuOpen] = useState(false)
   // language flyout: opens on hover, fixed-position so it can escape the
@@ -458,20 +455,15 @@ function AccountEntry() {
   // login progress pushed from main (gsk login CLI output)
   useEffect(() => {
     const off = window.aiOffice.onAccountLogin?.((ev) => {
-      if (ev.phase === 'url') {
-        if (ev.url) setAuthUrl(ev.url)
-        if (ev.expiresInSec) loginDeadline.current = Date.now() + ev.expiresInSec * 1000
-      } else if (ev.phase === 'success') {
+      if (ev.phase === 'success') {
         void window.aiOffice.accountStatus().then((s) => {
           if (s.loggedIn) {
             setStatus(s)
             setWaiting(false)
-            setAuthUrl(null)
           }
         })
       } else if (ev.phase === 'error') {
         setWaiting(false)
-        setAuthUrl(null)
         setLoginError(
           ev.error === 'network' ? 'network' : ev.error === 'expired' ? 'expired' : 'failed',
         )
@@ -488,10 +480,8 @@ function AccountEntry() {
         if (s.loggedIn) {
           setStatus(s)
           setWaiting(false)
-          setAuthUrl(null)
         } else if (Date.now() > loginDeadline.current) {
           setWaiting(false)
-          setAuthUrl(null)
           setLoginError('timeout')
         }
       })
@@ -571,8 +561,6 @@ function AccountEntry() {
     // clicking again while waiting = relaunch the login (main kills the stale CLI, so the new device code is the live one)
     setLoginError(null)
     setWaiting(true)
-    setAuthUrl(null)
-    setUrlCopied(false)
     loginDeadline.current = Date.now() + LOGIN_MAX_WAIT_MS
     setLoginNonce((n) => n + 1)
     closeMenu()
@@ -585,14 +573,6 @@ function AccountEntry() {
   }
 
   const openLoginUrl = () => void window.aiOffice.openLoginUrl?.()
-
-  const copyLoginUrl = () => {
-    if (!authUrl) return
-    void navigator.clipboard.writeText(authUrl).then(() => {
-      setUrlCopied(true)
-      window.setTimeout(() => setUrlCopied(false), 2000)
-    })
-  }
 
   const handleClick = () => {
     setMenuOpen((v) => !v)
@@ -619,23 +599,14 @@ function AccountEntry() {
               >
                 {waiting ? t('waitingShort') : t('loginGenspark')}
               </button>
-              {waiting && authUrl && (
-                <>
-                  <button
-                    className="account-menu-item login-rescue"
-                    role="menuitem"
-                    onClick={openLoginUrl}
-                  >
-                    {t('loginOpenManually')}
-                  </button>
-                  <button
-                    className="account-menu-item login-rescue"
-                    role="menuitem"
-                    onClick={copyLoginUrl}
-                  >
-                    {urlCopied ? t('loginCopied') : t('loginCopyUrl')}
-                  </button>
-                </>
+              {waiting && (
+                <button
+                  className="account-menu-item login-rescue"
+                  role="menuitem"
+                  onClick={openLoginUrl}
+                >
+                  {t('loginOpenManually')}
+                </button>
               )}
             </>
           )}
@@ -763,13 +734,10 @@ function AccountEntry() {
           )}
         </div>
       )}
-      {!menuOpen && waiting && authUrl && (
+      {!menuOpen && waiting && (
         <div className="login-hint" role="status">
           <button className="login-hint-open" onClick={openLoginUrl}>
             {t('loginOpenManually')}
-          </button>
-          <button className="login-hint-copy" onClick={copyLoginUrl}>
-            {urlCopied ? t('loginCopied') : t('loginCopyUrl')}
           </button>
         </div>
       )}

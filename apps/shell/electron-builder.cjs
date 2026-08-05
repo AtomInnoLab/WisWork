@@ -40,6 +40,8 @@ const config = {
   appId: 'com.genoffice.app',
   productName: 'GenOffice',
   electronVersion: '41.7.1',
+  // The shell is the authoritative installed owner. Standalone builds using the same scheme conflict if installed together.
+  protocols: [{ name: 'WisWork OAuth Callback', schemes: ['wiswork'] }],
   directories: {
     output: 'release',
   },
