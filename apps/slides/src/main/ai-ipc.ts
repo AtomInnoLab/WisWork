@@ -10,18 +10,13 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from 'node:path'
 import { AiIpcError, registerWisworkModelIpc, validateAiSearchArgs } from '@wiswork/ai-provider'
 import { AuthError, getElectronAuthRuntimeOrNull } from '@wiswork/auth'
+import { webSearch, imageSearch } from '@wiswork/ai-search'
 import { fetchWithSsrfGuard } from '@wiswork/electron-utils'
-import {
-  webSearch,
-  imageSearch,
-  gskGenerateImage,
-  gskAnalyzeMedia,
-  hasGskAuth,
-} from '@wiswork/ai-search'
 import { addPicture } from '@wiswork/pptx-engine'
 import { EMU_PER_PX_96 } from '@wiswork/pptx-render'
 import { tm } from './i18n-main'
 import { pushHistory, rebuildSlide, sessions } from './session-state'
+import { registerUnsupportedMediaIpc } from './unsupported-ipc'
 
 // ---- AI settings + streaming proxy (the main process does the networking to avoid renderer CORS; implementation shared via @wiswork/ai-provider) ----
 
@@ -140,87 +135,7 @@ export function registerAiIpc(): void {
 // never called; docs does not have these channels, so putting them in the wrong place raises
 // "No handler registered".
 export function registerSlidesOnlyAiIpc(): void {
-  ipcMain.handle('ai:gsk-capability-status', (event, ...args: unknown[]) => {
-    assertAiIpcSender(event)
-    if (args.length !== 0) throw new AiIpcError('invalid_payload')
-    return { available: hasGskAuth() }
-  })
-  // gsk (Genspark CLI) capabilities: AI image generation / media analysis. Returns an error prompt when not logged in.
-  ipcMain.handle(
-    'ai:generate-image',
-    async (
-      event,
-      op: {
-        prompt: string
-        model?: string
-        referenceImageUrls?: string[]
-        aspectRatio?: string
-        imageSize?: string
-      },
-    ) => {
-      assertAiIpcSender(event)
-      validateSlidesAiObject(op, [
-        'prompt',
-        'model',
-        'referenceImageUrls',
-        'aspectRatio',
-        'imageSize',
-      ])
-      validateSlidesAiString(op.prompt, 32_000)
-      for (const value of [op.model, op.aspectRatio, op.imageSize]) {
-        if (value !== undefined) validateSlidesAiString(value, 256)
-      }
-      if (
-        op.referenceImageUrls !== undefined &&
-        (!Array.isArray(op.referenceImageUrls) ||
-          op.referenceImageUrls.length > 8 ||
-          op.referenceImageUrls.some((url) => typeof url !== 'string' || url.length > 4_096))
-      ) {
-        throw new AiIpcError('invalid_payload')
-      }
-      if (!hasGskAuth()) return { error: tm('errGskCli') }
-      try {
-        const r = await gskGenerateImage({
-          prompt: String(op.prompt),
-          model: op.model ? String(op.model) : undefined,
-          referenceImageUrls: Array.isArray(op.referenceImageUrls)
-            ? op.referenceImageUrls.map(String)
-            : undefined,
-          aspectRatio: op.aspectRatio ? String(op.aspectRatio) : undefined,
-          imageSize: op.imageSize ? String(op.imageSize) : undefined,
-        })
-        return { url: r.url }
-      } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) }
-      }
-    },
-  )
-
-  ipcMain.handle(
-    'ai:analyze-media',
-    async (event, op: { mediaUrls: string[]; requirements: string }) => {
-      assertAiIpcSender(event)
-      validateSlidesAiObject(op, ['mediaUrls', 'requirements'])
-      if (
-        !Array.isArray(op.mediaUrls) ||
-        op.mediaUrls.length > 20 ||
-        op.mediaUrls.some((url) => typeof url !== 'string' || url.length > 4_096)
-      ) {
-        throw new AiIpcError('invalid_payload')
-      }
-      validateSlidesAiString(op.requirements, 32_000)
-      if (!hasGskAuth()) return { error: tm('errGskCli') }
-      try {
-        const text = await gskAnalyzeMedia({
-          mediaUrls: (op.mediaUrls ?? []).map(String),
-          requirements: String(op.requirements ?? ''),
-        })
-        return { text }
-      } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) }
-      }
-    },
-  )
+  registerUnsupportedMediaIpc(ipcMain, (senderId) => sessions.has(senderId))
 
   // Download an image from a URL and insert it into the given page (image search -> insert in one step; download in the main process avoids CORS)
   ipcMain.handle(

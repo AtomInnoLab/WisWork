@@ -70,7 +70,7 @@ export const aiStrings = defineStrings({
     aiErrEmptyOutput: '空输出',
     aiErrUnknown: '未知错误',
     aiErrStreamTimeout: 'AI 请求超时：网络长时间无响应，已停止。请检查网络后重试',
-    aiCreditsExhausted: 'Genspark 积分已用完，请前往 genspark.ai/pricing 充值后重试',
+    aiCreditsExhausted: 'WisWork 服务额度已用完，请联系管理员后重试。',
     aiErrRequestFailed: '请求发送失败: {msg}',
     aiErrGenerateFailed: '生成失败',
     aiErrRegenFailed: '重做页面失败',
@@ -146,7 +146,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: '保存风格模板',
     aiFailListTemplates: '列出风格模板',
     aiLabelInsertSmartart: '插入 SmartArt',
-    aiSumFromScratchGuard: '{label}：从零生成请用 generate_deck',
     aiSumDeckContext: '读取演示文稿结构',
     aiSumReadSlide: '读取第 {n} 页',
     aiSumEditText: '改写第 {n} 页文本',
@@ -265,7 +264,7 @@ export const aiStrings = defineStrings({
     aiErrStreamTimeout:
       'AI request timed out: no response from the network, so the run was stopped. Check your connection and try again',
     aiCreditsExhausted:
-      'Your Genspark credits have run out. Visit genspark.ai/pricing to top up, then try again',
+      'WisWork service limit reached. Please contact your administrator and try again.',
     aiErrRequestFailed: 'Failed to send request: {msg}',
     aiErrGenerateFailed: 'Generation failed',
     aiErrRegenFailed: 'Slide redo failed',
@@ -341,7 +340,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: 'Save style template',
     aiFailListTemplates: 'List style templates',
     aiLabelInsertSmartart: 'Insert SmartArt',
-    aiSumFromScratchGuard: '{label}: use generate_deck to build from scratch',
     aiSumDeckContext: 'Read deck structure',
     aiSumReadSlide: 'Read slide {n}',
     aiSumEditText: 'Rewrote text on slide {n}',
@@ -459,7 +457,7 @@ export const aiStrings = defineStrings({
     aiErrStreamTimeout:
       'AIリクエストがタイムアウトしました：ネットワークからの応答がないため中断しました。接続を確認して再試行してください',
     aiCreditsExhausted:
-      'Gensparkクレジットを使い切りました。genspark.ai/pricing でチャージしてから再試行してください',
+      'WisWork のサービス利用上限に達しました。管理者に連絡してから再試行してください。',
     aiErrRequestFailed: 'リクエストの送信に失敗しました: {msg}',
     aiErrGenerateFailed: '生成に失敗しました',
     aiErrRegenFailed: 'ページの再生成に失敗しました',
@@ -535,7 +533,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: 'スタイル テンプレートの保存',
     aiFailListTemplates: 'スタイル テンプレートの一覧',
     aiLabelInsertSmartart: 'SmartArt の挿入',
-    aiSumFromScratchGuard: '{label}: 新規作成には generate_deck を使用してください',
     aiSumDeckContext: 'プレゼンテーションの構造を読み取り',
     aiSumReadSlide: 'スライド {n} を読み取り',
     aiSumEditText: 'スライド {n} のテキストを書き換え',
@@ -654,7 +651,7 @@ export const aiStrings = defineStrings({
     aiErrStreamTimeout:
       'AI 요청 시간 초과: 네트워크 응답이 없어 중단되었습니다. 연결을 확인한 후 다시 시도해 주세요',
     aiCreditsExhausted:
-      'Genspark 크레딧을 모두 사용했습니다. genspark.ai/pricing에서 충전한 후 다시 시도해 주세요',
+      'WisWork 서비스 사용 한도에 도달했습니다. 관리자에게 문의한 후 다시 시도해 주세요.',
     aiErrRequestFailed: '요청 전송 실패: {msg}',
     aiErrGenerateFailed: '생성 실패',
     aiErrRegenFailed: '페이지 다시 생성 실패',
@@ -730,7 +727,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: '스타일 템플릿 저장',
     aiFailListTemplates: '스타일 템플릿 목록',
     aiLabelInsertSmartart: 'SmartArt 삽입',
-    aiSumFromScratchGuard: '{label}: 처음부터 생성하려면 generate_deck을 사용하세요',
     aiSumDeckContext: '프레젠테이션 구조 읽기',
     aiSumReadSlide: '슬라이드 {n} 읽기',
     aiSumEditText: '슬라이드 {n} 텍스트 수정',
@@ -851,7 +847,7 @@ export const aiStrings = defineStrings({
     aiErrStreamTimeout:
       "Délai de la requête IA dépassé : aucune réponse du réseau, l'exécution a été interrompue. Vérifiez votre connexion et réessayez",
     aiCreditsExhausted:
-      'Vos crédits Genspark sont épuisés. Rechargez sur genspark.ai/pricing puis réessayez',
+      'La limite d’utilisation du service WisWork est atteinte. Contactez votre administrateur, puis réessayez.',
     aiErrRequestFailed: "Échec de l'envoi de la requête : {msg}",
     aiErrGenerateFailed: 'Échec de la génération',
     aiErrRegenFailed: 'Échec de la régénération de la diapositive',
@@ -927,7 +923,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: 'Enregistrer le modèle de style',
     aiFailListTemplates: 'Lister les modèles de style',
     aiLabelInsertSmartart: 'Insérer un SmartArt',
-    aiSumFromScratchGuard: '{label} : utilisez generate_deck pour créer à partir de zéro',
     aiSumDeckContext: 'Lecture de la structure de la présentation',
     aiSumReadSlide: 'Lecture de la diapositive {n}',
     aiSumEditText: 'Texte réécrit sur la diapositive {n}',
@@ -1048,7 +1043,7 @@ export const aiStrings = defineStrings({
     aiErrStreamTimeout:
       'Zeitüberschreitung der KI-Anfrage: keine Antwort vom Netzwerk, der Vorgang wurde abgebrochen. Prüfe deine Verbindung und versuche es erneut',
     aiCreditsExhausted:
-      'Deine Genspark-Credits sind aufgebraucht. Lade unter genspark.ai/pricing auf und versuche es erneut',
+      'Das WisWork-Dienstlimit wurde erreicht. Wenden Sie sich an Ihre Administration und versuchen Sie es erneut.',
     aiErrRequestFailed: 'Senden der Anfrage fehlgeschlagen: {msg}',
     aiErrGenerateFailed: 'Generierung fehlgeschlagen',
     aiErrRegenFailed: 'Neuerstellung der Folie fehlgeschlagen',
@@ -1124,7 +1119,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: 'Stilvorlage speichern',
     aiFailListTemplates: 'Stilvorlagen auflisten',
     aiLabelInsertSmartart: 'SmartArt einfügen',
-    aiSumFromScratchGuard: '{label}: Zum Erstellen von Grund auf generate_deck verwenden',
     aiSumDeckContext: 'Präsentationsstruktur gelesen',
     aiSumReadSlide: 'Folie {n} gelesen',
     aiSumEditText: 'Text auf Folie {n} umgeschrieben',
@@ -1245,7 +1239,7 @@ export const aiStrings = defineStrings({
     aiErrStreamTimeout:
       'La solicitud de IA agotó el tiempo de espera: no hubo respuesta de la red y se detuvo. Comprueba tu conexión e inténtalo de nuevo',
     aiCreditsExhausted:
-      'Tus créditos de Genspark se han agotado. Recarga en genspark.ai/pricing e inténtalo de nuevo',
+      'Se alcanzó el límite del servicio WisWork. Ponte en contacto con el administrador e inténtalo de nuevo.',
     aiErrRequestFailed: 'No se pudo enviar la solicitud: {msg}',
     aiErrGenerateFailed: 'Error de generación',
     aiErrRegenFailed: 'No se pudo rehacer la diapositiva',
@@ -1321,7 +1315,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: 'Guardar plantilla de estilo',
     aiFailListTemplates: 'Enumerar plantillas de estilo',
     aiLabelInsertSmartart: 'Insertar SmartArt',
-    aiSumFromScratchGuard: '{label}: usa generate_deck para crear desde cero',
     aiSumDeckContext: 'Leer estructura de la presentación',
     aiSumReadSlide: 'Leer diapositiva {n}',
     aiSumEditText: 'Texto reescrito en la diapositiva {n}',
@@ -1438,7 +1431,7 @@ export const aiStrings = defineStrings({
     aiErrStreamTimeout:
       'คำขอ AI หมดเวลา: เครือข่ายไม่ตอบสนอง จึงหยุดการทำงาน โปรดตรวจสอบการเชื่อมต่อแล้วลองใหม่',
     aiCreditsExhausted:
-      'เครดิต Genspark ของคุณหมดแล้ว โปรดเติมเครดิตที่ genspark.ai/pricing แล้วลองใหม่',
+      'ถึงขีดจำกัดการใช้งานบริการ WisWork แล้ว โปรดติดต่อผู้ดูแลระบบแล้วลองอีกครั้ง',
     aiErrRequestFailed: 'ส่งคำขอไม่สำเร็จ: {msg}',
     aiErrGenerateFailed: 'สร้างไม่สำเร็จ',
     aiErrRegenFailed: 'ทำหน้าใหม่ไม่สำเร็จ',
@@ -1514,7 +1507,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: 'บันทึกเทมเพลตสไตล์',
     aiFailListTemplates: 'แสดงรายการเทมเพลตสไตล์',
     aiLabelInsertSmartart: 'แทรก SmartArt',
-    aiSumFromScratchGuard: '{label}: หากต้องการสร้างตั้งแต่ต้น ให้ใช้ generate_deck',
     aiSumDeckContext: 'อ่านโครงสร้างงานนำเสนอ',
     aiSumReadSlide: 'อ่านสไลด์ {n}',
     aiSumEditText: 'เขียนข้อความในสไลด์ {n} ใหม่',
@@ -1634,7 +1626,7 @@ export const aiStrings = defineStrings({
     aiErrStreamTimeout:
       'Permintaan AI habis waktu: jaringan tidak merespons sehingga proses dihentikan. Periksa koneksi Anda lalu coba lagi',
     aiCreditsExhausted:
-      'Kredit Genspark Anda telah habis. Isi ulang di genspark.ai/pricing lalu coba lagi',
+      'Batas layanan WisWork telah tercapai. Hubungi administrator Anda lalu coba lagi.',
     aiErrRequestFailed: 'Gagal mengirim permintaan: {msg}',
     aiErrGenerateFailed: 'Pembuatan gagal',
     aiErrRegenFailed: 'Gagal membuat ulang halaman',
@@ -1710,7 +1702,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: 'Simpan templat gaya',
     aiFailListTemplates: 'Daftar templat gaya',
     aiLabelInsertSmartart: 'Sisipkan SmartArt',
-    aiSumFromScratchGuard: '{label}: gunakan generate_deck untuk membuat dari awal',
     aiSumDeckContext: 'Baca struktur presentasi',
     aiSumReadSlide: 'Baca slide {n}',
     aiSumEditText: 'Menulis ulang teks di slide {n}',
@@ -1830,7 +1821,7 @@ export const aiStrings = defineStrings({
     aiErrStreamTimeout:
       'Тайм-аут запроса ИИ: сеть не отвечает, выполнение остановлено. Проверьте подключение и повторите попытку',
     aiCreditsExhausted:
-      'Кредиты Genspark исчерпаны. Пополните баланс на genspark.ai/pricing и повторите попытку',
+      'Достигнут лимит сервиса WisWork. Обратитесь к администратору и повторите попытку.',
     aiErrRequestFailed: 'Не удалось отправить запрос: {msg}',
     aiErrGenerateFailed: 'Сбой генерации',
     aiErrRegenFailed: 'Не удалось переделать слайд',
@@ -1906,7 +1897,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: 'Сохранение шаблона стиля',
     aiFailListTemplates: 'Список шаблонов стиля',
     aiLabelInsertSmartart: 'Вставка SmartArt',
-    aiSumFromScratchGuard: '{label}: для создания с нуля используйте generate_deck',
     aiSumDeckContext: 'Чтение структуры презентации',
     aiSumReadSlide: 'Чтение слайда {n}',
     aiSumEditText: 'Переписан текст на слайде {n}',
@@ -2022,8 +2012,7 @@ export const aiStrings = defineStrings({
     aiErrUnknown: 'خطأ غير معروف',
     aiErrStreamTimeout:
       'انتهت مهلة طلب الذكاء الاصطناعي: لا توجد استجابة من الشبكة وتم الإيقاف. تحقق من الاتصال وحاول مجددًا',
-    aiCreditsExhausted:
-      'نفدت أرصدة Genspark لديك. يرجى إعادة الشحن عبر genspark.ai/pricing ثم المحاولة مجددًا',
+    aiCreditsExhausted: 'تم بلوغ حد خدمة WisWork. يرجى التواصل مع المسؤول ثم المحاولة مرة أخرى.',
     aiErrRequestFailed: 'فشل إرسال الطلب: {msg}',
     aiErrGenerateFailed: 'فشل الإنشاء',
     aiErrRegenFailed: 'فشلت إعادة إنشاء الصفحة',
@@ -2099,7 +2088,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: 'حفظ قالب النمط',
     aiFailListTemplates: 'سرد قوالب الأنماط',
     aiLabelInsertSmartart: 'إدراج SmartArt',
-    aiSumFromScratchGuard: '{label}: للإنشاء من الصفر استخدم generate_deck',
     aiSumDeckContext: 'قراءة بنية العرض التقديمي',
     aiSumReadSlide: 'قراءة الشريحة {n}',
     aiSumEditText: 'إعادة صياغة نص الشريحة {n}',
@@ -2219,7 +2207,7 @@ export const aiStrings = defineStrings({
     aiErrStreamTimeout:
       'A solicitação de IA expirou: sem resposta da rede, a execução foi interrompida. Verifique sua conexão e tente novamente',
     aiCreditsExhausted:
-      'Seus créditos Genspark acabaram. Recarregue em genspark.ai/pricing e tente novamente',
+      'O limite do serviço WisWork foi atingido. Contate o administrador e tente novamente.',
     aiErrRequestFailed: 'Falha ao enviar a solicitação: {msg}',
     aiErrGenerateFailed: 'Falha na geração',
     aiErrRegenFailed: 'Falha ao refazer o slide',
@@ -2295,7 +2283,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: 'Salvar modelo de estilo',
     aiFailListTemplates: 'Listar modelos de estilo',
     aiLabelInsertSmartart: 'Inserir SmartArt',
-    aiSumFromScratchGuard: '{label}: use generate_deck para criar do zero',
     aiSumDeckContext: 'Ler estrutura da apresentação',
     aiSumReadSlide: 'Ler slide {n}',
     aiSumEditText: 'Texto reescrito no slide {n}',
@@ -2415,7 +2402,7 @@ export const aiStrings = defineStrings({
     aiErrStreamTimeout:
       'Richiesta IA scaduta: nessuna risposta dalla rete, esecuzione interrotta. Controlla la connessione e riprova',
     aiCreditsExhausted:
-      'I tuoi crediti Genspark sono esauriti. Ricarica su genspark.ai/pricing e riprova',
+      'È stato raggiunto il limite del servizio WisWork. Contatta l’amministratore e riprova.',
     aiErrRequestFailed: 'Invio della richiesta non riuscito: {msg}',
     aiErrGenerateFailed: 'Generazione non riuscita',
     aiErrRegenFailed: 'Rigenerazione della diapositiva non riuscita',
@@ -2491,7 +2478,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: 'Salvataggio modello di stile',
     aiFailListTemplates: 'Elenco dei modelli di stile',
     aiLabelInsertSmartart: 'Inserisci SmartArt',
-    aiSumFromScratchGuard: '{label}: usa generate_deck per creare da zero',
     aiSumDeckContext: 'Lettura della struttura della presentazione',
     aiSumReadSlide: 'Lettura della diapositiva {n}',
     aiSumEditText: 'Testo riscritto nella diapositiva {n}',
@@ -2611,7 +2597,7 @@ export const aiStrings = defineStrings({
     aiErrStreamTimeout:
       'Przekroczono limit czasu żądania AI: brak odpowiedzi sieci, przerwano. Sprawdź połączenie i spróbuj ponownie',
     aiCreditsExhausted:
-      'Twoje kredyty Genspark wyczerpały się. Doładuj konto na genspark.ai/pricing i spróbuj ponownie',
+      'Osiągnięto limit usługi WisWork. Skontaktuj się z administratorem i spróbuj ponownie.',
     aiErrRequestFailed: 'Wysłanie żądania nie powiodło się: {msg}',
     aiErrGenerateFailed: 'Generowanie nie powiodło się',
     aiErrRegenFailed: 'Ponowne wygenerowanie slajdu nie powiodło się',
@@ -2687,7 +2673,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: 'Zapisywanie szablonu stylu',
     aiFailListTemplates: 'Lista szablonów stylu',
     aiLabelInsertSmartart: 'Wstaw grafikę SmartArt',
-    aiSumFromScratchGuard: '{label}: aby tworzyć od zera, użyj generate_deck',
     aiSumDeckContext: 'Odczyt struktury prezentacji',
     aiSumReadSlide: 'Odczyt slajdu {n}',
     aiSumEditText: 'Przeredagowano tekst na slajdzie {n}',
@@ -2808,7 +2793,7 @@ export const aiStrings = defineStrings({
     aiErrStreamTimeout:
       'AI-verzoek verlopen: geen reactie van het netwerk, uitvoering gestopt. Controleer je verbinding en probeer het opnieuw',
     aiCreditsExhausted:
-      'Je Genspark-credits zijn op. Waardeer op via genspark.ai/pricing en probeer het opnieuw',
+      'De limiet van de WisWork-service is bereikt. Neem contact op met de beheerder en probeer het opnieuw.',
     aiErrRequestFailed: 'Verzenden van verzoek mislukt: {msg}',
     aiErrGenerateFailed: 'Genereren mislukt',
     aiErrRegenFailed: 'Dia opnieuw genereren mislukt',
@@ -2884,7 +2869,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: 'Stijlsjabloon opslaan',
     aiFailListTemplates: 'Stijlsjablonen weergeven',
     aiLabelInsertSmartart: 'SmartArt invoegen',
-    aiSumFromScratchGuard: '{label}: gebruik generate_deck om vanaf nul te bouwen',
     aiSumDeckContext: 'Presentatiestructuur gelezen',
     aiSumReadSlide: 'Dia {n} gelezen',
     aiSumEditText: 'Tekst herschreven op dia {n}',
@@ -3004,7 +2988,7 @@ export const aiStrings = defineStrings({
     aiErrStreamTimeout:
       'Permintaan AI tamat masa: rangkaian tidak memberi respons, proses dihentikan. Semak sambungan anda dan cuba lagi',
     aiCreditsExhausted:
-      'Kredit Genspark anda telah habis. Tambah nilai di genspark.ai/pricing dan cuba lagi',
+      'Had perkhidmatan WisWork telah dicapai. Hubungi pentadbir anda dan cuba lagi.',
     aiErrRequestFailed: 'Gagal menghantar permintaan: {msg}',
     aiErrGenerateFailed: 'Penjanaan gagal',
     aiErrRegenFailed: 'Gagal membuat semula slaid',
@@ -3080,7 +3064,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: 'Simpan templat gaya',
     aiFailListTemplates: 'Senaraikan templat gaya',
     aiLabelInsertSmartart: 'Selitkan SmartArt',
-    aiSumFromScratchGuard: '{label}: gunakan generate_deck untuk membina dari kosong',
     aiSumDeckContext: 'Baca struktur persembahan',
     aiSumReadSlide: 'Baca slaid {n}',
     aiSumEditText: 'Menulis semula teks pada slaid {n}',
@@ -3197,7 +3180,7 @@ export const aiStrings = defineStrings({
     aiErrUnknown: 'שגיאה לא ידועה',
     aiErrStreamTimeout:
       'תם הזמן לבקשת ה-AI: אין תגובה מהרשת וההרצה הופסקה. בדוק את החיבור ונסה שוב',
-    aiCreditsExhausted: 'קרדיטי Genspark שלך אזלו. טען מחדש ב-genspark.ai/pricing ונסה שוב',
+    aiCreditsExhausted: 'הגעת למגבלת השירות של WisWork. יש לפנות למנהל המערכת ולנסות שוב.',
     aiErrRequestFailed: 'שליחת הבקשה נכשלה: {msg}',
     aiErrGenerateFailed: 'היצירה נכשלה',
     aiErrRegenFailed: 'יצירת השקופית מחדש נכשלה',
@@ -3273,7 +3256,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: 'שמירת תבנית סגנון',
     aiFailListTemplates: 'הצגת תבניות סגנון',
     aiLabelInsertSmartart: 'הוסף SmartArt',
-    aiSumFromScratchGuard: '{label}: ליצירה מאפס השתמש ב-generate_deck',
     aiSumDeckContext: 'קריאת מבנה המצגת',
     aiSumReadSlide: 'קריאת שקופית {n}',
     aiSumEditText: 'הטקסט שוכתב בשקופית {n}',
@@ -3392,7 +3374,7 @@ export const aiStrings = defineStrings({
     aiErrStreamTimeout:
       'AI अनुरोध का समय समाप्त: नेटवर्क से कोई प्रतिक्रिया नहीं मिली, इसलिए रोक दिया गया। कनेक्शन जांचें और फिर से प्रयास करें',
     aiCreditsExhausted:
-      'आपके Genspark क्रेडिट समाप्त हो गए हैं। genspark.ai/pricing पर रिचार्ज करें और फिर से प्रयास करें',
+      'WisWork सेवा की सीमा पूरी हो गई है। अपने व्यवस्थापक से संपर्क करके फिर से प्रयास करें।',
     aiErrRequestFailed: 'अनुरोध भेजने में विफल: {msg}',
     aiErrGenerateFailed: 'जनरेशन विफल',
     aiErrRegenFailed: 'स्लाइड फिर से बनाने में विफल',
@@ -3468,7 +3450,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: 'स्टाइल टेम्पलेट सहेजें',
     aiFailListTemplates: 'स्टाइल टेम्पलेट सूचीबद्ध करें',
     aiLabelInsertSmartart: 'SmartArt सम्मिलित करें',
-    aiSumFromScratchGuard: '{label}: शुरुआत से बनाने के लिए generate_deck का उपयोग करें',
     aiSumDeckContext: 'प्रेज़ेंटेशन संरचना पढ़ी गई',
     aiSumReadSlide: 'स्लाइड {n} पढ़ी गई',
     aiSumEditText: 'स्लाइड {n} पर टेक्स्ट फिर से लिखा गया',
@@ -3581,7 +3562,7 @@ export const aiStrings = defineStrings({
     aiErrEmptyOutput: '空輸出',
     aiErrUnknown: '未知錯誤',
     aiErrStreamTimeout: 'AI 請求逾時：網路長時間無回應，已停止。請檢查網路後重試',
-    aiCreditsExhausted: 'Genspark 點數已用完，請前往 genspark.ai/pricing 儲值後重試',
+    aiCreditsExhausted: 'WisWork 服務額度已用完，請聯絡管理員後重試。',
     aiErrRequestFailed: '要求傳送失敗: {msg}',
     aiErrGenerateFailed: '產生失敗',
     aiErrRegenFailed: '重做頁面失敗',
@@ -3657,7 +3638,6 @@ export const aiStrings = defineStrings({
     aiFailSaveTemplate: '儲存風格範本',
     aiFailListTemplates: '列出風格範本',
     aiLabelInsertSmartart: '插入 SmartArt',
-    aiSumFromScratchGuard: '{label}：從零產生請用 generate_deck',
     aiSumDeckContext: '讀取簡報結構',
     aiSumReadSlide: '讀取第 {n} 頁',
     aiSumEditText: '改寫第 {n} 頁文字',

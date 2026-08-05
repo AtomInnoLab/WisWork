@@ -1,10 +1,6 @@
 import { AiProviderError, safeHttpProviderError } from './errors'
 import { httpBodyDetail } from './http-error'
-import {
-  GENSPARK_LLM_BASE_URLS,
-  WISWORK_MODEL_BASE_URL,
-  gensparkAttributionHeaders,
-} from './providers'
+import { WISWORK_MODEL_BASE_URL } from './providers'
 import type { AiChatResponse, AiProviderConfig, AiProviderId } from './types'
 import { AI_CHAT_RESPONSE_TIMEOUT_MS, createStreamWatchdog, type StreamWatchdog } from './watchdog'
 
@@ -24,7 +20,6 @@ async function chatAnthropic(
       'anthropic-version': '2023-06-01',
       // Fetch in the Electron main process goes through Chromium's network stack; this header avoids 403.
       'anthropic-dangerous-direct-browser-access': 'true',
-      ...gensparkAttributionHeaders(baseUrl),
     },
     body: JSON.stringify({
       model: config.model,
@@ -63,7 +58,6 @@ async function chatGemini(
     headers: {
       'Content-Type': 'application/json',
       'x-goog-api-key': config.apiKey,
-      ...gensparkAttributionHeaders(baseUrl),
     },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: system }] },
@@ -100,7 +94,6 @@ async function chatOpenAiCompatible(
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${config.apiKey}`,
-      ...gensparkAttributionHeaders(baseUrl),
     },
     body: JSON.stringify({
       model: config.model,
@@ -145,14 +138,6 @@ export async function chatForProvider(
     switch (provider) {
       case 'wiswork':
         return chatOpenAiCompatible(wd, WISWORK_MODEL_BASE_URL, config, system, user, true)
-      case 'genspark':
-        if (config.model.startsWith('claude')) {
-          return chatAnthropic(wd, config, system, user, GENSPARK_LLM_BASE_URLS.anthropic)
-        }
-        if (config.model.startsWith('gemini')) {
-          return chatGemini(wd, config, system, user, GENSPARK_LLM_BASE_URLS.gemini)
-        }
-        return chatOpenAiCompatible(wd, GENSPARK_LLM_BASE_URLS.openai, config, system, user)
       case 'anthropic':
         return chatAnthropic(wd, config, system, user)
       case 'gemini':

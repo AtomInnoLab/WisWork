@@ -100,7 +100,6 @@ export interface HomeApi {
   getAppVersion(): Promise<string>
   onboardingSeen(): Promise<boolean>
   setOnboardingSeen(): Promise<void>
-  openGenTeam(): Promise<void>
 }
 
 export interface AccountStatus {
@@ -187,7 +186,6 @@ export const HOME_CHANNELS = {
   getAppVersion: 'home:get-app-version',
   onboardingSeen: 'home:onboarding-seen',
   setOnboardingSeen: 'home:set-onboarding-seen',
-  openGenTeam: 'home:open-genteam',
 } as const
 
 export const PROJECT_CHANNELS = {

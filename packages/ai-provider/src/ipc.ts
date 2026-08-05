@@ -79,7 +79,6 @@ export interface RegisterWisworkModelIpcOptions {
 
 const PROVIDER_IDS: ReadonlySet<string> = new Set<AiProviderId>([
   'wiswork',
-  'genspark',
   'anthropic',
   'gemini',
   'deepseek',

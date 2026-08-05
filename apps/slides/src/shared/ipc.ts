@@ -988,39 +988,6 @@ export interface SlidesApi {
   consumePendingOpen: (fitWidthPx: number) => Promise<OpenResult | null>
   /** New blank presentation (single blank 16:9 page, untitled) */
   newBlank: (fitWidthPx: number) => Promise<OpenResult>
-  /** HTML pipeline generation: mode="append" merges with the previously generated pages and rebuilds wholesale (appendedFrom = existing page count);
-   *  mode="replace_at" redoes page atIndex in place from single-page HTML (other pages untouched, undoable, replacedIndex = that page's index);
-   *  mode="insert_at" inserts a new page at atIndex from single-page HTML (later pages shift back, undoable, insertedIndex = that page's index);
-   *  when the pipeline fails it falls back to element-level mode, fallbackReason explains why;
-   *  deckName = the deck name AI derived from user input, used as the filename when saving a new draft (falls back to timestamp naming) */
-  htmlToPptx: (
-    pagesHtml: string[],
-    fitWidthPx: number,
-    mode?: 'replace' | 'append' | 'replace_at' | 'insert_at',
-    atIndex?: number,
-    deckName?: string,
-  ) => Promise<
-    | (OpenResult & {
-        appendedFrom?: number
-        replacedIndex?: number
-        insertedIndex?: number
-        fallbackReason?: string
-        imageFailures?: { page: number; url: string }[]
-      })
-    | { error: string }
-  >
-  /** Whether cloud single-page generation (gsk slide_generate) is available (GENOFFICE_CLOUD_SLIDE=1 + gsk login) */
-  cloudGenStatus: () => Promise<{ enabled: boolean }>
-  /** Cloud single-page generation: brief → one-slide pptx temp file; the marker goes into an htmlToPptx pagesHtml slot in place of HTML */
-  cloudGeneratePage: (op: {
-    brief: string
-    title?: string
-    styleSkill?: string
-    deckContext?: Record<string, unknown>
-    images?: { url: string; caption?: string }[]
-    width?: number
-    height?: number
-  }) => Promise<{ ok: boolean; marker?: string; error?: string }>
   editText: (op: EditTextOp) => Promise<RenderSlide | null>
   /** Change font/size on selected elements wholesale (elements without text ignored; returns null if all ignored) */
   setElementFont: (op: SetElementFontOp) => Promise<RenderSlide | null>
@@ -1317,21 +1284,6 @@ export interface SlidesApi {
     hPx: number
     fitWidthPx: number
   }) => Promise<{ slide: RenderSlide; sourceId: string } | null>
-  /** gsk (Genspark) AI image generation/editing, returns the image URL (error prompts login when logged out) */
-  generateImage: (op: {
-    prompt: string
-    model?: string
-    referenceImageUrls?: string[]
-    aspectRatio?: string
-    imageSize?: string
-  }) => Promise<{ url?: string; error?: string }>
-  /** gsk (Genspark) media analysis: image/audio/video content understanding, returns analysis text */
-  analyzeMedia: (op: {
-    mediaUrls: string[]
-    requirements: string
-  }) => Promise<{ text?: string; error?: string }>
-  /** gsk availability: installed and logged in (for UI/tools to prompt login) */
-  gskStatus: () => Promise<{ available: boolean; email?: string }>
   onAiStream: (handler: (chunk: AiStreamChunk) => void) => () => void
   /** Style Skill sidecar: write styleSkill to a same-named .styleskill.json next to the draft */
   saveStyleSidecar: (data: {

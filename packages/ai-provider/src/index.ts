@@ -7,12 +7,10 @@ export type {
   AiSettings,
   AiStreamChunk,
   AiStreamRequest,
-  GenSparkAccountStatus,
   LegacyAiSettings,
 } from './types'
 export {
   AI_PROVIDERS,
-  GENSPARK_LLM_BASE_URLS,
   WISWORK_DEFAULT_MODEL,
   WISWORK_MODEL_BASE_URL,
   defaultAiSettings,

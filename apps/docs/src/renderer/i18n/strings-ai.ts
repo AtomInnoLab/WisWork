@@ -61,7 +61,7 @@ export const aiStrings = defineStrings({
     aiTooManyImages: '图片最多随消息发送 {max} 张,多余的已忽略',
     aiUnknownError: '未知错误',
     aiTimeoutError: 'AI 请求超时：网络长时间无响应，已停止。请检查网络后重试',
-    aiCreditsExhausted: 'Genspark 积分已用完，请前往 genspark.ai/pricing 充值后重试',
+    aiCreditsExhausted: 'WisWork 服务额度已用完，请联系管理员后重试。',
     aiSumReadAttachment: '读取附件',
     aiSumImageAttachment: '图片附件 {name}',
     aiSumRead: '读取 {name}',
@@ -166,7 +166,7 @@ export const aiStrings = defineStrings({
     aiTimeoutError:
       'AI request timed out: no response from the network, so the run was stopped. Check your connection and try again',
     aiCreditsExhausted:
-      'Your Genspark credits have run out. Visit genspark.ai/pricing to top up, then try again',
+      'WisWork service limit reached. Please contact your administrator and try again.',
     aiSumReadAttachment: 'Read attachment',
     aiSumImageAttachment: 'Image attachment {name}',
     aiSumRead: 'Read {name}',
@@ -272,7 +272,7 @@ export const aiStrings = defineStrings({
     aiTimeoutError:
       'AIリクエストがタイムアウトしました：ネットワークからの応答がないため中断しました。接続を確認して再試行してください',
     aiCreditsExhausted:
-      'Gensparkクレジットを使い切りました。genspark.ai/pricing でチャージしてから再試行してください',
+      'WisWork のサービス利用上限に達しました。管理者に連絡してから再試行してください。',
     aiSumReadAttachment: '添付ファイルを読み取り',
     aiSumImageAttachment: '画像添付 {name}',
     aiSumRead: '{name} を読み取り',
@@ -377,7 +377,7 @@ export const aiStrings = defineStrings({
     aiTimeoutError:
       'AI 요청 시간 초과: 네트워크 응답이 없어 중단되었습니다. 연결을 확인한 후 다시 시도해 주세요',
     aiCreditsExhausted:
-      'Genspark 크레딧을 모두 사용했습니다. genspark.ai/pricing에서 충전한 후 다시 시도해 주세요',
+      'WisWork 서비스 사용 한도에 도달했습니다. 관리자에게 문의한 후 다시 시도해 주세요.',
     aiSumReadAttachment: '첨부 파일 읽기',
     aiSumImageAttachment: '이미지 첨부 {name}',
     aiSumRead: '{name} 읽기',
@@ -486,7 +486,7 @@ export const aiStrings = defineStrings({
     aiTimeoutError:
       "Délai de la requête IA dépassé : aucune réponse du réseau, l'exécution a été interrompue. Vérifiez votre connexion et réessayez",
     aiCreditsExhausted:
-      'Vos crédits Genspark sont épuisés. Rechargez sur genspark.ai/pricing puis réessayez',
+      'La limite d’utilisation du service WisWork est atteinte. Contactez votre administrateur, puis réessayez.',
     aiSumReadAttachment: 'Lire la pièce jointe',
     aiSumImageAttachment: 'Pièce jointe image {name}',
     aiSumRead: 'Lire {name}',
@@ -594,7 +594,7 @@ export const aiStrings = defineStrings({
     aiTimeoutError:
       'Zeitüberschreitung der KI-Anfrage: keine Antwort vom Netzwerk, der Vorgang wurde abgebrochen. Prüfe deine Verbindung und versuche es erneut',
     aiCreditsExhausted:
-      'Deine Genspark-Credits sind aufgebraucht. Lade unter genspark.ai/pricing auf und versuche es erneut',
+      'Das WisWork-Dienstlimit wurde erreicht. Wenden Sie sich an Ihre Administration und versuchen Sie es erneut.',
     aiSumReadAttachment: 'Anlage lesen',
     aiSumImageAttachment: 'Bildanlage {name}',
     aiSumRead: '{name} lesen',
@@ -701,7 +701,7 @@ export const aiStrings = defineStrings({
     aiTimeoutError:
       'La solicitud de IA agotó el tiempo de espera: no hubo respuesta de la red y se detuvo. Comprueba tu conexión e inténtalo de nuevo',
     aiCreditsExhausted:
-      'Tus créditos de Genspark se han agotado. Recarga en genspark.ai/pricing e inténtalo de nuevo',
+      'Se alcanzó el límite del servicio WisWork. Ponte en contacto con el administrador e inténtalo de nuevo.',
     aiSumReadAttachment: 'Leer dato adjunto',
     aiSumImageAttachment: 'Imagen adjunta {name}',
     aiSumRead: 'Leer {name}',
@@ -806,7 +806,7 @@ export const aiStrings = defineStrings({
     aiTimeoutError:
       'คำขอ AI หมดเวลา: เครือข่ายไม่ตอบสนอง จึงหยุดการทำงาน โปรดตรวจสอบการเชื่อมต่อแล้วลองใหม่',
     aiCreditsExhausted:
-      'เครดิต Genspark ของคุณหมดแล้ว โปรดเติมเครดิตที่ genspark.ai/pricing แล้วลองใหม่',
+      'ถึงขีดจำกัดการใช้งานบริการ WisWork แล้ว โปรดติดต่อผู้ดูแลระบบแล้วลองอีกครั้ง',
     aiSumReadAttachment: 'อ่านสิ่งที่แนบ',
     aiSumImageAttachment: 'รูปภาพแนบ {name}',
     aiSumRead: 'อ่าน {name}',
@@ -911,7 +911,7 @@ export const aiStrings = defineStrings({
     aiTimeoutError:
       'Permintaan AI habis waktu: jaringan tidak merespons sehingga proses dihentikan. Periksa koneksi Anda lalu coba lagi',
     aiCreditsExhausted:
-      'Kredit Genspark Anda telah habis. Isi ulang di genspark.ai/pricing lalu coba lagi',
+      'Batas layanan WisWork telah tercapai. Hubungi administrator Anda lalu coba lagi.',
     aiSumReadAttachment: 'Baca lampiran',
     aiSumImageAttachment: 'Lampiran gambar {name}',
     aiSumRead: 'Baca {name}',
@@ -1017,7 +1017,7 @@ export const aiStrings = defineStrings({
     aiTimeoutError:
       'Тайм-аут запроса ИИ: сеть не отвечает, выполнение остановлено. Проверьте подключение и повторите попытку',
     aiCreditsExhausted:
-      'Кредиты Genspark исчерпаны. Пополните баланс на genspark.ai/pricing и повторите попытку',
+      'Достигнут лимит сервиса WisWork. Обратитесь к администратору и повторите попытку.',
     aiSumReadAttachment: 'Чтение вложения',
     aiSumImageAttachment: 'Вложенное изображение {name}',
     aiSumRead: 'Чтение {name}',
@@ -1121,8 +1121,7 @@ export const aiStrings = defineStrings({
     aiUnknownError: 'خطأ غير معروف',
     aiTimeoutError:
       'انتهت مهلة طلب الذكاء الاصطناعي: لا توجد استجابة من الشبكة وتم الإيقاف. تحقق من الاتصال وحاول مجددًا',
-    aiCreditsExhausted:
-      'نفدت أرصدة Genspark لديك. يرجى إعادة الشحن عبر genspark.ai/pricing ثم المحاولة مجددًا',
+    aiCreditsExhausted: 'تم بلوغ حد خدمة WisWork. يرجى التواصل مع المسؤول ثم المحاولة مرة أخرى.',
     aiSumReadAttachment: 'قراءة المرفق',
     aiSumImageAttachment: 'مرفق صورة {name}',
     aiSumRead: 'قراءة {name}',
@@ -1228,7 +1227,7 @@ export const aiStrings = defineStrings({
     aiTimeoutError:
       'A solicitação de IA expirou: sem resposta da rede, a execução foi interrompida. Verifique sua conexão e tente novamente',
     aiCreditsExhausted:
-      'Seus créditos Genspark acabaram. Recarregue em genspark.ai/pricing e tente novamente',
+      'O limite do serviço WisWork foi atingido. Contate o administrador e tente novamente.',
     aiSumReadAttachment: 'Ler anexo',
     aiSumImageAttachment: 'Imagem anexada {name}',
     aiSumRead: 'Ler {name}',
@@ -1338,7 +1337,7 @@ export const aiStrings = defineStrings({
     aiTimeoutError:
       'Richiesta IA scaduta: nessuna risposta dalla rete, esecuzione interrotta. Controlla la connessione e riprova',
     aiCreditsExhausted:
-      'I tuoi crediti Genspark sono esauriti. Ricarica su genspark.ai/pricing e riprova',
+      'È stato raggiunto il limite del servizio WisWork. Contatta l’amministratore e riprova.',
     aiSumReadAttachment: 'Lettura allegato',
     aiSumImageAttachment: 'Immagine allegata {name}',
     aiSumRead: 'Lettura di {name}',
@@ -1444,7 +1443,7 @@ export const aiStrings = defineStrings({
     aiTimeoutError:
       'Przekroczono limit czasu żądania AI: brak odpowiedzi sieci, przerwano. Sprawdź połączenie i spróbuj ponownie',
     aiCreditsExhausted:
-      'Twoje kredyty Genspark wyczerpały się. Doładuj konto na genspark.ai/pricing i spróbuj ponownie',
+      'Osiągnięto limit usługi WisWork. Skontaktuj się z administratorem i spróbuj ponownie.',
     aiSumReadAttachment: 'Odczyt załącznika',
     aiSumImageAttachment: 'Załącznik graficzny {name}',
     aiSumRead: 'Odczyt {name}',
@@ -1550,7 +1549,7 @@ export const aiStrings = defineStrings({
     aiTimeoutError:
       'AI-verzoek verlopen: geen reactie van het netwerk, uitvoering gestopt. Controleer je verbinding en probeer het opnieuw',
     aiCreditsExhausted:
-      'Je Genspark-credits zijn op. Waardeer op via genspark.ai/pricing en probeer het opnieuw',
+      'De limiet van de WisWork-service is bereikt. Neem contact op met de beheerder en probeer het opnieuw.',
     aiSumReadAttachment: 'Bijlage lezen',
     aiSumImageAttachment: 'Afbeeldingsbijlage {name}',
     aiSumRead: '{name} lezen',
@@ -1655,7 +1654,7 @@ export const aiStrings = defineStrings({
     aiTimeoutError:
       'Permintaan AI tamat masa: rangkaian tidak memberi respons, proses dihentikan. Semak sambungan anda dan cuba lagi',
     aiCreditsExhausted:
-      'Kredit Genspark anda telah habis. Tambah nilai di genspark.ai/pricing dan cuba lagi',
+      'Had perkhidmatan WisWork telah dicapai. Hubungi pentadbir anda dan cuba lagi.',
     aiSumReadAttachment: 'Baca lampiran',
     aiSumImageAttachment: 'Lampiran imej {name}',
     aiSumRead: 'Baca {name}',
@@ -1758,7 +1757,7 @@ export const aiStrings = defineStrings({
     aiTooManyImages: 'עד {max} תמונות בהודעה; הנוספות לא נכללו',
     aiUnknownError: 'שגיאה לא ידועה',
     aiTimeoutError: 'תם הזמן לבקשת ה-AI: אין תגובה מהרשת וההרצה הופסקה. בדוק את החיבור ונסה שוב',
-    aiCreditsExhausted: 'קרדיטי Genspark שלך אזלו. טען מחדש ב-genspark.ai/pricing ונסה שוב',
+    aiCreditsExhausted: 'הגעת למגבלת השירות של WisWork. יש לפנות למנהל המערכת ולנסות שוב.',
     aiSumReadAttachment: 'קריאת קובץ מצורף',
     aiSumImageAttachment: 'תמונה מצורפת {name}',
     aiSumRead: 'קריאת {name}',
@@ -1863,7 +1862,7 @@ export const aiStrings = defineStrings({
     aiTimeoutError:
       'AI अनुरोध का समय समाप्त: नेटवर्क से कोई प्रतिक्रिया नहीं मिली, इसलिए रोक दिया गया। कनेक्शन जांचें और फिर से प्रयास करें',
     aiCreditsExhausted:
-      'आपके Genspark क्रेडिट समाप्त हो गए हैं। genspark.ai/pricing पर रिचार्ज करें और फिर से प्रयास करें',
+      'WisWork सेवा की सीमा पूरी हो गई है। अपने व्यवस्थापक से संपर्क करके फिर से प्रयास करें।',
     aiSumReadAttachment: 'अनुलग्नक पढ़ें',
     aiSumImageAttachment: 'चित्र अनुलग्नक {name}',
     aiSumRead: '{name} पढ़ें',
@@ -1964,7 +1963,7 @@ export const aiStrings = defineStrings({
     aiTooManyImages: '圖片最多隨訊息傳送 {max} 張,多餘的已忽略',
     aiUnknownError: '未知錯誤',
     aiTimeoutError: 'AI 請求逾時：網路長時間無回應，已停止。請檢查網路後重試',
-    aiCreditsExhausted: 'Genspark 點數已用完，請前往 genspark.ai/pricing 儲值後重試',
+    aiCreditsExhausted: 'WisWork 服務額度已用完，請聯絡管理員後重試。',
     aiSumReadAttachment: '讀取附件',
     aiSumImageAttachment: '圖片附件 {name}',
     aiSumRead: '讀取 {name}',

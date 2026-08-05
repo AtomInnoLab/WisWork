@@ -142,9 +142,6 @@ const homeApi: HomeApi = {
   async setOnboardingSeen() {
     await ipcRenderer.invoke(HOME_CHANNELS.setOnboardingSeen)
   },
-  async openGenTeam() {
-    await ipcRenderer.invoke(HOME_CHANNELS.openGenTeam)
-  },
 }
 
 contextBridge.exposeInMainWorld('aiOffice', homeApi)

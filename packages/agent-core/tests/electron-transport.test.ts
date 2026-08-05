@@ -30,7 +30,7 @@ function setup(
       return startImpl?.(request)
     },
     cancel: (requestId) => cancelled.push(requestId),
-    getSettings: () => ({ provider: 'genspark' }),
+    getSettings: () => ({ provider: 'wiswork' }),
     unknownErrorText: () => 'unknown error',
     timeoutErrorText: () => 'timed out',
     ...(creditsErrorText ? { creditsErrorText } : {}),
@@ -52,7 +52,7 @@ describe('createIpcTransport', () => {
   it('starts one request with settings and forwards deltas and tool calls', () => {
     const { started, cb, emit } = setup()
     expect(started).toHaveLength(1)
-    expect(started[0]!.settings).toEqual({ provider: 'genspark' })
+    expect(started[0]!.settings).toEqual({ provider: 'wiswork' })
     expect(started[0]!.system).toBe('sys')
 
     emit({ type: 'delta', text: 'hi' })
@@ -107,7 +107,7 @@ describe('createIpcTransport', () => {
     const { cb, emit } = setup(undefined, () => 'credits used up')
     emit({
       type: 'error',
-      error: 'Your Genspark credits have been exhausted.',
+      error: 'Your upstream credits have been exhausted.',
       errorCode: 'credits',
     })
     expect(cb.onError).toHaveBeenCalledWith('credits used up')
@@ -117,10 +117,10 @@ describe('createIpcTransport', () => {
     const { cb, emit } = setup()
     emit({
       type: 'error',
-      error: 'Your Genspark credits have been exhausted.',
+      error: 'Your upstream credits have been exhausted.',
       errorCode: 'credits',
     })
-    expect(cb.onError).toHaveBeenCalledWith('Your Genspark credits have been exhausted.')
+    expect(cb.onError).toHaveBeenCalledWith('Your upstream credits have been exhausted.')
   })
 
   it('maps WisWork auth and model service codes to friendly messages', () => {

@@ -45,13 +45,6 @@ import {
 } from '@wiswork/electron-utils'
 import { readAppSettings, writeAppSetting } from './app-settings'
 import { ProjectStore } from '@wiswork/project-store'
-import {
-  gskConvertPdfToDocx,
-  gskLogin,
-  gskLoginInfo,
-  hasGskAuth,
-  resolveGskEntry,
-} from '@wiswork/ai-search'
 
 import {
   buildDocsMenu,
@@ -230,12 +223,6 @@ function persistLang(lang: Lang): void {
   setUiLang(lang)
   writeAppSetting(APP_SETTINGS_PATH(), 'language', lang)
 }
-
-// ---- first-run onboarding ----
-// The GenTeam community page opened from the onboarding's second slide.
-// Stable short link served by the genspark.ai site; it 302s to the tokened
-// invite link, which stays out of this repo and rotates server-side.
-const GENTEAM_URL = 'https://www.genspark.ai/genoffice/join'
 
 const tMain = createI18n({
   zh: {
@@ -1664,12 +1651,6 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.setOnboardingSeen, () => {
     writeAppSetting(APP_SETTINGS_PATH(), 'onboardingSeen', true)
   })
-
-  ipcMain.handle(HOME_CHANNELS.openGenTeam, () => {
-    shell.openExternal(GENTEAM_URL).catch(() => {
-      // no browser handler available; nothing actionable for the user here
-    })
-  })
 }
 
 function stringPaths(value: unknown): string[] {
@@ -1842,11 +1823,6 @@ function buildPdfMenu(): void {
         },
         { type: 'separator' },
         {
-          label: tm('menuExportDocx'),
-          click: () => void exportPdfAsDocx(),
-        },
-        { type: 'separator' },
-        {
           label: tm('menuClose'),
           accelerator: 'CmdOrCtrl+W',
           click: () => tabManager?.closeActiveTab(),
@@ -1869,7 +1845,7 @@ function buildPdfMenu(): void {
  * Non-destructive: the original file is never written, and a cancelled dialog changes
  * nothing on disk (dialog first, no flush into the source).
  */
-/** In-flight guard (same pattern as exportPdfAsDocx): a re-trigger while the dialog
+/** In-flight guard: a re-trigger while the dialog
     or write is active must not start a second flow that overwrites the first one's
     waiter/target grant or clears its autosave pause early */
 let savingPdfAs = false
@@ -1899,113 +1875,6 @@ async function savePdfAs(): Promise<void> {
   } finally {
     savingPdfAs = false
     setPdfSaveAsInFlight(tab.webContents, false)
-  }
-}
-
-/**
- * In-flight guard: covers the whole flow (dialogs included, conversion takes
- * ~10s+) so re-triggering from the menu can never start a second paid conversion
- */
-let exportingPdfDocx = false
-
-/**
- * Export as Word for pdf tabs: flush pending edits, confirm the 5-credit cost,
- * pick the destination, then upload + cloud-convert via gsk file_convert. Not
- * logged in → offer browser login and let the user re-trigger the export
- * afterwards. The destination is picked before converting so cancelling the
- * save dialog never wastes a paid conversion.
- */
-async function exportPdfAsDocx(): Promise<void> {
-  const tab = tabManager?.activePdfTab()
-  if (!tab?.filePath || !shellWindow) return
-  if (exportingPdfDocx) {
-    // Re-triggered while a previous export (dialogs or cloud conversion) is
-    // still in flight: tell the user instead of silently ignoring the click.
-    void dialog.showMessageBox(shellWindow, {
-      type: 'info',
-      message: tm('pdfDocxBusyMsg'),
-    })
-    return
-  }
-  exportingPdfDocx = true
-  try {
-    if (!(await flushPdfSave(tab.webContents))) return
-    if (!hasGskAuth()) {
-      // hasGskAuth() is also false when the gsk CLI itself cannot be resolved
-      // (broken install); Sign In could not launch in that case, so surface
-      // the real problem instead of a login dialog that cannot succeed.
-      if (!resolveGskEntry()) {
-        void dialog.showMessageBox(shellWindow, {
-          type: 'error',
-          message: tm('pdfDocxNoCliMsg'),
-        })
-        return
-      }
-      const { response } = await dialog.showMessageBox(shellWindow, {
-        type: 'info',
-        message: tm('pdfDocxLoginMsg'),
-        detail: tm('pdfDocxLoginDetail'),
-        buttons: [tm('pdfDocxBtnLogin'), tm('btnCancel')],
-        defaultId: 0,
-        cancelId: 1,
-        noLink: true,
-      })
-      if (response === 0 && !gskLogin()) {
-        void dialog.showMessageBox(shellWindow, {
-          type: 'error',
-          message: tm('pdfDocxNoCliMsg'),
-        })
-      }
-      return
-    }
-    const balance = (await gskLoginInfo())?.creditBalance
-    const balanceLine =
-      balance === undefined
-        ? ''
-        : ` ${tm('pdfDocxConfirmBalance', { balance: Math.floor(balance).toLocaleString('en-US') })}`
-    const confirm = await dialog.showMessageBox(shellWindow, {
-      type: 'question',
-      message: tm('pdfDocxConfirmMsg'),
-      detail: `${tm('pdfDocxConfirmDetail')}${balanceLine}`,
-      buttons: [tm('pdfDocxBtnConvert'), tm('btnCancel')],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-    })
-    if (confirm.response !== 0) return
-    const picked = await dialog.showSaveDialog(shellWindow, {
-      defaultPath: tab.filePath.replace(/\.pdf$/i, '.docx'),
-      filters: [{ name: tm('filterWord'), extensions: ['docx'] }],
-    })
-    if (picked.canceled || !picked.filePath) return
-    // If the destination is already open in a docs tab, close it first (its
-    // normal unsaved-changes guard applies) so the converted file opens fresh
-    // instead of leaving a stale tab whose next save would clobber the result.
-    // Cancelling the close aborts the export before any credits are spent.
-    const staleTabId = tabManager?.findDocsTabByPath(picked.filePath)
-    if (staleTabId) {
-      await tabManager?.closeTab(staleTabId)
-      // closeTab activates the docs tab for its unsaved-changes prompt (and a
-      // fallback tab after a successful close), so bring the pdf tab back
-      // either way — especially when the user cancels and the export aborts.
-      tabManager?.activateTab(tab.id)
-      if (tabManager?.findDocsTabByPath(picked.filePath)) return
-    }
-    shellWindow.setProgressBar(2)
-    const bytes = await gskConvertPdfToDocx(tab.filePath)
-    writeFileSync(picked.filePath, bytes)
-    openDocumentPath(picked.filePath)
-  } catch (err) {
-    if (shellWindow && !shellWindow.isDestroyed()) {
-      void dialog.showMessageBox(shellWindow, {
-        type: 'error',
-        message: tm('pdfDocxFailedMsg'),
-        detail: err instanceof Error ? err.message : String(err),
-      })
-    }
-  } finally {
-    exportingPdfDocx = false
-    if (shellWindow && !shellWindow.isDestroyed()) shellWindow.setProgressBar(-1)
   }
 }
 

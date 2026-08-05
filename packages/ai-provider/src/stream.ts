@@ -1,11 +1,7 @@
 import type { AgentMessage, AgentToolCall, AgentToolDef } from '@wiswork/agent-core'
 import { AiProviderError, safeHttpProviderError } from './errors'
 import { httpBodyDetail } from './http-error'
-import {
-  GENSPARK_LLM_BASE_URLS,
-  WISWORK_MODEL_BASE_URL,
-  gensparkAttributionHeaders,
-} from './providers'
+import { WISWORK_MODEL_BASE_URL } from './providers'
 import type { AiProviderConfig, AiProviderId } from './types'
 import { AiTimeoutError, createStreamWatchdog, type StreamWatchdog } from './watchdog'
 
@@ -98,7 +94,7 @@ function sseErrorText(error: unknown, fallback: string): string {
 
 /**
  * Gateways can answer a `stream: true` request with a complete non-SSE JSON body —
- * observed on the Genspark Anthropic route when credits are exhausted (HTTP 200,
+ * some gateways return this when upstream quota is exhausted (HTTP 200,
  * Content-Type: application/json, the notice text inside a regular message). The SSE
  * parser would find no `data:` lines in such a body and dissolve it into an empty
  * "successful" turn. Returns the body text when that happens, else null.
@@ -110,7 +106,7 @@ async function jsonBodyInsteadOfSse(response: Response): Promise<string | null> 
 
 /**
  * A non-SSE JSON reply whose text is the gateway's credits-exhausted notice
- * (Genspark: "Your Genspark credits have been exhausted…") surfaces as a typed
+ * surfaces as a typed
  * error so the apps show a localized "top up" message (errorCode 'credits')
  * instead of the English notice as a normal assistant reply.
  */
@@ -124,9 +120,7 @@ export class AiCreditsError extends Error {
 function creditsNoticeText(value: unknown): string | null {
   if (typeof value === 'string') {
     const t = value.toLowerCase()
-    const credits =
-      t.includes('genspark.ai/pricing') ||
-      (t.includes('credit') && (t.includes('exhausted') || t.includes('insufficient')))
+    const credits = t.includes('credit') && (t.includes('exhausted') || t.includes('insufficient'))
     return credits ? value : null
   }
   if (Array.isArray(value) || (value && typeof value === 'object')) {
@@ -285,7 +279,6 @@ async function anthropicTurn(
         // browser-semantics headers; Anthropic rejects those with 403 "Request not allowed". This
         // header is the official opt-in for direct access from browser/Electron environments.
         'anthropic-dangerous-direct-browser-access': 'true',
-        ...gensparkAttributionHeaders(baseUrl),
       },
       body: JSON.stringify({
         model: config.model,
@@ -500,7 +493,6 @@ async function geminiTurn(
     headers: {
       'Content-Type': 'application/json',
       'x-goog-api-key': config.apiKey,
-      ...gensparkAttributionHeaders(baseUrl),
     },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: system }] },
@@ -705,7 +697,6 @@ async function openAiCompatibleTurn(
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${config.apiKey}`,
-      ...gensparkAttributionHeaders(baseUrl),
     },
     body: JSON.stringify({
       model: config.model,
@@ -849,40 +840,6 @@ export async function streamForProvider(
           throw error
         throw new AiProviderError('model_upstream_unavailable')
       }
-    case 'genspark':
-      // The proxy exposes three protocol-specific endpoints; route by model id prefix: claude uses
-      // the Anthropic protocol (preserves image input fidelity), gemini uses Gemini, rest OpenAI-compatible
-      if (config.model.startsWith('claude')) {
-        return streamAnthropic(
-          config,
-          system,
-          messages,
-          tools,
-          maxTokens,
-          cb,
-          GENSPARK_LLM_BASE_URLS.anthropic,
-        )
-      }
-      if (config.model.startsWith('gemini')) {
-        return streamGemini(
-          config,
-          system,
-          messages,
-          tools,
-          maxTokens,
-          cb,
-          GENSPARK_LLM_BASE_URLS.gemini,
-        )
-      }
-      return streamOpenAiCompatible(
-        GENSPARK_LLM_BASE_URLS.openai,
-        config,
-        system,
-        messages,
-        tools,
-        maxTokens,
-        cb,
-      )
     case 'anthropic':
       return streamAnthropic(config, system, messages, tools, maxTokens, cb)
     case 'gemini':

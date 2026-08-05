@@ -3,18 +3,12 @@ import { AgentLoop, composeSkills, type AgentImage, type ToolDisplay } from '@wi
 import type { RenderSlide } from '@wiswork/pptx-render'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
-import {
-  createSlidesSkill,
-  type DeckAccess,
-  type ClarifyQuestion,
-  type DeckProgressEvent,
-  type PageProgressItem,
-} from './slides-skill'
+import { createSlidesSkill, type DeckAccess, type ClarifyQuestion } from './slides-skill'
 import { extractJsonObject, parseOutlineJson } from './outline-json'
 import { createFilesSkill } from './files-skill'
 import { createElectronTransport } from './transport'
 import { renderSlidesToPngBase64 } from '../export-render'
-import { isQcEnabled, mergeQcPages, qcSlidePage, QC_MAX_PAGES } from './slide-qc'
+import { isQcEnabled, qcSlidePage, QC_MAX_PAGES } from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
 import { Markdown } from '@wiswork/ui'
 import { GensparkMark } from '../components/icons'
@@ -76,35 +70,6 @@ function safeJsonInput(input: unknown): string | undefined {
   }
 }
 
-/** Generation progress snapshot in the chat stream (same card updated in real time) */
-interface DeckProgressSnapshot {
-  style?: { label: string; status: 'running' | 'done' | 'error'; summary: string }
-  plan?: {
-    label: string
-    done: number
-    total: number
-    status: 'running' | 'done' | 'error'
-    summary: string
-  }
-  images?: {
-    label: string
-    done: number
-    total: number
-    status: 'running' | 'done' | 'error'
-    summary: string
-  }
-  pages?: {
-    label: string
-    done: number
-    total: number
-    status: 'running' | 'done' | 'error'
-    summary: string
-    items: PageProgressItem[]
-  }
-  finalTotal?: number // Total page count from the done event
-  isDone?: boolean
-}
-
 interface ChatEntry {
   role: 'user' | 'assistant'
   text: string
@@ -115,8 +80,6 @@ interface ChatEntry {
   /** the run failed because Genspark is signed out — render an inline sign-in button */
   loginRequired?: boolean
   tools?: ToolActivity[]
-  /** Generation progress card (only one per turn, replaced in real time) */
-  deckProgress?: DeckProgressSnapshot
 }
 
 /** Empty deck → generation starters; deck with content → polish starters */
@@ -157,8 +120,6 @@ interface AiPanelProps {
   onUndo?: () => void
   /** Callback to update the path after AI generation lands on disk (title bar sync) */
   onPathChange?: (path: string) => void
-  /** Generation progress callback (for the canvas top progress bar) */
-  onDeckProgress?: (event: DeckProgressEvent | null) => void
   /** Absolute path of the currently open file (for chat history persistence) */
   currentFilePath?: string | null
 }
@@ -235,7 +196,6 @@ export function AiPanel({
   onExpand,
   onCollapse,
   onPathChange,
-  onDeckProgress,
   currentFilePath,
 }: AiPanelProps) {
   const { t } = useI18n()
@@ -291,15 +251,13 @@ export function AiPanel({
   applyDeckRef.current = applyDeck
   const onPathChangeRef = useRef(onPathChange)
   onPathChangeRef.current = onPathChange
-  const onDeckProgressRef = useRef(onDeckProgress)
-  onDeckProgressRef.current = onDeckProgress
   const settingsRef = useRef(settings)
   settingsRef.current = settings
   const imagesRef = useRef(images)
   imagesRef.current = images
   const attachmentsRef = useRef(attachments)
   attachmentsRef.current = attachments
-  // Paths of text attachments already read via read_attachment — generate_deck refuses to run
+  // Paths of text attachments already read via read_attachment — deck construction waits
   // while any current text attachment is still unread
   const readAttachmentPathsRef = useRef<Set<string>>(new Set())
 
@@ -459,19 +417,6 @@ export function AiPanel({
     })
   }
 
-  /** Update the last assistant message's progress card in real time (no spam; the same card updates in place). */
-  const patchProgressInLastAssistant = (
-    updater: (prev: DeckProgressSnapshot) => DeckProgressSnapshot,
-  ) => {
-    setChat((prev) => {
-      const next = [...prev]
-      const last = next[next.length - 1]
-      if (!last || last.role !== 'assistant') return prev
-      next[next.length - 1] = { ...last, deckProgress: updater(last.deckProgress ?? {}) }
-      return next
-    })
-  }
-
   const loopRef = useRef<AgentLoop | null>(null)
   if (!loopRef.current) {
     // The three slides generation steps (style/planning/per-page HTML) force the high-quality model (only with the anthropic provider;
@@ -596,138 +541,11 @@ export function AiPanel({
       getSelectedIds: () => selectedRef.current,
       applySlide: (i, updated) => applySlideRef.current(i, updated),
       applyDeck: (all, goTo) => applyDeckRef.current(all, goTo),
-      generateFromHtml: async (
-        pagesHtml: string[],
-        mode?: 'replace' | 'append' | 'insert_at',
-        deckName?: string,
-        insertAt?: number,
-      ) => {
-        try {
-          const res = await window.slidesApi.htmlToPptx(
-            pagesHtml,
-            fitWidthPx,
-            mode,
-            insertAt,
-            deckName,
-          )
-          if (res && 'slides' in res && Array.isArray(res.slides)) {
-            const appendedFrom =
-              'appendedFrom' in res && typeof res.appendedFrom === 'number' ? res.appendedFrom : 0
-            const insertedIndex =
-              'insertedIndex' in res && typeof res.insertedIndex === 'number'
-                ? res.insertedIndex
-                : undefined
-            const fallbackReason =
-              'fallbackReason' in res && typeof res.fallbackReason === 'string'
-                ? res.fallbackReason
-                : undefined
-            const imageFailures =
-              'imageFailures' in res && Array.isArray(res.imageFailures)
-                ? res.imageFailures
-                : undefined
-            applyDeckRef.current(res.slides, insertedIndex ?? appendedFrom)
-            // When the draft lands successfully, path is the real path; notify App to update the title bar
-            if (res.path) onPathChangeRef.current?.(res.path)
-            qcPagesRef.current = mergeQcPages(qcPagesRef.current, mode ?? 'replace', {
-              pages: res.slides.length,
-              appendedFrom,
-              ...(insertedIndex !== undefined ? { insertedIndex } : {}),
-            })
-            return {
-              ok: true,
-              pages: res.slides.length,
-              appendedFrom,
-              insertedIndex,
-              fallbackReason,
-              imageFailures,
-            }
-          }
-          return {
-            ok: false,
-            error:
-              'error' in (res || {})
-                ? (res as { error: string }).error
-                : tGlobal('aiErrGenerateFailed'),
-          }
-        } catch (e) {
-          return { ok: false, error: e instanceof Error ? e.message : String(e) }
-        }
-      },
-      regenerateSlide: async (slideIndex: number, html: string) => {
-        try {
-          const res = await window.slidesApi.htmlToPptx(
-            [html],
-            fitWidthPx,
-            'replace_at',
-            slideIndex,
-          )
-          if (res && 'slides' in res && Array.isArray(res.slides)) {
-            applyDeckRef.current(res.slides, slideIndex)
-            if (res.path) onPathChangeRef.current?.(res.path)
-            qcPagesRef.current = mergeQcPages(qcPagesRef.current, 'replace_at', {
-              pages: res.slides.length,
-              insertedIndex: slideIndex,
-            })
-            return {
-              ok: true,
-              imageFailures:
-                'imageFailures' in res && Array.isArray(res.imageFailures)
-                  ? res.imageFailures
-                  : undefined,
-            }
-          }
-          return {
-            ok: false,
-            error:
-              'error' in (res || {})
-                ? (res as { error: string }).error
-                : tGlobal('aiErrRegenFailed'),
-          }
-        } catch (e) {
-          return { ok: false, error: e instanceof Error ? e.message : String(e) }
-        }
-      },
       askClarification: (questions: ClarifyQuestion[]) => {
         return new Promise<{ answers: string; cancelled?: boolean }>((resolve) => {
           clarifyResolverRef.current = resolve
           setActiveClarify(questions)
         })
-      },
-      isCloudPageGenEnabled: async () => {
-        try {
-          return !!(await window.slidesApi.cloudGenStatus())?.enabled
-        } catch {
-          return false
-        }
-      },
-      // Cloud single-page generation (gsk slide_generate): the cloud service owns HTML writing +
-      // pptx conversion; the deck-level style/outline stay local.
-      generatePageCloud: async (args) => {
-        try {
-          const briefParts = [args.brief]
-          if (args.layout) briefParts.push(`Layout intent: ${args.layout}`)
-          if (args.context)
-            briefParts.push(
-              `Reference material (all real names/figures/facts come from here; do not invent):\n${args.context.slice(0, 4000)}`,
-            )
-          const res = await window.slidesApi.cloudGeneratePage({
-            brief: briefParts.join('\n\n'),
-            title: args.title,
-            styleSkill: args.style,
-            deckContext: {
-              ...(args.topic ? { topic: args.topic } : {}),
-              core_hook: args.coreHook,
-              page_index: args.pageIndex,
-              total_pages: args.totalPages,
-            },
-            images: args.images.map((u) => ({ url: u })),
-            width: args.canvasW,
-            height: args.canvasH,
-          })
-          return res ?? { ok: false, error: tGlobal('aiErrUnknown') }
-        } catch (e) {
-          return { ok: false, error: e instanceof Error ? e.message : String(e) }
-        }
       },
       // ── In-tool planning: given topic+page count, the LLM produces a structured outline (batched recursion scheduled by the skill).
       // Fixes "missing pages at the input side" at the root: the main agent doesn't hand-write dozens of pages of pages JSON.
@@ -820,60 +638,6 @@ export function AiPanel({
         return { ok: false, error: lastErr }
       },
       fitWidthPx,
-      onProgress: (event: DeckProgressEvent) => {
-        // Notify the App layer to update the canvas top progress bar
-        onDeckProgressRef.current?.(event)
-        // Update the progress card in the chat stream (replaced in place, no new message)
-        patchProgressInLastAssistant((prev) => {
-          if (event.stage === 'style') {
-            return {
-              ...prev,
-              style: { label: event.label, status: event.status, summary: event.summary },
-            }
-          }
-          if (event.stage === 'plan') {
-            return {
-              ...prev,
-              plan: {
-                label: event.label,
-                done: event.done,
-                total: event.total,
-                status: event.status,
-                summary: event.summary,
-              },
-            }
-          }
-          if (event.stage === 'images') {
-            return {
-              ...prev,
-              images: {
-                label: event.label,
-                done: event.done,
-                total: event.total,
-                status: event.status,
-                summary: event.summary,
-              },
-            }
-          }
-          if (event.stage === 'pages') {
-            return {
-              ...prev,
-              pages: {
-                label: event.label,
-                done: event.done,
-                total: event.total,
-                status: event.status,
-                summary: event.summary,
-                items: event.pages,
-              },
-            }
-          }
-          if (event.stage === 'done') {
-            return { ...prev, finalTotal: event.total, isDone: true }
-          }
-          return prev
-        })
-      },
       searchImages: async (query: string, maxResults: number) => {
         try {
           const r = await window.slidesApi.imageSearch(query, maxResults)
@@ -990,7 +754,7 @@ export function AiPanel({
             if (cancelled) qcPagesRef.current = []
             else if (qcPagesRef.current.length > 0) void runQcPassRef.current()
           })
-          // Persist the assistant message (deckProgress not stored; tools store the whole run's full activity) —
+          // Persist the assistant message; tools store the whole run's full activity —
           // side effects outside the updater (StrictMode double-invokes updaters, duplicating history writes)
           if (finalText && !cancelled) {
             persistMessage('assistant', finalText, runToolsRef.current)
@@ -1145,7 +909,7 @@ export function AiPanel({
     lastTurnToolsRef.current = []
     runToolsRef.current = []
     stickToBottomRef.current = true
-    // Internal orchestration prompts (like generate_deck step notes) skip the chat bubble and go only to the model
+    // Internal orchestration prompts (like deck-planning notes) skip the chat bubble and go only to the model
     const shown = displayText ?? instruction
     setChat((prev) => [
       // Fallback: clear leftover streaming flags on history entries, avoiding orphan "thinking" placeholders
@@ -1522,7 +1286,6 @@ export function AiPanel({
                   {t('aiGskLoginBtn')}
                 </button>
               )}
-              {entry.deckProgress && <DeckProgressCard progress={entry.deckProgress} />}
               {showToolbar && (
                 <div className="ai-msg-toolbar">
                   {entry.text && (
@@ -1992,141 +1755,6 @@ function ToolChipList({ tools }: { tools: ToolActivity[] }) {
               </div>
             )
           })}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-/** Generation progress card: structured step archive (style → plan → images → pages → done) */
-function DeckProgressCard({ progress }: { progress: DeckProgressSnapshot }) {
-  const { t } = useI18n()
-  // Collapsed by default: while generating only the one-line head shows (fewer concurrent loaders);
-  // expanding is a view-only toggle
-  const [open, setOpen] = useState(false)
-  const { style, plan, images, pages, isDone, finalTotal } = progress
-
-  type StepStatus = 'done' | 'error' | 'running'
-
-  // Fix the step display order (only steps that have appeared are shown).
-  // Labels come from skill-layer events (backend-defined steps pattern);
-  // in progress shows a live summary (e.g. "planned 5/10 page outlines…"), frozen to the label when done.
-  const steps: Array<{ key: string; label: string; stepStatus: StepStatus }> = []
-
-  const stepView = (
-    status: 'running' | 'done' | 'error',
-    label: string,
-    summary: string,
-  ): { label: string; stepStatus: StepStatus } => ({
-    // In progress/failed read summary; success freezes to the label
-    label: status === 'done' ? label : summary,
-    stepStatus: status === 'done' ? 'done' : status === 'error' ? 'error' : 'running',
-  })
-
-  if (style) {
-    steps.push({ key: 'style', ...stepView(style.status, style.label, style.summary) })
-  }
-  if (plan) {
-    steps.push({ key: 'plan', ...stepView(plan.status, plan.label, plan.summary) })
-  }
-  if (images) {
-    steps.push({ key: 'images', ...stepView(images.status, images.label, images.summary) })
-  }
-  if (pages) {
-    const allDone = isDone || pages.status === 'done'
-    const hasError = pages.items.some((p) => p.status === 'error')
-    steps.push({
-      key: 'pages',
-      label: allDone
-        ? `${pages.label}${pages.total > 0 ? t('aiPagesSuffix', { n: pages.total }) : ''}`
-        : pages.summary || pages.label,
-      stepStatus: allDone ? (hasError ? 'error' : 'done') : 'running',
-    })
-  }
-
-  // Show the summary when done; if any step errored, change the title to failed (avoiding perpetual "generating…" + spinner)
-  const doneSummary = isDone && finalTotal != null ? t('aiProgressDone', { n: finalTotal }) : null
-  const hasStepError = steps.some((s) => s.stepStatus === 'error')
-
-  if (steps.length === 0) return null
-
-  return (
-    <div className="deck-progress-card">
-      <button
-        type="button"
-        className="deck-progress-head"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-      >
-        {!doneSummary && !hasStepError && <span className="deck-progress-spinner" aria-hidden />}
-        {doneSummary ? (
-          <span className="deck-progress-done">{doneSummary}</span>
-        ) : (
-          <span className={`deck-progress-title${hasStepError ? ' is-error' : ''}`}>
-            {hasStepError ? t('aiProgressFailed') : t('aiProgressTitle')}
-          </span>
-        )}
-        <span className={`ai-tool-chip-caret${open ? ' open' : ''}`} aria-hidden>
-          ›
-        </span>
-      </button>
-      <div className={`deck-progress-body${open ? ' open' : ''}`}>
-        <div className="deck-progress-body-inner">
-          <div className="deck-progress-steps">
-            {steps.map((step) => (
-              <div key={step.key} className="deck-progress-step">
-                <span className={`deck-progress-icon ${step.stepStatus}`}>
-                  {step.stepStatus === 'running' ? (
-                    <span className="deck-progress-spinner" />
-                  ) : step.stepStatus === 'done' ? (
-                    <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
-                      <path
-                        d="M2 6l3 3 5-5"
-                        stroke="currentColor"
-                        strokeWidth="0.75"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  ) : (
-                    <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
-                      <path
-                        d="M2 2l8 8M10 2l-8 8"
-                        stroke="currentColor"
-                        strokeWidth="0.75"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  )}
-                </span>
-                <span className="deck-progress-step-label">{step.label}</span>
-              </div>
-            ))}
-          </div>
-          {pages && pages.items.length > 0 && (
-            <div className="deck-progress-pages">
-              {pages.items.map((p, i) => (
-                <div key={i} className={`deck-progress-page-item deck-progress-page-${p.status}`}>
-                  <span className="deck-progress-page-icon">
-                    {p.status === 'done'
-                      ? '✓'
-                      : p.status === 'error'
-                        ? '✗'
-                        : p.status === 'running'
-                          ? '⋯'
-                          : '·'}
-                  </span>
-                  <span className="deck-progress-page-title">{`${t('aiPageN', { n: i + 1 })}${p.title ? '·' + p.title : ''}`}</span>
-                  {p.status === 'error' && p.error && (
-                    <span className="deck-progress-page-error-text" title={p.error}>
-                      {p.error}
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       </div>
     </div>

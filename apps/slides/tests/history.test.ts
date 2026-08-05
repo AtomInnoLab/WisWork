@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Session } from '../src/main/session-state'
 import {
   beginHistoryBatch,
-  carryHistoryForReplacement,
   endHistoryBatch,
   pushHistory,
   registerAiSnapshot,
@@ -87,16 +86,6 @@ describe('Slides main-process history batching', () => {
     restoreSnapshot(session, session.undoStack.pop()!)
     expect(session.opened.deck.size).toEqual({ cx: 1, cy: 1 })
     expect(valueOf(session)).toBe('before')
-  })
-
-  it('keeps the old deck snapshot when replacing the full deck', () => {
-    const previous = sessionWith('old deck')
-    const replacement = sessionWith('new deck')
-    carryHistoryForReplacement(previous, replacement)
-
-    expect(replacement.undoStack).toHaveLength(1)
-    restoreSnapshot(replacement, replacement.undoStack.pop()!)
-    expect(valueOf(replacement)).toBe('old deck')
   })
 
   it('returns the pre-run snapshot from the outermost batch end with edits', () => {

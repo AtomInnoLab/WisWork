@@ -1,5 +1,5 @@
 /**
- * Parses the LLM JSON output of generate_deck / planDeckOutline.
+ * Parses the LLM JSON output of deck planning.
  * Models often put unescaped quotes, trailing commas and smart quotes inside brief/title,
  * making JSON.parse fail outright.
  */

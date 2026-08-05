@@ -8,11 +8,7 @@ import { BrowserWindow } from 'electron'
 import type { WebContents } from 'electron'
 import { join } from 'node:path'
 import { materializeSlide, type OpenedPptx, type Slide } from '@wiswork/pptx-engine'
-import {
-  buildRenderSlide,
-  type FontMetricsProvider,
-  type RenderSlide,
-} from '@wiswork/pptx-render'
+import { buildRenderSlide, type FontMetricsProvider, type RenderSlide } from '@wiswork/pptx-render'
 import { createSystemFontMetrics } from './fonts'
 import { tiffToPng } from './tiff-decode'
 
@@ -51,9 +47,6 @@ export interface Session {
   aiSnapshots?: Map<number, HistorySnapshot>
   /** Edits that only touch archive entries (notes/comments; element-level dirty cannot detect them), reset after save */
   metaDirty?: boolean
-  /** Per-page PageVisualData from the HTML pipeline: appends rebuild "existing + new" wholesale.
-      Set to null after any native edit — a rebuild would lose edits, so refuse to append instead. */
-  htmlPages?: unknown[] | null
   /** Transform preview gesture in progress (the first preview already pushed an undo snapshot; later previews/final commit do not) */
   transformPreview?: boolean
   /** The part currently edited in master view (exception to the fidelity rule: only that part is written back) */
@@ -99,7 +92,6 @@ export function pushHistory(session: Session): void {
   session.undoStack.push(takeSnapshot(session))
   trimHistory(session.undoStack)
   session.redoStack = []
-  session.htmlPages = null
 }
 
 /** Begin a nestable transaction. Individual edit handlers keep their normal rollback behavior. */
@@ -132,19 +124,6 @@ export function endHistoryBatch(session: Session): HistorySnapshot | null {
   session.undoStack.push(batch.before)
   trimHistory(session.undoStack)
   return batch.before
-}
-
-/** Preserve the old deck and its history when AI replaces the entire presentation. */
-export function carryHistoryForReplacement(
-  previous: Session | undefined,
-  replacement: Session,
-): void {
-  if (!previous) return
-  pushHistory(previous)
-  replacement.undoStack = previous.undoStack
-  replacement.redoStack = previous.redoStack
-  replacement.historyBatch = previous.historyBatch
-  replacement.aiSnapshots = previous.aiSnapshots
 }
 
 const MAX_AI_SNAPSHOTS = 20

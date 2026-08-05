@@ -1,13 +1,6 @@
 import type { AgentMessage, AgentToolCall, AgentToolDef } from '@wiswork/agent-core'
 
-export type AiProviderId =
-  'wiswork' | 'genspark' | 'anthropic' | 'gemini' | 'deepseek' | 'openai' | 'custom'
-
-/** Genspark account status (gsk login state; the sole auth source for AI features) */
-export interface GenSparkAccountStatus {
-  loggedIn: boolean
-  email?: string
-}
+export type AiProviderId = 'wiswork' | 'anthropic' | 'gemini' | 'deepseek' | 'openai' | 'custom'
 
 export interface AiProviderConfig {
   apiKey: string
