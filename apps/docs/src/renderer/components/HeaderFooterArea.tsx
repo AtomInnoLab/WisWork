@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { TOTAL_PAGES_MARK, type HfImage, type HfParagraph, type Run } from '@genoffice/docx-engine'
+import { TOTAL_PAGES_MARK, type HfImage, type HfParagraph, type Run } from '@wiswork/docx-engine'
 import { useI18n } from '../i18n/locale'
 import { cssFontFamily } from '../line-metrics'
 

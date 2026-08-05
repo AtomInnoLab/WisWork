@@ -1,6 +1,7 @@
-import { createIpcTransport, type AgentTransport } from '@genoffice/agent-core'
-import type { AiSettings } from '@genoffice/ai-provider'
-import { t } from '../i18n/locale'
+import { translateServiceError } from '@wiswork/i18n'
+import { createIpcTransport, type AgentTransport } from '@wiswork/agent-core'
+import type { AiSettings } from '@wiswork/ai-provider'
+import { getLang, t } from '../i18n/locale'
 
 /** The shared IPC transport wired to the sheets preload bridge (window.desktopApi). */
 export function createElectronTransport(getSettings: () => AiSettings): AgentTransport {
@@ -12,5 +13,6 @@ export function createElectronTransport(getSettings: () => AiSettings): AgentTra
     unknownErrorText: () => t('aiUnknownError'),
     timeoutErrorText: () => t('aiTimeoutError'),
     creditsErrorText: () => t('aiCreditsExhausted'),
+    serviceErrorText: (code) => translateServiceError(getLang(), code),
   })
 }

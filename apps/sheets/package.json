@@ -1,6 +1,6 @@
 {
-  "name": "@genoffice/sheets",
-  "productName": "GenOffice Sheets",
+  "name": "@wiswork/sheets",
+  "productName": "WisWork Sheets",
   "version": "0.1.0",
   "private": true,
   "description": "Cross-platform AI-native spreadsheet compatibility prototype",
@@ -22,13 +22,6 @@
     "gate": "npm run typecheck && npm run fixtures && npm test && npm run compat"
   },
   "dependencies": {
-    "@genoffice/agent-core": "*",
-    "@genoffice/ai-provider": "*",
-    "@genoffice/ai-search": "*",
-    "@genoffice/electron-utils": "*",
-    "@genoffice/file-parse": "*",
-    "@genoffice/i18n": "*",
-    "@genoffice/ui": "*",
     "@fluentui/react-icons": "^2.0.333",
     "@univerjs/core": "^0.25.1",
     "@univerjs/preset-sheets-conditional-formatting": "^0.25.1",
@@ -42,6 +35,14 @@
     "@univerjs/preset-sheets-table": "^0.25.1",
     "@univerjs/sheets-filter": "^0.25.1",
     "@univerjs/themes": "^0.25.1",
+    "@wiswork/agent-core": "*",
+    "@wiswork/ai-provider": "*",
+    "@wiswork/ai-search": "*",
+    "@wiswork/auth": "*",
+    "@wiswork/electron-utils": "*",
+    "@wiswork/file-parse": "*",
+    "@wiswork/i18n": "*",
+    "@wiswork/ui": "*",
     "fast-xml-parser": "^5.3.4",
     "jszip": "^3.10.1",
     "react": "^19.2.4",
@@ -49,11 +50,11 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@genoffice/project-store": "*",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.4",
+    "@wiswork/project-store": "*",
     "electron": "^41.0.3",
     "electron-vite": "^5.0.0",
     "tsx": "^4.21.0",
@@ -61,5 +62,13 @@
     "vite": "^7.3.1",
     "vitest": "^4.1.0"
   },
-  "author": "GenOffice"
+  "author": "AtomInnoLab",
+  "build": {
+    "appId": "com.atominnolab.wiswork.sheets",
+    "productName": "WisWork Sheets",
+    "artifactName": "WisWork-Sheets-${version}-${arch}.${ext}",
+    "files": [
+      "out/**"
+    ]
+  }
 }

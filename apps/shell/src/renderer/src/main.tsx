@@ -1,6 +1,6 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import { htmlLang } from '@genoffice/i18n'
+import { htmlLang } from '@wiswork/i18n'
 import { AppFrame } from './AppFrame'
 import { LocaleProvider } from './locale'
 import './home.css'

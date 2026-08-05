@@ -9,7 +9,7 @@ import {
   type Block,
   type SourceInfo,
   type TocEntry,
-} from '@genoffice/docx-engine'
+} from '@wiswork/docx-engine'
 import { PromptModal } from './PromptModal'
 import { collectHeadings } from '../editor/headings'
 import { t, useI18n, type StringKey } from '../i18n/locale'

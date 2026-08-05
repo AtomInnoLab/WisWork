@@ -2,9 +2,17 @@ import { describe, expect, it } from 'vitest'
 import { AI_PROVIDERS, defaultAiSettings, resolveAiSettings } from '../src/providers'
 
 describe('defaultAiSettings', () => {
+  it('exposes WisWork as the active provider without renderer credentials', () => {
+    expect(AI_PROVIDERS.map((provider) => provider.id)).toContain('wiswork')
+    expect(defaultAiSettings().providers.wiswork).toEqual({
+      apiKey: '',
+      model: 'deepseek/deepseek-v4-flash-0731',
+    })
+  })
+
   it('gives every provider its default model and an empty key by default', () => {
     const settings = defaultAiSettings()
-    expect(settings.provider).toBe('genspark')
+    expect(settings.provider).toBe('wiswork')
     for (const meta of AI_PROVIDERS) {
       expect(settings.providers[meta.id].apiKey).toBe('')
       expect(settings.providers[meta.id].model).toBe(meta.defaultModel)
@@ -21,6 +29,22 @@ describe('defaultAiSettings', () => {
 })
 
 describe('resolveAiSettings', () => {
+  it('drops persisted WisWork provider credentials during migration', () => {
+    const resolved = resolveAiSettings(
+      {
+        provider: 'wiswork' as never,
+        providers: {
+          wiswork: { apiKey: 'old-key', model: 'old-model' },
+        } as never,
+      },
+      defaultAiSettings(),
+    )
+
+    expect(resolved.provider).toBe('wiswork')
+    expect(resolved.providers.wiswork).toEqual(defaultAiSettings().providers.wiswork)
+    expect(JSON.stringify(resolved)).not.toContain('old-key')
+  })
+
   it('returns fresh defaults when nothing is stored', () => {
     const defaults = defaultAiSettings({ anthropic: 'sk-ant-preset' })
     expect(resolveAiSettings({}, defaults)).toEqual(defaults)
@@ -58,7 +82,10 @@ describe('resolveAiSettings', () => {
       defaults,
     )
     expect(resolved.provider).toBe('gemini')
-    expect(resolved.providers.gemini).toEqual({ apiKey: 'stored-gemini-key', model: 'gemini-2.5-pro' })
+    expect(resolved.providers.gemini).toEqual({
+      apiKey: 'stored-gemini-key',
+      model: 'gemini-2.5-pro',
+    })
     // provider not mentioned in stored.providers keeps the computed default
     expect(resolved.providers.anthropic.apiKey).toBe('preset-key')
   })

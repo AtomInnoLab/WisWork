@@ -1,4 +1,4 @@
-/** Search result types and shared constants (used by both the index and gsk backends) */
+/** Search result types and shared constants (used by the available search backends) */
 
 export interface WebSearchResult {
   title: string

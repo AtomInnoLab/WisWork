@@ -1,4 +1,4 @@
-import { defineStrings } from '@genoffice/i18n'
+import { defineStrings } from '@wiswork/i18n'
 
 /** Copy for App.tsx / ExcelShell / chart panels / non-dialog components */
 export const appStrings = defineStrings({
@@ -13957,7 +13957,8 @@ export const appStrings = defineStrings({
     appSelectRangeWithHeader: 'Selecteer een gegevensbereik met een veldnamenrij.',
     appSubtotalSameColumns: 'Kies verschillende kolommen voor groepering en waarden.',
     appRangeNoDataRows: 'Het geselecteerde bereik bevat geen gegevensrijen.',
-    appSubtotalTooManyGroups: 'Te veel groepen (max. 200) — sorteer eerst op de groeperingskolom.',
+    appSubtotalTooManyGroups:
+      'Te veel groepen (max. 200) — sorteer eerst op de groeperinwisworkolom.',
     appSubtotalInsertFailed: 'Kan de subtotaalrijen niet invoegen.',
     appSubtotalsInserted: 'Subtotalen ingevoegd: {count} groep(en) plus een eindtotaal.',
     appSelectTargetCellFirst: 'Selecteer eerst de doelcel.',

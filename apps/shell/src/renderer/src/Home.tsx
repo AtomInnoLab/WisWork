@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import logoLockup from './assets/genoffice-logo.svg'
+import logoLockup from './assets/wiswork-logo.svg'
 import iconDocx from './assets/file-docx.svg'
 import iconXlsx from './assets/file-xlsx.svg'
 import iconPptx from './assets/file-pptx.svg'
@@ -386,11 +386,11 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
 }
 
 // ── Account entry (bottom-left) ──────────────────────────
-// Currently the Genspark (gsk) login entry; to be upgraded to a signup/account system later.
+// WisWork OAuth account entry and language switcher.
 // Language switching also lives in this popup menu.
 
 const LOGIN_POLL_MS = 2500
-/** fallback deadline when the CLI does not report expires_in (device codes live ~300s) */
+/** Safety deadline if the browser login never returns a callback. */
 const LOGIN_MAX_WAIT_MS = 300_000
 
 // sorted by ISO 639 language code — native-script labels have no natural
@@ -426,9 +426,6 @@ function AccountEntry() {
   const [loginError, setLoginError] = useState<
     'timeout' | 'launch' | 'network' | 'expired' | 'failed' | null
   >(null)
-  // auth URL reported by the login CLI — rescue entry when the browser did not open
-  const [authUrl, setAuthUrl] = useState<string | null>(null)
-  const [urlCopied, setUrlCopied] = useState(false)
   const loginDeadline = useRef(0)
   const [menuOpen, setMenuOpen] = useState(false)
   // language flyout: opens on hover, fixed-position so it can escape the
@@ -444,9 +441,14 @@ function AccountEntry() {
   // query login state + app version once on mount
   useEffect(() => {
     let alive = true
-    void window.aiOffice.accountStatus?.().then((s) => {
-      if (alive) setStatus(s)
-    })
+    void window.aiOffice
+      .accountStatus?.()
+      .then((s) => {
+        if (alive) setStatus(s)
+      })
+      .catch(() => {
+        if (alive) setStatus({ loggedIn: false })
+      })
     void window.aiOffice.getAppVersion?.().then((v) => {
       if (alive && v) setAppVersion(v)
     })
@@ -455,23 +457,25 @@ function AccountEntry() {
     }
   }, [])
 
-  // login progress pushed from main (gsk login CLI output)
+  // OAuth launch/callback progress pushed from the main process.
   useEffect(() => {
     const off = window.aiOffice.onAccountLogin?.((ev) => {
-      if (ev.phase === 'url') {
-        if (ev.url) setAuthUrl(ev.url)
-        if (ev.expiresInSec) loginDeadline.current = Date.now() + ev.expiresInSec * 1000
-      } else if (ev.phase === 'success') {
-        void window.aiOffice.accountStatus().then((s) => {
-          if (s.loggedIn) {
-            setStatus(s)
+      if (ev.phase === 'success') {
+        void window.aiOffice
+          .accountStatus()
+          .then((s) => {
+            if (s.loggedIn) {
+              setStatus(s)
+              setWaiting(false)
+            }
+          })
+          .catch(() => {
+            setStatus({ loggedIn: false })
             setWaiting(false)
-            setAuthUrl(null)
-          }
-        })
+            setLoginError('network')
+          })
       } else if (ev.phase === 'error') {
         setWaiting(false)
-        setAuthUrl(null)
         setLoginError(
           ev.error === 'network' ? 'network' : ev.error === 'expired' ? 'expired' : 'failed',
         )
@@ -480,21 +484,26 @@ function AccountEntry() {
     return off
   }, [])
 
-  // config-file polling stays as the fallback success path (works even if progress events are lost)
+  // Status polling is a fallback when a callback progress event is lost.
   useEffect(() => {
     if (!waiting) return
     const timer = setInterval(() => {
-      void window.aiOffice.accountStatus().then((s) => {
-        if (s.loggedIn) {
-          setStatus(s)
+      void window.aiOffice
+        .accountStatus()
+        .then((s) => {
+          if (s.loggedIn) {
+            setStatus(s)
+            setWaiting(false)
+          } else if (Date.now() > loginDeadline.current) {
+            setWaiting(false)
+            setLoginError('timeout')
+          }
+        })
+        .catch(() => {
+          setStatus({ loggedIn: false })
           setWaiting(false)
-          setAuthUrl(null)
-        } else if (Date.now() > loginDeadline.current) {
-          setWaiting(false)
-          setAuthUrl(null)
-          setLoginError('timeout')
-        }
-      })
+          setLoginError('network')
+        })
     }, LOGIN_POLL_MS)
     return () => clearInterval(timer)
   }, [waiting, loginNonce])
@@ -515,7 +524,7 @@ function AccountEntry() {
 
   const loggedIn = status?.loggedIn ?? false
   const email = status?.email ?? ''
-  const initial = email ? email[0].toUpperCase() : loggedIn ? 'G' : '?'
+  const initial = email ? email[0].toUpperCase() : loggedIn ? 'W' : '?'
   const errorText = loginError
     ? {
         timeout: t('loginTimeout'),
@@ -568,11 +577,9 @@ function AccountEntry() {
   }, [langFly])
 
   const startLogin = () => {
-    // clicking again while waiting = relaunch the login (main kills the stale CLI, so the new device code is the live one)
+    // Clicking again while waiting starts a fresh state/PKCE transaction.
     setLoginError(null)
     setWaiting(true)
-    setAuthUrl(null)
-    setUrlCopied(false)
     loginDeadline.current = Date.now() + LOGIN_MAX_WAIT_MS
     setLoginNonce((n) => n + 1)
     closeMenu()
@@ -585,14 +592,6 @@ function AccountEntry() {
   }
 
   const openLoginUrl = () => void window.aiOffice.openLoginUrl?.()
-
-  const copyLoginUrl = () => {
-    if (!authUrl) return
-    void navigator.clipboard.writeText(authUrl).then(() => {
-      setUrlCopied(true)
-      window.setTimeout(() => setUrlCopied(false), 2000)
-    })
-  }
 
   const handleClick = () => {
     setMenuOpen((v) => !v)
@@ -617,25 +616,16 @@ function AccountEntry() {
                 onClick={startLogin}
                 title={waiting ? t('waitingLogin') : undefined}
               >
-                {waiting ? t('waitingShort') : t('loginGenspark')}
+                {waiting ? t('waitingShort') : t('loginWisWork')}
               </button>
-              {waiting && authUrl && (
-                <>
-                  <button
-                    className="account-menu-item login-rescue"
-                    role="menuitem"
-                    onClick={openLoginUrl}
-                  >
-                    {t('loginOpenManually')}
-                  </button>
-                  <button
-                    className="account-menu-item login-rescue"
-                    role="menuitem"
-                    onClick={copyLoginUrl}
-                  >
-                    {urlCopied ? t('loginCopied') : t('loginCopyUrl')}
-                  </button>
-                </>
+              {waiting && (
+                <button
+                  className="account-menu-item login-rescue"
+                  role="menuitem"
+                  onClick={openLoginUrl}
+                >
+                  {t('loginOpenManually')}
+                </button>
               )}
             </>
           )}
@@ -763,13 +753,10 @@ function AccountEntry() {
           )}
         </div>
       )}
-      {!menuOpen && waiting && authUrl && (
+      {!menuOpen && waiting && (
         <div className="login-hint" role="status">
           <button className="login-hint-open" onClick={openLoginUrl}>
             {t('loginOpenManually')}
-          </button>
-          <button className="login-hint-copy" onClick={copyLoginUrl}>
-            {urlCopied ? t('loginCopied') : t('loginCopyUrl')}
           </button>
         </div>
       )}
@@ -779,10 +766,10 @@ function AccountEntry() {
         aria-expanded={menuOpen}
         title={
           loggedIn
-            ? email || t('loggedInGenspark')
+            ? email || t('loggedInWisWork')
             : waiting
               ? t('waitingLogin')
-              : (errorText ?? t('loginGenspark'))
+              : (errorText ?? t('loginWisWork'))
         }
         aria-label={loggedIn ? t('account') : t('login')}
       >
@@ -818,14 +805,14 @@ function AccountEntry() {
             <>
               <span className="account-name">{email ? email.split('@')[0] : t('loggedIn')}</span>
               <span className="account-sub" title={email}>
-                {email || 'Genspark'}
+                {email || 'WisWork'}
               </span>
             </>
           ) : (
             <>
               <span className="account-name">{waiting ? t('waitingShort') : t('login')}</span>
               <span className={`account-sub${!waiting && errorText ? ' error' : ''}`}>
-                {!waiting && errorText ? errorText : t('accountGenspark')}
+                {!waiting && errorText ? errorText : t('accountWisWork')}
               </span>
             </>
           )}
@@ -860,10 +847,13 @@ export function Home() {
   )
 
   useEffect(() => {
-    void window.aiOffice.accountStatus?.().then((s) => {
-      const name = s?.loggedIn ? (s.email ?? '').split('@')[0] : ''
-      if (name) setAccountName(name[0].toUpperCase() + name.slice(1))
-    })
+    void window.aiOffice
+      .accountStatus?.()
+      .then((s) => {
+        const name = s?.loggedIn ? (s.email ?? '').split('@')[0] : ''
+        setAccountName(name ? name[0].toUpperCase() + name.slice(1) : '')
+      })
+      .catch(() => setAccountName(''))
   }, [])
 
   // ── Project state ──
@@ -1710,7 +1700,7 @@ export function Home() {
     <div className="home">
       <aside className="sidebar">
         <div className="sidebar-logo">
-          <img className="logo-lockup" src={logoLockup} alt="GenOffice" />
+          <img className="logo-lockup" src={logoLockup} alt="WisWork" />
         </div>
 
         <nav className="sidebar-nav">

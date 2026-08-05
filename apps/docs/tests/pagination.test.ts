@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { SectionInfo } from '@genoffice/docx-engine'
+import type { SectionInfo } from '@wiswork/docx-engine'
 import {
   appendEndnotesBlock,
   assignSections,

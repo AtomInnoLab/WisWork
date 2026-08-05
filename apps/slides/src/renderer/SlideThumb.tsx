@@ -5,7 +5,7 @@
 import React from 'react'
 import { Stage, Layer, Rect } from 'react-konva'
 import type Konva from 'konva'
-import type { RenderSlide } from '@genoffice/pptx-render'
+import type { RenderSlide } from '@wiswork/pptx-render'
 import { fillToKonva } from './konva-adapter'
 import { StaticNode } from './NodeBody'
 

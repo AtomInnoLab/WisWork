@@ -1,5 +1,5 @@
-import type { Lang } from '@genoffice/i18n'
-import type { AiSettings, AiStreamChunk, AiStreamRequest } from '@genoffice/ai-provider'
+import type { Lang } from '@wiswork/i18n'
+import type { AiSettings, AiStreamChunk, AiStreamRequest } from '@wiswork/ai-provider'
 
 export const PDF_CHANNELS = {
   consumePending: 'pdf:consume-pending',

@@ -45,7 +45,7 @@ const IMPLICIT = ['electron']
 
 /**
  * Packages copied into the installer verbatim by electron-builder rather than
- * bundled — the gsk CLI and its runtime deps are spawned, never imported, so
+ * bundled — removed external CLI dependencies are not part of the runtime graph, so
  * they are invisible to the import scan.
  */
 function extraResourceSeeds() {
@@ -68,8 +68,6 @@ const LICENSE_PATH = { electron: 'dist/LICENSE' }
 const NOTE = {
   '@fluentui/react-icons':
     'Copyright (c) Microsoft Corporation. Licensed under the MIT License.\nhttps://github.com/microsoft/fluentui-system-icons',
-  '@genspark/cli':
-    'Copyright (c) Genspark. Licensed under the MIT License.\nhttps://www.npmjs.com/package/@genspark/cli',
 }
 
 /** SPDX strings that need a word on which side of a dual license we take */
@@ -102,7 +100,7 @@ function bareName(spec) {
   if (spec.startsWith('.') || spec.startsWith('/')) return null
   const parts = spec.split('/')
   const name = spec.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]
-  if (BUILTIN.has(name) || name.startsWith('@genoffice/')) return null
+  if (BUILTIN.has(name) || name.startsWith('@wiswork/')) return null
   // the specifier regex also fires on prose inside string concatenations
   return NPM_NAME.test(name) ? name : null
 }
@@ -230,7 +228,7 @@ const seed = importedNames()
 const { resolved, missing } = closure(seed)
 resolved.sort(([a], [b]) => a.localeCompare(b))
 
-let out = `GenOffice — Third-Party Software Notices
+let out = `WisWork — Third-Party Software Notices
 
 This application includes third-party software components under the licenses
 reproduced below.

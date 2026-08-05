@@ -1,0 +1,6 @@
+<svg width="560" height="120" viewBox="0 0 560 120" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">WisWork</title>
+  <rect width="120" height="120" rx="28" fill="#171717"/>
+  <path d="M25 32L42 88L60 49L78 88L95 32" stroke="white" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="148" y="80" fill="#171717" font-family="Inter, Arial, sans-serif" font-size="66" font-weight="700" letter-spacing="-2">WisWork</text>
+</svg>

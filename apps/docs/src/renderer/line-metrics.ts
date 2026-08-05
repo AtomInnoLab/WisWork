@@ -23,7 +23,7 @@
  *   - space-before/space-after also align to the grid when a grid exists
  */
 
-import type { DocGrid } from '@genoffice/docx-engine'
+import type { DocGrid } from '@wiswork/docx-engine'
 
 // ─── Font metrics interface (same interface as pptx-render/metrics.ts) ─────
 

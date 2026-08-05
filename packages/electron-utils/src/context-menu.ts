@@ -83,7 +83,7 @@ export function buildContextMenuItems(
 }
 
 // Symbol.for: survives multiple bundled copies (see navigation-guard.ts).
-const INSTALLED = Symbol.for('genoffice.context-menu-installed')
+const INSTALLED = Symbol.for('wiswork.context-menu-installed')
 
 export function installContextMenu(app: App, getLabels: () => ContextMenuLabels): void {
   const holder = app as unknown as Record<symbol, boolean | undefined>

@@ -14,7 +14,7 @@
  * Keyboard: →/space/enter/PgDn next step; ←/PgUp previous page; Home/End first/last; B blackout; Esc exit.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { RenderSlide } from '@genoffice/pptx-render'
+import type { RenderSlide } from '@wiswork/pptx-render'
 import type { AnimationItem, ShowSyncState } from '../../shared/ipc'
 import { AnimatedSlideStage, useAnimPlayer } from './AnimatedSlide'
 import { useI18n } from '../i18n/locale'

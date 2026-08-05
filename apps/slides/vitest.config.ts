@@ -9,21 +9,22 @@ export default defineConfig({
   resolve: {
     alias: {
       // Subpath before the bare name: string aliases are prefix replacements
-      '@genoffice/pptx-engine/table-grid': resolve(
+      '@wiswork/pptx-engine/table-grid': resolve(
         here,
         '../../packages/pptx-engine/src/table-grid.ts',
       ),
-      '@genoffice/pptx-engine/background-promote': resolve(
+      '@wiswork/pptx-engine/background-promote': resolve(
         here,
         '../../packages/pptx-engine/src/background-promote.ts',
       ),
-      '@genoffice/pptx-engine': resolve(here, '../../packages/pptx-engine/src/index.ts'),
-      '@genoffice/pptx-render': resolve(here, '../../packages/pptx-render/src/index.ts'),
+      '@wiswork/pptx-engine': resolve(here, '../../packages/pptx-engine/src/index.ts'),
+      '@wiswork/pptx-render': resolve(here, '../../packages/pptx-render/src/index.ts'),
     },
   },
   test: {
     include: ['tests/**/*.test.ts'],
     environment: 'jsdom',
+    setupFiles: ['../../tools/vitest-jsdom-setup.ts'],
     testTimeout: 20000,
   },
 })

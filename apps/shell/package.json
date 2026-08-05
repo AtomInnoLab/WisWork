@@ -1,10 +1,10 @@
 {
-  "name": "@genoffice/shell",
-  "productName": "GenOffice",
+  "name": "@wiswork/shell",
+  "productName": "WisWork",
   "version": "0.5.0",
   "license": "Apache-2.0",
   "private": true,
-  "description": "Unified GenOffice shell: one app hosting the docs and sheets modules behind a home/launcher window",
+  "description": "Unified WisWork shell: one app hosting docs, sheets, slides, and PDF modules",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev --watch",
@@ -16,20 +16,21 @@
     "dist:win": "electron-vite build && electron-builder --win"
   },
   "devDependencies": {
-    "@genoffice/agent-core": "*",
-    "@genoffice/ai-provider": "*",
-    "@genoffice/ai-search": "*",
-    "@genoffice/docs": "*",
-    "@genoffice/docx-engine": "*",
-    "@genoffice/electron-utils": "*",
-    "@genoffice/i18n": "*",
-    "@genoffice/pptx-engine": "*",
-    "@genoffice/pptx-render": "*",
-    "@genoffice/sheets": "*",
-    "@genoffice/slides": "*",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.4",
+    "@wiswork/agent-core": "*",
+    "@wiswork/ai-provider": "*",
+    "@wiswork/ai-search": "*",
+    "@wiswork/auth": "*",
+    "@wiswork/docs": "*",
+    "@wiswork/docx-engine": "*",
+    "@wiswork/electron-utils": "*",
+    "@wiswork/i18n": "*",
+    "@wiswork/pptx-engine": "*",
+    "@wiswork/pptx-render": "*",
+    "@wiswork/sheets": "*",
+    "@wiswork/slides": "*",
     "electron": "^41.0.3",
     "electron-builder": "^26.0.12",
     "electron-updater": "^6.8.9",
@@ -40,5 +41,5 @@
     "vite": "^7.3.1",
     "vitest": "^4.1.10"
   },
-  "author": "GenOffice"
+  "author": "AtomInnoLab"
 }

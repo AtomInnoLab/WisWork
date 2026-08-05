@@ -1,6 +1,6 @@
 import { Editor } from '@tiptap/core'
 import { NodeSelection } from '@tiptap/pm/state'
-import { parseDocx, saveDocx } from '@genoffice/docx-engine'
+import { parseDocx, saveDocx } from '@wiswork/docx-engine'
 import { describe, expect, it } from 'vitest'
 import {
   buildDocx,

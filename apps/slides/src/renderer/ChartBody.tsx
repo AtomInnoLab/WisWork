@@ -5,7 +5,7 @@
  */
 import React from 'react'
 import { Rect, Text, Line, Circle, Arc } from 'react-konva'
-import type { ChartRenderNode } from '@genoffice/pptx-render'
+import type { ChartRenderNode } from '@wiswork/pptx-render'
 import { smoothTension } from './konva-adapter'
 
 export function ChartBody({ chart }: { chart: ChartRenderNode }) {

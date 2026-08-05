@@ -10,7 +10,7 @@ import {
   type FormulaDisplay,
   type TableModel,
   type TextboxDisplay,
-} from '@genoffice/docx-engine'
+} from '@wiswork/docx-engine'
 
 /**
  * Custom schema mirroring the docx-engine Block model 1:1.

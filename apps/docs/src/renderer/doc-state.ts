@@ -2,7 +2,7 @@
  * Shared document-state types and header/footer helpers used by App.tsx and
  * the extracted action modules (file-actions, review-actions, …).
  */
-import type { HeaderFooter, HfPartInfo, ParsedDocFull } from '@genoffice/docx-engine'
+import type { HeaderFooter, HfPartInfo, ParsedDocFull } from '@wiswork/docx-engine'
 
 /** first-page / even-page header & footer variants */
 export type HfVariantKey = 'headerFirst' | 'footerFirst' | 'headerEven' | 'footerEven'
@@ -31,7 +31,7 @@ export interface PendingNumbering {
   newDefs: Array<{
     numId: string
     kind: 'bullet' | 'ordered'
-    levels?: import('@genoffice/docx-engine').CustomNumberingLevel[]
+    levels?: import('@wiswork/docx-engine').CustomNumberingLevel[]
   }>
   restartNums: Array<{
     numId: string

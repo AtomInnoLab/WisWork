@@ -1,4 +1,4 @@
-import type { ParsedDoc } from '@genoffice/docx-engine'
+import type { ParsedDoc } from '@wiswork/docx-engine'
 import { cssFontFamily } from './line-metrics'
 
 /** bundled web fonts (fonts.css) — always "available" but they are the

@@ -1,4 +1,4 @@
-/** UI language; kept self-contained here (mirrors Lang in @genoffice/i18n) */
+/** UI language; kept self-contained here (mirrors Lang in @wiswork/i18n) */
 export type UiLanguage =
   | 'zh'
   | 'en'
@@ -87,38 +87,30 @@ export interface HomeApi {
   getLanguage(): Promise<UiLanguage>
   /** switch + persist the UI language; main rebuilds its menus to match */
   setLanguage(lang: UiLanguage): Promise<void>
-  /** Genspark account status (gsk login state; to be upgraded to a signup/account system later) */
+  /** Non-sensitive WisWork account status. */
   accountStatus(): Promise<AccountStatus>
-  /** start Genspark login (opens the browser; accountStatus flips to logged-in on completion); returns whether the launch succeeded */
+  /** Start WisWork login in the system browser. */
   accountLogin(): Promise<boolean>
-  /** progress events for the login started via accountLogin; returns an unsubscribe */
+  /** Subscribe to stable, non-sensitive login progress. */
   onAccountLogin(handler: (ev: AccountLoginEvent) => void): () => void
-  /** re-open the pending login auth URL in the default browser (rescue when auto-open failed) */
+  /** Re-open the main-process-owned pending authorization URL. */
   openLoginUrl(): Promise<void>
-  /** log out (clears the saved API key; the login state is shared globally with the gsk CLI) */
+  /** Clear the encrypted WisWork session. */
   accountLogout(): Promise<void>
-  /** app version (from package.json / electron app.getVersion) */
   getAppVersion(): Promise<string>
-  /** whether the first-run onboarding has been completed or skipped (persisted in userData/app-settings.json) */
   onboardingSeen(): Promise<boolean>
-  /** mark the first-run onboarding as done so it never shows again */
   setOnboardingSeen(): Promise<void>
-  /** open the GenTeam community page in the default browser */
-  openGenTeam(): Promise<void>
 }
 
 export interface AccountStatus {
-  /** gsk is installed and logged in */
   loggedIn: boolean
   email?: string
+  userId?: string
 }
 
-/** login flow progress pushed from main (gsk login CLI output) */
+/** Stable, non-sensitive WisWork login progress. */
 export interface AccountLoginEvent {
-  phase: 'launched' | 'url' | 'success' | 'error'
-  url?: string
-  expiresInSec?: number
-  /** 'network' | 'expired' | raw CLI error text */
+  phase: 'launched' | 'success' | 'error'
   error?: string
 }
 
@@ -194,7 +186,6 @@ export const HOME_CHANNELS = {
   getAppVersion: 'home:get-app-version',
   onboardingSeen: 'home:onboarding-seen',
   setOnboardingSeen: 'home:set-onboarding-seen',
-  openGenTeam: 'home:open-genteam',
 } as const
 
 export const PROJECT_CHANNELS = {

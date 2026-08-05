@@ -19,8 +19,8 @@ import {
   savePptx,
   setSlideBackground,
   type TextElement,
-} from '@genoffice/pptx-engine'
-import { buildRenderSlide } from '@genoffice/pptx-render'
+} from '@wiswork/pptx-engine'
+import { buildRenderSlide } from '@wiswork/pptx-render'
 import { THEME_PRESETS } from '../src/renderer/themes'
 
 const FIT = 1280

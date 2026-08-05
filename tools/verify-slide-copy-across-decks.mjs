@@ -15,7 +15,7 @@ copyFileSync(join(fixtures, '01_standard_business.pptx'), deckB)
 
 const app = await electron.launch({
   args: ['apps/shell', deckA],
-  env: { ...process.env, GENOFFICE_USER_DATA: join(work, 'userData') },
+  env: { ...process.env, WISWORK_USER_DATA: join(work, 'userData') },
 })
 await app.firstWindow()
 

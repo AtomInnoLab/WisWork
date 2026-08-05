@@ -6,7 +6,7 @@
  * per text node instead of blindly stacking marks.
  */
 import type { Editor } from '@tiptap/core'
-import type { CommentInfo } from '@genoffice/docx-engine'
+import type { CommentInfo } from '@wiswork/docx-engine'
 import { TRACK_IGNORE } from './revisions'
 
 /** smallest unused numeric comment id */

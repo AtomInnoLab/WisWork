@@ -1,12 +1,8 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
-import type {
-  AiChatResponse,
-  AiSettings,
-  AiStreamChunk,
-  GenSparkAccountStatus,
-} from '@genoffice/ai-provider'
-import type { ProjectApi } from '@genoffice/project-store'
+import type { AiChatResponse, AiSettings, AiStreamChunk } from '@wiswork/ai-provider'
+import type { AccountStatus } from '@wiswork/auth'
+import type { ProjectApi } from '@wiswork/project-store'
 import type {
   AttachmentAddResult,
   AttachmentImageResult,
@@ -232,15 +228,18 @@ const desktopApi: DesktopApi = {
     if (!requestId) throw new Error('Invalid AI stream request id.')
     await ipcRenderer.invoke(IPC_CHANNELS.aiStreamCancel, requestId)
   },
-  async aiGskStatus(withEmail) {
-    const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.aiGskStatus, withEmail)
+  async aiAccountStatus() {
+    const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.aiAccountStatus)
     if (!isRecord(result) || typeof result.loggedIn !== 'boolean') {
-      throw new Error('Invalid Genspark account status response.')
+      throw new Error('Invalid WisWork account status response.')
     }
-    return result as unknown as GenSparkAccountStatus
+    return result as unknown as AccountStatus
   },
-  async aiGskLogin() {
-    await ipcRenderer.invoke(IPC_CHANNELS.aiGskLogin)
+  async aiAccountLogin() {
+    await ipcRenderer.invoke(IPC_CHANNELS.aiAccountLogin)
+  },
+  async aiAccountLogout() {
+    await ipcRenderer.invoke(IPC_CHANNELS.aiAccountLogout)
   },
   async webSearch(query, maxResults) {
     if (typeof query !== 'string' || !query.trim() || query.length > 512) {

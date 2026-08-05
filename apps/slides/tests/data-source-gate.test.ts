@@ -1,7 +1,7 @@
 /** Figure-provenance gate: chart data and data-dense briefs must declare dataSource; 'search' requires a real web_search first. */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createSlidesSkill, type DeckAccess } from '../src/renderer/ai/slides-skill'
-import type { RenderSlide, PlacedBox, ShapeRenderNode } from '@genoffice/pptx-render'
+import type { RenderSlide, PlacedBox, ShapeRenderNode } from '@wiswork/pptx-render'
 import type { AgentToolCall } from '../src/shared/ipc'
 
 const box = (x: number, y: number, w: number, h: number): PlacedBox => ({
@@ -143,49 +143,5 @@ describe('edit_chart provenance gate', () => {
       input: { slideIndex: 0, sourceId: 'c1', title: 'New title' },
     })
     expect(styleOnly.isError).toBeUndefined()
-  })
-})
-
-describe('brief provenance gate (regenerate_slide / generate_deck)', () => {
-  const cloudAccess = () =>
-    mkAccess({
-      regenerateSlide: async () => null,
-      generatePageCloud: async () => ({ ok: false, error: 'cloud down' }),
-      isCloudPageGenEnabled: async () => true,
-      generateFromHtml: async () => ({ ok: true, pages: 1 }),
-    })
-
-  it('regenerate_slide with a figure-dense brief refuses without dataSource', async () => {
-    const r = await createSlidesSkill(cloudAccess()).executeTool!({
-      id: 't',
-      name: 'regenerate_slide',
-      input: { slideIndex: 0, brief: '2023 年营收 48 亿，同比增长 12.5%，客单价 ¥21.8' },
-    })
-    expect(r.isError).toBe(true)
-    expect(r.output).toContain('dataSource')
-  })
-
-  it('regenerate_slide with a figure-free brief is not gated', async () => {
-    const r = await createSlidesSkill(cloudAccess()).executeTool!({
-      id: 't',
-      name: 'regenerate_slide',
-      input: { slideIndex: 0, brief: 'Redo this page as a three column card layout' },
-    })
-    // Fails later in the cloud pipeline (mocked down), not at the provenance gate
-    expect(r.output).not.toContain('dataSource')
-  })
-
-  it('generate_deck with figure-dense briefs refuses without dataSource', async () => {
-    const r = await createSlidesSkill(cloudAccess()).executeTool!({
-      id: 't',
-      name: 'generate_deck',
-      input: {
-        core_hook: 'h',
-        style: 's',
-        pages: [{ title: 'Key metrics', brief: 'Revenue ¥4.8bn, growth 12.5%, ARPU $21.8' }],
-      },
-    })
-    expect(r.isError).toBe(true)
-    expect(r.output).toContain('dataSource')
   })
 })

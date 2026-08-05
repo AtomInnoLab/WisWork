@@ -19,8 +19,8 @@ import { describe, expect, it, beforeAll } from 'vitest'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parseDocx } from '@genoffice/docx-engine'
-import { readSections } from '@genoffice/docx-engine'
+import { parseDocx } from '@wiswork/docx-engine'
+import { readSections } from '@wiswork/docx-engine'
 import {
   computeSectionedSlicesF2,
   sectionColGeom,
@@ -31,7 +31,7 @@ import {
 } from '../src/renderer/pagination'
 import { computeLineMetrics } from '../src/renderer/line-metrics'
 import { loBaselineMetrics } from './helpers/lo-fonts'
-import type { ParsedDoc, DocGrid, ParaFormat, StyleDisplay } from '@genoffice/docx-engine'
+import type { ParsedDoc, DocGrid, ParaFormat, StyleDisplay } from '@wiswork/docx-engine'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)

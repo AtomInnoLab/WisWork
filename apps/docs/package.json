@@ -1,6 +1,6 @@
 {
-  "name": "@genoffice/docs",
-  "productName": "GenOffice Docs",
+  "name": "@wiswork/docs",
+  "productName": "WisWork Docs",
   "version": "0.1.0",
   "license": "Apache-2.0",
   "private": true,
@@ -18,14 +18,6 @@
     "dist:dir": "electron-vite build && electron-builder --dir"
   },
   "devDependencies": {
-    "@genoffice/agent-core": "*",
-    "@genoffice/i18n": "*",
-    "@genoffice/ai-provider": "*",
-    "@genoffice/ai-search": "*",
-    "@genoffice/docx-engine": "*",
-    "@genoffice/file-parse": "*",
-    "@genoffice/project-store": "*",
-    "@genoffice/ui": "*",
     "@tiptap/core": "^3.28.0",
     "@tiptap/extensions": "^3.28.0",
     "@tiptap/pm": "^3.28.0",
@@ -34,6 +26,15 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.4",
+    "@wiswork/agent-core": "*",
+    "@wiswork/ai-provider": "*",
+    "@wiswork/ai-search": "*",
+    "@wiswork/auth": "*",
+    "@wiswork/docx-engine": "*",
+    "@wiswork/file-parse": "*",
+    "@wiswork/i18n": "*",
+    "@wiswork/project-store": "*",
+    "@wiswork/ui": "*",
     "electron": "^41.0.3",
     "electron-builder": "^26.0.12",
     "electron-vite": "^5.0.0",
@@ -45,12 +46,12 @@
     "vite": "^7.3.1",
     "vitest": "^4.1.0"
   },
-  "author": "GenOffice",
+  "author": "AtomInnoLab",
   "build": {
-    "appId": "com.genoffice.docs",
-    "productName": "GenOffice Docs",
+    "appId": "com.atominnolab.wiswork.docs",
+    "productName": "WisWork Docs",
     "electronVersion": "41.7.1",
-    "artifactName": "AIDocx-${version}-${arch}.${ext}",
+    "artifactName": "WisWork-Docs-${version}-${arch}.${ext}",
     "directories": {
       "output": "release"
     },
@@ -89,7 +90,7 @@
     }
   },
   "dependencies": {
-    "@genoffice/electron-utils": "*",
+    "@wiswork/electron-utils": "*",
     "electron-updater": "^6.8.9",
     "pdf-lib": "^1.17.1"
   }

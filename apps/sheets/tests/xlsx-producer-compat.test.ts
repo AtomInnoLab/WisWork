@@ -1,4 +1,4 @@
-/// Regression tests for genoffice#10: workbook.xml serialization styles that
+/// Regression tests for wiswork#10: workbook.xml serialization styles that
 /// differ from Excel's (attribute order, numeric character references,
 /// relationship namespace prefix) are valid OOXML and must not break saves.
 import JSZip from 'jszip'

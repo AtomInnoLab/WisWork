@@ -1,4 +1,4 @@
-import type { ParsedDocFull, ThemeColors, ThemeFonts } from '@genoffice/docx-engine'
+import type { ParsedDocFull, ThemeColors, ThemeFonts } from '@wiswork/docx-engine'
 import { cssFontFamily, cssLineHeight, lineHeightFactor, textHasCjk } from './line-metrics'
 
 /**

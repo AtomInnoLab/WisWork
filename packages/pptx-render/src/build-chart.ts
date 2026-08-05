@@ -9,7 +9,7 @@
  * independent right-side range + tick labels). Unrecognized types fall back to a
  * placeholder chip upstream.
  */
-import type { ChartModel } from '@genoffice/pptx-engine'
+import type { ChartModel } from '@wiswork/pptx-engine'
 import type { ChartRenderNode } from './render-tree'
 import type { PlacedBox } from './coords'
 import { ptToPx, type Viewport } from './coords'

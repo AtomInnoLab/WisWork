@@ -11,7 +11,7 @@
  * the whole show.
  */
 import React, { useEffect, useRef, useState } from 'react'
-import type { RenderFill, RenderNode, RenderSlide } from '@genoffice/pptx-render'
+import type { RenderFill, RenderNode, RenderSlide } from '@wiswork/pptx-render'
 import type { AnimationItem, ShapeKey, ShowSyncState, TransitionKind } from '../../shared/ipc'
 import { AnimatedSlideStage, useAnimPlayer } from './AnimatedSlide'
 import { useI18n } from '../i18n/locale'

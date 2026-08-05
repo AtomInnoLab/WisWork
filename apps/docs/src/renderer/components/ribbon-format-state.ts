@@ -1,7 +1,7 @@
 import type { Editor } from '@tiptap/core'
 import type { Node as PmNode } from '@tiptap/pm/model'
 import { isInTable, mergeCells, selectedRect, splitCell } from '@tiptap/pm/tables'
-import type { DocDefaults, StyleInfo } from '@genoffice/docx-engine'
+import type { DocDefaults, StyleInfo } from '@wiswork/docx-engine'
 import { getActiveSubEditor } from '../editor/active-editor'
 import { effectiveSizeHalfPoints } from '../editor/text-style-resolve'
 import { cachedByDoc } from '../doc-cache'

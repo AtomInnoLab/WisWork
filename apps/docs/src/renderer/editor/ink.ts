@@ -1,4 +1,4 @@
-import type { InkInfo, NewInkImage } from '@genoffice/docx-engine'
+import type { InkInfo, NewInkImage } from '@wiswork/docx-engine'
 
 /**
  * Ink annotations (freehand drawing strokes) — editor-side model.

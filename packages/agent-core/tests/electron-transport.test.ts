@@ -13,6 +13,7 @@ interface FakeSettings {
 function setup(
   startImpl?: (request: IpcStreamStart<FakeSettings>) => void | Promise<unknown>,
   creditsErrorText?: () => string,
+  serviceErrorText?: (code: NonNullable<IpcStreamChunk['errorCode']>) => string,
 ) {
   let listener: ((chunk: IpcStreamChunk) => void) | undefined
   const unsubscribe = vi.fn(() => {
@@ -30,10 +31,11 @@ function setup(
       return startImpl?.(request)
     },
     cancel: (requestId) => cancelled.push(requestId),
-    getSettings: () => ({ provider: 'genspark' }),
+    getSettings: () => ({ provider: 'wiswork' }),
     unknownErrorText: () => 'unknown error',
     timeoutErrorText: () => 'timed out',
     ...(creditsErrorText ? { creditsErrorText } : {}),
+    ...(serviceErrorText ? { serviceErrorText } : {}),
   })
   const cb = {
     onDelta: vi.fn(),
@@ -52,7 +54,7 @@ describe('createIpcTransport', () => {
   it('starts one request with settings and forwards deltas and tool calls', () => {
     const { started, cb, emit } = setup()
     expect(started).toHaveLength(1)
-    expect(started[0]!.settings).toEqual({ provider: 'genspark' })
+    expect(started[0]!.settings).toEqual({ provider: 'wiswork' })
     expect(started[0]!.system).toBe('sys')
 
     emit({ type: 'delta', text: 'hi' })
@@ -107,7 +109,7 @@ describe('createIpcTransport', () => {
     const { cb, emit } = setup(undefined, () => 'credits used up')
     emit({
       type: 'error',
-      error: 'Your Genspark credits have been exhausted.',
+      error: 'Your upstream credits have been exhausted.',
       errorCode: 'credits',
     })
     expect(cb.onError).toHaveBeenCalledWith('credits used up')
@@ -117,10 +119,30 @@ describe('createIpcTransport', () => {
     const { cb, emit } = setup()
     emit({
       type: 'error',
-      error: 'Your Genspark credits have been exhausted.',
+      error: 'Your upstream credits have been exhausted.',
       errorCode: 'credits',
     })
-    expect(cb.onError).toHaveBeenCalledWith('Your Genspark credits have been exhausted.')
+    expect(cb.onError).toHaveBeenCalledWith('Your upstream credits have been exhausted.')
+  })
+
+  it('maps WisWork auth and model service codes through the localized callback', () => {
+    const localized = (code: NonNullable<IpcStreamChunk['errorCode']>) => 'localized:' + code
+    const auth = setup(undefined, undefined, localized)
+    auth.emit({ type: 'error', errorCode: 'auth_required' })
+    expect(auth.cb.onError).toHaveBeenCalledWith('localized:auth_required')
+
+    const model = setup(undefined, undefined, localized)
+    model.emit({ type: 'error', errorCode: 'model_credentials_missing' })
+    expect(model.cb.onError).toHaveBeenCalledWith('localized:model_credentials_missing')
+    const rate = setup(undefined, undefined, localized)
+    rate.emit({ type: 'error', errorCode: 'model_rate_limited' })
+    expect(rate.cb.onError).toHaveBeenCalledWith('localized:model_rate_limited')
+    const upstream = setup(undefined, undefined, localized)
+    upstream.emit({ type: 'error', errorCode: 'model_upstream_unavailable' })
+    expect(upstream.cb.onError).toHaveBeenCalledWith('localized:model_upstream_unavailable')
+    const invalid = setup(undefined, undefined, localized)
+    invalid.emit({ type: 'error', errorCode: 'model_invalid_response' })
+    expect(invalid.cb.onError).toHaveBeenCalledWith('localized:model_invalid_response')
   })
 
   it('fails the run after prolonged silence; pings re-arm the watchdog', () => {

@@ -1,6 +1,6 @@
 {
-  "name": "@genoffice/slides",
-  "productName": "GenOffice Slides",
+  "name": "@wiswork/slides",
+  "productName": "WisWork Slides",
   "version": "0.1.0",
   "license": "Apache-2.0",
   "private": true,
@@ -18,20 +18,21 @@
     "dist:dir": "electron-vite build && electron-builder --dir"
   },
   "devDependencies": {
-    "@genoffice/agent-core": "*",
-    "@genoffice/ai-provider": "*",
-    "@genoffice/ai-search": "*",
-    "@genoffice/file-parse": "*",
-    "@genoffice/i18n": "*",
-    "@genoffice/pptx-engine": "*",
-    "@genoffice/pptx-render": "*",
-    "@genoffice/project-store": "*",
-    "@genoffice/ui": "*",
     "@types/opentype.js": "^1.3.8",
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.4",
+    "@wiswork/agent-core": "*",
+    "@wiswork/ai-provider": "*",
+    "@wiswork/ai-search": "*",
+    "@wiswork/auth": "*",
+    "@wiswork/file-parse": "*",
+    "@wiswork/i18n": "*",
+    "@wiswork/pptx-engine": "*",
+    "@wiswork/pptx-render": "*",
+    "@wiswork/project-store": "*",
+    "@wiswork/ui": "*",
     "electron": "^41.0.3",
     "electron-builder": "^26.0.12",
     "electron-vite": "^5.0.0",
@@ -45,10 +46,10 @@
     "vite": "^7.3.1",
     "vitest": "^4.1.0"
   },
-  "author": "GenOffice",
+  "author": "AtomInnoLab",
   "build": {
-    "appId": "com.genoffice.slides",
-    "productName": "GenOffice Slides",
+    "appId": "com.atominnolab.wiswork.slides",
+    "productName": "WisWork Slides",
     "electronVersion": "41.7.1",
     "directories": {
       "output": "release"
@@ -84,10 +85,11 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
-    }
+    },
+    "artifactName": "WisWork-Slides-${version}-${arch}.${ext}"
   },
   "dependencies": {
-    "@genoffice/electron-utils": "*",
+    "@wiswork/electron-utils": "*",
     "acorn": "^8.18.0",
     "harfbuzzjs": "^1.4.0",
     "pngjs": "^7.0.0",

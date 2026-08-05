@@ -14,7 +14,7 @@ export interface PickImageResult {
   name: string
 }
 
-// ---- AI provider settings/config/streaming: canonical types live in @genoffice/ai-provider ----
+// ---- AI provider settings/config/streaming: canonical types live in @wiswork/ai-provider ----
 
 import type {
   AiChatRequest,
@@ -22,8 +22,9 @@ import type {
   AiSettings,
   AiStreamChunk,
   AiStreamRequest,
-  GenSparkAccountStatus,
-} from '@genoffice/ai-provider'
+} from '@wiswork/ai-provider'
+
+import type { AccountStatus } from '@wiswork/auth'
 
 export type {
   AiChatRequest,
@@ -34,18 +35,17 @@ export type {
   AiSettings,
   AiStreamChunk,
   AiStreamRequest,
-  GenSparkAccountStatus,
-} from '@genoffice/ai-provider'
-export { AI_PROVIDERS } from '@genoffice/ai-provider'
+} from '@wiswork/ai-provider'
+export { AI_PROVIDERS } from '@wiswork/ai-provider'
 
-// ---- agent protocol: canonical types live in @genoffice/agent-core ----
+// ---- agent protocol: canonical types live in @wiswork/agent-core ----
 
 export type {
   AgentMessage,
   AgentToolCall,
   AgentToolDef,
   AgentToolResult,
-} from '@genoffice/agent-core'
+} from '@wiswork/agent-core'
 
 // ---- chat attachments (local files fed to the agent via tools) ----
 
@@ -201,10 +201,11 @@ export interface DesktopApi {
   /** start a streaming AI call; deltas arrive via onAiStream with the same requestId */
   aiStream(request: AiStreamRequest): Promise<void>
   aiStreamCancel(requestId: string): Promise<void>
-  /** Genspark account status (gsk login state); withEmail also returns the email (needs a network request, slower) */
-  aiGskStatus(withEmail?: boolean): Promise<GenSparkAccountStatus>
-  /** Open the browser to log in to Genspark (fire-and-forget; aiGskStatus flips to logged-in when done) */
-  aiGskLogin(): Promise<void>
+  /** Non-sensitive WisWork account status. */
+  aiAccountStatus(): Promise<AccountStatus>
+  /** Open the system browser to sign in to WisWork (fire-and-forget; aiAccountStatus flips to logged-in when done) */
+  aiAccountLogin(): Promise<void>
+  aiAccountLogout(): Promise<void>
   webSearch(
     query: string,
     maxResults?: number,

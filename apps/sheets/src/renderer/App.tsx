@@ -98,8 +98,8 @@ import '@univerjs/preset-sheets-table/lib/index.css'
 import { greenTheme } from '@univerjs/themes'
 import { createUniver } from './create-univer'
 
-import { AgentLoop, composeSkills, type AgentImage } from '@genoffice/agent-core'
-import type { AiSettings } from '@genoffice/ai-provider'
+import { AgentLoop, composeSkills, type AgentImage } from '@wiswork/agent-core'
+import type { AiSettings } from '@wiswork/ai-provider'
 import { type WorkbookOperation } from '../domain/workbook-dsl'
 import { columnIndex, columnLabel, parseAddress, parseRange } from '../domain/cell-address'
 import {
@@ -870,9 +870,9 @@ export function App(): React.JSX.Element {
             return next
           })
           // Signed-out failures get an inline sign-in button; detected via
-          // gsk status rather than matching the localized error text
+          // wiswork status rather than matching the localized error text
           void window.desktopApi
-            .aiGskStatus()
+            .aiAccountStatus()
             .then((status) => {
               if (status.loggedIn) return
               setChat((previous) => {
@@ -896,10 +896,8 @@ export function App(): React.JSX.Element {
     if (!settings) return false
     const config = settings.providers[settings.provider]
     if (!config?.model) return false
-    // Genspark's key never lands in the settings file; the main process injects
-    // it from the gsk login state. When logged out, requests return an error
-    // guiding sign-in — not intercepted here.
-    return settings.provider === 'genspark' || !!config.apiKey
+    // WisWork credentials are injected by the trusted main process and never enter renderer settings.
+    return settings.provider === 'wiswork' || !!config.apiKey
   }
 
   /** Image attachments read as base64 and sent multimodal with this user message

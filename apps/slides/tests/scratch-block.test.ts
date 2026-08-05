@@ -1,7 +1,7 @@
-/** Hard guard against "building from scratch by hand": calling add_text_box/add_shape/add_smartart on an empty deck should be refused and redirected to generate_deck. */
+/** Local native tools remain usable on an empty deck after cloud generation is removed. */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createSlidesSkill, type DeckAccess } from '../src/renderer/ai/slides-skill'
-import type { RenderSlide, PlacedBox, ShapeRenderNode } from '@genoffice/pptx-render'
+import type { RenderSlide, PlacedBox, ShapeRenderNode } from '@wiswork/pptx-render'
 import type { AgentToolCall } from '../src/shared/ipc'
 
 const box = (x: number, y: number, w: number, h: number): PlacedBox => ({
@@ -72,7 +72,6 @@ function mkAccess(slides: RenderSlide[]): DeckAccess {
     applySlide: () => {},
     applyDeck: () => {},
     fitWidthPx: 1280,
-    generateFromHtml: async () => ({ ok: true, pages: 1 }),
   } as unknown as DeckAccess
 }
 const call = (name: string): AgentToolCall => ({
@@ -87,7 +86,7 @@ const call = (name: string): AgentToolCall => ({
     w: 100,
     h: 50,
     layout: 'list',
-    items: ['a'],
+    items: ['a', 'b'],
   },
 })
 
@@ -98,46 +97,25 @@ beforeEach(() => {
   }
 })
 
-describe('anti hand-building from scratch', () => {
-  it('empty deck + add_text_box → refused with guidance toward generate_deck', async () => {
+describe('local creation on a blank deck', () => {
+  it('empty deck + add_text_box is allowed', async () => {
     const r = await createSlidesSkill(mkAccess([blankDeck])).executeTool!(call('add_text_box'))
-    expect(r.isError).toBe(true)
-    expect(r.output).toContain('generate_deck')
-    expect((window as any).slidesApi.addElement).not.toHaveBeenCalled()
+    expect(r.isError).toBeUndefined()
+    expect((window as any).slidesApi.addElement).toHaveBeenCalledOnce()
   })
-  it('empty deck + add_shape → refused', async () => {
+  it('empty deck + add_shape is allowed', async () => {
     const r = await createSlidesSkill(mkAccess([blankDeck])).executeTool!(call('add_shape'))
-    expect(r.isError).toBe(true)
+    expect(r.isError).toBeUndefined()
+    expect((window as any).slidesApi.addElement).toHaveBeenCalledOnce()
   })
-  it('empty deck + add_smartart → refused', async () => {
+  it('empty deck + add_smartart is allowed', async () => {
     const r = await createSlidesSkill(mkAccess([blankDeck])).executeTool!(call('add_smartart'))
-    expect(r.isError).toBe(true)
-    expect((window as any).slidesApi.addSmartArt).not.toHaveBeenCalled()
+    expect(r.isError).toBeUndefined()
+    expect((window as any).slidesApi.addSmartArt).toHaveBeenCalledOnce()
   })
   it('existing rich deck (lots of content) + add_text_box → allowed (fine-tuning is legitimate)', async () => {
     const r = await createSlidesSkill(mkAccess([richDeck])).executeTool!(call('add_text_box'))
     expect(r.isError).toBeUndefined()
     expect((window as any).slidesApi.addElement).toHaveBeenCalledOnce()
-  })
-  it('after cloud generation has run, allowed even with an empty deck (tweak scenario)', async () => {
-    const access = {
-      ...mkAccess([blankDeck]),
-      retryBackoffMs: 0,
-      isCloudPageGenEnabled: async () => true,
-      generatePageCloud: async () => ({ ok: true, marker: 'cloudpptx:/tmp/x.pptx' }),
-    } as unknown as DeckAccess
-    const skill = createSlidesSkill(access)
-    // First run one generate_deck to set htmlGenerated=true
-    await skill.executeTool!({
-      id: 't',
-      name: 'generate_deck',
-      input: {
-        core_hook: 'h',
-        style: 's',
-        pages: [{ title: 'T', brief: 'b', layout: 'data', image_queries: [] }],
-      },
-    })
-    const r = await skill.executeTool!(call('add_text_box'))
-    expect(r.isError).toBeUndefined()
   })
 })

@@ -1,6 +1,7 @@
-import { createIpcTransport, type AgentTransport } from '@genoffice/agent-core'
+import { translateServiceError } from '@wiswork/i18n'
+import { createIpcTransport, type AgentTransport } from '@wiswork/agent-core'
 import type { AiSettings } from '../../shared/ipc'
-import { t } from '../i18n/locale'
+import { getLang, t } from '../i18n/locale'
 
 /** The shared IPC transport wired to the slides preload bridge (window.slidesApi). */
 export function createElectronTransport(getSettings: () => AiSettings): AgentTransport {
@@ -12,5 +13,6 @@ export function createElectronTransport(getSettings: () => AiSettings): AgentTra
     unknownErrorText: () => t('aiErrUnknown'),
     timeoutErrorText: () => t('aiErrStreamTimeout'),
     creditsErrorText: () => t('aiCreditsExhausted'),
+    serviceErrorText: (code) => translateServiceError(getLang(), code),
   })
 }

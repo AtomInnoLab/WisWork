@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { createI18n, htmlLang, type Lang, type Params } from '@genoffice/i18n'
+import { createI18n, htmlLang, type Lang, type Params } from '@wiswork/i18n'
 import { strings } from './strings'
 
 const translate = createI18n(strings)
@@ -39,6 +39,7 @@ const LocaleContext = createContext<Lang>('zh')
 
 /** Module-level current language: for code outliving render closures (AgentLoop events etc.), kept in sync with the Provider */
 let moduleLang: Lang = 'zh'
+export const getLang = (): Lang => moduleLang
 
 export function t(key: StringKey, params?: Params): string {
   return translate(moduleLang, key, params)

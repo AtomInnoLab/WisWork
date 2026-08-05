@@ -8,7 +8,7 @@ import {
   splitCell,
 } from '@tiptap/pm/tables'
 import { NodeSelection, TextSelection } from '@tiptap/pm/state'
-import { parseDocx, saveDocx } from '@genoffice/docx-engine'
+import { parseDocx, saveDocx } from '@wiswork/docx-engine'
 import { describe, expect, it } from 'vitest'
 import { buildDocx } from '../../../packages/docx-engine/tests/helpers/build-docx'
 import {

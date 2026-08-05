@@ -3,7 +3,7 @@
  * as the inserted OOXML shape, SmartArt thumbs reuse the engine's layout math,
  * so preview and insert result always match.
  */
-import { isPillPreset, presetPath, presetPolygon } from '@genoffice/pptx-render'
+import { isPillPreset, presetPath, presetPolygon } from '@wiswork/pptx-render'
 import {
   layoutShapes,
   type SmartArtLayout,

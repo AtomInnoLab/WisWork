@@ -36,7 +36,7 @@ import {
   type TableCell,
   type TableModel,
   type TextboxDisplay,
-} from '@genoffice/docx-engine'
+} from '@wiswork/docx-engine'
 import { computeListMarkers, type ListItemRef } from './numbering'
 import { dropActiveSubEditor, notifySubEditorState, setActiveSubEditor } from './active-editor'
 import { PaginationGapsExtension } from './pagination-gaps'

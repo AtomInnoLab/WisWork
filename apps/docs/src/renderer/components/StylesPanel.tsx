@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
-import type { StyleInfo } from '@genoffice/docx-engine'
+import type { StyleInfo } from '@wiswork/docx-engine'
 import { useI18n } from '../i18n/locale'
 import { cssFontFamily } from '../line-metrics'
 

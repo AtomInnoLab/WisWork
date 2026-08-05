@@ -1,5 +1,5 @@
 import type { Editor } from '@tiptap/core'
-import type { AgentSkill } from '@genoffice/agent-core'
+import type { AgentSkill } from '@wiswork/agent-core'
 import { AGENT_SYSTEM_PROMPT, buildDocContext, type AiTrack, type NumIds } from './protocol'
 import { AGENT_TOOLS, executeTool, markDocSeen } from './tools'
 

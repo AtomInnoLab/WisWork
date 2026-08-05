@@ -1,4 +1,4 @@
-import { type SectionSettings } from '@genoffice/docx-engine'
+import { type SectionSettings } from '@wiswork/docx-engine'
 import { WRAP_OPTIONS } from './ContextMenu'
 import { useI18n, type StringKey } from '../i18n/locale'
 import {

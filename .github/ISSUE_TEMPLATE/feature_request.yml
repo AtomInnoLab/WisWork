@@ -7,10 +7,10 @@ body:
     attributes:
       label: App
       options:
-        - GenOffice Docs (docs)
-        - GenOffice Sheets (sheets)
-        - GenOffice Slides (slides)
-        - GenOffice PDF (pdf)
+        - WisWork Docs (docs)
+        - WisWork Sheets (sheets)
+        - WisWork Slides (slides)
+        - WisWork PDF (pdf)
         - Shell / home screen
         - AI panel / providers
         - Whole suite

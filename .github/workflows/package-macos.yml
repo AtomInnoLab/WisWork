@@ -1,0 +1,91 @@
+name: Package macOS arm64 test build
+
+on:
+  workflow_dispatch:
+  # Adding or changing this workflow in a PR produces one test package without
+  # making every source PR consume a macOS runner. After merge, use the manual
+  # dispatch above for later test packages.
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/package-macos.yml'
+
+concurrency:
+  group: package-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  package-arm64:
+    name: unsigned-arm64
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate notices
+        run: npm run notices
+
+      - name: Build application modules
+        run: npm run build:all
+
+      - name: Build arm64 xlsx sidecar
+        run: |
+          cargo build --release --target aarch64-apple-darwin \
+            --manifest-path apps/sheets/native/xlsx-engine/Cargo.toml \
+            --config apps/sheets/native/xlsx-engine/.cargo/config.toml
+          cp apps/sheets/native/xlsx-engine/target/aarch64-apple-darwin/release/xlsx-sidecar \
+            apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar
+          chmod +x apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar
+          file apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar | grep -q arm64
+
+      - name: Package unsigned arm64 DMG and ZIP
+        working-directory: apps/shell
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          WISWORK_UNSIGNED_MAC_BUILD: '1'
+        run: npx electron-builder --config electron-builder.cjs --mac dmg zip --arm64 --publish never
+
+      - name: Verify packaged sidecar and checksums
+        working-directory: apps/shell
+        run: |
+          SIDECAR=$(find release -path '*WisWork.app/Contents/Resources/native/xlsx-sidecar' -type f -print -quit)
+          test -n "$SIDECAR"
+          file "$SIDECAR" | grep -q arm64
+          test -n "$(find release -maxdepth 1 -name '*.dmg' -print -quit)"
+          test -n "$(find release -maxdepth 1 -name '*.zip' -print -quit)"
+          cd release
+          shasum -a 256 *.dmg *.zip > SHA256SUMS.txt
+
+      - name: Upload unsigned macOS artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: WisWork-macos-arm64-unsigned
+          path: |
+            apps/shell/release/*.dmg
+            apps/shell/release/*.zip
+            apps/shell/release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7

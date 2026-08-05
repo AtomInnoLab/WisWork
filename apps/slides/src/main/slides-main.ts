@@ -1,5 +1,5 @@
 /**
- * GenOffice Slides main process — pptx parsing/render-tree building/edit application/saving all live
+ * WisWork Slides main process — pptx parsing/render-tree building/edit application/saving all live
  * here (Node side). The renderer only gets plain-data RenderSlide; edit intents are sent back
  * here to apply. Structure mirrors apps/docs: exports embeddable configure/register/start for
  * future shell reuse.
@@ -20,20 +20,19 @@ import {
 import type { WebContents } from 'electron'
 import { execFile } from 'node:child_process'
 import { readFile, writeFile, rm, stat, mkdir, open } from 'node:fs/promises'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
-import { gskApiKey, gskSlideGenerate } from '@genoffice/ai-search'
 import {
   appMenuLabels,
   contextMenuLabels,
   installContextMenu,
   installNavigationGuard,
   safeExternalUrl,
-} from '@genoffice/electron-utils'
-import { getUiLang, normalizeLang, setUiLang } from '@genoffice/i18n'
-import { ProjectStore } from '@genoffice/project-store'
+} from '@wiswork/electron-utils'
+import { getUiLang, normalizeLang, setUiLang } from '@wiswork/i18n'
+import { ProjectStore } from '@wiswork/project-store'
 import {
   addChart,
   addElement,
@@ -98,13 +97,10 @@ import {
   setSlideAnimations,
   type SlideAnimation,
   openPptx,
-  mergeSlideFromPptx,
-  promoteSlideBackground,
   parseTheme,
   pasteElements,
   reorderElement,
   reparseDeck,
-  savePptx,
   savePptxToFile,
   commitSaved,
   setElementFont,
@@ -141,8 +137,8 @@ import {
   type Paragraph,
   type Slide,
   type TextElement,
-} from '@genoffice/pptx-engine'
-import { buildRenderSlide, EMU_PER_PX_96, type RenderSlide } from '@genoffice/pptx-render'
+} from '@wiswork/pptx-engine'
+import { buildRenderSlide, EMU_PER_PX_96, type RenderSlide } from '@wiswork/pptx-render'
 import { refineComplexWidths, shapedMetricsReady } from './shaped-metrics'
 import { applyEditParagraphs, collectParagraphFormatPatches, levelsChanged } from './edit-text'
 import { cfbKind, isCfbHeader } from './cfb-sniff'
@@ -226,7 +222,6 @@ import { tiffToPng } from './tiff-decode'
 import {
   beginHistoryBatch,
   buildAllRenderSlides,
-  carryHistoryForReplacement,
   dialogParent,
   endHistoryBatch,
   getFontMetrics,
@@ -245,6 +240,7 @@ import {
   type Session,
 } from './session-state'
 import { registerAiIpc, registerSlidesOnlyAiIpc } from './ai-ipc'
+import { registerUnsupportedCloudIpc } from './unsupported-ipc'
 
 /** One slide, copied from any deck open in this process, waiting to be pasted into another. */
 let slideClipboard: { bundle: SlideBundle; png?: string } | null = null
@@ -252,10 +248,6 @@ let slideClipboard: { bundle: SlideBundle; png?: string } | null = null
 /** The immediately preceding slide paste per webContents, so the paste-options floater can redo it with another mode. */
 const lastSlidePaste = new Map<number, { afterIndex: number; undoLen: number }>()
 
-// Cloud-generated single-page pptx: marker strings travel in pagesHtml slots; only paths issued
-// by slides:cloud-page-generate are readable (the renderer can't point the reader at arbitrary files)
-const CLOUD_PAGE_PREFIX = 'cloudpptx:'
-const issuedCloudPages = new Set<string>()
 import { registerPresenterIpc } from './presenter-show'
 import { registerAttachmentIpc } from './attachments-ipc'
 
@@ -458,7 +450,7 @@ const AUTOSAVE_BACKOFF_TICKS = 10
 let autosaveRunning = false
 
 /**
- * Recovery drafts for never-saved decks (wcId → visible path in <Documents>/GenOffice):
+ * Recovery drafts for never-saved decks (wcId → visible path in <Documents>/WisWork):
  * the sha1-keyed recovery copy needs session.path, so before the first save a freeze or
  * crash used to lose everything. Removed on save, explicit discard, or clean close.
  */
@@ -684,9 +676,9 @@ async function openAndBuild(
   }
 }
 
-/** Directory where AI-generated drafts are saved: <Documents>/GenOffice/ */
+/** Directory where AI-generated drafts are saved: <Documents>/WisWork/ */
 function getDraftsDir(): string {
-  return join(app.getPath('documents'), 'GenOffice')
+  return join(app.getPath('documents'), 'WisWork')
 }
 
 /** Fallback draft filename: <untitled label>-YYYYMMDD-HHmmss.pptx */
@@ -724,44 +716,6 @@ function pickDraftPath(draftsDir: string, deckName?: string): string {
     if (!existsSync(candidate)) return candidate
   }
   return join(draftsDir, newDraftFilename())
-}
-
-/**
- * Auto-save the draft to <Documents>/GenOffice/<name>.pptx after AI generation completes.
- * Append mode reuses the session's existing draft path (overwrite); replace mode generates a
- * new filename. On successful write, update session.path, pushRecent, slidesOpenedHook.
- * On write failure, degrade silently (console.warn) without blocking the in-memory session.
- */
-async function saveDraftAfterGenerate(
-  wc: WebContents,
-  session: Session,
-  bytes: Uint8Array,
-  mode: 'replace' | 'append',
-  deckName?: string,
-): Promise<void> {
-  try {
-    const draftsDir = getDraftsDir()
-    // Ensure the directory exists
-    if (!existsSync(draftsDir)) mkdirSync(draftsDir, { recursive: true })
-
-    // Append mode: overwrite if the session already has a draft path; otherwise create a new file too
-    let draftPath: string
-    if (mode === 'append' && session.path && session.path.startsWith(draftsDir)) {
-      draftPath = session.path
-    } else {
-      draftPath = pickDraftPath(draftsDir, deckName)
-    }
-
-    await writeFile(draftPath, Buffer.from(bytes))
-    session.path = draftPath
-    await pushRecent(draftPath)
-    slidesOpenedHook?.(wc, draftPath)
-  } catch (err) {
-    console.warn(
-      '[slides] Failed to persist AI-generated draft to disk; the in-memory session still works:',
-      err,
-    )
-  }
 }
 
 /** Theme body (minor) Latin font: fallback shown in the ribbon font box when the selection has no text element. */
@@ -1284,281 +1238,7 @@ export function registerSlidesIpc(): void {
     )
     return rebuildSlide(session, op.slideIndex)
   })
-  // ── Cloud single-page generation (gsk slide_generate): brief → cloud HTML+conversion → one-slide
-  // pptx saved to a temp file. Returns a marker string that flows through the same pagesHtml slots
-  // as locally generated HTML; slides:html-to-pptx recognizes it and reads the bytes instead of
-  // converting. Enabled when gsk is logged in; GENOFFICE_CLOUD_SLIDE=0 is the kill switch.
-  const cloudSlideEnabled = () => process.env.GENOFFICE_CLOUD_SLIDE !== '0' && !!gskApiKey()
-
-  ipcMain.handle('slides:cloud-gen-status', () => ({ enabled: cloudSlideEnabled() }))
-
-  ipcMain.handle(
-    'slides:cloud-page-generate',
-    async (
-      _e,
-      op: {
-        brief: string
-        title?: string
-        styleSkill?: string
-        deckContext?: Record<string, unknown>
-        images?: { url: string; caption?: string }[]
-        width?: number
-        height?: number
-      },
-    ): Promise<{ ok: boolean; marker?: string; error?: string }> => {
-      if (!cloudSlideEnabled()) return { ok: false, error: 'cloud slide generation is disabled' }
-      try {
-        // ultra = opus-class model, matching the local path's quality tier; GENOFFICE_CLOUD_SLIDE_TIER=standard opts down
-        const tier = process.env.GENOFFICE_CLOUD_SLIDE_TIER === 'standard' ? 'standard' : 'ultra'
-        const started = Date.now()
-        const { bytes, model } = await gskSlideGenerate({
-          tier,
-          brief: String(op.brief ?? ''),
-          title: op.title ? String(op.title) : undefined,
-          styleSkill: op.styleSkill ? String(op.styleSkill) : undefined,
-          deckContext: op.deckContext,
-          images: Array.isArray(op.images) ? op.images : undefined,
-          width: op.width,
-          height: op.height,
-        })
-        console.log(
-          `[cloud-slide] page generated: tier=${tier} model=${model} bytes=${bytes.length} ms=${Date.now() - started}`,
-        )
-        const dir = join(app.getPath('temp'), 'genoffice-cloud-pages')
-        mkdirSync(dir, { recursive: true })
-        const path = join(dir, `${randomUUID()}.pptx`)
-        await writeFile(path, bytes)
-        issuedCloudPages.add(path)
-        return { ok: true, marker: CLOUD_PAGE_PREFIX + path }
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) }
-      }
-    },
-  )
-
-  ipcMain.handle(
-    'slides:html-to-pptx',
-    async (
-      e,
-      pagesHtml: string[],
-      fitWidthPx: number,
-      mode?: 'replace' | 'append' | 'replace_at' | 'insert_at',
-      atIndex?: number,
-      deckName?: string,
-    ): Promise<
-      | (OpenResult & {
-          appendedFrom?: number
-          replacedIndex?: number
-          insertedIndex?: number
-          fallbackReason?: string
-          imageFailures?: { page: number; url: string }[]
-        })
-      | { error: string }
-    > => {
-      // Every page arrives as a cloud marker (cloudpptx:<path> written by
-      // slides:cloud-page-generate, pointing at a one-slide pptx temp file); this handler only
-      // reads and lands the bytes.
-      // replace: assemble the whole batch into one multi-page pptx as the new deck base.
-      // append: merge the "new pages" one by one into the existing deck via mergeSlideFromPptx
-      // (earlier pages are untouched).
-      const readCloudPage = async (marker: string): Promise<{ bytes: Uint8Array }> => {
-        if (!marker.startsWith(CLOUD_PAGE_PREFIX)) throw new Error('expected a cloud page marker')
-        const path = marker.slice(CLOUD_PAGE_PREFIX.length)
-        if (!issuedCloudPages.has(path)) throw new Error('unknown cloud page marker')
-        return { bytes: new Uint8Array(await readFile(path)) }
-      }
-      const assembleDeck = async (): Promise<{ bytes: Uint8Array }> => {
-        const perPage = await Promise.all(pagesHtml.map(readCloudPage))
-        const base = await openPptx(perPage[0]!.bytes)
-        for (const one of perPage.slice(1)) await mergeSlideFromPptx(base, one.bytes)
-        for (const s of base.deck.slides) promoteSlideBackground(s, base.deck.size)
-        return { bytes: await savePptx(base) }
-      }
-
-      try {
-        // Append: convert only the "new pages" and merge them one by one into the existing
-        // in-memory deck via mergeSlideFromPptx. Already-landed pages stay untouched
-        // (O(N) rather than O(N²)); no dependency on stored PageVisualData.
-        if (mode === 'append') {
-          const existing = sessions.get(e.sender.id)
-          if (!existing) {
-            return { error: tm('errNoDeckAppend') }
-          }
-          const opened = existing.opened
-          const beforeCount = opened.deck.slides.length
-          // Push an undo snapshot: appending is an ordinary edit, ⌘Z should return to the
-          // pre-append state (previously the undoStack was simply cleared, making all of the
-          // user's prior manual edits non-undoable — inconsistent with replace_at behavior)
-          pushHistory(existing)
-          let merged = 0
-          let lastErr: string | undefined
-          for (const html of pagesHtml) {
-            try {
-              const one = await readCloudPage(html)
-              const slide = await mergeSlideFromPptx(opened, one.bytes)
-              if (slide) {
-                promoteSlideBackground(slide, opened.deck.size)
-                merged += 1
-              } else lastErr = tm('errMergeFailed')
-            } catch (pageErr) {
-              lastErr = pageErr instanceof Error ? pageErr.message : String(pageErr)
-            }
-          }
-          if (merged === 0) {
-            existing.undoStack.pop() // Nothing happened, pop the just-pushed snapshot
-            return { error: tm('errAppendFailed', { reason: lastErr ?? tm('errUnknown') }) }
-          }
-          existing.fitWidthPx = fitWidthPx
-          // Save the draft: persist the current complete deck
-          const bytes = await savePptx(opened)
-          await saveDraftAfterGenerate(e.sender, existing, bytes, 'append', deckName)
-          // Draft now matches memory: reopen from the output bytes to clear dirty (same as
-          // slides:save) — otherwise pure AI generation (per-page append merges mark
-          // structureDirty) would trigger the close confirmation even without edits
-          if (existing.path) {
-            existing.opened = await openPptx(bytes)
-            existing.metaDirty = false
-          }
-          return {
-            path: existing.path,
-            slides: buildAllRenderSlides(existing.opened, fitWidthPx),
-            size: { cx: existing.opened.deck.size.cx, cy: existing.opened.deck.size.cy },
-            defaultFont: deckDefaultFont(existing.opened),
-            appendedFrom: beforeCount,
-            ...(lastErr && merged < pagesHtml.length
-              ? { fallbackReason: tm('errPartialAppend', { reason: lastErr }) }
-              : {}),
-          }
-        }
-
-        // Redo one page in place: single-page HTML -> single-page pptx -> merge at the end ->
-        // moveSlide into position -> delete the old page. Conversion happens first (deck
-        // untouched); the mutation phase takes one undo snapshot overall, so ⌘Z rolls back to the
-        // old page.
-        if (mode === 'replace_at') {
-          const existing = sessions.get(e.sender.id)
-          if (!existing) {
-            return { error: tm('errNoDeckReplace') }
-          }
-          const opened = existing.opened
-          const total = opened.deck.slides.length
-          if (atIndex == null || !Number.isInteger(atIndex) || atIndex < 0 || atIndex >= total) {
-            return { error: tm('errIndexRange', { max: total - 1 }) }
-          }
-          const html = pagesHtml[0]
-          if (!html || pagesHtml.length !== 1) {
-            return { error: tm('errReplaceNeedsOne') }
-          }
-          const one = await readCloudPage(html)
-          pushHistory(existing)
-          const rollback = () => {
-            const snap = existing.undoStack.pop()
-            if (snap) restoreSnapshot(existing, snap)
-          }
-          const merged = await mergeSlideFromPptx(opened, one.bytes)
-          if (!merged) {
-            rollback()
-            return { error: tm('errMergeFailed') }
-          }
-          promoteSlideBackground(merged, opened.deck.size)
-          // The new page is at the end (index=total); after moving to atIndex the old page gets pushed to atIndex+1, delete it
-          if (!moveSlide(opened, total, atIndex) || !deleteSlide(opened, atIndex + 1)) {
-            rollback()
-            return { error: tm('errReplaceFailed') }
-          }
-          existing.fitWidthPx = fitWidthPx
-          const bytes = await savePptx(opened)
-          await saveDraftAfterGenerate(e.sender, existing, bytes, 'append', deckName)
-          if (existing.path) {
-            existing.opened = await openPptx(bytes)
-            existing.metaDirty = false
-          }
-          return {
-            path: existing.path,
-            slides: buildAllRenderSlides(existing.opened, fitWidthPx),
-            size: { cx: existing.opened.deck.size.cx, cy: existing.opened.deck.size.cy },
-            defaultFont: deckDefaultFont(existing.opened),
-            replacedIndex: atIndex,
-          }
-        }
-
-        // Insert one page at atIndex (later pages shift back): used to regenerate a failed middle
-        // page from generate_deck and put it back in place. Same mechanism as replace_at (merge at
-        // the end -> moveSlide into position) but without deleting an old page.
-        if (mode === 'insert_at') {
-          const existing = sessions.get(e.sender.id)
-          if (!existing) {
-            return { error: tm('errNoDeckInsert') }
-          }
-          const opened = existing.opened
-          const total = opened.deck.slides.length
-          if (atIndex == null || !Number.isInteger(atIndex) || atIndex < 0 || atIndex > total) {
-            return { error: tm('errIndexRange', { max: total }) }
-          }
-          const html = pagesHtml[0]
-          if (!html || pagesHtml.length !== 1) {
-            return { error: tm('errInsertNeedsOne') }
-          }
-          const one = await readCloudPage(html)
-          pushHistory(existing)
-          const rollback = () => {
-            const snap = existing.undoStack.pop()
-            if (snap) restoreSnapshot(existing, snap)
-          }
-          const merged = await mergeSlideFromPptx(opened, one.bytes)
-          if (!merged) {
-            rollback()
-            return { error: tm('errMergeFailed') }
-          }
-          promoteSlideBackground(merged, opened.deck.size)
-          // The new page is at the end (index=total); with atIndex=total it belongs at the end anyway, no move needed
-          if (atIndex < total && !moveSlide(opened, total, atIndex)) {
-            rollback()
-            return { error: tm('errInsertFailed') }
-          }
-          existing.fitWidthPx = fitWidthPx
-          const bytes = await savePptx(opened)
-          await saveDraftAfterGenerate(e.sender, existing, bytes, 'append', deckName)
-          if (existing.path) {
-            existing.opened = await openPptx(bytes)
-            existing.metaDirty = false
-          }
-          return {
-            path: existing.path,
-            slides: buildAllRenderSlides(existing.opened, fitWidthPx),
-            size: { cx: existing.opened.deck.size.cx, cy: existing.opened.deck.size.cy },
-            defaultFont: deckDefaultFont(existing.opened),
-            insertedIndex: atIndex,
-          }
-        }
-
-        // replace mode: assemble the whole batch into one multi-page pptx as the new deck base.
-        const { bytes } = await assembleDeck()
-        const opened = await openPptx(bytes)
-        // With per-page conversion + merging, stored PageVisualData is no longer needed; append reads the opened deck directly.
-        const replaceSession: Session = {
-          path: '',
-          opened,
-          fitWidthPx,
-          undoStack: [],
-          redoStack: [],
-          htmlPages: null,
-        }
-        carryHistoryForReplacement(sessions.get(e.sender.id), replaceSession)
-        sessions.set(e.sender.id, replaceSession)
-        // Save the draft: await completion so the real path is returned; on failure degrade silently (session.path stays '')
-        await saveDraftAfterGenerate(e.sender, replaceSession, bytes, 'replace', deckName)
-        return {
-          path: replaceSession.path,
-          slides: buildAllRenderSlides(opened, fitWidthPx),
-          size: { cx: opened.deck.size.cx, cy: opened.deck.size.cy },
-          defaultFont: deckDefaultFont(opened),
-        }
-      } catch (err) {
-        return { error: err instanceof Error ? err.message : String(err) }
-      }
-    },
-  )
+  registerUnsupportedCloudIpc(ipcMain, (senderId) => sessions.has(senderId))
 
   ipcMain.handle('slides:new-blank', async (e, fitWidthPx: number): Promise<OpenResult> => {
     const opened = await openPptx(await createBlankPptx())
@@ -1911,7 +1591,7 @@ export function registerSlidesIpc(): void {
     if (!bundle) return false
     slideClipboard = { bundle, ...(pngBase64 ? { png: pngBase64 } : {}) }
     // Marker so plain ⌘V knows the latest copy was a slide (element copies / external copies overwrite it)
-    clipboard.writeBuffer('io.genoffice.slides.slide', Buffer.from('1'))
+    clipboard.writeBuffer('io.wiswork.slides.slide', Buffer.from('1'))
     return true
   })
 
@@ -2520,8 +2200,8 @@ export function registerSlidesIpc(): void {
         return false
       }
     }
-    if (slideClipboard && marker('io.genoffice.slides.slide')) return { kind: 'slide' }
-    if (marker('io.genoffice.slides.elements')) return { kind: 'internal' }
+    if (slideClipboard && marker('io.wiswork.slides.slide')) return { kind: 'slide' }
+    if (marker('io.wiswork.slides.elements')) return { kind: 'internal' }
     const img = clipboard.readImage()
     if (!img.isEmpty()) return { kind: 'image', base64: img.toPNG().toString('base64'), ext: 'png' }
     const text = clipboard.readText()
@@ -2541,7 +2221,7 @@ export function registerSlidesIpc(): void {
     if (items.length) {
       clipboards.set(e.sender.id, { items, pasteCount: 0 })
       // Write our marker to the OS clipboard: an external copy overwrites it, so at paste time it tells whether internal or external is newer
-      clipboard.writeBuffer('io.genoffice.slides.elements', Buffer.from('1'))
+      clipboard.writeBuffer('io.wiswork.slides.elements', Buffer.from('1'))
     }
     return items.length
   })
@@ -3695,7 +3375,7 @@ export function createSlidesWindow(openPath?: string | null): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 840,
-    title: 'GenOffice Slides',
+    title: 'WisWork Slides',
     ...(process.platform === 'darwin'
       ? { titleBarStyle: 'hiddenInset' as const }
       : {
@@ -3917,11 +3597,11 @@ export function startSlidesStandalone(): void {
     app.commandLine.appendSwitch('remote-debugging-port', process.env.SLIDES_CDP_PORT)
     app.commandLine.appendSwitch('remote-allow-origins', '*')
   }
-  // GENOFFICE_USER_DATA: test drivers point this at a scratch dir so automated
+  // WISWORK_USER_DATA: test drivers point this at a scratch dir so automated
   // instances get their own userData AND single-instance lock (the lock is scoped
   // to userData), allowing parallel instances alongside a normal dev run.
-  if (!app.isPackaged && process.env.GENOFFICE_USER_DATA) {
-    app.setPath('userData', process.env.GENOFFICE_USER_DATA)
+  if (!app.isPackaged && process.env.WISWORK_USER_DATA) {
+    app.setPath('userData', process.env.WISWORK_USER_DATA)
   }
   // The main process's Node fetch (undici) does not use the system proxy by default, so access
   // from mainland China to overseas LLM APIs like api.anthropic.com hits ETIMEDOUT on direct
@@ -3935,6 +3615,12 @@ export function startSlidesStandalone(): void {
     app.quit()
     return
   }
+
+  app.on('second-instance', () => {
+    const win = BrowserWindow.getAllWindows()[0]
+    win?.show()
+    win?.focus()
+  })
 
   app.on('open-file', (event, path) => {
     event.preventDefault()
@@ -3953,7 +3639,7 @@ export function startSlidesStandalone(): void {
   if (argPath && existsSync(argPath)) pendingOpenPath = argPath
 
   app.whenReady().then(async () => {
-    setUiLang(normalizeLang(process.env.GENOFFICE_LANG ?? app.getLocale()))
+    setUiLang(normalizeLang(process.env.WISWORK_LANG ?? app.getLocale()))
     registerSlidesIpc()
     registerAiIpc()
     registerProjectIpc()

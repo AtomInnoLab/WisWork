@@ -3,7 +3,7 @@
  * ungrouping, align/distribute, z-order, and freehand ink. Functions read the
  * latest App state through ActionCtx.
  */
-import type { GroupRenderNode, RenderNode } from '@genoffice/pptx-render'
+import type { GroupRenderNode, RenderNode } from '@wiswork/pptx-render'
 import type { ReorderDirection } from '../shared/ipc'
 import type { ActionCtx } from './action-context'
 import { FIT_WIDTH } from './app-constants'

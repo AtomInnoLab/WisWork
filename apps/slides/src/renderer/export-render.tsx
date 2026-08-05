@@ -6,7 +6,7 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 import type Konva from 'konva'
-import type { RenderSlide } from '@genoffice/pptx-render'
+import type { RenderSlide } from '@wiswork/pptx-render'
 import { SlideThumb } from './SlideThumb'
 
 /** Pixel ratio of the exported bitmap (2x hi-res, 1280 viewport width → 2560px PNG) */

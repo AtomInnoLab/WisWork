@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AgentMessage } from '@genoffice/agent-core'
+import type { AgentMessage } from '@wiswork/agent-core'
 import { streamForProvider } from '../src/stream'
 import { okResponse, sseStream } from './test-utils'
 

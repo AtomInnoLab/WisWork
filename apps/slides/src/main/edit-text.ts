@@ -7,7 +7,7 @@
  * spread preserves fields the editor cannot express
  * (letterSpacing/field/outline, and hyperlinks whose rId didn't resolve).
  */
-import { encodeRunLink, type Paragraph, type ParagraphFormatPatch } from '@genoffice/pptx-engine'
+import { encodeRunLink, type Paragraph, type ParagraphFormatPatch } from '@wiswork/pptx-engine'
 import type { EditParagraph } from '../shared/ipc'
 
 /** Normalize a color to 6-digit uppercase hex (strip #/alpha), for comparison. */

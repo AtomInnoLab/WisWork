@@ -1,5 +1,6 @@
+import { safeHttpProviderError } from './errors'
 import { httpBodyDetail } from './http-error'
-import { GENSPARK_LLM_BASE_URLS, gensparkAttributionHeaders } from './providers'
+import { WISWORK_MODEL_BASE_URL } from './providers'
 import type { AiChatResponse, AiProviderConfig, AiProviderId } from './types'
 import { AI_CHAT_RESPONSE_TIMEOUT_MS, createStreamWatchdog, type StreamWatchdog } from './watchdog'
 
@@ -19,7 +20,6 @@ async function chatAnthropic(
       'anthropic-version': '2023-06-01',
       // Fetch in the Electron main process goes through Chromium's network stack; this header avoids 403.
       'anthropic-dangerous-direct-browser-access': 'true',
-      ...gensparkAttributionHeaders(baseUrl),
     },
     body: JSON.stringify({
       model: config.model,
@@ -58,7 +58,6 @@ async function chatGemini(
     headers: {
       'Content-Type': 'application/json',
       'x-goog-api-key': config.apiKey,
-      ...gensparkAttributionHeaders(baseUrl),
     },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: system }] },
@@ -87,6 +86,7 @@ async function chatOpenAiCompatible(
   config: AiProviderConfig,
   system: string,
   user: string,
+  safeErrors = false,
 ): Promise<AiChatResponse> {
   const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
@@ -94,7 +94,6 @@ async function chatOpenAiCompatible(
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${config.apiKey}`,
-      ...gensparkAttributionHeaders(baseUrl),
     },
     body: JSON.stringify({
       model: config.model,
@@ -107,6 +106,10 @@ async function chatOpenAiCompatible(
   })
   wd.touch()
   if (!response.ok) {
+    if (safeErrors) {
+      const error = safeHttpProviderError(response.status)
+      return { ok: false, error: error.code, errorCode: error.code }
+    }
     return { ok: false, error: `HTTP ${response.status}: ${httpBodyDetail(await response.text())}` }
   }
   const json = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> }
@@ -133,14 +136,8 @@ export async function chatForProvider(
   const wd = createStreamWatchdog(signal, AI_CHAT_RESPONSE_TIMEOUT_MS)
   return wd.guard(() => {
     switch (provider) {
-      case 'genspark':
-        if (config.model.startsWith('claude')) {
-          return chatAnthropic(wd, config, system, user, GENSPARK_LLM_BASE_URLS.anthropic)
-        }
-        if (config.model.startsWith('gemini')) {
-          return chatGemini(wd, config, system, user, GENSPARK_LLM_BASE_URLS.gemini)
-        }
-        return chatOpenAiCompatible(wd, GENSPARK_LLM_BASE_URLS.openai, config, system, user)
+      case 'wiswork':
+        return chatOpenAiCompatible(wd, WISWORK_MODEL_BASE_URL, config, system, user, true)
       case 'anthropic':
         return chatAnthropic(wd, config, system, user)
       case 'gemini':

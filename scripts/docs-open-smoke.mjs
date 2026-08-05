@@ -130,7 +130,7 @@ async function testOne(file, index) {
   const name = basename(file)
   const port = BASE_PORT + (index % 40)
   const stamp = `${process.pid}-${index}`
-  const userData = join(tmpdir(), `genoffice-docsmoke-${stamp}`)
+  const userData = join(tmpdir(), `wiswork-docsmoke-${stamp}`)
   mkdirSync(userData, { recursive: true })
   // Open a copy in tmp so any app-side write-back (recent list aside) never touches the original corpus
   const docCopy = join(tmpdir(), `docsmoke-${stamp}-${name}`)
@@ -148,7 +148,7 @@ async function testOne(file, index) {
       `--user-data-dir=${userData}`,
     ],
     {
-      env: { ...process.env, NODE_ENV: 'production', GENOFFICE_LANG: 'zh' },
+      env: { ...process.env, NODE_ENV: 'production', WISWORK_LANG: 'zh' },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   )

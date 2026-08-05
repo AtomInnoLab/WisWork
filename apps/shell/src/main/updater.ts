@@ -2,7 +2,7 @@ import { app } from 'electron'
 import type { BrowserWindow } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import type { UpdateInfo } from 'electron-updater'
-import { createI18n, getUiLang, htmlLang } from '@genoffice/i18n'
+import { createI18n, getUiLang, htmlLang } from '@wiswork/i18n'
 import type { UpdateUiState, UpdateUiStrings } from '../shared/update-api'
 import { closeUpdateWindow, pushUpdateState, showUpdateWindow } from './update-window'
 
@@ -13,7 +13,7 @@ import { closeUpdateWindow, pushUpdateState, showUpdateWindow } from './update-w
  * the update channel prefix (production builds only). The packaged app reads
  * that URL from resources/app-update.yml, which electron-builder bakes in
  * from the `publish` config in apps/shell/electron-builder.cjs — the URL
- * itself is injected at build time via the GENOFFICE_UPDATE_URL env var and
+ * itself is injected at build time via the WISWORK_UPDATE_URL env var and
  * is intentionally not committed to the repo.
  *
  * UX is the strong-guidance modal card (update-window.ts), not a native
@@ -21,7 +21,7 @@ import { closeUpdateWindow, pushUpdateState, showUpdateWindow } from './update-w
  * through the zip target (latest-mac.yml), both published by the internal
  * release pipeline.
  *
- * Dev preview: GENOFFICE_FAKE_UPDATE=<version> in an unpacked run opens the
+ * Dev preview: WISWORK_FAKE_UPDATE=<version> in an unpacked run opens the
  * window with a simulated download so the UI can be exercised end to end.
  */
 
@@ -294,8 +294,8 @@ export function initAutoUpdater(getWindow: () => BrowserWindow | null): void {
   started = true
 
   // dev preview of the update window with a simulated download
-  if (!app.isPackaged && process.env.GENOFFICE_FAKE_UPDATE) {
-    initFakeUpdate(getWindow, process.env.GENOFFICE_FAKE_UPDATE)
+  if (!app.isPackaged && process.env.WISWORK_FAKE_UPDATE) {
+    initFakeUpdate(getWindow, process.env.WISWORK_FAKE_UPDATE)
     return
   }
   // Unpacked runs have no app-update.yml and must not hit the CDN with a

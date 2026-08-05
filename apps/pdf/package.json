@@ -1,6 +1,6 @@
 {
-  "name": "@genoffice/pdf",
-  "productName": "GenOffice PDF",
+  "name": "@wiswork/pdf",
+  "productName": "WisWork PDF",
   "version": "0.1.0",
   "license": "Apache-2.0",
   "private": true,
@@ -14,14 +14,14 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@genoffice/agent-core": "*",
-    "@genoffice/ai-provider": "*",
-    "@genoffice/electron-utils": "*",
-    "@genoffice/i18n": "*",
-    "@genoffice/ui": "*",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.4",
+    "@wiswork/agent-core": "*",
+    "@wiswork/ai-provider": "*",
+    "@wiswork/electron-utils": "*",
+    "@wiswork/i18n": "*",
+    "@wiswork/ui": "*",
     "electron": "^41.0.3",
     "electron-vite": "^5.0.0",
     "jsdom": "^28.0.0",
@@ -34,5 +34,13 @@
     "vite-plugin-static-copy": "^3.0.0",
     "vitest": "^4.1.10"
   },
-  "author": "GenOffice"
+  "author": "AtomInnoLab",
+  "build": {
+    "appId": "com.atominnolab.wiswork.pdf",
+    "productName": "WisWork PDF",
+    "artifactName": "WisWork-PDF-${version}-${arch}.${ext}",
+    "files": [
+      "out/**"
+    ]
+  }
 }
