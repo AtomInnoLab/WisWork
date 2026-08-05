@@ -16,6 +16,9 @@
 
 // One-release compatibility fallback for packages still built by the previous CI variable name.
 const updateUrl = process.env.WISWORK_UPDATE_URL ?? process.env.GENOFFICE_UPDATE_URL
+// Explicitly scoped to disposable test artifacts. Production release jobs
+// must omit this variable so signing and notarization remain fail-closed.
+const unsignedMacBuild = process.env.WISWORK_UNSIGNED_MAC_BUILD === '1'
 
 /** @type {import('electron-builder').Configuration} */
 const config = {
@@ -95,7 +98,7 @@ const config = {
     gatekeeperAssess: false,
     entitlements: 'build/entitlements.mac.plist',
     entitlementsInherit: 'build/entitlements.mac.plist',
-    notarize: true,
+    ...(unsignedMacBuild ? { identity: null, notarize: false } : { notarize: true }),
     extraResources: [
       {
         from: '../sheets/native/xlsx-engine/target/release/xlsx-sidecar',
@@ -122,9 +125,9 @@ const config = {
     allowToChangeInstallationDirectory: true,
   },
   dmg: {
-    sign: true,
+    sign: !unsignedMacBuild,
   },
-  afterAllArtifactBuild: 'build/notarize-dmg.js',
+  afterAllArtifactBuild: unsignedMacBuild ? undefined : 'build/notarize-dmg.js',
 }
 
 if (updateUrl) {

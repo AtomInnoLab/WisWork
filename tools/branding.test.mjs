@@ -15,6 +15,7 @@ function json(path) {
 
 afterEach(() => {
   delete process.env.WISWORK_UPDATE_URL
+  delete process.env.WISWORK_UNSIGNED_MAC_BUILD
   delete process.env.GENOFFICE_UPDATE_URL
   delete require.cache[require.resolve('../apps/shell/electron-builder.cjs')]
 })
@@ -52,12 +53,33 @@ test('shell packaging uses WisWork update URL and exact product metadata', () =>
   assert.equal(config.productName, 'WisWork')
   assert.equal(config.artifactName, 'WisWork-${version}-${arch}.${ext}')
   assert.equal(config.publish[0].url, 'https://updates.example/wiswork')
+  assert.equal(config.mac.identity, undefined)
+  assert.equal(config.mac.notarize, true)
+  assert.equal(config.dmg.sign, true)
 })
 
 test('legacy update URL remains an explicit one-release compatibility fallback', () => {
   process.env.GENOFFICE_UPDATE_URL = 'https://legacy.example/channel/'
   const config = require('../apps/shell/electron-builder.cjs')
   assert.equal(config.publish[0].url, 'https://legacy.example/channel')
+})
+
+test('unsigned macOS test packaging disables signing and notarization only when explicitly enabled', () => {
+  process.env.WISWORK_UNSIGNED_MAC_BUILD = '1'
+  const config = require('../apps/shell/electron-builder.cjs')
+  assert.equal(config.mac.identity, null)
+  assert.equal(config.mac.notarize, false)
+  assert.equal(config.dmg.sign, false)
+  assert.equal(config.afterAllArtifactBuild, undefined)
+})
+
+test('macOS packaging workflow builds an arm64 sidecar and uploads dmg and zip artifacts', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/package-macos.yml'), 'utf8')
+  assert.match(workflow, /aarch64-apple-darwin/)
+  assert.match(workflow, /WISWORK_UNSIGNED_MAC_BUILD:\s*['"]1['"]/)
+  assert.match(workflow, /electron-builder --config electron-builder\.cjs --mac dmg zip --arm64/)
+  assert.match(workflow, /release\/\*\.dmg/)
+  assert.match(workflow, /release\/\*\.zip/)
 })
 
 test('CI runs the branding gate immediately after dependency installation', () => {
