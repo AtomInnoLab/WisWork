@@ -435,7 +435,8 @@ export const TextStyleMark = Mark.create({
     if (mark.attrs.vertAlign === 'subscript') styles.push('vertical-align:sub;font-size:0.75em')
     if (mark.attrs.em) {
       const em = String(mark.attrs.em)
-      const shape = em === 'circle' ? 'open circle' : em === 'comma' ? 'filled sesame' : 'filled dot'
+      const shape =
+        em === 'circle' ? 'open circle' : em === 'comma' ? 'filled sesame' : 'filled dot'
       // Word renders Chinese emphasis marks (dot/underDot) below the text; comma/circle kenten go above
       const pos = em === 'comma' || em === 'circle' ? 'over' : 'under'
       styles.push(`text-emphasis:${shape}`, `text-emphasis-position:${pos} right`)
