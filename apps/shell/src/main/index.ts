@@ -27,7 +27,7 @@ import menuXlsxIcon1x from './assets/menu-xlsx.png?asset'
 import menuXlsxIcon2x from './assets/menu-xlsx@2x.png?asset'
 import menuPptxIcon1x from './assets/menu-pptx.png?asset'
 import menuPptxIcon2x from './assets/menu-pptx@2x.png?asset'
-import { createI18n, isLang, normalizeLang, setUiLang, type Lang } from '@genoffice/i18n'
+import { createI18n, isLang, normalizeLang, setUiLang, type Lang } from '@wiswork/i18n'
 import {
   appMenuLabels,
   contextMenuLabels,
@@ -35,9 +35,9 @@ import {
   installContextMenu,
   installNavigationGuard,
   windowMenuTemplate,
-} from '@genoffice/electron-utils'
+} from '@wiswork/electron-utils'
 import { readAppSettings, writeAppSetting } from './app-settings'
-import { ProjectStore } from '@genoffice/project-store'
+import { ProjectStore } from '@wiswork/project-store'
 import {
   gskConvertPdfToDocx,
   gskLogin,
@@ -46,7 +46,7 @@ import {
   gskLogout,
   hasGskAuth,
   resolveGskEntry,
-} from '@genoffice/ai-search'
+} from '@wiswork/ai-search'
 
 import {
   buildDocsMenu,

@@ -7,18 +7,18 @@
  * renderer sends edit intents (text/geometry changes) back to the main process, which applies
  * them to the model and rebuilds the RenderSlide.
  */
-import type { RenderSlide } from '@genoffice/pptx-render'
-import type { SlideComment, SectionInfo } from '@genoffice/pptx-engine'
+import type { RenderSlide } from '@wiswork/pptx-render'
+import type { SlideComment, SectionInfo } from '@wiswork/pptx-engine'
 import type {
   AiSettings,
   AiStreamChunk,
   AiStreamRequest,
   GenSparkAccountStatus,
-} from '@genoffice/ai-provider'
+} from '@wiswork/ai-provider'
 
-export type { SlideComment, SectionInfo } from '@genoffice/pptx-engine'
+export type { SlideComment, SectionInfo } from '@wiswork/pptx-engine'
 
-// Canonical definitions of AI-related types live in @genoffice/ai-provider / @genoffice/agent-core (shared with docs)
+// Canonical definitions of AI-related types live in @wiswork/ai-provider / @wiswork/agent-core (shared with docs)
 export type {
   AiProviderConfig,
   AiProviderId,
@@ -27,9 +27,9 @@ export type {
   AiStreamChunk,
   AiStreamRequest,
   GenSparkAccountStatus,
-} from '@genoffice/ai-provider'
-export { AI_PROVIDERS } from '@genoffice/ai-provider'
-export type { AgentToolCall, AgentToolDef } from '@genoffice/agent-core'
+} from '@wiswork/ai-provider'
+export { AI_PROVIDERS } from '@wiswork/ai-provider'
+export type { AgentToolCall, AgentToolDef } from '@wiswork/agent-core'
 
 export interface OpenResult {
   path: string

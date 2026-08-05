@@ -7,12 +7,12 @@
     // Pin resolution to this repo's workspace sources (avoids stale types when node_modules links point elsewhere)
     "baseUrl": ".",
     "paths": {
-      "@genoffice/pptx-engine": ["../../packages/pptx-engine/src/index.ts"],
-      "@genoffice/pptx-engine/table-grid": ["../../packages/pptx-engine/src/table-grid.ts"],
-      "@genoffice/pptx-engine/background-promote": [
+      "@wiswork/pptx-engine": ["../../packages/pptx-engine/src/index.ts"],
+      "@wiswork/pptx-engine/table-grid": ["../../packages/pptx-engine/src/table-grid.ts"],
+      "@wiswork/pptx-engine/background-promote": [
         "../../packages/pptx-engine/src/background-promote.ts"
       ],
-      "@genoffice/pptx-render": ["../../packages/pptx-render/src/index.ts"]
+      "@wiswork/pptx-render": ["../../packages/pptx-render/src/index.ts"]
     }
   },
   "include": ["src", "tests", "electron.vite.config.ts", "vitest.config.ts"]

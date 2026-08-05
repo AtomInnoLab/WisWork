@@ -7,12 +7,12 @@
 import { BrowserWindow } from 'electron'
 import type { WebContents } from 'electron'
 import { join } from 'node:path'
-import { materializeSlide, type OpenedPptx, type Slide } from '@genoffice/pptx-engine'
+import { materializeSlide, type OpenedPptx, type Slide } from '@wiswork/pptx-engine'
 import {
   buildRenderSlide,
   type FontMetricsProvider,
   type RenderSlide,
-} from '@genoffice/pptx-render'
+} from '@wiswork/pptx-render'
 import { createSystemFontMetrics } from './fonts'
 import { tiffToPng } from './tiff-decode'
 

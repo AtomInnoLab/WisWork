@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { RunStyle } from '@genoffice/pptx-render'
+import type { RunStyle } from '@wiswork/pptx-render'
 
 // shaped-metrics pulls in the harfbuzz wasm (?asset only resolves in electron builds); disconnected in unit tests
 vi.mock('../src/main/shaped-metrics', () => ({

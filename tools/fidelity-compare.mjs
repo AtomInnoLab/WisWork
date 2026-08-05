@@ -9,7 +9,7 @@
  * Compare: pixelmatch per-pixel diff (bilinear-scaled to the same size first), emitting a side-by-side HTML report.
  *
  * Usage: node tools/fidelity-compare.mjs <a.pptx> [b.pptx …] [--max-slides N] [--out DIR]
- * Prereq: npm run build -w @genoffice/slides; brew: libreoffice + poppler (pdftoppm).
+ * Prereq: npm run build -w @wiswork/slides; brew: libreoffice + poppler (pdftoppm).
  */
 /* global document, MouseEvent -- used inside page.evaluate() browser context */
 import { _electron as electron } from 'playwright-core'

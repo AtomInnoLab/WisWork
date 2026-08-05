@@ -24,7 +24,7 @@ import {
   type FontMetricsProvider,
   type OpentypeFontLike,
   type RunStyle,
-} from '@genoffice/pptx-render'
+} from '@wiswork/pptx-render'
 import { classifyCjkScript } from '../shared/cjk-script'
 import { initShapedMetrics, shapedMeasure, shapedFamily } from './shaped-metrics'
 

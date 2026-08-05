@@ -1,4 +1,4 @@
-import { createIpcTransport, type AgentTransport } from '@genoffice/agent-core'
+import { createIpcTransport, type AgentTransport } from '@wiswork/agent-core'
 import type { AiSettings } from '../../shared/ipc'
 import { t } from '../i18n/locale'
 

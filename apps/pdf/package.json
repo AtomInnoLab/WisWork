@@ -1,5 +1,5 @@
 {
-  "name": "@genoffice/pdf",
+  "name": "@wiswork/pdf",
   "productName": "GenOffice PDF",
   "version": "0.1.0",
   "license": "Apache-2.0",
@@ -14,11 +14,11 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@genoffice/agent-core": "*",
-    "@genoffice/ai-provider": "*",
-    "@genoffice/electron-utils": "*",
-    "@genoffice/i18n": "*",
-    "@genoffice/ui": "*",
+    "@wiswork/agent-core": "*",
+    "@wiswork/ai-provider": "*",
+    "@wiswork/electron-utils": "*",
+    "@wiswork/i18n": "*",
+    "@wiswork/ui": "*",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.4",

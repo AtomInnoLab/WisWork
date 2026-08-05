@@ -6,7 +6,7 @@
  * wrapper, so module functions always see the latest state without stale closures.
  */
 import type React from 'react'
-import type { GroupRenderNode, RenderNode, RenderSlide } from '@genoffice/pptx-render'
+import type { GroupRenderNode, RenderNode, RenderSlide } from '@wiswork/pptx-render'
 import type {
   AnimationItem,
   LinkTargetOp,

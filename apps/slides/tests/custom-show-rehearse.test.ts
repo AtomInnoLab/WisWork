@@ -16,7 +16,7 @@ import {
   patchSlideAdvanceTimeXml,
   patchSlideTransitionXml,
   readSlideAdvanceTimeXml,
-} from '@genoffice/pptx-engine'
+} from '@wiswork/pptx-engine'
 
 describe('computePlayOrder (playback order)', () => {
   const slides = [{}, { hidden: true }, {}, {}, { hidden: true }]

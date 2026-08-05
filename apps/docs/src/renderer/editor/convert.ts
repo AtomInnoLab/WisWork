@@ -31,7 +31,7 @@ import {
   type TableModel,
   type TextboxDisplay,
   type TextboxParaPatch,
-} from '@genoffice/docx-engine'
+} from '@wiswork/docx-engine'
 import { t } from '../i18n/locale'
 import { inlineMathML } from './equation'
 

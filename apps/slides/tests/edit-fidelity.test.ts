@@ -6,13 +6,13 @@
  * by index (wrong inheritance when splitting paragraphs).
  */
 import { describe, it, expect } from 'vitest'
-import { layoutText, makeViewport, HeuristicMetrics } from '@genoffice/pptx-render'
+import { layoutText, makeViewport, HeuristicMetrics } from '@wiswork/pptx-render'
 import {
   generateParagraphXml,
   patchTextElementXml,
   type Paragraph,
   type TextElement,
-} from '@genoffice/pptx-engine'
+} from '@wiswork/pptx-engine'
 import {
   populateEditorDom,
   extractParagraphs,

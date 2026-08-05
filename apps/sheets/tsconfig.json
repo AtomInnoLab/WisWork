@@ -15,7 +15,7 @@
     // file-parse ships as TS source and its deps fail this package's stricter compiler options;
     // types go through a local shim (src/types/file-parse.d.ts) while the runtime bundle still uses the real source
     "paths": {
-      "@genoffice/file-parse": ["./src/types/file-parse.d.ts"]
+      "@wiswork/file-parse": ["./src/types/file-parse.d.ts"]
     }
   },
   "include": [

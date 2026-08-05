@@ -1,4 +1,4 @@
-/** UI language; kept self-contained here (mirrors Lang in @genoffice/i18n) */
+/** UI language; kept self-contained here (mirrors Lang in @wiswork/i18n) */
 export type UiLanguage =
   | 'zh'
   | 'en'

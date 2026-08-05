@@ -1,5 +1,5 @@
 {
-  "name": "@genoffice/docs",
+  "name": "@wiswork/docs",
   "productName": "GenOffice Docs",
   "version": "0.1.0",
   "license": "Apache-2.0",
@@ -18,14 +18,14 @@
     "dist:dir": "electron-vite build && electron-builder --dir"
   },
   "devDependencies": {
-    "@genoffice/agent-core": "*",
-    "@genoffice/i18n": "*",
-    "@genoffice/ai-provider": "*",
-    "@genoffice/ai-search": "*",
-    "@genoffice/docx-engine": "*",
-    "@genoffice/file-parse": "*",
-    "@genoffice/project-store": "*",
-    "@genoffice/ui": "*",
+    "@wiswork/agent-core": "*",
+    "@wiswork/i18n": "*",
+    "@wiswork/ai-provider": "*",
+    "@wiswork/ai-search": "*",
+    "@wiswork/docx-engine": "*",
+    "@wiswork/file-parse": "*",
+    "@wiswork/project-store": "*",
+    "@wiswork/ui": "*",
     "@tiptap/core": "^3.28.0",
     "@tiptap/extensions": "^3.28.0",
     "@tiptap/pm": "^3.28.0",
@@ -89,7 +89,7 @@
     }
   },
   "dependencies": {
-    "@genoffice/electron-utils": "*",
+    "@wiswork/electron-utils": "*",
     "electron-updater": "^6.8.9",
     "pdf-lib": "^1.17.1"
   }

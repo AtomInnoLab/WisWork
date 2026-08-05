@@ -6,7 +6,7 @@ import {
   buildBlankDocx,
   parseDocx,
   saveDocx,
-} from '@genoffice/docx-engine'
+} from '@wiswork/docx-engine'
 import { blocksToPmDoc, pmDocToSavePlan, type PmNode } from '../src/renderer/editor/convert'
 import { applyRevisionsBy, collectRevisions } from '../src/renderer/editor/revisions'
 import { executeTool } from '../src/renderer/ai/tools'

@@ -6,7 +6,7 @@ import {
   type ChartDisplay,
   type HeaderFooter,
   type NewChart,
-} from '@genoffice/docx-engine'
+} from '@wiswork/docx-engine'
 import { EquationGallery, EquationModal } from './EquationModal'
 import { COVER_PRESETS, insertCoverPage, type CoverPreset } from '../editor/cover-pages'
 import { useI18n } from '../i18n/locale'

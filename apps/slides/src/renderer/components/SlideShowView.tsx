@@ -10,7 +10,7 @@
  *   Esc exits; advancing past the last page shows the "end of show" black screen
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { RenderNode, RenderSlide, ShapeRenderNode } from '@genoffice/pptx-render'
+import type { RenderNode, RenderSlide, ShapeRenderNode } from '@wiswork/pptx-render'
 import type { AnimationItem, LinkTargetOp, ShapeKey, TransitionKind } from '../../shared/ipc'
 import { AnimatedSlideStage, useAnimPlayer } from './AnimatedSlide'
 import { useI18n } from '../i18n/locale'
@@ -435,8 +435,8 @@ function ShowMediaLayer({
 }) {
   const k = width / slide.widthPx
   const nodes = slide.nodes.filter(
-    (n): n is import('@genoffice/pptx-render').PictureRenderNode =>
-      n.type === 'picture' && !!(n as import('@genoffice/pptx-render').PictureRenderNode).media,
+    (n): n is import('@wiswork/pptx-render').PictureRenderNode =>
+      n.type === 'picture' && !!(n as import('@wiswork/pptx-render').PictureRenderNode).media,
   )
   const [urls, setUrls] = useState<Record<string, { kind: 'video' | 'audio'; dataUrl: string }>>({})
   const [playing, setPlaying] = useState<Record<string, boolean>>({})

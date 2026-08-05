@@ -1,7 +1,7 @@
 /** Hard guard against "building from scratch by hand": calling add_text_box/add_shape/add_smartart on an empty deck should be refused and redirected to generate_deck. */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createSlidesSkill, type DeckAccess } from '../src/renderer/ai/slides-skill'
-import type { RenderSlide, PlacedBox, ShapeRenderNode } from '@genoffice/pptx-render'
+import type { RenderSlide, PlacedBox, ShapeRenderNode } from '@wiswork/pptx-render'
 import type { AgentToolCall } from '../src/shared/ipc'
 
 const box = (x: number, y: number, w: number, h: number): PlacedBox => ({

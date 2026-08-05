@@ -24,16 +24,16 @@ import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
-import { gskApiKey, gskSlideGenerate } from '@genoffice/ai-search'
+import { gskApiKey, gskSlideGenerate } from '@wiswork/ai-search'
 import {
   appMenuLabels,
   contextMenuLabels,
   installContextMenu,
   installNavigationGuard,
   safeExternalUrl,
-} from '@genoffice/electron-utils'
-import { getUiLang, normalizeLang, setUiLang } from '@genoffice/i18n'
-import { ProjectStore } from '@genoffice/project-store'
+} from '@wiswork/electron-utils'
+import { getUiLang, normalizeLang, setUiLang } from '@wiswork/i18n'
+import { ProjectStore } from '@wiswork/project-store'
 import {
   addChart,
   addElement,
@@ -141,8 +141,8 @@ import {
   type Paragraph,
   type Slide,
   type TextElement,
-} from '@genoffice/pptx-engine'
-import { buildRenderSlide, EMU_PER_PX_96, type RenderSlide } from '@genoffice/pptx-render'
+} from '@wiswork/pptx-engine'
+import { buildRenderSlide, EMU_PER_PX_96, type RenderSlide } from '@wiswork/pptx-render'
 import { refineComplexWidths, shapedMetricsReady } from './shaped-metrics'
 import { applyEditParagraphs, collectParagraphFormatPatches, levelsChanged } from './edit-text'
 import { cfbKind, isCfbHeader } from './cfb-sniff'

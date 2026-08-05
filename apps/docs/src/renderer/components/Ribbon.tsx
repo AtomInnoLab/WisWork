@@ -26,7 +26,7 @@ import type {
   StyleInfo,
   ThemeColors,
   ThemeFonts,
-} from '@genoffice/docx-engine'
+} from '@wiswork/docx-engine'
 import { HIGHLIGHT_CSS } from '../editor/extensions'
 import { setParagraphDirection, setSelectionAlign } from '../editor/direction'
 import { stepParagraphIndent } from '../editor/indent'

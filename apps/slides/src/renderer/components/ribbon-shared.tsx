@@ -16,7 +16,7 @@ import type {
 import type { InkPenSettings, InkTool } from '../ink'
 import type { ChartPresetDef, IconDef, SmartArtDef, WordArtPreset } from '../insert-presets'
 import type { SlideThemePreset } from '../themes'
-import type { ChartStyleInfo } from '@genoffice/pptx-render'
+import type { ChartStyleInfo } from '@wiswork/pptx-render'
 import { useI18n } from '../i18n/locale'
 
 export type InsertDropKey =

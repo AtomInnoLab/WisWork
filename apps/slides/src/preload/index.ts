@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { IpcRendererEvent } from 'electron'
-import type { ProjectApi } from '@genoffice/project-store'
+import type { ProjectApi } from '@wiswork/project-store'
 import type {
   AddChartOp,
   AddElementOp,

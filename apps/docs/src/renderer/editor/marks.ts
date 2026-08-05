@@ -4,7 +4,7 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import {} from '@tiptap/pm/tables'
 import { cssFontFamily } from '../line-metrics'
 import { t } from '../i18n/locale'
-import {} from '@genoffice/docx-engine'
+import {} from '@wiswork/docx-engine'
 
 /**
  * Custom schema mirroring the docx-engine Block model 1:1.

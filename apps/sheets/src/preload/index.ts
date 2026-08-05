@@ -5,8 +5,8 @@ import type {
   AiSettings,
   AiStreamChunk,
   GenSparkAccountStatus,
-} from '@genoffice/ai-provider'
-import type { ProjectApi } from '@genoffice/project-store'
+} from '@wiswork/ai-provider'
+import type { ProjectApi } from '@wiswork/project-store'
 import type {
   AttachmentAddResult,
   AttachmentImageResult,

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { AgentToolCall, AgentToolDef } from '@genoffice/agent-core'
+import type { AgentToolCall, AgentToolDef } from '@wiswork/agent-core'
 import { workbookOperationSchema, type WorkbookOperation } from '../../domain/workbook-dsl'
 import {
   columnLabel,

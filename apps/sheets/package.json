@@ -1,5 +1,5 @@
 {
-  "name": "@genoffice/sheets",
+  "name": "@wiswork/sheets",
   "productName": "GenOffice Sheets",
   "version": "0.1.0",
   "private": true,
@@ -22,13 +22,13 @@
     "gate": "npm run typecheck && npm run fixtures && npm test && npm run compat"
   },
   "dependencies": {
-    "@genoffice/agent-core": "*",
-    "@genoffice/ai-provider": "*",
-    "@genoffice/ai-search": "*",
-    "@genoffice/electron-utils": "*",
-    "@genoffice/file-parse": "*",
-    "@genoffice/i18n": "*",
-    "@genoffice/ui": "*",
+    "@wiswork/agent-core": "*",
+    "@wiswork/ai-provider": "*",
+    "@wiswork/ai-search": "*",
+    "@wiswork/electron-utils": "*",
+    "@wiswork/file-parse": "*",
+    "@wiswork/i18n": "*",
+    "@wiswork/ui": "*",
     "@fluentui/react-icons": "^2.0.333",
     "@univerjs/core": "^0.25.1",
     "@univerjs/preset-sheets-conditional-formatting": "^0.25.1",
@@ -49,7 +49,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@genoffice/project-store": "*",
+    "@wiswork/project-store": "*",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

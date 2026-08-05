@@ -4,7 +4,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createSlidesSkill, type DeckAccess } from '../src/renderer/ai/slides-skill'
-import type { RenderSlide } from '@genoffice/pptx-render'
+import type { RenderSlide } from '@wiswork/pptx-render'
 import type { AgentToolCall } from '../src/shared/ipc'
 
 const SLIDE = {

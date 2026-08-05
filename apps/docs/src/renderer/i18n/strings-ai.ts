@@ -1,4 +1,4 @@
-import { defineStrings } from '@genoffice/i18n'
+import { defineStrings } from '@wiswork/i18n'
 
 /** User-visible strings for the ai/ panel and tool feedback (LLM prompts are not here) */
 export const aiStrings = defineStrings({

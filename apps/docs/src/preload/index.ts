@@ -8,7 +8,7 @@ import type {
   DesktopApi,
   MenuCommand,
 } from '../shared/ipc'
-import type { ProjectApi } from '@genoffice/project-store'
+import type { ProjectApi } from '@wiswork/project-store'
 
 const api: DesktopApi = {
   getLanguage: () => ipcRenderer.invoke('app:get-language'),

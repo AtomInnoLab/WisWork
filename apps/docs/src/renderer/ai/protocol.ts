@@ -5,7 +5,7 @@ import {
   type Block,
   type TableCell,
   type TableModel,
-} from '@genoffice/docx-engine'
+} from '@wiswork/docx-engine'
 import { pmTableToModel, tableModelToPmNode, type PmMark, type PmNode } from '../editor/convert'
 import { equationBlockJson, inlineEquationNodeJson } from '../editor/equation'
 import { TRACK_IGNORE } from '../editor/revisions'

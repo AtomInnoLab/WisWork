@@ -2,7 +2,7 @@ import { app } from 'electron'
 import type { BrowserWindow } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import type { UpdateInfo } from 'electron-updater'
-import { createI18n, getUiLang, htmlLang } from '@genoffice/i18n'
+import { createI18n, getUiLang, htmlLang } from '@wiswork/i18n'
 import type { UpdateUiState, UpdateUiStrings } from '../shared/update-api'
 import { closeUpdateWindow, pushUpdateState, showUpdateWindow } from './update-window'
 

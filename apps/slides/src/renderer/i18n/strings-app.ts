@@ -1,4 +1,4 @@
-import { defineStrings } from '@genoffice/i18n'
+import { defineStrings } from '@wiswork/i18n'
 
 /** Copy for App.tsx / canvas and edit overlays / renderer root-level modules */
 export const appStrings = defineStrings({

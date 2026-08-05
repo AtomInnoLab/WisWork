@@ -1,7 +1,7 @@
 import type { Editor } from '@tiptap/core'
 import type { Node as PmDocNode, Schema } from '@tiptap/pm/model'
 import type { Transaction } from '@tiptap/pm/state'
-import { generateTocFieldXml, type TocEntry } from '@genoffice/docx-engine'
+import { generateTocFieldXml, type TocEntry } from '@wiswork/docx-engine'
 import { t } from '../i18n/locale'
 
 /**

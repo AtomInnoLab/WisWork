@@ -3,7 +3,7 @@
  * thumbnail/section/canvas/element menus from the latest App state (ActionCtx);
  * item callbacks dispatch into the extracted action modules.
  */
-import type { PictureRenderNode } from '@genoffice/pptx-render'
+import type { PictureRenderNode } from '@wiswork/pptx-render'
 import type { ActionCtx } from './action-context'
 import type { CtxItem } from './components/ContextMenu'
 import { isEditableText } from './konva-adapter'

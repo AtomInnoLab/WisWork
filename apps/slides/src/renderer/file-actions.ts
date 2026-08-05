@@ -2,7 +2,7 @@
  * File actions extracted from App.tsx: save / save-as, image & PDF
  * export, and printing. Each function takes the ActionCtx built fresh per call.
  */
-import type { RenderSlide } from '@genoffice/pptx-render'
+import type { RenderSlide } from '@wiswork/pptx-render'
 import type { ActionCtx } from './action-context'
 import { renderSlidesToPngBase64 } from './export-render'
 import { t } from './i18n/locale'

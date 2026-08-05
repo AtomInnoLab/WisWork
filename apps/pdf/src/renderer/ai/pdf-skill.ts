@@ -1,4 +1,4 @@
-import type { AgentSkill } from '@genoffice/agent-core'
+import type { AgentSkill } from '@wiswork/agent-core'
 import { AGENT_TOOLS, executePdfTool } from './tools'
 import type { PdfAiDeps } from './tools'
 

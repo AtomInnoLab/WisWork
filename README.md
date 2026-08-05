@@ -72,7 +72,7 @@ npm run dist:win     # package Windows nsis installer
 ```
 
 The sheets app additionally needs a Rust toolchain for its xlsx sidecar
-(`cargo` on PATH); `npm run build -w @genoffice/sheets` compiles it
+(`cargo` on PATH); `npm run build -w @wiswork/sheets` compiles it
 automatically.
 
 Local UI/e2e driver scripts (Playwright + Electron, for local acceptance, not

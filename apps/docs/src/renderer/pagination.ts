@@ -2,7 +2,7 @@
  * Pagination slicing: greedy page breaking over the continuous-flow render result, by top-level block.
  * Pure functions; all coordinates are content-area Y at 100% zoom (px, 0 = top of page 1 content).
  */
-import type { HeaderFooter, HfPartInfo, SectionInfo, SectionSettings } from '@genoffice/docx-engine'
+import type { HeaderFooter, HfPartInfo, SectionInfo, SectionSettings } from '@wiswork/docx-engine'
 
 export interface BlockBox {
   top: number

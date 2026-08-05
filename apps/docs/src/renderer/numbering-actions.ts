@@ -4,7 +4,7 @@
  * NumberingContext built fresh per call so state never goes stale.
  */
 import type { Editor } from '@tiptap/core'
-import type { CustomNumberingLevel, NumberingDef } from '@genoffice/docx-engine'
+import type { CustomNumberingLevel, NumberingDef } from '@wiswork/docx-engine'
 import type { DocState, PendingNumbering } from './doc-state'
 import { t } from './i18n/locale'
 

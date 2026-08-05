@@ -1,4 +1,4 @@
-import { decodeSymbolText, isSymbolFont, type NumberingDef } from '@genoffice/docx-engine'
+import { decodeSymbolText, isSymbolFont, type NumberingDef } from '@wiswork/docx-engine'
 
 /** Word represents bullets with Symbol/Wingdings private-use characters; map them to common glyphs */
 const BULLET_GLYPHS: Record<string, string> = {

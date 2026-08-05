@@ -5,9 +5,9 @@
     // Pin resolution to this repo's workspace sources (avoids stale types when node_modules links point elsewhere)
     "baseUrl": ".",
     "paths": {
-      "@genoffice/pptx-engine": ["../pptx-engine/src/index.ts"],
-      "@genoffice/pptx-engine/table-grid": ["../pptx-engine/src/table-grid.ts"],
-      "@genoffice/pptx-engine/background-promote": ["../pptx-engine/src/background-promote.ts"]
+      "@wiswork/pptx-engine": ["../pptx-engine/src/index.ts"],
+      "@wiswork/pptx-engine/table-grid": ["../pptx-engine/src/table-grid.ts"],
+      "@wiswork/pptx-engine/background-promote": ["../pptx-engine/src/background-promote.ts"]
     }
   },
   "include": ["src", "tests"]

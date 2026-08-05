@@ -16,7 +16,7 @@ All application windows run with the full Electron renderer lockdown:
 - Renderers reach the main process only through typed, validated IPC channels
   (payloads are schema-checked in the main process; sheets uses zod end to end).
 - Every `shell.openExternal` call goes through a single shared gate
-  (`@genoffice/electron-utils` → `safeExternalUrl`) that parses the URL and
+  (`@wiswork/electron-utils` → `safeExternalUrl`) that parses the URL and
   enforces a protocol allowlist (http/https; pdf link annotations additionally
   allow mailto). `file:`, `javascript:`, and custom schemes are always rejected.
 - No API keys are hardcoded. AI requests are proxied through the signed-in

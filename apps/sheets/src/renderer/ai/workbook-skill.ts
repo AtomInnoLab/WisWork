@@ -1,4 +1,4 @@
-import type { AgentSkill } from '@genoffice/agent-core'
+import type { AgentSkill } from '@wiswork/agent-core'
 import basePrompt from './prompts/base.md?raw'
 import {
   WORKBOOK_TOOLS,

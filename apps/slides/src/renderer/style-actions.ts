@@ -3,7 +3,7 @@
  * format, fill/stroke, background, theme, table style, and chart edits.
  * Functions read the latest App state through ActionCtx.
  */
-import type { ShapeRenderNode } from '@genoffice/pptx-render'
+import type { ShapeRenderNode } from '@wiswork/pptx-render'
 import type { EditChartOp, EditTableStyleOp, GradientFillSpec } from '../shared/ipc'
 import type { ActionCtx } from './action-context'
 import { FIT_WIDTH } from './app-constants'

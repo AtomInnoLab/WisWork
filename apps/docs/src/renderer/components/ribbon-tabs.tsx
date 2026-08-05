@@ -8,7 +8,7 @@ import {
   WORDART_PRESETS,
   type HeaderFooter,
   type TextboxDisplay,
-} from '@genoffice/docx-engine'
+} from '@wiswork/docx-engine'
 import type { DocsTabInfo } from '../../shared/ipc'
 import { tableModelToPmNode } from '../editor/convert'
 import type { InkTool } from '../editor/ink'

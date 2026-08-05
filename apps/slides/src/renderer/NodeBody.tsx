@@ -17,7 +17,7 @@ import type {
   ChartRenderNode,
   GroupRenderNode,
   ArrowEndRender,
-} from '@genoffice/pptx-render'
+} from '@wiswork/pptx-render'
 import {
   featheredImage,
   fillToKonva,
