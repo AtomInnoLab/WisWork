@@ -1,8 +1,13 @@
 import type { AgentMessage, AgentToolCall, AgentToolDef } from '@wiswork/agent-core'
+import { AiProviderError, safeHttpProviderError } from './errors'
 import { httpBodyDetail } from './http-error'
-import { GENSPARK_LLM_BASE_URLS, gensparkAttributionHeaders } from './providers'
+import {
+  GENSPARK_LLM_BASE_URLS,
+  WISWORK_MODEL_BASE_URL,
+  gensparkAttributionHeaders,
+} from './providers'
 import type { AiProviderConfig, AiProviderId } from './types'
-import { createStreamWatchdog, type StreamWatchdog } from './watchdog'
+import { AiTimeoutError, createStreamWatchdog, type StreamWatchdog } from './watchdog'
 
 // ---- streaming (SSE line splitting shared by all providers) ----
 
@@ -671,10 +676,11 @@ export async function streamOpenAiCompatible(
   tools: AgentToolDef[],
   maxTokens: number,
   cb: StreamCallbacks,
+  safeErrors = false,
 ): Promise<void> {
   const wd = createStreamWatchdog(cb.signal)
   return wd.guard(() =>
-    openAiCompatibleTurn(baseUrl, config, system, messages, tools, maxTokens, cb, wd),
+    openAiCompatibleTurn(baseUrl, config, system, messages, tools, maxTokens, cb, wd, safeErrors),
   )
 }
 
@@ -687,6 +693,7 @@ async function openAiCompatibleTurn(
   maxTokens: number,
   cb: StreamCallbacks,
   wd: StreamWatchdog,
+  safeErrors: boolean,
 ): Promise<void> {
   const onBytes = () => {
     wd.touch()
@@ -719,6 +726,7 @@ async function openAiCompatibleTurn(
   // headers arrived: ping the renderer watchdog too, or a slow first chunk could trip it
   onBytes()
   if (!response.ok || !response.body) {
+    if (safeErrors) throw safeHttpProviderError(response.status)
     throw new Error(`HTTP ${response.status}: ${httpBodyDetail(await response.text())}`)
   }
   const jsonBody = await jsonBodyInsteadOfSse(response)
@@ -819,6 +827,28 @@ export async function streamForProvider(
   cb: StreamCallbacks,
 ): Promise<void> {
   switch (provider) {
+    case 'wiswork':
+      try {
+        return await streamOpenAiCompatible(
+          WISWORK_MODEL_BASE_URL,
+          config,
+          system,
+          messages,
+          tools,
+          maxTokens,
+          cb,
+          true,
+        )
+      } catch (error) {
+        if (
+          error instanceof AiProviderError ||
+          error instanceof AiTimeoutError ||
+          error instanceof AiCreditsError ||
+          cb.signal.aborted
+        )
+          throw error
+        throw new AiProviderError('model_upstream_unavailable')
+      }
     case 'genspark':
       // The proxy exposes three protocol-specific endpoints; route by model id prefix: claude uses
       // the Anthropic protocol (preserves image input fidelity), gemini uses Gemini, rest OpenAI-compatible

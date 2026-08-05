@@ -627,6 +627,32 @@ describe('streamForProvider: 200 + non-stream JSON instead of SSE', () => {
       headers: { 'Content-Type': 'application/json' },
     })
 
+  it('wiswork route: a credits notice preserves AiCreditsError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          json({
+            choices: [{ message: { role: 'assistant', content: creditsNotice } }],
+            usage: { prompt_tokens: 0, completion_tokens: 0 },
+          }),
+        ),
+    )
+    const { cb } = collector()
+    await expect(
+      streamForProvider(
+        'wiswork',
+        { apiKey: 'k', model: 'deepseek/deepseek-v4-flash-0731' },
+        'sys',
+        [],
+        [],
+        100,
+        cb,
+      ),
+    ).rejects.toBeInstanceOf(AiCreditsError)
+  })
+
   it('anthropic route: a credits-exhausted notice becomes AiCreditsError with the notice text', async () => {
     vi.stubGlobal(
       'fetch',

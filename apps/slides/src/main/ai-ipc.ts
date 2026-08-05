@@ -8,23 +8,12 @@ import { app, ipcMain } from 'electron'
 import type { IpcMainInvokeEvent } from 'electron'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import {
-  AiCreditsError,
-  AiTimeoutError,
-  defaultAiSettings,
-  resolveAiSettings,
-  streamForProvider,
-  type AiSettings,
-  type AiStreamChunk,
-  type AiStreamRequest,
-  type LegacyAiSettings,
-} from '@wiswork/ai-provider'
+import { AiIpcError, registerWisworkModelIpc, validateAiSearchArgs } from '@wiswork/ai-provider'
 import { AuthError, getElectronAuthRuntimeOrNull } from '@wiswork/auth'
 import { fetchWithSsrfGuard } from '@wiswork/electron-utils'
 import {
   webSearch,
   imageSearch,
-  gskApiKey,
   gskGenerateImage,
   gskAnalyzeMedia,
   hasGskAuth,
@@ -52,20 +41,60 @@ function writeJson(path: string, value: unknown): void {
   writeFileSync(path, JSON.stringify(value, null, 2))
 }
 
-const activeAiStreams = new Map<string, AbortController>()
-
 function assertAuthIpc(event: IpcMainInvokeEvent, args: readonly unknown[]): void {
   if (!sessions.has(event.sender.id)) throw new Error('Untrusted IPC sender.')
   if (args.length !== 0) throw new Error('Invalid auth IPC payload.')
 }
 
+function assertAiIpcSender(event: IpcMainInvokeEvent): void {
+  if (!sessions.has(event.sender.id)) throw new AiIpcError('untrusted_sender')
+}
+
+function validateSlidesAiObject(
+  value: unknown,
+  allowed: readonly string[],
+  maxChars = 2_000_000,
+): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new AiIpcError('invalid_payload')
+  }
+  const object = value as Record<string, unknown>
+  if (Object.keys(object).some((key) => !allowed.includes(key))) {
+    throw new AiIpcError('invalid_payload')
+  }
+  let encoded = ''
+  try {
+    encoded = JSON.stringify(object)
+  } catch {
+    throw new AiIpcError('invalid_payload')
+  }
+  if (encoded.length > maxChars) throw new AiIpcError('payload_too_large')
+  return object
+}
+
+function validateSlidesAiString(value: unknown, maxChars: number): string {
+  if (typeof value !== 'string') throw new AiIpcError('invalid_payload')
+  if (value.length > maxChars) throw new AiIpcError('payload_too_large')
+  return value
+}
+
 export function registerAiIpc(): void {
-  ipcMain.handle('ai:get-settings', (): AiSettings => {
-    const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(AI_SETTINGS_PATH(), {})
-    const settings = resolveAiSettings(stored, defaultAiSettings())
-    // AI features all go through Genspark (gsk login); stored settings that chose another provider are normalized back
-    settings.provider = 'genspark'
-    return settings
+  registerWisworkModelIpc({
+    ipcMain,
+    channels: {
+      getSettings: 'ai:get-settings',
+      setSettings: 'ai:set-settings',
+      stream: 'ai:stream',
+      streamChunk: 'ai:stream-chunk',
+      cancel: 'ai:stream-cancel',
+    },
+    isTrustedSender: (senderId) => sessions.has(senderId),
+    loadSettings: () => readJson(AI_SETTINGS_PATH(), {}),
+    saveSettings: (settings) => writeJson(AI_SETTINGS_PATH(), settings),
+    getLoggedIn: async () => {
+      const runtime = getElectronAuthRuntimeOrNull()
+      return runtime ? (await runtime.client.getAccountStatus()).loggedIn : false
+    },
   })
 
   ipcMain.handle('auth:status', (event, ...args: unknown[]) => {
@@ -83,91 +112,22 @@ export function registerAiIpc(): void {
     return getElectronAuthRuntimeOrNull()?.client.logout()
   })
 
-  ipcMain.handle('ai:set-settings', (_event, settings: AiSettings) => {
-    writeJson(AI_SETTINGS_PATH(), settings)
-  })
-
-  ipcMain.handle('ai:stream', async (event, request: AiStreamRequest) => {
-    const { requestId, settings, system, messages } = request
-    const tools = request.tools ?? []
-    const maxTokens = request.maxTokens ?? 8192
-    const provider = settings.provider
-    let config = settings.providers?.[provider]
-    // The genspark key never enters the settings file; it is fetched from the gsk login state per request
-    if (provider === 'genspark' && config && !config.apiKey) {
-      config = { ...config, apiKey: gskApiKey() }
-    }
-    const send = (chunk: AiStreamChunk) => {
-      if (!event.sender.isDestroyed()) event.sender.send('ai:stream-chunk', chunk)
-    }
-    if (!config?.apiKey) {
-      send({
-        requestId,
-        type: 'error',
-        error: provider === 'genspark' ? tm('errGskNotLoggedIn') : tm('errNoApiKey', { provider }),
-      })
-      return
-    }
-    if (!config.model) {
-      send({ requestId, type: 'error', error: tm('errNoModel') })
-      return
-    }
-    const controller = new AbortController()
-    activeAiStreams.set(requestId, controller)
-    // wire-activity keepalive: lets the renderer's silence watchdog tell a slow turn from a dead one
-    let lastPing = 0
-    const ping = () => {
-      const now = Date.now()
-      if (now - lastPing < 5_000) return
-      lastPing = now
-      send({ requestId, type: 'ping' })
-    }
-    try {
-      await streamForProvider(provider, config, system, messages, tools, maxTokens, {
-        signal: controller.signal,
-        onDelta: (text) => send({ requestId, type: 'delta', text }),
-        onToolCall: (toolCall) => send({ requestId, type: 'tool-call', toolCall }),
-        onActivity: ping,
-      })
-      send({ requestId, type: 'done' })
-    } catch (err) {
-      if (controller.signal.aborted) {
-        send({ requestId, type: 'done' })
-      } else {
-        const msg = err instanceof Error ? err.message : String(err)
-        console.error(`[ai-stream] ${requestId} (${provider}/${config.model}) failed:`, msg)
-        send({
-          requestId,
-          type: 'error',
-          error: msg,
-          ...(err instanceof AiTimeoutError
-            ? { errorCode: 'timeout' as const }
-            : err instanceof AiCreditsError
-              ? { errorCode: 'credits' as const }
-              : {}),
-        })
-      }
-    } finally {
-      activeAiStreams.delete(requestId)
-    }
-  })
-
-  ipcMain.handle('ai:stream-cancel', (_event, requestId: string) => {
-    activeAiStreams.get(requestId)?.abort()
-  })
-
   // Search tools (content + images), Serper with DuckDuckGo fallback
-  ipcMain.handle('ai:web-search', async (_event, query: string, maxResults?: number) => {
+  ipcMain.handle('ai:web-search', async (event, query: string, maxResults?: number) => {
+    assertAiIpcSender(event)
     try {
-      return await webSearch(String(query), typeof maxResults === 'number' ? maxResults : 6)
+      const input = validateAiSearchArgs(query, maxResults, 6)
+      return await webSearch(input.query, input.maxResults)
     } catch (err) {
       return { results: [], method: 'error', error: String(err) }
     }
   })
 
-  ipcMain.handle('ai:image-search', async (_event, query: string, maxResults?: number) => {
+  ipcMain.handle('ai:image-search', async (event, query: string, maxResults?: number) => {
+    assertAiIpcSender(event)
     try {
-      return await imageSearch(String(query), typeof maxResults === 'number' ? maxResults : 8)
+      const input = validateAiSearchArgs(query, maxResults, 8)
+      return await imageSearch(input.query, input.maxResults)
     } catch (err) {
       return { images: [], method: 'error', error: String(err) }
     }
@@ -180,12 +140,16 @@ export function registerAiIpc(): void {
 // never called; docs does not have these channels, so putting them in the wrong place raises
 // "No handler registered".
 export function registerSlidesOnlyAiIpc(): void {
-  ipcMain.handle('ai:gsk-capability-status', () => ({ available: hasGskAuth() }))
+  ipcMain.handle('ai:gsk-capability-status', (event, ...args: unknown[]) => {
+    assertAiIpcSender(event)
+    if (args.length !== 0) throw new AiIpcError('invalid_payload')
+    return { available: hasGskAuth() }
+  })
   // gsk (Genspark CLI) capabilities: AI image generation / media analysis. Returns an error prompt when not logged in.
   ipcMain.handle(
     'ai:generate-image',
     async (
-      _event,
+      event,
       op: {
         prompt: string
         model?: string
@@ -194,6 +158,26 @@ export function registerSlidesOnlyAiIpc(): void {
         imageSize?: string
       },
     ) => {
+      assertAiIpcSender(event)
+      validateSlidesAiObject(op, [
+        'prompt',
+        'model',
+        'referenceImageUrls',
+        'aspectRatio',
+        'imageSize',
+      ])
+      validateSlidesAiString(op.prompt, 32_000)
+      for (const value of [op.model, op.aspectRatio, op.imageSize]) {
+        if (value !== undefined) validateSlidesAiString(value, 256)
+      }
+      if (
+        op.referenceImageUrls !== undefined &&
+        (!Array.isArray(op.referenceImageUrls) ||
+          op.referenceImageUrls.length > 8 ||
+          op.referenceImageUrls.some((url) => typeof url !== 'string' || url.length > 4_096))
+      ) {
+        throw new AiIpcError('invalid_payload')
+      }
       if (!hasGskAuth()) return { error: tm('errGskCli') }
       try {
         const r = await gskGenerateImage({
@@ -214,7 +198,17 @@ export function registerSlidesOnlyAiIpc(): void {
 
   ipcMain.handle(
     'ai:analyze-media',
-    async (_event, op: { mediaUrls: string[]; requirements: string }) => {
+    async (event, op: { mediaUrls: string[]; requirements: string }) => {
+      assertAiIpcSender(event)
+      validateSlidesAiObject(op, ['mediaUrls', 'requirements'])
+      if (
+        !Array.isArray(op.mediaUrls) ||
+        op.mediaUrls.length > 20 ||
+        op.mediaUrls.some((url) => typeof url !== 'string' || url.length > 4_096)
+      ) {
+        throw new AiIpcError('invalid_payload')
+      }
+      validateSlidesAiString(op.requirements, 32_000)
       if (!hasGskAuth()) return { error: tm('errGskCli') }
       try {
         const text = await gskAnalyzeMedia({
@@ -243,6 +237,15 @@ export function registerSlidesOnlyAiIpc(): void {
         fitWidthPx: number
       },
     ) => {
+      assertAiIpcSender(e)
+      validateSlidesAiObject(op, ['slideIndex', 'url', 'xPx', 'yPx', 'wPx', 'hPx', 'fitWidthPx'])
+      validateSlidesAiString(op.url, 4_096)
+      if (!Number.isInteger(op.slideIndex) || op.slideIndex < 0 || op.slideIndex > 10_000)
+        throw new AiIpcError('invalid_payload')
+      for (const value of [op.xPx, op.yPx, op.wPx, op.hPx, op.fitWidthPx]) {
+        if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > 1_000_000)
+          throw new AiIpcError('invalid_payload')
+      }
       const session = sessions.get(e.sender.id)
       if (!session) return null
       const slide = session.opened.deck.slides[op.slideIndex]
@@ -292,6 +295,11 @@ export function registerSlidesOnlyAiIpc(): void {
       event,
       data: { topic: string; styleSkill: string; createdAt: string },
     ): Promise<{ ok: boolean }> => {
+      assertAiIpcSender(event)
+      validateSlidesAiObject(data, ['topic', 'styleSkill', 'createdAt'])
+      validateSlidesAiString(data.topic, 100_000)
+      validateSlidesAiString(data.styleSkill, 1_000_000)
+      validateSlidesAiString(data.createdAt, 128)
       try {
         const session = sessions.get(event.sender.id)
         const draftPath = session?.path
@@ -311,10 +319,16 @@ export function registerSlidesOnlyAiIpc(): void {
   ipcMain.handle(
     'ai:save-style-template',
     (
-      _event,
+      event,
       name: string,
       data: { topic: string; styleSkill: string; createdAt: string },
     ): { ok: boolean; error?: string } => {
+      assertAiIpcSender(event)
+      validateSlidesAiString(name, 256)
+      validateSlidesAiObject(data, ['topic', 'styleSkill', 'createdAt'])
+      validateSlidesAiString(data.topic, 100_000)
+      validateSlidesAiString(data.styleSkill, 1_000_000)
+      validateSlidesAiString(data.createdAt, 128)
       try {
         const dir = STYLE_TEMPLATES_DIR()
         mkdirSync(dir, { recursive: true })
@@ -332,7 +346,9 @@ export function registerSlidesOnlyAiIpc(): void {
   // ── Style template list
   ipcMain.handle(
     'ai:list-style-templates',
-    (): Array<{ name: string; topic: string; createdAt: string }> => {
+    (event, ...args: unknown[]): Array<{ name: string; topic: string; createdAt: string }> => {
+      assertAiIpcSender(event)
+      if (args.length !== 0) throw new AiIpcError('invalid_payload')
       try {
         const dir = STYLE_TEMPLATES_DIR()
         if (!existsSync(dir)) return []
@@ -365,10 +381,9 @@ export function registerSlidesOnlyAiIpc(): void {
   // ── Style template load
   ipcMain.handle(
     'ai:load-style-template',
-    (
-      _event,
-      name: string,
-    ): { ok: boolean; styleSkill?: string; topic?: string; error?: string } => {
+    (event, name: string): { ok: boolean; styleSkill?: string; topic?: string; error?: string } => {
+      assertAiIpcSender(event)
+      validateSlidesAiString(name, 256)
       try {
         const dir = STYLE_TEMPLATES_DIR()
         const safeName = name.replace(/[/\\:*?"<>|]/g, '_').slice(0, 64)

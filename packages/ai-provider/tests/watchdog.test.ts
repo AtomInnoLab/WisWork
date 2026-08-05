@@ -91,6 +91,47 @@ describe('stream timeouts end to end', () => {
     }
   }
 
+  it('preserves caller cancellation for WisWork', async () => {
+    const controller = new AbortController()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_url: string, init: RequestInit) => abortable(init.signal!)),
+    )
+    const { cb } = collector()
+    const run = streamForProvider(
+      'wiswork',
+      { apiKey: 'k', model: 'deepseek/deepseek-v4-flash-0731' },
+      'system',
+      [{ role: 'user', text: 'hi' }],
+      [],
+      100,
+      { ...cb, signal: controller.signal },
+    )
+    const result = expect(run).rejects.toThrow('aborted')
+    controller.abort()
+    await result
+  })
+
+  it('preserves AiTimeoutError for a WisWork watchdog timeout', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_url: string, init: RequestInit) => abortable(init.signal!)),
+    )
+    const { cb } = collector()
+    const run = streamForProvider(
+      'wiswork',
+      { apiKey: 'k', model: 'deepseek/deepseek-v4-flash-0731' },
+      'system',
+      [{ role: 'user', text: 'hi' }],
+      [],
+      100,
+      cb,
+    )
+    const result = expect(run).rejects.toBeInstanceOf(AiTimeoutError)
+    await vi.advanceTimersByTimeAsync(AI_CONNECT_TIMEOUT_MS)
+    await result
+  })
+
   it('rejects with AiTimeoutError when the connection never yields a response', async () => {
     vi.stubGlobal(
       'fetch',

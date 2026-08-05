@@ -1,5 +1,9 @@
 import type { AiProviderId, AiProviderMeta, AiSettings, LegacyAiSettings } from './types'
 
+export const WISWORK_MODEL_BASE_URL = 'https://wismodel-proxy-dev.atominnolab.com/api/v1'
+
+export const WISWORK_DEFAULT_MODEL = 'deepseek/deepseek-v4-flash-0731'
+
 /**
  * Genspark server-side LLM proxy endpoints. All three protocols share the
  * api_key from the gsk login; model ids follow the proxy's own naming scheme,
@@ -25,6 +29,13 @@ export function gensparkAttributionHeaders(baseUrl?: string): Record<string, str
 }
 
 export const AI_PROVIDERS: AiProviderMeta[] = [
+  {
+    id: 'wiswork',
+    label: 'WisWork',
+    models: [WISWORK_DEFAULT_MODEL],
+    defaultModel: WISWORK_DEFAULT_MODEL,
+    keyPlaceholder: 'Managed by the WisWork main process',
+  },
   {
     id: 'genspark',
     label: 'Genspark',
@@ -99,12 +110,12 @@ export function defaultAiSettings(
   const providers = {} as AiSettings['providers']
   for (const meta of AI_PROVIDERS) {
     providers[meta.id] = {
-      apiKey: defaultApiKeys?.[meta.id] ?? '',
+      apiKey: meta.id === 'wiswork' ? '' : (defaultApiKeys?.[meta.id] ?? ''),
       model: meta.defaultModel,
       baseUrl: meta.needsBaseUrl ? '' : undefined,
     }
   }
-  return { provider: 'genspark', providers }
+  return { provider: 'wiswork', providers }
 }
 
 /**

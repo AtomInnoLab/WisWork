@@ -43,21 +43,10 @@ import {
 import { createI18n, getUiLang, type Lang, normalizeLang, setUiLang } from '@wiswork/i18n'
 import { ProjectStore } from '@wiswork/project-store'
 
-import {
-  AiCreditsError,
-  AiTimeoutError,
-  chatForProvider,
-  defaultAiSettings,
-  resolveAiSettings,
-  streamForProvider,
-  type AiProviderId,
-  type AiSettings,
-  type AiStreamChunk,
-  type LegacyAiSettings,
-} from '@wiswork/ai-provider'
+import { registerWisworkModelIpc, validateAiSearchArgs } from '@wiswork/ai-provider'
 import { csvToXlsxBuffer, decodeCsvBuffer } from '../gateway/csv-import'
 import { AuthError, getElectronAuthRuntimeOrNull } from '@wiswork/auth'
-import { gskApiKey, webSearch, imageSearch } from '@wiswork/ai-search'
+import { webSearch, imageSearch } from '@wiswork/ai-search'
 import { parseFileToText } from '@wiswork/file-parse'
 import type { CellEdit, SheetStructuralOps } from '../gateway/xlsx-gateway'
 import { readArchiveEntryText, saveWorkbookViaSidecar } from '../gateway/xlsx-package-io'
@@ -2011,14 +2000,23 @@ export function registerSheetsAiIpc(): void {
   if (aiIpcRegistered) return
   aiIpcRegistered = true
 
-  ipcMain.handle(IPC_CHANNELS.aiGetSettings, (event): AiSettings => {
-    sessionFor(event)
-    const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(SETTINGS_PATH(), {})
-    const settings = resolveAiSettings(stored, defaultAiSettings())
-    // AI features all go through Genspark (gsk login); legacy settings that chose
-    // another provider are reset
-    settings.provider = 'genspark'
-    return settings
+  registerWisworkModelIpc({
+    ipcMain,
+    channels: {
+      getSettings: IPC_CHANNELS.aiGetSettings,
+      setSettings: IPC_CHANNELS.aiSetSettings,
+      stream: IPC_CHANNELS.aiStream,
+      streamChunk: IPC_CHANNELS.aiStreamChunk,
+      cancel: IPC_CHANNELS.aiStreamCancel,
+      chat: IPC_CHANNELS.aiChat,
+    },
+    isTrustedSender: (senderId) => sheetsTabs.has(senderId),
+    loadSettings: () => readJson(SETTINGS_PATH(), {}),
+    saveSettings: (settings) => writeJson(SETTINGS_PATH(), settings),
+    getLoggedIn: async () => {
+      const runtime = getElectronAuthRuntimeOrNull()
+      return runtime ? (await runtime.client.getAccountStatus()).loggedIn : false
+    },
   })
 
   ipcMain.handle(IPC_CHANNELS.aiAccountStatus, (event, ...args: unknown[]) => {
@@ -2036,123 +2034,22 @@ export function registerSheetsAiIpc(): void {
     return getElectronAuthRuntimeOrNull()?.client.logout()
   })
 
-  ipcMain.handle(IPC_CHANNELS.aiSetSettings, (event, input: unknown) => {
-    sessionFor(event)
-    const settings = aiSettingsInputSchema.parse(input)
-    writeJson(SETTINGS_PATH(), settings)
-  })
-
-  ipcMain.handle(IPC_CHANNELS.aiChat, async (event, input: unknown) => {
-    sessionFor(event)
-    const request = aiChatRequestSchema.parse(input)
-    const provider = request.settings.provider as AiProviderId
-    let config = request.settings.providers[provider]
-    if (provider === 'genspark' && config && !config.apiKey) {
-      config = { ...config, apiKey: gskApiKey() }
-    }
-    if (!config?.apiKey) {
-      return {
-        ok: false,
-        error: provider === 'genspark' ? tm('errGskNotLoggedIn') : tm('errNoApiKey', { provider }),
-      }
-    }
-    if (!config.model) return { ok: false, error: tm('errNoModel') }
-    try {
-      return await chatForProvider(provider, config, request.system, request.user)
-    } catch (err) {
-      return { ok: false, error: String(err) }
-    }
-  })
-
-  ipcMain.handle(IPC_CHANNELS.aiStream, async (event, input: unknown) => {
-    const entry = sessionFor(event)
-    const request = aiStreamRequestSchema.parse(input)
-    const { requestId, system, messages } = request
-    const tools = request.tools ?? []
-    const maxTokens = request.maxTokens ?? 8192
-    const provider = request.settings.provider as AiProviderId
-    let config = request.settings.providers[provider]
-    // Genspark's key never enters the settings file; it is read from the gsk
-    // login state per request
-    if (provider === 'genspark' && config && !config.apiKey) {
-      config = { ...config, apiKey: gskApiKey() }
-    }
-    const send = (chunk: AiStreamChunk) => {
-      if (!event.sender.isDestroyed()) event.sender.send(IPC_CHANNELS.aiStreamChunk, chunk)
-    }
-    if (!config?.apiKey) {
-      send({
-        requestId,
-        type: 'error',
-        error: provider === 'genspark' ? tm('errGskNotLoggedIn') : tm('errNoApiKey', { provider }),
-      })
-      return
-    }
-    if (!config.model) {
-      send({ requestId, type: 'error', error: tm('errNoModel') })
-      return
-    }
-    const controller = new AbortController()
-    entry.aiStreams.set(requestId, controller)
-    // wire-activity keepalive: lets the renderer's silence watchdog tell a slow turn from a dead one
-    let lastPing = 0
-    const ping = () => {
-      const now = Date.now()
-      if (now - lastPing < 5_000) return
-      lastPing = now
-      send({ requestId, type: 'ping' })
-    }
-    try {
-      await streamForProvider(provider, config, system, messages, tools, maxTokens, {
-        signal: controller.signal,
-        onDelta: (text) => send({ requestId, type: 'delta', text }),
-        onToolCall: (toolCall) => send({ requestId, type: 'tool-call', toolCall }),
-        onActivity: ping,
-      })
-      send({ requestId, type: 'done' })
-    } catch (err) {
-      if (controller.signal.aborted) {
-        send({ requestId, type: 'done' })
-      } else {
-        send({
-          requestId,
-          type: 'error',
-          error: err instanceof Error ? err.message : String(err),
-          ...(err instanceof AiTimeoutError
-            ? { errorCode: 'timeout' as const }
-            : err instanceof AiCreditsError
-              ? { errorCode: 'credits' as const }
-              : {}),
-        })
-      }
-    } finally {
-      entry.aiStreams.delete(requestId)
-    }
-  })
-
-  ipcMain.handle(IPC_CHANNELS.aiStreamCancel, (event, requestId: unknown) => {
-    const entry = sessionFor(event)
-    entry.aiStreams.get(z.string().min(1).parse(requestId))?.abort()
-  })
-
   // Shared search tools (content + images): Serper with DuckDuckGo fallback
   // (same source as slides/docs)
-  ipcMain.handle('ai:web-search', async (_event, query: unknown, maxResults?: unknown) => {
+  ipcMain.handle('ai:web-search', async (event, query: unknown, maxResults?: unknown) => {
+    sessionFor(event)
     try {
-      return await webSearch(
-        z.string().parse(query),
-        typeof maxResults === 'number' ? maxResults : 6,
-      )
+      const input = validateAiSearchArgs(query, maxResults, 6)
+      return await webSearch(input.query, input.maxResults)
     } catch (err) {
       return { results: [], method: 'error', error: String(err) }
     }
   })
-  ipcMain.handle('ai:image-search', async (_event, query: unknown, maxResults?: unknown) => {
+  ipcMain.handle('ai:image-search', async (event, query: unknown, maxResults?: unknown) => {
+    sessionFor(event)
     try {
-      return await imageSearch(
-        z.string().parse(query),
-        typeof maxResults === 'number' ? maxResults : 8,
-      )
+      const input = validateAiSearchArgs(query, maxResults, 8)
+      return await imageSearch(input.query, input.maxResults)
     } catch (err) {
       return { images: [], method: 'error', error: String(err) }
     }

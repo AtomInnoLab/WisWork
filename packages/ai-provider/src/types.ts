@@ -1,6 +1,7 @@
 import type { AgentMessage, AgentToolCall, AgentToolDef } from '@wiswork/agent-core'
 
-export type AiProviderId = 'genspark' | 'anthropic' | 'gemini' | 'deepseek' | 'openai' | 'custom'
+export type AiProviderId =
+  'wiswork' | 'genspark' | 'anthropic' | 'gemini' | 'deepseek' | 'openai' | 'custom'
 
 /** Genspark account status (gsk login state; the sole auth source for AI features) */
 export interface GenSparkAccountStatus {
@@ -46,6 +47,12 @@ export interface AiChatResponse {
   ok: boolean
   content?: string
   error?: string
+  errorCode?:
+    | 'auth_required'
+    | 'model_credentials_missing'
+    | 'model_rate_limited'
+    | 'model_upstream_unavailable'
+    | 'model_invalid_response'
 }
 
 export interface AiStreamRequest {
@@ -66,7 +73,14 @@ export interface AiStreamChunk {
   toolCall?: AgentToolCall
   error?: string
   /** machine-readable error cause ('timeout', exhausted 'credits'); lets the renderer localize the message */
-  errorCode?: 'timeout' | 'credits'
+  errorCode?:
+    | 'timeout'
+    | 'credits'
+    | 'auth_required'
+    | 'model_credentials_missing'
+    | 'model_rate_limited'
+    | 'model_upstream_unavailable'
+    | 'model_invalid_response'
   /** normalized stop reason carried on 'done' ('max_tokens' = output cut off by the token limit) */
   stopReason?: string
 }

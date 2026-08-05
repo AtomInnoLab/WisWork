@@ -19,7 +19,14 @@ export interface IpcStreamChunk {
   toolCall?: AgentToolCall
   error?: string
   /** machine-readable error cause; maps to the localized timeout/credits message */
-  errorCode?: 'timeout' | 'credits'
+  errorCode?:
+    | 'timeout'
+    | 'credits'
+    | 'auth_required'
+    | 'model_credentials_missing'
+    | 'model_rate_limited'
+    | 'model_upstream_unavailable'
+    | 'model_invalid_response'
   /** normalized stop reason on 'done' ('max_tokens' = cut off by the token limit) */
   stopReason?: string
 }
@@ -64,6 +71,24 @@ export interface IpcTransportOptions<S> {
  */
 export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTransport {
   const timeoutText = () => options.timeoutErrorText?.() ?? options.unknownErrorText()
+  const stableErrorText = (chunk: IpcStreamChunk): string => {
+    if (chunk.errorCode === 'timeout') return timeoutText()
+    if (chunk.errorCode === 'credits') {
+      return options.creditsErrorText?.() ?? chunk.error ?? options.unknownErrorText()
+    }
+    if (chunk.errorCode === 'auth_required') return 'Sign in to WisWork to use AI.'
+    if (chunk.errorCode === 'model_credentials_missing') {
+      return 'The WisWork model service is not configured.'
+    }
+    if (chunk.errorCode === 'model_rate_limited') return 'The WisWork model service is busy.'
+    if (
+      chunk.errorCode === 'model_upstream_unavailable' ||
+      chunk.errorCode === 'model_invalid_response'
+    ) {
+      return 'The WisWork model service is temporarily unavailable.'
+    }
+    return chunk.error ?? options.unknownErrorText()
+  }
   return {
     stream(request: AgentStreamRequest, cb) {
       const requestId = crypto.randomUUID()
@@ -102,13 +127,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
           cb.onDone()
         } else {
           settle()
-          cb.onError(
-            chunk.errorCode === 'timeout'
-              ? timeoutText()
-              : chunk.errorCode === 'credits'
-                ? (options.creditsErrorText?.() ?? chunk.error ?? options.unknownErrorText())
-                : (chunk.error ?? options.unknownErrorText()),
-          )
+          cb.onError(stableErrorText(chunk))
         }
       })
       armSilence()

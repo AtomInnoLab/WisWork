@@ -13,9 +13,32 @@ export type {
 export {
   AI_PROVIDERS,
   GENSPARK_LLM_BASE_URLS,
+  WISWORK_DEFAULT_MODEL,
+  WISWORK_MODEL_BASE_URL,
   defaultAiSettings,
   resolveAiSettings,
 } from './providers'
+export { resolveWisworkMainRequest, sanitizeWisworkSettings } from './main-config'
+export type { WisworkMainRequest, WisworkRequestErrorCode } from './main-config'
+export {
+  AI_IPC_LIMITS,
+  AiIpcError,
+  registerWisworkModelIpc,
+  validateAiChatRequest,
+  validateAiSearchArgs,
+  validateAiSettings,
+  validateAiStreamRequest,
+} from './ipc'
+export type {
+  AiIpcErrorCode,
+  IpcMainLike,
+  RegisterWisworkModelIpcOptions,
+  WisworkIpcEvent,
+  WisworkIpcSender,
+  WisworkModelIpcChannels,
+} from './ipc'
+export { AiProviderError, safeHttpProviderError } from './errors'
+export type { AiProviderErrorCode } from './errors'
 export { chatForProvider } from './chat'
 export { AiCreditsError, sseLines, streamForProvider } from './stream'
 export type { StreamCallbacks } from './stream'

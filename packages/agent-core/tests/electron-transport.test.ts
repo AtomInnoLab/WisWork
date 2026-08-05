@@ -123,6 +123,16 @@ describe('createIpcTransport', () => {
     expect(cb.onError).toHaveBeenCalledWith('Your Genspark credits have been exhausted.')
   })
 
+  it('maps WisWork auth and model service codes to friendly messages', () => {
+    const auth = setup()
+    auth.emit({ type: 'error', errorCode: 'auth_required' })
+    expect(auth.cb.onError).toHaveBeenCalledWith('Sign in to WisWork to use AI.')
+
+    const model = setup()
+    model.emit({ type: 'error', errorCode: 'model_credentials_missing' })
+    expect(model.cb.onError).toHaveBeenCalledWith('The WisWork model service is not configured.')
+  })
+
   it('fails the run after prolonged silence; pings re-arm the watchdog', () => {
     vi.useFakeTimers()
     try {
