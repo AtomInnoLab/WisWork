@@ -61,9 +61,6 @@ import type {
 } from '../shared/desktop-api'
 import {
   ATTACHMENT_IMAGE_EXTS,
-  aiChatRequestSchema,
-  aiSettingsInputSchema,
-  aiStreamRequestSchema,
   workbookFileSchema,
   workbookFormulaCellsRequestSchema,
   workbookFormulaCellsResultSchema,
@@ -2016,13 +2013,13 @@ export function registerSheetsAiIpc(): void {
     saveSettings: (settings) => writeJson(SETTINGS_PATH(), settings),
     getLoggedIn: async () => {
       const runtime = getElectronAuthRuntimeOrNull()
-      return runtime ? (await runtime.client.getAccountStatus()).loggedIn : false
+      return runtime ? (await runtime.client.getValidAccountStatus()).loggedIn : false
     },
   })
 
   ipcMain.handle(IPC_CHANNELS.aiAccountStatus, (event, ...args: unknown[]) => {
     assertAuthIpc(event, args)
-    return getElectronAuthRuntimeOrNull()?.client.getAccountStatus() ?? { loggedIn: false }
+    return getElectronAuthRuntimeOrNull()?.client.getValidAccountStatus() ?? { loggedIn: false }
   })
   ipcMain.handle(IPC_CHANNELS.aiAccountLogin, (event, ...args: unknown[]) => {
     assertAuthIpc(event, args)

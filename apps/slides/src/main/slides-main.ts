@@ -101,7 +101,6 @@ import {
   pasteElements,
   reorderElement,
   reparseDeck,
-  savePptx,
   savePptxToFile,
   commitSaved,
   setElementFont,

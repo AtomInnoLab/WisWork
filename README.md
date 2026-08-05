@@ -59,6 +59,53 @@ The sheets app additionally needs a Rust toolchain for its xlsx sidecar
 (`cargo` on PATH); `npm run build -w @wiswork/sheets` compiles it
 automatically.
 
+### Development authentication and model access
+
+Run the unified Shell for OAuth development. The Shell is the only process that registers and
+owns the `wiswork://oauth/callback` deep link; packaged macOS and Windows builds declare that
+protocol in the installer metadata. Docs, Sheets, Slides, and PDF standalone builds deliberately
+do not register it and fail closed with `auth_unavailable_in_standalone` when login is requested.
+
+The development OAuth defaults target WisPaper Logto and its Gateway. They can be overridden by
+the non-secret main-process environment variables `WISWORK_OAUTH_AUTHORIZATION_URL`,
+`WISWORK_OAUTH_CALLBACK_URL`, `WISWORK_OAUTH_REFRESH_URL`, and `WISWORK_OAUTH_CLIENT_ID`.
+The desktop redirect URI is `wiswork://oauth/callback`. The login request uses OAuth state and
+PKCE S256; the Gateway callback request includes the authorization code, PKCE verifier, desktop
+redirect URI, and client ID. Deployment is blocked until the Gateway owner confirms that it
+validates and consumes the PKCE verifier for this client. A fixed refresh code, OAuth tokens, or
+other service-side credentials must never be configured in the desktop app.
+
+For local model requests, provide the service credential only in the environment of the Electron
+main process:
+
+```bash
+WISWORK_MODEL_API_KEY='<development-service-key>' npm run dev
+```
+
+Do not put this value in `.env` files committed to the repository, renderer settings, project
+files, command-line arguments, screenshots, or logs. The current development provider is fixed to
+`https://wismodel-proxy-dev.atominnolab.com/api/v1` with default model
+`deepseek/deepseek-v4-flash-0731`; renderers cannot override its base URL or authorization header.
+Login and the model credential are separate gates: a valid OAuth session does not supply the
+model service key.
+
+This development phase does not route model traffic through the WisPaper Gateway and does not
+integrate WisUsage accounting or user-level billing. Features formerly supplied by the removed
+cloud runtime—image generation, media analysis, cloud slide generation, and cloud PDF conversion—are
+unavailable and return `unsupported_feature`; web/image search retains its documented
+Serper/DuckDuckGo paths.
+
+Before accepting a real integration build, verify all of the following without recording tokens:
+
+- Gateway contract review confirms PKCE verifier validation and one-time authorization-code use.
+- A packaged macOS and Windows build each completes cold-start login, deep-link return, restart
+  session restore, refresh, logout, and repeated/expired callback rejection.
+- Standalone editor builds neither claim the `wiswork` protocol nor offer a working login path.
+- An authenticated Shell streams a model response and completes a tool call against the approved
+  development endpoint, while missing credentials fail as `model_credentials_missing`.
+- Application logs, renderer IPC traffic, settings, user projects, crash output, and packaged
+  resources contain no service key, authorization code, access token, or refresh token.
+
 Local UI/e2e driver scripts (Playwright + Electron, for local acceptance, not
 committed by default) live in [`scripts/drivers/`](scripts/drivers/README.md).
 

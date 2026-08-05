@@ -43,6 +43,57 @@ function fixture(now = 1_000) {
 }
 
 describe('OAuth authorization and callback', () => {
+  it('bounds pending transactions and retains a bounded reused-state classification', async () => {
+    let sequence = 0
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ token: 'a', refresh_token: 'r', user_id: 'u', expires_in: 60 }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    )
+    const client = createAuthClient({
+      fetch,
+      store: memoryStore(),
+      randomBytes: (size) => new Uint8Array(size).fill(++sequence),
+    })
+    const requests = Array.from({ length: 40 }, () => client.createAuthorizationRequest())
+
+    await expect(
+      client.consumeCallback(`wiswork://oauth/callback?code=old&state=${requests[0]!.state}`),
+    ).rejects.toMatchObject({ code: 'invalid_state' })
+
+    const current = requests.at(-1)!
+    const callback = `wiswork://oauth/callback?code=ok&state=${current.state}`
+    await client.consumeCallback(callback)
+    await expect(client.consumeCallback(callback)).rejects.toMatchObject({
+      code: 'callback_reused',
+    })
+
+    for (let index = 0; index < 80; index += 1) {
+      const request = client.createAuthorizationRequest()
+      await client.consumeCallback(`wiswork://oauth/callback?code=${index}&state=${request.state}`)
+    }
+    await expect(client.consumeCallback(callback)).rejects.toMatchObject({ code: 'invalid_state' })
+  })
+
+  it('removes expired transactions during normal authorization activity', async () => {
+    let now = 1_000
+    let sequence = 0
+    const client = createAuthClient({
+      fetch: vi.fn(),
+      store: memoryStore(),
+      now: () => now,
+      randomBytes: (size) => new Uint8Array(size).fill(++sequence),
+    })
+    const expired = client.createAuthorizationRequest()
+    now += 10 * 60_000
+    client.createAuthorizationRequest()
+    await expect(
+      client.consumeCallback(`wiswork://oauth/callback?code=old&state=${expired.state}`),
+    ).rejects.toMatchObject({ code: 'callback_expired' })
+  })
+
   it('uses the configured Logto endpoint and PKCE S256', () => {
     const { client } = fixture()
     const request = client.createAuthorizationRequest()

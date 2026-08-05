@@ -57,7 +57,7 @@ function validateSlidesAiObject(
   if (Object.keys(object).some((key) => !allowed.includes(key))) {
     throw new AiIpcError('invalid_payload')
   }
-  let encoded = ''
+  let encoded: string
   try {
     encoded = JSON.stringify(object)
   } catch {
@@ -88,13 +88,13 @@ export function registerAiIpc(): void {
     saveSettings: (settings) => writeJson(AI_SETTINGS_PATH(), settings),
     getLoggedIn: async () => {
       const runtime = getElectronAuthRuntimeOrNull()
-      return runtime ? (await runtime.client.getAccountStatus()).loggedIn : false
+      return runtime ? (await runtime.client.getValidAccountStatus()).loggedIn : false
     },
   })
 
   ipcMain.handle('auth:status', (event, ...args: unknown[]) => {
     assertAuthIpc(event, args)
-    return getElectronAuthRuntimeOrNull()?.client.getAccountStatus() ?? { loggedIn: false }
+    return getElectronAuthRuntimeOrNull()?.client.getValidAccountStatus() ?? { loggedIn: false }
   })
   ipcMain.handle('auth:login', (event, ...args: unknown[]) => {
     assertAuthIpc(event, args)

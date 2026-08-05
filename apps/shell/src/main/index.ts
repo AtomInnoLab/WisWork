@@ -102,7 +102,7 @@ import {
   requestPdfSaveAs,
   setPdfSaveAsInFlight,
 } from '../../../pdf/src/main/pdf-main'
-import type { AccountLoginEvent, RecentEntry, RecentPage, RenameResult } from '../shared/home-api'
+import type { RecentEntry, RecentPage, RenameResult } from '../shared/home-api'
 import { HOME_CHANNELS } from '../shared/home-api'
 import type { TabKind } from '../shared/tabs-api'
 import { TABS_CHANNELS } from '../shared/tabs-api'
@@ -110,6 +110,7 @@ import { normalizeRecentQuery, pageRecentPaths, statExistingPaths } from './rece
 import { TabManager } from './tab-manager'
 import { initAutoUpdater } from './updater'
 import { migrateLegacyUserData } from './user-data-migration'
+import { createAuthDeepLinkQueue } from './auth-deep-link-queue'
 
 /**
  * WisWork unified shell: ONE Electron app, ONE BrowserWindow, hosting the
@@ -179,8 +180,14 @@ const requireAuthRuntime = (): ReturnType<typeof initializeElectronAuthRuntime> 
   if (!authRuntime) throw new AuthError('auth_not_initialized')
   return authRuntime
 }
-const pendingAuthCallbacks: string[] = []
 let accountLoginSender: Electron.WebContents | null = null
+const authDeepLinks = createAuthDeepLinkQueue({
+  notify(event) {
+    if (accountLoginSender && !accountLoginSender.isDestroyed()) {
+      accountLoginSender.send(HOME_CHANNELS.accountLoginEvent, event)
+    }
+  },
+})
 
 // ---- UI language ----
 // Persisted in userData/app-settings.json so the editor modules can read the
@@ -1444,7 +1451,7 @@ function registerHomeIpc(): void {
   let pendingLoginUrl = ''
   ipcMain.handle(HOME_CHANNELS.accountStatus, (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
-    return requireAuthRuntime().client.getAccountStatus()
+    return requireAuthRuntime().client.getValidAccountStatus()
   })
   ipcMain.handle(HOME_CHANNELS.accountLogin, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
@@ -1949,33 +1956,12 @@ function revealShellWindow(): void {
   shellWindow?.focus()
 }
 
-async function handleAuthDeepLink(input: string | readonly string[]): Promise<boolean> {
-  const callback = extractCallbackUrl(input)
-  if (!callback) return false
-  if (!authRuntime) {
-    pendingAuthCallbacks.push(callback)
-    return true
-  }
-  try {
-    await requireAuthRuntime().client.consumeCallback(callback)
-    if (accountLoginSender && !accountLoginSender.isDestroyed()) {
-      accountLoginSender.send(HOME_CHANNELS.accountLoginEvent, { phase: 'success' })
-    }
-  } catch (error) {
-    const code = error instanceof AuthError ? error.code : 'login_failed'
-    if (accountLoginSender && !accountLoginSender.isDestroyed()) {
-      accountLoginSender.send(HOME_CHANNELS.accountLoginEvent, { phase: 'error', error: code })
-    }
-  }
-  return true
-}
-
 registerAuthProtocolRouting({
   registerProtocolClient: (protocol) => app.setAsDefaultProtocolClient(protocol),
   onOpenUrl: (handler) => app.on('open-url', handler),
   onSecondInstance: (handler) => app.on('second-instance', (_event, argv) => handler(argv)),
   initialArgv: process.argv,
-  consume: (input) => handleAuthDeepLink(input),
+  consume: async (input) => authDeepLinks.handle(input),
 })
 
 // On macOS a file opened from Finder is not in argv; it arrives via the open-file event (before ready).
@@ -2034,7 +2020,7 @@ app.whenReady().then(() => {
     safeStorage,
     openExternal: (url) => shell.openExternal(url),
   })
-  for (const callback of pendingAuthCallbacks.splice(0)) void handleAuthDeepLink(callback)
+  void authDeepLinks.initialize((callback) => requireAuthRuntime().client.consumeCallback(callback))
 
   void installMainProcessProxy()
   app.setAccessibilitySupportEnabled(true)

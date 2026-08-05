@@ -23,7 +23,11 @@ function validRequest(requestId = ID) {
   }
 }
 
-function harness(options?: { trusted?: number[]; loggedIn?: boolean }) {
+function harness(options?: {
+  trusted?: number[]
+  loggedIn?: boolean
+  getLoggedIn?: () => Promise<boolean>
+}) {
   const handlers = new Map<string, (event: WisworkIpcEvent, ...args: unknown[]) => unknown>()
   const ipcMain: IpcMainLike = {
     handle: (channel, handler) => {
@@ -52,7 +56,7 @@ function harness(options?: { trusted?: number[]; loggedIn?: boolean }) {
     isTrustedSender: (id) => (options?.trusted ?? [1]).includes(id),
     loadSettings: () => defaultAiSettings(),
     saveSettings: (settings) => saved.push(settings),
-    getLoggedIn: async () => options?.loggedIn ?? true,
+    getLoggedIn: options?.getLoggedIn ?? (async () => options?.loggedIn ?? true),
   })
   const invoke = (channel: string, senderId: number, ...args: unknown[]) =>
     handlers.get(channel)!(event(senderId), ...args)
@@ -162,16 +166,14 @@ describe('registerWisworkModelIpc', () => {
     try {
       vi.stubGlobal(
         'fetch',
-        vi
-          .fn()
-          .mockImplementation(
-            (_url: string, init: RequestInit) =>
-              new Promise((_resolve, reject) =>
-                init.signal!.addEventListener('abort', () => reject(new Error('aborted')), {
-                  once: true,
-                }),
-              ),
-          ),
+        vi.fn().mockImplementation(
+          (_url: string, init: RequestInit) =>
+            new Promise((_resolve, reject) =>
+              init.signal!.addEventListener('abort', () => reject(new Error('aborted')), {
+                once: true,
+              }),
+            ),
+        ),
       )
       const { invoke, sent } = harness()
       const run = invoke('stream', 1, validRequest())
@@ -212,6 +214,25 @@ describe('registerWisworkModelIpc', () => {
       expect.objectContaining({ type: 'error', errorCode: 'auth_required' }),
     )
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('fails closed with an upstream error when session validation cannot refresh', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const { invoke, sent } = harness({
+      getLoggedIn: async () => {
+        throw new Error('temporary refresh failure containing private response')
+      },
+    })
+    await invoke('stream', 1, validRequest())
+    expect(sent).toContainEqual(
+      expect.objectContaining({ type: 'error', errorCode: 'model_upstream_unavailable' }),
+    )
+    await expect(
+      invoke('chat', 1, { settings: defaultAiSettings(), system: 's', user: 'u' }),
+    ).resolves.toMatchObject({ ok: false, errorCode: 'model_upstream_unavailable' })
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(JSON.stringify(sent)).not.toContain('private response')
   })
 
   it('forces the default model and strips all provider keys/base URLs from settings', async () => {

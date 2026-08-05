@@ -320,12 +320,7 @@ export function registerWisworkModelIpc(options: RegisterWisworkModelIpcOptions)
     if (!options.isTrustedSender(event.sender.id)) throw new AiIpcError('untrusted_sender')
   }
   const settingsForRequest = async (settings: AiSettings) => {
-    let loggedIn = false
-    try {
-      loggedIn = await options.getLoggedIn()
-    } catch {
-      loggedIn = false
-    }
+    const loggedIn = await options.getLoggedIn()
     return resolveWisworkMainRequest(loggedIn, settings.providers.wiswork)
   }
   const send = (event: WisworkIpcEvent, chunk: AiStreamChunk) => {
@@ -422,11 +417,11 @@ export function registerWisworkModelIpc(options: RegisterWisworkModelIpcOptions)
       trusted(event)
       if (args.length !== 1) throw new AiIpcError('invalid_payload')
       const request = validateAiChatRequest(args[0])
-      const resolved = await settingsForRequest(request.settings)
-      if (!resolved.ok) {
-        return { ok: false, error: resolved.errorCode, errorCode: resolved.errorCode }
-      }
       try {
+        const resolved = await settingsForRequest(request.settings)
+        if (!resolved.ok) {
+          return { ok: false, error: resolved.errorCode, errorCode: resolved.errorCode }
+        }
         const result = await chatForProvider(
           resolved.provider,
           resolved.config,

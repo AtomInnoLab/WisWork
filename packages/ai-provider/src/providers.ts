@@ -102,6 +102,7 @@ export function resolveAiSettings(
   const knownIds = new Set(AI_PROVIDERS.map((provider) => provider.id))
   const providers = { ...defaults.providers }
   for (const [id, config] of Object.entries(stored.providers)) {
+    if (id === 'wiswork') continue
     if (knownIds.has(id as AiProviderId)) providers[id as AiProviderId] = config
   }
   return {

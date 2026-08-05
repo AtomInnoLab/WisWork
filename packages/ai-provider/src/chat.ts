@@ -1,4 +1,4 @@
-import { AiProviderError, safeHttpProviderError } from './errors'
+import { safeHttpProviderError } from './errors'
 import { httpBodyDetail } from './http-error'
 import { WISWORK_MODEL_BASE_URL } from './providers'
 import type { AiChatResponse, AiProviderConfig, AiProviderId } from './types'

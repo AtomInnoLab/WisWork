@@ -17,6 +17,14 @@ interface PendingTransaction {
   attemptGeneration: number
 }
 
+interface RecentTransaction {
+  code: 'callback_reused' | 'callback_expired'
+  expiresAt: number
+}
+
+const MAX_PENDING_TRANSACTIONS = 32
+const MAX_RECENT_TRANSACTIONS = 64
+
 export interface AuthClientOptions {
   store: SessionStore
   fetch?: typeof globalThis.fetch
@@ -29,6 +37,7 @@ export interface AuthClient {
   createAuthorizationRequest(): { url: string; state: string }
   consumeCallback(url: string): Promise<AuthSession>
   getAccountStatus(): Promise<AccountStatus>
+  getValidAccountStatus(): Promise<AccountStatus>
   getAccessToken(): Promise<string | null>
   refresh(): Promise<AuthSession>
   logout(): Promise<void>
@@ -62,6 +71,7 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
   const randomBytes = options.randomBytes ?? ((size: number) => nodeRandomBytes(size))
   let now = options.now ?? Date.now
   const pending = new Map<string, PendingTransaction>()
+  const recent = new Map<string, RecentTransaction>()
   let refreshFlight: Promise<AuthSession> | null = null
   let loginAttemptGeneration = 0
   let sessionRevision = 0
@@ -76,8 +86,29 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
     return result
   }
 
+  const remember = (state: string, code: RecentTransaction['code']) => {
+    recent.delete(state)
+    recent.set(state, { code, expiresAt: now() + config.transactionTtlMs })
+    while (recent.size > MAX_RECENT_TRANSACTIONS) recent.delete(recent.keys().next().value!)
+  }
+
+  const pruneTransactions = () => {
+    const currentTime = now()
+    for (const [state, transaction] of pending) {
+      if (currentTime >= transaction.expiresAt) {
+        pending.delete(state)
+        remember(state, 'callback_expired')
+      }
+    }
+    for (const [state, transaction] of recent) {
+      if (currentTime >= transaction.expiresAt) recent.delete(state)
+    }
+    while (pending.size >= MAX_PENDING_TRANSACTIONS) pending.delete(pending.keys().next().value!)
+  }
+
   const client: AuthClient = {
     createAuthorizationRequest() {
+      pruneTransactions()
       const state = base64Url(randomBytes(32))
       const verifier = base64Url(randomBytes(32))
       const challenge = createHash('sha256').update(verifier).digest('base64url')
@@ -127,6 +158,9 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
       const state = url.searchParams.get('state')
       if (!code || code.length > 4_096 || !state || state.length > 512)
         throw new AuthError('invalid_callback')
+      pruneTransactions()
+      const remembered = [...recent.entries()].find(([candidate]) => equalSecret(state, candidate))
+      if (remembered) throw new AuthError(remembered[1].code)
       const transaction = [...pending.values()].find((candidate) =>
         equalSecret(state, candidate.state),
       )
@@ -136,12 +170,15 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
       }
       if (transaction.consumed) throw new AuthError('callback_reused')
       if (now() >= transaction.expiresAt) {
-        transaction.consumed = true
+        pending.delete(transaction.state)
+        remember(transaction.state, 'callback_expired')
         throw new AuthError('callback_expired')
       }
       if (transaction.attemptGeneration !== loginAttemptGeneration)
         throw new AuthError('auth_required')
       transaction.consumed = true
+      pending.delete(transaction.state)
+      remember(transaction.state, 'callback_reused')
       const callbackAttemptGeneration = transaction.attemptGeneration
       const callbackUrl = new URL(config.callbackEndpoint)
       callbackUrl.searchParams.set('code', code)
@@ -159,6 +196,19 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
       })
     },
     async getAccountStatus() {
+      return publicAccountStatus(await options.store.load())
+    },
+    async getValidAccountStatus() {
+      const session = await options.store.load()
+      if (!session) return { loggedIn: false }
+      if (session.expiresAt === undefined || session.expiresAt > now() + 60_000)
+        return publicAccountStatus(session)
+      try {
+        await client.getAccessToken()
+      } catch (error) {
+        if (error instanceof AuthError && error.code === 'auth_required') return { loggedIn: false }
+        throw error
+      }
       return publicAccountStatus(await options.store.load())
     },
     async getAccessToken() {
@@ -202,6 +252,7 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
     async logout() {
       loginAttemptGeneration += 1
       pending.clear()
+      recent.clear()
       return mutateSession(async () => {
         await options.store.clear()
         sessionRevision += 1

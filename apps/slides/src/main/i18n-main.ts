@@ -71,7 +71,6 @@ export const tMain = createI18n({
     errWisWorkNotLoggedIn: '未登录 WisWork:请点击下方「登录 WisWork」完成登录后重试',
     errNoApiKey: '未配置 {provider} 的 API Key',
     errNoModel: '未配置模型名称',
-    errWisWorkCli: 'wiswork 未登录:请先运行 wiswork login 登录 WisWork 账号',
     errNoDeckAppend:
       '当前没有可追加的文稿（会话不存在）。请先用 mode:"replace" 生成首页，或改用原生工具新增页面。',
     errAppendFailed: '追加失败：{reason}',
@@ -179,8 +178,6 @@ export const tMain = createI18n({
       'Not signed in to WisWork: click “Sign in to WisWork” below, sign in, then retry',
     errNoApiKey: 'No API key configured for {provider}',
     errNoModel: 'No model name configured',
-    errWisWorkCli:
-      'wiswork not signed in: run wiswork login to sign in to your WisWork account first',
     errNoDeckAppend:
       'No deck to append to (session missing). Generate the first page with mode:"replace" or add pages with the native tools.',
     errAppendFailed: 'Append failed: {reason}',
@@ -288,8 +285,6 @@ export const tMain = createI18n({
       'WisWork にサインインしていません。下の「WisWork にサインイン」からサインインして再試行してください',
     errNoApiKey: '{provider} の API キーが設定されていません',
     errNoModel: 'モデル名が設定されていません',
-    errWisWorkCli:
-      'wiswork が未サインインです。先に wiswork login を実行して WisWork アカウントにサインインしてください',
     errNoDeckAppend:
       '追加先のプレゼンテーションがありません（セッションが存在しません）。まず mode:"replace" で最初のページを生成するか、ネイティブ ツールでページを追加してください。',
     errAppendFailed: '追加に失敗しました: {reason}',
@@ -401,8 +396,6 @@ export const tMain = createI18n({
       'WisWork에 로그인되어 있지 않습니다. 아래 "WisWork 로그인"을 눌러 로그인한 뒤 다시 시도하세요',
     errNoApiKey: '{provider}의 API 키가 설정되지 않았습니다',
     errNoModel: '모델 이름이 설정되지 않았습니다',
-    errWisWorkCli:
-      'wiswork가 로그인되어 있지 않습니다. 먼저 wiswork login을 실행해 WisWork 계정에 로그인하세요',
     errNoDeckAppend:
       '추가할 수 있는 문서가 없습니다(세션 없음). 먼저 mode:"replace"로 첫 페이지를 생성하거나 네이티브 도구로 페이지를 추가하세요.',
     errAppendFailed: '추가 실패: {reason}',
@@ -511,8 +504,6 @@ export const tMain = createI18n({
       'Non connecté à WisWork : cliquez sur « Se connecter à WisWork » ci-dessous, connectez-vous puis réessayez',
     errNoApiKey: 'Aucune clé API configurée pour {provider}',
     errNoModel: 'Aucun nom de modèle configuré',
-    errWisWorkCli:
-      "wiswork non connecté : exécutez d'abord wiswork login pour vous connecter à votre compte WisWork",
     errNoDeckAppend:
       'Aucune présentation à compléter (session inexistante). Générez d\'abord la première page avec mode:"replace" ou ajoutez des pages avec les outils natifs.',
     errAppendFailed: "Échec de l'ajout : {reason}",
@@ -626,8 +617,6 @@ export const tMain = createI18n({
       'Nicht bei WisWork angemeldet: Klicken Sie unten auf „Bei WisWork anmelden“, melden Sie sich an und versuchen Sie es erneut',
     errNoApiKey: 'Kein API-Schlüssel für {provider} konfiguriert',
     errNoModel: 'Kein Modellname konfiguriert',
-    errWisWorkCli:
-      'wiswork nicht angemeldet: Führen Sie zuerst wiswork login aus, um sich bei Ihrem WisWork-Konto anzumelden',
     errNoDeckAppend:
       'Keine Präsentation zum Anfügen vorhanden (Sitzung fehlt). Generieren Sie zuerst die erste Seite mit mode:"replace" oder fügen Sie Seiten mit den nativen Tools hinzu.',
     errAppendFailed: 'Anfügen fehlgeschlagen: {reason}',
@@ -740,8 +729,6 @@ export const tMain = createI18n({
       'No has iniciado sesión en WisWork: pulsa «Iniciar sesión en WisWork» abajo, inicia sesión y vuelve a intentarlo',
     errNoApiKey: 'No hay clave de API configurada para {provider}',
     errNoModel: 'No hay nombre de modelo configurado',
-    errWisWorkCli:
-      'wiswork sin sesión iniciada: ejecuta primero wiswork login para iniciar sesión en tu cuenta de WisWork',
     errNoDeckAppend:
       'No hay ninguna presentación a la que anexar (no existe la sesión). Genera primero la primera página con mode:"replace" o añade páginas con las herramientas nativas.',
     errAppendFailed: 'Error al anexar: {reason}',
@@ -853,8 +840,6 @@ export const tMain = createI18n({
       'ยังไม่ได้ลงชื่อเข้าใช้ WisWork: แตะ “ลงชื่อเข้าใช้ WisWork” ด้านล่าง แล้วลองอีกครั้ง',
     errNoApiKey: 'ยังไม่ได้ตั้งค่า API Key ของ {provider}',
     errNoModel: 'ยังไม่ได้ตั้งค่าชื่อโมเดล',
-    errWisWorkCli:
-      'wiswork ยังไม่ได้เข้าสู่ระบบ: โปรดรัน wiswork login เพื่อเข้าสู่ระบบบัญชี WisWork ก่อน',
     errNoDeckAppend:
       'ไม่มีเอกสารให้เพิ่มต่อท้าย (ไม่มีเซสชัน) โปรดสร้างหน้าแรกด้วย mode:"replace" ก่อน หรือใช้เครื่องมือเนทีฟเพิ่มหน้าแทน',
     errAppendFailed: 'เพิ่มต่อท้ายไม่สำเร็จ: {reason}',
@@ -963,7 +948,6 @@ export const tMain = createI18n({
       'Belum masuk ke WisWork: klik “Masuk ke WisWork” di bawah, lalu coba lagi',
     errNoApiKey: 'API Key untuk {provider} belum dikonfigurasi',
     errNoModel: 'Nama model belum dikonfigurasi',
-    errWisWorkCli: 'wiswork belum masuk: jalankan wiswork login dulu untuk masuk ke akun WisWork',
     errNoDeckAppend:
       'Tidak ada dokumen yang bisa ditambahi (sesi tidak ada). Buat halaman pertama dengan mode:"replace" dulu, atau tambahkan halaman dengan alat bawaan.',
     errAppendFailed: 'Gagal menambahkan: {reason}',
@@ -1076,8 +1060,6 @@ export const tMain = createI18n({
       'Вы не вошли в WisWork: нажмите «Войти в WisWork» ниже, войдите и повторите попытку',
     errNoApiKey: 'API-ключ для {provider} не настроен',
     errNoModel: 'Не указано имя модели',
-    errWisWorkCli:
-      'wiswork не авторизован: сначала выполните wiswork login, чтобы войти в учётную запись WisWork',
     errNoDeckAppend:
       'Нет презентации для добавления страниц (сессия отсутствует). Сначала создайте первую страницу с mode:"replace" или добавьте страницы нативными инструментами.',
     errAppendFailed: 'Сбой добавления: {reason}',
@@ -1189,8 +1171,6 @@ export const tMain = createI18n({
       'لم تسجّل الدخول إلى WisWork: انقر على «تسجيل الدخول إلى WisWork» أدناه ثم أعد المحاولة',
     errNoApiKey: 'لم يتم تكوين مفتاح API لـ {provider}',
     errNoModel: 'لم يتم تكوين اسم النموذج',
-    errWisWorkCli:
-      'wiswork غير مسجَّل الدخول: شغّل wiswork login أولًا لتسجيل الدخول إلى حساب WisWork',
     errNoDeckAppend:
       'لا يوجد مستند يمكن الإلحاق به (الجلسة غير موجودة). أنشئ الصفحة الأولى باستخدام mode:"replace" أولًا، أو أضف صفحات بالأدوات الأصلية.',
     errAppendFailed: 'فشل الإلحاق: {reason}',
@@ -1299,8 +1279,6 @@ export const tMain = createI18n({
       'Não conectado ao WisWork: clique em “Entrar no WisWork” abaixo, entre e tente novamente',
     errNoApiKey: 'Nenhuma chave de API configurada para {provider}',
     errNoModel: 'Nenhum nome de modelo configurado',
-    errWisWorkCli:
-      'wiswork não conectado: execute wiswork login primeiro para entrar na sua conta WisWork',
     errNoDeckAppend:
       'Não há apresentação para anexar (sessão inexistente). Gere a primeira página com mode:"replace" ou adicione páginas com as ferramentas nativas.',
     errAppendFailed: 'Falha ao anexar: {reason}',
@@ -1413,8 +1391,6 @@ export const tMain = createI18n({
       'Accesso a WisWork non effettuato: fai clic su “Accedi a WisWork” qui sotto, accedi e riprova',
     errNoApiKey: 'Nessuna chiave API configurata per {provider}',
     errNoModel: 'Nessun nome di modello configurato',
-    errWisWorkCli:
-      "wiswork non ha effettuato l'accesso: esegui prima wiswork login per accedere al tuo account WisWork",
     errNoDeckAppend:
       'Nessuna presentazione a cui aggiungere pagine (sessione mancante). Genera la prima pagina con mode:"replace" o aggiungi pagine con gli strumenti nativi.',
     errAppendFailed: 'Aggiunta non riuscita: {reason}',
@@ -1528,8 +1504,6 @@ export const tMain = createI18n({
       'Nie zalogowano do WisWork: kliknij „Zaloguj się do WisWork” poniżej, zaloguj się i spróbuj ponownie',
     errNoApiKey: 'Nie skonfigurowano klucza API dla {provider}',
     errNoModel: 'Nie skonfigurowano nazwy modelu',
-    errWisWorkCli:
-      'wiswork nie jest zalogowany: najpierw uruchom wiswork login, aby zalogować się na konto WisWork',
     errNoDeckAppend:
       'Brak prezentacji do rozszerzenia (brak sesji). Najpierw wygeneruj pierwszą stronę z mode:"replace" albo dodaj strony narzędziami natywnymi.',
     errAppendFailed: 'Dołączanie nie powiodło się: {reason}',
@@ -1641,8 +1615,6 @@ export const tMain = createI18n({
       'Niet aangemeld bij WisWork: klik hieronder op “Aanmelden bij WisWork”, meld u aan en probeer het opnieuw',
     errNoApiKey: 'Geen API-sleutel geconfigureerd voor {provider}',
     errNoModel: 'Geen modelnaam geconfigureerd',
-    errWisWorkCli:
-      'wiswork is niet aangemeld: voer eerst wiswork login uit om u aan te melden bij uw WisWork-account',
     errNoDeckAppend:
       'Geen presentatie om aan toe te voegen (sessie ontbreekt). Genereer eerst de eerste pagina met mode:"replace" of voeg pagina\'s toe met de native tools.',
     errAppendFailed: 'Toevoegen mislukt: {reason}',
@@ -1753,8 +1725,6 @@ export const tMain = createI18n({
       'Belum log masuk ke WisWork: klik “Log masuk ke WisWork” di bawah, kemudian cuba lagi',
     errNoApiKey: 'Kunci API untuk {provider} belum dikonfigurasikan',
     errNoModel: 'Nama model belum dikonfigurasikan',
-    errWisWorkCli:
-      'wiswork belum log masuk: jalankan wiswork login dahulu untuk log masuk ke akaun WisWork anda',
     errNoDeckAppend:
       'Tiada persembahan untuk ditambah (sesi tidak wujud). Jana halaman pertama dengan mode:"replace" dahulu, atau tambah halaman dengan alat asli.',
     errAppendFailed: 'Gagal menambah: {reason}',
@@ -1863,7 +1833,6 @@ export const tMain = createI18n({
     errWisWorkNotLoggedIn: 'לא מחובר ל-WisWork: לחץ על "התחבר ל-WisWork" למטה, התחבר ונסה שוב',
     errNoApiKey: 'לא הוגדר מפתח API עבור {provider}',
     errNoModel: 'לא הוגדר שם מודל',
-    errWisWorkCli: 'wiswork אינו מחובר: הרץ תחילה wiswork login כדי להיכנס לחשבון WisWork שלך',
     errNoDeckAppend:
       'אין מצגת להוסיף אליה (הפעלה חסרה). צור תחילה את העמוד הראשון עם mode:"replace" או הוסף עמודים בכלים המקוריים.',
     errAppendFailed: 'ההוספה נכשלה: {reason}',
@@ -1971,8 +1940,6 @@ export const tMain = createI18n({
       'WisWork में साइन इन नहीं है: नीचे “WisWork में साइन इन करें” पर क्लिक करें, साइन इन करें और फिर से कोशिश करें',
     errNoApiKey: '{provider} के लिए कोई API कुंजी कॉन्फ़िगर नहीं है',
     errNoModel: 'कोई मॉडल नाम कॉन्फ़िगर नहीं है',
-    errWisWorkCli:
-      'wiswork साइन इन नहीं है: पहले wiswork login चलाकर अपने WisWork खाते में साइन इन करें',
     errNoDeckAppend:
       'जोड़ने के लिए कोई प्रस्तुति नहीं है (सत्र मौजूद नहीं)। पहले mode:"replace" से पहला पृष्ठ बनाएँ, या नेटिव टूल से पृष्ठ जोड़ें।',
     errAppendFailed: 'जोड़ना विफल: {reason}',
@@ -2081,7 +2048,6 @@ export const tMain = createI18n({
     errWisWorkNotLoggedIn: '未登入 WisWork:請點擊下方「登入 WisWork」完成登入後重試',
     errNoApiKey: '未設定 {provider} 的 API Key',
     errNoModel: '未設定模型名稱',
-    errWisWorkCli: 'wiswork 未登入:請先執行 wiswork login 登入 WisWork 帳號',
     errNoDeckAppend:
       '目前沒有可附加的簡報（工作階段不存在）。請先用 mode:"replace" 產生首頁，或改用原生工具新增頁面。',
     errAppendFailed: '附加失敗：{reason}',

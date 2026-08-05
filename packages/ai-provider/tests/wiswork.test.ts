@@ -213,9 +213,12 @@ describe('desktop WisModel security boundary', () => {
     ]) {
       const source = readRepo(relative)
       expect(source).toContain('registerWisworkModelIpc')
-      expect(source).toContain('getAccountStatus()')
+      expect(source).toContain('getValidAccountStatus()')
       expect(source).toContain('isTrustedSender:')
     }
+    const shell = readRepo('apps/shell/src/main/index.ts')
+    expect(shell).toContain('HOME_CHANNELS.accountStatus')
+    expect(shell).toContain('getValidAccountStatus()')
   })
 
   it('keeps the service env name and main config resolver out of renderer transports', () => {

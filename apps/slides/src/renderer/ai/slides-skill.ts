@@ -1121,14 +1121,6 @@ const fail = (summary: string, output: string) => ({
 // data-dense briefs must declare a dataSource, 'search' is only accepted after a
 // real web_search in this conversation, and 'sample' figures must be disclosed.
 
-/** Specific figures: percentages, money, magnitude units, decimals — not bare years/counts */
-const SPECIFIC_FIGURE_RE =
-  /\d[\d,.]*\s*(?:%|％|亿|萬|万|兆|billion|million|\bbn\b|\bmn\b)|[¥￥$€£]\s*\d|\d+\.\d+/g
-
-function countSpecificFigures(text: string): number {
-  return text.match(SPECIFIC_FIGURE_RE)?.length ?? 0
-}
-
 /**
  * Returns an error message when the declared dataSource does not justify the figures
  * this call carries, null when the call may proceed.
@@ -1184,18 +1176,11 @@ export function auditPageHtml(html: string): string | null {
   return null
 }
 
-/** Append the missing-image report to the tool output: the model learns which pages lack images and how to fix them, instead of silently treating it as success. */
-function imageFailNote(fails?: { page: number; url: string }[]): string {
-  if (!fails?.length) return ''
-  const detail = fails.map((f) => `page ${f.page} (${f.url})`).join(', ')
-  return `\n⚠️ Missing images: ${detail} failed to download/convert; those image slots are blank on the page. Re-run image_search with more generic English keywords, pick a working image, patch it onto the page with insert_web_image (slideIndex = page number - 1), then reply to the user.`
-}
-
 async function executeTool(
   access: DeckAccess,
   call: AgentToolCall,
   state?: SkillState,
-  signal?: AbortSignal,
+  _signal?: AbortSignal,
 ) {
   const slides = access.getSlides()
   if (UNSUPPORTED_CLOUD_TOOLS.has(call.name)) {

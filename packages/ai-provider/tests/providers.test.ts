@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { AI_PROVIDERS, defaultAiSettings, resolveAiSettings } from '../src/providers'
 
 describe('defaultAiSettings', () => {
-  it('does not expose WisWork as an active provider', () => {
-    expect(AI_PROVIDERS.map((provider) => provider.id)).not.toContain('wiswork')
-    expect(defaultAiSettings().providers).not.toHaveProperty('wiswork')
+  it('exposes WisWork as the active provider without renderer credentials', () => {
+    expect(AI_PROVIDERS.map((provider) => provider.id)).toContain('wiswork')
+    expect(defaultAiSettings().providers.wiswork).toEqual({
+      apiKey: '',
+      model: 'deepseek/deepseek-v4-flash-0731',
+    })
   })
 
   it('gives every provider its default model and an empty key by default', () => {
@@ -38,7 +41,7 @@ describe('resolveAiSettings', () => {
     )
 
     expect(resolved.provider).toBe('wiswork')
-    expect(resolved.providers).not.toHaveProperty('wiswork')
+    expect(resolved.providers.wiswork).toEqual(defaultAiSettings().providers.wiswork)
     expect(JSON.stringify(resolved)).not.toContain('old-key')
   })
 

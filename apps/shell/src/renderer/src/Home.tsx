@@ -386,11 +386,11 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
 }
 
 // ── Account entry (bottom-left) ──────────────────────────
-// Currently the WisWork (wiswork) login entry; to be upgraded to a signup/account system later.
+// WisWork OAuth account entry and language switcher.
 // Language switching also lives in this popup menu.
 
 const LOGIN_POLL_MS = 2500
-/** fallback deadline when the CLI does not report expires_in (device codes live ~300s) */
+/** Safety deadline if the browser login never returns a callback. */
 const LOGIN_MAX_WAIT_MS = 300_000
 
 // sorted by ISO 639 language code — native-script labels have no natural
@@ -441,9 +441,14 @@ function AccountEntry() {
   // query login state + app version once on mount
   useEffect(() => {
     let alive = true
-    void window.aiOffice.accountStatus?.().then((s) => {
-      if (alive) setStatus(s)
-    })
+    void window.aiOffice
+      .accountStatus?.()
+      .then((s) => {
+        if (alive) setStatus(s)
+      })
+      .catch(() => {
+        if (alive) setStatus({ loggedIn: false })
+      })
     void window.aiOffice.getAppVersion?.().then((v) => {
       if (alive && v) setAppVersion(v)
     })
@@ -452,16 +457,23 @@ function AccountEntry() {
     }
   }, [])
 
-  // login progress pushed from main (wiswork login CLI output)
+  // OAuth launch/callback progress pushed from the main process.
   useEffect(() => {
     const off = window.aiOffice.onAccountLogin?.((ev) => {
       if (ev.phase === 'success') {
-        void window.aiOffice.accountStatus().then((s) => {
-          if (s.loggedIn) {
-            setStatus(s)
+        void window.aiOffice
+          .accountStatus()
+          .then((s) => {
+            if (s.loggedIn) {
+              setStatus(s)
+              setWaiting(false)
+            }
+          })
+          .catch(() => {
+            setStatus({ loggedIn: false })
             setWaiting(false)
-          }
-        })
+            setLoginError('network')
+          })
       } else if (ev.phase === 'error') {
         setWaiting(false)
         setLoginError(
@@ -472,19 +484,26 @@ function AccountEntry() {
     return off
   }, [])
 
-  // config-file polling stays as the fallback success path (works even if progress events are lost)
+  // Status polling is a fallback when a callback progress event is lost.
   useEffect(() => {
     if (!waiting) return
     const timer = setInterval(() => {
-      void window.aiOffice.accountStatus().then((s) => {
-        if (s.loggedIn) {
-          setStatus(s)
+      void window.aiOffice
+        .accountStatus()
+        .then((s) => {
+          if (s.loggedIn) {
+            setStatus(s)
+            setWaiting(false)
+          } else if (Date.now() > loginDeadline.current) {
+            setWaiting(false)
+            setLoginError('timeout')
+          }
+        })
+        .catch(() => {
+          setStatus({ loggedIn: false })
           setWaiting(false)
-        } else if (Date.now() > loginDeadline.current) {
-          setWaiting(false)
-          setLoginError('timeout')
-        }
-      })
+          setLoginError('network')
+        })
     }, LOGIN_POLL_MS)
     return () => clearInterval(timer)
   }, [waiting, loginNonce])
@@ -505,7 +524,7 @@ function AccountEntry() {
 
   const loggedIn = status?.loggedIn ?? false
   const email = status?.email ?? ''
-  const initial = email ? email[0].toUpperCase() : loggedIn ? 'G' : '?'
+  const initial = email ? email[0].toUpperCase() : loggedIn ? 'W' : '?'
   const errorText = loginError
     ? {
         timeout: t('loginTimeout'),
@@ -558,7 +577,7 @@ function AccountEntry() {
   }, [langFly])
 
   const startLogin = () => {
-    // clicking again while waiting = relaunch the login (main kills the stale CLI, so the new device code is the live one)
+    // Clicking again while waiting starts a fresh state/PKCE transaction.
     setLoginError(null)
     setWaiting(true)
     loginDeadline.current = Date.now() + LOGIN_MAX_WAIT_MS
@@ -828,10 +847,13 @@ export function Home() {
   )
 
   useEffect(() => {
-    void window.aiOffice.accountStatus?.().then((s) => {
-      const name = s?.loggedIn ? (s.email ?? '').split('@')[0] : ''
-      if (name) setAccountName(name[0].toUpperCase() + name.slice(1))
-    })
+    void window.aiOffice
+      .accountStatus?.()
+      .then((s) => {
+        const name = s?.loggedIn ? (s.email ?? '').split('@')[0] : ''
+        setAccountName(name ? name[0].toUpperCase() + name.slice(1) : '')
+      })
+      .catch(() => setAccountName(''))
   }, [])
 
   // ── Project state ──

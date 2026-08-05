@@ -102,6 +102,97 @@ function setup() {
 }
 
 describe('session lifecycle', () => {
+  it('reports logged out when no session exists without calling refresh', async () => {
+    const store: SessionStore = {
+      load: vi.fn(async () => null),
+      save: vi.fn(),
+      clear: vi.fn(),
+    }
+    const fetch = vi.fn()
+    const client = createAuthClient({ store, fetch })
+
+    await expect(client.getValidAccountStatus()).resolves.toEqual({ loggedIn: false })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('returns a safe valid status without refreshing an unexpired session', async () => {
+    const store: SessionStore = {
+      load: vi.fn(async () => ({
+        accessToken: 'unexposed-access',
+        refreshToken: 'unexposed-refresh',
+        userId: 'valid-user',
+        email: 'valid@example.com',
+        expiresAt: 200_000,
+      })),
+      save: vi.fn(),
+      clear: vi.fn(),
+    }
+    const fetch = vi.fn()
+    const client = createAuthClient({ store, fetch, now: () => 10_000 })
+
+    const status = await client.getValidAccountStatus()
+
+    expect(status).toEqual({ loggedIn: true, userId: 'valid-user', email: 'valid@example.com' })
+    expect(JSON.stringify(status)).not.toContain('unexposed')
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('refreshes an expired session before reporting it as logged in', async () => {
+    const { client, fetch, releases } = setup()
+    const first = client.getValidAccountStatus()
+    const second = client.getValidAccountStatus()
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+    releases()
+
+    await expect(first).resolves.toEqual({ loggedIn: true, userId: 'u' })
+    await expect(second).resolves.toEqual({ loggedIn: true, userId: 'u' })
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([400, 401])(
+    'clears invalid expired credentials and reports logged out after refresh %i',
+    async (status) => {
+      let value: AuthSession | null = {
+        accessToken: 'expired-access',
+        refreshToken: 'invalid-refresh',
+        userId: 'expired-user',
+        expiresAt: 1,
+      }
+      const store: SessionStore = {
+        load: vi.fn(async () => value),
+        save: vi.fn(async (next) => void (value = next)),
+        clear: vi.fn(async () => void (value = null)),
+      }
+      const fetch = vi.fn(async () => new Response('', { status }))
+      const client = createAuthClient({ store, fetch, now: () => 10_000 })
+
+      await expect(client.getValidAccountStatus()).resolves.toEqual({ loggedIn: false })
+      expect(await client.getAccountStatus()).toEqual({ loggedIn: false })
+      expect(store.clear).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it('does not report an expired session as logged in when refresh has a transient failure', async () => {
+    const store: SessionStore = {
+      load: vi.fn(async () => ({
+        accessToken: 'expired-access',
+        refreshToken: 'preserved-refresh',
+        userId: 'expired-user',
+        expiresAt: 1,
+      })),
+      save: vi.fn(),
+      clear: vi.fn(),
+    }
+    const client = createAuthClient({
+      store,
+      fetch: vi.fn(async () => new Response('', { status: 503 })),
+      now: () => 10_000,
+    })
+
+    await expect(client.getValidAccountStatus()).rejects.toMatchObject({ code: 'network_error' })
+    expect(store.clear).not.toHaveBeenCalled()
+  })
+
   it('coalesces concurrent refresh calls', async () => {
     const { client, fetch, releases } = setup()
     const first = client.refresh()

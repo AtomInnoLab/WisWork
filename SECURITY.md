@@ -21,6 +21,33 @@ All application windows run with the full Electron renderer lockdown:
   allow mailto). `file:`, `javascript:`, and custom schemes are always rejected.
 - No API keys are hardcoded. `WISWORK_MODEL_API_KEY` is read only in the Electron main process and is never returned over IPC or persisted by the app.
 
+## OAuth and Model Credential Boundaries
+
+- Only the unified WisWork Shell owns `wiswork://oauth/callback`. Standalone editor builds do not
+  register the protocol and login fails closed with `auth_unavailable_in_standalone`.
+- OAuth authorization uses high-entropy state and PKCE S256. Callback URLs are parsed against an
+  exact scheme/host/path and bounded field allowlist; pending transactions expire, have bounded
+  capacity, and are consumed once. Sessions are persisted only through Electron `safeStorage`.
+  Linux backends that provide plaintext or unknown storage are rejected.
+- The Gateway callback contract must validate and consume the PKCE verifier supplied by the
+  desktop client. A deployment must not ship based only on client-side PKCE generation; the real
+  Gateway behavior is a release acceptance gate.
+- OAuth access and refresh tokens never cross preload IPC. Authentication error events expose only
+  stable categories, and callback values, token bodies, and credentials must not be logged.
+- `WISWORK_MODEL_API_KEY` is a development service credential, not a user token. It is accepted
+  only from the Electron main-process environment, is not persisted, and cannot be overridden by
+  a renderer-provided URL, header, or settings value. Production packaging must not embed it.
+- Model errors may record the provider, model, HTTP status, and bounded non-sensitive diagnostics;
+  they must never include authorization headers, request credentials, OAuth tokens, authorization
+  codes, or raw authentication responses.
+- The current model path is a direct development proxy. WisUsage metering, user billing, Gateway
+  model forwarding, production key distribution, and server-side rate-limit policy are not
+  implemented by this repository and must not be inferred from a successful desktop login.
+
+Image generation, media analysis, cloud slide generation, and cloud PDF conversion are explicitly
+unsupported in the current build and return `unsupported_feature`. They do not silently fall back
+to a renderer-supplied API key or an unapproved external provider.
+
 ## Threat Model: AI-Generated Layout Scripts (slides)
 
 The slides AI can adjust slide layouts by emitting a small script that is
