@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import logoLockup from './assets/genoffice-logo.svg'
+import logoLockup from './assets/wiswork-logo.svg'
 import iconDocx from './assets/file-docx.svg'
 import iconXlsx from './assets/file-xlsx.svg'
 import iconPptx from './assets/file-pptx.svg'
@@ -386,7 +386,7 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
 }
 
 // ── Account entry (bottom-left) ──────────────────────────
-// Currently the Genspark (gsk) login entry; to be upgraded to a signup/account system later.
+// Currently the WisWork (wiswork) login entry; to be upgraded to a signup/account system later.
 // Language switching also lives in this popup menu.
 
 const LOGIN_POLL_MS = 2500
@@ -452,7 +452,7 @@ function AccountEntry() {
     }
   }, [])
 
-  // login progress pushed from main (gsk login CLI output)
+  // login progress pushed from main (wiswork login CLI output)
   useEffect(() => {
     const off = window.aiOffice.onAccountLogin?.((ev) => {
       if (ev.phase === 'success') {
@@ -597,7 +597,7 @@ function AccountEntry() {
                 onClick={startLogin}
                 title={waiting ? t('waitingLogin') : undefined}
               >
-                {waiting ? t('waitingShort') : t('loginGenspark')}
+                {waiting ? t('waitingShort') : t('loginWisWork')}
               </button>
               {waiting && (
                 <button
@@ -747,10 +747,10 @@ function AccountEntry() {
         aria-expanded={menuOpen}
         title={
           loggedIn
-            ? email || t('loggedInGenspark')
+            ? email || t('loggedInWisWork')
             : waiting
               ? t('waitingLogin')
-              : (errorText ?? t('loginGenspark'))
+              : (errorText ?? t('loginWisWork'))
         }
         aria-label={loggedIn ? t('account') : t('login')}
       >
@@ -786,14 +786,14 @@ function AccountEntry() {
             <>
               <span className="account-name">{email ? email.split('@')[0] : t('loggedIn')}</span>
               <span className="account-sub" title={email}>
-                {email || 'Genspark'}
+                {email || 'WisWork'}
               </span>
             </>
           ) : (
             <>
               <span className="account-name">{waiting ? t('waitingShort') : t('login')}</span>
               <span className={`account-sub${!waiting && errorText ? ' error' : ''}`}>
-                {!waiting && errorText ? errorText : t('accountGenspark')}
+                {!waiting && errorText ? errorText : t('accountWisWork')}
               </span>
             </>
           )}
@@ -1678,7 +1678,7 @@ export function Home() {
     <div className="home">
       <aside className="sidebar">
         <div className="sidebar-logo">
-          <img className="logo-lockup" src={logoLockup} alt="GenOffice" />
+          <img className="logo-lockup" src={logoLockup} alt="WisWork" />
         </div>
 
         <nav className="sidebar-nav">

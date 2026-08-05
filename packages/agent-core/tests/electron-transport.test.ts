@@ -13,6 +13,7 @@ interface FakeSettings {
 function setup(
   startImpl?: (request: IpcStreamStart<FakeSettings>) => void | Promise<unknown>,
   creditsErrorText?: () => string,
+  serviceErrorText?: (code: NonNullable<IpcStreamChunk['errorCode']>) => string,
 ) {
   let listener: ((chunk: IpcStreamChunk) => void) | undefined
   const unsubscribe = vi.fn(() => {
@@ -34,6 +35,7 @@ function setup(
     unknownErrorText: () => 'unknown error',
     timeoutErrorText: () => 'timed out',
     ...(creditsErrorText ? { creditsErrorText } : {}),
+    ...(serviceErrorText ? { serviceErrorText } : {}),
   })
   const cb = {
     onDelta: vi.fn(),
@@ -123,14 +125,24 @@ describe('createIpcTransport', () => {
     expect(cb.onError).toHaveBeenCalledWith('Your upstream credits have been exhausted.')
   })
 
-  it('maps WisWork auth and model service codes to friendly messages', () => {
-    const auth = setup()
+  it('maps WisWork auth and model service codes through the localized callback', () => {
+    const localized = (code: NonNullable<IpcStreamChunk['errorCode']>) => 'localized:' + code
+    const auth = setup(undefined, undefined, localized)
     auth.emit({ type: 'error', errorCode: 'auth_required' })
-    expect(auth.cb.onError).toHaveBeenCalledWith('Sign in to WisWork to use AI.')
+    expect(auth.cb.onError).toHaveBeenCalledWith('localized:auth_required')
 
-    const model = setup()
+    const model = setup(undefined, undefined, localized)
     model.emit({ type: 'error', errorCode: 'model_credentials_missing' })
-    expect(model.cb.onError).toHaveBeenCalledWith('The WisWork model service is not configured.')
+    expect(model.cb.onError).toHaveBeenCalledWith('localized:model_credentials_missing')
+    const rate = setup(undefined, undefined, localized)
+    rate.emit({ type: 'error', errorCode: 'model_rate_limited' })
+    expect(rate.cb.onError).toHaveBeenCalledWith('localized:model_rate_limited')
+    const upstream = setup(undefined, undefined, localized)
+    upstream.emit({ type: 'error', errorCode: 'model_upstream_unavailable' })
+    expect(upstream.cb.onError).toHaveBeenCalledWith('localized:model_upstream_unavailable')
+    const invalid = setup(undefined, undefined, localized)
+    invalid.emit({ type: 'error', errorCode: 'model_invalid_response' })
+    expect(invalid.cb.onError).toHaveBeenCalledWith('localized:model_invalid_response')
   })
 
   it('fails the run after prolonged silence; pings re-arm the watchdog', () => {

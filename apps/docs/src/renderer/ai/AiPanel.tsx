@@ -15,7 +15,7 @@ import { createElectronTransport } from './transport'
 import { useI18n, t as tModule, aiLangDirective, type StringKey } from '../i18n/locale'
 import { Markdown } from '@wiswork/ui'
 import { AiComposer, AiTypingIndicator } from '@wiswork/ui'
-import { GensparkMark } from '../components/icons'
+import { WisWorkMark } from '../components/icons'
 import sendEnterOn from '../assets/send-enter-on.png'
 import sendEnterOff from '../assets/send-enter-off.png'
 import sendStop from '../assets/send-stop.png'
@@ -68,7 +68,7 @@ interface ChatEntry {
   turnLimit?: boolean
   /** the run failed and this user message was rolled back out of the model context */
   undelivered?: boolean
-  /** the run failed because Genspark is signed out — render an inline sign-in button */
+  /** the run failed because WisWork is signed out — render an inline sign-in button */
   loginRequired?: boolean
   /** tool executions performed during this assistant turn */
   tools?: ToolActivity[]
@@ -463,7 +463,7 @@ export function AiPanel({
             return next
           })
           // Signed-out failures get an inline sign-in button; detected via
-          // gsk status rather than matching the localized error text
+          // wiswork status rather than matching the localized error text
           void window.desktop
             .aiAccountStatus()
             .then((status) => {
@@ -695,7 +695,7 @@ export function AiPanel({
   if (!open) {
     return (
       <button className="ai-rail" title={t('appExpandAiPanel')} onClick={onExpand}>
-        <GensparkMark size={22} />
+        <WisWorkMark size={22} />
       </button>
     )
   }
@@ -726,7 +726,7 @@ export function AiPanel({
       />
       <div className="ai-panel-header">
         <span className="ai-panel-title">
-          <GensparkMark size={22} />
+          <WisWorkMark size={22} />
           {t('aiPanelTitle')}
         </span>
         <div className="ai-panel-header-actions">
@@ -830,7 +830,7 @@ export function AiPanel({
                   className="ai-login-btn"
                   onClick={() => void window.desktop.aiAccountLogin()}
                 >
-                  {t('aiGskLoginBtn')}
+                  {t('aiWisWorkLoginBtn')}
                 </button>
               )}
               {showToolbar && (

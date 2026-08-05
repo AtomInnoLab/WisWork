@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { AI_PROVIDERS, defaultAiSettings, resolveAiSettings } from '../src/providers'
 
 describe('defaultAiSettings', () => {
-  it('does not expose Genspark as an active provider', () => {
-    expect(AI_PROVIDERS.map((provider) => provider.id)).not.toContain('genspark')
-    expect(defaultAiSettings().providers).not.toHaveProperty('genspark')
+  it('does not expose WisWork as an active provider', () => {
+    expect(AI_PROVIDERS.map((provider) => provider.id)).not.toContain('wiswork')
+    expect(defaultAiSettings().providers).not.toHaveProperty('wiswork')
   })
 
   it('gives every provider its default model and an empty key by default', () => {
@@ -26,19 +26,19 @@ describe('defaultAiSettings', () => {
 })
 
 describe('resolveAiSettings', () => {
-  it('drops persisted Genspark provider credentials during migration', () => {
+  it('drops persisted WisWork provider credentials during migration', () => {
     const resolved = resolveAiSettings(
       {
-        provider: 'genspark' as never,
+        provider: 'wiswork' as never,
         providers: {
-          genspark: { apiKey: 'old-key', model: 'old-model' },
+          wiswork: { apiKey: 'old-key', model: 'old-model' },
         } as never,
       },
       defaultAiSettings(),
     )
 
     expect(resolved.provider).toBe('wiswork')
-    expect(resolved.providers).not.toHaveProperty('genspark')
+    expect(resolved.providers).not.toHaveProperty('wiswork')
     expect(JSON.stringify(resolved)).not.toContain('old-key')
   })
 

@@ -1,6 +1,6 @@
 {
   "name": "@wiswork/docs",
-  "productName": "GenOffice Docs",
+  "productName": "WisWork Docs",
   "version": "0.1.0",
   "license": "Apache-2.0",
   "private": true,
@@ -46,12 +46,12 @@
     "vite": "^7.3.1",
     "vitest": "^4.1.0"
   },
-  "author": "GenOffice",
+  "author": "AtomInnoLab",
   "build": {
-    "appId": "com.genoffice.docs",
-    "productName": "GenOffice Docs",
+    "appId": "com.atominnolab.wiswork.docs",
+    "productName": "WisWork Docs",
     "electronVersion": "41.7.1",
-    "artifactName": "AIDocx-${version}-${arch}.${ext}",
+    "artifactName": "WisWork-Docs-${version}-${arch}.${ext}",
     "directories": {
       "output": "release"
     },

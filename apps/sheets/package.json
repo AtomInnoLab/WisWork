@@ -1,6 +1,6 @@
 {
   "name": "@wiswork/sheets",
-  "productName": "GenOffice Sheets",
+  "productName": "WisWork Sheets",
   "version": "0.1.0",
   "private": true,
   "description": "Cross-platform AI-native spreadsheet compatibility prototype",
@@ -62,5 +62,13 @@
     "vite": "^7.3.1",
     "vitest": "^4.1.0"
   },
-  "author": "GenOffice"
+  "author": "AtomInnoLab",
+  "build": {
+    "appId": "com.atominnolab.wiswork.sheets",
+    "productName": "WisWork Sheets",
+    "artifactName": "WisWork-Sheets-${version}-${arch}.${ext}",
+    "files": [
+      "out/**"
+    ]
+  }
 }

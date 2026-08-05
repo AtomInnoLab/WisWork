@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { createI18n, format, htmlLang, isLang, LANGS, normalizeLang } from '../src/index'
+import {
+  createI18n,
+  format,
+  htmlLang,
+  isLang,
+  LANGS,
+  normalizeLang,
+  translateServiceError,
+} from '../src/index'
 
 describe('normalizeLang', () => {
   it('maps zh variants to zh', () => {
@@ -134,5 +142,17 @@ describe('createI18n', () => {
     expect(t('pt', 'hello', { name: 'mundo' })).toBe('Olá mundo')
     expect(t('he', 'plain')).toBe('קבצים')
     expect(t('zh-TW', 'plain')).toBe('檔案')
+  })
+})
+describe('translateServiceError', () => {
+  it('returns localized auth and model-service messages', () => {
+    expect(translateServiceError('zh', 'auth_required')).toContain('登录')
+    expect(translateServiceError('ja', 'model_credentials_missing')).not.toMatch(
+      /configured|service/,
+    )
+    expect(translateServiceError('fr', 'model_rate_limited')).toContain('occupé')
+    expect(translateServiceError('en', 'model_upstream_unavailable')).toContain(
+      'temporarily unavailable',
+    )
   })
 })

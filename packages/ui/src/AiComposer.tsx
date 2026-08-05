@@ -42,7 +42,7 @@ export function AiComposer({
   readonly ariaLabel?: string | undefined
   /** extra controls at the left of the footer (attach button, toggles, …) */
   readonly footerStart?: React.ReactNode
-  /** compact variant: no hint text, icon-only enter/stop button (Genspark composer style) */
+  /** compact variant: no hint text, icon-only enter/stop button (WisWork composer style) */
   readonly iconOnly?: boolean | undefined
   /** custom art for the icon-only send button (e.g. brand-supplied PNGs); falls back to IconEnter */
   readonly sendIconEnabled?: React.ReactNode

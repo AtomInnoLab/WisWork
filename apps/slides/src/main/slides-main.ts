@@ -1,5 +1,5 @@
 /**
- * GenOffice Slides main process — pptx parsing/render-tree building/edit application/saving all live
+ * WisWork Slides main process — pptx parsing/render-tree building/edit application/saving all live
  * here (Node side). The renderer only gets plain-data RenderSlide; edit intents are sent back
  * here to apply. Structure mirrors apps/docs: exports embeddable configure/register/start for
  * future shell reuse.
@@ -451,7 +451,7 @@ const AUTOSAVE_BACKOFF_TICKS = 10
 let autosaveRunning = false
 
 /**
- * Recovery drafts for never-saved decks (wcId → visible path in <Documents>/GenOffice):
+ * Recovery drafts for never-saved decks (wcId → visible path in <Documents>/WisWork):
  * the sha1-keyed recovery copy needs session.path, so before the first save a freeze or
  * crash used to lose everything. Removed on save, explicit discard, or clean close.
  */
@@ -677,9 +677,9 @@ async function openAndBuild(
   }
 }
 
-/** Directory where AI-generated drafts are saved: <Documents>/GenOffice/ */
+/** Directory where AI-generated drafts are saved: <Documents>/WisWork/ */
 function getDraftsDir(): string {
-  return join(app.getPath('documents'), 'GenOffice')
+  return join(app.getPath('documents'), 'WisWork')
 }
 
 /** Fallback draft filename: <untitled label>-YYYYMMDD-HHmmss.pptx */
@@ -1592,7 +1592,7 @@ export function registerSlidesIpc(): void {
     if (!bundle) return false
     slideClipboard = { bundle, ...(pngBase64 ? { png: pngBase64 } : {}) }
     // Marker so plain ⌘V knows the latest copy was a slide (element copies / external copies overwrite it)
-    clipboard.writeBuffer('io.genoffice.slides.slide', Buffer.from('1'))
+    clipboard.writeBuffer('io.wiswork.slides.slide', Buffer.from('1'))
     return true
   })
 
@@ -2201,8 +2201,8 @@ export function registerSlidesIpc(): void {
         return false
       }
     }
-    if (slideClipboard && marker('io.genoffice.slides.slide')) return { kind: 'slide' }
-    if (marker('io.genoffice.slides.elements')) return { kind: 'internal' }
+    if (slideClipboard && marker('io.wiswork.slides.slide')) return { kind: 'slide' }
+    if (marker('io.wiswork.slides.elements')) return { kind: 'internal' }
     const img = clipboard.readImage()
     if (!img.isEmpty()) return { kind: 'image', base64: img.toPNG().toString('base64'), ext: 'png' }
     const text = clipboard.readText()
@@ -2222,7 +2222,7 @@ export function registerSlidesIpc(): void {
     if (items.length) {
       clipboards.set(e.sender.id, { items, pasteCount: 0 })
       // Write our marker to the OS clipboard: an external copy overwrites it, so at paste time it tells whether internal or external is newer
-      clipboard.writeBuffer('io.genoffice.slides.elements', Buffer.from('1'))
+      clipboard.writeBuffer('io.wiswork.slides.elements', Buffer.from('1'))
     }
     return items.length
   })
@@ -3376,7 +3376,7 @@ export function createSlidesWindow(openPath?: string | null): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 840,
-    title: 'GenOffice Slides',
+    title: 'WisWork Slides',
     ...(process.platform === 'darwin'
       ? { titleBarStyle: 'hiddenInset' as const }
       : {
@@ -3598,11 +3598,11 @@ export function startSlidesStandalone(): void {
     app.commandLine.appendSwitch('remote-debugging-port', process.env.SLIDES_CDP_PORT)
     app.commandLine.appendSwitch('remote-allow-origins', '*')
   }
-  // GENOFFICE_USER_DATA: test drivers point this at a scratch dir so automated
+  // WISWORK_USER_DATA: test drivers point this at a scratch dir so automated
   // instances get their own userData AND single-instance lock (the lock is scoped
   // to userData), allowing parallel instances alongside a normal dev run.
-  if (!app.isPackaged && process.env.GENOFFICE_USER_DATA) {
-    app.setPath('userData', process.env.GENOFFICE_USER_DATA)
+  if (!app.isPackaged && process.env.WISWORK_USER_DATA) {
+    app.setPath('userData', process.env.WISWORK_USER_DATA)
   }
   // The main process's Node fetch (undici) does not use the system proxy by default, so access
   // from mainland China to overseas LLM APIs like api.anthropic.com hits ETIMEDOUT on direct
@@ -3640,7 +3640,7 @@ export function startSlidesStandalone(): void {
   if (argPath && existsSync(argPath)) pendingOpenPath = argPath
 
   app.whenReady().then(async () => {
-    setUiLang(normalizeLang(process.env.GENOFFICE_LANG ?? app.getLocale()))
+    setUiLang(normalizeLang(process.env.WISWORK_LANG ?? app.getLocale()))
     registerSlidesIpc()
     registerAiIpc()
     registerProjectIpc()

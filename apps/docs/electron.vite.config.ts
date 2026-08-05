@@ -14,7 +14,7 @@ export default defineConfig({
   renderer: {
     plugins: [react()],
     server: {
-      // Overridable so multiple genoffice dev instances can coexist (default 5173).
+      // Overridable so multiple wiswork dev instances can coexist (default 5173).
       port: Number(process.env.DOCS_DEV_PORT) || 5173,
       strictPort: Boolean(process.env.DOCS_DEV_PORT),
     },

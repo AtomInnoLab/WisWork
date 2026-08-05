@@ -45,7 +45,7 @@ const IMPLICIT = ['electron']
 
 /**
  * Packages copied into the installer verbatim by electron-builder rather than
- * bundled — the gsk CLI and its runtime deps are spawned, never imported, so
+ * bundled — removed external CLI dependencies are not part of the runtime graph, so
  * they are invisible to the import scan.
  */
 function extraResourceSeeds() {
@@ -228,7 +228,7 @@ const seed = importedNames()
 const { resolved, missing } = closure(seed)
 resolved.sort(([a], [b]) => a.localeCompare(b))
 
-let out = `GenOffice — Third-Party Software Notices
+let out = `WisWork — Third-Party Software Notices
 
 This application includes third-party software components under the licenses
 reproduced below.

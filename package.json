@@ -10,7 +10,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/genspark-ai/genoffice.git"
+    "url": "git+https://github.com/atominnolab/wiswork.git"
   },
   "workspaces": [
     "apps/*",
@@ -29,6 +29,7 @@
     "build:all": "npm run build -w @wiswork/docs && npm run build -w @wiswork/sheets && npm run build -w @wiswork/slides && npm run build -w @wiswork/pdf && npm run build -w @wiswork/shell",
     "shell": "npm run build:all && electron apps/shell",
     "test:e2e": "playwright test --config e2e/playwright.config.ts",
+    "test:branding": "node --test tools/branding.test.mjs",
     "notices": "node tools/gen-third-party-notices.mjs",
     "licenses": "node tools/check-licenses.mjs",
     "dist:mac": "npm run notices && npm run build:all && npm run dist:mac -w @wiswork/shell",

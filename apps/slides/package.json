@@ -1,6 +1,6 @@
 {
   "name": "@wiswork/slides",
-  "productName": "GenOffice Slides",
+  "productName": "WisWork Slides",
   "version": "0.1.0",
   "license": "Apache-2.0",
   "private": true,
@@ -46,10 +46,10 @@
     "vite": "^7.3.1",
     "vitest": "^4.1.0"
   },
-  "author": "GenOffice",
+  "author": "AtomInnoLab",
   "build": {
-    "appId": "com.genoffice.slides",
-    "productName": "GenOffice Slides",
+    "appId": "com.atominnolab.wiswork.slides",
+    "productName": "WisWork Slides",
     "electronVersion": "41.7.1",
     "directories": {
       "output": "release"
@@ -85,7 +85,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
-    }
+    },
+    "artifactName": "WisWork-Slides-${version}-${arch}.${ext}"
   },
   "dependencies": {
     "@wiswork/electron-utils": "*",

@@ -18,6 +18,6 @@ describe('removed GenTeam integration', () => {
     ].join('\n')
     expect(combined).not.toContain('openGenTeam')
     expect(combined).not.toContain('home:open-genteam')
-    expect(combined).not.toContain('genspark.ai/genoffice/join')
+    expect(combined).not.toContain('wiswork.ai/wiswork/join')
   })
 })

@@ -128,7 +128,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip: '样式窗格:查看全部样式,从选区新建/更新样式',
     ribbonGroupStyles: '样式',
     // Home · AI
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: '打开 AI 助手',
     // Table Design
     ribbonRemoveTableStyleTip: '移除表格样式',
@@ -664,7 +664,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip:
       'Styles pane: browse all styles, create or update styles from the selection',
     ribbonGroupStyles: 'Styles',
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: 'Open the AI assistant',
     ribbonRemoveTableStyleTip: 'Remove table style',
     ribbonNoStyle: 'No Style',
@@ -1203,7 +1203,7 @@ export const ribbonStrings = defineStrings({
       'スタイル ウィンドウ:すべてのスタイルを表示し、選択範囲からスタイルを新規作成/更新',
     ribbonGroupStyles: 'スタイル',
     // Home · AI
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: 'AI アシスタントを開く',
     // Table Design
     ribbonRemoveTableStyleTip: '表のスタイルを削除',
@@ -1756,7 +1756,7 @@ export const ribbonStrings = defineStrings({
       '스타일 창: 모든 스타일을 보고 선택 영역에서 스타일을 새로 만들거나 업데이트',
     ribbonGroupStyles: '스타일',
     // Home · AI
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: 'AI 도우미 열기',
     // Table Design
     ribbonRemoveTableStyleTip: '표 스타일 제거',
@@ -2301,7 +2301,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip:
       'Volet Styles : parcourir tous les styles, créer ou mettre à jour un style à partir de la sélection',
     ribbonGroupStyles: 'Styles',
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: "Ouvrir l'assistant IA",
     ribbonRemoveTableStyleTip: 'Supprimer le style de tableau',
     ribbonNoStyle: 'Aucun style',
@@ -2844,7 +2844,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip:
       'Formatvorlagenbereich: alle Formatvorlagen anzeigen, aus der Auswahl neue erstellen oder aktualisieren',
     ribbonGroupStyles: 'Formatvorlagen',
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: 'KI-Assistenten öffnen',
     ribbonRemoveTableStyleTip: 'Tabellenformatvorlage entfernen',
     ribbonNoStyle: 'Keine Formatvorlage',
@@ -3388,7 +3388,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip:
       'Panel de estilos: ver todos los estilos y crear o actualizar estilos a partir de la selección',
     ribbonGroupStyles: 'Estilos',
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: 'Abrir el asistente de IA',
     ribbonRemoveTableStyleTip: 'Quitar el estilo de tabla',
     ribbonNoStyle: 'Sin estilo',
@@ -3930,7 +3930,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePreview: 'Aaก',
     ribbonStylePaneTip: 'บานหน้าต่างสไตล์: ดูสไตล์ทั้งหมด สร้างหรืออัปเดตสไตล์จากส่วนที่เลือก',
     ribbonGroupStyles: 'สไตล์',
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: 'เปิดผู้ช่วย AI',
     ribbonRemoveTableStyleTip: 'เอาสไตล์ตารางออก',
     ribbonNoStyle: 'ไม่มีสไตล์',
@@ -4459,7 +4459,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePreview: 'AaBb',
     ribbonStylePaneTip: 'Panel Gaya: telusuri semua gaya, buat atau perbarui gaya dari pilihan',
     ribbonGroupStyles: 'Gaya',
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: 'Buka asisten AI',
     ribbonRemoveTableStyleTip: 'Hapus gaya tabel',
     ribbonNoStyle: 'Tanpa Gaya',
@@ -4995,7 +4995,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip:
       'Область стилей: просмотр всех стилей, создание и обновление стилей по выделенному фрагменту',
     ribbonGroupStyles: 'Стили',
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: 'Открыть помощника ИИ',
     ribbonRemoveTableStyleTip: 'Удалить стиль таблицы',
     ribbonNoStyle: 'Без стиля',
@@ -5530,7 +5530,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePreview: 'Aaأب',
     ribbonStylePaneTip: 'جزء الأنماط: استعراض كافة الأنماط، وإنشاء الأنماط أو تحديثها من التحديد',
     ribbonGroupStyles: 'أنماط',
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: 'فتح مساعد الذكاء الاصطناعي',
     ribbonRemoveTableStyleTip: 'إزالة نمط الجدول',
     ribbonNoStyle: 'بلا نمط',
@@ -6061,7 +6061,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip:
       'Painel de estilos: veja todos os estilos, crie ou atualize estilos a partir da seleção',
     ribbonGroupStyles: 'Estilos',
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: 'Abrir o assistente de IA',
     ribbonRemoveTableStyleTip: 'Remover estilo da tabela',
     ribbonNoStyle: 'Sem Estilo',
@@ -6598,7 +6598,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip:
       'Riquadro stili: sfoglia tutti gli stili, crea o aggiorna stili dalla selezione',
     ribbonGroupStyles: 'Stili',
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: "Apri l'assistente IA",
     ribbonRemoveTableStyleTip: 'Rimuovi stile tabella',
     ribbonNoStyle: 'Nessuno stile',
@@ -7139,7 +7139,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip:
       'Okienko stylów: przeglądaj wszystkie style, twórz lub aktualizuj style na podstawie zaznaczenia',
     ribbonGroupStyles: 'Style',
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: 'Otwórz asystenta AI',
     ribbonRemoveTableStyleTip: 'Usuń styl tabeli',
     ribbonNoStyle: 'Brak stylu',
@@ -7635,8 +7635,8 @@ export const ribbonStrings = defineStrings({
     ribbonStrikethrough: 'Doorhalen',
     ribbonSubscript: 'Subscript',
     ribbonSuperscript: 'Superscript',
-    ribbonTextHighlightColor: 'Markeringskleur voor tekst',
-    ribbonHighlightColors: 'Markeringskleuren',
+    ribbonTextHighlightColor: 'Markerinwisworkleur voor tekst',
+    ribbonHighlightColors: 'Markerinwisworkleuren',
     ribbonNoColor: 'Geen kleur',
     ribbonFontColor: 'Tekstkleur',
     ribbonThemeColorsSection: 'Themakleuren',
@@ -7678,7 +7678,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip:
       'Deelvenster Stijlen: blader door alle stijlen, maak of werk stijlen bij op basis van de selectie',
     ribbonGroupStyles: 'Stijlen',
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: 'De AI-assistent openen',
     ribbonRemoveTableStyleTip: 'Tabelstijl verwijderen',
     ribbonNoStyle: 'Geen stijl',
@@ -8217,7 +8217,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePaneTip:
       'Anak tetingkap gaya: lihat semua gaya, cipta atau kemas kini gaya daripada pilihan',
     ribbonGroupStyles: 'Gaya',
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: 'Buka pembantu AI',
     ribbonRemoveTableStyleTip: 'Alih keluar gaya jadual',
     ribbonNoStyle: 'Tiada Gaya',
@@ -8751,7 +8751,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePreview: 'AaBb',
     ribbonStylePaneTip: 'חלונית סגנונות: עיין בכל הסגנונות, צור או עדכן סגנונות מהקטע הנבחר',
     ribbonGroupStyles: 'סגנונות',
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: 'פתח את עוזר ה-AI',
     ribbonRemoveTableStyleTip: 'הסר סגנון טבלה',
     ribbonNoStyle: 'ללא סגנון',
@@ -9278,7 +9278,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePreview: 'AaBb',
     ribbonStylePaneTip: 'शैलियाँ फलक: सभी शैलियाँ देखें, चयन से नई शैली बनाएँ या अद्यतन करें',
     ribbonGroupStyles: 'शैलियाँ',
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: 'AI सहायक खोलें',
     ribbonRemoveTableStyleTip: 'तालिका शैली हटाएँ',
     ribbonNoStyle: 'कोई शैली नहीं',
@@ -9812,7 +9812,7 @@ export const ribbonStrings = defineStrings({
     ribbonStylePreview: 'Aa文',
     ribbonStylePaneTip: '樣式窗格：檢視全部樣式，從選取範圍新增/更新樣式',
     ribbonGroupStyles: '樣式',
-    ribbonAiAssistant: 'Genspark',
+    ribbonAiAssistant: 'WisWork',
     ribbonAiAssistantTip: '開啟 AI 助理',
     ribbonRemoveTableStyleTip: '移除表格樣式',
     ribbonNoStyle: '無樣式',

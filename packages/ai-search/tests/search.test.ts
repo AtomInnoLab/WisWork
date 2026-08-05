@@ -24,7 +24,7 @@ function mockFetch(
 }
 
 describe('webSearch (Serper)', () => {
-  it('exports search only and has no Genspark runtime surface', () => {
+  it('exports search only and has no WisWork runtime surface', () => {
     expect(Object.keys(searchModule).sort()).toEqual(['imageSearch', 'webSearch'])
   })
 

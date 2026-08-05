@@ -234,7 +234,7 @@ class CDP {
 async function oursExport(docxPath, pdfPath, index) {
   const port = 19680 + (index % 40)
   const stamp = `${process.pid}-${index}`
-  const userData = join(tmpdir(), `genoffice-fidelity-${stamp}`)
+  const userData = join(tmpdir(), `wiswork-fidelity-${stamp}`)
   mkdirSync(userData, { recursive: true })
   const docCopy = join(tmpdir(), `fidelity-${stamp}-${basename(docxPath)}`)
   copyFileSync(docxPath, docCopy)
@@ -250,7 +250,7 @@ async function oursExport(docxPath, pdfPath, index) {
       `--user-data-dir=${userData}`,
     ],
     {
-      env: { ...process.env, NODE_ENV: 'production', GENOFFICE_LANG: 'zh' },
+      env: { ...process.env, NODE_ENV: 'production', WISWORK_LANG: 'zh' },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   )

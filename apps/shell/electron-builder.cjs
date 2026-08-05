@@ -3,7 +3,7 @@
  * auto-update feed URL can be injected at build time instead of living in
  * the repo).
  *
- * GENOFFICE_UPDATE_URL — public base URL of the update channel (the generic
+ * WISWORK_UPDATE_URL — public base URL of the update channel (the generic
  * provider prefix that serves latest.yml / latest-mac.yml). Required for
  * release builds; CI provides it as a repository secret. For local release
  * builds put it in apps/shell/electron-builder.env (gitignored) — the
@@ -14,12 +14,14 @@
  * app-update.yml into the app and in-app auto-update stays disabled.
  */
 
-const updateUrl = process.env.GENOFFICE_UPDATE_URL
+// One-release compatibility fallback for packages still built by the previous CI variable name.
+const updateUrl = process.env.WISWORK_UPDATE_URL ?? process.env.GENOFFICE_UPDATE_URL
 
 /** @type {import('electron-builder').Configuration} */
 const config = {
-  appId: 'com.genoffice.app',
-  productName: 'GenOffice',
+  appId: 'com.atominnolab.wiswork',
+  productName: 'WisWork',
+  artifactName: 'WisWork-${version}-${arch}.${ext}',
   electronVersion: '41.7.1',
   // The shell is the authoritative installed owner. Standalone builds using the same scheme conflict if installed together.
   protocols: [{ name: 'WisWork OAuth Callback', schemes: ['wiswork'] }],

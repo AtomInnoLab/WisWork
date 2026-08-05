@@ -31,6 +31,15 @@ export interface IpcStreamChunk {
   stopReason?: string
 }
 
+export type IpcServiceErrorCode = Extract<
+  NonNullable<IpcStreamChunk['errorCode']>,
+  | 'auth_required'
+  | 'model_credentials_missing'
+  | 'model_rate_limited'
+  | 'model_upstream_unavailable'
+  | 'model_invalid_response'
+>
+
 /** The request forwarded to the main process to start one streaming turn. */
 export interface IpcStreamStart<S> {
   requestId: string
@@ -62,6 +71,8 @@ export interface IpcTransportOptions<S> {
   timeoutErrorText?(): string
   /** localized message for exhausted credits (errorCode 'credits') */
   creditsErrorText?(): string
+  /** localized messages for authentication and model-service failures */
+  serviceErrorText?(code: IpcServiceErrorCode): string
 }
 
 /**
@@ -75,6 +86,16 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
     if (chunk.errorCode === 'timeout') return timeoutText()
     if (chunk.errorCode === 'credits') {
       return options.creditsErrorText?.() ?? chunk.error ?? options.unknownErrorText()
+    }
+    if (
+      chunk.errorCode === 'auth_required' ||
+      chunk.errorCode === 'model_credentials_missing' ||
+      chunk.errorCode === 'model_rate_limited' ||
+      chunk.errorCode === 'model_upstream_unavailable' ||
+      chunk.errorCode === 'model_invalid_response'
+    ) {
+      const localized = options.serviceErrorText?.(chunk.errorCode)
+      if (localized) return localized
     }
     if (chunk.errorCode === 'auth_required') return 'Sign in to WisWork to use AI.'
     if (chunk.errorCode === 'model_credentials_missing') {

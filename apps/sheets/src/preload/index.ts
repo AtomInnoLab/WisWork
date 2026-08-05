@@ -231,7 +231,7 @@ const desktopApi: DesktopApi = {
   async aiAccountStatus() {
     const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.aiAccountStatus)
     if (!isRecord(result) || typeof result.loggedIn !== 'boolean') {
-      throw new Error('Invalid Genspark account status response.')
+      throw new Error('Invalid WisWork account status response.')
     }
     return result as unknown as AccountStatus
   },

@@ -26,8 +26,6 @@ const SLIDES: readonly Slide[] = [
   {
     titleKey: 'onbTitle3',
     subtitleKey: 'onbBody3',
-    bodyKey: 'onbNote3',
-    bodyDim: true,
     art: 'check',
   },
 ]

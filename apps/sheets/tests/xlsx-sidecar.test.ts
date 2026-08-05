@@ -426,7 +426,7 @@ describe('XLSX Rust sidecar', () => {
         { row: 1, hidden: true },
         { row: 2, hidden: false, outlineLevel: 1 },
       ])
-      expect(result.hyperlinks).toEqual([{ row: 3, column: 0, target: 'https://www.genspark.ai' }])
+      expect(result.hyperlinks).toEqual([{ row: 3, column: 0, target: 'https://www.wiswork.ai' }])
       const richCell = result.cells.find((cell) => cell.row === 2 && cell.column === 1)
       expect(richCell?.value).toBe('Red plain')
       expect(richCell?.rich).toEqual([
@@ -650,7 +650,7 @@ async function buildStructureFixture(): Promise<Buffer> {
     <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
       <Relationship Id="rId1"
         Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
-        Target="https://www.genspark.ai" TargetMode="External"/>
+        Target="https://www.wiswork.ai" TargetMode="External"/>
       <Relationship Id="rId2"
         Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table"
         Target="../tables/table1.xml"/>

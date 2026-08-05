@@ -11,7 +11,7 @@ import { renderSlidesToPngBase64 } from '../export-render'
 import { isQcEnabled, qcSlidePage, QC_MAX_PAGES } from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
 import { Markdown } from '@wiswork/ui'
-import { GensparkMark } from '../components/icons'
+import { WisWorkMark } from '../components/icons'
 import sendEnterOn from '../assets/send-enter-on.png'
 import sendEnterOff from '../assets/send-enter-off.png'
 import sendStop from '../assets/send-stop.png'
@@ -77,7 +77,7 @@ interface ChatEntry {
   streaming?: boolean
   /** the run failed and this user message was rolled back out of the model context */
   undelivered?: boolean
-  /** the run failed because Genspark is signed out — render an inline sign-in button */
+  /** the run failed because WisWork is signed out — render an inline sign-in button */
   loginRequired?: boolean
   tools?: ToolActivity[]
 }
@@ -784,7 +784,7 @@ export function AiPanel({
             return next
           })
           // Signed-out failures get an inline sign-in button; detected via
-          // gsk status rather than matching the localized error text
+          // wiswork status rather than matching the localized error text
           void window.slidesApi
             .aiAccountStatus()
             .then((status) => {
@@ -1148,7 +1148,7 @@ export function AiPanel({
   if (!open) {
     return (
       <button className="ai-rail" title={t('appAiRailExpand')} onClick={onExpand}>
-        <GensparkMark size={22} />
+        <WisWorkMark size={22} />
       </button>
     )
   }
@@ -1175,11 +1175,11 @@ export function AiPanel({
         onPointerDown={startResize}
         role="separator"
         aria-orientation="vertical"
-        aria-label="Genspark AI"
+        aria-label="WisWork AI"
       />
       <div className="ai-panel-header">
         <span className="ai-panel-title">
-          <GensparkMark size={22} />
+          <WisWorkMark size={22} />
           {t('aiPanelTitle')}
         </span>
         <div className="ai-panel-header-actions">
@@ -1283,7 +1283,7 @@ export function AiPanel({
                   className="ai-login-btn"
                   onClick={() => void window.slidesApi.aiAccountLogin()}
                 >
-                  {t('aiGskLoginBtn')}
+                  {t('aiWisWorkLoginBtn')}
                 </button>
               )}
               {showToolbar && (

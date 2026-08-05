@@ -870,7 +870,7 @@ export function App(): React.JSX.Element {
             return next
           })
           // Signed-out failures get an inline sign-in button; detected via
-          // gsk status rather than matching the localized error text
+          // wiswork status rather than matching the localized error text
           void window.desktopApi
             .aiAccountStatus()
             .then((status) => {
