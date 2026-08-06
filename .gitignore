@@ -20,6 +20,7 @@ electron-builder.env
 .idea/
 .claude/
 .worktrees/
+/tools/tectonic/.cache/
 
 # Local build artifacts dropped in the repo root
 /*.dmg
