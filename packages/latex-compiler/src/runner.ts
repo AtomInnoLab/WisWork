@@ -438,6 +438,8 @@ export interface StagedCompileResult {
   readonly stagingDirectory: string
   readonly files: readonly StagedFile[]
   readonly log: string
+  /** Trusted compile-workspace root used only to map absolute SyncTeX Input records. */
+  readonly synctexInputRoot: string
   readonly workspaceCleaned: true
 }
 
@@ -447,6 +449,7 @@ export interface CompileIsolatedResult {
   readonly synctexPath: string | null
   readonly logPath: string
   readonly log: string
+  readonly synctexInputRoot: string
   readonly published: readonly string[]
   readonly workspaceCleaned: true
 }
@@ -631,6 +634,7 @@ export async function compileIsolated(
       stagingDirectory,
       files,
       log: logBytes.toString('utf8'),
+      synctexInputRoot: workspace.inputDirectory,
       workspaceCleaned: true,
     }
   } catch (error) {
@@ -818,6 +822,7 @@ export async function commitCompileGeneration(
       synctexPath: synctexName ? join(generationDirectory, synctexName) : null,
       logPath: join(generationDirectory, logName),
       log: staged.log,
+      synctexInputRoot: staged.synctexInputRoot,
       published,
       workspaceCleaned: true,
     }

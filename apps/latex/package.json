@@ -1,0 +1,26 @@
+{
+  "name": "@wiswork/latex",
+  "productName": "WisWork LaTeX",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "description": "AI-native LaTeX project editor hosted by WisWork Shell",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "dev:renderer": "vite --config vite.renderer.config.ts",
+    "build": "electron-vite build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@wiswork/latex-compiler": "*",
+    "@wiswork/latex-project": "*",
+    "electron": "^41.0.3",
+    "electron-vite": "^5.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1",
+    "vitest": "^4.1.10"
+  }
+}
