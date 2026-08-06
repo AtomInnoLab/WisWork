@@ -19,7 +19,16 @@ import {
   type EditProposal,
   type LatexProject,
 } from '@wiswork/latex-project'
-import type { CompileResultDto, LatexBufferDto } from '../shared/ipc.js'
+import type { CompileResultDto, LatexBufferDto, LatexSaveDto } from '../shared/ipc.js'
+
+export class MainFileRenameError extends Error {}
+
+export class UnsavedBuffersError extends Error {
+  constructor() {
+    super('Project has unsaved LaTeX changes')
+    this.name = 'UnsavedBuffersError'
+  }
+}
 
 export interface WatcherLike {
   close(): void
@@ -41,10 +50,12 @@ export interface ProjectSessionRegistryOptions {
 interface BufferState {
   path: string
   text: string
+  baselineText: string
   baselineSha256: string
   dirty: boolean
-  conflict: { diskText: string | null } | null
+  conflict: { diskText: string | null; diskSha256: string | null } | null
   version: number
+  lastSaveRevision: number
   pendingSaveSha256?: string
 }
 
@@ -133,10 +144,12 @@ export class ProjectSession {
     const state: BufferState = {
       path,
       text,
+      baselineText: text,
       baselineSha256: digest(text),
       dirty: false,
       conflict: null,
       version: 0,
+      lastSaveRevision: -1,
     }
     this.buffers.set(path, state)
     return dto(state)
@@ -153,17 +166,34 @@ export class ProjectSession {
     if (!state) throw new Error(`File must be read before editing: ${path}`)
     state.text = text
     state.version += 1
-    state.dirty = digest(text) !== state.baselineSha256
+    state.dirty = text !== state.baselineText
     return dto(state)
   }
 
-  async saveText(path: string): Promise<LatexBufferDto> {
+  async saveText(
+    path: string,
+    requestedText?: string,
+    editRevision?: number,
+  ): Promise<LatexSaveDto> {
     this.assertActive()
     const state = this.buffers.get(path)
     if (!state) throw new Error(`File must be read before saving: ${path}`)
+    if (editRevision !== undefined) {
+      if (!Number.isSafeInteger(editRevision) || editRevision < state.lastSaveRevision) {
+        throw new Error('Stale renderer save revision')
+      }
+      state.lastSaveRevision = editRevision
+    }
+    if (requestedText !== undefined) this.updateBuffer(path, requestedText)
     if (state.conflict) throw new Error(`Project file changed externally: ${path}`)
-    if (!state.dirty) return dto(state)
-    const snapshot = { text: state.text, version: state.version, baseline: state.baselineSha256 }
+    if (!state.dirty) {
+      return { savedText: state.text, diskSha256: state.baselineSha256, buffer: dto(state) }
+    }
+    const snapshot = {
+      text: state.text,
+      version: state.version,
+      baseline: state.baselineSha256,
+    }
     const pendingHash = digest(snapshot.text)
     state.pendingSaveSha256 = pendingHash
     let saved
@@ -175,11 +205,12 @@ export class ProjectSession {
       if (state.pendingSaveSha256 === pendingHash) delete state.pendingSaveSha256
       throw error
     }
+    state.baselineText = snapshot.text
     state.baselineSha256 = saved.sha256
     state.dirty =
       state.conflict !== null || state.version !== snapshot.version || state.text !== snapshot.text
     delete state.pendingSaveSha256
-    return dto(state)
+    return { savedText: snapshot.text, diskSha256: saved.sha256, buffer: dto(state) }
   }
 
   async createText(path: string, text: string): Promise<LatexBufferDto> {
@@ -188,10 +219,12 @@ export class ProjectSession {
     const state: BufferState = {
       path: saved.path,
       text,
+      baselineText: text,
       baselineSha256: saved.sha256,
       dirty: false,
       conflict: null,
       version: 0,
+      lastSaveRevision: -1,
     }
     this.buffers.set(saved.path, state)
     return dto(state)
@@ -199,6 +232,8 @@ export class ProjectSession {
 
   async renameText(from: string, to: string): Promise<void> {
     this.assertActive()
+    if (from === this.mainFile)
+      throw new MainFileRenameError('Cannot rename the configured main file')
     const text = await this.project.readText(from)
     const hash = digest(text)
     await this.project.saveText(to, text, { expectedSha256: null })
@@ -233,20 +268,29 @@ export class ProjectSession {
     }
     const diskHash = diskText === null ? null : digest(diskText)
     if (diskHash === state.baselineSha256) return
-    if (diskHash !== null && diskHash === state.pendingSaveSha256) {
+    if (diskText !== null && diskHash !== null && diskHash === state.pendingSaveSha256) {
+      state.baselineText = diskText
       state.baselineSha256 = diskHash
-      state.dirty = digest(state.text) !== diskHash
+      state.dirty = state.text !== diskText
       state.conflict = null
-      this.onExternalChange?.(this.webContentsId, dto(state))
+      this.onExternalChange?.(this.webContentsId, {
+        ...dto(state),
+        text: diskText,
+        diskText,
+        dirty: false,
+        conflict: null,
+      })
       return
     }
     if (state.dirty) {
-      state.conflict = { diskText }
+      state.conflict = { diskText, diskSha256: diskHash }
     } else if (diskText === null) {
-      state.conflict = { diskText: null }
+      state.conflict = { diskText: null, diskSha256: null }
     } else {
       state.text = diskText
+      state.baselineText = diskText
       state.baselineSha256 = diskHash!
+      state.dirty = false
       state.conflict = null
     }
     this.onExternalChange?.(this.webContentsId, dto(state))
@@ -270,6 +314,7 @@ export class ProjectSession {
         continue
       }
       state.text = diskText
+      state.baselineText = diskText
       state.baselineSha256 = digest(diskText)
       state.dirty = false
       state.conflict = null
@@ -288,8 +333,15 @@ export class ProjectSession {
     return () => this.downloadCleanups.delete(cancel)
   }
 
+  private assertAllBuffersPersisted(): void {
+    if ([...this.buffers.values()].some((buffer) => buffer.dirty || buffer.conflict)) {
+      throw new UnsavedBuffersError()
+    }
+  }
+
   async compile(revision: number, mainFile: string): Promise<CompileResultDto> {
     this.assertActive()
+    this.assertAllBuffersPersisted()
     if (!this.compilerRuntime) throw new Error('LaTeX compiler runtime is not configured')
     if (this.activeCompile?.revision === revision) return this.activeCompile.promise
     const token = randomBytes(16).toString('hex')
@@ -308,12 +360,14 @@ export class ProjectSession {
         revision: token,
         run: async ({ signal }) => {
           if (this.cancelledCompileTokens.has(token)) throw new Error('Compile cancelled')
+          this.assertAllBuffersPersisted()
           if (this.activeCompile?.token === token) this.activeCompile.phase = 'running'
           await Promise.all([
             mkdir(cacheDirectory, { recursive: true }),
             mkdir(temporaryRoot, { recursive: true }),
           ])
           if (this.cancelledCompileTokens.has(token)) throw new Error('Compile cancelled')
+          this.assertAllBuffersPersisted()
           staged = await this.compiler({
             projectDirectory: this.project.rootPath,
             temporaryRoot,
@@ -534,6 +588,8 @@ function dto(state: BufferState): LatexBufferDto {
   return {
     path: state.path,
     text: state.text,
+    diskText: state.baselineText,
+    diskSha256: state.baselineSha256,
     dirty: state.dirty,
     conflict: state.conflict ? { ...state.conflict } : null,
   }

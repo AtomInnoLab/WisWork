@@ -1,0 +1,301 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: #e8ecf3;
+  background: #11151c;
+  --panel: #171c25;
+  --border: #2a3240;
+  --muted: #98a3b5;
+  --accent: #6d8cff;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+button {
+  color: inherit;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+}
+button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.latex-workbench {
+  display: grid;
+  grid-template-columns: minmax(180px, 16vw) minmax(420px, 1fr) minmax(360px, 42vw);
+  width: 100%;
+  height: 100%;
+  background: #11151c;
+}
+
+.project-tree,
+.editor-workspace,
+.pdf-preview {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+.preview-stale {
+  position: absolute;
+  z-index: 10;
+  top: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 7px 12px;
+  border-radius: 5px;
+  background: #8a4b10;
+  color: white;
+  font-size: 12px;
+  box-shadow: 0 2px 8px #0008;
+}
+.project-tree {
+  border-right: 1px solid var(--border);
+  background: #141922;
+  overflow: auto;
+}
+.project-tree header {
+  display: flex;
+  justify-content: space-between;
+  padding: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+.project-tree header button {
+  font-size: 20px;
+  line-height: 12px;
+}
+.project-tree ul,
+.diagnostic-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.project-tree li {
+  display: flex;
+  align-items: center;
+}
+.project-tree li > button:first-child {
+  flex: 1;
+  overflow: hidden;
+  padding: 7px 10px 7px 14px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-tree li.active {
+  background: #283249;
+  color: #fff;
+}
+.rename-file {
+  visibility: hidden;
+  padding: 6px 10px;
+}
+.project-tree li:hover .rename-file {
+  visibility: visible;
+}
+
+.editor-workspace {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+}
+.open-tabs {
+  display: flex;
+  height: 36px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.open-tabs > div {
+  display: flex;
+  flex: 0 0 auto;
+  border-right: 1px solid var(--border);
+}
+.open-tabs > div.active {
+  background: #222a38;
+  border-top: 2px solid var(--accent);
+}
+.open-tabs button {
+  padding: 0 9px;
+  font-size: 12px;
+}
+.open-tabs button + button {
+  color: var(--muted);
+  padding-left: 2px;
+}
+.latex-editor,
+.latex-editor .cm-editor {
+  height: 100%;
+  min-height: 0;
+}
+.latex-editor .cm-editor {
+  background: #11151c;
+  font-size: 14px;
+}
+.latex-editor .cm-scroller {
+  overflow: auto;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+}
+.latex-editor .cm-gutters {
+  background: #141922;
+  color: #657086;
+  border-right: 1px solid var(--border);
+}
+.latex-editor .cm-activeLine,
+.latex-editor .cm-activeLineGutter {
+  background: #1b2230;
+}
+.empty-editor {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+
+.compile-panel {
+  max-height: 180px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 12px;
+}
+.compile-panel header {
+  display: flex;
+  gap: 8px;
+  padding: 7px 10px;
+}
+.compile-panel header button,
+.readonly-pdf-toolbar button {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+}
+.compile-panel .compile-button {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+.compile-panel summary {
+  cursor: pointer;
+  padding: 5px 10px;
+  color: var(--muted);
+}
+.diagnostic-list button {
+  width: 100%;
+  padding: 5px 12px;
+  text-align: left;
+}
+.diagnostic-list button:hover {
+  background: #242d3d;
+}
+.compile-panel pre {
+  margin: 0;
+  padding: 8px 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: #c2cada;
+}
+.conflict-banner,
+.error-banner {
+  padding: 7px 10px;
+  background: #5a3d16;
+  font-size: 12px;
+}
+.error-banner {
+  background: #5b2026;
+}
+
+.pdf-preview {
+  border-left: 1px solid var(--border);
+  background: #202630;
+}
+.readonly-pdf-viewer {
+  display: grid;
+  grid-template-rows: 42px minmax(0, 1fr);
+  height: 100%;
+}
+.readonly-pdf-toolbar {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.readonly-pdf-scroll {
+  overflow: auto;
+  padding: 20px;
+}
+.readonly-pdf-page {
+  position: relative;
+  width: max-content;
+  min-width: 120px;
+  min-height: 160px;
+  margin: 0 auto 18px;
+  background: white;
+  box-shadow: 0 2px 12px #0008;
+}
+.pdf-page-content {
+  position: relative;
+  line-height: 1;
+}
+.pdf-page-content canvas {
+  display: block;
+}
+.pdf-page-content .textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: 1;
+  line-height: 1;
+  text-size-adjust: none;
+  transform-origin: 0 0;
+}
+.pdf-page-content .textLayer span,
+.pdf-page-content .textLayer br {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+}
+.pdf-page-content .textLayer ::selection {
+  background: #3578e5aa;
+}
+.pdf-sync-marker {
+  position: absolute;
+  z-index: 4;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border: 2px solid #ef4444;
+  border-radius: 50%;
+  background: #ef444455;
+  pointer-events: none;
+}
+.readonly-pdf-empty {
+  display: grid;
+  min-height: 60vh;
+  place-items: center;
+  color: var(--muted);
+}
+
+@media (max-width: 900px) {
+  .latex-workbench {
+    grid-template-columns: 150px minmax(350px, 1fr);
+  }
+  .pdf-preview {
+    display: none;
+  }
+}

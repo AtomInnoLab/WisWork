@@ -8,10 +8,16 @@ import {
   type LatexIpcErrorCode,
   type LatexIpcResult,
   type RenameFileRequest,
+  type SaveFileRequest,
   type SessionRequest,
   type UpdateFileRequest,
 } from '../shared/ipc.js'
-import type { ProjectSession, ProjectSessionRegistry } from './project-session.js'
+import {
+  MainFileRenameError,
+  UnsavedBuffersError,
+  type ProjectSession,
+  type ProjectSessionRegistry,
+} from './project-session.js'
 
 export interface IpcEventLike {
   sender: { id: number }
@@ -70,8 +76,8 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
     ),
   )
   handle(LATEX_CHANNELS.fileSave, (event, payload) =>
-    withSession(event, payload, registry, parseFileRequest, (session, request) =>
-      session.saveText(request.path),
+    withSession(event, payload, registry, parseSaveRequest, (session, request) =>
+      session.saveText(request.path, request.text, request.editRevision),
     ),
   )
   handle(LATEX_CHANNELS.fileCreate, (event, payload) =>
@@ -175,6 +181,12 @@ function parseUpdateRequest(value: unknown): UpdateFileRequest {
     path: relativePath(item.path),
     text,
   }
+}
+
+function parseSaveRequest(value: unknown): SaveFileRequest {
+  const item = exactObject(value, ['projectId', 'path', 'text', 'editRevision'])
+  const update = parseUpdateRequest({ projectId: item.projectId, path: item.path, text: item.text })
+  return { ...update, editRevision: revision(item.editRevision) }
 }
 
 function parseRenameRequest(value: unknown): RenameFileRequest {
@@ -304,6 +316,18 @@ function ok<T>(value: T): LatexIpcResult<T> {
 function fail(error: unknown): LatexIpcResult<never> {
   if (error instanceof CodedIpcError) {
     return { ok: false, error: { code: error.code, message: error.message } }
+  }
+  if (
+    error instanceof MainFileRenameError ||
+    (error instanceof Error && /configured main file/i.test(error.message))
+  ) {
+    return { ok: false, error: { code: 'LATEX_INVALID_PAYLOAD', message: error.message } }
+  }
+  if (error instanceof UnsavedBuffersError) {
+    return {
+      ok: false,
+      error: { code: 'LATEX_CONFLICT', message: 'Project has unsaved LaTeX changes' },
+    }
   }
   if (
     error instanceof ProjectWriteConflictError ||

@@ -15,12 +15,31 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^5.2.0",
     "@wiswork/latex-compiler": "*",
     "@wiswork/latex-project": "*",
     "electron": "^41.0.3",
     "electron-vite": "^5.0.0",
+    "jsdom": "^28.1.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.1",
+    "vite-plugin-static-copy": "^3.4.0",
     "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.10.4",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/lint": "^6.9.7",
+    "@codemirror/search": "^6.7.1",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/view": "^6.43.8",
+    "@wiswork/pdf-viewer": "*",
+    "codemirror-lang-latex": "^0.4.2",
+    "pdfjs-dist": "^5.4.54",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   }
 }

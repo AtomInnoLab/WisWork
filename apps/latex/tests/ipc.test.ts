@@ -5,12 +5,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LATEX_CHANNELS, type LatexIpcResult } from '../src/shared/ipc.js'
 import { registerLatexIpc, type IpcMainLike } from '../src/main/ipc.js'
 import { registerLatexPdfProtocol } from '../src/main/latex-main.js'
-import { ProjectSessionRegistry } from '../src/main/project-session.js'
+import { ProjectSessionRegistry, UnsavedBuffersError } from '../src/main/project-session.js'
 
 describe('LaTeX typed IPC boundary', () => {
   const roots: string[] = []
+  const registries: ProjectSessionRegistry[] = []
 
   afterEach(async () => {
+    for (const registry of registries.splice(0)) registry.disposeAll()
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
   })
 
@@ -21,6 +23,7 @@ describe('LaTeX typed IPC boundary', () => {
     await mkdir(projectRoot)
     await writeFile(join(projectRoot, 'main.tex'), 'before')
     const registry = new ProjectSessionRegistry()
+    registries.push(registry)
     const session = await registry.attach(11, projectRoot)
     const handlers = new Map<
       string,
@@ -70,6 +73,30 @@ describe('LaTeX typed IPC boundary', () => {
     expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('before')
   })
 
+  it('atomically saves the supplied text and rejects main-file rename', async () => {
+    const { projectRoot, session, call } = await setup()
+    await session.readText('main.tex')
+    await expect(
+      call(LATEX_CHANNELS.fileSave, 11, {
+        projectId: session.projectId,
+        path: 'main.tex',
+        text: 'saved',
+        editRevision: 4,
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: { savedText: 'saved', buffer: { text: 'saved', dirty: false } },
+    })
+    expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('saved')
+    await expect(
+      call(LATEX_CHANNELS.fileRename, 11, {
+        projectId: session.projectId,
+        from: 'main.tex',
+        to: 'other.tex',
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'LATEX_INVALID_PAYLOAD' } })
+  })
+
   it('does not accept executable, bundle URL, root, headers, env, or arguments from compile payloads', async () => {
     const { session, call } = await setup()
     for (const field of ['executable', 'bundleUrl', 'rootPath', 'headers', 'env', 'args']) {
@@ -82,6 +109,21 @@ describe('LaTeX typed IPC boundary', () => {
         }),
       ).resolves.toMatchObject({ ok: false, error: { code: 'LATEX_INVALID_PAYLOAD' } })
     }
+  })
+
+  it('maps unsaved-buffer compile rejection to a stable conflict error', async () => {
+    const { session, call } = await setup()
+    vi.spyOn(session, 'compile').mockRejectedValue(new UnsavedBuffersError())
+    await expect(
+      call(LATEX_CHANNELS.compileStart, 11, {
+        projectId: session.projectId,
+        revision: 1,
+        mainFile: 'main.tex',
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: 'LATEX_CONFLICT', message: 'Project has unsaved LaTeX changes' },
+    })
   })
 
   it('serves only session-owned compiled PDFs through the controlled protocol', async () => {

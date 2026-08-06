@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ProjectSessionRegistry } from '../src/main/project-session.js'
+import { ProjectSessionRegistry, UnsavedBuffersError } from '../src/main/project-session.js'
 
 describe('LaTeX project sessions', () => {
   const roots: string[] = []
@@ -60,6 +60,21 @@ describe('LaTeX project sessions', () => {
     })
   })
 
+  it('returns authoritative baseline text for an existing dirty buffer', async () => {
+    const { projectRoot } = await setup()
+    const session = await new ProjectSessionRegistry({ watch: () => ({ close() {} }) }).attach(
+      11,
+      projectRoot,
+    )
+    await session.readText('main.tex')
+    session.updateBuffer('main.tex', 'local-v2')
+    expect(await session.readText('main.tex')).toMatchObject({
+      text: 'local-v2',
+      diskText: 'disk-v1',
+      dirty: true,
+    })
+  })
+
   it('uses baseline hashes so save never overwrites a newly changed disk file', async () => {
     const { projectRoot } = await setup()
     const registry = new ProjectSessionRegistry({ watch: () => ({ close() {} }) })
@@ -71,9 +86,23 @@ describe('LaTeX project sessions', () => {
     expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('external')
   })
 
+  it('refuses to rename the configured main file', async () => {
+    const { projectRoot } = await setup()
+    const session = await new ProjectSessionRegistry({ watch: () => ({ close() {} }) }).attach(
+      11,
+      projectRoot,
+    )
+    await expect(session.renameText('main.tex', 'renamed.tex')).rejects.toThrow(/main file/i)
+    expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('disk-v1')
+  })
+
   it('keeps edits typed while a save is awaiting and reconciles its watcher event', async () => {
     const { projectRoot } = await setup()
-    const registry = new ProjectSessionRegistry({ watch: () => ({ close() {} }) })
+    const onExternalChange = vi.fn()
+    const registry = new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      onExternalChange,
+    })
     const session = await registry.attach(11, projectRoot)
     await session.readText('main.tex')
     session.updateBuffer('main.tex', 'save-v2')
@@ -91,6 +120,15 @@ describe('LaTeX project sessions', () => {
     )
     session.updateBuffer('main.tex', 'typed-v3')
     await session.handleExternalChange('main.tex')
+    expect(onExternalChange).toHaveBeenLastCalledWith(
+      11,
+      expect.objectContaining({
+        text: 'save-v2',
+        diskText: 'save-v2',
+        dirty: false,
+        conflict: null,
+      }),
+    )
     release()
     await saving
     expect(session.getBuffer('main.tex')).toMatchObject({
@@ -142,6 +180,68 @@ describe('LaTeX project sessions', () => {
       dirty: false,
       conflict: null,
     })
+  })
+
+  it('rejects compile when a hidden non-main buffer is dirty without invoking compiler', async () => {
+    const { root, projectRoot } = await setup()
+    await writeFile(join(projectRoot, 'hidden.tex'), 'disk')
+    const compiler = vi.fn()
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler: compiler as never,
+      compilerRuntime: { tectonicPath: 'fixed-tectonic', userDataPath: root },
+    }).attach(11, projectRoot)
+    await session.readText('hidden.tex')
+    session.updateBuffer('hidden.tex', 'local')
+    await expect(session.compile(1, 'main.tex')).rejects.toThrow(/unsaved/i)
+    expect(compiler).not.toHaveBeenCalled()
+  })
+
+  it('rechecks hidden buffers after a queued compile request starts running', async () => {
+    const { root, projectRoot } = await setup()
+    await writeFile(join(projectRoot, 'hidden.tex'), 'disk')
+    let calls = 0
+    const compiler = vi.fn((request: { signal?: AbortSignal }) => {
+      calls += 1
+      if (calls === 1) {
+        return new Promise((resolve, reject) => {
+          request.signal!.addEventListener('abort', () => reject(new Error('cancelled')), {
+            once: true,
+          })
+        })
+      }
+      return Promise.resolve({
+        generationId: 'unexpected',
+        stagingDirectory: join(root, 'unexpected'),
+        files: [],
+        log: '',
+        workspaceCleaned: true,
+      })
+    }) as never
+    const commit = vi.fn(async () => ({
+      generationId: 'unexpected',
+      pdfPath: null,
+      synctexPath: null,
+      logPath: join(root, 'log'),
+      log: '',
+      published: [],
+      workspaceCleaned: true as const,
+    }))
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler,
+      commitGeneration: commit as never,
+      compilerRuntime: { tectonicPath: 'fixed-tectonic', userDataPath: root },
+    }).attach(11, projectRoot)
+    await session.readText('hidden.tex')
+    const first = session.compile(1, 'main.tex').catch((error) => error)
+    await vi.waitFor(() => expect(compiler).toHaveBeenCalledTimes(1))
+    const queued = session.compile(2, 'main.tex')
+    session.updateBuffer('hidden.tex', 'local')
+    await expect(queued).rejects.toBeInstanceOf(UnsavedBuffersError)
+    await first
+    expect(compiler).toHaveBeenCalledTimes(1)
+    expect(commit).not.toHaveBeenCalled()
   })
 
   it('serializes revision ABA compiles and publishes only the newest token', async () => {

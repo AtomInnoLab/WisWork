@@ -47,6 +47,10 @@ export interface UpdateFileRequest extends FileRequest {
   text: string
 }
 
+export interface SaveFileRequest extends UpdateFileRequest {
+  editRevision: number
+}
+
 export interface RenameFileRequest extends SessionRequest {
   from: string
   to: string
@@ -83,14 +87,22 @@ export interface UndoProposalRequest extends SessionRequest {
 export interface LatexBufferDto {
   path: string
   text: string
+  diskText: string
+  diskSha256: string
   dirty: boolean
-  conflict: { diskText: string | null } | null
+  conflict: { diskText: string | null; diskSha256: string | null } | null
 }
 
 export interface LatexSessionDto {
   projectId: string
   mainFile: string | null
   dirty: boolean
+}
+
+export interface LatexSaveDto {
+  savedText: string
+  diskSha256: string
+  buffer: LatexBufferDto
 }
 
 export interface CompileResultDto {
@@ -105,7 +117,7 @@ export interface LatexApi {
   listFiles(request: SessionRequest): Promise<LatexIpcResult<string[]>>
   readFile(request: FileRequest): Promise<LatexIpcResult<LatexBufferDto>>
   updateFile(request: UpdateFileRequest): Promise<LatexIpcResult<LatexBufferDto>>
-  saveFile(request: FileRequest): Promise<LatexIpcResult<LatexBufferDto>>
+  saveFile(request: SaveFileRequest): Promise<LatexIpcResult<LatexSaveDto>>
   createFile(request: UpdateFileRequest): Promise<LatexIpcResult<LatexBufferDto>>
   renameFile(request: RenameFileRequest): Promise<LatexIpcResult<void>>
   compile(request: CompileRequest): Promise<LatexIpcResult<CompileResultDto>>
