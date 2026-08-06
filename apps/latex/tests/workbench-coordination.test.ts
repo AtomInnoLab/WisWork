@@ -7,8 +7,11 @@ import {
 import {
   CompileRequestQueue,
   PendingSaveRegistry,
+  ProjectListingRequestGate,
   canRenameFile,
   persistBuffer,
+  reconcileProjectListing,
+  refreshProjectListing,
   remapWorkspacePaths,
   completeReverseSync,
   runRenameFlow,
@@ -215,6 +218,67 @@ describe('renderer persistence and compile coordination', () => {
     expect(
       remapWorkspacePaths(['a.tex', 'main.tex'], ['a.tex'], 'a.tex', 'a.tex', 'b.tex'),
     ).toEqual({ files: ['b.tex', 'main.tex'], openPaths: ['b.tex'], activePath: 'b.tex' })
+  })
+
+  it('adds and removes AI-created files from the tree and tabs without discarding dirty buffers', () => {
+    const applied = reconcileProjectListing(
+      createEditorState([{ path: 'main.tex', text: 'main', diskSha256: 'main-sha' }]),
+      ['main.tex'],
+      ['main.tex'],
+      'main.tex',
+      ['main.tex', 'generated.tex'],
+    )
+    expect(applied.files).toEqual(['generated.tex', 'main.tex'])
+
+    const withGeneratedOpen = createEditorState([
+      { path: 'main.tex', text: 'main', diskSha256: 'main-sha' },
+      { path: 'generated.tex', text: 'generated', diskSha256: 'generated-sha' },
+    ])
+    const undone = reconcileProjectListing(
+      withGeneratedOpen,
+      ['generated.tex', 'main.tex'],
+      ['main.tex', 'generated.tex'],
+      'generated.tex',
+      ['main.tex'],
+    )
+    expect(undone.files).toEqual(['main.tex'])
+    expect(undone.openPaths).toEqual(['main.tex'])
+    expect(undone.activePath).toBe('main.tex')
+    expect(undone.editorState.buffers['generated.tex']).toBeUndefined()
+
+    const dirty = editBuffer(withGeneratedOpen, 'generated.tex', 'unsaved local edit')
+    const preserved = reconcileProjectListing(
+      dirty,
+      ['generated.tex', 'main.tex'],
+      ['main.tex', 'generated.tex'],
+      'generated.tex',
+      ['main.tex'],
+    )
+    expect(preserved.files).toContain('generated.tex')
+    expect(preserved.openPaths).toContain('generated.tex')
+    expect(preserved.editorState.buffers['generated.tex']?.text).toBe('unsaved local edit')
+    expect(preserved.editorState.buffers['generated.tex']?.dirty).toBe(true)
+  })
+
+  it('ignores deferred listing responses made stale by a local create or rename', async () => {
+    const gate = new ProjectListingRequestGate()
+    let resolveFirst!: (files: string[]) => void
+    const firstResponse = new Promise<string[]>((resolve) => (resolveFirst = resolve))
+    const applyFirst = vi.fn()
+    const firstRefresh = refreshProjectListing(gate, () => firstResponse, applyFirst)
+    gate.invalidate()
+    resolveFirst(['main.tex'])
+    await expect(firstRefresh).resolves.toBe(false)
+    expect(applyFirst).not.toHaveBeenCalled()
+
+    let resolveSecond!: (files: string[]) => void
+    const secondResponse = new Promise<string[]>((resolve) => (resolveSecond = resolve))
+    const applySecond = vi.fn()
+    const secondRefresh = refreshProjectListing(gate, () => secondResponse, applySecond)
+    gate.invalidate()
+    resolveSecond(['main.tex', 'old-name.tex'])
+    await expect(secondRefresh).resolves.toBe(false)
+    expect(applySecond).not.toHaveBeenCalled()
   })
 
   it('aborts compile when a dirty buffer is added during a deferred save', async () => {

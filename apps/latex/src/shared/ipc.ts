@@ -1,3 +1,5 @@
+import type { AiSettings, AiStreamChunk, AiStreamRequest } from '@wiswork/ai-provider'
+
 export const MAX_IPC_TEXT_BYTES = 2 * 1024 * 1024
 export const MAX_IPC_PATH_LENGTH = 1024
 export const MAX_IPC_FILES = 1_000
@@ -16,8 +18,17 @@ export const LATEX_CHANNELS = {
   syncTexForward: 'latex:synctex:forward',
   syncTexReverse: 'latex:synctex:reverse',
   proposalGet: 'latex:proposal:get',
+  proposalCreate: 'latex:proposal:create',
   proposalApply: 'latex:proposal:apply',
   proposalUndo: 'latex:proposal:undo',
+  aiProjectList: 'latex:ai:project:list',
+  aiProjectSearch: 'latex:ai:project:search',
+  aiProjectRead: 'latex:ai:project:read',
+  aiDiagnosticsGet: 'latex:ai:diagnostics:get',
+  aiCompile: 'latex:ai:compile',
+  aiChatResolve: 'latex:ai:chat:resolve',
+  aiChatAppend: 'latex:ai:chat:append',
+  aiChatLoad: 'latex:ai:chat:load',
   dirtyChanged: 'latex:dirty:changed',
   externalChanged: 'latex:external:changed',
   projectOpened: 'latex:project:opened',
@@ -87,6 +98,45 @@ export interface UndoProposalRequest extends SessionRequest {
   snapshotId: string
 }
 
+export interface CreateProposalRequest extends SessionRequest {
+  files: Array<{ path: string; afterText: string }>
+}
+
+export interface AiProjectReadRequest extends FileRequest {
+  offset: number
+  maxChars: number
+}
+
+export interface AiProjectSearchRequest extends SessionRequest {
+  query: string
+  maxResults: number
+}
+
+export interface AiChatAppendRequest extends SessionRequest {
+  storeProjectId: string
+  chatId: string
+  role: 'user' | 'assistant'
+  text: string
+}
+
+export interface AiChatLoadRequest extends SessionRequest {
+  storeProjectId: string
+  chatId: string
+  limit: number
+}
+
+export interface LatexProposalDto {
+  id: string
+  projectId: string
+  expiresAt: number
+  files: Array<{
+    path: string
+    beforeText: string | null
+    beforeSha256: string | null
+    afterText: string
+  }>
+}
+
 export interface LatexBufferDto {
   path: string
   text: string
@@ -132,12 +182,25 @@ export interface LatexApi {
     request: SyncTexReverseRequest,
   ): Promise<LatexIpcResult<{ path: string; line: number } | null>>
   getProposal(request: ProposalRequest): Promise<LatexIpcResult<unknown>>
-  applyProposal(
-    request: ProposalRequest,
-  ): Promise<LatexIpcResult<{ proposalId: string; snapshotId: string }>>
-  undoProposal(
-    request: UndoProposalRequest,
-  ): Promise<LatexIpcResult<{ snapshotId: string; restored: boolean }>>
+  proposeProjectEdits(request: CreateProposalRequest): Promise<LatexIpcResult<LatexProposalDto>>
+  applyProposal(request: ProposalRequest): Promise<LatexIpcResult<unknown>>
+  undoProposal(request: UndoProposalRequest): Promise<LatexIpcResult<unknown>>
+  listProjectFiles(request: SessionRequest): Promise<LatexIpcResult<unknown>>
+  searchProjectText(request: AiProjectSearchRequest): Promise<LatexIpcResult<unknown>>
+  readProjectText(request: AiProjectReadRequest): Promise<LatexIpcResult<unknown>>
+  getCompileDiagnostics(request: SessionRequest): Promise<LatexIpcResult<unknown>>
+  compileProjectForAi(request: SessionRequest): Promise<LatexIpcResult<unknown>>
+  resolveDirectoryChat(
+    request: SessionRequest,
+  ): Promise<LatexIpcResult<{ projectId: string; chatId: string }>>
+  appendDirectoryChat(request: AiChatAppendRequest): Promise<LatexIpcResult<void>>
+  loadDirectoryChat(
+    request: AiChatLoadRequest,
+  ): Promise<LatexIpcResult<Array<{ role: 'user' | 'assistant'; text: string }>>>
+  getAiSettings(): Promise<AiSettings>
+  aiStream(request: AiStreamRequest): Promise<void>
+  aiStreamCancel(requestId: string): Promise<void>
+  onAiStream(handler: (chunk: AiStreamChunk) => void): () => void
   onExternalChange(handler: (buffer: LatexBufferDto) => void): () => void
   onEditFlushRequest(handler: (requestId: string) => Promise<boolean>): () => void
   onEditFlushRelease(handler: (requestId: string) => void): () => void

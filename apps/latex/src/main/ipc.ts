@@ -118,6 +118,54 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
       session.syncTexReverse(request.revision, request.page, request.x, request.y),
     ),
   )
+  handle(LATEX_CHANNELS.aiProjectList, (event, payload) =>
+    withSession(event, payload, registry, parseSessionRequest, (session) =>
+      session.listProjectFilesForAi(),
+    ),
+  )
+  handle(LATEX_CHANNELS.aiProjectRead, (event, payload) =>
+    withSession(event, payload, registry, parseAiReadRequest, (session, request) =>
+      session.readProjectTextForAi(request.path, request.offset, request.maxChars),
+    ),
+  )
+  handle(LATEX_CHANNELS.aiProjectSearch, (event, payload) =>
+    withSession(event, payload, registry, parseAiSearchRequest, (session, request) =>
+      session.searchProjectTextForAi(request.query, request.maxResults),
+    ),
+  )
+  handle(LATEX_CHANNELS.aiDiagnosticsGet, (event, payload) =>
+    withSession(event, payload, registry, parseSessionRequest, (session) =>
+      session.getCompileDiagnosticsForAi(),
+    ),
+  )
+  handle(LATEX_CHANNELS.aiCompile, (event, payload) =>
+    withSession(event, payload, registry, parseSessionRequest, (session) => session.compileForAi()),
+  )
+  handle(LATEX_CHANNELS.aiChatResolve, (event, payload) =>
+    withSession(event, payload, registry, parseSessionRequest, (session) =>
+      session.resolveDirectoryChat(),
+    ),
+  )
+  handle(LATEX_CHANNELS.aiChatAppend, (event, payload) =>
+    withSession(event, payload, registry, parseAiChatAppend, (session, request) =>
+      session.appendDirectoryChat(
+        request.storeProjectId,
+        request.chatId,
+        request.role,
+        request.text,
+      ),
+    ),
+  )
+  handle(LATEX_CHANNELS.aiChatLoad, (event, payload) =>
+    withSession(event, payload, registry, parseAiChatLoad, (session, request) =>
+      session.loadDirectoryChat(request.storeProjectId, request.chatId, request.limit),
+    ),
+  )
+  handle(LATEX_CHANNELS.proposalCreate, (event, payload) =>
+    withSession(event, payload, registry, parseCreateProposalRequest, (session, request) =>
+      session.createEditProposal(request.files),
+    ),
+  )
   handle(LATEX_CHANNELS.proposalGet, (event, payload) =>
     withSession(event, payload, registry, parseProposalRequest, (session, request) => {
       const proposal = session.getProposal(request.proposalId)
@@ -127,12 +175,12 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
   )
   handle(LATEX_CHANNELS.proposalApply, (event, payload) =>
     withSession(event, payload, registry, parseProposalRequest, (session, request) =>
-      session.applyProposal(request.proposalId),
+      session.applyConfirmedProposal(request.proposalId),
     ),
   )
   handle(LATEX_CHANNELS.proposalUndo, (event, payload) =>
     withSession(event, payload, registry, parseUndoRequest, (session, request) =>
-      session.undoProposal(request.snapshotId),
+      session.undoConfirmedProposal(request.snapshotId),
     ),
   )
 
@@ -236,6 +284,68 @@ function parseSyncTexReverse(value: unknown) {
   }
 }
 
+function parseAiReadRequest(value: unknown) {
+  const item = exactObject(value, ['projectId', 'path', 'offset', 'maxChars'])
+  return {
+    projectId: boundedString(item.projectId, 'projectId', 128),
+    path: relativePath(item.path),
+    offset: revision(item.offset),
+    maxChars: boundedPositiveInteger(item.maxChars, 'maxChars', 24_000),
+  }
+}
+
+function parseAiSearchRequest(value: unknown) {
+  const item = exactObject(value, ['projectId', 'query', 'maxResults'])
+  return {
+    projectId: boundedString(item.projectId, 'projectId', 128),
+    query: boundedString(item.query, 'query', 256),
+    maxResults: boundedPositiveInteger(item.maxResults, 'maxResults', 50),
+  }
+}
+
+function parseAiChatAppend(value: unknown) {
+  const item = exactObject(value, ['projectId', 'storeProjectId', 'chatId', 'role', 'text'])
+  const role =
+    item.role === 'user' || item.role === 'assistant' ? item.role : invalid('role is invalid')
+  return {
+    projectId: boundedString(item.projectId, 'projectId', 128),
+    storeProjectId: boundedString(item.storeProjectId, 'storeProjectId', 128),
+    chatId: boundedString(item.chatId, 'chatId', 128),
+    role: role as 'user' | 'assistant',
+    text:
+      typeof item.text === 'string' && item.text.length <= 100_000
+        ? item.text
+        : invalid('text is invalid'),
+  }
+}
+
+function parseAiChatLoad(value: unknown) {
+  const item = exactObject(value, ['projectId', 'storeProjectId', 'chatId', 'limit'])
+  return {
+    projectId: boundedString(item.projectId, 'projectId', 128),
+    storeProjectId: boundedString(item.storeProjectId, 'storeProjectId', 128),
+    chatId: boundedString(item.chatId, 'chatId', 128),
+    limit: boundedPositiveInteger(item.limit, 'limit', 200),
+  }
+}
+
+function parseCreateProposalRequest(value: unknown) {
+  const item = exactObject(value, ['projectId', 'files'])
+  if (!Array.isArray(item.files) || item.files.length < 1 || item.files.length > 20)
+    invalid('files are invalid')
+  let totalBytes = 0
+  const files = item.files.map((raw) => {
+    const file = exactObject(raw, ['path', 'afterText'])
+    if (typeof file.afterText !== 'string') invalid('afterText is invalid')
+    const fileBytes = Buffer.byteLength(file.afterText, 'utf8')
+    if (fileBytes > MAX_IPC_TEXT_BYTES) invalid('proposal file is too large')
+    totalBytes += fileBytes
+    if (totalBytes > 2 * MAX_IPC_TEXT_BYTES) invalid('proposal is too large')
+    return { path: relativePath(file.path), afterText: file.afterText }
+  })
+  return { projectId: boundedString(item.projectId, 'projectId', 128), files }
+}
+
 function parseProposalRequest(value: unknown) {
   const item = exactObject(value, ['projectId', 'proposalId'])
   return {
@@ -290,6 +400,12 @@ function boundedString(value: unknown, name: string, maxLength: number): string 
 
 function revision(value: unknown): number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) invalid('revision is invalid')
+  return value as number
+}
+
+function boundedPositiveInteger(value: unknown, name: string, max: number): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > max)
+    invalid(name + ' is invalid')
   return value as number
 }
 

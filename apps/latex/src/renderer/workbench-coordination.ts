@@ -244,6 +244,65 @@ export function remapWorkspacePaths(
   }
 }
 
+export function reconcileProjectListing(
+  editorState: EditorState,
+  currentFiles: readonly string[],
+  openPaths: readonly string[],
+  activePath: string | null,
+  listedFiles: readonly string[],
+) {
+  const listed = new Set(listedFiles)
+  const preserved = new Set(
+    currentFiles.filter((path) => {
+      const buffer = editorState.buffers[path]
+      return !listed.has(path) && Boolean(buffer?.dirty || buffer?.conflict)
+    }),
+  )
+  const files = [...new Set([...listed, ...preserved])].sort()
+  const available = new Set(files)
+  const nextOpenPaths = openPaths.filter((path) => available.has(path))
+  const buffers = { ...editorState.buffers }
+  for (const path of Object.keys(buffers)) {
+    if (!available.has(path) && !buffers[path]?.dirty && !buffers[path]?.conflict)
+      delete buffers[path]
+  }
+  return {
+    files,
+    openPaths: nextOpenPaths,
+    activePath:
+      activePath !== null && available.has(activePath) ? activePath : (nextOpenPaths[0] ?? null),
+    editorState: buffers === editorState.buffers ? editorState : { ...editorState, buffers },
+  }
+}
+
+export class ProjectListingRequestGate {
+  private generation = 0
+
+  begin(): number {
+    return ++this.generation
+  }
+
+  invalidate(): void {
+    this.generation += 1
+  }
+
+  accept(generation: number): boolean {
+    return generation === this.generation
+  }
+}
+
+export async function refreshProjectListing(
+  gate: ProjectListingRequestGate,
+  list: () => Promise<string[]>,
+  apply: (files: string[]) => void,
+): Promise<boolean> {
+  const generation = gate.begin()
+  const files = await list()
+  if (!gate.accept(generation)) return false
+  apply(files)
+  return true
+}
+
 export async function completeReverseSync(options: {
   token: SyncRequestToken
   gate: SyncRequestGate

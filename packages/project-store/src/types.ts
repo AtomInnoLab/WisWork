@@ -76,6 +76,8 @@ export interface ProjectIndex {
    * Old data without this map falls back to sha256(path) derivation.
    */
   chatIdByPath?: Record<string, string>
+  resourceMap?: Record<string, string>
+  chatIdByResource?: Record<string, string>
 }
 
 export interface ChatMeta {

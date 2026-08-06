@@ -3,6 +3,7 @@ import type { PdfPoint, ViewerLocation } from '@wiswork/pdf-viewer'
 import type { CompileDiagnosticInput, EditorDiagnostic } from './compile/diagnostics.js'
 import { mapCompileDiagnostics } from './compile/diagnostics.js'
 import { CompilePanel } from './compile/CompilePanel.js'
+import { AiPanel } from './ai/AiPanel.js'
 import {
   acceptCompileResult,
   addEditorBuffer,
@@ -24,10 +25,13 @@ import {
   CompileRequestQueue,
   PendingSaveRegistry,
   PendingUpdateRegistry,
+  ProjectListingRequestGate,
   RendererCloseFreeze,
   flushRendererCloseFence,
   persistBuffer,
   remapWorkspacePaths,
+  reconcileProjectListing,
+  refreshProjectListing,
   runRenameFlow,
   saveAllForCompile,
   SyncRequestGate,
@@ -64,7 +68,11 @@ export function App() {
   const [projectId, setProjectId] = useState<string | null>(null)
   const [mainFile, setMainFile] = useState<string | null>(null)
   const [files, setFiles] = useState<string[]>([])
+  const filesRef = useRef(files)
+  filesRef.current = files
   const [openPaths, setOpenPaths] = useState<string[]>([])
+  const openPathsRef = useRef(openPaths)
+  openPathsRef.current = openPaths
   const [activePath, setActivePath] = useState<string | null>(null)
   const activePathRef = useRef<string | null>(activePath)
   activePathRef.current = activePath
@@ -84,6 +92,7 @@ export function App() {
   const syncTimer = useRef<number | null>(null)
   const compileLatestRef = useRef<() => void>(() => undefined)
   const compileQueue = useRef(new CompileRequestQueue())
+  const projectListingGate = useRef(new ProjectListingRequestGate())
   const forwardGate = useRef(new SyncRequestGate())
   const reverseGate = useRef(new SyncRequestGate())
   const scheduleAutoCompile = useCallback(() => {
@@ -150,6 +159,35 @@ export function App() {
     },
     [activateFile, loadFile],
   )
+
+  const refreshProjectFiles = useCallback(async () => {
+    if (!projectId) return
+    try {
+      await refreshProjectListing(
+        projectListingGate.current,
+        async () => {
+          const listed = await window.latexApi.listFiles({ projectId })
+          if (!listed.ok) throw new Error(listed.error.message)
+          return listed.value
+        },
+        (listed) => {
+          const next = reconcileProjectListing(
+            editorStateRef.current,
+            filesRef.current,
+            openPathsRef.current,
+            activePathRef.current,
+            listed,
+          )
+          replaceEditorState(next.editorState)
+          setFiles(next.files)
+          setOpenPaths(next.openPaths)
+          setActivePath(next.activePath)
+        },
+      )
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error))
+    }
+  }, [projectId, replaceEditorState])
 
   useEffect(() => {
     let disposed = false
@@ -357,6 +395,7 @@ export function App() {
     if (closeFreeze.current.isFrozen() || !projectId) return
     const path = window.prompt('New LaTeX file path', 'chapter.tex')?.trim()
     if (!path) return
+    projectListingGate.current.invalidate()
     const result = await window.latexApi.createFile({ projectId, path, text: '' })
     if (!result.ok) return setError(result.error.message)
     replaceEditorState(
@@ -411,6 +450,7 @@ export function App() {
         return Boolean(buffer && !buffer.dirty && !buffer.conflict)
       },
       rename: async (ownedFrom, to) => {
+        projectListingGate.current.invalidate()
         const result = await window.latexApi.renameFile({ projectId, from: ownedFrom, to })
         if (!result.ok) setError(result.error.message)
         return result.ok
@@ -563,6 +603,13 @@ export function App() {
         stale={editorState.previewStale}
         onReverseSync={(point) => void reverseSync(point)}
       />
+      {projectId && (
+        <AiPanel
+          projectId={projectId}
+          disabled={frozen}
+          onProjectFilesChanged={refreshProjectFiles}
+        />
+      )}
     </main>
   )
 }

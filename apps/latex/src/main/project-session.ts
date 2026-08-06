@@ -14,12 +14,32 @@ import {
 } from '@wiswork/latex-compiler'
 import {
   openLatexProject,
+  ProjectPathPolicy,
   ProposalStore,
   SnapshotStore,
   type EditProposal,
   type LatexProject,
 } from '@wiswork/latex-project'
-import type { CompileResultDto, LatexBufferDto, LatexSaveDto } from '../shared/ipc.js'
+import { ProjectStore } from '@wiswork/project-store'
+import type {
+  CompileResultDto,
+  LatexBufferDto,
+  LatexProposalDto,
+  LatexSaveDto,
+} from '../shared/ipc.js'
+
+function isAiSensitivePath(path: string): boolean {
+  return path.split('/').some((part) => {
+    const lower = part.toLowerCase()
+    return (
+      lower === '.env' ||
+      lower.includes('secret') ||
+      lower.includes('credential') ||
+      lower.includes('private-key') ||
+      lower.includes('private_key')
+    )
+  })
+}
 
 export class MainFileRenameError extends Error {}
 
@@ -81,7 +101,9 @@ export class ProjectSession {
   private readonly maxCompileResults: number
   private readonly cleanupStaging: (path: string) => Promise<void>
   private readonly proposalStore?: ProposalStore
+  private readonly projectStore?: ProjectStore
   private readonly proposals = new Map<string, EditProposal>()
+  private readonly proposalReviews = new Map<string, LatexProposalDto>()
   private readonly saveQueues = new Map<string, Promise<unknown>>()
   private activeCompile: ActiveCompile | undefined
   private readonly cancelledCompileTokens = new Set<string>()
@@ -95,6 +117,11 @@ export class ProjectSession {
     }
   >()
   private disposed = false
+  private confirmedEditRevision = 0
+  private confirmedMutationInProgress = false
+  private activeRendererMutations = 0
+  private rendererMutationsSettled: Promise<void> = Promise.resolve()
+  private resolveRendererMutationsSettled: (() => void) | undefined
 
   constructor(
     webContentsId: number,
@@ -122,6 +149,7 @@ export class ProjectSession {
     if (this.compilerRuntime) {
       const cacheRoot = join(this.compilerRuntime.userDataPath, 'latex', 'project-state')
       this.proposalStore = new ProposalStore(cacheRoot, new SnapshotStore(cacheRoot))
+      this.projectStore = new ProjectStore(this.compilerRuntime.userDataPath)
     }
     this.watcher = watcherFactory(project.rootPath, (path) => {
       void this.handleExternalChange(path).catch(() => undefined)
@@ -163,6 +191,15 @@ export class ProjectSession {
 
   updateBuffer(path: string, text: string): LatexBufferDto {
     this.assertActive()
+    const release = this.acquireRendererMutation()
+    try {
+      return this.updateBufferState(path, text)
+    } finally {
+      release()
+    }
+  }
+
+  private updateBufferState(path: string, text: string): LatexBufferDto {
     const state = this.buffers.get(path)
     if (!state) throw new Error(`File must be read before editing: ${path}`)
     state.text = text
@@ -177,16 +214,21 @@ export class ProjectSession {
     editRevision?: number,
   ): Promise<LatexSaveDto> {
     this.assertActive()
-    const state = this.buffers.get(path)
-    if (!state) throw new Error(`File must be read before saving: ${path}`)
-    if (editRevision !== undefined) {
-      if (!Number.isSafeInteger(editRevision) || editRevision < state.lastSaveRevision) {
-        throw new Error('Stale renderer save revision')
+    const release = this.acquireRendererMutation()
+    try {
+      const state = this.buffers.get(path)
+      if (!state) throw new Error(`File must be read before saving: ${path}`)
+      if (editRevision !== undefined) {
+        if (!Number.isSafeInteger(editRevision) || editRevision < state.lastSaveRevision) {
+          throw new Error('Stale renderer save revision')
+        }
+        state.lastSaveRevision = editRevision
       }
-      state.lastSaveRevision = editRevision
+      if (requestedText !== undefined) this.updateBufferState(path, requestedText)
+      return await this.enqueueSave(path, () => this.saveCurrentText(path))
+    } finally {
+      release()
     }
-    if (requestedText !== undefined) this.updateBuffer(path, requestedText)
-    return this.enqueueSave(path, () => this.saveCurrentText(path))
   }
 
   private enqueueSave<T>(path: string, operation: () => Promise<T>): Promise<T> {
@@ -239,45 +281,55 @@ export class ProjectSession {
 
   async createText(path: string, text: string): Promise<LatexBufferDto> {
     this.assertActive()
-    const saved = await this.project.saveText(path, text, { expectedSha256: null })
-    const state: BufferState = {
-      path: saved.path,
-      text,
-      baselineText: text,
-      baselineSha256: saved.sha256,
-      dirty: false,
-      conflict: null,
-      version: 0,
-      lastSaveRevision: -1,
+    const release = this.acquireRendererMutation()
+    try {
+      const saved = await this.project.saveText(path, text, { expectedSha256: null })
+      const state: BufferState = {
+        path: saved.path,
+        text,
+        baselineText: text,
+        baselineSha256: saved.sha256,
+        dirty: false,
+        conflict: null,
+        version: 0,
+        lastSaveRevision: -1,
+      }
+      this.buffers.set(saved.path, state)
+      return dto(state)
+    } finally {
+      release()
     }
-    this.buffers.set(saved.path, state)
-    return dto(state)
   }
 
   async renameText(from: string, to: string): Promise<void> {
     this.assertActive()
-    if (from === this.mainFile)
-      throw new MainFileRenameError('Cannot rename the configured main file')
-    const text = await this.project.readText(from)
-    const hash = digest(text)
-    await this.project.saveText(to, text, { expectedSha256: null })
+    const release = this.acquireRendererMutation()
     try {
-      await this.project.deleteText(from, {
-        expectedSha256: hash,
-        transactionId: randomBytes(12).toString('hex'),
-      })
-    } catch (error) {
-      await this.project
-        .deleteText(to, {
+      if (from === this.mainFile)
+        throw new MainFileRenameError('Cannot rename the configured main file')
+      const text = await this.project.readText(from)
+      const hash = digest(text)
+      await this.project.saveText(to, text, { expectedSha256: null })
+      try {
+        await this.project.deleteText(from, {
           expectedSha256: hash,
           transactionId: randomBytes(12).toString('hex'),
         })
-        .catch(() => undefined)
-      throw error
+      } catch (error) {
+        await this.project
+          .deleteText(to, {
+            expectedSha256: hash,
+            transactionId: randomBytes(12).toString('hex'),
+          })
+          .catch(() => undefined)
+        throw error
+      }
+      const state = this.buffers.get(from)
+      this.buffers.delete(from)
+      if (state) this.buffers.set(to, { ...state, path: to })
+    } finally {
+      release()
     }
-    const state = this.buffers.get(from)
-    this.buffers.delete(from)
-    if (state) this.buffers.set(to, { ...state, path: to })
   }
 
   async handleExternalChange(path: string): Promise<void> {
@@ -485,6 +537,166 @@ export class ProjectSession {
     return this.compileResults.get(revision)?.syncTex?.inverse(page, x, y) ?? null
   }
 
+  resolveDirectoryChat() {
+    if (!this.projectStore) throw new Error('Project store is not configured')
+    return this.projectStore.resolveChatForDirectory(this.project.rootPath)
+  }
+
+  appendDirectoryChat(
+    storeProjectId: string,
+    chatId: string,
+    role: 'user' | 'assistant',
+    text: string,
+  ) {
+    if (!this.projectStore) throw new Error('Project store is not configured')
+    const owned = this.resolveDirectoryChat()
+    if (owned.projectId !== storeProjectId || owned.chatId !== chatId)
+      throw new Error('Chat does not belong to project session')
+    this.projectStore.appendChatMessage(storeProjectId, chatId, { role, text })
+  }
+
+  loadDirectoryChat(storeProjectId: string, chatId: string, limit: number) {
+    if (!this.projectStore) throw new Error('Project store is not configured')
+    const owned = this.resolveDirectoryChat()
+    if (owned.projectId !== storeProjectId || owned.chatId !== chatId)
+      throw new Error('Chat does not belong to project session')
+    return this.projectStore.loadChat(storeProjectId, chatId, limit)
+  }
+
+  async listProjectFilesForAi() {
+    const files = await this.listTextFiles()
+    const allowed = files.filter((path) => !isAiSensitivePath(path))
+    return { files: allowed.slice(0, 200), truncated: allowed.length > 200 }
+  }
+
+  async readProjectTextForAi(path: string, offset: number, maxChars: number) {
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > 10_000_000)
+      throw new Error('Invalid read offset')
+    if (!Number.isSafeInteger(maxChars) || maxChars < 1 || maxChars > 24_000)
+      throw new Error('Invalid read size')
+    if (isAiSensitivePath(path)) throw new Error('Sensitive project files are not AI-readable')
+    const text = await this.project.readText(path)
+    if (text.includes('\0')) throw new Error('Binary project files are not AI-readable')
+    if (Buffer.byteLength(text, 'utf8') > 256 * 1024)
+      throw new Error('AI read file exceeds size limit')
+    return {
+      path,
+      offset,
+      totalChars: text.length,
+      text: text.slice(offset, offset + maxChars),
+      truncated: offset + maxChars < text.length,
+    }
+  }
+
+  async searchProjectTextForAi(query: string, maxResults: number) {
+    if (!query || query.length > 256) throw new Error('Invalid search query')
+    if (!Number.isSafeInteger(maxResults) || maxResults < 1 || maxResults > 50)
+      throw new Error('Invalid search result limit')
+    const files = (await this.listTextFiles())
+      .filter((path) => !isAiSensitivePath(path))
+      .slice(0, 200)
+    const matches: Array<{ path: string; line: number; text: string }> = []
+    let outputChars = 0
+    for (const path of files) {
+      let text: string
+      try {
+        text = await this.project.readText(path)
+      } catch {
+        continue
+      }
+      if (text.includes('\0') || Buffer.byteLength(text, 'utf8') > 256 * 1024) continue
+      for (const [index, line] of text.split(/\r?\n/).entries()) {
+        if (!line.includes(query)) continue
+        const excerpt = line.slice(0, 400)
+        if (outputChars + path.length + excerpt.length > 32_000) return { matches, truncated: true }
+        matches.push({ path, line: index + 1, text: excerpt })
+        outputChars += path.length + excerpt.length
+        if (matches.length >= maxResults) return { matches, truncated: true }
+      }
+    }
+    return { matches, truncated: false }
+  }
+
+  getCompileDiagnosticsForAi() {
+    const latest = [...this.compileResults.values()].at(-1)
+    return {
+      revision: latest?.revision ?? null,
+      diagnostics: (latest?.diagnostics ?? []).slice(0, 100),
+    }
+  }
+
+  async compileForAi() {
+    if (!this.mainFile) throw new Error('Main file is not configured')
+    this.confirmedEditRevision = Math.max(this.confirmedEditRevision + 1, Date.now())
+    const result = await this.compile(this.confirmedEditRevision, this.mainFile)
+    return {
+      revision: result.revision,
+      pdfUrl: result.pdfUrl,
+      diagnostics: result.diagnostics.slice(0, 100),
+    }
+  }
+
+  async createEditProposal(
+    files: Array<{ path: string; afterText: string }>,
+  ): Promise<LatexProposalDto> {
+    this.assertActive()
+    if (!this.proposalStore) throw new Error('Proposal store is not configured')
+    if (!Array.isArray(files) || files.length < 1 || files.length > 20)
+      throw new Error('Proposal file count is invalid')
+    const policy = await ProjectPathPolicy.open(this.project.rootPath)
+    const seen = new Set<string>()
+    let reviewBytes = 0
+    for (const file of files) {
+      if (typeof file.afterText !== 'string') throw new Error('Proposal text is invalid')
+      const bytes = Buffer.byteLength(file.afterText, 'utf8')
+      if (bytes > 2 * 1024 * 1024) throw new Error('Proposal text exceeds file size limit')
+      reviewBytes += bytes
+      if (reviewBytes > 4 * 1024 * 1024) throw new Error('Proposal review exceeds total size limit')
+    }
+    const reviewed: LatexProposalDto['files'] = []
+    for (const file of files) {
+      const path = policy.normalize(file.path)
+      if (isAiSensitivePath(path))
+        throw new Error('Sensitive project files cannot be proposed by AI')
+      if (seen.has(path)) throw new Error('Proposal paths must be unique')
+      seen.add(path)
+      let beforeText: string | null
+      try {
+        beforeText = await this.project.readText(path)
+      } catch (error) {
+        if (error instanceof Error && /does not exist/.test(error.message)) beforeText = null
+        else throw error
+      }
+      const beforeBytes = beforeText === null ? 0 : Buffer.byteLength(beforeText, 'utf8')
+      if (beforeBytes > 256 * 1024) throw new Error('Proposal baseline exceeds file size limit')
+      reviewBytes += beforeBytes
+      if (reviewBytes > 4 * 1024 * 1024) throw new Error('Proposal review exceeds total size limit')
+      if (beforeText?.includes('\0') || file.afterText.includes('\0'))
+        throw new Error('Binary proposal targets are not supported')
+      reviewed.push({
+        path,
+        beforeText,
+        beforeSha256: beforeText === null ? null : digest(beforeText),
+        afterText: file.afterText,
+      })
+    }
+    const proposal: EditProposal = {
+      id: `ai-${randomBytes(16).toString('hex')}`,
+      projectId: this.projectId,
+      expiresAt: Date.now() + 5 * 60_000,
+      files: reviewed.map(({ path, beforeSha256, afterText }) => ({
+        path,
+        beforeSha256,
+        afterText,
+      })),
+    }
+    await this.proposalStore.create(proposal)
+    this.proposals.set(proposal.id, structuredClone(proposal))
+    const dto = { ...proposal, files: reviewed }
+    this.proposalReviews.set(proposal.id, structuredClone(dto))
+    return dto
+  }
+
   async registerProposal(proposal: Omit<EditProposal, 'projectId'>): Promise<void> {
     if (!this.proposalStore) throw new Error('Proposal store is not configured')
     const owned = { ...proposal, projectId: this.projectId }
@@ -492,7 +704,9 @@ export class ProjectSession {
     this.proposals.set(owned.id, structuredClone(owned))
   }
 
-  getProposal(id: string): EditProposal | undefined {
+  getProposal(id: string): EditProposal | LatexProposalDto | undefined {
+    const review = this.proposalReviews.get(id)
+    if (review) return structuredClone(review)
     const proposal = this.proposals.get(id)
     return proposal ? structuredClone(proposal) : undefined
   }
@@ -505,6 +719,63 @@ export class ProjectSession {
   async undoProposal(snapshotId: string) {
     if (!this.proposalStore) throw new Error('Proposal store is not configured')
     return this.proposalStore.undo(this.projectId, snapshotId, this.project)
+  }
+
+  async applyConfirmedProposal(id: string) {
+    this.assertActive()
+    return this.withConfirmedMutation(async () => {
+      this.assertAllBuffersPersisted()
+      const proposal = this.proposals.get(id)
+      if (!this.proposalStore || !proposal) throw new Error('Proposal not found')
+      const applied = await this.proposalStore.apply(id, this.projectId, this.project)
+      this.proposals.delete(id)
+      this.proposalReviews.delete(id)
+      await this.refreshBuffers(proposal.files.map((file) => file.path))
+      return { ...applied, compile: await this.compileAfterConfirmedEdit() }
+    })
+  }
+
+  async undoConfirmedProposal(snapshotId: string) {
+    this.assertActive()
+    return this.withConfirmedMutation(async () => {
+      this.assertAllBuffersPersisted()
+      if (!this.proposalStore) throw new Error('Proposal store is not configured')
+      const undone = await this.proposalStore.undo(this.projectId, snapshotId, this.project)
+      if (!undone.restored) return { ...undone, compile: null }
+      await this.refreshBuffers([...this.buffers.keys()])
+      return { ...undone, compile: await this.compileAfterConfirmedEdit() }
+    })
+  }
+
+  private async refreshBuffers(paths: readonly string[]): Promise<void> {
+    for (const path of paths) {
+      const state = this.buffers.get(path)
+      if (!state) continue
+      try {
+        const text = await this.project.readText(path)
+        state.text = text
+        state.baselineText = text
+        state.baselineSha256 = digest(text)
+        state.dirty = false
+        state.conflict = null
+        state.version += 1
+        delete state.pendingSaveSha256
+        this.onExternalChange?.(this.webContentsId, dto(state))
+      } catch {
+        this.buffers.delete(path)
+      }
+    }
+  }
+
+  private async compileAfterConfirmedEdit() {
+    if (!this.mainFile) return { ok: false as const, error: 'Main file is not configured' }
+    this.confirmedEditRevision = Math.max(this.confirmedEditRevision + 1, Date.now())
+    try {
+      const result = await this.compile(this.confirmedEditRevision, this.mainFile)
+      return { ok: true as const, result }
+    } catch (error) {
+      return { ok: false as const, error: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   dispose(): void {
@@ -520,6 +791,43 @@ export class ProjectSession {
 
   private assertActive(): void {
     if (this.disposed) throw new Error('Project session is closed')
+  }
+
+  private assertRendererMutationAllowed(): void {
+    if (this.confirmedMutationInProgress)
+      throw new Error('Confirmed edit transaction is in progress')
+  }
+
+  private acquireRendererMutation(): () => void {
+    this.assertRendererMutationAllowed()
+    if (this.activeRendererMutations === 0) {
+      this.rendererMutationsSettled = new Promise<void>((resolve) => {
+        this.resolveRendererMutationsSettled = resolve
+      })
+    }
+    this.activeRendererMutations += 1
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      this.activeRendererMutations -= 1
+      if (this.activeRendererMutations === 0) {
+        this.resolveRendererMutationsSettled?.()
+        this.resolveRendererMutationsSettled = undefined
+      }
+    }
+  }
+
+  private async withConfirmedMutation<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.confirmedMutationInProgress)
+      throw new Error('Confirmed edit transaction is already in progress')
+    this.confirmedMutationInProgress = true
+    try {
+      await this.rendererMutationsSettled
+      return await operation()
+    } finally {
+      this.confirmedMutationInProgress = false
+    }
   }
 }
 
