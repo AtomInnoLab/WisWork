@@ -52,7 +52,17 @@ export interface RecentPage {
   totalAll: number
 }
 
+export interface LatexRecentProjectEntry {
+  path: string
+  name: string
+  lastOpenedAt: number
+}
+
 export interface HomeApi {
+  latexRecents(): Promise<LatexRecentProjectEntry[]>
+  newLatexProject(): Promise<LatexRecentProjectEntry | null>
+  importLatexProject(): Promise<LatexRecentProjectEntry | null>
+  openLatexProject(path: string): Promise<void>
   /** unified recents across document types, newest first (paged) */
   recents(query?: RecentQuery): Promise<RecentPage>
   /** starred files (independent of the recent list), newest first (paged) */
@@ -170,6 +180,10 @@ export const HOME_CHANNELS = {
   newDoc: 'home:new-doc',
   newSheet: 'home:new-sheet',
   newSlide: 'home:new-slide',
+  latexRecents: 'home:latex-recents',
+  newLatexProject: 'home:new-latex-project',
+  importLatexProject: 'home:import-latex-project',
+  openLatexProject: 'home:open-latex-project',
   removeRecent: 'home:remove-recent',
   revealPath: 'home:reveal-path',
   renameFile: 'home:rename-file',

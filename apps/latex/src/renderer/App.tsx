@@ -23,6 +23,9 @@ import {
   completeReverseSync,
   CompileRequestQueue,
   PendingSaveRegistry,
+  PendingUpdateRegistry,
+  RendererCloseFreeze,
+  flushRendererCloseFence,
   persistBuffer,
   remapWorkspacePaths,
   runRenameFlow,
@@ -56,6 +59,8 @@ async function waitForSession() {
 
 export function App() {
   const { t } = useLatexLocale()
+  const closeFreeze = useRef(new RendererCloseFreeze())
+  const [frozen, setFrozen] = useState(false)
   const [projectId, setProjectId] = useState<string | null>(null)
   const [mainFile, setMainFile] = useState<string | null>(null)
   const [files, setFiles] = useState<string[]>([])
@@ -74,6 +79,7 @@ export function App() {
   const saveTimers = useRef(new Map<string, number>())
   const saveQueues = useRef(new Map<string, Promise<boolean>>())
   const pendingSaves = useRef(new PendingSaveRegistry())
+  const pendingUpdates = useRef(new PendingUpdateRegistry())
   const autoCompileTimer = useRef<number | null>(null)
   const syncTimer = useRef<number | null>(null)
   const compileLatestRef = useRef<() => void>(() => undefined)
@@ -81,6 +87,7 @@ export function App() {
   const forwardGate = useRef(new SyncRequestGate())
   const reverseGate = useRef(new SyncRequestGate())
   const scheduleAutoCompile = useCallback(() => {
+    if (closeFreeze.current.isFrozen()) return
     if (autoCompileTimer.current !== null) window.clearTimeout(autoCompileTimer.current)
     autoCompileTimer.current = window.setTimeout(() => compileLatestRef.current(), 2_000)
   }, [])
@@ -194,7 +201,7 @@ export function App() {
 
   const savePath = useCallback(
     (path: string): Promise<boolean> => {
-      if (!projectId) return Promise.resolve(false)
+      if (!projectId || closeFreeze.current.isFrozen()) return Promise.resolve(false)
       const previous = saveQueues.current.get(path) ?? Promise.resolve(true)
       const next = previous
         .catch(() => false)
@@ -222,7 +229,7 @@ export function App() {
   )
 
   const compileOnce = useCallback(async () => {
-    if (!projectId || !mainFile) return
+    if (closeFreeze.current.isFrozen() || !projectId || !mainFile) return
     const paths = Object.keys(editorStateRef.current.buffers)
     if (!(await saveAllForCompile(paths, savePath, () => editorStateRef.current))) {
       setError('Compilation stopped because not all edits were saved.')
@@ -281,6 +288,35 @@ export function App() {
     return () => unsubscribe()
   }, [replaceEditorState, scheduleAutoCompile])
 
+  useEffect(() => {
+    const unsubscribeRequest = window.latexApi.onEditFlushRequest((requestId) => {
+      const preparing = closeFreeze.current.prepare(requestId, () =>
+        flushRendererCloseFence({
+          saveTimers: saveTimers.current,
+          saveQueues: saveQueues.current,
+          clearTimer: (timer) => window.clearTimeout(timer),
+          cancelAutoCompile: () => {
+            if (autoCompileTimer.current !== null) window.clearTimeout(autoCompileTimer.current)
+            autoCompileTimer.current = null
+          },
+          settleUpdates: () => pendingUpdates.current.settleAll(),
+        }),
+      )
+      setFrozen(closeFreeze.current.isFrozen())
+      void preparing.then((ok) => {
+        if (!ok) setFrozen(closeFreeze.current.isFrozen())
+      })
+      return preparing
+    })
+    const unsubscribeRelease = window.latexApi.onEditFlushRelease((requestId) => {
+      if (closeFreeze.current.release(requestId)) setFrozen(false)
+    })
+    return () => {
+      unsubscribeRequest()
+      unsubscribeRelease()
+    }
+  }, [])
+
   useEffect(
     () => () => {
       for (const timer of saveTimers.current.values()) window.clearTimeout(timer)
@@ -291,11 +327,20 @@ export function App() {
   )
 
   const handleEdit = (text: string) => {
-    if (!activePath || !projectId) return
+    if (closeFreeze.current.isFrozen() || !activePath || !projectId) return
     updateEditorState((state) => editBuffer(state, activePath, text))
-    void window.latexApi.updateFile({ projectId, path: activePath, text }).then((result) => {
-      if (!result.ok) setError(result.error.message)
-    })
+    pendingUpdates.current.track(
+      window.latexApi
+        .updateFile({ projectId, path: activePath, text })
+        .then((result) => {
+          if (!result.ok) setError(result.error.message)
+          return result.ok
+        })
+        .catch((reason: unknown) => {
+          setError(reason instanceof Error ? reason.message : String(reason))
+          return false
+        }),
+    )
     const previous = saveTimers.current.get(activePath)
     if (previous !== undefined) window.clearTimeout(previous)
     saveTimers.current.set(
@@ -309,7 +354,7 @@ export function App() {
   }
 
   const createFile = async () => {
-    if (!projectId) return
+    if (closeFreeze.current.isFrozen() || !projectId) return
     const path = window.prompt('New LaTeX file path', 'chapter.tex')?.trim()
     if (!path) return
     const result = await window.latexApi.createFile({ projectId, path, text: '' })
@@ -339,7 +384,7 @@ export function App() {
   }
 
   const renameFile = async (from: string) => {
-    if (!projectId) return
+    if (closeFreeze.current.isFrozen() || !projectId) return
     if (!canRenameFile(from, mainFile))
       return setError('The configured main file cannot be renamed.')
     const scheduleTimer = () => {
@@ -475,6 +520,7 @@ export function App() {
             path={activeBuffer.path}
             value={activeBuffer.text}
             diagnostics={activeDiagnostics}
+            readOnly={frozen}
             onChange={handleEdit}
             onSave={() => void savePath(activeBuffer.path)}
             onCompile={compileProject}

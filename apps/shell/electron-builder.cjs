@@ -19,13 +19,14 @@ const updateUrl = process.env.WISWORK_UPDATE_URL ?? process.env.GENOFFICE_UPDATE
 // Explicitly scoped to disposable test artifacts. Production release jobs
 // must omit this variable so signing and notarization remain fail-closed.
 const unsignedMacBuild = process.env.WISWORK_UNSIGNED_MAC_BUILD === '1'
+const tectonicSource = process.env.WISWORK_TECTONIC_SOURCE
 
 /** @type {import('electron-builder').Configuration} */
 const config = {
   appId: 'com.atominnolab.wiswork',
   productName: 'WisWork',
   artifactName: 'WisWork-${version}-${arch}.${ext}',
-  electronVersion: '41.7.1',
+  electronVersion: '41.10.4',
   // The shell is the authoritative installed owner. Standalone builds using the same scheme conflict if installed together.
   protocols: [{ name: 'WisWork OAuth Callback', schemes: ['wiswork'] }],
   directories: {
@@ -56,6 +57,10 @@ const config = {
     {
       from: '../pdf/out',
       to: 'modules/pdf',
+    },
+    {
+      from: '../latex/out',
+      to: 'modules/latex',
     },
   ],
   fileAssociations: [
@@ -104,6 +109,10 @@ const config = {
         from: '../sheets/native/xlsx-engine/target/release/xlsx-sidecar',
         to: 'native/xlsx-sidecar',
       },
+      {
+        from: tectonicSource ?? '../latex/native/tectonic',
+        to: 'native/tectonic',
+      },
     ],
   },
   win: {
@@ -117,6 +126,10 @@ const config = {
       {
         from: '../sheets/native/xlsx-engine/target/x86_64-pc-windows-gnu/release/xlsx-sidecar.exe',
         to: 'native/xlsx-sidecar.exe',
+      },
+      {
+        from: tectonicSource ?? '../latex/native/tectonic.exe',
+        to: 'native/tectonic.exe',
       },
     ],
   },

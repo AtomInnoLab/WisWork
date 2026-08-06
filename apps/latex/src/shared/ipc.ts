@@ -22,6 +22,9 @@ export const LATEX_CHANNELS = {
   externalChanged: 'latex:external:changed',
   projectOpened: 'latex:project:opened',
   projectRenamed: 'latex:project:renamed',
+  editFlushRequest: 'latex:edit-flush:request',
+  editFlushAck: 'latex:edit-flush:ack',
+  editFlushRelease: 'latex:edit-flush:release',
 } as const
 
 export type LatexIpcErrorCode =
@@ -136,4 +139,6 @@ export interface LatexApi {
     request: UndoProposalRequest,
   ): Promise<LatexIpcResult<{ snapshotId: string; restored: boolean }>>
   onExternalChange(handler: (buffer: LatexBufferDto) => void): () => void
+  onEditFlushRequest(handler: (requestId: string) => Promise<boolean>): () => void
+  onEditFlushRelease(handler: (requestId: string) => void): () => void
 }

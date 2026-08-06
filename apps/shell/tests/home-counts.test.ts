@@ -3,14 +3,31 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createI18n } from '@wiswork/i18n'
+import { HOME_CHANNELS } from '../src/shared/home-api'
 import { pageRecentPaths } from '../src/main/recent-files'
-import { fileCountKey, timelineCountKey, visiblePageCount } from '../src/renderer/src/counts'
+import {
+  fileCountKey,
+  latexProjectCountKey,
+  timelineCountKey,
+  visiblePageCount,
+} from '../src/renderer/src/counts'
 import { strings } from '../src/renderer/src/strings'
 
 const tempDirs: string[] = []
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
+describe('LaTeX Home API contract', () => {
+  it('uses dedicated directory-project channels', () => {
+    expect(HOME_CHANNELS).toMatchObject({
+      latexRecents: 'home:latex-recents',
+      newLatexProject: 'home:new-latex-project',
+      importLatexProject: 'home:import-latex-project',
+      openLatexProject: 'home:open-latex-project',
+    })
+  })
 })
 
 describe('home visible counts', () => {
@@ -55,6 +72,11 @@ describe('count labels', () => {
   it('uses singular and plural file labels', () => {
     expect(translate('en', fileCountKey(1), { n: 1 })).toBe('1 file')
     expect(translate('en', fileCountKey(2), { n: 2 })).toBe('2 files')
+  })
+
+  it('uses singular and plural LaTeX project labels', () => {
+    expect(translate('en', latexProjectCountKey(1), { n: 1 })).toBe('1 LaTeX project')
+    expect(translate('en', latexProjectCountKey(2), { n: 2 })).toBe('2 LaTeX projects')
   })
 
   it('uses singular and plural activity item labels', () => {

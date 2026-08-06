@@ -45,6 +45,21 @@ function PdfIcon() {
   )
 }
 
+function LatexIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect width="24" height="24" rx="5" fill="#7357C7" />
+      <path
+        d="M5.5 6.5h8M9.5 6.5v11M6.75 17.5h5.5M14.25 10l4.25 7.5M18.5 10l-4.25 7.5M15.25 15.75h2.25"
+        stroke="#fff"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 function HomeIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -84,6 +99,7 @@ const KIND_ICON: Record<TabSummary['kind'], ReactElement> = {
   sheets: <SheetIcon />,
   slides: <SlideIcon />,
   pdf: <PdfIcon />,
+  latex: <LatexIcon />,
 }
 
 export function TabBar() {

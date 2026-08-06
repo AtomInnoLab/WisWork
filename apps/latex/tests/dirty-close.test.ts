@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -22,7 +22,7 @@ describe('LaTeX dirty close guard', () => {
     const session = await registry.attach(22, projectRoot)
     await session.readText('main.tex')
     session.updateBuffer('main.tex', 'local')
-    return { registry, session, contents: { id: 22, isDestroyed: () => false } }
+    return { projectRoot, registry, session, contents: { id: 22, isDestroyed: () => false } }
   }
 
   it('queries clean and dirty state from the sender-owned session', async () => {
@@ -54,5 +54,99 @@ describe('LaTeX dirty close guard', () => {
       true,
     )
     expect(session.isDirty()).toBe(false)
+  })
+
+  it('waits for in-flight autosave then Save persists latest v3', async () => {
+    const { projectRoot, registry, contents, session } = await dirtySession()
+    const original = session.project.saveText.bind(session.project)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    vi.spyOn(session.project, 'saveText').mockImplementation(async (...args) => {
+      const saved = await original(...args)
+      if (args[1] === 'local') await gate
+      return saved
+    })
+    const autosave = session.saveText('main.tex')
+    await vi.waitFor(async () =>
+      expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('local'),
+    )
+    session.updateBuffer('main.tex', 'v3')
+    const showMessageBox = vi.fn().mockResolvedValue({ response: 0 })
+    const closing = requestLatexClose(contents, null, registry, { showMessageBox })
+    await Promise.resolve()
+    expect(showMessageBox).not.toHaveBeenCalled()
+    release()
+    await autosave
+    await expect(closing).resolves.toBe(true)
+    expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('v3')
+  })
+
+  it("settles autosave before Don't Save so discard has no late write", async () => {
+    const { projectRoot, registry, contents, session } = await dirtySession()
+    const original = session.project.saveText.bind(session.project)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    vi.spyOn(session.project, 'saveText').mockImplementation(async (...args) => {
+      const saved = await original(...args)
+      await gate
+      return saved
+    })
+    const autosave = session.saveText('main.tex')
+    await vi.waitFor(async () =>
+      expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('local'),
+    )
+    session.updateBuffer('main.tex', 'v3')
+    const closing = requestLatexClose(contents, null, registry, {
+      showMessageBox: vi.fn().mockResolvedValue({ response: 1 }),
+    })
+    release()
+    await autosave
+    await expect(closing).resolves.toBe(true)
+    expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('local')
+    expect(session.isDirty()).toBe(false)
+  })
+
+  it('preserves a concurrent edit while close Discard is reading disk', async () => {
+    const { registry, contents, session } = await dirtySession()
+    const original = session.project.readText.bind(session.project)
+    let markStarted!: () => void
+    let release!: () => void
+    const started = new Promise<void>((resolve) => (markStarted = resolve))
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    vi.spyOn(session.project, 'readText').mockImplementation(async (...args) => {
+      markStarted()
+      await gate
+      return original(...args)
+    })
+    const closing = requestLatexClose(contents, null, registry, {
+      showMessageBox: vi.fn().mockResolvedValue({ response: 1 }),
+    })
+    await started
+    session.updateBuffer('main.tex', 'v3')
+    release()
+    await expect(closing).resolves.toBe(false)
+    expect(session.getBuffer('main.tex')).toMatchObject({ text: 'v3', dirty: true })
+  })
+
+  it('returns false when a new edit arrives during close Save', async () => {
+    const { projectRoot, registry, contents, session } = await dirtySession()
+    const original = session.project.saveText.bind(session.project)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    vi.spyOn(session.project, 'saveText').mockImplementation(async (...args) => {
+      const saved = await original(...args)
+      await gate
+      return saved
+    })
+    const closing = requestLatexClose(contents, null, registry, {
+      showMessageBox: vi.fn().mockResolvedValue({ response: 0 }),
+    })
+    await vi.waitFor(async () =>
+      expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('local'),
+    )
+    session.updateBuffer('main.tex', 'v3')
+    release()
+    await expect(closing).resolves.toBe(false)
+    expect(session.getBuffer('main.tex')).toMatchObject({ text: 'v3', dirty: true })
   })
 })

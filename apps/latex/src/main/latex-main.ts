@@ -2,6 +2,7 @@ import { createRequire } from 'node:module'
 import { readFile } from 'node:fs/promises'
 import type { BrowserWindow, WebContents, WebContentsView } from 'electron'
 import { LATEX_CHANNELS } from '../shared/ipc.js'
+import { LatexEditFlushCoordinator, type FlushWebContents } from './edit-flush.js'
 import { registerLatexIpc } from './ipc.js'
 import { ProjectSessionRegistry } from './project-session.js'
 
@@ -26,6 +27,7 @@ let runtime: LatexRuntimeConfig | undefined
 let registry = new ProjectSessionRegistry()
 let ipcRegistered = false
 let unregisterIpc: (() => void) | undefined
+let editFlushCoordinator: LatexEditFlushCoordinator | undefined
 
 export function configureLatexRuntime(config: LatexRuntimeConfig): void {
   if (runtime) throw new Error('LaTeX runtime is already configured')
@@ -48,6 +50,7 @@ export function configureLatexRuntime(config: LatexRuntimeConfig): void {
 export function createLatexView(projectPath: string): WebContentsView {
   if (!runtime) throw new Error('LaTeX runtime is not configured')
   const electron = electronRuntime()
+  editFlushCoordinator ??= new LatexEditFlushCoordinator(electron.ipcMain)
   const ownedRuntime = runtime
   const ownedRegistry = registry
   if (!ipcRegistered) {
@@ -89,6 +92,20 @@ export function createLatexView(projectPath: string): WebContentsView {
   return view
 }
 
+export function requestLatexEditFlush(
+  contents: FlushWebContents,
+  coordinator: LatexEditFlushCoordinator | undefined = editFlushCoordinator,
+): Promise<boolean> {
+  return coordinator ? coordinator.request(contents) : Promise.resolve(false)
+}
+
+export function releaseLatexEditFlush(
+  contents: FlushWebContents,
+  coordinator: LatexEditFlushCoordinator | undefined = editFlushCoordinator,
+): void {
+  coordinator?.release(contents)
+}
+
 export async function latexQueryDirty(
   contents: DirtyWebContents,
   sessions: ProjectSessionRegistry = registry,
@@ -104,7 +121,14 @@ export async function requestLatexClose(
   dialogOverride?: DialogLike,
 ): Promise<boolean> {
   const session = sessions.getByWebContents(contents.id)
-  if (!session || contents.isDestroyed() || !session.isDirty()) return true
+  if (!session || contents.isDestroyed()) return true
+  try {
+    await session.settleSaves()
+  } catch {
+    return false
+  }
+  if (contents.isDestroyed()) return true
+  if (!session.isDirty()) return true
   const dialog = dialogOverride ?? electronRuntime().dialog
   const options = {
     type: 'warning',
@@ -120,12 +144,18 @@ export async function requestLatexClose(
     : await dialog.showMessageBox(options)
   if (response === 2) return false
   if (response === 1) {
-    await session.discardAll()
-    return true
+    try {
+      await session.settleSaves()
+      await session.discardAll()
+      return !session.isDirty()
+    } catch {
+      return false
+    }
   }
   try {
     await session.saveAll()
-    return true
+    await session.settleSaves()
+    return !session.isDirty()
   } catch {
     return false
   }
@@ -168,6 +198,8 @@ export function getLatexSessionRegistry(): ProjectSessionRegistry {
 /** @internal Tests only; production configuration is single-assignment. */
 export function resetLatexRuntimeForTests(): void {
   registry.disposeAll()
+  editFlushCoordinator?.dispose()
+  editFlushCoordinator = undefined
   unregisterIpc?.()
   unregisterIpc = undefined
   runtime = undefined
@@ -184,7 +216,8 @@ export function notifyLatexProjectRenamed(contents: WebContents, name: string): 
 
 interface ElectronRuntime {
   WebContentsView: new (options: unknown) => WebContentsView
-  ipcMain: Parameters<typeof registerLatexIpc>[0]['ipcMain']
+  ipcMain: Parameters<typeof registerLatexIpc>[0]['ipcMain'] &
+    ConstructorParameters<typeof LatexEditFlushCoordinator>[0]
   dialog: DialogLike
   webContents: { fromId(id: number): WebContents | undefined }
 }

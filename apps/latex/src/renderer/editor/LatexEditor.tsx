@@ -4,7 +4,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
 import { setDiagnostics, lintGutter, type Diagnostic } from '@codemirror/lint'
 import { searchKeymap } from '@codemirror/search'
-import { EditorState } from '@codemirror/state'
+import { Compartment, EditorState } from '@codemirror/state'
 import {
   EditorView,
   drawSelection,
@@ -22,6 +22,7 @@ export interface LatexEditorProps {
   path: string
   value: string
   diagnostics: readonly EditorDiagnostic[]
+  readOnly?: boolean
   onChange: (value: string) => void
   onSave: () => void
   onCompile: () => void
@@ -51,6 +52,7 @@ export function LatexEditor({
   path,
   value,
   diagnostics,
+  readOnly = false,
   onChange,
   onSave,
   onCompile,
@@ -59,10 +61,12 @@ export function LatexEditor({
 }: LatexEditorProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
+  const readOnlyCompartment = useRef(new Compartment())
+  const suppressChanges = useRef(false)
   const callbacks = useRef({ onChange, onSave, onCompile, onCursorLine })
-  const currentInput = useRef({ value, diagnostics })
+  const currentInput = useRef({ value, diagnostics, readOnly })
   callbacks.current = { onChange, onSave, onCompile, onCursorLine }
-  currentInput.current = { value, diagnostics }
+  currentInput.current = { value, diagnostics, readOnly }
 
   useEffect(() => {
     const host = hostRef.current
@@ -81,6 +85,10 @@ export function LatexEditor({
           highlightActiveLine(),
           syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
           lintGutter(),
+          readOnlyCompartment.current.of([
+            EditorState.readOnly.of(currentInput.current.readOnly),
+            EditorView.editable.of(!currentInput.current.readOnly),
+          ]),
           autocompletion(),
           ...latexLanguageExtensions(path),
           keymap.of([
@@ -108,7 +116,9 @@ export function LatexEditor({
           ]),
           EditorView.lineWrapping,
           EditorView.updateListener.of((update) => {
-            if (update.docChanged) callbacks.current.onChange(update.state.doc.toString())
+            if (update.docChanged && !suppressChanges.current) {
+              callbacks.current.onChange(update.state.doc.toString())
+            }
             if (update.selectionSet) {
               callbacks.current.onCursorLine?.(
                 update.state.doc.lineAt(update.state.selection.main.head).number,
@@ -133,9 +143,19 @@ export function LatexEditor({
     const view = viewRef.current
     if (!view) return
     const current = view.state.doc.toString()
-    if (current !== value)
-      view.dispatch({ changes: { from: 0, to: current.length, insert: value } })
-  }, [value])
+    suppressChanges.current = true
+    try {
+      view.dispatch({
+        changes: current === value ? undefined : { from: 0, to: current.length, insert: value },
+        effects: readOnlyCompartment.current.reconfigure([
+          EditorState.readOnly.of(readOnly),
+          EditorView.editable.of(!readOnly),
+        ]),
+      })
+    } finally {
+      suppressChanges.current = false
+    }
+  }, [readOnly, value])
 
   useEffect(() => {
     const view = viewRef.current

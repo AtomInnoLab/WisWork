@@ -92,6 +92,20 @@ vi.mock('../../slides/src/main/slides-main', () => ({
   slidesIsDirty: (...args: unknown[]) => slidesIsDirty(...(args as [])),
 }))
 
+const createLatexView = vi.fn(() => makeFakeView())
+const requestLatexEditFlush = vi.fn(() => Promise.resolve(true))
+const releaseLatexEditFlush = vi.fn()
+const latexQueryDirty = vi.fn(() => Promise.resolve(false))
+const requestLatexClose = vi.fn(() => Promise.resolve(true))
+
+vi.mock('../../latex/src/main/latex-main', () => ({
+  createLatexView: (...args: unknown[]) => createLatexView(...(args as [])),
+  requestLatexEditFlush: (...args: unknown[]) => requestLatexEditFlush(...(args as [])),
+  releaseLatexEditFlush: (...args: unknown[]) => releaseLatexEditFlush(...args),
+  latexQueryDirty: (...args: unknown[]) => latexQueryDirty(...(args as [])),
+  requestLatexClose: (...args: unknown[]) => requestLatexClose(...(args as [])),
+}))
+
 import { TabManager } from '../src/main/tab-manager'
 
 const TAB_STRIP_HEIGHT = 40
@@ -132,6 +146,9 @@ beforeEach(() => {
   pdfIsDirty.mockImplementation(() => false)
   sheetsPendingEditCount.mockImplementation(() => 0)
   slidesIsDirty.mockImplementation(() => false)
+  requestLatexEditFlush.mockImplementation(() => Promise.resolve(true))
+  latexQueryDirty.mockImplementation(() => Promise.resolve(false))
+  requestLatexClose.mockImplementation(() => Promise.resolve(true))
   shellWindow = makeShellWindow()
   onChanged = vi.fn()
   applyMenuFor = vi.fn()
@@ -201,6 +218,18 @@ describe('opening tabs', () => {
     expect(markDocsNewBlank).toHaveBeenCalledTimes(1)
     manager.openSheetsTab(undefined, { newBlank: true })
     expect(setSheetsNewBlank).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens one canonical LaTeX directory tab with its basename title', () => {
+    const first = manager.openLatexTab(process.cwd())
+    const duplicate = manager.openLatexTab(process.cwd() + '/.')
+    expect(duplicate).toBe(first)
+    expect(createLatexView).toHaveBeenCalledTimes(1)
+    expect(manager.list().at(-1)).toMatchObject({
+      kind: 'latex',
+      title: process.cwd().split('/').at(-1),
+      active: true,
+    })
   })
 })
 
@@ -343,6 +372,55 @@ describe('closing tabs', () => {
     const id = manager.openSheetsTab()
     await manager.closeTab(id)
     expect(manager.list()).toHaveLength(1)
+  })
+
+  it('keeps a dirty LaTeX tab open when close is cancelled and destroys it after approval', async () => {
+    latexQueryDirty.mockResolvedValue(true)
+    requestLatexClose.mockResolvedValue(false)
+    const id = manager.openLatexTab(process.cwd())
+    const view = lastCreatedView(createLatexView)
+    await manager.closeTab(id)
+    expect(requestLatexClose).toHaveBeenCalledWith(view.webContents, shellWindow)
+    expect(manager.list().some((tab) => tab.id === id)).toBe(true)
+    expect(view.webContents.close).not.toHaveBeenCalled()
+    expect(releaseLatexEditFlush).toHaveBeenCalledWith(view.webContents)
+
+    requestLatexClose.mockResolvedValue(true)
+    await manager.closeTab(id)
+    expect(view.webContents.close).toHaveBeenCalledOnce()
+    expect(requestLatexEditFlush).toHaveBeenCalledTimes(2)
+  })
+
+  it('waits for the last renderer edit before querying dirty and respects cancel', async () => {
+    let release!: (ok: boolean) => void
+    requestLatexEditFlush.mockImplementation(
+      () => new Promise<boolean>((resolve) => (release = resolve)),
+    )
+    latexQueryDirty.mockResolvedValue(true)
+    requestLatexClose.mockResolvedValue(false)
+    const id = manager.openLatexTab(process.cwd())
+    const view = lastCreatedView(createLatexView)
+    const closing = manager.closeTab(id)
+    await Promise.resolve()
+    expect(latexQueryDirty).not.toHaveBeenCalled()
+    release(true)
+    await closing
+    expect(latexQueryDirty).toHaveBeenCalledOnce()
+    expect(requestLatexClose).toHaveBeenCalledOnce()
+    expect(view.webContents.close).not.toHaveBeenCalled()
+    expect(manager.list().some((tab) => tab.id === id)).toBe(true)
+    expect(releaseLatexEditFlush).toHaveBeenCalledWith(view.webContents)
+  })
+
+  it('keeps a LaTeX tab open when the edit flush times out or fails', async () => {
+    requestLatexEditFlush.mockResolvedValue(false)
+    const id = manager.openLatexTab(process.cwd())
+    const view = lastCreatedView(createLatexView)
+    await manager.closeTab(id)
+    expect(latexQueryDirty).not.toHaveBeenCalled()
+    expect(requestLatexClose).not.toHaveBeenCalled()
+    expect(view.webContents.close).not.toHaveBeenCalled()
+    expect(manager.list().some((tab) => tab.id === id)).toBe(true)
   })
 
   it('does not stack close guards while one prompt is pending', async () => {

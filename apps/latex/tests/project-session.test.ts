@@ -140,6 +140,40 @@ describe('LaTeX project sessions', () => {
     expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('typed-v3')
   })
 
+  it('serializes same-path saves and the queued save uses latest state', async () => {
+    const { projectRoot } = await setup()
+    const session = await new ProjectSessionRegistry({ watch: () => ({ close() {} }) }).attach(
+      11,
+      projectRoot,
+    )
+    await session.readText('main.tex')
+    const original = session.project.saveText.bind(session.project)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    let active = 0
+    let maxActive = 0
+    let calls = 0
+    vi.spyOn(session.project, 'saveText').mockImplementation(async (...args) => {
+      calls += 1
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      if (calls === 1) await gate
+      const result = await original(...args)
+      active -= 1
+      return result
+    })
+    session.updateBuffer('main.tex', 'v2')
+    const v2 = session.saveText('main.tex')
+    await vi.waitFor(() => expect(calls).toBe(1))
+    session.updateBuffer('main.tex', 'v3')
+    const v3 = session.saveText('main.tex')
+    expect(calls).toBe(1)
+    release()
+    await Promise.all([v2, v3])
+    expect(maxActive).toBe(1)
+    expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('v3')
+  })
+
   it('retains an external conflict observed after the save write but before save settles', async () => {
     const { projectRoot } = await setup()
     const session = await new ProjectSessionRegistry({ watch: () => ({ close() {} }) }).attach(

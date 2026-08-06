@@ -8,6 +8,7 @@ import {
   dialog,
   ipcMain,
   nativeImage,
+  protocol,
   session,
   shell,
   webContents,
@@ -20,6 +21,7 @@ import menuXlsxIcon1x from './assets/menu-xlsx.png?asset'
 import menuXlsxIcon2x from './assets/menu-xlsx@2x.png?asset'
 import menuPptxIcon1x from './assets/menu-pptx.png?asset'
 import menuPptxIcon2x from './assets/menu-pptx@2x.png?asset'
+import menuTexIcon from './assets/menu-tex.svg?asset'
 import {
   AuthError,
   registerAuthProtocolRouting,
@@ -37,6 +39,11 @@ import {
 } from '@wiswork/electron-utils'
 import { readAppSettings, writeAppSetting } from './app-settings'
 import { ProjectStore } from '@wiswork/project-store'
+import {
+  createLatexProject as createLatexProjectDirectory,
+  importLatexProject as importLatexProjectArchive,
+  openLatexProject as validateLatexProject,
+} from '@wiswork/latex-project'
 
 import {
   buildDocsMenu,
@@ -95,6 +102,13 @@ import {
   slidesFileRenamed,
 } from '../../../slides/src/main/slides-main'
 import {
+  configureLatexRuntime,
+  getLatexSessionRegistry,
+  latexQueryDirty,
+  registerLatexPdfProtocol,
+  requestLatexClose,
+} from '../../../latex/src/main/latex-main'
+import {
   configurePdfRuntime,
   flushPdfSave,
   pdfIsDirty,
@@ -102,12 +116,25 @@ import {
   requestPdfSaveAs,
   setPdfSaveAsInFlight,
 } from '../../../pdf/src/main/pdf-main'
-import type { RecentEntry, RecentPage, RenameResult } from '../shared/home-api'
+import type {
+  LatexRecentProjectEntry,
+  RecentEntry,
+  RecentPage,
+  RenameResult,
+} from '../shared/home-api'
 import { HOME_CHANNELS } from '../shared/home-api'
 import type { TabKind } from '../shared/tabs-api'
 import { TABS_CHANNELS } from '../shared/tabs-api'
 import { normalizeRecentQuery, pageRecentPaths, statExistingPaths } from './recent-files'
 import { TabManager } from './tab-manager'
+import { loadTabSession, saveTabSession, TabSessionPersistenceCoordinator } from './tab-session'
+import { registerLatexHomeIpc } from './latex-home-ipc'
+import {
+  finalLatexCloseCheck,
+  prepareLatexCloseTabs,
+  releaseLatexCloseTabs,
+} from './latex-final-close'
+import { registerLatexProtocolScheme } from './latex-protocol-scheme'
 import { initAutoUpdater } from './updater'
 import { migrateLegacyUserData } from './user-data-migration'
 import { createAuthDeepLinkQueue } from './auth-deep-link-queue'
@@ -149,6 +176,13 @@ const SLIDES_OUT = app.isPackaged
 const PDF_OUT = app.isPackaged
   ? join(process.resourcesPath, 'modules', 'pdf')
   : join(APPS_ROOT, 'pdf', 'out')
+const TECTONIC_EXE = process.platform === 'win32' ? 'tectonic.exe' : 'tectonic'
+const LATEX_OUT = app.isPackaged
+  ? join(process.resourcesPath, 'modules', 'latex')
+  : join(APPS_ROOT, 'latex', 'out')
+const TECTONIC_BIN = app.isPackaged
+  ? join(process.resourcesPath, 'native', TECTONIC_EXE)
+  : (process.env.WISWORK_TECTONIC_PATH ?? join(APPS_ROOT, 'latex', 'native', TECTONIC_EXE))
 const SIDECAR_BIN = app.isPackaged
   ? join(process.resourcesPath, 'native', SIDECAR_EXE)
   : join(APPS_ROOT, 'sheets', 'native', 'xlsx-engine', 'target', 'release', SIDECAR_EXE)
@@ -174,6 +208,15 @@ configurePdfRuntime({
   rendererUrl: process.env.PDF_RENDERER_URL,
   rendererFile: join(PDF_OUT, 'renderer', 'index.html'),
 })
+configureLatexRuntime({
+  preloadPath: join(LATEX_OUT, 'preload', 'index.mjs'),
+  rendererUrl: process.env.LATEX_RENDERER_URL,
+  rendererFile: join(LATEX_OUT, 'renderer', 'index.html'),
+  tectonicPath: TECTONIC_BIN,
+  userDataPath: app.getPath('userData'),
+})
+
+registerLatexProtocolScheme(protocol)
 
 let authRuntime: ReturnType<typeof initializeElectronAuthRuntime> | null = null
 const requireAuthRuntime = (): ReturnType<typeof initializeElectronAuthRuntime> => {
@@ -227,6 +270,8 @@ const tMain = createI18n({
     untitledDoc: '未命名文档',
     untitledDeck: '未命名演示文稿',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: '打开…',
     menuSave: '保存',
     menuSaveAs: '另存为…',
@@ -272,6 +317,8 @@ const tMain = createI18n({
     untitledDoc: 'Untitled Document',
     untitledDeck: 'Untitled Presentation',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: 'Open…',
     menuSave: 'Save',
     menuSaveAs: 'Save As…',
@@ -320,6 +367,8 @@ const tMain = createI18n({
     untitledDoc: '無題のドキュメント',
     untitledDeck: '無題のプレゼンテーション',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: '開く…',
     menuSave: '保存',
     menuSaveAs: '名前を付けて保存…',
@@ -368,6 +417,8 @@ const tMain = createI18n({
     untitledDoc: '제목 없는 문서',
     untitledDeck: '제목 없는 프레젠테이션',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: '열기…',
     menuSave: '저장',
     menuSaveAs: '다른 이름으로 저장…',
@@ -416,6 +467,8 @@ const tMain = createI18n({
     untitledDoc: 'Document sans titre',
     untitledDeck: 'Présentation sans titre',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: 'Ouvrir…',
     menuSave: 'Enregistrer',
     menuSaveAs: 'Enregistrer sous…',
@@ -464,6 +517,8 @@ const tMain = createI18n({
     untitledDoc: 'Unbenanntes Dokument',
     untitledDeck: 'Unbenannte Präsentation',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: 'Öffnen…',
     menuSave: 'Speichern',
     menuSaveAs: 'Speichern unter…',
@@ -512,6 +567,8 @@ const tMain = createI18n({
     untitledDoc: 'Documento sin título',
     untitledDeck: 'Presentación sin título',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: 'Abrir…',
     menuSave: 'Guardar',
     menuSaveAs: 'Guardar como…',
@@ -560,6 +617,8 @@ const tMain = createI18n({
     untitledDoc: 'เอกสารไม่มีชื่อ',
     untitledDeck: 'งานนำเสนอไม่มีชื่อ',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: 'เปิด…',
     menuSave: 'บันทึก',
     menuSaveAs: 'บันทึกเป็น…',
@@ -607,6 +666,8 @@ const tMain = createI18n({
     untitledDoc: 'Dokumen tanpa judul',
     untitledDeck: 'Presentasi tanpa judul',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: 'Buka…',
     menuSave: 'Simpan',
     menuSaveAs: 'Simpan Sebagai…',
@@ -655,6 +716,8 @@ const tMain = createI18n({
     untitledDoc: 'Документ без названия',
     untitledDeck: 'Презентация без названия',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: 'Открыть…',
     menuSave: 'Сохранить',
     menuSaveAs: 'Сохранить как…',
@@ -703,6 +766,8 @@ const tMain = createI18n({
     untitledDoc: 'مستند بدون عنوان',
     untitledDeck: 'عرض تقديمي بدون عنوان',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: 'فتح…',
     menuSave: 'حفظ',
     menuSaveAs: 'حفظ باسم…',
@@ -750,6 +815,8 @@ const tMain = createI18n({
     untitledDoc: 'Documento sem título',
     untitledDeck: 'Apresentação sem título',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: 'Abrir…',
     menuSave: 'Salvar',
     menuSaveAs: 'Salvar Como…',
@@ -798,6 +865,8 @@ const tMain = createI18n({
     untitledDoc: 'Documento senza titolo',
     untitledDeck: 'Presentazione senza titolo',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: 'Apri…',
     menuSave: 'Salva',
     menuSaveAs: 'Salva con nome…',
@@ -846,6 +915,8 @@ const tMain = createI18n({
     untitledDoc: 'Dokument bez tytułu',
     untitledDeck: 'Prezentacja bez tytułu',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: 'Otwórz…',
     menuSave: 'Zapisz',
     menuSaveAs: 'Zapisz jako…',
@@ -894,6 +965,8 @@ const tMain = createI18n({
     untitledDoc: 'Naamloos document',
     untitledDeck: 'Naamloze presentatie',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: 'Openen…',
     menuSave: 'Opslaan',
     menuSaveAs: 'Opslaan als…',
@@ -942,6 +1015,8 @@ const tMain = createI18n({
     untitledDoc: 'Dokumen tanpa tajuk',
     untitledDeck: 'Persembahan tanpa tajuk',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: 'Buka…',
     menuSave: 'Simpan',
     menuSaveAs: 'Simpan Sebagai…',
@@ -990,6 +1065,8 @@ const tMain = createI18n({
     untitledDoc: 'מסמך ללא שם',
     untitledDeck: 'מצגת ללא שם',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: 'פתיחה…',
     menuSave: 'שמירה',
     menuSaveAs: 'שמירה בשם…',
@@ -1036,6 +1113,8 @@ const tMain = createI18n({
     untitledDoc: 'बिना शीर्षक दस्तावेज़',
     untitledDeck: 'बिना शीर्षक प्रस्तुति',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: 'खोलें…',
     menuSave: 'सहेजें',
     menuSaveAs: 'इस रूप में सहेजें…',
@@ -1084,6 +1163,8 @@ const tMain = createI18n({
     untitledDoc: '未命名文件',
     untitledDeck: '未命名簡報',
     menuNewSlide: 'AI Slides',
+    menuNewLatex: 'LaTeX Project',
+    menuImportLatex: 'Import LaTeX…',
     menuOpen: '開啟…',
     menuSave: '儲存',
     menuSaveAs: '另存新檔…',
@@ -1202,9 +1283,15 @@ function createShellWindow(): void {
   })
   shellWindow = win
 
+  const tabSessionPersistence = new TabSessionPersistenceCoordinator((state) =>
+    saveTabSession(OPEN_TABS_PATH(), state),
+  )
   const manager = new TabManager(
     win,
-    () => win.webContents.send(TABS_CHANNELS.changed, manager.list()),
+    () => {
+      win.webContents.send(TABS_CHANNELS.changed, manager.list())
+      tabSessionPersistence.enqueue(manager.latexSessionState())
+    },
     applyMenuFor,
     // no extension: these tabs have no file on disk yet; the title becomes the
     // real filename (the localized untitled default + .docx etc.) once the first save lands
@@ -1259,44 +1346,62 @@ function createShellWindow(): void {
   // docs dirtiness lives renderer-side, so any live docs tab forces the async path
   // and gets queried there (clean tabs pass through without activation).
   let closeConfirmed = false
+  let closeInProgress = false
   win.on('close', (event) => {
     if (closeConfirmed) return
-    const dirtySheets = manager.dirtySheetsTabs()
-    const dirtyPdf = manager.dirtyPdfTabs()
-    const dirtySlides = manager.dirtySlidesTabs()
-    const docsTabs = manager.docsTabs()
-    if (
-      dirtySheets.length === 0 &&
-      dirtyPdf.length === 0 &&
-      dirtySlides.length === 0 &&
-      docsTabs.length === 0
-    )
-      return
     event.preventDefault()
+    if (closeInProgress) return
+    closeInProgress = true
     void (async () => {
-      for (const tab of dirtySheets) {
-        manager.activateTab(tab.id)
-        if (!(await requestSheetsClose(tab.webContents, win))) return
+      const latexTabs = manager.latexTabs()
+      if (!(await prepareLatexCloseTabs(latexTabs))) {
+        releaseLatexCloseTabs(latexTabs)
+        return
       }
-      for (const tab of dirtyPdf) {
-        manager.activateTab(tab.id)
-        if (!(await requestPdfClose(tab.webContents, win))) return
+      let closeCommitted = false
+      try {
+        for (const tab of manager.dirtySheetsTabs()) {
+          manager.activateTab(tab.id)
+          if (!(await requestSheetsClose(tab.webContents, win))) return
+        }
+        for (const tab of manager.dirtyPdfTabs()) {
+          manager.activateTab(tab.id)
+          if (!(await requestPdfClose(tab.webContents, win))) return
+        }
+        for (const tab of manager.dirtySlidesTabs()) {
+          manager.activateTab(tab.id)
+          if (!(await requestSlidesClose(tab.webContents, win))) return
+        }
+        for (const tab of latexTabs) {
+          if (!(await latexQueryDirty(tab.webContents))) continue
+          manager.activateTab(tab.id)
+          if (!(await requestLatexClose(tab.webContents, win))) return
+        }
+        for (const tab of manager.docsTabs()) {
+          if (!(await docsQueryDirty(tab.webContents))) continue
+          manager.activateTab(tab.id)
+          if (!(await requestDocsClose(tab.webContents, win))) return
+        }
+        if (!(await tabSessionPersistence.flush(manager.latexSessionState()))) {
+          console.error('[shell] final tab session save failed; window remains open')
+          return
+        }
+        if (!(await finalLatexCloseCheck(latexTabs))) return
+        closeConfirmed = true
+        if (!win.isDestroyed()) win.close()
+        closeCommitted = true
+      } finally {
+        if (!closeCommitted) releaseLatexCloseTabs(latexTabs)
       }
-      for (const tab of dirtySlides) {
-        manager.activateTab(tab.id)
-        if (!(await requestSlidesClose(tab.webContents, win))) return
-      }
-      for (const tab of docsTabs) {
-        if (!(await docsQueryDirty(tab.webContents))) continue
-        manager.activateTab(tab.id)
-        if (!(await requestDocsClose(tab.webContents, win))) return
-      }
-      closeConfirmed = true
-      if (!win.isDestroyed()) win.close()
     })()
+      .catch((error: unknown) => console.error('[shell] close preparation failed:', error))
+      .finally(() => {
+        closeInProgress = false
+      })
   })
 
   win.on('closed', () => {
+    getLatexSessionRegistry().disposeAll()
     if (shellWindow === win) shellWindow = null
     if (tabManager === manager) tabManager = null
   })
@@ -1442,6 +1547,101 @@ function statEntries(paths: string[]): RecentEntry[] {
   return statExistingPaths(paths, new Set(readStarredFiles()))
 }
 
+const LATEX_RECENTS_PATH = () => join(app.getPath('userData'), 'latex-recents.json')
+const OPEN_TABS_PATH = () => join(app.getPath('userData'), 'open-tabs.json')
+const MAX_LATEX_RECENTS = 30
+
+function readLatexRecentPaths(): string[] {
+  try {
+    const bytes = readFileSync(LATEX_RECENTS_PATH())
+    if (bytes.length > 64 * 1024) return []
+    const value = JSON.parse(bytes.toString('utf8')) as unknown
+    if (!value || typeof value !== 'object') return []
+    const record = value as Record<string, unknown>
+    if (record.version !== 1 || !Array.isArray(record.paths)) return []
+    return record.paths
+      .filter((path): path is string => typeof path === 'string' && path.length <= 4096)
+      .slice(0, MAX_LATEX_RECENTS)
+  } catch {
+    return []
+  }
+}
+
+function writeLatexRecentPaths(paths: readonly string[]): void {
+  const target = LATEX_RECENTS_PATH()
+  const temporary = `${target}.tmp`
+  writeFileSync(
+    temporary,
+    JSON.stringify({ version: 1, paths: paths.slice(0, MAX_LATEX_RECENTS) }),
+    {
+      mode: 0o600,
+    },
+  )
+  renameSync(temporary, target)
+}
+
+function recordLatexRecent(path: string): void {
+  writeLatexRecentPaths([path, ...readLatexRecentPaths().filter((recent) => recent !== path)])
+}
+
+async function latexRecentProjects(): Promise<LatexRecentProjectEntry[]> {
+  const entries: LatexRecentProjectEntry[] = []
+  for (const input of readLatexRecentPaths()) {
+    try {
+      const project = await validateLatexProject(input)
+      if (!project.mainFile || entries.some((entry) => entry.path === project.rootPath)) continue
+      entries.push({
+        path: project.rootPath,
+        name: basename(project.rootPath),
+        lastOpenedAt: Date.now(),
+      })
+    } catch {
+      // Missing or no-longer-valid directories are pruned from Home recents.
+    }
+  }
+  writeLatexRecentPaths(entries.map((entry) => entry.path))
+  return entries
+}
+
+async function openLatexProjectPath(input: string): Promise<LatexRecentProjectEntry> {
+  if (!tabManager) throw new Error('Shell tab manager is unavailable')
+  const project = await validateLatexProject(input)
+  if (!project.mainFile) throw new Error('LaTeX project has no main file')
+  tabManager.openLatexTab(project.rootPath)
+  recordLatexRecent(project.rootPath)
+  return { path: project.rootPath, name: basename(project.rootPath), lastOpenedAt: Date.now() }
+}
+
+async function newLatexProjectViaDialog(): Promise<LatexRecentProjectEntry | null> {
+  const win = shellWindow ?? BrowserWindow.getFocusedWindow()
+  if (!win) return null
+  const selected = await dialog.showSaveDialog(win, {
+    title: tm('menuNewLatex'),
+    defaultPath: join(app.getPath('documents'), 'LaTeX Project'),
+  })
+  if (selected.canceled || !selected.filePath) return null
+  const project = await createLatexProjectDirectory(selected.filePath)
+  return openLatexProjectPath(project.rootPath)
+}
+
+async function importLatexProjectViaDialog(): Promise<LatexRecentProjectEntry | null> {
+  const win = shellWindow ?? BrowserWindow.getFocusedWindow()
+  if (!win) return null
+  const archive = await dialog.showOpenDialog(win, {
+    title: tm('menuImportLatex'),
+    filters: [{ name: 'LaTeX ZIP', extensions: ['zip'] }],
+    properties: ['openFile'],
+  })
+  if (archive.canceled || !archive.filePaths[0]) return null
+  const destination = await dialog.showSaveDialog(win, {
+    title: tm('menuImportLatex'),
+    defaultPath: join(app.getPath('documents'), basename(archive.filePaths[0], '.zip')),
+  })
+  if (destination.canceled || !destination.filePath) return null
+  const imported = await importLatexProjectArchive(archive.filePaths[0], destination.filePath)
+  return openLatexProjectPath(imported.rootPath)
+}
+
 function registerHomeIpc(): void {
   const assertHomeAuthIpc = (event: Electron.IpcMainInvokeEvent, args: readonly unknown[]) => {
     if (args.length !== 0) throw new Error('Invalid auth IPC payload.')
@@ -1547,6 +1747,15 @@ function registerHomeIpc(): void {
       pendingNewFileProject.set('slide', opts.projectId)
     }
     tabManager?.openSlidesTab()
+  })
+
+  registerLatexHomeIpc({
+    ipcMain,
+    shellSender: () => shellWindow?.webContents ?? null,
+    recents: latexRecentProjects,
+    create: newLatexProjectViaDialog,
+    importProject: importLatexProjectViaDialog,
+    open: openLatexProjectPath,
   })
 
   ipcMain.handle(HOME_CHANNELS.removeRecent, (_event, paths: unknown) => {
@@ -1660,12 +1869,23 @@ function loadMenuIcon(path1x: string, path2x: string): NativeImage {
 }
 
 // loaded once, not on every menu open
-let menuIconCache: { docx: NativeImage; xlsx: NativeImage; pptx: NativeImage } | null = null
-function menuIcons(): { docx: NativeImage; xlsx: NativeImage; pptx: NativeImage } {
+let menuIconCache: {
+  docx: NativeImage
+  xlsx: NativeImage
+  pptx: NativeImage
+  tex: NativeImage
+} | null = null
+function menuIcons(): {
+  docx: NativeImage
+  xlsx: NativeImage
+  pptx: NativeImage
+  tex: NativeImage
+} {
   menuIconCache ??= {
     docx: loadMenuIcon(menuDocxIcon1x, menuDocxIcon2x),
     xlsx: loadMenuIcon(menuXlsxIcon1x, menuXlsxIcon2x),
     pptx: loadMenuIcon(menuPptxIcon1x, menuPptxIcon2x),
+    tex: nativeImage.createFromPath(menuTexIcon),
   }
   return menuIconCache
 }
@@ -1718,6 +1938,16 @@ function registerTabsIpc(): void {
         icon: menuIcons().pptx,
         click: () => tabManager?.openSlidesTab(),
       },
+      {
+        label: tm('menuNewLatex'),
+        icon: menuIcons().tex,
+        click: () => void newLatexProjectViaDialog(),
+      },
+      {
+        label: tm('menuImportLatex'),
+        icon: menuIcons().tex,
+        click: () => void importLatexProjectViaDialog(),
+      },
       { type: 'separator' },
       { label: tm('menuOpen'), click: () => void openFileViaDialog() },
     ])
@@ -1760,6 +1990,8 @@ function buildHomeMenu(): void {
           click: () => void newSheetTab(),
         },
         { label: tm('menuNewSlide'), click: () => tabManager?.openSlidesTab() },
+        { label: tm('menuNewLatex'), click: () => void newLatexProjectViaDialog() },
+        { label: tm('menuImportLatex'), click: () => void importLatexProjectViaDialog() },
         { type: 'separator' },
         {
           label: tm('menuOpen'),
@@ -2003,7 +2235,7 @@ registerTabsIpc()
 // sheets' project:resolveChat goes through the handler registered by docs-main; the sessionId reverse lookup hooks in here
 setSessionPathResolver(resolveSheetsSessionPath)
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   const hasLock = app.requestSingleInstanceLock(
     pendingLaunchPath ? { launchPath: pendingLaunchPath } : {},
   )
@@ -2029,8 +2261,21 @@ app.whenReady().then(() => {
   // mutable lang, whose 'zh' default otherwise wins the race for whichever
   // tab loads first (e.g. sheets booting in Chinese while docs shows English).
   currentLang()
+  registerLatexPdfProtocol(protocol)
   startSheetsCaptureServer()
   createShellWindow()
+  const restored = await loadTabSession(OPEN_TABS_PATH())
+  for (const projectPath of restored.projectPaths) {
+    try {
+      tabManager?.openLatexTab(projectPath)
+    } catch {
+      console.warn('[shell] skipped invalid restored LaTeX project')
+    }
+  }
+  if (restored.activeProjectPath) {
+    const active = tabManager?.findLatexTabByPath(restored.activeProjectPath)
+    if (active) tabManager?.activateTab(active)
+  }
   // deferred to ready: labels need currentLang(), which reads app.getLocale()
   installBackToHomeItems()
   installDockMenu()

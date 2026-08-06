@@ -40,6 +40,76 @@ export class PendingSaveRegistry {
   }
 }
 
+export class PendingUpdateRegistry {
+  private readonly pending = new Set<Promise<boolean>>()
+  private nextGeneration = 0
+  private latestOutcome = { generation: 0, ok: true }
+
+  track(update: Promise<boolean>): void {
+    const generation = ++this.nextGeneration
+    const tracked = update.catch(() => false)
+    this.pending.add(tracked)
+    void tracked
+      .then((ok) => {
+        if (generation > this.latestOutcome.generation) {
+          this.latestOutcome = { generation, ok }
+        }
+      })
+      .finally(() => this.pending.delete(tracked))
+  }
+
+  async settleAll(): Promise<boolean> {
+    let ok = true
+    while (this.pending.size > 0) {
+      const results = await Promise.all([...this.pending])
+      if (results.some((result) => !result)) ok = false
+    }
+    return ok && this.latestOutcome.ok
+  }
+}
+
+export class RendererCloseFreeze {
+  private requestId: string | null = null
+
+  isFrozen(): boolean {
+    return this.requestId !== null
+  }
+
+  async prepare(requestId: string, fence: () => Promise<boolean>): Promise<boolean> {
+    if (this.requestId !== null) return this.requestId === requestId
+    this.requestId = requestId
+    const ok = await fence().catch(() => false)
+    if (!ok && this.requestId === requestId) this.requestId = null
+    return ok
+  }
+
+  release(requestId: string): boolean {
+    if (this.requestId !== requestId) return false
+    this.requestId = null
+    return true
+  }
+}
+
+export async function flushRendererCloseFence(options: {
+  saveTimers: Map<string, number>
+  saveQueues: Map<string, Promise<boolean>>
+  clearTimer: (timer: number) => void
+  cancelAutoCompile: () => void
+  settleUpdates: () => Promise<boolean>
+}): Promise<boolean> {
+  let updatesOk = true
+  while (true) {
+    options.cancelAutoCompile()
+    for (const timer of options.saveTimers.values()) options.clearTimer(timer)
+    options.saveTimers.clear()
+    if (!(await options.settleUpdates())) updatesOk = false
+    const saves = [...options.saveQueues.values()]
+    if (saves.length > 0) await Promise.allSettled(saves)
+    await Promise.resolve()
+    if (options.saveTimers.size === 0 && options.saveQueues.size === 0) return updatesOk
+  }
+}
+
 export async function persistBuffer(options: {
   projectId: string
   path: string

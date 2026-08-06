@@ -82,6 +82,7 @@ export class ProjectSession {
   private readonly cleanupStaging: (path: string) => Promise<void>
   private readonly proposalStore?: ProposalStore
   private readonly proposals = new Map<string, EditProposal>()
+  private readonly saveQueues = new Map<string, Promise<unknown>>()
   private activeCompile: ActiveCompile | undefined
   private readonly cancelledCompileTokens = new Set<string>()
   private readonly compileQueue = new CompileQueue<StagedCompileResult>()
@@ -185,6 +186,29 @@ export class ProjectSession {
       state.lastSaveRevision = editRevision
     }
     if (requestedText !== undefined) this.updateBuffer(path, requestedText)
+    return this.enqueueSave(path, () => this.saveCurrentText(path))
+  }
+
+  private enqueueSave<T>(path: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.saveQueues.get(path) ?? Promise.resolve()
+    const next = previous.catch(() => undefined).then(operation)
+    this.saveQueues.set(path, next)
+    const cleanup = () => {
+      if (this.saveQueues.get(path) === next) this.saveQueues.delete(path)
+    }
+    void next.then(cleanup, cleanup)
+    return next
+  }
+
+  async settleSaves(): Promise<void> {
+    while (this.saveQueues.size > 0) {
+      await Promise.allSettled([...this.saveQueues.values()])
+    }
+  }
+
+  private async saveCurrentText(path: string): Promise<LatexSaveDto> {
+    const state = this.buffers.get(path)
+    if (!state) throw new Error(`File must be read before saving: ${path}`)
     if (state.conflict) throw new Error(`Project file changed externally: ${path}`)
     if (!state.dirty) {
       return { savedText: state.text, diskSha256: state.baselineSha256, buffer: dto(state) }
@@ -302,17 +326,23 @@ export class ProjectSession {
 
   async saveAll(): Promise<void> {
     for (const state of this.buffers.values()) if (state.dirty) await this.saveText(state.path)
+    await this.settleSaves()
   }
 
   async discardAll(): Promise<void> {
+    await this.settleSaves()
     for (const [path, state] of this.buffers) {
+      const version = state.version
       let diskText: string
       try {
         diskText = await this.project.readText(path)
       } catch {
-        this.buffers.delete(path)
+        if (this.buffers.get(path) === state && state.version === version) {
+          this.buffers.delete(path)
+        }
         continue
       }
+      if (this.buffers.get(path) !== state || state.version !== version) continue
       state.text = diskText
       state.baselineText = diskText
       state.baselineSha256 = digest(diskText)
@@ -485,7 +515,7 @@ export class ProjectSession {
     for (const cancel of [...this.compileCleanups, ...this.downloadCleanups]) cancel()
     this.compileCleanups.clear()
     this.downloadCleanups.clear()
-    this.buffers.clear()
+    void this.settleSaves().finally(() => this.buffers.clear())
   }
 
   private assertActive(): void {

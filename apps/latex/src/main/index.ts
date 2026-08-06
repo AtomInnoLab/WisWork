@@ -4,6 +4,8 @@ export {
   getLatexSessionRegistry,
   latexQueryDirty,
   notifyLatexProjectRenamed,
+  requestLatexEditFlush,
+  releaseLatexEditFlush,
   registerLatexPdfProtocol,
   requestLatexClose,
 } from './latex-main.js'

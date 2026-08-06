@@ -22,6 +22,35 @@ const api: LatexApi = {
     ipcRenderer.on(LATEX_CHANNELS.externalChanged, listener)
     return () => ipcRenderer.removeListener(LATEX_CHANNELS.externalChanged, listener)
   },
+  onEditFlushRequest: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+      if (!payload || typeof payload !== 'object') return
+      const record = payload as Record<string, unknown>
+      if (Object.keys(record).join(',') !== 'requestId' || typeof record.requestId !== 'string') {
+        return
+      }
+      void Promise.resolve()
+        .then(() => handler(record.requestId as string))
+        .then((ok) =>
+          ipcRenderer.send(LATEX_CHANNELS.editFlushAck, { requestId: record.requestId, ok }),
+        )
+        .catch(() =>
+          ipcRenderer.send(LATEX_CHANNELS.editFlushAck, { requestId: record.requestId, ok: false }),
+        )
+    }
+    ipcRenderer.on(LATEX_CHANNELS.editFlushRequest, listener)
+    return () => ipcRenderer.removeListener(LATEX_CHANNELS.editFlushRequest, listener)
+  },
+  onEditFlushRelease: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+      if (!payload || typeof payload !== 'object') return
+      const record = payload as Record<string, unknown>
+      if (Object.keys(record).join(',') === 'requestId' && typeof record.requestId === 'string')
+        handler(record.requestId)
+    }
+    ipcRenderer.on(LATEX_CHANNELS.editFlushRelease, listener)
+    return () => ipcRenderer.removeListener(LATEX_CHANNELS.editFlushRelease, listener)
+  },
 }
 
 contextBridge.exposeInMainWorld('latexApi', api)
