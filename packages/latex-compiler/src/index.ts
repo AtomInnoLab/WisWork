@@ -21,3 +21,38 @@ export type {
   TectonicManifest,
   TectonicPlatformAsset,
 } from './manifest.js'
+export { parseTectonicDiagnostics } from './diagnostics.js'
+export type { TectonicDiagnostic } from './diagnostics.js'
+export { CompileQueue } from './queue.js'
+export type { CompileQueueRequest } from './queue.js'
+export {
+  commitCompileGeneration,
+  compileIsolated,
+  killProcessTree,
+  runTectonic,
+  TectonicRunError,
+} from './runner.js'
+export type {
+  CompileIsolatedRequest,
+  CompileIsolatedResult,
+  CommitGenerationOptions,
+  RunTectonicRequest,
+  ProcessTreeKillOptions,
+  TectonicProcess,
+  SpawnTectonic,
+  TectonicRunResult,
+  StagedCompileResult,
+} from './runner.js'
+export { parseSyncTeX } from './synctex.js'
+export type {
+  SyncTeXIndex,
+  SyncTeXPageLocation,
+  SyncTeXParseOptions,
+  SyncTeXSourceLocation,
+} from './synctex.js'
+export { createCompileWorkspace } from './workspace.js'
+export type {
+  CompileWorkspace,
+  CompileWorkspaceHooks,
+  CompileWorkspaceLimits,
+} from './workspace.js'

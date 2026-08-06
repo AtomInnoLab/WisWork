@@ -4,6 +4,13 @@ export type LatexCompilerErrorCode =
   | 'BUNDLE_DOWNLOAD_FAILED'
   | 'BUNDLE_INTEGRITY_FAILED'
   | 'BUNDLE_INSTALL_FAILED'
+  | 'TECTONIC_WORKSPACE_INVALID'
+  | 'TECTONIC_EXIT_NONZERO'
+  | 'TECTONIC_TOTAL_TIMEOUT'
+  | 'TECTONIC_IDLE_TIMEOUT'
+  | 'TECTONIC_OUTPUT_LIMIT'
+  | 'TECTONIC_CANCELLED'
+  | 'TECTONIC_STALE_RESULT'
 
 export class LatexCompilerError extends Error {
   readonly code: LatexCompilerErrorCode
