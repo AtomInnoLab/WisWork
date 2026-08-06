@@ -14,10 +14,12 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
+    "@types/yauzl": "^2.10.3",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0"
   },
   "dependencies": {
-    "smol-toml": "1.7.1"
+    "smol-toml": "1.7.1",
+    "yauzl": "2.10.0"
   }
 }
