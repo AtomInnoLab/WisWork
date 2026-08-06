@@ -85,7 +85,7 @@ describe('persistent proposal state', () => {
     ).rejects.toThrow(/ID/i)
   })
 
-  it('rolls files back when rollback-point persistence reports a committed error', async () => {
+  it('keeps a committed apply when rollback-point persistence reports a committed error', async () => {
     const { root, project, projectRoot } = await sandbox()
     const cache = join(root, 'cache')
     class FailingSnapshotStore extends SnapshotStore {
@@ -104,9 +104,12 @@ describe('persistent proposal state', () => {
       expiresAt: Date.now() + 10_000,
       files: [{ path: 'main.tex', beforeSha256: sha('before'), afterText: 'after' }],
     })
-    await expect(store.apply('metadata-failure', 'project-1', project)).rejects.toThrow(
-      /committed/i,
-    )
+    const applied = await store.apply('metadata-failure', 'project-1', project)
+    expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('after')
+    expect(await snapshots.getCurrentRollback('project-1')).toBe(applied.snapshotId)
+    await expect(store.undo('project-1', applied.snapshotId, project)).resolves.toMatchObject({
+      restored: true,
+    })
     expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('before')
   })
 })

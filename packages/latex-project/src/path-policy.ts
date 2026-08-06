@@ -27,6 +27,8 @@ export class ProjectWriteConflictError extends Error {
 export interface PathPolicyTestHooks {
   afterReadOpen?: () => Promise<void>
   afterReadStat?: () => Promise<void>
+  beforeConditionalDelete?: (path: string) => Promise<void>
+  syncConditionalDeleteDirectory?: (directory: string) => Promise<void>
 }
 
 export interface PreparedWriteTarget {
@@ -40,6 +42,7 @@ export interface PreparedWriteTarget {
 
 export interface OpenedProjectFile {
   handle: FileHandle
+  path: string
   normalizedPath: string
   stat: Awaited<ReturnType<FileHandle['stat']>>
 }
@@ -124,7 +127,7 @@ export class ProjectPathPolicy {
         throw new Error(`Project file changed during validation: ${normalizedPath}`)
       }
       await this.hooks.afterReadStat?.()
-      return { handle, normalizedPath, stat: handleStat }
+      return { handle, path, normalizedPath, stat: handleStat }
     } catch (error) {
       await handle.close()
       throw error
@@ -218,6 +221,30 @@ export class ProjectPathPolicy {
     } catch (error) {
       if (error instanceof Error && /Project root changed/.test(error.message)) throw error
       throw new Error('Project root changed after it was opened', { cause: error })
+    }
+  }
+
+  /** @internal Deterministic race hook for conditional-delete tests only. */
+  async beforeConditionalDelete(path: string): Promise<void> {
+    await this.hooks.beforeConditionalDelete?.(path)
+  }
+
+  /** @internal Uses the production directory sync unless a deterministic test hook overrides it. */
+  async syncConditionalDeleteDirectory(directory: string): Promise<void> {
+    if (this.hooks.syncConditionalDeleteDirectory) {
+      await this.hooks.syncConditionalDeleteDirectory(directory)
+      return
+    }
+    let handle
+    try {
+      handle = await open(directory, constants.O_RDONLY)
+      await handle.sync()
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? ''
+      const unsupportedOnWindows = new Set(['EACCES', 'EINVAL', 'EISDIR', 'ENOTSUP', 'EPERM'])
+      if (process.platform !== 'win32' || !unsupportedOnWindows.has(code)) throw error
+    } finally {
+      await handle?.close().catch(() => undefined)
     }
   }
 

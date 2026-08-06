@@ -12,7 +12,7 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { join } from 'node:path'
-import { atomicWriteFile } from './atomic-write.js'
+import { AtomicWriteCommittedError, atomicWriteFile } from './atomic-write.js'
 import { ProjectPathPolicy } from './path-policy.js'
 import type { LatexProject } from './project.js'
 
@@ -23,6 +23,11 @@ export interface SnapshotStoreOptions {
   maxBytes?: number
   maxSnapshots?: number
   now?: () => number
+  /** @internal deterministic storage failure hooks for tests. */
+  storageHooks?: {
+    writeIndex?: (path: string, data: Uint8Array) => Promise<void>
+    removeSnapshotDirectory?: (path: string) => Promise<void>
+  }
 }
 
 export interface SnapshotSummary {
@@ -48,12 +53,15 @@ interface SnapshotManifest {
 interface SnapshotIndex {
   schemaVersion: typeof INDEX_SCHEMA_VERSION
   snapshots: SnapshotSummary[]
+  pendingDeletes: SnapshotSummary[]
   currentRollback: Record<string, string>
 }
 
 export interface SnapshotRestoreOptions {
   /** Required before deleting a file represented by an absent marker. */
   expectedAbsentHashes?: ReadonlyMap<string, string>
+  /** Require each text entry to still match this hash before restoration. */
+  expectedCurrentHashes?: ReadonlyMap<string, string>
 }
 
 export class SnapshotStore {
@@ -61,12 +69,18 @@ export class SnapshotStore {
   private readonly maxBytes: number
   private readonly maxSnapshots: number
   private readonly now: () => number
+  private readonly writeIndex: (path: string, data: Uint8Array) => Promise<void>
+  private readonly removeSnapshotDirectory: (path: string) => Promise<void>
 
   constructor(cacheRoot: string, options: SnapshotStoreOptions = {}) {
     this.root = join(cacheRoot, 'snapshots')
     this.maxBytes = options.maxBytes ?? 64 * 1024 * 1024
     this.maxSnapshots = options.maxSnapshots ?? 20
     this.now = options.now ?? Date.now
+    this.writeIndex = options.storageHooks?.writeIndex ?? atomicWriteFile
+    this.removeSnapshotDirectory =
+      options.storageHooks?.removeSnapshotDirectory ??
+      ((path) => rm(path, { recursive: true, force: true }))
     if (!Number.isSafeInteger(this.maxBytes) || this.maxBytes <= 0) {
       throw new Error('Snapshot maxBytes must be a positive safe integer')
     }
@@ -133,6 +147,17 @@ export class SnapshotStore {
       try {
         await this.addAndPrune(summary)
       } catch (error) {
+        let indexed: boolean
+        try {
+          indexed = (await this.readIndex()).snapshots.some((item) => item.id === id)
+        } catch (readbackError) {
+          throw new AggregateError(
+            [error, readbackError],
+            'Snapshot index update failed and its commit state could not be determined',
+            { cause: readbackError },
+          )
+        }
+        if (indexed) return summary
         await rm(this.snapshotPath(id), { recursive: true, force: true })
         throw error
       }
@@ -181,7 +206,7 @@ export class SnapshotStore {
     if (manifest.projectId !== projectId) throw new Error('Snapshot belongs to another project')
     const policy = await ProjectPathPolicy.open(project.rootPath)
     const actions: (
-      | { kind: 'text'; path: string; text: string }
+      | { kind: 'text'; path: string; text: string; expectedHash?: string }
       | { kind: 'absent'; path: string; expectedHash: string }
     )[] = []
     for (const entry of manifest.entries) {
@@ -191,27 +216,61 @@ export class SnapshotStore {
           throw new Error(`Snapshot payload failed integrity check: ${entry.path}`)
         }
         const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-        actions.push({ kind: 'text', path: entry.path, text })
-      } else if (await textExists(policy, entry.path)) {
+        const expectedHash = options.expectedCurrentHashes?.get(entry.path)
+        if (options.expectedCurrentHashes) {
+          if (!expectedHash || !(await textExists(policy, entry.path))) {
+            throw new Error(`Project changed before snapshot restore: ${entry.path}`)
+          }
+          const currentHash = digest(Buffer.from(await project.readText(entry.path), 'utf8'))
+          if (currentHash === entry.sha256) continue
+          if (currentHash !== expectedHash) {
+            throw new Error(`Project changed before snapshot restore: ${entry.path}`)
+          }
+        }
+        actions.push({ kind: 'text', path: entry.path, text, expectedHash })
+      } else {
         const expectedHash = options.expectedAbsentHashes?.get(entry.path)
-        if (!expectedHash) {
-          throw new Error(`Snapshot absent marker requires an expected current hash: ${entry.path}`)
+        const exists = await textExists(policy, entry.path)
+        if (exists) {
+          if (!expectedHash) {
+            throw new Error(
+              `Snapshot absent marker requires an expected current hash: ${entry.path}`,
+            )
+          }
+          const current = await project.readText(entry.path)
+          if (digest(Buffer.from(current, 'utf8')) !== expectedHash) {
+            throw new Error(`Project changed before restoring absent file: ${entry.path}`)
+          }
         }
-        const current = await project.readText(entry.path)
-        if (digest(Buffer.from(current, 'utf8')) !== expectedHash) {
-          throw new Error(`Project changed before restoring absent file: ${entry.path}`)
-        }
-        actions.push({ kind: 'absent', path: entry.path, expectedHash })
+        if (expectedHash) actions.push({ kind: 'absent', path: entry.path, expectedHash })
       }
     }
 
     for (const action of actions) {
       if (action.kind === 'text') {
-        await project.saveText(action.path, action.text)
+        await project.saveText(action.path, action.text, {
+          expectedSha256: action.expectedHash,
+        })
       } else {
-        await removeExpectedText(project, policy, action.path, action.expectedHash)
+        await project.deleteText(action.path, {
+          expectedSha256: action.expectedHash,
+          transactionId: snapshotId,
+        })
       }
     }
+  }
+
+  async getFileHashes(
+    projectId: string,
+    snapshotId: string,
+  ): Promise<ReadonlyMap<string, string | null>> {
+    validateProjectId(projectId)
+    validateSnapshotId(snapshotId)
+    const manifest = await this.readManifest(snapshotId)
+    if (manifest.projectId !== projectId) throw new Error('Snapshot belongs to another project')
+    return new Map(
+      manifest.entries.map((entry) => [entry.path, entry.kind === 'text' ? entry.sha256 : null]),
+    )
   }
 
   async verifyRestored(
@@ -238,28 +297,31 @@ export class SnapshotStore {
   }
 
   private async addAndPrune(summary: SnapshotSummary): Promise<void> {
-    const removed: SnapshotSummary[] = []
-    await this.mutateIndex((index) => {
-      index.snapshots.push(summary)
-      const isOver = () =>
-        index.snapshots.length > this.maxSnapshots ||
-        index.snapshots.reduce((sum, item) => sum + item.byteLength, 0) > this.maxBytes
-      while (isOver()) {
-        const candidate = index.snapshots
-          .filter(
-            (item) => item.id !== summary.id && index.currentRollback[item.projectId] !== item.id,
-          )
-          .sort((left, right) => left.createdAt - right.createdAt)[0]
-        if (!candidate) throw new Error('Snapshot quota cannot retain the protected rollback point')
-        index.snapshots = index.snapshots.filter((item) => item.id !== candidate.id)
-        removed.push(candidate)
-      }
-    })
-    await Promise.all(
-      removed.map((snapshot) =>
-        rm(this.snapshotPath(snapshot.id), { recursive: true, force: true }),
-      ),
-    )
+    try {
+      await this.mutateIndex((index) => {
+        const pendingCount = index.pendingDeletes.length
+        const pendingBytes = index.pendingDeletes.reduce((sum, item) => sum + item.byteLength, 0)
+        index.snapshots.push(summary)
+        const isOver = () =>
+          index.snapshots.length + pendingCount > this.maxSnapshots ||
+          index.snapshots.reduce((sum, item) => sum + item.byteLength, pendingBytes) > this.maxBytes
+        while (isOver()) {
+          const candidate = index.snapshots
+            .filter(
+              (item) => item.id !== summary.id && index.currentRollback[item.projectId] !== item.id,
+            )
+            .sort((left, right) => left.createdAt - right.createdAt)[0]
+          if (!candidate)
+            throw new Error('Snapshot cleanup is pending and quota cannot accept another snapshot')
+          index.snapshots = index.snapshots.filter((item) => item.id !== candidate.id)
+          index.pendingDeletes.push(candidate)
+        }
+      })
+    } catch (error) {
+      const committed = (await this.readIndex()).snapshots.some((item) => item.id === summary.id)
+      if (!committed) throw error
+    }
+    await this.flushPendingDeletes()
   }
 
   private async readManifest(snapshotId: string): Promise<SnapshotManifest> {
@@ -287,10 +349,15 @@ export class SnapshotStore {
     try {
       const value: unknown = JSON.parse(await readFile(join(this.root, 'index.json'), 'utf8'))
       if (!isIndex(value)) throw new Error('Invalid snapshot index')
-      return value
+      return { ...value, pendingDeletes: value.pendingDeletes ?? [] }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { schemaVersion: INDEX_SCHEMA_VERSION, snapshots: [], currentRollback: {} }
+        return {
+          schemaVersion: INDEX_SCHEMA_VERSION,
+          snapshots: [],
+          pendingDeletes: [],
+          currentRollback: {},
+        }
       }
       throw error
     }
@@ -302,13 +369,51 @@ export class SnapshotStore {
     const lock = await acquireIndexLock(lockPath)
     try {
       const index = await this.readIndex()
-      change(index)
-      await atomicWriteFile(
-        join(this.root, 'index.json'),
-        Buffer.from(`${JSON.stringify(index, null, 2)}\n`),
-      )
+      const cleaned = await this.retryPendingDeletes(index)
+      try {
+        change(index)
+      } catch (error) {
+        if (cleaned) await this.persistIndex(index)
+        throw error
+      }
+      await this.persistIndex(index)
     } finally {
       await releaseIndexLock(lockPath, lock)
+    }
+  }
+
+  private async flushPendingDeletes(): Promise<void> {
+    if ((await this.readIndex()).pendingDeletes.length === 0) return
+    await this.mutateIndex(() => undefined)
+  }
+
+  private async retryPendingDeletes(index: SnapshotIndex): Promise<boolean> {
+    if (index.pendingDeletes.length === 0) return false
+    const remaining: SnapshotSummary[] = []
+    for (const snapshot of index.pendingDeletes) {
+      try {
+        await this.removeSnapshotDirectory(this.snapshotPath(snapshot.id))
+      } catch {
+        remaining.push(snapshot)
+      }
+    }
+    const changed = remaining.length !== index.pendingDeletes.length
+    index.pendingDeletes = remaining
+    return changed
+  }
+
+  private async persistIndex(index: SnapshotIndex): Promise<void> {
+    const data = Buffer.from(`${JSON.stringify(index, null, 2)}\n`)
+    try {
+      await this.writeIndex(join(this.root, 'index.json'), data)
+    } catch (error) {
+      if (
+        error instanceof AtomicWriteCommittedError &&
+        JSON.stringify(await this.readIndex()) === JSON.stringify(index)
+      ) {
+        return
+      }
+      throw error
     }
   }
 }
@@ -361,6 +466,7 @@ async function acquireIndexLock(path: string): Promise<HeldIndexLock> {
           throw new AggregateError(
             [error, cleanupError],
             'Snapshot index lock acquisition and cleanup both failed',
+            { cause: cleanupError },
           )
         }
       }
@@ -470,22 +576,6 @@ async function textExists(policy: ProjectPathPolicy, path: string): Promise<bool
   }
 }
 
-async function removeExpectedText(
-  project: LatexProject,
-  policy: ProjectPathPolicy,
-  path: string,
-  expectedHash: string,
-): Promise<void> {
-  const text = await project.readText(path)
-  if (digest(Buffer.from(text, 'utf8')) !== expectedHash) {
-    throw new Error(`Project changed before removing restored absent file: ${path}`)
-  }
-  const target = await policy.resolveExisting(path, 'file')
-  const before = await lstat(target)
-  if (!before.isFile() || before.isSymbolicLink()) throw new Error(`Unsafe restore target: ${path}`)
-  await unlink(target)
-}
-
 function digest(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex')
 }
@@ -541,6 +631,7 @@ function isIndex(value: unknown): value is SnapshotIndex {
   if (
     item.schemaVersion !== INDEX_SCHEMA_VERSION ||
     !Array.isArray(item.snapshots) ||
+    (item.pendingDeletes !== undefined && !Array.isArray(item.pendingDeletes)) ||
     !item.currentRollback ||
     typeof item.currentRollback !== 'object' ||
     Array.isArray(item.currentRollback)
@@ -550,6 +641,16 @@ function isIndex(value: unknown): value is SnapshotIndex {
   const ids = new Set<string>()
   if (
     !item.snapshots.every((summary) => {
+      if (!isSnapshotSummary(summary) || ids.has(summary.id)) return false
+      ids.add(summary.id)
+      return true
+    })
+  ) {
+    return false
+  }
+  const pendingDeletes = item.pendingDeletes ?? []
+  if (
+    !pendingDeletes.every((summary) => {
       if (!isSnapshotSummary(summary) || ids.has(summary.id)) return false
       ids.add(summary.id)
       return true

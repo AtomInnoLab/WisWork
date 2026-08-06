@@ -17,9 +17,11 @@ export { SnapshotStore } from './snapshot.js'
 export type { SnapshotRestoreOptions, SnapshotStoreOptions, SnapshotSummary } from './snapshot.js'
 export {
   DEFAULT_MAX_TEXT_BYTES,
+  type DeleteTextOptions,
   type LatexProjectOptions,
   type MainFileDiscovery,
   type MainFileDiscoveryOptions,
   type MainFileSource,
   type SavedText,
+  type SaveTextOptions,
 } from './types.js'

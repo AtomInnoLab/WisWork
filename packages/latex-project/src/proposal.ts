@@ -6,6 +6,7 @@ import { ProjectPathPolicy } from './path-policy.js'
 import type { LatexProject } from './project.js'
 import { SnapshotStore } from './snapshot.js'
 import { DEFAULT_MAX_TEXT_BYTES } from './types.js'
+import { ProjectTransactionState, type ProjectTransactionJournal } from './transaction-state.js'
 
 const PROPOSAL_SCHEMA_VERSION = 1
 const TEXT_EXTENSIONS = new Set([
@@ -32,9 +33,9 @@ export interface EditProposal {
   expiresAt: number
   files: ProposalFile[]
 }
-
 interface StoredProposal extends EditProposal {
   schemaVersion: typeof PROPOSAL_SCHEMA_VERSION
+  projectRevision: number
 }
 
 interface RollbackRecord {
@@ -50,7 +51,12 @@ export interface ProposalStoreOptions {
   maxFiles?: number
   now?: () => number
   /** @internal deterministic transaction failure hook for tests. */
-  writeText?: (project: LatexProject, path: string, text: string) => Promise<unknown>
+  writeText?: (
+    project: LatexProject,
+    path: string,
+    text: string,
+    expectedSha256: string | null,
+  ) => Promise<unknown>
 }
 
 export interface AppliedProposal {
@@ -70,7 +76,9 @@ export class ProposalStore {
     project: LatexProject,
     path: string,
     text: string,
+    expectedSha256: string | null,
   ) => Promise<unknown>
+  private readonly transactionState: ProjectTransactionState
 
   constructor(
     cacheRoot: string,
@@ -85,7 +93,10 @@ export class ProposalStore {
     this.maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_TEXT_BYTES
     this.maxFiles = options.maxFiles ?? 100
     this.now = options.now ?? Date.now
-    this.writeText = options.writeText ?? ((project, path, text) => project.saveText(path, text))
+    this.writeText =
+      options.writeText ??
+      ((project, path, text, expectedSha256) => project.saveText(path, text, { expectedSha256 }))
+    this.transactionState = new ProjectTransactionState(cacheRoot)
     if (!Number.isSafeInteger(this.maxFileBytes) || this.maxFileBytes <= 0) {
       throw new Error('Proposal maxFileBytes must be a positive safe integer')
     }
@@ -95,27 +106,38 @@ export class ProposalStore {
   }
 
   async create(proposal: EditProposal): Promise<void> {
-    const stored = validateProposal(proposal, this.maxFileBytes, this.maxFiles, this.now())
-    await this.ensureDirectories()
-    if (await exists(this.consumedPath(stored.id))) throw new Error('Proposal was already consumed')
-    try {
-      await atomicWriteFile(
-        this.pendingPath(stored.id),
-        Buffer.from(`${JSON.stringify(stored, null, 2)}\n`),
-        {
-          validateBeforeRename: async () => {
-            if (await exists(this.pendingPath(stored.id)))
-              throw new Error('Proposal already exists')
-            if (await exists(this.consumedPath(stored.id)))
-              throw new Error('Proposal was already consumed')
+    const normalized = validateProposal(proposal, this.maxFileBytes, this.maxFiles, this.now(), 0)
+    await this.transactionState.withProjectLock(proposal.projectId, async () => {
+      const stored: StoredProposal = {
+        ...normalized,
+        projectRevision: await this.transactionState.readRevision(proposal.projectId),
+      }
+      await this.ensureDirectories()
+      if (await exists(this.consumedPath(stored.id))) {
+        throw new Error('Proposal was already consumed')
+      }
+      try {
+        await atomicWriteFile(
+          this.pendingPath(stored.id),
+          Buffer.from(`${JSON.stringify(stored, null, 2)}\n`),
+          {
+            validateBeforeRename: async () => {
+              if (await exists(this.pendingPath(stored.id))) {
+                throw new Error('Proposal already exists')
+              }
+              if (await exists(this.consumedPath(stored.id))) {
+                throw new Error('Proposal was already consumed')
+              }
+            },
           },
-        },
-      )
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST')
-        throw new Error('Proposal already exists')
-      throw error
-    }
+        )
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+          throw new Error('Proposal already exists', { cause: error })
+        }
+        throw error
+      }
+    })
   }
 
   async apply(
@@ -125,9 +147,23 @@ export class ProposalStore {
   ): Promise<AppliedProposal> {
     validateProposalId(proposalId)
     validateProjectId(projectId)
+    return this.transactionState.withProjectLock(projectId, async () => {
+      await this.recoverLocked(projectId, project)
+      return this.applyLocked(proposalId, projectId, project)
+    })
+  }
+
+  private async applyLocked(
+    proposalId: string,
+    projectId: string,
+    project: LatexProject,
+  ): Promise<AppliedProposal> {
     const proposal = await this.claim(proposalId)
     if (proposal.projectId !== projectId) throw new Error('Proposal belongs to another project')
     if (proposal.expiresAt <= this.now()) throw new Error('Proposal has expired')
+    if ((await this.transactionState.readRevision(projectId)) !== proposal.projectRevision) {
+      throw new Error('Proposal baseline revision changed')
+    }
 
     const policy = await ProjectPathPolicy.open(project.rootPath)
     const prepared = await Promise.all(
@@ -141,61 +177,79 @@ export class ProposalStore {
         return { ...file, path, afterSha256: digest(file.afterText) }
       }),
     )
-
     const previousRollback = await this.snapshots.getCurrentRollback(projectId)
     const snapshot = await this.snapshots.create(
       projectId,
       project,
       prepared.map((file) => file.path),
     )
-    const expectedAbsentHashes = new Map(
-      prepared
-        .filter((file) => file.beforeSha256 === null)
-        .map((file) => [file.path, file.afterSha256] as const),
-    )
     await assertPreparedBaselines(project, policy, prepared)
-    const rollbackPath = this.rollbackPath(snapshot.id)
-    const record: RollbackRecord = {
+    const journal: ProjectTransactionJournal = {
       schemaVersion: 1,
-      snapshotId: snapshot.id,
+      id: proposal.id,
+      operation: 'apply',
+      phase: 'prepared',
       projectId,
-      expectedAbsentHashes: Object.fromEntries(expectedAbsentHashes),
-      expectedCurrentHashes: Object.fromEntries(
-        prepared.map((file) => [file.path, file.afterSha256]),
-      ),
+      projectRevision: proposal.projectRevision,
+      nextProjectRevision: proposal.projectRevision + 1,
+      snapshotId: snapshot.id,
+      previousRollback: previousRollback ?? null,
+      files: prepared.map((file) => ({
+        path: file.path,
+        beforeSha256: file.beforeSha256,
+        afterSha256: file.afterSha256,
+      })),
     }
+    await this.transactionState.writeJournal(journal)
 
     try {
-      for (const file of prepared) await this.writeText(project, file.path, file.afterText)
-      await atomicWriteFile(rollbackPath, Buffer.from(`${JSON.stringify(record, null, 2)}\n`))
-      await this.snapshots.setCurrentRollback(projectId, snapshot.id)
-      return { proposalId, snapshotId: snapshot.id }
+      for (const file of prepared) {
+        await this.writeText(project, file.path, file.afterText, file.beforeSha256)
+      }
+      await assertExpectedCurrentHashes(
+        project,
+        policy,
+        new Map(prepared.map((file) => [file.path, file.afterSha256])),
+      )
+      await this.transactionState.writeJournal({ ...journal, phase: 'committed' })
     } catch (transactionError) {
-      const cleanupErrors: unknown[] = []
-      try {
-        await this.snapshots.restore(projectId, snapshot.id, project, { expectedAbsentHashes })
-      } catch (rollbackError) {
-        cleanupErrors.push(rollbackError)
-      }
-      try {
-        await this.snapshots.setCurrentRollback(projectId, previousRollback ?? null)
-      } catch (rollbackPointError) {
-        cleanupErrors.push(rollbackPointError)
-      }
-      try {
-        await unlink(rollbackPath)
-      } catch (unlinkError) {
-        if ((unlinkError as NodeJS.ErrnoException).code !== 'ENOENT')
-          cleanupErrors.push(unlinkError)
-      }
-      if (cleanupErrors.length > 0) {
-        throw new AggregateError(
-          [transactionError, ...cleanupErrors],
-          'Proposal transaction failed and cleanup was incomplete',
-        )
-      }
+      await this.rollbackOrAggregate(journal, project, transactionError)
       throw transactionError
     }
+
+    const committed = { ...journal, phase: 'committed' as const }
+    await this.finalizeApplyJournal(committed, project)
+    return { proposalId, snapshotId: snapshot.id }
+  }
+
+  async recover(projectId: string, project: LatexProject): Promise<{ recovered: number }> {
+    validateProjectId(projectId)
+    return this.transactionState.withProjectLock(projectId, async () => ({
+      recovered: await this.recoverLocked(projectId, project),
+    }))
+  }
+
+  private async recoverLocked(projectId: string, project: LatexProject): Promise<number> {
+    const journals = await this.transactionState.listJournals(projectId)
+    for (const journal of journals) {
+      const revision = await this.transactionState.readRevision(projectId)
+      if (revision !== journal.projectRevision && revision !== journal.nextProjectRevision) {
+        throw new Error('Project transaction journal revision is inconsistent')
+      }
+      if (journal.operation === 'apply' && journal.phase === 'prepared') {
+        if (revision !== journal.projectRevision) {
+          throw new Error('Prepared transaction advanced its project revision')
+        }
+        await this.rollbackApplyJournal(journal, project)
+      } else if (journal.operation === 'apply' && journal.phase === 'committed') {
+        await this.finalizeApplyJournal(journal, project)
+      } else if (journal.operation === 'undo' && journal.phase === 'restoring') {
+        await this.completeUndoJournal(journal, project)
+      } else {
+        throw new Error('Unsupported project transaction journal state')
+      }
+    }
+    return journals.length
   }
 
   async undo(
@@ -205,6 +259,17 @@ export class ProposalStore {
   ): Promise<{ snapshotId: string; restored: boolean }> {
     validateProjectId(projectId)
     validateSnapshotId(snapshotId)
+    return this.transactionState.withProjectLock(projectId, async () => {
+      await this.recoverLocked(projectId, project)
+      return this.undoLocked(projectId, snapshotId, project)
+    })
+  }
+
+  private async undoLocked(
+    projectId: string,
+    snapshotId: string,
+    project: LatexProject,
+  ): Promise<{ snapshotId: string; restored: boolean }> {
     const markerPath = this.undoPath(snapshotId)
     if (await undoMarkerExists(markerPath)) {
       await this.snapshots.verifyRestored(projectId, snapshotId, project)
@@ -218,6 +283,7 @@ export class ProposalStore {
     }
     try {
       await this.snapshots.verifyRestored(projectId, snapshotId, project)
+      await mkdir(this.undoRoot, { recursive: true })
       await atomicWriteFile(
         markerPath,
         Buffer.from(`${JSON.stringify({ schemaVersion: 1, projectId, snapshotId })}\n`),
@@ -227,28 +293,160 @@ export class ProposalStore {
     } catch (error) {
       if (!isProjectChangedAfterUndoError(error)) throw error
     }
+
     const record = await this.readRollback(snapshotId)
     if (record.projectId !== projectId) throw new Error('Rollback belongs to another project')
-    const snapshot = (await this.snapshots.list(projectId)).find((item) => item.id === snapshotId)
+    const snapshotHashes = await this.snapshots.getFileHashes(projectId, snapshotId)
     const expectedCurrentHashes = new Map(Object.entries(record.expectedCurrentHashes))
     if (
-      !snapshot ||
-      snapshot.paths.length !== expectedCurrentHashes.size ||
-      snapshot.paths.some((path) => !expectedCurrentHashes.has(path))
+      snapshotHashes.size !== expectedCurrentHashes.size ||
+      [...snapshotHashes.keys()].some((path) => !expectedCurrentHashes.has(path))
     ) {
       throw new Error('Invalid rollback record paths')
     }
     const policy = await ProjectPathPolicy.open(project.rootPath)
     await assertExpectedCurrentHashes(project, policy, expectedCurrentHashes)
-    await this.snapshots.restore(projectId, snapshotId, project, {
-      expectedAbsentHashes: new Map(Object.entries(record.expectedAbsentHashes)),
-    })
-    await atomicWriteFile(
-      markerPath,
-      Buffer.from(`${JSON.stringify({ schemaVersion: 1, projectId, snapshotId })}\n`),
-    )
-    await this.snapshots.setCurrentRollback(projectId, null)
+    const revision = await this.transactionState.readRevision(projectId)
+    const journal: ProjectTransactionJournal = {
+      schemaVersion: 1,
+      id: `undo-${snapshotId}`,
+      operation: 'undo',
+      phase: 'restoring',
+      projectId,
+      projectRevision: revision,
+      nextProjectRevision: revision + 1,
+      snapshotId,
+      previousRollback: snapshotId,
+      files: [...snapshotHashes].map(([path, beforeSha256]) => ({
+        path,
+        beforeSha256,
+        afterSha256: expectedCurrentHashes.get(path)!,
+      })),
+    }
+    await this.transactionState.writeJournal(journal)
+    await this.completeUndoJournal(journal, project)
     return { snapshotId, restored: true }
+  }
+
+  private async finalizeApplyJournal(
+    journal: ProjectTransactionJournal,
+    project: LatexProject,
+  ): Promise<void> {
+    await this.validateJournalSnapshot(journal)
+    const policy = await ProjectPathPolicy.open(project.rootPath)
+    const expectedCurrentHashes = new Map(
+      journal.files.map((file) => [file.path, file.afterSha256]),
+    )
+    await assertExpectedCurrentHashes(project, policy, expectedCurrentHashes)
+    const record = rollbackRecordFromJournal(journal)
+    await mkdir(this.rollbackRoot, { recursive: true })
+    try {
+      await atomicWriteFile(
+        this.rollbackPath(journal.snapshotId),
+        Buffer.from(`${JSON.stringify(record, null, 2)}\n`),
+      )
+    } catch (error) {
+      const persisted = await this.readRollback(journal.snapshotId).catch(() => undefined)
+      if (!persisted || JSON.stringify(persisted) !== JSON.stringify(record)) throw error
+    }
+    try {
+      await this.snapshots.setCurrentRollback(journal.projectId, journal.snapshotId)
+    } catch (error) {
+      if ((await this.snapshots.getCurrentRollback(journal.projectId)) !== journal.snapshotId) {
+        throw error
+      }
+    }
+    await this.transactionState.advanceRevision(
+      journal.projectId,
+      journal.projectRevision,
+      journal.nextProjectRevision,
+    )
+    await this.transactionState.deleteJournal(journal.id)
+  }
+
+  private async rollbackApplyJournal(
+    journal: ProjectTransactionJournal,
+    project: LatexProject,
+  ): Promise<void> {
+    await this.validateJournalSnapshot(journal)
+    const expectedCurrentHashes = new Map(
+      journal.files.map((file) => [file.path, file.afterSha256]),
+    )
+    await this.snapshots.restore(journal.projectId, journal.snapshotId, project, {
+      expectedAbsentHashes: new Map(
+        journal.files
+          .filter((file) => file.beforeSha256 === null)
+          .map((file) => [file.path, file.afterSha256]),
+      ),
+      expectedCurrentHashes,
+    })
+    await this.snapshots.setCurrentRollback(journal.projectId, journal.previousRollback)
+    await unlink(this.rollbackPath(journal.snapshotId)).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    })
+    await this.transactionState.deleteJournal(journal.id)
+  }
+
+  private async rollbackOrAggregate(
+    journal: ProjectTransactionJournal,
+    project: LatexProject,
+    transactionError: unknown,
+  ): Promise<void> {
+    try {
+      await this.rollbackApplyJournal(journal, project)
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [transactionError, rollbackError],
+        'Proposal transaction failed and persistent rollback is incomplete',
+        { cause: rollbackError },
+      )
+    }
+  }
+
+  private async completeUndoJournal(
+    journal: ProjectTransactionJournal,
+    project: LatexProject,
+  ): Promise<void> {
+    await this.validateJournalSnapshot(journal)
+    await this.snapshots.restore(journal.projectId, journal.snapshotId, project, {
+      expectedAbsentHashes: new Map(
+        journal.files
+          .filter((file) => file.beforeSha256 === null)
+          .map((file) => [file.path, file.afterSha256]),
+      ),
+      expectedCurrentHashes: new Map(journal.files.map((file) => [file.path, file.afterSha256])),
+    })
+    await mkdir(this.undoRoot, { recursive: true })
+    await atomicWriteFile(
+      this.undoPath(journal.snapshotId),
+      Buffer.from(
+        `${JSON.stringify({
+          schemaVersion: 1,
+          projectId: journal.projectId,
+          snapshotId: journal.snapshotId,
+        })}\n`,
+      ),
+    )
+    await this.snapshots.setCurrentRollback(journal.projectId, null)
+    await this.transactionState.advanceRevision(
+      journal.projectId,
+      journal.projectRevision,
+      journal.nextProjectRevision,
+    )
+    await this.transactionState.deleteJournal(journal.id)
+  }
+
+  private async validateJournalSnapshot(journal: ProjectTransactionJournal): Promise<void> {
+    const snapshotHashes = await this.snapshots.getFileHashes(journal.projectId, journal.snapshotId)
+    if (
+      snapshotHashes.size !== journal.files.length ||
+      journal.files.some(
+        (file) =>
+          !snapshotHashes.has(file.path) || snapshotHashes.get(file.path) !== file.beforeSha256,
+      )
+    ) {
+      throw new Error('Project transaction journal does not match its snapshot')
+    }
   }
 
   private async claim(proposalId: string): Promise<StoredProposal> {
@@ -259,7 +457,7 @@ export class ProposalStore {
       await rename(pending, consumed)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT' && (await exists(consumed))) {
-        throw new Error('Proposal was already consumed')
+        throw new Error('Proposal was already consumed', { cause: error })
       }
       throw new Error(`Proposal not found: ${proposalId}`, { cause: error })
     }
@@ -308,6 +506,7 @@ function validateProposal(
   maxFileBytes: number,
   maxFiles: number,
   now: number,
+  projectRevision: number,
 ): StoredProposal {
   if (!proposal || typeof proposal !== 'object') throw new Error('Invalid proposal')
   validateProposalId(proposal.id)
@@ -344,10 +543,10 @@ function validateProposal(
     id: proposal.id,
     projectId: proposal.projectId,
     expiresAt: proposal.expiresAt,
+    projectRevision,
     files,
   }
 }
-
 async function readStoredProposal(
   path: string,
   maxFileBytes: number,
@@ -357,7 +556,20 @@ async function readStoredProposal(
   if (!value || typeof value !== 'object') throw new Error('Invalid stored proposal')
   const item = value as Partial<StoredProposal>
   if (item.schemaVersion !== PROPOSAL_SCHEMA_VERSION) throw new Error('Invalid stored proposal')
-  return validateProposal(value as EditProposal, maxFileBytes, maxFiles, Number.MIN_SAFE_INTEGER)
+  if (
+    typeof item.projectRevision !== 'number' ||
+    !Number.isSafeInteger(item.projectRevision) ||
+    item.projectRevision < 0
+  ) {
+    throw new Error('Invalid stored proposal revision')
+  }
+  return validateProposal(
+    value as EditProposal,
+    maxFileBytes,
+    maxFiles,
+    Number.MIN_SAFE_INTEGER,
+    item.projectRevision,
+  )
 }
 
 async function readOptionalText(
@@ -469,6 +681,22 @@ function isRollbackRecord(value: unknown): value is RollbackRecord {
   return Object.entries(record.expectedAbsentHashes).every(
     ([path, hash]) => record.expectedCurrentHashes?.[path] === hash,
   )
+}
+
+function rollbackRecordFromJournal(journal: ProjectTransactionJournal): RollbackRecord {
+  return {
+    schemaVersion: 1,
+    snapshotId: journal.snapshotId,
+    projectId: journal.projectId,
+    expectedAbsentHashes: Object.fromEntries(
+      journal.files
+        .filter((file) => file.beforeSha256 === null)
+        .map((file) => [file.path, file.afterSha256]),
+    ),
+    expectedCurrentHashes: Object.fromEntries(
+      journal.files.map((file) => [file.path, file.afterSha256]),
+    ),
+  }
 }
 
 function isHashRecord(value: unknown): value is Record<string, string> {

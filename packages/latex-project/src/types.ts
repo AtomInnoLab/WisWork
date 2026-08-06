@@ -15,6 +15,17 @@ export interface SavedText {
 }
 
 export type MainFileSource = 'saved' | 'tectonic' | 'main' | 'documentclass'
+export interface SaveTextOptions {
+  /** Require the current file to match this hash, or null to require absence. */
+  expectedSha256?: string | null
+}
+
+export interface DeleteTextOptions {
+  /** Hash of the file created by the transaction and safe to remove. */
+  expectedSha256: string
+  /** Stable transaction identifier used for crash-recoverable quarantine. */
+  transactionId: string
+}
 
 export type MainFileDiscovery =
   | { kind: 'found'; path: string; source: MainFileSource }
