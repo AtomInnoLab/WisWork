@@ -12,6 +12,17 @@ const WINDOWS_ABSOLUTE = /^[a-zA-Z]:[\\/]/
  */
 export type FileIdentity = Pick<Awaited<ReturnType<typeof lstat>>, 'dev' | 'ino'>
 
+type ExpectedWriteTarget = { kind: 'absent' } | { kind: 'present'; identity: FileIdentity }
+
+export class ProjectWriteConflictError extends Error {
+  readonly code = 'LATEX_PROJECT_WRITE_CONFLICT'
+
+  constructor(path: string) {
+    super(`Project file changed before save: ${path}`)
+    this.name = 'ProjectWriteConflictError'
+  }
+}
+
 /** @internal Deterministic race hooks for filesystem security tests only. */
 export interface PathPolicyTestHooks {
   afterReadOpen?: () => Promise<void>
@@ -24,6 +35,7 @@ export interface PreparedWriteTarget {
   parentPath: string
   parentRealPath: string
   parentIdentity: FileIdentity
+  expectedTarget: ExpectedWriteTarget
 }
 
 export interface OpenedProjectFile {
@@ -139,6 +151,7 @@ export class ProjectPathPolicy {
       parentPath,
       parentRealPath,
       parentIdentity: identity(parentStat),
+      expectedTarget: info ? { kind: 'present', identity: identity(info) } : { kind: 'absent' },
     }
   }
 
@@ -164,6 +177,14 @@ export class ProjectPathPolicy {
 
     try {
       const targetStat = await lstat(target.path)
+      if (stage === 'before-rename') {
+        if (
+          target.expectedTarget.kind === 'absent' ||
+          !sameIdentity(targetStat, target.expectedTarget.identity)
+        ) {
+          throw new ProjectWriteConflictError(target.normalizedPath)
+        }
+      }
       if (
         targetStat.isSymbolicLink() ||
         !targetStat.isFile() ||
@@ -172,7 +193,10 @@ export class ProjectPathPolicy {
         throw new Error(`Write target is not a safe regular file: ${target.normalizedPath}`)
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && stage === 'before-rename') return
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && stage === 'before-rename') {
+        if (target.expectedTarget.kind === 'absent') return
+        throw new ProjectWriteConflictError(target.normalizedPath)
+      }
       throw error
     }
   }

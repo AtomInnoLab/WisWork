@@ -72,4 +72,28 @@ describe('ProjectPathPolicy', () => {
       /parent directory changed/i,
     )
   })
+
+  it('rejects an existing target replaced after write preparation', async () => {
+    const policy = await ProjectPathPolicy.open(root)
+    const target = await policy.prepareWrite('chapters/one.tex')
+    const replacement = join(root, 'chapters', 'replacement.tex')
+    await writeFile(replacement, 'external edit')
+    await rename(replacement, join(root, 'chapters', 'one.tex'))
+
+    await expect(policy.validateWriteTarget(target, 'before-rename')).rejects.toMatchObject({
+      code: 'LATEX_PROJECT_WRITE_CONFLICT',
+    })
+    expect(await readFile(join(root, 'chapters', 'one.tex'), 'utf8')).toBe('external edit')
+  })
+
+  it('rejects a missing target created after write preparation', async () => {
+    const policy = await ProjectPathPolicy.open(root)
+    const target = await policy.prepareWrite('chapters/new.tex')
+    await writeFile(join(root, 'chapters', 'new.tex'), 'external create')
+
+    await expect(policy.validateWriteTarget(target, 'before-rename')).rejects.toMatchObject({
+      code: 'LATEX_PROJECT_WRITE_CONFLICT',
+    })
+    expect(await readFile(join(root, 'chapters', 'new.tex'), 'utf8')).toBe('external create')
+  })
 })
