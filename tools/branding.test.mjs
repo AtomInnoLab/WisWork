@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { afterEach, test } from 'node:test'
@@ -130,7 +130,18 @@ test('macOS workflow fetches, verifies, injects, and inspects the arm64 Tectonic
 })
 
 test('generated notices and developer docs cover LaTeX and pinned Tectonic metadata', () => {
-  const notices = readFileSync(join(root, 'apps/shell/build/THIRD-PARTY-NOTICES.txt'), 'utf8')
+  // The notices file is a git-ignored build artifact that only `npm run notices`
+  // (a dist:* step) produces, so it is absent on a fresh checkout — the branding
+  // gate runs straight after `npm ci`. Generate it here instead of ordering a
+  // packaging step ahead of the gate.
+  const noticesPath = join(root, 'apps/shell/build/THIRD-PARTY-NOTICES.txt')
+  if (!existsSync(noticesPath)) {
+    execFileSync(process.execPath, [join(root, 'tools/gen-third-party-notices.mjs')], {
+      cwd: root,
+      stdio: ['ignore', 'ignore', 'inherit'],
+    })
+  }
+  const notices = readFileSync(noticesPath, 'utf8')
   assert.match(notices, /codemirror-lang-latex v0\.4\.2 — MIT/)
   assert.match(notices, /Tectonic 0\.16\.9 — MIT/)
   assert.match(

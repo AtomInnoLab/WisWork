@@ -74,7 +74,9 @@ jobs:
           set -euo pipefail
           node tools/fetch-tectonic.mjs --platform darwin-arm64 --output apps/latex/native/tectonic-ci
           file apps/latex/native/tectonic-ci | grep -q arm64
-          apps/latex/native/tectonic-ci --version | grep -q 'tectonic 0.16.9'
+          # clap prints the declared command name, `Tectonic 0.16.9` — match
+          # case-insensitively, exactly as tools/fetch-tectonic.mjs does.
+          apps/latex/native/tectonic-ci --version | grep -qi 'tectonic 0.16.9'
 
       - name: Package unsigned arm64 DMG and ZIP
         working-directory: apps/shell
@@ -96,7 +98,7 @@ jobs:
           TECTONIC="$APP/Contents/Resources/native/tectonic"
           test -x "$TECTONIC"
           file "$TECTONIC" | grep -q arm64
-          "$TECTONIC" --version | grep -q 'tectonic 0.16.9'
+          "$TECTONIC" --version | grep -qi 'tectonic 0.16.9'
           test -f "$APP/Contents/Resources/modules/latex/renderer/index.html"
           test -z "$(find "$APP/Contents/Resources" -iname '*default_bundle*' -print -quit)"
           test -n "$(find release -maxdepth 1 -name '*.dmg' -print -quit)"
