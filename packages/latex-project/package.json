@@ -1,0 +1,25 @@
+{
+  "name": "@wiswork/latex-project",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "description": "Secure local directory projects for the WisWork LaTeX editor",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/yauzl": "^2.10.3",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  },
+  "dependencies": {
+    "smol-toml": "1.7.1",
+    "yauzl": "2.10.0"
+  }
+}

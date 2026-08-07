@@ -4,14 +4,16 @@ import iconDocx from './assets/file-docx.svg'
 import iconXlsx from './assets/file-xlsx.svg'
 import iconPptx from './assets/file-pptx.svg'
 import iconPdf from './assets/file-pdf.svg'
+import iconTex from './assets/file-tex.svg'
 import type {
   AccountStatus,
   HomeApi,
+  LatexRecentProjectEntry,
   ProjectHomeApi,
   ProjectSummaryEntry,
   RecentEntry,
 } from '../../shared/home-api'
-import { fileCountKey, visiblePageCount } from './counts'
+import { fileCountKey, latexProjectCountKey, visiblePageCount } from './counts'
 import { useI18n } from './locale'
 import type { I18n, StringKey } from './locale'
 
@@ -40,6 +42,7 @@ const FILE_ICONS: Record<string, string> = {
   xlsx: iconXlsx,
   pptx: iconPptx,
   pdf: iconPdf,
+  tex: iconTex,
 }
 
 function FileBadge({ ext, size }: { ext: string; size: number }) {
@@ -858,9 +861,18 @@ export function Home() {
 
   // ── Project state ──
   const [projects, setProjects] = useState<ProjectSummaryEntry[]>([])
+  const [latexRecents, setLatexRecents] = useState<LatexRecentProjectEntry[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
 
   const projectMode = hasProjectApi()
+
+  const reloadLatexRecents = () => {
+    void window.aiOffice
+      .latexRecents()
+      .then(setLatexRecents)
+      .catch(() => setLatexRecents([]))
+  }
+  useEffect(reloadLatexRecents, [])
 
   // ── Paged loading ──
   // stale responses are dropped via a request sequence number (when views/filters switch quickly)
@@ -1187,17 +1199,31 @@ export function Home() {
     void window.aiOffice.newSlide(selectedProjectId ? { projectId: selectedProjectId } : undefined)
   }
 
+  const handleNewLatex = async () => {
+    if (await window.aiOffice.newLatexProject()) reloadLatexRecents()
+  }
+
+  const handleImportLatex = async () => {
+    if (await window.aiOffice.importLatexProject()) reloadLatexRecents()
+  }
+
   const NEW_ITEMS = [
     { ext: 'docx', title: t('newDoc'), sub: '.docx', action: handleNewDoc },
     { ext: 'xlsx', title: t('newSheet'), sub: '.xlsx', action: handleNewSheet },
     { ext: 'pptx', title: t('newSlide'), sub: '.pptx', action: handleNewSlide },
+    { ext: 'tex', title: t('newLatex'), sub: '.tex', action: handleNewLatex },
   ]
 
   function renderQuickCards() {
     return (
       <div className="quick-cards">
         {NEW_ITEMS.map((item) => (
-          <button key={item.ext} className="quick-card" onClick={() => void item.action()}>
+          <button
+            key={item.ext}
+            className="quick-card"
+            data-testid={`quick-new-${item.ext}`}
+            onClick={() => void item.action()}
+          >
             <FileBadge ext={item.ext} size={30} />
             <span className="quick-text">
               <span className="quick-title-row">
@@ -1208,6 +1234,21 @@ export function Home() {
             </span>
           </button>
         ))}
+        <button
+          className="quick-card"
+          data-testid="quick-import-latex"
+          onClick={() => void handleImportLatex()}
+        >
+          <span className="quick-folder">
+            <img src={iconTex} width="18" height="18" alt="" aria-hidden="true" />
+          </span>
+          <span className="quick-text">
+            <span className="quick-title-row">
+              <span className="quick-title">{t('importLatex')}</span>
+            </span>
+            <span className="quick-sub">.zip</span>
+          </span>
+        </button>
         <button className="quick-card" onClick={() => void window.aiOffice.browse()}>
           <span className="quick-folder">
             <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -1588,6 +1629,34 @@ export function Home() {
             </h1>
           </div>
           {renderQuickCards()}
+        </section>
+
+        <section className="recents latex-project-recents" aria-label={t('latexProjects')}>
+          <div className="recents-toolbar">
+            <div className="recents-heading">
+              <span className="section-label">{t('latexProjects')}</span>
+              <span className="file-count">
+                {t(latexProjectCountKey(latexRecents.length), { n: latexRecents.length })}
+              </span>
+            </div>
+          </div>
+          {latexRecents.length === 0 ? (
+            <p className="empty latex-project-empty">{t('emptyLatexProjects')}</p>
+          ) : (
+            <div className="latex-project-list" role="list">
+              {latexRecents.map((project) => (
+                <button
+                  key={project.path}
+                  role="listitem"
+                  className="latex-project-row"
+                  onClick={() => void window.aiOffice.openLatexProject(project.path)}
+                >
+                  <img src={iconTex} width="24" height="24" alt="" aria-hidden="true" />
+                  <span>{project.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </section>
 
         <section

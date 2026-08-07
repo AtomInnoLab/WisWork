@@ -4,6 +4,7 @@ import type {
   AccountLoginEvent,
   AccountStatus,
   HomeApi,
+  LatexRecentProjectEntry,
   RecentEntry,
   RecentPage,
   RenameResult,
@@ -52,6 +53,22 @@ function asRecentPage(result: unknown): RecentPage {
 }
 
 const homeApi: HomeApi = {
+  async latexRecents() {
+    const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.latexRecents)
+    return Array.isArray(result) ? (result as LatexRecentProjectEntry[]) : []
+  },
+  async newLatexProject() {
+    const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.newLatexProject)
+    return (result as LatexRecentProjectEntry | null) ?? null
+  },
+  async importLatexProject() {
+    const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.importLatexProject)
+    return (result as LatexRecentProjectEntry | null) ?? null
+  },
+  async openLatexProject(path) {
+    if (typeof path !== 'string' || !path) throw new Error('Invalid path.')
+    await ipcRenderer.invoke(HOME_CHANNELS.openLatexProject, path)
+  },
   async recents(query) {
     return asRecentPage(await ipcRenderer.invoke(HOME_CHANNELS.recents, query))
   },

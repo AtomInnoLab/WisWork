@@ -9,6 +9,14 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/package-macos.yml'
+      - 'apps/shell/electron-builder.cjs'
+      - 'apps/latex/**'
+      - 'packages/latex-project/**'
+      - 'packages/latex-compiler/**'
+      - 'packages/pdf-viewer/**'
+      - 'tools/fetch-tectonic.mjs'
+      - 'tools/tectonic/**'
+      - 'package-lock.json'
 
 concurrency:
   group: package-macos-${{ github.ref }}
@@ -61,19 +69,38 @@ jobs:
           chmod +x apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar
           file apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar | grep -q arm64
 
+      - name: Fetch and verify arm64 Tectonic
+        run: |
+          set -euo pipefail
+          node tools/fetch-tectonic.mjs --platform darwin-arm64 --output apps/latex/native/tectonic-ci
+          file apps/latex/native/tectonic-ci | grep -q arm64
+          # clap prints the declared command name, `Tectonic 0.16.9` — match
+          # case-insensitively, exactly as tools/fetch-tectonic.mjs does.
+          apps/latex/native/tectonic-ci --version | grep -qi 'tectonic 0.16.9'
+
       - name: Package unsigned arm64 DMG and ZIP
         working-directory: apps/shell
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           WISWORK_UNSIGNED_MAC_BUILD: '1'
+          WISWORK_TECTONIC_SOURCE: ${{ github.workspace }}/apps/latex/native/tectonic-ci
         run: npx electron-builder --config electron-builder.cjs --mac dmg zip --arm64 --publish never
 
       - name: Verify packaged sidecar and checksums
         working-directory: apps/shell
         run: |
+          set -euo pipefail
+          APP=$(find release -type d -path '*WisWork.app' -print -quit)
+          test -n "$APP"
           SIDECAR=$(find release -path '*WisWork.app/Contents/Resources/native/xlsx-sidecar' -type f -print -quit)
           test -n "$SIDECAR"
           file "$SIDECAR" | grep -q arm64
+          TECTONIC="$APP/Contents/Resources/native/tectonic"
+          test -x "$TECTONIC"
+          file "$TECTONIC" | grep -q arm64
+          "$TECTONIC" --version | grep -qi 'tectonic 0.16.9'
+          test -f "$APP/Contents/Resources/modules/latex/renderer/index.html"
+          test -z "$(find "$APP/Contents/Resources" -iname '*default_bundle*' -print -quit)"
           test -n "$(find release -maxdepth 1 -name '*.dmg' -print -quit)"
           test -n "$(find release -maxdepth 1 -name '*.zip' -print -quit)"
           cd release

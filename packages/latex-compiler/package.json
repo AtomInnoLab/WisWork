@@ -1,0 +1,20 @@
+{
+  "name": "@wiswork/latex-compiler",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "description": "Verified Tectonic assets and isolated LaTeX compilation for WisWork",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run && node --test ../../tools/fetch-tectonic.test.mjs",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

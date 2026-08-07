@@ -15,6 +15,12 @@ function placeholdersOf(template: string): string[] {
 }
 
 describe('home-screen locale tables', () => {
+  it('includes the LaTeX Home actions in every locale contract', () => {
+    expect(referenceKeys).toEqual(
+      expect.arrayContaining(['newLatex', 'importLatex', 'latexProjects', 'emptyLatexProjects']),
+    )
+  })
+
   it('includes the expected UI languages', () => {
     expect(locales).toContain('zh')
     expect(locales).toContain('en')

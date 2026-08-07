@@ -29,6 +29,7 @@ const BUILTIN = new Set(builtinModules)
  */
 const SRC_GLOBS = [
   'apps/docs/src',
+  'apps/latex/src',
   'apps/pdf/src',
   'apps/sheets/src',
   'apps/shell/src',
@@ -224,6 +225,26 @@ function rustCrates() {
 const hr = (title) => `\n${'='.repeat(72)}\n${title}\n${'='.repeat(72)}\n`
 const sub = (title) => `\n${'-'.repeat(72)}\n${title}\n${'-'.repeat(72)}\n`
 
+function tectonicMetadata() {
+  const manifest = JSON.parse(readFileSync(join(ROOT, 'tools/tectonic/manifest.json'), 'utf8'))
+  const version = manifest?.tectonic?.version
+  const spdx = manifest?.tectonic?.license?.spdx
+  const sourceUrl = manifest?.tectonic?.license?.sourceUrl
+  if (
+    version !== '0.16.9' ||
+    spdx !== 'MIT' ||
+    typeof sourceUrl !== 'string' ||
+    new URL(sourceUrl).protocol !== 'https:'
+  ) {
+    throw new Error('Tectonic license metadata is invalid')
+  }
+  const licenseText = readFileSync(join(ROOT, 'tools/tectonic/LICENSE'), 'utf8').trim()
+  if (!licenseText.includes('Tectonic is licensed under the MIT License')) {
+    throw new Error('Tectonic license text is invalid')
+  }
+  return { version, spdx, sourceUrl, licenseText }
+}
+
 const seed = importedNames()
 const { resolved, missing } = closure(seed)
 resolved.sort(([a], [b]) => a.localeCompare(b))
@@ -271,6 +292,11 @@ if (crates === null) {
   for (const [text, first] of texts) out += `\n[first seen in ${first}]\n${text}\n`
 }
 
+const tectonic = tectonicMetadata()
+out += hr('3. Native executables')
+out += sub(`Tectonic ${tectonic.version} — ${tectonic.spdx}`)
+out += `Pinned upstream license source: ${tectonic.sourceUrl}\n\n${tectonic.licenseText}\n`
+
 /** Bundled fonts (for docs rendering; all metric-compatible replacements for Microsoft fonts) */
 const FONTS = [
   [
@@ -295,7 +321,7 @@ const FONTS = [
   ],
 ]
 
-out += hr('3. Bundled fonts')
+out += hr('4. Bundled fonts')
 for (const [name, spdx, copyright] of FONTS) out += sub(`${name} — ${spdx}`) + copyright + '\n'
 out += sub('SIL Open Font License 1.1 — full text')
 out +=

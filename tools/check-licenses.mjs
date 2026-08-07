@@ -6,6 +6,7 @@
  * (apps/sheets/native/xlsx-engine/deny.toml).
  */
 import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -92,6 +93,32 @@ for (const [path, info] of Object.entries(lock.packages)) {
   } else if (!isAllowed(license)) {
     violations.push(`${name}: ${license}`)
   }
+}
+
+const tectonicManifest = JSON.parse(
+  readFileSync(join(ROOT, 'tools/tectonic/manifest.json'), 'utf8'),
+)
+const tectonicVersion = tectonicManifest?.tectonic?.version
+const tectonicLicense = tectonicManifest?.tectonic?.license?.spdx
+const tectonicLicenseSource = tectonicManifest?.tectonic?.license?.sourceUrl
+const tectonicLicenseText = readFileSync(join(ROOT, 'tools/tectonic/LICENSE'), 'utf8')
+const tectonicLicenseHash = createHash('sha256').update(tectonicLicenseText).digest('hex')
+if (tectonicVersion !== '0.16.9') violations.push(`tectonic: unexpected version ${tectonicVersion}`)
+if (typeof tectonicLicense !== 'string' || !isAllowed(tectonicLicense)) {
+  violations.push(`tectonic: ${tectonicLicense ?? 'no SPDX license'}`)
+}
+try {
+  if (new URL(tectonicLicenseSource).protocol !== 'https:')
+    violations.push('tectonic: license source must use HTTPS')
+} catch {
+  violations.push('tectonic: license source is invalid')
+}
+if (
+  tectonicLicenseHash !== '814a258f76e420b25cb3c07172eb2b3956f34cefbf0a650413b78e65c425f306' ||
+  !tectonicLicenseText.includes('Tectonic is licensed under the MIT License') ||
+  !tectonicLicenseText.includes('THE SOFTWARE IS PROVIDED "AS IS"')
+) {
+  violations.push('tectonic: vendored MIT license text is incomplete')
 }
 
 if (violations.length > 0) {

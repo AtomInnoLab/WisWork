@@ -27,7 +27,7 @@ import {
   writeFileSync,
   readdirSync,
 } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import type {
   ChatMeta,
   ChatMessage,
@@ -212,6 +212,22 @@ export class ProjectStore {
    */
   static chatIdForFile(filePath: string): string {
     return createHash('sha256').update(filePath).digest('hex').slice(0, 16)
+  }
+
+  static directoryResourceKey(directoryPath: string): string {
+    return 'directory:' + resolve(directoryPath)
+  }
+
+  resolveChatForDirectory(directoryPath: string): { projectId: string; chatId: string } {
+    this.ensureDefaultProject()
+    const resourceKey = ProjectStore.directoryResourceKey(directoryPath)
+    const index = this.readIndex()
+    const projectId = index.resourceMap?.[resourceKey] ?? 'default'
+    const chatId = index.chatIdByResource?.[resourceKey] ?? ProjectStore.chatIdForFile(resourceKey)
+    index.resourceMap = { ...(index.resourceMap ?? {}), [resourceKey]: projectId }
+    index.chatIdByResource = { ...(index.chatIdByResource ?? {}), [resourceKey]: chatId }
+    this.writeIndex(index)
+    return { projectId, chatId }
   }
 
   /** Gets the chatId from the mapping; falls back to the path hash without registering. */
@@ -685,6 +701,12 @@ export class ProjectStore {
         const chatId = index.chatIdByPath?.[filePath] ?? ProjectStore.chatIdForFile(filePath)
         chatToFile.set(chatId, filePath)
       }
+    }
+    for (const [resourceKey, pid] of Object.entries(index.resourceMap ?? {})) {
+      if (pid !== projectId || !resourceKey.startsWith('directory:')) continue
+      const chatId =
+        index.chatIdByResource?.[resourceKey] ?? ProjectStore.chatIdForFile(resourceKey)
+      chatToFile.set(chatId, resourceKey.slice('directory:'.length))
     }
 
     const entries: TimelineEntry[] = []

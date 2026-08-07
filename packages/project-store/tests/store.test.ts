@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { ProjectStore } from '../src/store.js'
+import type { ProjectIndex } from '../src/types.js'
 
 // ────────────────────────────────────────────────────────────
 // Test helpers
@@ -855,6 +856,50 @@ describe('getProjectTimeline', () => {
     const timeline = store.getProjectTimeline('default')
     const entry = timeline.find((e) => e.chatId === chatId)
     expect(entry?.fileName).toBe('myFile.docx')
+  })
+})
+
+describe('directory resources', () => {
+  let tmpDir: string
+  let store: ProjectStore
+
+  beforeEach(() => {
+    tmpDir = makeTempDir()
+    store = new ProjectStore(tmpDir)
+    store.ensureDefaultProject()
+  })
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('binds a stable chat to a directory without changing the Office file map', () => {
+    const directory = '/Users/x/Documents/paper'
+    const first = store.resolveChatForDirectory(directory)
+    const second = store.resolveChatForDirectory(`${directory}/`)
+    expect(second).toEqual(first)
+    store.appendChatMessage(first.projectId, first.chatId, { role: 'user', text: 'paper question' })
+    store.appendChatMessage(first.projectId, first.chatId, { role: 'assistant', text: 'answer' })
+
+    const index = JSON.parse(
+      readFileSync(join(tmpDir, 'projects', 'index.json'), 'utf8'),
+    ) as ProjectIndex
+    expect(index.fileMap[directory]).toBeUndefined()
+    expect(index.resourceMap?.[ProjectStore.directoryResourceKey(directory)]).toBe('default')
+    expect(store.loadChat(first.projectId, first.chatId).map((message) => message.text)).toEqual([
+      'paper question',
+      'answer',
+    ])
+    expect(store.getProjectTimeline('default').some((entry) => entry.chatId === first.chatId)).toBe(
+      true,
+    )
+  })
+
+  it('keeps existing Office file resolution semantics unchanged', () => {
+    const file = '/Users/x/Documents/paper/main.docx'
+    const before = store.resolveChatForFile(file)
+    store.resolveChatForDirectory('/Users/x/Documents/paper')
+    expect(store.resolveChatForFile(file)).toEqual(before)
   })
 })
 

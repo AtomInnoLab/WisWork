@@ -1,3 +1,4 @@
+import { realpathSync, statSync } from 'node:fs'
 import { basename } from 'node:path'
 import { BrowserWindow } from 'electron'
 import type { Rectangle, WebContents, WebContentsView } from 'electron'
@@ -10,6 +11,14 @@ import {
   setActiveDocsResolver,
   teardownDocsRenderer,
 } from '../../../docs/src/main/docs-main'
+import {
+  createLatexView,
+  latexQueryDirty,
+  requestLatexEditFlush,
+  releaseLatexEditFlush,
+  requestLatexClose,
+  teardownLatexRenderer,
+} from '../../../latex/src/main/latex-main'
 import { createPdfView, pdfIsDirty, requestPdfClose } from '../../../pdf/src/main/pdf-main'
 import {
   createSheetsView,
@@ -169,6 +178,30 @@ export class TabManager {
     return id
   }
 
+  openLatexTab(projectPath: string): string {
+    const canonicalPath = realpathSync(projectPath)
+    if (!statSync(canonicalPath).isDirectory()) throw new Error('LaTeX project must be a directory')
+    const existing = this.tabs.find((tab) => tab.kind === 'latex' && tab.filePath === canonicalPath)
+    if (existing) {
+      this.activateTab(existing.id)
+      return existing.id
+    }
+    const view = createLatexView(canonicalPath)
+    const id = 't' + this.nextId++
+    this.shellWindow.contentView.addChildView(view)
+    view.setVisible(false)
+    this.trackHtmlFullScreen(id, view)
+    this.tabs.push({
+      id,
+      kind: 'latex',
+      view,
+      title: basename(canonicalPath),
+      filePath: canonicalPath,
+    })
+    this.activateTab(id)
+    return id
+  }
+
   openPdfTab(openPath: string): string {
     const view = createPdfView(openPath)
     const id = `t${this.nextId++}`
@@ -254,6 +287,21 @@ export class TabManager {
       .map((t) => ({ id: t.id, webContents: t.view!.webContents }))
   }
 
+  latexTabs(): Array<{ id: string; webContents: WebContents }> {
+    return this.tabs
+      .filter((tab) => tab.kind === 'latex' && tab.view)
+      .map((tab) => ({ id: tab.id, webContents: tab.view!.webContents }))
+  }
+
+  latexSessionState(): { projectPaths: string[]; activeProjectPath: string | null } {
+    const latexTabs = this.tabs.filter((tab) => tab.kind === 'latex' && tab.filePath)
+    const active = latexTabs.find((tab) => tab.id === this.activeId)
+    return {
+      projectPaths: latexTabs.map((tab) => tab.filePath!),
+      activeProjectPath: active?.filePath ?? null,
+    }
+  }
+
   /** all live docs tabs — dirtiness lives renderer-side, caller queries async (shell-close guard) */
   docsTabs(): Array<{ id: string; webContents: WebContents }> {
     return this.tabs
@@ -270,6 +318,7 @@ export class TabManager {
     if (id === HOME_ID) return
     const tab = this.tabs.find((t) => t.id === id)
     if (!tab || this.closingIds.has(id)) return
+    let latexPrepared = false
     let closeGuard =
       tab.view &&
       (tab.kind === 'sheets' && sheetsPendingEditCount(tab.view.webContents.id) > 0
@@ -280,6 +329,19 @@ export class TabManager {
             ? requestSlidesClose
             : null)
     // docs dirty state lives in the renderer and needs an async query; skip the guard when clean (avoids a flash activation)
+    if (!closeGuard && tab.kind === 'latex' && tab.view) {
+      this.closingIds.add(id)
+      try {
+        if (!(await requestLatexEditFlush(tab.view.webContents))) return
+        latexPrepared = true
+        if (await latexQueryDirty(tab.view.webContents)) closeGuard = requestLatexClose
+      } catch {
+        if (latexPrepared) releaseLatexEditFlush(tab.view.webContents)
+        return
+      } finally {
+        this.closingIds.delete(id)
+      }
+    }
     if (!closeGuard && tab.kind === 'docs' && tab.view) {
       this.closingIds.add(id)
       try {
@@ -293,7 +355,13 @@ export class TabManager {
       if (this.activeId !== id) this.activateTab(id)
       this.closingIds.add(id)
       try {
-        if (!(await closeGuard(tab.view.webContents, this.shellWindow))) return
+        if (!(await closeGuard(tab.view.webContents, this.shellWindow))) {
+          if (latexPrepared) releaseLatexEditFlush(tab.view.webContents)
+          return
+        }
+      } catch {
+        if (latexPrepared) releaseLatexEditFlush(tab.view.webContents)
+        return
       } finally {
         this.closingIds.delete(id)
       }
@@ -311,14 +379,15 @@ export class TabManager {
     if (removed.view) {
       removed.view.setVisible(false)
       this.shellWindow.contentView.removeChildView(removed.view)
-      if (removed.kind === 'docs') {
-        // webContents.close()/.destroy() on a closed docs tab wedges Electron's whole
+      if (removed.kind === 'docs' || removed.kind === 'latex') {
+        // webContents.close()/.destroy() on some closed WebContentsView renderers wedges Electron's whole
         // UI thread in a native modal run loop (reproduced consistently; survives
         // close() vs destroy(), teardown ordering, deferring, and disabling
         // accessibility support — looks like an upstream WebContentsView/Chromium
         // issue, not something fixable from here). Detaching without destroying
         // avoids the freeze; the orphaned webContents is reclaimed when the app quits.
-        teardownDocsRenderer(removed.view.webContents)
+        if (removed.kind === 'docs') teardownDocsRenderer(removed.view.webContents)
+        else teardownLatexRenderer(removed.view.webContents)
       } else {
         removed.view.webContents.close()
       }
@@ -339,6 +408,16 @@ export class TabManager {
 
   findSlidesTabByPath(path: string): string | undefined {
     return this.tabs.find((t) => t.kind === 'slides' && t.filePath === path)?.id
+  }
+
+  findLatexTabByPath(path: string): string | undefined {
+    let canonical: string
+    try {
+      canonical = realpathSync(path)
+    } catch {
+      return undefined
+    }
+    return this.tabs.find((tab) => tab.kind === 'latex' && tab.filePath === canonical)?.id
   }
 
   findPdfTabByPath(path: string): string | undefined {

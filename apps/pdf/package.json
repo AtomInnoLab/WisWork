@@ -21,6 +21,7 @@
     "@wiswork/ai-provider": "*",
     "@wiswork/electron-utils": "*",
     "@wiswork/i18n": "*",
+    "@wiswork/pdf-viewer": "*",
     "@wiswork/ui": "*",
     "electron": "^41.0.3",
     "electron-vite": "^5.0.0",

@@ -1548,3 +1548,37 @@ body.vib .home {
   font-variant-numeric: tabular-nums;
   padding-top: 1px;
 }
+.latex-project-recents {
+  margin-bottom: 18px;
+}
+
+.latex-project-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
+}
+
+.latex-project-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 9px;
+  background: var(--surface, #fff);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.latex-project-row:hover {
+  background: var(--surface-hover, #f7f7fa);
+}
+
+.latex-project-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

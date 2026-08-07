@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactElement, ReactNode, RefObject } from 'react'
 // legacy build: the modern build relies on new APIs like Math.sumPrecise that the current
 // Electron V8 lacks, making embedded font parsing fail and whole pages render as garbled raw char codes
-import { GlobalWorkerOptions, TextLayer, getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
-import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
+import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
+import type { PDFDocumentProxy } from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
+import { ReadonlyPdfPage } from '@wiswork/pdf-viewer'
 import { AiPanel, WisWorkMark } from './ai/AiPanel'
 import type { PdfAiDeps } from './ai/tools'
 import {
@@ -120,55 +121,16 @@ function PdfPage({
   rotationDelta: number
   visible: boolean
 }) {
-  const holderRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    const holder = holderRef.current
-    if (!visible || !holder) return
-    let cancelled = false
-    let renderTask: RenderTask | null = null
-    void (async () => {
-      const page = await doc.getPage(pageNo)
-      if (cancelled) return
-      const viewport = page.getViewport({ scale, rotation: (page.rotate + rotationDelta) % 360 })
-      // Cap at 2x: on hi-dpi screens a 3x-dpr full-page bitmap doubles memory with no visible gain
-      const dpr = Math.min(window.devicePixelRatio || 1, 2)
-      const canvas = document.createElement('canvas')
-      canvas.width = Math.floor(viewport.width * dpr)
-      canvas.height = Math.floor(viewport.height * dpr)
-      canvas.style.width = `${Math.floor(viewport.width)}px`
-      canvas.style.height = `${Math.floor(viewport.height)}px`
-      renderTask = page.render({
-        canvas,
-        viewport,
-        transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
-      })
-      try {
-        await renderTask.promise
-      } catch {
-        return // cancelled
-      }
-      if (cancelled) return
-      const textDiv = document.createElement('div')
-      textDiv.className = 'textLayer'
-      holder.replaceChildren(canvas, textDiv)
-      const textLayer = new TextLayer({
-        textContentSource: page.streamTextContent(),
-        container: textDiv,
-        viewport,
-      })
-      try {
-        await textLayer.render()
-      } catch {
-        /* cancelled */
-      }
-    })()
-    return () => {
-      cancelled = true
-      renderTask?.cancel()
-      holder.replaceChildren()
-    }
-  }, [doc, pageNo, scale, rotationDelta, visible])
-  return <div ref={holderRef} className="pdf-page-content" />
+  return (
+    <ReadonlyPdfPage
+      document={doc}
+      page={pageNo}
+      scale={scale}
+      rotation={rotationDelta}
+      visible={visible}
+      className="pdf-page-content"
+    />
+  )
 }
 
 /** Overlay for unsaved markups; click to select (deletion is explicit via the delete popup or Delete key) */
