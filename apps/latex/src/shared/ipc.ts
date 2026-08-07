@@ -13,6 +13,7 @@ export const LATEX_CHANNELS = {
   fileCreate: 'latex:file:create',
   fileRename: 'latex:file:rename',
   compileStatus: 'latex:compile:status',
+  bundleStatus: 'latex:bundle:status',
   compileStart: 'latex:compile:start',
   compileCancel: 'latex:compile:cancel',
   syncTexForward: 'latex:synctex:forward',
@@ -165,6 +166,12 @@ export interface CompileResultDto {
   log: string
 }
 
+export type LatexBundleStatusDto =
+  | { state: 'missing' }
+  | { state: 'downloading'; receivedBytes: number; totalBytes: number }
+  | { state: 'ready'; bytes: number }
+  | { state: 'error'; code: string }
+
 export interface LatexApi {
   getSession(): Promise<LatexIpcResult<LatexSessionDto>>
   listFiles(request: SessionRequest): Promise<LatexIpcResult<string[]>>
@@ -175,6 +182,7 @@ export interface LatexApi {
   renameFile(request: RenameFileRequest): Promise<LatexIpcResult<void>>
   compile(request: CompileRequest): Promise<LatexIpcResult<CompileResultDto>>
   cancelCompile(request: SessionRequest): Promise<LatexIpcResult<{ cancelled: boolean }>>
+  getBundleStatus(request: SessionRequest): Promise<LatexIpcResult<LatexBundleStatusDto>>
   syncTexForward(
     request: SyncTexForwardRequest,
   ): Promise<LatexIpcResult<{ page: number; x: number; y: number } | null>>

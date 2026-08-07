@@ -10,7 +10,7 @@ Until every required value is known, do not add placeholder assets to the manife
 To populate the local, ignored cache after the manifest is committed:
 
 ```sh
-node tools/fetch-tectonic.mjs --platform darwin-arm64
+node tools/fetch-tectonic.mjs --platform darwin-arm64 --output /explicit/path/to/tectonic
 ```
 
 The fetcher accepts no URL argument. It permits an initial request only to `github.com` and a
@@ -21,4 +21,5 @@ from the verified archive into a staging directory, and requires exact `tectonic
 before a backup-and-swap publish. Stable JSON logs contain only an asset ID, byte count, or error
 code; URLs and upstream error text are intentionally omitted.
 
+The optional `--output` path receives only the verified executable and is intended for packaging.
 The cache contains downloaded upstream archives and verified executables and must not be committed.

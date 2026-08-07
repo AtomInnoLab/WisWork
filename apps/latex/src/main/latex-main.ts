@@ -5,6 +5,7 @@ import { LATEX_CHANNELS } from '../shared/ipc.js'
 import { LatexEditFlushCoordinator, type FlushWebContents } from './edit-flush.js'
 import { registerLatexIpc } from './ipc.js'
 import { ProjectSessionRegistry } from './project-session.js'
+import type { TectonicBundleAsset } from '@wiswork/latex-compiler'
 
 export interface LatexRuntimeConfig {
   preloadPath: string
@@ -12,6 +13,7 @@ export interface LatexRuntimeConfig {
   rendererFile?: string
   tectonicPath: string
   userDataPath: string
+  bundleAsset?: TectonicBundleAsset
 }
 
 export interface DirtyWebContents {
@@ -39,7 +41,11 @@ export function configureLatexRuntime(config: LatexRuntimeConfig): void {
   }
   runtime = { ...config }
   registry = new ProjectSessionRegistry({
-    compilerRuntime: { tectonicPath: config.tectonicPath, userDataPath: config.userDataPath },
+    compilerRuntime: {
+      tectonicPath: config.tectonicPath,
+      userDataPath: config.userDataPath,
+      bundleAsset: config.bundleAsset,
+    },
     onExternalChange: (id, buffer) => {
       const electron = electronRuntime()
       electron.webContents.fromId(id)?.send(LATEX_CHANNELS.externalChanged, buffer)

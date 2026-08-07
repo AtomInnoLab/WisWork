@@ -111,6 +111,28 @@ describe('LaTeX typed IPC boundary', () => {
     }
   })
 
+  it('exposes bundle status only through the owning project session', async () => {
+    const { session, call } = await setup()
+    const payload = { projectId: session.projectId }
+    await expect(call(LATEX_CHANNELS.bundleStatus, 11, payload)).resolves.toEqual({
+      ok: true,
+      value: { state: 'error', code: 'BUNDLE_NOT_CONFIGURED' },
+    })
+    await expect(call(LATEX_CHANNELS.bundleStatus, 99, payload)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'LATEX_FORBIDDEN_SENDER' },
+    })
+    await expect(
+      call(LATEX_CHANNELS.bundleStatus, 11, {
+        ...payload,
+        bundleUrl: 'https://attacker.invalid/bundle.tar',
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'LATEX_INVALID_PAYLOAD' },
+    })
+  })
+
   it('maps unsaved-buffer compile rejection to a stable conflict error', async () => {
     const { session, call } = await setup()
     vi.spyOn(session, 'compile').mockRejectedValue(new UnsavedBuffersError())

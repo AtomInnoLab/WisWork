@@ -1,8 +1,10 @@
 import type { EditorDiagnostic } from './diagnostics.js'
+import type { LatexBundleStatusDto } from '../../shared/ipc.js'
 import { useLatexLocale } from '../i18n/locale.js'
 
 export interface CompilePanelProps {
   compiling: boolean
+  bundleStatus: LatexBundleStatusDto
   diagnostics: readonly EditorDiagnostic[]
   log: string
   onCompile: () => void
@@ -12,6 +14,7 @@ export interface CompilePanelProps {
 
 export function CompilePanel({
   compiling,
+  bundleStatus,
   diagnostics,
   log,
   onCompile,
@@ -19,18 +22,30 @@ export function CompilePanel({
   onDiagnostic,
 }: CompilePanelProps) {
   const { t } = useLatexLocale()
+  const busy = compiling || bundleStatus.state === 'downloading'
   return (
     <section className="compile-panel">
       <header>
-        <button type="button" className="compile-button" onClick={onCompile} disabled={compiling}>
-          {compiling ? t('compiling') : t('compile')}
+        <button type="button" className="compile-button" onClick={onCompile} disabled={busy}>
+          {busy ? t('compiling') : t('compile')}
         </button>
-        {compiling && (
+        {busy && (
           <button type="button" onClick={onCancel}>
             {t('cancel')}
           </button>
         )}
       </header>
+      <div className="bundle-status" role="status">
+        {bundleStatus.state === 'downloading'
+          ? `Downloading TeX bundle (${Math.floor(
+              (100 * bundleStatus.receivedBytes) / Math.max(1, bundleStatus.totalBytes),
+            )}%)`
+          : bundleStatus.state === 'ready'
+            ? 'TeX bundle ready'
+            : bundleStatus.state === 'error'
+              ? `TeX bundle error: ${bundleStatus.code}`
+              : 'TeX bundle required on first compile'}
+      </div>
       <details open={diagnostics.length > 0}>
         <summary>
           {t('diagnostics')} ({diagnostics.length})

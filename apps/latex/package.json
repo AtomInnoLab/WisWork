@@ -6,7 +6,12 @@
   "private": true,
   "type": "module",
   "description": "AI-native LaTeX project editor hosted by WisWork Shell",
+  "author": "AtomInnoLab",
   "main": "out/main/index.js",
+  "build": {
+    "appId": "com.atominnolab.wiswork.latex",
+    "productName": "WisWork LaTeX"
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "dev:renderer": "vite --config vite.renderer.config.ts",

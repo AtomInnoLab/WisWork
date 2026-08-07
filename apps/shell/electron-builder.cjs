@@ -62,6 +62,10 @@ const config = {
       from: '../latex/out',
       to: 'modules/latex',
     },
+    {
+      from: '../../tools/tectonic/manifest.json',
+      to: 'native/tectonic-manifest.json',
+    },
   ],
   fileAssociations: [
     {

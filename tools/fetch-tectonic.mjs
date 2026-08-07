@@ -3,7 +3,18 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { createReadStream, createWriteStream } from 'node:fs'
-import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
+import {
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+} from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
@@ -21,17 +32,35 @@ export function parseArguments(argv) {
   let platform
   let manifestPath = DEFAULT_MANIFEST_PATH
   let cachePath = DEFAULT_CACHE_PATH
+  let outputPath
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (argument === '--platform') platform = argv[++index]
     else if (argument === '--manifest') manifestPath = resolve(argv[++index] ?? '')
     else if (argument === '--cache') cachePath = resolve(argv[++index] ?? '')
+    else if (argument === '--output') outputPath = resolve(argv[++index] ?? '')
     else throw new Error(`unsupported argument: ${argument}`)
   }
   if (!platform || !/^[a-z0-9]+-[a-z0-9_]+$/.test(platform)) {
     throw new Error('--platform is required (for example, darwin-arm64)')
   }
-  return Object.freeze({ platform, manifestPath, cachePath })
+  return Object.freeze({ platform, manifestPath, cachePath, outputPath })
+}
+
+export async function publishExecutable(sourcePath, outputPath) {
+  const source = await lstat(sourcePath)
+  if (!source.isFile() || source.isSymbolicLink()) throw new Error('verified executable is unsafe')
+  await mkdir(dirname(outputPath), { recursive: true })
+  const temporaryPath = `${outputPath}.${randomBytes(6).toString('hex')}.part`
+  try {
+    await copyFile(sourcePath, temporaryPath)
+    await chmod(temporaryPath, 0o755)
+    await rename(temporaryPath, outputPath)
+  } catch (error) {
+    await rm(temporaryPath, { force: true })
+    throw error
+  }
+  return outputPath
 }
 
 export async function sha256File(path) {
@@ -386,8 +415,11 @@ export async function main(argv = process.argv.slice(2)) {
     options.cachePath,
     manifest.tectonic.version,
   )
+  const publishedPath = options.outputPath
+    ? await publishExecutable(executablePath, options.outputPath)
+    : executablePath
   process.stdout.write(
-    `${JSON.stringify({ assetId: asset.id, bytes: result.bytes, executable: executablePath })}\n`,
+    `${JSON.stringify({ assetId: asset.id, bytes: result.bytes, executable: publishedPath })}\n`,
   )
 }
 

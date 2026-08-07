@@ -100,6 +100,11 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
       cancelled: session.cancelCompile(),
     })),
   )
+  handle(LATEX_CHANNELS.bundleStatus, (event, payload) =>
+    withSession(event, payload, registry, parseSessionRequest, (session) =>
+      session.getBundleStatus(),
+    ),
+  )
   handle(LATEX_CHANNELS.compileStatus, (event, payload) =>
     withSession(event, payload, registry, parseRevisionRequest, (session, request) => ({
       revision: request.revision,

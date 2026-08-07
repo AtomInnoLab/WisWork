@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PdfPoint, ViewerLocation } from '@wiswork/pdf-viewer'
 import type { CompileDiagnosticInput, EditorDiagnostic } from './compile/diagnostics.js'
+import type { LatexBundleStatusDto } from '../shared/ipc.js'
 import { mapCompileDiagnostics } from './compile/diagnostics.js'
 import { CompilePanel } from './compile/CompilePanel.js'
 import { AiPanel } from './ai/AiPanel.js'
@@ -79,6 +80,7 @@ export function App() {
   const [editorState, setEditorState] = useState(() => createEditorState([]))
   const editorStateRef = useRef(editorState)
   const [compiling, setCompiling] = useState(false)
+  const [bundleStatus, setBundleStatus] = useState<LatexBundleStatusDto>({ state: 'missing' })
   const [diagnostics, setDiagnostics] = useState<EditorDiagnostic[]>([])
   const [log, setLog] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -325,6 +327,21 @@ export function App() {
     })
     return () => unsubscribe()
   }, [replaceEditorState, scheduleAutoCompile])
+
+  useEffect(() => {
+    if (!projectId) return
+    let disposed = false
+    const update = async () => {
+      const result = await window.latexApi.getBundleStatus({ projectId })
+      if (!disposed && result.ok) setBundleStatus(result.value)
+    }
+    void update()
+    const timer = window.setInterval(() => void update(), 250)
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
+    }
+  }, [projectId])
 
   useEffect(() => {
     const unsubscribeRequest = window.latexApi.onEditFlushRequest((requestId) => {
@@ -582,6 +599,7 @@ export function App() {
         )}
         <CompilePanel
           compiling={compiling}
+          bundleStatus={bundleStatus}
           diagnostics={diagnostics}
           log={log}
           onCompile={compileProject}

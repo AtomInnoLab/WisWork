@@ -14,7 +14,8 @@ WisWork release artifacts are published through the AtomInnoLab release pipeline
 | `apps/sheets` | **WisWork Sheets** | `.xlsx` spreadsheet. UI built on the open-source [Univer](https://github.com/dream-num/univer) core (Apache-2.0) with a large layer of in-house extensions; xlsx import/export runs through an in-house Rust sidecar (calamine + IronCalc), charts are rendered in-house (Konva), plus pivot tables, slicers, conditional formatting, and formula tracing. |
 | `apps/slides` | **WisWork Slides** | `.pptx` presentations. In-house pptx parse/render/edit engine with masters, charts, cropping, ink, and text shaping (HarfBuzz metrics).                                                                                                                                                                                                                    |
 | `apps/pdf`    | **WisWork PDF**    | PDF viewer/editor on pdf.js + pdf-lib: annotations, forms, outlines, stamps, signatures, page operations, print.                                                                                                                                                                                                                                           |
-| `apps/shell`  | **WisWork**        | The suite shell: home screen, tabbed hosting of the four editors, auto-update.                                                                                                                                                                                                                                                                             |
+| `apps/latex`  | **WisWork LaTeX**  | AI-native multi-file LaTeX project editor with CodeMirror, confirmed AI proposals, Tectonic compilation, diagnostics, PDF preview, and SyncTeX navigation.                                                                                                                                                                                                 |
+| `apps/shell`  | **WisWork**        | The suite shell: home screen, tabbed hosting of the editors, auto-update.                                                                                                                                                                                                                                                                                  |
 
 Every app embeds the same AI panel: block-granular AI editing with version
 snapshots and diffs in docs, a tool-calling agent over workbook/slide/PDF
@@ -58,6 +59,9 @@ npm run dist:win     # package Windows nsis installer
 The sheets app additionally needs a Rust toolchain for its xlsx sidecar
 (`cargo` on PATH); `npm run build -w @wiswork/sheets` compiles it
 automatically.
+
+LaTeX packaging, Tectonic cache behavior, offline compilation, cleanup, and troubleshooting are
+documented in [`docs/development/latex.md`](docs/development/latex.md).
 
 ### Development authentication and model access
 

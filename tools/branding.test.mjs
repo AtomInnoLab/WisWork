@@ -16,6 +16,7 @@ function json(path) {
 afterEach(() => {
   delete process.env.WISWORK_UPDATE_URL
   delete process.env.WISWORK_UNSIGNED_MAC_BUILD
+  delete process.env.WISWORK_TECTONIC_SOURCE
   delete process.env.GENOFFICE_UPDATE_URL
   delete require.cache[require.resolve('../apps/shell/electron-builder.cjs')]
 })
@@ -37,6 +38,7 @@ test('all distributable apps use WisWork names and AtomInnoLab bundle identifier
     ['apps/sheets/package.json', ['WisWork Sheets', 'com.atominnolab.wiswork.sheets']],
     ['apps/slides/package.json', ['WisWork Slides', 'com.atominnolab.wiswork.slides']],
     ['apps/pdf/package.json', ['WisWork PDF', 'com.atominnolab.wiswork.pdf']],
+    ['apps/latex/package.json', ['WisWork LaTeX', 'com.atominnolab.wiswork.latex']],
   ])
   for (const [path, [productName, appId]] of expected) {
     const pkg = json(path)
@@ -80,6 +82,78 @@ test('macOS packaging workflow builds an arm64 sidecar and uploads dmg and zip a
   assert.match(workflow, /electron-builder --config electron-builder\.cjs --mac dmg zip --arm64/)
   assert.match(workflow, /release\/\*\.dmg/)
   assert.match(workflow, /release\/\*\.zip/)
+})
+
+test('shell packages the LaTeX renderer and only the verified Tectonic executable', () => {
+  process.env.WISWORK_TECTONIC_SOURCE = '/tmp/verified-tectonic'
+  const config = require('../apps/shell/electron-builder.cjs')
+  assert.ok(
+    config.extraResources.some(
+      (entry) => entry.from === '../latex/out' && entry.to === 'modules/latex',
+    ),
+  )
+  assert.ok(
+    config.extraResources.some(
+      (entry) =>
+        entry.from === '../../tools/tectonic/manifest.json' &&
+        entry.to === 'native/tectonic-manifest.json',
+    ),
+  )
+  assert.ok(
+    config.mac.extraResources.some(
+      (entry) => entry.from === '/tmp/verified-tectonic' && entry.to === 'native/tectonic',
+    ),
+  )
+  assert.equal(JSON.stringify(config).includes('tectonic-default-bundle-v33'), false)
+})
+
+test('macOS workflow fetches, verifies, injects, and inspects the arm64 Tectonic sidecar', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/package-macos.yml'), 'utf8')
+  for (const path of [
+    'apps/shell/electron-builder.cjs',
+    'apps/latex/**',
+    'packages/latex-project/**',
+    'packages/latex-compiler/**',
+    'packages/pdf-viewer/**',
+    'tools/tectonic/**',
+    'package-lock.json',
+  ]) {
+    assert.ok(workflow.includes(`- '${path}'`) || workflow.includes(`- "${path}"`), path)
+  }
+  assert.match(workflow, /node tools\/fetch-tectonic\.mjs --platform darwin-arm64 --output [^\n]+/)
+  assert.match(workflow, /file [^\n]*tectonic[^\n]*\| grep -q arm64/)
+  assert.match(workflow, /tectonic[^\n]*--version[^\n]*0\.16\.9/)
+  assert.match(workflow, /WISWORK_TECTONIC_SOURCE:/)
+  assert.match(workflow, /modules\/latex\/renderer\/index\.html/)
+  assert.match(workflow, /Contents\/Resources\/native\/tectonic/)
+  assert.match(workflow, /SHA256SUMS\.txt/)
+})
+
+test('generated notices and developer docs cover LaTeX and pinned Tectonic metadata', () => {
+  const notices = readFileSync(join(root, 'apps/shell/build/THIRD-PARTY-NOTICES.txt'), 'utf8')
+  assert.match(notices, /codemirror-lang-latex v0\.4\.2 — MIT/)
+  assert.match(notices, /Tectonic 0\.16\.9 — MIT/)
+  assert.match(
+    notices,
+    /Tectonic 0\.16\.9 — MIT[\s\S]*?Tectonic is licensed under the MIT License[\s\S]*?THE SOFTWARE IS PROVIDED "AS IS"/,
+  )
+  const docs = readFileSync(join(root, 'docs/development/latex.md'), 'utf8')
+  assert.match(docs, /first compile/i)
+  assert.match(docs, /offline/i)
+  assert.match(docs, /cache/i)
+  assert.match(docs, /2\.8\s*(?:GB|GiB)/i)
+  assert.doesNotMatch(docs, /sk-[a-z0-9]{20,}|1234567890/i)
+  assert.match(readFileSync(join(root, 'README.md'), 'utf8'), /docs\/development\/latex\.md/)
+})
+
+test('LaTeX polls authoritative bundle state even for AI-triggered compilation', () => {
+  const source = readFileSync(join(root, 'apps/latex/src/renderer/App.tsx'), 'utf8')
+  const effect = source.slice(
+    source.indexOf('window.latexApi.getBundleStatus'),
+    source.indexOf('window.latexApi.onEditFlushRequest'),
+  )
+  assert.match(effect, /window\.setInterval\(\(\) => void update\(\), 250\)/)
+  assert.doesNotMatch(effect, /if \(!compiling\)/)
 })
 
 test('CI runs the branding gate immediately after dependency installation', () => {

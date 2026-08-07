@@ -6,6 +6,8 @@ import test from 'node:test'
 import {
   extractVerifiedTectonic,
   fetchVerifiedAsset,
+  parseArguments,
+  publishExecutable,
   selectPlatformAsset,
 } from './fetch-tectonic.mjs'
 
@@ -13,6 +15,23 @@ const asset = {
   id: 'tectonic-test-darwin-arm64',
   archive: { format: 'tar.gz', executable: 'tectonic' },
 }
+
+test('CLI accepts an explicit output path for the verified executable', () => {
+  const parsed = parseArguments(['--platform', 'darwin-arm64', '--output', '/tmp/wiswork-tectonic'])
+  assert.equal(parsed.platform, 'darwin-arm64')
+  assert.equal(parsed.outputPath, '/tmp/wiswork-tectonic')
+})
+
+test('publishExecutable copies only a regular verified executable to the explicit output', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'publish-tectonic-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const source = join(root, 'cache', 'tectonic')
+  const output = join(root, 'ci', 'tectonic')
+  await mkdir(join(root, 'cache'))
+  await writeFile(source, 'verified-binary')
+  await publishExecutable(source, output)
+  assert.equal(await readFile(output, 'utf8'), 'verified-binary')
+})
 
 test('extractVerifiedTectonic validates one executable and its exact version', async (context) => {
   const root = await mkdtemp(join(tmpdir(), 'fetch-tectonic-'))

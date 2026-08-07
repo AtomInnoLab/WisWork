@@ -39,6 +39,7 @@ import {
 } from '@wiswork/electron-utils'
 import { readAppSettings, writeAppSetting } from './app-settings'
 import { ProjectStore } from '@wiswork/project-store'
+import { parseTectonicManifest } from '@wiswork/latex-compiler'
 import {
   createLatexProject as createLatexProjectDirectory,
   importLatexProject as importLatexProjectArchive,
@@ -183,6 +184,16 @@ const LATEX_OUT = app.isPackaged
 const TECTONIC_BIN = app.isPackaged
   ? join(process.resourcesPath, 'native', TECTONIC_EXE)
   : (process.env.WISWORK_TECTONIC_PATH ?? join(APPS_ROOT, 'latex', 'native', TECTONIC_EXE))
+const TECTONIC_MANIFEST = parseTectonicManifest(
+  JSON.parse(
+    readFileSync(
+      app.isPackaged
+        ? join(process.resourcesPath, 'native', 'tectonic-manifest.json')
+        : join(APPS_ROOT, '..', 'tools', 'tectonic', 'manifest.json'),
+      'utf8',
+    ),
+  ),
+)
 const SIDECAR_BIN = app.isPackaged
   ? join(process.resourcesPath, 'native', SIDECAR_EXE)
   : join(APPS_ROOT, 'sheets', 'native', 'xlsx-engine', 'target', 'release', SIDECAR_EXE)
@@ -214,6 +225,7 @@ configureLatexRuntime({
   rendererFile: join(LATEX_OUT, 'renderer', 'index.html'),
   tectonicPath: TECTONIC_BIN,
   userDataPath: app.getPath('userData'),
+  bundleAsset: TECTONIC_MANIFEST.bundle,
 })
 
 registerLatexProtocolScheme(protocol)
