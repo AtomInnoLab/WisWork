@@ -1218,7 +1218,12 @@ export function Home() {
     return (
       <div className="quick-cards">
         {NEW_ITEMS.map((item) => (
-          <button key={item.ext} className="quick-card" onClick={() => void item.action()}>
+          <button
+            key={item.ext}
+            className="quick-card"
+            data-testid={`quick-new-${item.ext}`}
+            onClick={() => void item.action()}
+          >
             <FileBadge ext={item.ext} size={30} />
             <span className="quick-text">
               <span className="quick-title-row">
@@ -1229,7 +1234,11 @@ export function Home() {
             </span>
           </button>
         ))}
-        <button className="quick-card" onClick={() => void handleImportLatex()}>
+        <button
+          className="quick-card"
+          data-testid="quick-import-latex"
+          onClick={() => void handleImportLatex()}
+        >
           <span className="quick-folder">
             <img src={iconTex} width="18" height="18" alt="" aria-hidden="true" />
           </span>

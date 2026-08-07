@@ -11,7 +11,12 @@ describe('LaTeX PDF privileged scheme', () => {
     expect(protocol.registerSchemesAsPrivileged).toHaveBeenCalledWith([
       {
         scheme: 'wiswork-latex-pdf',
-        privileges: { secure: true, standard: true, supportFetchAPI: true },
+        privileges: {
+          secure: true,
+          standard: true,
+          supportFetchAPI: true,
+          corsEnabled: true,
+        },
       },
     ])
   })

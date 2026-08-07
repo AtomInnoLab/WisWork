@@ -7,11 +7,13 @@ test.describe('home screen', () => {
     const { page } = launched
     try {
       await expect(page.locator('.home-hero')).toBeVisible()
-      // three AI quick-create cards plus the "Open file" browse card
-      await expect(page.locator('.quick-card')).toHaveCount(4)
+      // four AI create cards, LaTeX import, and the "Open file" browse card
+      await expect(page.locator('.quick-card')).toHaveCount(6)
       await expect(page.locator('.quick-card').first()).toContainText('AI Docs')
       await expect(page.locator('.quick-card').nth(1)).toContainText('AI Sheets')
       await expect(page.locator('.quick-card').nth(2)).toContainText('AI Slides')
+      await expect(page.getByTestId('quick-new-tex')).toContainText('LaTeX')
+      await expect(page.getByTestId('quick-import-latex')).toContainText('Import LaTeX')
       await expect(page.locator('.tab-bar .tab-item.tab-home')).toBeVisible()
       await page.screenshot({ path: screenshotPath('home-overview') })
     } finally {

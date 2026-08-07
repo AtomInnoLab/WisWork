@@ -9,6 +9,11 @@ import {
 import { ProposalReview } from './ProposalReview.js'
 import { createLatexTransport } from './transport.js'
 
+const E2E_PROPOSAL_TEXT = String.raw`\documentclass{article}
+\begin{document}
+AI-confirmed WisWork
+\end{document}`
+
 export function AiPanel({
   projectId,
   disabled = false,
@@ -28,6 +33,7 @@ export function AiPanel({
   projectRef.current = projectId
   const loopRef = useRef<AgentLoop | null>(null)
   const chatIdsRef = useRef<{ projectId: string; chatId: string } | null>(null)
+  const e2eProposalLoaded = useRef<string | null>(null)
 
   useEffect(() => {
     const loop = new AgentLoop({
@@ -86,6 +92,25 @@ export function AiPanel({
           loaded.value.map((message) => ({ role: message.role, text: message.text })),
         )
     })
+  }, [projectId])
+
+  useEffect(() => {
+    if (
+      new URLSearchParams(window.location.search).get('e2eProposal') !== '1' ||
+      e2eProposalLoaded.current === projectId
+    ) {
+      return
+    }
+    e2eProposalLoaded.current = projectId
+    void window.latexApi
+      .proposeProjectEdits({
+        projectId,
+        files: [{ path: 'main.tex', afterText: E2E_PROPOSAL_TEXT }],
+      })
+      .then((result) => {
+        if (result.ok) setProposal(result.value)
+        else setStatus(result.error.message)
+      })
   }, [projectId])
 
   const send = () => {

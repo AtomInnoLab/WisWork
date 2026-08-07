@@ -97,6 +97,7 @@ const requestLatexEditFlush = vi.fn(() => Promise.resolve(true))
 const releaseLatexEditFlush = vi.fn()
 const latexQueryDirty = vi.fn(() => Promise.resolve(false))
 const requestLatexClose = vi.fn(() => Promise.resolve(true))
+const teardownLatexRenderer = vi.fn()
 
 vi.mock('../../latex/src/main/latex-main', () => ({
   createLatexView: (...args: unknown[]) => createLatexView(...(args as [])),
@@ -104,6 +105,7 @@ vi.mock('../../latex/src/main/latex-main', () => ({
   releaseLatexEditFlush: (...args: unknown[]) => releaseLatexEditFlush(...args),
   latexQueryDirty: (...args: unknown[]) => latexQueryDirty(...(args as [])),
   requestLatexClose: (...args: unknown[]) => requestLatexClose(...(args as [])),
+  teardownLatexRenderer: (...args: unknown[]) => teardownLatexRenderer(...args),
 }))
 
 import { TabManager } from '../src/main/tab-manager'
@@ -374,7 +376,7 @@ describe('closing tabs', () => {
     expect(manager.list()).toHaveLength(1)
   })
 
-  it('keeps a dirty LaTeX tab open when close is cancelled and destroys it after approval', async () => {
+  it('keeps a dirty LaTeX tab open when close is cancelled and revokes it after approval', async () => {
     latexQueryDirty.mockResolvedValue(true)
     requestLatexClose.mockResolvedValue(false)
     const id = manager.openLatexTab(process.cwd())
@@ -387,7 +389,8 @@ describe('closing tabs', () => {
 
     requestLatexClose.mockResolvedValue(true)
     await manager.closeTab(id)
-    expect(view.webContents.close).toHaveBeenCalledOnce()
+    expect(view.webContents.close).not.toHaveBeenCalled()
+    expect(teardownLatexRenderer).toHaveBeenCalledWith(view.webContents)
     expect(requestLatexEditFlush).toHaveBeenCalledTimes(2)
   })
 

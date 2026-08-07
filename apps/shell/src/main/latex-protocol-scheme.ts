@@ -2,7 +2,12 @@ interface PrivilegedSchemeProtocol {
   registerSchemesAsPrivileged(
     schemes: Array<{
       scheme: string
-      privileges: { secure: boolean; standard: boolean; supportFetchAPI: boolean }
+      privileges: {
+        secure: boolean
+        standard: boolean
+        supportFetchAPI: boolean
+        corsEnabled: boolean
+      }
     }>,
   ): void
 }
@@ -14,7 +19,7 @@ export function registerLatexProtocolScheme(protocol: PrivilegedSchemeProtocol):
   protocol.registerSchemesAsPrivileged([
     {
       scheme: 'wiswork-latex-pdf',
-      privileges: { secure: true, standard: true, supportFetchAPI: true },
+      privileges: { secure: true, standard: true, supportFetchAPI: true, corsEnabled: true },
     },
   ])
   registeredOwners.add(protocol)

@@ -23,7 +23,7 @@ void app.whenReady().then(() => {
   if (!projectPath || !tectonicPath)
     throw new Error('Standalone LaTeX requires project and Tectonic paths')
   configureLatexRuntime({
-    preloadPath: join(import.meta.dirname, '../preload/index.mjs'),
+    preloadPath: join(import.meta.dirname, '../preload/index.cjs'),
     rendererUrl: process.env.LATEX_RENDERER_URL ?? 'http://localhost:5177',
     tectonicPath,
     userDataPath: app.getPath('userData'),

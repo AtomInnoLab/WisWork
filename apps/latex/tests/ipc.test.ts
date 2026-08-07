@@ -159,6 +159,7 @@ describe('LaTeX typed IPC boundary', () => {
     } as never)
     const allowed = await handler!({ url: `wiswork-latex-pdf://${'a'.repeat(32)}/7` })
     expect(allowed.status).toBe(200)
+    expect(allowed.headers.get('access-control-allow-origin')).toBe('*')
     expect(await allowed.text()).toBe('%PDF-controlled')
     await expect(
       handler!({ url: `wiswork-latex-pdf://${'a'.repeat(32)}/../../outside.txt` }),

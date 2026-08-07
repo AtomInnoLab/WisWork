@@ -42,7 +42,7 @@ export function ProposalReview({
         </article>
       ))}
       <button disabled={busy || selected.size === 0} onClick={() => onConfirm(selected)}>
-        Apply selected changes
+        Confirm selected changes
       </button>
       <button disabled={busy} onClick={onCancel}>
         Cancel

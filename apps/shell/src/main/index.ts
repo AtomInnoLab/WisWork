@@ -189,7 +189,8 @@ const TECTONIC_MANIFEST = parseTectonicManifest(
     readFileSync(
       app.isPackaged
         ? join(process.resourcesPath, 'native', 'tectonic-manifest.json')
-        : join(APPS_ROOT, '..', 'tools', 'tectonic', 'manifest.json'),
+        : (process.env.WISWORK_TECTONIC_MANIFEST_PATH ??
+            join(APPS_ROOT, '..', 'tools', 'tectonic', 'manifest.json')),
       'utf8',
     ),
   ),
@@ -220,9 +221,13 @@ configurePdfRuntime({
   rendererFile: join(PDF_OUT, 'renderer', 'index.html'),
 })
 configureLatexRuntime({
-  preloadPath: join(LATEX_OUT, 'preload', 'index.mjs'),
+  preloadPath: join(LATEX_OUT, 'preload', 'index.cjs'),
   rendererUrl: process.env.LATEX_RENDERER_URL,
   rendererFile: join(LATEX_OUT, 'renderer', 'index.html'),
+  rendererQuery:
+    !app.isPackaged && process.env.WISWORK_E2E_LATEX_PROPOSAL === '1'
+      ? { e2eProposal: '1' }
+      : undefined,
   tectonicPath: TECTONIC_BIN,
   userDataPath: app.getPath('userData'),
   bundleAsset: TECTONIC_MANIFEST.bundle,
@@ -2284,16 +2289,21 @@ app.whenReady().then(async () => {
       console.warn('[shell] skipped invalid restored LaTeX project')
     }
   }
+  let restoredActive = false
   if (restored.activeProjectPath) {
     const active = tabManager?.findLatexTabByPath(restored.activeProjectPath)
-    if (active) tabManager?.activateTab(active)
+    if (active) {
+      tabManager?.activateTab(active)
+      restoredActive = true
+    }
   }
   // deferred to ready: labels need currentLang(), which reads app.getLocale()
   installBackToHomeItems()
   installDockMenu()
   initAutoUpdater(() => shellWindow)
 
-  if (!pendingLaunchPath || !openDocumentPath(pendingLaunchPath)) tabManager?.openHomeTab()
+  const openedLaunchPath = pendingLaunchPath ? openDocumentPath(pendingLaunchPath) : false
+  if (!openedLaunchPath && !restoredActive) tabManager?.openHomeTab()
   pendingLaunchPath = null
 
   app.on('activate', () => {

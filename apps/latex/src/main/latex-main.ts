@@ -11,6 +11,7 @@ export interface LatexRuntimeConfig {
   preloadPath: string
   rendererUrl?: string
   rendererFile?: string
+  rendererQuery?: Record<string, string>
   tectonicPath: string
   userDataPath: string
   bundleAsset?: TectonicBundleAsset
@@ -30,6 +31,7 @@ let registry = new ProjectSessionRegistry()
 let ipcRegistered = false
 let unregisterIpc: (() => void) | undefined
 let editFlushCoordinator: LatexEditFlushCoordinator | undefined
+const openingViews = new Map<number, { revoked: boolean }>()
 
 export function configureLatexRuntime(config: LatexRuntimeConfig): void {
   if (runtime) throw new Error('LaTeX runtime is already configured')
@@ -71,31 +73,56 @@ export function createLatexView(projectPath: string): WebContentsView {
       sandbox: true,
     },
   }) as WebContentsView
-  view.webContents.once('destroyed', () => ownedRegistry.destroy(view.webContents.id))
   const load = ownedRuntime.rendererUrl
     ? view.webContents.loadURL(ownedRuntime.rendererUrl)
-    : view.webContents.loadFile(ownedRuntime.rendererFile!)
-  void Promise.all([load, ownedRegistry.attach(view.webContents.id, projectPath)])
-    .then(([, session]) => {
-      if (view.webContents.isDestroyed()) {
-        ownedRegistry.destroy(view.webContents.id)
-        return
-      }
-      view.webContents.send(LATEX_CHANNELS.projectOpened, {
-        projectId: session.projectId,
-        name: projectPath.split(/[\\/]/).at(-1) ?? 'LaTeX Project',
+    : view.webContents.loadFile(ownedRuntime.rendererFile!, {
+        query: ownedRuntime.rendererQuery,
       })
-    })
-    .catch(async () => {
-      await load.catch(() => undefined)
-      if (!view.webContents.isDestroyed()) {
-        view.webContents.send('latex:host-error', {
+  attachLatexViewSessionForHost(view.webContents, projectPath, ownedRegistry, load)
+  return view
+}
+
+type LatexViewContents = Pick<WebContents, 'id' | 'isDestroyed' | 'once' | 'send'>
+
+/** @internal Exported for the deferred-attach lifecycle regression test. */
+export function attachLatexViewSessionForHost(
+  contents: LatexViewContents,
+  projectPath: string,
+  ownedRegistry: ProjectSessionRegistry,
+  load: Promise<void>,
+): void {
+  const lifecycle = { revoked: false }
+  openingViews.set(contents.id, lifecycle)
+  contents.once('destroyed', () => {
+    lifecycle.revoked = true
+    ownedRegistry.destroy(contents.id)
+  })
+  void Promise.allSettled([load, ownedRegistry.attach(contents.id, projectPath)])
+    .then(([loadResult, attachResult]) => {
+      if (attachResult.status === 'fulfilled') {
+        if (lifecycle.revoked || contents.isDestroyed() || loadResult.status === 'rejected') {
+          ownedRegistry.destroy(contents.id)
+        } else {
+          contents.send(LATEX_CHANNELS.projectOpened, {
+            projectId: attachResult.value.projectId,
+            name: projectPath.split(/[\\/]/).at(-1) ?? 'LaTeX Project',
+          })
+        }
+      }
+      if (
+        (loadResult.status === 'rejected' || attachResult.status === 'rejected') &&
+        !lifecycle.revoked &&
+        !contents.isDestroyed()
+      ) {
+        contents.send('latex:host-error', {
           code: 'LATEX_PROJECT_OPEN_FAILED',
           message: 'Unable to open LaTeX project',
         })
       }
     })
-  return view
+    .finally(() => {
+      if (openingViews.get(contents.id) === lifecycle) openingViews.delete(contents.id)
+    })
 }
 
 export function requestLatexEditFlush(
@@ -189,7 +216,11 @@ export function registerLatexPdfProtocol(protocol: ProtocolLike, sessions = regi
     if (!path) return new Response('PDF not found', { status: 404 })
     try {
       return new Response(await readFile(path), {
-        headers: { 'content-type': 'application/pdf', 'cache-control': 'no-store' },
+        headers: {
+          'content-type': 'application/pdf',
+          'cache-control': 'no-store',
+          'access-control-allow-origin': '*',
+        },
       })
     } catch {
       return new Response('PDF not found', { status: 404 })
@@ -201,8 +232,30 @@ export function getLatexSessionRegistry(): ProjectSessionRegistry {
   return registry
 }
 
+/**
+ * Electron can block indefinitely while synchronously closing a detached
+ * WebContentsView on some Linux/CI builds. Revoke all project authority before
+ * the shell leaves that renderer detached for Electron to reclaim at app exit.
+ */
+export function teardownLatexRenderer(
+  contents: WebContents,
+  sessions: Pick<ProjectSessionRegistry, 'destroy'> = registry,
+): void {
+  const opening = openingViews.get(contents.id)
+  if (opening) opening.revoked = true
+  releaseLatexEditFlush(contents)
+  sessions.destroy(contents.id)
+}
+
+/** @internal Tests only. */
+export function getOpeningLatexViewCountForTests(): number {
+  return openingViews.size
+}
+
 /** @internal Tests only; production configuration is single-assignment. */
 export function resetLatexRuntimeForTests(): void {
+  for (const opening of openingViews.values()) opening.revoked = true
+  openingViews.clear()
   registry.disposeAll()
   editFlushCoordinator?.dispose()
   editFlushCoordinator = undefined

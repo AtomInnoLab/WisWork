@@ -17,6 +17,7 @@ import {
   requestLatexEditFlush,
   releaseLatexEditFlush,
   requestLatexClose,
+  teardownLatexRenderer,
 } from '../../../latex/src/main/latex-main'
 import { createPdfView, pdfIsDirty, requestPdfClose } from '../../../pdf/src/main/pdf-main'
 import {
@@ -378,14 +379,15 @@ export class TabManager {
     if (removed.view) {
       removed.view.setVisible(false)
       this.shellWindow.contentView.removeChildView(removed.view)
-      if (removed.kind === 'docs') {
-        // webContents.close()/.destroy() on a closed docs tab wedges Electron's whole
+      if (removed.kind === 'docs' || removed.kind === 'latex') {
+        // webContents.close()/.destroy() on some closed WebContentsView renderers wedges Electron's whole
         // UI thread in a native modal run loop (reproduced consistently; survives
         // close() vs destroy(), teardown ordering, deferring, and disabling
         // accessibility support — looks like an upstream WebContentsView/Chromium
         // issue, not something fixable from here). Detaching without destroying
         // avoids the freeze; the orphaned webContents is reclaimed when the app quits.
-        teardownDocsRenderer(removed.view.webContents)
+        if (removed.kind === 'docs') teardownDocsRenderer(removed.view.webContents)
+        else teardownLatexRenderer(removed.view.webContents)
       } else {
         removed.view.webContents.close()
       }
