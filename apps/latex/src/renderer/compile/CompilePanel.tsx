@@ -42,9 +42,11 @@ export function CompilePanel({
             )}%)`
           : bundleStatus.state === 'ready'
             ? 'TeX bundle ready'
-            : bundleStatus.state === 'error'
-              ? `TeX bundle error: ${bundleStatus.code}`
-              : 'TeX bundle required on first compile'}
+            : bundleStatus.state === 'remote'
+              ? 'Remote TeX bundle configured'
+              : bundleStatus.state === 'error'
+                ? `TeX bundle error: ${bundleStatus.code}`
+                : 'TeX bundle required on first compile'}
       </div>
       <details open={diagnostics.length > 0}>
         <summary>

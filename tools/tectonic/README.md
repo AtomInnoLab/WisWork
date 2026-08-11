@@ -1,7 +1,7 @@
 # Tectonic assets
 
 `manifest.json` is the sole source of network locations used to package the Tectonic sidecar and
-install its TeX bundle. Asset URLs, byte lengths, SHA-256 digests, versions, and license sources
+select its TeX bundle. Asset URLs, byte lengths, SHA-256 digests, versions, and license sources
 must be reviewed and committed together. Never use a `latest` URL or add credentials/query tokens.
 
 The checked-in manifest is generated only after upstream bytes have been independently verified.

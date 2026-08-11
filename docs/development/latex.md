@@ -5,26 +5,26 @@ WisWork packages the LaTeX renderer at
 `WisWork.app/Contents/Resources/native/tectonic`. The 2.8 GB `tectonic-default-bundle-v33` TeX
 bundle is deliberately not included in the DMG or ZIP.
 
-## First compile and bundle cache
+## Online indexed bundle and package cache
 
 The compiler manifest in `tools/tectonic/manifest.json` pins the bundle URL, exact byte length,
-SHA-256 digest, and license source. `BundleInstaller` supports resumable, bounded downloading,
-hash verification, an installation lock, and atomic publication. The desktop runtime consumes the
-verified bundle at the user-data path `latex/bundles/tectonic-default-bundle-v33.tar`; on macOS the
-full default location is
-`~/Library/Application Support/WisWork/latex/bundles/tectonic-default-bundle-v33.tar`.
+SHA-256 digest, and license source. Tectonic 0.16.9's legacy indexed `.tar` format is an HTTP range
+bundle: it is valid at its official HTTPS URL but is not a supported local bundle file. WisWork
+therefore passes only the validated, versioned official URL to Tectonic and does not download or
+misreport the complete 2.8 GB tar as a local bundle.
 
-On first compile, the main process checks the cache and starts one shared `BundleInstaller`
-download when the bundle is missing. The Compile panel reports bounded progress and Cancel aborts
-the download. A verified file is published atomically as
-`latex/bundles/tectonic-default-bundle-v33.tar`; later launches validate and reuse that concrete tar
-offline without another download. Do not copy an unverified TeX bundle into the cache. Packaging
-CI downloads only the small Tectonic executable and never downloads or embeds the 2.8 GB bundle.
+On first compile, Tectonic downloads the index and only the TeX package data required by the
+document. Downloaded package data is retained under the controlled user-data path
+`latex/tectonic-cache`; on macOS the full default location is
+`~/Library/Application Support/WisWork/latex/tectonic-cache`. Later compiles reuse cached package
+data but may still access the pinned bundle URL when a document needs uncached files. Packaging CI
+downloads only the small Tectonic executable and never downloads or embeds the 2.8 GB bundle.
 
-After a verified bundle is present, compilation runs Tectonic with `--only-cached` and an explicit
-`--bundle` path. Recompilation is offline: it does not let a project select an executable, bundle
-URL, environment, headers, or command-line arguments. A document that needs files absent from the
-pinned bundle still fails deterministically rather than fetching arbitrary content.
+The renderer and project cannot select an executable, bundle URL, cache directory, environment,
+headers, or command-line arguments. Remote bundle mode accepts only the exact pinned
+`https://relay.fullyjustified.net/default_bundle_v33.tar` URL. Local `.ttb` and `.zip` bundles
+remain supported by the compiler runner in `--only-cached` mode; local `.tar` files are rejected
+before process spawn.
 
 ## Local sidecar setup
 
@@ -49,8 +49,11 @@ Quit WisWork before cleanup. The following macOS user-data entries are independe
 - `latex/compile-cache/`: committed PDF/SyncTeX generations; safe to remove.
 - `latex/compile-temp/`: abandoned compile staging; safe to remove while the app is stopped.
 - `latex/project-state/`: AI proposal and undo snapshots; removing it discards recovery history.
-- `latex/bundles/`: the verified TeX bundle; removing it disables offline compilation and makes
-  the next compile download and verify the pinned bundle again.
+- `latex/tectonic-cache/`: package data fetched from the pinned indexed bundle; removing it makes
+  later compiles fetch required package data again.
+- `latex/bundles/`: legacy or future local-compatible bundle assets. The current indexed `.tar`
+  runtime does not use the previously downloaded 2.8 GB file, so it may be removed while WisWork
+  is stopped.
 
 Never delete a user's LaTeX project while clearing WisWork caches.
 
@@ -59,10 +62,10 @@ Never delete a user's LaTeX project while clearing WisWork caches.
 - `file WisWork.app/Contents/Resources/native/tectonic` must report `arm64` for the macOS arm64
   artifact, and `tectonic --version` must report `tectonic 0.16.9`.
 - A missing `modules/latex/renderer/index.html` indicates an incomplete application build.
-- A missing or wrong-size bundle is not repaired silently. Check the manifest byte length and
-  SHA-256 without logging its contents or adding alternate download URLs.
+- Network errors require access to the manifest-pinned official bundle host. Do not add alternate
+  download URLs or project-controlled mirrors.
 - The current editor does not provide arbitrary TeX package installation, shell escape,
-  project-supplied executables, or network access after the verified bundle is installed. These
-  are intentional current limitations and security boundaries.
+  project-supplied executables, or arbitrary network destinations. These are intentional current
+  limitations and security boundaries.
 - Model credentials and OAuth tokens are unrelated to Tectonic. Never place keys, fixed codes,
   authorization headers, or tokens in this document, the bundle cache, project files, or CI logs.

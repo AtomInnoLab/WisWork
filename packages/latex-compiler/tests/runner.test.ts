@@ -43,11 +43,13 @@ describe('controlled Tectonic runner', () => {
 
   it('uses fixed args, no shell, an isolated cwd, and a minimal untrusted environment', async () => {
     const child = new FakeChild()
-    const spawn = vi.fn(() => child) as unknown as SpawnTectonic
+    const spawnMock = vi.fn((..._args: Parameters<SpawnTectonic>) => child)
+    const spawn = spawnMock as unknown as SpawnTectonic
     const ws = await workspace()
     const pending = runTectonic({
       executable: '/app/tectonic',
-      bundlePath: '/cache/bundle.tar',
+      bundlePath: '/cache/bundle.ttb',
+      tectonicCacheDirectory: '/cache/tectonic',
       mainFile: 'main.tex',
       workspace: ws,
       spawn,
@@ -62,7 +64,7 @@ describe('controlled Tectonic runner', () => {
         '--only-cached',
         '--synctex',
         '--bundle',
-        '/cache/bundle.tar',
+        '/cache/bundle.ttb',
         '--outdir',
         ws.outputDirectory,
       ],
@@ -70,9 +72,70 @@ describe('controlled Tectonic runner', () => {
         cwd: ws.inputDirectory,
         shell: false,
         detached: true,
-        env: { LANG: 'C.UTF-8', TECTONIC_UNTRUSTED_MODE: '1' },
+        env: {
+          LANG: 'C.UTF-8',
+          TECTONIC_CACHE_DIR: '/cache/tectonic',
+          TECTONIC_UNTRUSTED_MODE: '1',
+        },
       }),
     )
+  })
+
+  it('streams the pinned HTTPS indexed tar without forcing offline mode', async () => {
+    const child = new FakeChild()
+    const spawnMock = vi.fn((..._args: Parameters<SpawnTectonic>) => child)
+    const spawn = spawnMock as unknown as SpawnTectonic
+    const ws = await workspace()
+    const bundleUrl = 'https://relay.fullyjustified.net/default_bundle_v33.tar'
+    const pending = runTectonic({
+      executable: '/app/tectonic',
+      bundlePath: bundleUrl,
+      mainFile: 'main.tex',
+      workspace: ws,
+      spawn,
+    })
+    child.emit('close', 0, null)
+    await expect(pending).resolves.toMatchObject({ exitCode: 0 })
+    const args = spawnMock.mock.calls[0]![1]
+    expect(args).toContain(bundleUrl)
+    expect(args).not.toContain('--only-cached')
+  })
+
+  it('keeps local zip bundles in offline mode', async () => {
+    const child = new FakeChild()
+    const spawnMock = vi.fn((..._args: Parameters<SpawnTectonic>) => child)
+    const ws = await workspace()
+    const pending = runTectonic({
+      executable: '/app/tectonic',
+      bundlePath: '/cache/bundle.zip',
+      mainFile: 'main.tex',
+      workspace: ws,
+      spawn: spawnMock as unknown as SpawnTectonic,
+    })
+    child.emit('close', 0, null)
+    await expect(pending).resolves.toMatchObject({ exitCode: 0 })
+    expect(spawnMock.mock.calls[0]![1]).toContain('--only-cached')
+  })
+
+  it.each([
+    'http://relay.fullyjustified.net/default_bundle_v33.tar',
+    'https://attacker.invalid/default_bundle_v33.tar',
+    'https://relay.fullyjustified.net/default_bundle_v999.tar',
+    'https://data1.fullyjustified.net/default_bundle_v33.tar',
+    'https://relay.fullyjustified.net/other.tar',
+    'https://user@relay.fullyjustified.net/default_bundle_v33.tar',
+    '/cache/default_bundle_v33.tar',
+  ])('rejects an untrusted remote bundle location: %s', async (bundlePath) => {
+    const ws = await workspace()
+    expect(() =>
+      runTectonic({
+        executable: '/app/tectonic',
+        bundlePath,
+        mainFile: 'main.tex',
+        workspace: ws,
+        spawn: vi.fn() as unknown as SpawnTectonic,
+      }),
+    ).toThrow(/untrusted compiler path/i)
   })
 
   interface FailureBehavior {
@@ -96,7 +159,7 @@ describe('controlled Tectonic runner', () => {
     const controller = new AbortController()
     const pending = runTectonic({
       executable: '/app/tectonic',
-      bundlePath: '/cache/bundle.tar',
+      bundlePath: '/cache/bundle.ttb',
       mainFile: 'main.tex',
       workspace: ws,
       spawn: (() => child) as SpawnTectonic,
@@ -127,7 +190,7 @@ describe('controlled Tectonic runner', () => {
       cacheDirectory: cache,
       mainFile: 'main.tex',
       executable: '/app/tectonic',
-      bundlePath: '/cache/bundle.tar',
+      bundlePath: '/cache/bundle.ttb',
       maxLogBytes: 4,
       run: async ({ workspace }) => {
         await writeFile(join(workspace.outputDirectory, 'main.pdf'), 'pdf')

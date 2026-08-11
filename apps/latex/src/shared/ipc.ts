@@ -170,6 +170,7 @@ export type LatexBundleStatusDto =
   | { state: 'missing' }
   | { state: 'downloading'; receivedBytes: number; totalBytes: number }
   | { state: 'ready'; bytes: number }
+  | { state: 'remote' }
   | { state: 'error'; code: string }
 
 export interface LatexApi {

@@ -54,7 +54,7 @@ describe('second compiler hardening pass', () => {
     const child = new FakeChild()
     const pending = runTectonic({
       executable: '/app/tectonic',
-      bundlePath: '/cache/bundle.tar',
+      bundlePath: '/cache/bundle.ttb',
       mainFile: 'main.tex',
       workspace: {
         root: '/tmp/job',
@@ -87,7 +87,7 @@ describe('second compiler hardening pass', () => {
       cacheDirectory: join(root, 'cache'),
       mainFile: 'main.tex',
       executable: '/app/tectonic',
-      bundlePath: '/cache/bundle.tar',
+      bundlePath: '/cache/bundle.ttb',
       spawn: (() => child) as SpawnTectonic,
       killTree: async () => new Promise(() => undefined),
       totalTimeoutMs: 2,
@@ -108,7 +108,7 @@ describe('second compiler hardening pass', () => {
     const child = new FakeChild()
     const pending = runTectonic({
       executable: '/app/tectonic',
-      bundlePath: '/cache/bundle.tar',
+      bundlePath: '/cache/bundle.ttb',
       mainFile: 'main.tex',
       workspace: {
         root,
@@ -143,7 +143,7 @@ describe('second compiler hardening pass', () => {
         cacheDirectory: cache,
         mainFile: 'main.tex',
         executable: '/app/tectonic',
-        bundlePath: '/cache/bundle.tar',
+        bundlePath: '/cache/bundle.ttb',
         run: async ({ workspace }) => {
           await writeFile(join(workspace.outputDirectory, 'main.pdf'), text)
           return { exitCode: 0, signal: null, log: text }
@@ -220,7 +220,7 @@ describe('second compiler hardening pass', () => {
     const child = new FakeChild()
     const pending = runTectonic({
       executable: '/app/tectonic',
-      bundlePath: '/cache/bundle.tar',
+      bundlePath: '/cache/bundle.ttb',
       mainFile: 'main.tex',
       workspace: {
         root: '/tmp/job',
@@ -245,7 +245,7 @@ describe('second compiler hardening pass', () => {
     const killTree = vi.fn(async () => undefined)
     const pending = runTectonic({
       executable: '/app/tectonic',
-      bundlePath: '/cache/bundle.tar',
+      bundlePath: '/cache/bundle.ttb',
       mainFile: 'main.tex',
       workspace: {
         root: '/tmp/job',
@@ -278,7 +278,7 @@ describe('second compiler hardening pass', () => {
       cacheDirectory: join(root, 'cache'),
       mainFile: 'main.tex',
       executable: '/app/tectonic',
-      bundlePath: '/cache/bundle.tar',
+      bundlePath: '/cache/bundle.ttb',
       spawn: (() => child) as SpawnTectonic,
       killTree: async () => {
         throw new Error('kill failed')

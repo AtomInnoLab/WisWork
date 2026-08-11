@@ -4,6 +4,7 @@ import { constants } from 'node:fs'
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, resolve, sep, win32 } from 'node:path'
 import { LatexCompilerError, type LatexCompilerErrorCode } from './errors.js'
+import { isRemoteIndexedBundleUrl } from './manifest.js'
 import {
   createCompileWorkspace,
   type CompileWorkspace,
@@ -32,6 +33,7 @@ export type SpawnTectonic = (
 export interface RunTectonicRequest {
   readonly executable: string
   readonly bundlePath: string
+  readonly tectonicCacheDirectory?: string
   readonly mainFile: string
   readonly workspace: CompileWorkspace
   readonly signal?: AbortSignal
@@ -180,31 +182,41 @@ async function validateOutputDirectory(
 }
 
 export function runTectonic(request: RunTectonicRequest): Promise<TectonicRunResult> {
+  const remoteIndexedBundle = isRemoteIndexedBundleUrl(request.bundlePath)
+  const tectonicCacheDirectory =
+    request.tectonicCacheDirectory ?? join(request.workspace.root, '.tectonic-cache')
+  const unsupportedLocalTar =
+    isAbsolute(request.bundlePath) && request.bundlePath.toLowerCase().endsWith('.tar')
   if (
     request.mainFile !== request.workspace.mainFile ||
     !isAbsolute(request.executable) ||
-    !isAbsolute(request.bundlePath)
+    !isAbsolute(tectonicCacheDirectory) ||
+    (!isAbsolute(request.bundlePath) && !remoteIndexedBundle) ||
+    unsupportedLocalTar
   ) {
     throw new LatexCompilerError('TECTONIC_WORKSPACE_INVALID', 'Untrusted compiler path')
   }
   const spawn = request.spawn ?? (nodeSpawn as unknown as SpawnTectonic)
-  const args = [
-    request.mainFile,
-    '--untrusted',
-    '--only-cached',
+  const args = [request.mainFile, '--untrusted']
+  if (!remoteIndexedBundle) args.push('--only-cached')
+  args.push(
     '--synctex',
     '--bundle',
     request.bundlePath,
     '--outdir',
     request.workspace.outputDirectory,
-  ]
+  )
   const child = spawn(request.executable, args, {
     cwd: request.workspace.inputDirectory,
     shell: false,
     detached: true,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { LANG: 'C.UTF-8', TECTONIC_UNTRUSTED_MODE: '1' },
+    env: {
+      LANG: 'C.UTF-8',
+      TECTONIC_CACHE_DIR: tectonicCacheDirectory,
+      TECTONIC_UNTRUSTED_MODE: '1',
+    },
   })
 
   return new Promise((resolveRun, rejectRun) => {
@@ -410,6 +422,7 @@ export interface CompileIsolatedRequest extends CompileWorkspaceLimits {
   readonly cacheDirectory: string
   readonly executable: string
   readonly bundlePath: string
+  readonly tectonicCacheDirectory?: string
   readonly mainFile: string
   readonly maxLogBytes?: number
   readonly maxArtifactBytes?: number
@@ -553,6 +566,7 @@ export async function compileIsolated(
     const result = await (request.run ?? runTectonic)({
       executable: request.executable,
       bundlePath: request.bundlePath,
+      tectonicCacheDirectory: request.tectonicCacheDirectory,
       mainFile: workspace.mainFile,
       workspace,
       signal: request.signal,
