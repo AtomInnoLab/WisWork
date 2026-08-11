@@ -1,5 +1,6 @@
 export interface AuthConfig {
   authorizationEndpoint: string
+  authorizationResponseIssuer: string
   callbackEndpoint: string
   refreshEndpoint: string
   clientId: string
@@ -10,6 +11,7 @@ export interface AuthConfig {
 
 export const DEFAULT_AUTH_CONFIG: AuthConfig = {
   authorizationEndpoint: 'https://auth.dev.wispaper.ai/oidc/auth',
+  authorizationResponseIssuer: 'https://auth.dev.wispaper.ai/oidc',
   callbackEndpoint: 'https://gateway.dev.wispaper.ai/api/v1/auth/user/callback',
   refreshEndpoint: 'https://gateway.dev.wispaper.ai/api/v1/auth/user/refresh',
   clientId: 'y3xpwx3ytskxf66p0wztm',

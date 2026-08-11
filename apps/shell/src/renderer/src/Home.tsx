@@ -15,6 +15,7 @@ import type {
 } from '../../shared/home-api'
 import { fileCountKey, latexProjectCountKey, visiblePageCount } from './counts'
 import { formatAccountLoginDiagnostic, loginErrorKind } from './login-diagnostic'
+import { LoginDiagnostic } from './LoginDiagnostic'
 import { useI18n } from './locale'
 import type { I18n, StringKey } from './locale'
 
@@ -539,6 +540,9 @@ function AccountEntry() {
         failed: t('loginFailed'),
       }[loginError]
     : null
+  const displayedErrorText = errorText
+    ? `${errorText}${loginDiagnostic ? ` [${loginDiagnostic}]` : ''}`
+    : null
 
   const closeMenu = () => {
     setMenuOpen(false)
@@ -632,6 +636,12 @@ function AccountEntry() {
                 >
                   {t('loginOpenManually')}
                 </button>
+              )}
+              {loginDiagnostic && (
+                <LoginDiagnostic
+                  value={loginDiagnostic}
+                  onCopy={() => void navigator.clipboard.writeText(loginDiagnostic)}
+                />
               )}
             </>
           )}
@@ -775,7 +785,7 @@ function AccountEntry() {
             ? email || t('loggedInWisWork')
             : waiting
               ? t('waitingLogin')
-              : (errorText ?? t('loginWisWork'))
+              : (displayedErrorText ?? t('loginWisWork'))
         }
         aria-label={loggedIn ? t('account') : t('login')}
       >
@@ -817,10 +827,8 @@ function AccountEntry() {
           ) : (
             <>
               <span className="account-name">{waiting ? t('waitingShort') : t('login')}</span>
-              <span className={`account-sub${!waiting && errorText ? ' error' : ''}`}>
-                {!waiting && errorText
-                  ? `${errorText}${loginDiagnostic ? ` [${loginDiagnostic}]` : ''}`
-                  : t('accountWisWork')}
+              <span className={`account-sub${!waiting && displayedErrorText ? ' error' : ''}`}>
+                {!waiting && displayedErrorText ? displayedErrorText : t('accountWisWork')}
               </span>
             </>
           )}
