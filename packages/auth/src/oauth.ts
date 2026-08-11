@@ -158,11 +158,22 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
       )
         throw new AuthError('invalid_callback')
       const keys = [...url.searchParams.keys()]
-      if (keys.some((key) => key !== 'code' && key !== 'state') || keys.length !== 2)
+      const codeValues = url.searchParams.getAll('code')
+      const stateValues = url.searchParams.getAll('state')
+      const issuerValues = url.searchParams.getAll('iss')
+      if (
+        keys.some((key) => key !== 'code' && key !== 'state' && key !== 'iss') ||
+        codeValues.length !== 1 ||
+        stateValues.length !== 1 ||
+        issuerValues.length > 1
+      )
         throw new AuthError('invalid_callback')
-      const code = url.searchParams.get('code')
-      const state = url.searchParams.get('state')
+      const [code] = codeValues
+      const [state] = stateValues
+      const [issuer] = issuerValues
       if (!code || code.length > 4_096 || !state || state.length > 512)
+        throw new AuthError('invalid_callback')
+      if (issuer !== undefined && issuer !== config.authorizationResponseIssuer)
         throw new AuthError('invalid_callback')
       pruneTransactions()
       const remembered = [...recent.entries()].find(([candidate]) => equalSecret(state, candidate))

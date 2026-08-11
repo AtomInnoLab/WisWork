@@ -129,6 +129,43 @@ describe('OAuth authorization and callback', () => {
     await expect(client.consumeCallback(url)).rejects.toMatchObject({ code: 'callback_reused' })
   })
 
+  it('accepts Logto authorization responses with the validated issuer parameter', async () => {
+    const { client, fetch } = fixture()
+    const { state } = client.createAuthorizationRequest()
+
+    await expect(
+      client.consumeCallback(
+        `wiswork://oauth/callback?code=ok&state=${state}&iss=${encodeURIComponent('https://auth.dev.wispaper.ai/oidc')}`,
+      ),
+    ).resolves.toMatchObject({ userId: 'user-1' })
+    expect(fetch).toHaveBeenCalledOnce()
+  })
+
+  it('rejects an unexpected authorization response issuer without consuming state', async () => {
+    const { client, fetch } = fixture()
+    const { state } = client.createAuthorizationRequest()
+
+    await expect(
+      client.consumeCallback(
+        `wiswork://oauth/callback?code=ok&state=${state}&iss=${encodeURIComponent('https://attacker.invalid/oidc')}`,
+      ),
+    ).rejects.toMatchObject({ code: 'invalid_callback' })
+    await expect(
+      client.consumeCallback(`wiswork://oauth/callback?code=ok&state=${state}`),
+    ).resolves.toMatchObject({ userId: 'user-1' })
+    expect(fetch).toHaveBeenCalledOnce()
+  })
+
+  it('rejects duplicate callback parameters', async () => {
+    const { client, fetch } = fixture()
+    const { state } = client.createAuthorizationRequest()
+
+    await expect(
+      client.consumeCallback(`wiswork://oauth/callback?code=first&code=second&state=${state}`),
+    ).rejects.toMatchObject({ code: 'invalid_callback' })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
   it('rejects transactions at the exact expiry timestamp', async () => {
     let now = 1_000
     const { client } = fixture(now)
