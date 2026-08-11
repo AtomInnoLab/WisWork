@@ -11,9 +11,11 @@ export { LatexCompilerError } from './errors.js'
 export { createHttpBundleDownload } from './download.js'
 export type { LatexCompilerErrorCode } from './errors.js'
 export {
+  isRemoteIndexedBundleUrl,
   parseTectonicManifest,
   TECTONIC_ASSET_HOST_ALLOWLIST,
   TECTONIC_LICENSE_HOST_ALLOWLIST,
+  TECTONIC_REMOTE_INDEXED_BUNDLE_URL,
 } from './manifest.js'
 export type {
   AssetLicense,

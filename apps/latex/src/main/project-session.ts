@@ -3,14 +3,13 @@ import { constants, watch as watchFs } from 'node:fs'
 import { lstat, mkdir, open, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
-  BundleInstaller,
   commitCompileGeneration,
   CompileQueue,
   compileIsolated,
+  isRemoteIndexedBundleUrl,
   parseSyncTeX,
   parseTectonicDiagnostics,
   type CompileIsolatedResult,
-  type BundleInstallState,
   type StagedCompileResult,
   type SyncTeXIndex,
   type TectonicBundleAsset,
@@ -68,18 +67,7 @@ export interface ProjectSessionRegistryOptions {
     userDataPath: string
     bundleAsset?: TectonicBundleAsset
   }
-  bundleInstallerFactory?: (
-    installDirectory: string,
-    asset: TectonicBundleAsset,
-  ) => BundleInstallerLike
   onExternalChange?: (webContentsId: number, buffer: LatexBufferDto) => void
-}
-
-interface BundleInstallerLike {
-  current: BundleInstallState
-  status(): Promise<BundleInstallState>
-  install(): Promise<{ path: string; bytes: number; sha256: string }>
-  cancel(): void
 }
 
 interface BufferState {
@@ -117,7 +105,8 @@ export class ProjectSession {
   private readonly cleanupStaging: (path: string) => Promise<void>
   private readonly proposalStore?: ProposalStore
   private readonly projectStore?: ProjectStore
-  private readonly bundleInstaller?: BundleInstallerLike
+  private readonly remoteBundleUrl?: string
+  private readonly fallbackBundlePath?: string
   private readonly proposals = new Map<string, EditProposal>()
   private readonly proposalReviews = new Map<string, LatexProposalDto>()
   private readonly saveQueues = new Map<string, Promise<unknown>>()
@@ -166,12 +155,16 @@ export class ProjectSession {
       const cacheRoot = join(this.compilerRuntime.userDataPath, 'latex', 'project-state')
       this.proposalStore = new ProposalStore(cacheRoot, new SnapshotStore(cacheRoot))
       this.projectStore = new ProjectStore(this.compilerRuntime.userDataPath)
-      if (this.compilerRuntime.bundleAsset) {
-        const factory =
-          options.bundleInstallerFactory ?? ((root, asset) => new BundleInstaller(root, asset, {}))
-        this.bundleInstaller = factory(
-          join(this.compilerRuntime.userDataPath, 'latex', 'bundles'),
-          this.compilerRuntime.bundleAsset,
+      if (
+        this.compilerRuntime.bundleAsset &&
+        isRemoteIndexedBundleUrl(this.compilerRuntime.bundleAsset.url)
+      ) {
+        this.remoteBundleUrl = this.compilerRuntime.bundleAsset.url
+      } else if (!this.compilerRuntime.bundleAsset) {
+        this.fallbackBundlePath = join(
+          this.compilerRuntime.userDataPath,
+          'latex',
+          'tectonic-bundle',
         )
       }
     }
@@ -458,6 +451,11 @@ export class ProjectSession {
       this.projectId,
     )
     const temporaryRoot = join(this.compilerRuntime.userDataPath, 'latex', 'compile-temp')
+    const tectonicCacheDirectory = join(
+      this.compilerRuntime.userDataPath,
+      'latex',
+      'tectonic-cache',
+    )
     let staged: StagedCompileResult | undefined
     let committed: CompileIsolatedResult | undefined
     const promise = this.compileQueue
@@ -473,6 +471,7 @@ export class ProjectSession {
           await Promise.all([
             mkdir(cacheDirectory, { recursive: true }),
             mkdir(temporaryRoot, { recursive: true }),
+            mkdir(tectonicCacheDirectory, { recursive: true }),
           ])
           if (this.cancelledCompileTokens.has(token)) throw new Error('Compile cancelled')
           this.assertAllBuffersPersisted()
@@ -482,6 +481,7 @@ export class ProjectSession {
             cacheDirectory,
             executable: this.compilerRuntime!.tectonicPath,
             bundlePath,
+            tectonicCacheDirectory,
             mainFile,
             signal,
           })
@@ -545,7 +545,6 @@ export class ProjectSession {
     if (!this.activeCompile) return false
     if (this.activeCompile.phase === 'publishing') return false
     const token = this.activeCompile.token
-    this.bundleInstaller?.cancel()
     this.cancelledCompileTokens.add(token)
     this.compileQueue.cancel(this.projectId)
     this.activeCompile = undefined
@@ -553,30 +552,14 @@ export class ProjectSession {
   }
 
   getBundleStatus() {
-    const state = this.bundleInstaller?.current
-    if (!state) return { state: 'error' as const, code: 'BUNDLE_NOT_CONFIGURED' }
-    if (state.state === 'downloading') {
-      return {
-        state: 'downloading' as const,
-        receivedBytes: boundedBytes(state.receivedBytes),
-        totalBytes: boundedBytes(state.totalBytes),
-      }
-    }
-    if (state.state === 'ready')
-      return { state: 'ready' as const, bytes: boundedBytes(state.bytes) }
-    if (state.state === 'error') return { state: 'error' as const, code: state.code }
-    return { state: 'missing' as const }
+    if (this.remoteBundleUrl) return { state: 'remote' as const }
+    return { state: 'error' as const, code: 'BUNDLE_NOT_CONFIGURED' }
   }
 
   private async ensureBundle(): Promise<string> {
-    if (!this.bundleInstaller) {
-      return join(this.compilerRuntime!.userDataPath, 'latex', 'tectonic-bundle')
-    }
-    const state = await this.bundleInstaller.status()
-    if (state.state === 'ready') return state.path
-    if (state.state === 'error') throw new Error(`TeX bundle integrity error: ${state.code}`)
-    const installed = await this.bundleInstaller.install()
-    return installed.path
+    if (this.remoteBundleUrl) return this.remoteBundleUrl
+    if (this.fallbackBundlePath) return this.fallbackBundlePath
+    throw new Error('TeX bundle is not configured')
   }
 
   pdfPath(revision: number): string | undefined {
@@ -946,10 +929,6 @@ function defaultWatch(root: string, onChange: (relativePath: string) => void): W
 
 function digest(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex')
-}
-
-function boundedBytes(value: number): number {
-  return Number.isSafeInteger(value) && value >= 0 ? Math.min(value, 4 * 1024 * 1024 * 1024) : 0
 }
 
 async function readBoundedArtifact(path: string, maxBytes: number): Promise<Uint8Array> {

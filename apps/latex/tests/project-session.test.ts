@@ -21,7 +21,7 @@ describe('LaTeX project sessions', () => {
     return { root, projectRoot }
   }
 
-  async function setupBundleSession(installer: any) {
+  async function setupBundleSession(bundleUrl: string) {
     const { root, projectRoot } = await setup()
     const compiler = vi.fn(async () => ({
       generationId: 'bundle-compile',
@@ -48,88 +48,39 @@ describe('LaTeX project sessions', () => {
         userDataPath: root,
         bundleAsset: {
           id: 'tectonic-default-bundle-v33',
-          url: 'https://relay.fullyjustified.net/default_bundle_v33.tar',
+          url: bundleUrl,
           bytes: 100,
           sha256: 'a'.repeat(64),
           license: { spdx: 'MIT', sourceUrl: 'https://tug.org/texlive/copying.html' },
         },
       },
-      bundleInstallerFactory: () => installer,
     } as never).attach(11, projectRoot)
     return { root, session, compiler, commitGeneration }
   }
 
-  it('installs a missing verified bundle before compiling with its concrete tar path', async () => {
-    const bundlePath = '/cache/tectonic-default-bundle-v33.tar'
-    const installer = {
-      current: { state: 'missing' },
-      status: vi.fn(async () => ({ state: 'missing' })),
-      install: vi.fn(async () => ({ path: bundlePath, bytes: 100, sha256: 'a'.repeat(64) })),
-      cancel: vi.fn(),
-    }
-    const { session, compiler } = await setupBundleSession(installer)
+  it('uses the validated remote indexed tar directly instead of downloading it', async () => {
+    const bundleUrl = 'https://relay.fullyjustified.net/default_bundle_v33.tar'
+    const { root, session, compiler } = await setupBundleSession(bundleUrl)
     await session.compile(1, 'main.tex')
-    expect(installer.install).toHaveBeenCalledOnce()
-    expect(compiler).toHaveBeenCalledWith(expect.objectContaining({ bundlePath }))
+    expect(session.getBundleStatus()).toEqual({ state: 'remote' })
+    expect(compiler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bundlePath: bundleUrl,
+        tectonicCacheDirectory: join(root, 'latex', 'tectonic-cache'),
+      }),
+    )
   })
 
-  it('reuses a ready bundle offline without starting a download', async () => {
-    const bundlePath = '/cache/tectonic-default-bundle-v33.tar'
-    const installer = {
-      current: { state: 'ready', path: bundlePath, bytes: 100 },
-      status: vi.fn(async () => ({ state: 'ready', path: bundlePath, bytes: 100 })),
-      install: vi.fn(),
-      cancel: vi.fn(),
-    }
-    const { session, compiler } = await setupBundleSession(installer)
-    await session.compile(1, 'main.tex')
-    expect(installer.install).not.toHaveBeenCalled()
-    expect(compiler).toHaveBeenCalledWith(expect.objectContaining({ bundlePath }))
-  })
-
-  it('does not compile when the cached bundle fails integrity validation', async () => {
-    const installer = {
-      current: { state: 'error', code: 'BUNDLE_INTEGRITY_FAILED' },
-      status: vi.fn(async () => ({ state: 'error', code: 'BUNDLE_INTEGRITY_FAILED' })),
-      install: vi.fn(),
-      cancel: vi.fn(),
-    }
-    const { session, compiler } = await setupBundleSession(installer)
-    await expect(session.compile(1, 'main.tex')).rejects.toThrow(/integrity|bundle/i)
-    expect(installer.install).not.toHaveBeenCalled()
+  it('fails closed before compile for any non-pinned bundle asset', async () => {
+    const { session, compiler } = await setupBundleSession(
+      'https://relay.fullyjustified.net/default_bundle_v999.tar',
+    )
+    expect(session.getBundleStatus()).toEqual({
+      state: 'error',
+      code: 'BUNDLE_NOT_CONFIGURED',
+    })
+    await expect(session.compile(1, 'main.tex')).rejects.toThrow(/not configured/i)
     expect(compiler).not.toHaveBeenCalled()
-  })
-
-  it('cancels an active bundle download on compile cancel and session dispose', async () => {
-    let rejectInstall!: (error: Error) => void
-    const installer: any = {
-      current: { state: 'missing' },
-      status: vi.fn(async () => ({ state: 'missing' })),
-      install: vi.fn(
-        () =>
-          new Promise((_resolve, reject) => {
-            rejectInstall = reject
-            installer.current = { state: 'downloading', receivedBytes: 10, totalBytes: 100 }
-          }),
-      ),
-      cancel: vi.fn(() => rejectInstall(new Error('Bundle download cancelled'))),
-    }
-    const { session, compiler } = await setupBundleSession(installer)
-    const compiling = session.compile(1, 'main.tex').catch((error) => error)
-    await vi.waitFor(() => expect(installer.install).toHaveBeenCalledOnce())
-    expect(session.getBundleStatus()).toMatchObject({ state: 'downloading', receivedBytes: 10 })
-    expect(session.cancelCompile()).toBe(true)
-    await compiling
-    expect(installer.cancel).toHaveBeenCalledOnce()
-    expect(compiler).not.toHaveBeenCalled()
-
-    installer.status.mockResolvedValueOnce({ state: 'missing' })
-    installer.current = { state: 'missing' }
-    const second = session.compile(2, 'main.tex').catch((error) => error)
-    await vi.waitFor(() => expect(installer.install).toHaveBeenCalledTimes(2))
-    session.dispose()
-    await second
-    expect(installer.cancel).toHaveBeenCalledTimes(2)
   })
 
   it('maps one project session to one WebContents and disposes owned resources on destroy', async () => {

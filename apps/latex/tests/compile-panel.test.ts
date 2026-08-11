@@ -21,4 +21,20 @@ describe('CompilePanel bundle status', () => {
     expect(html).toContain('Cancel')
     expect(html).toContain('disabled=""')
   })
+
+  it('describes the indexed TeX bundle as online instead of locally installed', () => {
+    const html = renderToStaticMarkup(
+      createElement(CompilePanel, {
+        compiling: false,
+        bundleStatus: { state: 'remote' },
+        diagnostics: [],
+        log: '',
+        onCompile: vi.fn(),
+        onCancel: vi.fn(),
+        onDiagnostic: vi.fn(),
+      }),
+    )
+    expect(html).toContain('Remote TeX bundle configured')
+    expect(html).not.toContain('TeX bundle ready')
+  })
 })

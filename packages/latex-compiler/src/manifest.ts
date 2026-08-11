@@ -7,6 +7,12 @@ export const TECTONIC_ASSET_HOST_ALLOWLIST = Object.freeze([
   'data1.fullyjustified.net',
 ] as const)
 export const TECTONIC_LICENSE_HOST_ALLOWLIST = Object.freeze(['github.com', 'tug.org'] as const)
+export const TECTONIC_REMOTE_INDEXED_BUNDLE_URL =
+  'https://relay.fullyjustified.net/default_bundle_v33.tar'
+
+export function isRemoteIndexedBundleUrl(value: string): boolean {
+  return value === TECTONIC_REMOTE_INDEXED_BUNDLE_URL
+}
 
 export interface AssetLicense {
   readonly spdx: string

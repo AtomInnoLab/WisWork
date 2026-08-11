@@ -89,7 +89,7 @@ describe('compiler hardening', () => {
     })
     const pending = runTectonic({
       executable: '/app/tectonic',
-      bundlePath: '/cache/bundle.tar',
+      bundlePath: '/cache/bundle.ttb',
       mainFile: 'main.tex',
       workspace: {
         root: '/tmp/job',
@@ -128,7 +128,7 @@ describe('compiler hardening', () => {
         cacheDirectory: cache,
         mainFile: 'main.tex',
         executable: '/app/tectonic',
-        bundlePath: '/cache/bundle.tar',
+        bundlePath: '/cache/bundle.ttb',
         maxArtifactBytes: 8,
         maxPublishedBytes: 16,
         run: async ({ workspace }) => {
@@ -168,7 +168,7 @@ describe('compiler hardening', () => {
         cacheDirectory: cache,
         mainFile: 'main.tex',
         executable: '/app/tectonic',
-        bundlePath: '/cache/bundle.tar',
+        bundlePath: '/cache/bundle.ttb',
         maxArtifactBytes: 2,
         run: async ({ workspace }) => {
           await writeFile(join(workspace.outputDirectory, 'main.pdf'), 'huge')

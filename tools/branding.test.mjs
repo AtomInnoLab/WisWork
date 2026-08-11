@@ -150,8 +150,9 @@ test('generated notices and developer docs cover LaTeX and pinned Tectonic metad
     /Tectonic 0\.16\.9 — MIT[\s\S]*?Tectonic is licensed under the MIT License[\s\S]*?THE SOFTWARE IS PROVIDED "AS IS"/,
   )
   const docs = readFileSync(join(root, 'docs/development/latex.md'), 'utf8')
-  assert.match(docs, /first compile/i)
-  assert.match(docs, /offline/i)
+  assert.match(docs, /HTTP range\s+bundle/i)
+  assert.match(docs, /tectonic-cache/i)
+  assert.match(docs, /local `\.tar` files are rejected/i)
   assert.match(docs, /cache/i)
   assert.match(docs, /2\.8\s*(?:GB|GiB)/i)
   assert.doesNotMatch(docs, /sk-[a-z0-9]{20,}|1234567890/i)
