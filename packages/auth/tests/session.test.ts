@@ -203,6 +203,47 @@ describe('session lifecycle', () => {
     expect(fetch).toHaveBeenCalledTimes(1)
   })
 
+  it('uses the Gateway refresh contract and preserves identity fields', async () => {
+    let value: AuthSession | null = {
+      accessToken: 'expired-access',
+      refreshToken: 'old-refresh',
+      userId: 'user-7',
+      email: 'user@example.com',
+      expiresAt: 1,
+    }
+    const store: SessionStore = {
+      load: vi.fn(async () => value),
+      save: vi.fn(async (next) => void (value = next)),
+      clear: vi.fn(async () => void (value = null)),
+    }
+    const fetch = vi.fn(
+      async (_input?: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(
+          JSON.stringify({
+            success: true,
+            data: { id_token: 'new-access', refresh_token: 'new-refresh' },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    )
+    const client = createAuthClient({ store, fetch, now: () => 10_000 })
+
+    await expect(client.refresh()).resolves.toMatchObject({
+      accessToken: 'new-access',
+      refreshToken: 'new-refresh',
+      userId: 'user-7',
+      email: 'user@example.com',
+    })
+    const [input, init] = fetch.mock.calls[0]!
+    const requestUrl = new URL(String(input))
+    expect(requestUrl.searchParams.get('code')).toBe('1234567890')
+    expect(requestUrl.searchParams.get('redirect_uri')).toBe('wiswork://oauth/callback')
+    expect(init).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ refresh_token: 'old-refresh' }),
+    })
+  })
+
   it('does not restore a refreshed session after logout', async () => {
     const { client, fetch, releases } = setup()
     const refresh = client.refresh()

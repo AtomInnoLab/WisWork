@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { AuthError, createAuthClient, type AuthSession, type SessionStore } from '../src/index'
 
@@ -94,7 +93,7 @@ describe('OAuth authorization and callback', () => {
     ).rejects.toMatchObject({ code: 'callback_expired' })
   })
 
-  it('uses the configured Logto endpoint and PKCE S256', () => {
+  it('uses the configured Logto endpoint without unsupported Gateway PKCE', () => {
     const { client } = fixture()
     const request = client.createAuthorizationRequest()
     const url = new URL(request.url)
@@ -102,11 +101,8 @@ describe('OAuth authorization and callback', () => {
     expect(url.searchParams.get('client_id')).toBe('y3xpwx3ytskxf66p0wztm')
     expect(url.searchParams.get('redirect_uri')).toBe('wiswork://oauth/callback')
     expect(url.searchParams.get('scope')).toBe('openid profile email offline_access')
-    expect(url.searchParams.get('code_challenge_method')).toBe('S256')
-    const expected = createHash('sha256')
-      .update(Buffer.alloc(32, 7).toString('base64url'))
-      .digest('base64url')
-    expect(url.searchParams.get('code_challenge')).toBe(expected)
+    expect(url.searchParams.has('code_challenge_method')).toBe(false)
+    expect(url.searchParams.has('code_challenge')).toBe(false)
     expect(Buffer.from(request.state, 'base64url')).toHaveLength(32)
   })
 
@@ -187,17 +183,8 @@ describe('OAuth authorization and callback', () => {
       'https://gateway.dev.wispaper.ai/api/v1/auth/user/callback',
     )
     expect(requestUrl.searchParams.get('code')).toBe('one-time-code')
-    expect(requestUrl.searchParams.get('code_verifier')).toBe(
-      Buffer.alloc(32, 7).toString('base64url'),
-    )
     expect(requestUrl.searchParams.get('redirect_uri')).toBe('wiswork://oauth/callback')
-    expect(requestUrl.searchParams.get('client_id')).toBe('y3xpwx3ytskxf66p0wztm')
-    expect([...requestUrl.searchParams.keys()].sort()).toEqual([
-      'client_id',
-      'code',
-      'code_verifier',
-      'redirect_uri',
-    ])
+    expect([...requestUrl.searchParams.keys()].sort()).toEqual(['code', 'redirect_uri'])
     expect(init).toBeUndefined()
 
     const rejected = createAuthClient({
@@ -214,6 +201,31 @@ describe('OAuth authorization and callback', () => {
     })
     expect(String(error)).not.toContain('one-time-code')
     expect(String(error)).not.toContain('access-secret')
+  })
+
+  it('parses the Gateway success envelope and numeric user id', async () => {
+    const client = createAuthClient({
+      store: memoryStore(),
+      fetch: vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              success: true,
+              data: { token: 'gateway-access', refresh_token: 'gateway-refresh', user_id: 42 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+      ),
+    })
+    const { state } = client.createAuthorizationRequest()
+
+    await expect(
+      client.consumeCallback(`wiswork://oauth/callback?code=ok&state=${state}`),
+    ).resolves.toMatchObject({
+      accessToken: 'gateway-access',
+      refreshToken: 'gateway-refresh',
+      userId: '42',
+    })
   })
 
   it.each([
