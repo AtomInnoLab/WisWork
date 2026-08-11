@@ -14,6 +14,7 @@ import type {
   RecentEntry,
 } from '../../shared/home-api'
 import { fileCountKey, latexProjectCountKey, visiblePageCount } from './counts'
+import { formatAccountLoginDiagnostic, loginErrorKind } from './login-diagnostic'
 import { useI18n } from './locale'
 import type { I18n, StringKey } from './locale'
 
@@ -429,6 +430,7 @@ function AccountEntry() {
   const [loginError, setLoginError] = useState<
     'timeout' | 'launch' | 'network' | 'expired' | 'failed' | null
   >(null)
+  const [loginDiagnostic, setLoginDiagnostic] = useState<string | null>(null)
   const loginDeadline = useRef(0)
   const [menuOpen, setMenuOpen] = useState(false)
   // language flyout: opens on hover, fixed-position so it can escape the
@@ -464,6 +466,7 @@ function AccountEntry() {
   useEffect(() => {
     const off = window.aiOffice.onAccountLogin?.((ev) => {
       if (ev.phase === 'success') {
+        setLoginDiagnostic(null)
         void window.aiOffice
           .accountStatus()
           .then((s) => {
@@ -479,9 +482,8 @@ function AccountEntry() {
           })
       } else if (ev.phase === 'error') {
         setWaiting(false)
-        setLoginError(
-          ev.error === 'network' ? 'network' : ev.error === 'expired' ? 'expired' : 'failed',
-        )
+        setLoginError(loginErrorKind(ev.error))
+        setLoginDiagnostic(formatAccountLoginDiagnostic(ev))
       }
     })
     return off
@@ -582,6 +584,7 @@ function AccountEntry() {
   const startLogin = () => {
     // Clicking again while waiting starts a fresh state/PKCE transaction.
     setLoginError(null)
+    setLoginDiagnostic(null)
     setWaiting(true)
     loginDeadline.current = Date.now() + LOGIN_MAX_WAIT_MS
     setLoginNonce((n) => n + 1)
@@ -815,7 +818,9 @@ function AccountEntry() {
             <>
               <span className="account-name">{waiting ? t('waitingShort') : t('login')}</span>
               <span className={`account-sub${!waiting && errorText ? ' error' : ''}`}>
-                {!waiting && errorText ? errorText : t('accountWisWork')}
+                {!waiting && errorText
+                  ? `${errorText}${loginDiagnostic ? ` [${loginDiagnostic}]` : ''}`
+                  : t('accountWisWork')}
               </span>
             </>
           )}

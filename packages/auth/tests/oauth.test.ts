@@ -172,6 +172,9 @@ describe('OAuth authorization and callback', () => {
       .consumeCallback(`wiswork://oauth/callback?code=one-time-code&state=${rejectedRequest.state}`)
       .catch((reason: unknown) => reason)
     expect(String(error)).toBe('AuthError: network_error')
+    expect(error).toMatchObject({
+      diagnostic: { stage: 'callback_exchange', httpStatus: 500 },
+    })
     expect(String(error)).not.toContain('one-time-code')
     expect(String(error)).not.toContain('access-secret')
   })

@@ -43,5 +43,21 @@ describe('auth deep-link queue', () => {
     authQueue.handle('wiswork://oauth/callback?code=private&state=two')
     await authQueue.whenIdle()
     expect(notify).toHaveBeenLastCalledWith({ phase: 'error', error: 'callback_expired' })
+
+    const exchangeQueue = createAuthDeepLinkQueue({ notify })
+    await exchangeQueue.initialize(async () => {
+      const error = new AuthError('network_error') as AuthError & {
+        diagnostic: { stage: 'callback_exchange'; httpStatus: number }
+      }
+      error.diagnostic = { stage: 'callback_exchange', httpStatus: 400 }
+      throw error
+    })
+    exchangeQueue.handle('wiswork://oauth/callback?code=private&state=three')
+    await exchangeQueue.whenIdle()
+    expect(notify).toHaveBeenLastCalledWith({
+      phase: 'error',
+      error: 'network_error',
+      diagnostic: { stage: 'callback_exchange', httpStatus: 400 },
+    })
   })
 })

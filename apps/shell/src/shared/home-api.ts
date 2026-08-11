@@ -122,6 +122,10 @@ export interface AccountStatus {
 export interface AccountLoginEvent {
   phase: 'launched' | 'success' | 'error'
   error?: string
+  diagnostic?: {
+    stage: 'callback_exchange' | 'refresh'
+    httpStatus?: number
+  }
 }
 
 export interface RenameResult {

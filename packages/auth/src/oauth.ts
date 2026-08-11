@@ -55,13 +55,19 @@ function equalSecret(a: string, b: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right)
 }
 
-async function parseResponse(response: Response, now: number): Promise<AuthSession> {
-  if (!response.ok) throw new AuthError(response.status === 401 ? 'auth_required' : 'network_error')
+async function parseResponse(
+  response: Response,
+  now: number,
+  stage: 'callback_exchange' | 'refresh',
+): Promise<AuthSession> {
+  const diagnostic = { stage, httpStatus: response.status } as const
+  if (!response.ok)
+    throw new AuthError(response.status === 401 ? 'auth_required' : 'network_error', diagnostic)
   try {
     return parseSessionPayload(await response.json(), now)
   } catch (error) {
-    if (error instanceof AuthError) throw error
-    throw new AuthError('invalid_response')
+    if (error instanceof AuthError) throw new AuthError(error.code, diagnostic)
+    throw new AuthError('invalid_response', diagnostic)
   }
 }
 
@@ -185,8 +191,13 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
       callbackUrl.searchParams.set('code_verifier', transaction.verifier)
       callbackUrl.searchParams.set('redirect_uri', config.redirectUri)
       callbackUrl.searchParams.set('client_id', config.clientId)
-      const response = await doFetch(callbackUrl)
-      const session = await parseResponse(response, now())
+      let response: Response
+      try {
+        response = await doFetch(callbackUrl)
+      } catch {
+        throw new AuthError('network_error', { stage: 'callback_exchange' })
+      }
+      const session = await parseResponse(response, now(), 'callback_exchange')
       return mutateSession(async () => {
         if (callbackAttemptGeneration !== loginAttemptGeneration)
           throw new AuthError('auth_required')
@@ -224,11 +235,16 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
         const refreshRevision = sessionRevision
         const current = await options.store.load()
         if (!current) throw new AuthError('auth_required')
-        const response = await doFetch(config.refreshEndpoint, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ refresh_token: current.refreshToken }),
-        })
+        let response: Response
+        try {
+          response = await doFetch(config.refreshEndpoint, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ refresh_token: current.refreshToken }),
+          })
+        } catch {
+          throw new AuthError('network_error', { stage: 'refresh' })
+        }
         if (response.status === 401 || response.status === 400) {
           return mutateSession(async () => {
             if (refreshRevision === sessionRevision) {
@@ -238,7 +254,7 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
             throw new AuthError('auth_required')
           })
         }
-        const next = await parseResponse(response, now())
+        const next = await parseResponse(response, now(), 'refresh')
         return mutateSession(async () => {
           if (refreshRevision !== sessionRevision) throw new AuthError('auth_required')
           await options.store.save(next)
