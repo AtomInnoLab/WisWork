@@ -21,10 +21,24 @@ export function createAuthDeepLinkQueue(options: AuthDeepLinkQueueOptions) {
         await activeConsumer(url)
         options.notify({ phase: 'success' })
       } catch (error) {
-        options.notify({
+        const diagnostic =
+          error instanceof AuthError &&
+          error.diagnostic &&
+          (error.diagnostic.stage === 'callback_exchange' ||
+            error.diagnostic.stage === 'refresh') &&
+          (error.diagnostic.httpStatus === undefined ||
+            (Number.isInteger(error.diagnostic.httpStatus) &&
+              error.diagnostic.httpStatus >= 100 &&
+              error.diagnostic.httpStatus <= 599))
+            ? error.diagnostic
+            : undefined
+        const event: AccountLoginEvent = {
           phase: 'error',
           error: error instanceof AuthError ? error.code : 'login_failed',
-        })
+          ...(diagnostic ? { diagnostic } : {}),
+        }
+        console.warn('[auth] login callback failed', event)
+        options.notify(event)
       }
     })
   }

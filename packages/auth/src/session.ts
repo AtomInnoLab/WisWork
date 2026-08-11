@@ -30,8 +30,16 @@ export type AuthErrorCode =
   | 'auth_not_initialized'
   | 'auth_unavailable_in_standalone'
 
+export interface AuthDiagnostic {
+  stage: 'callback_exchange' | 'refresh'
+  httpStatus?: number
+}
+
 export class AuthError extends Error {
-  constructor(public readonly code: AuthErrorCode) {
+  constructor(
+    public readonly code: AuthErrorCode,
+    public readonly diagnostic?: AuthDiagnostic,
+  ) {
     super(code)
     this.name = 'AuthError'
   }
