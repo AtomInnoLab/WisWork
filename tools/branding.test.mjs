@@ -110,8 +110,9 @@ test('shell packages the LaTeX renderer and only the verified Tectonic executabl
 test('macOS workflow fetches, verifies, injects, and inspects the arm64 Tectonic sidecar', () => {
   const workflow = readFileSync(join(root, '.github/workflows/package-macos.yml'), 'utf8')
   for (const path of [
-    'apps/shell/electron-builder.cjs',
+    'apps/shell/**',
     'apps/latex/**',
+    'packages/auth/**',
     'packages/latex-project/**',
     'packages/latex-compiler/**',
     'packages/pdf-viewer/**',
