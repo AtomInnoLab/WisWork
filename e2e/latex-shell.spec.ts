@@ -46,7 +46,7 @@ Hello from WisWork
 \end{document}`
       await editLatexSource(latexPage, valid)
       await latexPage.getByRole('button', { name: 'Compile' }).click()
-      await expect(latexPage.getByText('TeX bundle ready')).toBeVisible()
+      await expect(latexPage.getByText('Remote TeX bundle configured')).toBeVisible()
       await expect.poll(() => readFile(join(projectPath, 'main.tex'), 'utf8')).toBe(valid)
       await expect(latexPage.locator('.pdf-preview canvas')).toBeVisible()
     } finally {
