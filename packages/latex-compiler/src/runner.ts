@@ -665,6 +665,7 @@ export async function compileIsolated(
 export interface CommitGenerationOptions {
   readonly beforePointerCommit?: () => void | Promise<void>
   readonly maxGenerations?: number
+  readonly platform?: NodeJS.Platform
   readonly syncDirectory?: (path: string) => Promise<void>
   readonly removeGeneration?: (path: string) => Promise<void>
 }
@@ -718,20 +719,44 @@ async function verifyGeneration(path: string, expectedId: string): Promise<Gener
 }
 
 async function readCurrentGeneration(cacheDirectory: string): Promise<string | null> {
+  const generationsRoot = join(cacheDirectory, 'generations')
+  let pointerGeneration: string | null = null
   try {
     const value = JSON.parse(await readFile(join(cacheDirectory, 'current.json'), 'utf8')) as {
       schemaVersion?: unknown
       generationId?: unknown
     }
-    return value.schemaVersion === 1 &&
+    pointerGeneration =
+      value.schemaVersion === 1 &&
       typeof value.generationId === 'string' &&
       /^[0-9a-f-]{36}$/.test(value.generationId)
-      ? value.generationId
-      : null
+        ? value.generationId
+        : null
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
-    throw error
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) {
+      throw error
+    }
   }
+  if (pointerGeneration) {
+    const pointed = await lstat(join(generationsRoot, pointerGeneration)).catch(() => null)
+    if (pointed?.isDirectory() && !pointed.isSymbolicLink()) return pointerGeneration
+  }
+  const entries = await readdir(generationsRoot, { withFileTypes: true }).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  })
+  const recoverable: Array<{ id: string; mtimeMs: number }> = []
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^[0-9a-f-]{36}$/.test(entry.name)) continue
+    const path = join(generationsRoot, entry.name)
+    if (committingGenerations.has(path)) continue
+    const stats = await lstat(path)
+    if (stats.isDirectory() && !stats.isSymbolicLink()) {
+      recoverable.push({ id: entry.name, mtimeMs: stats.mtimeMs })
+    }
+  }
+  recoverable.sort((left, right) => right.mtimeMs - left.mtimeMs || right.id.localeCompare(left.id))
+  return recoverable[0]?.id ?? null
 }
 
 async function pruneGenerations(
@@ -779,6 +804,14 @@ export async function commitCompileGeneration(
   await mkdir(generationsRoot, { recursive: true })
   const generationDirectory = join(generationsRoot, staged.generationId)
   const sync = options.syncDirectory ?? syncDirectory
+  const platform = options.platform ?? process.platform
+  const prune = () =>
+    pruneGenerations(
+      cacheDirectory,
+      generationsRoot,
+      options.maxGenerations ?? 10,
+      options.removeGeneration ?? ((path) => rm(path, { recursive: true, force: true })),
+    )
   committingGenerations.add(generationDirectory)
   try {
     let sourceDirectory = staged.stagingDirectory
@@ -797,6 +830,9 @@ export async function commitCompileGeneration(
       sourceDirectory = generationDirectory
     }
     const manifest = await verifyGeneration(sourceDirectory, staged.generationId)
+    // On macOS, prune before switching the pointer so both the previous
+    // generation and the in-flight generation remain crash-safe rollback targets.
+    if (platform === 'darwin') await prune()
     await options.beforePointerCommit?.()
     const pointerPath = join(cacheDirectory, 'current.json')
     const temporaryPointer = `${pointerPath}.part-${randomUUID()}`
@@ -815,7 +851,10 @@ export async function commitCompileGeneration(
         await pointer.close()
       }
       await rename(temporaryPointer, pointerPath)
-      await sync(cacheDirectory)
+      // The pointer file is already fsynced and atomically renamed. A directory
+      // fsync at this final boundary was observed to remain blocked on macOS,
+      // preventing a successfully published compile from returning to the UI.
+      if (platform !== 'darwin') await sync(cacheDirectory)
     } catch (error) {
       await rm(temporaryPointer, { force: true })
       if ((await readCurrentGeneration(cacheDirectory)) !== staged.generationId) throw error
@@ -840,12 +879,7 @@ export async function commitCompileGeneration(
       published,
       workspaceCleaned: true,
     }
-    await pruneGenerations(
-      cacheDirectory,
-      generationsRoot,
-      options.maxGenerations ?? 10,
-      options.removeGeneration ?? ((path) => rm(path, { recursive: true, force: true })),
-    )
+    if (platform !== 'darwin') await prune()
     return result
   } finally {
     committingGenerations.delete(generationDirectory)
