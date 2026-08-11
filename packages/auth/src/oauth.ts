@@ -1,4 +1,4 @@
-import { createHash, randomBytes as nodeRandomBytes, timingSafeEqual } from 'node:crypto'
+import { randomBytes as nodeRandomBytes, timingSafeEqual } from 'node:crypto'
 import { DEFAULT_AUTH_CONFIG, type AuthConfig } from './config'
 import {
   AuthError,
@@ -11,7 +11,6 @@ import {
 
 interface PendingTransaction {
   state: string
-  verifier: string
   expiresAt: number
   consumed: boolean
   attemptGeneration: number
@@ -64,7 +63,45 @@ async function parseResponse(
   if (!response.ok)
     throw new AuthError(response.status === 401 ? 'auth_required' : 'network_error', diagnostic)
   try {
-    return parseSessionPayload(await response.json(), now)
+    return parseSessionPayload(unwrapGatewayPayload(await response.json()), now)
+  } catch (error) {
+    if (error instanceof AuthError) throw new AuthError(error.code, diagnostic)
+    throw new AuthError('invalid_response', diagnostic)
+  }
+}
+
+function unwrapGatewayPayload(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  const record = value as Record<string, unknown>
+  if (!Object.hasOwn(record, 'success')) return value
+  if (record.success !== true || !record.data || typeof record.data !== 'object')
+    throw new AuthError('invalid_response')
+  return record.data
+}
+
+async function parseRefreshResponse(
+  response: Response,
+  now: number,
+  current: AuthSession,
+): Promise<AuthSession> {
+  const diagnostic = { stage: 'refresh', httpStatus: response.status } as const
+  if (!response.ok)
+    throw new AuthError(response.status === 401 ? 'auth_required' : 'network_error', diagnostic)
+  try {
+    const payload = unwrapGatewayPayload(await response.json())
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload))
+      throw new AuthError('invalid_response')
+    const record = payload as Record<string, unknown>
+    return parseSessionPayload(
+      {
+        token: record.id_token ?? record.token,
+        refresh_token: record.refresh_token ?? current.refreshToken,
+        user_id: record.user_id ?? current.userId,
+        email: record.email ?? current.email,
+        expires_in: record.expires_in,
+      },
+      now,
+    )
   } catch (error) {
     if (error instanceof AuthError) throw new AuthError(error.code, diagnostic)
     throw new AuthError('invalid_response', diagnostic)
@@ -116,12 +153,9 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
     createAuthorizationRequest() {
       pruneTransactions()
       const state = base64Url(randomBytes(32))
-      const verifier = base64Url(randomBytes(32))
-      const challenge = createHash('sha256').update(verifier).digest('base64url')
       loginAttemptGeneration += 1
       pending.set(state, {
         state,
-        verifier,
         expiresAt: now() + config.transactionTtlMs,
         consumed: false,
         attemptGeneration: loginAttemptGeneration,
@@ -133,8 +167,6 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
         response_type: 'code',
         scope: config.scope,
         state,
-        code_challenge: challenge,
-        code_challenge_method: 'S256',
       }).toString()
       return { url: url.toString(), state }
     },
@@ -199,9 +231,7 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
       const callbackAttemptGeneration = transaction.attemptGeneration
       const callbackUrl = new URL(config.callbackEndpoint)
       callbackUrl.searchParams.set('code', code)
-      callbackUrl.searchParams.set('code_verifier', transaction.verifier)
       callbackUrl.searchParams.set('redirect_uri', config.redirectUri)
-      callbackUrl.searchParams.set('client_id', config.clientId)
       let response: Response
       try {
         response = await doFetch(callbackUrl)
@@ -246,9 +276,12 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
         const refreshRevision = sessionRevision
         const current = await options.store.load()
         if (!current) throw new AuthError('auth_required')
+        const refreshUrl = new URL(config.refreshEndpoint)
+        refreshUrl.searchParams.set('code', config.refreshFixedCode)
+        refreshUrl.searchParams.set('redirect_uri', config.redirectUri)
         let response: Response
         try {
-          response = await doFetch(config.refreshEndpoint, {
+          response = await doFetch(refreshUrl, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ refresh_token: current.refreshToken }),
@@ -265,7 +298,7 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
             throw new AuthError('auth_required')
           })
         }
-        const next = await parseResponse(response, now(), 'refresh')
+        const next = await parseRefreshResponse(response, now(), current)
         return mutateSession(async () => {
           if (refreshRevision !== sessionRevision) throw new AuthError('auth_required')
           await options.store.save(next)

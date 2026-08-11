@@ -60,13 +60,18 @@ export function parseSessionPayload(value: unknown, now: number): AuthSession {
   const record = value as Record<string, unknown>
   const accessToken = record.token
   const refreshToken = record.refresh_token
-  const userId = record.user_id
+  const rawUserId = record.user_id
   if (typeof accessToken !== 'string' || !accessToken || accessToken.length > 16_384)
     throw new AuthError('invalid_response')
   if (typeof refreshToken !== 'string' || !refreshToken || refreshToken.length > 16_384)
     throw new AuthError('invalid_response')
-  if (typeof userId !== 'string' || !userId || userId.length > 512)
-    throw new AuthError('invalid_response')
+  const userId =
+    typeof rawUserId === 'string'
+      ? rawUserId
+      : typeof rawUserId === 'number' && Number.isSafeInteger(rawUserId) && rawUserId >= 0
+        ? String(rawUserId)
+        : undefined
+  if (!userId || userId.length > 512) throw new AuthError('invalid_response')
   const email =
     typeof record.email === 'string' && record.email.length <= 512 ? record.email : undefined
   const expiresIn =
