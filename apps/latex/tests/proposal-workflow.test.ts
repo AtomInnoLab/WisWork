@@ -134,6 +134,11 @@ describe('proposal workflow wiring', () => {
 
     await workflow.primaryAction()
     expect(apply).toHaveBeenCalledTimes(1)
+    expect(workflow.state.riskArmed).toBe(false)
+
+    await workflow.primaryAction()
+    expect(workflow.state.riskArmed).toBe(true)
+    expect(apply).toHaveBeenCalledTimes(1)
 
     workflow.setSelection(new Set(['a.tex']))
     expect(workflow.state.riskArmed).toBe(false)
@@ -240,6 +245,7 @@ describe('verification DTO validation', () => {
       { ...verification('proposal-1', 'verified'), reason: 'not allowed' },
       { ...verification('other', 'verified') },
       { ...verification('proposal-1', 'verified'), verifiedAt: Number.NaN },
+      { ...verification('proposal-1', 'verified'), verifiedAt: Number.MAX_SAFE_INTEGER },
       { ...verification('proposal-1', 'failed'), reason: 'x'.repeat(5_000) },
       { ...verification('proposal-1', 'verified'), logSummary: 'x'.repeat(16_001) },
       {

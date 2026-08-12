@@ -46,17 +46,40 @@ describe('bounded proposal line diff', () => {
     ).toBeLessThanOrEqual(600)
   })
 
-  it('stops scanning at the input budget and labels counts as lower bounds', () => {
+  it('locates the first difference after a long common prefix with bounded retained context', () => {
     const before = Array.from({ length: 2_000 }, (_, index) => `line ${index}`)
     const after = [...before]
     after[1_500] = 'changed late line'
-    const diff = buildLineDiff(before.join('\n'), after.join('\n'), {
-      maxInputLines: 20,
-      maxInputChars: 200,
-    })
+    const diff = buildLineDiff(before.join('\n'), after.join('\n'), { maxInputLines: 20 })
 
     expect(diff.truncated).toBe(true)
     expect(diff.summary.atLeast).toBe(true)
+    expect(diff.hunks.flatMap((hunk) => hunk.lines).map((line) => line.afterLine)).toContain(1_501)
+    expect(diff.hunks.flatMap((hunk) => hunk.lines).map((line) => line.text)).toContain(
+      'changed late line',
+    )
+  })
+
+  it('finds a first difference on line 10000 without retaining the common prefix', () => {
+    const before = Array.from({ length: 10_001 }, (_, index) => `x${index}`)
+    const after = [...before]
+    after[9_999] = 'late difference'
+    const diff = buildLineDiff(before.join('\n'), after.join('\n'))
+
+    expect(diff.hunks.flatMap((hunk) => hunk.lines).map((line) => line.afterLine)).toContain(10_000)
+    expect(diff.hunks.flatMap((hunk) => hunk.lines).length).toBeLessThanOrEqual(240)
+  })
+
+  it('reports when the change location is beyond the scan budget', () => {
+    const before = `${'same\n'.repeat(100)}before`
+    const after = `${'same\n'.repeat(100)}after`
+    const diff = buildLineDiff(before, after, { maxScanChars: 100 })
+
+    expect(diff).toMatchObject({
+      truncated: true,
+      notice: 'change-location-beyond-preview-budget',
+      summary: { added: 0, removed: 0, atLeast: true },
+    })
     expect(diff.hunks).toEqual([])
   })
 

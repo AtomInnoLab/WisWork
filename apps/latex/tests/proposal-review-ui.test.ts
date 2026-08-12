@@ -153,5 +153,31 @@ describe('verified proposal review UI', () => {
     expect(html).toContain('Verifying…')
     expect(html).toContain('disabled=""')
   })
+
+  it('explains when a change is beyond the bounded diff scan budget', () => {
+    const longProposal = {
+      ...proposal,
+      files: [
+        {
+          ...proposal.files[0],
+          beforeText: `${'same\n'.repeat(120_000)}before`,
+          afterText: `${'same\n'.repeat(120_000)}after`,
+        },
+      ],
+    }
+    const html = renderToStaticMarkup(
+      createElement(ProposalReview, {
+        proposal: longProposal,
+        selection: new Set(['main.tex']),
+        busy: false,
+        verification: { state: 'verifying' },
+        riskArmed: false,
+        onSelectionChange: () => undefined,
+        onPrimaryAction: () => undefined,
+        onCancel: () => undefined,
+      }),
+    )
+    expect(html).toContain('Change location is beyond the preview budget')
+  })
 })
 import { readFileSync } from 'node:fs'

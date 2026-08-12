@@ -743,6 +743,14 @@ button:disabled {
   font-size: 11px;
 }
 
+.proposal-diff-notice {
+  padding: 8px 10px;
+  border-top: 1px solid #e1b77c;
+  background: #fff6e8;
+  color: #7b4d0b;
+  font-size: 11px;
+}
+
 .proposal-hunk {
   overflow-x: auto;
   border-top: 1px solid var(--border);

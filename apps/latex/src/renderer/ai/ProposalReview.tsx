@@ -77,6 +77,11 @@ function ProposalFileDiff({ file }: { file: ReviewProposal['files'][number] }) {
         {diff.summary.removed} removal{diff.summary.removed === 1 ? '' : 's'}
         {diff.truncated ? ' · preview truncated' : ''}
       </div>
+      {diff.notice === 'change-location-beyond-preview-budget' && (
+        <div className="proposal-diff-notice" role="status">
+          Change location is beyond the preview budget. Review the source file before applying.
+        </div>
+      )}
       {diff.hunks.map((hunk, hunkIndex) => (
         <div className="proposal-hunk" key={`${hunk.beforeStart}:${hunk.afterStart}:${hunkIndex}`}>
           <div className="proposal-hunk-header">

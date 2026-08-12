@@ -17,10 +17,12 @@ export interface LineDiff {
   hunks: DiffHunk[]
   summary: { added: number; removed: number; atLeast: boolean }
   truncated: boolean
+  notice?: 'change-location-beyond-preview-budget'
 }
 
 export interface LineDiffLimits {
   contextLines?: number
+  maxScanChars?: number
   maxInputLines?: number
   maxInputChars?: number
   maxOutputLines?: number
@@ -28,37 +30,110 @@ export interface LineDiffLimits {
 }
 
 const DEFAULT_CONTEXT_LINES = 1
+const DEFAULT_MAX_SCAN_CHARS = 1024 * 1024
 const DEFAULT_MAX_INPUT_LINES = 500
 const DEFAULT_MAX_INPUT_CHARS = 64_000
 const DEFAULT_MAX_OUTPUT_LINES = 240
 const DEFAULT_MAX_OUTPUT_CHARS = 30_000
 
-function collectLines(
-  text: string | null,
-  maxLines: number,
-  maxChars: number,
-): { lines: string[]; truncated: boolean } {
-  if (text === null || text === '') return { lines: [], truncated: false }
-  const result: string[] = []
-  let current = ''
-  let index = 0
-  let consumedChars = 0
-  while (index < text.length && result.length < maxLines && consumedChars < maxChars) {
+interface LineSpan {
+  start: number
+  end: number
+  line: number
+}
+
+interface LineCursor {
+  text: string
+  index: number
+  line: number
+  trailingEmpty: boolean
+}
+
+function cursor(text: string | null): LineCursor {
+  return { text: text ?? '', index: 0, line: 1, trailingEmpty: false }
+}
+
+function nextLine(cursor: LineCursor): LineSpan | null {
+  if (cursor.trailingEmpty) {
+    cursor.trailingEmpty = false
+    return { start: cursor.text.length, end: cursor.text.length, line: cursor.line++ }
+  }
+  if (cursor.index >= cursor.text.length) return null
+  const newline = cursor.text.indexOf('\n', cursor.index)
+  const start = cursor.index
+  const end = newline === -1 ? cursor.text.length : newline
+  cursor.index = newline === -1 ? cursor.text.length : newline + 1
+  if (newline === cursor.text.length - 1) cursor.trailingEmpty = true
+  return { start, end, line: cursor.line++ }
+}
+
+function hasMore(cursor: LineCursor): boolean {
+  return cursor.trailingEmpty || cursor.index < cursor.text.length
+}
+
+function equalLine(
+  beforeText: string,
+  before: LineSpan,
+  afterText: string,
+  after: LineSpan,
+): boolean {
+  const length = before.end - before.start
+  if (length !== after.end - after.start) return false
+  for (let index = 0; index < length; index += 1) {
+    if (beforeText.charCodeAt(before.start + index) !== afterText.charCodeAt(after.start + index))
+      return false
+  }
+  return true
+}
+
+function boundedSpan(text: string, span: LineSpan, maxChars: number) {
+  let value = ''
+  let consumed = 0
+  let index = span.start
+  while (index < span.end && consumed < maxChars) {
     const codePoint = text.codePointAt(index)!
     const character = String.fromCodePoint(codePoint)
+    value += character
     index += character.length
-    consumedChars += 1
-    if (character === '\n') {
-      result.push(current)
-      current = ''
-    } else current += character
+    consumed += 1
   }
-  let truncated = index < text.length
-  if (current || (!truncated && text.endsWith('\n'))) {
-    if (result.length < maxLines) result.push(current)
-    else truncated = true
+  return { text: value, count: consumed }
+}
+
+function collectWindow(
+  cursor: LineCursor,
+  prefix: readonly LineSpan[],
+  first: LineSpan | null,
+  maxLines: number,
+  maxChars: number,
+): { lines: string[]; startLine: number; truncated: boolean } {
+  const retainedPrefix = prefix.slice(-(first ? Math.max(0, maxLines - 1) : maxLines))
+  const spans = [...retainedPrefix]
+  if (first) spans.push(first)
+  let next = first ? nextLine(cursor) : null
+  while (next && spans.length < maxLines) {
+    spans.push(next)
+    next = nextLine(cursor)
   }
-  return { lines: result, truncated }
+
+  const lines: string[] = []
+  let remainingChars = maxChars
+  let truncated = Boolean(next || hasMore(cursor))
+  for (let index = 0; index < spans.length; index += 1) {
+    const span = spans[index]!
+    const context = index < retainedPrefix.length
+    const allowance = context ? Math.min(2_000, Math.max(0, remainingChars - 1)) : remainingChars
+    if (allowance <= 0) {
+      truncated = true
+      break
+    }
+    const bounded = boundedSpan(cursor.text, span, allowance)
+    lines.push(bounded.text)
+    remainingChars -= bounded.count
+    if (bounded.text.length < span.end - span.start) truncated = true
+  }
+  if (lines.length < spans.length) truncated = true
+  return { lines, startLine: spans[0]?.line ?? cursor.line, truncated }
 }
 
 function takeCodePoints(text: string, count: number): { text: string; count: number } {
@@ -134,14 +209,56 @@ export function buildLineDiff(
   limits: LineDiffLimits = {},
 ): LineDiff {
   const contextLines = Math.max(0, limits.contextLines ?? DEFAULT_CONTEXT_LINES)
+  const maxScanChars = Math.max(1, limits.maxScanChars ?? DEFAULT_MAX_SCAN_CHARS)
   const maxInputLines = Math.max(1, limits.maxInputLines ?? DEFAULT_MAX_INPUT_LINES)
   const maxInputChars = Math.max(1, limits.maxInputChars ?? DEFAULT_MAX_INPUT_CHARS)
   const maxOutputLines = Math.max(1, limits.maxOutputLines ?? DEFAULT_MAX_OUTPUT_LINES)
   const maxOutputChars = Math.max(1, limits.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS)
-  const before = collectLines(beforeText, maxInputLines, maxInputChars)
-  const after = collectLines(afterText, maxInputLines, maxInputChars)
+  const normalizedBefore = beforeText ?? ''
+  if (normalizedBefore === afterText) {
+    return {
+      hunks: [],
+      summary: { added: 0, removed: 0, atLeast: false },
+      truncated: false,
+    }
+  }
+  const beforeCursor = cursor(beforeText)
+  const afterCursor = cursor(afterText)
+  const beforePrefix: LineSpan[] = []
+  const afterPrefix: LineSpan[] = []
+  let beforeFirst = nextLine(beforeCursor)
+  let afterFirst = nextLine(afterCursor)
+  let scannedChars = 0
+  while (beforeFirst && afterFirst) {
+    const nextCost = beforeFirst.end - beforeFirst.start + afterFirst.end - afterFirst.start + 2
+    if (scannedChars + nextCost > maxScanChars) {
+      return {
+        hunks: [],
+        summary: { added: 0, removed: 0, atLeast: true },
+        truncated: true,
+        notice: 'change-location-beyond-preview-budget',
+      }
+    }
+    if (!equalLine(normalizedBefore, beforeFirst, afterText, afterFirst)) break
+    scannedChars += nextCost
+    beforePrefix.push(beforeFirst)
+    afterPrefix.push(afterFirst)
+    if (beforePrefix.length > contextLines) beforePrefix.shift()
+    if (afterPrefix.length > contextLines) afterPrefix.shift()
+    beforeFirst = nextLine(beforeCursor)
+    afterFirst = nextLine(afterCursor)
+  }
+
+  const before = collectWindow(
+    beforeCursor,
+    beforePrefix,
+    beforeFirst,
+    maxInputLines,
+    maxInputChars,
+  )
+  const after = collectWindow(afterCursor, afterPrefix, afterFirst, maxInputLines, maxInputChars)
   let truncated = before.truncated || after.truncated
-  const ops = operations(before.lines, after.lines, 0, 0)
+  const ops = operations(before.lines, after.lines, before.startLine - 1, after.startLine - 1)
   const summary = {
     added: ops.filter((line) => line.kind === 'add').length,
     removed: ops.filter((line) => line.kind === 'remove').length,

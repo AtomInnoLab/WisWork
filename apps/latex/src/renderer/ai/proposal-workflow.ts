@@ -118,6 +118,7 @@ export function validateProposalVerification(
     record.proposalId !== proposalId ||
     !Number.isSafeInteger(record.verifiedAt) ||
     (record.verifiedAt as number) < 0 ||
+    !Number.isFinite(new Date(record.verifiedAt as number).getTime()) ||
     !Array.isArray(record.diagnostics) ||
     record.diagnostics.length > MAX_DIAGNOSTICS ||
     !boundedString(record.logSummary, MAX_LOG_BYTES) ||
@@ -409,7 +410,11 @@ export class ProposalWorkflow {
       }
     } catch (error) {
       if (this.accepts(generation, proposal.id))
-        this.update({ busy: false, status: error instanceof Error ? error.message : String(error) })
+        this.update({
+          busy: false,
+          riskArmed: false,
+          status: error instanceof Error ? error.message : String(error),
+        })
       return
     }
 
