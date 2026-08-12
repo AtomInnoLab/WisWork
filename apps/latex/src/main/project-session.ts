@@ -7,8 +7,10 @@ import {
   CompileQueue,
   compileIsolated,
   isRemoteIndexedBundleUrl,
+  LatexCompilerError,
   parseSyncTeX,
   parseTectonicDiagnostics,
+  TectonicRunError,
   type CompileIsolatedResult,
   type StagedCompileResult,
   type SyncTeXIndex,
@@ -28,6 +30,7 @@ import type {
   LatexBufferDto,
   LatexProposalDto,
   LatexSaveDto,
+  ProposalVerificationDto,
 } from '../shared/ipc.js'
 
 function isAiSensitivePath(path: string): boolean {
@@ -51,6 +54,22 @@ export class UnsavedBuffersError extends Error {
     this.name = 'UnsavedBuffersError'
   }
 }
+
+type ProposalVerificationRejectionReason =
+  'not-found' | 'expired' | 'baseline' | 'configuration' | 'safety'
+
+export class ProposalVerificationRejectedError extends Error {
+  constructor(
+    readonly reason: ProposalVerificationRejectionReason,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'ProposalVerificationRejectedError'
+  }
+}
+
+const MAX_PROPOSAL_VERIFICATION_DIAGNOSTICS = 100
+const MAX_PROPOSAL_VERIFICATION_LOG_BYTES = 16_000
 
 export interface WatcherLike {
   close(): void
@@ -750,6 +769,125 @@ export class ProjectSession {
     return proposal ? structuredClone(proposal) : undefined
   }
 
+  async verifyProposal(id: string): Promise<ProposalVerificationDto> {
+    this.assertActive()
+    return this.withConfirmedMutation(async () => {
+      this.assertAllBuffersPersisted()
+      const proposal = this.proposals.get(id)
+      if (!proposal) {
+        throw new ProposalVerificationRejectedError('not-found', 'Proposal not found')
+      }
+      if (proposal.expiresAt <= Date.now()) {
+        throw new ProposalVerificationRejectedError('expired', 'Proposal has expired')
+      }
+      if (proposal.files.some((file) => file.beforeSha256 === null)) {
+        return {
+          proposalId: proposal.id,
+          state: 'unverifiable',
+          reason: 'Proposals that create new files cannot be verified in isolation',
+          diagnostics: [],
+          logSummary: '',
+          verifiedAt: Date.now(),
+        }
+      }
+      for (const file of proposal.files) {
+        let text: string
+        try {
+          text = await this.project.readText(file.path)
+        } catch {
+          throw new ProposalVerificationRejectedError(
+            'baseline',
+            'Proposal baseline changed on disk',
+          )
+        }
+        if (digest(text) !== file.beforeSha256) {
+          throw new ProposalVerificationRejectedError(
+            'baseline',
+            'Proposal baseline changed on disk',
+          )
+        }
+      }
+      if (!this.compilerRuntime || !this.mainFile) {
+        throw new ProposalVerificationRejectedError(
+          'configuration',
+          'Proposal verification is not configured',
+        )
+      }
+      let bundlePath: string
+      try {
+        bundlePath = await this.ensureBundle()
+      } catch {
+        throw new ProposalVerificationRejectedError(
+          'configuration',
+          'Proposal verification is not configured',
+        )
+      }
+      const cacheDirectory = join(
+        this.compilerRuntime.userDataPath,
+        'latex',
+        'proposal-verification-cache',
+        this.projectId,
+      )
+      const temporaryRoot = join(this.compilerRuntime.userDataPath, 'latex', 'compile-temp')
+      const tectonicCacheDirectory = join(
+        this.compilerRuntime.userDataPath,
+        'latex',
+        'tectonic-cache',
+      )
+      await Promise.all([
+        mkdir(cacheDirectory, { recursive: true }),
+        mkdir(temporaryRoot, { recursive: true }),
+        mkdir(tectonicCacheDirectory, { recursive: true }),
+      ])
+      let staged: StagedCompileResult | undefined
+      try {
+        staged = await this.compiler({
+          projectDirectory: this.project.rootPath,
+          temporaryRoot,
+          cacheDirectory,
+          executable: this.compilerRuntime.tectonicPath,
+          bundlePath,
+          tectonicCacheDirectory,
+          mainFile: this.mainFile,
+          overlay: proposal.files.map((file) => ({ path: file.path, text: file.afterText })),
+        })
+        return {
+          proposalId: proposal.id,
+          state: 'verified',
+          diagnostics: parseTectonicDiagnostics(staged.log, staged.synctexInputRoot).slice(
+            0,
+            MAX_PROPOSAL_VERIFICATION_DIAGNOSTICS,
+          ),
+          logSummary: boundedUtf8(staged.log, MAX_PROPOSAL_VERIFICATION_LOG_BYTES),
+          verifiedAt: Date.now(),
+        }
+      } catch (error) {
+        if (error instanceof TectonicRunError) {
+          return {
+            proposalId: proposal.id,
+            state: 'failed',
+            reason: 'Tectonic could not compile the isolated proposal',
+            diagnostics: parseTectonicDiagnostics(error.log).slice(
+              0,
+              MAX_PROPOSAL_VERIFICATION_DIAGNOSTICS,
+            ),
+            logSummary: boundedUtf8(error.log, MAX_PROPOSAL_VERIFICATION_LOG_BYTES),
+            verifiedAt: Date.now(),
+          }
+        }
+        if (error instanceof LatexCompilerError) {
+          throw new ProposalVerificationRejectedError(
+            'safety',
+            'Proposal verification was rejected by the compiler safety policy',
+          )
+        }
+        throw error
+      } finally {
+        if (staged) await this.cleanupStaging(staged.stagingDirectory)
+      }
+    })
+  }
+
   async applyProposal(id: string) {
     if (!this.proposalStore || !this.proposals.has(id)) throw new Error('Proposal not found')
     return this.proposalStore.apply(id, this.projectId, this.project)
@@ -931,6 +1069,19 @@ function defaultWatch(root: string, onChange: (relativePath: string) => void): W
 
 function digest(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex')
+}
+
+function boundedUtf8(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text
+  let bytes = 0
+  let result = ''
+  for (const character of text) {
+    const characterBytes = Buffer.byteLength(character, 'utf8')
+    if (bytes + characterBytes > maxBytes) break
+    result += character
+    bytes += characterBytes
+  }
+  return result
 }
 
 async function readBoundedArtifact(path: string, maxBytes: number): Promise<Uint8Array> {

@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { TectonicRunError } from '@wiswork/latex-compiler'
 import { ProjectSessionRegistry } from '../src/main/project-session.js'
 
 const sha = (text: string) => createHash('sha256').update(text).digest('hex')
@@ -11,6 +12,7 @@ describe('confirmed LaTeX AI edit flow', () => {
   const roots: string[] = []
 
   afterEach(async () => {
+    vi.restoreAllMocks()
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
   })
 
@@ -32,6 +34,142 @@ describe('confirmed LaTeX AI edit flow', () => {
     })
     return { projectRoot, session }
   }
+
+  async function setupVerification(
+    files: Array<{ path: string; beforeSha256: string | null; afterText: string }> = [
+      { path: 'main.tex', beforeSha256: sha('before'), afterText: 'after' },
+    ],
+    compilerFailure?: Error,
+  ) {
+    const root = await mkdtemp(join(tmpdir(), 'latex-proposal-verify-'))
+    roots.push(root)
+    const projectRoot = join(root, 'project')
+    const stagingDirectory = join(root, 'verify-stage')
+    await mkdir(projectRoot)
+    await writeFile(join(projectRoot, 'main.tex'), 'before')
+    const compiler = vi.fn(async () => {
+      if (compilerFailure) throw compilerFailure
+      await mkdir(stagingDirectory, { recursive: true })
+      await writeFile(join(stagingDirectory, 'main.log'), 'staged evidence')
+      return {
+        generationId: 'verification-generation',
+        stagingDirectory,
+        files: [],
+        log: 'main.tex:2:3: warning: isolated warning',
+        synctexInputRoot: join(root, 'isolated-input'),
+        workspaceCleaned: true as const,
+      }
+    })
+    const commitGeneration = vi.fn()
+    const cleanupStaging = vi.fn((path: string) => rm(path, { recursive: true, force: true }))
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler: compiler as never,
+      commitGeneration: commitGeneration as never,
+      cleanupStaging,
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
+    }).attach(51, projectRoot)
+    await session.readText('main.tex')
+    await session.registerProposal({
+      id: 'proposal-verify',
+      expiresAt: Date.now() + 60_000,
+      files,
+    })
+    return {
+      root,
+      projectRoot,
+      stagingDirectory,
+      session,
+      compiler,
+      commitGeneration,
+      cleanupStaging,
+    }
+  }
+
+  it('verifies a replacement in isolation without changing source, publishing, or consuming it', async () => {
+    const { projectRoot, stagingDirectory, session, compiler, commitGeneration, cleanupStaging } =
+      await setupVerification()
+    const sourceBefore = sha(await readFile(join(projectRoot, 'main.tex'), 'utf8'))
+
+    await expect(session.verifyProposal('proposal-verify')).resolves.toMatchObject({
+      proposalId: 'proposal-verify',
+      state: 'verified',
+      diagnostics: [{ path: 'main.tex', severity: 'warning' }],
+    })
+    expect(compiler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectDirectory: projectRoot,
+        mainFile: 'main.tex',
+        overlay: [{ path: 'main.tex', text: 'after' }],
+      }),
+    )
+    expect(commitGeneration).not.toHaveBeenCalled()
+    expect(cleanupStaging).toHaveBeenCalledWith(stagingDirectory)
+    await expect(access(stagingDirectory)).rejects.toThrow()
+    expect(sha(await readFile(join(projectRoot, 'main.tex'), 'utf8'))).toBe(sourceBefore)
+
+    vi.spyOn(session, 'compile').mockResolvedValue({
+      revision: 1,
+      pdfUrl: null,
+      diagnostics: [],
+      log: '',
+    })
+    await expect(session.applyConfirmedProposal('proposal-verify')).resolves.toMatchObject({
+      proposalId: 'proposal-verify',
+    })
+    await expect(session.applyConfirmedProposal('proposal-verify')).rejects.toThrow(/not found/i)
+  })
+
+  it('returns typed unverifiable evidence for a new file without calling the compiler', async () => {
+    const { session, compiler } = await setupVerification([
+      { path: 'new.tex', beforeSha256: null, afterText: 'new file' },
+    ])
+    await expect(session.verifyProposal('proposal-verify')).resolves.toMatchObject({
+      proposalId: 'proposal-verify',
+      state: 'unverifiable',
+      diagnostics: [],
+      reason: expect.stringMatching(/new file/i),
+    })
+    expect(compiler).not.toHaveBeenCalled()
+  })
+
+  it('rejects dirty buffers and changed proposal baselines before compiling', async () => {
+    const dirty = await setupVerification()
+    dirty.session.updateBuffer('main.tex', 'local dirty')
+    await expect(dirty.session.verifyProposal('proposal-verify')).rejects.toThrow(/unsaved/i)
+    expect(dirty.compiler).not.toHaveBeenCalled()
+
+    const changed = await setupVerification()
+    await writeFile(join(changed.projectRoot, 'main.tex'), 'external change')
+    await expect(changed.session.verifyProposal('proposal-verify')).rejects.toThrow(
+      /baseline|changed/i,
+    )
+    expect(changed.compiler).not.toHaveBeenCalled()
+  })
+
+  it('returns bounded failed evidence for a Tectonic run error', async () => {
+    const log = Array.from(
+      { length: 150 },
+      (_, index) => `main.tex:${index + 1}:1: error: ${'x'.repeat(200)}`,
+    ).join('\n')
+    const failure = new TectonicRunError('TECTONIC_EXIT_NONZERO', 'compile failed', log, 1)
+    failure.terminationConfirmed = true
+    const { session, compiler, cleanupStaging } = await setupVerification(undefined, failure)
+
+    const result = await session.verifyProposal('proposal-verify')
+    expect(result).toMatchObject({ proposalId: 'proposal-verify', state: 'failed' })
+    expect(result.diagnostics).toHaveLength(100)
+    expect(result.logSummary.length).toBeLessThanOrEqual(16_000)
+    expect(compiler).toHaveBeenCalledOnce()
+    expect(cleanupStaging).not.toHaveBeenCalled()
+  })
+
+  it('rejects expired proposals before compiling', async () => {
+    const { session, compiler } = await setupVerification()
+    vi.spyOn(Date, 'now').mockReturnValue(Number.MAX_SAFE_INTEGER)
+    await expect(session.verifyProposal('proposal-verify')).rejects.toThrow(/expired/i)
+    expect(compiler).not.toHaveBeenCalled()
+  })
 
   it('rejects renderer-dirty state before consuming authorization', async () => {
     const { session } = await setup()
