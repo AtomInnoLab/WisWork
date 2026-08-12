@@ -14,6 +14,7 @@
    * than --pressed so it reads against both hover and rest states */
   --active-bg: #e2e0de;
   --canvas: #e6e6e6;
+  --authored-slide-surface: #ffffff;
 }
 
 * {
@@ -767,7 +768,7 @@ body.vib .slide-list {
 }
 
 .thumb {
-  background: #fff;
+  background: var(--authored-slide-surface);
   border: 2px solid var(--border-strong);
   border-radius: 4px;
   overflow: hidden;
@@ -1163,16 +1164,16 @@ body.vib .slide-list {
   display: flex;
   flex-direction: column;
   background: var(--surface);
-  border-right: 1px solid var(--border);
-  box-shadow: 4px 0 16px rgba(82, 41, 31, 0.05);
+  border-left: 1px solid var(--border);
+  box-shadow: -4px 0 16px rgba(82, 41, 31, 0.05);
   font-family: var(--gs-font-sans);
   color: var(--color-text-primary);
 }
 
-/* drag handle on the panel's right edge — resize the panel horizontally (no highlight, cursor-only affordance) */
+/* Drag handle on the panel's left edge (no highlight, cursor-only affordance). */
 .ai-panel-resizer {
   position: absolute;
-  right: 0;
+  left: 0;
   top: 0;
   bottom: 0;
   width: 6px;
@@ -1245,7 +1246,7 @@ body.vib .slide-list {
   cursor: default;
 }
 
-/* Collapsed state: vertical bar on the left edge */
+/* Collapsed state: vertical rail on the right edge. */
 .ai-rail {
   display: flex;
   flex-direction: column;
@@ -1254,7 +1255,7 @@ body.vib .slide-list {
   width: 34px;
   padding: 12px 2px;
   border: none;
-  border-right: 1px solid var(--border);
+  border-left: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
@@ -6283,4 +6284,33 @@ body.vib .slide-list {
 
 .ai-login-btn:hover {
   opacity: 0.88;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --surface: #242629;
+    --chrome-bg: #1d1f22;
+    --border: #3b3e43;
+    --border-strong: #50545a;
+    --text: #f1f3f5;
+    --text-dim: #b7bbc1;
+    --hover: #303338;
+    --pressed: #3a3e44;
+    --active-bg: #49302a;
+    --canvas: #141619;
+    --color-text-primary: #f1f3f5;
+    --color-text-secondary: #b7bbc1;
+    --color-text-tertiary: #9298a1;
+    --color-bg-page: #242629;
+    --color-bg-subtle: #303338;
+    --color-border-default: #3b3e43;
+    --color-border-strong: #50545a;
+  }
+
+  .thumb,
+  .stage-scale,
+  .reading-slide {
+    color-scheme: light;
+  }
 }

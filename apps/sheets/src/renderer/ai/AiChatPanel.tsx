@@ -151,7 +151,7 @@ export function AiChatPanel({
   const resizeCleanupRef = useRef<(() => void) | null>(null)
   useEffect(() => () => resizeCleanupRef.current?.(), [])
 
-  /** Drag the right edge to resize: the panel is flush with the window's left edge, so width = clientX; the grid transition is disabled while dragging */
+  /** Drag the dock's left edge; width is the distance to the window's right edge. */
   const startResize = (e: React.PointerEvent<HTMLDivElement>): void => {
     e.preventDefault()
     const area = asideRef.current?.closest('.sheet-body') as HTMLElement | null
@@ -163,7 +163,7 @@ export function AiChatPanel({
     document.body.style.userSelect = 'none'
     let width = 0
     const onMove = (ev: PointerEvent): void => {
-      width = clampPanelWidth(ev.clientX)
+      width = clampPanelWidth(window.innerWidth - ev.clientX)
       area.style.setProperty('--copilot-width', `${width}px`)
     }
     let done = false
@@ -502,12 +502,11 @@ function IconNewChat({ size }: { size: number }): React.JSX.Element {
 }
 
 function IconCollapse({ size }: { size: number }): React.JSX.Element {
-  // Mirrored glyph: the AI panel docks on the LEFT, so the divider and arrow point left
   return (
     <Svg size={size}>
       <rect x="1.5" y="2.5" width="13" height="11" rx="1" />
-      <path d="M5.5 2.5v11" />
-      <path d="M12.5 8H8.1M9.8 5.9 7.7 8l2.1 2.1" strokeWidth="1.3" strokeLinejoin="round" />
+      <path d="M10.5 2.5v11" />
+      <path d="M3.5 8h4.4M6.2 5.9 8.3 8l-2.1 2.1" strokeWidth="1.3" strokeLinejoin="round" />
     </Svg>
   )
 }

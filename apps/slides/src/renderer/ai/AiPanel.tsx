@@ -21,7 +21,7 @@ import {
   IconNewChat,
   IconPaperclip,
   IconRefresh,
-  IconSidebarCollapseLeft,
+  IconSidebarCollapse,
 } from '../components/icons'
 
 interface ToolActivity {
@@ -1078,7 +1078,7 @@ export function AiPanel({
   const resizeCleanupRef = useRef<(() => void) | null>(null)
   useEffect(() => () => resizeCleanupRef.current?.(), [])
 
-  /** Drag the right edge to resize: the panel is flush with the window's left edge, so width = clientX */
+  /** Drag the dock's left edge; width is the distance to the window's right edge. */
   const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault()
     const resizer = e.currentTarget
@@ -1086,7 +1086,7 @@ export function AiPanel({
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
     const onMove = (ev: PointerEvent) => {
-      setPanelWidth(clampPanelWidth(ev.clientX))
+      setPanelWidth(clampPanelWidth(window.innerWidth - ev.clientX))
     }
     let done = false
     const cleanup = () => {
@@ -1160,7 +1160,7 @@ export function AiPanel({
           )}
           {onCollapse && (
             <button className="ai-header-btn" onClick={onCollapse} title={t('aiCollapsePanel')}>
-              <IconSidebarCollapseLeft size={15} />
+              <IconSidebarCollapse size={15} />
             </button>
           )}
         </div>

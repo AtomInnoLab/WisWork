@@ -12,6 +12,7 @@
   --pressed: #edebe9;
   --active-bg: #fbeae5;
   --canvas: #e6e6e6;
+  --authored-page-surface: #ffffff;
 }
 
 * {
@@ -670,7 +671,7 @@ button {
 
   position: relative;
   flex-shrink: 0;
-  background: #fff;
+  background: var(--authored-page-surface);
   box-shadow: 0 1px 4px rgb(0 0 0 / 18%);
 }
 
@@ -1579,7 +1580,7 @@ button {
   }
 }
 
-/* collapsed AI sidebar: thin rail on the left edge (same as docs) */
+/* Collapsed AI sidebar: thin rail on the right edge. */
 .ai-rail {
   display: flex;
   flex-direction: column;
@@ -1588,7 +1589,7 @@ button {
   width: 34px;
   padding: 12px 2px;
   border: none;
-  border-right: 1px solid var(--border);
+  border-left: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
@@ -1607,16 +1608,16 @@ button {
   flex-shrink: 0;
   min-height: 0;
   overflow: hidden;
-  border-right: 1px solid var(--border);
+  border-left: 1px solid var(--border);
   background: var(--surface);
   font-family: var(--gs-font-sans);
   color: var(--color-text-primary);
 }
 
-/* drag handle on the panel's right edge — resize the panel horizontally */
+/* Drag handle on the panel's left edge. */
 .ai-panel-resizer {
   position: absolute;
-  right: 0;
+  left: 0;
   top: 0;
   bottom: 0;
   width: 6px;
@@ -2195,4 +2196,31 @@ button {
 
 .ai-retry-btn:hover {
   background: rgb(198 40 40 / 8%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --surface: #242629;
+    --chrome-bg: #1d1f22;
+    --border: #3b3e43;
+    --border-strong: #50545a;
+    --text: #f1f3f5;
+    --text-dim: #b7bbc1;
+    --hover: #303338;
+    --pressed: #3a3e44;
+    --active-bg: #49302a;
+    --canvas: #141619;
+    --color-text-primary: #f1f3f5;
+    --color-text-secondary: #b7bbc1;
+    --color-text-tertiary: #9298a1;
+    --color-bg-page: #242629;
+    --color-bg-subtle: #303338;
+    --color-border-default: #3b3e43;
+    --color-border-strong: #50545a;
+  }
+
+  .pdf-page {
+    color-scheme: light;
+  }
 }

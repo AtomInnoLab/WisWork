@@ -1222,11 +1222,11 @@ select.select-like {
   font-size: 12px;
 }
 
-/* AI panel on the left, spanning from the ribbon to the status bar (unified with docs);
+/* AI panel on the right, spanning from the ribbon to the status bar (unified with docs);
  * its column is drag-resizable: driven by --copilot-width (updated by the AiChatPanel resizer) */
 .sheet-body {
   display: grid;
-  grid-template-columns: var(--copilot-width, 360px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) var(--copilot-width, 360px);
   min-height: 0;
   transition: grid-template-columns 180ms ease;
 }
@@ -1309,7 +1309,7 @@ select.select-like {
 }
 
 .app-shell.copilot-collapsed .sheet-body {
-  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 34px;
 }
 
 .spreadsheet {
@@ -1354,26 +1354,25 @@ select.select-like {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  border-right: 1px solid var(--color-border-default);
+  border-left: 1px solid var(--color-border-default);
   background: var(--color-bg-page);
-  box-shadow: 4px 0 16px rgb(24 60 40 / 5%);
+  box-shadow: -4px 0 16px rgb(24 60 40 / 5%);
   font-family: var(--gs-font-sans);
   color: var(--color-text-primary);
 }
 
-/* Collapsed rail: identical to the slides .ai-rail — plain white strip,
- * hairline right border, no float shadow */
+/* Collapsed rail: plain strip at the workspace's right edge. */
 .copilot.collapsed {
   align-items: stretch;
   background: var(--color-bg-page);
   box-shadow: none;
 }
 
-/* drag handle on the panel's right edge — resize the panel horizontally
+/* Drag handle on the panel's left edge.
  * (.copilot is overflow: hidden, so the handle must sit fully inside the panel) */
 .ai-panel-resizer {
   position: absolute;
-  right: 0;
+  left: 0;
   top: 0;
   bottom: 0;
   width: 6px;
@@ -3954,4 +3953,35 @@ textarea:focus {
 
 .ai-login-btn:hover {
   opacity: 0.88;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --surface: #242629;
+    --surface-subtle: #1d1f22;
+    --surface-hover: #303b35;
+    --ribbon-hover: #303338;
+    --ribbon-active: #3a3e44;
+    --border: #3b3e43;
+    --border-strong: #50545a;
+    --text: #f1f3f5;
+    --text-muted: #b7bbc1;
+    --text-dim: #b7bbc1;
+    --focus: rgb(80 184 128 / 34%);
+    --color-text-primary: #f1f3f5;
+    --color-text-secondary: #b7bbc1;
+    --color-text-tertiary: #9298a1;
+    --color-bg-page: #242629;
+    --color-bg-subtle: #303338;
+    --color-border-default: #3b3e43;
+    --color-border-strong: #50545a;
+  }
+
+  body,
+  .app-shell,
+  .excel-shell {
+    background: var(--surface-subtle);
+    color: var(--text);
+  }
 }

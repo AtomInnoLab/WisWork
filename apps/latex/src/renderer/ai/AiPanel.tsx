@@ -41,11 +41,15 @@ export function AiPanel({
   projectId,
   disabled = false,
   onProjectFilesChanged,
+  open = true,
+  onExpand,
   onCollapse,
 }: {
   projectId: string
   disabled?: boolean
   onProjectFilesChanged?: () => void | Promise<void>
+  open?: boolean
+  onExpand?: () => void
   onCollapse?: () => void
 }) {
   const [input, setInput] = useState('')
@@ -231,6 +235,16 @@ export function AiPanel({
       setStatus('AI changes were undone and the project was compiled again.')
     } else setStatus(result.error.message)
     setBusy(false)
+  }
+
+  // Keep the component mounted while collapsed so its transcript, draft and active run survive.
+  if (!open) {
+    return (
+      <button className="latex-ai-rail" onClick={onExpand} aria-label="Open AI panel">
+        <WisWorkAppMark className="ai-brand-icon" size={25} />
+        <span>AI</span>
+      </button>
+    )
   }
 
   return (

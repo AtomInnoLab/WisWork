@@ -1955,20 +1955,6 @@ export default function App() {
         </div>
       </div>
       <div className="pdf-body">
-        {/* dock wrapper animates the width between panel and rail (docs-style 180ms ease);
-            the panel stays mounted while collapsed so the chat history survives */}
-        <div className={`ai-dock${aiCollapsed ? ' collapsed' : ''}`}>
-          {aiCollapsed && (
-            <button
-              className="ai-rail"
-              title={t('aiOpenAssistant')}
-              onClick={() => setAiCollapsed(false)}
-            >
-              <WisWorkMark size={22} />
-            </button>
-          )}
-          <AiPanel api={aiApi} onCollapse={() => setAiCollapsed(true)} />
-        </div>
         {sidebar === 'outline' && outline && (
           <div className="pdf-thumbs pdf-outline-pane">
             <OutlinePanel outline={outline} onGoToDest={(dest) => void goToDest(dest)} />
@@ -2407,6 +2393,19 @@ export default function App() {
             </div>
           </div>
         )}
+        {/* Final/rightmost workspace child. The mounted panel keeps chat and in-flight state while collapsed. */}
+        <div className={`ai-dock${aiCollapsed ? ' collapsed' : ''}`}>
+          {aiCollapsed && (
+            <button
+              className="ai-rail"
+              title={t('aiOpenAssistant')}
+              onClick={() => setAiCollapsed(false)}
+            >
+              <WisWorkMark size={22} />
+            </button>
+          )}
+          <AiPanel api={aiApi} onCollapse={() => setAiCollapsed(true)} />
+        </div>
       </div>
     </div>
   )

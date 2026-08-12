@@ -625,23 +625,15 @@ export function App() {
           onReverseSync={(point) => void reverseSync(point)}
         />
       </div>
-      {projectId && aiOpen && (
+      {projectId && (
         <AiPanel
           projectId={projectId}
           disabled={frozen}
           onProjectFilesChanged={refreshProjectFiles}
+          open={aiOpen}
+          onExpand={() => setAiOpen(true)}
           onCollapse={() => setAiOpen(false)}
         />
-      )}
-      {projectId && !aiOpen && (
-        <button
-          className="latex-ai-rail"
-          onClick={() => setAiOpen(true)}
-          aria-label="Open AI panel"
-        >
-          <span aria-hidden="true">W</span>
-          <span>AI</span>
-        </button>
       )}
     </main>
   )

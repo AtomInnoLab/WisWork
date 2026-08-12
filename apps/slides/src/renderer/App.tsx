@@ -2344,37 +2344,6 @@ export function App() {
           </div>
         ) : (
           <>
-            <div className={`ai-dock${showAi && aiSettings ? '' : ' collapsed'}`}>
-              {/* always mounted once settings load: collapse must not drop state or in-flight runs */}
-              {aiSettings ? (
-                <AiPanel
-                  key={aiPanelKey}
-                  slides={slides}
-                  current={current}
-                  selectedIds={selectedIds}
-                  deckEmpty={deckEmpty}
-                  images={images}
-                  applySlide={applySlide}
-                  applyDeck={applyDeck}
-                  fitWidthPx={FIT_WIDTH}
-                  settings={aiSettings}
-                  preset={aiPreset}
-                  open={showAi}
-                  onExpand={toggleAi}
-                  onCollapse={toggleAi}
-                  onUndo={() => void undo()}
-                  onPathChange={(p) => {
-                    setPath(p)
-                    setDirty(false)
-                  }}
-                  currentFilePath={path}
-                />
-              ) : (
-                <button className="ai-rail" onClick={toggleAi} title={t('appAiRailExpand')}>
-                  <WisWorkMark size={22} />
-                </button>
-              )}
-            </div>
             {viewMode === 'outline' ? (
               <div className="outline-pane">
                 {slides.map((s, i) => {
@@ -2906,6 +2875,37 @@ export function App() {
                 onCollapse={() => setShowComments(false)}
               />
             ) : null}
+            <div className={`ai-dock${showAi && aiSettings ? '' : ' collapsed'}`}>
+              {/* always mounted once settings load: collapse must not drop state or in-flight runs */}
+              {aiSettings ? (
+                <AiPanel
+                  key={aiPanelKey}
+                  slides={slides}
+                  current={current}
+                  selectedIds={selectedIds}
+                  deckEmpty={deckEmpty}
+                  images={images}
+                  applySlide={applySlide}
+                  applyDeck={applyDeck}
+                  fitWidthPx={FIT_WIDTH}
+                  settings={aiSettings}
+                  preset={aiPreset}
+                  open={showAi}
+                  onExpand={toggleAi}
+                  onCollapse={toggleAi}
+                  onUndo={() => void undo()}
+                  onPathChange={(p) => {
+                    setPath(p)
+                    setDirty(false)
+                  }}
+                  currentFilePath={path}
+                />
+              ) : (
+                <button className="ai-rail" onClick={toggleAi} title={t('appAiRailExpand')}>
+                  <WisWorkMark size={22} />
+                </button>
+              )}
+            </div>
           </>
         )}
       </div>
