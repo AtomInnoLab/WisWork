@@ -93,7 +93,7 @@
 
 - Provider ID：`wiswork`
 - API base URL：`https://wismodel-proxy-dev.atominnolab.com/api/v1`
-- 默认模型：`deepseek/deepseek-v4-flash-0731`
+- 默认模型：`qwen/qwen3.8-max`
 - 完整路径：`/chat/completions`
 - 协议：OpenAI-compatible JSON 与 SSE
 - 主进程请求头：`Authorization: Bearer <WISWORK_MODEL_API_KEY>`、`Content-Type: application/json`

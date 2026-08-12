@@ -1,8 +1,8 @@
 import type { AgentMessage, AgentToolCall, AgentToolDef } from '@wiswork/agent-core'
-import { AiProviderError, safeHttpProviderError } from './errors'
+import { AiProviderError, isAuthRequiredError, safeHttpProviderError } from './errors'
 import { httpBodyDetail } from './http-error'
-import { WISWORK_MODEL_BASE_URL } from './providers'
-import type { AiProviderConfig, AiProviderId } from './types'
+import { WISWORK_DEFAULT_MODEL, WISWORK_MESSAGES_URL } from './providers'
+import type { AiProviderConfig, AiProviderId, WisworkFetchWithAuth } from './types'
 import { AiTimeoutError, createStreamWatchdog, type StreamWatchdog } from './watchdog'
 
 // ---- streaming (SSE line splitting shared by all providers) ----
@@ -249,7 +249,26 @@ export async function streamAnthropic(
   baseUrl = 'https://api.anthropic.com',
 ): Promise<void> {
   const wd = createStreamWatchdog(cb.signal)
-  return wd.guard(() => anthropicTurn(config, system, messages, tools, maxTokens, cb, baseUrl, wd))
+  return wd.guard(() =>
+    anthropicTurn(
+      config,
+      system,
+      messages,
+      tools,
+      maxTokens,
+      cb,
+      `${baseUrl.replace(/\/$/, '')}/v1/messages`,
+      wd,
+      (url, init) => fetch(url, init),
+      {
+        'Content-Type': 'application/json',
+        'x-api-key': config.apiKey,
+        'anthropic-version': '2023-06-01',
+        // Fetch in Electron uses browser semantics; Anthropic requires this explicit opt-in.
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+    ),
+  )
 }
 
 async function anthropicTurn(
@@ -259,8 +278,11 @@ async function anthropicTurn(
   tools: AgentToolDef[],
   maxTokens: number,
   cb: StreamCallbacks,
-  baseUrl: string,
+  endpoint: string,
   wd: StreamWatchdog,
+  request: (url: string, init: RequestInit) => Promise<Response>,
+  headers: Record<string, string>,
+  safeErrors = false,
 ): Promise<void> {
   const onBytes = () => {
     wd.touch()
@@ -268,18 +290,10 @@ async function anthropicTurn(
   }
   let response: Response
   try {
-    response = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/messages`, {
+    response = await request(endpoint, {
       method: 'POST',
       signal: wd.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': config.apiKey,
-        'anthropic-version': '2023-06-01',
-        // Fetch in the Electron main process goes through Chromium's network stack, which adds
-        // browser-semantics headers; Anthropic rejects those with 403 "Request not allowed". This
-        // header is the official opt-in for direct access from browser/Electron environments.
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
+      headers,
       body: JSON.stringify({
         model: config.model,
         max_tokens: maxTokens,
@@ -298,6 +312,7 @@ async function anthropicTurn(
       }),
     })
   } catch (e) {
+    if (safeErrors && isAuthRequiredError(e)) throw new AiProviderError('auth_required')
     // When fetch fails in the Electron main process, the real reason lives in `cause`
     const err = e as { message?: unknown; cause?: { code?: unknown; message?: unknown } } | null
     const causeText = err?.cause
@@ -308,6 +323,10 @@ async function anthropicTurn(
   // headers arrived: ping the renderer watchdog too, or a slow first chunk could trip it
   onBytes()
   if (!response.ok || !response.body) {
+    if (safeErrors) {
+      if (response.status === 401) throw new AiProviderError('auth_required', response.status)
+      throw safeHttpProviderError(response.status)
+    }
     throw new Error(`Claude HTTP ${response.status}: ${httpBodyDetail(await response.text())}`)
   }
   const jsonBody = await jsonBodyInsteadOfSse(response)
@@ -325,6 +344,7 @@ async function anthropicTurn(
     if (!line.startsWith('data:')) continue
     const payload = line.slice(5).trim()
     if (!payload) continue
+    if (payload === '[DONE]') continue
     const event = JSON.parse(payload) as {
       type?: string
       index?: number
@@ -362,6 +382,43 @@ async function anthropicTurn(
   if (stopReason === 'max_tokens' && lastTool) lastTool.truncated = true
   for (const call of completedTools) cb.onToolCall(call)
   if (stopReason) cb.onStopReason?.(stopReason)
+}
+
+async function streamWiswork(
+  config: AiProviderConfig,
+  system: string,
+  messages: AgentMessage[],
+  tools: AgentToolDef[],
+  maxTokens: number,
+  cb: StreamCallbacks,
+  fetchWithAuth?: WisworkFetchWithAuth,
+): Promise<void> {
+  if (!fetchWithAuth) throw new AiProviderError('auth_required')
+  const wd = createStreamWatchdog(cb.signal)
+  return wd.guard(() =>
+    anthropicTurn(
+      { ...config, apiKey: '', model: WISWORK_DEFAULT_MODEL },
+      system,
+      messages,
+      tools,
+      maxTokens,
+      cb,
+      WISWORK_MESSAGES_URL,
+      wd,
+      (url, init) =>
+        fetchWithAuth((accessToken) =>
+          fetch(url, {
+            ...init,
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+            },
+          }),
+        ),
+      { 'Content-Type': 'application/json' },
+      true,
+    ),
+  )
 }
 
 // ---- Gemini ----
@@ -816,20 +873,12 @@ export async function streamForProvider(
   tools: AgentToolDef[],
   maxTokens: number,
   cb: StreamCallbacks,
+  fetchWithAuth?: WisworkFetchWithAuth,
 ): Promise<void> {
   switch (provider) {
     case 'wiswork':
       try {
-        return await streamOpenAiCompatible(
-          WISWORK_MODEL_BASE_URL,
-          config,
-          system,
-          messages,
-          tools,
-          maxTokens,
-          cb,
-          true,
-        )
+        return await streamWiswork(config, system, messages, tools, maxTokens, cb, fetchWithAuth)
       } catch (error) {
         if (
           error instanceof AiProviderError ||

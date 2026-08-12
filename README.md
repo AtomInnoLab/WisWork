@@ -79,22 +79,13 @@ redirect URI, and client ID. Deployment is blocked until the Gateway owner confi
 validates and consumes the PKCE verifier for this client. A fixed refresh code, OAuth tokens, or
 other service-side credentials must never be configured in the desktop app.
 
-For local model requests, provide the service credential only in the environment of the Electron
-main process:
+Managed model requests require a valid WisWork login. The main process sends the current OAuth
+access token to the fixed WisUsage endpoint `https://wisusage.dev.atominnolab.com/v1/messages`
+using the Anthropic Messages protocol and model `qwen/qwen3.8-max`. A 401 refreshes the session
+once and retries. Tokens never enter renderer settings or IPC responses, and renderers cannot
+override the endpoint, model, or authorization header. No model service key is required.
 
-```bash
-WISWORK_MODEL_API_KEY='<development-service-key>' npm run dev
-```
-
-Do not put this value in `.env` files committed to the repository, renderer settings, project
-files, command-line arguments, screenshots, or logs. The current development provider is fixed to
-`https://wismodel-proxy-dev.atominnolab.com/api/v1` with default model
-`deepseek/deepseek-v4-flash-0731`; renderers cannot override its base URL or authorization header.
-Login and the model credential are separate gates: a valid OAuth session does not supply the
-model service key.
-
-This development phase does not route model traffic through the WisPaper Gateway and does not
-integrate WisUsage accounting or user-level billing. Features formerly supplied by the removed
+Features formerly supplied by the removed
 cloud runtime—image generation, media analysis, cloud slide generation, and cloud PDF conversion—are
 unavailable and return `unsupported_feature`; web/image search retains its documented
 Serper/DuckDuckGo paths.

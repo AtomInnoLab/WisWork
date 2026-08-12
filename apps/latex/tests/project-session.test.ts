@@ -449,8 +449,15 @@ describe('LaTeX project sessions', () => {
       log: '',
       workspaceCleaned: true,
     })
-    await current
+    const result = await current
     await old
+    expect(() => structuredClone(result)).not.toThrow()
+    expect(result).toEqual({
+      revision: 2,
+      pdfUrl: null,
+      diagnostics: [],
+      log: '',
+    })
     await expect(access(stale)).rejects.toMatchObject({ code: 'ENOENT' })
     expect(commit).toHaveBeenCalledTimes(1)
     expect(session.syncTexForward(2, 'main.tex', 9)).toMatchObject({ page: 1 })

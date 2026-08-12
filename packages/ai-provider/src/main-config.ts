@@ -1,29 +1,27 @@
 import { WISWORK_DEFAULT_MODEL, defaultAiSettings } from './providers'
 import type { AiProviderConfig, AiProviderId, AiSettings } from './types'
 
-export type WisworkRequestErrorCode = 'auth_required' | 'model_credentials_missing'
+export type WisworkRequestErrorCode = 'auth_required'
 
 export type WisworkMainRequest =
   | { ok: true; provider: 'wiswork'; config: AiProviderConfig }
   | { ok: false; errorCode: WisworkRequestErrorCode }
 
 /**
- * Main-process-only boundary for WisModel requests. The renderer cannot supply or
- * override the service credential, endpoint, or model.
+ * Main-process-only boundary for WisUsage requests. The renderer cannot supply or
+ * override the login credential, endpoint, or model. The access token itself is
+ * deliberately not accepted here; it remains inside the authenticated fetch callback.
  */
 export function resolveWisworkMainRequest(
-  loggedIn: boolean,
-  rendererConfig: AiProviderConfig | undefined,
-  env: Readonly<Record<string, string | undefined>> = process.env,
+  hasAccessToken: boolean,
+  _rendererConfig: AiProviderConfig | undefined,
 ): WisworkMainRequest {
-  if (!loggedIn) return { ok: false, errorCode: 'auth_required' }
-  const apiKey = env.WISWORK_MODEL_API_KEY?.trim()
-  if (!apiKey) return { ok: false, errorCode: 'model_credentials_missing' }
+  if (!hasAccessToken) return { ok: false, errorCode: 'auth_required' }
   return {
     ok: true,
     provider: 'wiswork',
     config: {
-      apiKey,
+      apiKey: '',
       model: WISWORK_DEFAULT_MODEL,
     },
   }

@@ -1,4 +1,5 @@
 export type AiProviderErrorCode =
+  | 'auth_required'
   | 'model_credentials_missing'
   | 'model_rate_limited'
   | 'model_upstream_unavailable'
@@ -14,6 +15,16 @@ export class AiProviderError extends Error {
     this.code = code
     this.status = status
   }
+}
+
+/** Preserve the auth package's stable code without coupling this provider package to Electron auth. */
+export function isAuthRequiredError(error: unknown): boolean {
+  return Boolean(
+    error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'auth_required',
+  )
 }
 
 export function safeHttpProviderError(status: number): AiProviderError {

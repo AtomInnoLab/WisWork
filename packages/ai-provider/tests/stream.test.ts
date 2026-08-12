@@ -543,8 +543,8 @@ describe('streamForProvider: 200 + non-stream JSON instead of SSE', () => {
       'fetch',
       vi.fn().mockResolvedValue(
         json({
-          choices: [{ message: { role: 'assistant', content: creditsNotice } }],
-          usage: { prompt_tokens: 0, completion_tokens: 0 },
+          type: 'message',
+          content: [{ type: 'text', text: creditsNotice }],
         }),
       ),
     )
@@ -558,6 +558,7 @@ describe('streamForProvider: 200 + non-stream JSON instead of SSE', () => {
         [],
         100,
         cb,
+        async (request) => request('login-token'),
       ),
     ).rejects.toBeInstanceOf(AiCreditsError)
   })

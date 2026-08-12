@@ -129,7 +129,7 @@
 ### 接口
 
 - `AiProviderId` 包含 `wiswork`，默认 provider 为 `wiswork`。
-- 固定 base URL 为 `https://wismodel-proxy-dev.atominnolab.com/api/v1`，默认模型为 `deepseek/deepseek-v4-flash-0731`。
+- 固定 base URL 为 `https://wismodel-proxy-dev.atominnolab.com/api/v1`，默认模型为 `qwen/qwen3.8-max`。
 - 新增主进程配置解析器，从 `WISWORK_MODEL_API_KEY` 返回请求级 config；任何 renderer settings 中的 apiKey/baseUrl 对 `wiswork` 无效。
 - 缺少登录返回 `auth_required`；缺少模型 Key 返回 `model_credentials_missing`。
 

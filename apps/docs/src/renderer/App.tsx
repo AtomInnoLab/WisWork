@@ -2491,26 +2491,6 @@ export function App() {
       />
 
       <div className={`workspace ${darkCanvas ? 'workspace-dark' : ''}`}>
-        {doc && (
-          <div className={`ai-dock${showAi ? '' : ' collapsed'}`}>
-            {/* always mounted: collapse must not drop state or in-flight runs */}
-            <AiPanel
-              key={aiPanelKey}
-              editor={editor}
-              blocks={doc.parsed.blocks}
-              settings={settings}
-              docEmpty={wordCount === 0}
-              numIdFallback={
-                doc.isBlank ? { bullet: BLANK_BULLET_NUM_ID, ordered: BLANK_ORDERED_NUM_ID } : null
-              }
-              preset={aiPreset}
-              open={showAi}
-              onExpand={() => setShowAi(true)}
-              onCollapse={() => setShowAi(false)}
-              filePath={doc?.filePath ?? null}
-            />
-          </div>
-        )}
         {doc && showFind && <FindPanel editor={editor} onClose={() => setShowFind(false)} />}
         {doc && showNav && <NavPane editor={editor} doc={editor.state.doc} />}
         <div className="editor-area">
@@ -2754,6 +2734,26 @@ export function App() {
             entries={compareResult.entries}
             onClose={() => setCompareResult(null)}
           />
+        )}
+        {doc && (
+          <div className={`ai-dock${showAi ? '' : ' collapsed'}`}>
+            {/* always mounted: collapse must not drop state or in-flight runs */}
+            <AiPanel
+              key={aiPanelKey}
+              editor={editor}
+              blocks={doc.parsed.blocks}
+              settings={settings}
+              docEmpty={wordCount === 0}
+              numIdFallback={
+                doc.isBlank ? { bullet: BLANK_BULLET_NUM_ID, ordered: BLANK_ORDERED_NUM_ID } : null
+              }
+              preset={aiPreset}
+              open={showAi}
+              onExpand={() => setShowAi(true)}
+              onCollapse={() => setShowAi(false)}
+              filePath={doc?.filePath ?? null}
+            />
+          </div>
         )}
       </div>
 

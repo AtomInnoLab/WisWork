@@ -25,9 +25,12 @@ function validRequest(requestId = ID) {
 
 function harness(options?: {
   trusted?: number[]
-  loggedIn?: boolean
-  getLoggedIn?: () => Promise<boolean>
+  accessToken?: string | null
+  getAccessToken?: () => Promise<string | null>
+  fetchWithAuth?: (request: (accessToken: string) => Promise<Response>) => Promise<Response>
 }) {
+  const accessToken =
+    options && 'accessToken' in options ? options.accessToken : 'login-access-token'
   const handlers = new Map<string, (event: WisworkIpcEvent, ...args: unknown[]) => unknown>()
   const ipcMain: IpcMainLike = {
     handle: (channel, handler) => {
@@ -56,17 +59,20 @@ function harness(options?: {
     isTrustedSender: (id) => (options?.trusted ?? [1]).includes(id),
     loadSettings: () => defaultAiSettings(),
     saveSettings: (settings) => saved.push(settings),
-    getLoggedIn: options?.getLoggedIn ?? (async () => options?.loggedIn ?? true),
+    getAccessToken: options?.getAccessToken ?? (async () => accessToken ?? null),
+    fetchWithAuth:
+      options?.fetchWithAuth ??
+      (async (request) => {
+        if (!accessToken) throw new Error('auth_required')
+        return request(accessToken)
+      }),
   })
   const invoke = (channel: string, senderId: number, ...args: unknown[]) =>
     handlers.get(channel)!(event(senderId), ...args)
   return { invoke, sent, saved }
 }
 
-beforeEach(() => {
-  vi.unstubAllGlobals()
-  vi.stubEnv('WISWORK_MODEL_API_KEY', 'fake-main-key')
-})
+beforeEach(() => vi.unstubAllGlobals())
 
 describe('registerWisworkModelIpc', () => {
   it('rejects untrusted senders on every registered handler', async () => {
@@ -144,7 +150,7 @@ describe('registerWisworkModelIpc', () => {
       vi.fn().mockImplementation(
         () =>
           new Promise<Response>((resolve) => {
-            release = () => resolve(okResponse(sseStream(['data: [DONE]'])))
+            release = () => resolve(okResponse(sseStream([])))
           }),
       ),
     )
@@ -197,8 +203,8 @@ describe('registerWisworkModelIpc', () => {
       await invoke('stream', 1, validRequest(status === 401 ? ID : OTHER_ID))
       expect(sent.at(-1)).toMatchObject({
         type: 'error',
-        error: 'model_credentials_missing',
-        errorCode: 'model_credentials_missing',
+        error: status === 401 ? 'auth_required' : 'model_credentials_missing',
+        errorCode: status === 401 ? 'auth_required' : 'model_credentials_missing',
       })
       expect(JSON.stringify(sent)).not.toContain('fake-upstream-secret')
       expect(JSON.stringify(sent)).not.toContain('fake-key')
@@ -208,7 +214,7 @@ describe('registerWisworkModelIpc', () => {
   it('fails closed with auth_required in standalone and never calls fetch', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    const { invoke, sent } = harness({ loggedIn: false })
+    const { invoke, sent } = harness({ accessToken: null })
     await invoke('stream', 1, validRequest())
     expect(sent).toContainEqual(
       expect.objectContaining({ type: 'error', errorCode: 'auth_required' }),
@@ -216,11 +222,11 @@ describe('registerWisworkModelIpc', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('fails closed with an upstream error when session validation cannot refresh', async () => {
+  it('fails closed without leaking details when session validation cannot refresh', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     const { invoke, sent } = harness({
-      getLoggedIn: async () => {
+      getAccessToken: async () => {
         throw new Error('temporary refresh failure containing private response')
       },
     })
@@ -235,8 +241,26 @@ describe('registerWisworkModelIpc', () => {
     expect(JSON.stringify(sent)).not.toContain('private response')
   })
 
+  it('preserves auth_required when the session has expired during validation', async () => {
+    const authFailure = Object.assign(new Error('private expired-session detail'), {
+      code: 'auth_required',
+    })
+    const { invoke, sent } = harness({
+      getAccessToken: async () => {
+        throw authFailure
+      },
+    })
+
+    await invoke('stream', 1, validRequest())
+    expect(sent.at(-1)).toMatchObject({ type: 'error', errorCode: 'auth_required' })
+    await expect(
+      invoke('chat', 1, { settings: defaultAiSettings(), system: 's', user: 'u' }),
+    ).resolves.toMatchObject({ ok: false, errorCode: 'auth_required' })
+    expect(JSON.stringify(sent)).not.toContain('private expired-session detail')
+  })
+
   it('forces the default model and strips all provider keys/base URLs from settings', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream(['data: [DONE]'])))
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
     vi.stubGlobal('fetch', fetchMock)
     const settings = defaultAiSettings()
     settings.providers.wiswork.model = 'renderer-model'
@@ -246,7 +270,7 @@ describe('registerWisworkModelIpc', () => {
     const returned = (await invoke('get', 1)) as ReturnType<typeof defaultAiSettings>
     await invoke('set', 1, settings)
     for (const value of [returned, saved[0] as typeof returned]) {
-      expect(value.providers.wiswork.model).toBe('deepseek/deepseek-v4-flash-0731')
+      expect(value.providers.wiswork.model).toBe('qwen/qwen3.8-max')
       for (const config of Object.values(value.providers)) {
         expect(config.apiKey).toBe('')
         expect(config.baseUrl).toBeUndefined()
@@ -254,6 +278,39 @@ describe('registerWisworkModelIpc', () => {
     }
     await invoke('stream', 1, { ...validRequest(), settings })
     const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string)
-    expect(body.model).toBe('deepseek/deepseek-v4-flash-0731')
+    expect(body.model).toBe('qwen/qwen3.8-max')
+  })
+
+  it('delegates WisUsage requests to the auth client so a 401 refreshes and retries once', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(errorResponse(401, 'expired'))
+      .mockResolvedValueOnce(
+        okResponse(
+          sseStream([
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}',
+          ]),
+        ),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    const fetchWithAuth = async (request: (accessToken: string) => Promise<Response>) => {
+      let response = await request('expired-login-token')
+      if (response.status === 401) response = await request('refreshed-login-token')
+      return response
+    }
+    const { invoke, sent } = harness({ fetchWithAuth })
+
+    await invoke('stream', 1, validRequest())
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[0]![0]).toBe('https://wisusage.dev.atominnolab.com/v1/messages')
+    expect(fetchMock.mock.calls[0]![1].headers).toMatchObject({
+      Authorization: 'Bearer expired-login-token',
+    })
+    expect(fetchMock.mock.calls[1]![1].headers).toMatchObject({
+      Authorization: 'Bearer refreshed-login-token',
+    })
+    expect(sent).toContainEqual(expect.objectContaining({ type: 'delta', text: 'ok' }))
+    expect(JSON.stringify(sent)).not.toContain('login-token')
   })
 })

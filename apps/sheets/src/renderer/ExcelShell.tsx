@@ -415,8 +415,25 @@ export function ExcelShell({
         />
       </header>
 
-      {/* AI panel docks on the left, full height under the ribbon (unified with docs) */}
+      {/* Persistent AI dock is the final/rightmost workspace child. */}
       <div className="sheet-body">
+        <div className="sheet-main">
+          {/* Excel's formula-bar row, Name Box only for now (fx bar TBD). */}
+          <div className="name-box-bar">
+            <NameBox activeCellA1={activeCellA1} onGoTo={onGoToReference} />
+            <button
+              className="name-box-goto"
+              title={t('appGoToButtonTitle')}
+              aria-label="Go To"
+              onClick={() => setShowGoTo(true)}
+            >
+              ▾
+            </button>
+          </div>
+          <section className="workbook-area">
+            <div id="univer-container" className="spreadsheet" />
+          </section>
+        </div>
         <AiChatPanel
           isOpen={isCopilotOpen}
           hasContent={sheetHasContent}
@@ -439,23 +456,6 @@ export function ExcelShell({
           onExpand={() => setIsCopilotOpen(true)}
           onCollapse={() => setIsCopilotOpen(false)}
         />
-        <div className="sheet-main">
-          {/* Excel's formula-bar row, Name Box only for now (fx bar TBD). */}
-          <div className="name-box-bar">
-            <NameBox activeCellA1={activeCellA1} onGoTo={onGoToReference} />
-            <button
-              className="name-box-goto"
-              title={t('appGoToButtonTitle')}
-              aria-label="Go To"
-              onClick={() => setShowGoTo(true)}
-            >
-              ▾
-            </button>
-          </div>
-          <section className="workbook-area">
-            <div id="univer-container" className="spreadsheet" />
-          </section>
-        </div>
       </div>
 
       {/* Full-width status bar, unified with docs/slides (Univer's own zoom slider is disabled). */}

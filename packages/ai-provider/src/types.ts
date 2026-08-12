@@ -9,6 +9,11 @@ export interface AiProviderConfig {
   baseUrl?: string | undefined
 }
 
+/** Main-process-only authenticated request boundary used by the managed provider. */
+export type WisworkFetchWithAuth = (
+  request: (accessToken: string) => Promise<Response>,
+) => Promise<Response>
+
 export interface AiProviderMeta {
   id: AiProviderId
   label: string

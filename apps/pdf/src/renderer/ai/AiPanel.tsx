@@ -216,7 +216,7 @@ export function AiPanel({
   const resizeCleanupRef = useRef<(() => void) | null>(null)
   useEffect(() => () => resizeCleanupRef.current?.(), [])
 
-  /** Drag the right edge to resize: the panel is flush with the window's left edge, so width = clientX */
+  /** Drag the dock's left edge; width is the distance to the window's right edge. */
   const startResize = (e: ReactPointerEvent<HTMLDivElement>): void => {
     e.preventDefault()
     const resizer = e.currentTarget
@@ -224,7 +224,7 @@ export function AiPanel({
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
     const onMove = (ev: PointerEvent): void => {
-      setPanelWidth(clampPanelWidth(ev.clientX))
+      setPanelWidth(clampPanelWidth(window.innerWidth - ev.clientX))
     }
     let done = false
     const cleanup = (): void => {
@@ -541,10 +541,9 @@ function IconCollapse(): ReactElement {
       strokeLinejoin="round"
       aria-hidden
     >
-      {/* Mirrored: the AI panel docks on the LEFT, so the divider and arrow point left */}
       <rect x="2.25" y="3.75" width="19.5" height="16.5" rx="1.5" />
-      <path d="M8.25 3.75 v16.5" />
-      <path d="M18.75 12 h-6.6 M14.7 8.85 11.55 12 l3.15 3.15" />
+      <path d="M15.75 3.75 v16.5" />
+      <path d="M5.25 12 h6.6 M9.3 8.85 12.45 12 9.3 15.15" />
     </svg>
   )
 }

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { access, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -167,6 +167,66 @@ describe('second compiler hardening pass', () => {
     expect(generations).toContain(third.generationId)
     expect(JSON.parse(await readFile(join(cache, 'current.json'), 'utf8')).generationId).toBe(
       third.generationId,
+    )
+  })
+
+  it('avoids the final cache-directory fsync on macOS and retains the rollback generation', async () => {
+    const root = await sandbox()
+    const project = join(root, 'project')
+    const cache = join(root, 'cache')
+    await mkdir(project)
+    await writeFile(join(project, 'main.tex'), 'source')
+    const stage = async (pdf: string) =>
+      compileIsolated({
+        projectDirectory: project,
+        temporaryRoot: join(root, 'job'),
+        cacheDirectory: cache,
+        mainFile: 'main.tex',
+        executable: '/app/tectonic',
+        bundlePath: '/cache/bundle.ttb',
+        run: async ({ workspace }) => {
+          await writeFile(join(workspace.outputDirectory, 'main.pdf'), pdf)
+          return { exitCode: 0, signal: null, log: '' }
+        },
+      })
+    const previous = await stage('previous')
+    await commitCompileGeneration(previous, cache, { syncDirectory: async () => undefined })
+    const current = await stage('current')
+    const synced: string[] = []
+    await expect(
+      commitCompileGeneration(current, cache, {
+        maxGenerations: 1,
+        platform: 'darwin',
+        syncDirectory: async (path) => {
+          synced.push(path)
+          if (path === cache) throw new Error('cache root directory sync must be skipped')
+        },
+      }),
+    ).resolves.toMatchObject({ generationId: current.generationId })
+    expect(synced).toContain(join(cache, 'generations'))
+    expect(synced).toContain(join(cache, '.staging'))
+    expect(synced).not.toContain(cache)
+    await utimes(join(cache, 'generations', previous.generationId), 1, 1)
+    await utimes(join(cache, 'generations', current.generationId), 2, 2)
+    const missingGeneration = '00000000-0000-0000-0000-000000000000'
+    await writeFile(
+      join(cache, 'current.json'),
+      `${JSON.stringify({ schemaVersion: 1, generationId: missingGeneration })}\n`,
+    )
+    const next = await stage('next')
+    await commitCompileGeneration(next, cache, {
+      maxGenerations: 1,
+      platform: 'darwin',
+      syncDirectory: async (path) => {
+        synced.push(path)
+        if (path === cache) throw new Error('cache root directory sync must be skipped')
+      },
+    })
+    const generations = await readdir(join(cache, 'generations'))
+    expect(generations).toEqual(expect.arrayContaining([current.generationId, next.generationId]))
+    expect(generations).not.toContain(previous.generationId)
+    expect(JSON.parse(await readFile(join(cache, 'current.json'), 'utf8')).generationId).toBe(
+      next.generationId,
     )
   })
 

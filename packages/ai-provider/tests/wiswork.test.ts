@@ -3,16 +3,26 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentMessage, AgentToolCall } from '@wiswork/agent-core'
 import { chatForProvider } from '../src/chat'
 import { resolveWisworkMainRequest, sanitizeWisworkSettings } from '../src/main-config'
-import { AI_PROVIDERS, WISWORK_DEFAULT_MODEL, defaultAiSettings } from '../src/providers'
+import {
+  AI_PROVIDERS,
+  WISWORK_DEFAULT_MODEL,
+  WISWORK_MESSAGES_URL,
+  defaultAiSettings,
+} from '../src/providers'
 import { streamForProvider } from '../src/stream'
 import { errorResponse, jsonResponse, okResponse, sseStream } from './test-utils'
 
 afterEach(() => vi.unstubAllGlobals())
 
 const config = {
-  apiKey: 'main-process-test-key',
+  apiKey: '',
   model: 'renderer-model-must-be-ignored',
 }
+
+const withToken =
+  (token = 'login-access-token') =>
+  async (request: (accessToken: string) => Promise<Response>) =>
+    request(token)
 
 function collector(signal = new AbortController().signal) {
   const deltas: string[] = []
@@ -31,7 +41,7 @@ function collector(signal = new AbortController().signal) {
 describe('WisWork provider defaults and main-process config', () => {
   it('uses wiswork and the fixed WisModel model by default', () => {
     const meta = AI_PROVIDERS.find((provider) => provider.id === 'wiswork')
-    expect(meta?.defaultModel).toBe('deepseek/deepseek-v4-flash-0731')
+    expect(meta?.defaultModel).toBe('qwen/qwen3.8-max')
     expect(
       defaultAiSettings({ wiswork: 'renderer-key-must-be-ignored' }).providers.wiswork,
     ).toEqual({
@@ -41,35 +51,24 @@ describe('WisWork provider defaults and main-process config', () => {
     })
   })
 
-  it('fails authentication before checking the service credential', () => {
-    expect(resolveWisworkMainRequest(false, undefined, {})).toEqual({
+  it('fails closed when no authenticated session token is available', () => {
+    expect(resolveWisworkMainRequest(false, undefined)).toEqual({
       ok: false,
       errorCode: 'auth_required',
     })
   })
 
-  it('reports a missing service key separately after login', () => {
-    expect(resolveWisworkMainRequest(true, undefined, {})).toEqual({
-      ok: false,
-      errorCode: 'model_credentials_missing',
-    })
-  })
-
-  it('takes only the main-process env key and ignores renderer endpoint/key overrides', () => {
+  it('uses no service key and ignores renderer endpoint/key overrides', () => {
     expect(
-      resolveWisworkMainRequest(
-        true,
-        {
-          apiKey: 'renderer-key-must-be-ignored',
-          model: 'deepseek/deepseek-v4-flash-0731',
-          baseUrl: 'https://renderer.example.test/v1',
-        },
-        { WISWORK_MODEL_API_KEY: 'main-process-test-key' },
-      ),
+      resolveWisworkMainRequest(true, {
+        apiKey: 'renderer-key-must-be-ignored',
+        model: 'deepseek/deepseek-v4-flash-0731',
+        baseUrl: 'https://renderer.example.test/v1',
+      }),
     ).toEqual({
       ok: true,
       provider: 'wiswork',
-      config: { apiKey: 'main-process-test-key', model: 'deepseek/deepseek-v4-flash-0731' },
+      config: { apiKey: '', model: 'qwen/qwen3.8-max' },
     })
   })
 
@@ -91,22 +90,32 @@ describe('WisWork provider defaults and main-process config', () => {
   })
 })
 
-describe('WisWork OpenAI-compatible calls', () => {
-  it('uses the fixed URL and bearer header for one-shot chat', async () => {
+describe('WisUsage Anthropic Messages calls', () => {
+  it('uses the exact fixed URL and login bearer token for one-shot chat', async () => {
     const fetchMock = vi
       .fn()
-      .mockResolvedValue(jsonResponse({ choices: [{ message: { content: 'ok' } }] }))
+      .mockResolvedValue(jsonResponse({ content: [{ type: 'text', text: 'ok' }] }))
     vi.stubGlobal('fetch', fetchMock)
-    await chatForProvider('wiswork', config, 'sys', 'hi')
+    await chatForProvider('wiswork', config, 'sys', 'hi', undefined, withToken())
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://wismodel-proxy-dev.atominnolab.com/api/v1/chat/completions',
+      WISWORK_MESSAGES_URL,
       expect.objectContaining({
-        headers: expect.objectContaining({ Authorization: 'Bearer main-process-test-key' }),
+        headers: {
+          Authorization: 'Bearer login-access-token',
+          'Content-Type': 'application/json',
+        },
       }),
     )
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string)
+    expect(body).toEqual({
+      model: 'qwen/qwen3.8-max',
+      max_tokens: 8192,
+      system: 'sys',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
   })
 
-  it('emits SSE text and fragmented tool calls', async () => {
+  it('emits Anthropic SSE text and fragmented tool calls', async () => {
     vi.stubGlobal(
       'fetch',
       vi
@@ -114,24 +123,34 @@ describe('WisWork OpenAI-compatible calls', () => {
         .mockResolvedValue(
           okResponse(
             sseStream([
-              'data: {"choices":[{"delta":{"content":"hello "},"finish_reason":null}]}',
-              'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"lookup","arguments":"{\\"q\\":"}}]},"finish_reason":null}]}',
-              'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"paper\\"}"}}]},"finish_reason":"tool_calls"}]}',
-              'data: [DONE]',
+              'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello "}}',
+              'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call-1","name":"lookup"}}',
+              'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"q\\":\\"paper\\"}"}}',
+              'data: {"type":"content_block_stop","index":1}',
+              'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}',
             ]),
           ),
         ),
     )
     const { deltas, toolCalls, cb } = collector()
-    await streamForProvider('wiswork', config, 'sys', [{ role: 'user', text: 'hi' }], [], 100, cb)
+    await streamForProvider(
+      'wiswork',
+      config,
+      'sys',
+      [{ role: 'user', text: 'hi' }],
+      [],
+      100,
+      cb,
+      withToken(),
+    )
     expect(deltas.join('')).toBe('hello ')
     expect(toolCalls).toEqual([
       { id: 'call-1', name: 'lookup', input: { q: 'paper' }, inputError: undefined },
     ])
   })
 
-  it('preserves image data URLs in the OpenAI-compatible payload', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream(['data: [DONE]'])))
+  it('uses Anthropic image blocks in the fixed request payload', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
     vi.stubGlobal('fetch', fetchMock)
     const messages: AgentMessage[] = [
       {
@@ -140,23 +159,64 @@ describe('WisWork OpenAI-compatible calls', () => {
         images: [{ base64: 'aGVsbG8=', mime: 'image/png' }],
       },
     ]
-    await streamForProvider('wiswork', config, 'sys', messages, [], 100, collector().cb)
+    await streamForProvider(
+      'wiswork',
+      config,
+      'sys',
+      messages,
+      [],
+      100,
+      collector().cb,
+      withToken(),
+    )
     const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string)
-    expect(body.messages[1].content[1]).toEqual({
-      type: 'image_url',
-      image_url: { url: 'data:image/png;base64,aGVsbG8=' },
+    expect(body.messages[0].content[1]).toEqual({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' },
     })
   })
 
-  it('surfaces 401 without including the bearer credential', async () => {
+  it('requires the authenticated request boundary before network I/O', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(
+      streamForProvider('wiswork', config, 'sys', [], [], 100, collector().cb),
+    ).rejects.toMatchObject({ code: 'auth_required' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('preserves auth_required when the authenticated request boundary cannot refresh', async () => {
+    const authFailure = Object.assign(new Error('session expired'), { code: 'auth_required' })
+    const rejectedAuth = async () => {
+      throw authFailure
+    }
+
+    await expect(
+      streamForProvider('wiswork', config, 'sys', [], [], 100, collector().cb, rejectedAuth),
+    ).rejects.toMatchObject({ code: 'auth_required' })
+    await expect(
+      chatForProvider('wiswork', config, 'sys', 'hi', undefined, rejectedAuth),
+    ).rejects.toMatchObject({ code: 'auth_required' })
+  })
+
+  it('surfaces a repeated 401 as auth_required without including the bearer credential', async () => {
     vi.stubGlobal(
       'fetch',
       vi
         .fn()
         .mockResolvedValue(errorResponse(401, 'invalid credential Bearer fake-upstream-secret')),
     )
-    const run = streamForProvider('wiswork', config, 'sys', [], [], 100, collector().cb)
-    const result = expect(run).rejects.toMatchObject({ code: 'model_credentials_missing' })
+    const run = streamForProvider(
+      'wiswork',
+      config,
+      'sys',
+      [],
+      [],
+      100,
+      collector().cb,
+      withToken('fake-upstream-secret'),
+    )
+    const result = expect(run).rejects.toMatchObject({ code: 'auth_required' })
     await result
   })
 
@@ -180,23 +240,24 @@ describe('WisWork OpenAI-compatible calls', () => {
       [],
       100,
       collector(controller.signal).cb,
+      withToken(),
     )
     controller.abort()
     await expect(run).rejects.toThrow('cancelled')
   })
 
-  it('accepts a complete non-stream JSON fallback', async () => {
+  it('accepts a complete Anthropic non-stream JSON fallback', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ choices: [{ message: { content: 'fallback' } }] }), {
+        new Response(JSON.stringify({ content: [{ type: 'text', text: 'fallback' }] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }),
       ),
     )
     const { deltas, cb } = collector()
-    await streamForProvider('wiswork', config, 'sys', [], [], 100, cb)
+    await streamForProvider('wiswork', config, 'sys', [], [], 100, cb, withToken())
     expect(deltas).toEqual(['fallback'])
   })
 })
@@ -213,7 +274,8 @@ describe('desktop WisModel security boundary', () => {
     ]) {
       const source = readRepo(relative)
       expect(source).toContain('registerWisworkModelIpc')
-      expect(source).toContain('getValidAccountStatus()')
+      expect(source).toContain('getAccessToken()')
+      expect(source).toContain('fetchWithAuth(')
       expect(source).toContain('isTrustedSender:')
     }
     const shell = readRepo('apps/shell/src/main/index.ts')

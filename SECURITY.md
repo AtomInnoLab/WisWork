@@ -19,7 +19,7 @@ All application windows run with the full Electron renderer lockdown:
   (`@wiswork/electron-utils` → `safeExternalUrl`) that parses the URL and
   enforces a protocol allowlist (http/https; pdf link annotations additionally
   allow mailto). `file:`, `javascript:`, and custom schemes are always rejected.
-- No API keys are hardcoded. `WISWORK_MODEL_API_KEY` is read only in the Electron main process and is never returned over IPC or persisted by the app.
+- No API keys are hardcoded. Managed model calls use the current OAuth access token only inside the Electron main process.
 
 ## OAuth and Model Credential Boundaries
 
@@ -34,15 +34,14 @@ All application windows run with the full Electron renderer lockdown:
   Gateway behavior is a release acceptance gate.
 - OAuth access and refresh tokens never cross preload IPC. Authentication error events expose only
   stable categories, and callback values, token bodies, and credentials must not be logged.
-- `WISWORK_MODEL_API_KEY` is a development service credential, not a user token. It is accepted
-  only from the Electron main-process environment, is not persisted, and cannot be overridden by
-  a renderer-provided URL, header, or settings value. Production packaging must not embed it.
+- Managed model calls resolve and refresh the OAuth access token only in the Electron main process.
+  The token is not persisted in AI settings and cannot be overridden by a renderer-provided URL,
+  header, model, or settings value.
 - Model errors may record the provider, model, HTTP status, and bounded non-sensitive diagnostics;
   they must never include authorization headers, request credentials, OAuth tokens, authorization
   codes, or raw authentication responses.
-- The current model path is a direct development proxy. WisUsage metering, user billing, Gateway
-  model forwarding, production key distribution, and server-side rate-limit policy are not
-  implemented by this repository and must not be inferred from a successful desktop login.
+- The managed model path is the fixed WisUsage Anthropic Messages endpoint. Metering, billing,
+  production credential policy, and server-side rate limits remain server responsibilities.
 
 Image generation, media analysis, cloud slide generation, and cloud PDF conversion are explicitly
 unsupported in the current build and return `unsupported_feature`. They do not silently fall back

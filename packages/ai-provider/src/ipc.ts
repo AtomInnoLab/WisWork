@@ -1,6 +1,6 @@
 import { AiCreditsError, streamForProvider } from './stream'
 import { chatForProvider } from './chat'
-import { AiProviderError } from './errors'
+import { AiProviderError, isAuthRequiredError } from './errors'
 import { resolveWisworkMainRequest, sanitizeWisworkSettings } from './main-config'
 import { defaultAiSettings } from './providers'
 import { AiTimeoutError } from './watchdog'
@@ -11,6 +11,7 @@ import type {
   AiSettings,
   AiStreamChunk,
   AiStreamRequest,
+  WisworkFetchWithAuth,
 } from './types'
 
 export const AI_IPC_LIMITS = {
@@ -74,7 +75,8 @@ export interface RegisterWisworkModelIpcOptions {
   isTrustedSender(senderId: number): boolean
   loadSettings(): unknown
   saveSettings(settings: AiSettings): void
-  getLoggedIn(): Promise<boolean>
+  getAccessToken(): Promise<string | null>
+  fetchWithAuth: WisworkFetchWithAuth
 }
 
 const PROVIDER_IDS: ReadonlySet<string> = new Set<AiProviderId>([
@@ -307,6 +309,7 @@ function safeSettings(value: unknown): AiSettings {
 type StableStreamErrorCode = NonNullable<AiStreamChunk['errorCode']>
 
 function stableErrorCode(error: unknown): StableStreamErrorCode {
+  if (isAuthRequiredError(error)) return 'auth_required'
   if (error instanceof AiTimeoutError) return 'timeout'
   if (error instanceof AiCreditsError) return 'credits'
   if (error instanceof AiProviderError) return error.code
@@ -320,8 +323,8 @@ export function registerWisworkModelIpc(options: RegisterWisworkModelIpcOptions)
     if (!options.isTrustedSender(event.sender.id)) throw new AiIpcError('untrusted_sender')
   }
   const settingsForRequest = async (settings: AiSettings) => {
-    const loggedIn = await options.getLoggedIn()
-    return resolveWisworkMainRequest(loggedIn, settings.providers.wiswork)
+    const accessToken = await options.getAccessToken()
+    return resolveWisworkMainRequest(accessToken !== null, settings.providers.wiswork)
   }
   const send = (event: WisworkIpcEvent, chunk: AiStreamChunk) => {
     if (!event.sender.isDestroyed()) event.sender.send(options.channels.streamChunk, chunk)
@@ -382,6 +385,7 @@ export function registerWisworkModelIpc(options: RegisterWisworkModelIpcOptions)
             stopReason = reason
           },
         },
+        options.fetchWithAuth,
       )
       send(event, {
         requestId: request.requestId,
@@ -427,6 +431,8 @@ export function registerWisworkModelIpc(options: RegisterWisworkModelIpcOptions)
           resolved.config,
           request.system,
           request.user,
+          undefined,
+          options.fetchWithAuth,
         )
         if (result.ok) return result
         const code = result.errorCode ?? 'model_upstream_unavailable'

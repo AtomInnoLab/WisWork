@@ -1200,13 +1200,12 @@ export function IconGear(props: IconProps) {
 
 /** collapse the right sidebar: panel outline + arrow pushing into it */
 export function IconSidebarCollapse(props: IconProps) {
-  // Mirrored glyph: the AI panel docks on the LEFT, so the divider and arrow point left
   return (
     <Svg {...props}>
       <rect x="3" y="3.76" width="10.01" height="8.47" rx="0.77" />
-      <path d="M 6.07 3.76 v 8.47" />
+      <path d="M 9.93 3.76 v 8.47" />
       <path
-        d="M 11.46 8 h -3.39 M 9.39 6.38 7.77 8 l 1.62 1.62"
+        d="M 4.54 8 h 3.39 M 6.61 6.38 8.23 8 l -1.62 1.62"
         strokeWidth="1"
         strokeLinejoin="round"
       />

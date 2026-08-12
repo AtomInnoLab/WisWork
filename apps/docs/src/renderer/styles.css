@@ -14,6 +14,7 @@
   --canvas: #e6e6e6;
   --ai-highlight: #fff3c4;
   --ai-highlight-border: #f2b900;
+  --document-surface: #ffffff;
 }
 
 * {
@@ -2518,7 +2519,7 @@ th.cell-rev-del {
 .doc-page {
   width: var(--page-w, 816px);
   margin: 0 auto;
-  background: var(--page-bg, var(--surface));
+  background: var(--page-bg, var(--document-surface));
   box-shadow:
     0 1px 3px rgba(0, 0, 0, 0.28),
     0 4px 16px rgba(0, 0, 0, 0.1);
@@ -3938,15 +3939,15 @@ body.docs-crop-active
   flex-direction: column;
   background: var(--color-bg-page);
   /* Same visible divider as the WisWork Sheets panel: the editor canvas is gray, so the default border would drown */
-  border-right: 1px solid var(--color-border-strong);
+  border-left: 1px solid var(--color-border-strong);
   font-family: var(--gs-font-sans);
   color: var(--color-text-primary);
 }
 
-/* drag handle on the panel's right edge — resize the panel horizontally */
+/* Drag handle on the dock's left edge. */
 .ai-panel-resizer {
   position: absolute;
-  right: -3px;
+  left: -3px;
   top: 0;
   bottom: 0;
   width: 7px;
@@ -4008,7 +4009,7 @@ body.docs-crop-active
   color: var(--color-text-primary);
 }
 
-/* collapsed AI sidebar: thin rail on the left edge */
+/* Collapsed AI sidebar: thin rail on the right edge. */
 .ai-rail {
   display: flex;
   flex-direction: column;
@@ -4017,7 +4018,7 @@ body.docs-crop-active
   width: 34px;
   padding: 12px 2px;
   border: none;
-  border-right: 1px solid var(--border);
+  border-left: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
@@ -6804,4 +6805,35 @@ tr > .page-gap-cut {
 
 .ai-login-btn:hover {
   opacity: 0.88;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --surface: #242629;
+    --chrome-bg: #1d1f22;
+    --border: #3b3e43;
+    --border-strong: #50545a;
+    --text: #f1f3f5;
+    --text-dim: #b7bbc1;
+    --hover: #303338;
+    --pressed: #3a3e44;
+    --active-bg: #253b58;
+    --canvas: #141619;
+    --ai-highlight: #584917;
+    --ai-highlight-border: #d5a600;
+    --color-text-primary: #f1f3f5;
+    --color-text-secondary: #b7bbc1;
+    --color-text-tertiary: #9298a1;
+    --color-bg-page: #242629;
+    --color-bg-subtle: #303338;
+    --color-border-default: #3b3e43;
+    --color-border-strong: #50545a;
+  }
+
+  .doc-page,
+  .page-notes,
+  .page-hf {
+    color-scheme: light;
+  }
 }
