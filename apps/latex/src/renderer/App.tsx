@@ -6,6 +6,13 @@ import { mapCompileDiagnostics } from './compile/diagnostics.js'
 import { CompilePanel } from './compile/CompilePanel.js'
 import { AiPanel } from './ai/AiPanel.js'
 import {
+  diagnosticToAgentContext,
+  type AgentContext,
+  type AgentContextKey,
+  type AgentDiagnosticContext,
+  type EditorContextSnapshot,
+} from './ai/agent-context.js'
+import {
   acceptCompileResult,
   addEditorBuffer,
   beginCompile,
@@ -82,6 +89,13 @@ export function App() {
   const [compiling, setCompiling] = useState(false)
   const [bundleStatus, setBundleStatus] = useState<LatexBundleStatusDto>({ state: 'missing' })
   const [aiOpen, setAiOpen] = useState(true)
+  const [editorContext, setEditorContext] = useState<
+    (EditorContextSnapshot & { path: string }) | null
+  >(null)
+  const [aiDiagnostic, setAiDiagnostic] = useState<AgentDiagnosticContext | undefined>()
+  const [hiddenAiContext, setHiddenAiContext] = useState<ReadonlySet<AgentContextKey>>(
+    () => new Set(),
+  )
   const [diagnostics, setDiagnostics] = useState<EditorDiagnostic[]>([])
   const [log, setLog] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -545,6 +559,29 @@ export function App() {
     [editorState],
   )
   const activeDiagnostics = diagnostics.filter((item) => item.path === activePath)
+  const agentContext = useMemo<AgentContext>(() => {
+    const currentEditor = editorContext?.path === activePath ? editorContext : null
+    return {
+      ...(!hiddenAiContext.has('activeFile') && activePath ? { activeFile: activePath } : {}),
+      ...(!hiddenAiContext.has('activeFile') && currentEditor
+        ? { cursorLine: currentEditor.cursorLine }
+        : {}),
+      ...(!hiddenAiContext.has('selection') && currentEditor?.selection
+        ? { selection: currentEditor.selection }
+        : {}),
+      ...(!hiddenAiContext.has('diagnostic') && aiDiagnostic ? { diagnostic: aiDiagnostic } : {}),
+    }
+  }, [activePath, aiDiagnostic, editorContext, hiddenAiContext])
+
+  useEffect(() => {
+    setEditorContext(null)
+    setHiddenAiContext((current) => {
+      const next = new Set(current)
+      next.delete('activeFile')
+      next.delete('selection')
+      return next
+    })
+  }, [activePath])
 
   useEffect(() => {
     forwardGate.current.invalidate()
@@ -585,6 +622,15 @@ export function App() {
               onSave={() => void savePath(activeBuffer.path)}
               onCompile={compileProject}
               onCursorLine={forwardSync}
+              onContextChange={(context) => {
+                setEditorContext({ path: activeBuffer.path, ...context })
+                setHiddenAiContext((current) => {
+                  const next = new Set(current)
+                  next.delete('activeFile')
+                  next.delete('selection')
+                  return next
+                })
+              }}
               revealLine={revealTarget?.path === activeBuffer.path ? revealTarget.line : null}
             />
           ) : (
@@ -615,6 +661,15 @@ export function App() {
                 setRevealTarget({ path: diagnostic.path, line: diagnostic.lineIndex + 1 }),
               )
             }}
+            onAskAi={(diagnostic) => {
+              setAiDiagnostic(diagnosticToAgentContext(diagnostic))
+              setHiddenAiContext((current) => {
+                const next = new Set(current)
+                next.delete('diagnostic')
+                return next
+              })
+              setAiOpen(true)
+            }}
           />
         </section>
         <PdfPreview
@@ -631,6 +686,8 @@ export function App() {
           disabled={frozen}
           onProjectFilesChanged={refreshProjectFiles}
           open={aiOpen}
+          context={agentContext}
+          onRemoveContext={(key) => setHiddenAiContext((current) => new Set([...current, key]))}
           onExpand={() => setAiOpen(true)}
           onCollapse={() => setAiOpen(false)}
         />

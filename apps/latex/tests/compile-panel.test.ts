@@ -14,6 +14,7 @@ describe('CompilePanel bundle status', () => {
         onCompile: vi.fn(),
         onCancel: vi.fn(),
         onDiagnostic: vi.fn(),
+        onAskAi: vi.fn(),
       }),
     )
     expect(html).toContain('Downloading TeX bundle')
@@ -32,9 +33,35 @@ describe('CompilePanel bundle status', () => {
         onCompile: vi.fn(),
         onCancel: vi.fn(),
         onDiagnostic: vi.fn(),
+        onAskAi: vi.fn(),
       }),
     )
     expect(html).toContain('Remote TeX bundle configured')
     expect(html).not.toContain('TeX bundle ready')
+  })
+
+  it('offers a separate AI action for each diagnostic', () => {
+    const html = renderToStaticMarkup(
+      createElement(CompilePanel, {
+        compiling: false,
+        bundleStatus: { state: 'ready', bytes: 1 },
+        diagnostics: [
+          {
+            path: 'main.tex',
+            lineIndex: 4,
+            columnIndex: 2,
+            severity: 'error',
+            message: 'Undefined control sequence',
+          },
+        ],
+        log: '',
+        onCompile: vi.fn(),
+        onCancel: vi.fn(),
+        onDiagnostic: vi.fn(),
+        onAskAi: vi.fn(),
+      }),
+    )
+    expect(html).toContain('Open main.tex:5')
+    expect(html).toContain('Ask AI about this issue')
   })
 })

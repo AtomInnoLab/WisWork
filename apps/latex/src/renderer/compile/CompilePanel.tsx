@@ -10,6 +10,7 @@ export interface CompilePanelProps {
   onCompile: () => void
   onCancel: () => void
   onDiagnostic: (diagnostic: EditorDiagnostic) => void
+  onAskAi: (diagnostic: EditorDiagnostic) => void
 }
 
 export function CompilePanel({
@@ -20,6 +21,7 @@ export function CompilePanel({
   onCompile,
   onCancel,
   onDiagnostic,
+  onAskAi,
 }: CompilePanelProps) {
   const { t } = useLatexLocale()
   const busy = compiling || bundleStatus.state === 'downloading'
@@ -55,9 +57,22 @@ export function CompilePanel({
         <ul className="diagnostic-list">
           {diagnostics.map((diagnostic, index) => (
             <li key={`${diagnostic.path}:${diagnostic.lineIndex}:${index}`}>
-              <button type="button" onClick={() => onDiagnostic(diagnostic)}>
+              <button
+                type="button"
+                aria-label={`Open ${diagnostic.path}:${diagnostic.lineIndex + 1}`}
+                onClick={() => onDiagnostic(diagnostic)}
+              >
                 <strong>{diagnostic.severity}</strong> {diagnostic.path}:{diagnostic.lineIndex + 1}{' '}
                 — {diagnostic.message}
+              </button>
+              <button
+                type="button"
+                className="diagnostic-ai-button"
+                aria-label="Ask AI about this issue"
+                title="Ask AI about this issue"
+                onClick={() => onAskAi(diagnostic)}
+              >
+                Ask AI
               </button>
             </li>
           ))}

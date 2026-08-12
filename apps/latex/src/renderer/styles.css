@@ -211,6 +211,19 @@ button:disabled {
 .diagnostic-list button:hover {
   background: var(--hover);
 }
+.diagnostic-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+.diagnostic-list .diagnostic-ai-button {
+  width: auto;
+  margin-right: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: #145da0;
+}
 .compile-panel pre {
   margin: 0;
   padding: 8px 12px;
@@ -512,6 +525,72 @@ button:disabled {
   font-size: 12px;
 }
 
+.agent-task-timeline {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.agent-task-timeline-title {
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.agent-task-timeline ol {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-task-timeline li {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 7px;
+}
+
+.timeline-state {
+  width: 8px;
+  height: 8px;
+  margin-top: 3px;
+  border-radius: 50%;
+  background: #7b8188;
+}
+
+.timeline-running .timeline-state {
+  background: var(--accent);
+  animation: latex-ai-dot 900ms ease-in-out infinite alternate;
+}
+
+.timeline-success .timeline-state {
+  background: #26854a;
+}
+
+.timeline-error .timeline-state {
+  background: #c9363e;
+}
+
+.timeline-cancelled .timeline-state {
+  background: #8b8f94;
+}
+
+.agent-task-timeline details summary {
+  padding: 2px 0;
+  font-size: 11px;
+}
+
+.agent-task-timeline pre {
+  max-height: 120px;
+  margin: 3px 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
 .ai-undo-button,
 .proposal-review > button {
   align-self: flex-start;
@@ -525,6 +604,38 @@ button:disabled {
   padding: 10px 14px 14px;
   border-top: 1px solid var(--border);
   background: #fff;
+}
+
+.ai-context-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.ai-context-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 4px 7px;
+  border: 1px solid #cfe0f4;
+  border-radius: 999px;
+  background: #eef6ff;
+  color: #145da0;
+  font-size: 11px;
+}
+
+.ai-context-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-context-chip button {
+  flex: 0 0 auto;
+  color: #55718f;
+  line-height: 1;
 }
 
 .ai-input-box {

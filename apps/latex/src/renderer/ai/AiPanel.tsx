@@ -9,6 +9,19 @@ import {
 } from './proposal-review.js'
 import { ProposalReview } from './ProposalReview.js'
 import { createLatexTransport } from './transport.js'
+import {
+  normalizeAgentContext,
+  serializeAgentPrompt,
+  type AgentContext,
+  type AgentContextKey,
+} from './agent-context.js'
+import {
+  cancelRunningTimelineEntries,
+  completeTimelineEntry,
+  failRunningTimelineEntries,
+  startTimelineEntry,
+  type TaskTimelineEntry,
+} from './task-timeline.js'
 
 const E2E_PROPOSAL_TEXT = String.raw`\documentclass{article}
 \begin{document}
@@ -37,6 +50,61 @@ function loadPanelWidth(): number {
   return Number.isFinite(saved) && saved > 0 ? clampPanelWidth(saved) : PANEL_WIDTH_DEFAULT
 }
 
+function contextChips(context: AgentContext): Array<{ key: AgentContextKey; label: string }> {
+  const normalized = normalizeAgentContext(context)
+  return [
+    ...(normalized.activeFile
+      ? [
+          {
+            key: 'activeFile' as const,
+            label: `${normalized.activeFile}${normalized.cursorLine ? `:${normalized.cursorLine}` : ''}`,
+          },
+        ]
+      : []),
+    ...(normalized.selection
+      ? [
+          {
+            key: 'selection' as const,
+            label: `Selection lines ${normalized.selection.startLine}–${normalized.selection.endLine}`,
+          },
+        ]
+      : []),
+    ...(normalized.diagnostic
+      ? [
+          {
+            key: 'diagnostic' as const,
+            label: `${normalized.diagnostic.severity === 'error' ? 'Error' : 'Warning'} at ${normalized.diagnostic.path}:${normalized.diagnostic.line}`,
+          },
+        ]
+      : []),
+  ]
+}
+
+function TaskTimeline({ entries }: { entries: readonly TaskTimelineEntry[] }) {
+  if (!entries.length) return null
+  return (
+    <section className="agent-task-timeline" aria-label="Agent task timeline">
+      <div className="agent-task-timeline-title">Task activity</div>
+      <ol>
+        {entries.map((entry) => (
+          <li key={entry.id} className={`timeline-${entry.state}`}>
+            <span className="timeline-state" aria-label={entry.state} />
+            <div>
+              <div className="timeline-label">{entry.label}</div>
+              {entry.detail && (
+                <details>
+                  <summary>Details</summary>
+                  <pre>{entry.detail}</pre>
+                </details>
+              )}
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
+  )
+}
+
 export function AiPanel({
   projectId,
   disabled = false,
@@ -44,6 +112,8 @@ export function AiPanel({
   open = true,
   onExpand,
   onCollapse,
+  context = {},
+  onRemoveContext,
 }: {
   projectId: string
   disabled?: boolean
@@ -51,6 +121,8 @@ export function AiPanel({
   open?: boolean
   onExpand?: () => void
   onCollapse?: () => void
+  context?: AgentContext
+  onRemoveContext?: (key: AgentContextKey) => void
 }) {
   const [input, setInput] = useState('')
   const [text, setText] = useState('')
@@ -59,6 +131,7 @@ export function AiPanel({
   const [proposal, setProposal] = useState<ReviewProposal | null>(null)
   const [snapshotId, setSnapshotId] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  const [timeline, setTimeline] = useState<TaskTimelineEntry[]>([])
   const [panelWidth, setPanelWidth] = useState(loadPanelWidth)
   const [resizing, setResizing] = useState(false)
   const projectRef = useRef(projectId)
@@ -73,7 +146,14 @@ export function AiPanel({
       skill: createLatexSkill(window.latexApi, () => projectRef.current),
       events: {
         onText: setText,
+        onToolStart: (call) => setTimeline((current) => startTimelineEntry(current, call)),
         onToolExecuted: ({ call, execution }) => {
+          setTimeline((current) => {
+            const started = current.some((entry) => entry.id === call.id)
+              ? current
+              : startTimelineEntry(current, call)
+            return completeTimelineEntry(started, call.id, execution)
+          })
           if (call.name !== 'propose_project_edits' || execution.isError) return
           const projectId = projectRef.current
           void loadProposalForReview(execution.output, projectId, (request) =>
@@ -85,6 +165,7 @@ export function AiPanel({
             )
         },
         onDone: (result) => {
+          if (result.cancelled) setTimeline(cancelRunningTimelineEntries)
           setBusy(false)
           setText('')
           if (result.text)
@@ -100,6 +181,7 @@ export function AiPanel({
             })
         },
         onError: (error) => {
+          setTimeline((current) => failRunningTimelineEntries(current, error))
           setStatus(error)
           setBusy(false)
         },
@@ -185,7 +267,7 @@ export function AiPanel({
         role: 'user',
         text: instruction,
       })
-    loopRef.current?.run(instruction)
+    loopRef.current?.run(serializeAgentPrompt(instruction, context))
   }
 
   const cancel = () => {
@@ -193,6 +275,7 @@ export function AiPanel({
     setBusy(false)
     setText('')
     setStatus('Stopped.')
+    setTimeline(cancelRunningTimelineEntries)
   }
 
   const confirm = async (selected: ReadonlySet<string>) => {
@@ -307,6 +390,7 @@ export function AiPanel({
             </div>
           )}
           {busy && !text && <AiTypingIndicator label="WisWork is working" />}
+          <TaskTimeline entries={timeline} />
           {proposal && (
             <ProposalReview
               proposal={proposal}
@@ -331,6 +415,22 @@ export function AiPanel({
           )}
         </div>
         <div className="ai-composer-wrap">
+          {contextChips(context).length > 0 && (
+            <div className="ai-context-chips" aria-label="Attached context">
+              {contextChips(context).map((chip) => (
+                <span className="ai-context-chip" key={chip.key}>
+                  <span>{chip.label}</span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${chip.key} context`}
+                    onClick={() => onRemoveContext?.(chip.key)}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           <AiComposer
             value={input}
             busy={busy}
