@@ -35,7 +35,7 @@ TDD：先写纯函数和组件契约测试并观察缺少模块/行为的 RED，
 - 修改 `packages/latex-compiler/src/runner.ts` 与 `index.ts`：把 overlay 传入隔离编译流程。
 - 修改 `packages/latex-compiler/tests/workspace.test.ts`、`runner.test.ts`、hardening tests。
 
-验收：overlay 可修改现有文本或创建允许的新文本文件；原项目不变化；路径穿越、绝对路径、符号链接目标、二进制/NUL、单文件/总量超限均在 spawn 前拒绝。
+验收：overlay 可修改现有文本，但本期拒绝创建新文件；原项目不变化；路径穿越、绝对路径、跨平台文件名别名、符号链接目标、二进制/NUL、单文件/总量超限和缺失目标均在 spawn 前拒绝。新文件提案由上层标记为无法隔离验证，仍可进入人工审阅。
 
 TDD：先加入行为和攻击面测试并确认 RED；最小实现后运行 latex-compiler 全套测试与 typecheck。
 
@@ -80,4 +80,3 @@ TDD：先写 diff 模型、状态机和渲染契约测试确认 RED；实现后�
 验收：设计中的安全、回滚和验证标准均有测试证据；分支可由用户选择合并、创建 PR 或保留。
 
 提交：`docs(latex): document verified agent workflow`（仅在文档未与前述提交同交付时）。
-
