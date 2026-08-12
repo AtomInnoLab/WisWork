@@ -51,9 +51,9 @@ test.describe('theme pipeline', () => {
       const editorPage = await waitForPageWithUrl(app, 'markdown/out')
       await expect(editorPage.locator('.doc-editor')).toBeVisible()
       expect(await themeAttr(shellPage)).toBe('light')
-      // Editors initially follow Electron's explicit nativeTheme source; the
-      // shell then pushes subsequent user selections to every tab.
-      expect(await themeAttr(editorPage)).toBeNull()
+      // Editors read the current explicit Shell theme before their first
+      // render, then receive subsequent selections through the shared app:* channel.
+      expect(await themeAttr(editorPage)).toBe('light')
 
       await setTheme(shellPage, 'dark')
       await expect.poll(() => themeAttr(shellPage)).toBe('dark')
