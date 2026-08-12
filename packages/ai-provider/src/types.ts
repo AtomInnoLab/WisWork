@@ -51,6 +51,12 @@ export interface AiChatResponse {
     | 'model_rate_limited'
     | 'model_upstream_unavailable'
     | 'model_invalid_response'
+  diagnostic?: AiServiceDiagnostic
+}
+
+export interface AiServiceDiagnostic {
+  stage: 'auth' | 'request' | 'response' | 'stream'
+  httpStatus?: number
 }
 
 export interface AiStreamRequest {
@@ -79,6 +85,8 @@ export interface AiStreamChunk {
     | 'model_rate_limited'
     | 'model_upstream_unavailable'
     | 'model_invalid_response'
+  /** Safe support detail: never includes response bodies, URLs, credentials, or exception messages. */
+  diagnostic?: AiServiceDiagnostic
   /** normalized stop reason carried on 'done' ('max_tokens' = output cut off by the token limit) */
   stopReason?: string
 }

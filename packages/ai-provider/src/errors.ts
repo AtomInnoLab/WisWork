@@ -8,12 +8,18 @@ export type AiProviderErrorCode =
 export class AiProviderError extends Error {
   readonly code: AiProviderErrorCode
   readonly status: number | undefined
+  readonly stage: 'auth' | 'request' | 'response' | 'stream' | undefined
 
-  constructor(code: AiProviderErrorCode, status?: number) {
+  constructor(
+    code: AiProviderErrorCode,
+    status?: number,
+    stage?: 'auth' | 'request' | 'response' | 'stream',
+  ) {
     super(code)
     this.name = 'AiProviderError'
     this.code = code
     this.status = status
+    this.stage = stage
   }
 }
 
@@ -29,8 +35,8 @@ export function isAuthRequiredError(error: unknown): boolean {
 
 export function safeHttpProviderError(status: number): AiProviderError {
   if (status === 401 || status === 403) {
-    return new AiProviderError('model_credentials_missing', status)
+    return new AiProviderError('model_credentials_missing', status, 'response')
   }
-  if (status === 429) return new AiProviderError('model_rate_limited', status)
-  return new AiProviderError('model_upstream_unavailable', status)
+  if (status === 429) return new AiProviderError('model_rate_limited', status, 'response')
+  return new AiProviderError('model_upstream_unavailable', status, 'response')
 }

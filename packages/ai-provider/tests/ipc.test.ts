@@ -205,6 +205,7 @@ describe('registerWisworkModelIpc', () => {
         type: 'error',
         error: status === 401 ? 'auth_required' : 'model_credentials_missing',
         errorCode: status === 401 ? 'auth_required' : 'model_credentials_missing',
+        diagnostic: { stage: 'response', httpStatus: status },
       })
       expect(JSON.stringify(sent)).not.toContain('fake-upstream-secret')
       expect(JSON.stringify(sent)).not.toContain('fake-key')

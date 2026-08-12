@@ -7,6 +7,7 @@ import {
   AI_PROVIDERS,
   WISWORK_DEFAULT_MODEL,
   WISWORK_MESSAGES_URL,
+  WISWORK_REQUEST_LOCATION,
   defaultAiSettings,
 } from '../src/providers'
 import { streamForProvider } from '../src/stream'
@@ -103,6 +104,7 @@ describe('WisUsage Anthropic Messages calls', () => {
         headers: {
           Authorization: 'Bearer login-access-token',
           'Content-Type': 'application/json',
+          'x-req-location': 'sg',
         },
       }),
     )
@@ -147,6 +149,21 @@ describe('WisUsage Anthropic Messages calls', () => {
     expect(toolCalls).toEqual([
       { id: 'call-1', name: 'lookup', input: { q: 'paper' }, inputError: undefined },
     ])
+  })
+
+  it('passes through the requested output limit and routes managed streaming through sg', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await streamForProvider('wiswork', config, 'sys', [], [], 8192, collector().cb, withToken())
+
+    const init = fetchMock.mock.calls[0]![1]
+    expect(JSON.parse(init.body as string).max_tokens).toBe(8192)
+    expect(init.headers).toEqual({
+      Authorization: 'Bearer login-access-token',
+      'Content-Type': 'application/json',
+      'x-req-location': WISWORK_REQUEST_LOCATION,
+    })
   })
 
   it('uses Anthropic image blocks in the fixed request payload', async () => {
@@ -197,6 +214,20 @@ describe('WisUsage Anthropic Messages calls', () => {
     await expect(
       chatForProvider('wiswork', config, 'sys', 'hi', undefined, rejectedAuth),
     ).rejects.toMatchObject({ code: 'auth_required' })
+  })
+
+  it('classifies one-shot connection and response decoding failures without leaking details', async () => {
+    const connectionFailure = async () => {
+      throw new Error('private network detail')
+    }
+    await expect(
+      chatForProvider('wiswork', config, 'sys', 'hi', undefined, connectionFailure),
+    ).rejects.toMatchObject({ code: 'model_upstream_unavailable', stage: 'request' })
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('not-json', { status: 200 })))
+    await expect(
+      chatForProvider('wiswork', config, 'sys', 'hi', undefined, withToken()),
+    ).rejects.toMatchObject({ code: 'model_invalid_response', stage: 'response' })
   })
 
   it('surfaces a repeated 401 as auth_required without including the bearer credential', async () => {

@@ -19,17 +19,6 @@
   z-index: 10;
 }
 
-:root[data-theme='dark'] .tab-bar {
-  --tabstrip-bg: #17191c;
-  --tabstrip-text: #b7bbc1;
-  --tabstrip-text-active: #f1f3f5;
-  --tab-separator: rgb(255 255 255 / 18%);
-}
-
-:root[data-theme='dark'] .tab-item:not(.active):hover .tab-plate {
-  background: rgb(255 255 255 / 10%);
-}
-
 /* room for the macOS traffic lights (titleBarStyle: hiddenInset) */
 .tab-bar-drag-spacer {
   width: 78px;
