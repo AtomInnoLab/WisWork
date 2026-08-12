@@ -4,6 +4,7 @@ import { useLatexLocale } from '../i18n/locale.js'
 
 export interface CompilePanelProps {
   compiling: boolean
+  disabled?: boolean
   bundleStatus: LatexBundleStatusDto
   diagnostics: readonly EditorDiagnostic[]
   log: string
@@ -13,8 +14,13 @@ export interface CompilePanelProps {
   onAskAi: (diagnostic: EditorDiagnostic) => void
 }
 
+export function runCompilePanelAction(disabled: boolean, action: () => void): void {
+  if (!disabled) action()
+}
+
 export function CompilePanel({
   compiling,
+  disabled = false,
   bundleStatus,
   diagnostics,
   log,
@@ -28,11 +34,20 @@ export function CompilePanel({
   return (
     <section className="compile-panel">
       <header>
-        <button type="button" className="compile-button" onClick={onCompile} disabled={busy}>
+        <button
+          type="button"
+          className="compile-button"
+          onClick={() => runCompilePanelAction(disabled, onCompile)}
+          disabled={busy || disabled}
+        >
           {busy ? t('compiling') : t('compile')}
         </button>
         {busy && (
-          <button type="button" onClick={onCancel}>
+          <button
+            type="button"
+            onClick={() => runCompilePanelAction(disabled, onCancel)}
+            disabled={disabled}
+          >
             {t('cancel')}
           </button>
         )}

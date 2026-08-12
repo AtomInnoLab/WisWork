@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createElement } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import { CompilePanel } from '../src/renderer/compile/CompilePanel.js'
+import { CompilePanel, runCompilePanelAction } from '../src/renderer/compile/CompilePanel.js'
 
 describe('CompilePanel bundle status', () => {
   it('shows AI-triggered bundle download progress and keeps cancel available', () => {
@@ -38,6 +38,26 @@ describe('CompilePanel bundle status', () => {
     )
     expect(html).toContain('Remote TeX bundle configured')
     expect(html).not.toContain('TeX bundle ready')
+  })
+
+  it('disables compile and cancel while the editor transaction is frozen and gates handlers', () => {
+    const action = vi.fn()
+    runCompilePanelAction(true, action)
+    expect(action).not.toHaveBeenCalled()
+    const html = renderToStaticMarkup(
+      createElement(CompilePanel, {
+        compiling: true,
+        disabled: true,
+        bundleStatus: { state: 'ready', bytes: 1 },
+        diagnostics: [],
+        log: '',
+        onCompile: action,
+        onCancel: action,
+        onDiagnostic: vi.fn(),
+        onAskAi: vi.fn(),
+      }),
+    )
+    expect(html.match(/disabled=""/g)).toHaveLength(2)
   })
 
   it('offers a separate AI action for each diagnostic', () => {

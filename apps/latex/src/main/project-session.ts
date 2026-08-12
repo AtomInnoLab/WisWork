@@ -33,7 +33,10 @@ import type {
   ProposalVerificationDto,
 } from '../shared/ipc.js'
 import { isAiSensitivePath } from '../shared/ai-path-policy.js'
-import { normalizeProposalDiagnostics } from '../shared/proposal-verification.js'
+import {
+  MAX_FORMAL_COMPILE_DIAGNOSTICS,
+  normalizeProposalDiagnostics,
+} from '../shared/proposal-verification.js'
 
 export class MainFileRenameError extends Error {}
 
@@ -58,6 +61,7 @@ export class ProposalVerificationRejectedError extends Error {
 }
 
 const MAX_PROPOSAL_VERIFICATION_LOG_BYTES = 16_000
+const CONFIRMED_INTERNAL_COMPILE = Symbol('confirmed-internal-compile')
 
 export interface WatcherLike {
   close(): void
@@ -453,8 +457,15 @@ export class ProjectSession {
     }
   }
 
-  async compile(revision: number, mainFile: string): Promise<CompileResultDto> {
+  async compile(
+    revision: number,
+    mainFile: string,
+    authorization?: typeof CONFIRMED_INTERNAL_COMPILE,
+  ): Promise<CompileResultDto> {
     this.assertActive()
+    if (this.confirmedMutationInProgress && authorization !== CONFIRMED_INTERNAL_COMPILE) {
+      throw new Error('Confirmed edit transaction is in progress')
+    }
     this.assertAllBuffersPersisted()
     if (!this.compilerRuntime) throw new Error('LaTeX compiler runtime is not configured')
     if (this.activeCompile?.kind === 'compile' && this.activeCompile.revision === revision) {
@@ -531,7 +542,10 @@ export class ProjectSession {
         const value: CompileResultDto = {
           revision,
           pdfUrl: result.pdfPath ? `wiswork-latex-pdf://${this.projectId}/${revision}` : null,
-          diagnostics: normalizeProposalDiagnostics(parseTectonicDiagnostics(result.log)),
+          diagnostics: normalizeProposalDiagnostics(
+            parseTectonicDiagnostics(result.log),
+            MAX_FORMAL_COMPILE_DIAGNOSTICS,
+          ),
           log: result.log,
         }
         this.compileResults.delete(revision)
@@ -561,6 +575,11 @@ export class ProjectSession {
   }
 
   cancelCompile(): boolean {
+    if (this.confirmedMutationInProgress) return false
+    return this.cancelCompileInternal()
+  }
+
+  private cancelCompileInternal(): boolean {
     if (!this.activeCompile) return false
     if (this.activeCompile.phase === 'publishing') return false
     const token = this.activeCompile.token
@@ -1001,7 +1020,11 @@ export class ProjectSession {
     if (!this.mainFile) return { ok: false as const, error: 'Main file is not configured' }
     this.confirmedEditRevision = Math.max(this.confirmedEditRevision + 1, Date.now())
     try {
-      const result = await this.compile(this.confirmedEditRevision, this.mainFile)
+      const result = await this.compile(
+        this.confirmedEditRevision,
+        this.mainFile,
+        CONFIRMED_INTERNAL_COMPILE,
+      )
       return { ok: true as const, result }
     } catch (error) {
       return { ok: false as const, error: error instanceof Error ? error.message : String(error) }
@@ -1012,7 +1035,7 @@ export class ProjectSession {
     if (this.disposed) return
     this.disposed = true
     this.watcher.close()
-    this.cancelCompile()
+    this.cancelCompileInternal()
     for (const cancel of [...this.compileCleanups, ...this.downloadCleanups]) cancel()
     this.compileCleanups.clear()
     this.downloadCleanups.clear()

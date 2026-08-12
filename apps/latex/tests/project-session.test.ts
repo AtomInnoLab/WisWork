@@ -541,6 +541,36 @@ describe('LaTeX project sessions', () => {
     expect(session.pdfPath(8)).toContain('publishing.pdf')
   })
 
+  it('keeps up to 1000 bounded diagnostics for an ordinary compile', async () => {
+    const { root, projectRoot } = await setup()
+    const log = Array.from(
+      { length: 150 },
+      (_, index) => `main.tex:${index + 1}:1: warning: warning ${index}`,
+    ).join('\n')
+    const staged = {
+      generationId: 'diagnostics',
+      stagingDirectory: join(root, 'stage'),
+      files: [],
+      log,
+      workspaceCleaned: true as const,
+    }
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler: vi.fn(async () => staged) as never,
+      commitGeneration: vi.fn(async () => ({
+        ...staged,
+        pdfPath: null,
+        synctexPath: null,
+        synctexInputRoot: projectRoot,
+        logPath: join(root, 'log'),
+        published: [],
+      })) as never,
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
+    }).attach(11, projectRoot)
+    const result = await session.compile(1, 'main.tex')
+    expect(result.diagnostics).toHaveLength(150)
+  })
+
   it('cancels the pending latest revision before it can enter the compiler', async () => {
     const { root, projectRoot } = await setup()
     let releaseA!: (value: any) => void

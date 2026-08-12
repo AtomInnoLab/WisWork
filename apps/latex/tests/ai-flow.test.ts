@@ -381,51 +381,51 @@ describe('confirmed LaTeX AI edit flow', () => {
     expect(maxActive).toBe(1)
   })
 
-  it.each(['cancel', 'dispose'] as const)(
-    '%s aborts and rejects an active proposal verification',
-    async (action) => {
-      const root = await mkdtemp(join(tmpdir(), 'latex-proposal-cancel-'))
-      roots.push(root)
-      const projectRoot = join(root, 'project')
-      await mkdir(projectRoot)
-      await writeFile(join(projectRoot, 'main.tex'), 'before')
-      let markStarted!: () => void
-      let release!: () => void
-      let observedSignal: AbortSignal | undefined
-      const started = new Promise<void>((resolve) => (markStarted = resolve))
-      const gate = new Promise<void>((resolve) => (release = resolve))
-      const compiler = vi.fn((request: { signal?: AbortSignal }) => {
-        observedSignal = request.signal
-        markStarted()
-        return new Promise((resolve, reject) => {
-          request.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
-            once: true,
-          })
-          void gate.then(() => reject(new Error('test release')))
+  it('dispose aborts and rejects an active proposal verification', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'latex-proposal-cancel-'))
+    roots.push(root)
+    const projectRoot = join(root, 'project')
+    await mkdir(projectRoot)
+    await writeFile(join(projectRoot, 'main.tex'), 'before')
+    let markStarted!: () => void
+    let release!: () => void
+    let observedSignal: AbortSignal | undefined
+    const started = new Promise<void>((resolve) => (markStarted = resolve))
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const compiler = vi.fn((request: { signal?: AbortSignal }) => {
+      observedSignal = request.signal
+      markStarted()
+      return new Promise((resolve, reject) => {
+        request.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+          once: true,
         })
+        void gate.then(() => reject(new Error('test release')))
       })
-      const session = await new ProjectSessionRegistry({
-        watch: () => ({ close() {} }),
-        compiler: compiler as never,
-        acquireRendererFreeze: testFreeze,
-        compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
-      }).attach(71, projectRoot)
-      await session.registerProposal({
-        id: 'cancel-proposal',
-        expiresAt: Date.now() + 60_000,
-        files: [{ path: 'main.tex', beforeSha256: sha('before'), afterText: 'after' }],
-      })
+    })
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler: compiler as never,
+      acquireRendererFreeze: testFreeze,
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
+    }).attach(71, projectRoot)
+    await session.registerProposal({
+      id: 'cancel-proposal',
+      expiresAt: Date.now() + 60_000,
+      files: [{ path: 'main.tex', beforeSha256: sha('before'), afterText: 'after' }],
+    })
 
-      const verifying = session.verifyProposal('cancel-proposal')
-      await started
-      const cancelled = action === 'cancel' ? session.cancelCompile() : (session.dispose(), true)
-      const aborted = observedSignal?.aborted === true
-      if (!aborted) release()
-      await expect(verifying).rejects.toThrow()
-      expect(cancelled).toBe(true)
-      expect(aborted).toBe(true)
-    },
-  )
+    const verifying = session.verifyProposal('cancel-proposal')
+    await started
+    expect(session.cancelCompile()).toBe(false)
+    await expect(session.compile(99, 'main.tex')).rejects.toThrow(/transaction/i)
+    session.dispose()
+    const cancelled = true
+    const aborted = observedSignal?.aborted === true
+    if (!aborted) release()
+    await expect(verifying).rejects.toThrow()
+    expect(cancelled).toBe(true)
+    expect(aborted).toBe(true)
+  })
 
   it('rejects expired proposals before compiling', async () => {
     const { session, compiler } = await setupVerification()
@@ -473,6 +473,41 @@ describe('confirmed LaTeX AI edit flow', () => {
       compile: { ok: false, error: 'compile error' },
     })
     expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('after')
+  })
+
+  it('rejects external compile/cancel during apply while allowing its formal internal compile', async () => {
+    const { projectRoot, session } = await setup()
+    let started!: () => void
+    let release!: () => void
+    const startedPromise = new Promise<void>((resolve) => (started = resolve))
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const staged = {
+      generationId: 'formal',
+      stagingDirectory: join(projectRoot, '..', 'formal-stage'),
+      files: [],
+      log: '',
+      workspaceCleaned: true as const,
+    }
+    ;(session as unknown as { compiler: () => Promise<typeof staged> }).compiler = async () => {
+      started()
+      await gate
+      return staged
+    }
+    ;(session as unknown as { commitGeneration: () => Promise<unknown> }).commitGeneration =
+      async () => ({
+        ...staged,
+        pdfPath: null,
+        synctexPath: null,
+        synctexInputRoot: projectRoot,
+        logPath: join(projectRoot, '..', 'formal.log'),
+        published: [],
+      })
+    const applying = session.applyConfirmedProposal('proposal-1')
+    await startedPromise
+    await expect(session.compile(999, 'main.tex')).rejects.toThrow(/transaction/i)
+    expect(session.cancelCompile()).toBe(false)
+    release()
+    await expect(applying).resolves.toMatchObject({ compile: { ok: true } })
   })
 
   it('bounds main-process AI reads and rejects binary targets', async () => {

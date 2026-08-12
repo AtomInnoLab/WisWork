@@ -1,4 +1,5 @@
 export const MAX_PROPOSAL_DIAGNOSTICS = 100
+export const MAX_FORMAL_COMPILE_DIAGNOSTICS = 1_000
 export const MAX_PROPOSAL_DIAGNOSTIC_PATH_BYTES = 1_024
 export const MAX_PROPOSAL_DIAGNOSTIC_MESSAGE_BYTES = 4_096
 export const MAX_PROPOSAL_DIAGNOSTIC_POSITION = 10_000_000
@@ -33,10 +34,18 @@ function position(value: unknown): number | null {
 
 export function normalizeProposalDiagnostics(
   values: readonly unknown[],
+  maxDiagnostics = MAX_PROPOSAL_DIAGNOSTICS,
 ): NormalizedProposalDiagnostic[] {
+  if (
+    !Number.isSafeInteger(maxDiagnostics) ||
+    maxDiagnostics < 1 ||
+    maxDiagnostics > MAX_FORMAL_COMPILE_DIAGNOSTICS
+  ) {
+    throw new Error('Invalid diagnostic count limit')
+  }
   const result: NormalizedProposalDiagnostic[] = []
   for (const value of values) {
-    if (result.length >= MAX_PROPOSAL_DIAGNOSTICS) break
+    if (result.length >= maxDiagnostics) break
     if (!value || typeof value !== 'object' || Array.isArray(value)) continue
     const record = value as Record<string, unknown>
     if (record.severity !== 'error' && record.severity !== 'warning') continue

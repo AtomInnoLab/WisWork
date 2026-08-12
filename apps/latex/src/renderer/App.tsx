@@ -331,7 +331,10 @@ export function App() {
       }
     }
   }, [files, mainFile, projectId, replaceEditorState, savePath, updateEditorState])
-  const compileProject = useCallback(() => compileQueue.current.request(compileOnce), [compileOnce])
+  const compileProject = useCallback(() => {
+    if (closeFreeze.current.isFrozen()) return
+    compileQueue.current.request(compileOnce)
+  }, [compileOnce])
   compileLatestRef.current = compileProject
 
   useEffect(() => {
@@ -642,11 +645,13 @@ export function App() {
           )}
           <CompilePanel
             compiling={compiling}
+            disabled={frozen}
             bundleStatus={bundleStatus}
             diagnostics={diagnostics}
             log={log}
             onCompile={compileProject}
             onCancel={() => {
+              if (closeFreeze.current.isFrozen()) return
               compileQueue.current.cancelPending()
               if (projectId) void window.latexApi.cancelCompile({ projectId })
             }}
