@@ -65,21 +65,26 @@ describe('isolated compile workspace', () => {
     ).rejects.toThrow(/path|traversal/i)
   })
 
-  it('applies replacement and new text overlays only to the isolated input', async () => {
+  it('applies replacement overlays only to the isolated input', async () => {
     const { root, project } = await setup()
     await mkdir(join(project, 'chapters'))
     await writeFile(join(project, 'chapters/a.tex'), 'before')
     const workspace = await createCompileWorkspace(project, join(root, 'tmp'), {
-      overlay: [
-        { path: 'chapters/a.tex', text: 'after' },
-        { path: 'chapters/new.tex', text: 'new' },
-      ],
+      overlay: [{ path: 'chapters/a.tex', text: 'after' }],
     })
 
     expect(await readFile(join(workspace.inputDirectory, 'chapters/a.tex'), 'utf8')).toBe('after')
-    expect(await readFile(join(workspace.inputDirectory, 'chapters/new.tex'), 'utf8')).toBe('new')
     expect(await readFile(join(project, 'chapters/a.tex'), 'utf8')).toBe('before')
-    await expect(access(join(project, 'chapters/new.tex'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('rejects new overlay files without changing the source project', async () => {
+    const { root, project } = await setup()
+    await expect(
+      createCompileWorkspace(project, join(root, 'tmp'), {
+        overlay: [{ path: 'new.tex', text: 'new' }],
+      }),
+    ).rejects.toMatchObject({ code: 'TECTONIC_WORKSPACE_INVALID' })
+    await expect(access(join(project, 'new.tex'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it.each([
@@ -213,29 +218,5 @@ describe('isolated compile workspace', () => {
     ).rejects.toThrow(/changed|link|identity|target/i)
     expect(enteredOverlay).toBe(true)
     expect(await readFile(join(outside, 'a.tex'), 'utf8')).toBe('outside sentinel')
-  })
-
-  it('does not create a new overlay file after a pre-open parent symlink swap', async () => {
-    const { root, project } = await setup()
-    await mkdir(join(project, 'chapters'))
-    const outside = join(root, 'outside')
-    await mkdir(outside)
-    let enteredOverlay = false
-
-    await expect(
-      createCompileWorkspace(project, join(root, 'tmp'), {
-        overlay: [{ path: 'chapters/new.tex', text: 'overlay' }],
-        hooks: {
-          beforeOverlayTargetOpen: async (target) => {
-            enteredOverlay = true
-            const parent = join(target, '..')
-            await rename(parent, `${parent}-moved`)
-            await symlink(outside, parent, 'dir')
-          },
-        },
-      }),
-    ).rejects.toThrow(/changed|link|identity|target/i)
-    expect(enteredOverlay).toBe(true)
-    await expect(access(join(outside, 'new.tex'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

@@ -245,38 +245,39 @@ async function applyOverlayFile(
   try {
     const directoryChain = await captureOverlayDirectoryChain(inputDirectory, parent)
 
-    let targetStats: Stats | undefined
+    let targetStats: Stats
     try {
       targetStats = await lstat(target)
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw overlayError(`Overlay target must already exist: ${file.path}`)
+      }
+      throw error
     }
-    if (targetStats?.isSymbolicLink() || (targetStats && !targetStats.isFile())) {
+    if (targetStats.isSymbolicLink() || !targetStats.isFile()) {
       throw overlayError(`Overlay target is not a safe regular file: ${file.path}`)
     }
-    if (targetStats && (await realpath(target)) !== target) {
+    if ((await realpath(target)) !== target) {
       throw overlayError(`Overlay target escaped workspace: ${file.path}`)
     }
 
     await hooks?.beforeOverlayTargetOpen?.(target)
-    // Node does not expose portable openat(). Revalidating every ancestor immediately before open
-    // closes deterministic swaps; once the handle is open, a second validation protects writes.
+    // Node does not expose portable openat(). Revalidate every ancestor immediately before open;
+    // after open, inode and ancestor checks happen before any truncation or write through the handle.
     await validateOverlayDirectoryChain(directoryChain)
-    const flags = targetStats
-      ? constants.O_WRONLY | constants.O_NOFOLLOW
-      : constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW
-    const handle = await open(target, flags, 0o600)
+    const handle = await open(target, constants.O_WRONLY | constants.O_NOFOLLOW)
     try {
       const opened = await handle.stat()
       if (
         !opened.isFile() ||
-        (targetStats && (opened.dev !== targetStats.dev || opened.ino !== targetStats.ino))
+        opened.dev !== targetStats.dev ||
+        opened.ino !== targetStats.ino
       ) {
         throw overlayError(`Overlay target changed during validation: ${file.path}`)
       }
       await hooks?.afterOverlayTargetOpen?.(target)
       await validateOverlayDirectoryChain(directoryChain)
-      if (targetStats) await handle.truncate(0)
+      await handle.truncate(0)
       await handle.writeFile(file.text, 'utf8')
     } finally {
       await handle.close()
