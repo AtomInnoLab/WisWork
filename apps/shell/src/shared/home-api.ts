@@ -1,3 +1,5 @@
+import type { UpdateChannel } from './update-api'
+
 /** UI language; kept self-contained here (mirrors Lang in @wiswork/i18n) */
 export type UiLanguage =
   | 'zh'
@@ -83,6 +85,8 @@ export interface HomeApi {
   newSheet(opts?: { projectId?: string }): Promise<void>
   /** open a slides tab at its start screen (open-a-pptx) */
   newSlide(opts?: { projectId?: string }): Promise<void>
+  /** open a blank markdown editor tab */
+  newMarkdown(opts?: { projectId?: string }): Promise<void>
   /** drop entries from the recent list (does not touch the files) */
   removeRecent(paths: string[]): Promise<void>
   /** reveal the file in Finder / Explorer */
@@ -99,6 +103,10 @@ export interface HomeApi {
   getLanguage(): Promise<UiLanguage>
   /** switch + persist the UI language; main rebuilds its menus to match */
   setLanguage(lang: UiLanguage): Promise<void>
+  /** current update channel (persisted in userData/app-settings.json; default 'stable') */
+  getUpdateChannel(): Promise<UpdateChannel>
+  /** switch + persist the update channel; triggers an immediate update check */
+  setUpdateChannel(channel: UpdateChannel): Promise<void>
   /** Current application theme, persisted by the shell. */
   getTheme(): Promise<AppTheme>
   /** Apply and persist the application theme. */
@@ -196,6 +204,7 @@ export const HOME_CHANNELS = {
   newLatexProject: 'home:new-latex-project',
   importLatexProject: 'home:import-latex-project',
   openLatexProject: 'home:open-latex-project',
+  newMarkdown: 'home:new-markdown',
   removeRecent: 'home:remove-recent',
   revealPath: 'home:reveal-path',
   renameFile: 'home:rename-file',
@@ -207,6 +216,8 @@ export const HOME_CHANNELS = {
   getTheme: 'home:get-theme',
   setTheme: 'home:set-theme',
   themeChanged: 'home:theme-changed',
+  getUpdateChannel: 'home:get-update-channel',
+  setUpdateChannel: 'home:set-update-channel',
   accountStatus: 'home:account-status',
   accountLogin: 'home:account-login',
   accountLoginEvent: 'home:account-login-event',

@@ -5,6 +5,7 @@ import iconXlsx from './assets/file-xlsx.svg'
 import iconPptx from './assets/file-pptx.svg'
 import iconPdf from './assets/file-pdf.svg'
 import iconTex from './assets/file-tex.svg'
+import iconMd from './assets/file-md.svg'
 import type {
   AccountStatus,
   AppTheme,
@@ -46,6 +47,8 @@ const FILE_ICONS: Record<string, string> = {
   pptx: iconPptx,
   pdf: iconPdf,
   tex: iconTex,
+  md: iconMd,
+  markdown: iconMd,
 }
 
 function FileBadge({ ext, size }: { ext: string; size: number }) {
@@ -1259,6 +1262,12 @@ export function Home() {
     if (await window.aiOffice.newLatexProject()) reloadLatexRecents()
   }
 
+  const handleNewMarkdown = () => {
+    void window.aiOffice.newMarkdown(
+      selectedProjectId ? { projectId: selectedProjectId } : undefined,
+    )
+  }
+
   const handleImportLatex = async () => {
     if (await window.aiOffice.importLatexProject()) reloadLatexRecents()
   }
@@ -1267,6 +1276,7 @@ export function Home() {
     { ext: 'docx', title: t('newDoc'), sub: '.docx', action: handleNewDoc },
     { ext: 'xlsx', title: t('newSheet'), sub: '.xlsx', action: handleNewSheet },
     { ext: 'pptx', title: t('newSlide'), sub: '.pptx', action: handleNewSlide },
+    { ext: 'md', title: t('newMarkdown'), sub: '.md', action: handleNewMarkdown },
     { ext: 'tex', title: t('newLatex'), sub: '.tex', action: handleNewLatex },
   ]
 

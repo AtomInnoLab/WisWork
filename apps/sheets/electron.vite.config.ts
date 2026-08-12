@@ -14,6 +14,7 @@ export default defineConfig({
           '@wiswork/ai-provider',
           '@wiswork/agent-core',
           '@wiswork/ai-search',
+          '@wiswork/docx-engine',
           '@wiswork/file-parse',
           '@wiswork/electron-utils',
           '@wiswork/i18n',

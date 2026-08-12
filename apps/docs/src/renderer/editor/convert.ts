@@ -9,10 +9,15 @@ import {
   patchMathTokens,
   patchTableCellTexts,
   type CellTextsPatch,
-  patchTextboxHeights,
+  patchDrawingExtent,
+  patchTextboxSizes,
+  patchShapeStyles,
+  type ShapeStylePatch,
+  type TextboxSizePatch,
   patchTextboxParas,
   generateTableModelXml,
   type Block,
+  type CellBorder,
   type ChartDisplay,
   type ChartPatch,
   type ChartSeriesPatch,
@@ -27,13 +32,16 @@ import {
   type Run,
   type SaveBlock,
   type SdtShell,
+  type SectionInfo,
   type TableCell,
   type TableModel,
   type TextboxDisplay,
   type TextboxParaPatch,
 } from '@wiswork/docx-engine'
 import { t } from '../i18n/locale'
+import { textHasComplexScript } from '../line-metrics'
 import { inlineMathML } from './equation'
+import { isStraightLineKind } from './shape-svg'
 
 /** minimal ProseMirror JSON shapes */
 export interface PmMark {
@@ -50,11 +58,11 @@ export interface PmNode {
 
 // ---- Block[] -> ProseMirror doc ----
 
-export function blocksToPmDoc(blocks: Block[]): PmNode {
+export function blocksToPmDoc(blocks: Block[], sections?: SectionInfo[]): PmNode {
   const content: PmNode[] = []
   for (const block of blocks) {
     if (block.hidden) continue
-    content.push(blockToPmNode(block))
+    content.push(blockToPmNode(block, sectionRowCapTwips(sections, block.docxIndex)))
   }
   if (content.length === 0) {
     content.push({
@@ -82,10 +90,48 @@ function formatAttrs(format: ParaFormat | undefined): Record<string, unknown> {
     tabStops: format?.tabStops ? JSON.stringify(format.tabStops) : null,
     dropCap: format?.dropCap ? JSON.stringify(format.dropCap) : null,
     bidi: format?.bidi ?? false,
+    autoSpace: format?.autoSpace ?? null,
+    snapToGrid: format?.snapToGrid ?? null,
+    emptyRunSize: format?.emptyRunSizeHalfPoints ?? null,
   }
 }
 
-function blockToPmNode(block: Block): PmNode {
+/** Effective row-height ceiling: one page of section content (Word truncates taller rows within the page) */
+function sectionRowCapTwips(
+  sections: SectionInfo[] | undefined,
+  docxIndex: number | null,
+): number | null {
+  if (!sections?.length || docxIndex == null) return null
+  const sec =
+    sections.find((s) => docxIndex >= s.firstBlockIndex && docxIndex <= s.lastBlockIndex) ??
+    sections[sections.length - 1]
+  const cap = sec.settings.pageHeight - sec.settings.marginTop - sec.settings.marginBottom
+  return cap > 0 ? cap : null
+}
+
+/** Cap declared row heights (incl. nested tables); returns the input model when nothing exceeds the cap */
+export function capTableRowHeights(model: TableModel, capTwips: number): TableModel {
+  let changed = false
+  const rowHeightsTwips = model.rowHeightsTwips?.map((h) => {
+    if (h != null && h > capTwips) {
+      changed = true
+      return capTwips
+    }
+    return h
+  })
+  const rows = model.rows.map((row) =>
+    row.map((cell) => {
+      if (!cell.nestedTables?.length) return cell
+      const nested = cell.nestedTables.map((nt) => capTableRowHeights(nt, capTwips))
+      if (nested.every((nt, i) => nt === cell.nestedTables![i])) return cell
+      changed = true
+      return { ...cell, nestedTables: nested }
+    }),
+  )
+  return changed ? { ...model, rows, rowHeightsTwips } : model
+}
+
+function blockToPmNode(block: Block, rowCapTwips: number | null = null): PmNode {
   switch (block.type) {
     case 'heading':
       return {
@@ -149,6 +195,7 @@ function blockToPmNode(block: Block): PmNode {
         block.table ?? { rows: [[{ paras: [''] }]] },
         block.docxIndex,
         block.blockRevision ?? null,
+        rowCapTwips,
       )
     default:
       // image / passthrough: protected whole-unit blocks
@@ -158,21 +205,36 @@ function blockToPmNode(block: Block): PmNode {
           docxIndex: block.docxIndex,
           blockRevision: block.blockRevision ?? null,
           blockType: block.type,
+          styleId: block.styleId ?? null,
           label: block.label ?? block.type,
           previewText: block.previewText ?? '',
           imageDataUrl: block.imageDataUrl ?? null,
           oleProgId: block.oleProgId ?? null,
           imageWidthPx: block.imageWidthPx ?? null,
           imageHeightPx: block.imageHeightPx ?? null,
+          imageCrop: block.imageCrop ?? null,
+          imageFillRect: block.imageFillRect ?? null,
           imageAlign: block.imageAlign ?? null,
           imageWrap: block.imageWrap ?? null,
           imageOffsetXEmu: block.imageOffsetXEmu ?? null,
           imageOffsetYEmu: block.imageOffsetYEmu ?? null,
           imagePosH: block.imagePosH ?? null,
           imagePosV: block.imagePosV ?? null,
-          table: block.table ?? null,
+          imageRotDeg: block.imageRotDeg ?? null,
+          imageFlipH: block.imageFlipH ?? false,
+          imageFlipV: block.imageFlipV ?? false,
+          table:
+            block.table && rowCapTwips != null
+              ? capTableRowHeights(block.table, rowCapTwips)
+              : (block.table ?? null),
           fieldDisplay: block.fieldDisplay ?? null,
+          diagramDisplay: block.diagramDisplay ?? null,
           decorative: block.decorative ?? false,
+          ruleColorHex: block.ruleColorHex ?? null,
+          ruleThicknessPx: block.ruleThicknessPx ?? null,
+          ruleWidthPx: block.ruleWidthPx ?? null,
+          brokenImage: block.brokenImage ?? false,
+          invisibleMarker: block.invisibleMarker ?? false,
           textboxes: block.textboxes ?? null,
           formulaDisplay: block.formulaDisplay ?? null,
           chartDisplay: block.chartDisplay ?? null,
@@ -194,11 +256,41 @@ function cellRowSpan(model: TableModel, row: number, cell: number, positions: nu
   return span
 }
 
+function cellBorderPx(b: CellBorder | undefined): number {
+  if (!b || b.style === 'none' || b.style === 'nil') return 0
+  return Math.max(1, Math.round(((b.szEighths ?? 4) / 8 / 72) * 96))
+}
+
+/** Inner clip-box height (twips) for cells of hRule="exact" rows — Word clips overflow
+ *  instead of growing the row. null = not exact, or the cell spans rows (its clip height
+ *  would be the sum of the spanned rows; not handled yet). */
+export function cellClipTwips(
+  model: TableModel,
+  rowIndex: number,
+  cell: TableCell,
+  rowSpan: number,
+): number | null {
+  if (rowSpan > 1 || model.rowHeightRules?.[rowIndex] !== 'exact') return null
+  const h = model.rowHeightsTwips?.[rowIndex]
+  if (!h) return null
+  const padTop = cell.cellMarTwips?.top ?? model.cellMarTwips?.top ?? 0
+  const padBottom = cell.cellMarTwips?.bottom ?? model.cellMarTwips?.bottom ?? 0
+  // collapsed borders straddle the row edges: half of each eats into the row height
+  const bTop = cell.borders?.top ?? (rowIndex === 0 ? model.borders?.top : model.borders?.insideH)
+  const bBottom =
+    cell.borders?.bottom ??
+    (rowIndex === model.rows.length - 1 ? model.borders?.bottom : model.borders?.insideH)
+  const borderTwips = Math.round(((cellBorderPx(bTop) + cellBorderPx(bBottom)) / 2) * 15)
+  return Math.max(0, h - padTop - padBottom - borderTwips)
+}
+
 export function tableModelToPmNode(
   model: TableModel,
   docxIndex: number | null = null,
   blockRevision: Block['blockRevision'] | null = null,
+  rowCapTwips: number | null = null,
 ): PmNode {
+  if (rowCapTwips != null) model = capTableRowHeights(model, rowCapTwips)
   const positions = model.rows.map((row) => {
     let column = 0
     return row.map((cell) => {
@@ -237,6 +329,7 @@ export function tableModelToPmNode(
       type: 'docTableRow',
       attrs: {
         heightTwips: model.rowHeightsTwips?.[rowIndex] ?? null,
+        heightRule: model.rowHeightRules?.[rowIndex] ?? null,
         rawTrPr: model.rawTrPrs?.[rowIndex] ?? null,
         rowRevision: model.rowRevisions?.[rowIndex] ?? null,
       },
@@ -244,12 +337,14 @@ export function tableModelToPmNode(
         if (cell.vMerge === 'continue') return []
         const start = positions[rowIndex][cellIndex]
         const colspan = cell.colSpan ?? 1
+        const rowspan = cellRowSpan(model, rowIndex, cellIndex, positions)
         return [
           {
             type: hasHeaderRow && rowIndex === 0 ? 'docTableHeader' : 'docTableCell',
             attrs: {
               colspan,
-              rowspan: cellRowSpan(model, rowIndex, cellIndex, positions),
+              rowspan,
+              clipHeightTwips: cellClipTwips(model, rowIndex, cell, rowspan),
               colwidth: widthPx ? widthPx.slice(start, start + colspan) : null,
               cellMar: cell.cellMarTwips ?? null,
               textDirection: cell.textDirection ?? null,
@@ -262,38 +357,7 @@ export function tableModelToPmNode(
               rawTcPr: cell.rawTcPr ?? null,
               cellRevision: cell.cellRevision ?? null,
             },
-            content: [
-              ...(cell.richParas?.length
-                ? cell.richParas
-                : (cell.paras.length > 0 ? cell.paras : ['']).map((text) => ({
-                    align: cell.align,
-                    runs: text === '' ? [] : [{ text, bold: cell.bold, color: cell.color }],
-                  }))
-              ).map((paragraph) => {
-                const list = 'list' in paragraph ? paragraph.list : undefined
-                return list
-                  ? {
-                      type: 'docListItem',
-                      attrs: {
-                        ...formatAttrs(paragraph),
-                        kind: list.kind,
-                        numId: list.numId,
-                        ilvl: list.ilvl,
-                      },
-                      content: runsToInline(paragraph.runs),
-                    }
-                  : {
-                      type: 'docParagraph',
-                      attrs: formatAttrs(paragraph),
-                      content: runsToInline(paragraph.runs),
-                    }
-              }),
-              // nested tables: read-only atomic child-table nodes (placed after paragraphs; fidelity on save comes from the outer table's bytes)
-              ...(cell.nestedTables ?? []).map((nt) => ({
-                type: 'docNestedTable',
-                attrs: { model: nt },
-              })),
-            ],
+            content: cellContentNodes(cell),
           },
         ]
       }),
@@ -302,6 +366,44 @@ export function tableModelToPmNode(
   table.attrs!.originalStructure = tableStructureSignature(table)
   table.attrs!.originalFormatting = tableFormattingSignature(table)
   return table
+}
+
+/** cell paragraphs with nested tables (read-only atoms) spliced in at their anchors */
+function cellContentNodes(cell: TableCell): PmNode[] {
+  const paraNodes: PmNode[] = (
+    cell.richParas?.length
+      ? cell.richParas
+      : (cell.paras.length > 0 ? cell.paras : ['']).map((text) => ({
+          align: cell.align,
+          runs: text === '' ? [] : [{ text, bold: cell.bold, color: cell.color }],
+        }))
+  ).map((paragraph) => {
+    const list = 'list' in paragraph ? paragraph.list : undefined
+    return list
+      ? {
+          type: 'docListItem',
+          attrs: {
+            ...formatAttrs(paragraph),
+            kind: list.kind,
+            numId: list.numId,
+            ilvl: list.ilvl,
+          },
+          content: runsToInline(paragraph.runs),
+        }
+      : {
+          type: 'docParagraph',
+          attrs: formatAttrs(paragraph),
+          content: runsToInline(paragraph.runs),
+        }
+  })
+  // fidelity on save comes from the outer table's bytes; reverse insertion keeps anchors valid
+  const nested = cell.nestedTables ?? []
+  const content = [...paraNodes]
+  for (let i = nested.length - 1; i >= 0; i--) {
+    const at = Math.min(cell.nestedTableAnchors?.[i] ?? paraNodes.length, paraNodes.length)
+    content.splice(at, 0, { type: 'docNestedTable', attrs: { model: nested[i] } })
+  }
+  return content
 }
 
 export function tableStructureSignature(table: PmNode): string {
@@ -383,10 +485,14 @@ export function pmTableToModel(table: PmNode): TableModel {
   let maximumColumns = 0
 
   const rowHeightsTwips: Array<number | null> = []
+  const rowHeightRules: NonNullable<TableModel['rowHeightRules']> = []
   const rawTrPrs: Array<string | null> = []
   const rowRevisions: TableModel['rowRevisions'] = []
   for (const rowNode of table.content ?? []) {
     rowHeightsTwips.push((rowNode.attrs?.heightTwips as number | null) ?? null)
+    rowHeightRules.push(
+      (rowNode.attrs?.heightRule as NonNullable<TableModel['rowHeightRules']>[number]) ?? null,
+    )
     rawTrPrs.push((rowNode.attrs?.rawTrPr as string | null) ?? null)
     rowRevisions.push(
       (rowNode.attrs?.rowRevision as NonNullable<TableModel['rowRevisions']>[number]) ?? null,
@@ -425,10 +531,16 @@ export function pmTableToModel(table: PmNode): TableModel {
         (n) => n.type === 'docParagraph' || n.type === 'docListItem',
       )
       // nested tables round-trip with the model: text edits use the surgical patch, structural regeneration emits the whole table (nested tables no longer dropped)
-      const nestedModels = (cellNode.content ?? [])
-        .filter((n) => n.type === 'docNestedTable')
-        .map((n) => n.attrs?.model as TableModel | null)
-        .filter((m): m is TableModel => !!m)
+      const nestedModels: TableModel[] = []
+      const nestedAnchors: number[] = []
+      let paraCount = 0
+      for (const n of cellNode.content ?? []) {
+        if (n.type === 'docParagraph' || n.type === 'docListItem') paraCount++
+        else if (n.type === 'docNestedTable' && n.attrs?.model) {
+          nestedModels.push(n.attrs.model as TableModel)
+          nestedAnchors.push(paraCount)
+        }
+      }
       entries.push({
         column: cursor,
         cell: {
@@ -447,7 +559,9 @@ export function pmTableToModel(table: PmNode): TableModel {
               : {}),
             runs: inlineToRuns(paragraph.content ?? []),
           })),
-          ...(nestedModels.length > 0 ? { nestedTables: nestedModels } : {}),
+          ...(nestedModels.length > 0
+            ? { nestedTables: nestedModels, nestedTableAnchors: nestedAnchors }
+            : {}),
           colSpan: colspan > 1 ? colspan : undefined,
           vMerge: rowspan > 1 ? 'restart' : undefined,
         },
@@ -483,7 +597,7 @@ export function pmTableToModel(table: PmNode): TableModel {
     rows,
     ...(colWidthsPct ? { colWidthsPct } : {}),
     ...(colWidthsTwips ? { colWidthsTwips } : {}),
-    ...(rowHeightsTwips.some((h) => h !== null) ? { rowHeightsTwips } : {}),
+    ...(rowHeightsTwips.some((h) => h !== null) ? { rowHeightsTwips, rowHeightRules } : {}),
     ...(rawTrPrs.some((r) => r !== null) ? { rawTrPrs } : {}),
     ...(rowRevisions.some((revision) => revision !== null) ? { rowRevisions } : {}),
     // null (cleared) → '' removes explicitly; undefined leaves it alone
@@ -557,6 +671,19 @@ export function runsToInline(runs: Run[]): PmNode[] {
         nodes.push({ type: 'text', text: segment, ...(marks.length > 0 ? { marks } : {}) })
       }
     }
+    // A run can carry both w:t text and a w:drawing; generate.ts writes the
+    // text before the drawing, so emit the image after the text segments
+    if (run.image) {
+      nodes.push({
+        type: 'docInlineImage',
+        attrs: {
+          dataUrl: run.image.dataUrl,
+          widthPx: run.image.widthPx ?? null,
+          heightPx: run.image.heightPx ?? null,
+          xml: run.image.xml,
+        },
+      })
+    }
     if (run.xeTerm !== undefined) {
       nodes.push({ type: 'docXeMark', attrs: { term: run.xeTerm } })
     }
@@ -607,9 +734,11 @@ function runMarks(run: Run): PmMark[] {
     run.color ||
     run.sizeHalfPoints ||
     run.font ||
+    run.fontAscii ||
     run.charSpacingTwips ||
     run.charScalePct ||
     run.highlight ||
+    run.shading ||
     run.vertAlign ||
     run.em ||
     run.styleId ||
@@ -621,9 +750,14 @@ function runMarks(run: Run): PmMark[] {
         color: run.color ?? null,
         sizeHalfPoints: run.sizeHalfPoints ?? null,
         font: run.font ?? null,
+        eaSlotEmpty: run.eaSlotEmpty ?? null,
+        fontAscii: run.fontAscii ?? null,
+        // cs chain only kicks in for complex-script text (Word's w:cs semantics)
+        csFont: run.csFont && textHasComplexScript(run.text) ? run.csFont : null,
         charSpacingTwips: run.charSpacingTwips ?? null,
         charScaleEm: run.charScalePct ? charScaleEm(run.text, run.charScalePct) : null,
         highlight: run.highlight ?? null,
+        shading: run.shading ?? null,
         vertAlign: run.vertAlign ?? null,
         em: run.em ?? null,
         styleId: run.styleId ?? null,
@@ -788,7 +922,8 @@ export function pmDocToSavePlan(doc: PmNode, originalBlocks: Block[]): SavePlan 
         const imagePatch = imagePatchOf(node, original)
         const tableTexts = tableTextsPatch(node, original)
         const textboxTexts = textboxParasPatch(node, original)
-        const textboxHeights = textboxHeightsPatch(node, original)
+        const textboxSizes = textboxSizesPatch(node, original)
+        const textboxStyles = textboxStylesPatch(node, original)
         const textboxOffsetX =
           node.attrs?.imageOffsetXEmu != null ? Number(node.attrs.imageOffsetXEmu) : undefined
         const textboxOffsetY =
@@ -807,10 +942,25 @@ export function pmDocToSavePlan(doc: PmNode, originalBlocks: Block[]): SavePlan 
           changedCount++
           chartPatches.push(chartPatch)
         }
-        if (imagePatch && original.originalXml) {
+        // chart resize rewrites the body drawing's extent
+        const chartDisplay = node.attrs?.chartDisplay as ChartDisplay | null
+        const chartSize =
+          chartDisplay?.widthPx &&
+          chartDisplay.heightPx &&
+          (chartDisplay.widthPx !== original.chartDisplay?.widthPx ||
+            chartDisplay.heightPx !== original.chartDisplay?.heightPx)
+            ? { w: chartDisplay.widthPx, h: chartDisplay.heightPx }
+            : null
+        const imageReplace =
+          original.type === 'image'
+            ? (node.attrs?.imageReplace as { base64: string; mime: string } | null)
+            : null
+        if ((imagePatch || imageReplace) && original.originalXml) {
           changedCount++
-          let xml = patchImageParagraphXml(original.originalXml, imagePatch)
-          if (imagePatch.wrap !== undefined) {
+          let xml = imagePatch
+            ? patchImageParagraphXml(original.originalXml, imagePatch)
+            : original.originalXml
+          if (imagePatch?.wrap !== undefined) {
             const posOffset =
               imagePatch.posOffsetX !== undefined && imagePatch.posOffsetY !== undefined
                 ? { x: imagePatch.posOffsetX, y: imagePatch.posOffsetY }
@@ -820,21 +970,36 @@ export function pmDocToSavePlan(doc: PmNode, originalBlocks: Block[]): SavePlan 
                 ? { h: imagePatch.posH, v: imagePatch.posV }
                 : undefined
             xml = applyImageWrap(xml, imagePatch.wrap, posOffset, marginAlign)
-          } else if (imagePatch.posOffsetX !== undefined || imagePatch.posOffsetY !== undefined) {
+          } else if (
+            imagePatch &&
+            (imagePatch.posOffsetX !== undefined || imagePatch.posOffsetY !== undefined)
+          ) {
             // posOffset changed without wrap change: patchImageParagraphXml already rewrote it
           }
-          pushBlock({ kind: 'xml', xml })
+          pushBlock({
+            kind: 'xml',
+            xml,
+            ...(imageReplace
+              ? {
+                  replaceImage: {
+                    base64: imageReplace.base64,
+                    mime: imageReplace.mime as NewImage['mime'],
+                  },
+                }
+              : {}),
+          })
         } else if (tableTexts && original.originalXml) {
           changedCount++
           pushBlock({ kind: 'xml', xml: patchTableCellTexts(original.originalXml, tableTexts) })
         } else if (
-          (textboxTexts || textboxHeights || textboxPositionChanged) &&
+          (textboxTexts || textboxSizes || textboxStyles || textboxPositionChanged) &&
           original.originalXml
         ) {
           changedCount++
           let xml = original.originalXml
           if (textboxTexts) xml = patchTextboxParas(xml, textboxTexts)
-          if (textboxHeights) xml = patchTextboxHeights(xml, textboxHeights)
+          if (textboxSizes) xml = patchTextboxSizes(xml, textboxSizes)
+          if (textboxStyles) xml = patchShapeStyles(xml, textboxStyles)
           if (textboxPositionChanged) {
             const wrap =
               (node.attrs?.imageWrap as ImageWrap | null) ?? original.imageWrap ?? 'square-left'
@@ -847,6 +1012,12 @@ export function pmDocToSavePlan(doc: PmNode, originalBlocks: Block[]): SavePlan 
         } else if (formulaTokens && original.originalXml) {
           changedCount++
           pushBlock({ kind: 'xml', xml: patchMathTokens(original.originalXml, formulaTokens) })
+        } else if (chartSize && original.originalXml) {
+          changedCount++
+          pushBlock({
+            kind: 'xml',
+            xml: patchDrawingExtent(original.originalXml, chartSize.w, chartSize.h),
+          })
         } else {
           pushBlock({ kind: 'original', docxIndex: idx })
         }
@@ -874,6 +1045,13 @@ export function pmDocToSavePlan(doc: PmNode, originalBlocks: Block[]): SavePlan 
             table.rows.map((row) => row.map((cell) => cell.paras)),
           )
         }
+        // editor-generated TOC lines: write the auto-refreshed page number back
+        // (right only — the title is already in the genXml, and a left+right
+        // patch bails out entirely when the title text nodes don't line up)
+        const genField = node.attrs?.fieldDisplay as FieldDisplay | null
+        if (genField?.kind === 'tocLine' && genField.right) {
+          xml = patchFieldParagraphXml(xml, { right: genField.right })
+        }
         // patch textbox paragraphs for newly-inserted textboxes/shapes with text
         const genTextboxes = node.attrs?.textboxes as TextboxDisplay[] | null
         const hasNonEmptyTextbox =
@@ -887,6 +1065,22 @@ export function pmDocToSavePlan(doc: PmNode, originalBlocks: Block[]): SavePlan 
               box.paras.map((p) => ({ runs: mergeRuns(p.runs), align: p.align ?? null })),
             ),
           )
+        }
+        // persist resize/autogrow of newly-inserted single-box shapes/lines;
+        // horizontal lines keep their zero-height extent (display box is a grab band)
+        const genBox = genTextboxes?.length === 1 ? genTextboxes[0] : null
+        if (genBox && (genBox.widthPx || genBox.heightPx)) {
+          xml = patchTextboxSizes(xml, [
+            {
+              wPx: genBox.widthPx ?? null,
+              hPx: isStraightLineKind(genBox.prst) ? null : (genBox.heightPx ?? null),
+            },
+          ])
+        }
+        if (genBox) {
+          xml = patchShapeStyles(xml, [
+            { fillHex: genBox.fill ?? null, borderHex: genBox.borderColor ?? null },
+          ])
         }
         // apply wrap changes for floating textboxes/shapes
         const genWrap = node.attrs?.imageWrap as ImageWrap | null
@@ -911,6 +1105,9 @@ export function pmDocToSavePlan(doc: PmNode, originalBlocks: Block[]): SavePlan 
         if (align) image.align = align
         const wrap = node.attrs.imageWrap as ImageWrap | null
         if (wrap) image.wrap = wrap
+        if (node.attrs.imageRotDeg) image.rotDeg = Number(node.attrs.imageRotDeg)
+        if (node.attrs.imageFlipH) image.flipH = true
+        if (node.attrs.imageFlipV) image.flipV = true
         pushBlock({ kind: 'image', image })
       } else if (node.attrs?.genChart) {
         // in-place edits live in chartDisplay; the saved part reflects them
@@ -925,7 +1122,13 @@ export function pmDocToSavePlan(doc: PmNode, originalBlocks: Block[]): SavePlan 
             values: s.values,
           }))
         }
-        pushBlock({ kind: 'chart', chart: spec })
+        pushBlock({
+          kind: 'chart',
+          chart: spec,
+          ...(display?.widthPx && display.heightPx
+            ? { extentPx: { w: display.widthPx, h: display.heightPx } }
+            : {}),
+        })
       }
       // protected node without an anchor or generated payload cannot be regenerated; drop it
       continue
@@ -1022,6 +1225,9 @@ function imageFromProtectedAttrs(node: PmNode): NewImage | null {
   if (align) image.align = align
   const wrap = node.attrs?.imageWrap as ImageWrap | null
   if (wrap) image.wrap = wrap
+  if (node.attrs?.imageRotDeg) image.rotDeg = Number(node.attrs.imageRotDeg)
+  if (node.attrs?.imageFlipH) image.flipH = true
+  if (node.attrs?.imageFlipV) image.flipV = true
   return image
 }
 
@@ -1093,6 +1299,10 @@ interface ImageBlockPatch {
   /** margin-relative align pair (Word position-gallery presets); undefined = keep */
   posH?: 'left' | 'center' | 'right'
   posV?: 'top' | 'center' | 'bottom'
+  /** rotation (deg clockwise, 0 removes) / mirror flips; undefined = keep */
+  rotDeg?: number
+  flipH?: boolean
+  flipV?: boolean
 }
 
 /** size/align/wrap changes on an original image block; null when untouched */
@@ -1124,6 +1334,12 @@ function imagePatchOf(node: PmNode, original: Block): ImageBlockPatch | null {
   if (posOffsetY !== undefined && posOffsetY !== (original.imageOffsetYEmu ?? undefined)) {
     patch.posOffsetY = posOffsetY
   }
+  const rotDeg = node.attrs?.imageRotDeg != null ? Number(node.attrs.imageRotDeg) : 0
+  if (rotDeg !== (original.imageRotDeg ?? 0)) patch.rotDeg = rotDeg
+  const flipH = !!node.attrs?.imageFlipH
+  const flipV = !!node.attrs?.imageFlipV
+  if (flipH !== (original.imageFlipH ?? false)) patch.flipH = flipH
+  if (flipV !== (original.imageFlipV ?? false)) patch.flipV = flipV
   const posH = (node.attrs?.imagePosH as ImageBlockPatch['posH'] | null) ?? null
   const posV = (node.attrs?.imagePosV as ImageBlockPatch['posV'] | null) ?? null
   if (
@@ -1241,18 +1457,40 @@ function textboxParasPatch(
   return changed ? boxes : null
 }
 
-function textboxHeightsPatch(node: PmNode, original: Block): (number | null)[] | null {
+function textboxSizesPatch(node: PmNode, original: Block): (TextboxSizePatch | null)[] | null {
   const current = node.attrs?.textboxes as TextboxDisplay[] | null
   const initial = original.textboxes
   if (!current || !initial || current.length !== initial.length) return null
   let changed = false
-  const heights = current.map((box, index) => {
-    const originalHeight = initial[index].heightPx
-    if (!originalHeight || !box.heightPx || box.heightPx === originalHeight) return null
+  const sizes = current.map((box, index) => {
+    // a resize on an autofit box (no initial heightPx) pins its height:
+    // patchTextboxSizes drops spAutoFit so Word honors the fixed extent
+    const wPx = box.widthPx && box.widthPx !== initial[index].widthPx ? box.widthPx : null
+    const hPx = box.heightPx && box.heightPx !== initial[index].heightPx ? box.heightPx : null
+    if (wPx == null && hPx == null) return null
     changed = true
-    return box.heightPx
+    return { wPx, hPx }
   })
-  return changed ? heights : null
+  return changed ? sizes : null
+}
+
+function textboxStylesPatch(node: PmNode, original: Block): (ShapeStylePatch | null)[] | null {
+  const current = node.attrs?.textboxes as TextboxDisplay[] | null
+  const initial = original.textboxes
+  if (!current || !initial || current.length !== initial.length) return null
+  let changed = false
+  const styles = current.map((box, index) => {
+    const fillHex =
+      (box.fill ?? null) !== (initial[index].fill ?? null) ? (box.fill ?? null) : undefined
+    const borderHex =
+      (box.borderColor ?? null) !== (initial[index].borderColor ?? null)
+        ? (box.borderColor ?? null)
+        : undefined
+    if (fillHex === undefined && borderHex === undefined) return null
+    changed = true
+    return { fillHex, borderHex }
+  })
+  return changed ? styles : null
 }
 
 function fieldTextPatch(node: PmNode, original: Block): FieldTextPatch | null {
@@ -1309,10 +1547,11 @@ function nodeFormat(node: PmNode): ParaFormat | undefined {
   if (node.attrs?.indentLeft) format.indentLeft = Number(node.attrs.indentLeft)
   if (node.attrs?.indentRight) format.indentRight = Number(node.attrs.indentRight)
   if (node.attrs?.indentFirstLine) format.indentFirstLine = Number(node.attrs.indentFirstLine)
-  if (node.attrs?.spaceBefore) format.spaceBefore = Number(node.attrs.spaceBefore)
-  if (node.attrs?.spaceAfter) format.spaceAfter = Number(node.attrs.spaceAfter)
+  if (node.attrs?.spaceBefore != null) format.spaceBefore = Number(node.attrs.spaceBefore)
+  if (node.attrs?.spaceAfter != null) format.spaceAfter = Number(node.attrs.spaceAfter)
   if (node.attrs?.pageBreakBefore) format.pageBreakBefore = true
   if (node.attrs?.bidi) format.bidi = true
+  if (node.attrs?.autoSpace != null) format.autoSpace = node.attrs.autoSpace as boolean
   if (node.attrs?.shadingFill) format.shadingFill = String(node.attrs.shadingFill)
   if (node.attrs?.borders) format.borders = String(node.attrs.borders)
   if (node.attrs?.tabStops) {
@@ -1331,6 +1570,7 @@ function nodeFormat(node: PmNode): ParaFormat | undefined {
       /* ignore malformed */
     }
   }
+  if (node.attrs?.emptyRunSize) format.emptyRunSizeHalfPoints = Number(node.attrs.emptyRunSize)
   return Object.keys(format).length > 0 ? format : undefined
 }
 
@@ -1437,7 +1677,7 @@ export function inlineToRuns(content: PmNode[]): Run[] {
       const ch = node.attrs?.pageBreak ? '\f' : '\n'
       const prev = runs[runs.length - 1]
       const prevAtomic =
-        prev && (prev.noteRef || prev.xeTerm !== undefined || prev.math || prev.ruby)
+        prev && (prev.noteRef || prev.xeTerm !== undefined || prev.math || prev.ruby || prev.image)
       if (prev && !prevAtomic) prev.text += ch
       else runs.push({ text: ch })
       continue
@@ -1468,6 +1708,22 @@ export function inlineToRuns(content: PmNode[]): Run[] {
         runs.push(
           xml ? { text: base, ruby: { rt: String(node.attrs?.rt ?? ''), xml } } : { text: base },
         )
+      }
+      continue
+    }
+    if (node.type === 'docInlineImage') {
+      const dataUrl = String(node.attrs?.dataUrl ?? '')
+      const xml = String(node.attrs?.xml ?? '')
+      if (dataUrl && xml) {
+        runs.push({
+          text: '',
+          image: {
+            dataUrl,
+            xml,
+            ...(node.attrs?.widthPx ? { widthPx: Number(node.attrs.widthPx) } : {}),
+            ...(node.attrs?.heightPx ? { heightPx: Number(node.attrs.heightPx) } : {}),
+          },
+        })
       }
       continue
     }
@@ -1503,8 +1759,11 @@ export function inlineToRuns(content: PmNode[]): Run[] {
         if (mark.attrs?.color) run.color = String(mark.attrs.color)
         if (mark.attrs?.sizeHalfPoints) run.sizeHalfPoints = Number(mark.attrs.sizeHalfPoints)
         if (mark.attrs?.font) run.font = String(mark.attrs.font)
+        if (mark.attrs?.fontAscii) run.fontAscii = String(mark.attrs.fontAscii)
+        if (mark.attrs?.csFont) run.csFont = String(mark.attrs.csFont)
         if (mark.attrs?.charSpacingTwips) run.charSpacingTwips = Number(mark.attrs.charSpacingTwips)
         if (mark.attrs?.highlight) run.highlight = String(mark.attrs.highlight)
+        if (mark.attrs?.shading) run.shading = String(mark.attrs.shading)
         if (mark.attrs?.vertAlign === 'superscript' || mark.attrs?.vertAlign === 'subscript') {
           run.vertAlign = mark.attrs.vertAlign
         }
@@ -1537,10 +1796,12 @@ function mergeRuns(runs: Run[]): Run[] {
       run.xeTerm !== undefined ||
       run.math ||
       run.ruby ||
+      run.image ||
       prev?.noteRef ||
       prev?.xeTerm !== undefined ||
       prev?.math ||
-      prev?.ruby
+      prev?.ruby ||
+      prev?.image
     if (prev && !atomic && runStyleKey(prev) === runStyleKey(run)) prev.text += run.text
     else merged.push({ ...run })
   }
@@ -1558,7 +1819,9 @@ function runStyleKey(run: Run): string {
     run.color ?? null,
     run.sizeHalfPoints ?? null,
     run.font ?? null,
+    run.fontAscii ?? null,
     run.highlight ?? null,
+    run.shading ?? null,
     run.vertAlign ?? null,
     run.link?.href ?? null,
     run.link?.rId ?? null,
@@ -1599,6 +1862,7 @@ function normalizedRuns(runs: Run[]): unknown[] {
     r.color ?? null,
     r.sizeHalfPoints ?? null,
     r.font ?? null,
+    r.fontAscii ?? null,
     r.highlight ?? null,
     r.vertAlign ?? null,
     r.link?.href ?? null,
@@ -1631,6 +1895,8 @@ function normalizedFormat(format: ParaFormat | undefined): unknown {
     format.borders ?? null,
     format.tabStops ? JSON.stringify(format.tabStops) : null,
     format.dropCap ? JSON.stringify(format.dropCap) : null,
+    format.autoSpace ?? null,
+    format.emptyRunSizeHalfPoints ?? null,
   ]
 }
 

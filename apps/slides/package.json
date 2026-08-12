@@ -33,7 +33,7 @@
     "@wiswork/pptx-render": "*",
     "@wiswork/project-store": "*",
     "@wiswork/ui": "*",
-    "electron": "^41.0.3",
+    "electron": "43.4.0",
     "electron-builder": "^26.0.12",
     "electron-vite": "^5.0.0",
     "jsdom": "^28.0.0",
@@ -50,7 +50,7 @@
   "build": {
     "appId": "com.atominnolab.wiswork.slides",
     "productName": "WisWork Slides",
-    "electronVersion": "41.7.1",
+    "electronVersion": "43.4.0",
     "directories": {
       "output": "release"
     },

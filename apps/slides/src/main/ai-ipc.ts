@@ -12,10 +12,10 @@ import { AiIpcError, registerWisworkModelIpc, validateAiSearchArgs } from '@wisw
 import { AuthError, getElectronAuthRuntimeOrNull } from '@wiswork/auth'
 import { webSearch, imageSearch } from '@wiswork/ai-search'
 import { fetchWithSsrfGuard } from '@wiswork/electron-utils'
-import { addPicture } from '@wiswork/pptx-engine'
+import { addPicture, replacePictureBytes } from '@wiswork/pptx-engine'
 import { EMU_PER_PX_96 } from '@wiswork/pptx-render'
 import { tm } from './i18n-main'
-import { pushHistory, rebuildSlide, sessions } from './session-state'
+import { pushHistory, rebuildSlide, scheduleHistoryNotify, sessions } from './session-state'
 import { registerUnsupportedMediaIpc } from './unsupported-ipc'
 
 // ---- AI settings + streaming proxy (the main process does the networking to avoid renderer CORS; implementation shared via @wiswork/ai-provider) ----
@@ -197,11 +197,58 @@ export function registerSlidesOnlyAiIpc(): void {
         })
         if (!el) {
           session.undoStack.pop()
+          scheduleHistoryNotify(session)
           return null
         }
         session.fitWidthPx = op.fitWidthPx
         const rebuilt = rebuildSlide(session, op.slideIndex)
         return rebuilt ? { slide: rebuilt, sourceId: el.id } : null
+      } catch {
+        return null
+      }
+    },
+  )
+
+  // Download an image from a URL and swap it into an existing picture in place
+  // (frame/z-order/effects survive). Same URL hardening as ai:insert-image-url.
+  ipcMain.handle(
+    'ai:replace-picture-url',
+    async (e, op: { slideIndex: number; sourceId: string; url: string; keepSrcRect?: boolean }) => {
+      assertAiIpcSender(e)
+      validateSlidesAiObject(op, ['slideIndex', 'sourceId', 'url', 'keepSrcRect'])
+      validateSlidesAiString(op.sourceId, 4_096)
+      validateSlidesAiString(op.url, 4_096)
+      if (!Number.isInteger(op.slideIndex) || op.slideIndex < 0 || op.slideIndex > 10_000)
+        throw new AiIpcError('invalid_payload')
+      if (op.keepSrcRect !== undefined && typeof op.keepSrcRect !== 'boolean')
+        throw new AiIpcError('invalid_payload')
+      const session = sessions.get(e.sender.id)
+      if (!session) return null
+      const slide = session.opened.deck.slides[op.slideIndex]
+      if (!slide) return null
+      try {
+        const resp = await fetchWithSsrfGuard(op.url, {
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+        })
+        if (!resp || !resp.ok) return null
+        const buf = Buffer.from(await resp.arrayBuffer())
+        const ct = resp.headers.get('content-type') ?? ''
+        const ext = ct.includes('png') ? 'png' : ct.includes('gif') ? 'gif' : 'jpg'
+        pushHistory(session)
+        const ok = replacePictureBytes(
+          session.opened,
+          slide,
+          String(op.sourceId),
+          new Uint8Array(buf),
+          ext,
+          op.keepSrcRect ? { keepSrcRect: true } : undefined,
+        )
+        if (!ok) {
+          session.undoStack.pop()
+          scheduleHistoryNotify(session)
+          return null
+        }
+        return rebuildSlide(session, op.slideIndex)
       } catch {
         return null
       }

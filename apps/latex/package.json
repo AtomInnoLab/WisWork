@@ -25,7 +25,7 @@
     "@vitejs/plugin-react": "^5.2.0",
     "@wiswork/latex-compiler": "*",
     "@wiswork/latex-project": "*",
-    "electron": "^41.0.3",
+    "electron": "43.4.0",
     "electron-vite": "^5.0.0",
     "jsdom": "^28.1.0",
     "typescript": "^5.9.3",

@@ -104,6 +104,9 @@ const homeApi: HomeApi = {
   async newSlide(opts) {
     await ipcRenderer.invoke(HOME_CHANNELS.newSlide, opts)
   },
+  async newMarkdown(opts) {
+    await ipcRenderer.invoke(HOME_CHANNELS.newMarkdown, opts)
+  },
   async removeRecent(paths) {
     await ipcRenderer.invoke(HOME_CHANNELS.removeRecent, paths)
   },
@@ -148,6 +151,18 @@ const homeApi: HomeApi = {
     }
     ipcRenderer.on(HOME_CHANNELS.themeChanged, listener)
     return () => ipcRenderer.removeListener(HOME_CHANNELS.themeChanged, listener)
+  },
+  async getUpdateChannel() {
+    const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getUpdateChannel)
+    return result === 'beta' ? 'beta' : 'stable'
+  },
+  async setUpdateChannel(channel) {
+    // validated inline: a runtime import from ../shared/update-api would be
+    // shared with the update.ts preload entry and get split into a chunk,
+    // which sandboxed preload scripts cannot load (window.aiOffice would
+    // silently disappear). Preload entries must stay single-file bundles.
+    if (channel !== 'stable' && channel !== 'beta') throw new Error('Invalid update channel.')
+    await ipcRenderer.invoke(HOME_CHANNELS.setUpdateChannel, channel)
   },
   async accountStatus() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.accountStatus)
@@ -242,6 +257,9 @@ const tabsApi: TabsApi = {
     const listener = (_event: IpcRendererEvent, tabs: TabSummary[]) => handler(tabs)
     ipcRenderer.on(TABS_CHANNELS.changed, listener)
     return () => ipcRenderer.removeListener(TABS_CHANNELS.changed, listener)
+  },
+  notifyChromePressed() {
+    ipcRenderer.send(TABS_CHANNELS.chromePressed)
   },
 }
 
