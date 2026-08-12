@@ -126,7 +126,7 @@ export function LatexEditor({
               const selection = update.state.selection.main
               callbacks.current.onCursorLine?.(update.state.doc.lineAt(selection.head).number)
               callbacks.current.onContextChange?.(
-                captureEditorContext(update.state.doc.toString(), selection.anchor, selection.head),
+                captureEditorContext(update.state.doc, selection.anchor, selection.head),
               )
             }
           }),
@@ -136,11 +136,7 @@ export function LatexEditor({
     viewRef.current = view
     const initialSelection = view.state.selection.main
     callbacks.current.onContextChange?.(
-      captureEditorContext(
-        view.state.doc.toString(),
-        initialSelection.anchor,
-        initialSelection.head,
-      ),
+      captureEditorContext(view.state.doc, initialSelection.anchor, initialSelection.head),
     )
     view.dispatch(
       setDiagnostics(view.state, editorDiagnostics(view, currentInput.current.diagnostics)),

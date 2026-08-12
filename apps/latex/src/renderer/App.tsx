@@ -7,6 +7,7 @@ import { CompilePanel } from './compile/CompilePanel.js'
 import { AiPanel } from './ai/AiPanel.js'
 import {
   diagnosticToAgentContext,
+  editorContextForActivePath,
   type AgentContext,
   type AgentContextKey,
   type AgentDiagnosticContext,
@@ -560,7 +561,7 @@ export function App() {
   )
   const activeDiagnostics = diagnostics.filter((item) => item.path === activePath)
   const agentContext = useMemo<AgentContext>(() => {
-    const currentEditor = editorContext?.path === activePath ? editorContext : null
+    const currentEditor = editorContextForActivePath(editorContext, activePath)
     return {
       ...(!hiddenAiContext.has('activeFile') && activePath ? { activeFile: activePath } : {}),
       ...(!hiddenAiContext.has('activeFile') && currentEditor
@@ -572,16 +573,6 @@ export function App() {
       ...(!hiddenAiContext.has('diagnostic') && aiDiagnostic ? { diagnostic: aiDiagnostic } : {}),
     }
   }, [activePath, aiDiagnostic, editorContext, hiddenAiContext])
-
-  useEffect(() => {
-    setEditorContext(null)
-    setHiddenAiContext((current) => {
-      const next = new Set(current)
-      next.delete('activeFile')
-      next.delete('selection')
-      return next
-    })
-  }, [activePath])
 
   useEffect(() => {
     forwardGate.current.invalidate()

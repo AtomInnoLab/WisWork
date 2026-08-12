@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import { Text } from '@codemirror/state'
 import {
   MAX_DIAGNOSTIC_MESSAGE_CHARS,
   MAX_SELECTION_CHARS,
   captureEditorContext,
+  editorContextForActivePath,
   serializeAgentPrompt,
   type AgentContext,
 } from '../src/renderer/ai/agent-context.js'
@@ -10,7 +12,7 @@ import {
 describe('LaTeX agent context', () => {
   it('captures bounded selected text with its one-based line range and cursor line', () => {
     const source = `first\n${'x'.repeat(MAX_SELECTION_CHARS + 20)}\nlast`
-    const selection = captureEditorContext(source, 6, source.length - 5)
+    const selection = captureEditorContext(Text.of(source.split('\n')), 6, source.length - 5)
 
     expect(selection.cursorLine).toBe(2)
     expect(selection.selection).toMatchObject({ startLine: 2, endLine: 2, truncated: true })
@@ -48,5 +50,33 @@ describe('LaTeX agent context', () => {
       prompt.match(/<untrusted_latex_context>\n([\s\S]*?)\n<\/untrusted_latex_context>/)?.[1] ?? '',
     ) as AgentContext
     expect(serializedMessage.diagnostic?.message).toHaveLength(MAX_DIAGNOSTIC_MESSAGE_CHARS)
+  })
+
+  it('reads only the bounded prefix from CodeMirror and never leaves an orphan surrogate', () => {
+    const source = `${'x'.repeat(MAX_SELECTION_CHARS - 1)}😀${'m'.repeat(MAX_SELECTION_CHARS * 4)}`
+    const doc = Text.of([source])
+    const sliceString = doc.sliceString.bind(doc)
+    const reads: Array<[number, number]> = []
+    const observed = {
+      length: doc.length,
+      lineAt: doc.lineAt.bind(doc),
+      sliceString(from: number, to: number) {
+        reads.push([from, to])
+        return sliceString(from, to)
+      },
+    }
+
+    const context = captureEditorContext(observed, 0, doc.length)
+
+    expect(reads).toEqual([[0, MAX_SELECTION_CHARS * 2]])
+    expect(context.selection?.text).toBe(`${'x'.repeat(MAX_SELECTION_CHARS - 1)}😀`)
+    expect(Array.from(context.selection?.text ?? '')).toHaveLength(MAX_SELECTION_CHARS)
+  })
+
+  it('filters stale editor context during a file switch without clearing the new child report', () => {
+    const old = { path: 'old.tex', cursorLine: 3 }
+    const next = { path: 'new.tex', cursorLine: 8 }
+    expect(editorContextForActivePath(old, 'new.tex')).toBeNull()
+    expect(editorContextForActivePath(next, 'new.tex')).toBe(next)
   })
 })

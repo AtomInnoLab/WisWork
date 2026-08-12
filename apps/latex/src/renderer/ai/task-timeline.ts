@@ -17,9 +17,14 @@ const MAX_DETAIL_CHARS = 2_000
 
 function boundedDetail(detail: string | undefined): string | undefined {
   if (!detail) return undefined
-  return detail.length > MAX_DETAIL_CHARS
-    ? `${detail.slice(0, MAX_DETAIL_CHARS)}\n[detail truncated]`
-    : detail
+  let codePoints = 0
+  let end = 0
+  while (end < detail.length && codePoints < MAX_DETAIL_CHARS) {
+    const codePoint = detail.codePointAt(end)
+    end += codePoint !== undefined && codePoint > 0xffff ? 2 : 1
+    codePoints += 1
+  }
+  return end < detail.length ? `${detail.slice(0, end)}\n[detail truncated]` : detail
 }
 
 function kindForTool(name: string): TaskTimelineKind {
@@ -54,11 +59,13 @@ function inputDetail(input: Record<string, unknown>): string | undefined {
 export function startTimelineEntry(
   entries: readonly TaskTimelineEntry[],
   call: AgentToolCall,
+  runId?: string,
 ): TaskTimelineEntry[] {
+  const entryId = runId ? `${runId}:${call.id}` : call.id
   return [
-    ...entries.filter((entry) => entry.id !== call.id),
+    ...entries.filter((entry) => entry.id !== entryId),
     {
-      id: call.id,
+      id: entryId,
       kind: kindForTool(call.name),
       label: toolLabel(call.name),
       state: 'running',

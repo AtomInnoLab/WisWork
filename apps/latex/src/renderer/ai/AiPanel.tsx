@@ -22,6 +22,11 @@ import {
   startTimelineEntry,
   type TaskTimelineEntry,
 } from './task-timeline.js'
+import {
+  AgentPanelSession,
+  type AgentRunScope,
+  type AgentProjectScope,
+} from './agent-panel-session.js'
 
 const E2E_PROPOSAL_TEXT = String.raw`\documentclass{article}
 \begin{document}
@@ -134,77 +139,115 @@ export function AiPanel({
   const [timeline, setTimeline] = useState<TaskTimelineEntry[]>([])
   const [panelWidth, setPanelWidth] = useState(loadPanelWidth)
   const [resizing, setResizing] = useState(false)
-  const projectRef = useRef(projectId)
-  projectRef.current = projectId
+  const sessionRef = useRef<AgentPanelSession | null>(null)
+  if (!sessionRef.current) sessionRef.current = new AgentPanelSession(projectId)
   const loopRef = useRef<AgentLoop | null>(null)
-  const chatIdsRef = useRef<{ projectId: string; chatId: string } | null>(null)
+  const activeRunRef = useRef<AgentRunScope | null>(null)
+  const chatIdsRef = useRef<
+    (AgentProjectScope & { storeProjectId: string; chatId: string }) | null
+  >(null)
   const e2eProposalLoaded = useRef<string | null>(null)
 
   useEffect(() => {
+    const session = sessionRef.current!
+    const projectScope = session.switchProject(projectId)
+    activeRunRef.current = null
+    chatIdsRef.current = null
+    setInput('')
+    setText('')
+    setBusy(false)
+    setChat([])
+    setProposal(null)
+    setSnapshotId(null)
+    setStatus(null)
+    setTimeline([])
     const loop = new AgentLoop({
       transport: createLatexTransport(),
-      skill: createLatexSkill(window.latexApi, () => projectRef.current),
+      skill: createLatexSkill(window.latexApi, () => projectId),
       events: {
-        onText: setText,
-        onToolStart: (call) => setTimeline((current) => startTimelineEntry(current, call)),
+        onText: (value) => {
+          const scope = activeRunRef.current
+          if (scope && session.acceptsRun(scope)) setText(value)
+        },
+        onToolStart: (call) => {
+          const scope = activeRunRef.current
+          if (!scope || !session.acceptsRun(scope)) return
+          const runId = `${scope.generation}.${scope.run}`
+          setTimeline((current) => startTimelineEntry(current, call, runId))
+        },
         onToolExecuted: ({ call, execution }) => {
+          const scope = activeRunRef.current
+          if (!scope || !session.acceptsRun(scope)) return
+          const timelineId = session.timelineId(scope, call.id)
+          const runId = `${scope.generation}.${scope.run}`
           setTimeline((current) => {
-            const started = current.some((entry) => entry.id === call.id)
+            const started = current.some((entry) => entry.id === timelineId)
               ? current
-              : startTimelineEntry(current, call)
-            return completeTimelineEntry(started, call.id, execution)
+              : startTimelineEntry(current, call, runId)
+            return completeTimelineEntry(started, timelineId, execution)
           })
           if (call.name !== 'propose_project_edits' || execution.isError) return
-          const projectId = projectRef.current
           void loadProposalForReview(execution.output, projectId, (request) =>
             window.latexApi.getProposal(request),
           )
-            .then(setProposal)
-            .catch((error: unknown) =>
-              setStatus(error instanceof Error ? error.message : String(error)),
-            )
+            .then((value) => {
+              if (session.acceptsRunResult(scope)) setProposal(value)
+            })
+            .catch((error: unknown) => {
+              if (session.acceptsRunResult(scope))
+                setStatus(error instanceof Error ? error.message : String(error))
+            })
         },
         onDone: (result) => {
+          const scope = activeRunRef.current
+          if (!scope || !session.acceptsCompletion(scope)) return
+          const acceptResult = session.acceptsRun(scope)
           if (result.cancelled) setTimeline(cancelRunningTimelineEntries)
           setBusy(false)
           setText('')
-          if (result.text)
+          if (acceptResult && result.text)
             setChat((current) => [...current, { role: 'assistant', text: result.text }])
           const ids = chatIdsRef.current
-          if (ids)
+          if (acceptResult && ids && session.acceptsProject(ids))
             void window.latexApi.appendDirectoryChat({
-              projectId: projectRef.current,
-              storeProjectId: ids.projectId,
+              projectId,
+              storeProjectId: ids.storeProjectId,
               chatId: ids.chatId,
               role: 'assistant',
               text: result.text,
             })
+          session.finishRun(scope)
+          activeRunRef.current = null
         },
         onError: (error) => {
-          setTimeline((current) => failRunningTimelineEntries(current, error))
-          setStatus(error)
+          const scope = activeRunRef.current
+          if (!scope || !session.acceptsCompletion(scope)) return
+          if (session.acceptsRun(scope)) {
+            setTimeline((current) => failRunningTimelineEntries(current, error))
+            setStatus(error)
+          }
           setBusy(false)
+          setText('')
+          session.finishRun(scope)
+          activeRunRef.current = null
         },
       },
     })
     loopRef.current = loop
-    return () => {
-      loop.cancel()
-      loopRef.current = null
-    }
-  }, [])
-
-  useEffect(() => {
     void window.latexApi.resolveDirectoryChat({ projectId }).then(async (result) => {
-      if (!result.ok) return
-      chatIdsRef.current = result.value
+      if (!result.ok || !session.acceptsProject(projectScope)) return
+      chatIdsRef.current = {
+        ...projectScope,
+        storeProjectId: result.value.projectId,
+        chatId: result.value.chatId,
+      }
       const loaded = await window.latexApi.loadDirectoryChat({
         projectId,
         storeProjectId: result.value.projectId,
         chatId: result.value.chatId,
         limit: 200,
       })
-      if (loaded.ok) {
+      if (loaded.ok && session.acceptsProject(projectScope) && loopRef.current === loop) {
         const restored = loaded.value.map((message) => ({
           role: message.role,
           text: message.text,
@@ -213,6 +256,12 @@ export function AiPanel({
         loopRef.current?.restore(restored)
       }
     })
+    return () => {
+      session.switchProject(projectId)
+      loop.cancel()
+      if (loopRef.current === loop) loopRef.current = null
+      activeRunRef.current = null
+    }
   }, [projectId])
 
   useEffect(() => {
@@ -239,12 +288,15 @@ export function AiPanel({
       return
     }
     e2eProposalLoaded.current = projectId
+    const session = sessionRef.current!
+    const projectScope = session.captureProject()
     void window.latexApi
       .proposeProjectEdits({
         projectId,
         files: [{ path: 'main.tex', afterText: E2E_PROPOSAL_TEXT }],
       })
       .then((result) => {
+        if (!session.acceptsProject(projectScope)) return
         if (result.ok) setProposal(result.value)
         else setStatus(result.error.message)
       })
@@ -252,27 +304,33 @@ export function AiPanel({
 
   const send = () => {
     const instruction = input.trim()
-    if (!instruction || busy || disabled) return
+    const loop = loopRef.current
+    if (!instruction || busy || disabled || !loop || loop.busy) return
+    const session = sessionRef.current!
+    const runScope = session.beginRun()
+    activeRunRef.current = runScope
     setBusy(true)
     setStatus(null)
     setText('')
     setInput('')
     setChat((current) => [...current, { role: 'user', text: instruction }])
     const ids = chatIdsRef.current
-    if (ids)
+    if (ids && session.acceptsProject(ids))
       void window.latexApi.appendDirectoryChat({
         projectId,
-        storeProjectId: ids.projectId,
+        storeProjectId: ids.storeProjectId,
         chatId: ids.chatId,
         role: 'user',
         text: instruction,
       })
-    loopRef.current?.run(serializeAgentPrompt(instruction, context))
+    loop.run(serializeAgentPrompt(instruction, context))
   }
 
   const cancel = () => {
+    const scope = activeRunRef.current
+    if (!scope) return
+    sessionRef.current!.cancelRun(scope)
     loopRef.current?.cancel()
-    setBusy(false)
     setText('')
     setStatus('Stopped.')
     setTimeline(cancelRunningTimelineEntries)
@@ -280,6 +338,8 @@ export function AiPanel({
 
   const confirm = async (selected: ReadonlySet<string>) => {
     if (!proposal || disabled) return
+    const session = sessionRef.current!
+    const projectScope = session.captureProject()
     setBusy(true)
     try {
       const owned = await proposalForSelection(proposal, selected, async (files) => {
@@ -293,7 +353,9 @@ export function AiPanel({
         snapshotId: string
         compile: { ok: boolean; error?: string; result?: { diagnostics: unknown[] } }
       }
+      if (!session.acceptsProject(projectScope)) return
       await onProjectFilesChanged?.()
+      if (!session.acceptsProject(projectScope)) return
       setSnapshotId(value.snapshotId)
       setProposal(null)
       setStatus(
@@ -302,22 +364,27 @@ export function AiPanel({
           : `Changes applied; compile failed: ${value.compile.error ?? 'unknown error'}`,
       )
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
+      if (session.acceptsProject(projectScope))
+        setStatus(error instanceof Error ? error.message : String(error))
     } finally {
-      setBusy(false)
+      if (session.acceptsProject(projectScope)) setBusy(false)
     }
   }
 
   const undo = async () => {
     if (!snapshotId || disabled) return
+    const session = sessionRef.current!
+    const projectScope = session.captureProject()
     setBusy(true)
     const result = await window.latexApi.undoProposal({ projectId, snapshotId })
+    if (!session.acceptsProject(projectScope)) return
     if (result.ok) {
       await onProjectFilesChanged?.()
+      if (!session.acceptsProject(projectScope)) return
       setSnapshotId(null)
       setStatus('AI changes were undone and the project was compiled again.')
     } else setStatus(result.error.message)
-    setBusy(false)
+    if (session.acceptsProject(projectScope)) setBusy(false)
   }
 
   // Keep the component mounted while collapsed so its transcript, draft and active run survive.

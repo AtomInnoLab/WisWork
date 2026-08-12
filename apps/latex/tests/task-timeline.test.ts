@@ -67,4 +67,29 @@ describe('agent task timeline', () => {
       })[0],
     ).toMatchObject({ state: 'cancelled', label: 'Read project text' })
   })
+
+  it('keeps repeated provider tool ids as separate entries across runs', () => {
+    const first = startTimelineEntry(
+      [],
+      { id: 'tool-1', name: 'read_project_text', input: {} },
+      'run-1',
+    )
+    const second = startTimelineEntry(
+      first,
+      { id: 'tool-1', name: 'read_project_text', input: {} },
+      'run-2',
+    )
+    expect(second.map((entry) => entry.id)).toEqual(['run-1:tool-1', 'run-2:tool-1'])
+  })
+
+  it('truncates detail on a complete Unicode code-point boundary', () => {
+    const running = startTimelineEntry([], { id: 'read', name: 'read_project_text', input: {} })
+    const completed = completeTimelineEntry(running, 'read', {
+      summary: 'Read',
+      output: `${'x'.repeat(1_999)}😀tail`,
+      mutated: false,
+    })
+    expect(completed[0]?.detail).toContain(`${'x'.repeat(1_999)}😀\n[detail truncated]`)
+    expect(completed[0]?.detail).not.toContain('\ud83d\n')
+  })
 })
