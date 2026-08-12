@@ -2,7 +2,7 @@ import type { AgentMessage, AgentToolCall, AgentToolDef } from '@wiswork/agent-c
 import { AiProviderError, isAuthRequiredError, safeHttpProviderError } from './errors'
 import { aiFetch } from './fetch'
 import { httpBodyDetail } from './http-error'
-import { WISWORK_DEFAULT_MODEL, WISWORK_MESSAGES_URL } from './providers'
+import { WISWORK_DEFAULT_MODEL, WISWORK_MESSAGES_URL, WISWORK_REQUEST_LOCATION } from './providers'
 import type { AiProviderConfig, AiProviderId, WisworkFetchWithAuth } from './types'
 import { AiTimeoutError, createStreamWatchdog, type StreamWatchdog } from './watchdog'
 
@@ -316,7 +316,10 @@ async function anthropicTurn(
       }),
     })
   } catch (e) {
-    if (safeErrors && isAuthRequiredError(e)) throw new AiProviderError('auth_required')
+    if (cb.signal.aborted) throw e
+    if (safeErrors && isAuthRequiredError(e))
+      throw new AiProviderError('auth_required', undefined, 'auth')
+    if (safeErrors) throw new AiProviderError('model_upstream_unavailable', undefined, 'request')
     // When fetch fails in the Electron main process, the real reason lives in `cause`
     const err = e as { message?: unknown; cause?: { code?: unknown; message?: unknown } } | null
     const causeText = err?.cause
@@ -328,7 +331,8 @@ async function anthropicTurn(
   onBytes()
   if (!response.ok || !response.body) {
     if (safeErrors) {
-      if (response.status === 401) throw new AiProviderError('auth_required', response.status)
+      if (response.status === 401)
+        throw new AiProviderError('auth_required', response.status, 'response')
       throw safeHttpProviderError(response.status)
     }
     throw new Error(`Claude HTTP ${response.status}: ${httpBodyDetail(await response.text())}`)
@@ -428,6 +432,7 @@ async function streamWiswork(
             headers: {
               Authorization: `Bearer ${accessToken}`,
               'Content-Type': 'application/json',
+              'x-req-location': WISWORK_REQUEST_LOCATION,
             },
           }),
         ),
@@ -922,7 +927,7 @@ export async function streamForProvider(
           cb.signal.aborted
         )
           throw error
-        throw new AiProviderError('model_upstream_unavailable')
+        throw new AiProviderError('model_upstream_unavailable', undefined, 'stream')
       }
     case 'anthropic':
       return streamAnthropic(config, system, messages, tools, maxTokens, cb)

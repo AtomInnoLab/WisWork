@@ -1,7 +1,7 @@
-import { safeHttpProviderError } from './errors'
+import { AiProviderError, isAuthRequiredError, safeHttpProviderError } from './errors'
 import { aiFetch } from './fetch'
 import { httpBodyDetail } from './http-error'
-import { WISWORK_DEFAULT_MODEL, WISWORK_MESSAGES_URL } from './providers'
+import { WISWORK_DEFAULT_MODEL, WISWORK_MESSAGES_URL, WISWORK_REQUEST_LOCATION } from './providers'
 import type { AiChatResponse, AiProviderConfig, AiProviderId, WisworkFetchWithAuth } from './types'
 import { AI_CHAT_RESPONSE_TIMEOUT_MS, createStreamWatchdog, type StreamWatchdog } from './watchdog'
 
@@ -52,29 +52,47 @@ async function chatWiswork(
   fetchWithAuth?: WisworkFetchWithAuth,
 ): Promise<AiChatResponse> {
   if (!fetchWithAuth) return { ok: false, error: 'auth_required', errorCode: 'auth_required' }
-  const response = await fetchWithAuth((accessToken) =>
-    fetch(WISWORK_MESSAGES_URL, {
-      method: 'POST',
-      signal: wd.signal,
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: WISWORK_DEFAULT_MODEL,
-        max_tokens: 8192,
-        system,
-        messages: [{ role: 'user', content: user }],
+  let response: Response
+  try {
+    response = await fetchWithAuth((accessToken) =>
+      fetch(WISWORK_MESSAGES_URL, {
+        method: 'POST',
+        signal: wd.signal,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'x-req-location': WISWORK_REQUEST_LOCATION,
+        },
+        body: JSON.stringify({
+          model: WISWORK_DEFAULT_MODEL,
+          max_tokens: 8192,
+          system,
+          messages: [{ role: 'user', content: user }],
+        }),
       }),
-    }),
-  )
+    )
+  } catch (error) {
+    if (wd.signal.aborted) throw error
+    if (isAuthRequiredError(error)) throw new AiProviderError('auth_required', undefined, 'auth')
+    throw new AiProviderError('model_upstream_unavailable', undefined, 'request')
+  }
   wd.touch()
   if (!response.ok) {
     const errorCode =
       response.status === 401 ? 'auth_required' : safeHttpProviderError(response.status).code
-    return { ok: false, error: errorCode, errorCode }
+    return {
+      ok: false,
+      error: errorCode,
+      errorCode,
+      diagnostic: { stage: 'response', httpStatus: response.status },
+    }
   }
-  const json = (await response.json()) as { content?: Array<{ type: string; text?: string }> }
+  let json: { content?: Array<{ type: string; text?: string }> }
+  try {
+    json = (await response.json()) as typeof json
+  } catch {
+    throw new AiProviderError('model_invalid_response', response.status, 'response')
+  }
   const content = json.content
     ?.filter((block) => block.type === 'text')
     .map((block) => block.text ?? '')

@@ -138,8 +138,14 @@ describe('createIpcTransport', () => {
     rate.emit({ type: 'error', errorCode: 'model_rate_limited' })
     expect(rate.cb.onError).toHaveBeenCalledWith('localized:model_rate_limited')
     const upstream = setup(undefined, undefined, localized)
-    upstream.emit({ type: 'error', errorCode: 'model_upstream_unavailable' })
-    expect(upstream.cb.onError).toHaveBeenCalledWith('localized:model_upstream_unavailable')
+    upstream.emit({
+      type: 'error',
+      errorCode: 'model_upstream_unavailable',
+      diagnostic: { stage: 'response', httpStatus: 503 },
+    })
+    expect(upstream.cb.onError).toHaveBeenCalledWith(
+      'localized:model_upstream_unavailable (HTTP 503 · response)',
+    )
     const invalid = setup(undefined, undefined, localized)
     invalid.emit({ type: 'error', errorCode: 'model_invalid_response' })
     expect(invalid.cb.onError).toHaveBeenCalledWith('localized:model_invalid_response')
