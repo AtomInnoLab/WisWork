@@ -8,11 +8,12 @@ export type {
   AiStreamChunk,
   AiStreamRequest,
   LegacyAiSettings,
+  WisworkFetchWithAuth,
 } from './types'
 export {
   AI_PROVIDERS,
   WISWORK_DEFAULT_MODEL,
-  WISWORK_MODEL_BASE_URL,
+  WISWORK_MESSAGES_URL,
   defaultAiSettings,
   resolveAiSettings,
 } from './providers'

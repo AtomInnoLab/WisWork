@@ -102,13 +102,12 @@ testing and local overrides:
 | `WISWORK_USER_DATA`                                      | Override the Electron userData directory (test isolation)              |
 | `WISWORK_LANG`                                           | Force the UI language instead of following the OS locale               |
 | `WISWORK_FAKE_UPDATE`                                    | Exercise the updater UI without a real release feed                    |
-| `WISWORK_MODEL_API_KEY`                                  | Main-process-only WisModel service key (never expose to renderers)     |
 | `WISWORK_UPDATE_URL`                                     | Release update-channel base URL used by electron-builder               |
 | `SERPER_API_KEY`                                         | Optional Serper key for web/image search                               |
 | `XLSX_SIDECAR_PATH`, `XLSX_OPEN_PATH`, `XLSX_DEBUG_PORT` | Point at a locally built xlsx sidecar and its debug port               |
 | `*_DEV_PORT`, `*_RENDERER_URL`                           | Per-app Vite dev server ports and renderer URLs (set by `npm run dev`) |
 
-Without a signed-in WisPaper session or `WISWORK_MODEL_API_KEY`, AI requests fail closed with a localized configuration message; document editing remains available. Web search falls back to a keyless backend when Serper is not configured.
+Without a signed-in WisWork session, managed AI requests fail closed; document editing remains available. Web search falls back to a keyless backend when Serper is not configured.
 
 ## Coding conventions
 

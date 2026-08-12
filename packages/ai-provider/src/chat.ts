@@ -1,7 +1,7 @@
 import { safeHttpProviderError } from './errors'
 import { httpBodyDetail } from './http-error'
-import { WISWORK_MODEL_BASE_URL } from './providers'
-import type { AiChatResponse, AiProviderConfig, AiProviderId } from './types'
+import { WISWORK_DEFAULT_MODEL, WISWORK_MESSAGES_URL } from './providers'
+import type { AiChatResponse, AiProviderConfig, AiProviderId, WisworkFetchWithAuth } from './types'
 import { AI_CHAT_RESPONSE_TIMEOUT_MS, createStreamWatchdog, type StreamWatchdog } from './watchdog'
 
 async function chatAnthropic(
@@ -41,6 +41,45 @@ async function chatAnthropic(
     .map((c) => c.text ?? '')
     .join('')
   if (!content) return { ok: false, error: 'Claude returned an empty response' }
+  return { ok: true, content }
+}
+
+async function chatWiswork(
+  wd: StreamWatchdog,
+  system: string,
+  user: string,
+  fetchWithAuth?: WisworkFetchWithAuth,
+): Promise<AiChatResponse> {
+  if (!fetchWithAuth) return { ok: false, error: 'auth_required', errorCode: 'auth_required' }
+  const response = await fetchWithAuth((accessToken) =>
+    fetch(WISWORK_MESSAGES_URL, {
+      method: 'POST',
+      signal: wd.signal,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: WISWORK_DEFAULT_MODEL,
+        max_tokens: 8192,
+        system,
+        messages: [{ role: 'user', content: user }],
+      }),
+    }),
+  )
+  wd.touch()
+  if (!response.ok) {
+    const errorCode =
+      response.status === 401 ? 'auth_required' : safeHttpProviderError(response.status).code
+    return { ok: false, error: errorCode, errorCode }
+  }
+  const json = (await response.json()) as { content?: Array<{ type: string; text?: string }> }
+  const content = json.content
+    ?.filter((block) => block.type === 'text')
+    .map((block) => block.text ?? '')
+    .join('')
+  if (!content)
+    return { ok: false, error: 'model_invalid_response', errorCode: 'model_invalid_response' }
   return { ok: true, content }
 }
 
@@ -130,6 +169,7 @@ export async function chatForProvider(
   system: string,
   user: string,
   signal?: AbortSignal,
+  fetchWithAuth?: WisworkFetchWithAuth,
 ): Promise<AiChatResponse> {
   // non-streaming: the server generates the full answer before the headers arrive,
   // so the connect phase gets the long budget; the body read then gets the idle budget
@@ -137,7 +177,7 @@ export async function chatForProvider(
   return wd.guard(() => {
     switch (provider) {
       case 'wiswork':
-        return chatOpenAiCompatible(wd, WISWORK_MODEL_BASE_URL, config, system, user, true)
+        return chatWiswork(wd, system, user, fetchWithAuth)
       case 'anthropic':
         return chatAnthropic(wd, config, system, user)
       case 'gemini':

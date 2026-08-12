@@ -106,6 +106,7 @@ describe('stream timeouts end to end', () => {
       [],
       100,
       { ...cb, signal: controller.signal },
+      async (request) => request('login-token'),
     )
     const result = expect(run).rejects.toThrow('aborted')
     controller.abort()
@@ -126,6 +127,7 @@ describe('stream timeouts end to end', () => {
       [],
       100,
       cb,
+      async (request) => request('login-token'),
     )
     const result = expect(run).rejects.toBeInstanceOf(AiTimeoutError)
     await vi.advanceTimersByTimeAsync(AI_CONNECT_TIMEOUT_MS)

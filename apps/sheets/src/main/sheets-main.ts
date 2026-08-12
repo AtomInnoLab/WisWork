@@ -2011,9 +2011,14 @@ export function registerSheetsAiIpc(): void {
     isTrustedSender: (senderId) => sheetsTabs.has(senderId),
     loadSettings: () => readJson(SETTINGS_PATH(), {}),
     saveSettings: (settings) => writeJson(SETTINGS_PATH(), settings),
-    getLoggedIn: async () => {
+    getAccessToken: async () => {
       const runtime = getElectronAuthRuntimeOrNull()
-      return runtime ? (await runtime.client.getValidAccountStatus()).loggedIn : false
+      return runtime?.client.getAccessToken() ?? null
+    },
+    fetchWithAuth: (request) => {
+      const runtime = getElectronAuthRuntimeOrNull()
+      if (!runtime) throw new AuthError('auth_required')
+      return runtime.client.fetchWithAuth(request)
     },
   })
 

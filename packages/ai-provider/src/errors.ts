@@ -1,4 +1,5 @@
 export type AiProviderErrorCode =
+  | 'auth_required'
   | 'model_credentials_missing'
   | 'model_rate_limited'
   | 'model_upstream_unavailable'

@@ -1,6 +1,6 @@
 import type { AiProviderId, AiProviderMeta, AiSettings, LegacyAiSettings } from './types'
 
-export const WISWORK_MODEL_BASE_URL = 'https://wismodel-proxy-dev.atominnolab.com/api/v1'
+export const WISWORK_MESSAGES_URL = 'https://wisusage.dev.atominnolab.com/v1/messages'
 
 export const WISWORK_DEFAULT_MODEL = 'qwen/qwen3.8-max'
 
@@ -10,7 +10,7 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     label: 'WisWork',
     models: [WISWORK_DEFAULT_MODEL],
     defaultModel: WISWORK_DEFAULT_MODEL,
-    keyPlaceholder: 'Managed by the WisWork main process',
+    keyPlaceholder: 'Uses your WisWork login',
   },
   {
     id: 'anthropic',
