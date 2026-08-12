@@ -10,6 +10,7 @@
   --muted: #606366;
   --accent: #0f7fff;
   --hover: #f0f2f5;
+  --latex-workbench-bg: #f3f4f6;
 }
 
 * {
@@ -669,10 +670,10 @@ button:disabled {
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme='light']):not([data-theme='dark']) {
     color-scheme: dark;
-    color: #f1f3f5;
-    background: #141619;
+    color: var(--color-text-primary);
+    background: var(--latex-workbench-bg);
     --panel: #242629;
     --surface: #1d1f22;
     --border: #3b3e43;
@@ -686,16 +687,17 @@ button:disabled {
     --color-bg-subtle: #303338;
     --color-border-default: #3b3e43;
     --color-border-strong: #50545a;
+    --latex-workbench-bg: #141619;
   }
 
-  .latex-workbench,
-  .editor-workspace,
-  .pdf-preview {
-    background: #141619;
+  :root:not([data-theme='light']):not([data-theme='dark']) .latex-workbench,
+  :root:not([data-theme='light']):not([data-theme='dark']) .editor-workspace,
+  :root:not([data-theme='light']):not([data-theme='dark']) .pdf-preview {
+    background: var(--latex-workbench-bg);
   }
 
-  .proposal-diff pre,
-  .latex-ai-message.assistant {
+  :root:not([data-theme='light']):not([data-theme='dark']) .proposal-diff pre,
+  :root:not([data-theme='light']):not([data-theme='dark']) .latex-ai-message.assistant {
     background: var(--surface);
   }
 }

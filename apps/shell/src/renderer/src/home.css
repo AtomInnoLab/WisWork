@@ -12,6 +12,7 @@
   --timeline-user-text: #5a6170;
   /* lift for the active segment in gray-track tab pills */
   --shadow-pill: 0 1px 2px rgb(0 0 0 / 8%);
+  --shadow-theme-switch: 0 1px 3px rgb(0 0 0 / 12%);
 
   /* Monochrome logo assets flip in dark themes. */
   --logo-invert: 0;
@@ -128,7 +129,7 @@ body.vib .home {
 .theme-switch button.active {
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 12%);
+  box-shadow: var(--shadow-theme-switch);
 }
 
 :root[data-theme='dark'] {
@@ -145,7 +146,7 @@ body.vib .home {
 :root[data-theme='dark'] .nav-item:hover,
 :root[data-theme='dark'] .nav-item.active,
 :root[data-theme='dark'] .lang-menu-item:hover {
-  background: #303338;
+  background: var(--bg-hover);
 }
 
 :root[data-theme='dark'] .nav-item svg,
