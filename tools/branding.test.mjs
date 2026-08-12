@@ -21,6 +21,13 @@ afterEach(() => {
   delete require.cache[require.resolve('../apps/shell/electron-builder.cjs')]
 })
 
+test('shell home uses the same gradient app icon as the packaged product', () => {
+  const source = readFileSync(join(root, 'apps/shell/src/renderer/src/Home.tsx'), 'utf8')
+  assert.match(source, /import appIcon from ['"]\.\/assets\/app-icon\.png['"]/)
+  assert.doesNotMatch(source, /wiswork-logo\.svg/)
+  assert.match(source, /className="logo-app-icon"/)
+})
+
 test('package-lock workspace identities use only the WisWork scope and root name', () => {
   const lock = json('package-lock.json')
   assert.equal(lock.packages[''].name, 'wiswork')

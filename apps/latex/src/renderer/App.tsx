@@ -81,6 +81,7 @@ export function App() {
   const editorStateRef = useRef(editorState)
   const [compiling, setCompiling] = useState(false)
   const [bundleStatus, setBundleStatus] = useState<LatexBundleStatusDto>({ state: 'missing' })
+  const [aiOpen, setAiOpen] = useState(true)
   const [diagnostics, setDiagnostics] = useState<EditorDiagnostic[]>([])
   const [log, setLog] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -553,80 +554,94 @@ export function App() {
 
   return (
     <main className="latex-workbench">
-      <ProjectTree
-        files={files}
-        activePath={activePath}
-        onOpen={(path) => void openFile(path)}
-        onCreate={() => void createFile()}
-        onRename={(path) => void renameFile(path)}
-        mainFile={mainFile}
-      />
-      <section className="editor-workspace">
-        <OpenTabs
-          paths={openPaths}
+      <div className="latex-main-area">
+        <ProjectTree
+          files={files}
           activePath={activePath}
-          dirty={dirtyPaths}
-          onActivate={setActivePath}
-          onClose={(path) => {
-            setOpenPaths((current) => current.filter((item) => item !== path))
-            if (activePath === path) setActivePath(openPaths.find((item) => item !== path) ?? null)
-          }}
+          onOpen={(path) => void openFile(path)}
+          onCreate={() => void createFile()}
+          onRename={(path) => void renameFile(path)}
+          mainFile={mainFile}
         />
-        {activeBuffer ? (
-          <LatexEditor
-            path={activeBuffer.path}
-            value={activeBuffer.text}
-            diagnostics={activeDiagnostics}
-            readOnly={frozen}
-            onChange={handleEdit}
-            onSave={() => void savePath(activeBuffer.path)}
-            onCompile={compileProject}
-            onCursorLine={forwardSync}
-            revealLine={revealTarget?.path === activeBuffer.path ? revealTarget.line : null}
+        <section className="editor-workspace">
+          <OpenTabs
+            paths={openPaths}
+            activePath={activePath}
+            dirty={dirtyPaths}
+            onActivate={setActivePath}
+            onClose={(path) => {
+              setOpenPaths((current) => current.filter((item) => item !== path))
+              if (activePath === path)
+                setActivePath(openPaths.find((item) => item !== path) ?? null)
+            }}
           />
-        ) : (
-          <div className="empty-editor">{t('projectUnavailable')}</div>
-        )}
-        {activeBuffer?.conflict && (
-          <div role="alert" className="conflict-banner">
-            {t('externalConflict')}
-          </div>
-        )}
-        {error && (
-          <div role="alert" className="error-banner">
-            {error}
-          </div>
-        )}
-        <CompilePanel
-          compiling={compiling}
-          bundleStatus={bundleStatus}
-          diagnostics={diagnostics}
-          log={log}
-          onCompile={compileProject}
-          onCancel={() => {
-            compileQueue.current.cancelPending()
-            if (projectId) void window.latexApi.cancelCompile({ projectId })
-          }}
-          onDiagnostic={(diagnostic) => {
-            void openFile(diagnostic.path).then(() =>
-              setRevealTarget({ path: diagnostic.path, line: diagnostic.lineIndex + 1 }),
-            )
-          }}
+          {activeBuffer ? (
+            <LatexEditor
+              path={activeBuffer.path}
+              value={activeBuffer.text}
+              diagnostics={activeDiagnostics}
+              readOnly={frozen}
+              onChange={handleEdit}
+              onSave={() => void savePath(activeBuffer.path)}
+              onCompile={compileProject}
+              onCursorLine={forwardSync}
+              revealLine={revealTarget?.path === activeBuffer.path ? revealTarget.line : null}
+            />
+          ) : (
+            <div className="empty-editor">{t('projectUnavailable')}</div>
+          )}
+          {activeBuffer?.conflict && (
+            <div role="alert" className="conflict-banner">
+              {t('externalConflict')}
+            </div>
+          )}
+          {error && (
+            <div role="alert" className="error-banner">
+              {error}
+            </div>
+          )}
+          <CompilePanel
+            compiling={compiling}
+            bundleStatus={bundleStatus}
+            diagnostics={diagnostics}
+            log={log}
+            onCompile={compileProject}
+            onCancel={() => {
+              compileQueue.current.cancelPending()
+              if (projectId) void window.latexApi.cancelCompile({ projectId })
+            }}
+            onDiagnostic={(diagnostic) => {
+              void openFile(diagnostic.path).then(() =>
+                setRevealTarget({ path: diagnostic.path, line: diagnostic.lineIndex + 1 }),
+              )
+            }}
+          />
+        </section>
+        <PdfPreview
+          pdfUrl={editorState.preview?.pdfUrl ?? null}
+          revision={editorState.preview?.revision ?? null}
+          location={previewLocation}
+          stale={editorState.previewStale}
+          onReverseSync={(point) => void reverseSync(point)}
         />
-      </section>
-      <PdfPreview
-        pdfUrl={editorState.preview?.pdfUrl ?? null}
-        revision={editorState.preview?.revision ?? null}
-        location={previewLocation}
-        stale={editorState.previewStale}
-        onReverseSync={(point) => void reverseSync(point)}
-      />
-      {projectId && (
+      </div>
+      {projectId && aiOpen && (
         <AiPanel
           projectId={projectId}
           disabled={frozen}
           onProjectFilesChanged={refreshProjectFiles}
+          onCollapse={() => setAiOpen(false)}
         />
+      )}
+      {projectId && !aiOpen && (
+        <button
+          className="latex-ai-rail"
+          onClick={() => setAiOpen(true)}
+          aria-label="Open AI panel"
+        >
+          <span aria-hidden="true">W</span>
+          <span>AI</span>
+        </button>
       )}
     </main>
   )

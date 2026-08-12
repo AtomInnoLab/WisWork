@@ -246,7 +246,7 @@ describe('registerWisworkModelIpc', () => {
     const returned = (await invoke('get', 1)) as ReturnType<typeof defaultAiSettings>
     await invoke('set', 1, settings)
     for (const value of [returned, saved[0] as typeof returned]) {
-      expect(value.providers.wiswork.model).toBe('deepseek/deepseek-v4-flash-0731')
+      expect(value.providers.wiswork.model).toBe('qwen/qwen3.8-max')
       for (const config of Object.values(value.providers)) {
         expect(config.apiKey).toBe('')
         expect(config.baseUrl).toBeUndefined()
@@ -254,6 +254,6 @@ describe('registerWisworkModelIpc', () => {
     }
     await invoke('stream', 1, { ...validRequest(), settings })
     const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string)
-    expect(body.model).toBe('deepseek/deepseek-v4-flash-0731')
+    expect(body.model).toBe('qwen/qwen3.8-max')
   })
 })

@@ -6,7 +6,7 @@ describe('defaultAiSettings', () => {
     expect(AI_PROVIDERS.map((provider) => provider.id)).toContain('wiswork')
     expect(defaultAiSettings().providers.wiswork).toEqual({
       apiKey: '',
-      model: 'deepseek/deepseek-v4-flash-0731',
+      model: 'qwen/qwen3.8-max',
     })
   })
 

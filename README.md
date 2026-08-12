@@ -89,7 +89,7 @@ WISWORK_MODEL_API_KEY='<development-service-key>' npm run dev
 Do not put this value in `.env` files committed to the repository, renderer settings, project
 files, command-line arguments, screenshots, or logs. The current development provider is fixed to
 `https://wismodel-proxy-dev.atominnolab.com/api/v1` with default model
-`deepseek/deepseek-v4-flash-0731`; renderers cannot override its base URL or authorization header.
+`qwen/qwen3.8-max`; renderers cannot override its base URL or authorization header.
 Login and the model credential are separate gates: a valid OAuth session does not supply the
 model service key.
 

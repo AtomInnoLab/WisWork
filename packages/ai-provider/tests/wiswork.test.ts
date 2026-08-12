@@ -31,7 +31,7 @@ function collector(signal = new AbortController().signal) {
 describe('WisWork provider defaults and main-process config', () => {
   it('uses wiswork and the fixed WisModel model by default', () => {
     const meta = AI_PROVIDERS.find((provider) => provider.id === 'wiswork')
-    expect(meta?.defaultModel).toBe('deepseek/deepseek-v4-flash-0731')
+    expect(meta?.defaultModel).toBe('qwen/qwen3.8-max')
     expect(
       defaultAiSettings({ wiswork: 'renderer-key-must-be-ignored' }).providers.wiswork,
     ).toEqual({
@@ -69,7 +69,7 @@ describe('WisWork provider defaults and main-process config', () => {
     ).toEqual({
       ok: true,
       provider: 'wiswork',
-      config: { apiKey: 'main-process-test-key', model: 'deepseek/deepseek-v4-flash-0731' },
+      config: { apiKey: 'main-process-test-key', model: 'qwen/qwen3.8-max' },
     })
   })
 

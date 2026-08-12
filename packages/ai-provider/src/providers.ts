@@ -2,7 +2,7 @@ import type { AiProviderId, AiProviderMeta, AiSettings, LegacyAiSettings } from 
 
 export const WISWORK_MODEL_BASE_URL = 'https://wismodel-proxy-dev.atominnolab.com/api/v1'
 
-export const WISWORK_DEFAULT_MODEL = 'deepseek/deepseek-v4-flash-0731'
+export const WISWORK_DEFAULT_MODEL = 'qwen/qwen3.8-max'
 
 export const AI_PROVIDERS: AiProviderMeta[] = [
   {

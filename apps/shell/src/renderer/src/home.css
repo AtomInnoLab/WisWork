@@ -84,10 +84,19 @@ body.vib .home {
   margin-bottom: 20px;
 }
 
-.logo-lockup {
+.logo-app-icon {
   display: block;
-  height: 28px;
-  width: auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  box-shadow: 0 3px 10px rgba(54, 39, 157, 0.22);
+}
+
+.logo-wordmark {
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
 }
 
 .sidebar-nav {
