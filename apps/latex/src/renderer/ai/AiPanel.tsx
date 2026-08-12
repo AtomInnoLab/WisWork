@@ -4,8 +4,12 @@ import { AiComposer, AiTypingIndicator, Markdown, WisWorkAppMark } from '@wiswor
 import { createLatexSkill } from './latex-skill.js'
 import {
   loadProposalForReview,
+  ProposalVerificationController,
   proposalForSelection,
+  requestProposalVerification,
+  verificationCompileComparison,
   type ReviewProposal,
+  type ReviewVerification,
 } from './proposal-review.js'
 import { ProposalReview } from './ProposalReview.js'
 import { createLatexTransport } from './transport.js'
@@ -135,6 +139,7 @@ export function AiPanel({
   const [busy, setBusy] = useState(false)
   const [chat, setChat] = useState<ChatEntry[]>([])
   const [proposal, setProposal] = useState<ReviewProposal | null>(null)
+  const [verification, setVerification] = useState<ReviewVerification>({ state: 'verifying' })
   const [snapshotId, setSnapshotId] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [timeline, setTimeline] = useState<TaskTimelineEntry[]>([])
@@ -154,11 +159,24 @@ export function AiPanel({
     (AgentProjectScope & { storeProjectId: string; chatId: string }) | null
   >(null)
   const e2eProposalLoaded = useRef<string | null>(null)
+  const verificationControllerRef = useRef(new ProposalVerificationController())
+
+  const replaceProposal = (value: ReviewProposal) => {
+    verificationControllerRef.current.cancel()
+    setVerification({ state: 'verifying' })
+    setProposal(value)
+  }
+
+  const dismissProposal = () => {
+    verificationControllerRef.current.cancel()
+    setProposal(null)
+    setVerification({ state: 'verifying' })
+  }
 
   useEffect(() => {
     const session = sessionRef.current!
+    const verificationController = verificationControllerRef.current
     let loopRun: AgentRunScope | null = null
-    let loop!: AgentLoop
     chatIdsRef.current = null
     chatLoadStateRef.current = 'loading'
     setChatLoadState('loading')
@@ -166,11 +184,13 @@ export function AiPanel({
     setText('')
     setBusy(false)
     setChat([])
+    verificationController.cancel()
     setProposal(null)
+    setVerification({ state: 'verifying' })
     setSnapshotId(null)
     setStatus(null)
     setTimeline([])
-    loop = new AgentLoop({
+    const loop = new AgentLoop({
       transport: createLatexTransport(),
       skill: createLatexSkill(window.latexApi, () => projectId),
       events: {
@@ -204,7 +224,7 @@ export function AiPanel({
           )
             .then((value) => {
               if (loopRef.current === loop && session.acceptsRunResult(loop, scope))
-                setProposal(value)
+                replaceProposal(value)
             })
             .catch((error: unknown) => {
               if (loopRef.current === loop && session.acceptsRunResult(loop, scope))
@@ -306,6 +326,7 @@ export function AiPanel({
       }
     })()
     return () => {
+      verificationController.cancel()
       session.detachLoop(loop)
       loop.cancel()
       if (loopRef.current === loop) loopRef.current = null
@@ -313,6 +334,22 @@ export function AiPanel({
       loopRun = null
     }
   }, [projectId])
+
+  useEffect(() => {
+    if (!proposal || proposal.projectId !== projectId) return
+    const session = sessionRef.current!
+    const verificationController = verificationControllerRef.current
+    const projectScope = session.captureProject()
+    void requestProposalVerification(
+      verificationController,
+      proposal,
+      (request) => window.latexApi.verifyProposal(request),
+      (state) => {
+        if (session.acceptsProject(projectScope)) setVerification(state)
+      },
+    )
+    return () => verificationController.cancel()
+  }, [projectId, proposal])
 
   useEffect(() => {
     if (!resizing) return
@@ -347,7 +384,7 @@ export function AiPanel({
       })
       .then((result) => {
         if (!session.acceptsProject(projectScope)) return
-        if (result.ok) setProposal(result.value)
+        if (result.ok) replaceProposal(result.value)
         else setStatus(result.error.message)
       })
   }, [projectId])
@@ -395,7 +432,7 @@ export function AiPanel({
     setTimeline(cancelRunningTimelineEntries)
   }
 
-  const confirm = async (selected: ReadonlySet<string>) => {
+  const verifySelection = async (selected: ReadonlySet<string>) => {
     if (!proposal || disabled) return
     const session = sessionRef.current!
     const projectScope = session.captureProject()
@@ -406,7 +443,31 @@ export function AiPanel({
         if (!result.ok) throw new Error(result.error.message)
         return result.value
       })
-      const result = await window.latexApi.applyProposal({ projectId, proposalId: owned.id })
+      if (!session.acceptsProject(projectScope)) return
+      replaceProposal(owned)
+      setStatus('Selected changes are now being verified as a fresh proposal.')
+    } catch (error) {
+      if (session.acceptsProject(projectScope))
+        setStatus(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (session.acceptsProject(projectScope)) setBusy(false)
+    }
+  }
+
+  const confirm = async (_selected: ReadonlySet<string>) => {
+    if (
+      !proposal ||
+      disabled ||
+      verification.state === 'verifying' ||
+      verification.state === 'rejected'
+    )
+      return
+    const session = sessionRef.current!
+    const projectScope = session.captureProject()
+    const appliedVerification = verification
+    setBusy(true)
+    try {
+      const result = await window.latexApi.applyProposal({ projectId, proposalId: proposal.id })
       if (!result.ok) throw new Error(result.error.message)
       const value = result.value as {
         snapshotId: string
@@ -416,12 +477,22 @@ export function AiPanel({
       await onProjectFilesChanged?.()
       if (!session.acceptsProject(projectScope)) return
       setSnapshotId(value.snapshotId)
-      setProposal(null)
-      setStatus(
-        value.compile.ok
-          ? `Changes applied and compiled (${value.compile.result?.diagnostics.length ?? 0} diagnostics).`
-          : `Changes applied; compile failed: ${value.compile.error ?? 'unknown error'}`,
-      )
+      dismissProposal()
+      if (value.compile.ok) {
+        const formalCount = value.compile.result?.diagnostics.length ?? 0
+        const comparison = verificationCompileComparison(
+          {
+            state: appliedVerification.state,
+            diagnosticCount: appliedVerification.evidence.diagnostics.length,
+          },
+          formalCount,
+        )
+        setStatus(`Changes applied and compiled. ${comparison}`)
+      } else {
+        setStatus(
+          `Changes applied; formal compile failed: ${value.compile.error ?? 'unknown error'}. Isolation reported ${appliedVerification.evidence.diagnostics.length} diagnostics; the results are different.`,
+        )
+      }
     } catch (error) {
       if (session.acceptsProject(projectScope))
         setStatus(error instanceof Error ? error.message : String(error))
@@ -521,8 +592,10 @@ export function AiPanel({
             <ProposalReview
               proposal={proposal}
               busy={busy || disabled}
+              verification={verification}
               onConfirm={(selected) => void confirm(selected)}
-              onCancel={() => setProposal(null)}
+              onVerifySelection={(selected) => void verifySelection(selected)}
+              onCancel={dismissProposal}
             />
           )}
           {status && (

@@ -721,13 +721,106 @@ button:disabled {
 }
 .proposal-review article {
   margin: 10px 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
-.proposal-diff {
+
+.proposal-review article > label {
+  display: flex;
+  gap: 7px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.proposal-file-summary,
+.proposal-hunk-header {
+  padding: 5px 10px;
+  border-top: 1px solid var(--border);
+  background: #f4f5f7;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.proposal-hunk {
+  overflow-x: auto;
+  border-top: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.proposal-hunk-header {
+  border-top: 0;
+  color: #596a7c;
+}
+
+.diff-line {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
+  grid-template-columns: 34px 34px minmax(max-content, 1fr);
+  min-height: 20px;
 }
-.proposal-diff pre {
+
+.diff-line > span {
+  padding: 2px 5px;
+  border-right: 1px solid rgba(0, 0, 0, 0.07);
+  color: #7b8188;
+  text-align: right;
+  user-select: none;
+}
+
+.diff-line code {
+  padding: 2px 7px;
+  white-space: pre;
+}
+
+.diff-line-add {
+  background: #e8f7ed;
+  color: #176b36;
+}
+
+.diff-line-remove {
+  background: #fff0f0;
+  color: #a4262c;
+}
+
+.proposal-verification {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f5f6f7;
+  color: #555b62;
+  font-size: 11px;
+}
+
+.proposal-verification p {
+  margin: 4px 0;
+}
+
+.verification-verified {
+  border-color: #9bd5ae;
+  background: #e8f7ed;
+  color: #176b36;
+}
+
+.verification-failed {
+  border-color: #efb0b3;
+  background: #fff0f0;
+  color: #a4262c;
+}
+
+.verification-rejected {
+  border-color: #e1b77c;
+  background: #fff6e8;
+  color: #7b4d0b;
+}
+
+.verification-diagnostics {
+  margin: 6px 0;
+  padding-left: 18px;
+}
+
+.proposal-verification pre {
   max-height: 180px;
   margin: 4px 0;
   overflow: auto;
@@ -737,11 +830,18 @@ button:disabled {
   background: #f7f7f8;
   font-size: 11px;
 }
-.proposal-before {
-  color: #ffb4b4;
+
+.proposal-verification time {
+  display: block;
+  margin-top: 6px;
+  color: currentColor;
+  opacity: 0.75;
 }
-.proposal-after {
-  color: #adf0bd;
+
+.proposal-risk-warning {
+  margin: 6px 0;
+  color: #a4262c;
+  font-size: 11px;
 }
 
 @media (max-width: 900px) {
