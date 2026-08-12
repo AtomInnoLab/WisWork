@@ -1,6 +1,6 @@
 import { AiCreditsError, streamForProvider } from './stream'
 import { chatForProvider } from './chat'
-import { AiProviderError } from './errors'
+import { AiProviderError, isAuthRequiredError } from './errors'
 import { resolveWisworkMainRequest, sanitizeWisworkSettings } from './main-config'
 import { defaultAiSettings } from './providers'
 import { AiTimeoutError } from './watchdog'
@@ -309,6 +309,7 @@ function safeSettings(value: unknown): AiSettings {
 type StableStreamErrorCode = NonNullable<AiStreamChunk['errorCode']>
 
 function stableErrorCode(error: unknown): StableStreamErrorCode {
+  if (isAuthRequiredError(error)) return 'auth_required'
   if (error instanceof AiTimeoutError) return 'timeout'
   if (error instanceof AiCreditsError) return 'credits'
   if (error instanceof AiProviderError) return error.code

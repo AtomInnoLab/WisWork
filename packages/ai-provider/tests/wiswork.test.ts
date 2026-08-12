@@ -185,6 +185,20 @@ describe('WisUsage Anthropic Messages calls', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('preserves auth_required when the authenticated request boundary cannot refresh', async () => {
+    const authFailure = Object.assign(new Error('session expired'), { code: 'auth_required' })
+    const rejectedAuth = async () => {
+      throw authFailure
+    }
+
+    await expect(
+      streamForProvider('wiswork', config, 'sys', [], [], 100, collector().cb, rejectedAuth),
+    ).rejects.toMatchObject({ code: 'auth_required' })
+    await expect(
+      chatForProvider('wiswork', config, 'sys', 'hi', undefined, rejectedAuth),
+    ).rejects.toMatchObject({ code: 'auth_required' })
+  })
+
   it('surfaces a repeated 401 as auth_required without including the bearer credential', async () => {
     vi.stubGlobal(
       'fetch',

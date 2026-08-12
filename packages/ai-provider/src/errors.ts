@@ -17,6 +17,16 @@ export class AiProviderError extends Error {
   }
 }
 
+/** Preserve the auth package's stable code without coupling this provider package to Electron auth. */
+export function isAuthRequiredError(error: unknown): boolean {
+  return Boolean(
+    error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'auth_required',
+  )
+}
+
 export function safeHttpProviderError(status: number): AiProviderError {
   if (status === 401 || status === 403) {
     return new AiProviderError('model_credentials_missing', status)

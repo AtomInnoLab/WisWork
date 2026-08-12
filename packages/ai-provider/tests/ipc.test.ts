@@ -241,6 +241,24 @@ describe('registerWisworkModelIpc', () => {
     expect(JSON.stringify(sent)).not.toContain('private response')
   })
 
+  it('preserves auth_required when the session has expired during validation', async () => {
+    const authFailure = Object.assign(new Error('private expired-session detail'), {
+      code: 'auth_required',
+    })
+    const { invoke, sent } = harness({
+      getAccessToken: async () => {
+        throw authFailure
+      },
+    })
+
+    await invoke('stream', 1, validRequest())
+    expect(sent.at(-1)).toMatchObject({ type: 'error', errorCode: 'auth_required' })
+    await expect(
+      invoke('chat', 1, { settings: defaultAiSettings(), system: 's', user: 'u' }),
+    ).resolves.toMatchObject({ ok: false, errorCode: 'auth_required' })
+    expect(JSON.stringify(sent)).not.toContain('private expired-session detail')
+  })
+
   it('forces the default model and strips all provider keys/base URLs from settings', async () => {
     const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
     vi.stubGlobal('fetch', fetchMock)

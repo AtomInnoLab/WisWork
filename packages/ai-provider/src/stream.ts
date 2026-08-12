@@ -1,5 +1,5 @@
 import type { AgentMessage, AgentToolCall, AgentToolDef } from '@wiswork/agent-core'
-import { AiProviderError, safeHttpProviderError } from './errors'
+import { AiProviderError, isAuthRequiredError, safeHttpProviderError } from './errors'
 import { httpBodyDetail } from './http-error'
 import { WISWORK_DEFAULT_MODEL, WISWORK_MESSAGES_URL } from './providers'
 import type { AiProviderConfig, AiProviderId, WisworkFetchWithAuth } from './types'
@@ -312,6 +312,7 @@ async function anthropicTurn(
       }),
     })
   } catch (e) {
+    if (safeErrors && isAuthRequiredError(e)) throw new AiProviderError('auth_required')
     // When fetch fails in the Electron main process, the real reason lives in `cause`
     const err = e as { message?: unknown; cause?: { code?: unknown; message?: unknown } } | null
     const causeText = err?.cause

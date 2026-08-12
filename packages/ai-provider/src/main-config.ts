@@ -14,7 +14,7 @@ export type WisworkMainRequest =
  */
 export function resolveWisworkMainRequest(
   hasAccessToken: boolean,
-  rendererConfig: AiProviderConfig | undefined,
+  _rendererConfig: AiProviderConfig | undefined,
 ): WisworkMainRequest {
   if (!hasAccessToken) return { ok: false, errorCode: 'auth_required' }
   return {
