@@ -559,7 +559,17 @@ export async function compileIsolated(
   const workspace = await createCompileWorkspace(
     request.projectDirectory,
     request.temporaryRoot,
-    request,
+    {
+      mainFile: request.mainFile,
+      maxEntries: request.maxEntries,
+      maxFileBytes: request.maxFileBytes,
+      maxTotalBytes: request.maxTotalBytes,
+      overlay: request.overlay,
+      maxOverlayFiles: request.maxOverlayFiles,
+      maxOverlayFileBytes: request.maxOverlayFileBytes,
+      maxOverlayTotalBytes: request.maxOverlayTotalBytes,
+      hooks: request.hooks,
+    },
   )
   let stagingDirectory: string | null = null
   try {

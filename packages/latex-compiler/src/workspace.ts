@@ -1,6 +1,6 @@
 import { constants, type Stats } from 'node:fs'
 import { lstat, mkdir, mkdtemp, open, readdir, realpath, rm } from 'node:fs/promises'
-import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path'
+import { dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path'
 import { LatexCompilerError } from './errors.js'
 
 export interface CompileWorkspaceHooks {
@@ -13,8 +13,17 @@ export interface CompileWorkspaceLimits {
   readonly maxEntries?: number
   readonly maxFileBytes?: number
   readonly maxTotalBytes?: number
+  readonly overlay?: readonly CompileTextOverlay[]
+  readonly maxOverlayFiles?: number
+  readonly maxOverlayFileBytes?: number
+  readonly maxOverlayTotalBytes?: number
   readonly mainFile?: string
   readonly hooks?: CompileWorkspaceHooks
+}
+
+export interface CompileTextOverlay {
+  readonly path: string
+  readonly text: string
 }
 
 export interface CompileWorkspace {
@@ -29,7 +38,22 @@ const DEFAULT_LIMITS = Object.freeze({
   maxEntries: 10_000,
   maxFileBytes: 100 * 1024 * 1024,
   maxTotalBytes: 500 * 1024 * 1024,
+  maxOverlayFiles: 20,
+  maxOverlayFileBytes: 2 * 1024 * 1024,
+  maxOverlayTotalBytes: 4 * 1024 * 1024,
 })
+
+const TEXT_EXTENSIONS = new Set([
+  '.bib',
+  '.bst',
+  '.cls',
+  '.csv',
+  '.ltx',
+  '.md',
+  '.sty',
+  '.tex',
+  '.txt',
+])
 
 interface SourceIdentity {
   readonly path: string
@@ -51,6 +75,135 @@ function safeRelativePath(path: string): string {
     throw new LatexCompilerError('TECTONIC_WORKSPACE_INVALID', 'Compile path traversal')
   }
   return normalized
+}
+
+function overlayError(message: string, cause?: unknown): LatexCompilerError {
+  return new LatexCompilerError('TECTONIC_WORKSPACE_INVALID', message, cause)
+}
+
+function normalizeOverlayPath(path: unknown): string {
+  if (typeof path !== 'string' || !path || path.includes('\0')) {
+    throw overlayError('Invalid overlay path')
+  }
+  if (path.startsWith('/') || path.startsWith('\\') || /^[a-zA-Z]:[\\/]/.test(path)) {
+    throw overlayError('Overlay path must be relative')
+  }
+  const segments = path.replaceAll('\\', '/').split('/')
+  if (segments.includes('..')) throw overlayError('Overlay path traversal is not allowed')
+  const normalized = segments.filter((segment) => segment && segment !== '.').join('/')
+  if (!normalized) throw overlayError('Invalid overlay path')
+  const lower = normalized.toLowerCase()
+  if (lower !== 'tectonic.toml' && !TEXT_EXTENSIONS.has(extname(lower))) {
+    throw overlayError(`Unsupported overlay text file type: ${normalized}`)
+  }
+  return normalized
+}
+
+function assertValidOverlayText(text: unknown, path: string): asserts text is string {
+  if (typeof text !== 'string' || text.includes('\0')) {
+    throw overlayError(`Overlay contains binary text: ${path}`)
+  }
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index)
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(index + 1)
+      if (index + 1 >= text.length || next < 0xdc00 || next > 0xdfff) {
+        throw overlayError(`Overlay text is not valid UTF-8: ${path}`)
+      }
+      index += 1
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      throw overlayError(`Overlay text is not valid UTF-8: ${path}`)
+    }
+  }
+}
+
+function validatePositiveLimit(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw overlayError(`${name} must be a positive safe integer`)
+  }
+}
+
+function validateOverlay(
+  overlay: readonly CompileTextOverlay[] | undefined,
+  limits: Pick<
+    Required<CompileWorkspaceLimits>,
+    'maxOverlayFiles' | 'maxOverlayFileBytes' | 'maxOverlayTotalBytes'
+  >,
+): readonly CompileTextOverlay[] {
+  validatePositiveLimit(limits.maxOverlayFiles, 'Overlay file count limit')
+  validatePositiveLimit(limits.maxOverlayFileBytes, 'Overlay file size limit')
+  validatePositiveLimit(limits.maxOverlayTotalBytes, 'Overlay total size limit')
+  if (overlay === undefined) return []
+  if (!Array.isArray(overlay) || overlay.length > limits.maxOverlayFiles) {
+    throw overlayError('Overlay file count limit exceeded')
+  }
+  const seen = new Set<string>()
+  let totalBytes = 0
+  return overlay.map((file) => {
+    if (!file || typeof file !== 'object') throw overlayError('Invalid overlay file')
+    const path = normalizeOverlayPath(file.path)
+    if (seen.has(path)) throw overlayError(`Duplicate overlay path: ${path}`)
+    seen.add(path)
+    assertValidOverlayText(file.text, path)
+    const bytes = Buffer.byteLength(file.text, 'utf8')
+    if (bytes > limits.maxOverlayFileBytes) {
+      throw overlayError(`Overlay file size limit exceeded: ${path}`)
+    }
+    totalBytes += bytes
+    if (totalBytes > limits.maxOverlayTotalBytes) {
+      throw overlayError('Overlay total size limit exceeded')
+    }
+    return { path, text: file.text }
+  })
+}
+
+async function applyOverlayFile(inputDirectory: string, file: CompileTextOverlay): Promise<void> {
+  const target = resolve(inputDirectory, file.path)
+  if (!target.startsWith(`${inputDirectory}${sep}`)) throw overlayError('Overlay escaped workspace')
+  const parent = dirname(target)
+  try {
+    const [parentRealPath, parentStats] = await Promise.all([realpath(parent), lstat(parent)])
+    if (
+      (parentRealPath !== inputDirectory && !parentRealPath.startsWith(`${inputDirectory}${sep}`)) ||
+      parentStats.isSymbolicLink() ||
+      !parentStats.isDirectory()
+    ) {
+      throw overlayError(`Overlay parent is not a safe directory: ${file.path}`)
+    }
+
+    let targetStats: Stats | undefined
+    try {
+      targetStats = await lstat(target)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    if (targetStats?.isSymbolicLink() || (targetStats && !targetStats.isFile())) {
+      throw overlayError(`Overlay target is not a safe regular file: ${file.path}`)
+    }
+    if (targetStats && (await realpath(target)) !== target) {
+      throw overlayError(`Overlay target escaped workspace: ${file.path}`)
+    }
+
+    const flags = targetStats
+      ? constants.O_WRONLY | constants.O_TRUNC | constants.O_NOFOLLOW
+      : constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW
+    const handle = await open(target, flags, 0o600)
+    try {
+      const opened = await handle.stat()
+      if (
+        !opened.isFile() ||
+        (targetStats && (opened.dev !== targetStats.dev || opened.ino !== targetStats.ino))
+      ) {
+        throw overlayError(`Overlay target changed during validation: ${file.path}`)
+      }
+      await handle.writeFile(file.text, 'utf8')
+    } finally {
+      await handle.close()
+    }
+  } catch (error) {
+    if (error instanceof LatexCompilerError) throw error
+    throw overlayError(`Invalid overlay target: ${file.path}`, error)
+  }
 }
 
 function identity(path: string, realPath: string, stats: Stats): SourceIdentity {
@@ -82,7 +235,15 @@ export async function createCompileWorkspace(
   temporaryRoot: string,
   options: CompileWorkspaceLimits = {},
 ): Promise<CompileWorkspace> {
-  const limits = { ...DEFAULT_LIMITS, ...options }
+  const limits = {
+    maxEntries: options.maxEntries ?? DEFAULT_LIMITS.maxEntries,
+    maxFileBytes: options.maxFileBytes ?? DEFAULT_LIMITS.maxFileBytes,
+    maxTotalBytes: options.maxTotalBytes ?? DEFAULT_LIMITS.maxTotalBytes,
+    maxOverlayFiles: options.maxOverlayFiles ?? DEFAULT_LIMITS.maxOverlayFiles,
+    maxOverlayFileBytes: options.maxOverlayFileBytes ?? DEFAULT_LIMITS.maxOverlayFileBytes,
+    maxOverlayTotalBytes: options.maxOverlayTotalBytes ?? DEFAULT_LIMITS.maxOverlayTotalBytes,
+  }
+  const overlay = validateOverlay(options.overlay, limits)
   const mainFile = safeRelativePath(options.mainFile ?? 'main.tex')
   const projectRoot = await realpath(projectDirectory)
   await mkdir(dirname(temporaryRoot), { recursive: true })
@@ -225,6 +386,8 @@ export async function createCompileWorkspace(
         )
       }
     }
+
+    for (const file of overlay) await applyOverlayFile(inputDirectory, file)
 
     const mainPath = resolve(inputDirectory, mainFile)
     if (!mainPath.startsWith(`${inputDirectory}${sep}`)) {

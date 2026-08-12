@@ -207,6 +207,56 @@ describe('controlled Tectonic runner', () => {
     expect(result.workspaceCleaned).toBe(true)
     expect(result.published).toHaveLength(3)
   })
+
+  it('passes a bounded overlay into the isolated workspace before running', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'latex-overlay-runner-'))
+    roots.push(root)
+    const project = join(root, 'project')
+    await mkdir(project)
+    await writeFile(join(project, 'main.tex'), 'before')
+    const run = vi.fn(async ({ workspace }) => {
+      expect(await readFile(join(workspace.inputDirectory, 'main.tex'), 'utf8')).toBe('after')
+      await writeFile(join(workspace.outputDirectory, 'main.pdf'), 'pdf')
+      return { exitCode: 0 as const, signal: null, log: '' }
+    })
+
+    await compileIsolated({
+      projectDirectory: project,
+      temporaryRoot: join(root, 'tmp'),
+      cacheDirectory: join(root, 'cache'),
+      mainFile: 'main.tex',
+      executable: '/app/tectonic',
+      bundlePath: '/cache/bundle.ttb',
+      overlay: [{ path: 'main.tex', text: 'after' }],
+      run,
+    })
+
+    expect(run).toHaveBeenCalledOnce()
+    expect(await readFile(join(project, 'main.tex'), 'utf8')).toBe('before')
+  })
+
+  it('rejects an invalid overlay before invoking the compiler runner', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'latex-overlay-runner-'))
+    roots.push(root)
+    const project = join(root, 'project')
+    await mkdir(project)
+    await writeFile(join(project, 'main.tex'), 'before')
+    const run = vi.fn()
+
+    await expect(
+      compileIsolated({
+        projectDirectory: project,
+        temporaryRoot: join(root, 'tmp'),
+        cacheDirectory: join(root, 'cache'),
+        mainFile: 'main.tex',
+        executable: '/app/tectonic',
+        bundlePath: '/cache/bundle.ttb',
+        overlay: [{ path: '../escape.tex', text: 'owned' }],
+        run,
+      }),
+    ).rejects.toMatchObject({ code: 'TECTONIC_WORKSPACE_INVALID' })
+    expect(run).not.toHaveBeenCalled()
+  })
   it('uses taskkill /T /F without a shell for a Windows process tree', async () => {
     const child = new FakeChild()
     const killer = new EventEmitter()
