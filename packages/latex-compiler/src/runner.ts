@@ -556,21 +556,18 @@ async function copyBoundedFile(
 export async function compileIsolated(
   request: CompileIsolatedRequest,
 ): Promise<StagedCompileResult> {
-  const workspace = await createCompileWorkspace(
-    request.projectDirectory,
-    request.temporaryRoot,
-    {
-      mainFile: request.mainFile,
-      maxEntries: request.maxEntries,
-      maxFileBytes: request.maxFileBytes,
-      maxTotalBytes: request.maxTotalBytes,
-      overlay: request.overlay,
-      maxOverlayFiles: request.maxOverlayFiles,
-      maxOverlayFileBytes: request.maxOverlayFileBytes,
-      maxOverlayTotalBytes: request.maxOverlayTotalBytes,
-      hooks: request.hooks,
-    },
-  )
+  const workspace = await createCompileWorkspace(request.projectDirectory, request.temporaryRoot, {
+    mainFile: request.mainFile,
+    maxEntries: request.maxEntries,
+    maxFileBytes: request.maxFileBytes,
+    maxTotalBytes: request.maxTotalBytes,
+    overlay: request.overlay,
+    maxOverlayFiles: request.maxOverlayFiles,
+    maxOverlayFileBytes: request.maxOverlayFileBytes,
+    maxOverlayTotalBytes: request.maxOverlayTotalBytes,
+    expectedSourceHashes: request.expectedSourceHashes,
+    hooks: request.hooks,
+  })
   let stagingDirectory: string | null = null
   try {
     const result = await (request.run ?? runTectonic)({

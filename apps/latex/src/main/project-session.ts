@@ -102,10 +102,11 @@ interface BufferState {
 }
 
 interface ActiveCompile {
-  revision: number
+  kind: 'compile' | 'verification'
+  revision: number | null
   token: string
   phase: 'pending' | 'running' | 'publishing'
-  promise: Promise<CompileResultDto>
+  promise: Promise<unknown>
 }
 
 export class ProjectSession {
@@ -461,7 +462,9 @@ export class ProjectSession {
     this.assertActive()
     this.assertAllBuffersPersisted()
     if (!this.compilerRuntime) throw new Error('LaTeX compiler runtime is not configured')
-    if (this.activeCompile?.revision === revision) return this.activeCompile.promise
+    if (this.activeCompile?.kind === 'compile' && this.activeCompile.revision === revision) {
+      return this.activeCompile.promise as Promise<CompileResultDto>
+    }
     const token = randomBytes(16).toString('hex')
     const cacheDirectory = join(
       this.compilerRuntime.userDataPath,
@@ -558,7 +561,7 @@ export class ProjectSession {
           if (this.activeCompile?.token === token) this.activeCompile = undefined
         }
       })
-    this.activeCompile = { revision, token, phase: 'pending', promise }
+    this.activeCompile = { kind: 'compile', revision, token, phase: 'pending', promise }
     return promise
   }
 
@@ -839,30 +842,75 @@ export class ProjectSession {
         mkdir(temporaryRoot, { recursive: true }),
         mkdir(tectonicCacheDirectory, { recursive: true }),
       ])
-      let staged: StagedCompileResult | undefined
-      try {
-        staged = await this.compiler({
-          projectDirectory: this.project.rootPath,
-          temporaryRoot,
-          cacheDirectory,
-          executable: this.compilerRuntime.tectonicPath,
-          bundlePath,
-          tectonicCacheDirectory,
-          mainFile: this.mainFile,
-          overlay: proposal.files.map((file) => ({ path: file.path, text: file.afterText })),
-        })
-        return {
-          proposalId: proposal.id,
-          state: 'verified',
-          diagnostics: parseTectonicDiagnostics(staged.log, staged.synctexInputRoot).slice(
-            0,
-            MAX_PROPOSAL_VERIFICATION_DIAGNOSTICS,
-          ),
-          logSummary: boundedUtf8(staged.log, MAX_PROPOSAL_VERIFICATION_LOG_BYTES),
-          verifiedAt: Date.now(),
-        }
-      } catch (error) {
-        if (error instanceof TectonicRunError) {
+      return this.runIsolatedVerification(proposal, {
+        cacheDirectory,
+        temporaryRoot,
+        tectonicCacheDirectory,
+        bundlePath,
+      })
+    })
+  }
+
+  private runIsolatedVerification(
+    proposal: EditProposal,
+    runtime: {
+      cacheDirectory: string
+      temporaryRoot: string
+      tectonicCacheDirectory: string
+      bundlePath: string
+    },
+  ): Promise<ProposalVerificationDto> {
+    const token = randomBytes(16).toString('hex')
+    let staged: StagedCompileResult | undefined
+    const promise = this.compileQueue
+      .request({
+        projectId: this.projectId,
+        revision: `proposal-verification:${proposal.id}:${token}`,
+        run: async ({ signal }) => {
+          if (this.cancelledCompileTokens.has(token) || this.disposed) {
+            throw new Error('Proposal verification cancelled')
+          }
+          if (this.activeCompile?.token === token) this.activeCompile.phase = 'running'
+          staged = await this.compiler({
+            projectDirectory: this.project.rootPath,
+            temporaryRoot: runtime.temporaryRoot,
+            cacheDirectory: runtime.cacheDirectory,
+            executable: this.compilerRuntime!.tectonicPath,
+            bundlePath: runtime.bundlePath,
+            tectonicCacheDirectory: runtime.tectonicCacheDirectory,
+            mainFile: this.mainFile!,
+            overlay: proposal.files.map((file) => ({ path: file.path, text: file.afterText })),
+            expectedSourceHashes: Object.fromEntries(
+              proposal.files.map((file) => [file.path, file.beforeSha256!]),
+            ),
+            signal,
+          })
+          return staged
+        },
+        publish: () => {
+          if (this.cancelledCompileTokens.has(token) || this.activeCompile?.token !== token) {
+            throw new Error('Proposal verification cancelled')
+          }
+          this.activeCompile.phase = 'publishing'
+        },
+      })
+      .then((result): ProposalVerificationDto => ({
+        proposalId: proposal.id,
+        state: 'verified',
+        diagnostics: parseTectonicDiagnostics(result.log, result.synctexInputRoot).slice(
+          0,
+          MAX_PROPOSAL_VERIFICATION_DIAGNOSTICS,
+        ),
+        logSummary: boundedUtf8(result.log, MAX_PROPOSAL_VERIFICATION_LOG_BYTES),
+        verifiedAt: Date.now(),
+      }))
+      .catch((error: unknown): ProposalVerificationDto => {
+        if (
+          error instanceof TectonicRunError &&
+          error.code === 'TECTONIC_EXIT_NONZERO' &&
+          error.terminationConfirmed &&
+          error.exitCode !== null
+        ) {
           return {
             proposalId: proposal.id,
             state: 'failed',
@@ -882,10 +930,23 @@ export class ProjectSession {
           )
         }
         throw error
-      } finally {
-        if (staged) await this.cleanupStaging(staged.stagingDirectory)
-      }
-    })
+      })
+      .finally(async () => {
+        try {
+          if (staged) await this.cleanupStaging(staged.stagingDirectory)
+        } finally {
+          this.cancelledCompileTokens.delete(token)
+          if (this.activeCompile?.token === token) this.activeCompile = undefined
+        }
+      })
+    this.activeCompile = {
+      kind: 'verification',
+      revision: null,
+      token,
+      phase: 'pending',
+      promise,
+    }
+    return promise
   }
 
   async applyProposal(id: string) {

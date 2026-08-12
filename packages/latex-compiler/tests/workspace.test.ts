@@ -11,6 +11,7 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createCompileWorkspace } from '../src/workspace.js'
@@ -157,6 +158,31 @@ describe('isolated compile workspace', () => {
         maxOverlayTotalBytes: 3,
       }),
     ).rejects.toThrow(/total size/i)
+  })
+
+  it('requires expected source hashes to be bounded, canonical, and exact overlay targets', async () => {
+    const { root, project } = await setup()
+    const hash = createHash('sha256').update('main').digest('hex')
+    const invalidExpectedSourceHashes: Array<Record<string, string>> = [
+      { './main.tex': hash },
+      { 'other.tex': hash },
+      { 'main.tex': 'not-a-sha256' },
+    ]
+    for (const [index, expectedSourceHashes] of invalidExpectedSourceHashes.entries()) {
+      await expect(
+        createCompileWorkspace(project, join(root, `hash-${index}`), {
+          overlay: [{ path: 'main.tex', text: 'after' }],
+          expectedSourceHashes,
+        }),
+      ).rejects.toMatchObject({ code: 'TECTONIC_WORKSPACE_INVALID' })
+    }
+    await expect(
+      createCompileWorkspace(project, join(root, 'hash-count'), {
+        overlay: [{ path: 'main.tex', text: 'after' }],
+        expectedSourceHashes: { 'main.tex': hash, 'other.tex': hash },
+        maxOverlayFiles: 1,
+      }),
+    ).rejects.toMatchObject({ code: 'TECTONIC_WORKSPACE_INVALID' })
   })
 
   it('rejects overlay targets below a linked directory', async () => {

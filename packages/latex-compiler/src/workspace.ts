@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { constants, type Stats } from 'node:fs'
 import { lstat, mkdir, mkdtemp, open, readdir, realpath, rm } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path'
@@ -20,6 +21,7 @@ export interface CompileWorkspaceLimits {
   readonly maxOverlayFiles?: number
   readonly maxOverlayFileBytes?: number
   readonly maxOverlayTotalBytes?: number
+  readonly expectedSourceHashes?: Readonly<Record<string, string>>
   readonly mainFile?: string
   readonly hooks?: CompileWorkspaceHooks
 }
@@ -115,11 +117,7 @@ function normalizeOverlayPath(path: unknown): string {
   if (segments.includes('..')) throw overlayError('Overlay path traversal is not allowed')
   const meaningfulSegments = segments.filter((segment) => segment && segment !== '.')
   for (const segment of meaningfulSegments) {
-    if (
-      segment.includes(':') ||
-      /[. ]$/.test(segment) ||
-      isWindowsReservedComponent(segment)
-    ) {
+    if (segment.includes(':') || /[. ]$/.test(segment) || isWindowsReservedComponent(segment)) {
       throw overlayError(`Overlay path is not portable: ${path}`)
     }
   }
@@ -178,6 +176,41 @@ function validateOverlay(
     }
     return { path, text: file.text }
   })
+}
+
+function validateExpectedSourceHashes(
+  value: Readonly<Record<string, string>> | undefined,
+  overlay: readonly CompileTextOverlay[],
+  maxFiles: number,
+): ReadonlyMap<string, string> {
+  if (value === undefined) return new Map()
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw overlayError('Expected source hashes must be an object')
+  }
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw overlayError('Expected source hashes must be a plain object')
+  }
+  const entries = Object.entries(value)
+  if (entries.length > maxFiles) throw overlayError('Expected source hash count limit exceeded')
+  const expected = new Map<string, string>()
+  for (const [rawPath, hash] of entries) {
+    const path = normalizeOverlayPath(rawPath)
+    if (path !== rawPath)
+      throw overlayError(`Expected source hash path is not canonical: ${rawPath}`)
+    if (!/^[a-f0-9]{64}$/.test(hash)) {
+      throw overlayError(`Expected source hash is invalid: ${path}`)
+    }
+    expected.set(path, hash)
+  }
+  const overlayPaths = new Set(overlay.map((file) => file.path))
+  if (
+    expected.size !== overlayPaths.size ||
+    [...expected.keys()].some((path) => !overlayPaths.has(path))
+  ) {
+    throw overlayError('Expected source hashes must exactly match overlay targets')
+  }
+  return expected
 }
 
 interface OverlayDirectoryIdentity {
@@ -268,11 +301,7 @@ async function applyOverlayFile(
     const handle = await open(target, constants.O_WRONLY | constants.O_NOFOLLOW)
     try {
       const opened = await handle.stat()
-      if (
-        !opened.isFile() ||
-        opened.dev !== targetStats.dev ||
-        opened.ino !== targetStats.ino
-      ) {
+      if (!opened.isFile() || opened.dev !== targetStats.dev || opened.ino !== targetStats.ino) {
         throw overlayError(`Overlay target changed during validation: ${file.path}`)
       }
       await hooks?.afterOverlayTargetOpen?.(target)
@@ -326,6 +355,11 @@ export async function createCompileWorkspace(
     maxOverlayTotalBytes: options.maxOverlayTotalBytes ?? DEFAULT_LIMITS.maxOverlayTotalBytes,
   }
   const overlay = validateOverlay(options.overlay, limits)
+  const expectedSourceHashes = validateExpectedSourceHashes(
+    options.expectedSourceHashes,
+    overlay,
+    limits.maxOverlayFiles,
+  )
   const mainFile = safeRelativePath(options.mainFile ?? 'main.tex')
   const projectRoot = await realpath(projectDirectory)
   await mkdir(dirname(temporaryRoot), { recursive: true })
@@ -333,6 +367,7 @@ export async function createCompileWorkspace(
   const inputDirectory = join(root, 'input')
   const outputDirectory = join(root, 'output')
   const identities: SourceIdentity[] = []
+  const verifiedSourceHashes = new Set<string>()
   let entries = 0
   let totalBytes = 0
   try {
@@ -424,6 +459,9 @@ export async function createCompileWorkspace(
             throw new LatexCompilerError('TECTONIC_WORKSPACE_INVALID', 'Source changed before read')
           }
           const sourceIdentity = identity(source, await realpath(source), opened)
+          const portableSourceRelative = sourceRelative.split(sep).join('/')
+          const expectedSourceHash = expectedSourceHashes.get(portableSourceRelative)
+          const sourceHash = expectedSourceHash ? createHash('sha256') : undefined
           await options.hooks?.afterFileOpen?.(source)
           const buffer = Buffer.allocUnsafe(64 * 1024)
           let fileBytes = 0
@@ -438,6 +476,7 @@ export async function createCompileWorkspace(
                 'Workspace byte limit exceeded while reading',
               )
             }
+            sourceHash?.update(buffer.subarray(0, bytesRead))
             await targetFile.write(buffer.subarray(0, bytesRead))
           }
           const afterFileRead = await sourceFile.stat()
@@ -447,6 +486,13 @@ export async function createCompileWorkspace(
               'Source changed while reading',
             )
           }
+          if (sourceHash && sourceHash.digest('hex') !== expectedSourceHash) {
+            throw new LatexCompilerError(
+              'TECTONIC_WORKSPACE_INVALID',
+              'Source hash does not match expected proposal baseline',
+            )
+          }
+          if (expectedSourceHash) verifiedSourceHashes.add(portableSourceRelative)
           identities.push(sourceIdentity)
         } finally {
           await Promise.allSettled([sourceFile.close(), targetFile.close()])
@@ -455,6 +501,12 @@ export async function createCompileWorkspace(
     }
 
     await copyDirectory(projectRoot, inputDirectory)
+    if (verifiedSourceHashes.size !== expectedSourceHashes.size) {
+      throw new LatexCompilerError(
+        'TECTONIC_WORKSPACE_INVALID',
+        'Expected proposal baseline source was not copied',
+      )
+    }
     await options.hooks?.beforeFinalValidation?.()
     for (const expected of identities) {
       const actual = await lstat(expected.path)
