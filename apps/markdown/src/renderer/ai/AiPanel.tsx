@@ -391,7 +391,7 @@ export function AiPanel({
   const resizeCleanupRef = useRef<(() => void) | null>(null)
   useEffect(() => () => resizeCleanupRef.current?.(), [])
 
-  /** Drag the right edge to resize: the panel is flush with the window's left edge, so width = clientX */
+  /** Drag the left edge to resize the right-side dock. */
   const startResize = (e: ReactPointerEvent<HTMLDivElement>): void => {
     e.preventDefault()
     const resizer = e.currentTarget
@@ -399,7 +399,7 @@ export function AiPanel({
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
     const onMove = (ev: PointerEvent): void => {
-      const w = clampPanelWidth(ev.clientX)
+      const w = clampPanelWidth(window.innerWidth - ev.clientX)
       preferredWidthRef.current = w
       setPanelWidth(w)
     }

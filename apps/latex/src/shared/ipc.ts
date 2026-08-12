@@ -4,6 +4,8 @@ export const MAX_IPC_TEXT_BYTES = 2 * 1024 * 1024
 export const MAX_IPC_PATH_LENGTH = 1024
 export const MAX_IPC_FILES = 1_000
 
+export type UiTheme = 'light' | 'dark' | 'system'
+
 export const LATEX_CHANNELS = {
   sessionGet: 'latex:session:get',
   projectList: 'latex:project:list',
@@ -174,6 +176,8 @@ export type LatexBundleStatusDto =
   | { state: 'error'; code: string }
 
 export interface LatexApi {
+  getTheme(): Promise<UiTheme>
+  onThemeChanged(handler: (theme: UiTheme) => void): () => void
   getSession(): Promise<LatexIpcResult<LatexSessionDto>>
   listFiles(request: SessionRequest): Promise<LatexIpcResult<string[]>>
   readFile(request: FileRequest): Promise<LatexIpcResult<LatexBufferDto>>

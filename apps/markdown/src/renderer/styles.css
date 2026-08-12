@@ -828,7 +828,7 @@ button {
   }
 }
 
-/* collapsed AI sidebar: thin rail on the left edge (same as docs) */
+/* collapsed AI sidebar: thin rail on the right edge */
 .ai-rail {
   display: flex;
   flex-direction: column;
@@ -837,7 +837,7 @@ button {
   width: 34px;
   padding: 12px 2px;
   border: none;
-  border-right: 1px solid var(--border);
+  border-left: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
@@ -857,16 +857,16 @@ button {
   min-height: 0;
   overflow: hidden;
   /* same visible divider as the docs panel: strong border so it doesn't drown */
-  border-right: 1px solid var(--color-border-strong);
+  border-left: 1px solid var(--color-border-strong);
   background: var(--color-bg-page);
   font-family: var(--gs-font-sans);
   color: var(--color-text-primary);
 }
 
-/* drag handle on the panel's right edge — resize the panel horizontally */
+/* drag handle on the panel's left edge — resize the right-side panel horizontally */
 .ai-panel-resizer {
   position: absolute;
-  right: 0;
+  left: 0;
   top: 0;
   bottom: 0;
   width: 6px;

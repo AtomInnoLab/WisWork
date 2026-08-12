@@ -106,6 +106,10 @@ body.vib .home {
   background: var(--surface-subtle);
 }
 
+.account-menu .theme-switch {
+  margin: 5px 8px;
+}
+
 .theme-switch button {
   display: flex;
   align-items: center;
@@ -155,7 +159,7 @@ body.vib .home {
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme='light']):not([data-theme='dark']) {
     color-scheme: dark;
   }
 }
@@ -415,13 +419,13 @@ body.vib .home {
   gap: 8px;
   margin: 8px;
   padding: 10px;
-  border: 1px solid #f0c7c3;
+  border: 1px solid var(--danger-border);
   border-radius: 8px;
-  background: #fff5f4;
+  background: var(--danger-bg);
 }
 
 .login-diagnostic-value {
-  color: #8c1d18;
+  color: var(--danger);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   line-height: 1.5;
@@ -433,10 +437,10 @@ body.vib .home {
 .login-diagnostic button {
   justify-self: start;
   padding: 4px 8px;
-  border: 1px solid #d9a09b;
+  border: 1px solid var(--danger-border);
   border-radius: 6px;
   background: var(--surface);
-  color: #8c1d18;
+  color: var(--danger);
   cursor: pointer;
   font: inherit;
   font-size: 12px;
@@ -475,7 +479,7 @@ body.vib .home {
 .account-menu-divider {
   height: 1px;
   margin: 9px 0;
-  background: #efefef;
+  background: var(--border-subtle);
 }
 
 .account-menu-item {
@@ -492,17 +496,17 @@ body.vib .home {
   font: inherit;
   font-size: 14px;
   line-height: 22px;
-  color: #232425;
+  color: var(--text-primary);
   cursor: pointer;
   text-align: left;
 }
 
 .account-menu-item:hover {
-  background: #f5f5f5;
+  background: var(--bg-hover);
 }
 
 .account-menu-item.danger {
-  color: #d93025;
+  color: var(--danger);
 }
 
 .account-menu-item.danger svg {
@@ -519,13 +523,13 @@ body.vib .home {
   padding: 6px 8px;
   font-size: 14px;
   line-height: 22px;
-  color: #232425;
+  color: var(--text-primary);
   user-select: text;
 }
 
 .account-menu-version svg {
   flex-shrink: 0;
-  color: #232425;
+  color: var(--text-primary);
 }
 
 .version-row-label {
@@ -556,7 +560,7 @@ body.vib .home {
 
 .lang-row svg {
   flex-shrink: 0;
-  color: #232425;
+  color: var(--text-primary);
 }
 
 .lang-row-label {

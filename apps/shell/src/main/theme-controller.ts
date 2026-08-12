@@ -51,6 +51,7 @@ export function registerThemeIpc(deps: {
   ipcMain: IpcMainLike
   controller: ThemeController
   isTrustedSender: (sender: unknown) => boolean
+  isTrustedEditorSender?: (sender: unknown) => boolean
 }): void {
   const assertSender = (event: { sender: unknown }, args: readonly unknown[]) => {
     if (!deps.isTrustedSender(event.sender)) throw new Error('Untrusted IPC sender.')
@@ -64,5 +65,10 @@ export function registerThemeIpc(deps: {
   deps.ipcMain.handle(HOME_CHANNELS.setTheme, (event, value, ...args) => {
     assertSender(event, args)
     return deps.controller.set(value)
+  })
+  deps.ipcMain.handle('app:get-theme', (event, ...args) => {
+    if (!deps.isTrustedEditorSender?.(event.sender)) throw new Error('Untrusted IPC sender.')
+    if (args.length !== 0) throw new Error('Invalid theme IPC payload.')
+    return deps.controller.get()
   })
 }

@@ -2433,6 +2433,10 @@ app.whenReady().then(async () => {
     ipcMain,
     controller: themeController,
     isTrustedSender: (sender) => Boolean(shellWindow && sender === shellWindow.webContents),
+    isTrustedEditorSender: (sender) => {
+      const id = (sender as { id?: unknown } | null)?.id
+      return typeof id === 'number' && (tabManager?.ownsWebContents(id) ?? false)
+    },
   })
   authRuntime = initializeElectronAuthRuntime({
     userDataPath: app.getPath('userData'),

@@ -692,6 +692,8 @@ function AccountEntry() {
             </>
           )}
           <div className="account-menu-divider" />
+          <ThemeSwitch />
+          <div className="account-menu-divider" />
           <div
             className="lang-row-wrap"
             ref={langRowRef}
@@ -1899,7 +1901,6 @@ export function Home() {
         )}
 
         <div className="sidebar-bottom">
-          <ThemeSwitch />
           <AccountEntry />
         </div>
       </aside>

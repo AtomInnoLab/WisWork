@@ -70,13 +70,22 @@ describe('theme controller', () => {
       broadcast: vi.fn(),
     })
     controller.initialize()
-    registerThemeIpc({ ipcMain, controller, isTrustedSender: (sender) => sender === 'shell' })
+    registerThemeIpc({
+      ipcMain,
+      controller,
+      isTrustedSender: (sender) => sender === 'shell',
+      isTrustedEditorSender: (sender) => sender === 'editor',
+    })
 
     const get = handlers.get(HOME_CHANNELS.getTheme)!
     const set = handlers.get(HOME_CHANNELS.setTheme)!
     expect(get({ sender: 'shell' })).toBe('light')
     expect(() => get({ sender: 'document' })).toThrow('Untrusted IPC sender')
     expect(() => get({ sender: 'shell' }, 'extra')).toThrow('Invalid theme IPC payload')
+    const editorGet = handlers.get('app:get-theme')!
+    expect(editorGet({ sender: 'editor' })).toBe('light')
+    expect(() => editorGet({ sender: 'document' })).toThrow('Untrusted IPC sender')
+    expect(() => editorGet({ sender: 'editor' }, 'extra')).toThrow('Invalid theme IPC payload')
     expect(() => set({ sender: 'shell' }, 'system')).toThrow('Invalid theme')
     expect(set({ sender: 'shell' }, 'dark')).toBe('dark')
   })

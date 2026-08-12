@@ -382,6 +382,24 @@ export default function App() {
       />
       {status === 'loading' && <div className="center-note">{t('loading')}</div>}
       <div className="app-main" style={status === 'ready' ? undefined : { display: 'none' }}>
+        <div className="app-content">
+          <div className="editor-scroll" ref={scrollRef}>
+            <div className="doc-page">
+              {fmOpen && <FrontmatterPanel value={fmText} onChange={onFrontmatterChange} />}
+              <EditorContent editor={editor} />
+            </div>
+          </div>
+          <footer className="status-bar">
+            <div className="status-left">
+              {fileName && <span className="status-item status-file">{fileName}</span>}
+            </div>
+            <div className="status-right">
+              {statusText && (
+                <span className={`status-save status-${saveState}`}>{statusText}</span>
+              )}
+            </div>
+          </footer>
+        </div>
         <div className={`ai-dock${aiOpen ? '' : ' collapsed'}`}>
           {!aiOpen && (
             <button
@@ -402,24 +420,6 @@ export default function App() {
               onCollapse={() => setAiOpen(false)}
             />
           )}
-        </div>
-        <div className="app-content">
-          <div className="editor-scroll" ref={scrollRef}>
-            <div className="doc-page">
-              {fmOpen && <FrontmatterPanel value={fmText} onChange={onFrontmatterChange} />}
-              <EditorContent editor={editor} />
-            </div>
-          </div>
-          <footer className="status-bar">
-            <div className="status-left">
-              {fileName && <span className="status-item status-file">{fileName}</span>}
-            </div>
-            <div className="status-right">
-              {statusText && (
-                <span className={`status-save status-${saveState}`}>{statusText}</span>
-              )}
-            </div>
-          </footer>
         </div>
       </div>
       <SlashMenu ref={slashMenuRef} state={slashState} onDismiss={() => setSlashState(null)} />
