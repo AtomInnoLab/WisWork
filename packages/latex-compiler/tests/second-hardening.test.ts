@@ -170,7 +170,7 @@ describe('second compiler hardening pass', () => {
     )
   })
 
-  it('avoids cache directory fsyncs on macOS and retains the rollback generation', async () => {
+  it('avoids the final cache-directory fsync on macOS and retains the rollback generation', async () => {
     const root = await sandbox()
     const project = join(root, 'project')
     const cache = join(root, 'cache')
@@ -199,11 +199,13 @@ describe('second compiler hardening pass', () => {
         platform: 'darwin',
         syncDirectory: async (path) => {
           synced.push(path)
-          throw new Error(`cache directory sync must be skipped: ${path}`)
+          if (path === cache) throw new Error('cache root directory sync must be skipped')
         },
       }),
     ).resolves.toMatchObject({ generationId: current.generationId })
-    expect(synced).toEqual([])
+    expect(synced).toContain(join(cache, 'generations'))
+    expect(synced).toContain(join(cache, '.staging'))
+    expect(synced).not.toContain(cache)
     await utimes(join(cache, 'generations', previous.generationId), 1, 1)
     await utimes(join(cache, 'generations', current.generationId), 2, 2)
     const missingGeneration = '00000000-0000-0000-0000-000000000000'
@@ -217,10 +219,9 @@ describe('second compiler hardening pass', () => {
       platform: 'darwin',
       syncDirectory: async (path) => {
         synced.push(path)
-        throw new Error(`cache directory sync must be skipped: ${path}`)
+        if (path === cache) throw new Error('cache root directory sync must be skipped')
       },
     })
-    expect(synced).toEqual([])
     const generations = await readdir(join(cache, 'generations'))
     expect(generations).toEqual(expect.arrayContaining([current.generationId, next.generationId]))
     expect(generations).not.toContain(previous.generationId)

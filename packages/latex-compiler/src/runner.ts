@@ -474,11 +474,6 @@ interface GenerationManifest {
 }
 
 async function syncDirectory(path: string): Promise<void> {
-  // Directory fsync can remain blocked indefinitely on macOS even after all
-  // regular files have been flushed. Compile outputs are recoverable cache
-  // artifacts, so Darwin relies on fsynced files, atomic renames, and pointer
-  // recovery instead of risking a permanently wedged compiler session.
-  if (process.platform === 'darwin') return
   let directory
   try {
     directory = await open(path, 'r')
@@ -827,10 +822,8 @@ export async function commitCompileGeneration(
       }
       await verifyGeneration(resolvedStage, staged.generationId)
       await rename(resolvedStage, generationDirectory)
-      if (platform !== 'darwin') {
-        await sync(generationsRoot)
-        await sync(stagingRoot)
-      }
+      await sync(generationsRoot)
+      await sync(stagingRoot)
       sourceDirectory = generationDirectory
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error

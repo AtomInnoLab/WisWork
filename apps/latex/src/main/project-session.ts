@@ -511,17 +511,19 @@ export class ProjectSession {
             syncTex = undefined
           }
         }
-        const value = {
+        const value: CompileResultDto = {
           revision,
           pdfUrl: result.pdfPath ? `wiswork-latex-pdf://${this.projectId}/${revision}` : null,
-          pdfPath: result.pdfPath,
-          synctexPath: result.synctexPath,
-          syncTex,
           diagnostics: parseTectonicDiagnostics(result.log),
           log: result.log,
         }
         this.compileResults.delete(revision)
-        this.compileResults.set(revision, value)
+        this.compileResults.set(revision, {
+          ...value,
+          pdfPath: result.pdfPath,
+          synctexPath: result.synctexPath,
+          syncTex,
+        })
         while (this.compileResults.size > this.maxCompileResults) {
           const oldest = this.compileResults.keys().next().value as number | undefined
           if (oldest === undefined) break
