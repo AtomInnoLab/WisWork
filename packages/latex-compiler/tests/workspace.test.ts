@@ -1,4 +1,15 @@
-import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import {
+  access,
+  link,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -77,6 +88,11 @@ describe('isolated compile workspace', () => {
     ['backslash rooted', '\\escape.tex', 'x'],
     ['traversal', '../escape.tex', 'x'],
     ['disallowed extension', 'image.png', 'x'],
+    ['alternate data stream', 'main.tex:payload', 'x'],
+    ['reserved device name', 'CON.tex', 'x'],
+    ['trailing component dot', 'chapter./a.tex', 'x'],
+    ['trailing component space', 'chapter /a.tex', 'x'],
+    ['invalid Unicode path', '\ud800.tex', 'x'],
     ['NUL text', 'main.tex', 'x\0y'],
     ['invalid UTF-8 text', 'main.tex', '\ud800'],
   ])('rejects invalid overlay %s', async (_label, path, text) => {
@@ -93,6 +109,22 @@ describe('isolated compile workspace', () => {
         overlay: [
           { path: 'a/./b.tex', text: 'one' },
           { path: 'a/b.tex', text: 'two' },
+        ],
+      }),
+    ).rejects.toThrow(/duplicate/i)
+    await expect(
+      createCompileWorkspace(project, join(root, 'case-duplicate'), {
+        overlay: [
+          { path: 'A.tex', text: 'one' },
+          { path: 'a.tex', text: 'two' },
+        ],
+      }),
+    ).rejects.toThrow(/duplicate/i)
+    await expect(
+      createCompileWorkspace(project, join(root, 'unicode-duplicate'), {
+        overlay: [
+          { path: 'caf\u00e9.tex', text: 'one' },
+          { path: 'cafe\u0301.tex', text: 'two' },
         ],
       }),
     ).rejects.toThrow(/duplicate/i)
@@ -133,5 +165,77 @@ describe('isolated compile workspace', () => {
       }),
     ).rejects.toThrow(/link/i)
     await expect(access(join(outside, 'escape.tex'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('does not truncate a replaced existing target before validating its handle identity', async () => {
+    const { root, project } = await setup()
+    const outside = join(root, 'outside.tex')
+    await writeFile(outside, 'outside sentinel')
+    let enteredOverlay = false
+
+    await expect(
+      createCompileWorkspace(project, join(root, 'tmp'), {
+        overlay: [{ path: 'main.tex', text: 'overlay' }],
+        hooks: {
+          beforeOverlayTargetOpen: async (target) => {
+            enteredOverlay = true
+            await unlink(target)
+            await link(outside, target)
+          },
+        },
+      }),
+    ).rejects.toThrow(/changed|identity|target/i)
+    expect(enteredOverlay).toBe(true)
+    expect(await readFile(outside, 'utf8')).toBe('outside sentinel')
+  })
+
+  it('fails closed when an overlay parent is swapped to an external symlink', async () => {
+    const { root, project } = await setup()
+    await mkdir(join(project, 'chapters'))
+    await writeFile(join(project, 'chapters/a.tex'), 'inside')
+    const outside = join(root, 'outside')
+    await mkdir(outside)
+    await writeFile(join(outside, 'a.tex'), 'outside sentinel')
+    let enteredOverlay = false
+
+    await expect(
+      createCompileWorkspace(project, join(root, 'tmp'), {
+        overlay: [{ path: 'chapters/a.tex', text: 'overlay' }],
+        hooks: {
+          afterOverlayTargetOpen: async (target) => {
+            enteredOverlay = true
+            const parent = join(target, '..')
+            await rename(parent, `${parent}-moved`)
+            await symlink(outside, parent, 'dir')
+          },
+        },
+      }),
+    ).rejects.toThrow(/changed|link|identity|target/i)
+    expect(enteredOverlay).toBe(true)
+    expect(await readFile(join(outside, 'a.tex'), 'utf8')).toBe('outside sentinel')
+  })
+
+  it('does not create a new overlay file after a pre-open parent symlink swap', async () => {
+    const { root, project } = await setup()
+    await mkdir(join(project, 'chapters'))
+    const outside = join(root, 'outside')
+    await mkdir(outside)
+    let enteredOverlay = false
+
+    await expect(
+      createCompileWorkspace(project, join(root, 'tmp'), {
+        overlay: [{ path: 'chapters/new.tex', text: 'overlay' }],
+        hooks: {
+          beforeOverlayTargetOpen: async (target) => {
+            enteredOverlay = true
+            const parent = join(target, '..')
+            await rename(parent, `${parent}-moved`)
+            await symlink(outside, parent, 'dir')
+          },
+        },
+      }),
+    ).rejects.toThrow(/changed|link|identity|target/i)
+    expect(enteredOverlay).toBe(true)
+    await expect(access(join(outside, 'new.tex'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

@@ -7,6 +7,9 @@ export interface CompileWorkspaceHooks {
   readonly afterDirectoryRead?: (path: string) => void | Promise<void>
   readonly afterFileOpen?: (path: string) => void | Promise<void>
   readonly beforeFinalValidation?: () => void | Promise<void>
+  /** @internal Deterministic overlay race hooks for security tests only. */
+  readonly beforeOverlayTargetOpen?: (path: string) => void | Promise<void>
+  readonly afterOverlayTargetOpen?: (path: string) => void | Promise<void>
 }
 
 export interface CompileWorkspaceLimits {
@@ -81,16 +84,46 @@ function overlayError(message: string, cause?: unknown): LatexCompilerError {
   return new LatexCompilerError('TECTONIC_WORKSPACE_INVALID', message, cause)
 }
 
+function assertUnicodeScalarString(value: string, label: string): void {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (index + 1 >= value.length || next < 0xdc00 || next > 0xdfff) {
+        throw overlayError(`${label} is not valid Unicode`)
+      }
+      index += 1
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      throw overlayError(`${label} is not valid Unicode`)
+    }
+  }
+}
+
+function isWindowsReservedComponent(component: string): boolean {
+  return /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(component)
+}
+
 function normalizeOverlayPath(path: unknown): string {
   if (typeof path !== 'string' || !path || path.includes('\0')) {
     throw overlayError('Invalid overlay path')
   }
+  assertUnicodeScalarString(path, 'Overlay path')
   if (path.startsWith('/') || path.startsWith('\\') || /^[a-zA-Z]:[\\/]/.test(path)) {
     throw overlayError('Overlay path must be relative')
   }
-  const segments = path.replaceAll('\\', '/').split('/')
+  const segments = path.normalize('NFC').replaceAll('\\', '/').split('/')
   if (segments.includes('..')) throw overlayError('Overlay path traversal is not allowed')
-  const normalized = segments.filter((segment) => segment && segment !== '.').join('/')
+  const meaningfulSegments = segments.filter((segment) => segment && segment !== '.')
+  for (const segment of meaningfulSegments) {
+    if (
+      segment.includes(':') ||
+      /[. ]$/.test(segment) ||
+      isWindowsReservedComponent(segment)
+    ) {
+      throw overlayError(`Overlay path is not portable: ${path}`)
+    }
+  }
+  const normalized = meaningfulSegments.join('/')
   if (!normalized) throw overlayError('Invalid overlay path')
   const lower = normalized.toLowerCase()
   if (lower !== 'tectonic.toml' && !TEXT_EXTENSIONS.has(extname(lower))) {
@@ -103,18 +136,7 @@ function assertValidOverlayText(text: unknown, path: string): asserts text is st
   if (typeof text !== 'string' || text.includes('\0')) {
     throw overlayError(`Overlay contains binary text: ${path}`)
   }
-  for (let index = 0; index < text.length; index += 1) {
-    const code = text.charCodeAt(index)
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = text.charCodeAt(index + 1)
-      if (index + 1 >= text.length || next < 0xdc00 || next > 0xdfff) {
-        throw overlayError(`Overlay text is not valid UTF-8: ${path}`)
-      }
-      index += 1
-    } else if (code >= 0xdc00 && code <= 0xdfff) {
-      throw overlayError(`Overlay text is not valid UTF-8: ${path}`)
-    }
-  }
+  assertUnicodeScalarString(text, `Overlay text for ${path}`)
 }
 
 function validatePositiveLimit(value: number, name: string): void {
@@ -142,8 +164,9 @@ function validateOverlay(
   return overlay.map((file) => {
     if (!file || typeof file !== 'object') throw overlayError('Invalid overlay file')
     const path = normalizeOverlayPath(file.path)
-    if (seen.has(path)) throw overlayError(`Duplicate overlay path: ${path}`)
-    seen.add(path)
+    const duplicateKey = path.toLowerCase()
+    if (seen.has(duplicateKey)) throw overlayError(`Duplicate overlay path: ${path}`)
+    seen.add(duplicateKey)
     assertValidOverlayText(file.text, path)
     const bytes = Buffer.byteLength(file.text, 'utf8')
     if (bytes > limits.maxOverlayFileBytes) {
@@ -157,19 +180,70 @@ function validateOverlay(
   })
 }
 
-async function applyOverlayFile(inputDirectory: string, file: CompileTextOverlay): Promise<void> {
+interface OverlayDirectoryIdentity {
+  readonly path: string
+  readonly realPath: string
+  readonly dev: number
+  readonly ino: number
+}
+
+async function captureOverlayDirectoryChain(
+  inputDirectory: string,
+  parent: string,
+): Promise<readonly OverlayDirectoryIdentity[]> {
+  const parentRelative = relative(inputDirectory, parent)
+  if (parentRelative.startsWith('..') || isAbsolute(parentRelative)) {
+    throw overlayError('Overlay parent escaped workspace')
+  }
+  const paths = [inputDirectory]
+  let current = inputDirectory
+  for (const segment of parentRelative.split(sep).filter(Boolean)) {
+    current = join(current, segment)
+    paths.push(current)
+  }
+  return Promise.all(
+    paths.map(async (path) => {
+      const [realPath, stats] = await Promise.all([realpath(path), lstat(path)])
+      if (
+        realPath !== path ||
+        stats.isSymbolicLink() ||
+        !stats.isDirectory() ||
+        (realPath !== inputDirectory && !realPath.startsWith(`${inputDirectory}${sep}`))
+      ) {
+        throw overlayError(`Overlay parent is not a safe directory: ${parentRelative}`)
+      }
+      return { path, realPath, dev: stats.dev, ino: stats.ino }
+    }),
+  )
+}
+
+async function validateOverlayDirectoryChain(
+  expected: readonly OverlayDirectoryIdentity[],
+): Promise<void> {
+  for (const directory of expected) {
+    const [realPath, stats] = await Promise.all([realpath(directory.path), lstat(directory.path)])
+    if (
+      realPath !== directory.realPath ||
+      stats.isSymbolicLink() ||
+      !stats.isDirectory() ||
+      stats.dev !== directory.dev ||
+      stats.ino !== directory.ino
+    ) {
+      throw overlayError(`Overlay parent changed during validation: ${directory.path}`)
+    }
+  }
+}
+
+async function applyOverlayFile(
+  inputDirectory: string,
+  file: CompileTextOverlay,
+  hooks: CompileWorkspaceHooks | undefined,
+): Promise<void> {
   const target = resolve(inputDirectory, file.path)
   if (!target.startsWith(`${inputDirectory}${sep}`)) throw overlayError('Overlay escaped workspace')
   const parent = dirname(target)
   try {
-    const [parentRealPath, parentStats] = await Promise.all([realpath(parent), lstat(parent)])
-    if (
-      (parentRealPath !== inputDirectory && !parentRealPath.startsWith(`${inputDirectory}${sep}`)) ||
-      parentStats.isSymbolicLink() ||
-      !parentStats.isDirectory()
-    ) {
-      throw overlayError(`Overlay parent is not a safe directory: ${file.path}`)
-    }
+    const directoryChain = await captureOverlayDirectoryChain(inputDirectory, parent)
 
     let targetStats: Stats | undefined
     try {
@@ -184,8 +258,12 @@ async function applyOverlayFile(inputDirectory: string, file: CompileTextOverlay
       throw overlayError(`Overlay target escaped workspace: ${file.path}`)
     }
 
+    await hooks?.beforeOverlayTargetOpen?.(target)
+    // Node does not expose portable openat(). Revalidating every ancestor immediately before open
+    // closes deterministic swaps; once the handle is open, a second validation protects writes.
+    await validateOverlayDirectoryChain(directoryChain)
     const flags = targetStats
-      ? constants.O_WRONLY | constants.O_TRUNC | constants.O_NOFOLLOW
+      ? constants.O_WRONLY | constants.O_NOFOLLOW
       : constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW
     const handle = await open(target, flags, 0o600)
     try {
@@ -196,6 +274,9 @@ async function applyOverlayFile(inputDirectory: string, file: CompileTextOverlay
       ) {
         throw overlayError(`Overlay target changed during validation: ${file.path}`)
       }
+      await hooks?.afterOverlayTargetOpen?.(target)
+      await validateOverlayDirectoryChain(directoryChain)
+      if (targetStats) await handle.truncate(0)
       await handle.writeFile(file.text, 'utf8')
     } finally {
       await handle.close()
@@ -387,7 +468,7 @@ export async function createCompileWorkspace(
       }
     }
 
-    for (const file of overlay) await applyOverlayFile(inputDirectory, file)
+    for (const file of overlay) await applyOverlayFile(inputDirectory, file, options.hooks)
 
     const mainPath = resolve(inputDirectory, mainFile)
     if (!mainPath.startsWith(`${inputDirectory}${sep}`)) {
