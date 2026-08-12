@@ -32,19 +32,8 @@ import type {
   LatexSaveDto,
   ProposalVerificationDto,
 } from '../shared/ipc.js'
-
-function isAiSensitivePath(path: string): boolean {
-  return path.split('/').some((part) => {
-    const lower = part.toLowerCase()
-    return (
-      lower === '.env' ||
-      lower.includes('secret') ||
-      lower.includes('credential') ||
-      lower.includes('private-key') ||
-      lower.includes('private_key')
-    )
-  })
-}
+import { isAiSensitivePath } from '../shared/ai-path-policy.js'
+import { normalizeProposalDiagnostics } from '../shared/proposal-verification.js'
 
 export class MainFileRenameError extends Error {}
 
@@ -68,7 +57,6 @@ export class ProposalVerificationRejectedError extends Error {
   }
 }
 
-const MAX_PROPOSAL_VERIFICATION_DIAGNOSTICS = 100
 const MAX_PROPOSAL_VERIFICATION_LOG_BYTES = 16_000
 
 export interface WatcherLike {
@@ -87,6 +75,7 @@ export interface ProjectSessionRegistryOptions {
     bundleAsset?: TectonicBundleAsset
   }
   onExternalChange?: (webContentsId: number, buffer: LatexBufferDto) => void
+  acquireRendererFreeze?: (webContentsId: number) => Promise<() => void>
 }
 
 interface BufferState {
@@ -123,6 +112,7 @@ export class ProjectSession {
   private readonly onExternalChange?: ProjectSessionRegistryOptions['onExternalChange']
   private readonly maxCompileResults: number
   private readonly cleanupStaging: (path: string) => Promise<void>
+  private readonly acquireRendererFreeze: () => Promise<() => void>
   private readonly proposalStore?: ProposalStore
   private readonly projectStore?: ProjectStore
   private readonly remoteBundleUrl?: string
@@ -164,6 +154,11 @@ export class ProjectSession {
     this.maxCompileResults = options.maxCompileResults ?? 3
     this.cleanupStaging =
       options.cleanupStaging ?? ((path) => rm(path, { recursive: true, force: true }))
+    this.acquireRendererFreeze = options.acquireRendererFreeze
+      ? () => options.acquireRendererFreeze!(this.webContentsId)
+      : async () => {
+          throw new Error('LaTeX renderer freeze is not configured')
+        }
     if (
       !Number.isSafeInteger(this.maxCompileResults) ||
       this.maxCompileResults < 1 ||
@@ -536,7 +531,7 @@ export class ProjectSession {
         const value: CompileResultDto = {
           revision,
           pdfUrl: result.pdfPath ? `wiswork-latex-pdf://${this.projectId}/${revision}` : null,
-          diagnostics: parseTectonicDiagnostics(result.log),
+          diagnostics: normalizeProposalDiagnostics(parseTectonicDiagnostics(result.log)),
           log: result.log,
         }
         this.compileResults.delete(revision)
@@ -783,17 +778,8 @@ export class ProjectSession {
       if (proposal.expiresAt <= Date.now()) {
         throw new ProposalVerificationRejectedError('expired', 'Proposal has expired')
       }
-      if (proposal.files.some((file) => file.beforeSha256 === null)) {
-        return {
-          proposalId: proposal.id,
-          state: 'unverifiable',
-          reason: 'Proposals that create new files cannot be verified in isolation',
-          diagnostics: [],
-          logSummary: '',
-          verifiedAt: Date.now(),
-        }
-      }
       for (const file of proposal.files) {
+        if (file.beforeSha256 === null) continue
         let text: string
         try {
           text = await this.project.readText(file.path)
@@ -808,6 +794,16 @@ export class ProjectSession {
             'baseline',
             'Proposal baseline changed on disk',
           )
+        }
+      }
+      if (proposal.files.some((file) => file.beforeSha256 === null)) {
+        return {
+          proposalId: proposal.id,
+          state: 'unverifiable',
+          reason: 'Proposals that create new files cannot be verified in isolation',
+          diagnostics: [],
+          logSummary: '',
+          verifiedAt: Date.now(),
         }
       }
       if (!this.compilerRuntime || !this.mainFile) {
@@ -897,9 +893,8 @@ export class ProjectSession {
       .then((result): ProposalVerificationDto => ({
         proposalId: proposal.id,
         state: 'verified',
-        diagnostics: parseTectonicDiagnostics(result.log, result.synctexInputRoot).slice(
-          0,
-          MAX_PROPOSAL_VERIFICATION_DIAGNOSTICS,
+        diagnostics: normalizeProposalDiagnostics(
+          parseTectonicDiagnostics(result.log, result.synctexInputRoot),
         ),
         logSummary: boundedUtf8(result.log, MAX_PROPOSAL_VERIFICATION_LOG_BYTES),
         verifiedAt: Date.now(),
@@ -915,10 +910,7 @@ export class ProjectSession {
             proposalId: proposal.id,
             state: 'failed',
             reason: 'Tectonic could not compile the isolated proposal',
-            diagnostics: parseTectonicDiagnostics(error.log).slice(
-              0,
-              MAX_PROPOSAL_VERIFICATION_DIAGNOSTICS,
-            ),
+            diagnostics: normalizeProposalDiagnostics(parseTectonicDiagnostics(error.log)),
             logSummary: boundedUtf8(error.log, MAX_PROPOSAL_VERIFICATION_LOG_BYTES),
             verifiedAt: Date.now(),
           }
@@ -1057,14 +1049,23 @@ export class ProjectSession {
   }
 
   private async withConfirmedMutation<T>(operation: () => Promise<T>): Promise<T> {
+    this.assertActive()
     if (this.confirmedMutationInProgress)
       throw new Error('Confirmed edit transaction is already in progress')
-    this.confirmedMutationInProgress = true
+    const releaseFreeze = await this.acquireRendererFreeze()
+    let ownsMutation = false
     try {
+      this.assertActive()
+      if (this.confirmedMutationInProgress)
+        throw new Error('Confirmed edit transaction is already in progress')
+      this.confirmedMutationInProgress = true
+      ownsMutation = true
       await this.rendererMutationsSettled
+      this.assertActive()
       return await operation()
     } finally {
-      this.confirmedMutationInProgress = false
+      if (ownsMutation) this.confirmedMutationInProgress = false
+      releaseFreeze()
     }
   }
 }

@@ -117,7 +117,16 @@ function normalizeOverlayPath(path: unknown): string {
   if (segments.includes('..')) throw overlayError('Overlay path traversal is not allowed')
   const meaningfulSegments = segments.filter((segment) => segment && segment !== '.')
   for (const segment of meaningfulSegments) {
-    if (segment.includes(':') || /[. ]$/.test(segment) || isWindowsReservedComponent(segment)) {
+    if (
+      /[<>"|?*]/.test(segment) ||
+      [...segment].some((character) => {
+        const code = character.charCodeAt(0)
+        return code >= 1 && code <= 31
+      }) ||
+      segment.includes(':') ||
+      /[. ]$/.test(segment) ||
+      isWindowsReservedComponent(segment)
+    ) {
       throw overlayError(`Overlay path is not portable: ${path}`)
     }
   }

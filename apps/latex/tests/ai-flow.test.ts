@@ -7,6 +7,13 @@ import { compileIsolated, TectonicRunError } from '@wiswork/latex-compiler'
 import { ProjectSessionRegistry } from '../src/main/project-session.js'
 
 const sha = (text: string) => createHash('sha256').update(text).digest('hex')
+const testFreeze = async () => () => undefined
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => (resolve = done))
+  return { promise, resolve }
+}
 
 describe('confirmed LaTeX AI edit flow', () => {
   const roots: string[] = []
@@ -24,6 +31,7 @@ describe('confirmed LaTeX AI edit flow', () => {
     await writeFile(join(projectRoot, 'main.tex'), 'before')
     const session = await new ProjectSessionRegistry({
       watch: () => ({ close() {} }),
+      acquireRendererFreeze: testFreeze,
       compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
     }).attach(41, projectRoot)
     await session.readText('main.tex')
@@ -67,6 +75,7 @@ describe('confirmed LaTeX AI edit flow', () => {
       compiler: compiler as never,
       commitGeneration: commitGeneration as never,
       cleanupStaging,
+      acquireRendererFreeze: testFreeze,
       compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
     }).attach(51, projectRoot)
     await session.readText('main.tex')
@@ -134,6 +143,92 @@ describe('confirmed LaTeX AI edit flow', () => {
     expect(compiler).not.toHaveBeenCalled()
   })
 
+  it('checks every existing baseline before returning mixed proposals as unverifiable', async () => {
+    const { projectRoot, session, compiler } = await setupVerification([
+      { path: 'main.tex', beforeSha256: sha('before'), afterText: 'after' },
+      { path: 'new.tex', beforeSha256: null, afterText: 'new file' },
+    ])
+    await writeFile(join(projectRoot, 'main.tex'), 'stale')
+    await expect(session.verifyProposal('proposal-verify')).rejects.toThrow(/baseline|changed/i)
+    expect(compiler).not.toHaveBeenCalled()
+  })
+
+  it('waits for the renderer freeze before checking persisted buffers and always releases it', async () => {
+    const freeze = deferred<() => void>()
+    const release = vi.fn()
+    const root = await mkdtemp(join(tmpdir(), 'latex-freeze-'))
+    roots.push(root)
+    const projectRoot = join(root, 'project')
+    await mkdir(projectRoot)
+    await writeFile(join(projectRoot, 'main.tex'), 'before')
+    const compiler = vi.fn(async () => ({
+      generationId: 'verified',
+      stagingDirectory: join(root, 'stage'),
+      files: [],
+      log: '',
+      synctexInputRoot: projectRoot,
+      workspaceCleaned: true as const,
+    }))
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler: compiler as never,
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
+      acquireRendererFreeze: () => freeze.promise,
+    }).attach(91, projectRoot)
+    await session.readText('main.tex')
+    session.updateBuffer('main.tex', 'pending')
+    await session.registerProposal({
+      id: 'fenced',
+      expiresAt: Date.now() + 60_000,
+      files: [{ path: 'main.tex', beforeSha256: sha('before'), afterText: 'after' }],
+    })
+    const verifying = session.verifyProposal('fenced')
+    await Promise.resolve()
+    expect(compiler).not.toHaveBeenCalled()
+    await session.saveText('main.tex', 'pending')
+    freeze.resolve(release)
+    await expect(verifying).rejects.toThrow(/baseline|changed/i)
+    expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('rejects when disposed while waiting for the renderer freeze', async () => {
+    const freeze = deferred<() => void>()
+    const { session } = await setupVerification()
+    ;(
+      session as unknown as { acquireRendererFreeze: () => Promise<() => void> }
+    ).acquireRendererFreeze = () => freeze.promise
+    const release = vi.fn()
+    const verifying = session.verifyProposal('proposal-verify')
+    session.dispose()
+    freeze.resolve(release)
+    await expect(verifying).rejects.toThrow(/closed/i)
+    expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('refuses a confirmed transaction when the renderer cannot be frozen', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'latex-freeze-fail-'))
+    roots.push(root)
+    const projectRoot = join(root, 'project')
+    await mkdir(projectRoot)
+    await writeFile(join(projectRoot, 'main.tex'), 'before')
+    const compiler = vi.fn()
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler: compiler as never,
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
+      acquireRendererFreeze: async () => {
+        throw new Error('freeze failed')
+      },
+    }).attach(92, projectRoot)
+    await session.registerProposal({
+      id: 'fenced',
+      expiresAt: Date.now() + 60_000,
+      files: [{ path: 'main.tex', beforeSha256: sha('before'), afterText: 'after' }],
+    })
+    await expect(session.verifyProposal('fenced')).rejects.toThrow(/freeze/i)
+    expect(compiler).not.toHaveBeenCalled()
+  })
+
   it('rejects dirty buffers and changed proposal baselines before compiling', async () => {
     const dirty = await setupVerification()
     dirty.session.updateBuffer('main.tex', 'local dirty')
@@ -172,6 +267,7 @@ describe('confirmed LaTeX AI edit flow', () => {
     const session = await new ProjectSessionRegistry({
       watch: () => ({ close() {} }),
       compiler,
+      acquireRendererFreeze: testFreeze,
       compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
     }).attach(52, projectRoot)
     await session.registerProposal({
@@ -266,6 +362,7 @@ describe('confirmed LaTeX AI edit flow', () => {
       watch: () => ({ close() {} }),
       compiler: compiler as never,
       commitGeneration: vi.fn() as never,
+      acquireRendererFreeze: testFreeze,
       compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
     }).attach(61, projectRoot)
     await session.registerProposal({
@@ -310,6 +407,7 @@ describe('confirmed LaTeX AI edit flow', () => {
       const session = await new ProjectSessionRegistry({
         watch: () => ({ close() {} }),
         compiler: compiler as never,
+        acquireRendererFreeze: testFreeze,
         compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
       }).attach(71, projectRoot)
       await session.registerProposal({

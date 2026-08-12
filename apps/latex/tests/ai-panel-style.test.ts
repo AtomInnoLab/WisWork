@@ -55,4 +55,20 @@ describe('LaTeX AI dock', () => {
     expect(html).toContain('Error at main.tex:12')
     expect(html.match(/aria-label="Remove [^"]+ context"/g)).toHaveLength(3)
   })
+
+  it('blocks sensitive context chips and explains the boundary', () => {
+    const html = renderToStaticMarkup(
+      createElement(AiPanel, {
+        projectId: 'project-1',
+        context: {
+          activeFile: 'secrets/secret.tex',
+          selection: { startLine: 1, endLine: 1, text: 'TOP_SECRET_VALUE', truncated: false },
+        },
+        sensitiveContextBlocked: true,
+      }),
+    )
+    expect(html).not.toContain('secret.tex')
+    expect(html).not.toContain('TOP_SECRET_VALUE')
+    expect(html).toContain('cannot be attached as AI context')
+  })
 })

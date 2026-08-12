@@ -3,7 +3,7 @@ import { AgentLoop } from '@wiswork/agent-core'
 import { AiComposer, AiTypingIndicator, Markdown, WisWorkAppMark } from '@wiswork/ui'
 import { createLatexSkill } from './latex-skill.js'
 import { loadProposalForReview } from './proposal-review.js'
-import { ProposalWorkflow } from './proposal-workflow.js'
+import { ProposalWorkflow, validateUndoProposal } from './proposal-workflow.js'
 import { ProposalReview } from './ProposalReview.js'
 import { createLatexTransport } from './transport.js'
 import {
@@ -116,6 +116,7 @@ export function AiPanel({
   onExpand,
   onCollapse,
   context = {},
+  sensitiveContextBlocked = false,
   onRemoveContext,
 }: {
   projectId: string
@@ -125,6 +126,7 @@ export function AiPanel({
   onExpand?: () => void
   onCollapse?: () => void
   context?: AgentContext
+  sensitiveContextBlocked?: boolean
   onRemoveContext?: (key: AgentContextKey) => void
 }) {
   const [input, setInput] = useState('')
@@ -417,7 +419,16 @@ export function AiPanel({
         setStatus(result.error.message)
         return
       }
-      workflow.clearSnapshot('AI changes were undone and the project was compiled again.')
+      const undone = validateUndoProposal(result.value, snapshotId)
+      if (!undone.restored) {
+        workflow.clearSnapshot('AI changes were already undone; no compile was needed.')
+        return
+      }
+      workflow.clearSnapshot(
+        undone.compile.ok
+          ? 'AI changes were undone and the project was compiled again.'
+          : `AI changes were undone, but compile failed: ${undone.compile.error}`,
+      )
       try {
         await projectFilesChangedRef.current?.()
       } catch (error) {
@@ -426,6 +437,10 @@ export function AiPanel({
             `AI changes were undone, but file refresh failed: ${error instanceof Error ? error.message : String(error)}.`,
           )
         }
+      }
+    } catch (error) {
+      if (session.acceptsProject(projectScope)) {
+        setStatus(error instanceof Error ? error.message : 'Undo response was invalid.')
       }
     } finally {
       if (session.acceptsProject(projectScope)) setBusy(false)
@@ -536,6 +551,11 @@ export function AiPanel({
           )}
         </div>
         <div className="ai-composer-wrap">
+          {sensitiveContextBlocked && (
+            <div className="ai-status" role="status">
+              Sensitive files remain editable, but cannot be attached as AI context.
+            </div>
+          )}
           {contextChips(context).length > 0 && (
             <div className="ai-context-chips" aria-label="Attached context">
               {contextChips(context).map((chip) => (

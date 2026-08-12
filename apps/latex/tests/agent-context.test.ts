@@ -8,6 +8,7 @@ import {
   serializeAgentPrompt,
   type AgentContext,
 } from '../src/renderer/ai/agent-context.js'
+import { isAiSensitivePath } from '../src/shared/ai-path-policy.js'
 
 describe('LaTeX agent context', () => {
   it('captures bounded selected text with its one-based line range and cursor line', () => {
@@ -82,5 +83,30 @@ describe('LaTeX agent context', () => {
     const next = { path: 'new.tex', cursorLine: 8 }
     expect(editorContextForActivePath(old, 'new.tex')).toBeNull()
     expect(editorContextForActivePath(next, 'new.tex')).toBe(next)
+  })
+
+  it.each(['secret.tex', 'credentials.json', '.env', 'config/.env.local'])(
+    'never serializes sensitive editor context: %s',
+    (path) => {
+      expect(isAiSensitivePath(path)).toBe(true)
+      const prompt = serializeAgentPrompt('help', {
+        activeFile: path,
+        selection: { startLine: 1, endLine: 1, text: 'TOP_SECRET', truncated: false },
+        diagnostic: { path, line: 1, column: 1, severity: 'error', message: 'SECRET_ERROR' },
+      })
+      expect(prompt).not.toContain(path)
+      expect(prompt).not.toContain('TOP_SECRET')
+      expect(prompt).not.toContain('SECRET_ERROR')
+    },
+  )
+
+  it('checks the full path before applying context path bounds', () => {
+    const path = `${'safe/'.repeat(300)}secret.tex`
+    const prompt = serializeAgentPrompt('help', {
+      activeFile: path,
+      selection: { startLine: 1, endLine: 1, text: 'TAIL_SECRET', truncated: false },
+    })
+    expect(prompt).not.toContain('TAIL_SECRET')
+    expect(prompt).not.toContain('safe/')
   })
 })

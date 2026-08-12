@@ -11,12 +11,18 @@ import {
   type ReviewProposal,
   type ReviewVerification,
 } from './proposal-review.js'
+import {
+  MAX_PROPOSAL_DIAGNOSTICS,
+  MAX_PROPOSAL_DIAGNOSTIC_MESSAGE_BYTES,
+  MAX_PROPOSAL_DIAGNOSTIC_PATH_BYTES,
+  MAX_PROPOSAL_DIAGNOSTIC_POSITION,
+} from '../../shared/proposal-verification.js'
 
-const MAX_DIAGNOSTICS = 100
+const MAX_DIAGNOSTICS = MAX_PROPOSAL_DIAGNOSTICS
 const MAX_FORMAL_DIAGNOSTICS = 1_000
 const MAX_LOG_BYTES = 16_000
 const MAX_REASON_BYTES = 4_096
-const MAX_MESSAGE_BYTES = 4_096
+const MAX_MESSAGE_BYTES = MAX_PROPOSAL_DIAGNOSTIC_MESSAGE_BYTES
 const MAX_FORMAL_LOG_BYTES = 2 * 1024 * 1024
 const encoder = new TextEncoder()
 
@@ -59,6 +65,10 @@ interface AppliedProposalResult {
     | { ok: false; error: string }
 }
 
+export type UndoProposalResult =
+  | { snapshotId: string; restored: false; compile: null }
+  | { snapshotId: string; restored: true; compile: AppliedProposalResult['compile'] }
+
 function exactKeys(record: Record<string, unknown>, expected: readonly string[]): boolean {
   return (
     Object.keys(record).length === expected.length &&
@@ -78,7 +88,12 @@ function boundedString(
 }
 
 function safePosition(value: unknown): value is number | null {
-  return value === null || (Number.isSafeInteger(value) && (value as number) >= 1)
+  return (
+    value === null ||
+    (Number.isSafeInteger(value) &&
+      (value as number) >= 1 &&
+      (value as number) <= MAX_PROPOSAL_DIAGNOSTIC_POSITION)
+  )
 }
 
 function validateDiagnostic(value: unknown): ProposalVerificationDiagnosticDto {
@@ -87,7 +102,7 @@ function validateDiagnostic(value: unknown): ProposalVerificationDiagnosticDto {
   const record = value as Record<string, unknown>
   if (
     !exactKeys(record, ['path', 'line', 'column', 'severity', 'message']) ||
-    !boundedString(record.path, 1_024, true) ||
+    !boundedString(record.path, MAX_PROPOSAL_DIAGNOSTIC_PATH_BYTES, true) ||
     (record.path !== null && (!record.path || record.path.includes('\0'))) ||
     !safePosition(record.line) ||
     !safePosition(record.column) ||
@@ -178,6 +193,25 @@ export function validateAppliedProposal(value: unknown, proposalId: string): App
   }
   result.diagnostics = result.diagnostics.map(validateDiagnostic)
   return record as unknown as AppliedProposalResult
+}
+
+export function validateUndoProposal(value: unknown, snapshotId: string): UndoProposalResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('Undo response was invalid.')
+  const record = value as Record<string, unknown>
+  if (!exactKeys(record, ['snapshotId', 'restored', 'compile']) || record.snapshotId !== snapshotId)
+    throw new Error('Undo response was invalid.')
+  if (record.restored === false && record.compile === null) {
+    return record as unknown as UndoProposalResult
+  }
+  if (record.restored !== true || record.compile === null) {
+    throw new Error('Undo response was invalid.')
+  }
+  const validated = validateAppliedProposal(
+    { proposalId: 'undo', snapshotId, compile: record.compile },
+    'undo',
+  )
+  return { snapshotId, restored: true, compile: validated.compile }
 }
 
 function recoverSnapshotId(value: unknown, proposalId: string): string | null {

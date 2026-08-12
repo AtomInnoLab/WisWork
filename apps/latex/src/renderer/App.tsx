@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PdfPoint, ViewerLocation } from '@wiswork/pdf-viewer'
 import type { CompileDiagnosticInput, EditorDiagnostic } from './compile/diagnostics.js'
+import { isAiSensitivePath } from '../shared/ai-path-policy.js'
 import type { LatexBundleStatusDto } from '../shared/ipc.js'
 import { mapCompileDiagnostics } from './compile/diagnostics.js'
 import { CompilePanel } from './compile/CompilePanel.js'
@@ -560,7 +561,9 @@ export function App() {
     [editorState],
   )
   const activeDiagnostics = diagnostics.filter((item) => item.path === activePath)
+  const sensitiveAiContext = Boolean(activePath && isAiSensitivePath(activePath))
   const agentContext = useMemo<AgentContext>(() => {
+    if (activePath && isAiSensitivePath(activePath)) return {}
     const currentEditor = editorContextForActivePath(editorContext, activePath)
     return {
       ...(!hiddenAiContext.has('activeFile') && activePath ? { activeFile: activePath } : {}),
@@ -678,6 +681,7 @@ export function App() {
           onProjectFilesChanged={refreshProjectFiles}
           open={aiOpen}
           context={agentContext}
+          sensitiveContextBlocked={sensitiveAiContext}
           onRemoveContext={(key) => setHiddenAiContext((current) => new Set([...current, key]))}
           onExpand={() => setAiOpen(true)}
           onCollapse={() => setAiOpen(false)}

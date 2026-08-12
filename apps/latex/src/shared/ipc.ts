@@ -1,4 +1,5 @@
 import type { AiSettings, AiStreamChunk, AiStreamRequest } from '@wiswork/ai-provider'
+import type { NormalizedProposalDiagnostic } from './proposal-verification.js'
 
 export const MAX_IPC_TEXT_BYTES = 2 * 1024 * 1024
 export const MAX_IPC_PATH_LENGTH = 1024
@@ -140,13 +141,7 @@ export interface LatexProposalDto {
   }>
 }
 
-export interface ProposalVerificationDiagnosticDto {
-  path: string | null
-  line: number | null
-  column: number | null
-  severity: 'error' | 'warning'
-  message: string
-}
+export type ProposalVerificationDiagnosticDto = NormalizedProposalDiagnostic
 
 interface ProposalVerificationEvidenceDto {
   proposalId: string

@@ -97,6 +97,7 @@ describe('last-edit close fence', () => {
       removeListener: vi.fn(),
     }
     const pending = coordinator.request(contents)
+    const joined = coordinator.request(contents)
     expect(contents.send).toHaveBeenCalledWith(LATEX_CHANNELS.editFlushRequest, {
       requestId: 'r1',
     })
@@ -108,6 +109,11 @@ describe('last-edit close fence', () => {
     expect(done).toBe(false)
     ack({ sender: contents }, { requestId: 'r1', ok: true })
     await expect(pending).resolves.toBe(true)
+    await expect(joined).resolves.toBe(true)
+    expect(contents.send).not.toHaveBeenCalledWith(LATEX_CHANNELS.editFlushRelease, {
+      requestId: 'r1',
+    })
+    coordinator.release(contents)
     expect(contents.send).not.toHaveBeenCalledWith(LATEX_CHANNELS.editFlushRelease, {
       requestId: 'r1',
     })
@@ -138,8 +144,10 @@ describe('last-edit close fence', () => {
       removeListener: vi.fn(),
     }
     const timedOut = coordinator.request(contents)
+    const joinedTimeout = coordinator.request(contents)
     await vi.advanceTimersByTimeAsync(10)
     await expect(timedOut).resolves.toBe(false)
+    await expect(joinedTimeout).resolves.toBe(false)
     expect(
       contents.send.mock.calls.some(([channel]) => channel === LATEX_CHANNELS.editFlushRelease),
     ).toBe(true)

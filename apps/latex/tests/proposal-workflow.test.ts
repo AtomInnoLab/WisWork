@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  validateUndoProposal,
   ProposalWorkflow,
   validateAppliedProposal,
   validateProposalVerification,
@@ -314,5 +315,28 @@ describe('apply DTO validation', () => {
     ]
     for (const value of invalid)
       expect(() => validateAppliedProposal(value, 'proposal-1')).toThrow()
+  })
+})
+
+describe('undo DTO validation', () => {
+  it('accepts exact restored and already-undone unions and rejects malformed success payloads', () => {
+    expect(
+      validateUndoProposal(
+        { snapshotId: 'e'.repeat(32), restored: false, compile: null },
+        'e'.repeat(32),
+      ),
+    ).toMatchObject({ restored: false })
+    expect(() =>
+      validateUndoProposal(
+        { snapshotId: 'e'.repeat(32), restored: true, compile: null },
+        'e'.repeat(32),
+      ),
+    ).toThrow()
+    expect(() =>
+      validateUndoProposal(
+        { snapshotId: 'e'.repeat(32), restored: false, compile: { ok: false, error: 'x' } },
+        'e'.repeat(32),
+      ),
+    ).toThrow()
   })
 })

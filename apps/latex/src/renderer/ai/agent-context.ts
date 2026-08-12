@@ -1,4 +1,5 @@
 import type { EditorDiagnostic } from '../compile/diagnostics.js'
+import { isAiSensitivePath } from '../../shared/ai-path-policy.js'
 
 export const MAX_SELECTION_CHARS = 8_000
 export const MAX_DIAGNOSTIC_MESSAGE_CHARS = 2_000
@@ -103,12 +104,15 @@ export function diagnosticToAgentContext(diagnostic: EditorDiagnostic): AgentDia
 }
 
 export function normalizeAgentContext(context: AgentContext): AgentContext {
-  const activeFile = context.activeFile ? boundedPath(context.activeFile) : undefined
+  const activeFile =
+    context.activeFile && !isAiSensitivePath(context.activeFile)
+      ? boundedPath(context.activeFile)
+      : undefined
   const boundedSelectionText = context.selection
     ? safeSlice(context.selection.text, MAX_SELECTION_CHARS)
     : undefined
   const selection =
-    context.selection && boundedSelectionText !== undefined
+    activeFile && context.selection && boundedSelectionText !== undefined
       ? {
           startLine: positiveLine(context.selection.startLine),
           endLine: positiveLine(context.selection.endLine),
@@ -116,15 +120,16 @@ export function normalizeAgentContext(context: AgentContext): AgentContext {
           truncated: context.selection.truncated || boundedSelectionText !== context.selection.text,
         }
       : undefined
-  const diagnostic = context.diagnostic
-    ? {
-        path: boundedPath(context.diagnostic.path),
-        line: positiveLine(context.diagnostic.line),
-        column: positiveLine(context.diagnostic.column),
-        severity: context.diagnostic.severity,
-        message: safeSlice(context.diagnostic.message, MAX_DIAGNOSTIC_MESSAGE_CHARS),
-      }
-    : undefined
+  const diagnostic =
+    context.diagnostic && !isAiSensitivePath(context.diagnostic.path)
+      ? {
+          path: boundedPath(context.diagnostic.path),
+          line: positiveLine(context.diagnostic.line),
+          column: positiveLine(context.diagnostic.column),
+          severity: context.diagnostic.severity,
+          message: safeSlice(context.diagnostic.message, MAX_DIAGNOSTIC_MESSAGE_CHARS),
+        }
+      : undefined
   return {
     ...(activeFile ? { activeFile } : {}),
     ...(activeFile && context.cursorLine ? { cursorLine: positiveLine(context.cursorLine) } : {}),
