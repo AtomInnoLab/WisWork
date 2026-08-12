@@ -107,7 +107,7 @@ describe('LaTeX AI read-only skill', () => {
         {
           path: 'main.tex',
           beforeText: largeText,
-          beforeSha256: 'hash',
+          beforeSha256: 'a'.repeat(64),
           afterText: largeText,
         },
       ],

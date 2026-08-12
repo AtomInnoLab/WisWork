@@ -1,8 +1,4 @@
-import type {
-  LatexIpcErrorCode,
-  LatexIpcResult,
-  ProposalVerificationDto,
-} from '../../shared/ipc.js'
+import type { LatexIpcErrorCode, ProposalVerificationDto } from '../../shared/ipc.js'
 
 export interface ReviewProposal {
   id: string
@@ -31,76 +27,6 @@ export type ReviewVerification =
     }
   | { state: 'rejected'; code: LatexIpcErrorCode; message: string }
 
-export interface ProposalVerificationScope {
-  projectId: string
-  proposalId: string
-  generation: number
-}
-
-export class ProposalVerificationController {
-  private generation = 0
-  private current: ProposalVerificationScope | null = null
-
-  begin(projectId: string, proposalId: string): ProposalVerificationScope {
-    this.generation += 1
-    this.current = { projectId, proposalId, generation: this.generation }
-    return this.current
-  }
-
-  accepts(scope: ProposalVerificationScope): boolean {
-    return Boolean(
-      this.current &&
-      this.current.projectId === scope.projectId &&
-      this.current.proposalId === scope.proposalId &&
-      this.current.generation === scope.generation,
-    )
-  }
-
-  cancel(): void {
-    this.generation += 1
-    this.current = null
-  }
-}
-
-export async function requestProposalVerification(
-  controller: ProposalVerificationController,
-  proposal: ReviewProposal,
-  verify: (request: {
-    projectId: string
-    proposalId: string
-  }) => Promise<LatexIpcResult<ProposalVerificationDto>>,
-  commit: (state: ReviewVerification) => void,
-): Promise<void> {
-  const scope = controller.begin(proposal.projectId, proposal.id)
-  commit({ state: 'verifying' })
-  try {
-    const result = await verify({ projectId: proposal.projectId, proposalId: proposal.id })
-    if (!controller.accepts(scope)) return
-    if (!result.ok) {
-      commit({ state: 'rejected', code: result.error.code, message: result.error.message })
-      return
-    }
-    if (result.value.proposalId !== proposal.id) {
-      commit({
-        state: 'rejected',
-        code: 'LATEX_INVALID_PAYLOAD',
-        message: 'Verification evidence did not match the current proposal.',
-      })
-      return
-    }
-    if (result.value.state === 'verified') commit({ state: 'verified', evidence: result.value })
-    else if (result.value.state === 'failed') commit({ state: 'failed', evidence: result.value })
-    else commit({ state: 'unverifiable', evidence: result.value })
-  } catch (error) {
-    if (!controller.accepts(scope)) return
-    commit({
-      state: 'rejected',
-      code: 'LATEX_INTERNAL',
-      message: error instanceof Error ? error.message : String(error),
-    })
-  }
-}
-
 export function verificationCompileComparison(
   verification: { state: 'verified' | 'failed' | 'unverifiable'; diagnosticCount: number },
   formalDiagnosticCount: number,
@@ -114,7 +40,7 @@ export function verificationCompileComparison(
 }
 
 export interface ReviewAction {
-  kind: 'apply' | 'verify-selection'
+  kind: 'apply' | 'verify-selection' | 'review-risk'
   label: string
   disabled: boolean
 }
@@ -123,6 +49,7 @@ export function reviewAction(
   proposal: ReviewProposal,
   selectedPaths: ReadonlySet<string>,
   verification: { state: ReviewVerification['state'] },
+  riskArmed = false,
 ): ReviewAction {
   const fullSelection =
     selectedPaths.size === proposal.files.length &&
@@ -140,9 +67,10 @@ export function reviewAction(
     return { kind: 'apply', label: 'Regenerate proposal to apply', disabled: true }
   if (verification.state === 'verified')
     return { kind: 'apply', label: 'Apply verified changes', disabled: false }
+  if (!riskArmed) return { kind: 'review-risk', label: 'Review risk', disabled: false }
   return {
     kind: 'apply',
-    label: 'Apply without successful verification',
+    label: 'Apply unverified changes',
     disabled: false,
   }
 }
@@ -169,18 +97,23 @@ export async function loadProposalForReview(
   return validateReviewProposal(result.value, projectId, record.proposalId)
 }
 
-function validateReviewProposal(
+export function validateReviewProposal(
   value: unknown,
   projectId: string,
-  proposalId: string,
+  proposalId?: string,
 ): ReviewProposal {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('The proposal response was invalid.')
   const proposal = value as Record<string, unknown>
   if (
-    proposal.id !== proposalId ||
+    typeof proposal.id !== 'string' ||
+    !proposal.id ||
+    proposal.id.length > 128 ||
+    (proposalId !== undefined && proposal.id !== proposalId) ||
     proposal.projectId !== projectId ||
-    typeof proposal.expiresAt !== 'number' ||
+    !Number.isSafeInteger(proposal.expiresAt) ||
+    (proposal.expiresAt as number) < 0 ||
+    Object.keys(proposal).some((key) => !['id', 'projectId', 'expiresAt', 'files'].includes(key)) ||
     !Array.isArray(proposal.files) ||
     proposal.files.length < 1 ||
     proposal.files.length > 20
@@ -188,32 +121,35 @@ function validateReviewProposal(
     throw new Error('The proposal response was invalid.')
   }
   let totalBytes = 0
+  const seenPaths = new Set<string>()
   for (const value of proposal.files) {
     if (!value || typeof value !== 'object' || Array.isArray(value))
       throw new Error('The proposal response was invalid.')
     const file = value as Record<string, unknown>
     if (
       typeof file.path !== 'string' ||
+      !file.path ||
+      file.path.length > 1_024 ||
+      file.path.includes('\0') ||
+      file.path.includes('\\') ||
+      file.path.startsWith('/') ||
+      file.path.split('/').some((part) => !part || part === '.' || part === '..') ||
       (file.beforeText !== null && typeof file.beforeText !== 'string') ||
-      (file.beforeSha256 !== null && typeof file.beforeSha256 !== 'string') ||
-      typeof file.afterText !== 'string'
+      (file.beforeText === null
+        ? file.beforeSha256 !== null
+        : typeof file.beforeSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(file.beforeSha256)) ||
+      typeof file.afterText !== 'string' ||
+      Object.keys(file).some(
+        (key) => !['path', 'beforeText', 'beforeSha256', 'afterText'].includes(key),
+      )
     ) {
       throw new Error('The proposal response was invalid.')
     }
+    if (seenPaths.has(file.path)) throw new Error('The proposal response was invalid.')
+    seenPaths.add(file.path)
     totalBytes += new TextEncoder().encode(file.beforeText ?? '').byteLength
     totalBytes += new TextEncoder().encode(file.afterText).byteLength
     if (totalBytes > 4 * 1024 * 1024) throw new Error('The proposal response was too large.')
   }
   return value as ReviewProposal
-}
-
-export async function proposalForSelection(
-  proposal: ReviewProposal,
-  selectedPaths: ReadonlySet<string>,
-  create: (files: Array<{ path: string; afterText: string }>) => Promise<ReviewProposal>,
-): Promise<ReviewProposal> {
-  const selected = proposal.files.filter((file) => selectedPaths.has(file.path))
-  if (selected.length === 0) throw new Error('Select at least one file')
-  if (selected.length === proposal.files.length) return proposal
-  return create(selected.map(({ path, afterText }) => ({ path, afterText })))
 }

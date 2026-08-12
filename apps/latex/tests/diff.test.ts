@@ -21,7 +21,7 @@ describe('bounded proposal line diff', () => {
       beforeLine: null,
       afterLine: 5,
     })
-    expect(diff.summary).toEqual({ added: 2, removed: 2 })
+    expect(diff.summary).toEqual({ added: 2, removed: 2, atLeast: false })
   })
 
   it('bounds work and rendered output for enormous proposals', () => {
@@ -46,21 +46,33 @@ describe('bounded proposal line diff', () => {
     ).toBeLessThanOrEqual(600)
   })
 
-  it('finds a localized change beyond the initial input budget', () => {
+  it('stops scanning at the input budget and labels counts as lower bounds', () => {
     const before = Array.from({ length: 2_000 }, (_, index) => `line ${index}`)
     const after = [...before]
     after[1_500] = 'changed late line'
-    const diff = buildLineDiff(before.join('\n'), after.join('\n'), { maxInputLines: 20 })
+    const diff = buildLineDiff(before.join('\n'), after.join('\n'), {
+      maxInputLines: 20,
+      maxInputChars: 200,
+    })
 
-    expect(diff.hunks.flatMap((hunk) => hunk.lines).map((line) => line.beforeLine)).toContain(1_501)
-    expect(diff.hunks.flatMap((hunk) => hunk.lines).map((line) => line.text)).toContain(
-      'changed late line',
-    )
+    expect(diff.truncated).toBe(true)
+    expect(diff.summary.atLeast).toBe(true)
+    expect(diff.hunks).toEqual([])
+  })
+
+  it('never emits a broken Unicode surrogate when enforcing character limits', () => {
+    const diff = buildLineDiff('', '😀😀😀', { maxOutputChars: 1 })
+    const emitted = diff.hunks
+      .flatMap((hunk) => hunk.lines)
+      .map((line) => line.text)
+      .join('')
+    expect(emitted).toBe('😀')
+    expect(Array.from(emitted)).toHaveLength(1)
   })
 
   it('describes a new file without manufacturing removed lines', () => {
     const diff = buildLineDiff(null, 'alpha\nbeta')
-    expect(diff.summary).toEqual({ added: 2, removed: 0 })
+    expect(diff.summary).toEqual({ added: 2, removed: 0, atLeast: false })
     expect(diff.hunks[0]?.lines.every((line) => line.kind === 'add')).toBe(true)
   })
 })

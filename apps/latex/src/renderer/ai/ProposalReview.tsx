@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react'
 import { buildLineDiff } from './diff.js'
 import { reviewAction, type ReviewProposal, type ReviewVerification } from './proposal-review.js'
 
@@ -13,7 +12,9 @@ function rejectionRecovery(code: Extract<ReviewVerification, { state: 'rejected'
 function VerificationEvidence({ verification }: { verification: ReviewVerification }) {
   if (verification.state === 'verifying') {
     return (
-      <div className="proposal-verification verification-verifying">Verifying in isolation…</div>
+      <div className="proposal-verification verification-verifying" role="status">
+        Verifying in isolation…
+      </div>
     )
   }
   if (verification.state === 'rejected') {
@@ -35,7 +36,10 @@ function VerificationEvidence({ verification }: { verification: ReviewVerificati
         ? 'Verification failed'
         : 'Verification unavailable'
   return (
-    <div className={`proposal-verification verification-${verification.state}`}>
+    <div
+      className={`proposal-verification verification-${verification.state}`}
+      role={verification.state === 'failed' ? 'alert' : 'status'}
+    >
       <strong>{title}</strong>
       {'reason' in evidence && <p>{evidence.reason}</p>}
       <div>{evidence.diagnostics.length} diagnostics</div>
@@ -67,8 +71,10 @@ function ProposalFileDiff({ file }: { file: ReviewProposal['files'][number] }) {
   return (
     <>
       <div className="proposal-file-summary">
-        {diff.summary.added} addition{diff.summary.added === 1 ? '' : 's'}, {diff.summary.removed}{' '}
-        removal{diff.summary.removed === 1 ? '' : 's'}
+        {diff.summary.atLeast ? 'at least ' : ''}
+        {diff.summary.added} addition{diff.summary.added === 1 ? '' : 's'},{' '}
+        {diff.summary.atLeast ? 'at least ' : ''}
+        {diff.summary.removed} removal{diff.summary.removed === 1 ? '' : 's'}
         {diff.truncated ? ' · preview truncated' : ''}
       </div>
       {diff.hunks.map((hunk, hunkIndex) => (
@@ -93,24 +99,33 @@ function ProposalFileDiff({ file }: { file: ReviewProposal['files'][number] }) {
 
 export function ProposalReview({
   proposal,
+  selection,
   busy,
   verification,
-  onConfirm,
-  onVerifySelection,
+  riskArmed,
+  onSelectionChange,
+  onPrimaryAction,
   onCancel,
 }: {
   proposal: ReviewProposal
+  selection: ReadonlySet<string>
   busy: boolean
   verification: ReviewVerification
-  onConfirm(selected: ReadonlySet<string>): void
-  onVerifySelection(selected: ReadonlySet<string>): void
+  riskArmed: boolean
+  onSelectionChange(selected: ReadonlySet<string>): void
+  onPrimaryAction(): void
   onCancel(): void
 }) {
-  const [selected, setSelected] = useState(() => new Set(proposal.files.map((file) => file.path)))
-  useEffect(() => setSelected(new Set(proposal.files.map((file) => file.path))), [proposal])
-  const action = reviewAction(proposal, selected, verification)
+  const action = reviewAction(proposal, selection, verification, riskArmed)
+  const risky =
+    (verification.state === 'failed' || verification.state === 'unverifiable') &&
+    action.kind !== 'verify-selection'
   return (
-    <section className="proposal-review" aria-label="AI edit proposal">
+    <section
+      className="proposal-review"
+      aria-label="AI edit proposal"
+      aria-busy={busy || verification.state === 'verifying'}
+    >
       <h3>Review AI changes</h3>
       <VerificationEvidence verification={verification} />
       {proposal.files.map((file) => (
@@ -118,15 +133,17 @@ export function ProposalReview({
           <label>
             <input
               type="checkbox"
-              checked={selected.has(file.path)}
+              checked={selection.has(file.path)}
               disabled={busy}
               onChange={() =>
-                setSelected((current) => {
-                  const next = new Set(current)
-                  if (next.has(file.path)) next.delete(file.path)
-                  else next.add(file.path)
-                  return next
-                })
+                onSelectionChange(
+                  (() => {
+                    const next = new Set(selection)
+                    if (next.has(file.path)) next.delete(file.path)
+                    else next.add(file.path)
+                    return next
+                  })(),
+                )
               }
             />
             {file.path}
@@ -134,22 +151,23 @@ export function ProposalReview({
           <ProposalFileDiff file={file} />
         </article>
       ))}
-      {(verification.state === 'failed' || verification.state === 'unverifiable') &&
-        action.kind === 'apply' && (
-          <p className="proposal-risk-warning" role="alert">
-            This change has not compiled successfully in isolation. Applying it may break the
-            project.
-          </p>
-        )}
+      {risky && (
+        <p className="proposal-risk-warning" id="proposal-risk-warning" role="alert">
+          {riskArmed
+            ? 'Risk acknowledged. A separate confirmation will apply changes without successful verification.'
+            : 'This change has not compiled successfully in isolation. Review this risk before enabling apply.'}
+        </p>
+      )}
       <button
+        type="button"
+        className={riskArmed && action.kind === 'apply' ? 'proposal-danger-button' : undefined}
         disabled={busy || action.disabled}
-        onClick={() =>
-          action.kind === 'verify-selection' ? onVerifySelection(selected) : onConfirm(selected)
-        }
+        aria-describedby={risky ? 'proposal-risk-warning' : undefined}
+        onClick={onPrimaryAction}
       >
         {action.label}
       </button>
-      <button disabled={busy} onClick={onCancel}>
+      <button type="button" disabled={busy} onClick={onCancel}>
         Cancel
       </button>
     </section>

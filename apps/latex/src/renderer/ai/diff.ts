@@ -15,25 +15,61 @@ export interface DiffHunk {
 
 export interface LineDiff {
   hunks: DiffHunk[]
-  summary: { added: number; removed: number }
+  summary: { added: number; removed: number; atLeast: boolean }
   truncated: boolean
 }
 
 export interface LineDiffLimits {
   contextLines?: number
   maxInputLines?: number
+  maxInputChars?: number
   maxOutputLines?: number
   maxOutputChars?: number
 }
 
 const DEFAULT_CONTEXT_LINES = 1
 const DEFAULT_MAX_INPUT_LINES = 500
+const DEFAULT_MAX_INPUT_CHARS = 64_000
 const DEFAULT_MAX_OUTPUT_LINES = 240
 const DEFAULT_MAX_OUTPUT_CHARS = 30_000
 
-function lines(text: string | null): string[] {
-  if (text === null || text === '') return []
-  return text.split('\n')
+function collectLines(
+  text: string | null,
+  maxLines: number,
+  maxChars: number,
+): { lines: string[]; truncated: boolean } {
+  if (text === null || text === '') return { lines: [], truncated: false }
+  const result: string[] = []
+  let current = ''
+  let index = 0
+  let consumedChars = 0
+  while (index < text.length && result.length < maxLines && consumedChars < maxChars) {
+    const codePoint = text.codePointAt(index)!
+    const character = String.fromCodePoint(codePoint)
+    index += character.length
+    consumedChars += 1
+    if (character === '\n') {
+      result.push(current)
+      current = ''
+    } else current += character
+  }
+  let truncated = index < text.length
+  if (current || (!truncated && text.endsWith('\n'))) {
+    if (result.length < maxLines) result.push(current)
+    else truncated = true
+  }
+  return { lines: result, truncated }
+}
+
+function takeCodePoints(text: string, count: number): { text: string; count: number } {
+  let value = ''
+  let consumed = 0
+  for (const character of text) {
+    if (consumed >= count) break
+    value += character
+    consumed += 1
+  }
+  return { text: value, count: consumed }
 }
 
 function operations(
@@ -99,43 +135,17 @@ export function buildLineDiff(
 ): LineDiff {
   const contextLines = Math.max(0, limits.contextLines ?? DEFAULT_CONTEXT_LINES)
   const maxInputLines = Math.max(1, limits.maxInputLines ?? DEFAULT_MAX_INPUT_LINES)
+  const maxInputChars = Math.max(1, limits.maxInputChars ?? DEFAULT_MAX_INPUT_CHARS)
   const maxOutputLines = Math.max(1, limits.maxOutputLines ?? DEFAULT_MAX_OUTPUT_LINES)
   const maxOutputChars = Math.max(1, limits.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS)
-  const allBefore = lines(beforeText)
-  const allAfter = lines(afterText)
-  let commonPrefix = 0
-  while (
-    commonPrefix < allBefore.length &&
-    commonPrefix < allAfter.length &&
-    allBefore[commonPrefix] === allAfter[commonPrefix]
-  ) {
-    commonPrefix += 1
-  }
-  if (commonPrefix === allBefore.length && commonPrefix === allAfter.length) {
-    return { hunks: [], summary: { added: 0, removed: 0 }, truncated: false }
-  }
-  let commonSuffix = 0
-  while (
-    commonSuffix < allBefore.length - commonPrefix &&
-    commonSuffix < allAfter.length - commonPrefix &&
-    allBefore[allBefore.length - commonSuffix - 1] === allAfter[allAfter.length - commonSuffix - 1]
-  ) {
-    commonSuffix += 1
-  }
-  const beforeStart = Math.max(0, commonPrefix - contextLines)
-  const afterStart = Math.max(0, commonPrefix - contextLines)
-  const beforeEnd = Math.min(allBefore.length, allBefore.length - commonSuffix + contextLines)
-  const afterEnd = Math.min(allAfter.length, allAfter.length - commonSuffix + contextLines)
-  let truncated = beforeEnd - beforeStart > maxInputLines || afterEnd - afterStart > maxInputLines
-  const ops = operations(
-    allBefore.slice(beforeStart, beforeStart + maxInputLines),
-    allAfter.slice(afterStart, afterStart + maxInputLines),
-    beforeStart,
-    afterStart,
-  )
+  const before = collectLines(beforeText, maxInputLines, maxInputChars)
+  const after = collectLines(afterText, maxInputLines, maxInputChars)
+  let truncated = before.truncated || after.truncated
+  const ops = operations(before.lines, after.lines, 0, 0)
   const summary = {
     added: ops.filter((line) => line.kind === 'add').length,
     removed: ops.filter((line) => line.kind === 'remove').length,
+    atLeast: truncated,
   }
   const changes = ops.flatMap((line, index) => (line.kind === 'context' ? [] : [index]))
   if (!changes.length) return { hunks: [], summary, truncated }
@@ -163,10 +173,10 @@ export function buildLineDiff(
         truncated = true
         break
       }
-      const text = line.text.slice(0, remainingChars)
-      if (text.length < line.text.length) truncated = true
-      hunkLines.push({ ...line, text })
-      remainingChars -= text.length
+      const bounded = takeCodePoints(line.text, remainingChars)
+      if (bounded.text.length < line.text.length) truncated = true
+      hunkLines.push({ ...line, text: bounded.text })
+      remainingChars -= bounded.count
       remainingLines -= 1
     }
     if (hunkLines.length) {

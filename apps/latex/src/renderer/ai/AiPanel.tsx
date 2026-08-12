@@ -2,15 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { AgentLoop } from '@wiswork/agent-core'
 import { AiComposer, AiTypingIndicator, Markdown, WisWorkAppMark } from '@wiswork/ui'
 import { createLatexSkill } from './latex-skill.js'
-import {
-  loadProposalForReview,
-  ProposalVerificationController,
-  proposalForSelection,
-  requestProposalVerification,
-  verificationCompileComparison,
-  type ReviewProposal,
-  type ReviewVerification,
-} from './proposal-review.js'
+import { loadProposalForReview } from './proposal-review.js'
+import { ProposalWorkflow } from './proposal-workflow.js'
 import { ProposalReview } from './ProposalReview.js'
 import { createLatexTransport } from './transport.js'
 import {
@@ -138,9 +131,6 @@ export function AiPanel({
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [chat, setChat] = useState<ChatEntry[]>([])
-  const [proposal, setProposal] = useState<ReviewProposal | null>(null)
-  const [verification, setVerification] = useState<ReviewVerification>({ state: 'verifying' })
-  const [snapshotId, setSnapshotId] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [timeline, setTimeline] = useState<TaskTimelineEntry[]>([])
   const [chatLoadState, setChatLoadState] = useState<ChatLoadState>('loading')
@@ -159,23 +149,24 @@ export function AiPanel({
     (AgentProjectScope & { storeProjectId: string; chatId: string }) | null
   >(null)
   const e2eProposalLoaded = useRef<string | null>(null)
-  const verificationControllerRef = useRef(new ProposalVerificationController())
-
-  const replaceProposal = (value: ReviewProposal) => {
-    verificationControllerRef.current.cancel()
-    setVerification({ state: 'verifying' })
-    setProposal(value)
+  const projectFilesChangedRef = useRef(onProjectFilesChanged)
+  projectFilesChangedRef.current = onProjectFilesChanged
+  const workflowRef = useRef<ProposalWorkflow | null>(null)
+  if (!workflowRef.current) {
+    workflowRef.current = new ProposalWorkflow(projectId, {
+      verify: (request) => window.latexApi.verifyProposal(request),
+      create: (request) => window.latexApi.proposeProjectEdits(request),
+      apply: (request) => window.latexApi.applyProposal(request),
+      refresh: () => projectFilesChangedRef.current?.(),
+    })
   }
+  const workflow = workflowRef.current
+  const [proposalWorkflow, setProposalWorkflow] = useState(workflow.state)
 
-  const dismissProposal = () => {
-    verificationControllerRef.current.cancel()
-    setProposal(null)
-    setVerification({ state: 'verifying' })
-  }
+  useEffect(() => workflow.subscribe(setProposalWorkflow), [workflow])
 
   useEffect(() => {
     const session = sessionRef.current!
-    const verificationController = verificationControllerRef.current
     let loopRun: AgentRunScope | null = null
     chatIdsRef.current = null
     chatLoadStateRef.current = 'loading'
@@ -184,10 +175,7 @@ export function AiPanel({
     setText('')
     setBusy(false)
     setChat([])
-    verificationController.cancel()
-    setProposal(null)
-    setVerification({ state: 'verifying' })
-    setSnapshotId(null)
+    workflow.setProject(projectId)
     setStatus(null)
     setTimeline([])
     const loop = new AgentLoop({
@@ -224,7 +212,7 @@ export function AiPanel({
           )
             .then((value) => {
               if (loopRef.current === loop && session.acceptsRunResult(loop, scope))
-                replaceProposal(value)
+                void workflow.setProposal(value)
             })
             .catch((error: unknown) => {
               if (loopRef.current === loop && session.acceptsRunResult(loop, scope))
@@ -326,30 +314,14 @@ export function AiPanel({
       }
     })()
     return () => {
-      verificationController.cancel()
+      workflow.cancel()
       session.detachLoop(loop)
       loop.cancel()
       if (loopRef.current === loop) loopRef.current = null
       if (loopBindingRef.current?.loop === loop) loopBindingRef.current = null
       loopRun = null
     }
-  }, [projectId])
-
-  useEffect(() => {
-    if (!proposal || proposal.projectId !== projectId) return
-    const session = sessionRef.current!
-    const verificationController = verificationControllerRef.current
-    const projectScope = session.captureProject()
-    void requestProposalVerification(
-      verificationController,
-      proposal,
-      (request) => window.latexApi.verifyProposal(request),
-      (state) => {
-        if (session.acceptsProject(projectScope)) setVerification(state)
-      },
-    )
-    return () => verificationController.cancel()
-  }, [projectId, proposal])
+  }, [projectId, workflow])
 
   useEffect(() => {
     if (!resizing) return
@@ -384,10 +356,10 @@ export function AiPanel({
       })
       .then((result) => {
         if (!session.acceptsProject(projectScope)) return
-        if (result.ok) replaceProposal(result.value)
+        if (result.ok) void workflow.setProposal(result.value)
         else setStatus(result.error.message)
       })
-  }, [projectId])
+  }, [projectId, workflow])
 
   const send = () => {
     const instruction = input.trim()
@@ -432,89 +404,32 @@ export function AiPanel({
     setTimeline(cancelRunningTimelineEntries)
   }
 
-  const verifySelection = async (selected: ReadonlySet<string>) => {
-    if (!proposal || disabled) return
-    const session = sessionRef.current!
-    const projectScope = session.captureProject()
-    setBusy(true)
-    try {
-      const owned = await proposalForSelection(proposal, selected, async (files) => {
-        const result = await window.latexApi.proposeProjectEdits({ projectId, files })
-        if (!result.ok) throw new Error(result.error.message)
-        return result.value
-      })
-      if (!session.acceptsProject(projectScope)) return
-      replaceProposal(owned)
-      setStatus('Selected changes are now being verified as a fresh proposal.')
-    } catch (error) {
-      if (session.acceptsProject(projectScope))
-        setStatus(error instanceof Error ? error.message : String(error))
-    } finally {
-      if (session.acceptsProject(projectScope)) setBusy(false)
-    }
-  }
-
-  const confirm = async (_selected: ReadonlySet<string>) => {
-    if (
-      !proposal ||
-      disabled ||
-      verification.state === 'verifying' ||
-      verification.state === 'rejected'
-    )
-      return
-    const session = sessionRef.current!
-    const projectScope = session.captureProject()
-    const appliedVerification = verification
-    setBusy(true)
-    try {
-      const result = await window.latexApi.applyProposal({ projectId, proposalId: proposal.id })
-      if (!result.ok) throw new Error(result.error.message)
-      const value = result.value as {
-        snapshotId: string
-        compile: { ok: boolean; error?: string; result?: { diagnostics: unknown[] } }
-      }
-      if (!session.acceptsProject(projectScope)) return
-      await onProjectFilesChanged?.()
-      if (!session.acceptsProject(projectScope)) return
-      setSnapshotId(value.snapshotId)
-      dismissProposal()
-      if (value.compile.ok) {
-        const formalCount = value.compile.result?.diagnostics.length ?? 0
-        const comparison = verificationCompileComparison(
-          {
-            state: appliedVerification.state,
-            diagnosticCount: appliedVerification.evidence.diagnostics.length,
-          },
-          formalCount,
-        )
-        setStatus(`Changes applied and compiled. ${comparison}`)
-      } else {
-        setStatus(
-          `Changes applied; formal compile failed: ${value.compile.error ?? 'unknown error'}. Isolation reported ${appliedVerification.evidence.diagnostics.length} diagnostics; the results are different.`,
-        )
-      }
-    } catch (error) {
-      if (session.acceptsProject(projectScope))
-        setStatus(error instanceof Error ? error.message : String(error))
-    } finally {
-      if (session.acceptsProject(projectScope)) setBusy(false)
-    }
-  }
-
   const undo = async () => {
+    const snapshotId = proposalWorkflow.snapshotId
     if (!snapshotId || disabled) return
     const session = sessionRef.current!
     const projectScope = session.captureProject()
     setBusy(true)
-    const result = await window.latexApi.undoProposal({ projectId, snapshotId })
-    if (!session.acceptsProject(projectScope)) return
-    if (result.ok) {
-      await onProjectFilesChanged?.()
+    try {
+      const result = await window.latexApi.undoProposal({ projectId, snapshotId })
       if (!session.acceptsProject(projectScope)) return
-      setSnapshotId(null)
-      setStatus('AI changes were undone and the project was compiled again.')
-    } else setStatus(result.error.message)
-    if (session.acceptsProject(projectScope)) setBusy(false)
+      if (!result.ok) {
+        setStatus(result.error.message)
+        return
+      }
+      workflow.clearSnapshot('AI changes were undone and the project was compiled again.')
+      try {
+        await projectFilesChangedRef.current?.()
+      } catch (error) {
+        if (session.acceptsProject(projectScope)) {
+          workflow.clearSnapshot(
+            `AI changes were undone, but file refresh failed: ${error instanceof Error ? error.message : String(error)}.`,
+          )
+        }
+      }
+    } finally {
+      if (session.acceptsProject(projectScope)) setBusy(false)
+    }
   }
 
   // Keep the component mounted while collapsed so its transcript, draft and active run survive.
@@ -551,7 +466,7 @@ export function AiPanel({
           )}
         </header>
         <div className="ai-chat" aria-live="polite">
-          {chat.length === 0 && !text && !proposal && (
+          {chat.length === 0 && !text && !proposalWorkflow.proposal && (
             <div className="ai-chat-empty">
               <div className="ai-chat-empty-title">Edit LaTeX with WisWork AI</div>
               <div className="ai-chat-empty-body">
@@ -588,14 +503,16 @@ export function AiPanel({
           )}
           {busy && !text && <AiTypingIndicator label="WisWork is working" />}
           <TaskTimeline entries={timeline} />
-          {proposal && (
+          {proposalWorkflow.proposal && proposalWorkflow.verification && (
             <ProposalReview
-              proposal={proposal}
-              busy={busy || disabled}
-              verification={verification}
-              onConfirm={(selected) => void confirm(selected)}
-              onVerifySelection={(selected) => void verifySelection(selected)}
-              onCancel={dismissProposal}
+              proposal={proposalWorkflow.proposal}
+              selection={proposalWorkflow.selection}
+              busy={busy || proposalWorkflow.busy || disabled}
+              verification={proposalWorkflow.verification}
+              riskArmed={proposalWorkflow.riskArmed}
+              onSelectionChange={(selection) => workflow.setSelection(selection)}
+              onPrimaryAction={() => void workflow.primaryAction()}
+              onCancel={() => workflow.cancel()}
             />
           )}
           {status && (
@@ -603,7 +520,12 @@ export function AiPanel({
               {status}
             </div>
           )}
-          {snapshotId && (
+          {proposalWorkflow.status && (
+            <div className="ai-status" role="status">
+              {proposalWorkflow.status}
+            </div>
+          )}
+          {proposalWorkflow.snapshotId && (
             <button
               className="ai-undo-button"
               disabled={busy || disabled}

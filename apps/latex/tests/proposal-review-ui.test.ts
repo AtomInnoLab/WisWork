@@ -22,7 +22,9 @@ describe('verified proposal review UI', () => {
     const html = renderToStaticMarkup(
       createElement(ProposalReview, {
         proposal,
+        selection: new Set(['main.tex']),
         busy: false,
+        riskArmed: false,
         verification: {
           state: 'verified',
           evidence: {
@@ -33,8 +35,8 @@ describe('verified proposal review UI', () => {
             verifiedAt: Date.UTC(2026, 7, 12),
           },
         },
-        onConfirm: () => undefined,
-        onVerifySelection: () => undefined,
+        onSelectionChange: () => undefined,
+        onPrimaryAction: () => undefined,
         onCancel: () => undefined,
       }),
     )
@@ -50,14 +52,16 @@ describe('verified proposal review UI', () => {
   })
 
   it('explains failed, unverifiable, and rejected verification actions', () => {
-    const render = (verification: unknown) =>
+    const render = (verification: unknown, riskArmed = false) =>
       renderToStaticMarkup(
         createElement(ProposalReview, {
           proposal,
+          selection: new Set(['main.tex']),
           busy: false,
+          riskArmed,
           verification,
-          onConfirm: () => undefined,
-          onVerifySelection: () => undefined,
+          onSelectionChange: () => undefined,
+          onPrimaryAction: () => undefined,
           onCancel: () => undefined,
         } as never),
       )
@@ -82,7 +86,7 @@ describe('verified proposal review UI', () => {
           verifiedAt: 1,
         },
       }),
-    ).toContain('Apply without successful verification')
+    ).toContain('Review risk')
     expect(
       render({
         state: 'unverifiable',
@@ -104,6 +108,23 @@ describe('verified proposal review UI', () => {
     expect(rejected).toContain('Verification rejected')
     expect(rejected).toContain('Save your work or regenerate')
     expect(rejected).toContain('disabled=""')
+
+    const armed = render(
+      {
+        state: 'failed',
+        evidence: {
+          proposalId: 'proposal-1',
+          state: 'failed',
+          diagnostics: [],
+          logSummary: '',
+          reason: 'Compilation failed',
+          verifiedAt: 1,
+        },
+      },
+      true,
+    )
+    expect(armed).toContain('Apply unverified changes')
+    expect(armed).toContain('aria-describedby="proposal-risk-warning"')
   })
 
   it('visually distinguishes verified, failed, and neutral diff evidence', () => {
@@ -112,6 +133,25 @@ describe('verified proposal review UI', () => {
     expect(styles).toMatch(/\.verification-failed\s*{[^}]*#[0-9a-f]{6}/s)
     expect(styles).toMatch(/\.diff-line-add\s*{[^}]*background:/s)
     expect(styles).toMatch(/\.diff-line-remove\s*{[^}]*background:/s)
+  })
+
+  it('announces verification busy state and disables apply until it settles', () => {
+    const html = renderToStaticMarkup(
+      createElement(ProposalReview, {
+        proposal,
+        selection: new Set(['main.tex']),
+        busy: false,
+        verification: { state: 'verifying' },
+        riskArmed: false,
+        onSelectionChange: () => undefined,
+        onPrimaryAction: () => undefined,
+        onCancel: () => undefined,
+      }),
+    )
+    expect(html).toContain('aria-busy="true"')
+    expect(html).toContain('role="status"')
+    expect(html).toContain('Verifying…')
+    expect(html).toContain('disabled=""')
   })
 })
 import { readFileSync } from 'node:fs'

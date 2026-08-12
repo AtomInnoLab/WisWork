@@ -844,6 +844,12 @@ button:disabled {
   font-size: 11px;
 }
 
+.proposal-review > .proposal-danger-button {
+  border-color: #a4262c;
+  background: #a4262c;
+  color: #fff;
+}
+
 @media (max-width: 900px) {
   .latex-main-area {
     grid-template-columns: 150px minmax(350px, 1fr);
