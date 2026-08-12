@@ -67,5 +67,21 @@ Never delete a user's LaTeX project while clearing WisWork caches.
 - The current editor does not provide arbitrary TeX package installation, shell escape,
   project-supplied executables, or arbitrary network destinations. These are intentional current
   limitations and security boundaries.
+- AI edit proposals are verified against a copied compile workspace before they can be presented
+  as verified. Verification uses the proposal's baseline hashes while copying the same opened
+  source files, does not publish a PDF generation, does not consume the one-time proposal, and
+  never writes the source project. The confirmed project is compiled again after the user applies
+  a proposal.
+- Isolated verification currently supports replacements of existing text files only. A proposal
+  that creates a file remains reviewable but is marked unverifiable. This preserves the guarantee
+  that verification cannot create a file outside the copied workspace during a parent-directory
+  replacement race on platforms where Node does not expose a portable `openat` primitive.
+- Cancelling proposal review invalidates its renderer generation so late results cannot update the
+  UI. It does not stop an already-running verification process because the current project-level
+  compile cancellation API could also cancel a user-requested compile. Selective verification
+  cancellation requires a future request-token IPC.
+- A `verified` result proves that the bounded source overlay compiled in isolation at the recorded
+  baseline. It is not a visual PDF comparison. The review UI reports if the diagnostic count from
+  the confirmed compile differs from isolation, and the user can undo the whole applied snapshot.
 - Model credentials and OAuth tokens are unrelated to Tectonic. Never place keys, fixed codes,
   authorization headers, or tokens in this document, the bundle cache, project files, or CI logs.
