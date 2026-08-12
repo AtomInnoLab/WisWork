@@ -26,6 +26,7 @@ import {
   AgentPanelSession,
   type AgentRunScope,
   type AgentProjectScope,
+  type ChatLoadState,
 } from './agent-panel-session.js'
 
 const E2E_PROPOSAL_TEXT = String.raw`\documentclass{article}
@@ -137,12 +138,18 @@ export function AiPanel({
   const [snapshotId, setSnapshotId] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [timeline, setTimeline] = useState<TaskTimelineEntry[]>([])
+  const [chatLoadState, setChatLoadState] = useState<ChatLoadState>('loading')
   const [panelWidth, setPanelWidth] = useState(loadPanelWidth)
   const [resizing, setResizing] = useState(false)
   const sessionRef = useRef<AgentPanelSession | null>(null)
   if (!sessionRef.current) sessionRef.current = new AgentPanelSession(projectId)
   const loopRef = useRef<AgentLoop | null>(null)
-  const activeRunRef = useRef<AgentRunScope | null>(null)
+  const loopBindingRef = useRef<{
+    loop: AgentLoop
+    getRun: () => AgentRunScope | null
+    setRun: (scope: AgentRunScope | null) => void
+  } | null>(null)
+  const chatLoadStateRef = useRef<ChatLoadState>('loading')
   const chatIdsRef = useRef<
     (AgentProjectScope & { storeProjectId: string; chatId: string }) | null
   >(null)
@@ -150,9 +157,11 @@ export function AiPanel({
 
   useEffect(() => {
     const session = sessionRef.current!
-    const projectScope = session.switchProject(projectId)
-    activeRunRef.current = null
+    let loopRun: AgentRunScope | null = null
+    let loop!: AgentLoop
     chatIdsRef.current = null
+    chatLoadStateRef.current = 'loading'
+    setChatLoadState('loading')
     setInput('')
     setText('')
     setBusy(false)
@@ -161,23 +170,26 @@ export function AiPanel({
     setSnapshotId(null)
     setStatus(null)
     setTimeline([])
-    const loop = new AgentLoop({
+    loop = new AgentLoop({
       transport: createLatexTransport(),
       skill: createLatexSkill(window.latexApi, () => projectId),
       events: {
         onText: (value) => {
-          const scope = activeRunRef.current
-          if (scope && session.acceptsRun(scope)) setText(value)
+          if (loopRef.current !== loop) return
+          const scope = loopRun
+          if (scope && session.acceptsRun(loop, scope)) setText(value)
         },
         onToolStart: (call) => {
-          const scope = activeRunRef.current
-          if (!scope || !session.acceptsRun(scope)) return
+          if (loopRef.current !== loop) return
+          const scope = loopRun
+          if (!scope || !session.acceptsRun(loop, scope)) return
           const runId = `${scope.generation}.${scope.run}`
           setTimeline((current) => startTimelineEntry(current, call, runId))
         },
         onToolExecuted: ({ call, execution }) => {
-          const scope = activeRunRef.current
-          if (!scope || !session.acceptsRun(scope)) return
+          if (loopRef.current !== loop) return
+          const scope = loopRun
+          if (!scope || !session.acceptsRun(loop, scope)) return
           const timelineId = session.timelineId(scope, call.id)
           const runId = `${scope.generation}.${scope.run}`
           setTimeline((current) => {
@@ -191,17 +203,19 @@ export function AiPanel({
             window.latexApi.getProposal(request),
           )
             .then((value) => {
-              if (session.acceptsRunResult(scope)) setProposal(value)
+              if (loopRef.current === loop && session.acceptsRunResult(loop, scope))
+                setProposal(value)
             })
             .catch((error: unknown) => {
-              if (session.acceptsRunResult(scope))
+              if (loopRef.current === loop && session.acceptsRunResult(loop, scope))
                 setStatus(error instanceof Error ? error.message : String(error))
             })
         },
         onDone: (result) => {
-          const scope = activeRunRef.current
-          if (!scope || !session.acceptsCompletion(scope)) return
-          const acceptResult = session.acceptsRun(scope)
+          if (loopRef.current !== loop) return
+          const scope = loopRun
+          if (!scope || !session.acceptsCompletion(loop, scope)) return
+          const acceptResult = session.acceptsRun(loop, scope)
           if (result.cancelled) setTimeline(cancelRunningTimelineEntries)
           setBusy(false)
           setText('')
@@ -216,51 +230,87 @@ export function AiPanel({
               role: 'assistant',
               text: result.text,
             })
-          session.finishRun(scope)
-          activeRunRef.current = null
+          session.finishRun(loop, scope)
+          loopRun = null
         },
         onError: (error) => {
-          const scope = activeRunRef.current
-          if (!scope || !session.acceptsCompletion(scope)) return
-          if (session.acceptsRun(scope)) {
+          if (loopRef.current !== loop) return
+          const scope = loopRun
+          if (!scope || !session.acceptsCompletion(loop, scope)) return
+          if (session.acceptsRun(loop, scope)) {
             setTimeline((current) => failRunningTimelineEntries(current, error))
             setStatus(error)
           }
           setBusy(false)
           setText('')
-          session.finishRun(scope)
-          activeRunRef.current = null
+          session.finishRun(loop, scope)
+          loopRun = null
         },
       },
     })
+    const projectScope = session.attachLoop(loop, projectId)
     loopRef.current = loop
-    void window.latexApi.resolveDirectoryChat({ projectId }).then(async (result) => {
-      if (!result.ok || !session.acceptsProject(projectScope)) return
-      chatIdsRef.current = {
-        ...projectScope,
-        storeProjectId: result.value.projectId,
-        chatId: result.value.chatId,
+    loopBindingRef.current = {
+      loop,
+      getRun: () => loopRun,
+      setRun: (scope) => {
+        loopRun = scope
+      },
+    }
+    const finishChatLoad = (state: Exclude<ChatLoadState, 'loading'>, message?: string) => {
+      if (loopRef.current !== loop || !session.acceptsLoopProject(loop, projectScope)) return
+      chatLoadStateRef.current = state
+      setChatLoadState(state)
+      if (message) setStatus(message)
+    }
+    void (async () => {
+      try {
+        const result = await window.latexApi.resolveDirectoryChat({ projectId })
+        if (loopRef.current !== loop || !session.acceptsLoopProject(loop, projectScope)) return
+        if (!result.ok) {
+          finishChatLoad('error', `Chat history unavailable: ${result.error.message}`)
+          return
+        }
+        chatIdsRef.current = {
+          ...projectScope,
+          storeProjectId: result.value.projectId,
+          chatId: result.value.chatId,
+        }
+        const loaded = await window.latexApi.loadDirectoryChat({
+          projectId,
+          storeProjectId: result.value.projectId,
+          chatId: result.value.chatId,
+          limit: 200,
+        })
+        if (loopRef.current !== loop || !session.acceptsLoopProject(loop, projectScope)) return
+        if (!loaded.ok) {
+          chatIdsRef.current = null
+          finishChatLoad('error', `Chat history unavailable: ${loaded.error.message}`)
+          return
+        }
+        if (session.canRestoreChat(loop, projectScope)) {
+          const restored = loaded.value.map((message) => ({
+            role: message.role,
+            text: message.text,
+          }))
+          setChat(restored)
+          loop.restore(restored)
+        }
+        finishChatLoad('ready')
+      } catch (error) {
+        chatIdsRef.current = null
+        finishChatLoad(
+          'error',
+          `Chat history unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        )
       }
-      const loaded = await window.latexApi.loadDirectoryChat({
-        projectId,
-        storeProjectId: result.value.projectId,
-        chatId: result.value.chatId,
-        limit: 200,
-      })
-      if (loaded.ok && session.acceptsProject(projectScope) && loopRef.current === loop) {
-        const restored = loaded.value.map((message) => ({
-          role: message.role,
-          text: message.text,
-        }))
-        setChat(restored)
-        loopRef.current?.restore(restored)
-      }
-    })
+    })()
     return () => {
-      session.switchProject(projectId)
+      session.detachLoop(loop)
       loop.cancel()
       if (loopRef.current === loop) loopRef.current = null
-      activeRunRef.current = null
+      if (loopBindingRef.current?.loop === loop) loopBindingRef.current = null
+      loopRun = null
     }
   }, [projectId])
 
@@ -304,11 +354,19 @@ export function AiPanel({
 
   const send = () => {
     const instruction = input.trim()
-    const loop = loopRef.current
-    if (!instruction || busy || disabled || !loop || loop.busy) return
+    const binding = loopBindingRef.current
+    if (
+      !instruction ||
+      busy ||
+      disabled ||
+      !binding ||
+      binding.loop.busy ||
+      !sessionRef.current!.canSend(binding.loop, chatLoadStateRef.current)
+    )
+      return
     const session = sessionRef.current!
-    const runScope = session.beginRun()
-    activeRunRef.current = runScope
+    const runScope = session.beginRun(binding.loop)
+    binding.setRun(runScope)
     setBusy(true)
     setStatus(null)
     setText('')
@@ -323,14 +381,15 @@ export function AiPanel({
         role: 'user',
         text: instruction,
       })
-    loop.run(serializeAgentPrompt(instruction, context))
+    binding.loop.run(serializeAgentPrompt(instruction, context))
   }
 
   const cancel = () => {
-    const scope = activeRunRef.current
-    if (!scope) return
-    sessionRef.current!.cancelRun(scope)
-    loopRef.current?.cancel()
+    const binding = loopBindingRef.current
+    const scope = binding?.getRun()
+    if (!binding || !scope) return
+    sessionRef.current!.cancelRun(binding.loop, scope)
+    binding.loop.cancel()
     setText('')
     setStatus('Stopped.')
     setTimeline(cancelRunningTimelineEntries)
@@ -501,14 +560,24 @@ export function AiPanel({
           <AiComposer
             value={input}
             busy={busy}
-            placeholder="Ask WisWork AI about this LaTeX project"
-            hintIdle="Enter to send · Shift+Enter for new line"
+            placeholder={
+              chatLoadState === 'loading'
+                ? 'Loading project chat…'
+                : 'Ask WisWork AI about this LaTeX project'
+            }
+            hintIdle={
+              chatLoadState === 'error'
+                ? 'Chat history unavailable · messages will not be saved'
+                : 'Enter to send · Shift+Enter for new line'
+            }
             hintBusy="Working…"
             hintIdleTitle="Enter to send"
             sendLabel="Send"
             stopLabel="Stop"
             ariaLabel="Ask WisWork AI"
-            onChange={setInput}
+            onChange={(value) => {
+              if (chatLoadState !== 'loading') setInput(value)
+            }}
             onSend={send}
             onStop={cancel}
           />

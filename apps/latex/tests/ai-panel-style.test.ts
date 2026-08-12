@@ -15,6 +15,7 @@ describe('LaTeX AI dock', () => {
     expect(html).toContain('class="ai-chat"')
     expect(html).toContain('class="ai-input-box"')
     expect(html).toContain('class="ai-brand-icon"')
+    expect(html).toContain('Loading project chat…')
   })
 
   it('stays after the main work area and resizes from its left edge', () => {

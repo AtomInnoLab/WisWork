@@ -75,7 +75,8 @@ export function captureEditorContext(
   const from = Math.min(boundedAnchor, boundedHead)
   const to = Math.max(boundedAnchor, boundedHead)
   const sliceEnd = Math.min(to, from + MAX_SELECTION_CHARS * 2)
-  const selectedText = safeSlice(source.sliceString(from, sliceEnd), MAX_SELECTION_CHARS)
+  const selectionCandidate = source.sliceString(from, sliceEnd)
+  const selectedText = safeSlice(selectionCandidate, MAX_SELECTION_CHARS)
   return {
     cursorLine: source.lineAt(boundedHead).number,
     ...(from === to
@@ -85,7 +86,7 @@ export function captureEditorContext(
             startLine: source.lineAt(from).number,
             endLine: source.lineAt(Math.max(from, to - 1)).number,
             text: selectedText,
-            truncated: to - from > MAX_SELECTION_CHARS,
+            truncated: sliceEnd < to || selectedText.length < selectionCandidate.length,
           },
         }),
   }

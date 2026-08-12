@@ -71,6 +71,10 @@ describe('LaTeX agent context', () => {
     expect(reads).toEqual([[0, MAX_SELECTION_CHARS * 2]])
     expect(context.selection?.text).toBe(`${'x'.repeat(MAX_SELECTION_CHARS - 1)}😀`)
     expect(Array.from(context.selection?.text ?? '')).toHaveLength(MAX_SELECTION_CHARS)
+    expect(context.selection?.truncated).toBe(true)
+
+    const exact = Text.of([`${'x'.repeat(MAX_SELECTION_CHARS - 1)}😀`])
+    expect(captureEditorContext(exact, 0, exact.length).selection?.truncated).toBe(false)
   })
 
   it('filters stale editor context during a file switch without clearing the new child report', () => {
