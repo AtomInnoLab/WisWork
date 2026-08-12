@@ -83,7 +83,9 @@ Managed model requests require a valid WisWork login. The main process sends the
 access token to the fixed WisUsage endpoint `https://wisusage.dev.atominnolab.com/v1/messages`
 using the Anthropic Messages protocol and model `qwen/qwen3.8-max`. A 401 refreshes the session
 once and retries. Tokens never enter renderer settings or IPC responses, and renderers cannot
-override the endpoint, model, or authorization header. No model service key is required.
+override the endpoint, model, authorization header, or required `sg` serving region. Safe failures
+expose only the request stage and HTTP status for support diagnostics—never the token or upstream
+response body. No model service key is required.
 
 Features formerly supplied by the removed
 cloud runtime—image generation, media analysis, cloud slide generation, and cloud PDF conversion—are

@@ -140,7 +140,6 @@ import { registerLatexProtocolScheme } from './latex-protocol-scheme'
 import { initAutoUpdater } from './updater'
 import { migrateLegacyUserData } from './user-data-migration'
 import { createAuthDeepLinkQueue } from './auth-deep-link-queue'
-import { createThemeController, registerThemeIpc } from './theme-controller'
 
 /**
  * WisWork unified shell: ONE Electron app, ONE BrowserWindow, hosting the
@@ -2266,21 +2265,7 @@ app.whenReady().then(async () => {
   // Hold the lock before touching either legacy or current profile. Migration completes before
   // auth/session/settings consumers and before any BrowserWindow is created.
   if (app.isPackaged) migrateLegacyUserData(app.getPath('appData'), app.getPath('userData'))
-  const themeController = createThemeController({
-    settingsPath: APP_SETTINGS_PATH(),
-    nativeTheme,
-    broadcast: (theme) => {
-      for (const wc of webContents.getAllWebContents()) {
-        if (!wc.isDestroyed()) wc.send(HOME_CHANNELS.themeChanged, theme)
-      }
-    },
-  })
-  themeController.initialize()
-  registerThemeIpc({
-    ipcMain,
-    controller: themeController,
-    isTrustedSender: (sender) => Boolean(shellWindow && sender === shellWindow.webContents),
-  })
+  nativeTheme.themeSource = 'light'
   authRuntime = initializeElectronAuthRuntime({
     userDataPath: app.getPath('userData'),
     safeStorage,

@@ -4,6 +4,9 @@ export const WISWORK_MESSAGES_URL = 'https://wisusage.dev.atominnolab.com/v1/mes
 
 export const WISWORK_DEFAULT_MODEL = 'qwen/qwen3.8-max'
 
+/** WisUsage requires an explicit serving region on every managed request. */
+export const WISWORK_REQUEST_LOCATION = 'sg'
+
 export const AI_PROVIDERS: AiProviderMeta[] = [
   {
     id: 'wiswork',

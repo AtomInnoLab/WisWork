@@ -5,6 +5,7 @@ export type {
   AiProviderId,
   AiProviderMeta,
   AiSettings,
+  AiServiceDiagnostic,
   AiStreamChunk,
   AiStreamRequest,
   LegacyAiSettings,
@@ -14,6 +15,7 @@ export {
   AI_PROVIDERS,
   WISWORK_DEFAULT_MODEL,
   WISWORK_MESSAGES_URL,
+  WISWORK_REQUEST_LOCATION,
   defaultAiSettings,
   resolveAiSettings,
 } from './providers'

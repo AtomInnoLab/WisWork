@@ -3954,34 +3954,3 @@ textarea:focus {
 .ai-login-btn:hover {
   opacity: 0.88;
 }
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --surface: #242629;
-    --surface-subtle: #1d1f22;
-    --surface-hover: #303b35;
-    --ribbon-hover: #303338;
-    --ribbon-active: #3a3e44;
-    --border: #3b3e43;
-    --border-strong: #50545a;
-    --text: #f1f3f5;
-    --text-muted: #b7bbc1;
-    --text-dim: #b7bbc1;
-    --focus: rgb(80 184 128 / 34%);
-    --color-text-primary: #f1f3f5;
-    --color-text-secondary: #b7bbc1;
-    --color-text-tertiary: #9298a1;
-    --color-bg-page: #242629;
-    --color-bg-subtle: #303338;
-    --color-border-default: #3b3e43;
-    --color-border-strong: #50545a;
-  }
-
-  body,
-  .app-shell,
-  .excel-shell {
-    background: var(--surface-subtle);
-    color: var(--text);
-  }
-}

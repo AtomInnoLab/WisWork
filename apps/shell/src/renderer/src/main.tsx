@@ -14,15 +14,10 @@ if (navigator.platform.toLowerCase().includes('mac')) document.body.classList.ad
 // the UI never flashes (home showing briefly before the onboarding overlay)
 void Promise.all([
   window.aiOffice.getLanguage(),
-  window.aiOffice.getTheme(),
   // if the flag is unreadable, skip onboarding rather than block the home screen
   window.aiOffice.onboardingSeen().catch(() => true),
-]).then(([lang, theme, onboardingSeen]) => {
+]).then(([lang, onboardingSeen]) => {
   document.documentElement.lang = htmlLang(lang)
-  document.documentElement.dataset.theme = theme
-  window.aiOffice.onThemeChanged((nextTheme) => {
-    document.documentElement.dataset.theme = nextTheme
-  })
   createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
       <LocaleProvider initial={lang}>

@@ -14,7 +14,6 @@
   --canvas: #e6e6e6;
   --ai-highlight: #fff3c4;
   --ai-highlight-border: #f2b900;
-  --document-surface: #ffffff;
 }
 
 * {
@@ -2519,7 +2518,7 @@ th.cell-rev-del {
 .doc-page {
   width: var(--page-w, 816px);
   margin: 0 auto;
-  background: var(--page-bg, var(--document-surface));
+  background: var(--page-bg, var(--surface));
   box-shadow:
     0 1px 3px rgba(0, 0, 0, 0.28),
     0 4px 16px rgba(0, 0, 0, 0.1);
@@ -6805,35 +6804,4 @@ tr > .page-gap-cut {
 
 .ai-login-btn:hover {
   opacity: 0.88;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --surface: #242629;
-    --chrome-bg: #1d1f22;
-    --border: #3b3e43;
-    --border-strong: #50545a;
-    --text: #f1f3f5;
-    --text-dim: #b7bbc1;
-    --hover: #303338;
-    --pressed: #3a3e44;
-    --active-bg: #253b58;
-    --canvas: #141619;
-    --ai-highlight: #584917;
-    --ai-highlight-border: #d5a600;
-    --color-text-primary: #f1f3f5;
-    --color-text-secondary: #b7bbc1;
-    --color-text-tertiary: #9298a1;
-    --color-bg-page: #242629;
-    --color-bg-subtle: #303338;
-    --color-border-default: #3b3e43;
-    --color-border-strong: #50545a;
-  }
-
-  .doc-page,
-  .page-notes,
-  .page-hf {
-    color-scheme: light;
-  }
 }

@@ -667,35 +667,3 @@ button:disabled {
     box-shadow: -8px 0 28px rgba(29, 34, 43, 0.15);
   }
 }
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    color: #f1f3f5;
-    background: #141619;
-    --panel: #242629;
-    --surface: #1d1f22;
-    --border: #3b3e43;
-    --border-strong: #50545a;
-    --muted: #b7bbc1;
-    --hover: #303338;
-    --color-text-primary: #f1f3f5;
-    --color-text-secondary: #b7bbc1;
-    --color-text-tertiary: #9298a1;
-    --color-bg-page: #242629;
-    --color-bg-subtle: #303338;
-    --color-border-default: #3b3e43;
-    --color-border-strong: #50545a;
-  }
-
-  .latex-workbench,
-  .editor-workspace,
-  .pdf-preview {
-    background: #141619;
-  }
-
-  .proposal-diff pre,
-  .latex-ai-message.assistant {
-    background: var(--surface);
-  }
-}

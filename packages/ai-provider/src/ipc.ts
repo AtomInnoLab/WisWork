@@ -9,6 +9,7 @@ import type {
   AiProviderConfig,
   AiProviderId,
   AiSettings,
+  AiServiceDiagnostic,
   AiStreamChunk,
   AiStreamRequest,
   WisworkFetchWithAuth,
@@ -316,6 +317,16 @@ function stableErrorCode(error: unknown): StableStreamErrorCode {
   return 'model_upstream_unavailable'
 }
 
+function stableDiagnostic(error: unknown): AiServiceDiagnostic {
+  if (error instanceof AiProviderError) {
+    return {
+      stage: error.stage ?? (error.status ? 'response' : 'stream'),
+      ...(error.status ? { httpStatus: error.status } : {}),
+    }
+  }
+  return { stage: isAuthRequiredError(error) ? 'auth' : 'stream' }
+}
+
 export function registerWisworkModelIpc(options: RegisterWisworkModelIpcOptions): void {
   const active = new Map<string, { senderId: number; controller: AbortController }>()
 
@@ -397,7 +408,13 @@ export function registerWisworkModelIpc(options: RegisterWisworkModelIpcOptions)
         send(event, { requestId: request.requestId, type: 'done' })
       } else {
         const code = stableErrorCode(error)
-        send(event, { requestId: request.requestId, type: 'error', error: code, errorCode: code })
+        send(event, {
+          requestId: request.requestId,
+          type: 'error',
+          error: code,
+          errorCode: code,
+          diagnostic: stableDiagnostic(error),
+        })
       }
     } finally {
       const current = active.get(request.requestId)
@@ -436,10 +453,10 @@ export function registerWisworkModelIpc(options: RegisterWisworkModelIpcOptions)
         )
         if (result.ok) return result
         const code = result.errorCode ?? 'model_upstream_unavailable'
-        return { ok: false, error: code, errorCode: code }
+        return { ok: false, error: code, errorCode: code, diagnostic: result.diagnostic }
       } catch (error) {
         const code = stableErrorCode(error)
-        return { ok: false, error: code, errorCode: code }
+        return { ok: false, error: code, errorCode: code, diagnostic: stableDiagnostic(error) }
       }
     })
   }

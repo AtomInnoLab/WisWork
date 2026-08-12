@@ -7,7 +7,6 @@ import iconPdf from './assets/file-pdf.svg'
 import iconTex from './assets/file-tex.svg'
 import type {
   AccountStatus,
-  AppTheme,
   HomeApi,
   LatexRecentProjectEntry,
   ProjectHomeApi,
@@ -117,48 +116,6 @@ const FILTERS: { key: string; label: StringKey }[] = [
   { key: 'pptx', label: 'filterSlides' },
   { key: 'pdf', label: 'filterPdf' },
 ]
-
-function ThemeSwitch() {
-  const [theme, setTheme] = useState<AppTheme>(() =>
-    document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
-  )
-
-  useEffect(() => {
-    void window.aiOffice.getTheme().then(setTheme)
-    return window.aiOffice.onThemeChanged(setTheme)
-  }, [])
-
-  const choose = (next: AppTheme) => {
-    setTheme(next)
-    document.documentElement.dataset.theme = next
-    const request =
-      next === 'light' ? window.aiOffice.setTheme('light') : window.aiOffice.setTheme('dark')
-    void request.catch(() => window.aiOffice.getTheme().then(setTheme))
-  }
-
-  return (
-    <div className="theme-switch" role="group" aria-label="Theme">
-      <button
-        type="button"
-        className={theme === 'light' ? 'active' : ''}
-        aria-pressed={theme === 'light'}
-        onClick={() => choose('light')}
-      >
-        <span aria-hidden="true">☀</span>
-        Light
-      </button>
-      <button
-        type="button"
-        className={theme === 'dark' ? 'active' : ''}
-        aria-pressed={theme === 'dark'}
-        onClick={() => choose('dark')}
-      >
-        <span aria-hidden="true">☾</span>
-        Dark
-      </button>
-    </div>
-  )
-}
 
 // ── Project sidebar component ────────────────────────────
 
@@ -1888,10 +1845,7 @@ export function Home() {
           </>
         )}
 
-        <div className="sidebar-bottom">
-          <ThemeSwitch />
-          <AccountEntry />
-        </div>
+        <AccountEntry />
       </aside>
 
       {selectedProjectId ? renderProjectContent() : renderGlobalContent()}

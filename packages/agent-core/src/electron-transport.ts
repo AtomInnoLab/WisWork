@@ -27,6 +27,10 @@ export interface IpcStreamChunk {
     | 'model_rate_limited'
     | 'model_upstream_unavailable'
     | 'model_invalid_response'
+  diagnostic?: {
+    stage: 'auth' | 'request' | 'response' | 'stream'
+    httpStatus?: number
+  }
   /** normalized stop reason on 'done' ('max_tokens' = cut off by the token limit) */
   stopReason?: string
 }
@@ -83,6 +87,11 @@ export interface IpcTransportOptions<S> {
 export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTransport {
   const timeoutText = () => options.timeoutErrorText?.() ?? options.unknownErrorText()
   const stableErrorText = (chunk: IpcStreamChunk): string => {
+    const withDiagnostic = (message: string) => {
+      if (!chunk.diagnostic) return message
+      const status = chunk.diagnostic.httpStatus ? `HTTP ${chunk.diagnostic.httpStatus} · ` : ''
+      return `${message} (${status}${chunk.diagnostic.stage})`
+    }
     if (chunk.errorCode === 'timeout') return timeoutText()
     if (chunk.errorCode === 'credits') {
       return options.creditsErrorText?.() ?? chunk.error ?? options.unknownErrorText()
@@ -95,18 +104,19 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
       chunk.errorCode === 'model_invalid_response'
     ) {
       const localized = options.serviceErrorText?.(chunk.errorCode)
-      if (localized) return localized
+      if (localized) return withDiagnostic(localized)
     }
-    if (chunk.errorCode === 'auth_required') return 'Sign in to WisWork to use AI.'
+    if (chunk.errorCode === 'auth_required') return withDiagnostic('Sign in to WisWork to use AI.')
     if (chunk.errorCode === 'model_credentials_missing') {
-      return 'The WisWork model service is not configured.'
+      return withDiagnostic('The WisWork model service is not configured.')
     }
-    if (chunk.errorCode === 'model_rate_limited') return 'The WisWork model service is busy.'
+    if (chunk.errorCode === 'model_rate_limited')
+      return withDiagnostic('The WisWork model service is busy.')
     if (
       chunk.errorCode === 'model_upstream_unavailable' ||
       chunk.errorCode === 'model_invalid_response'
     ) {
-      return 'The WisWork model service is temporarily unavailable.'
+      return withDiagnostic('The WisWork model service is temporarily unavailable.')
     }
     return chunk.error ?? options.unknownErrorText()
   }
