@@ -127,12 +127,22 @@ describe('verified proposal review UI', () => {
     expect(armed).toContain('aria-describedby="proposal-risk-warning"')
   })
 
-  it('visually distinguishes verified, failed, and neutral diff evidence', () => {
+  it('visually distinguishes verified, failed, and neutral diff evidence in both themes', () => {
     const styles = readFileSync(new URL('../src/renderer/styles.css', import.meta.url), 'utf8')
-    expect(styles).toMatch(/\.verification-verified\s*{[^}]*#[0-9a-f]{6}/s)
-    expect(styles).toMatch(/\.verification-failed\s*{[^}]*#[0-9a-f]{6}/s)
-    expect(styles).toMatch(/\.diff-line-add\s*{[^}]*background:/s)
-    expect(styles).toMatch(/\.diff-line-remove\s*{[^}]*background:/s)
+    expect(styles).toMatch(/\.verification-verified\s*{[^}]*var\(--latex-proposal-success-bg\)/s)
+    expect(styles).toMatch(/\.verification-failed\s*{[^}]*var\(--latex-proposal-danger-bg\)/s)
+    expect(styles).toMatch(/\.diff-line-add\s*{[^}]*var\(--latex-proposal-success-bg\)/s)
+    expect(styles).toMatch(/\.diff-line-remove\s*{[^}]*var\(--latex-proposal-danger-bg\)/s)
+
+    const lightSuccess = styles.match(
+      /:root\s*{[^}]*--latex-proposal-success-bg:\s*(#[0-9a-f]{6})/s,
+    )?.[1]
+    const darkSuccess = styles.match(
+      /\[data-theme='dark'\]\s*{[^}]*--latex-proposal-success-bg:\s*(#[0-9a-f]{6})/s,
+    )?.[1]
+    expect(lightSuccess).toBeTruthy()
+    expect(darkSuccess).toBeTruthy()
+    expect(darkSuccess).not.toBe(lightSuccess)
   })
 
   it('announces verification busy state and disables apply until it settles', () => {

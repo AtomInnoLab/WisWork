@@ -1,15 +1,126 @@
 :root {
-  color-scheme: light;
   font-family: Arial, Inter, ui-sans-serif, system-ui, sans-serif;
-  color: #232425;
-  background: #f3f4f6;
-  --panel: #ffffff;
-  --surface: #f7f7f8;
-  --border: #e0e2e5;
-  --border-strong: #cfd2d7;
-  --muted: #606366;
   --accent: #0f7fff;
-  --hover: #f0f2f5;
+  --latex-workbench-bg: var(--surface-subtle);
+  --latex-editor-bg: #ffffff;
+  --latex-editor-text: var(--text-primary);
+  --latex-gutter-bg: var(--surface-subtle);
+  --latex-gutter-text: #85898f;
+  --latex-active-line: #f3f7fc;
+  --latex-selected-file-bg: #e8f2ff;
+  --latex-selected-file-text: #145da0;
+  --latex-preview-bg: #e9eaec;
+  --latex-pdf-paper: #ffffff;
+  --latex-log-text: #45484c;
+  --latex-ai-user-bg: #f0f1f3;
+  --latex-ai-code-bg: #f2f3f5;
+  --latex-ai-code-text: #4b4e52;
+  --latex-ai-status-bg: #f5f7fa;
+  --latex-ai-disabled-bg: #d7d9dc;
+  --latex-ai-stop-bg: #55585c;
+  --latex-warning-bg: #5a3d16;
+  --latex-error-bg: #5b2026;
+  --latex-preview-stale-bg: #8a4b10;
+  --latex-selection: #3578e5aa;
+  --latex-sync-marker: #ef4444;
+  --latex-sync-marker-bg: #ef444455;
+  --latex-proposal-before: #b42318;
+  --latex-proposal-after: #067647;
+  --latex-ai-accent-text: #145da0;
+  --latex-ai-chip-border: #cfe0f4;
+  --latex-ai-chip-bg: #eef6ff;
+  --latex-ai-chip-dismiss: #55718f;
+  --latex-timeline-idle: #7b8188;
+  --latex-timeline-success: #26854a;
+  --latex-timeline-error: #c9363e;
+  --latex-timeline-cancelled: #8b8f94;
+  --latex-proposal-neutral-bg: #f4f5f7;
+  --latex-proposal-neutral-text: #555b62;
+  --latex-proposal-muted-text: #596a7c;
+  --latex-proposal-divider: rgba(0, 0, 0, 0.07);
+  --latex-proposal-success-border: #9bd5ae;
+  --latex-proposal-success-bg: #e8f7ed;
+  --latex-proposal-success-text: #176b36;
+  --latex-proposal-danger-border: #efb0b3;
+  --latex-proposal-danger-bg: #fff0f0;
+  --latex-proposal-danger-text: #a4262c;
+  --latex-proposal-warning-border: #e1b77c;
+  --latex-proposal-warning-bg: #fff6e8;
+  --latex-proposal-warning-text: #7b4d0b;
+  --latex-proposal-danger-button-text: #ffffff;
+  --latex-shadow-page: 0 2px 12px #0008;
+  --latex-shadow-float: 0 2px 8px #0008;
+  --latex-shadow-brand: 0 2px 7px rgba(47, 32, 143, 0.2);
+  --latex-shadow-focus: 0 0 0 3px rgba(15, 127, 255, 0.12);
+  --latex-shadow-mobile-dock: -8px 0 28px rgba(29, 34, 43, 0.15);
+  --latex-syntax-meta: #404740;
+  --latex-syntax-keyword: #770088;
+  --latex-syntax-atom: #221199;
+  --latex-syntax-literal: #116644;
+  --latex-syntax-string: #aa1111;
+  --latex-syntax-escape: #ee4400;
+  --latex-syntax-definition: #0000ff;
+  --latex-syntax-local: #3300aa;
+  --latex-syntax-type: #008855;
+  --latex-syntax-class: #116677;
+  --latex-syntax-special: #5c2699;
+  --latex-syntax-name: #111111;
+  --latex-syntax-invalid: #ff0000;
+}
+
+[data-theme='dark'] {
+  --latex-editor-bg: #181a1d;
+  --latex-gutter-bg: #202225;
+  --latex-gutter-text: #9298a1;
+  --latex-active-line: #252a31;
+  --latex-selected-file-bg: #26374a;
+  --latex-selected-file-text: #82bfff;
+  --latex-preview-bg: #141619;
+  --latex-log-text: #c9cdd2;
+  --latex-ai-user-bg: #303338;
+  --latex-ai-code-bg: #303338;
+  --latex-ai-code-text: #e4e7eb;
+  --latex-ai-status-bg: #24282d;
+  --latex-ai-disabled-bg: #45494f;
+  --latex-ai-stop-bg: #555b63;
+  --latex-proposal-before: #ffb4b4;
+  --latex-proposal-after: #adf0bd;
+  --latex-ai-accent-text: #82bfff;
+  --latex-ai-chip-border: #3a5a78;
+  --latex-ai-chip-bg: #203449;
+  --latex-ai-chip-dismiss: #a7bdd3;
+  --latex-timeline-idle: #9298a1;
+  --latex-timeline-success: #69c985;
+  --latex-timeline-error: #ff858b;
+  --latex-timeline-cancelled: #9ca3ad;
+  --latex-proposal-neutral-bg: #25292e;
+  --latex-proposal-neutral-text: #c4c9cf;
+  --latex-proposal-muted-text: #aeb8c4;
+  --latex-proposal-divider: rgba(255, 255, 255, 0.1);
+  --latex-proposal-success-border: #397a4e;
+  --latex-proposal-success-bg: #1f3a28;
+  --latex-proposal-success-text: #adf0bd;
+  --latex-proposal-danger-border: #824247;
+  --latex-proposal-danger-bg: #3b2326;
+  --latex-proposal-danger-text: #ffb4b4;
+  --latex-proposal-warning-border: #80633c;
+  --latex-proposal-warning-bg: #3b3020;
+  --latex-proposal-warning-text: #f2c879;
+  --latex-proposal-danger-button-text: #ffffff;
+  --latex-shadow-page: 0 2px 12px #000b;
+  --latex-syntax-meta: #a7b0a7;
+  --latex-syntax-keyword: #d7a7ff;
+  --latex-syntax-atom: #9db8ff;
+  --latex-syntax-literal: #7fd7ae;
+  --latex-syntax-string: #ff9f9f;
+  --latex-syntax-escape: #ffb36b;
+  --latex-syntax-definition: #8fb8ff;
+  --latex-syntax-local: #c3a6ff;
+  --latex-syntax-type: #72d7bd;
+  --latex-syntax-class: #7ed6e8;
+  --latex-syntax-special: #d0a7ff;
+  --latex-syntax-name: #e4e7eb;
+  --latex-syntax-invalid: #ff7b72;
 }
 
 * {
@@ -39,7 +150,8 @@ button:disabled {
   display: flex;
   width: 100%;
   height: 100%;
-  background: #f3f4f6;
+  background: var(--latex-workbench-bg);
+  color: var(--text);
 }
 
 .latex-main-area {
@@ -66,21 +178,21 @@ button:disabled {
   transform: translateX(-50%);
   padding: 7px 12px;
   border-radius: 5px;
-  background: #8a4b10;
-  color: white;
+  background: var(--latex-preview-stale-bg);
+  color: var(--color-btn-primary-text);
   font-size: 12px;
-  box-shadow: 0 2px 8px #0008;
+  box-shadow: var(--latex-shadow-float);
 }
 .project-tree {
   border-right: 1px solid var(--border);
-  background: var(--panel);
+  background: var(--surface);
   overflow: auto;
 }
 .project-tree header {
   display: flex;
   justify-content: space-between;
   padding: 12px;
-  color: var(--muted);
+  color: var(--text-muted);
   font-size: 12px;
   text-transform: uppercase;
 }
@@ -107,8 +219,8 @@ button:disabled {
   white-space: nowrap;
 }
 .project-tree li.active {
-  background: #e8f2ff;
-  color: #145da0;
+  background: var(--latex-selected-file-bg);
+  color: var(--latex-selected-file-text);
 }
 .rename-file {
   visibility: hidden;
@@ -127,7 +239,7 @@ button:disabled {
   height: 36px;
   overflow-x: auto;
   border-bottom: 1px solid var(--border);
-  background: #f7f7f8;
+  background: var(--surface-subtle);
 }
 .open-tabs > div {
   display: flex;
@@ -135,7 +247,7 @@ button:disabled {
   border-right: 1px solid var(--border);
 }
 .open-tabs > div.active {
-  background: #fff;
+  background: var(--latex-editor-bg);
   border-top: 2px solid var(--accent);
 }
 .open-tabs button {
@@ -143,7 +255,7 @@ button:disabled {
   font-size: 12px;
 }
 .open-tabs button + button {
-  color: var(--muted);
+  color: var(--text-muted);
   padding-left: 2px;
 }
 .latex-editor,
@@ -152,8 +264,8 @@ button:disabled {
   min-height: 0;
 }
 .latex-editor .cm-editor {
-  background: #fff;
-  color: #232425;
+  background: var(--latex-editor-bg);
+  color: var(--latex-editor-text);
   font-size: 14px;
 }
 .latex-editor .cm-scroller {
@@ -161,25 +273,25 @@ button:disabled {
   font-family: 'SFMono-Regular', Consolas, monospace;
 }
 .latex-editor .cm-gutters {
-  background: #f7f7f8;
-  color: #85898f;
+  background: var(--latex-gutter-bg);
+  color: var(--latex-gutter-text);
   border-right: 1px solid var(--border);
 }
 .latex-editor .cm-activeLine,
 .latex-editor .cm-activeLineGutter {
-  background: #f3f7fc;
+  background: var(--latex-active-line);
 }
 .empty-editor {
   display: grid;
   place-items: center;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .compile-panel {
   max-height: 180px;
   overflow: auto;
   border-top: 1px solid var(--border);
-  background: var(--panel);
+  background: var(--surface);
   font-size: 12px;
 }
 .compile-panel header {
@@ -201,7 +313,7 @@ button:disabled {
 .compile-panel summary {
   cursor: pointer;
   padding: 5px 10px;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 .diagnostic-list button {
   width: 100%;
@@ -222,28 +334,28 @@ button:disabled {
   padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 5px;
-  color: #145da0;
+  color: var(--latex-ai-accent-text);
 }
 .compile-panel pre {
   margin: 0;
   padding: 8px 12px;
   overflow: auto;
   white-space: pre-wrap;
-  color: #45484c;
+  color: var(--latex-log-text);
 }
 .conflict-banner,
 .error-banner {
   padding: 7px 10px;
-  background: #5a3d16;
+  background: var(--latex-warning-bg);
   font-size: 12px;
 }
 .error-banner {
-  background: #5b2026;
+  background: var(--latex-error-bg);
 }
 
 .pdf-preview {
   border-left: 1px solid var(--border);
-  background: #e9eaec;
+  background: var(--latex-preview-bg);
 }
 .readonly-pdf-viewer {
   display: grid;
@@ -255,7 +367,7 @@ button:disabled {
   justify-content: center;
   align-items: center;
   gap: 10px;
-  background: var(--panel);
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 .readonly-pdf-scroll {
@@ -268,8 +380,8 @@ button:disabled {
   min-width: 120px;
   min-height: 160px;
   margin: 0 auto 18px;
-  background: white;
-  box-shadow: 0 2px 12px #0008;
+  background: var(--latex-pdf-paper);
+  box-shadow: var(--latex-shadow-page);
 }
 .pdf-page-content {
   position: relative;
@@ -296,7 +408,7 @@ button:disabled {
   transform-origin: 0 0;
 }
 .pdf-page-content .textLayer ::selection {
-  background: #3578e5aa;
+  background: var(--latex-selection);
 }
 .pdf-sync-marker {
   position: absolute;
@@ -304,16 +416,16 @@ button:disabled {
   width: 12px;
   height: 12px;
   margin: -6px 0 0 -6px;
-  border: 2px solid #ef4444;
+  border: 2px solid var(--latex-sync-marker);
   border-radius: 50%;
-  background: #ef444455;
+  background: var(--latex-sync-marker-bg);
   pointer-events: none;
 }
 .readonly-pdf-empty {
   display: grid;
   min-height: 60vh;
   place-items: center;
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 .latex-ai-dock {
@@ -322,7 +434,7 @@ button:disabled {
   min-width: 300px;
   max-width: 55vw;
   height: 100%;
-  background: #fff;
+  background: var(--color-bg-page);
   border-left: 1px solid var(--border-strong);
 }
 
@@ -333,8 +445,8 @@ button:disabled {
   width: 100%;
   height: 100%;
   min-width: 0;
-  background: #fff;
-  color: #232425;
+  background: var(--color-bg-page);
+  color: var(--color-text-primary);
 }
 
 .ai-panel-resizer {
@@ -372,7 +484,7 @@ button:disabled {
 .ai-brand-icon {
   flex: 0 0 auto;
   border-radius: 6px;
-  box-shadow: 0 2px 7px rgba(47, 32, 143, 0.2);
+  box-shadow: var(--latex-shadow-brand);
 }
 
 .ai-header-btn {
@@ -381,13 +493,13 @@ button:disabled {
   height: 28px;
   place-items: center;
   border-radius: 7px;
-  color: var(--muted);
+  color: var(--color-text-tertiary);
   font-size: 22px;
 }
 
 .ai-header-btn:hover {
   background: var(--hover);
-  color: #232425;
+  color: var(--color-text-primary);
 }
 
 .ai-chat {
@@ -411,7 +523,7 @@ button:disabled {
 }
 
 .ai-chat-empty-body {
-  color: var(--muted);
+  color: var(--color-text-secondary);
   font-size: 14px;
   line-height: 1.5;
 }
@@ -428,7 +540,7 @@ button:disabled {
   padding: 8px 14px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: #fff;
+  background: var(--color-bg-page);
   font-size: 13px;
 }
 
@@ -448,7 +560,7 @@ button:disabled {
   max-width: 82%;
   padding: 8px 14px;
   border-radius: 14px;
-  background: #f0f1f3;
+  background: var(--latex-ai-user-bg);
   white-space: pre-wrap;
 }
 
@@ -459,7 +571,7 @@ button:disabled {
 .ai-typing {
   align-self: flex-start;
   min-height: 24px;
-  color: var(--muted);
+  color: var(--color-text-secondary);
   font-size: 13px;
 }
 
@@ -511,8 +623,8 @@ button:disabled {
 .ai-md code {
   padding: 1px 5px;
   border-radius: 4px;
-  background: #f2f3f5;
-  color: #4b4e52;
+  background: var(--latex-ai-code-bg);
+  color: var(--latex-ai-code-text);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
 }
@@ -520,8 +632,8 @@ button:disabled {
 .ai-status {
   padding: 8px 10px;
   border-radius: 8px;
-  background: #f5f7fa;
-  color: var(--muted);
+  background: var(--latex-ai-status-bg);
+  color: var(--color-text-secondary);
   font-size: 12px;
 }
 
@@ -559,7 +671,7 @@ button:disabled {
   height: 8px;
   margin-top: 3px;
   border-radius: 50%;
-  background: #7b8188;
+  background: var(--latex-timeline-idle);
 }
 
 .timeline-running .timeline-state {
@@ -568,15 +680,15 @@ button:disabled {
 }
 
 .timeline-success .timeline-state {
-  background: #26854a;
+  background: var(--latex-timeline-success);
 }
 
 .timeline-error .timeline-state {
-  background: #c9363e;
+  background: var(--latex-timeline-error);
 }
 
 .timeline-cancelled .timeline-state {
-  background: #8b8f94;
+  background: var(--latex-timeline-cancelled);
 }
 
 .agent-task-timeline details summary {
@@ -597,13 +709,13 @@ button:disabled {
   padding: 7px 11px;
   border: 1px solid var(--border-strong);
   border-radius: 7px;
-  background: #fff;
+  background: var(--color-bg-page);
 }
 
 .ai-composer-wrap {
   padding: 10px 14px 14px;
   border-top: 1px solid var(--border);
-  background: #fff;
+  background: var(--color-bg-page);
 }
 
 .ai-context-chips {
@@ -619,10 +731,10 @@ button:disabled {
   gap: 5px;
   max-width: 100%;
   padding: 4px 7px;
-  border: 1px solid #cfe0f4;
+  border: 1px solid var(--latex-ai-chip-border);
   border-radius: 999px;
-  background: #eef6ff;
-  color: #145da0;
+  background: var(--latex-ai-chip-bg);
+  color: var(--latex-ai-accent-text);
   font-size: 11px;
 }
 
@@ -634,7 +746,7 @@ button:disabled {
 
 .ai-context-chip button {
   flex: 0 0 auto;
-  color: #55718f;
+  color: var(--latex-ai-chip-dismiss);
   line-height: 1;
 }
 
@@ -642,7 +754,7 @@ button:disabled {
   overflow: hidden;
   border: 1px solid var(--border-strong);
   border-radius: 12px;
-  background: #fff;
+  background: var(--color-bg-page);
   transition:
     border-color 150ms ease,
     box-shadow 150ms ease;
@@ -650,7 +762,7 @@ button:disabled {
 
 .ai-input-box:focus-within {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(15, 127, 255, 0.12);
+  box-shadow: var(--latex-shadow-focus);
 }
 
 .ai-input-box textarea {
@@ -663,7 +775,7 @@ button:disabled {
   border: 0;
   outline: none;
   background: transparent;
-  color: #232425;
+  color: var(--color-text-primary);
   font: inherit;
   line-height: 21px;
 }
@@ -679,7 +791,7 @@ button:disabled {
 
 .ai-input-hint {
   margin-right: auto;
-  color: #909499;
+  color: var(--color-text-tertiary);
   font-size: 11px;
 }
 
@@ -689,17 +801,17 @@ button:disabled {
   gap: 5px;
   padding: 6px 10px;
   border-radius: 8px;
-  background: #232425;
-  color: white;
+  background: var(--color-btn-primary);
+  color: var(--color-btn-primary-text);
   font-size: 12px;
 }
 
 .ai-send-btn:disabled {
-  background: #d7d9dc;
+  background: var(--latex-ai-disabled-bg);
 }
 
 .ai-stop-btn {
-  background: #55585c;
+  background: var(--latex-ai-stop-bg);
 }
 
 .latex-ai-rail {
@@ -710,8 +822,8 @@ button:disabled {
   gap: 9px;
   padding: 12px 4px;
   border-left: 1px solid var(--border-strong);
-  background: #fff;
-  color: var(--muted);
+  background: var(--color-bg-page);
+  color: var(--color-text-secondary);
   font-size: 11px;
   letter-spacing: 1px;
 }
@@ -738,16 +850,16 @@ button:disabled {
 .proposal-hunk-header {
   padding: 5px 10px;
   border-top: 1px solid var(--border);
-  background: #f4f5f7;
+  background: var(--latex-proposal-neutral-bg);
   color: var(--muted);
   font-size: 11px;
 }
 
 .proposal-diff-notice {
   padding: 8px 10px;
-  border-top: 1px solid #e1b77c;
-  background: #fff6e8;
-  color: #7b4d0b;
+  border-top: 1px solid var(--latex-proposal-warning-border);
+  background: var(--latex-proposal-warning-bg);
+  color: var(--latex-proposal-warning-text);
   font-size: 11px;
 }
 
@@ -760,7 +872,7 @@ button:disabled {
 
 .proposal-hunk-header {
   border-top: 0;
-  color: #596a7c;
+  color: var(--latex-proposal-muted-text);
 }
 
 .diff-line {
@@ -771,8 +883,8 @@ button:disabled {
 
 .diff-line > span {
   padding: 2px 5px;
-  border-right: 1px solid rgba(0, 0, 0, 0.07);
-  color: #7b8188;
+  border-right: 1px solid var(--latex-proposal-divider);
+  color: var(--latex-timeline-idle);
   text-align: right;
   user-select: none;
 }
@@ -783,21 +895,21 @@ button:disabled {
 }
 
 .diff-line-add {
-  background: #e8f7ed;
-  color: #176b36;
+  background: var(--latex-proposal-success-bg);
+  color: var(--latex-proposal-success-text);
 }
 
 .diff-line-remove {
-  background: #fff0f0;
-  color: #a4262c;
+  background: var(--latex-proposal-danger-bg);
+  color: var(--latex-proposal-danger-text);
 }
 
 .proposal-verification {
   padding: 9px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #f5f6f7;
-  color: #555b62;
+  background: var(--latex-proposal-neutral-bg);
+  color: var(--latex-proposal-neutral-text);
   font-size: 11px;
 }
 
@@ -806,21 +918,21 @@ button:disabled {
 }
 
 .verification-verified {
-  border-color: #9bd5ae;
-  background: #e8f7ed;
-  color: #176b36;
+  border-color: var(--latex-proposal-success-border);
+  background: var(--latex-proposal-success-bg);
+  color: var(--latex-proposal-success-text);
 }
 
 .verification-failed {
-  border-color: #efb0b3;
-  background: #fff0f0;
-  color: #a4262c;
+  border-color: var(--latex-proposal-danger-border);
+  background: var(--latex-proposal-danger-bg);
+  color: var(--latex-proposal-danger-text);
 }
 
 .verification-rejected {
-  border-color: #e1b77c;
-  background: #fff6e8;
-  color: #7b4d0b;
+  border-color: var(--latex-proposal-warning-border);
+  background: var(--latex-proposal-warning-bg);
+  color: var(--latex-proposal-warning-text);
 }
 
 .verification-diagnostics {
@@ -835,8 +947,14 @@ button:disabled {
   padding: 6px;
   white-space: pre-wrap;
   border: 1px solid var(--border);
-  background: #f7f7f8;
+  background: var(--color-bg-subtle);
   font-size: 11px;
+}
+.proposal-before {
+  color: var(--latex-proposal-before);
+}
+.proposal-after {
+  color: var(--latex-proposal-after);
 }
 
 .proposal-verification time {
@@ -848,14 +966,14 @@ button:disabled {
 
 .proposal-risk-warning {
   margin: 6px 0;
-  color: #a4262c;
+  color: var(--latex-proposal-danger-text);
   font-size: 11px;
 }
 
 .proposal-review > .proposal-danger-button {
-  border-color: #a4262c;
-  background: #a4262c;
-  color: #fff;
+  border-color: var(--latex-proposal-danger-text);
+  background: var(--latex-proposal-danger-text);
+  color: var(--latex-proposal-danger-button-text);
 }
 
 @media (max-width: 900px) {
@@ -889,6 +1007,63 @@ button:disabled {
     width: min(360px, calc(100vw - 42px)) !important;
     min-width: 0;
     max-width: none;
-    box-shadow: -8px 0 28px rgba(29, 34, 43, 0.15);
+    box-shadow: var(--latex-shadow-mobile-dock);
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']):not([data-theme='dark']) {
+    --latex-editor-bg: #181a1d;
+    --latex-gutter-bg: #202225;
+    --latex-gutter-text: #9298a1;
+    --latex-active-line: #252a31;
+    --latex-selected-file-bg: #26374a;
+    --latex-selected-file-text: #82bfff;
+    --latex-preview-bg: #141619;
+    --latex-log-text: #c9cdd2;
+    --latex-ai-user-bg: #303338;
+    --latex-ai-code-bg: #303338;
+    --latex-ai-code-text: #e4e7eb;
+    --latex-ai-status-bg: #24282d;
+    --latex-ai-disabled-bg: #45494f;
+    --latex-ai-stop-bg: #555b63;
+    --latex-proposal-before: #ffb4b4;
+    --latex-proposal-after: #adf0bd;
+    --latex-ai-accent-text: #82bfff;
+    --latex-ai-chip-border: #3a5a78;
+    --latex-ai-chip-bg: #203449;
+    --latex-ai-chip-dismiss: #a7bdd3;
+    --latex-timeline-idle: #9298a1;
+    --latex-timeline-success: #69c985;
+    --latex-timeline-error: #ff858b;
+    --latex-timeline-cancelled: #9ca3ad;
+    --latex-proposal-neutral-bg: #25292e;
+    --latex-proposal-neutral-text: #c4c9cf;
+    --latex-proposal-muted-text: #aeb8c4;
+    --latex-proposal-divider: rgba(255, 255, 255, 0.1);
+    --latex-proposal-success-border: #397a4e;
+    --latex-proposal-success-bg: #1f3a28;
+    --latex-proposal-success-text: #adf0bd;
+    --latex-proposal-danger-border: #824247;
+    --latex-proposal-danger-bg: #3b2326;
+    --latex-proposal-danger-text: #ffb4b4;
+    --latex-proposal-warning-border: #80633c;
+    --latex-proposal-warning-bg: #3b3020;
+    --latex-proposal-warning-text: #f2c879;
+    --latex-proposal-danger-button-text: #ffffff;
+    --latex-shadow-page: 0 2px 12px #000b;
+    --latex-syntax-meta: #a7b0a7;
+    --latex-syntax-keyword: #d7a7ff;
+    --latex-syntax-atom: #9db8ff;
+    --latex-syntax-literal: #7fd7ae;
+    --latex-syntax-string: #ff9f9f;
+    --latex-syntax-escape: #ffb36b;
+    --latex-syntax-definition: #8fb8ff;
+    --latex-syntax-local: #c3a6ff;
+    --latex-syntax-type: #72d7bd;
+    --latex-syntax-class: #7ed6e8;
+    --latex-syntax-special: #d0a7ff;
+    --latex-syntax-name: #e4e7eb;
+    --latex-syntax-invalid: #ff7b72;
   }
 }

@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/core'
+import { platformShortcuts } from '@wiswork/i18n'
 import { useI18n, type StringKey } from '../i18n/locale'
-import { fontFamiliesFor } from '../font-list'
+import { fontFamiliesFor, isEastAsianFontName } from '../font-list'
+import { useSystemFontFamilies } from '../system-fonts'
 import { cssFontFamily } from '../line-metrics'
 import { setParaAttrs, activeParaAttrs } from './ribbon-tabs'
 import { setSelectionAlign } from '../editor/direction'
@@ -187,7 +189,7 @@ export function EditorContextMenu({
           <IconSparkle size={10} />
         </span>
       )}
-      {opts.key && <span className="ctx-key">{opts.key}</span>}
+      {opts.key && <span className="ctx-key">{platformShortcuts(opts.key)}</span>}
       {opts.submenuKey && <span className="ctx-arrow">›</span>}
     </button>
   )
@@ -327,6 +329,9 @@ export function FontDialog({ editor, onClose }: { editor: Editor; onClose: () =>
   const { t, lang } = useI18n()
   const modalKeys = useModalKeys(onClose)
   const fontFamilies = fontFamiliesFor(lang)
+  const { families: systemFontFamilies, load: loadSystemFonts } = useSystemFontFamilies()
+  // the dialog opens from a click, so activation is still live here
+  useEffect(() => loadSystemFonts(), [loadSystemFonts])
   const textAttrs = editor.getAttributes('docTextStyle')
   const initialStyle = editor.isActive('bold')
     ? editor.isActive('italic')
@@ -336,7 +341,9 @@ export function FontDialog({ editor, onClose }: { editor: Editor; onClose: () =>
       ? 'italic'
       : 'regular'
 
-  const [font, setFont] = useState((textAttrs.font as string | null) ?? '')
+  const [font, setFont] = useState(
+    (textAttrs.font as string | null) ?? (textAttrs.fontAscii as string | null) ?? '',
+  )
   const [size, setSize] = useState(
     textAttrs.sizeHalfPoints ? Number(textAttrs.sizeHalfPoints) / 2 : 11,
   )
@@ -358,7 +365,12 @@ export function FontDialog({ editor, onClose }: { editor: Editor; onClose: () =>
       .setMark('docTextStyle', {
         color: hex === '000000' ? null : hex,
         sizeHalfPoints: Math.round(size * 2),
-        font: font || null,
+        // picks target only their script's rFonts slot; the other slot survives
+        ...(!font
+          ? { font: null, fontAscii: null }
+          : isEastAsianFontName(font)
+            ? { font }
+            : { fontAscii: font }),
         highlight: textAttrs.highlight ?? null,
         vertAlign: vertAlign || null,
       })
@@ -386,12 +398,25 @@ export function FontDialog({ editor, onClose }: { editor: Editor; onClose: () =>
             {t('appFontFamilyLabel')}
             <select value={font} onChange={(e) => setFont(e.target.value)}>
               <option value="">{t('appDefaultBodyFont')}</option>
-              {fontFamilies.map((f) => (
-                <option key={f} value={f} style={{ fontFamily: cssFontFamily(f) }}>
-                  {f}
-                </option>
-              ))}
-              {font && !fontFamilies.includes(font) && <option value={font}>{font}</option>}
+              <optgroup label={t('ribbonFontsCommon')}>
+                {fontFamilies.map((f) => (
+                  <option key={f} value={f} style={{ fontFamily: cssFontFamily(f) }}>
+                    {f}
+                  </option>
+                ))}
+              </optgroup>
+              {systemFontFamilies.length > 0 && (
+                <optgroup label={t('ribbonFontsSystem')}>
+                  {systemFontFamilies.map((f) => (
+                    <option key={f} value={f} style={{ fontFamily: cssFontFamily(f) }}>
+                      {f}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {font && !fontFamilies.includes(font) && !systemFontFamilies.includes(font) && (
+                <option value={font}>{font}</option>
+              )}
             </select>
           </label>
           <label>

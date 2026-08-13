@@ -5,8 +5,10 @@ import iconXlsx from './assets/file-xlsx.svg'
 import iconPptx from './assets/file-pptx.svg'
 import iconPdf from './assets/file-pdf.svg'
 import iconTex from './assets/file-tex.svg'
+import iconMd from './assets/file-md.svg'
 import type {
   AccountStatus,
+  AppTheme,
   HomeApi,
   LatexRecentProjectEntry,
   ProjectHomeApi,
@@ -45,6 +47,8 @@ const FILE_ICONS: Record<string, string> = {
   pptx: iconPptx,
   pdf: iconPdf,
   tex: iconTex,
+  md: iconMd,
+  markdown: iconMd,
 }
 
 function FileBadge({ ext, size }: { ext: string; size: number }) {
@@ -116,6 +120,48 @@ const FILTERS: { key: string; label: StringKey }[] = [
   { key: 'pptx', label: 'filterSlides' },
   { key: 'pdf', label: 'filterPdf' },
 ]
+
+function ThemeSwitch() {
+  const [theme, setTheme] = useState<AppTheme>(() =>
+    document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
+  )
+
+  useEffect(() => {
+    void window.aiOffice.getTheme().then(setTheme)
+    return window.aiOffice.onThemeChanged(setTheme)
+  }, [])
+
+  const choose = (next: AppTheme) => {
+    setTheme(next)
+    document.documentElement.dataset.theme = next
+    const request =
+      next === 'light' ? window.aiOffice.setTheme('light') : window.aiOffice.setTheme('dark')
+    void request.catch(() => window.aiOffice.getTheme().then(setTheme))
+  }
+
+  return (
+    <div className="theme-switch" role="group" aria-label="Theme">
+      <button
+        type="button"
+        className={theme === 'light' ? 'active' : ''}
+        aria-pressed={theme === 'light'}
+        onClick={() => choose('light')}
+      >
+        <span aria-hidden="true">☀</span>
+        Light
+      </button>
+      <button
+        type="button"
+        className={theme === 'dark' ? 'active' : ''}
+        aria-pressed={theme === 'dark'}
+        onClick={() => choose('dark')}
+      >
+        <span aria-hidden="true">☾</span>
+        Dark
+      </button>
+    </div>
+  )
+}
 
 // ── Project sidebar component ────────────────────────────
 
@@ -645,6 +691,8 @@ function AccountEntry() {
               )}
             </>
           )}
+          <div className="account-menu-divider" />
+          <ThemeSwitch />
           <div className="account-menu-divider" />
           <div
             className="lang-row-wrap"
@@ -1216,6 +1264,12 @@ export function Home() {
     if (await window.aiOffice.newLatexProject()) reloadLatexRecents()
   }
 
+  const handleNewMarkdown = () => {
+    void window.aiOffice.newMarkdown(
+      selectedProjectId ? { projectId: selectedProjectId } : undefined,
+    )
+  }
+
   const handleImportLatex = async () => {
     if (await window.aiOffice.importLatexProject()) reloadLatexRecents()
   }
@@ -1224,6 +1278,7 @@ export function Home() {
     { ext: 'docx', title: t('newDoc'), sub: '.docx', action: handleNewDoc },
     { ext: 'xlsx', title: t('newSheet'), sub: '.xlsx', action: handleNewSheet },
     { ext: 'pptx', title: t('newSlide'), sub: '.pptx', action: handleNewSlide },
+    { ext: 'md', title: t('newMarkdown'), sub: '.md', action: handleNewMarkdown },
     { ext: 'tex', title: t('newLatex'), sub: '.tex', action: handleNewLatex },
   ]
 
@@ -1845,7 +1900,9 @@ export function Home() {
           </>
         )}
 
-        <AccountEntry />
+        <div className="sidebar-bottom">
+          <AccountEntry />
+        </div>
       </aside>
 
       {selectedProjectId ? renderProjectContent() : renderGlobalContent()}

@@ -1,5 +1,6 @@
 import type { AgentMessage, AgentToolCall, AgentToolDef } from '@wiswork/agent-core'
 import { AiProviderError, isAuthRequiredError, safeHttpProviderError } from './errors'
+import { aiFetch } from './fetch'
 import { httpBodyDetail } from './http-error'
 import { WISWORK_DEFAULT_MODEL, WISWORK_MESSAGES_URL, WISWORK_REQUEST_LOCATION } from './providers'
 import type { AiProviderConfig, AiProviderId, WisworkFetchWithAuth } from './types'
@@ -182,6 +183,9 @@ function anthropicMessages(messages: AgentMessage[]): unknown[] {
       for (const call of m.toolCalls ?? []) {
         content.push({ type: 'tool_use', id: call.id, name: call.name, input: call.input })
       }
+      // Anthropic rejects empty content arrays; a prior empty terminal turn
+      // (tool work with no prose) would otherwise poison every follow-up.
+      if (content.length === 0) content.push({ type: 'text', text: '(no content)' })
       return { role: 'assistant', content }
     }
     // tool results travel back as a user message of tool_result blocks
@@ -259,7 +263,7 @@ export async function streamAnthropic(
       cb,
       `${baseUrl.replace(/\/$/, '')}/v1/messages`,
       wd,
-      (url, init) => fetch(url, init),
+      (url, init) => aiFetch(url, init),
       {
         'Content-Type': 'application/json',
         'x-api-key': config.apiKey,
@@ -344,6 +348,7 @@ async function anthropicTurn(
   // blocks, and a max_tokens stop must mark the last (cut-off) tool call as truncated
   const completedTools: AgentToolCall[] = []
   let stopReason: string | undefined
+  let emitted = false
   for await (const line of sseLines(response.body, onBytes)) {
     if (!line.startsWith('data:')) continue
     const payload = line.slice(5).trim()
@@ -363,8 +368,10 @@ async function anthropicTurn(
         json: '',
       })
     } else if (event.type === 'content_block_delta') {
-      if (event.delta?.type === 'text_delta' && event.delta.text) cb.onDelta(event.delta.text)
-      else if (event.delta?.type === 'input_json_delta') {
+      if (event.delta?.type === 'text_delta' && event.delta.text) {
+        emitted = true
+        cb.onDelta(event.delta.text)
+      } else if (event.delta?.type === 'input_json_delta') {
         const pending = pendingTools.get(event.index ?? 0)
         if (pending) pending.json += event.delta.partial_json ?? ''
       }
@@ -385,6 +392,15 @@ async function anthropicTurn(
   const lastTool = completedTools.at(-1)
   if (stopReason === 'max_tokens' && lastTool) lastTool.truncated = true
   for (const call of completedTools) cb.onToolCall(call)
+  // A stream with no content AND no message framing (no stop_reason ever seen)
+  // is a gateway soft-failure, not a model turn — surface it instead of letting
+  // it dissolve into an empty "successful" turn with no diagnostics. A genuine
+  // empty closing turn (common after tool-heavy runs) still carries end_turn.
+  // The "(empty stream)" suffix is a contract: app renderers match it to
+  // classify the failure as empty output (fail fast, no billed retries).
+  if (!emitted && completedTools.length === 0 && !stopReason) {
+    throw new Error('Claude returned no content (empty stream)')
+  }
   if (stopReason) cb.onStopReason?.(stopReason)
 }
 
@@ -446,6 +462,8 @@ function geminiContents(messages: AgentMessage[]): unknown[] {
       for (const call of m.toolCalls ?? []) {
         parts.push({ functionCall: { name: call.name, args: call.input } })
       }
+      // Gemini rejects model turns with empty parts lists.
+      if (parts.length === 0) parts.push({ text: '(no content)' })
       return { role: 'model', parts }
     }
     return {
@@ -549,7 +567,7 @@ async function geminiTurn(
     cb.onActivity?.()
   }
   const url = `${baseUrl.replace(/\/$/, '')}/models/${config.model}:streamGenerateContent?alt=sse`
-  const response = await fetch(url, {
+  const response = await aiFetch(url, {
     method: 'POST',
     signal: wd.signal,
     headers: {
@@ -587,6 +605,7 @@ async function geminiTurn(
   }
   let stopReason: string | undefined
   let abnormalFinish: string | undefined
+  let sawFinish = false
   let emitted = false
   for await (const line of sseLines(response.body, onBytes)) {
     if (!line.startsWith('data:')) continue
@@ -610,6 +629,7 @@ async function geminiTurn(
       throw new Error(`Gemini blocked the prompt (${event.promptFeedback.blockReason})`)
     }
     const finishReason = event.candidates?.[0]?.finishReason
+    if (finishReason) sawFinish = true
     if (finishReason === 'MAX_TOKENS') stopReason = 'max_tokens'
     else if (finishReason && finishReason !== 'STOP') abnormalFinish = finishReason
     for (const part of event.candidates?.[0]?.content?.parts ?? []) {
@@ -628,9 +648,14 @@ async function geminiTurn(
       }
     }
   }
-  // A safety/recitation stop that produced nothing would otherwise look like an empty success
+  // A safety/recitation stop that produced nothing, or a stream with no message
+  // framing at all (gateway soft-failure), would otherwise look like an empty
+  // success; a genuine empty turn still carries finishReason=STOP and passes
   if (!emitted && abnormalFinish) {
     throw new Error(`Gemini returned no content (finishReason=${abnormalFinish})`)
+  }
+  if (!emitted && !sawFinish) {
+    throw new Error('Gemini returned no content (empty stream)')
   }
   if (stopReason) cb.onStopReason?.(stopReason)
 }
@@ -656,12 +681,15 @@ function openAiMessages(system: string, messages: AgentMessage[]): unknown[] {
         })
       }
     } else if (m.role === 'assistant') {
+      const hasTools = !!(m.toolCalls && m.toolCalls.length > 0)
+      // content:null with no tool_calls is an empty assistant turn; some OpenAI-
+      // compatible proxies drop or reject the follow-up conversation after that.
       out.push({
         role: 'assistant',
-        content: m.text || null,
-        ...(m.toolCalls && m.toolCalls.length > 0
+        content: m.text || (hasTools ? null : '(no content)'),
+        ...(hasTools
           ? {
-              tool_calls: m.toolCalls.map((call) => ({
+              tool_calls: m.toolCalls!.map((call) => ({
                 id: call.id,
                 type: 'function',
                 function: { name: call.name, arguments: JSON.stringify(call.input) },
@@ -753,7 +781,7 @@ async function openAiCompatibleTurn(
     wd.touch()
     cb.onActivity?.()
   }
-  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+  const response = await aiFetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
     signal: wd.signal,
     headers: {
@@ -791,6 +819,7 @@ async function openAiCompatibleTurn(
   const pendingTools = new Map<number, { id: string; name: string; json: string }>()
   let stopReason: string | undefined
   let abnormalFinish: string | undefined
+  let sawFinish = false
   let emitted = false
   const flushTools = () => {
     const entries = [...pendingTools.entries()].sort(([a], [b]) => a - b)
@@ -849,6 +878,7 @@ async function openAiCompatibleTurn(
       pendingTools.set(tc.index, pending)
     }
     if (choice.finish_reason) {
+      sawFinish = true
       if (choice.finish_reason === 'length') stopReason = 'max_tokens'
       else if (choice.finish_reason !== 'stop' && choice.finish_reason !== 'tool_calls') {
         abnormalFinish = choice.finish_reason
@@ -857,9 +887,14 @@ async function openAiCompatibleTurn(
     }
   }
   flushTools()
-  // e.g. finish_reason=content_filter with no output — surface it instead of an empty success
+  // e.g. finish_reason=content_filter with no output, or a stream with no
+  // message framing at all (gateway soft-failure) — surface both instead of an
+  // empty success; a genuine empty turn still carries finish_reason=stop
   if (!emitted && abnormalFinish) {
     throw new Error(`The model returned no content (finish_reason=${abnormalFinish})`)
+  }
+  if (!emitted && !sawFinish) {
+    throw new Error('The model returned no content (empty stream)')
   }
   if (stopReason) cb.onStopReason?.(stopReason)
 }

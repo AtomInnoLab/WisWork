@@ -157,6 +157,40 @@ describe('updateTextStyle', () => {
     expect(textStyleOf(editor, 1)).toBeNull()
   })
 
+  it('font routes to its script slot: CJK keeps the Latin font, Latin keeps the CJK font', () => {
+    const mixed = () =>
+      createEditor([
+        para([
+          text('合同 Contract', [
+            { type: 'docTextStyle', attrs: { font: 'SimSun', fontAscii: 'Times New Roman' } },
+          ]),
+        ]),
+      ])
+    const style = (font: string | null) => ({
+      commands: [
+        {
+          updateTextStyle: {
+            target: { nodeType: 'docParagraph' as const },
+            style: { font },
+            fields: ['font' as const],
+          },
+        },
+      ],
+    })
+
+    const cjk = mixed()
+    expect(executeCommands(cjk, style('KaiTi')).ok).toBe(true)
+    expect(textStyleOf(cjk, 0)).toMatchObject({ font: 'KaiTi', fontAscii: 'Times New Roman' })
+
+    const latin = mixed()
+    expect(executeCommands(latin, style('Arial')).ok).toBe(true)
+    expect(textStyleOf(latin, 0)).toMatchObject({ font: 'SimSun', fontAscii: 'Arial' })
+
+    const cleared = mixed()
+    expect(executeCommands(cleared, style(null)).ok).toBe(true)
+    expect(textStyleOf(cleared, 0)).toBeNull()
+  })
+
   it('boolean fields add and remove basic marks', () => {
     const editor = createEditor([para([text('plain'), text('bold', [{ type: 'bold' }])])])
     executeCommands(editor, {

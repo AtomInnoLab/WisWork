@@ -1,7 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { LATEX_CHANNELS, type LatexApi } from '../shared/ipc.js'
+import { LATEX_CHANNELS, type LatexApi, type UiTheme } from '../shared/ipc.js'
 
 const api: LatexApi = {
+  getTheme: () => ipcRenderer.invoke('app:get-theme'),
+  onThemeChanged: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, theme: UiTheme) => handler(theme)
+    ipcRenderer.on('app:theme-changed', listener)
+    return () => ipcRenderer.removeListener('app:theme-changed', listener)
+  },
   getSession: () => ipcRenderer.invoke(LATEX_CHANNELS.sessionGet),
   listFiles: (request) => ipcRenderer.invoke(LATEX_CHANNELS.projectList, request),
   readFile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.fileRead, request),

@@ -152,7 +152,13 @@ describe('WisUsage Anthropic Messages calls', () => {
   })
 
   it('passes through the requested output limit and routes managed streaming through sg', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        okResponse(
+          sseStream(['data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}']),
+        ),
+      )
     vi.stubGlobal('fetch', fetchMock)
 
     await streamForProvider('wiswork', config, 'sys', [], [], 8192, collector().cb, withToken())
@@ -167,7 +173,13 @@ describe('WisUsage Anthropic Messages calls', () => {
   })
 
   it('uses Anthropic image blocks in the fixed request payload', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        okResponse(
+          sseStream(['data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}']),
+        ),
+      )
     vi.stubGlobal('fetch', fetchMock)
     const messages: AgentMessage[] = [
       {

@@ -16,11 +16,14 @@ import { basename, dirname, isAbsolute, join } from 'node:path'
 import {
   app,
   BrowserWindow,
+  desktopCapturer,
   dialog,
   ipcMain,
   Menu,
+  screen,
   session as electronSession,
   shell,
+  systemPreferences,
   WebContentsView,
 } from 'electron'
 import type {
@@ -33,10 +36,13 @@ import type {
 import { z } from 'zod'
 import {
   appMenuLabels,
+  configuredDefaultSaveDir,
   contextMenuLabels,
   installContextMenu,
   installNavigationGuard,
   safeExternalUrl,
+  showOpenDialogWithMemory,
+  showSaveDialogWithMemory,
   viewMenuTemplate,
   windowMenuTemplate,
 } from '@wiswork/electron-utils'
@@ -71,6 +77,9 @@ import {
   workbookPivotRequestSchema,
   localImageRequestSchema,
   localImageResultSchema,
+  screenCaptureRequestSchema,
+  screenCaptureResultSchema,
+  screenSourcesResultSchema,
   workbookPivotDefinitionSchema,
   workbookExportPdfRequestSchema,
   workbookRangeRequestSchema,
@@ -1048,13 +1057,18 @@ function dialogParent(event: IpcMainInvokeEvent): BrowserWindow | undefined {
 }
 
 async function openFileDialog(event: IpcMainInvokeEvent, options: OpenDialogOptions) {
-  const parent = dialogParent(event)
-  return parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options)
+  return showOpenDialogWithMemory(dialog, dialogParent(event), options)
 }
 
 async function saveFileDialog(event: IpcMainInvokeEvent, options: SaveDialogOptions) {
-  const parent = dialogParent(event)
-  return parent ? dialog.showSaveDialog(parent, options) : dialog.showSaveDialog(options)
+  // before any pick is remembered, bare-name suggestions anchor in the
+  // configurable default save folder instead of Electron's Downloads pin
+  return showSaveDialogWithMemory(
+    dialog,
+    dialogParent(event),
+    options,
+    configuredDefaultSaveDir(app),
+  )
 }
 
 /** register a tab's webContents/client pair and wire up cleanup on teardown */
@@ -1624,6 +1638,18 @@ export function registerSheetsIpc(): void {
     return false
   })
 
+  /**
+   * Is a shell-queued workbook still waiting to be opened? The shell's 'open'
+   * nudge loop gives up after 30s; on slow dev cold starts (vite compiles the
+   * renderer on demand) Univer mounts later than that and the queued path
+   * would strand the tab as a blank in-memory workbook. The renderer polls
+   * this once it is ready and triggers the open itself.
+   */
+  ipcMain.handle('sheets:has-queued-workbook', (event) => {
+    sessionFor(event)
+    return hasQueuedWorkbook()
+  })
+
   ipcMain.handle(IPC_CHANNELS.selectWorkbook, async (event) => {
     const entry = sessionFor(event)
     let path = forcedWorkbookPath
@@ -1773,6 +1799,82 @@ export function registerSheetsIpc(): void {
       throw new Error(tm('errImgBadType'))
     }
     return localImageResultSchema.parse({ mediaType, base64: bytes.toString('base64') })
+  })
+
+  ipcMain.handle(IPC_CHANNELS.captureScreenSources, async (event) => {
+    sessionFor(event)
+    // macOS gates desktopCapturer behind the Screen Recording permission and
+    // returns black frames instead of failing; surface a real denied state.
+    if (process.platform === 'darwin') {
+      const status = systemPreferences.getMediaAccessStatus('screen')
+      if (status !== 'granted' && status !== 'not-determined') {
+        return screenSourcesResultSchema.parse({ status: 'denied', sources: [] })
+      }
+    }
+    const sources = await desktopCapturer.getSources({
+      types: ['screen', 'window'],
+      thumbnailSize: { width: 320, height: 200 },
+      fetchWindowIcons: false,
+    })
+    if (
+      process.platform === 'darwin' &&
+      systemPreferences.getMediaAccessStatus('screen') !== 'granted'
+    ) {
+      return screenSourcesResultSchema.parse({ status: 'denied', sources: [] })
+    }
+    // In tab mode the sheets renderer is a WebContentsView, so fromWebContents
+    // on the sender is null; the shell window is the one to exclude.
+    const selfWindow = sheetsShellWindow ?? BrowserWindow.fromWebContents(event.sender)
+    const selfId = selfWindow?.getMediaSourceId()
+    return screenSourcesResultSchema.parse({
+      status: 'ok',
+      sources: sources
+        .filter((source) => source.id !== selfId)
+        .map((source) => ({
+          id: source.id,
+          name: source.name,
+          kind: source.id.startsWith('screen') ? 'screen' : 'window',
+          thumbnail: source.thumbnail.isEmpty() ? '' : source.thumbnail.toDataURL(),
+        })),
+    })
+  })
+
+  ipcMain.handle(IPC_CHANNELS.captureScreenSource, async (event, input: unknown) => {
+    sessionFor(event)
+    const request = screenCaptureRequestSchema.parse(input)
+    // desktopCapturer only ever returns thumbnails, so a full-res capture is
+    // a re-listing with the thumbnail sized to the largest physical display.
+    const displays = screen.getAllDisplays()
+    const captureSize = {
+      width: Math.min(
+        4096,
+        Math.max(1920, ...displays.map((d) => Math.ceil(d.size.width * d.scaleFactor))),
+      ),
+      height: Math.min(
+        4096,
+        Math.max(1080, ...displays.map((d) => Math.ceil(d.size.height * d.scaleFactor))),
+      ),
+    }
+    const sources = await desktopCapturer.getSources({
+      types: ['screen', 'window'],
+      thumbnailSize: captureSize,
+      fetchWindowIcons: false,
+    })
+    const source = sources.find((candidate) => candidate.id === request.id)
+    if (!source || source.thumbnail.isEmpty()) return null
+    let image = source.thumbnail
+    let png = image.toPNG()
+    if (png.length > 20 * 1024 * 1024) {
+      image = image.resize({ width: Math.round(image.getSize().width / 2) })
+      png = image.toPNG()
+    }
+    const { width, height } = image.getSize()
+    return screenCaptureResultSchema.parse({
+      mediaType: 'image/png',
+      base64: png.toString('base64'),
+      width,
+      height,
+    })
   })
 
   ipcMain.handle(IPC_CHANNELS.readPivotDefinition, async (event, input: unknown) => {
@@ -2267,6 +2369,8 @@ async function writeWorkbookTo(
       })
     } else if ('hidden' in op) {
       sheetOps.push({ kind: op.kind, start: op.start, end: op.end, hidden: op.hidden })
+    } else if ('before' in op) {
+      sheetOps.push({ kind: op.kind, index: op.index, count: op.count, before: op.before })
     } else {
       sheetOps.push({ kind: op.kind, index: op.index, count: op.count })
     }
@@ -2422,7 +2526,7 @@ async function openWorkbookSession(
   csvImport?: boolean,
 ): Promise<WorkbookFile> {
   const [opened, digest] = await Promise.all([
-    client.open(path).then((result) => sidecarOpenResultSchema.parse(result)),
+    client.open(path, getUiLang()).then((result) => sidecarOpenResultSchema.parse(result)),
     sha256File(path),
   ])
   sessions.set(opened.sessionId, {
