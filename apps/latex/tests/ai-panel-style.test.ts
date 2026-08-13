@@ -6,16 +6,14 @@ import { AiPanel } from '../src/renderer/ai/AiPanel.js'
 import type { AgentContext } from '../src/renderer/ai/agent-context.js'
 
 describe('LaTeX AI dock', () => {
-  it('shows account identity in the dock header', () => {
+  it('keeps account identity out of the LaTeX dock header', () => {
     const html = renderToStaticMarkup(
       createElement(AiPanel, {
         projectId: 'project-1',
-        account: { loggedIn: true, email: 'writer@example.com', userId: 'writer-1' },
       }),
     )
-    expect(html).toContain('class="latex-account-avatar"')
-    expect(html).toContain('writer@example.com')
-    expect(html).toContain('>W<')
+    expect(html).not.toContain('latex-account')
+    expect(html).not.toContain('writer@example.com')
   })
 
   it('keeps both workspace tabs visible while collapsed', () => {
@@ -26,6 +24,10 @@ describe('LaTeX AI dock', () => {
     expect(html).toContain('WisWork AI')
     expect(html).toContain('编译')
     expect(html).toContain('aria-selected="true"')
+    const styles = readFileSync(new URL('../src/renderer/styles.css', import.meta.url), 'utf8')
+    const railButtons = styles.match(/\.latex-ai-rail > button\s*\{([^}]*)\}/)?.[1] ?? ''
+    expect(railButtons).toContain('flex: 0 0 auto')
+    expect(railButtons).not.toContain('min-height: 112px')
   })
 
   it('has only WisWork AI and 编译 tabs, with editing kept inside AI', () => {

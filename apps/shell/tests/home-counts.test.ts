@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,7 +14,11 @@ import {
   visiblePageCount,
 } from '../src/renderer/src/counts'
 import { strings } from '../src/renderer/src/strings'
-import { homeCreationItems } from '../src/renderer/src/Home'
+import {
+  AccountMenuIdentity,
+  accountPresentation,
+  homeCreationItems,
+} from '../src/renderer/src/Home'
 
 const tempDirs: string[] = []
 
@@ -34,6 +40,28 @@ describe('LaTeX Home API contract', () => {
       importLatexProject: 'home:import-latex-project',
       openLatexProject: 'home:open-latex-project',
     })
+  })
+})
+
+describe('home account presentation', () => {
+  it('provides avatar, username, and email for the account flyout', () => {
+    expect(
+      accountPresentation(
+        { loggedIn: true, email: 'writer@example.com', userId: 'writer-1' },
+        'Signed in',
+      ),
+    ).toEqual({ initial: 'W', name: 'writer', email: 'writer@example.com' })
+
+    const html = renderToStaticMarkup(
+      createElement(AccountMenuIdentity, {
+        status: { loggedIn: true, email: 'writer@example.com', userId: 'writer-1' },
+        loggedInLabel: 'Signed in',
+      }),
+    )
+    expect(html).toContain('account-menu-avatar')
+    expect(html).toContain('account-menu-name">writer')
+    expect(html).toContain('account-menu-email')
+    expect(html).toContain('writer@example.com')
   })
 })
 

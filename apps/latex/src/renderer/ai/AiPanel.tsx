@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { AgentLoop } from '@wiswork/agent-core'
 import { AiComposer, AiTypingIndicator, Markdown, WisWorkAppMark } from '@wiswork/ui'
-import type { LatexAccountStatus } from '../../shared/ipc.js'
 import { createLatexSkill } from './latex-skill.js'
 import { loadProposalForReview } from './proposal-review.js'
 import { ProposalWorkflow, validateUndoProposal } from './proposal-workflow.js'
@@ -122,7 +121,6 @@ export function AiPanel({
   activeTab = 'ai',
   onTabChange = () => undefined,
   compilePanel = null,
-  account = { loggedIn: false },
 }: {
   projectId: string
   disabled?: boolean
@@ -136,7 +134,6 @@ export function AiPanel({
   activeTab?: 'ai' | 'compile'
   onTabChange?: (tab: 'ai' | 'compile') => void
   compilePanel?: ReactNode
-  account?: LatexAccountStatus
 }) {
   const [input, setInput] = useState('')
   const [text, setText] = useState('')
@@ -489,13 +486,6 @@ export function AiPanel({
     )
   }
 
-  const accountLabel = account.loggedIn
-    ? (account.email ?? account.userId ?? 'Signed in')
-    : 'Not signed in'
-  const accountInitial = account.loggedIn
-    ? (account.email ?? account.userId ?? 'W').trim().charAt(0).toUpperCase() || 'W'
-    : '?'
-
   return (
     <div
       className={`latex-ai-dock${resizing ? ' ai-panel-resizing' : ''}`}
@@ -530,17 +520,11 @@ export function AiPanel({
               编译
             </button>
           </div>
-          <div className="ai-panel-actions">
-            <div className="latex-account" title={accountLabel} aria-label={accountLabel}>
-              <span className="latex-account-avatar">{accountInitial}</span>
-              <span className="latex-account-label">{accountLabel}</span>
-            </div>
-            {onCollapse && (
-              <button className="ai-header-btn" onClick={onCollapse} aria-label="Collapse AI panel">
-                ›
-              </button>
-            )}
-          </div>
+          {onCollapse && (
+            <button className="ai-header-btn" onClick={onCollapse} aria-label="Collapse AI panel">
+              ›
+            </button>
+          )}
         </header>
         {activeTab === 'ai' ? (
           <>
