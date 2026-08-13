@@ -167,18 +167,11 @@ export interface LatexBufferDto {
   conflict: { diskText: string | null; diskSha256: string | null } | null
 }
 
-export interface LatexAccountStatus {
-  loggedIn: boolean
-  email?: string
-  userId?: string
-}
-
 export interface LatexSessionDto {
   projectId: string
   mainFile: string | null
   dirty: boolean
   latestCompile: CompileResultDto | null
-  account: LatexAccountStatus
 }
 
 export interface LatexSaveDto {

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PdfPoint, ViewerLocation } from '@wiswork/pdf-viewer'
 import type { CompileDiagnosticInput, EditorDiagnostic } from './compile/diagnostics.js'
 import { isAiSensitivePath } from '../shared/ai-path-policy.js'
-import type { LatexAccountStatus, LatexBundleStatusDto } from '../shared/ipc.js'
+import type { LatexBundleStatusDto } from '../shared/ipc.js'
 import { mapCompileDiagnostics } from './compile/diagnostics.js'
 import { CompilePanel } from './compile/CompilePanel.js'
 import { AiPanel } from './ai/AiPanel.js'
@@ -95,7 +95,6 @@ export function App() {
   const [bundleStatus, setBundleStatus] = useState<LatexBundleStatusDto>({ state: 'missing' })
   const [aiOpen, setAiOpen] = useState(true)
   const [dockTab, setDockTab] = useState<'ai' | 'compile'>('ai')
-  const [account, setAccount] = useState<LatexAccountStatus>({ loggedIn: false })
   const [previewOpen, setPreviewOpen] = useState(true)
   const [fileAction, setFileAction] = useState<FileAction | null>(null)
   const [fileActionBusy, setFileActionBusy] = useState(false)
@@ -223,7 +222,6 @@ export function App() {
         if (disposed) return
         setProjectId(session.projectId)
         setMainFile(session.mainFile)
-        setAccount(session.account)
         const listed = await window.latexApi.listFiles({ projectId: session.projectId })
         if (!listed.ok) throw new Error(listed.error.message)
         if (disposed) return
@@ -748,7 +746,6 @@ export function App() {
       {projectId && (
         <AiPanel
           projectId={projectId}
-          account={account}
           disabled={frozen}
           onProjectFilesChanged={refreshProjectFiles}
           open={aiOpen}

@@ -6,7 +6,6 @@ import { LatexEditFlushCoordinator, type FlushWebContents } from './edit-flush.j
 import { registerLatexIpc } from './ipc.js'
 import { ProjectSessionRegistry } from './project-session.js'
 import type { TectonicBundleAsset } from '@wiswork/latex-compiler'
-import type { LatexAccountStatus } from '../shared/ipc.js'
 
 export interface LatexRuntimeConfig {
   preloadPath: string
@@ -16,7 +15,6 @@ export interface LatexRuntimeConfig {
   tectonicPath: string
   userDataPath: string
   bundleAsset?: TectonicBundleAsset
-  getAccountStatus?: () => Promise<LatexAccountStatus> | LatexAccountStatus
 }
 
 export interface DirtyWebContents {
@@ -71,11 +69,7 @@ export function createLatexView(projectPath: string): WebContentsView {
   const ownedRuntime = runtime
   const ownedRegistry = registry
   if (!ipcRegistered) {
-    unregisterIpc = registerLatexIpc({
-      ipcMain: electron.ipcMain,
-      registry: ownedRegistry,
-      getAccountStatus: ownedRuntime.getAccountStatus,
-    })
+    unregisterIpc = registerLatexIpc({ ipcMain: electron.ipcMain, registry: ownedRegistry })
     ipcRegistered = true
   }
   const view = new electron.WebContentsView({
