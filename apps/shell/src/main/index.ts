@@ -254,6 +254,7 @@ configureLatexRuntime({
   tectonicPath: TECTONIC_BIN,
   userDataPath: app.getPath('userData'),
   bundleAsset: TECTONIC_MANIFEST.bundle,
+  getAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
 })
 
 registerLatexProtocolScheme(protocol)

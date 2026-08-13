@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PdfPoint, ViewerLocation } from '@wiswork/pdf-viewer'
 import type { CompileDiagnosticInput, EditorDiagnostic } from './compile/diagnostics.js'
 import { isAiSensitivePath } from '../shared/ai-path-policy.js'
-import type { LatexBundleStatusDto } from '../shared/ipc.js'
+import type { LatexAccountStatus, LatexBundleStatusDto } from '../shared/ipc.js'
 import { mapCompileDiagnostics } from './compile/diagnostics.js'
 import { CompilePanel } from './compile/CompilePanel.js'
 import { AiPanel } from './ai/AiPanel.js'
@@ -95,6 +95,8 @@ export function App() {
   const [bundleStatus, setBundleStatus] = useState<LatexBundleStatusDto>({ state: 'missing' })
   const [aiOpen, setAiOpen] = useState(true)
   const [dockTab, setDockTab] = useState<'ai' | 'compile'>('ai')
+  const [account, setAccount] = useState<LatexAccountStatus>({ loggedIn: false })
+  const [previewOpen, setPreviewOpen] = useState(true)
   const [fileAction, setFileAction] = useState<FileAction | null>(null)
   const [fileActionBusy, setFileActionBusy] = useState(false)
   const [editorContext, setEditorContext] = useState<
@@ -221,6 +223,7 @@ export function App() {
         if (disposed) return
         setProjectId(session.projectId)
         setMainFile(session.mainFile)
+        setAccount(session.account)
         const listed = await window.latexApi.listFiles({ projectId: session.projectId })
         if (!listed.ok) throw new Error(listed.error.message)
         if (disposed) return
@@ -665,7 +668,7 @@ export function App() {
 
   return (
     <main className="latex-workbench">
-      <div className="latex-main-area">
+      <div className={`latex-main-area${previewOpen ? '' : ' preview-closed'}`}>
         <ProjectTree
           files={files}
           activePath={activePath}
@@ -722,17 +725,30 @@ export function App() {
             </div>
           )}
         </section>
-        <PdfPreview
-          pdfUrl={editorState.preview?.pdfUrl ?? null}
-          revision={editorState.preview?.revision ?? null}
-          location={previewLocation}
-          stale={editorState.previewStale}
-          onReverseSync={(point) => void reverseSync(point)}
-        />
+        {previewOpen ? (
+          <PdfPreview
+            pdfUrl={editorState.preview?.pdfUrl ?? null}
+            revision={editorState.preview?.revision ?? null}
+            location={previewLocation}
+            stale={editorState.previewStale}
+            onReverseSync={(point) => void reverseSync(point)}
+            onClose={() => setPreviewOpen(false)}
+          />
+        ) : (
+          <button
+            type="button"
+            className="pdf-preview-rail"
+            aria-label="Open PDF preview"
+            onClick={() => setPreviewOpen(true)}
+          >
+            PDF
+          </button>
+        )}
       </div>
       {projectId && (
         <AiPanel
           projectId={projectId}
+          account={account}
           disabled={frozen}
           onProjectFilesChanged={refreshProjectFiles}
           open={aiOpen}
