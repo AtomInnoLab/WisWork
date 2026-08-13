@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   commitCompileGeneration,
+  loadCurrentCompileGeneration,
   killProcessTree,
   compileIsolated,
   runTectonic,
@@ -315,5 +316,52 @@ describe('controlled Tectonic runner', () => {
     )
     killer.emit('close', 0)
     await expect(pending).resolves.toBeUndefined()
+  })
+})
+
+describe('published compile recovery', () => {
+  const roots: string[] = []
+  afterEach(async () =>
+    Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))),
+  )
+
+  it('loads the validated current PDF and log after a process restart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'latex-recovery-'))
+    roots.push(root)
+    const generationId = '12345678-1234-1234-1234-123456789abc'
+    const generation = join(root, 'generations', generationId)
+    await mkdir(generation, { recursive: true })
+    const files = [
+      { name: 'main.pdf', text: 'pdf' },
+      { name: 'main.log', text: 'compile log' },
+    ].map(({ name, text }) => ({
+      name,
+      text,
+      bytes: Buffer.byteLength(text),
+      sha256: createHash('sha256').update(text).digest('hex'),
+    }))
+    for (const file of files) await writeFile(join(generation, file.name), file.text)
+    await writeFile(
+      join(generation, 'manifest.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        generationId,
+        files: files.map(({ name, bytes, sha256 }) => ({ name, bytes, sha256 })),
+      }),
+    )
+    await writeFile(join(root, 'current.json'), JSON.stringify({ schemaVersion: 1, generationId }))
+
+    await expect(loadCurrentCompileGeneration(root)).resolves.toMatchObject({
+      generationId,
+      pdfPath: join(generation, 'main.pdf'),
+      logPath: join(generation, 'main.log'),
+      log: 'compile log',
+    })
+  })
+
+  it('returns null when no published generation exists', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'latex-recovery-'))
+    roots.push(root)
+    await expect(loadCurrentCompileGeneration(root)).resolves.toBeNull()
   })
 })

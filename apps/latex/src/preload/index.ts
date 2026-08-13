@@ -15,6 +15,7 @@ const api: LatexApi = {
   saveFile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.fileSave, request),
   createFile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.fileCreate, request),
   renameFile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.fileRename, request),
+  deleteFile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.fileDelete, request),
   compile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.compileStart, request),
   cancelCompile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.compileCancel, request),
   getBundleStatus: (request) => ipcRenderer.invoke(LATEX_CHANNELS.bundleStatus, request),

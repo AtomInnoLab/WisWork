@@ -467,6 +467,15 @@ export interface CompileIsolatedResult {
   readonly workspaceCleaned: true
 }
 
+export interface PublishedCompileGeneration {
+  readonly generationId: string
+  readonly pdfPath: string | null
+  readonly synctexPath: string | null
+  readonly logPath: string
+  readonly log: string
+  readonly published: readonly string[]
+}
+
 interface GenerationManifest {
   readonly schemaVersion: 1
   readonly generationId: string
@@ -764,6 +773,32 @@ async function readCurrentGeneration(cacheDirectory: string): Promise<string | n
   }
   recoverable.sort((left, right) => right.mtimeMs - left.mtimeMs || right.id.localeCompare(left.id))
   return recoverable[0]?.id ?? null
+}
+
+export async function loadCurrentCompileGeneration(
+  cacheDirectory: string,
+): Promise<PublishedCompileGeneration | null> {
+  const generationId = await readCurrentGeneration(cacheDirectory)
+  if (!generationId) return null
+  const generationDirectory = join(cacheDirectory, 'generations', generationId)
+  const manifest = await verifyGeneration(generationDirectory, generationId)
+  const pathFor = (suffix: string) =>
+    manifest.files.find((file) => file.name.endsWith(suffix))?.name ?? null
+  const logName = pathFor('.log')
+  if (!logName) {
+    throw new LatexCompilerError('TECTONIC_WORKSPACE_INVALID', 'Generation log missing')
+  }
+  const published = manifest.files.map((file) => join(generationDirectory, file.name))
+  const pdfName = pathFor('.pdf')
+  const synctexName = pathFor('.synctex.gz')
+  return {
+    generationId,
+    pdfPath: pdfName ? join(generationDirectory, pdfName) : null,
+    synctexPath: synctexName ? join(generationDirectory, synctexName) : null,
+    logPath: join(generationDirectory, logName),
+    log: await readFile(join(generationDirectory, logName), 'utf8'),
+    published,
+  }
 }
 
 async function pruneGenerations(

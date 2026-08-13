@@ -6,6 +6,32 @@ import { AiPanel } from '../src/renderer/ai/AiPanel.js'
 import type { AgentContext } from '../src/renderer/ai/agent-context.js'
 
 describe('LaTeX AI dock', () => {
+  it('has only WisWork AI and 编译 tabs, with editing kept inside AI', () => {
+    const aiHtml = renderToStaticMarkup(
+      createElement(AiPanel, {
+        projectId: 'project-1',
+        activeTab: 'ai',
+        compilePanel: createElement('div', null, 'compile evidence'),
+      }),
+    )
+    expect(aiHtml.match(/role="tab"/g)).toHaveLength(2)
+    expect(aiHtml).toContain('WisWork AI')
+    expect(aiHtml).toContain('编译')
+    expect(aiHtml).toContain('Edit LaTeX with WisWork AI')
+    expect(aiHtml).not.toContain('compile evidence')
+
+    const compileHtml = renderToStaticMarkup(
+      createElement(AiPanel, {
+        projectId: 'project-1',
+        activeTab: 'compile',
+        compilePanel: createElement('div', null, 'compile evidence'),
+      }),
+    )
+    expect(compileHtml).toContain('compile evidence')
+    expect(compileHtml).not.toContain('Edit LaTeX with WisWork AI')
+    expect(compileHtml).not.toContain('>编辑<')
+  })
+
   it('uses the shared WisWork chat design and product app icon', () => {
     const html = renderToStaticMarkup(
       createElement(AiPanel, { projectId: 'project-1', disabled: false }),

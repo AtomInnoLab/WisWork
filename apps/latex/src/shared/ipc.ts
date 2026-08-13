@@ -15,6 +15,7 @@ export const LATEX_CHANNELS = {
   fileSave: 'latex:file:save',
   fileCreate: 'latex:file:create',
   fileRename: 'latex:file:rename',
+  fileDelete: 'latex:file:delete',
   compileStatus: 'latex:compile:status',
   bundleStatus: 'latex:bundle:status',
   compileStart: 'latex:compile:start',
@@ -170,6 +171,7 @@ export interface LatexSessionDto {
   projectId: string
   mainFile: string | null
   dirty: boolean
+  latestCompile: CompileResultDto | null
 }
 
 export interface LatexSaveDto {
@@ -202,6 +204,7 @@ export interface LatexApi {
   saveFile(request: SaveFileRequest): Promise<LatexIpcResult<LatexSaveDto>>
   createFile(request: UpdateFileRequest): Promise<LatexIpcResult<LatexBufferDto>>
   renameFile(request: RenameFileRequest): Promise<LatexIpcResult<void>>
+  deleteFile(request: FileRequest): Promise<LatexIpcResult<void>>
   compile(request: CompileRequest): Promise<LatexIpcResult<CompileResultDto>>
   cancelCompile(request: SessionRequest): Promise<LatexIpcResult<{ cancelled: boolean }>>
   getBundleStatus(request: SessionRequest): Promise<LatexIpcResult<LatexBundleStatusDto>>

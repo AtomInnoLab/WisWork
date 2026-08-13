@@ -21,13 +21,16 @@ import {
   createEditorState,
   editBuffer,
   reconcileExternalBuffer,
+  removeEditorBuffer,
   renameEditorBuffer,
+  restoreEditorPreview,
   type EditorState,
 } from './editor/editor-state.js'
 import { LatexEditor } from './editor/LatexEditor.js'
 import { useLatexLocale } from './i18n/locale.js'
 import { PdfPreview } from './pdf/PdfPreview.js'
 import { OpenTabs } from './project/OpenTabs.js'
+import { FileActionDialog, type FileAction } from './project/FileActionDialog.js'
 import { ProjectTree } from './project/ProjectTree.js'
 import {
   canRenameFile,
@@ -91,6 +94,9 @@ export function App() {
   const [compiling, setCompiling] = useState(false)
   const [bundleStatus, setBundleStatus] = useState<LatexBundleStatusDto>({ state: 'missing' })
   const [aiOpen, setAiOpen] = useState(true)
+  const [dockTab, setDockTab] = useState<'ai' | 'compile'>('ai')
+  const [fileAction, setFileAction] = useState<FileAction | null>(null)
+  const [fileActionBusy, setFileActionBusy] = useState(false)
   const [editorContext, setEditorContext] = useState<
     (EditorContextSnapshot & { path: string }) | null
   >(null)
@@ -242,7 +248,21 @@ export function App() {
             },
           ])
           if (!disposed) {
-            replaceEditorState(state)
+            replaceEditorState(
+              session.latestCompile ? restoreEditorPreview(state, session.latestCompile) : state,
+            )
+            if (session.latestCompile) {
+              setLog(session.latestCompile.log)
+              setDiagnostics(
+                mapCompileDiagnostics(
+                  session.latestCompile.diagnostics.flatMap((value) => {
+                    const parsed = diagnosticInput(value)
+                    return parsed ? [parsed] : []
+                  }),
+                  new Set(listed.value),
+                ),
+              )
+            }
             setOpenPaths([initial])
             setActivePath(initial)
           }
@@ -428,13 +448,14 @@ export function App() {
     scheduleAutoCompile()
   }
 
-  const createFile = async () => {
-    if (closeFreeze.current.isFrozen() || !projectId) return
-    const path = window.prompt('New LaTeX file path', 'chapter.tex')?.trim()
-    if (!path) return
+  const createFile = async (path: string): Promise<boolean> => {
+    if (closeFreeze.current.isFrozen() || !projectId) return false
     projectListingGate.current.invalidate()
     const result = await window.latexApi.createFile({ projectId, path, text: '' })
-    if (!result.ok) return setError(result.error.message)
+    if (!result.ok) {
+      setError(result.error.message)
+      return false
+    }
     replaceEditorState(
       addEditorBuffer(
         editorStateRef.current,
@@ -457,12 +478,15 @@ export function App() {
     setFiles((current) => [...new Set([...current, path])].sort())
     activateFile(path)
     scheduleAutoCompile()
+    return true
   }
 
-  const renameFile = async (from: string) => {
-    if (closeFreeze.current.isFrozen() || !projectId) return
-    if (!canRenameFile(from, mainFile))
-      return setError('The configured main file cannot be renamed.')
+  const renameFile = async (from: string, to: string): Promise<boolean> => {
+    if (closeFreeze.current.isFrozen() || !projectId) return false
+    if (!canRenameFile(from, mainFile)) {
+      setError('The configured main file cannot be renamed.')
+      return false
+    }
     const scheduleTimer = () => {
       saveTimers.current.set(
         from,
@@ -472,8 +496,8 @@ export function App() {
         }, 600),
       )
     }
-    await runRenameFlow({
-      prompt: () => window.prompt('Rename file', from),
+    return runRenameFlow({
+      prompt: () => to,
       from,
       cancelTimer: () => {
         const timer = saveTimers.current.get(from)
@@ -493,7 +517,7 @@ export function App() {
         return result.ok
       },
       apply: (ownedFrom, to) => {
-        updateEditorState((state) => renameEditorBuffer(state, ownedFrom, to))
+        updateEditorState((state) => renameEditorBuffer(state, ownedFrom, to, true))
         const remapped = remapWorkspacePaths(files, openPaths, activePathRef.current, ownedFrom, to)
         setFiles(remapped.files)
         setOpenPaths(remapped.openPaths)
@@ -501,6 +525,59 @@ export function App() {
         scheduleAutoCompile()
       },
     })
+  }
+
+  const deleteFile = async (path: string): Promise<boolean> => {
+    if (closeFreeze.current.isFrozen() || !projectId) return false
+    let buffer = editorStateRef.current.buffers[path]
+    if (buffer?.conflict) {
+      setError('Resolve this file before deleting it.')
+      return false
+    }
+    if (buffer?.dirty) {
+      if (!(await savePath(path))) return false
+      buffer = editorStateRef.current.buffers[path]
+      if (buffer?.dirty || buffer?.conflict) {
+        setError('The file could not be saved before deletion.')
+        return false
+      }
+    }
+    projectListingGate.current.invalidate()
+    const result = await window.latexApi.deleteFile({ projectId, path })
+    if (!result.ok) {
+      setError(result.error.message)
+      return false
+    }
+    updateEditorState((state) => removeEditorBuffer(state, path))
+    const nextFiles = filesRef.current.filter((item) => item !== path)
+    const nextOpen = openPathsRef.current.filter((item) => item !== path)
+    setFiles(nextFiles)
+    setOpenPaths(nextOpen)
+    if (activePathRef.current === path) setActivePath(nextOpen[0] ?? null)
+    scheduleAutoCompile()
+    return true
+  }
+
+  const submitFileAction = async (value?: string) => {
+    const action = fileAction
+    if (!action) return
+    setFileActionBusy(true)
+    setError(null)
+    try {
+      const succeeded =
+        action.kind === 'create' && value
+          ? await createFile(value)
+          : action.kind === 'rename' && value
+            ? await renameFile(action.path, value)
+            : action.kind === 'delete'
+              ? await deleteFile(action.path)
+              : false
+      if (succeeded) setFileAction(null)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setFileActionBusy(false)
+    }
   }
 
   const forwardSync = (line: number) => {
@@ -593,8 +670,9 @@ export function App() {
           files={files}
           activePath={activePath}
           onOpen={(path) => void openFile(path)}
-          onCreate={() => void createFile()}
-          onRename={(path) => void renameFile(path)}
+          onCreate={() => setFileAction({ kind: 'create' })}
+          onRename={(path) => setFileAction({ kind: 'rename', path })}
+          onDelete={(path) => setFileAction({ kind: 'delete', path })}
           mainFile={mainFile}
         />
         <section className="editor-workspace">
@@ -643,33 +721,6 @@ export function App() {
               {error}
             </div>
           )}
-          <CompilePanel
-            compiling={compiling}
-            disabled={frozen}
-            bundleStatus={bundleStatus}
-            diagnostics={diagnostics}
-            log={log}
-            onCompile={compileProject}
-            onCancel={() => {
-              if (closeFreeze.current.isFrozen()) return
-              compileQueue.current.cancelPending()
-              if (projectId) void window.latexApi.cancelCompile({ projectId })
-            }}
-            onDiagnostic={(diagnostic) => {
-              void openFile(diagnostic.path).then(() =>
-                setRevealTarget({ path: diagnostic.path, line: diagnostic.lineIndex + 1 }),
-              )
-            }}
-            onAskAi={(diagnostic) => {
-              setAiDiagnostic(diagnosticToAgentContext(diagnostic))
-              setHiddenAiContext((current) => {
-                const next = new Set(current)
-                next.delete('diagnostic')
-                return next
-              })
-              setAiOpen(true)
-            }}
-          />
         </section>
         <PdfPreview
           pdfUrl={editorState.preview?.pdfUrl ?? null}
@@ -690,8 +741,47 @@ export function App() {
           onRemoveContext={(key) => setHiddenAiContext((current) => new Set([...current, key]))}
           onExpand={() => setAiOpen(true)}
           onCollapse={() => setAiOpen(false)}
+          activeTab={dockTab}
+          onTabChange={setDockTab}
+          compilePanel={
+            <CompilePanel
+              compiling={compiling}
+              disabled={frozen}
+              bundleStatus={bundleStatus}
+              diagnostics={diagnostics}
+              log={log}
+              onCompile={compileProject}
+              onCancel={() => {
+                if (closeFreeze.current.isFrozen()) return
+                compileQueue.current.cancelPending()
+                if (projectId) void window.latexApi.cancelCompile({ projectId })
+              }}
+              onDiagnostic={(diagnostic) => {
+                void openFile(diagnostic.path).then(() =>
+                  setRevealTarget({ path: diagnostic.path, line: diagnostic.lineIndex + 1 }),
+                )
+              }}
+              onAskAi={(diagnostic) => {
+                setAiDiagnostic(diagnosticToAgentContext(diagnostic))
+                setHiddenAiContext((current) => {
+                  const next = new Set(current)
+                  next.delete('diagnostic')
+                  return next
+                })
+                setDockTab('ai')
+              }}
+            />
+          }
         />
       )}
+      <FileActionDialog
+        action={fileAction}
+        busy={fileActionBusy}
+        onCancel={() => {
+          if (!fileActionBusy) setFileAction(null)
+        }}
+        onSubmit={(value) => void submitFileAction(value)}
+      />
     </main>
   )
 }
