@@ -14,6 +14,7 @@ import {
 } from '../shared/ipc.js'
 import {
   MainFileRenameError,
+  ProposalVerificationRejectedError,
   UnsavedBuffersError,
   type ProjectSession,
   type ProjectSessionRegistry,
@@ -177,6 +178,11 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
       if (!proposal) throw coded('LATEX_NOT_FOUND', 'Proposal not found')
       return proposal
     }),
+  )
+  handle(LATEX_CHANNELS.proposalVerify, (event, payload) =>
+    withSession(event, payload, registry, parseProposalRequest, (session, request) =>
+      session.verifyProposal(request.proposalId),
+    ),
   )
   handle(LATEX_CHANNELS.proposalApply, (event, payload) =>
     withSession(event, payload, registry, parseProposalRequest, (session, request) =>
@@ -448,6 +454,18 @@ function fail(error: unknown): LatexIpcResult<never> {
     return {
       ok: false,
       error: { code: 'LATEX_CONFLICT', message: 'Project has unsaved LaTeX changes' },
+    }
+  }
+  if (error instanceof ProposalVerificationRejectedError) {
+    if (error.reason === 'not-found' || error.reason === 'expired') {
+      return { ok: false, error: { code: 'LATEX_NOT_FOUND', message: error.message } }
+    }
+    if (error.reason === 'baseline') {
+      return { ok: false, error: { code: 'LATEX_CONFLICT', message: error.message } }
+    }
+    return {
+      ok: false,
+      error: { code: 'LATEX_VERIFICATION_REJECTED', message: error.message },
     }
   }
   if (

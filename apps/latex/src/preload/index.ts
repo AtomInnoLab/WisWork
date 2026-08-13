@@ -16,6 +16,7 @@ const api: LatexApi = {
   syncTexReverse: (request) => ipcRenderer.invoke(LATEX_CHANNELS.syncTexReverse, request),
   getProposal: (request) => ipcRenderer.invoke(LATEX_CHANNELS.proposalGet, request),
   proposeProjectEdits: (request) => ipcRenderer.invoke(LATEX_CHANNELS.proposalCreate, request),
+  verifyProposal: (request) => ipcRenderer.invoke(LATEX_CHANNELS.proposalVerify, request),
   applyProposal: (request) => ipcRenderer.invoke(LATEX_CHANNELS.proposalApply, request),
   undoProposal: (request) => ipcRenderer.invoke(LATEX_CHANNELS.proposalUndo, request),
   listProjectFiles: (request) => ipcRenderer.invoke(LATEX_CHANNELS.aiProjectList, request),

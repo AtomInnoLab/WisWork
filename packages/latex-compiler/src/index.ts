@@ -57,4 +57,5 @@ export type {
   CompileWorkspace,
   CompileWorkspaceHooks,
   CompileWorkspaceLimits,
+  CompileTextOverlay,
 } from './workspace.js'

@@ -52,6 +52,13 @@ export function configureLatexRuntime(config: LatexRuntimeConfig): void {
       const electron = electronRuntime()
       electron.webContents.fromId(id)?.send(LATEX_CHANNELS.externalChanged, buffer)
     },
+    acquireRendererFreeze: async (id) => {
+      const contents = electronRuntime().webContents.fromId(id)
+      if (!contents || contents.isDestroyed()) throw new Error('LaTeX renderer is unavailable')
+      const frozen = await requestLatexEditFlush(contents)
+      if (!frozen) throw new Error('Unable to freeze the LaTeX editor')
+      return () => releaseLatexEditFlush(contents)
+    },
   })
 }
 

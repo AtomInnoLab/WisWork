@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
-import { proposalForSelection } from '../src/renderer/ai/proposal-review.js'
+import { describe, expect, it } from 'vitest'
+import { reviewAction, verificationCompileComparison } from '../src/renderer/ai/proposal-review.js'
 
 const proposal = {
   id: 'original',
@@ -12,34 +12,45 @@ const proposal = {
 }
 
 describe('proposal review selection', () => {
-  it('keeps the original id only for the unchanged full proposal', async () => {
-    const create = vi.fn()
-    await expect(proposalForSelection(proposal, new Set(['a.tex', 'b.tex']), create)).resolves.toBe(
-      proposal,
-    )
-    expect(create).not.toHaveBeenCalled()
+  it('requires subset verification before apply and permits explicit risky apply only after settling', () => {
+    expect(reviewAction(proposal, new Set(['a.tex']), { state: 'verified' })).toEqual({
+      kind: 'verify-selection',
+      label: 'Verify selected',
+      disabled: false,
+    })
+    expect(reviewAction(proposal, new Set(['a.tex', 'b.tex']), { state: 'verifying' })).toEqual({
+      kind: 'apply',
+      label: 'Verifying…',
+      disabled: true,
+    })
+    expect(reviewAction(proposal, new Set(['a.tex', 'b.tex']), { state: 'failed' })).toEqual({
+      kind: 'review-risk',
+      label: 'Review risk',
+      disabled: false,
+    })
+    expect(reviewAction(proposal, new Set(['a.tex', 'b.tex']), { state: 'failed' }, true)).toEqual({
+      kind: 'apply',
+      label: 'Apply unverified changes',
+      disabled: false,
+    })
+    expect(reviewAction(proposal, new Set(['a.tex', 'b.tex']), { state: 'rejected' })).toEqual({
+      kind: 'apply',
+      label: 'Regenerate proposal to apply',
+      disabled: true,
+    })
   })
+})
 
-  it('creates a fresh one-time proposal every time the selected content changes', async () => {
-    const create = vi
-      .fn()
-      .mockResolvedValueOnce({ ...proposal, id: 'subset-1', files: [proposal.files[0]] })
-      .mockResolvedValueOnce({ ...proposal, id: 'subset-2', files: [proposal.files[0]] })
-    await expect(proposalForSelection(proposal, new Set(['a.tex']), create)).resolves.toMatchObject(
-      {
-        id: 'subset-1',
-      },
+describe('proposal verification comparison', () => {
+  it('compares isolated and formal compile diagnostic counts', () => {
+    expect(verificationCompileComparison({ state: 'verified', diagnosticCount: 2 }, 2)).toContain(
+      'consistent',
     )
-    await expect(proposalForSelection(proposal, new Set(['a.tex']), create)).resolves.toMatchObject(
-      {
-        id: 'subset-2',
-      },
+    expect(verificationCompileComparison({ state: 'failed', diagnosticCount: 3 }, 1)).toContain(
+      'different',
     )
-    expect(create).toHaveBeenCalledTimes(2)
-    expect(create).toHaveBeenLastCalledWith([{ path: 'a.tex', afterText: 'a1' }])
-  })
-
-  it('does not authorize an empty selection', async () => {
-    await expect(proposalForSelection(proposal, new Set(), vi.fn())).rejects.toThrow(/select/i)
+    expect(
+      verificationCompileComparison({ state: 'unverifiable', diagnosticCount: 0 }, 1),
+    ).toContain('unavailable')
   })
 })

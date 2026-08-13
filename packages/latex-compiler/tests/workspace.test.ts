@@ -1,5 +1,17 @@
-import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import {
+  access,
+  link,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createCompileWorkspace } from '../src/workspace.js'
@@ -52,5 +64,188 @@ describe('isolated compile workspace', () => {
     await expect(
       createCompileWorkspace(project, join(root, 'd'), { mainFile: '../main.tex' }),
     ).rejects.toThrow(/path|traversal/i)
+  })
+
+  it('applies replacement overlays only to the isolated input', async () => {
+    const { root, project } = await setup()
+    await mkdir(join(project, 'chapters'))
+    await writeFile(join(project, 'chapters/a.tex'), 'before')
+    const workspace = await createCompileWorkspace(project, join(root, 'tmp'), {
+      overlay: [{ path: 'chapters/a.tex', text: 'after' }],
+    })
+
+    expect(await readFile(join(workspace.inputDirectory, 'chapters/a.tex'), 'utf8')).toBe('after')
+    expect(await readFile(join(project, 'chapters/a.tex'), 'utf8')).toBe('before')
+  })
+
+  it('rejects new overlay files without changing the source project', async () => {
+    const { root, project } = await setup()
+    await expect(
+      createCompileWorkspace(project, join(root, 'tmp'), {
+        overlay: [{ path: 'new.tex', text: 'new' }],
+      }),
+    ).rejects.toMatchObject({ code: 'TECTONIC_WORKSPACE_INVALID' })
+    await expect(access(join(project, 'new.tex'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it.each([
+    ['absolute', '/escape.tex', 'x'],
+    ['drive absolute', 'C:\\escape.tex', 'x'],
+    ['backslash rooted', '\\escape.tex', 'x'],
+    ['traversal', '../escape.tex', 'x'],
+    ['disallowed extension', 'image.png', 'x'],
+    ['alternate data stream', 'main.tex:payload', 'x'],
+    ['reserved device name', 'CON.tex', 'x'],
+    ['Windows illegal character', 'chapter?/a.tex', 'x'],
+    ['Windows illegal quote', 'chapters/a".tex', 'x'],
+    ['control character', 'chapters/a\u0001.tex', 'x'],
+    ['trailing component dot', 'chapter./a.tex', 'x'],
+    ['trailing component space', 'chapter /a.tex', 'x'],
+    ['invalid Unicode path', '\ud800.tex', 'x'],
+    ['NUL text', 'main.tex', 'x\0y'],
+    ['invalid UTF-8 text', 'main.tex', '\ud800'],
+  ])('rejects invalid overlay %s', async (_label, path, text) => {
+    const { root, project } = await setup()
+    await expect(
+      createCompileWorkspace(project, join(root, 'tmp'), { overlay: [{ path, text }] }),
+    ).rejects.toMatchObject({ code: 'TECTONIC_WORKSPACE_INVALID' })
+  })
+
+  it('rejects duplicate normalized overlay paths and overlay size limits', async () => {
+    const { root, project } = await setup()
+    await expect(
+      createCompileWorkspace(project, join(root, 'duplicate'), {
+        overlay: [
+          { path: 'a/./b.tex', text: 'one' },
+          { path: 'a/b.tex', text: 'two' },
+        ],
+      }),
+    ).rejects.toThrow(/duplicate/i)
+    await expect(
+      createCompileWorkspace(project, join(root, 'case-duplicate'), {
+        overlay: [
+          { path: 'A.tex', text: 'one' },
+          { path: 'a.tex', text: 'two' },
+        ],
+      }),
+    ).rejects.toThrow(/duplicate/i)
+    await expect(
+      createCompileWorkspace(project, join(root, 'unicode-duplicate'), {
+        overlay: [
+          { path: 'caf\u00e9.tex', text: 'one' },
+          { path: 'cafe\u0301.tex', text: 'two' },
+        ],
+      }),
+    ).rejects.toThrow(/duplicate/i)
+    await expect(
+      createCompileWorkspace(project, join(root, 'count'), {
+        overlay: [
+          { path: 'a.tex', text: 'a' },
+          { path: 'b.tex', text: 'b' },
+        ],
+        maxOverlayFiles: 1,
+      }),
+    ).rejects.toThrow(/file count/i)
+    await expect(
+      createCompileWorkspace(project, join(root, 'file-bytes'), {
+        overlay: [{ path: 'a.tex', text: '123' }],
+        maxOverlayFileBytes: 2,
+      }),
+    ).rejects.toThrow(/file size/i)
+    await expect(
+      createCompileWorkspace(project, join(root, 'total-bytes'), {
+        overlay: [
+          { path: 'a.tex', text: '12' },
+          { path: 'b.tex', text: '34' },
+        ],
+        maxOverlayTotalBytes: 3,
+      }),
+    ).rejects.toThrow(/total size/i)
+  })
+
+  it('requires expected source hashes to be bounded, canonical, and exact overlay targets', async () => {
+    const { root, project } = await setup()
+    const hash = createHash('sha256').update('main').digest('hex')
+    const invalidExpectedSourceHashes: Array<Record<string, string>> = [
+      { './main.tex': hash },
+      { 'other.tex': hash },
+      { 'main.tex': 'not-a-sha256' },
+    ]
+    for (const [index, expectedSourceHashes] of invalidExpectedSourceHashes.entries()) {
+      await expect(
+        createCompileWorkspace(project, join(root, `hash-${index}`), {
+          overlay: [{ path: 'main.tex', text: 'after' }],
+          expectedSourceHashes,
+        }),
+      ).rejects.toMatchObject({ code: 'TECTONIC_WORKSPACE_INVALID' })
+    }
+    await expect(
+      createCompileWorkspace(project, join(root, 'hash-count'), {
+        overlay: [{ path: 'main.tex', text: 'after' }],
+        expectedSourceHashes: { 'main.tex': hash, 'other.tex': hash },
+        maxOverlayFiles: 1,
+      }),
+    ).rejects.toMatchObject({ code: 'TECTONIC_WORKSPACE_INVALID' })
+  })
+
+  it('rejects overlay targets below a linked directory', async () => {
+    const { root, project } = await setup()
+    const outside = join(root, 'outside')
+    await mkdir(outside)
+    await symlink(outside, join(project, 'linked'))
+    await expect(
+      createCompileWorkspace(project, join(root, 'tmp'), {
+        overlay: [{ path: 'linked/escape.tex', text: 'owned' }],
+      }),
+    ).rejects.toThrow(/link/i)
+    await expect(access(join(outside, 'escape.tex'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('does not truncate a replaced existing target before validating its handle identity', async () => {
+    const { root, project } = await setup()
+    const outside = join(root, 'outside.tex')
+    await writeFile(outside, 'outside sentinel')
+    let enteredOverlay = false
+
+    await expect(
+      createCompileWorkspace(project, join(root, 'tmp'), {
+        overlay: [{ path: 'main.tex', text: 'overlay' }],
+        hooks: {
+          beforeOverlayTargetOpen: async (target) => {
+            enteredOverlay = true
+            await unlink(target)
+            await link(outside, target)
+          },
+        },
+      }),
+    ).rejects.toThrow(/changed|identity|target/i)
+    expect(enteredOverlay).toBe(true)
+    expect(await readFile(outside, 'utf8')).toBe('outside sentinel')
+  })
+
+  it('fails closed when an overlay parent is swapped to an external symlink', async () => {
+    const { root, project } = await setup()
+    await mkdir(join(project, 'chapters'))
+    await writeFile(join(project, 'chapters/a.tex'), 'inside')
+    const outside = join(root, 'outside')
+    await mkdir(outside)
+    await writeFile(join(outside, 'a.tex'), 'outside sentinel')
+    let enteredOverlay = false
+
+    await expect(
+      createCompileWorkspace(project, join(root, 'tmp'), {
+        overlay: [{ path: 'chapters/a.tex', text: 'overlay' }],
+        hooks: {
+          afterOverlayTargetOpen: async (target) => {
+            enteredOverlay = true
+            const parent = join(target, '..')
+            await rename(parent, `${parent}-moved`)
+            await symlink(outside, parent, 'dir')
+          },
+        },
+      }),
+    ).rejects.toThrow(/changed|link|identity|target/i)
+    expect(enteredOverlay).toBe(true)
+    expect(await readFile(join(outside, 'a.tex'), 'utf8')).toBe('outside sentinel')
   })
 })

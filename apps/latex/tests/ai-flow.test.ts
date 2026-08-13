@@ -1,16 +1,25 @@
 import { createHash } from 'node:crypto'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { compileIsolated, TectonicRunError } from '@wiswork/latex-compiler'
 import { ProjectSessionRegistry } from '../src/main/project-session.js'
 
 const sha = (text: string) => createHash('sha256').update(text).digest('hex')
+const testFreeze = async () => () => undefined
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => (resolve = done))
+  return { promise, resolve }
+}
 
 describe('confirmed LaTeX AI edit flow', () => {
   const roots: string[] = []
 
   afterEach(async () => {
+    vi.restoreAllMocks()
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
   })
 
@@ -22,6 +31,7 @@ describe('confirmed LaTeX AI edit flow', () => {
     await writeFile(join(projectRoot, 'main.tex'), 'before')
     const session = await new ProjectSessionRegistry({
       watch: () => ({ close() {} }),
+      acquireRendererFreeze: testFreeze,
       compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
     }).attach(41, projectRoot)
     await session.readText('main.tex')
@@ -32,6 +42,397 @@ describe('confirmed LaTeX AI edit flow', () => {
     })
     return { projectRoot, session }
   }
+
+  async function setupVerification(
+    files: Array<{ path: string; beforeSha256: string | null; afterText: string }> = [
+      { path: 'main.tex', beforeSha256: sha('before'), afterText: 'after' },
+    ],
+    compilerFailure?: Error,
+  ) {
+    const root = await mkdtemp(join(tmpdir(), 'latex-proposal-verify-'))
+    roots.push(root)
+    const projectRoot = join(root, 'project')
+    const stagingDirectory = join(root, 'verify-stage')
+    await mkdir(projectRoot)
+    await writeFile(join(projectRoot, 'main.tex'), 'before')
+    const compiler = vi.fn(async () => {
+      if (compilerFailure) throw compilerFailure
+      await mkdir(stagingDirectory, { recursive: true })
+      await writeFile(join(stagingDirectory, 'main.log'), 'staged evidence')
+      return {
+        generationId: 'verification-generation',
+        stagingDirectory,
+        files: [],
+        log: 'main.tex:2:3: warning: isolated warning',
+        synctexInputRoot: join(root, 'isolated-input'),
+        workspaceCleaned: true as const,
+      }
+    })
+    const commitGeneration = vi.fn()
+    const cleanupStaging = vi.fn((path: string) => rm(path, { recursive: true, force: true }))
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler: compiler as never,
+      commitGeneration: commitGeneration as never,
+      cleanupStaging,
+      acquireRendererFreeze: testFreeze,
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
+    }).attach(51, projectRoot)
+    await session.readText('main.tex')
+    await session.registerProposal({
+      id: 'proposal-verify',
+      expiresAt: Date.now() + 60_000,
+      files,
+    })
+    return {
+      root,
+      projectRoot,
+      stagingDirectory,
+      session,
+      compiler,
+      commitGeneration,
+      cleanupStaging,
+    }
+  }
+
+  it('verifies a replacement in isolation without changing source, publishing, or consuming it', async () => {
+    const { projectRoot, stagingDirectory, session, compiler, commitGeneration, cleanupStaging } =
+      await setupVerification()
+    const sourceBefore = sha(await readFile(join(projectRoot, 'main.tex'), 'utf8'))
+
+    await expect(session.verifyProposal('proposal-verify')).resolves.toMatchObject({
+      proposalId: 'proposal-verify',
+      state: 'verified',
+      diagnostics: [{ path: 'main.tex', severity: 'warning' }],
+    })
+    expect(compiler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectDirectory: projectRoot,
+        mainFile: 'main.tex',
+        overlay: [{ path: 'main.tex', text: 'after' }],
+        expectedSourceHashes: { 'main.tex': sha('before') },
+      }),
+    )
+    expect(commitGeneration).not.toHaveBeenCalled()
+    expect(cleanupStaging).toHaveBeenCalledWith(stagingDirectory)
+    await expect(access(stagingDirectory)).rejects.toThrow()
+    expect(sha(await readFile(join(projectRoot, 'main.tex'), 'utf8'))).toBe(sourceBefore)
+
+    vi.spyOn(session, 'compile').mockResolvedValue({
+      revision: 1,
+      pdfUrl: null,
+      diagnostics: [],
+      log: '',
+    })
+    await expect(session.applyConfirmedProposal('proposal-verify')).resolves.toMatchObject({
+      proposalId: 'proposal-verify',
+    })
+    await expect(session.applyConfirmedProposal('proposal-verify')).rejects.toThrow(/not found/i)
+  })
+
+  it('returns typed unverifiable evidence for a new file without calling the compiler', async () => {
+    const { session, compiler } = await setupVerification([
+      { path: 'new.tex', beforeSha256: null, afterText: 'new file' },
+    ])
+    await expect(session.verifyProposal('proposal-verify')).resolves.toMatchObject({
+      proposalId: 'proposal-verify',
+      state: 'unverifiable',
+      diagnostics: [],
+      reason: expect.stringMatching(/new file/i),
+    })
+    expect(compiler).not.toHaveBeenCalled()
+  })
+
+  it('checks every existing baseline before returning mixed proposals as unverifiable', async () => {
+    const { projectRoot, session, compiler } = await setupVerification([
+      { path: 'main.tex', beforeSha256: sha('before'), afterText: 'after' },
+      { path: 'new.tex', beforeSha256: null, afterText: 'new file' },
+    ])
+    await writeFile(join(projectRoot, 'main.tex'), 'stale')
+    await expect(session.verifyProposal('proposal-verify')).rejects.toThrow(/baseline|changed/i)
+    expect(compiler).not.toHaveBeenCalled()
+  })
+
+  it('waits for the renderer freeze before checking persisted buffers and always releases it', async () => {
+    const freeze = deferred<() => void>()
+    const release = vi.fn()
+    const root = await mkdtemp(join(tmpdir(), 'latex-freeze-'))
+    roots.push(root)
+    const projectRoot = join(root, 'project')
+    await mkdir(projectRoot)
+    await writeFile(join(projectRoot, 'main.tex'), 'before')
+    const compiler = vi.fn(async () => ({
+      generationId: 'verified',
+      stagingDirectory: join(root, 'stage'),
+      files: [],
+      log: '',
+      synctexInputRoot: projectRoot,
+      workspaceCleaned: true as const,
+    }))
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler: compiler as never,
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
+      acquireRendererFreeze: () => freeze.promise,
+    }).attach(91, projectRoot)
+    await session.readText('main.tex')
+    session.updateBuffer('main.tex', 'pending')
+    await session.registerProposal({
+      id: 'fenced',
+      expiresAt: Date.now() + 60_000,
+      files: [{ path: 'main.tex', beforeSha256: sha('before'), afterText: 'after' }],
+    })
+    const verifying = session.verifyProposal('fenced')
+    await Promise.resolve()
+    expect(compiler).not.toHaveBeenCalled()
+    await session.saveText('main.tex', 'pending')
+    freeze.resolve(release)
+    await expect(verifying).rejects.toThrow(/baseline|changed/i)
+    expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('rejects when disposed while waiting for the renderer freeze', async () => {
+    const freeze = deferred<() => void>()
+    const { session } = await setupVerification()
+    ;(
+      session as unknown as { acquireRendererFreeze: () => Promise<() => void> }
+    ).acquireRendererFreeze = () => freeze.promise
+    const release = vi.fn()
+    const verifying = session.verifyProposal('proposal-verify')
+    session.dispose()
+    freeze.resolve(release)
+    await expect(verifying).rejects.toThrow(/closed/i)
+    expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('refuses a confirmed transaction when the renderer cannot be frozen', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'latex-freeze-fail-'))
+    roots.push(root)
+    const projectRoot = join(root, 'project')
+    await mkdir(projectRoot)
+    await writeFile(join(projectRoot, 'main.tex'), 'before')
+    const compiler = vi.fn()
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler: compiler as never,
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
+      acquireRendererFreeze: async () => {
+        throw new Error('freeze failed')
+      },
+    }).attach(92, projectRoot)
+    await session.registerProposal({
+      id: 'fenced',
+      expiresAt: Date.now() + 60_000,
+      files: [{ path: 'main.tex', beforeSha256: sha('before'), afterText: 'after' }],
+    })
+    await expect(session.verifyProposal('fenced')).rejects.toThrow(/freeze/i)
+    expect(compiler).not.toHaveBeenCalled()
+  })
+
+  it('rejects dirty buffers and changed proposal baselines before compiling', async () => {
+    const dirty = await setupVerification()
+    dirty.session.updateBuffer('main.tex', 'local dirty')
+    await expect(dirty.session.verifyProposal('proposal-verify')).rejects.toThrow(/unsaved/i)
+    expect(dirty.compiler).not.toHaveBeenCalled()
+
+    const changed = await setupVerification()
+    await writeFile(join(changed.projectRoot, 'main.tex'), 'external change')
+    await expect(changed.session.verifyProposal('proposal-verify')).rejects.toThrow(
+      /baseline|changed/i,
+    )
+    expect(changed.compiler).not.toHaveBeenCalled()
+  })
+
+  it('rejects a baseline changed between session precheck and compiler copy before run', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'latex-proposal-toctou-'))
+    roots.push(root)
+    const projectRoot = join(root, 'project')
+    await mkdir(projectRoot)
+    await writeFile(join(projectRoot, 'main.tex'), 'before')
+    const run = vi.fn()
+    let changed = false
+    const compiler = vi.fn((request: Parameters<typeof compileIsolated>[0]) =>
+      compileIsolated({
+        ...request,
+        hooks: {
+          afterDirectoryRead: async (path) => {
+            if (path !== projectRoot || changed) return
+            changed = true
+            await writeFile(join(projectRoot, 'main.tex'), 'changed')
+          },
+        },
+        run,
+      }),
+    )
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler,
+      acquireRendererFreeze: testFreeze,
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
+    }).attach(52, projectRoot)
+    await session.registerProposal({
+      id: 'toctou-proposal',
+      expiresAt: Date.now() + 60_000,
+      files: [{ path: 'main.tex', beforeSha256: sha('before'), afterText: 'after' }],
+    })
+
+    await expect(session.verifyProposal('toctou-proposal')).rejects.toThrow(/safety|rejected/i)
+    expect(run).not.toHaveBeenCalled()
+    expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('changed')
+  })
+
+  it('returns bounded failed evidence for a Tectonic run error', async () => {
+    const log = `${'😀'.repeat(5_000)}\n${Array.from(
+      { length: 150 },
+      (_, index) => `main.tex:${index + 1}:1: error: ${'x'.repeat(200)}`,
+    ).join('\n')}`
+    const failure = new TectonicRunError('TECTONIC_EXIT_NONZERO', 'compile failed', log, 1)
+    failure.terminationConfirmed = true
+    const { session, compiler, cleanupStaging } = await setupVerification(undefined, failure)
+
+    const result = await session.verifyProposal('proposal-verify')
+    expect(result).toMatchObject({ proposalId: 'proposal-verify', state: 'failed' })
+    expect(result.diagnostics).toHaveLength(100)
+    expect(Buffer.byteLength(result.logSummary, 'utf8')).toBeLessThanOrEqual(16_000)
+    expect(compiler).toHaveBeenCalledOnce()
+    expect(cleanupStaging).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['unconfirmed exit', 'TECTONIC_EXIT_NONZERO', false, 1],
+    ['spawn failure', 'TECTONIC_EXIT_NONZERO', true, null],
+    ['total timeout', 'TECTONIC_TOTAL_TIMEOUT', true, null],
+    ['idle timeout', 'TECTONIC_IDLE_TIMEOUT', true, null],
+    ['output limit', 'TECTONIC_OUTPUT_LIMIT', true, null],
+    ['cancelled', 'TECTONIC_CANCELLED', true, null],
+  ] as const)(
+    'rejects unsafe Tectonic failure classification: %s',
+    async (_label, code, terminationConfirmed, exitCode) => {
+      const failure = new TectonicRunError(code, 'unsafe failure', 'unsafe log', exitCode)
+      failure.terminationConfirmed = terminationConfirmed
+      const { session } = await setupVerification(undefined, failure)
+      await expect(session.verifyProposal('proposal-verify')).rejects.toThrow(/rejected|safety/i)
+    },
+  )
+
+  it('serializes ordinary compile and proposal verification through one queue', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'latex-proposal-queue-'))
+    roots.push(root)
+    const projectRoot = join(root, 'project')
+    await mkdir(projectRoot)
+    await writeFile(join(projectRoot, 'main.tex'), 'before')
+    let calls = 0
+    let active = 0
+    let maxActive = 0
+    let markFirstStarted!: () => void
+    let releaseFirst!: () => void
+    const firstStarted = new Promise<void>((resolve) => (markFirstStarted = resolve))
+    const firstGate = new Promise<void>((resolve) => (releaseFirst = resolve))
+    const compiler = vi.fn(async (request: { signal?: AbortSignal }) => {
+      calls += 1
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      try {
+        if (calls === 1) {
+          markFirstStarted()
+          await Promise.race([
+            firstGate.then(() => {
+              throw new Error('test release')
+            }),
+            new Promise<never>((_resolve, reject) =>
+              request.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+                once: true,
+              }),
+            ),
+          ])
+        }
+        return {
+          generationId: 'verified',
+          stagingDirectory: join(root, 'verified-stage'),
+          files: [],
+          log: '',
+          synctexInputRoot: '/isolated/input',
+          workspaceCleaned: true as const,
+        }
+      } finally {
+        active -= 1
+      }
+    })
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler: compiler as never,
+      commitGeneration: vi.fn() as never,
+      acquireRendererFreeze: testFreeze,
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
+    }).attach(61, projectRoot)
+    await session.registerProposal({
+      id: 'queued-proposal',
+      expiresAt: Date.now() + 60_000,
+      files: [{ path: 'main.tex', beforeSha256: sha('before'), afterText: 'after' }],
+    })
+
+    const compiling = session.compile(1, 'main.tex').catch((error) => error)
+    await firstStarted
+    const verifying = session.verifyProposal('queued-proposal')
+    await vi.waitFor(() => expect(compiler).toHaveBeenCalledTimes(2))
+    releaseFirst()
+    await expect(verifying).resolves.toMatchObject({ state: 'verified' })
+    await compiling
+    expect(maxActive).toBe(1)
+  })
+
+  it('dispose aborts and rejects an active proposal verification', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'latex-proposal-cancel-'))
+    roots.push(root)
+    const projectRoot = join(root, 'project')
+    await mkdir(projectRoot)
+    await writeFile(join(projectRoot, 'main.tex'), 'before')
+    let markStarted!: () => void
+    let release!: () => void
+    let observedSignal: AbortSignal | undefined
+    const started = new Promise<void>((resolve) => (markStarted = resolve))
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const compiler = vi.fn((request: { signal?: AbortSignal }) => {
+      observedSignal = request.signal
+      markStarted()
+      return new Promise((resolve, reject) => {
+        request.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+          once: true,
+        })
+        void gate.then(() => reject(new Error('test release')))
+      })
+    })
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler: compiler as never,
+      acquireRendererFreeze: testFreeze,
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
+    }).attach(71, projectRoot)
+    await session.registerProposal({
+      id: 'cancel-proposal',
+      expiresAt: Date.now() + 60_000,
+      files: [{ path: 'main.tex', beforeSha256: sha('before'), afterText: 'after' }],
+    })
+
+    const verifying = session.verifyProposal('cancel-proposal')
+    await started
+    expect(session.cancelCompile()).toBe(false)
+    await expect(session.compile(99, 'main.tex')).rejects.toThrow(/transaction/i)
+    session.dispose()
+    const cancelled = true
+    const aborted = observedSignal?.aborted === true
+    if (!aborted) release()
+    await expect(verifying).rejects.toThrow()
+    expect(cancelled).toBe(true)
+    expect(aborted).toBe(true)
+  })
+
+  it('rejects expired proposals before compiling', async () => {
+    const { session, compiler } = await setupVerification()
+    vi.spyOn(Date, 'now').mockReturnValue(Number.MAX_SAFE_INTEGER)
+    await expect(session.verifyProposal('proposal-verify')).rejects.toThrow(/expired/i)
+    expect(compiler).not.toHaveBeenCalled()
+  })
 
   it('rejects renderer-dirty state before consuming authorization', async () => {
     const { session } = await setup()
@@ -72,6 +473,41 @@ describe('confirmed LaTeX AI edit flow', () => {
       compile: { ok: false, error: 'compile error' },
     })
     expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('after')
+  })
+
+  it('rejects external compile/cancel during apply while allowing its formal internal compile', async () => {
+    const { projectRoot, session } = await setup()
+    let started!: () => void
+    let release!: () => void
+    const startedPromise = new Promise<void>((resolve) => (started = resolve))
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const staged = {
+      generationId: 'formal',
+      stagingDirectory: join(projectRoot, '..', 'formal-stage'),
+      files: [],
+      log: '',
+      workspaceCleaned: true as const,
+    }
+    ;(session as unknown as { compiler: () => Promise<typeof staged> }).compiler = async () => {
+      started()
+      await gate
+      return staged
+    }
+    ;(session as unknown as { commitGeneration: () => Promise<unknown> }).commitGeneration =
+      async () => ({
+        ...staged,
+        pdfPath: null,
+        synctexPath: null,
+        synctexInputRoot: projectRoot,
+        logPath: join(projectRoot, '..', 'formal.log'),
+        published: [],
+      })
+    const applying = session.applyConfirmedProposal('proposal-1')
+    await startedPromise
+    await expect(session.compile(999, 'main.tex')).rejects.toThrow(/transaction/i)
+    expect(session.cancelCompile()).toBe(false)
+    release()
+    await expect(applying).resolves.toMatchObject({ compile: { ok: true } })
   })
 
   it('bounds main-process AI reads and rejects binary targets', async () => {

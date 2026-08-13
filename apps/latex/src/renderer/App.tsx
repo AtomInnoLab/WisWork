@@ -1,10 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PdfPoint, ViewerLocation } from '@wiswork/pdf-viewer'
 import type { CompileDiagnosticInput, EditorDiagnostic } from './compile/diagnostics.js'
+import { isAiSensitivePath } from '../shared/ai-path-policy.js'
 import type { LatexBundleStatusDto } from '../shared/ipc.js'
 import { mapCompileDiagnostics } from './compile/diagnostics.js'
 import { CompilePanel } from './compile/CompilePanel.js'
 import { AiPanel } from './ai/AiPanel.js'
+import {
+  diagnosticToAgentContext,
+  editorContextForActivePath,
+  type AgentContext,
+  type AgentContextKey,
+  type AgentDiagnosticContext,
+  type EditorContextSnapshot,
+} from './ai/agent-context.js'
 import {
   acceptCompileResult,
   addEditorBuffer,
@@ -82,6 +91,13 @@ export function App() {
   const [compiling, setCompiling] = useState(false)
   const [bundleStatus, setBundleStatus] = useState<LatexBundleStatusDto>({ state: 'missing' })
   const [aiOpen, setAiOpen] = useState(true)
+  const [editorContext, setEditorContext] = useState<
+    (EditorContextSnapshot & { path: string }) | null
+  >(null)
+  const [aiDiagnostic, setAiDiagnostic] = useState<AgentDiagnosticContext | undefined>()
+  const [hiddenAiContext, setHiddenAiContext] = useState<ReadonlySet<AgentContextKey>>(
+    () => new Set(),
+  )
   const [diagnostics, setDiagnostics] = useState<EditorDiagnostic[]>([])
   const [log, setLog] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -315,7 +331,10 @@ export function App() {
       }
     }
   }, [files, mainFile, projectId, replaceEditorState, savePath, updateEditorState])
-  const compileProject = useCallback(() => compileQueue.current.request(compileOnce), [compileOnce])
+  const compileProject = useCallback(() => {
+    if (closeFreeze.current.isFrozen()) return
+    compileQueue.current.request(compileOnce)
+  }, [compileOnce])
   compileLatestRef.current = compileProject
 
   useEffect(() => {
@@ -545,6 +564,21 @@ export function App() {
     [editorState],
   )
   const activeDiagnostics = diagnostics.filter((item) => item.path === activePath)
+  const sensitiveAiContext = Boolean(activePath && isAiSensitivePath(activePath))
+  const agentContext = useMemo<AgentContext>(() => {
+    if (activePath && isAiSensitivePath(activePath)) return {}
+    const currentEditor = editorContextForActivePath(editorContext, activePath)
+    return {
+      ...(!hiddenAiContext.has('activeFile') && activePath ? { activeFile: activePath } : {}),
+      ...(!hiddenAiContext.has('activeFile') && currentEditor
+        ? { cursorLine: currentEditor.cursorLine }
+        : {}),
+      ...(!hiddenAiContext.has('selection') && currentEditor?.selection
+        ? { selection: currentEditor.selection }
+        : {}),
+      ...(!hiddenAiContext.has('diagnostic') && aiDiagnostic ? { diagnostic: aiDiagnostic } : {}),
+    }
+  }, [activePath, aiDiagnostic, editorContext, hiddenAiContext])
 
   useEffect(() => {
     forwardGate.current.invalidate()
@@ -585,6 +619,15 @@ export function App() {
               onSave={() => void savePath(activeBuffer.path)}
               onCompile={compileProject}
               onCursorLine={forwardSync}
+              onContextChange={(context) => {
+                setEditorContext({ path: activeBuffer.path, ...context })
+                setHiddenAiContext((current) => {
+                  const next = new Set(current)
+                  next.delete('activeFile')
+                  next.delete('selection')
+                  return next
+                })
+              }}
               revealLine={revealTarget?.path === activeBuffer.path ? revealTarget.line : null}
             />
           ) : (
@@ -602,11 +645,13 @@ export function App() {
           )}
           <CompilePanel
             compiling={compiling}
+            disabled={frozen}
             bundleStatus={bundleStatus}
             diagnostics={diagnostics}
             log={log}
             onCompile={compileProject}
             onCancel={() => {
+              if (closeFreeze.current.isFrozen()) return
               compileQueue.current.cancelPending()
               if (projectId) void window.latexApi.cancelCompile({ projectId })
             }}
@@ -614,6 +659,15 @@ export function App() {
               void openFile(diagnostic.path).then(() =>
                 setRevealTarget({ path: diagnostic.path, line: diagnostic.lineIndex + 1 }),
               )
+            }}
+            onAskAi={(diagnostic) => {
+              setAiDiagnostic(diagnosticToAgentContext(diagnostic))
+              setHiddenAiContext((current) => {
+                const next = new Set(current)
+                next.delete('diagnostic')
+                return next
+              })
+              setAiOpen(true)
             }}
           />
         </section>
@@ -631,6 +685,9 @@ export function App() {
           disabled={frozen}
           onProjectFilesChanged={refreshProjectFiles}
           open={aiOpen}
+          context={agentContext}
+          sensitiveContextBlocked={sensitiveAiContext}
+          onRemoveContext={(key) => setHiddenAiContext((current) => new Set([...current, key]))}
           onExpand={() => setAiOpen(true)}
           onCollapse={() => setAiOpen(false)}
         />
