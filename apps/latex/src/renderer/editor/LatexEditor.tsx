@@ -17,6 +17,7 @@ import {
   lineNumbers,
 } from '@codemirror/view'
 import type { EditorDiagnostic } from '../compile/diagnostics.js'
+import { captureEditorContext, type EditorContextSnapshot } from '../ai/agent-context.js'
 import { latexLanguageExtensions } from './latex-language.js'
 
 const latexHighlightStyle = HighlightStyle.define([
@@ -68,6 +69,7 @@ export interface LatexEditorProps {
   onSave: () => void
   onCompile: () => void
   onCursorLine?: (line: number) => void
+  onContextChange?: (context: EditorContextSnapshot) => void
   revealLine?: number | null
 }
 
@@ -98,6 +100,7 @@ export function LatexEditor({
   onSave,
   onCompile,
   onCursorLine,
+  onContextChange,
   revealLine,
 }: LatexEditorProps) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -105,9 +108,9 @@ export function LatexEditor({
   const readOnlyCompartment = useRef(new Compartment())
   const themeCompartment = useRef(new Compartment())
   const suppressChanges = useRef(false)
-  const callbacks = useRef({ onChange, onSave, onCompile, onCursorLine })
+  const callbacks = useRef({ onChange, onSave, onCompile, onCursorLine, onContextChange })
   const currentInput = useRef({ value, diagnostics, readOnly })
-  callbacks.current = { onChange, onSave, onCompile, onCursorLine }
+  callbacks.current = { onChange, onSave, onCompile, onCursorLine, onContextChange }
   currentInput.current = { value, diagnostics, readOnly }
 
   useEffect(() => {
@@ -162,9 +165,11 @@ export function LatexEditor({
             if (update.docChanged && !suppressChanges.current) {
               callbacks.current.onChange(update.state.doc.toString())
             }
-            if (update.selectionSet) {
-              callbacks.current.onCursorLine?.(
-                update.state.doc.lineAt(update.state.selection.main.head).number,
+            if (update.selectionSet || update.docChanged) {
+              const selection = update.state.selection.main
+              callbacks.current.onCursorLine?.(update.state.doc.lineAt(selection.head).number)
+              callbacks.current.onContextChange?.(
+                captureEditorContext(update.state.doc, selection.anchor, selection.head),
               )
             }
           }),
@@ -185,6 +190,10 @@ export function LatexEditor({
       attributeFilter: ['data-theme'],
     })
     media.addEventListener('change', applyEditorTheme)
+    const initialSelection = view.state.selection.main
+    callbacks.current.onContextChange?.(
+      captureEditorContext(view.state.doc, initialSelection.anchor, initialSelection.head),
+    )
     view.dispatch(
       setDiagnostics(view.state, editorDiagnostics(view, currentInput.current.diagnostics)),
     )

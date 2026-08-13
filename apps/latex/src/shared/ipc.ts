@@ -1,4 +1,5 @@
 import type { AiSettings, AiStreamChunk, AiStreamRequest } from '@wiswork/ai-provider'
+import type { NormalizedProposalDiagnostic } from './proposal-verification.js'
 
 export const MAX_IPC_TEXT_BYTES = 2 * 1024 * 1024
 export const MAX_IPC_PATH_LENGTH = 1024
@@ -22,6 +23,7 @@ export const LATEX_CHANNELS = {
   syncTexReverse: 'latex:synctex:reverse',
   proposalGet: 'latex:proposal:get',
   proposalCreate: 'latex:proposal:create',
+  proposalVerify: 'latex:proposal:verify',
   proposalApply: 'latex:proposal:apply',
   proposalUndo: 'latex:proposal:undo',
   aiProjectList: 'latex:ai:project:list',
@@ -47,6 +49,7 @@ export type LatexIpcErrorCode =
   | 'LATEX_INVALID_PAYLOAD'
   | 'LATEX_CONFLICT'
   | 'LATEX_NOT_FOUND'
+  | 'LATEX_VERIFICATION_REJECTED'
   | 'LATEX_INTERNAL'
 
 export type LatexIpcResult<T> =
@@ -140,6 +143,20 @@ export interface LatexProposalDto {
   }>
 }
 
+export type ProposalVerificationDiagnosticDto = NormalizedProposalDiagnostic
+
+interface ProposalVerificationEvidenceDto {
+  proposalId: string
+  diagnostics: ProposalVerificationDiagnosticDto[]
+  logSummary: string
+  verifiedAt: number
+}
+
+export type ProposalVerificationDto =
+  | (ProposalVerificationEvidenceDto & { state: 'verified' })
+  | (ProposalVerificationEvidenceDto & { state: 'failed'; reason: string })
+  | (ProposalVerificationEvidenceDto & { state: 'unverifiable'; reason: string })
+
 export interface LatexBufferDto {
   path: string
   text: string
@@ -196,6 +213,7 @@ export interface LatexApi {
   ): Promise<LatexIpcResult<{ path: string; line: number } | null>>
   getProposal(request: ProposalRequest): Promise<LatexIpcResult<unknown>>
   proposeProjectEdits(request: CreateProposalRequest): Promise<LatexIpcResult<LatexProposalDto>>
+  verifyProposal(request: ProposalRequest): Promise<LatexIpcResult<ProposalVerificationDto>>
   applyProposal(request: ProposalRequest): Promise<LatexIpcResult<unknown>>
   undoProposal(request: UndoProposalRequest): Promise<LatexIpcResult<unknown>>
   listProjectFiles(request: SessionRequest): Promise<LatexIpcResult<unknown>>
