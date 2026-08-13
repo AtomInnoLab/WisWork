@@ -51,6 +51,18 @@ const FILE_ICONS: Record<string, string> = {
   markdown: iconMd,
 }
 
+export function homeCreationItems(
+  translate: (key: 'newDoc' | 'newSheet' | 'newSlide' | 'newMarkdown') => string,
+) {
+  return [
+    { ext: 'docx', title: translate('newDoc'), sub: '.docx' },
+    { ext: 'xlsx', title: translate('newSheet'), sub: '.xlsx' },
+    { ext: 'pptx', title: translate('newSlide'), sub: '.pptx' },
+    { ext: 'md', title: translate('newMarkdown'), sub: '.md' },
+    { ext: 'tex', title: 'AI LaTeX', sub: '.tex' },
+  ] as const
+}
+
 function FileBadge({ ext, size }: { ext: string; size: number }) {
   const icon = FILE_ICONS[ext]
   if (icon) {
@@ -1274,13 +1286,17 @@ export function Home() {
     if (await window.aiOffice.importLatexProject()) reloadLatexRecents()
   }
 
-  const NEW_ITEMS = [
-    { ext: 'docx', title: t('newDoc'), sub: '.docx', action: handleNewDoc },
-    { ext: 'xlsx', title: t('newSheet'), sub: '.xlsx', action: handleNewSheet },
-    { ext: 'pptx', title: t('newSlide'), sub: '.pptx', action: handleNewSlide },
-    { ext: 'md', title: t('newMarkdown'), sub: '.md', action: handleNewMarkdown },
-    { ext: 'tex', title: t('newLatex'), sub: '.tex', action: handleNewLatex },
-  ]
+  const newActions = {
+    docx: handleNewDoc,
+    xlsx: handleNewSheet,
+    pptx: handleNewSlide,
+    md: handleNewMarkdown,
+    tex: handleNewLatex,
+  }
+  const NEW_ITEMS = homeCreationItems(t).map((item) => ({
+    ...item,
+    action: newActions[item.ext],
+  }))
 
   function renderQuickCards() {
     return (
@@ -1296,7 +1312,7 @@ export function Home() {
             <span className="quick-text">
               <span className="quick-title-row">
                 <span className="quick-title">{item.title}</span>
-                <span className="ai-chip">AI</span>
+                {item.ext !== 'tex' && <span className="ai-chip">AI</span>}
               </span>
               <span className="quick-sub">{item.sub}</span>
             </span>

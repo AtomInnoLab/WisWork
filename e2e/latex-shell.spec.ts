@@ -52,6 +52,10 @@ Hello from WisWork
       await expect(latexPage.getByText('Remote TeX bundle configured')).toBeVisible()
       await expect.poll(() => readFile(join(projectPath, 'main.tex'), 'utf8')).toBe(valid)
       await expect(latexPage.locator('.pdf-preview canvas')).toBeVisible()
+      await latexPage.getByRole('button', { name: 'Close PDF preview' }).click()
+      await expect(latexPage.locator('.pdf-preview')).toHaveCount(0)
+      await latexPage.getByRole('button', { name: 'Open PDF preview' }).click()
+      await expect(latexPage.locator('.pdf-preview canvas')).toBeVisible()
 
       await launched.page.locator('.tab-item:not(.tab-home) .tab-close').click()
       await expect(launched.page.locator('.tab-item:not(.tab-home)')).toHaveCount(0)

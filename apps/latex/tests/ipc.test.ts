@@ -37,11 +37,29 @@ describe('LaTeX typed IPC boundary', () => {
       handle: (channel, handler) => handlers.set(channel, handler),
       removeHandler: vi.fn(),
     }
-    registerLatexIpc({ ipcMain, registry })
+    registerLatexIpc({
+      ipcMain,
+      registry,
+      getAccountStatus: async () => ({
+        loggedIn: true,
+        email: 'writer@example.com',
+        userId: 'writer-1',
+      }),
+    })
     const call = async <T>(channel: string, senderId: number, payload: unknown) =>
       (await handlers.get(channel)!({ sender: { id: senderId } }, payload)) as LatexIpcResult<T>
     return { root, projectRoot, session, registry, call }
   }
+
+  it('returns only non-sensitive account identity with the project session', async () => {
+    const { call } = await setup()
+    await expect(call(LATEX_CHANNELS.sessionGet, 11, undefined)).resolves.toMatchObject({
+      ok: true,
+      value: {
+        account: { loggedIn: true, email: 'writer@example.com', userId: 'writer-1' },
+      },
+    })
+  })
 
   it('rejects forged senders and project IDs with stable error codes', async () => {
     const { session, call } = await setup()

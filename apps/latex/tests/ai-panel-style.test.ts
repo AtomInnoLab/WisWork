@@ -6,6 +6,28 @@ import { AiPanel } from '../src/renderer/ai/AiPanel.js'
 import type { AgentContext } from '../src/renderer/ai/agent-context.js'
 
 describe('LaTeX AI dock', () => {
+  it('shows account identity in the dock header', () => {
+    const html = renderToStaticMarkup(
+      createElement(AiPanel, {
+        projectId: 'project-1',
+        account: { loggedIn: true, email: 'writer@example.com', userId: 'writer-1' },
+      }),
+    )
+    expect(html).toContain('class="latex-account-avatar"')
+    expect(html).toContain('writer@example.com')
+    expect(html).toContain('>W<')
+  })
+
+  it('keeps both workspace tabs visible while collapsed', () => {
+    const html = renderToStaticMarkup(
+      createElement(AiPanel, { projectId: 'project-1', open: false, activeTab: 'compile' }),
+    )
+    expect(html.match(/role="tab"/g)).toHaveLength(2)
+    expect(html).toContain('WisWork AI')
+    expect(html).toContain('编译')
+    expect(html).toContain('aria-selected="true"')
+  })
+
   it('has only WisWork AI and 编译 tabs, with editing kept inside AI', () => {
     const aiHtml = renderToStaticMarkup(
       createElement(AiPanel, {
