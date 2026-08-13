@@ -64,7 +64,6 @@ export function homeCreationItems(
 }
 
 export function accountPresentation(status: AccountStatus | null, loggedInLabel: string) {
-  const loggedIn = status?.loggedIn ?? false
   const email = status?.email ?? ''
   const name = email ? email.split('@')[0] : (status?.userId ?? loggedInLabel)
   const initial = (email || name || 'W').trim().charAt(0).toUpperCase() || 'W'
