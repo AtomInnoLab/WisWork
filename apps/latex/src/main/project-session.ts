@@ -8,10 +8,12 @@ import {
   compileIsolated,
   isRemoteIndexedBundleUrl,
   LatexCompilerError,
+  loadCurrentCompileGeneration,
   parseSyncTeX,
   parseTectonicDiagnostics,
   TectonicRunError,
   type CompileIsolatedResult,
+  type PublishedCompileGeneration,
   type StagedCompileResult,
   type SyncTeXIndex,
   type TectonicBundleAsset,
@@ -71,6 +73,7 @@ export interface ProjectSessionRegistryOptions {
   watch?: (root: string, onChange: (relativePath: string) => void) => WatcherLike
   compiler?: typeof compileIsolated
   commitGeneration?: typeof commitCompileGeneration
+  loadCurrentGeneration?: typeof loadCurrentCompileGeneration
   maxCompileResults?: number
   cleanupStaging?: (path: string) => Promise<void>
   compilerRuntime?: {
@@ -116,6 +119,7 @@ export class ProjectSession {
   private readonly onExternalChange?: ProjectSessionRegistryOptions['onExternalChange']
   private readonly maxCompileResults: number
   private readonly cleanupStaging: (path: string) => Promise<void>
+  private readonly loadCurrentGeneration: typeof loadCurrentCompileGeneration
   private readonly acquireRendererFreeze: () => Promise<() => void>
   private readonly proposalStore?: ProposalStore
   private readonly projectStore?: ProjectStore
@@ -158,6 +162,7 @@ export class ProjectSession {
     this.maxCompileResults = options.maxCompileResults ?? 3
     this.cleanupStaging =
       options.cleanupStaging ?? ((path) => rm(path, { recursive: true, force: true }))
+    this.loadCurrentGeneration = options.loadCurrentGeneration ?? loadCurrentCompileGeneration
     this.acquireRendererFreeze = options.acquireRendererFreeze
       ? () => options.acquireRendererFreeze!(this.webContentsId)
       : async () => {
@@ -343,9 +348,11 @@ export class ProjectSession {
     try {
       if (from === this.mainFile)
         throw new MainFileRenameError('Cannot rename the configured main file')
+      const state = this.buffers.get(from)
+      if (state?.dirty || state?.conflict) throw new UnsavedBuffersError()
       const text = await this.project.readText(from)
       const hash = digest(text)
-      await this.project.saveText(to, text, { expectedSha256: null })
+      const saved = await this.project.saveText(to, text, { expectedSha256: null })
       try {
         await this.project.deleteText(from, {
           expectedSha256: hash,
@@ -360,9 +367,37 @@ export class ProjectSession {
           .catch(() => undefined)
         throw error
       }
-      const state = this.buffers.get(from)
       this.buffers.delete(from)
-      if (state) this.buffers.set(to, { ...state, path: to })
+      if (state) {
+        this.buffers.set(to, {
+          ...state,
+          path: to,
+          text,
+          baselineText: text,
+          baselineSha256: saved.sha256,
+          dirty: false,
+          conflict: null,
+        })
+      }
+    } finally {
+      release()
+    }
+  }
+
+  async deleteText(path: string): Promise<void> {
+    this.assertActive()
+    const release = this.acquireRendererMutation()
+    try {
+      if (path === this.mainFile)
+        throw new MainFileRenameError('Cannot delete the configured main file')
+      const state = this.buffers.get(path)
+      if (state?.dirty || state?.conflict) throw new UnsavedBuffersError()
+      const text = await this.project.readText(path)
+      await this.project.deleteText(path, {
+        expectedSha256: digest(text),
+        transactionId: randomBytes(12).toString('hex'),
+      })
+      this.buffers.delete(path)
     } finally {
       release()
     }
@@ -378,6 +413,7 @@ export class ProjectSession {
     } catch {
       diskText = null
     }
+    if (this.disposed || this.buffers.get(path) !== state) return
     const diskHash = diskText === null ? null : digest(diskText)
     if (diskHash === state.baselineSha256) return
     if (diskText !== null && diskHash !== null && diskHash === state.pendingSaveSha256) {
@@ -457,6 +493,48 @@ export class ProjectSession {
     }
   }
 
+  private compileCacheDirectory(): string {
+    if (!this.compilerRuntime) throw new Error('LaTeX compiler runtime is not configured')
+    const projectKey = createHash('sha256').update(this.project.rootPath, 'utf8').digest('hex')
+    return join(this.compilerRuntime.userDataPath, 'latex', 'compile-cache', projectKey)
+  }
+
+  async restoreLatestCompile(): Promise<void> {
+    if (!this.compilerRuntime) return
+    let restored: PublishedCompileGeneration | null
+    try {
+      restored = await this.loadCurrentGeneration(this.compileCacheDirectory())
+    } catch {
+      return
+    }
+    if (!restored?.pdfPath) return
+    const value: CompileResultDto = {
+      revision: 0,
+      pdfUrl: `wiswork-latex-pdf://${this.projectId}/0`,
+      diagnostics: normalizeProposalDiagnostics(
+        parseTectonicDiagnostics(restored.log),
+        MAX_FORMAL_COMPILE_DIAGNOSTICS,
+      ),
+      log: restored.log,
+    }
+    this.compileResults.set(0, {
+      ...value,
+      pdfPath: restored.pdfPath,
+      synctexPath: restored.synctexPath,
+    })
+  }
+
+  latestCompile(): CompileResultDto | null {
+    const latest = [...this.compileResults.values()].at(-1)
+    if (!latest) return null
+    return {
+      revision: latest.revision,
+      pdfUrl: latest.pdfUrl,
+      diagnostics: structuredClone(latest.diagnostics),
+      log: latest.log,
+    }
+  }
+
   async compile(
     revision: number,
     mainFile: string,
@@ -472,12 +550,7 @@ export class ProjectSession {
       return this.activeCompile.promise as Promise<CompileResultDto>
     }
     const token = randomBytes(16).toString('hex')
-    const cacheDirectory = join(
-      this.compilerRuntime.userDataPath,
-      'latex',
-      'compile-cache',
-      this.projectId,
-    )
+    const cacheDirectory = this.compileCacheDirectory()
     const temporaryRoot = join(this.compilerRuntime.userDataPath, 'latex', 'compile-temp')
     const tectonicCacheDirectory = join(
       this.compilerRuntime.userDataPath,
@@ -1113,6 +1186,7 @@ export class ProjectSessionRegistry {
     }
     const project = await openLatexProject(projectRoot)
     const session = new ProjectSession(webContentsId, project, this.watcherFactory, this.options)
+    await session.restoreLatestCompile()
     this.byWebContents.set(webContentsId, session)
     this.byProjectId.set(session.projectId, session)
     return session

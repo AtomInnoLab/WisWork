@@ -222,17 +222,43 @@ button:disabled {
   background: var(--latex-selected-file-bg);
   color: var(--latex-selected-file-text);
 }
-.rename-file {
+.file-actions {
+  position: relative;
+}
+.file-actions-trigger {
   visibility: hidden;
   padding: 6px 10px;
 }
-.project-tree li:hover .rename-file {
+.project-tree li:hover .file-actions-trigger,
+.file-actions:focus-within .file-actions-trigger,
+.file-actions-trigger[aria-expanded='true'] {
   visibility: visible;
+}
+.file-actions-menu {
+  position: absolute;
+  z-index: 25;
+  top: 100%;
+  right: 4px;
+  display: grid;
+  min-width: 110px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: var(--latex-shadow-float);
+}
+.file-actions-menu button {
+  padding: 7px 9px;
+  border-radius: 4px;
+  text-align: left;
+}
+.file-actions-menu button:hover:not(:disabled) {
+  background: var(--hover);
 }
 
 .editor-workspace {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 .open-tabs {
   display: flex;
@@ -475,10 +501,30 @@ button:disabled {
   font-weight: 600;
 }
 
-.ai-panel-title {
+.workspace-tabs {
   display: flex;
   align-items: center;
-  gap: 8px;
+  align-self: stretch;
+  gap: 4px;
+}
+
+.workspace-tabs > button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px;
+  border-radius: 7px;
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+
+.workspace-tabs > button:hover {
+  background: var(--hover);
+}
+
+.workspace-tabs > button.active {
+  background: var(--latex-selected-file-bg);
+  color: var(--latex-selected-file-text);
 }
 
 .ai-brand-icon {
@@ -509,6 +555,80 @@ button:disabled {
   gap: 16px;
   overflow-y: auto;
   padding: 28px 16px 20px;
+}
+
+.dock-compile-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.dock-compile-content .compile-panel {
+  max-height: none;
+  min-height: 100%;
+  border-top: 0;
+}
+
+.file-dialog-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--latex-workbench-bg) 68%, transparent);
+}
+
+.file-dialog {
+  width: min(420px, calc(100vw - 32px));
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--latex-shadow-mobile-dock);
+}
+
+.file-dialog h3 {
+  margin: 0 0 14px;
+}
+
+.file-dialog label {
+  display: grid;
+  gap: 7px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.file-dialog input {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--latex-editor-bg);
+  color: var(--text);
+}
+
+.file-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.file-dialog footer button {
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.file-dialog .primary-button {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--color-btn-primary-text);
+}
+
+.file-dialog .danger-button {
+  border-color: var(--latex-proposal-danger-text);
+  background: var(--latex-proposal-danger-text);
+  color: var(--latex-proposal-danger-button-text);
 }
 
 .ai-chat-empty {
