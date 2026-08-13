@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { AgentLoop } from '@wiswork/agent-core'
 import { AiComposer, AiTypingIndicator, Markdown, WisWorkAppMark } from '@wiswork/ui'
+import type { LatexAccountStatus } from '../../shared/ipc.js'
 import { createLatexSkill } from './latex-skill.js'
 import { loadProposalForReview } from './proposal-review.js'
 import { ProposalWorkflow, validateUndoProposal } from './proposal-workflow.js'
@@ -121,6 +122,7 @@ export function AiPanel({
   activeTab = 'ai',
   onTabChange = () => undefined,
   compilePanel = null,
+  account = { loggedIn: false },
 }: {
   projectId: string
   disabled?: boolean
@@ -134,6 +136,7 @@ export function AiPanel({
   activeTab?: 'ai' | 'compile'
   onTabChange?: (tab: 'ai' | 'compile') => void
   compilePanel?: ReactNode
+  account?: LatexAccountStatus
 }) {
   const [input, setInput] = useState('')
   const [text, setText] = useState('')
@@ -456,12 +459,42 @@ export function AiPanel({
   // Keep the component mounted while collapsed so its transcript, draft and active run survive.
   if (!open) {
     return (
-      <button className="latex-ai-rail" onClick={onExpand} aria-label="Open AI panel">
-        <WisWorkAppMark className="ai-brand-icon" size={25} />
-        <span>AI</span>
-      </button>
+      <aside className="latex-ai-rail" role="tablist" aria-label="Workspace panel">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'ai'}
+          className={activeTab === 'ai' ? 'active' : undefined}
+          onClick={() => {
+            onTabChange('ai')
+            onExpand?.()
+          }}
+        >
+          <WisWorkAppMark className="ai-brand-icon" size={22} />
+          <span>WisWork AI</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'compile'}
+          className={activeTab === 'compile' ? 'active' : undefined}
+          onClick={() => {
+            onTabChange('compile')
+            onExpand?.()
+          }}
+        >
+          <span>编译</span>
+        </button>
+      </aside>
     )
   }
+
+  const accountLabel = account.loggedIn
+    ? (account.email ?? account.userId ?? 'Signed in')
+    : 'Not signed in'
+  const accountInitial = account.loggedIn
+    ? (account.email ?? account.userId ?? 'W').trim().charAt(0).toUpperCase() || 'W'
+    : '?'
 
   return (
     <div
@@ -497,11 +530,17 @@ export function AiPanel({
               编译
             </button>
           </div>
-          {onCollapse && (
-            <button className="ai-header-btn" onClick={onCollapse} aria-label="Collapse AI panel">
-              ›
-            </button>
-          )}
+          <div className="ai-panel-actions">
+            <div className="latex-account" title={accountLabel} aria-label={accountLabel}>
+              <span className="latex-account-avatar">{accountInitial}</span>
+              <span className="latex-account-label">{accountLabel}</span>
+            </div>
+            {onCollapse && (
+              <button className="ai-header-btn" onClick={onCollapse} aria-label="Collapse AI panel">
+                ›
+              </button>
+            )}
+          </div>
         </header>
         {activeTab === 'ai' ? (
           <>

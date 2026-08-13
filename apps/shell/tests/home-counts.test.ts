@@ -12,6 +12,7 @@ import {
   visiblePageCount,
 } from '../src/renderer/src/counts'
 import { strings } from '../src/renderer/src/strings'
+import { homeCreationItems } from '../src/renderer/src/Home'
 
 const tempDirs: string[] = []
 
@@ -20,6 +21,12 @@ afterEach(() => {
 })
 
 describe('LaTeX Home API contract', () => {
+  it('names the home creation card AI LaTeX', () => {
+    expect(homeCreationItems((key) => key).find((item) => item.ext === 'tex')?.title).toBe(
+      'AI LaTeX',
+    )
+  })
+
   it('uses dedicated directory-project channels', () => {
     expect(HOME_CHANNELS).toMatchObject({
       latexRecents: 'home:latex-recents',

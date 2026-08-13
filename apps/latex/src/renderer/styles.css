@@ -162,6 +162,10 @@ button:disabled {
   flex: 1;
 }
 
+.latex-main-area.preview-closed {
+  grid-template-columns: minmax(170px, 14vw) minmax(380px, 1fr) 38px;
+}
+
 .project-tree,
 .editor-workspace,
 .pdf-preview,
@@ -383,6 +387,35 @@ button:disabled {
   border-left: 1px solid var(--border);
   background: var(--latex-preview-bg);
 }
+.pdf-preview-close {
+  position: absolute;
+  z-index: 12;
+  top: 7px;
+  right: 8px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 7px;
+  color: var(--color-text-secondary);
+  font-size: 20px;
+}
+.pdf-preview-close:hover {
+  background: var(--hover);
+  color: var(--color-text-primary);
+}
+.pdf-preview-rail {
+  border-left: 1px solid var(--border-strong);
+  background: var(--color-bg-page);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  letter-spacing: 1px;
+  writing-mode: vertical-rl;
+}
+.pdf-preview-rail:hover {
+  background: var(--hover);
+  color: var(--color-text-primary);
+}
 .readonly-pdf-viewer {
   display: grid;
   grid-template-rows: 42px minmax(0, 1fr);
@@ -546,6 +579,43 @@ button:disabled {
 .ai-header-btn:hover {
   background: var(--hover);
   color: var(--color-text-primary);
+}
+
+.ai-panel-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.latex-account {
+  display: flex;
+  min-width: 0;
+  max-width: 145px;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.latex-account-avatar {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--latex-selected-file-bg);
+  color: var(--latex-selected-file-text);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.latex-account-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ai-chat {
@@ -939,8 +1009,8 @@ button:disabled {
   flex: 0 0 38px;
   flex-direction: column;
   align-items: center;
-  gap: 9px;
-  padding: 12px 4px;
+  gap: 2px;
+  padding: 6px 3px;
   border-left: 1px solid var(--border-strong);
   background: var(--color-bg-page);
   color: var(--color-text-secondary);
@@ -948,8 +1018,30 @@ button:disabled {
   letter-spacing: 1px;
 }
 
-.latex-ai-rail .ai-brand-icon {
-  flex: 0 0 auto;
+.latex-ai-rail > button {
+  display: flex;
+  min-height: 112px;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  padding: 8px 3px;
+  border-radius: 7px;
+  color: inherit;
+}
+
+.latex-ai-rail > button > span {
+  writing-mode: vertical-rl;
+}
+
+.latex-ai-rail > button:hover {
+  background: var(--hover);
+}
+
+.latex-ai-rail > button.active {
+  background: var(--latex-selected-file-bg);
+  color: var(--latex-selected-file-text);
 }
 .proposal-review article {
   margin: 10px 0;
@@ -1101,6 +1193,12 @@ button:disabled {
     grid-template-columns: 150px minmax(350px, 1fr);
   }
   .pdf-preview {
+    display: none;
+  }
+  .latex-main-area.preview-closed {
+    grid-template-columns: 150px minmax(350px, 1fr);
+  }
+  .pdf-preview-rail {
     display: none;
   }
 
