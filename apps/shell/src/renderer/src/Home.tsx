@@ -63,6 +63,37 @@ export function homeCreationItems(
   ] as const
 }
 
+export function accountPresentation(status: AccountStatus | null, loggedInLabel: string) {
+  const loggedIn = status?.loggedIn ?? false
+  const email = status?.email ?? ''
+  const name = email ? email.split('@')[0] : (status?.userId ?? loggedInLabel)
+  const initial = (email || name || 'W').trim().charAt(0).toUpperCase() || 'W'
+  return { initial, name, email }
+}
+
+export function AccountMenuIdentity({
+  status,
+  loggedInLabel,
+}: {
+  status: AccountStatus
+  loggedInLabel: string
+}) {
+  const identity = accountPresentation(status, loggedInLabel)
+  return (
+    <div className="account-menu-info">
+      <span className="account-avatar logged-in account-menu-avatar" aria-hidden="true">
+        {identity.initial}
+      </span>
+      <span className="account-menu-identity">
+        <span className="account-menu-name">{identity.name}</span>
+        <span className="account-menu-email" title={identity.email}>
+          {identity.email || status.userId || 'WisWork'}
+        </span>
+      </span>
+    </div>
+  )
+}
+
 function FileBadge({ ext, size }: { ext: string; size: number }) {
   const icon = FILE_ICONS[ext]
   if (icon) {
@@ -587,8 +618,9 @@ function AccountEntry() {
   }, [menuOpen])
 
   const loggedIn = status?.loggedIn ?? false
-  const email = status?.email ?? ''
-  const initial = email ? email[0].toUpperCase() : loggedIn ? 'W' : '?'
+  const identity = accountPresentation(status, t('loggedIn'))
+  const email = identity.email
+  const initial = loggedIn ? identity.initial : '?'
   const errorText = loginError
     ? {
         timeout: t('loginTimeout'),
@@ -670,12 +702,8 @@ function AccountEntry() {
     <div className="account-entry">
       {menuOpen && (
         <div className="account-menu" role="menu">
-          {loggedIn ? (
-            <div className="account-menu-info">
-              <span className="account-menu-email" title={email}>
-                {email || t('loggedIn')}
-              </span>
-            </div>
+          {loggedIn && status ? (
+            <AccountMenuIdentity status={status} loggedInLabel={t('loggedIn')} />
           ) : (
             <>
               <button
@@ -879,7 +907,7 @@ function AccountEntry() {
         <span className="account-text">
           {loggedIn ? (
             <>
-              <span className="account-name">{email ? email.split('@')[0] : t('loggedIn')}</span>
+              <span className="account-name">{identity.name}</span>
               <span className="account-sub" title={email}>
                 {email || 'WisWork'}
               </span>

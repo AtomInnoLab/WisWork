@@ -7,7 +7,6 @@ import {
   type FileRequest,
   type LatexIpcErrorCode,
   type LatexIpcResult,
-  type LatexAccountStatus,
   type RenameFileRequest,
   type SaveFileRequest,
   type SessionRequest,
@@ -33,7 +32,6 @@ export interface IpcMainLike {
 export interface RegisterLatexIpcOptions {
   ipcMain: IpcMainLike
   registry: ProjectSessionRegistry
-  getAccountStatus?: () => Promise<LatexAccountStatus> | LatexAccountStatus
 }
 
 export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
@@ -53,22 +51,15 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
     })
   }
 
-  handle(LATEX_CHANNELS.sessionGet, async (event, payload) => {
+  handle(LATEX_CHANNELS.sessionGet, (event, payload) => {
     assertNoPayload(payload)
     const session = registry.getByWebContents(event.sender.id)
     if (!session) throw coded('LATEX_FORBIDDEN_SENDER', 'Sender has no LaTeX project session')
-    let account: LatexAccountStatus = { loggedIn: false }
-    try {
-      account = normalizeAccountStatus(await options.getAccountStatus?.())
-    } catch {
-      // Account refresh must never prevent a project from opening.
-    }
     return {
       projectId: session.projectId,
       mainFile: session.mainFile ?? null,
       dirty: session.isDirty(),
       latestCompile: session.latestCompile(),
-      account,
     }
   })
   handle(LATEX_CHANNELS.projectList, (event, payload) =>
@@ -213,16 +204,6 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
   return () => {
     for (const channel of channels) ipcMain.removeHandler(channel)
   }
-}
-
-function normalizeAccountStatus(value: unknown): LatexAccountStatus {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return { loggedIn: false }
-  const item = value as Record<string, unknown>
-  if (item.loggedIn !== true) return { loggedIn: false }
-  const email = typeof item.email === 'string' && item.email.length <= 320 ? item.email : undefined
-  const userId =
-    typeof item.userId === 'string' && item.userId.length <= 512 ? item.userId : undefined
-  return { loggedIn: true, ...(email ? { email } : {}), ...(userId ? { userId } : {}) }
 }
 
 async function withSession<TRequest extends SessionRequest, TResult>(

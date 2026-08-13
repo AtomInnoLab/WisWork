@@ -581,43 +581,6 @@ button:disabled {
   color: var(--color-text-primary);
 }
 
-.ai-panel-actions {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
-}
-
-.latex-account {
-  display: flex;
-  min-width: 0;
-  max-width: 145px;
-  align-items: center;
-  gap: 6px;
-  color: var(--color-text-secondary);
-  font-size: 11px;
-  font-weight: 500;
-}
-
-.latex-account-avatar {
-  display: grid;
-  width: 24px;
-  height: 24px;
-  flex: 0 0 24px;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--latex-selected-file-bg);
-  color: var(--latex-selected-file-text);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.latex-account-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .ai-chat {
   display: flex;
   flex: 1;
@@ -1020,8 +983,7 @@ button:disabled {
 
 .latex-ai-rail > button {
   display: flex;
-  min-height: 112px;
-  flex: 1;
+  flex: 0 0 auto;
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
