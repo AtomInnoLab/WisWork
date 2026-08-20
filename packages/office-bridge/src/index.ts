@@ -22,6 +22,8 @@ export interface OfficeBridgeOptions {
   maxPairings?: number
   maxCapabilities?: number
   maxPairingCreatesPerMinute?: number
+  maxConcurrentPairingCreates?: number
+  pairingRequestTimeoutMs?: number
   maxBodyBytes?: number
   maxResponseBytes?: number
   maxConcurrentMessages?: number
@@ -91,7 +93,11 @@ function authorization(request: Request, scheme: string): string | null {
   return value?.startsWith(prefix) ? value.slice(prefix.length) : null
 }
 
-async function readBoundedJson(request: Request, maximum: number): Promise<unknown> {
+async function readBoundedJson(
+  request: Request,
+  maximum: number,
+  signal: AbortSignal = request.signal,
+): Promise<unknown> {
   const declared = Number(request.headers.get('content-length'))
   if (Number.isFinite(declared) && declared > maximum) throw new Error('body_too_large')
   if (!request.body) throw new Error('invalid_json')
@@ -100,8 +106,12 @@ async function readBoundedJson(request: Request, maximum: number): Promise<unkno
   let size = 0
   let rejectAbort!: (error: Error) => void
   const aborted = new Promise<never>((_, reject) => (rejectAbort = reject))
-  const onAbort = () => rejectAbort(new Error('request_aborted'))
-  request.signal.addEventListener('abort', onAbort, { once: true })
+  const onAbort = () => {
+    void reader.cancel('request_aborted').catch(() => undefined)
+    rejectAbort(new Error('request_aborted'))
+  }
+  signal.addEventListener('abort', onAbort, { once: true })
+  if (signal.aborted) onAbort()
   try {
     while (true) {
       const result = await Promise.race([reader.read(), aborted])
@@ -125,7 +135,7 @@ async function readBoundedJson(request: Request, maximum: number): Promise<unkno
     void reader.cancel('invalid_request').catch(() => undefined)
     throw new Error('invalid_json', { cause: error })
   } finally {
-    request.signal.removeEventListener('abort', onAbort)
+    signal.removeEventListener('abort', onAbort)
   }
 }
 
@@ -170,6 +180,8 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
     options.maxPairings,
     options.maxCapabilities,
     options.maxPairingCreatesPerMinute,
+    options.maxConcurrentPairingCreates,
+    options.pairingRequestTimeoutMs,
     options.maxBodyBytes,
     options.maxResponseBytes,
     options.maxConcurrentMessages,
@@ -184,6 +196,8 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
   const maxPairings = options.maxPairings ?? 20
   const maxCapabilities = options.maxCapabilities ?? 50
   const maxCreatesPerMinute = options.maxPairingCreatesPerMinute ?? 30
+  const maxConcurrentPairingCreates = options.maxConcurrentPairingCreates ?? 4
+  const pairingRequestTimeoutMs = options.pairingRequestTimeoutMs ?? 5_000
   const maxBodyBytes = options.maxBodyBytes ?? 256 * 1024
   const maxResponseBytes = options.maxResponseBytes ?? 4 * 1024 * 1024
   const maxConcurrentMessages = options.maxConcurrentMessages ?? 2
@@ -191,6 +205,8 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
   const pairings = new Map<string, Pairing>()
   let capabilities: Capability[] = []
   let createTimes: number[] = []
+  let activePairingCreates = 0
+  const activePairingControllers = new Set<AbortController>()
   let activeMessages = 0
   const activeOperations = new Set<ActiveOperation>()
   let stopped = false
@@ -245,21 +261,38 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
       if (pairing.expiresAt <= timestamp) pairings.delete(id)
     }
     createTimes = createTimes.filter((entry) => timestamp - entry < 60_000)
-    if (createTimes.length >= maxCreatesPerMinute || pairings.size >= maxPairings) {
+    if (
+      createTimes.length >= maxCreatesPerMinute ||
+      pairings.size >= maxPairings ||
+      activePairingCreates >= maxConcurrentPairingCreates
+    ) {
       return jsonResponse(429, { error: 'pairing_capacity' }, options.allowedOrigin)
     }
+    activePairingCreates += 1
+    const bodyController = new AbortController()
+    activePairingControllers.add(bodyController)
+    const abortBody = () => bodyController.abort()
+    request.signal.addEventListener('abort', abortBody, { once: true })
+    const bodyTimer = setTimeout(() => bodyController.abort(), pairingRequestTimeoutMs)
+    if (request.signal.aborted) bodyController.abort()
     let parsed: unknown
     try {
-      parsed = await readBoundedJson(request, 4096)
+      parsed = await readBoundedJson(request, 4096, bodyController.signal)
     } catch (error) {
       const tooLarge = error instanceof Error && error.message === 'body_too_large'
+      const interrupted = bodyController.signal.aborted
       return jsonResponse(
-        tooLarge ? 413 : 400,
+        tooLarge ? 413 : interrupted ? 408 : 400,
         {
-          error: tooLarge ? 'body_too_large' : 'invalid_request',
+          error: tooLarge ? 'body_too_large' : interrupted ? 'request_timeout' : 'invalid_request',
         },
         options.allowedOrigin,
       )
+    } finally {
+      clearTimeout(bodyTimer)
+      request.signal.removeEventListener('abort', abortBody)
+      activePairingControllers.delete(bodyController)
+      activePairingCreates -= 1
     }
     const requestedHostLabel =
       typeof parsed === 'object' &&
@@ -332,19 +365,6 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
     if (activeMessages >= maxConcurrentMessages) {
       return jsonResponse(429, { error: 'message_capacity' }, options.allowedOrigin)
     }
-    let body: unknown
-    try {
-      body = await readBoundedJson(request, maxBodyBytes)
-    } catch (error) {
-      const tooLarge = error instanceof Error && error.message === 'body_too_large'
-      return jsonResponse(
-        tooLarge ? 413 : 400,
-        {
-          error: tooLarge ? 'body_too_large' : 'invalid_request',
-        },
-        options.allowedOrigin,
-      )
-    }
     activeMessages += 1
     const controller = new AbortController()
     let iterator: AsyncIterator<Uint8Array> | undefined
@@ -377,6 +397,25 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
     activeOperations.add(operation)
     request.signal.addEventListener('abort', abortFromClient, { once: true })
     if (request.signal.aborted) operation.abort()
+    let body: unknown
+    try {
+      body = await readBoundedJson(request, maxBodyBytes, controller.signal)
+    } catch (error) {
+      const tooLarge = error instanceof Error && error.message === 'body_too_large'
+      const interruptedBody = controller.signal.aborted
+      finish(true)
+      return jsonResponse(
+        tooLarge ? 413 : interruptedBody ? 408 : 400,
+        {
+          error: tooLarge
+            ? 'body_too_large'
+            : interruptedBody
+              ? 'request_timeout'
+              : 'invalid_request',
+        },
+        options.allowedOrigin,
+      )
+    }
     try {
       const proxyPromise = options.proxy({ body, signal: controller.signal })
       void proxyPromise.then(
@@ -481,12 +520,14 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
     revokeAll() {
       pairings.clear()
       capabilities = []
+      for (const controller of [...activePairingControllers]) controller.abort()
       for (const operation of [...activeOperations]) operation.abort()
     },
     shutdown() {
       stopped = true
       pairings.clear()
       capabilities = []
+      for (const controller of [...activePairingControllers]) controller.abort()
       for (const operation of [...activeOperations]) operation.abort()
     },
   }

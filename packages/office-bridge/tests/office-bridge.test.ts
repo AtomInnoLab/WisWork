@@ -208,6 +208,35 @@ describe('pairing lifecycle', () => {
     }
   })
 
+  it('bounds and times out concurrent slow pairing request bodies', async () => {
+    const slowBody = () =>
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"host_label":"'))
+        },
+      })
+    const bridge = createOfficeBridge({
+      allowedOrigin: origin,
+      proxy: vi.fn(),
+      maxConcurrentPairingCreates: 1,
+      pairingRequestTimeoutMs: 10,
+    })
+    const pairingRequest = () =>
+      new Request('http://127.0.0.1:43127/v1/office/pairings', {
+        method: 'POST',
+        headers: { origin, 'content-type': 'application/json' },
+        body: slowBody(),
+        duplex: 'half',
+      } as RequestInit & { duplex: 'half' })
+    const first = bridge.handle(pairingRequest())
+    const second = await bridge.handle(pairingRequest())
+    expect(second.status).toBe(429)
+    expect(await second.json()).toEqual({ error: 'pairing_capacity' })
+    const timedOut = await first
+    expect(timedOut.status).toBe(408)
+    expect(await timedOut.json()).toEqual({ error: 'request_timeout' })
+  })
+
   it('rate-limits pairing creation and rejects unsupported methods', async () => {
     const bridge = createOfficeBridge({
       allowedOrigin: origin,
@@ -369,6 +398,60 @@ describe('messages capability', () => {
     )
     expect(response.status).toBe(413)
     expect(cancel).toHaveBeenCalledOnce()
+  })
+
+  it('times out a never-ending message body while holding its concurrency slot', async () => {
+    const cancel = vi.fn()
+    const slowBody = () =>
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"messages":['))
+        },
+        cancel,
+      })
+    const { bridge, capability } = await approvedBridge(vi.fn(), {
+      maxConcurrentMessages: 1,
+      messageTimeoutMs: 10,
+    })
+    const slowRequest = () =>
+      new Request('http://127.0.0.1:43127/v1/office/messages', {
+        method: 'POST',
+        headers: {
+          origin,
+          authorization: `Bridge ${capability}`,
+          'content-type': 'application/json',
+        },
+        body: slowBody(),
+        duplex: 'half',
+      } as RequestInit & { duplex: 'half' })
+    const first = bridge.handle(slowRequest())
+    const concurrent = await bridge.handle(slowRequest())
+    expect(concurrent.status).toBe(429)
+    const timedOut = await first
+    expect(timedOut.status).toBe(408)
+    expect(await timedOut.json()).toEqual({ error: 'request_timeout' })
+    expect(cancel).toHaveBeenCalled()
+  })
+
+  it('fails a pre-aborted message request without invoking the proxy', async () => {
+    const proxy = vi.fn<MessagesProxy>()
+    const { bridge, capability } = await approvedBridge(proxy)
+    const controller = new AbortController()
+    controller.abort()
+    const response = await bridge.handle(
+      request('/v1/office/messages', {
+        method: 'POST',
+        headers: {
+          origin,
+          authorization: `Bridge ${capability}`,
+          'content-type': 'application/json',
+        },
+        body: '{}',
+        signal: controller.signal,
+      }),
+    )
+    expect(response.status).toBe(408)
+    expect(proxy).not.toHaveBeenCalled()
   })
 
   it('streams chunks before completion and holds concurrency until close or cancel', async () => {
