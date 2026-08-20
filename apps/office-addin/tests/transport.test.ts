@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { WISWORK_DEFAULT_MODEL, WISWORK_MESSAGES_URL } from '@wiswork/ai-provider'
 import {
+  MAX_COMPLETED_TOOL_CALLS,
   MAX_REQUEST_BODY_LENGTH,
+  MAX_STREAM_TEXT_LENGTH,
   MAX_STREAM_TOOL_INPUT_LENGTH,
+  STREAM_RESPONSE_TIMEOUT_MS,
   createOfficeAgentTransport,
 } from '../src/agent/transport.js'
 import type { BrowserAuth } from '../src/auth/browser-auth.js'
@@ -79,14 +82,7 @@ describe('Office Agent transport', () => {
 
   it('cancels and completes exactly once without surfacing an abort error', async () => {
     const auth = {
-      authenticatedFetch: vi.fn(
-        (_url, init: RequestInit) =>
-          new Promise<Response>((_resolve, reject) => {
-            init.signal?.addEventListener('abort', () =>
-              reject(new DOMException('secret', 'AbortError')),
-            )
-          }),
-      ),
+      authenticatedFetch: vi.fn(() => new Promise<Response>(() => undefined)),
     } as unknown as BrowserAuth
     const cb = callbacks()
     const handle = createOfficeAgentTransport(config, auth).stream(
@@ -177,5 +173,58 @@ describe('Office Agent transport', () => {
     await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
     expect(cb.onError).toHaveBeenCalledWith('transport_request_too_large')
     expect(auth.authenticatedFetch).not.toHaveBeenCalled()
+  })
+
+  it('bounds cumulative text output across many individually small deltas', async () => {
+    const fragment = 'x'.repeat(1024)
+    const auth = {
+      authenticatedFetch: vi
+        .fn()
+        .mockResolvedValue(
+          sse(
+            Array.from(
+              { length: Math.ceil(MAX_STREAM_TEXT_LENGTH / fragment.length) + 1 },
+              () =>
+                `data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: fragment } })}`,
+            ),
+          ),
+        ),
+    } as unknown as BrowserAuth
+    const cb = callbacks()
+    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(cb.onError).toHaveBeenCalledWith('transport_stream_budget_exceeded')
+    expect(cb.onDelta).toHaveBeenCalledTimes(MAX_STREAM_TEXT_LENGTH / fragment.length)
+  })
+
+  it('bounds sequential completed tool calls across the whole response', async () => {
+    const lines = Array.from({ length: MAX_COMPLETED_TOOL_CALLS + 1 }, (_, index) => [
+      `data: ${JSON.stringify({ type: 'content_block_start', index, content_block: { type: 'tool_use', id: `c${index}`, name: 'read_selection' } })}`,
+      `data: ${JSON.stringify({ type: 'content_block_stop', index })}`,
+    ]).flat()
+    const auth = {
+      authenticatedFetch: vi.fn().mockResolvedValue(sse(lines)),
+    } as unknown as BrowserAuth
+    const cb = callbacks()
+    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(cb.onError).toHaveBeenCalledWith('transport_stream_budget_exceeded')
+    expect(cb.onToolCall).toHaveBeenCalledTimes(MAX_COMPLETED_TOOL_CALLS)
+  })
+
+  it('times out response consumption, cancels the reader, and completes once', async () => {
+    vi.useFakeTimers()
+    const cancel = vi.fn()
+    const hanging = new ReadableStream<Uint8Array>({ cancel })
+    const auth = {
+      authenticatedFetch: vi.fn().mockResolvedValue(new Response(hanging, { status: 200 })),
+    } as unknown as BrowserAuth
+    const cb = callbacks()
+    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    await vi.advanceTimersByTimeAsync(STREAM_RESPONSE_TIMEOUT_MS)
+    expect(cb.onError).toHaveBeenCalledWith('transport_timeout')
+    expect(cb.onDone).toHaveBeenCalledOnce()
+    expect(cancel).toHaveBeenCalledOnce()
+    vi.useRealTimers()
   })
 })

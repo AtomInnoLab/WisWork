@@ -16,6 +16,11 @@ import type { RuntimeConfig } from '../config.js'
 const MAX_TOKENS = 8192
 export const MAX_STREAM_TOOL_INPUT_LENGTH = 16 * 1024
 export const MAX_REQUEST_BODY_LENGTH = 256 * 1024
+export const MAX_STREAM_TEXT_LENGTH = 128 * 1024
+export const MAX_COMPLETED_TOOL_CALLS = 32
+export const STREAM_RESPONSE_TIMEOUT_MS = 60_000
+const MAX_STREAM_RESPONSE_BYTES = 1024 * 1024
+const MAX_STREAM_EVENTS = 4096
 const MAX_SSE_LINE_LENGTH = 64 * 1024
 const MAX_PENDING_TOOL_CALLS = 16
 
@@ -26,6 +31,8 @@ type TransportErrorCode =
   | 'transport_stream_too_large'
   | 'transport_tool_input_too_large'
   | 'transport_request_too_large'
+  | 'transport_stream_budget_exceeded'
+  | 'transport_timeout'
 
 class TransportError extends Error {
   constructor(
@@ -89,39 +96,77 @@ function safeError(error: unknown): string {
   return 'transport_network'
 }
 
-async function* boundedSseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+async function* boundedSseLines(
+  body: ReadableStream<Uint8Array>,
+  signal: AbortSignal,
+): AsyncGenerator<string> {
   const decoder = new TextDecoder()
   const reader = body.getReader()
-  let buffer = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    let newline = buffer.indexOf('\n')
-    while (newline !== -1) {
-      const line = buffer.slice(0, newline).replace(/\r$/, '')
-      if (line.length > MAX_SSE_LINE_LENGTH) throw new TransportError('transport_stream_too_large')
-      yield line
-      buffer = buffer.slice(newline + 1)
-      newline = buffer.indexOf('\n')
-    }
-    if (buffer.length > MAX_SSE_LINE_LENGTH) {
-      throw new TransportError('transport_stream_too_large')
-    }
+  let readerCancelled = false
+  let finished = false
+  const abort = () => {
+    readerCancelled = true
+    void reader.cancel()
   }
-  buffer += decoder.decode()
-  if (buffer.length > MAX_SSE_LINE_LENGTH) throw new TransportError('transport_stream_too_large')
-  if (buffer) yield buffer.replace(/\r$/, '')
+  signal.addEventListener('abort', abort, { once: true })
+  let responseBytes = 0
+  let buffer = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+      if (done) {
+        finished = true
+        break
+      }
+      responseBytes += value.byteLength
+      if (responseBytes > MAX_STREAM_RESPONSE_BYTES) {
+        throw new TransportError('transport_stream_budget_exceeded')
+      }
+      buffer += decoder.decode(value, { stream: true })
+      let newline = buffer.indexOf('\n')
+      while (newline !== -1) {
+        const line = buffer.slice(0, newline).replace(/\r$/, '')
+        if (line.length > MAX_SSE_LINE_LENGTH) {
+          throw new TransportError('transport_stream_too_large')
+        }
+        yield line
+        buffer = buffer.slice(newline + 1)
+        newline = buffer.indexOf('\n')
+      }
+      if (buffer.length > MAX_SSE_LINE_LENGTH) {
+        throw new TransportError('transport_stream_too_large')
+      }
+    }
+    buffer += decoder.decode()
+    if (buffer.length > MAX_SSE_LINE_LENGTH) throw new TransportError('transport_stream_too_large')
+    if (buffer) yield buffer.replace(/\r$/, '')
+  } finally {
+    signal.removeEventListener('abort', abort)
+    if (!finished && !readerCancelled) await reader.cancel()
+    reader.releaseLock()
+  }
 }
 
-async function consumeStream(response: Response, callbacks: AgentStreamCallbacks): Promise<void> {
+async function consumeStream(
+  response: Response,
+  callbacks: AgentStreamCallbacks,
+  signal: AbortSignal,
+): Promise<void> {
   if (!response.ok || !response.body) throw new TransportError('transport_http', response.status)
   const pending = new Map<number, { id: string; name: string; json: string }>()
   let stopReason: string | undefined
-  for await (const line of boundedSseLines(response.body)) {
+  let eventCount = 0
+  let textLength = 0
+  let completedToolCalls = 0
+  for await (const line of boundedSseLines(response.body, signal)) {
     if (!line.startsWith('data:')) continue
     const payload = line.slice(5).trim()
     if (!payload || payload === '[DONE]') continue
+    eventCount += 1
+    if (eventCount > MAX_STREAM_EVENTS) {
+      throw new TransportError('transport_stream_budget_exceeded')
+    }
     let event: {
       type?: string
       index?: number
@@ -146,7 +191,13 @@ async function consumeStream(response: Response, callbacks: AgentStreamCallbacks
         json: '',
       })
     } else if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-      if (event.delta.text) callbacks.onDelta(event.delta.text)
+      if (event.delta.text) {
+        textLength += event.delta.text.length
+        if (textLength > MAX_STREAM_TEXT_LENGTH) {
+          throw new TransportError('transport_stream_budget_exceeded')
+        }
+        callbacks.onDelta(event.delta.text)
+      }
     } else if (event.type === 'content_block_delta' && event.delta?.type === 'input_json_delta') {
       const tool = pending.get(index)
       const fragment = event.delta.partial_json ?? ''
@@ -160,6 +211,10 @@ async function consumeStream(response: Response, callbacks: AgentStreamCallbacks
       const tool = pending.get(index)
       if (tool) {
         pending.delete(index)
+        completedToolCalls += 1
+        if (completedToolCalls > MAX_COMPLETED_TOOL_CALLS) {
+          throw new TransportError('transport_stream_budget_exceeded')
+        }
         let call: AgentToolCall
         try {
           const input: unknown = tool.json.trim() ? JSON.parse(tool.json) : {}
@@ -187,6 +242,8 @@ export function createOfficeAgentTransport(
   return {
     stream(request: AgentStreamRequest, callbacks: AgentStreamCallbacks) {
       const controller = new AbortController()
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      let cancelListener: (() => void) | undefined
       let completed = false
       const done = () => {
         if (completed) return
@@ -195,38 +252,56 @@ export function createOfficeAgentTransport(
       }
       void (async () => {
         try {
-          const body = JSON.stringify({
-            model: WISWORK_DEFAULT_MODEL,
-            max_tokens: MAX_TOKENS,
-            system: request.system,
-            messages: messagesForProvider(request.messages),
-            tools: request.tools.map((tool) => ({
-              name: tool.name,
-              description: tool.description,
-              input_schema: tool.inputSchema,
-            })),
-            stream: true,
+          const operation = (async () => {
+            const body = JSON.stringify({
+              model: WISWORK_DEFAULT_MODEL,
+              max_tokens: MAX_TOKENS,
+              system: request.system,
+              messages: messagesForProvider(request.messages),
+              tools: request.tools.map((tool) => ({
+                name: tool.name,
+                description: tool.description,
+                input_schema: tool.inputSchema,
+              })),
+              stream: true,
+            })
+            if (body.length > MAX_REQUEST_BODY_LENGTH) {
+              throw new TransportError('transport_request_too_large')
+            }
+            const response = await auth.authenticatedFetch(WISWORK_MESSAGES_URL, {
+              method: 'POST',
+              signal: controller.signal,
+              headers: {
+                'content-type': 'application/json',
+                'x-req-location': WISWORK_REQUEST_LOCATION,
+              },
+              body,
+            })
+            if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+            await consumeStream(response, callbacks, controller.signal)
+          })()
+          const expired = new Promise<never>((_resolve, reject) => {
+            timeout = setTimeout(() => {
+              reject(new TransportError('transport_timeout'))
+              controller.abort()
+            }, STREAM_RESPONSE_TIMEOUT_MS)
           })
-          if (body.length > MAX_REQUEST_BODY_LENGTH) {
-            throw new TransportError('transport_request_too_large')
-          }
-          const response = await auth.authenticatedFetch(WISWORK_MESSAGES_URL, {
-            method: 'POST',
-            signal: controller.signal,
-            headers: {
-              'content-type': 'application/json',
-              'x-req-location': WISWORK_REQUEST_LOCATION,
-            },
-            body,
+          const cancelled = new Promise<never>((_resolve, reject) => {
+            cancelListener = () => reject(new DOMException('Aborted', 'AbortError'))
+            controller.signal.addEventListener('abort', cancelListener, { once: true })
           })
-          await consumeStream(response, callbacks)
+          await Promise.race([operation, expired, cancelled])
         } catch (error) {
-          if (!controller.signal.aborted) {
+          if (error instanceof TransportError && error.code === 'transport_timeout') {
+            callbacks.onError(error.publicMessage())
+          } else if (!controller.signal.aborted) {
             callbacks.onError(
               error instanceof TransportError ? error.publicMessage() : safeError(error),
             )
           }
         } finally {
+          if (timeout !== undefined) clearTimeout(timeout)
+          if (cancelListener) controller.signal.removeEventListener('abort', cancelListener)
           done()
         }
       })()
