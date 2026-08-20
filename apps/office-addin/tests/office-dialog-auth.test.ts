@@ -6,6 +6,7 @@ import {
   createBrowserOfficeDialogRuntime,
   forwardOAuthCallbackToParent,
   dialogMessageOriginIsTrusted,
+  officeDialogError,
   type OfficeAuthDialog,
   type OfficeDialogRuntime,
 } from '../src/auth/office-dialog-auth.js'
@@ -14,7 +15,7 @@ const callbackUrl = 'https://office.example/oauth/callback'
 
 function dialogHarness() {
   let message: ((value: string) => void) | undefined
-  let error: (() => void) | undefined
+  let error: ((code?: number) => void) | undefined
   const close = vi.fn()
   const dialog: OfficeAuthDialog = {
     close,
@@ -28,7 +29,12 @@ function dialogHarness() {
     },
   }
   const runtime: OfficeDialogRuntime = { open: vi.fn(async () => dialog) }
-  return { runtime, close, send: (value: string) => message?.(value), fail: () => error?.() }
+  return {
+    runtime,
+    close,
+    send: (value: string) => message?.(value),
+    fail: (code?: number) => error?.(code),
+  }
 }
 
 describe('Office dialog OAuth', () => {
@@ -133,6 +139,24 @@ describe('Office dialog OAuth', () => {
     expect(
       dialogMessageOriginIsTrusted('https://attacker.example', 'https://office.example', false),
     ).toBe(false)
+  })
+
+  it('exposes only allowlisted Office dialog error codes', async () => {
+    expect(officeDialogError(12002).message).toBe('office_dialog_12002')
+    expect(officeDialogError(12006).message).toBe('office_dialog_12006')
+    expect(officeDialogError(99999).message).toBe('sign_in_failed')
+    expect(officeDialogError(undefined).message).toBe('sign_in_failed')
+
+    const harness = dialogHarness()
+    const auth = {
+      startAuthorization: vi.fn(async () => 'https://auth.example/oidc/auth'),
+      consumeCallback: vi.fn(async () => undefined),
+      cancelAuthorization: vi.fn(),
+    }
+    const result = createOfficeDialogAuth(harness.runtime, callbackUrl)(auth)
+    await vi.waitFor(() => expect(harness.runtime.open).toHaveBeenCalledOnce())
+    harness.fail(12006)
+    await expect(result).rejects.toThrow('office_dialog_12006')
   })
 
   it('forwards only an exact callback URL to the parent task pane', () => {

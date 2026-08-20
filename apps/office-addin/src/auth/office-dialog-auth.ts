@@ -1,7 +1,7 @@
 export interface OfficeAuthDialog {
   close(): void
   onMessage(listener: (message: string) => void): () => void
-  onError(listener: () => void): () => void
+  onError(listener: (code?: number) => void): () => void
 }
 
 export interface OfficeDialogRuntime {
@@ -17,6 +17,15 @@ interface DialogAuthClient {
 const CALLBACK_MESSAGE_TYPE = 'wiswork_oauth_callback'
 const MAX_CALLBACK_URL_LENGTH = 4_096
 const DIALOG_START_PATH = '/oauth/dialog-start.html'
+const OFFICE_DIALOG_ERROR_CODES = new Set([12002, 12003, 12004, 12005, 12006, 12007, 12009, 12011])
+
+export function officeDialogError(code: number | undefined): Error {
+  return new Error(
+    code !== undefined && OFFICE_DIALOG_ERROR_CODES.has(code)
+      ? `office_dialog_${code}`
+      : 'sign_in_failed',
+  )
+}
 
 export function createDialogStartUrl(authorizationUrl: string, callbackUrl: string): string {
   const start = new URL(DIALOG_START_PATH, new URL(callbackUrl).origin)
@@ -119,7 +128,7 @@ export function createOfficeDialogAuth(runtime: OfficeDialogRuntime, callbackUrl
         dialog.close()
         void auth.consumeCallback(callback).then(resolve, reject)
       })
-      removeError = dialog.onError(() => finish(() => reject(new Error('sign_in_failed'))))
+      removeError = dialog.onError((code) => finish(() => reject(officeDialogError(code))))
     })
   }
 }
@@ -170,7 +179,7 @@ export function createBrowserOfficeDialogRuntime(
           { height: 60, width: 40, displayInIframe: false },
           (result) => {
             if (result.status !== Office.AsyncResultStatus.Succeeded) {
-              reject(new Error('sign_in_failed'))
+              reject(officeDialogError(result.error.code))
               return
             }
             const dialog = result.value
@@ -194,7 +203,8 @@ export function createBrowserOfficeDialogRuntime(
                 return () => undefined
               },
               onError(listener) {
-                const handler = () => listener()
+                const handler = (event: { message: string } | { error: number }) =>
+                  listener('error' in event ? event.error : undefined)
                 dialog.addEventHandler(Office.EventType.DialogEventReceived, handler)
                 return () => undefined
               },

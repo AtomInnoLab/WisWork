@@ -29,7 +29,9 @@ const hostLabels: Record<OfficeHost, string> = {
 }
 
 const safeAuthError = (error: unknown) =>
-  error instanceof Error && ['invalid_callback', 'token_exchange_failed'].includes(error.message)
+  error instanceof Error &&
+  (['invalid_callback', 'token_exchange_failed'].includes(error.message) ||
+    /^office_dialog_120(?:0[2-7]|09|11)$/.test(error.message))
     ? error.message
     : 'sign_in_failed'
 
