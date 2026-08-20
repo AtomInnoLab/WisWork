@@ -19,6 +19,7 @@ import type {
 import { fileCountKey, latexProjectCountKey, visiblePageCount } from './counts'
 import { formatAccountLoginDiagnostic, loginErrorKind } from './login-diagnostic'
 import { LoginDiagnostic } from './LoginDiagnostic'
+import { mergeOfficePairings } from './office-pairings'
 import { useI18n } from './locale'
 import type { I18n, StringKey } from './locale'
 
@@ -964,16 +965,12 @@ export function Home() {
 
   useEffect(() => {
     const add = (pairing: OfficePairingRequest) =>
-      setOfficePairings((current) =>
-        current.some((entry) => entry.pairingId === pairing.pairingId)
-          ? current
-          : [...current, pairing],
-      )
+      setOfficePairings((current) => mergeOfficePairings(current, [pairing]))
     const off = window.aiOffice.onOfficePairingRequested(add)
     void window.aiOffice
       .listOfficePairings()
-      .then((pending) => setOfficePairings(pending))
-      .catch(() => setOfficePairings([]))
+      .then((pending) => setOfficePairings((current) => mergeOfficePairings(current, pending)))
+      .catch(() => undefined)
     return off
   }, [])
 
