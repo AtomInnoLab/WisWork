@@ -34,6 +34,7 @@ import {
   initializeElectronAuthRuntime,
   extractCallbackUrl,
 } from '@wiswork/auth'
+import { createOfficeBridge, type OfficeBridge } from '@wiswork/office-bridge'
 import { createI18n, isLang, normalizeLang, setUiLang, type Lang } from '@wiswork/i18n'
 import {
   appMenuLabels,
@@ -141,6 +142,7 @@ import type {
   RenameResult,
 } from '../shared/home-api'
 import { HOME_CHANNELS } from '../shared/home-api'
+import { OFFICE_PAIRING_CHANNELS } from '../shared/home-api'
 import type { TabKind } from '../shared/tabs-api'
 import { TABS_CHANNELS } from '../shared/tabs-api'
 import { showErrorDialog } from './error-dialog'
@@ -159,6 +161,15 @@ import { createAuthDeepLinkQueue } from './auth-deep-link-queue'
 import { createThemeController, registerThemeIpc } from './theme-controller'
 import { applyUpdateChannel, initAutoUpdater } from './updater'
 import { isUpdateChannel, type UpdateChannel } from '../shared/update-api'
+import { startOfficeBridgeHttpServer, type OfficeBridgeHttpServer } from './office-bridge-http'
+import {
+  createOfficeMessagesProxy,
+  logoutAndRevokeOfficeBridge,
+  officeBridgePortFromEnv,
+  officeOriginFromEnv,
+  validAccountStatusOrRevoke,
+} from './office-bridge-runtime'
+import { registerOfficePairingIpc } from './office-pairing-ipc'
 
 /**
  * WisWork unified shell: ONE Electron app, ONE BrowserWindow, hosting the
@@ -259,6 +270,8 @@ configureLatexRuntime({
 registerLatexProtocolScheme(protocol)
 
 let authRuntime: ReturnType<typeof initializeElectronAuthRuntime> | null = null
+let officeBridge: OfficeBridge | null = null
+let officeBridgeServer: OfficeBridgeHttpServer | null = null
 const requireAuthRuntime = (): ReturnType<typeof initializeElectronAuthRuntime> => {
   if (!authRuntime) throw new AuthError('auth_not_initialized')
   return authRuntime
@@ -1725,7 +1738,7 @@ function registerHomeIpc(): void {
   })
   ipcMain.handle(HOME_CHANNELS.accountLogout, (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
-    return requireAuthRuntime().client.logout()
+    return logoutAndRevokeOfficeBridge(officeBridge, () => requireAuthRuntime().client.logout())
   })
 
   ipcMain.handle(HOME_CHANNELS.getAppVersion, (): string => app.getVersion())
@@ -2443,6 +2456,39 @@ app.whenReady().then(async () => {
     safeStorage,
     openExternal: (url) => shell.openExternal(url),
   })
+  const initializedOfficeBridge = createOfficeBridge({
+    allowedOrigin: officeOriginFromEnv(process.env),
+    proxy: createOfficeMessagesProxy({
+      fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+      onTerminalAuthLoss: () => officeBridge?.revokeAll(),
+    }),
+  })
+  officeBridge = initializedOfficeBridge
+  registerOfficePairingIpc({
+    ipcMain,
+    bridge: initializedOfficeBridge,
+    getValidAccountStatus: () =>
+      validAccountStatusOrRevoke(initializedOfficeBridge, () =>
+        requireAuthRuntime().client.getValidAccountStatus(),
+      ),
+    isTrustedSender: (sender) => Boolean(shellWindow && sender === shellWindow.webContents),
+  })
+  try {
+    officeBridgeServer = await startOfficeBridgeHttpServer({
+      bridge: initializedOfficeBridge,
+      host: '127.0.0.1',
+      port: officeBridgePortFromEnv(process.env),
+      onPending: (pairing) => {
+        if (!shellWindow || shellWindow.isDestroyed()) return
+        shellWindow.webContents.send(OFFICE_PAIRING_CHANNELS.requested, pairing)
+        revealShellWindow()
+      },
+    })
+  } catch {
+    initializedOfficeBridge.shutdown()
+    officeBridge = null
+    console.error('[office-bridge] failed to start on loopback')
+  }
   void authDeepLinks.initialize((callback) => requireAuthRuntime().client.consumeCallback(callback))
 
   app.setAccessibilitySupportEnabled(true)
@@ -2492,4 +2538,7 @@ app.on('before-quit', () => {
   // No close prompt may fall through to "Save" during shutdown
   markSheetsShuttingDown()
   stopSheetsSidecar()
+  officeBridge?.revokeAll()
+  officeBridge?.shutdown()
+  void officeBridgeServer?.stop()
 })

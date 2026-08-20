@@ -1231,6 +1231,17 @@ body.vib .home {
   background: var(--color-error-hover);
 }
 
+.btn-office-allow {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-office-allow:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;

@@ -30,6 +30,7 @@
     "@wiswork/latex": "*",
     "@wiswork/latex-compiler": "*",
     "@wiswork/latex-project": "*",
+    "@wiswork/office-bridge": "*",
     "@wiswork/markdown": "*",
     "@wiswork/pdf-viewer": "*",
     "@wiswork/pptx-engine": "*",

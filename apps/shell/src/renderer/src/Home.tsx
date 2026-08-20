@@ -11,6 +11,7 @@ import type {
   AppTheme,
   HomeApi,
   LatexRecentProjectEntry,
+  OfficePairingRequest,
   ProjectHomeApi,
   ProjectSummaryEntry,
   RecentEntry,
@@ -943,6 +944,8 @@ export function Home() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string[] | null>(null)
+  const [officePairing, setOfficePairing] = useState<OfficePairingRequest | null>(null)
+  const [officePairingBusy, setOfficePairingBusy] = useState(false)
   // name in the greeting; omitted when logged out
   const [accountName, setAccountName] = useState('')
   const [greetAskKey] = useState(
@@ -958,6 +961,11 @@ export function Home() {
       })
       .catch(() => setAccountName(''))
   }, [])
+
+  useEffect(
+    () => window.aiOffice.onOfficePairingRequested((pairing) => setOfficePairing(pairing)),
+    [],
+  )
 
   // ── Project state ──
   const [projects, setProjects] = useState<ProjectSummaryEntry[]>([])
@@ -1985,6 +1993,53 @@ export function Home() {
               </button>
               <button className="btn btn-danger" onClick={confirmDeleteNow}>
                 {t('delete')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {officePairing && (
+        <div className="modal-overlay">
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Office connection request"
+          >
+            <h3>Connect WisWork Office Agent?</h3>
+            <p>
+              {officePairing.hostLabel} from {new URL(officePairing.origin).host} is requesting to
+              use your signed-in WisWork account. Your Wispaper token stays on this PC.
+            </p>
+            <div className="modal-buttons">
+              <button
+                className="btn btn-secondary"
+                disabled={officePairingBusy}
+                onClick={() => {
+                  setOfficePairingBusy(true)
+                  void window.aiOffice.rejectOfficePairing(officePairing.pairingId).finally(() => {
+                    setOfficePairing(null)
+                    setOfficePairingBusy(false)
+                  })
+                }}
+              >
+                Reject
+              </button>
+              <button
+                className="btn btn-office-allow"
+                autoFocus
+                disabled={officePairingBusy}
+                onClick={() => {
+                  setOfficePairingBusy(true)
+                  void window.aiOffice
+                    .approveOfficePairing(officePairing.pairingId)
+                    .then((approved) => {
+                      if (approved) setOfficePairing(null)
+                    })
+                    .finally(() => setOfficePairingBusy(false))
+                }}
+              >
+                Allow
               </button>
             </div>
           </div>

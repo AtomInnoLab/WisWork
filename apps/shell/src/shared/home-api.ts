@@ -123,6 +123,10 @@ export interface HomeApi {
   openLoginUrl(): Promise<void>
   /** Clear the encrypted WisWork session. */
   accountLogout(): Promise<void>
+  /** Observe explicit Office connection requests awaiting approval on this PC. */
+  onOfficePairingRequested(handler: (pairing: OfficePairingRequest) => void): () => void
+  approveOfficePairing(pairingId: string): Promise<boolean>
+  rejectOfficePairing(pairingId: string): Promise<boolean>
   getAppVersion(): Promise<string>
   onboardingSeen(): Promise<boolean>
   setOnboardingSeen(): Promise<void>
@@ -142,6 +146,12 @@ export interface AccountLoginEvent {
     stage: 'callback_exchange' | 'refresh'
     httpStatus?: number
   }
+}
+
+export interface OfficePairingRequest {
+  pairingId: string
+  hostLabel: 'Word' | 'Excel' | 'PowerPoint'
+  origin: string
 }
 
 export interface RenameResult {
@@ -236,4 +246,10 @@ export const PROJECT_CHANNELS = {
   delete: 'project:delete',
   moveFile: 'project:moveFile',
   timeline: 'project:timeline',
+} as const
+
+export const OFFICE_PAIRING_CHANNELS = {
+  requested: 'home:office-pairing-requested',
+  approve: 'home:office-pairing-approve',
+  reject: 'home:office-pairing-reject',
 } as const
