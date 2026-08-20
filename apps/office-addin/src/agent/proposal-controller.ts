@@ -30,29 +30,32 @@ export function selectionFingerprint(value: string): string {
 }
 
 export function createProposalController(document: OfficeDocumentClient): ProposalController {
-  let current: OfficeProposal | undefined
+  let current: Readonly<OfficeProposal> | undefined
+
+  const publicSnapshot = (proposal: Readonly<OfficeProposal>): OfficeProposal =>
+    Object.freeze({ ...proposal })
 
   const invalidate = () => {
     current = undefined
   }
 
   return {
-    pending: () => current,
+    pending: () => (current ? publicSnapshot(current) : undefined),
 
     async propose(operation, value) {
       const before = await document.readSelection()
       if (before.length > MAX_PROPOSAL_SELECTION_LENGTH) {
         throw new Error('selection_too_large')
       }
-      const proposal = {
+      const proposal: Readonly<OfficeProposal> = Object.freeze({
         id: crypto.randomUUID(),
         operation,
         before,
         value,
         fingerprint: selectionFingerprint(before),
-      }
+      })
       current = proposal
-      return proposal
+      return publicSnapshot(proposal)
     },
 
     async confirm(id) {

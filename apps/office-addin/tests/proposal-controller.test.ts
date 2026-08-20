@@ -49,4 +49,27 @@ describe('proposal controller', () => {
     expect(doc.appendText).toHaveBeenCalledWith('before', 'more')
     await expect(controller.confirm(proposal.id)).rejects.toThrow('proposal_missing')
   })
+
+  it('does not let mutation of the propose result change the confirmed write', async () => {
+    const doc = document()
+    const controller = createProposalController(doc)
+    const proposal = await controller.propose('replace', 'original preview')
+    expect(Object.isFrozen(proposal)).toBe(true)
+    expect(() => Object.assign(proposal, { value: 'attacker value', before: 'changed' })).toThrow()
+    await controller.confirm(proposal.id)
+    expect(doc.replaceSelection).toHaveBeenCalledWith('original preview')
+  })
+
+  it('returns an immutable pending snapshot detached from internal confirmation state', async () => {
+    const doc = document()
+    const controller = createProposalController(doc)
+    const proposed = await controller.propose('append', ' original')
+    const pending = controller.pending()!
+    expect(pending).not.toBe(proposed)
+    expect(Object.isFrozen(pending)).toBe(true)
+    expect(() => Object.assign(pending, { operation: 'replace', value: ' attacker' })).toThrow()
+    await controller.confirm(proposed.id)
+    expect(doc.appendText).toHaveBeenCalledWith('before', ' original')
+    expect(doc.replaceSelection).not.toHaveBeenCalled()
+  })
 })

@@ -9,12 +9,37 @@ import {
   WISWORK_DEFAULT_MODEL,
   WISWORK_MESSAGES_URL,
   WISWORK_REQUEST_LOCATION,
-  sseLines,
 } from '@wiswork/ai-provider'
 import type { BrowserAuth } from '../auth/browser-auth.js'
 import type { RuntimeConfig } from '../config.js'
 
 const MAX_TOKENS = 8192
+export const MAX_STREAM_TOOL_INPUT_LENGTH = 16 * 1024
+export const MAX_REQUEST_BODY_LENGTH = 256 * 1024
+const MAX_SSE_LINE_LENGTH = 64 * 1024
+const MAX_PENDING_TOOL_CALLS = 16
+
+type TransportErrorCode =
+  | 'transport_http'
+  | 'transport_invalid_stream'
+  | 'transport_stream_error'
+  | 'transport_stream_too_large'
+  | 'transport_tool_input_too_large'
+  | 'transport_request_too_large'
+
+class TransportError extends Error {
+  constructor(
+    readonly code: TransportErrorCode,
+    readonly status?: number,
+  ) {
+    super(code)
+    this.name = 'TransportError'
+  }
+
+  publicMessage(): string {
+    return this.code === 'transport_http' ? `transport_http_${this.status ?? 0}` : this.code
+  }
+}
 
 function trustedMessagesUrl(value: string): boolean {
   try {
@@ -64,11 +89,36 @@ function safeError(error: unknown): string {
   return 'transport_network'
 }
 
+async function* boundedSseLines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+  const decoder = new TextDecoder()
+  const reader = body.getReader()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let newline = buffer.indexOf('\n')
+    while (newline !== -1) {
+      const line = buffer.slice(0, newline).replace(/\r$/, '')
+      if (line.length > MAX_SSE_LINE_LENGTH) throw new TransportError('transport_stream_too_large')
+      yield line
+      buffer = buffer.slice(newline + 1)
+      newline = buffer.indexOf('\n')
+    }
+    if (buffer.length > MAX_SSE_LINE_LENGTH) {
+      throw new TransportError('transport_stream_too_large')
+    }
+  }
+  buffer += decoder.decode()
+  if (buffer.length > MAX_SSE_LINE_LENGTH) throw new TransportError('transport_stream_too_large')
+  if (buffer) yield buffer.replace(/\r$/, '')
+}
+
 async function consumeStream(response: Response, callbacks: AgentStreamCallbacks): Promise<void> {
-  if (!response.ok || !response.body) throw new Error(`transport_http_${response.status}`)
+  if (!response.ok || !response.body) throw new TransportError('transport_http', response.status)
   const pending = new Map<number, { id: string; name: string; json: string }>()
   let stopReason: string | undefined
-  for await (const line of sseLines(response.body)) {
+  for await (const line of boundedSseLines(response.body)) {
     if (!line.startsWith('data:')) continue
     const payload = line.slice(5).trim()
     if (!payload || payload === '[DONE]') continue
@@ -82,11 +132,14 @@ async function consumeStream(response: Response, callbacks: AgentStreamCallbacks
     try {
       event = JSON.parse(payload) as typeof event
     } catch {
-      throw new Error('transport_invalid_stream')
+      throw new TransportError('transport_invalid_stream')
     }
-    if (event.type === 'error' || event.error) throw new Error('transport_stream_error')
+    if (event.type === 'error' || event.error) throw new TransportError('transport_stream_error')
     const index = event.index ?? 0
     if (event.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
+      if (!pending.has(index) && pending.size >= MAX_PENDING_TOOL_CALLS) {
+        throw new TransportError('transport_stream_too_large')
+      }
       pending.set(index, {
         id: event.content_block.id ?? crypto.randomUUID(),
         name: event.content_block.name ?? '',
@@ -96,7 +149,13 @@ async function consumeStream(response: Response, callbacks: AgentStreamCallbacks
       if (event.delta.text) callbacks.onDelta(event.delta.text)
     } else if (event.type === 'content_block_delta' && event.delta?.type === 'input_json_delta') {
       const tool = pending.get(index)
-      if (tool) tool.json += event.delta.partial_json ?? ''
+      const fragment = event.delta.partial_json ?? ''
+      if (tool) {
+        if (tool.json.length + fragment.length > MAX_STREAM_TOOL_INPUT_LENGTH) {
+          throw new TransportError('transport_tool_input_too_large')
+        }
+        tool.json += fragment
+      }
     } else if (event.type === 'content_block_stop') {
       const tool = pending.get(index)
       if (tool) {
@@ -115,7 +174,7 @@ async function consumeStream(response: Response, callbacks: AgentStreamCallbacks
       stopReason = event.delta.stop_reason
     }
   }
-  if (pending.size) throw new Error('transport_invalid_stream')
+  if (pending.size) throw new TransportError('transport_invalid_stream')
   if (stopReason) callbacks.onStopReason?.(stopReason)
 }
 
@@ -136,6 +195,21 @@ export function createOfficeAgentTransport(
       }
       void (async () => {
         try {
+          const body = JSON.stringify({
+            model: WISWORK_DEFAULT_MODEL,
+            max_tokens: MAX_TOKENS,
+            system: request.system,
+            messages: messagesForProvider(request.messages),
+            tools: request.tools.map((tool) => ({
+              name: tool.name,
+              description: tool.description,
+              input_schema: tool.inputSchema,
+            })),
+            stream: true,
+          })
+          if (body.length > MAX_REQUEST_BODY_LENGTH) {
+            throw new TransportError('transport_request_too_large')
+          }
           const response = await auth.authenticatedFetch(WISWORK_MESSAGES_URL, {
             method: 'POST',
             signal: controller.signal,
@@ -143,24 +217,14 @@ export function createOfficeAgentTransport(
               'content-type': 'application/json',
               'x-req-location': WISWORK_REQUEST_LOCATION,
             },
-            body: JSON.stringify({
-              model: WISWORK_DEFAULT_MODEL,
-              max_tokens: MAX_TOKENS,
-              system: request.system,
-              messages: messagesForProvider(request.messages),
-              tools: request.tools.map((tool) => ({
-                name: tool.name,
-                description: tool.description,
-                input_schema: tool.inputSchema,
-              })),
-              stream: true,
-            }),
+            body,
           })
           await consumeStream(response, callbacks)
         } catch (error) {
           if (!controller.signal.aborted) {
-            const message = error instanceof Error ? error.message : ''
-            callbacks.onError(message.startsWith('transport_') ? message : safeError(error))
+            callbacks.onError(
+              error instanceof TransportError ? error.publicMessage() : safeError(error),
+            )
           }
         } finally {
           done()

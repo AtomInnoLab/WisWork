@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { WISWORK_DEFAULT_MODEL, WISWORK_MESSAGES_URL } from '@wiswork/ai-provider'
-import { createOfficeAgentTransport } from '../src/agent/transport.js'
+import {
+  MAX_REQUEST_BODY_LENGTH,
+  MAX_STREAM_TOOL_INPUT_LENGTH,
+  createOfficeAgentTransport,
+} from '../src/agent/transport.js'
 import type { BrowserAuth } from '../src/auth/browser-auth.js'
 import type { RuntimeConfig } from '../src/config.js'
 
@@ -115,5 +119,63 @@ describe('Office Agent transport', () => {
     createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
     await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
     expect(cb.onError).toHaveBeenCalledWith('transport_network')
+  })
+
+  it('does not trust transport-prefixed exception messages from dependencies', async () => {
+    const auth = {
+      authenticatedFetch: vi.fn().mockRejectedValue(new Error('transport_token_private-secret')),
+    } as unknown as BrowserAuth
+    const cb = callbacks()
+    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(cb.onError).toHaveBeenCalledWith('transport_network')
+  })
+
+  it('bounds accumulated streamed tool input across individually valid SSE lines', async () => {
+    const fragment = 'x'.repeat(1024)
+    const deltas = Array.from(
+      { length: Math.ceil(MAX_STREAM_TOOL_INPUT_LENGTH / fragment.length) + 1 },
+      () =>
+        `data: ${JSON.stringify({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: fragment } })}`,
+    )
+    const auth = {
+      authenticatedFetch: vi
+        .fn()
+        .mockResolvedValue(
+          sse([
+            'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"c1","name":"propose_append_text"}}',
+            ...deltas,
+          ]),
+        ),
+    } as unknown as BrowserAuth
+    const cb = callbacks()
+    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(cb.onError).toHaveBeenCalledWith('transport_tool_input_too_large')
+    expect(cb.onToolCall).not.toHaveBeenCalled()
+  })
+
+  it('bounds an unterminated SSE line before it can accumulate indefinitely', async () => {
+    const auth = {
+      authenticatedFetch: vi
+        .fn()
+        .mockResolvedValue(new Response(`data: ${'x'.repeat(70 * 1024)}`, { status: 200 })),
+    } as unknown as BrowserAuth
+    const cb = callbacks()
+    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(cb.onError).toHaveBeenCalledWith('transport_stream_too_large')
+  })
+
+  it('rejects an oversized outbound request before authenticated network I/O', async () => {
+    const auth = { authenticatedFetch: vi.fn() } as unknown as BrowserAuth
+    const cb = callbacks()
+    createOfficeAgentTransport(config, auth).stream(
+      { system: 'x'.repeat(MAX_REQUEST_BODY_LENGTH + 1), messages: [], tools: [] },
+      cb,
+    )
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(cb.onError).toHaveBeenCalledWith('transport_request_too_large')
+    expect(auth.authenticatedFetch).not.toHaveBeenCalled()
   })
 })
