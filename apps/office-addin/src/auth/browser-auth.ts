@@ -32,6 +32,7 @@ interface BrowserAuthDependencies {
 
 export interface BrowserAuth {
   startAuthorization(): Promise<string>
+  cancelAuthorization(): void
   consumeCallback(callbackUrl: string): Promise<void>
   authenticatedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>
   isAuthenticated(): boolean
@@ -219,6 +220,10 @@ export function createBrowserAuth(
       )
       session = exchangedSession
       sessionGeneration += 1
+    },
+
+    cancelAuthorization() {
+      clearPkce()
     },
 
     async authenticatedFetch(input, init = {}) {

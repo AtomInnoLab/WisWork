@@ -9,6 +9,10 @@ import {
   type OfficeAgentSession,
 } from './agent/use-office-agent.js'
 import { createBrowserAuth, type BrowserAuth } from './auth/browser-auth.js'
+import {
+  createBrowserOfficeDialogRuntime,
+  createOfficeDialogAuth,
+} from './auth/office-dialog-auth.js'
 import { captureAndScrubOAuthCallback } from './auth/oauth-callback.js'
 import { loadRuntimeConfig, type RuntimeConfig } from './config.js'
 import {
@@ -172,6 +176,14 @@ function AgentWorkspace(props: {
 function ConfiguredApp({ config }: { config: RuntimeConfig }) {
   const document = useMemo(() => createOfficeDocumentClient(createBrowserOfficeRuntime()), [])
   const auth = useMemo(() => createBrowserAuth(config), [config])
+  const signInWithDialog = useMemo(
+    () =>
+      createOfficeDialogAuth(
+        createBrowserOfficeDialogRuntime(config.callbackUrl),
+        config.callbackUrl,
+      ),
+    [config.callbackUrl],
+  )
   const proposals = useMemo(() => createProposalController(document), [document])
   const session = useMemo(
     () =>
@@ -239,11 +251,15 @@ function ConfiguredApp({ config }: { config: RuntimeConfig }) {
           type="button"
           onClick={() => {
             setBusy(true)
-            void auth
-              .startAuthorization()
-              .then((url) => window.location.assign(url))
+            void signInWithDialog(auth)
+              .then(() => {
+                setSignedIn(true)
+                setStatus(`${hostLabels[host]} is ready`)
+              })
               .catch((error) => {
                 setStatus(safeAuthError(error))
+              })
+              .finally(() => {
                 setBusy(false)
               })
           }}

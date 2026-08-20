@@ -41,6 +41,13 @@ describe('configured Office build output', () => {
     expect(route).toMatch(/<meta\s+http-equiv="Content-Security-Policy"/)
   })
 
+  it('emits the same-origin Office dialog bootstrap page', async () => {
+    const start = await readFile(resolve(dist, 'oauth/dialog-start.html'), 'utf8')
+    expect(start).toMatch(/^<!doctype html>/)
+    expect(start).toContain('main-')
+    expect(start).not.toMatch(/state=|code_challenge=/)
+  })
+
   it('emits only configured origins in the deployment manifest', async () => {
     const manifest = await readFile(resolve(dist, 'manifest.xml'), 'utf8')
     expect(manifest).toContain('https://office.example/taskpane.html')

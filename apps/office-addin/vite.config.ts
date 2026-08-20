@@ -77,6 +77,7 @@ export default defineConfig(async ({ command, mode }) => {
         input: {
           taskpane: resolve(here, 'src/taskpane.html'),
           callback: resolve(here, 'src/oauth/callback.html'),
+          dialogStart: resolve(here, 'src/oauth/dialog-start.html'),
         },
       },
     },

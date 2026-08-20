@@ -17,7 +17,7 @@ VITE_WISWORK_ISSUER=https://YOUR_AUTH_HOST
 VITE_WISWORK_MESSAGES_URL=https://wisusage.dev.atominnolab.com/v1/messages
 ```
 
-Do not put client secrets, access tokens, refresh tokens, authorization codes, or PKCE verifiers in environment files. The add-in keeps access and refresh tokens in memory. Only one-time PKCE state and verifier values use `sessionStorage` while a login redirect is in progress.
+Do not put client secrets, access tokens, refresh tokens, authorization codes, or PKCE verifiers in environment files. The add-in keeps access and refresh tokens in memory. Only one-time PKCE state and verifier values use `sessionStorage` while a login dialog is in progress.
 
 Missing or invalid values render an unavailable screen and disable login/chat. The messages URL must also match the fixed WisWork provider endpoint enforced by the transport.
 
@@ -38,6 +38,8 @@ A build with all validated environment values emits `dist/manifest.xml` using th
 
 The deployment host must serve `/oauth/callback` as `text/html; charset=utf-8`, or rewrite that exact route (including its query string) internally to `/oauth/callback.html`. The Vite development and preview servers already perform this exact rewrite. Never redirect the callback to the `.html` URL: an HTTP redirect can propagate the authorization code in browser or intermediary history.
 
+Sign-in opens Wispaper in the Office Dialog API through the same-origin `/oauth/dialog-start.html` bootstrap. After Wispaper redirects to `/oauth/callback`, that page sends the callback to the original task pane, which exchanges the code, closes the dialog, and shows the Agent conversation. The Office client must support the `DialogOrigin 1.1` requirement set; unsupported clients fail closed before opening the login dialog.
+
 ## Gateway prerequisites
 
 Before end-to-end login can work, the Gateway operator must:
@@ -54,7 +56,7 @@ Before end-to-end login can work, the Gateway operator must:
 Do not mark real Gateway acceptance complete until the prerequisites above are confirmed.
 
 1. Start with no configuration and verify the task pane shows **Agent unavailable**, with no prompt or login controls.
-2. Configure the registered development client, sideload the manifest, and verify login returns to `/oauth/callback`, then cleans the visible URL to `/taskpane.html`.
+2. Configure the registered development client, sideload the manifest, and verify Wispaper login returns through `/oauth/callback`, closes the dialog, and reveals the Agent conversation in the task pane.
 3. Select text and ask the Agent to summarize or improve it. Verify streamed text and tool activity appear and **Stop** cancels an active run.
 4. Ask for a replacement. Verify the document does not change when the proposal appears, and the preview clearly shows Before and After.
 5. Click **Reject** and verify the document remains unchanged.
