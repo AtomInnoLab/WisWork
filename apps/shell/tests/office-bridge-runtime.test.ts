@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { WISWORK_MESSAGES_URL } from '@wiswork/ai-provider'
+import { createOfficeBridge } from '@wiswork/office-bridge'
 import {
   createOfficeMessagesProxy,
   logoutAndRevokeOfficeBridge,
   officeBridgePortFromEnv,
   runOfficeBridgeLifecycle,
   validAccountStatusOrRevoke,
+  syncOfficeBridgeAvailability,
   officeBridgeEnabled,
 } from '../src/main/office-bridge-runtime'
 
@@ -89,5 +91,27 @@ describe('Office bridge shell runtime', () => {
       validAccountStatusOrRevoke(bridge, async () => ({ loggedIn: false })),
     ).resolves.toEqual({ loggedIn: false })
     expect(bridge.revokeAll).toHaveBeenCalledOnce()
+  })
+
+  it('reenables pairing after a real signed-in account status without restarting', async () => {
+    const bridge = createOfficeBridge({
+      allowedOrigin: 'https://office.example.test',
+      proxy: vi.fn(),
+      sessionAvailable: false,
+    })
+    await expect(
+      syncOfficeBridgeAvailability(bridge, async () => ({ loggedIn: true })),
+    ).resolves.toEqual({ loggedIn: true })
+    const response = await bridge.handle(
+      new Request('http://127.0.0.1:43127/v1/office/pairings', {
+        method: 'POST',
+        headers: {
+          origin: 'https://office.example.test',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ host_label: 'Word' }),
+      }),
+    )
+    expect(response.status).toBe(202)
   })
 })

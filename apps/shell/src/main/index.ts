@@ -167,6 +167,7 @@ import {
   officeBridgeEnabled,
   officeBridgePortFromEnv,
   officeOriginFromEnv,
+  syncOfficeBridgeAvailability,
 } from './office-bridge-runtime'
 import { registerOfficePairingIpc } from './office-pairing-ipc'
 
@@ -1709,9 +1710,11 @@ function registerHomeIpc(): void {
       throw new Error('Untrusted IPC sender.')
   }
   let pendingLoginUrl = ''
-  ipcMain.handle(HOME_CHANNELS.accountStatus, (event, ...args: unknown[]) => {
+  ipcMain.handle(HOME_CHANNELS.accountStatus, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
-    return requireAuthRuntime().client.getValidAccountStatus()
+    return syncOfficeBridgeAvailability(officeBridge, () =>
+      requireAuthRuntime().client.getValidAccountStatus(),
+    )
   })
   ipcMain.handle(HOME_CHANNELS.accountLogin, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
@@ -2515,7 +2518,12 @@ app.whenReady().then(async () => {
       console.error('[office-bridge] failed to start on loopback')
     }
   }
-  void authDeepLinks.initialize((callback) => requireAuthRuntime().client.consumeCallback(callback))
+  void authDeepLinks.initialize(async (callback) => {
+    await requireAuthRuntime().client.consumeCallback(callback)
+    await syncOfficeBridgeAvailability(officeBridge, () =>
+      requireAuthRuntime().client.getValidAccountStatus(),
+    )
+  })
 
   app.setAccessibilitySupportEnabled(true)
   // Settle the shared uiLang from saved settings BEFORE any tab renderer can

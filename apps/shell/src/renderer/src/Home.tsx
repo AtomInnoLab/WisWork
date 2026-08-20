@@ -957,6 +957,9 @@ export function Home() {
   const [officePairings, setOfficePairings] = useState<OfficePairingRequest[]>([])
   const [officePairingBusy, setOfficePairingBusy] = useState(false)
   const [officePairingError, setOfficePairingError] = useState(false)
+  const [officePairingAccountLoggedIn, setOfficePairingAccountLoggedIn] = useState<boolean | null>(
+    null,
+  )
   // name in the greeting; omitted when logged out
   const [accountName, setAccountName] = useState('')
   const [greetAskKey] = useState(
@@ -972,6 +975,25 @@ export function Home() {
       })
       .catch(() => setAccountName(''))
   }, [])
+
+  useEffect(() => {
+    if (officePairings.length === 0) {
+      setOfficePairingAccountLoggedIn(null)
+      return
+    }
+    let active = true
+    void window.aiOffice
+      .accountStatus()
+      .then((account) => {
+        if (active) setOfficePairingAccountLoggedIn(account.loggedIn)
+      })
+      .catch(() => {
+        if (active) setOfficePairingAccountLoggedIn(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [officePairings.length])
 
   useEffect(() => {
     const add = (pairing: OfficePairingRequest) =>
@@ -2033,6 +2055,10 @@ export function Home() {
               {officePairings[0].verificationCode}
             </p>
             <p>Only allow if Office displays this exact same code.</p>
+            {officePairingAccountLoggedIn === false && (
+              <p role="alert">Sign in to WisWork PC to enable Allow.</p>
+            )}
+            {officePairingAccountLoggedIn === null && <p role="status">Checking account…</p>}
             {officePairingError && <p role="alert">Sign in to WisWork PC before allowing.</p>}
             <div className="modal-buttons">
               <button
@@ -2054,7 +2080,7 @@ export function Home() {
               </button>
               <button
                 className="btn btn-office-allow"
-                disabled={officePairingBusy}
+                disabled={officePairingBusy || officePairingAccountLoggedIn !== true}
                 onClick={() => {
                   setOfficePairingBusy(true)
                   const pairingId = officePairings[0].pairingId

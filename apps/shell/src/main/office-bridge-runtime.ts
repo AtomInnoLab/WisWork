@@ -52,6 +52,25 @@ export async function validAccountStatusOrRevoke(
   }
 }
 
+export async function syncOfficeBridgeAvailability(
+  bridge: Pick<OfficeBridge, 'setSessionAvailable'> | null,
+  getStatus: () => Promise<{ loggedIn: boolean }>,
+): Promise<{ loggedIn: boolean }> {
+  try {
+    const status = await getStatus()
+    bridge?.setSessionAvailable(status.loggedIn)
+    return status
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message === 'auth_required' ||
+        (error as Error & { code?: string }).code === 'auth_required')
+    )
+      bridge?.setSessionAvailable(false)
+    throw error
+  }
+}
+
 export function createOfficeMessagesProxy(options: {
   fetchWithAuth(request: (accessToken: string) => Promise<Response>): Promise<Response>
   fetch?: typeof fetch
