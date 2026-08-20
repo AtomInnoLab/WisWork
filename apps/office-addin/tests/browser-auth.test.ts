@@ -126,6 +126,104 @@ describe('browser OAuth', () => {
     expect(fetch.mock.calls[3][1].headers.get('authorization')).toBe('Bearer new-access')
   })
 
+  it('shares one refresh exchange across concurrent 401 responses', async () => {
+    const storage = new MemoryStorage()
+    let releaseRefresh!: (response: Response) => void
+    const refreshResponse = new Promise<Response>((resolve) => {
+      releaseRefresh = resolve
+    })
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === config.tokenUrl) {
+        const body = new URLSearchParams(init?.body as string)
+        if (body.get('grant_type') === 'refresh_token') return refreshResponse
+        return tokenResponse()
+      }
+      const authorization = new Headers(init?.headers).get('authorization')
+      return new Response('', { status: authorization === 'Bearer new-access' ? 200 : 401 })
+    })
+    const auth = createBrowserAuth(config, { storage, fetch })
+    const start = new URL(await auth.startAuthorization())
+    await auth.consumeCallback(
+      `${config.callbackUrl}?code=a&state=${start.searchParams.get('state')}`,
+    )
+
+    const first = auth.authenticatedFetch(config.messagesUrl)
+    const second = auth.authenticatedFetch(config.messagesUrl)
+    await vi.waitFor(() => {
+      expect(fetch).toHaveBeenCalledTimes(4)
+    })
+    releaseRefresh(tokenResponse('new-access', 'new-refresh'))
+
+    await expect(Promise.all([first, second])).resolves.toMatchObject([
+      { status: 200 },
+      { status: 200 },
+    ])
+    const refreshCalls = fetch.mock.calls.filter((call) => {
+      if (String(call[0]) !== config.tokenUrl) return false
+      return new URLSearchParams(call[1]?.body as string).get('grant_type') === 'refresh_token'
+    })
+    expect(refreshCalls).toHaveLength(1)
+  })
+
+  it('does not let a stale failed refresh clear a newer login session', async () => {
+    const storage = new MemoryStorage()
+    let rejectRefresh!: (error: Error) => void
+    const refreshResponse = new Promise<Response>((_resolve, reject) => {
+      rejectRefresh = reject
+    })
+    let authorizationExchanges = 0
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === config.tokenUrl) {
+        const body = new URLSearchParams(init?.body as string)
+        if (body.get('grant_type') === 'refresh_token') return refreshResponse
+        authorizationExchanges += 1
+        return authorizationExchanges === 1
+          ? tokenResponse('old-access', 'old-refresh')
+          : tokenResponse('new-access', 'new-refresh')
+      }
+      const authorization = new Headers(init?.headers).get('authorization')
+      return new Response('', { status: authorization === 'Bearer new-access' ? 200 : 401 })
+    })
+    const auth = createBrowserAuth(config, { storage, fetch })
+    const firstStart = new URL(await auth.startAuthorization())
+    await auth.consumeCallback(
+      `${config.callbackUrl}?code=first&state=${firstStart.searchParams.get('state')}`,
+    )
+    const staleRequest = auth.authenticatedFetch(config.messagesUrl)
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(3))
+
+    const secondStart = new URL(await auth.startAuthorization())
+    await auth.consumeCallback(
+      `${config.callbackUrl}?code=second&state=${secondStart.searchParams.get('state')}`,
+    )
+    rejectRefresh(new Error('old refresh failed'))
+
+    await expect(staleRequest).rejects.toEqual(new BrowserAuthError('refresh_failed'))
+    expect(auth.isAuthenticated()).toBe(true)
+    await expect(auth.authenticatedFetch(config.messagesUrl)).resolves.toMatchObject({
+      status: 200,
+    })
+  })
+
+  it('refuses to attach authorization outside the exact messages endpoint', async () => {
+    const storage = new MemoryStorage()
+    const fetch = vi.fn().mockResolvedValue(tokenResponse())
+    const auth = createBrowserAuth(config, { storage, fetch })
+    const start = new URL(await auth.startAuthorization())
+    await auth.consumeCallback(
+      `${config.callbackUrl}?code=a&state=${start.searchParams.get('state')}`,
+    )
+    fetch.mockClear()
+
+    await expect(auth.authenticatedFetch('https://attacker.example/collect')).rejects.toEqual(
+      new BrowserAuthError('invalid_destination'),
+    )
+    await expect(auth.authenticatedFetch(`${config.messagesUrl}/another-path`)).rejects.toEqual(
+      new BrowserAuthError('invalid_destination'),
+    )
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
   it('logs out after the retried request returns 401', async () => {
     const storage = new MemoryStorage()
     const fetch = vi
@@ -159,6 +257,32 @@ describe('browser OAuth', () => {
       auth.consumeCallback(`${config.callbackUrl}?code=a&state=${start.searchParams.get('state')}`),
     ).rejects.toEqual(new BrowserAuthError('token_exchange_failed'))
     expect(auth.isAuthenticated()).toBe(false)
+  })
+
+  it('rejects oversized access and refresh token values', async () => {
+    const oversized = 'x'.repeat(16 * 1024 + 1)
+
+    for (const payload of [
+      { access_token: oversized, refresh_token: 'refresh' },
+      { access_token: 'access', refresh_token: oversized },
+    ]) {
+      const storage = new MemoryStorage()
+      const fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      const auth = createBrowserAuth(config, { storage, fetch })
+      const start = new URL(await auth.startAuthorization())
+
+      await expect(
+        auth.consumeCallback(
+          `${config.callbackUrl}?code=a&state=${start.searchParams.get('state')}`,
+        ),
+      ).rejects.toEqual(new BrowserAuthError('token_exchange_failed'))
+      expect(auth.isAuthenticated()).toBe(false)
+    }
   })
 
   it('clears all session material on logout', async () => {

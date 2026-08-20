@@ -35,7 +35,7 @@ function validUrl(value: string, requireHttps: boolean): boolean {
 
 export function loadRuntimeConfig(
   env: RuntimeEnv,
-  options: { production: boolean },
+  _options: { production: boolean },
 ): RuntimeConfigState {
   const values = Object.fromEntries(
     Object.entries(ENVIRONMENT_KEYS).map(([name, key]) => [name, env[key]?.trim() ?? '']),
@@ -48,7 +48,9 @@ export function loadRuntimeConfig(
     !validUrl(values.tokenUrl, true) ||
     !validUrl(values.issuer, true) ||
     !validUrl(values.messagesUrl, true) ||
-    !validUrl(values.callbackUrl, options.production)
+    !validUrl(values.callbackUrl, true) ||
+    new URL(values.callbackUrl).search !== '' ||
+    new URL(values.callbackUrl).hash !== ''
   ) {
     return { status: 'unavailable' }
   }

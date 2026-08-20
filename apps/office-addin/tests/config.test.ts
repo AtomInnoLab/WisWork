@@ -43,4 +43,17 @@ describe('loadRuntimeConfig', () => {
       ),
     ).toEqual({ status: 'unavailable' })
   })
+
+  it.each([
+    ['http://localhost:3000/oauth/callback'],
+    ['https://localhost:3000/oauth/callback?tenant=one'],
+    ['https://localhost:3000/oauth/callback#fragment'],
+  ])('rejects an insecure or non-canonical callback in every mode', (callbackUrl) => {
+    expect(
+      loadRuntimeConfig(
+        { ...validEnv, VITE_WISWORK_CALLBACK_URL: callbackUrl },
+        { production: false },
+      ),
+    ).toEqual({ status: 'unavailable' })
+  })
 })

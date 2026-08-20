@@ -3,11 +3,13 @@ import { createPkcePair, createState } from './pkce.js'
 
 const STATE_KEY = 'wiswork.oauth.state'
 const VERIFIER_KEY = 'wiswork.oauth.verifier'
+const MAX_TOKEN_LENGTH = 16 * 1024
 
 type BrowserAuthErrorCode =
   | 'invalid_callback'
   | 'token_exchange_failed'
   | 'unauthenticated'
+  | 'invalid_destination'
   | 'refresh_failed'
   | 'unauthorized'
 
@@ -58,8 +60,19 @@ async function readTokenSession(response: Response): Promise<TokenSession | unde
     if (!value || typeof value !== 'object') return undefined
     const accessToken = Reflect.get(value, 'access_token')
     const refreshToken = Reflect.get(value, 'refresh_token')
-    if (typeof accessToken !== 'string' || accessToken.length === 0) return undefined
-    if (refreshToken !== undefined && typeof refreshToken !== 'string') return undefined
+    if (
+      typeof accessToken !== 'string' ||
+      accessToken.length === 0 ||
+      accessToken.length > MAX_TOKEN_LENGTH
+    ) {
+      return undefined
+    }
+    if (
+      refreshToken !== undefined &&
+      (typeof refreshToken !== 'string' || refreshToken.length > MAX_TOKEN_LENGTH)
+    ) {
+      return undefined
+    }
     return { accessToken, refreshToken }
   } catch {
     return undefined
@@ -73,6 +86,8 @@ export function createBrowserAuth(
   const storage = dependencies.storage ?? globalThis.sessionStorage
   const fetchImplementation = dependencies.fetch ?? globalThis.fetch
   let session: TokenSession | undefined
+  let sessionGeneration = 0
+  let refreshFlight: { generation: number; promise: Promise<void> } | undefined
 
   function clearPkce(): void {
     storage.removeItem(STATE_KEY)
@@ -81,6 +96,7 @@ export function createBrowserAuth(
 
   function logout(): void {
     session = undefined
+    sessionGeneration += 1
     clearPkce()
   }
 
@@ -98,6 +114,42 @@ export function createBrowserAuth(
     const nextSession = await readTokenSession(response)
     if (!nextSession) throw new BrowserAuthError(errorCode)
     return nextSession
+  }
+
+  function refreshSession(generation: number): Promise<void> {
+    if (sessionGeneration !== generation) return Promise.resolve()
+    if (refreshFlight?.generation === generation) return refreshFlight.promise
+    if (!session?.refreshToken) {
+      logout()
+      return Promise.reject(new BrowserAuthError('refresh_failed'))
+    }
+
+    const refreshToken = session.refreshToken
+    const promise = (async () => {
+      try {
+        const refreshed = await exchange(
+          new URLSearchParams({
+            grant_type: 'refresh_token',
+            refresh_token: refreshToken,
+            client_id: config.clientId,
+          }),
+          'refresh_failed',
+        )
+        if (sessionGeneration === generation) {
+          session = { ...refreshed, refreshToken: refreshed.refreshToken ?? refreshToken }
+          sessionGeneration += 1
+        }
+      } catch {
+        if (sessionGeneration === generation) logout()
+        throw new BrowserAuthError('refresh_failed')
+      }
+    })()
+    refreshFlight = { generation, promise }
+    const clearFlight = () => {
+      if (refreshFlight?.promise === promise) refreshFlight = undefined
+    }
+    promise.then(clearFlight, clearFlight)
+    return promise
   }
 
   return {
@@ -149,7 +201,7 @@ export function createBrowserAuth(
         throw new BrowserAuthError('invalid_callback')
       }
 
-      session = await exchange(
+      const exchangedSession = await exchange(
         new URLSearchParams({
           grant_type: 'authorization_code',
           code,
@@ -159,10 +211,21 @@ export function createBrowserAuth(
         }),
         'token_exchange_failed',
       )
+      session = exchangedSession
+      sessionGeneration += 1
     },
 
     async authenticatedFetch(input, init = {}) {
       if (!session) throw new BrowserAuthError('unauthenticated')
+      let destination: string
+      try {
+        destination = input instanceof Request ? input.url : new URL(input).href
+      } catch {
+        throw new BrowserAuthError('invalid_destination')
+      }
+      if (destination !== new URL(config.messagesUrl).href) {
+        throw new BrowserAuthError('invalid_destination')
+      }
 
       const authorizedRequest = (accessToken: string) => {
         const headers = new Headers(init.headers)
@@ -170,32 +233,16 @@ export function createBrowserAuth(
         return fetchImplementation(input, { ...init, headers })
       }
 
+      const initialGeneration = sessionGeneration
       let response = await authorizedRequest(session.accessToken)
       if (response.status !== 401) return response
 
-      if (!session.refreshToken) {
-        logout()
-        throw new BrowserAuthError('refresh_failed')
-      }
-
-      let refreshed: TokenSession
-      try {
-        refreshed = await exchange(
-          new URLSearchParams({
-            grant_type: 'refresh_token',
-            refresh_token: session.refreshToken,
-            client_id: config.clientId,
-          }),
-          'refresh_failed',
-        )
-      } catch {
-        logout()
-        throw new BrowserAuthError('refresh_failed')
-      }
-      session = { ...refreshed, refreshToken: refreshed.refreshToken ?? session.refreshToken }
+      await refreshSession(initialGeneration)
+      if (!session) throw new BrowserAuthError('refresh_failed')
+      const retryGeneration = sessionGeneration
       response = await authorizedRequest(session.accessToken)
       if (response.status === 401) {
-        logout()
+        if (sessionGeneration === retryGeneration) logout()
         throw new BrowserAuthError('unauthorized')
       }
       return response
