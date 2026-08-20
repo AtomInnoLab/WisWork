@@ -1,12 +1,15 @@
 import type { OfficeHost } from '../office-document.js'
-import { officeBridgeEndpoint } from '../../build-config.js'
+import { officeBridgeEndpoints } from '../../build-config.js'
 
-export const PC_BRIDGE_ENDPOINT = officeBridgeEndpoint(import.meta.env)
+export const PC_BRIDGE_ENDPOINTS = officeBridgeEndpoints(import.meta.env)
 const PAIRINGS_PATH = '/v1/office/pairings'
 const MESSAGES_PATH = '/v1/office/messages'
 const CONNECT_DEADLINE_MS = 120_000
 const MAX_PROTOCOL_BODY_BYTES = 4096
 const MAX_OPAQUE_LENGTH = 512
+const HEALTH_PATH = '/v1/office/health'
+const DISCOVERY_BATCH_SIZE = 8
+const PROBE_TIMEOUT_MS = 400
 
 export type PcBridgeStatus =
   'offline' | 'signed_out' | 'pending' | 'rejected' | 'expired' | 'connected'
@@ -23,15 +26,31 @@ export interface PcBridgeSession {
 }
 interface Dependencies {
   endpoint?: string
+  endpoints?: readonly string[]
   fetch?: typeof globalThis.fetch
   delay?: (milliseconds: number, signal: AbortSignal) => Promise<void>
   now?: () => number
+  batchSize?: number
+  probeTimeoutMs?: number
 }
 
 function validateEndpoint(value: string): string {
   const url = new URL(value)
-  if (url.href !== `${PC_BRIDGE_ENDPOINT}/`) throw new Error('invalid_bridge_endpoint')
-  return PC_BRIDGE_ENDPOINT
+  if (
+    url.protocol !== 'http:' ||
+    url.hostname !== '127.0.0.1' ||
+    url.href !== `http://127.0.0.1:${url.port}/` ||
+    !url.port
+  )
+    throw new Error('invalid_bridge_endpoint')
+  return url.origin
+}
+
+function validateEndpoints(values: readonly string[]): readonly string[] {
+  if (values.length < 1 || values.length > 128) throw new Error('invalid_bridge_endpoints')
+  const endpoints = values.map(validateEndpoint)
+  if (new Set(endpoints).size !== endpoints.length) throw new Error('invalid_bridge_endpoints')
+  return endpoints
 }
 const hostLabels: Record<Exclude<OfficeHost, 'unknown'>, string> = {
   word: 'Word',
@@ -93,8 +112,107 @@ async function boundedJson(response: Response, signal: AbortSignal): Promise<unk
   }
 }
 
+interface DiscoveryDependencies {
+  fetch?: typeof globalThis.fetch
+  signal?: AbortSignal
+  batchSize?: number
+  probeTimeoutMs?: number
+}
+
+const validHealth = (value: unknown): boolean => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return (
+    Object.keys(record).length === 2 &&
+    record.service === 'wiswork-office-bridge' &&
+    record.version === 1
+  )
+}
+
+async function discoverBatch(
+  endpoints: readonly string[],
+  fetcher: typeof globalThis.fetch,
+  timeoutMs: number,
+  outerSignal?: AbortSignal,
+): Promise<string | undefined> {
+  const controllers = endpoints.map(() => new AbortController())
+  const results: Array<boolean | undefined> = endpoints.map(() => undefined)
+  let settled = false
+  return new Promise((resolve) => {
+    const finish = (endpoint?: string) => {
+      if (settled) return
+      settled = true
+      controllers.forEach((controller) => controller.abort())
+      outerSignal?.removeEventListener('abort', abort)
+      resolve(endpoint)
+    }
+    const consider = () => {
+      for (let index = 0; index < results.length; index += 1) {
+        if (results[index] === undefined) return
+        if (results[index]) return finish(endpoints[index])
+      }
+      finish()
+    }
+    const abort = () => finish()
+    if (outerSignal?.aborted) return abort()
+    outerSignal?.addEventListener('abort', abort, { once: true })
+    endpoints.forEach((endpoint, index) => {
+      const controller = controllers[index]!
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
+      void (async () => {
+        try {
+          const response = await Promise.race([
+            fetcher(`${endpoint}${HEALTH_PATH}`, {
+              method: 'GET',
+              signal: controller.signal,
+              headers: { accept: 'application/json' },
+            }),
+            abortPromise(controller.signal),
+          ])
+          results[index] =
+            response.status === 200 && validHealth(await boundedJson(response, controller.signal))
+        } catch {
+          results[index] = false
+        } finally {
+          clearTimeout(timer)
+          consider()
+        }
+      })()
+    })
+  })
+}
+
+export async function discoverPcBridgeEndpoint(
+  endpointValues: readonly string[],
+  dependencies: DiscoveryDependencies = {},
+): Promise<string | undefined> {
+  const endpoints = validateEndpoints(endpointValues)
+  const fetcher = dependencies.fetch ?? globalThis.fetch
+  const batchSize = dependencies.batchSize ?? DISCOVERY_BATCH_SIZE
+  const timeoutMs = dependencies.probeTimeoutMs ?? PROBE_TIMEOUT_MS
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 16)
+    throw new Error('invalid_batch_size')
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 500)
+    throw new Error('invalid_probe_timeout')
+  for (
+    let offset = 0;
+    offset < endpoints.length && !dependencies.signal?.aborted;
+    offset += batchSize
+  ) {
+    const found = await discoverBatch(
+      endpoints.slice(offset, offset + batchSize),
+      fetcher,
+      timeoutMs,
+      dependencies.signal,
+    )
+    if (found) return found
+  }
+  return undefined
+}
+
 export function createPcBridgeSession(dependencies: Dependencies = {}): PcBridgeSession {
-  const endpoint = validateEndpoint(dependencies.endpoint ?? PC_BRIDGE_ENDPOINT)
+  const fixedEndpoint = dependencies.endpoint ? validateEndpoint(dependencies.endpoint) : undefined
+  const configuredEndpoints = validateEndpoints(dependencies.endpoints ?? PC_BRIDGE_ENDPOINTS)
   const fetcher = dependencies.fetch ?? globalThis.fetch
   const delay = dependencies.delay ?? sleep
   const now = dependencies.now ?? Date.now
@@ -103,6 +221,7 @@ export function createPcBridgeSession(dependencies: Dependencies = {}): PcBridge
   let capability: string | undefined
   let controller: AbortController | undefined
   let generation = 0
+  let activeEndpoint: string | undefined
   const publish = (status: PcBridgeStatus) => {
     state = { status }
     listeners.forEach((listener) => listener())
@@ -110,6 +229,7 @@ export function createPcBridgeSession(dependencies: Dependencies = {}): PcBridge
   const invalidate = (status: PcBridgeStatus): number => {
     generation += 1
     capability = undefined
+    activeEndpoint = undefined
     controller?.abort()
     controller = undefined
     publish(status)
@@ -137,6 +257,20 @@ export function createPcBridgeSession(dependencies: Dependencies = {}): PcBridge
       const timer = setTimeout(() => operation.abort(), CONNECT_DEADLINE_MS)
       let stage: 'create' | 'poll' = 'create'
       try {
+        const endpoint =
+          fixedEndpoint ??
+          (await discoverPcBridgeEndpoint(configuredEndpoints, {
+            fetch: fetcher,
+            signal: operation.signal,
+            batchSize: dependencies.batchSize,
+            probeTimeoutMs: dependencies.probeTimeoutMs,
+          }))
+        if (!endpoint) {
+          finish(epoch, operation, 'offline')
+          return
+        }
+        if (!active(epoch, operation)) return
+        activeEndpoint = endpoint
         const created = await Promise.race([
           fetcher(`${endpoint}${PAIRINGS_PATH}`, {
             method: 'POST',
@@ -233,13 +367,14 @@ export function createPcBridgeSession(dependencies: Dependencies = {}): PcBridge
       invalidate('offline')
     },
     async authenticatedFetch(path, init) {
-      if (path !== MESSAGES_PATH || !capability) throw new Error('bridge_disconnected')
+      if (path !== MESSAGES_PATH || !capability || !activeEndpoint)
+        throw new Error('bridge_disconnected')
       const requestGeneration = generation
       const requestCapability = capability
       const headers = new Headers(init.headers)
       headers.set('authorization', `Bridge ${requestCapability}`)
       try {
-        const response = await fetcher(`${endpoint}${MESSAGES_PATH}`, { ...init, headers })
+        const response = await fetcher(`${activeEndpoint}${MESSAGES_PATH}`, { ...init, headers })
         if (
           response.status === 401 &&
           generation === requestGeneration &&

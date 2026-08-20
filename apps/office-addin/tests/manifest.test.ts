@@ -2,8 +2,10 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_OFFICE_BRIDGE_PORTS,
   deploymentConfig,
   deploymentConnectOrigins,
+  officeBridgePorts,
   renderDeploymentManifest,
 } from '../build-config.js'
 
@@ -38,10 +40,18 @@ describe('Office Add-in manifest and routes', () => {
     { VITE_WISWORK_ADDIN_ORIGIN: 'https://office.example/path' },
     { VITE_WISWORK_ADDIN_ORIGIN: 'http://office.example' },
     { VITE_WISWORK_ADDIN_ORIGIN: 'https://*.example' },
-    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORT: '0' },
-    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORT: '65536' },
-    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORT: '1.5' },
-    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORT: '43127/path' },
+    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORTS: '0' },
+    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORTS: '65536' },
+    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORTS: '1.5' },
+    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORTS: '43127,43127' },
+    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORTS: '43127,' },
+    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORTS: '' },
+    {
+      ...validEnv,
+      VITE_WISWORK_PC_BRIDGE_PORTS: Array.from({ length: 129 }, (_, index) =>
+        String(10_000 + index),
+      ).join(','),
+    },
   ])('rejects unsafe deployment configuration', (env) => {
     expect(deploymentConfig(env)).toBeUndefined()
   })
@@ -49,9 +59,21 @@ describe('Office Add-in manifest and routes', () => {
   it('allows only the numeric loopback bridge in taskpane connections', async () => {
     const viteConfig = await readFile(resolve(import.meta.dirname, '../vite.config.ts'), 'utf8')
     const taskpane = await readFile(resolve(import.meta.dirname, '../src/taskpane.html'), 'utf8')
-    expect(deploymentConnectOrigins({})).toBe('http://127.0.0.1:43127')
-    expect(deploymentConnectOrigins({ VITE_WISWORK_PC_BRIDGE_PORT: '44000' })).toBe(
-      'http://127.0.0.1:44000',
+    expect(DEFAULT_OFFICE_BRIDGE_PORTS).toHaveLength(64)
+    expect(DEFAULT_OFFICE_BRIDGE_PORTS[0]).toBe(43127)
+    expect(new Set(DEFAULT_OFFICE_BRIDGE_PORTS)).toEqual(
+      new Set(Array.from({ length: 64 }, (_, index) => 43120 + index)),
+    )
+    expect(officeBridgePorts({ VITE_WISWORK_PC_BRIDGE_PORTS: '44000,44001' })).toEqual([
+      44000, 44001,
+    ])
+    const origins = deploymentConnectOrigins({}).split(' ')
+    expect(origins).toHaveLength(64)
+    expect(origins[0]).toBe('http://127.0.0.1:43127')
+    expect(origins).toContain('http://127.0.0.1:43120')
+    expect(origins.every((origin) => /^http:\/\/127\.0\.0\.1:\d+$/.test(origin))).toBe(true)
+    expect(deploymentConnectOrigins({ VITE_WISWORK_PC_BRIDGE_PORTS: '44000,44001' })).toBe(
+      'http://127.0.0.1:44000 http://127.0.0.1:44001',
     )
     expect(viteConfig).not.toContain('oauth/callback')
     expect(taskpane).toContain("connect-src 'self' __WISWORK_CONNECT_ORIGINS__")

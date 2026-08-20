@@ -1,30 +1,40 @@
-export const DEFAULT_OFFICE_BRIDGE_PORT = 43_127
+export const PREFERRED_OFFICE_BRIDGE_PORT = 43_127
+export const DEFAULT_OFFICE_BRIDGE_PORTS = Object.freeze([
+  PREFERRED_OFFICE_BRIDGE_PORT,
+  ...Array.from({ length: 64 }, (_, index) => 43_120 + index).filter(
+    (port) => port !== PREFERRED_OFFICE_BRIDGE_PORT,
+  ),
+])
 
 type BuildEnv = Record<string, string | undefined>
 export interface DeploymentConfig {
   addinOrigin: string
-  bridgePort: number
+  bridgePorts: readonly number[]
 }
 
-export function officeBridgePort(env: BuildEnv): number | undefined {
-  const raw = env.VITE_WISWORK_PC_BRIDGE_PORT?.trim()
-  if (!raw) return DEFAULT_OFFICE_BRIDGE_PORT
-  if (!/^\d+$/.test(raw)) return undefined
-  const port = Number(raw)
-  return Number.isSafeInteger(port) && port >= 1 && port <= 65_535 ? port : undefined
+export function officeBridgePorts(env: BuildEnv): readonly number[] | undefined {
+  const configured = env.VITE_WISWORK_PC_BRIDGE_PORTS
+  if (configured === undefined) return DEFAULT_OFFICE_BRIDGE_PORTS
+  if (configured !== configured.trim()) return undefined
+  const values = configured.split(',')
+  if (values.length < 1 || values.length > 128) return undefined
+  if (values.some((value) => !/^(?:[1-9]\d{0,4})$/.test(value))) return undefined
+  const ports = values.map(Number)
+  if (ports.some((port) => port > 65_535) || new Set(ports).size !== ports.length) return undefined
+  return Object.freeze(ports)
 }
 
-export function officeBridgeEndpoint(env: BuildEnv): string {
-  const port = officeBridgePort(env)
-  if (port === undefined) throw new Error('invalid_office_bridge_port')
-  return `http://127.0.0.1:${port}`
+export function officeBridgeEndpoints(env: BuildEnv): readonly string[] {
+  const ports = officeBridgePorts(env)
+  if (!ports) throw new Error('invalid_office_bridge_ports')
+  return ports.map((port) => `http://127.0.0.1:${port}`)
 }
 
 export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
   const value = env.VITE_WISWORK_ADDIN_ORIGIN?.trim()
   if (!value) return undefined
-  const bridgePort = officeBridgePort(env)
-  if (bridgePort === undefined) return undefined
+  const bridgePorts = officeBridgePorts(env)
+  if (!bridgePorts) return undefined
   try {
     const url = new URL(value)
     if (
@@ -35,7 +45,7 @@ export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
       url.hostname.includes('*')
     )
       return undefined
-    return { addinOrigin: url.origin, bridgePort }
+    return { addinOrigin: url.origin, bridgePorts }
   } catch {
     return undefined
   }
@@ -43,7 +53,7 @@ export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
 
 export function deploymentConnectOrigins(env: BuildEnv): string {
   try {
-    return officeBridgeEndpoint(env)
+    return officeBridgeEndpoints(env).join(' ')
   } catch {
     return ''
   }
