@@ -94,12 +94,38 @@ function authorization(request: Request, scheme: string): string | null {
 async function readBoundedJson(request: Request, maximum: number): Promise<unknown> {
   const declared = Number(request.headers.get('content-length'))
   if (Number.isFinite(declared) && declared > maximum) throw new Error('body_too_large')
-  const bytes = new Uint8Array(await request.arrayBuffer())
-  if (bytes.byteLength > maximum) throw new Error('body_too_large')
+  if (!request.body) throw new Error('invalid_json')
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  let rejectAbort!: (error: Error) => void
+  const aborted = new Promise<never>((_, reject) => (rejectAbort = reject))
+  const onAbort = () => rejectAbort(new Error('request_aborted'))
+  request.signal.addEventListener('abort', onAbort, { once: true })
   try {
+    while (true) {
+      const result = await Promise.race([reader.read(), aborted])
+      if (result.done) break
+      size += result.value.byteLength
+      if (size > maximum) {
+        void reader.cancel('body_too_large').catch(() => undefined)
+        throw new Error('body_too_large')
+      }
+      chunks.push(result.value)
+    }
+    const bytes = new Uint8Array(size)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
     return JSON.parse(new TextDecoder().decode(bytes)) as unknown
-  } catch {
-    throw new Error('invalid_json')
+  } catch (error) {
+    if (error instanceof Error && error.message === 'body_too_large') throw error
+    void reader.cancel('invalid_request').catch(() => undefined)
+    throw new Error('invalid_json', { cause: error })
+  } finally {
+    request.signal.removeEventListener('abort', onAbort)
   }
 }
 
@@ -109,28 +135,23 @@ function isAsyncIterable(
   return Symbol.asyncIterator in value
 }
 
-async function collectBounded(
-  body: Uint8Array | AsyncIterable<Uint8Array>,
-  maximum: number,
-): Promise<Uint8Array> {
-  if (!isAsyncIterable(body)) {
-    if (body.byteLength > maximum) throw new Error('response_too_large')
-    return body
+function bodyIterator(body: Uint8Array | AsyncIterable<Uint8Array>): AsyncIterator<Uint8Array> {
+  if (isAsyncIterable(body)) return body[Symbol.asyncIterator]()
+  let emitted = false
+  return {
+    async next() {
+      if (emitted) return { done: true, value: undefined }
+      emitted = true
+      return { done: false, value: body }
+    },
+    async return() {
+      return { done: true, value: undefined }
+    },
   }
-  const chunks: Uint8Array[] = []
-  let size = 0
-  for await (const chunk of body) {
-    size += chunk.byteLength
-    if (size > maximum) throw new Error('response_too_large')
-    chunks.push(chunk)
-  }
-  const result = new Uint8Array(size)
-  let offset = 0
-  for (const chunk of chunks) {
-    result.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return result
+}
+
+interface ActiveOperation {
+  abort(): void
 }
 
 export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
@@ -142,6 +163,20 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
   }
   if (allowedOrigin.protocol !== 'https:' || allowedOrigin.origin !== options.allowedOrigin) {
     throw new Error('invalid_allowed_origin')
+  }
+  const configuredLimits = [
+    options.pairingTtlMs,
+    options.capabilityTtlMs,
+    options.maxPairings,
+    options.maxCapabilities,
+    options.maxPairingCreatesPerMinute,
+    options.maxBodyBytes,
+    options.maxResponseBytes,
+    options.maxConcurrentMessages,
+    options.messageTimeoutMs,
+  ].filter((value): value is number => value !== undefined)
+  if (configuredLimits.some((value) => !Number.isSafeInteger(value) || value <= 0)) {
+    throw new Error('invalid_bridge_limits')
   }
   const now = options.now ?? Date.now
   const pairingTtlMs = options.pairingTtlMs ?? 120_000
@@ -157,6 +192,7 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
   let capabilities: Capability[] = []
   let createTimes: number[] = []
   let activeMessages = 0
+  const activeOperations = new Set<ActiveOperation>()
   let stopped = false
 
   const findCapability = (candidate: string): Capability | undefined => {
@@ -168,9 +204,29 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
   }
 
   const handlePreflight = (request: Request): Response => {
+    const path = new URL(request.url).pathname
+    const pairingPoll = /^\/v1\/office\/pairings\/[A-Za-z0-9_-]+$/.test(path)
+    const expectedMethod = pairingPoll
+      ? 'GET'
+      : path === '/v1/office/pairings' || path === '/v1/office/messages'
+        ? 'POST'
+        : null
+    const requestedMethod = request.headers.get('access-control-request-method')?.toUpperCase()
+    const requestedHeaders = (request.headers.get('access-control-request-headers') ?? '')
+      .split(',')
+      .map((header) => header.trim().toLowerCase())
+      .filter(Boolean)
+    const allowedHeaders = new Set(['authorization', 'content-type'])
+    if (
+      !expectedMethod ||
+      requestedMethod !== expectedMethod ||
+      requestedHeaders.some((header) => !allowedHeaders.has(header))
+    ) {
+      return jsonResponse(403, { error: 'preflight_denied' })
+    }
     const headers = new Headers()
     addCors(headers, options.allowedOrigin)
-    headers.set('access-control-allow-methods', 'GET, POST, OPTIONS')
+    headers.set('access-control-allow-methods', expectedMethod)
     headers.set('access-control-allow-headers', 'Authorization, Content-Type')
     headers.append('vary', 'Access-Control-Request-Headers')
     if (request.headers.get('access-control-request-private-network') === 'true') {
@@ -205,19 +261,22 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
         options.allowedOrigin,
       )
     }
-    const hostLabel =
+    const requestedHostLabel =
       typeof parsed === 'object' &&
       parsed !== null &&
       typeof (parsed as Record<string, unknown>).host_label === 'string'
-        ? (parsed as Record<string, string>).host_label.trim().slice(0, 80)
+        ? (parsed as Record<string, string>).host_label
         : ''
-    if (!hostLabel) return jsonResponse(400, { error: 'invalid_request' }, options.allowedOrigin)
+    const allowedHostLabels = new Set(['Word', 'Excel', 'PowerPoint'])
+    if (!allowedHostLabels.has(requestedHostLabel)) {
+      return jsonResponse(400, { error: 'invalid_request' }, options.allowedOrigin)
+    }
     const id = opaqueValue()
     const pollingSecret = opaqueValue()
     pairings.set(id, {
       id,
       pollingSecretHash: digest(pollingSecret),
-      hostLabel,
+      hostLabel: requestedHostLabel,
       origin: options.allowedOrigin,
       expiresAt: timestamp + pairingTtlMs,
       status: 'pending',
@@ -288,33 +347,89 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
     }
     activeMessages += 1
     const controller = new AbortController()
-    const abort = () => controller.abort()
-    request.signal.addEventListener('abort', abort, { once: true })
-    let timer: ReturnType<typeof setTimeout> | undefined
+    let iterator: AsyncIterator<Uint8Array> | undefined
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined
+    let finished = false
+    let rejectInterrupted!: (error: Error) => void
+    const interrupted = new Promise<never>((_, reject) => (rejectInterrupted = reject))
+    void interrupted.catch(() => undefined)
+    const timer = setTimeout(() => operation.abort(), messageTimeoutMs)
+    const finish = (abort: boolean, errorStream = false): void => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      request.signal.removeEventListener('abort', abortFromClient)
+      activeOperations.delete(operation)
+      activeMessages -= 1
+      if (abort) controller.abort()
+      rejectInterrupted(new Error('operation_interrupted'))
+      if (iterator?.return) void iterator.return().catch(() => undefined)
+      if (errorStream && streamController) {
+        try {
+          streamController.error(new Error('stream_interrupted'))
+        } catch {
+          // The consumer may already have closed or cancelled the stream.
+        }
+      }
+    }
+    const operation: ActiveOperation = { abort: () => finish(true, true) }
+    const abortFromClient = () => operation.abort()
+    activeOperations.add(operation)
+    request.signal.addEventListener('abort', abortFromClient, { once: true })
+    if (request.signal.aborted) operation.abort()
     try {
-      const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          controller.abort()
-          reject(new Error('timeout'))
-        }, messageTimeoutMs)
-      })
-      const upstream = await Promise.race([
-        options.proxy({ body, signal: controller.signal }),
-        timeout,
-      ])
+      const proxyPromise = options.proxy({ body, signal: controller.signal })
+      void proxyPromise.then(
+        (lateResponse) => {
+          if (finished && isAsyncIterable(lateResponse.body)) {
+            void lateResponse.body[Symbol.asyncIterator]()
+              .return?.()
+              .catch(() => undefined)
+          }
+        },
+        () => undefined,
+      )
+      const upstream = await Promise.race([proxyPromise, interrupted])
       if (upstream.status < 200 || upstream.status >= 300) throw new Error('upstream_status')
-      const bytes = await Promise.race([collectBounded(upstream.body, maxResponseBytes), timeout])
+      iterator = bodyIterator(upstream.body)
+      let streamedBytes = 0
+      const stream = new ReadableStream<Uint8Array>({
+        start(readableController) {
+          streamController = readableController
+        },
+        async pull(readableController) {
+          try {
+            const result = await Promise.race([iterator!.next(), interrupted])
+            if (result.done) {
+              finish(false)
+              readableController.close()
+              return
+            }
+            if (!(result.value instanceof Uint8Array)) throw new Error('invalid_stream_chunk')
+            streamedBytes += result.value.byteLength
+            if (streamedBytes > maxResponseBytes) throw new Error('response_too_large')
+            readableController.enqueue(result.value)
+          } catch {
+            finish(true)
+            try {
+              readableController.error(new Error('stream_failed'))
+            } catch {
+              // The stream was already closed by a concurrent abort.
+            }
+          }
+        },
+        cancel() {
+          finish(true)
+        },
+      })
       const headers = new Headers({
         'content-type': upstream.contentType ?? 'application/octet-stream',
       })
       addCors(headers, options.allowedOrigin)
-      return new Response(Uint8Array.from(bytes).buffer, { status: 200, headers })
+      return new Response(stream, { status: 200, headers })
     } catch {
+      finish(true)
       return jsonResponse(502, { error: 'upstream_failed' }, options.allowedOrigin)
-    } finally {
-      if (timer) clearTimeout(timer)
-      request.signal.removeEventListener('abort', abort)
-      activeMessages -= 1
     }
   }
 
@@ -366,11 +481,13 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
     revokeAll() {
       pairings.clear()
       capabilities = []
+      for (const operation of [...activeOperations]) operation.abort()
     },
     shutdown() {
       stopped = true
       pairings.clear()
       capabilities = []
+      for (const operation of [...activeOperations]) operation.abort()
     },
   }
 }

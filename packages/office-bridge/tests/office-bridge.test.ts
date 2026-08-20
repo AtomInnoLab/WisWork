@@ -70,6 +70,33 @@ describe('loopback and browser boundary', () => {
     expect(preflight.headers.get('access-control-allow-private-network')).toBe('true')
     expect(preflight.headers.get('vary')).toContain('Origin')
     expect(preflight.headers.get('access-control-allow-origin')).not.toBe('*')
+
+    for (const [path, method, headers] of [
+      ['/unknown', 'POST', 'authorization, content-type'],
+      ['/v1/office/messages', 'DELETE', 'authorization, content-type'],
+      ['/v1/office/messages', 'POST', 'authorization, x-secret'],
+    ] as const) {
+      const invalid = await bridge.handle(
+        request(path, {
+          method: 'OPTIONS',
+          headers: {
+            origin,
+            'access-control-request-method': method,
+            'access-control-request-headers': headers,
+          },
+        }),
+      )
+      expect(invalid.status).toBe(403)
+      expect(invalid.headers.get('access-control-allow-origin')).toBeNull()
+    }
+  })
+
+  it('fails closed for non-positive, fractional, or infinite budgets', () => {
+    for (const value of [0, -1, 1.5, Number.POSITIVE_INFINITY, Number.NaN]) {
+      expect(() =>
+        createOfficeBridge({ allowedOrigin: origin, proxy: vi.fn(), maxBodyBytes: value }),
+      ).toThrow('invalid_bridge_limits')
+    }
   })
 })
 
@@ -165,6 +192,20 @@ describe('pairing lifecycle', () => {
     )
     expect(full.status).toBe(429)
     expect(await full.json()).toEqual({ error: 'pairing_capacity' })
+  })
+
+  it('accepts only a known Office host label', async () => {
+    const bridge = createOfficeBridge({ allowedOrigin: origin, proxy: vi.fn() })
+    for (const hostLabel of ['Outlook', '<script>', 'Word\nExcel']) {
+      const response = await bridge.handle(
+        request('/v1/office/pairings', {
+          method: 'POST',
+          headers: { origin, 'content-type': 'application/json' },
+          body: json({ host_label: hostLabel }),
+        }),
+      )
+      expect(response.status).toBe(400)
+    }
   })
 
   it('rate-limits pairing creation and rejects unsupported methods', async () => {
@@ -287,7 +328,7 @@ describe('messages capability', () => {
     )
     expect(concurrent.status).toBe(429)
     release()
-    await first
+    await (await first).arrayBuffer()
 
     const oversized = await bridge.handle(
       request('/v1/office/messages', { method: 'POST', headers, body: '{"long":1}' }),
@@ -301,6 +342,165 @@ describe('messages capability', () => {
       }),
     )
     expect(wrongType.status).toBe(415)
+  })
+
+  it('cancels a chunked request body immediately when its byte budget is exceeded', async () => {
+    const cancel = vi.fn()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"a":"'))
+        controller.enqueue(new TextEncoder().encode('too long"}'))
+      },
+      cancel,
+    })
+    const { bridge, capability } = await approvedBridge(vi.fn(), { maxBodyBytes: 8 })
+    const init = {
+      method: 'POST',
+      headers: {
+        origin,
+        authorization: `Bridge ${capability}`,
+        'content-type': 'application/json',
+      },
+      body,
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' }
+    const response = await bridge.handle(
+      new Request('http://127.0.0.1:43127/v1/office/messages', init),
+    )
+    expect(response.status).toBe(413)
+    expect(cancel).toHaveBeenCalledOnce()
+  })
+
+  it('streams chunks before completion and holds concurrency until close or cancel', async () => {
+    let release!: () => void
+    const waiting = new Promise<void>((resolve) => (release = resolve))
+    const proxy: MessagesProxy = async () => ({
+      status: 200,
+      body: (async function* () {
+        yield new TextEncoder().encode('first')
+        await waiting
+        yield new TextEncoder().encode('second')
+      })(),
+    })
+    const { bridge, capability } = await approvedBridge(proxy, { maxConcurrentMessages: 1 })
+    const invoke = () =>
+      bridge.handle(
+        request('/v1/office/messages', {
+          method: 'POST',
+          headers: {
+            origin,
+            authorization: `Bridge ${capability}`,
+            'content-type': 'application/json',
+          },
+          body: '{}',
+        }),
+      )
+    const response = await invoke()
+    const reader = response.body!.getReader()
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe('first')
+    expect((await invoke()).status).toBe(429)
+    await reader.cancel()
+    release()
+    expect((await invoke()).status).toBe(200)
+  })
+
+  it('aborts active proxy streams on logout and shutdown', async () => {
+    const signals: AbortSignal[] = []
+    const returned = vi.fn()
+    const proxy: MessagesProxy = async ({ signal }) => {
+      signals.push(signal)
+      return {
+        status: 200,
+        body: {
+          [Symbol.asyncIterator]() {
+            return {
+              next: () => new Promise<IteratorResult<Uint8Array>>(() => undefined),
+              return: async () => {
+                returned()
+                return { done: true, value: undefined }
+              },
+            }
+          },
+        },
+      }
+    }
+    const first = await approvedBridge(proxy)
+    const invoke = (bridge: OfficeBridge, capability: string) =>
+      bridge.handle(
+        request('/v1/office/messages', {
+          method: 'POST',
+          headers: {
+            origin,
+            authorization: `Bridge ${capability}`,
+            'content-type': 'application/json',
+          },
+          body: '{}',
+        }),
+      )
+    const response = await invoke(first.bridge, first.capability)
+    void response
+      .body!.getReader()
+      .read()
+      .catch(() => undefined)
+    first.bridge.revokeAll()
+    expect(signals[0].aborted).toBe(true)
+    expect(returned).toHaveBeenCalledOnce()
+
+    const second = await approvedBridge(proxy)
+    const secondResponse = await invoke(second.bridge, second.capability)
+    void secondResponse
+      .body!.getReader()
+      .read()
+      .catch(() => undefined)
+    second.bridge.shutdown()
+    expect(signals[1].aborted).toBe(true)
+    expect(returned).toHaveBeenCalledTimes(2)
+  })
+
+  it('releases concurrency immediately when the client aborts an uncooperative proxy', async () => {
+    const controller = new AbortController()
+    let calls = 0
+    const proxy: MessagesProxy = () => {
+      calls += 1
+      return calls === 1
+        ? new Promise(() => undefined)
+        : Promise.resolve({ status: 200, body: new Uint8Array() })
+    }
+    const { bridge, capability } = await approvedBridge(proxy, {
+      maxConcurrentMessages: 1,
+      messageTimeoutMs: 10_000,
+    })
+    const first = bridge.handle(
+      request('/v1/office/messages', {
+        method: 'POST',
+        headers: {
+          origin,
+          authorization: `Bridge ${capability}`,
+          'content-type': 'application/json',
+        },
+        body: '{}',
+        signal: controller.signal,
+      }),
+    )
+    controller.abort()
+    const response = await Promise.race([
+      first,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('hung')), 100)),
+    ])
+    expect(response.status).toBe(502)
+    const retry = await bridge.handle(
+      request('/v1/office/messages', {
+        method: 'POST',
+        headers: {
+          origin,
+          authorization: `Bridge ${capability}`,
+          'content-type': 'application/json',
+        },
+        body: '{}',
+      }),
+    )
+    expect(retry.status).toBe(200)
+    await retry.arrayBuffer()
   })
 
   it('expires and revokes capabilities on logout or shutdown', async () => {
@@ -368,7 +568,9 @@ describe('messages capability', () => {
           body: '{}',
         }),
       )
-    expect((await invoke(oversized.bridge, oversized.capability)).status).toBe(502)
+    const oversizedResponse = await invoke(oversized.bridge, oversized.capability)
+    expect(oversizedResponse.status).toBe(200)
+    await expect(oversizedResponse.arrayBuffer()).rejects.toThrow('stream_failed')
 
     const timedOut = await approvedBridge(() => new Promise(() => undefined), {
       messageTimeoutMs: 5,
