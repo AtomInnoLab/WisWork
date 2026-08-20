@@ -28,7 +28,7 @@ The development server uses trusted local HTTPS on port 3000. Start the PC bridg
 
 ## Deployment build
 
-Only the public add-in origin is build configuration:
+Configure the deployment origin and the bridge port shared with WisWork PC:
 
 ```bash
 VITE_WISWORK_ADDIN_ORIGIN=https://office.example \
