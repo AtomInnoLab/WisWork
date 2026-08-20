@@ -7,7 +7,7 @@ const validEnv = {
   VITE_WISWORK_CALLBACK_URL: 'https://localhost:3000/oauth/callback',
   VITE_WISWORK_CLIENT_ID: 'office-addin',
   VITE_WISWORK_ISSUER: 'https://gateway.example',
-  VITE_WISWORK_MESSAGES_URL: 'https://gateway.example/v1/messages',
+  VITE_WISWORK_MESSAGES_URL: 'https://wisusage.dev.atominnolab.com/v1/messages',
 }
 
 describe('loadRuntimeConfig', () => {
@@ -30,6 +30,7 @@ describe('loadRuntimeConfig', () => {
     [{ ...validEnv, VITE_WISWORK_TOKEN_URL: 'not a url' }],
     [{ ...validEnv, VITE_WISWORK_ISSUER: '' }],
     [{ ...validEnv, VITE_WISWORK_MESSAGES_URL: 'javascript:alert(1)' }],
+    [{ ...validEnv, VITE_WISWORK_MESSAGES_URL: 'https://attacker.example/v1/messages' }],
     [{ ...validEnv, VITE_WISWORK_CALLBACK_URL: 'javascript:alert(1)' }],
   ])('fails closed for missing or invalid configuration', (env) => {
     expect(loadRuntimeConfig(env, { production: false })).toEqual({ status: 'unavailable' })

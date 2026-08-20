@@ -1,28 +1,66 @@
-# WisWork Office Add-in Lab
+# WisWork Office Agent
 
-This workspace is the development home for WisWork Microsoft Office task-pane add-ins. It follows the small, host-oriented package structure used by [office-agents](https://github.com/hewliyang/office-agents), while keeping the first version focused on a shared Office.js boundary instead of copying its agent runtime.
+An Office.js task-pane MVP for Word, Excel, and PowerPoint. It connects the shared WisWork `AgentLoop` to the current text selection. The Agent can read immediately, but replacement and append operations are only proposals until the user explicitly confirms a before/after preview.
 
-The development manifest targets Word, Excel, and PowerPoint. The sample task pane detects the current host and can read or replace the current text selection through the shared Office document API.
+This is an integration scaffold, not a claim that the production Gateway is enabled.
 
-## Develop
+## Configure local development
+
+Create an untracked `apps/office-addin/.env.development.local` with non-secret browser configuration:
+
+```dotenv
+VITE_WISWORK_AUTHORIZATION_URL=https://YOUR_AUTH_HOST/oauth/authorize
+VITE_WISWORK_TOKEN_URL=https://YOUR_AUTH_HOST/oauth/token
+VITE_WISWORK_CALLBACK_URL=https://localhost:3000/oauth/callback
+VITE_WISWORK_CLIENT_ID=YOUR_PUBLIC_OFFICE_CLIENT_ID
+VITE_WISWORK_ISSUER=https://YOUR_AUTH_HOST
+VITE_WISWORK_MESSAGES_URL=https://wisusage.dev.atominnolab.com/v1/messages
+```
+
+Do not put client secrets, access tokens, refresh tokens, authorization codes, or PKCE verifiers in environment files. The add-in keeps access and refresh tokens in memory. Only one-time PKCE state and verifier values use `sessionStorage` while a login redirect is in progress.
+
+Missing or invalid values render an unavailable screen and disable login/chat. The messages URL must also match the fixed WisWork provider endpoint enforced by the transport.
+
+## Run and sideload
+
+From the repository root:
 
 ```bash
 npm install
-npm run dev:office
+npm run dev -w @wiswork/office-addin
 ```
 
-The first run may ask to trust a local development certificate. Keep the HTTPS server running, then sideload [`public/manifest.xml`](public/manifest.xml) into an Office desktop or web host.
+The development server uses trusted local HTTPS on port 3000. Sideload `apps/office-addin/public/manifest.xml` using the normal sideload flow for your Office host, then open **WisWork Office Agent** from the task pane.
 
-## Verify
+## Gateway prerequisites
+
+Before end-to-end login can work, the Gateway operator must:
+
+- register the exact callback `https://localhost:3000/oauth/callback` for the public Office client;
+- require PKCE S256 and one-time authorization codes;
+- permit the local task-pane origin through an explicit CORS allowlist;
+- support the documented refresh-token exchange without a browser client secret;
+- return safe OAuth errors without upstream bodies or credentials; and
+- expose the fixed WisUsage streaming messages contract expected by `@wiswork/ai-provider`.
+
+## Manual acceptance checklist
+
+Do not mark real Gateway acceptance complete until the prerequisites above are confirmed.
+
+1. Start with no configuration and verify the task pane shows **Agent unavailable**, with no prompt or login controls.
+2. Configure the registered development client, sideload the manifest, and verify login returns to `/oauth/callback`, then cleans the visible URL to `/taskpane.html`.
+3. Select text and ask the Agent to summarize or improve it. Verify streamed text and tool activity appear and **Stop** cancels an active run.
+4. Ask for a replacement. Verify the document does not change when the proposal appears, and the preview clearly shows Before and After.
+5. Click **Reject** and verify the document remains unchanged.
+6. Request another edit, change the Office selection before confirmation, and verify confirmation reports `proposal_stale` without writing.
+7. Request again and click **Confirm change** without changing the selection; verify exactly one replacement or append occurs.
+8. Start a new instruction while a proposal is pending and verify the old proposal disappears. Log out and verify conversation and pending proposal are cleared.
+9. Inspect browser storage and logs: tokens must not be persisted or printed; only in-progress PKCE state may briefly exist in session storage.
+
+## Checks
 
 ```bash
 npm run test -w @wiswork/office-addin
 npm run typecheck -w @wiswork/office-addin
 npm run build -w @wiswork/office-addin
 ```
-
-## Extend
-
-- Keep host-neutral Office.js operations in `src/office-document.ts`.
-- Add Word-, Excel-, or PowerPoint-specific adapters in separate files when a feature needs a host-specific requirement set.
-- Keep credentials and privileged model calls outside the task pane. An Office renderer must not receive WisWork service keys.

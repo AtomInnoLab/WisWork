@@ -1,3 +1,5 @@
+import { WISWORK_MESSAGES_URL } from '@wiswork/ai-provider'
+
 export interface RuntimeConfig {
   authorizationUrl: string
   tokenUrl: string
@@ -48,6 +50,7 @@ export function loadRuntimeConfig(
     !validUrl(values.tokenUrl, true) ||
     !validUrl(values.issuer, true) ||
     !validUrl(values.messagesUrl, true) ||
+    new URL(values.messagesUrl).href !== new URL(WISWORK_MESSAGES_URL).href ||
     !validUrl(values.callbackUrl, true) ||
     new URL(values.callbackUrl).search !== '' ||
     new URL(values.callbackUrl).hash !== ''

@@ -6,8 +6,8 @@
   <Version>0.1.0.0</Version>
   <ProviderName>AtomInnoLab</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
-  <DisplayName DefaultValue="WisWork Office Add-in Lab" />
-  <Description DefaultValue="A shared WisWork development task pane for Word, Excel, and PowerPoint." />
+  <DisplayName DefaultValue="WisWork Office Agent" />
+  <Description DefaultValue="A confirmation-first WisWork Agent for Word, Excel, and PowerPoint." />
   <IconUrl DefaultValue="https://localhost:3000/assets/icon.png" />
   <SupportUrl DefaultValue="https://github.com/atominnolab/wiswork" />
   <AppDomains>

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "Office.js task-pane add-in development workspace for Word, Excel, and PowerPoint",
+  "description": "Confirmation-first WisWork Agent task pane for Word, Excel, and PowerPoint",
   "dependencies": {
     "@wiswork/agent-core": "*",
     "@wiswork/ai-provider": "*"

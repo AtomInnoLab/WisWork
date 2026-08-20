@@ -7,20 +7,18 @@
     BlinkMacSystemFont,
     'Segoe UI',
     sans-serif;
-  color: #172033;
-  background: #f4f7fb;
+  color: #19212f;
+  background: #f5f6f9;
   font-synthesis: none;
 }
 
 * {
   box-sizing: border-box;
 }
-
 body {
   margin: 0;
   min-width: 280px;
 }
-
 button,
 textarea {
   font: inherit;
@@ -28,107 +26,197 @@ textarea {
 
 .taskpane {
   display: grid;
-  gap: 18px;
-  padding: 22px 18px 28px;
+  gap: 16px;
+  padding: 20px 16px 26px;
 }
-
-header h1 {
+.taskpane.centered {
+  min-height: 100vh;
+  align-content: center;
+}
+.app-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+h1 {
   margin: 5px 0 8px;
-  font-size: 25px;
-  letter-spacing: -0.03em;
+  font-size: 23px;
+  letter-spacing: -0.025em;
 }
-
-header p,
-.status-card p {
+h2 {
+  margin: 4px 0 0;
+  font-size: 17px;
+}
+p {
   margin: 0;
-  color: #5f6c80;
+  color: #617083;
   line-height: 1.5;
 }
-
 .eyebrow {
-  color: #5f4ae8;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  color: #5b4ad1;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
 }
 
 .status-card,
-.editor-card {
-  border: 1px solid #dce3ed;
+.message-card,
+.proposal-card,
+.composer-card,
+.welcome-card {
+  border: 1px solid #dce2ea;
   border-radius: 14px;
   background: #fff;
-  box-shadow: 0 8px 24px rgb(32 49 78 / 7%);
+  box-shadow: 0 8px 24px rgb(31 43 61 / 6%);
 }
-
 .status-card {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 14px;
+  gap: 11px;
+  padding: 13px 14px;
 }
-
 .status-dot {
-  width: 10px;
-  height: 10px;
-  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  flex: none;
   border-radius: 50%;
-  background: #2ba66a;
+  background: #279766;
 }
-
 .status-dot.busy {
-  background: #f2a93b;
+  background: #ed9f2e;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.status-card p {
+  font-size: 13px;
+}
+.message-card {
+  padding: 15px;
+}
+.assistant-text {
+  color: #283448;
+  white-space: pre-wrap;
+}
+.error-text {
+  color: #a63333;
+  font-size: 13px;
 }
 
-.editor-card {
+.proposal-card,
+.composer-card,
+.welcome-card {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   padding: 16px;
 }
-
-.editor-card label {
+.preview-block {
+  min-width: 0;
+  border-left: 3px solid #b8c1cf;
+  padding-left: 10px;
+}
+.preview-block.after {
+  border-color: #5b4ad1;
+}
+.preview-block strong {
+  color: #4c596b;
+  font-size: 12px;
+}
+pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 6px 0 0;
+  color: #253147;
+  font:
+    12px/1.55 ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+label {
   font-size: 13px;
   font-weight: 700;
 }
-
 textarea {
   width: 100%;
   resize: vertical;
-  border: 1px solid #cbd5e2;
+  border: 1px solid #c9d2df;
   border-radius: 10px;
   padding: 11px 12px;
   color: inherit;
   outline: none;
 }
-
 textarea:focus {
-  border-color: #6b58e8;
-  box-shadow: 0 0 0 3px rgb(107 88 232 / 14%);
+  border-color: #6655df;
+  box-shadow: 0 0 0 3px rgb(102 85 223 / 14%);
 }
-
 .actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
 }
-
 button {
-  border: 1px solid #5f4ae8;
+  border: 1px solid #5b4ad1;
   border-radius: 9px;
-  padding: 9px 13px;
+  padding: 8px 12px;
   color: #fff;
-  background: #5f4ae8;
+  background: #5b4ad1;
   cursor: pointer;
   font-weight: 650;
 }
-
-button.secondary {
-  color: #4735c5;
+button.secondary,
+button.quiet {
+  color: #4e3cbd;
   background: #fff;
 }
-
+button.quiet {
+  flex: none;
+  border-color: #d8dce5;
+  font-size: 12px;
+}
 button:disabled {
-  cursor: wait;
-  opacity: 0.55;
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.welcome-card {
+  text-align: center;
+  justify-items: center;
+  padding: 28px 20px;
+}
+.welcome-card button {
+  margin-top: 6px;
+}
+.loading-line {
+  width: 48px;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #ded9ff;
+}
+.loading-line::after {
+  display: block;
+  width: 50%;
+  height: 100%;
+  background: #5b4ad1;
+  content: '';
+  animation: slide 1s ease-in-out infinite alternate;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+@keyframes slide {
+  to {
+    transform: translateX(100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-dot.busy,
+  .loading-line::after {
+    animation: none;
+  }
 }
