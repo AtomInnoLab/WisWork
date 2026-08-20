@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { BrowserAuthError, createBrowserAuth } from '../src/auth/browser-auth.js'
+import {
+  BrowserAuthError,
+  createBrowserAuth,
+  startAuthorizationInCurrentWindow,
+} from '../src/auth/browser-auth.js'
 import type { RuntimeConfig } from '../src/config.js'
 
 const config: RuntimeConfig = {
@@ -32,6 +36,19 @@ class MemoryStorage implements Storage {
     this.values.set(key, value)
   }
 }
+
+describe('current WebView authorization', () => {
+  it('navigates the task pane to the generated authorization URL', async () => {
+    const navigate = vi.fn()
+
+    await startAuthorizationInCurrentWindow(
+      { startAuthorization: vi.fn(async () => 'https://auth.example/oidc/auth?state=one') },
+      navigate,
+    )
+
+    expect(navigate).toHaveBeenCalledWith('https://auth.example/oidc/auth?state=one')
+  })
+})
 
 function tokenResponse(accessToken = 'access-secret', refreshToken = 'refresh-secret') {
   return new Response(JSON.stringify({ access_token: accessToken, refresh_token: refreshToken }), {

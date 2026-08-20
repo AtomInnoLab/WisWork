@@ -8,12 +8,11 @@ import {
   useOfficeAgent,
   type OfficeAgentSession,
 } from './agent/use-office-agent.js'
-import { createBrowserAuth, type BrowserAuth } from './auth/browser-auth.js'
 import {
-  createBrowserOfficeDialogRuntime,
-  createOfficeDialogAuth,
-} from './auth/office-dialog-auth.js'
-import { captureAndScrubOAuthCallback } from './auth/oauth-callback.js'
+  createBrowserAuth,
+  startAuthorizationInCurrentWindow,
+  type BrowserAuth,
+} from './auth/browser-auth.js'
 import { loadRuntimeConfig, type RuntimeConfig } from './config.js'
 import {
   createBrowserOfficeRuntime,
@@ -175,17 +174,15 @@ function AgentWorkspace(props: {
   )
 }
 
-function ConfiguredApp({ config }: { config: RuntimeConfig }) {
+function ConfiguredApp({
+  config,
+  oauthCallback,
+}: {
+  config: RuntimeConfig
+  oauthCallback?: string
+}) {
   const document = useMemo(() => createOfficeDocumentClient(createBrowserOfficeRuntime()), [])
   const auth = useMemo(() => createBrowserAuth(config), [config])
-  const signInWithDialog = useMemo(
-    () =>
-      createOfficeDialogAuth(
-        createBrowserOfficeDialogRuntime(config.callbackUrl),
-        config.callbackUrl,
-      ),
-    [config.callbackUrl],
-  )
   const proposals = useMemo(() => createProposalController(document), [document])
   const session = useMemo(
     () =>
@@ -210,13 +207,8 @@ function ConfiguredApp({ config }: { config: RuntimeConfig }) {
     let active = true
     void (async () => {
       try {
-        const capturedCallback = captureAndScrubOAuthCallback(
-          config.callbackUrl,
-          window.location.href,
-          (cleanUrl) => window.history.replaceState({}, '', cleanUrl),
-        )
-        if (capturedCallback) {
-          await auth.consumeCallback(capturedCallback)
+        if (oauthCallback) {
+          await auth.consumeCallback(oauthCallback)
           if (active) setSignedIn(true)
         }
         const activeHost = await document.initialize()
@@ -238,7 +230,7 @@ function ConfiguredApp({ config }: { config: RuntimeConfig }) {
     return () => {
       active = false
     }
-  }, [auth, config.callbackUrl, document])
+  }, [auth, document, oauthCallback])
 
   if (busy) return <StatusScreen title="Starting WisWork Agent" detail={status} busy />
   if (!hostSupported) {
@@ -253,15 +245,9 @@ function ConfiguredApp({ config }: { config: RuntimeConfig }) {
           type="button"
           onClick={() => {
             setBusy(true)
-            void signInWithDialog(auth)
-              .then(() => {
-                setSignedIn(true)
-                setStatus(`${hostLabels[host]} is ready`)
-              })
+            void startAuthorizationInCurrentWindow(auth, (url) => window.location.assign(url))
               .catch((error) => {
                 setStatus(safeAuthError(error))
-              })
-              .finally(() => {
                 setBusy(false)
               })
           }}
@@ -293,7 +279,7 @@ function StatusScreen(props: {
   )
 }
 
-export function App() {
+export function App({ oauthCallback }: { oauthCallback?: string }) {
   const runtime = useMemo(
     () => loadRuntimeConfig(import.meta.env, { production: import.meta.env.PROD }),
     [],
@@ -306,5 +292,5 @@ export function App() {
       />
     )
   }
-  return <ConfiguredApp config={runtime.config} />
+  return <ConfiguredApp config={runtime.config} oauthCallback={oauthCallback} />
 }

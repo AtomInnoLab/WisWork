@@ -40,6 +40,13 @@ export interface BrowserAuth {
   logout(): void
 }
 
+export async function startAuthorizationInCurrentWindow(
+  auth: Pick<BrowserAuth, 'startAuthorization'>,
+  navigate: (url: string) => void,
+): Promise<void> {
+  navigate(await auth.startAuthorization())
+}
+
 function singleParameter(url: URL, name: string): string | undefined {
   const values = url.searchParams.getAll(name)
   return values.length === 1 && values[0] ? values[0] : undefined
