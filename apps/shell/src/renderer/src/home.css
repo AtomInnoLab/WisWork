@@ -1234,7 +1234,7 @@ body.vib .home {
 .btn-office-allow {
   border: 1px solid var(--accent);
   background: var(--accent);
-  color: #fff;
+  color: var(--color-btn-primary-text);
 }
 
 .btn-office-allow:hover:not(:disabled) {
