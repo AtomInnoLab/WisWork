@@ -633,11 +633,15 @@ describe('messages capability', () => {
   it('releases concurrency immediately when the client aborts an uncooperative proxy', async () => {
     const controller = new AbortController()
     let calls = 0
+    let markProxyStarted!: () => void
+    const proxyStarted = new Promise<void>((resolve) => (markProxyStarted = resolve))
     const proxy: MessagesProxy = () => {
       calls += 1
-      return calls === 1
-        ? new Promise(() => undefined)
-        : Promise.resolve({ status: 200, body: new Uint8Array() })
+      if (calls === 1) {
+        markProxyStarted()
+        return new Promise(() => undefined)
+      }
+      return Promise.resolve({ status: 200, body: new Uint8Array() })
     }
     const { bridge, capability } = await approvedBridge(proxy, {
       maxConcurrentMessages: 1,
@@ -655,6 +659,7 @@ describe('messages capability', () => {
         signal: controller.signal,
       }),
     )
+    await proxyStarted
     controller.abort()
     const response = await Promise.race([
       first,
