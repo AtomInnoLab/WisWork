@@ -227,4 +227,20 @@ describe('Office Agent transport', () => {
     expect(cancel).toHaveBeenCalledOnce()
     vi.useRealTimers()
   })
+
+  it('contains a response reader cancellation rejection during timeout cleanup', async () => {
+    vi.useFakeTimers()
+    const hanging = new ReadableStream<Uint8Array>({
+      cancel: () => Promise.reject(new Error('private cancel failure')),
+    })
+    const auth = {
+      authenticatedFetch: vi.fn().mockResolvedValue(new Response(hanging, { status: 200 })),
+    } as unknown as BrowserAuth
+    const cb = callbacks()
+    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    await vi.advanceTimersByTimeAsync(STREAM_RESPONSE_TIMEOUT_MS)
+    expect(cb.onError).toHaveBeenCalledWith('transport_timeout')
+    expect(cb.onDone).toHaveBeenCalledOnce()
+    vi.useRealTimers()
+  })
 })

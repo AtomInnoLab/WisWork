@@ -103,10 +103,11 @@ async function* boundedSseLines(
   const decoder = new TextDecoder()
   const reader = body.getReader()
   let readerCancelled = false
+  let cancellation: Promise<void> | undefined
   let finished = false
   const abort = () => {
     readerCancelled = true
-    void reader.cancel()
+    cancellation = reader.cancel().catch(() => undefined)
   }
   signal.addEventListener('abort', abort, { once: true })
   let responseBytes = 0
@@ -143,7 +144,8 @@ async function* boundedSseLines(
     if (buffer) yield buffer.replace(/\r$/, '')
   } finally {
     signal.removeEventListener('abort', abort)
-    if (!finished && !readerCancelled) await reader.cancel()
+    if (cancellation) await cancellation
+    else if (!finished && !readerCancelled) await reader.cancel().catch(() => undefined)
     reader.releaseLock()
   }
 }
