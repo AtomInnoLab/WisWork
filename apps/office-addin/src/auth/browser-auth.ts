@@ -171,6 +171,7 @@ export function createBrowserAuth(
       authorizationUrl.searchParams.set('response_type', 'code')
       authorizationUrl.searchParams.set('client_id', config.clientId)
       authorizationUrl.searchParams.set('redirect_uri', config.callbackUrl)
+      authorizationUrl.searchParams.set('scope', 'openid profile email offline_access')
       authorizationUrl.searchParams.set('state', state)
       authorizationUrl.searchParams.set('code_challenge', challenge)
       authorizationUrl.searchParams.set('code_challenge_method', method)

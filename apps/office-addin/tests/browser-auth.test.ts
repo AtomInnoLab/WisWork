@@ -50,6 +50,7 @@ describe('browser OAuth', () => {
     expect(authorizationUrl.origin + authorizationUrl.pathname).toBe(config.authorizationUrl)
     expect(authorizationUrl.searchParams.get('client_id')).toBe(config.clientId)
     expect(authorizationUrl.searchParams.get('redirect_uri')).toBe(config.callbackUrl)
+    expect(authorizationUrl.searchParams.get('scope')).toBe('openid profile email offline_access')
     expect(authorizationUrl.searchParams.get('code_challenge_method')).toBe('S256')
     expect(authorizationUrl.searchParams.get('code_challenge')).toMatch(/^[A-Za-z0-9_-]{43}$/)
     expect(authorizationUrl.searchParams.get('state')).toBeTruthy()
