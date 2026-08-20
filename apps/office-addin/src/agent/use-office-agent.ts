@@ -93,7 +93,7 @@ export function createOfficeAgentSession(dependencies: {
       loop.cancel()
     },
     async confirm(id) {
-      if (state.applying) return
+      if (state.applying || loop.busy) return
       publish({ applying: true, error: undefined })
       try {
         await proposals.confirm(id)

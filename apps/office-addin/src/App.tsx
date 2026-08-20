@@ -124,7 +124,7 @@ function AgentWorkspace(props: {
             </button>
             <button
               type="button"
-              disabled={state.applying}
+              disabled={state.busy || state.applying}
               onClick={() => void session.confirm(proposal.id)}
             >
               {state.applying ? 'Applying…' : 'Confirm change'}

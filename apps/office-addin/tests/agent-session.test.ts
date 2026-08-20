@@ -117,6 +117,7 @@ describe('Office agent session', () => {
     await Promise.resolve()
     session.stop()
     expect(harness.cancel).toHaveBeenCalledOnce()
+    harness.callbacks().onDone()
     await session.confirm('p1')
     expect(session.snapshot().error).toBe('proposal_stale')
     expect(session.snapshot().proposal).toBeUndefined()
@@ -162,5 +163,28 @@ describe('Office agent session', () => {
     expect(session.snapshot().proposal).toBeUndefined()
     session.logout()
     expect(proposals.controller.logout).toHaveBeenCalledOnce()
+  })
+
+  it('does not confirm a visible proposal until the active agent run finishes', async () => {
+    const harness = transportHarness()
+    const proposals = proposalsHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposals.controller,
+    })
+
+    session.send('prepare an edit')
+    await Promise.resolve()
+    proposals.setPending()
+    harness.callbacks().onDelta('Review this change')
+
+    await session.confirm('p1')
+    expect(session.snapshot().busy).toBe(true)
+    expect(proposals.controller.confirm).not.toHaveBeenCalled()
+
+    harness.callbacks().onDone()
+    await session.confirm('p1')
+    expect(proposals.controller.confirm).toHaveBeenCalledOnce()
   })
 })
