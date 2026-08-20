@@ -368,6 +368,52 @@ const ALL_TOOLS: AgentToolDef[] = [
     },
   },
   {
+    name: 'crop_image',
+    description:
+      'Crop a picture non-destructively (srcRect): l/t/r/b are fractions (0..1) cut from each edge of the source image. The element frame stays where it is; the remaining region stretches to fill it. Pass all zeros to remove an existing crop.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slideIndex: { type: 'integer' },
+        sourceId: { type: 'string', description: 'Picture element id' },
+        l: { type: 'number', description: 'Fraction cut from the left edge (0..1)' },
+        t: { type: 'number', description: 'Fraction cut from the top edge (0..1)' },
+        r: { type: 'number', description: 'Fraction cut from the right edge (0..1)' },
+        b: { type: 'number', description: 'Fraction cut from the bottom edge (0..1)' },
+      },
+      required: ['slideIndex', 'sourceId', 'l', 't', 'r', 'b'],
+    },
+  },
+  {
+    name: 'set_picture_opacity',
+    description:
+      "Set a picture's whole-image opacity. opacity 0..1; 1 = fully opaque (removes the effect).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slideIndex: { type: 'integer' },
+        sourceId: { type: 'string', description: 'Picture element id' },
+        opacity: { type: 'number', description: '0 (invisible) .. 1 (opaque)' },
+      },
+      required: ['slideIndex', 'sourceId', 'opacity'],
+    },
+  },
+  {
+    name: 'replace_image',
+    description:
+      "Swap a picture's source image for a direct URL (for example, from image_search) in place so position, size, z-order, border, and effects survive. keepCrop preserves the existing crop window and is only correct when the new image has the same pixel geometry as the old one.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slideIndex: { type: 'integer' },
+        sourceId: { type: 'string', description: 'Picture element id' },
+        url: { type: 'string', description: 'Direct image link' },
+        keepCrop: { type: 'boolean', description: 'Keep the existing crop window (default false)' },
+      },
+      required: ['slideIndex', 'sourceId', 'url'],
+    },
+  },
+  {
     name: 'ask_clarification',
     description:
       "[Call before creating a whole new deck] Shows a questionnaire card with options, letting the user make key choices for this deck (audience/scenario/tone/focus etc.); the user's choices directly determine the deck's Core Hook and style. Questions must target the specific topic, each being a real trade-off (options represent different directions). Ask 2–4 questions, ≤5 options each. After calling, wait for the user to finish choosing in the card and generate once you have the answers. Don't repeat the questions in your reply text.",
@@ -1631,6 +1677,94 @@ async function executeTool(
         output: `Inserted the image on page ${idx + 1}, element id=${r.sourceId}.`,
         mutated: true,
         summary: t('aiSumInsertImage', { n: idx + 1 }),
+      }
+    }
+
+    case 'crop_image':
+    case 'set_picture_opacity':
+    case 'replace_image': {
+      const idx = Number(call.input.slideIndex)
+      const sourceId = String(call.input.sourceId ?? '')
+      const failKey =
+        call.name === 'crop_image'
+          ? ('aiFailCropImage' as const)
+          : call.name === 'set_picture_opacity'
+            ? ('aiFailPictureOpacity' as const)
+            : ('aiFailReplaceImage' as const)
+      const slide = slides[idx]
+      if (!slide) return fail(t(failKey), `slideIndex out of range (0-${slides.length - 1})`)
+      const target = resolveEditTarget(slide, sourceId)
+      const terr = targetError(target, sourceId, idx + 1)
+      if (terr || !target || 'nested' in target) return fail(t(failKey), terr!)
+      if (target.node.type !== 'picture')
+        return fail(t(failKey), `Element ${sourceId} is not a picture (type: ${target.node.type})`)
+      if (target.groupId)
+        return fail(
+          t(failKey),
+          `Element ${sourceId} is inside a group; this tool only supports top-level pictures — ungroup_element first`,
+        )
+
+      if (call.name === 'crop_image') {
+        const frac = (v: unknown) => Math.min(1, Math.max(0, Number(v) || 0))
+        const cl = frac(call.input.l)
+        const ct = frac(call.input.t)
+        const cr = frac(call.input.r)
+        const cb = frac(call.input.b)
+        if (cl + cr >= 0.99 || ct + cb >= 0.99)
+          return fail(t(failKey), 'Crop removes the whole image (l+r and t+b must be < 1)')
+        const srcRect = cl || ct || cr || cb ? { l: cl, t: ct, r: cr, b: cb } : null
+        const updated = await window.slidesApi.editPictureSrcRect({
+          slideIndex: idx,
+          sourceId,
+          srcRect,
+        })
+        if (!updated) return fail(t(failKey), 'Crop failed')
+        access.applySlide(idx, updated)
+        return {
+          output: srcRect
+            ? `Cropped picture ${sourceId} on page ${idx + 1} (l=${cl} t=${ct} r=${cr} b=${cb}).`
+            : `Removed the crop of picture ${sourceId} on page ${idx + 1}.`,
+          mutated: true,
+          summary: t('aiSumCropImage', { n: idx + 1 }),
+        }
+      }
+
+      if (call.name === 'set_picture_opacity') {
+        const opacity = Number(call.input.opacity)
+        if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1)
+          return fail(t(failKey), 'opacity must be between 0 and 1')
+        const updated = await window.slidesApi.editPictureOpacity({
+          slideIndex: idx,
+          sourceId,
+          opacity,
+        })
+        if (!updated) return fail(t(failKey), 'Opacity change failed')
+        access.applySlide(idx, updated)
+        return {
+          output: `Set the opacity of picture ${sourceId} on page ${idx + 1} to ${opacity}.`,
+          mutated: true,
+          summary: t('aiSumPictureOpacity', { n: idx + 1 }),
+        }
+      }
+
+      const url = String(call.input.url ?? '')
+      if (!/^https?:\/\//.test(url)) return fail(t(failKey), 'Invalid url')
+      const updated = await window.slidesApi.replacePictureUrl({
+        slideIndex: idx,
+        sourceId,
+        url,
+        ...(call.input.keepCrop ? { keepSrcRect: true } : {}),
+      })
+      if (!updated)
+        return fail(
+          t(failKey),
+          'Replacement failed (the image may be inaccessible, or the element is not a replaceable picture)',
+        )
+      access.applySlide(idx, updated)
+      return {
+        output: `Replaced the image of picture ${sourceId} on page ${idx + 1} in place (frame/z-order/effects kept).`,
+        mutated: true,
+        summary: t('aiSumReplaceImage', { n: idx + 1 }),
       }
     }
 

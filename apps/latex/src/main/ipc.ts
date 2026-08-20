@@ -14,6 +14,7 @@ import {
 } from '../shared/ipc.js'
 import {
   MainFileRenameError,
+  ProposalVerificationRejectedError,
   UnsavedBuffersError,
   type ProjectSession,
   type ProjectSessionRegistry,
@@ -58,6 +59,7 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
       projectId: session.projectId,
       mainFile: session.mainFile ?? null,
       dirty: session.isDirty(),
+      latestCompile: session.latestCompile(),
     }
   })
   handle(LATEX_CHANNELS.projectList, (event, payload) =>
@@ -88,6 +90,11 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
   handle(LATEX_CHANNELS.fileRename, (event, payload) =>
     withSession(event, payload, registry, parseRenameRequest, (session, request) =>
       session.renameText(request.from, request.to),
+    ),
+  )
+  handle(LATEX_CHANNELS.fileDelete, (event, payload) =>
+    withSession(event, payload, registry, parseFileRequest, (session, request) =>
+      session.deleteText(request.path),
     ),
   )
   handle(LATEX_CHANNELS.compileStart, (event, payload) =>
@@ -178,6 +185,11 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
       return proposal
     }),
   )
+  handle(LATEX_CHANNELS.proposalVerify, (event, payload) =>
+    withSession(event, payload, registry, parseProposalRequest, (session, request) =>
+      session.verifyProposal(request.proposalId),
+    ),
+  )
   handle(LATEX_CHANNELS.proposalApply, (event, payload) =>
     withSession(event, payload, registry, parseProposalRequest, (session, request) =>
       session.applyConfirmedProposal(request.proposalId),
@@ -227,7 +239,10 @@ function parseFileRequest(value: unknown): FileRequest {
 
 function parseUpdateRequest(value: unknown): UpdateFileRequest {
   const item = exactObject(value, ['projectId', 'path', 'text'])
-  const text = boundedString(item.text, 'text', MAX_IPC_TEXT_BYTES)
+  const text =
+    typeof item.text === 'string' && item.text.length <= MAX_IPC_TEXT_BYTES
+      ? item.text
+      : invalid('text is invalid')
   if (Buffer.byteLength(text, 'utf8') > MAX_IPC_TEXT_BYTES) invalid('text is too large')
   return {
     projectId: boundedString(item.projectId, 'projectId', 128),
@@ -448,6 +463,18 @@ function fail(error: unknown): LatexIpcResult<never> {
     return {
       ok: false,
       error: { code: 'LATEX_CONFLICT', message: 'Project has unsaved LaTeX changes' },
+    }
+  }
+  if (error instanceof ProposalVerificationRejectedError) {
+    if (error.reason === 'not-found' || error.reason === 'expired') {
+      return { ok: false, error: { code: 'LATEX_NOT_FOUND', message: error.message } }
+    }
+    if (error.reason === 'baseline') {
+      return { ok: false, error: { code: 'LATEX_CONFLICT', message: error.message } }
+    }
+    return {
+      ok: false,
+      error: { code: 'LATEX_VERIFICATION_REJECTED', message: error.message },
     }
   }
   if (

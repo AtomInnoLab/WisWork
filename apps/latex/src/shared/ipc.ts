@@ -1,8 +1,11 @@
 import type { AiSettings, AiStreamChunk, AiStreamRequest } from '@wiswork/ai-provider'
+import type { NormalizedProposalDiagnostic } from './proposal-verification.js'
 
 export const MAX_IPC_TEXT_BYTES = 2 * 1024 * 1024
 export const MAX_IPC_PATH_LENGTH = 1024
 export const MAX_IPC_FILES = 1_000
+
+export type UiTheme = 'light' | 'dark' | 'system'
 
 export const LATEX_CHANNELS = {
   sessionGet: 'latex:session:get',
@@ -12,6 +15,7 @@ export const LATEX_CHANNELS = {
   fileSave: 'latex:file:save',
   fileCreate: 'latex:file:create',
   fileRename: 'latex:file:rename',
+  fileDelete: 'latex:file:delete',
   compileStatus: 'latex:compile:status',
   bundleStatus: 'latex:bundle:status',
   compileStart: 'latex:compile:start',
@@ -20,6 +24,7 @@ export const LATEX_CHANNELS = {
   syncTexReverse: 'latex:synctex:reverse',
   proposalGet: 'latex:proposal:get',
   proposalCreate: 'latex:proposal:create',
+  proposalVerify: 'latex:proposal:verify',
   proposalApply: 'latex:proposal:apply',
   proposalUndo: 'latex:proposal:undo',
   aiProjectList: 'latex:ai:project:list',
@@ -45,6 +50,7 @@ export type LatexIpcErrorCode =
   | 'LATEX_INVALID_PAYLOAD'
   | 'LATEX_CONFLICT'
   | 'LATEX_NOT_FOUND'
+  | 'LATEX_VERIFICATION_REJECTED'
   | 'LATEX_INTERNAL'
 
 export type LatexIpcResult<T> =
@@ -138,6 +144,20 @@ export interface LatexProposalDto {
   }>
 }
 
+export type ProposalVerificationDiagnosticDto = NormalizedProposalDiagnostic
+
+interface ProposalVerificationEvidenceDto {
+  proposalId: string
+  diagnostics: ProposalVerificationDiagnosticDto[]
+  logSummary: string
+  verifiedAt: number
+}
+
+export type ProposalVerificationDto =
+  | (ProposalVerificationEvidenceDto & { state: 'verified' })
+  | (ProposalVerificationEvidenceDto & { state: 'failed'; reason: string })
+  | (ProposalVerificationEvidenceDto & { state: 'unverifiable'; reason: string })
+
 export interface LatexBufferDto {
   path: string
   text: string
@@ -151,6 +171,7 @@ export interface LatexSessionDto {
   projectId: string
   mainFile: string | null
   dirty: boolean
+  latestCompile: CompileResultDto | null
 }
 
 export interface LatexSaveDto {
@@ -174,6 +195,8 @@ export type LatexBundleStatusDto =
   | { state: 'error'; code: string }
 
 export interface LatexApi {
+  getTheme(): Promise<UiTheme>
+  onThemeChanged(handler: (theme: UiTheme) => void): () => void
   getSession(): Promise<LatexIpcResult<LatexSessionDto>>
   listFiles(request: SessionRequest): Promise<LatexIpcResult<string[]>>
   readFile(request: FileRequest): Promise<LatexIpcResult<LatexBufferDto>>
@@ -181,6 +204,7 @@ export interface LatexApi {
   saveFile(request: SaveFileRequest): Promise<LatexIpcResult<LatexSaveDto>>
   createFile(request: UpdateFileRequest): Promise<LatexIpcResult<LatexBufferDto>>
   renameFile(request: RenameFileRequest): Promise<LatexIpcResult<void>>
+  deleteFile(request: FileRequest): Promise<LatexIpcResult<void>>
   compile(request: CompileRequest): Promise<LatexIpcResult<CompileResultDto>>
   cancelCompile(request: SessionRequest): Promise<LatexIpcResult<{ cancelled: boolean }>>
   getBundleStatus(request: SessionRequest): Promise<LatexIpcResult<LatexBundleStatusDto>>
@@ -192,6 +216,7 @@ export interface LatexApi {
   ): Promise<LatexIpcResult<{ path: string; line: number } | null>>
   getProposal(request: ProposalRequest): Promise<LatexIpcResult<unknown>>
   proposeProjectEdits(request: CreateProposalRequest): Promise<LatexIpcResult<LatexProposalDto>>
+  verifyProposal(request: ProposalRequest): Promise<LatexIpcResult<ProposalVerificationDto>>
   applyProposal(request: ProposalRequest): Promise<LatexIpcResult<unknown>>
   undoProposal(request: UndoProposalRequest): Promise<LatexIpcResult<unknown>>
   listProjectFiles(request: SessionRequest): Promise<LatexIpcResult<unknown>>

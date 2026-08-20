@@ -41,6 +41,7 @@ export type {
 export { AiProviderError, safeHttpProviderError } from './errors'
 export type { AiProviderErrorCode } from './errors'
 export { chatForProvider } from './chat'
+export { setRescueFetch } from './fetch'
 export { AiCreditsError, sseLines, streamForProvider } from './stream'
 export type { StreamCallbacks } from './stream'
 export {

@@ -12,6 +12,7 @@ import type {
   ProjectSummaryEntry,
   TimelineEntryItem,
   UiLanguage,
+  AppTheme,
 } from '../shared/home-api'
 import { HOME_CHANNELS, PROJECT_CHANNELS } from '../shared/home-api'
 import type { TabsApi, TabSummary } from '../shared/tabs-api'
@@ -41,6 +42,10 @@ const UI_LANGUAGES: readonly UiLanguage[] = [
 
 function isUiLanguage(value: unknown): value is UiLanguage {
   return UI_LANGUAGES.includes(value as UiLanguage)
+}
+
+function isAppTheme(value: unknown): value is AppTheme {
+  return value === 'light' || value === 'dark'
 }
 
 const EMPTY_PAGE: RecentPage = { entries: [], total: 0, totalAll: 0 }
@@ -99,6 +104,9 @@ const homeApi: HomeApi = {
   async newSlide(opts) {
     await ipcRenderer.invoke(HOME_CHANNELS.newSlide, opts)
   },
+  async newMarkdown(opts) {
+    await ipcRenderer.invoke(HOME_CHANNELS.newMarkdown, opts)
+  },
   async removeRecent(paths) {
     await ipcRenderer.invoke(HOME_CHANNELS.removeRecent, paths)
   },
@@ -128,6 +136,33 @@ const homeApi: HomeApi = {
   async setLanguage(lang) {
     if (!isUiLanguage(lang)) throw new Error('Invalid language.')
     await ipcRenderer.invoke(HOME_CHANNELS.setLanguage, lang)
+  },
+  async getTheme() {
+    const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getTheme)
+    return isAppTheme(result) ? result : 'light'
+  },
+  async setTheme(theme) {
+    if (!isAppTheme(theme)) throw new Error('Invalid theme.')
+    await ipcRenderer.invoke(HOME_CHANNELS.setTheme, theme)
+  },
+  onThemeChanged(handler) {
+    const listener = (_event: IpcRendererEvent, theme: unknown) => {
+      if (isAppTheme(theme)) handler(theme)
+    }
+    ipcRenderer.on(HOME_CHANNELS.themeChanged, listener)
+    return () => ipcRenderer.removeListener(HOME_CHANNELS.themeChanged, listener)
+  },
+  async getUpdateChannel() {
+    const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getUpdateChannel)
+    return result === 'beta' ? 'beta' : 'stable'
+  },
+  async setUpdateChannel(channel) {
+    // validated inline: a runtime import from ../shared/update-api would be
+    // shared with the update.ts preload entry and get split into a chunk,
+    // which sandboxed preload scripts cannot load (window.aiOffice would
+    // silently disappear). Preload entries must stay single-file bundles.
+    if (channel !== 'stable' && channel !== 'beta') throw new Error('Invalid update channel.')
+    await ipcRenderer.invoke(HOME_CHANNELS.setUpdateChannel, channel)
   },
   async accountStatus() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.accountStatus)
@@ -222,6 +257,9 @@ const tabsApi: TabsApi = {
     const listener = (_event: IpcRendererEvent, tabs: TabSummary[]) => handler(tabs)
     ipcRenderer.on(TABS_CHANNELS.changed, listener)
     return () => ipcRenderer.removeListener(TABS_CHANNELS.changed, listener)
+  },
+  notifyChromePressed() {
+    ipcRenderer.send(TABS_CHANNELS.chromePressed)
   },
 }
 

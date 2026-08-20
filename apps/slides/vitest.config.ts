@@ -17,6 +17,10 @@ export default defineConfig({
         here,
         '../../packages/pptx-engine/src/background-promote.ts',
       ),
+      '@wiswork/pptx-render/preset-geometry': resolve(
+        here,
+        '../../packages/pptx-render/src/preset-geometry.ts',
+      ),
       '@wiswork/pptx-engine': resolve(here, '../../packages/pptx-engine/src/index.ts'),
       '@wiswork/pptx-render': resolve(here, '../../packages/pptx-render/src/index.ts'),
     },

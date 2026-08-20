@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react'
 import { GlobalWorkerOptions, TextLayer, getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
@@ -10,7 +10,9 @@ import {
   clampViewerPageToDocument,
   computeCanvasBudget,
   createPageResourceScope,
+  getDocumentPages,
   getPageWindow,
+  nearestPageToViewport,
   resetViewerPageForSource,
   runPageRenderSafely,
 } from './viewer-state.js'
@@ -27,6 +29,7 @@ export interface ReadonlyPdfPageProps {
   onClick?: (point: PdfPoint) => void
   onDoubleClick?: (point: PdfPoint) => void
   location?: ViewerLocation | null
+  onViewportSize?: (page: number, width: number, height: number) => void
 }
 
 export function ReadonlyPdfPage({
@@ -39,6 +42,7 @@ export function ReadonlyPdfPage({
   onClick,
   onDoubleClick,
   location,
+  onViewportSize,
 }: ReadonlyPdfPageProps) {
   const holderRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<ReturnType<
@@ -59,6 +63,7 @@ export function ReadonlyPdfPage({
           scale,
           rotation: (pdfPage.rotate + rotation) % 360,
         })
+        onViewportSize?.(page, viewport.width, viewport.height)
         viewportRef.current = viewport
         const dpr = Math.min(window.devicePixelRatio || 1, 2)
         const budget = computeCanvasBudget(viewport.width, viewport.height, dpr)
@@ -122,7 +127,7 @@ export function ReadonlyPdfPage({
       viewportRef.current = null
       holder.replaceChildren()
     }
-  }, [pdfDocument, location, page, rotation, scale, visible])
+  }, [pdfDocument, location, onViewportSize, page, rotation, scale, visible])
 
   const emitPoint = (
     event: ReactMouseEvent<HTMLDivElement>,
@@ -184,6 +189,8 @@ export function ReadonlyPdfViewer({
   const [error, setError] = useState<string | null>(null)
   const [scale, setScale] = useState(1)
   const [currentPage, setCurrentPage] = useState(1)
+  const [pageSizes, setPageSizes] = useState<Record<number, { width: number; height: number }>>({})
+  const scrollFrame = useRef<number | null>(null)
   const sourceIdentity =
     sourceKey ?? (source?.kind === 'url' ? source.url : source?.data.byteLength)
 
@@ -191,6 +198,7 @@ export function ReadonlyPdfViewer({
     const token = ++loadToken.current
     setError(null)
     setPdfDocument(null)
+    setPageSizes({})
     setCurrentPage((page) => resetViewerPageForSource(page))
     if (!source) return
     let loadingTask: ReturnType<typeof getDocument> | null = null
@@ -232,6 +240,57 @@ export function ReadonlyPdfViewer({
     () => getPageWindow(currentPage, pdfDocument?.numPages ?? 0),
     [currentPage, pdfDocument],
   )
+  const documentPages = useMemo(() => getDocumentPages(pdfDocument?.numPages ?? 0), [pdfDocument])
+  const renderedPages = useMemo(() => new Set(pages), [pages])
+
+  const recordPageSize = useCallback((page: number, width: number, height: number) => {
+    setPageSizes((current) => {
+      const existing = current[page]
+      if (existing?.width === width && existing.height === height) return current
+      return { ...current, [page]: { width, height } }
+    })
+  }, [])
+
+  useEffect(
+    () => () => {
+      if (scrollFrame.current !== null) window.cancelAnimationFrame(scrollFrame.current)
+    },
+    [],
+  )
+
+  const scrollToPage = (page: number) => {
+    setCurrentPage(page)
+    onPageChange?.(page)
+    window.requestAnimationFrame(() => {
+      rootRef.current
+        ?.querySelector<HTMLElement>(`[data-page="${page}"]`)
+        ?.scrollIntoView({ block: 'start' })
+    })
+  }
+
+  const updateCurrentPageFromScroll = () => {
+    if (scrollFrame.current !== null) return
+    scrollFrame.current = window.requestAnimationFrame(() => {
+      scrollFrame.current = null
+      const root = rootRef.current
+      if (!root) return
+      const rootTop = root.getBoundingClientRect().top
+      const page = nearestPageToViewport(
+        Array.from(root.querySelectorAll<HTMLElement>('[data-page]'), (element) => {
+          const rect = element.getBoundingClientRect()
+          return {
+            page: Number(element.dataset.page),
+            top: rect.top - rootTop,
+            bottom: rect.bottom - rootTop,
+          }
+        }),
+      )
+      if (page && page !== currentPage) {
+        setCurrentPage(page)
+        onPageChange?.(page)
+      }
+    })
+  }
 
   useEffect(() => {
     if (!location || !pdfDocument || location.page > pdfDocument.numPages) return
@@ -249,6 +308,7 @@ export function ReadonlyPdfViewer({
   const updateScale = (next: number) => {
     const clamped = Math.min(4, Math.max(0.5, next))
     setScale(clamped)
+    setPageSizes({})
     onScaleChange?.(clamped)
   }
 
@@ -263,7 +323,7 @@ export function ReadonlyPdfViewer({
         <button
           type="button"
           disabled={currentPage <= 1}
-          onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+          onClick={() => scrollToPage(Math.max(1, currentPage - 1))}
         >
           ‹
         </button>
@@ -273,7 +333,7 @@ export function ReadonlyPdfViewer({
         <button
           type="button"
           disabled={!pdfDocument || currentPage >= pdfDocument.numPages}
-          onClick={() => setCurrentPage((page) => Math.min(pdfDocument?.numPages ?? 1, page + 1))}
+          onClick={() => scrollToPage(Math.min(pdfDocument?.numPages ?? 1, currentPage + 1))}
         >
           ›
         </button>
@@ -285,28 +345,39 @@ export function ReadonlyPdfViewer({
           +
         </button>
       </div>
-      <div ref={rootRef} className="readonly-pdf-scroll">
+      <div ref={rootRef} className="readonly-pdf-scroll" onScroll={updateCurrentPageFromScroll}>
         {error && <div role="alert">{error}</div>}
         {!source && <div className="readonly-pdf-empty">No PDF</div>}
-        {pages.map((page) => (
-          <div key={page} data-page={page} className="readonly-pdf-page" style={pageStyle(page)}>
-            {pdfDocument && (
-              <ReadonlyPdfPage
-                document={pdfDocument}
-                page={page}
-                scale={scale}
-                visible
-                location={location}
-                onClick={(point) => {
-                  setCurrentPage(page)
-                  onPageChange?.(page)
-                  onPageClick?.(point)
-                }}
-                onDoubleClick={onPageDoubleClick}
-              />
-            )}
-          </div>
-        ))}
+        {documentPages.map((page) => {
+          const measured = pageSizes[page]
+          const fallback = pageSizes[currentPage] ?? Object.values(pageSizes)[0]
+          const size = measured ?? fallback ?? { width: 612 * scale, height: 792 * scale }
+          return (
+            <div
+              key={page}
+              data-page={page}
+              className="readonly-pdf-page"
+              style={{ ...pageStyle(page), width: size.width, minHeight: size.height }}
+            >
+              {pdfDocument && renderedPages.has(page) && (
+                <ReadonlyPdfPage
+                  document={pdfDocument}
+                  page={page}
+                  scale={scale}
+                  visible
+                  location={location}
+                  onClick={(point) => {
+                    setCurrentPage(page)
+                    onPageChange?.(page)
+                    onPageClick?.(point)
+                  }}
+                  onDoubleClick={onPageDoubleClick}
+                  onViewportSize={recordPageSize}
+                />
+              )}
+            </div>
+          )
+        })}
       </div>
     </section>
   )

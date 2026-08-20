@@ -19,6 +19,8 @@ export interface FlushWebContents {
 
 interface PendingFlush {
   contents: FlushWebContents
+  holds: number
+  waiters: Array<(ok: boolean) => void>
   finish(ok: boolean): void
 }
 
@@ -43,6 +45,7 @@ export class LatexEditFlushCoordinator {
       contents: FlushWebContents
       requestId: string
       destroyed: () => void
+      holds: number
     }
   >()
   private readonly timeoutMs: number
@@ -67,7 +70,15 @@ export class LatexEditFlushCoordinator {
   request(contents: FlushWebContents): Promise<boolean> {
     if (contents.isDestroyed()) return Promise.resolve(false)
     const existing = this.frozen.get(contents.id)
-    if (existing?.contents === contents) return Promise.resolve(true)
+    if (existing?.contents === contents) {
+      existing.holds += 1
+      return Promise.resolve(true)
+    }
+    const pendingExisting = [...this.pending.values()].find((entry) => entry.contents === contents)
+    if (pendingExisting) {
+      pendingExisting.holds += 1
+      return new Promise<boolean>((resolve) => pendingExisting.waiters.push(resolve))
+    }
     let requestId = this.randomId()
     while (this.pending.has(requestId)) requestId = this.randomId()
     return new Promise<boolean>((resolve) => {
@@ -87,16 +98,18 @@ export class LatexEditFlushCoordinator {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        const holds = this.pending.get(requestId)?.holds ?? 1
         this.pending.delete(requestId)
         if (ok && !contents.isDestroyed()) {
-          this.frozen.set(contents.id, { contents, requestId, destroyed })
+          this.frozen.set(contents.id, { contents, requestId, destroyed, holds })
         } else {
           contents.removeListener('destroyed', destroyed)
           sendRelease()
         }
-        resolve(ok)
+        for (const waiter of pending.waiters) waiter(ok)
       }
-      this.pending.set(requestId, { contents, finish })
+      const pending: PendingFlush = { contents, holds: 1, waiters: [resolve], finish }
+      this.pending.set(requestId, pending)
       contents.once('destroyed', destroyed)
       try {
         contents.send(LATEX_CHANNELS.editFlushRequest, { requestId })
@@ -109,6 +122,8 @@ export class LatexEditFlushCoordinator {
   release(contents: FlushWebContents): void {
     const entry = this.frozen.get(contents.id)
     if (!entry || entry.contents !== contents) return
+    entry.holds -= 1
+    if (entry.holds > 0) return
     this.frozen.delete(contents.id)
     contents.removeListener('destroyed', entry.destroyed)
     if (contents.isDestroyed()) return
@@ -120,6 +135,9 @@ export class LatexEditFlushCoordinator {
   dispose(): void {
     this.ipcMain.removeListener(LATEX_CHANNELS.editFlushAck, this.onAck)
     for (const pending of [...this.pending.values()]) pending.finish(false)
-    for (const entry of [...this.frozen.values()]) this.release(entry.contents)
+    for (const entry of [...this.frozen.values()]) {
+      entry.holds = 1
+      this.release(entry.contents)
+    }
   }
 }

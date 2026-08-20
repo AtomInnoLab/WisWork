@@ -26,6 +26,23 @@ export function getPageWindow(page: number, pageCount: number, radius = 1): numb
   return Array.from({ length: Math.max(0, end - start + 1) }, (_, index) => start + index)
 }
 
+export function getDocumentPages(pageCount: number): number[] {
+  if (!Number.isSafeInteger(pageCount) || pageCount < 1) return []
+  return Array.from({ length: pageCount }, (_, index) => index + 1)
+}
+
+export function nearestPageToViewport(
+  pages: readonly { page: number; top: number; bottom: number }[],
+): number | null {
+  let nearest: { page: number; distance: number } | null = null
+  for (const candidate of pages) {
+    if (!Number.isSafeInteger(candidate.page) || candidate.page < 1) continue
+    const distance = Math.abs(candidate.top)
+    if (!nearest || distance < nearest.distance) nearest = { page: candidate.page, distance }
+  }
+  return nearest?.page ?? null
+}
+
 export function computeCanvasBudget(width: number, height: number, desiredScale: number) {
   if (
     !Number.isFinite(width) ||

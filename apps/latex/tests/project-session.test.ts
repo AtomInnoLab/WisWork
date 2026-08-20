@@ -158,6 +158,51 @@ describe('LaTeX project sessions', () => {
     expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('disk-v1')
   })
 
+  it('finishes a rename cleanly when its own delete watcher event arrives mid-transaction', async () => {
+    const { projectRoot } = await setup()
+    await writeFile(join(projectRoot, 'notes.tex'), 'notes')
+    const onExternalChange = vi.fn()
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      onExternalChange,
+    }).attach(11, projectRoot)
+    await session.readText('notes.tex')
+    const originalDelete = session.project.deleteText.bind(session.project)
+    let watcher: Promise<void> | undefined
+    vi.spyOn(session.project, 'deleteText').mockImplementation(async (...args) => {
+      await originalDelete(...args)
+      watcher = session.handleExternalChange('notes.tex')
+    })
+
+    await session.renameText('notes.tex', 'renamed.tex')
+    await watcher
+
+    expect(session.getBuffer('notes.tex')).toBeUndefined()
+    expect(session.getBuffer('renamed.tex')).toMatchObject({
+      path: 'renamed.tex',
+      text: 'notes',
+      diskText: 'notes',
+      dirty: false,
+      conflict: null,
+    })
+  })
+
+  it('deletes a clean non-main file conditionally and refuses main or dirty files', async () => {
+    const { projectRoot } = await setup()
+    await writeFile(join(projectRoot, 'notes.tex'), 'notes')
+    const session = await new ProjectSessionRegistry({ watch: () => ({ close() {} }) }).attach(
+      11,
+      projectRoot,
+    )
+    await session.readText('notes.tex')
+    await session.deleteText('notes.tex')
+    await expect(access(join(projectRoot, 'notes.tex'))).rejects.toThrow()
+    await expect(session.deleteText('main.tex')).rejects.toThrow(/main file/i)
+    await session.readText('main.tex')
+    session.updateBuffer('main.tex', 'dirty')
+    await expect(session.deleteText('main.tex')).rejects.toThrow(/main file|dirty/i)
+  })
+
   it('keeps edits typed while a save is awaiting and reconciles its watcher event', async () => {
     const { projectRoot } = await setup()
     const onExternalChange = vi.fn()
@@ -541,6 +586,36 @@ describe('LaTeX project sessions', () => {
     expect(session.pdfPath(8)).toContain('publishing.pdf')
   })
 
+  it('keeps up to 1000 bounded diagnostics for an ordinary compile', async () => {
+    const { root, projectRoot } = await setup()
+    const log = Array.from(
+      { length: 150 },
+      (_, index) => `main.tex:${index + 1}:1: warning: warning ${index}`,
+    ).join('\n')
+    const staged = {
+      generationId: 'diagnostics',
+      stagingDirectory: join(root, 'stage'),
+      files: [],
+      log,
+      workspaceCleaned: true as const,
+    }
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler: vi.fn(async () => staged) as never,
+      commitGeneration: vi.fn(async () => ({
+        ...staged,
+        pdfPath: null,
+        synctexPath: null,
+        synctexInputRoot: projectRoot,
+        logPath: join(root, 'log'),
+        published: [],
+      })) as never,
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
+    }).attach(11, projectRoot)
+    const result = await session.compile(1, 'main.tex')
+    expect(result.diagnostics).toHaveLength(150)
+  })
+
   it('cancels the pending latest revision before it can enter the compiler', async () => {
     const { root, projectRoot } = await setup()
     let releaseA!: (value: any) => void
@@ -629,5 +704,35 @@ describe('LaTeX project sessions', () => {
     await expect(session.compile(4, 'main.tex')).resolves.toMatchObject({ revision: 4 })
     expect(compiler).toHaveBeenCalledTimes(2)
     expect(cleanupStaging).toHaveBeenCalledTimes(2)
+  })
+
+  it('restores the latest published PDF from a stable per-project cache across sessions', async () => {
+    const { root, projectRoot } = await setup()
+    const pdfPath = join(root, 'cached.pdf')
+    await writeFile(pdfPath, 'pdf')
+    const loadCurrentGeneration = vi.fn(async (_cacheDirectory: string) => ({
+      generationId: '12345678-1234-1234-1234-123456789abc',
+      pdfPath,
+      synctexPath: null,
+      logPath: join(root, 'cached.log'),
+      log: 'cached log',
+      published: [pdfPath],
+    }))
+    const options = {
+      watch: () => ({ close() {} }),
+      loadCurrentGeneration,
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
+    }
+
+    const first = await new ProjectSessionRegistry(options as never).attach(11, projectRoot)
+    const firstCache = loadCurrentGeneration.mock.calls[0]?.[0]
+    expect(first.latestCompile()).toMatchObject({ revision: 0, log: 'cached log' })
+    expect(first.latestCompile()?.pdfUrl).toContain(first.projectId)
+
+    first.dispose()
+    const second = await new ProjectSessionRegistry(options as never).attach(12, projectRoot)
+    expect(loadCurrentGeneration.mock.calls[1]?.[0]).toBe(firstCache)
+    expect(second.latestCompile()).toMatchObject({ revision: 0, log: 'cached log' })
+    expect(second.pdfPath(0)).toBe(pdfPath)
   })
 })

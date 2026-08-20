@@ -5,8 +5,10 @@ import iconXlsx from './assets/file-xlsx.svg'
 import iconPptx from './assets/file-pptx.svg'
 import iconPdf from './assets/file-pdf.svg'
 import iconTex from './assets/file-tex.svg'
+import iconMd from './assets/file-md.svg'
 import type {
   AccountStatus,
+  AppTheme,
   HomeApi,
   LatexRecentProjectEntry,
   ProjectHomeApi,
@@ -45,6 +47,50 @@ const FILE_ICONS: Record<string, string> = {
   pptx: iconPptx,
   pdf: iconPdf,
   tex: iconTex,
+  md: iconMd,
+  markdown: iconMd,
+}
+
+export function homeCreationItems(
+  translate: (key: 'newDoc' | 'newSheet' | 'newSlide' | 'newMarkdown') => string,
+) {
+  return [
+    { ext: 'docx', title: translate('newDoc'), sub: '.docx' },
+    { ext: 'xlsx', title: translate('newSheet'), sub: '.xlsx' },
+    { ext: 'pptx', title: translate('newSlide'), sub: '.pptx' },
+    { ext: 'md', title: translate('newMarkdown'), sub: '.md' },
+    { ext: 'tex', title: 'AI LaTeX', sub: '.tex' },
+  ] as const
+}
+
+export function accountPresentation(status: AccountStatus | null, loggedInLabel: string) {
+  const email = status?.email ?? ''
+  const name = email ? email.split('@')[0] : (status?.userId ?? loggedInLabel)
+  const initial = (email || name || 'W').trim().charAt(0).toUpperCase() || 'W'
+  return { initial, name, email }
+}
+
+export function AccountMenuIdentity({
+  status,
+  loggedInLabel,
+}: {
+  status: AccountStatus
+  loggedInLabel: string
+}) {
+  const identity = accountPresentation(status, loggedInLabel)
+  return (
+    <div className="account-menu-info">
+      <span className="account-avatar logged-in account-menu-avatar" aria-hidden="true">
+        {identity.initial}
+      </span>
+      <span className="account-menu-identity">
+        <span className="account-menu-name">{identity.name}</span>
+        <span className="account-menu-email" title={identity.email}>
+          {identity.email || status.userId || 'WisWork'}
+        </span>
+      </span>
+    </div>
+  )
 }
 
 function FileBadge({ ext, size }: { ext: string; size: number }) {
@@ -116,6 +162,48 @@ const FILTERS: { key: string; label: StringKey }[] = [
   { key: 'pptx', label: 'filterSlides' },
   { key: 'pdf', label: 'filterPdf' },
 ]
+
+function ThemeSwitch() {
+  const [theme, setTheme] = useState<AppTheme>(() =>
+    document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
+  )
+
+  useEffect(() => {
+    void window.aiOffice.getTheme().then(setTheme)
+    return window.aiOffice.onThemeChanged(setTheme)
+  }, [])
+
+  const choose = (next: AppTheme) => {
+    setTheme(next)
+    document.documentElement.dataset.theme = next
+    const request =
+      next === 'light' ? window.aiOffice.setTheme('light') : window.aiOffice.setTheme('dark')
+    void request.catch(() => window.aiOffice.getTheme().then(setTheme))
+  }
+
+  return (
+    <div className="theme-switch" role="group" aria-label="Theme">
+      <button
+        type="button"
+        className={theme === 'light' ? 'active' : ''}
+        aria-pressed={theme === 'light'}
+        onClick={() => choose('light')}
+      >
+        <span aria-hidden="true">☀</span>
+        Light
+      </button>
+      <button
+        type="button"
+        className={theme === 'dark' ? 'active' : ''}
+        aria-pressed={theme === 'dark'}
+        onClick={() => choose('dark')}
+      >
+        <span aria-hidden="true">☾</span>
+        Dark
+      </button>
+    </div>
+  )
+}
 
 // ── Project sidebar component ────────────────────────────
 
@@ -529,8 +617,9 @@ function AccountEntry() {
   }, [menuOpen])
 
   const loggedIn = status?.loggedIn ?? false
-  const email = status?.email ?? ''
-  const initial = email ? email[0].toUpperCase() : loggedIn ? 'W' : '?'
+  const identity = accountPresentation(status, t('loggedIn'))
+  const email = identity.email
+  const initial = loggedIn ? identity.initial : '?'
   const errorText = loginError
     ? {
         timeout: t('loginTimeout'),
@@ -612,12 +701,8 @@ function AccountEntry() {
     <div className="account-entry">
       {menuOpen && (
         <div className="account-menu" role="menu">
-          {loggedIn ? (
-            <div className="account-menu-info">
-              <span className="account-menu-email" title={email}>
-                {email || t('loggedIn')}
-              </span>
-            </div>
+          {loggedIn && status ? (
+            <AccountMenuIdentity status={status} loggedInLabel={t('loggedIn')} />
           ) : (
             <>
               <button
@@ -645,6 +730,8 @@ function AccountEntry() {
               )}
             </>
           )}
+          <div className="account-menu-divider" />
+          <ThemeSwitch />
           <div className="account-menu-divider" />
           <div
             className="lang-row-wrap"
@@ -819,7 +906,7 @@ function AccountEntry() {
         <span className="account-text">
           {loggedIn ? (
             <>
-              <span className="account-name">{email ? email.split('@')[0] : t('loggedIn')}</span>
+              <span className="account-name">{identity.name}</span>
               <span className="account-sub" title={email}>
                 {email || 'WisWork'}
               </span>
@@ -1216,16 +1303,27 @@ export function Home() {
     if (await window.aiOffice.newLatexProject()) reloadLatexRecents()
   }
 
+  const handleNewMarkdown = () => {
+    void window.aiOffice.newMarkdown(
+      selectedProjectId ? { projectId: selectedProjectId } : undefined,
+    )
+  }
+
   const handleImportLatex = async () => {
     if (await window.aiOffice.importLatexProject()) reloadLatexRecents()
   }
 
-  const NEW_ITEMS = [
-    { ext: 'docx', title: t('newDoc'), sub: '.docx', action: handleNewDoc },
-    { ext: 'xlsx', title: t('newSheet'), sub: '.xlsx', action: handleNewSheet },
-    { ext: 'pptx', title: t('newSlide'), sub: '.pptx', action: handleNewSlide },
-    { ext: 'tex', title: t('newLatex'), sub: '.tex', action: handleNewLatex },
-  ]
+  const newActions = {
+    docx: handleNewDoc,
+    xlsx: handleNewSheet,
+    pptx: handleNewSlide,
+    md: handleNewMarkdown,
+    tex: handleNewLatex,
+  }
+  const NEW_ITEMS = homeCreationItems(t).map((item) => ({
+    ...item,
+    action: newActions[item.ext],
+  }))
 
   function renderQuickCards() {
     return (
@@ -1241,7 +1339,7 @@ export function Home() {
             <span className="quick-text">
               <span className="quick-title-row">
                 <span className="quick-title">{item.title}</span>
-                <span className="ai-chip">AI</span>
+                {item.ext !== 'tex' && <span className="ai-chip">AI</span>}
               </span>
               <span className="quick-sub">{item.sub}</span>
             </span>
@@ -1845,7 +1943,9 @@ export function Home() {
           </>
         )}
 
-        <AccountEntry />
+        <div className="sidebar-bottom">
+          <AccountEntry />
+        </div>
       </aside>
 
       {selectedProjectId ? renderProjectContent() : renderGlobalContent()}

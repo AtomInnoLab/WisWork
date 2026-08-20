@@ -5,7 +5,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LATEX_CHANNELS, type LatexIpcResult } from '../src/shared/ipc.js'
 import { registerLatexIpc, type IpcMainLike } from '../src/main/ipc.js'
 import { registerLatexPdfProtocol } from '../src/main/latex-main.js'
-import { ProjectSessionRegistry, UnsavedBuffersError } from '../src/main/project-session.js'
+import {
+  ProjectSessionRegistry,
+  ProposalVerificationRejectedError,
+  UnsavedBuffersError,
+} from '../src/main/project-session.js'
 
 describe('LaTeX typed IPC boundary', () => {
   const roots: string[] = []
@@ -97,6 +101,56 @@ describe('LaTeX typed IPC boundary', () => {
     ).resolves.toMatchObject({ ok: false, error: { code: 'LATEX_INVALID_PAYLOAD' } })
   })
 
+  it('allows an empty LaTeX file to be created and saved', async () => {
+    const { projectRoot, session, call } = await setup()
+    await expect(
+      call(LATEX_CHANNELS.fileCreate, 11, {
+        projectId: session.projectId,
+        path: 'empty.tex',
+        text: '',
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { text: '', dirty: false } })
+    expect(await readFile(join(projectRoot, 'empty.tex'), 'utf8')).toBe('')
+
+    await session.readText('main.tex')
+    await expect(
+      call(LATEX_CHANNELS.fileUpdate, 11, {
+        projectId: session.projectId,
+        path: 'main.tex',
+        text: '',
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { text: '', dirty: true } })
+    await expect(
+      call(LATEX_CHANNELS.fileSave, 11, {
+        projectId: session.projectId,
+        path: 'main.tex',
+        text: '',
+        editRevision: 1,
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { savedText: '' } })
+    expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('')
+  })
+
+  it('deletes only a validated project-relative file owned by the session', async () => {
+    const { projectRoot, session, call } = await setup()
+    await writeFile(join(projectRoot, 'chapter.tex'), 'chapter')
+    await expect(
+      call(LATEX_CHANNELS.fileDelete, 11, {
+        projectId: session.projectId,
+        path: 'chapter.tex',
+      }),
+    ).resolves.toEqual({ ok: true })
+    await expect(readFile(join(projectRoot, 'chapter.tex'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    await expect(
+      call(LATEX_CHANNELS.fileDelete, 11, {
+        projectId: session.projectId,
+        path: '../outside.tex',
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'LATEX_INVALID_PAYLOAD' } })
+  })
+
   it('does not accept executable, bundle URL, root, headers, env, or arguments from compile payloads', async () => {
     const { session, call } = await setup()
     for (const field of ['executable', 'bundleUrl', 'rootPath', 'headers', 'env', 'args']) {
@@ -109,6 +163,43 @@ describe('LaTeX typed IPC boundary', () => {
         }),
       ).resolves.toMatchObject({ ok: false, error: { code: 'LATEX_INVALID_PAYLOAD' } })
     }
+  })
+
+  it('accepts only projectId and proposalId for isolated proposal verification', async () => {
+    const { session, call } = await setup()
+    const verifyProposal = vi.fn().mockResolvedValue({
+      proposalId: 'proposal-1',
+      state: 'verified',
+      diagnostics: [],
+      logSummary: '',
+      verifiedAt: 1,
+    })
+    ;(session as unknown as { verifyProposal: typeof verifyProposal }).verifyProposal =
+      verifyProposal
+
+    await expect(
+      call(LATEX_CHANNELS.proposalVerify, 11, {
+        projectId: session.projectId,
+        proposalId: 'proposal-1',
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { state: 'verified' } })
+    expect(verifyProposal).toHaveBeenCalledWith('proposal-1')
+
+    for (const [field, value] of [
+      ['overlay', [{ path: 'main.tex', text: 'attacker' }]],
+      ['args', ['--shell-escape']],
+      ['mainFile', '../outside.tex'],
+      ['projectDirectory', '/tmp/attacker-project'],
+    ] as const) {
+      await expect(
+        call(LATEX_CHANNELS.proposalVerify, 11, {
+          projectId: session.projectId,
+          proposalId: 'proposal-1',
+          [field]: value,
+        }),
+      ).resolves.toMatchObject({ ok: false, error: { code: 'LATEX_INVALID_PAYLOAD' } })
+    }
+    expect(verifyProposal).toHaveBeenCalledTimes(1)
   })
 
   it('exposes bundle status only through the owning project session', async () => {
@@ -145,6 +236,42 @@ describe('LaTeX typed IPC boundary', () => {
     ).resolves.toEqual({
       ok: false,
       error: { code: 'LATEX_CONFLICT', message: 'Project has unsaved LaTeX changes' },
+    })
+  })
+
+  it('maps proposal verification rejections to stable public error codes', async () => {
+    const { session, call } = await setup()
+    const request = { projectId: session.projectId, proposalId: 'proposal-1' }
+    const verify = vi.spyOn(session, 'verifyProposal')
+
+    verify.mockRejectedValueOnce(
+      new ProposalVerificationRejectedError('expired', 'Proposal has expired'),
+    )
+    await expect(call(LATEX_CHANNELS.proposalVerify, 11, request)).resolves.toEqual({
+      ok: false,
+      error: { code: 'LATEX_NOT_FOUND', message: 'Proposal has expired' },
+    })
+
+    verify.mockRejectedValueOnce(
+      new ProposalVerificationRejectedError('baseline', 'Proposal baseline changed on disk'),
+    )
+    await expect(call(LATEX_CHANNELS.proposalVerify, 11, request)).resolves.toEqual({
+      ok: false,
+      error: { code: 'LATEX_CONFLICT', message: 'Proposal baseline changed on disk' },
+    })
+
+    verify.mockRejectedValueOnce(
+      new ProposalVerificationRejectedError(
+        'safety',
+        'Proposal verification was rejected by the compiler safety policy',
+      ),
+    )
+    await expect(call(LATEX_CHANNELS.proposalVerify, 11, request)).resolves.toEqual({
+      ok: false,
+      error: {
+        code: 'LATEX_VERIFICATION_REJECTED',
+        message: 'Proposal verification was rejected by the compiler safety policy',
+      },
     })
   })
 

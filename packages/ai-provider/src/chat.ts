@@ -1,4 +1,5 @@
 import { AiProviderError, isAuthRequiredError, safeHttpProviderError } from './errors'
+import { aiFetch } from './fetch'
 import { httpBodyDetail } from './http-error'
 import { WISWORK_DEFAULT_MODEL, WISWORK_MESSAGES_URL, WISWORK_REQUEST_LOCATION } from './providers'
 import type { AiChatResponse, AiProviderConfig, AiProviderId, WisworkFetchWithAuth } from './types'
@@ -11,7 +12,7 @@ async function chatAnthropic(
   user: string,
   baseUrl = 'https://api.anthropic.com',
 ): Promise<AiChatResponse> {
-  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/messages`, {
+  const response = await aiFetch(`${baseUrl.replace(/\/$/, '')}/v1/messages`, {
     method: 'POST',
     signal: wd.signal,
     headers: {
@@ -109,7 +110,7 @@ async function chatGemini(
   baseUrl = 'https://generativelanguage.googleapis.com/v1beta',
 ): Promise<AiChatResponse> {
   const url = `${baseUrl.replace(/\/$/, '')}/models/${config.model}:generateContent`
-  const response = await fetch(url, {
+  const response = await aiFetch(url, {
     method: 'POST',
     signal: wd.signal,
     headers: {
@@ -145,7 +146,7 @@ async function chatOpenAiCompatible(
   user: string,
   safeErrors = false,
 ): Promise<AiChatResponse> {
-  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+  const response = await aiFetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
     signal: wd.signal,
     headers: {
