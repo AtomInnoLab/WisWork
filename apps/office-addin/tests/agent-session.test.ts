@@ -18,21 +18,24 @@ function proposalsHarness() {
   let pending:
     | { id: string; operation: 'replace'; before: string; value: string; fingerprint: string }
     | undefined
+  const controller = {
+    pending: () => pending,
+    propose: vi.fn(),
+    confirm: vi.fn(async () => {
+      pending = undefined
+    }),
+    reject: vi.fn(() => {
+      pending = undefined
+    }),
+    newTurn: vi.fn(() => {
+      pending = undefined
+    }),
+    logout: vi.fn(() => {
+      pending = undefined
+    }),
+  }
   return {
-    controller: {
-      pending: () => pending,
-      propose: vi.fn(),
-      confirm: vi.fn(),
-      reject: vi.fn(() => {
-        pending = undefined
-      }),
-      newTurn: vi.fn(() => {
-        pending = undefined
-      }),
-      logout: vi.fn(() => {
-        pending = undefined
-      }),
-    },
+    controller,
     setPending() {
       pending = {
         id: 'p1',
@@ -41,6 +44,9 @@ function proposalsHarness() {
         value: 'new',
         fingerprint: 'x',
       }
+    },
+    clearPending() {
+      pending = undefined
     },
   }
 }
@@ -96,7 +102,10 @@ describe('Office agent session', () => {
   it('stops the active stream and surfaces safe proposal confirmation errors', async () => {
     const harness = transportHarness()
     const proposals = proposalsHarness()
-    proposals.controller.confirm.mockRejectedValue(new Error('proposal_stale'))
+    proposals.controller.confirm.mockImplementation(async () => {
+      proposals.clearPending()
+      throw new Error('proposal_stale')
+    })
     proposals.setPending()
     const session = createOfficeAgentSession({
       transport: harness.transport,
@@ -110,5 +119,48 @@ describe('Office agent session', () => {
     expect(harness.cancel).toHaveBeenCalledOnce()
     await session.confirm('p1')
     expect(session.snapshot().error).toBe('proposal_stale')
+    expect(session.snapshot().proposal).toBeUndefined()
+  })
+
+  it('allows only one confirmation and blocks competing actions until the write settles', async () => {
+    const harness = transportHarness()
+    const proposals = proposalsHarness()
+    proposals.setPending()
+    let settle!: () => void
+    proposals.controller.confirm.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = () => {
+            proposals.clearPending()
+            resolve()
+          }
+        }),
+    )
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposals.controller,
+    })
+
+    const first = session.confirm('p1')
+    const second = session.confirm('p1')
+    session.send('race')
+    session.reject()
+    session.stop()
+    session.logout()
+
+    expect(session.snapshot().applying).toBe(true)
+    expect(proposals.controller.confirm).toHaveBeenCalledOnce()
+    expect(proposals.controller.newTurn).not.toHaveBeenCalled()
+    expect(proposals.controller.reject).not.toHaveBeenCalled()
+    expect(proposals.controller.logout).not.toHaveBeenCalled()
+    expect(harness.cancel).not.toHaveBeenCalled()
+
+    settle()
+    await Promise.all([first, second])
+    expect(session.snapshot().applying).toBe(false)
+    expect(session.snapshot().proposal).toBeUndefined()
+    session.logout()
+    expect(proposals.controller.logout).toHaveBeenCalledOnce()
   })
 })

@@ -4,33 +4,20 @@ import { fileURLToPath } from 'node:url'
 import react from '@vitejs/plugin-react'
 import { getHttpsServerOptions } from 'office-addin-dev-certs'
 import { defineConfig, loadEnv, type Plugin } from 'vite'
+import {
+  deploymentConfig,
+  deploymentConnectOrigins,
+  renderDeploymentManifest,
+  rewriteOAuthCallbackRequest,
+} from './build-config.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
-// Keep aligned with WISWORK_MESSAGES_URL; config.ts and transport.ts enforce the same URL at runtime.
-const FIXED_MESSAGES_URL = 'https://wisusage.dev.atominnolab.com/v1/messages'
-
-function connectOrigins(env: Record<string, string>): string {
-  const origins = new Set<string>()
-  for (const key of [
-    'VITE_WISWORK_AUTHORIZATION_URL',
-    'VITE_WISWORK_TOKEN_URL',
-    'VITE_WISWORK_MESSAGES_URL',
-  ]) {
-    try {
-      const url = new URL(env[key] ?? '')
-      if (key === 'VITE_WISWORK_MESSAGES_URL' && url.href !== FIXED_MESSAGES_URL) continue
-      if (url.protocol === 'https:' && !url.username && !url.password) origins.add(url.origin)
-    } catch {
-      // Missing or malformed runtime configuration remains unavailable in the app.
-    }
-  }
-  return [...origins].join(' ')
-}
-
 export default defineConfig(async ({ command, mode }) => {
   const env = loadEnv(mode, here, '')
-  const allowedConnectOrigins = connectOrigins(env)
+  const deployment = deploymentConfig(env)
+  const allowedConnectOrigins = deployment ? deploymentConnectOrigins(deployment) : ''
   const icon = await readFile(resolve(here, '../shell/src/main/assets/menu-docx@2x.png'))
+  const manifestTemplate = await readFile(resolve(here, 'public/manifest.xml'), 'utf8')
   const officeIconPlugin: Plugin = {
     name: 'wiswork-office-icon',
     configureServer(server) {
@@ -45,15 +32,42 @@ export default defineConfig(async ({ command, mode }) => {
   }
   const securityConfigPlugin: Plugin = {
     name: 'wiswork-office-security-config',
+    enforce: 'post',
     transformIndexHtml(html) {
       return html.replaceAll('__WISWORK_CONNECT_ORIGINS__', allowedConnectOrigins)
+    },
+    configureServer(server) {
+      server.middlewares.use((request, _response, next) => {
+        request.url = rewriteOAuthCallbackRequest(request.url)
+        next()
+      })
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use((request, _response, next) => {
+        request.url = rewriteOAuthCallbackRequest(request.url)
+        next()
+      })
+    },
+    generateBundle(_options, bundle) {
+      const callback = Object.values(bundle).find(
+        (entry) => entry.type === 'asset' && entry.fileName === 'oauth/callback.html',
+      )
+      if (!callback || callback.type !== 'asset') this.error('OAuth callback HTML was not emitted')
+      this.emitFile({ type: 'asset', fileName: 'oauth/callback', source: callback.source })
+      if (deployment) {
+        this.emitFile({
+          type: 'asset',
+          fileName: 'manifest.xml',
+          source: renderDeploymentManifest(manifestTemplate, deployment),
+        })
+      }
     },
   }
 
   return {
     root: resolve(here, 'src'),
     envDir: here,
-    publicDir: resolve(here, 'public'),
+    publicDir: false as const,
     plugins: [react(), officeIconPlugin, securityConfigPlugin],
     build: {
       outDir: resolve(here, 'dist'),
@@ -71,9 +85,6 @@ export default defineConfig(async ({ command, mode }) => {
       port: 3000,
       strictPort: true,
       https: command === 'serve' ? await getHttpsServerOptions() : undefined,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-      },
     },
   }
 })

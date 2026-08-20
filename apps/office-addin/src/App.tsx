@@ -8,6 +8,7 @@ import {
   type OfficeAgentSession,
 } from './agent/use-office-agent.js'
 import { createBrowserAuth, type BrowserAuth } from './auth/browser-auth.js'
+import { captureAndScrubOAuthCallback } from './auth/oauth-callback.js'
 import { loadRuntimeConfig, type RuntimeConfig } from './config.js'
 import {
   createBrowserOfficeRuntime,
@@ -61,6 +62,7 @@ function AgentWorkspace(props: {
         <button
           type="button"
           className="quiet"
+          disabled={state.applying}
           onClick={() => {
             session.logout()
             auth.logout()
@@ -72,9 +74,15 @@ function AgentWorkspace(props: {
       </header>
 
       <section className="status-card" aria-live="polite">
-        <span className={`status-dot ${state.busy ? 'busy' : ''}`} />
+        <span className={`status-dot ${state.busy || state.applying ? 'busy' : ''}`} />
         <div>
-          <strong>{state.busy ? 'Agent is working' : 'Agent is ready'}</strong>
+          <strong>
+            {state.applying
+              ? 'Applying approved change'
+              : state.busy
+                ? 'Agent is working'
+                : 'Agent is ready'}
+          </strong>
           <p>
             {state.activity ||
               (state.status === 'cancelled' ? 'Run stopped' : 'Ask about the current selection.')}
@@ -106,11 +114,20 @@ function AgentWorkspace(props: {
             <pre>{after}</pre>
           </div>
           <div className="actions">
-            <button type="button" className="secondary" onClick={() => session.reject()}>
+            <button
+              type="button"
+              className="secondary"
+              disabled={state.applying}
+              onClick={() => session.reject()}
+            >
               Reject
             </button>
-            <button type="button" onClick={() => void session.confirm(proposal.id)}>
-              Confirm change
+            <button
+              type="button"
+              disabled={state.applying}
+              onClick={() => void session.confirm(proposal.id)}
+            >
+              {state.applying ? 'Applying…' : 'Confirm change'}
             </button>
           </div>
         </section>
@@ -131,15 +148,20 @@ function AgentWorkspace(props: {
           placeholder="For example: make the selected paragraph clearer"
           rows={4}
           maxLength={12_000}
-          disabled={state.busy}
+          disabled={state.busy || state.applying}
         />
         <div className="actions">
           {state.busy ? (
-            <button type="button" className="secondary" onClick={() => session.stop()}>
+            <button
+              type="button"
+              className="secondary"
+              disabled={state.applying}
+              onClick={() => session.stop()}
+            >
               Stop
             </button>
           ) : (
-            <button type="button" disabled={!instruction.trim()} onClick={send}>
+            <button type="button" disabled={!instruction.trim() || state.applying} onClick={send}>
               Send
             </button>
           )}
@@ -171,13 +193,13 @@ function ConfiguredApp({ config }: { config: RuntimeConfig }) {
     let active = true
     void (async () => {
       try {
-        const callback = new URL(config.callbackUrl)
-        if (
-          window.location.origin === callback.origin &&
-          window.location.pathname === callback.pathname
-        ) {
-          await auth.consumeCallback(window.location.href)
-          window.history.replaceState({}, '', '/taskpane.html')
+        const capturedCallback = captureAndScrubOAuthCallback(
+          config.callbackUrl,
+          window.location.href,
+          (cleanUrl) => window.history.replaceState({}, '', cleanUrl),
+        )
+        if (capturedCallback) {
+          await auth.consumeCallback(capturedCallback)
           if (active) setSignedIn(true)
         }
         const activeHost = await document.initialize()

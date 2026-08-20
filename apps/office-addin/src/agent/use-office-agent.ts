@@ -8,6 +8,7 @@ export interface OfficeAgentSnapshot {
   assistantText: string
   activity: string
   busy: boolean
+  applying: boolean
   status: AgentSessionStatus
   error?: string
   proposal?: OfficeProposal
@@ -39,6 +40,7 @@ export function createOfficeAgentSession(dependencies: {
     assistantText: '',
     activity: '',
     busy: false,
+    applying: false,
     status: 'idle',
   }
   let cached: OfficeAgentSnapshot = { ...state, proposal: proposals.pending() }
@@ -75,7 +77,7 @@ export function createOfficeAgentSession(dependencies: {
     },
     send(instruction) {
       const value = instruction.trim()
-      if (!value || loop.busy) return
+      if (!value || loop.busy || state.applying) return
       proposals.newTurn()
       publish({
         assistantText: '',
@@ -87,24 +89,38 @@ export function createOfficeAgentSession(dependencies: {
       loop.run(value)
     },
     stop() {
+      if (state.applying) return
       loop.cancel()
     },
     async confirm(id) {
+      if (state.applying) return
+      publish({ applying: true, error: undefined })
       try {
         await proposals.confirm(id)
         publish({ activity: 'Document updated', error: undefined })
       } catch (error) {
         publish({ error: safeConfirmationError(error), status: 'error' })
+      } finally {
+        publish({ applying: false })
       }
     },
     reject() {
+      if (state.applying) return
       proposals.reject()
       publish({ activity: 'Proposal rejected', error: undefined })
     },
     logout() {
+      if (state.applying) return
       loop.reset()
       proposals.logout()
-      publish({ assistantText: '', activity: '', busy: false, status: 'idle', error: undefined })
+      publish({
+        assistantText: '',
+        activity: '',
+        busy: false,
+        applying: false,
+        status: 'idle',
+        error: undefined,
+      })
     },
   }
 }

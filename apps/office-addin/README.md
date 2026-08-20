@@ -30,7 +30,13 @@ npm install
 npm run dev -w @wiswork/office-addin
 ```
 
-The development server uses trusted local HTTPS on port 3000. Sideload `apps/office-addin/public/manifest.xml` using the normal sideload flow for your Office host, then open **WisWork Office Agent** from the task pane.
+The development server uses trusted local HTTPS on port 3000. The source `apps/office-addin/public/manifest.xml` is explicitly development-only; sideload that file for local work, then open **WisWork Office Agent** from the task pane.
+
+## Deployment build
+
+A build with all validated environment values emits `dist/manifest.xml` using the callback origin for its task pane and icon, plus exact authentication origins in `AppDomains`. It also emits both `dist/oauth/callback.html` and the exact extensionless `dist/oauth/callback`. An unconfigured build deliberately emits no deployable manifest.
+
+The deployment host must serve `/oauth/callback` as `text/html; charset=utf-8`, or rewrite that exact route (including its query string) internally to `/oauth/callback.html`. The Vite development and preview servers already perform this exact rewrite. Never redirect the callback to the `.html` URL: an HTTP redirect can propagate the authorization code in browser or intermediary history.
 
 ## Gateway prerequisites
 

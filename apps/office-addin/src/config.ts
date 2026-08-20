@@ -52,6 +52,7 @@ export function loadRuntimeConfig(
     !validUrl(values.messagesUrl, true) ||
     new URL(values.messagesUrl).href !== new URL(WISWORK_MESSAGES_URL).href ||
     !validUrl(values.callbackUrl, true) ||
+    new URL(values.callbackUrl).pathname !== '/oauth/callback' ||
     new URL(values.callbackUrl).search !== '' ||
     new URL(values.callbackUrl).hash !== ''
   ) {
