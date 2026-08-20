@@ -6,7 +6,7 @@ Implement the approved loopback pairing design so the Office add-in reuses WisWo
 
 ## Architecture and global constraints
 
-Create a framework-neutral pairing/bridge package with in-memory state and strict origin/capability boundaries, integrate it into the Electron shell through loopback HTTP plus trusted IPC approval, then replace Office browser OAuth with a pairing client and PC-backed transport. Bind only `127.0.0.1`; exact CORS/PNA; no wildcard; no credential persistence in Office; stable safe errors; bounded requests/streams; writes remain confirmation-first.
+Create a framework-neutral pairing/bridge package with in-memory state and strict origin/capability boundaries, integrate it into the Electron shell through loopback HTTP plus trusted IPC approval, then replace Office browser OAuth with a pairing client and PC-backed transport. Bind only `127.0.0.1`; use a shared explicit port pool with bounded health discovery; exact CORS/PNA; no wildcard; no credential persistence in Office; stable safe errors; bounded requests/streams; writes remain confirmation-first.
 
 ## Files and responsibilities
 
@@ -36,7 +36,7 @@ Acceptance: tests first fail then pass for PC offline, pending, rejection, expir
 
 ## Task 4 — Deployment, compatibility, and documentation
 
-Generate a manifest/config that permits only the deployed task-pane origin, fixed WisUsage origin where still needed, and the exact loopback endpoint required by the bridge. Document PC-required operation, port conflicts, origin configuration, revocation, and manual Windows/macOS acceptance.
+Generate a manifest/config that permits only the deployed task-pane origin and explicitly enumerates the configured numeric loopback port pool. PC tries the ordered pool only on `EADDRINUSE`; Office uses bounded, identity-checked health probes and retains the selected endpoint. Document PC-required operation, single-port recovery, full-pool exhaustion, origin/pool configuration, revocation, and manual Windows/macOS acceptance.
 
 Acceptance: configured/unconfigured builds fail closed appropriately; CSP/manifest contain no wildcard, placeholder, or obsolete auth callback; full root tests, typecheck, lint, formatting, build, diff checks, security searches, and manual HTTP contract probes pass. Commit as one release/readiness deliverable.
 

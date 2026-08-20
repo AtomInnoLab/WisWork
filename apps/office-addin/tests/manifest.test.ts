@@ -84,7 +84,7 @@ describe('Office Add-in manifest and routes', () => {
   it('documents the exact PC runtime environment names used by the shell', async () => {
     const readme = await readFile(resolve(import.meta.dirname, '../README.md'), 'utf8')
     expect(readme).toContain('WISWORK_OFFICE_ORIGIN=')
-    expect(readme).toContain('WISWORK_OFFICE_BRIDGE_PORT=')
+    expect(readme).toContain('WISWORK_OFFICE_BRIDGE_PORTS=')
     expect(readme).not.toContain('WISWORK_OFFICE_ALLOWED_ORIGIN')
   })
 })

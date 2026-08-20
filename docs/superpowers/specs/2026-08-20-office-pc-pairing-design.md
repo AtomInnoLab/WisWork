@@ -21,7 +21,7 @@ WisWork Office reuses the authenticated WisWork PC session and Agent transport t
 
 ## Architecture
 
-WisWork PC starts an HTTP loopback service bound only to `127.0.0.1` on a fixed configurable port. The Office task pane creates a short-lived pairing request, the PC UI approves or rejects it through internal IPC, and the task pane polls with an unguessable polling secret. Once approved, the task pane receives a short-lived opaque capability that can call only the local streaming messages endpoint. The bridge invokes the existing PC auth client's authenticated request path; credentials never cross the loopback boundary.
+WisWork PC starts an HTTP loopback service bound only to `127.0.0.1`. It tries an ordered, explicitly configured port pool and selects the first available port; the default pool contains 64 ports (`43127` first, then the remaining ports in `43120–43183`). The Office task pane discovers the selected port through bounded health probes before creating a short-lived pairing request. The PC UI approves or rejects it through internal IPC, and the task pane polls with an unguessable polling secret. Once approved, the task pane receives a short-lived opaque capability that can call only the local streaming messages endpoint. The bridge invokes the existing PC auth client's authenticated request path; credentials never cross the loopback boundary.
 
 The Office AgentLoop, Office skill, proposal preview, and confirmation boundary stay in the task pane. Only provider transport moves behind the PC bridge.
 
@@ -49,6 +49,10 @@ Requires `Authorization: Bridge <capability>`, exact allowed Origin, JSON conten
 
 The loopback server handles `OPTIONS` with an exact origin allowlist, explicit methods/headers, `Access-Control-Allow-Private-Network: true` when requested, `Vary: Origin`, and no wildcard. Requests without an allowed `Origin` fail closed except internal health diagnostics that disclose no session state.
 
+### `GET /v1/office/health`
+
+Office probes only the explicitly built-in numeric loopback endpoints, in stable bounded batches. A bridge is accepted only when it returns status 200 and the exact bounded JSON object `{ "service": "wiswork-office-bridge", "version": 1 }`. The response contains no account, session, or credential data. The selected endpoint is retained for the entire pairing and messages session.
+
 ## Security and trust boundaries
 
 - Bind to the numeric loopback address only; startup fails if binding would expose a non-loopback interface.
@@ -71,7 +75,7 @@ The loopback server handles `OPTIONS` with an exact origin allowlist, explicit m
 
 ## Failure handling
 
-- Port conflict or server startup failure is surfaced in PC diagnostics without falling back to a public bind.
+- `EADDRINUSE` advances to the next configured loopback port. Exhausting the pool or encountering any other bind error fails closed and is surfaced in PC diagnostics without falling back to a public bind.
 - Unknown origins, malformed bodies, invalid/replayed secrets, expired grants, and unsupported methods return stable status/stage-only errors.
 - Upstream 401 follows the existing PC refresh-once behavior; terminal auth loss revokes Office capabilities.
 - A disconnected stream never applies an Office proposal automatically.
@@ -85,7 +89,7 @@ The PC bridge is feature-gated and can be disabled without changing existing PC 
 - Unit tests cover origin/PNA handling, loopback-only bind configuration, expiration, replay, approval authorization, logout revocation, safe errors, and bounded proxy streaming.
 - Shell integration tests cover protocol lifecycle and internal approval IPC without opening real network listeners where avoidable.
 - Office tests cover offline/pending/rejected/approved/logout UI session transitions and verify no credential persistence.
-- Manual Windows/macOS acceptance verifies WebView fetch to loopback from the deployed HTTPS task pane, PC confirmation, streaming Agent response, credit-bearing PC identity, write confirmation, logout revocation, and port-conflict recovery.
+- Manual Windows/macOS acceptance verifies bounded WebView discovery/fetch to loopback from the deployed HTTPS task pane, PC confirmation, streaming Agent response, credit-bearing PC identity, write confirmation, logout revocation, single-port conflict recovery, and full-pool exhaustion.
 
 ## Success criteria
 

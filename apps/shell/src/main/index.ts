@@ -167,6 +167,7 @@ import {
   createOfficeMessagesProxy,
   officeBridgeEnabled,
   officeBridgePortsFromEnv,
+  officeBridgeDiagnosticForError,
   officeOriginFromEnv,
   syncOfficeBridgeAvailability,
 } from './office-bridge-runtime'
@@ -2516,8 +2517,8 @@ app.whenReady().then(async () => {
       )
       officeBridgeServer = bound.server
       officeBridgeDiagnostic = `ready:${bound.port}`
-    } catch {
-      officeBridgeDiagnostic = 'error:pool_exhausted'
+    } catch (error) {
+      officeBridgeDiagnostic = officeBridgeDiagnosticForError(error)
       initializedOfficeBridge.shutdown()
       officeBridge = null
       console.error('[office-bridge] failed to start on loopback')

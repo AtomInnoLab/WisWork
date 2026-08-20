@@ -228,9 +228,13 @@ const homeApi: HomeApi = {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.officeBridgeStatus)
     const value = String(result)
     return (
-      value === 'disabled' || value === 'error:pool_exhausted' || /^ready:\d+$/.test(value)
+      value === 'disabled' ||
+      value === 'error:pool_exhausted' ||
+      value === 'error:invalid_config' ||
+      value === 'error:bind_failed' ||
+      /^ready:\d+$/.test(value)
         ? value
-        : 'error:pool_exhausted'
+        : 'error:bind_failed'
     ) as OfficeBridgeStatus
   },
   async getAppVersion() {

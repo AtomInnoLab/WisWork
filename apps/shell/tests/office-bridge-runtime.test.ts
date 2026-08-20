@@ -12,6 +12,7 @@ import {
   officeBridgeEnabled,
   officeBridgePortsFromEnv,
   bindOfficeBridgePortPool,
+  officeBridgeDiagnosticForError,
 } from '../src/main/office-bridge-runtime'
 
 describe('Office bridge shell runtime', () => {
@@ -21,6 +22,16 @@ describe('Office bridge shell runtime', () => {
     expect(defaults[0]).toBe(43127)
     expect(() => officeBridgePortsFromEnv({ WISWORK_OFFICE_BRIDGE_PORTS: '43127,43127' })).toThrow()
     expect(() => officeBridgePortsFromEnv({ WISWORK_OFFICE_BRIDGE_PORTS: '43127,' })).toThrow()
+    expect(officeBridgePortsFromEnv({ WISWORK_OFFICE_BRIDGE_PORT: '44000' })).toEqual([44000])
+    expect(
+      officeBridgePortsFromEnv({
+        WISWORK_OFFICE_BRIDGE_PORT: '44000',
+        WISWORK_OFFICE_BRIDGE_PORTS: '45000,45001',
+      }),
+    ).toEqual([45000, 45001])
+    expect(() => officeBridgePortsFromEnv({ WISWORK_OFFICE_BRIDGE_PORT: 'invalid' })).toThrow(
+      'invalid_office_bridge_port',
+    )
     const start = vi.fn(async (port: number) => {
       if (port === 43127) throw Object.assign(new Error('busy'), { code: 'EADDRINUSE' })
       return 'server'
@@ -34,6 +45,26 @@ describe('Office bridge shell runtime', () => {
         throw Object.assign(new Error('denied'), { code: 'EACCES' })
       }),
     ).rejects.toThrow('denied')
+  })
+  it('distinguishes exhausted pools from configuration and bind failures', () => {
+    expect(
+      officeBridgeDiagnosticForError(
+        Object.assign(new Error('office_bridge_pool_exhausted'), { code: 'EADDRINUSE' }),
+      ),
+    ).toBe('error:pool_exhausted')
+    expect(officeBridgeDiagnosticForError(new Error('invalid_office_bridge_ports'))).toBe(
+      'error:invalid_config',
+    )
+    let legacyConfigError: unknown
+    try {
+      officeBridgePortsFromEnv({ WISWORK_OFFICE_BRIDGE_PORT: 'invalid' })
+    } catch (error) {
+      legacyConfigError = error
+    }
+    expect(officeBridgeDiagnosticForError(legacyConfigError)).toBe('error:invalid_config')
+    expect(
+      officeBridgeDiagnosticForError(Object.assign(new Error('denied'), { code: 'EACCES' })),
+    ).toBe('error:bind_failed')
   })
   it('is fail-closed unless explicitly enabled', () => {
     expect(officeBridgeEnabled({})).toBe(false)
