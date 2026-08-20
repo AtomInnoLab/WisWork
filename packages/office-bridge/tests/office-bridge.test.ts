@@ -237,6 +237,45 @@ describe('pairing lifecycle', () => {
     expect(await timedOut.json()).toEqual({ error: 'request_timeout' })
   })
 
+  it('reserves capacity before concurrent successful pairing bodies are read', async () => {
+    const encoder = new TextEncoder()
+    let releaseFirst!: () => void
+    const firstBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('{"host_label":"Word"}'))
+        releaseFirst = () => controller.close()
+      },
+    })
+    const bridge = createOfficeBridge({
+      allowedOrigin: origin,
+      proxy: vi.fn(),
+      maxPairings: 1,
+      maxPairingCreatesPerMinute: 1,
+    })
+    const first = bridge.handle(
+      new Request('http://127.0.0.1:43127/v1/office/pairings', {
+        method: 'POST',
+        headers: { origin, 'content-type': 'application/json' },
+        body: firstBody,
+        duplex: 'half',
+      } as RequestInit & { duplex: 'half' }),
+    )
+    const second = await bridge.handle(
+      request('/v1/office/pairings', {
+        method: 'POST',
+        headers: { origin, 'content-type': 'application/json' },
+        body: json({ host_label: 'Excel' }),
+      }),
+    )
+    releaseFirst()
+    const accepted = await first
+
+    expect(accepted.status).toBe(202)
+    expect(second.status).toBe(429)
+    expect(await second.json()).toEqual({ error: 'pairing_capacity' })
+    expect(bridge.listPending()).toHaveLength(1)
+  })
+
   it('rate-limits pairing creation and rejects unsupported methods', async () => {
     const bridge = createOfficeBridge({
       allowedOrigin: origin,

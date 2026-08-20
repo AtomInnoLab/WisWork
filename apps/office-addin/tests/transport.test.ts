@@ -1,18 +1,19 @@
 import { describe, expect, it, vi } from 'vitest'
-import { WISWORK_DEFAULT_MODEL, WISWORK_MESSAGES_URL } from '@wiswork/ai-provider'
+import { WISWORK_DEFAULT_MODEL } from '@wiswork/ai-provider'
 import {
   MAX_COMPLETED_TOOL_CALLS,
   MAX_REQUEST_BODY_LENGTH,
   MAX_STREAM_TEXT_LENGTH,
   MAX_STREAM_TOOL_INPUT_LENGTH,
   STREAM_RESPONSE_TIMEOUT_MS,
-  createOfficeAgentTransport,
   createPcBridgeAgentTransport,
 } from '../src/agent/transport.js'
-import type { BrowserAuth } from '../src/auth/browser-auth.js'
-import type { RuntimeConfig } from '../src/config.js'
 
-const config = { messagesUrl: WISWORK_MESSAGES_URL } as RuntimeConfig
+interface TestBridge {
+  authenticatedFetch: (path: string, init: RequestInit) => Promise<Response>
+}
+
+const createTestTransport = (bridge: TestBridge) => createPcBridgeAgentTransport(bridge as never)
 
 function sse(lines: string[]): Response {
   return new Response(`${lines.join('\n')}\n`, {
@@ -47,30 +48,22 @@ describe('Office Agent transport', () => {
     const headers = new Headers(authenticatedFetch.mock.calls[0]![1].headers)
     expect(headers.has('authorization')).toBe(false)
   })
-  it('uses the trusted endpoint and fixed model/region', async () => {
+  it('uses the fixed provider model through the PC bridge', async () => {
     const authenticatedFetch = vi.fn().mockResolvedValue(sse([]))
-    const auth = { authenticatedFetch } as unknown as BrowserAuth
+    const auth = { authenticatedFetch }
     const cb = callbacks()
-    createOfficeAgentTransport(config, auth).stream(
+    createTestTransport(auth).stream(
       { system: 'sys', messages: [{ role: 'user', text: 'hi' }], tools: [] },
       cb,
     )
     await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
     expect(authenticatedFetch).toHaveBeenCalledWith(
-      WISWORK_MESSAGES_URL,
+      '/v1/office/messages',
       expect.objectContaining({ method: 'POST', signal: expect.any(AbortSignal) }),
     )
     const init = authenticatedFetch.mock.calls[0]![1] as RequestInit
-    expect(new Headers(init.headers).get('x-req-location')).toBe('sg')
+    expect(new Headers(init.headers).has('authorization')).toBe(false)
     expect(JSON.parse(init.body as string)).toMatchObject({ model: WISWORK_DEFAULT_MODEL })
-  })
-
-  it('fails closed when runtime configuration does not normalize to the trusted endpoint', () => {
-    const auth = { authenticatedFetch: vi.fn() } as unknown as BrowserAuth
-    expect(() =>
-      createOfficeAgentTransport({ ...config, messagesUrl: 'https://evil.test/v1/messages' }, auth),
-    ).toThrow('transport_unavailable')
-    expect(auth.authenticatedFetch).not.toHaveBeenCalled()
   })
 
   it('normalizes text, tool calls, and stop reasons', async () => {
@@ -86,9 +79,9 @@ describe('Office Agent transport', () => {
             'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}',
           ]),
         ),
-    } as unknown as BrowserAuth
+    } as TestBridge
     const cb = callbacks()
-    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    createTestTransport(auth).stream({ system: '', messages: [], tools: [] }, cb)
     await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
     expect(cb.onDelta).toHaveBeenCalledWith('hello')
     expect(cb.onToolCall).toHaveBeenCalledWith({ id: 'c1', name: 'read_selection', input: {} })
@@ -99,12 +92,9 @@ describe('Office Agent transport', () => {
   it('cancels and completes exactly once without surfacing an abort error', async () => {
     const auth = {
       authenticatedFetch: vi.fn(() => new Promise<Response>(() => undefined)),
-    } as unknown as BrowserAuth
+    } as TestBridge
     const cb = callbacks()
-    const handle = createOfficeAgentTransport(config, auth).stream(
-      { system: '', messages: [], tools: [] },
-      cb,
-    )
+    const handle = createTestTransport(auth).stream({ system: '', messages: [], tools: [] }, cb)
     handle.cancel()
     handle.cancel()
     await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
@@ -115,9 +105,9 @@ describe('Office Agent transport', () => {
     const secret = 'upstream-secret-body'
     const auth = {
       authenticatedFetch: vi.fn().mockResolvedValue(new Response(secret, { status: 502 })),
-    } as unknown as BrowserAuth
+    } as TestBridge
     const cb = callbacks()
-    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    createTestTransport(auth).stream({ system: '', messages: [], tools: [] }, cb)
     await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
     expect(cb.onError).toHaveBeenCalledWith('transport_http_502')
     expect(cb.onError.mock.calls.flat().join(' ')).not.toContain(secret)
@@ -126,9 +116,9 @@ describe('Office Agent transport', () => {
   it('does not forward arbitrary exception codes', async () => {
     const auth = {
       authenticatedFetch: vi.fn().mockRejectedValue({ code: 'private_secret_detail' }),
-    } as unknown as BrowserAuth
+    } as TestBridge
     const cb = callbacks()
-    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    createTestTransport(auth).stream({ system: '', messages: [], tools: [] }, cb)
     await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
     expect(cb.onError).toHaveBeenCalledWith('transport_network')
   })
@@ -136,9 +126,9 @@ describe('Office Agent transport', () => {
   it('does not trust transport-prefixed exception messages from dependencies', async () => {
     const auth = {
       authenticatedFetch: vi.fn().mockRejectedValue(new Error('transport_token_private-secret')),
-    } as unknown as BrowserAuth
+    } as TestBridge
     const cb = callbacks()
-    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    createTestTransport(auth).stream({ system: '', messages: [], tools: [] }, cb)
     await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
     expect(cb.onError).toHaveBeenCalledWith('transport_network')
   })
@@ -159,9 +149,9 @@ describe('Office Agent transport', () => {
             ...deltas,
           ]),
         ),
-    } as unknown as BrowserAuth
+    } as TestBridge
     const cb = callbacks()
-    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    createTestTransport(auth).stream({ system: '', messages: [], tools: [] }, cb)
     await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
     expect(cb.onError).toHaveBeenCalledWith('transport_tool_input_too_large')
     expect(cb.onToolCall).not.toHaveBeenCalled()
@@ -172,17 +162,17 @@ describe('Office Agent transport', () => {
       authenticatedFetch: vi
         .fn()
         .mockResolvedValue(new Response(`data: ${'x'.repeat(70 * 1024)}`, { status: 200 })),
-    } as unknown as BrowserAuth
+    } as TestBridge
     const cb = callbacks()
-    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    createTestTransport(auth).stream({ system: '', messages: [], tools: [] }, cb)
     await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
     expect(cb.onError).toHaveBeenCalledWith('transport_stream_too_large')
   })
 
   it('rejects an oversized outbound request before authenticated network I/O', async () => {
-    const auth = { authenticatedFetch: vi.fn() } as unknown as BrowserAuth
+    const auth = { authenticatedFetch: vi.fn() } as TestBridge
     const cb = callbacks()
-    createOfficeAgentTransport(config, auth).stream(
+    createTestTransport(auth).stream(
       { system: 'x'.repeat(MAX_REQUEST_BODY_LENGTH + 1), messages: [], tools: [] },
       cb,
     )
@@ -205,9 +195,9 @@ describe('Office Agent transport', () => {
             ),
           ),
         ),
-    } as unknown as BrowserAuth
+    } as TestBridge
     const cb = callbacks()
-    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    createTestTransport(auth).stream({ system: '', messages: [], tools: [] }, cb)
     await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
     expect(cb.onError).toHaveBeenCalledWith('transport_stream_budget_exceeded')
     expect(cb.onDelta).toHaveBeenCalledTimes(MAX_STREAM_TEXT_LENGTH / fragment.length)
@@ -220,9 +210,9 @@ describe('Office Agent transport', () => {
     ]).flat()
     const auth = {
       authenticatedFetch: vi.fn().mockResolvedValue(sse(lines)),
-    } as unknown as BrowserAuth
+    } as TestBridge
     const cb = callbacks()
-    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    createTestTransport(auth).stream({ system: '', messages: [], tools: [] }, cb)
     await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
     expect(cb.onError).toHaveBeenCalledWith('transport_stream_budget_exceeded')
     expect(cb.onToolCall).toHaveBeenCalledTimes(MAX_COMPLETED_TOOL_CALLS)
@@ -234,9 +224,9 @@ describe('Office Agent transport', () => {
     const hanging = new ReadableStream<Uint8Array>({ cancel })
     const auth = {
       authenticatedFetch: vi.fn().mockResolvedValue(new Response(hanging, { status: 200 })),
-    } as unknown as BrowserAuth
+    } as TestBridge
     const cb = callbacks()
-    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    createTestTransport(auth).stream({ system: '', messages: [], tools: [] }, cb)
     await vi.advanceTimersByTimeAsync(STREAM_RESPONSE_TIMEOUT_MS)
     expect(cb.onError).toHaveBeenCalledWith('transport_timeout')
     expect(cb.onDone).toHaveBeenCalledOnce()
@@ -251,9 +241,9 @@ describe('Office Agent transport', () => {
     })
     const auth = {
       authenticatedFetch: vi.fn().mockResolvedValue(new Response(hanging, { status: 200 })),
-    } as unknown as BrowserAuth
+    } as TestBridge
     const cb = callbacks()
-    createOfficeAgentTransport(config, auth).stream({ system: '', messages: [], tools: [] }, cb)
+    createTestTransport(auth).stream({ system: '', messages: [], tools: [] }, cb)
     await vi.advanceTimersByTimeAsync(STREAM_RESPONSE_TIMEOUT_MS)
     expect(cb.onError).toHaveBeenCalledWith('transport_timeout')
     expect(cb.onDone).toHaveBeenCalledOnce()

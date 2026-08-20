@@ -1,4 +1,4 @@
-import { access, readFile } from 'node:fs/promises'
+import { access, readFile, readdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { build } from 'vite'
 import { beforeAll, describe, expect, it } from 'vitest'
@@ -29,6 +29,15 @@ describe('configured Office build output', () => {
     expect(manifest).not.toContain('auth.example')
     expect(manifest).not.toContain('localhost')
     expect(manifest).not.toContain('*')
+  })
+
+  it('emits one task pane with an exact loopback-only connect policy and no legacy auth assets', async () => {
+    const taskpane = await readFile(resolve(dist, 'taskpane.html'), 'utf8')
+    const files = await readdir(dist, { recursive: true })
+    expect(taskpane).toContain("connect-src 'self' http://127.0.0.1:43127")
+    expect(taskpane).not.toMatch(/oauth|callback|auth\.dev|wisusage/i)
+    expect(files).not.toContain('oauth')
+    expect(files.some((file) => file.endsWith('.map'))).toBe(false)
   })
 
   it('omits a deployable manifest from an unconfigured build', async () => {

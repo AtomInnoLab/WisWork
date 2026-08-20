@@ -262,8 +262,8 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
     }
     createTimes = createTimes.filter((entry) => timestamp - entry < 60_000)
     if (
-      createTimes.length >= maxCreatesPerMinute ||
-      pairings.size >= maxPairings ||
+      createTimes.length + activePairingCreates >= maxCreatesPerMinute ||
+      pairings.size + activePairingCreates >= maxPairings ||
       activePairingCreates >= maxConcurrentPairingCreates
     ) {
       return jsonResponse(429, { error: 'pairing_capacity' }, options.allowedOrigin)

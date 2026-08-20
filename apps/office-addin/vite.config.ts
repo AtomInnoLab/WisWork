@@ -35,7 +35,7 @@ export default defineConfig(async ({ command, mode }) => {
     transformIndexHtml(html) {
       return html.replaceAll('__WISWORK_CONNECT_ORIGINS__', allowedConnectOrigins)
     },
-    generateBundle(_options, bundle) {
+    generateBundle() {
       if (deployment) {
         this.emitFile({
           type: 'asset',
@@ -54,7 +54,7 @@ export default defineConfig(async ({ command, mode }) => {
     build: {
       outDir: resolve(here, 'dist'),
       emptyOutDir: true,
-      sourcemap: true,
+      sourcemap: false,
       rollupOptions: {
         input: {
           taskpane: resolve(here, 'src/taskpane.html'),

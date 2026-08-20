@@ -1,74 +1,69 @@
 # WisWork Office Agent
 
-An Office.js task-pane MVP for Word, Excel, and PowerPoint. It connects the shared WisWork `AgentLoop` to the current text selection. The Agent can read immediately, but replacement and append operations are only proposals until the user explicitly confirms a before/after preview.
+An Office.js task pane for Word, Excel, and PowerPoint. It reuses the signed-in WisWork PC account and Agent transport through a consented local bridge. Wispaper credentials remain in the PC process; the task pane keeps only a short-lived bridge capability in memory. Document writes still require an explicit before/after confirmation.
 
-This is an integration scaffold, not a claim that the production Gateway is enabled.
+## Start WisWork PC
 
-## Configure local development
+The Office bridge is disabled by default. Start the PC app with an exact HTTPS add-in origin:
 
-Create an untracked `apps/office-addin/.env.development.local` with non-secret browser configuration:
-
-```dotenv
-VITE_WISWORK_AUTHORIZATION_URL=https://YOUR_AUTH_HOST/oauth/authorize
-VITE_WISWORK_TOKEN_URL=https://YOUR_AUTH_HOST/oauth/token
-VITE_WISWORK_CALLBACK_URL=https://localhost:3000/oauth/callback
-VITE_WISWORK_CLIENT_ID=YOUR_PUBLIC_OFFICE_CLIENT_ID
-VITE_WISWORK_ISSUER=https://YOUR_AUTH_HOST
-VITE_WISWORK_MESSAGES_URL=https://wisusage.dev.atominnolab.com/v1/messages
+```bash
+WISWORK_OFFICE_BRIDGE_ENABLED=1 \
+WISWORK_OFFICE_ALLOWED_ORIGIN=https://office.example \
+WISWORK_OFFICE_BRIDGE_PORT=43127 \
+npm run dev -w @wiswork/shell
 ```
 
-Do not put client secrets, access tokens, refresh tokens, authorization codes, or PKCE verifiers in environment files. The add-in keeps access and refresh tokens in memory. Only one-time PKCE state and verifier values use `sessionStorage` while a login dialog is in progress.
+`WISWORK_OFFICE_ALLOWED_ORIGIN` must exactly match the deployed task-pane origin. The port defaults to `43127`; changing it requires rebuilding the add-in because its endpoint and CSP are deliberately fixed. The bridge binds only `127.0.0.1` and never exposes PC access or refresh tokens.
 
-Missing or invalid values render an unavailable screen and disable login/chat. The messages URL must also match the fixed WisWork provider endpoint enforced by the transport.
-
-## Run and sideload
+## Develop and sideload
 
 From the repository root:
 
 ```bash
 npm install
-npm run dev -w @wiswork/office-addin
+npm run dev:office
 ```
 
-The development server uses trusted local HTTPS on port 3000. The source `apps/office-addin/public/manifest.xml` is explicitly development-only; sideload that file for local work, then open **WisWork Office Agent** from the task pane.
+The development server uses trusted local HTTPS on port 3000. Start the PC bridge with `WISWORK_OFFICE_ALLOWED_ORIGIN=https://localhost:3000`, sideload `apps/office-addin/public/manifest.xml`, and open **WisWork Office Agent**. Click **Connect to WisWork PC**, then approve the request in the PC app.
 
 ## Deployment build
 
-A build with all validated environment values emits `dist/manifest.xml` using the callback origin for its task pane and icon, plus exact authentication origins in `AppDomains`. It also emits both `dist/oauth/callback.html` and the exact extensionless `dist/oauth/callback`. An unconfigured build deliberately emits no deployable manifest.
+Only the public add-in origin is build configuration:
 
-The deployment host must serve `/oauth/callback` as `text/html; charset=utf-8`, or rewrite that exact route (including its query string) internally to `/oauth/callback.html`. The Vite development and preview servers already perform this exact rewrite. Never redirect the callback to the `.html` URL: an HTTP redirect can propagate the authorization code in browser or intermediary history.
+```bash
+VITE_WISWORK_ADDIN_ORIGIN=https://office.example npm run build -w @wiswork/office-addin
+```
 
-Sign-in navigates the task pane's own Office WebView to Wispaper. After Wispaper redirects to `/oauth/callback`, the task-pane application reloads in that same WebView, exchanges the code, scrubs the callback URL, and shows the Agent conversation. The exchange still requires an exact callback URL, matching OAuth state, issuer validation, and PKCE.
+A valid configured build emits `dist/manifest.xml`. An unconfigured or invalid build emits no deployable manifest. The generated manifest contains only the exact add-in HTTPS origin; task-pane CSP permits connections only to itself and `http://127.0.0.1:43127`. There are no OAuth callback pages, auth domains, direct WisUsage connection, wildcard origins, or source maps in the deployment output.
 
-## Gateway prerequisites
+## Operational behavior
 
-Before end-to-end login can work, the Gateway operator must:
+- **PC offline:** Office shows **Open WisWork PC** and can retry after the app starts.
+- **PC signed out:** approval is refused; sign in through the existing WisWork PC flow first.
+- **Approval:** every new task-pane session requires visible approval in WisWork PC.
+- **Revocation:** Office logout/disconnect drops the in-memory capability. PC logout, bridge shutdown, or PC restart revokes every pairing and active stream.
+- **Port conflict:** the PC app reports bridge startup failure and does not fall back to another address or public bind. Stop the conflicting process or deliberately configure the same new port in both PC and a rebuilt add-in.
+- **Rollback:** unset `WISWORK_OFFICE_BRIDGE_ENABLED` (or set it to `0`) and deploy the prior add-in build. Restarting WisWork PC clears all in-memory grants; no data migration is required.
 
-- register the exact callback `https://localhost:3000/oauth/callback` for the public Office client;
-- require PKCE S256 and one-time authorization codes;
-- permit the local task-pane origin through an explicit CORS allowlist;
-- support the documented refresh-token exchange without a browser client secret;
-- return safe OAuth errors without upstream bodies or credentials; and
-- expose the fixed WisUsage streaming messages contract expected by `@wiswork/ai-provider`.
+## Manual Windows/macOS acceptance
 
-## Manual acceptance checklist
+Private Network Access and Office WebView behavior must be checked on both supported desktop platforms before release:
 
-Do not mark real Gateway acceptance complete until the prerequisites above are confirmed.
-
-1. Start with no configuration and verify the task pane shows **Agent unavailable**, with no prompt or login controls.
-2. Configure the registered development client, sideload the manifest, and verify Wispaper login returns through `/oauth/callback`, closes the dialog, and reveals the Agent conversation in the task pane.
-3. Select text and ask the Agent to summarize or improve it. Verify streamed text and tool activity appear and **Stop** cancels an active run.
-4. Ask for a replacement. Verify the document does not change when the proposal appears, and the preview clearly shows Before and After.
-5. Click **Reject** and verify the document remains unchanged.
-6. Request another edit, change the Office selection before confirmation, and verify confirmation reports `proposal_stale` without writing.
-7. Request again and click **Confirm change** without changing the selection; verify exactly one replacement or append occurs.
-8. Start a new instruction while a proposal is pending and verify the old proposal disappears. Log out and verify conversation and pending proposal are cleared.
-9. Inspect browser storage and logs: tokens must not be persisted or printed; only in-progress PKCE state may briefly exist in session storage.
+1. Start WisWork PC signed in with the bridge environment above; sideload the configured manifest in Word, Excel, and PowerPoint.
+2. Confirm the HTTPS task pane can preflight and fetch `http://127.0.0.1:43127`, including `Access-Control-Allow-Private-Network: true` where the WebView requests it.
+3. Connect, approve in PC, and verify the Agent conversation appears and streams using the same Wispaper account and credits as PC.
+4. Verify Reject never changes the document, stale proposals fail, and Confirm applies exactly one replacement or append.
+5. Log out of WisWork PC during an active stream. Verify the stream stops, Office clears conversation/proposals, and reconnect requires a new approval.
+6. Stop WisWork PC and verify Office returns to its offline state without retaining a capability. Restart and reconnect.
+7. Occupy port `43127`; verify PC reports the conflict and never listens publicly. Release the port and restart successfully.
+8. Inspect Office storage, logs, and network responses: no Wispaper access token, refresh token, authorization code, or upstream secret may appear.
 
 ## Checks
 
 ```bash
+npm run test -w @wiswork/office-bridge
 npm run test -w @wiswork/office-addin
+npm run typecheck -w @wiswork/office-bridge
 npm run typecheck -w @wiswork/office-addin
-npm run build -w @wiswork/office-addin
+VITE_WISWORK_ADDIN_ORIGIN=https://office.example npm run build -w @wiswork/office-addin
 ```
