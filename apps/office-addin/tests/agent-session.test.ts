@@ -1,6 +1,6 @@
 import type { AgentStreamCallbacks, AgentTransport } from '@wiswork/agent-core'
 import { describe, expect, it, vi } from 'vitest'
-import { createOfficeAgentSession } from '../src/agent/use-office-agent.js'
+import { bindAuthLoss, createOfficeAgentSession } from '../src/agent/use-office-agent.js'
 
 function transportHarness() {
   let callbacks: AgentStreamCallbacks | undefined
@@ -186,5 +186,38 @@ describe('Office agent session', () => {
     harness.callbacks().onDone()
     await session.confirm('p1')
     expect(proposals.controller.confirm).toHaveBeenCalledOnce()
+  })
+
+  it('atomically resets history and proposals when authentication is lost', async () => {
+    const harness = transportHarness()
+    const proposals = proposalsHarness()
+    proposals.setPending()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposals.controller,
+    })
+    let authLoss: (() => void) | undefined
+    const signedOut = vi.fn()
+    const disconnect = bindAuthLoss(
+      { subscribeAuthLoss: (listener) => ((authLoss = listener), () => (authLoss = undefined)) },
+      session,
+      signedOut,
+    )
+
+    session.send('active request')
+    await Promise.resolve()
+    authLoss?.()
+
+    expect(harness.cancel).toHaveBeenCalledOnce()
+    expect(proposals.controller.logout).toHaveBeenCalledOnce()
+    expect(session.snapshot()).toMatchObject({
+      busy: false,
+      proposal: undefined,
+      assistantText: '',
+    })
+    expect(signedOut).toHaveBeenCalledOnce()
+    disconnect()
+    expect(authLoss).toBeUndefined()
   })
 })

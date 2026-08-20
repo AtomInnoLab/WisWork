@@ -4,6 +4,7 @@ import { createProposalController } from './agent/proposal-controller.js'
 import { createOfficeAgentTransport } from './agent/transport.js'
 import {
   createOfficeAgentSession,
+  bindAuthLoss,
   useOfficeAgent,
   type OfficeAgentSession,
 } from './agent/use-office-agent.js'
@@ -32,9 +33,8 @@ function AgentWorkspace(props: {
   session: OfficeAgentSession
   auth: BrowserAuth
   host: OfficeHost
-  onLogout(): void
 }) {
-  const { session, auth, host, onLogout } = props
+  const { session, auth, host } = props
   const state = useOfficeAgent(session)
   const [instruction, setInstruction] = useState('')
 
@@ -64,9 +64,7 @@ function AgentWorkspace(props: {
           className="quiet"
           disabled={state.applying}
           onClick={() => {
-            session.logout()
             auth.logout()
-            onLogout()
           }}
         >
           Log out
@@ -185,9 +183,14 @@ function ConfiguredApp({ config }: { config: RuntimeConfig }) {
     [auth, config, document, proposals],
   )
   const [host, setHost] = useState<OfficeHost>('unknown')
+  const [hostSupported, setHostSupported] = useState(false)
   const [signedIn, setSignedIn] = useState(auth.isAuthenticated())
   const [status, setStatus] = useState('Connecting to Office…')
   const [busy, setBusy] = useState(true)
+
+  useEffect(() => {
+    return bindAuthLoss(auth, session, () => setSignedIn(false))
+  }, [auth, session])
 
   useEffect(() => {
     let active = true
@@ -205,7 +208,12 @@ function ConfiguredApp({ config }: { config: RuntimeConfig }) {
         const activeHost = await document.initialize()
         if (active) {
           setHost(activeHost)
-          setStatus(`${hostLabels[activeHost]} is ready`)
+          setHostSupported(activeHost !== 'unknown')
+          setStatus(
+            activeHost === 'unknown'
+              ? 'office_host_unsupported'
+              : `${hostLabels[activeHost]} is ready`,
+          )
         }
       } catch (error) {
         if (active) setStatus(safeAuthError(error))
@@ -219,6 +227,11 @@ function ConfiguredApp({ config }: { config: RuntimeConfig }) {
   }, [auth, config.callbackUrl, document])
 
   if (busy) return <StatusScreen title="Starting WisWork Agent" detail={status} busy />
+  if (!hostSupported) {
+    return (
+      <StatusScreen title="Unsupported Office host" detail="This host cannot use document tools." />
+    )
+  }
   if (!signedIn) {
     return (
       <StatusScreen title="WisWork Agent for Office" detail={status}>
@@ -240,9 +253,7 @@ function ConfiguredApp({ config }: { config: RuntimeConfig }) {
       </StatusScreen>
     )
   }
-  return (
-    <AgentWorkspace session={session} auth={auth} host={host} onLogout={() => setSignedIn(false)} />
-  )
+  return <AgentWorkspace session={session} auth={auth} host={host} />
 }
 
 function StatusScreen(props: {

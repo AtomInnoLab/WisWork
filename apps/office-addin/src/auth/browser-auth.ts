@@ -35,6 +35,7 @@ export interface BrowserAuth {
   consumeCallback(callbackUrl: string): Promise<void>
   authenticatedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>
   isAuthenticated(): boolean
+  subscribeAuthLoss(listener: () => void): () => void
   logout(): void
 }
 
@@ -88,6 +89,7 @@ export function createBrowserAuth(
   let session: TokenSession | undefined
   let sessionGeneration = 0
   let refreshFlight: { generation: number; promise: Promise<void> } | undefined
+  const authLossListeners = new Set<() => void>()
 
   function clearPkce(): void {
     storage.removeItem(STATE_KEY)
@@ -95,9 +97,11 @@ export function createBrowserAuth(
   }
 
   function logout(): void {
+    const wasAuthenticated = session !== undefined
     session = undefined
     sessionGeneration += 1
     clearPkce()
+    if (wasAuthenticated) authLossListeners.forEach((listener) => listener())
   }
 
   async function exchange(body: URLSearchParams, errorCode: BrowserAuthErrorCode) {
@@ -105,6 +109,7 @@ export function createBrowserAuth(
     try {
       response = await fetchImplementation(config.tokenUrl, {
         method: 'POST',
+        redirect: 'error',
         headers: new Headers({ 'content-type': 'application/x-www-form-urlencoded' }),
         body,
       })
@@ -250,6 +255,11 @@ export function createBrowserAuth(
 
     isAuthenticated() {
       return session !== undefined
+    },
+
+    subscribeAuthLoss(listener) {
+      authLossListeners.add(listener)
+      return () => authLossListeners.delete(listener)
     },
 
     logout,

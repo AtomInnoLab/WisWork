@@ -68,6 +68,7 @@ describe('browser OAuth', () => {
     expect(auth.isAuthenticated()).toBe(true)
     expect(storage.length).toBe(0)
     const body = new URLSearchParams(fetch.mock.calls[0][1].body)
+    expect(fetch.mock.calls[0][1].redirect).toBe('error')
     expect(body.get('code')).toBe('one-time-code')
     expect(body.get('code_verifier')).toBeTruthy()
     expect(body.get('client_secret')).toBeNull()
@@ -123,6 +124,7 @@ describe('browser OAuth', () => {
     expect(response.status).toBe(200)
     expect(fetch).toHaveBeenCalledTimes(4)
     expect(fetch.mock.calls[1][1].headers.get('authorization')).toBe('Bearer access-secret')
+    expect(fetch.mock.calls[2][1].redirect).toBe('error')
     expect(fetch.mock.calls[3][1].headers.get('authorization')).toBe('Bearer new-access')
   })
 
@@ -233,6 +235,8 @@ describe('browser OAuth', () => {
       .mockResolvedValueOnce(tokenResponse('new-access', 'new-refresh'))
       .mockResolvedValueOnce(new Response('second upstream secret', { status: 401 }))
     const auth = createBrowserAuth(config, { storage, fetch })
+    const authLost = vi.fn()
+    auth.subscribeAuthLoss(authLost)
     const start = new URL(await auth.startAuthorization())
     await auth.consumeCallback(
       `${config.callbackUrl}?code=a&state=${start.searchParams.get('state')}`,
@@ -242,7 +246,20 @@ describe('browser OAuth', () => {
       new BrowserAuthError('unauthorized'),
     )
     expect(auth.isAuthenticated()).toBe(false)
+    expect(authLost).toHaveBeenCalledOnce()
     expect(fetch).toHaveBeenCalledTimes(4)
+  })
+
+  it('does not follow token endpoint redirects with OAuth request bodies', async () => {
+    const storage = new MemoryStorage()
+    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 307 }))
+    const auth = createBrowserAuth(config, { storage, fetch })
+    const start = new URL(await auth.startAuthorization())
+
+    await expect(
+      auth.consumeCallback(`${config.callbackUrl}?code=a&state=${start.searchParams.get('state')}`),
+    ).rejects.toEqual(new BrowserAuthError('token_exchange_failed'))
+    expect(fetch.mock.calls[0][1].redirect).toBe('error')
   })
 
   it('uses safe stable errors without exposing token endpoint bodies', async () => {
@@ -287,11 +304,23 @@ describe('browser OAuth', () => {
 
   it('clears all session material on logout', async () => {
     const storage = new MemoryStorage()
-    const auth = createBrowserAuth(config, { storage, fetch: vi.fn() })
-    await auth.startAuthorization()
+    const auth = createBrowserAuth(config, {
+      storage,
+      fetch: vi.fn().mockResolvedValue(tokenResponse()),
+    })
+    const lost = vi.fn()
+    const unsubscribe = auth.subscribeAuthLoss(lost)
+    const start = new URL(await auth.startAuthorization())
+    await auth.consumeCallback(
+      `${config.callbackUrl}?code=a&state=${start.searchParams.get('state')}`,
+    )
 
     auth.logout()
     expect(storage.length).toBe(0)
     expect(auth.isAuthenticated()).toBe(false)
+    expect(lost).toHaveBeenCalledOnce()
+    unsubscribe()
+    auth.logout()
+    expect(lost).toHaveBeenCalledOnce()
   })
 })

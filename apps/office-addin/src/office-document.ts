@@ -48,13 +48,20 @@ function officeError(result: OfficeAsyncResult): Error {
 }
 
 export function createOfficeDocumentClient(runtime: OfficeRuntime): OfficeDocumentClient {
+  let hostStatus: 'unchecked' | 'supported' | 'unsupported' = 'unchecked'
+  const unsupportedHost = () =>
+    hostStatus === 'unsupported' ? new Error('office_host_unsupported') : undefined
   return {
     async initialize() {
       const info = await runtime.ready()
-      return normalizeOfficeHost(info.host)
+      const host = normalizeOfficeHost(info.host)
+      hostStatus = host === 'unknown' ? 'unsupported' : 'supported'
+      return host
     },
 
     readSelection() {
+      const unsupported = unsupportedHost()
+      if (unsupported) return Promise.reject(unsupported)
       return new Promise((resolve, reject) => {
         runtime.context.document.getSelectedDataAsync('text', (result) => {
           if (result.status === 'failed') {
@@ -67,6 +74,8 @@ export function createOfficeDocumentClient(runtime: OfficeRuntime): OfficeDocume
     },
 
     replaceSelection(value) {
+      const unsupported = unsupportedHost()
+      if (unsupported) return Promise.reject(unsupported)
       return new Promise((resolve, reject) => {
         runtime.context.document.setSelectedDataAsync(value, { coercionType: 'text' }, (result) => {
           if (result.status === 'failed') {
@@ -79,6 +88,8 @@ export function createOfficeDocumentClient(runtime: OfficeRuntime): OfficeDocume
     },
 
     appendText(selection, value) {
+      const unsupported = unsupportedHost()
+      if (unsupported) return Promise.reject(unsupported)
       return new Promise((resolve, reject) => {
         runtime.context.document.setSelectedDataAsync(
           `${selection}${value}`,

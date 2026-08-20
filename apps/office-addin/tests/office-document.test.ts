@@ -40,6 +40,18 @@ describe('OfficeDocumentClient', () => {
     expect(runtime.ready).toHaveBeenCalledOnce()
   })
 
+  it('fails closed for an unsupported Office host', async () => {
+    const runtime = runtimeWith({ status: 'succeeded', value: 'secret' })
+    runtime.ready = vi.fn().mockResolvedValue({ host: 'Outlook' })
+    const client = createOfficeDocumentClient(runtime)
+
+    await expect(client.initialize()).resolves.toBe('unknown')
+    await expect(client.readSelection()).rejects.toThrow('office_host_unsupported')
+    await expect(client.replaceSelection('write')).rejects.toThrow('office_host_unsupported')
+    expect(runtime.context.document.getSelectedDataAsync).not.toHaveBeenCalled()
+    expect(runtime.context.document.setSelectedDataAsync).not.toHaveBeenCalled()
+  })
+
   it('reads the selected text through the shared Office document API', async () => {
     const runtime = runtimeWith({ status: 'succeeded', value: 'Selected text' })
 

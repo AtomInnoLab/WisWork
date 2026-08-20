@@ -68,6 +68,7 @@ export function renderDeploymentManifest(template: string, config: DeploymentCon
       config.authorizationOrigin,
       config.tokenOrigin,
       config.issuerOrigin,
+      new URL(FIXED_MESSAGES_URL).origin,
     ]),
   ]
     .map((origin) => `    <AppDomain>${origin}</AppDomain>`)
@@ -78,7 +79,10 @@ export function renderDeploymentManifest(template: string, config: DeploymentCon
       '',
     )
     .replaceAll('https://localhost:3000', config.addinOrigin)
-    .replace(/  <AppDomains>[\s\S]*?<\/AppDomains>/, `  <AppDomains>\n${domains}\n  </AppDomains>`)
+    .replace(
+      / {2}<AppDomains>[\s\S]*?<\/AppDomains>/,
+      `  <AppDomains>\n${domains}\n  </AppDomains>`,
+    )
 }
 
 export function rewriteOAuthCallbackRequest(requestUrl: string | undefined): string | undefined {

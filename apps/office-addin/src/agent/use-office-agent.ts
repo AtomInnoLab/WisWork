@@ -22,6 +22,7 @@ export interface OfficeAgentSession {
   confirm(id: string): Promise<void>
   reject(): void
   logout(): void
+  authenticationLost(): void
 }
 
 const safeConfirmationError = (error: unknown): string =>
@@ -122,7 +123,30 @@ export function createOfficeAgentSession(dependencies: {
         error: undefined,
       })
     },
+    authenticationLost() {
+      loop.reset()
+      proposals.logout()
+      publish({
+        assistantText: '',
+        activity: '',
+        busy: false,
+        applying: false,
+        status: 'idle',
+        error: undefined,
+      })
+    },
   }
+}
+
+export function bindAuthLoss(
+  auth: { subscribeAuthLoss(listener: () => void): () => void },
+  session: OfficeAgentSession,
+  signedOut: () => void,
+): () => void {
+  return auth.subscribeAuthLoss(() => {
+    session.authenticationLost()
+    signedOut()
+  })
 }
 
 export function useOfficeAgent(session: OfficeAgentSession): OfficeAgentSnapshot {
