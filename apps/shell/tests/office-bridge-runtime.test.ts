@@ -7,9 +7,15 @@ import {
   officeBridgePortFromEnv,
   runOfficeBridgeLifecycle,
   validAccountStatusOrRevoke,
+  officeBridgeEnabled,
 } from '../src/main/office-bridge-runtime'
 
 describe('Office bridge shell runtime', () => {
+  it('is fail-closed unless explicitly enabled', () => {
+    expect(officeBridgeEnabled({})).toBe(false)
+    expect(officeBridgeEnabled({ WISWORK_OFFICE_BRIDGE_ENABLED: '0' })).toBe(false)
+    expect(officeBridgeEnabled({ WISWORK_OFFICE_BRIDGE_ENABLED: '1' })).toBe(true)
+  })
   it('uses a validated fixed configurable port', () => {
     expect(officeBridgePortFromEnv({})).toBe(43127)
     expect(officeBridgePortFromEnv({ WISWORK_OFFICE_BRIDGE_PORT: '44000' })).toBe(44000)

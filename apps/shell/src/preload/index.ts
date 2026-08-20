@@ -198,6 +198,19 @@ const homeApi: HomeApi = {
     ipcRenderer.on(OFFICE_PAIRING_CHANNELS.requested, listener)
     return () => ipcRenderer.removeListener(OFFICE_PAIRING_CHANNELS.requested, listener)
   },
+  async listOfficePairings() {
+    const result: unknown = await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.list)
+    if (!Array.isArray(result)) return []
+    return result.filter((value): value is OfficePairingRequest => {
+      if (!value || typeof value !== 'object') return false
+      const pairing = value as Partial<OfficePairingRequest>
+      return (
+        typeof pairing.pairingId === 'string' &&
+        ['Word', 'Excel', 'PowerPoint'].includes(pairing.hostLabel ?? '') &&
+        typeof pairing.origin === 'string'
+      )
+    })
+  },
   async approveOfficePairing(pairingId) {
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(pairingId)) throw new Error('Invalid pairing ID.')
     return (await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.approve, { pairingId })) === true

@@ -125,6 +125,7 @@ export interface HomeApi {
   accountLogout(): Promise<void>
   /** Observe explicit Office connection requests awaiting approval on this PC. */
   onOfficePairingRequested(handler: (pairing: OfficePairingRequest) => void): () => void
+  listOfficePairings(): Promise<OfficePairingRequest[]>
   approveOfficePairing(pairingId: string): Promise<boolean>
   rejectOfficePairing(pairingId: string): Promise<boolean>
   getAppVersion(): Promise<string>
@@ -250,6 +251,7 @@ export const PROJECT_CHANNELS = {
 
 export const OFFICE_PAIRING_CHANNELS = {
   requested: 'home:office-pairing-requested',
+  list: 'home:office-pairing-list',
   approve: 'home:office-pairing-approve',
   reject: 'home:office-pairing-reject',
 } as const

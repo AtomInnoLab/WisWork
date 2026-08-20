@@ -4,6 +4,10 @@ import type { MessagesProxy, OfficeBridge } from '@wiswork/office-bridge'
 export const DEFAULT_OFFICE_BRIDGE_PORT = 43_127
 export const DEFAULT_OFFICE_ORIGIN = 'https://office.8-216-134-194.sslip.io'
 
+export function officeBridgeEnabled(env: Record<string, string | undefined>): boolean {
+  return env.WISWORK_OFFICE_BRIDGE_ENABLED === '1'
+}
+
 export function officeBridgePortFromEnv(env: Record<string, string | undefined>): number {
   const raw = env.WISWORK_OFFICE_BRIDGE_PORT
   if (raw === undefined) return DEFAULT_OFFICE_BRIDGE_PORT

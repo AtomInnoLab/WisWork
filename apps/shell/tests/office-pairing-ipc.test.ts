@@ -11,14 +11,21 @@ describe('Office pairing IPC', () => {
     }
     const trusted = { id: 1 }
     const bridge = { approve: vi.fn(() => true), reject: vi.fn(() => true) }
+    const pending = [
+      { pairingId: 'valid_pairing-id', hostLabel: 'Word', origin: 'https://office.example' },
+    ]
     const getValidAccountStatus = vi.fn(async () => ({ loggedIn: true }))
     registerOfficePairingIpc({
       ipcMain,
       bridge,
+      listPending: () => pending,
       getValidAccountStatus,
       isTrustedSender: (sender) => sender === trusted,
     })
     const approve = handlers.get(OFFICE_PAIRING_CHANNELS.approve)!
+    const list = handlers.get(OFFICE_PAIRING_CHANNELS.list)!
+    expect(() => list({ sender: {} })).toThrow('Untrusted IPC sender')
+    expect(list({ sender: trusted })).toEqual(pending)
     await expect(approve({ sender: {} }, { pairingId: 'valid_pairing-id' })).rejects.toThrow(
       'Untrusted IPC sender',
     )

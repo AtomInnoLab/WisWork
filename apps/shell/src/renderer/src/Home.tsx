@@ -944,7 +944,7 @@ export function Home() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string[] | null>(null)
-  const [officePairing, setOfficePairing] = useState<OfficePairingRequest | null>(null)
+  const [officePairings, setOfficePairings] = useState<OfficePairingRequest[]>([])
   const [officePairingBusy, setOfficePairingBusy] = useState(false)
   // name in the greeting; omitted when logged out
   const [accountName, setAccountName] = useState('')
@@ -962,10 +962,20 @@ export function Home() {
       .catch(() => setAccountName(''))
   }, [])
 
-  useEffect(
-    () => window.aiOffice.onOfficePairingRequested((pairing) => setOfficePairing(pairing)),
-    [],
-  )
+  useEffect(() => {
+    const add = (pairing: OfficePairingRequest) =>
+      setOfficePairings((current) =>
+        current.some((entry) => entry.pairingId === pairing.pairingId)
+          ? current
+          : [...current, pairing],
+      )
+    const off = window.aiOffice.onOfficePairingRequested(add)
+    void window.aiOffice
+      .listOfficePairings()
+      .then((pending) => setOfficePairings(pending))
+      .catch(() => setOfficePairings([]))
+    return off
+  }, [])
 
   // ── Project state ──
   const [projects, setProjects] = useState<ProjectSummaryEntry[]>([])
@@ -1998,7 +2008,7 @@ export function Home() {
           </div>
         </div>
       )}
-      {officePairing && (
+      {officePairings[0] && (
         <div className="modal-overlay">
           <div
             className="modal"
@@ -2008,8 +2018,9 @@ export function Home() {
           >
             <h3>Connect WisWork Office Agent?</h3>
             <p>
-              {officePairing.hostLabel} from {new URL(officePairing.origin).host} is requesting to
-              use your signed-in WisWork account. Your Wispaper token stays on this PC.
+              {officePairings[0].hostLabel} from {new URL(officePairings[0].origin).host} is
+              requesting to use your signed-in WisWork account. Your Wispaper token stays on this
+              PC.
             </p>
             <div className="modal-buttons">
               <button
@@ -2017,8 +2028,11 @@ export function Home() {
                 disabled={officePairingBusy}
                 onClick={() => {
                   setOfficePairingBusy(true)
-                  void window.aiOffice.rejectOfficePairing(officePairing.pairingId).finally(() => {
-                    setOfficePairing(null)
+                  const pairingId = officePairings[0].pairingId
+                  void window.aiOffice.rejectOfficePairing(pairingId).finally(() => {
+                    setOfficePairings((current) =>
+                      current.filter((entry) => entry.pairingId !== pairingId),
+                    )
                     setOfficePairingBusy(false)
                   })
                 }}
@@ -2027,14 +2041,17 @@ export function Home() {
               </button>
               <button
                 className="btn btn-office-allow"
-                autoFocus
                 disabled={officePairingBusy}
                 onClick={() => {
                   setOfficePairingBusy(true)
+                  const pairingId = officePairings[0].pairingId
                   void window.aiOffice
-                    .approveOfficePairing(officePairing.pairingId)
+                    .approveOfficePairing(pairingId)
                     .then((approved) => {
-                      if (approved) setOfficePairing(null)
+                      if (approved)
+                        setOfficePairings((current) =>
+                          current.filter((entry) => entry.pairingId !== pairingId),
+                        )
                     })
                     .finally(() => setOfficePairingBusy(false))
                 }}

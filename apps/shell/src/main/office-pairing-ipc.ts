@@ -24,6 +24,7 @@ export function registerOfficePairingIpc(options: {
     ): unknown
   }
   bridge: Pick<OfficeBridge, 'approve' | 'reject'>
+  listPending(): ReturnType<OfficeBridge['listPending']>
   getValidAccountStatus(): Promise<{ loggedIn: boolean }>
   isTrustedSender(sender: unknown): boolean
 }): void {
@@ -32,6 +33,11 @@ export function registerOfficePairingIpc(options: {
     if (args.length !== 1) throw new Error('Invalid pairing IPC payload.')
     return pairingId(args[0])
   }
+  options.ipcMain.handle(OFFICE_PAIRING_CHANNELS.list, (event, ...args) => {
+    if (!options.isTrustedSender(event.sender)) throw new Error('Untrusted IPC sender.')
+    if (args.length !== 0) throw new Error('Invalid pairing IPC payload.')
+    return options.listPending()
+  })
   options.ipcMain.handle(OFFICE_PAIRING_CHANNELS.approve, async (event, ...args) => {
     const id = validate(event, args)
     const status = await options.getValidAccountStatus()

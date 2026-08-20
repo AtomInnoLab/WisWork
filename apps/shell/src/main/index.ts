@@ -165,6 +165,7 @@ import { startOfficeBridgeHttpServer, type OfficeBridgeHttpServer } from './offi
 import {
   createOfficeMessagesProxy,
   logoutAndRevokeOfficeBridge,
+  officeBridgeEnabled,
   officeBridgePortFromEnv,
   officeOriginFromEnv,
   validAccountStatusOrRevoke,
@@ -2456,38 +2457,41 @@ app.whenReady().then(async () => {
     safeStorage,
     openExternal: (url) => shell.openExternal(url),
   })
-  const initializedOfficeBridge = createOfficeBridge({
-    allowedOrigin: officeOriginFromEnv(process.env),
-    proxy: createOfficeMessagesProxy({
-      fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
-      onTerminalAuthLoss: () => officeBridge?.revokeAll(),
-    }),
-  })
-  officeBridge = initializedOfficeBridge
-  registerOfficePairingIpc({
-    ipcMain,
-    bridge: initializedOfficeBridge,
-    getValidAccountStatus: () =>
-      validAccountStatusOrRevoke(initializedOfficeBridge, () =>
-        requireAuthRuntime().client.getValidAccountStatus(),
-      ),
-    isTrustedSender: (sender) => Boolean(shellWindow && sender === shellWindow.webContents),
-  })
-  try {
-    officeBridgeServer = await startOfficeBridgeHttpServer({
-      bridge: initializedOfficeBridge,
-      host: '127.0.0.1',
-      port: officeBridgePortFromEnv(process.env),
-      onPending: (pairing) => {
-        if (!shellWindow || shellWindow.isDestroyed()) return
-        shellWindow.webContents.send(OFFICE_PAIRING_CHANNELS.requested, pairing)
-        revealShellWindow()
-      },
+  if (officeBridgeEnabled(process.env)) {
+    const initializedOfficeBridge = createOfficeBridge({
+      allowedOrigin: officeOriginFromEnv(process.env),
+      proxy: createOfficeMessagesProxy({
+        fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+        onTerminalAuthLoss: () => officeBridge?.revokeAll(),
+      }),
     })
-  } catch {
-    initializedOfficeBridge.shutdown()
-    officeBridge = null
-    console.error('[office-bridge] failed to start on loopback')
+    officeBridge = initializedOfficeBridge
+    registerOfficePairingIpc({
+      ipcMain,
+      bridge: initializedOfficeBridge,
+      listPending: () => initializedOfficeBridge.listPending(),
+      getValidAccountStatus: () =>
+        validAccountStatusOrRevoke(initializedOfficeBridge, () =>
+          requireAuthRuntime().client.getValidAccountStatus(),
+        ),
+      isTrustedSender: (sender) => Boolean(shellWindow && sender === shellWindow.webContents),
+    })
+    try {
+      officeBridgeServer = await startOfficeBridgeHttpServer({
+        bridge: initializedOfficeBridge,
+        host: '127.0.0.1',
+        port: officeBridgePortFromEnv(process.env),
+        onPending: (pairing) => {
+          if (!shellWindow || shellWindow.isDestroyed()) return
+          shellWindow.webContents.send(OFFICE_PAIRING_CHANNELS.requested, pairing)
+          revealShellWindow()
+        },
+      })
+    } catch {
+      initializedOfficeBridge.shutdown()
+      officeBridge = null
+      console.error('[office-bridge] failed to start on loopback')
+    }
   }
   void authDeepLinks.initialize((callback) => requireAuthRuntime().client.consumeCallback(callback))
 
