@@ -66,4 +66,14 @@ describe('OfficeDocumentClient', () => {
       'Selection is locked',
     )
   })
+
+  it('appends text by preserving the freshly confirmed selection', async () => {
+    const runtime = runtimeWith({ status: 'succeeded' })
+    await createOfficeDocumentClient(runtime).appendText('before', ' after')
+    expect(runtime.context.document.setSelectedDataAsync).toHaveBeenCalledWith(
+      'before after',
+      { coercionType: 'text' },
+      expect.any(Function),
+    )
+  })
 })

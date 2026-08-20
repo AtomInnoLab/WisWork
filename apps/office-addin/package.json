@@ -5,6 +5,10 @@
   "type": "module",
   "license": "Apache-2.0",
   "description": "Office.js task-pane add-in development workspace for Word, Excel, and PowerPoint",
+  "dependencies": {
+    "@wiswork/agent-core": "*",
+    "@wiswork/ai-provider": "*"
+  },
   "scripts": {
     "dev": "vite --mode development",
     "build": "vite build",

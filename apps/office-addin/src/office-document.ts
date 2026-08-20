@@ -27,6 +27,7 @@ export interface OfficeDocumentClient {
   initialize(): Promise<OfficeHost>
   readSelection(): Promise<string>
   replaceSelection(value: string): Promise<void>
+  appendText(selection: string, value: string): Promise<void>
 }
 
 export function normalizeOfficeHost(host: unknown): OfficeHost {
@@ -74,6 +75,22 @@ export function createOfficeDocumentClient(runtime: OfficeRuntime): OfficeDocume
           }
           resolve()
         })
+      })
+    },
+
+    appendText(selection, value) {
+      return new Promise((resolve, reject) => {
+        runtime.context.document.setSelectedDataAsync(
+          `${selection}${value}`,
+          { coercionType: 'text' },
+          (result) => {
+            if (result.status === 'failed') {
+              reject(officeError(result))
+              return
+            }
+            resolve()
+          },
+        )
       })
     },
   }
