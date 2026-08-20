@@ -28,6 +28,7 @@ async function createPairing(bridge: ReturnType<typeof createOfficeBridge>) {
   return (await response.json()) as {
     pairing_id: string
     polling_secret: string
+    verification_code: string
     expires_in: number
   }
 }
@@ -101,6 +102,34 @@ describe('loopback and browser boundary', () => {
 })
 
 describe('pairing lifecycle', () => {
+  it('reports PC signed-out and issues a human-verifiable six-digit code', async () => {
+    const signedOut = createOfficeBridge({
+      allowedOrigin: origin,
+      proxy: vi.fn(),
+      sessionAvailable: false,
+    })
+    const denied = await signedOut.handle(
+      request('/v1/office/pairings', {
+        method: 'POST',
+        headers: { origin, 'content-type': 'application/json' },
+        body: json({ host_label: 'Word' }),
+      }),
+    )
+    expect(denied.status).toBe(401)
+    expect(await denied.json()).toEqual({ error: 'pc_signed_out' })
+
+    signedOut.setSessionAvailable(true)
+    const pairing = await createPairing(signedOut)
+    expect(pairing.verification_code).toMatch(/^\d{6}$/)
+    expect(signedOut.listPending()[0]?.verificationCode).toBe(pairing.verification_code)
+    signedOut.setSessionAvailable(false)
+    const poll = await signedOut.handle(
+      request(`/v1/office/pairings/${pairing.pairing_id}`, {
+        headers: { origin, authorization: `Pairing ${pairing.polling_secret}` },
+      }),
+    )
+    expect(await poll.json()).toEqual({ status: 'signed_out' })
+  })
   it('creates independent random identifiers and reports pending', async () => {
     const bridge = createOfficeBridge({ allowedOrigin: origin, proxy: vi.fn() })
     const first = await createPairing(bridge)
@@ -109,8 +138,18 @@ describe('pairing lifecycle', () => {
     expect(first.polling_secret).not.toBe(second.polling_secret)
     expect(first.pairing_id.length).toBeGreaterThanOrEqual(22)
     expect(bridge.listPending()).toEqual([
-      { pairingId: first.pairing_id, hostLabel: 'Word', origin },
-      { pairingId: second.pairing_id, hostLabel: 'Word', origin },
+      {
+        pairingId: first.pairing_id,
+        hostLabel: 'Word',
+        origin,
+        verificationCode: first.verification_code,
+      },
+      {
+        pairingId: second.pairing_id,
+        hostLabel: 'Word',
+        origin,
+        verificationCode: second.verification_code,
+      },
     ])
     const poll = await bridge.handle(
       request(`/v1/office/pairings/${first.pairing_id}`, {

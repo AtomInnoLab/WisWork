@@ -4,6 +4,7 @@ import type {
   AccountLoginEvent,
   AccountStatus,
   OfficePairingRequest,
+  OfficeBridgeStatus,
   HomeApi,
   LatexRecentProjectEntry,
   RecentEntry,
@@ -191,7 +192,9 @@ const homeApi: HomeApi = {
       if (
         typeof pairing.pairingId === 'string' &&
         ['Word', 'Excel', 'PowerPoint'].includes(pairing.hostLabel ?? '') &&
-        typeof pairing.origin === 'string'
+        typeof pairing.origin === 'string' &&
+        typeof pairing.verificationCode === 'string' &&
+        /^\d{6}$/.test(pairing.verificationCode)
       )
         handler(pairing as OfficePairingRequest)
     }
@@ -207,7 +210,9 @@ const homeApi: HomeApi = {
       return (
         typeof pairing.pairingId === 'string' &&
         ['Word', 'Excel', 'PowerPoint'].includes(pairing.hostLabel ?? '') &&
-        typeof pairing.origin === 'string'
+        typeof pairing.origin === 'string' &&
+        typeof pairing.verificationCode === 'string' &&
+        /^\d{6}$/.test(pairing.verificationCode)
       )
     })
   },
@@ -218,6 +223,12 @@ const homeApi: HomeApi = {
   async rejectOfficePairing(pairingId) {
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(pairingId)) throw new Error('Invalid pairing ID.')
     return (await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.reject, { pairingId })) === true
+  },
+  async officeBridgeStatus() {
+    const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.officeBridgeStatus)
+    return (
+      ['disabled', 'ready', 'error'].includes(String(result)) ? result : 'error'
+    ) as OfficeBridgeStatus
   },
   async getAppVersion() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getAppVersion)

@@ -128,6 +128,7 @@ export interface HomeApi {
   listOfficePairings(): Promise<OfficePairingRequest[]>
   approveOfficePairing(pairingId: string): Promise<boolean>
   rejectOfficePairing(pairingId: string): Promise<boolean>
+  officeBridgeStatus(): Promise<OfficeBridgeStatus>
   getAppVersion(): Promise<string>
   onboardingSeen(): Promise<boolean>
   setOnboardingSeen(): Promise<void>
@@ -153,7 +154,10 @@ export interface OfficePairingRequest {
   pairingId: string
   hostLabel: 'Word' | 'Excel' | 'PowerPoint'
   origin: string
+  verificationCode: string
 }
+
+export type OfficeBridgeStatus = 'disabled' | 'ready' | 'error'
 
 export interface RenameResult {
   ok: boolean
@@ -234,6 +238,7 @@ export const HOME_CHANNELS = {
   accountLoginEvent: 'home:account-login-event',
   accountLoginOpenUrl: 'home:account-login-open-url',
   accountLogout: 'home:account-logout',
+  officeBridgeStatus: 'home:office-bridge-status',
   getAppVersion: 'home:get-app-version',
   onboardingSeen: 'home:onboarding-seen',
   setOnboardingSeen: 'home:set-onboarding-seen',

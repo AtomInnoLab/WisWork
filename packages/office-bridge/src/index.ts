@@ -28,6 +28,7 @@ export interface OfficeBridgeOptions {
   maxResponseBytes?: number
   maxConcurrentMessages?: number
   messageTimeoutMs?: number
+  sessionAvailable?: boolean
 }
 
 interface Pairing {
@@ -37,6 +38,7 @@ interface Pairing {
   origin: string
   expiresAt: number
   status: 'pending' | 'approved' | 'rejected'
+  verificationCode: string
 }
 
 interface Capability {
@@ -48,6 +50,7 @@ export interface PendingPairing {
   pairingId: string
   hostLabel: string
   origin: string
+  verificationCode: string
 }
 
 export interface OfficeBridge {
@@ -56,6 +59,7 @@ export interface OfficeBridge {
   approve(pairingId: string, hasValidSession: boolean): boolean
   reject(pairingId: string): boolean
   revokeAll(): void
+  setSessionAvailable(available: boolean): void
   shutdown(): void
 }
 
@@ -66,6 +70,10 @@ export function assertLoopbackHost(host: string): '127.0.0.1' {
 
 function opaqueValue(): string {
   return randomBytes(32).toString('base64url')
+}
+
+function verificationCode(): string {
+  return String(randomBytes(4).readUInt32BE(0) % 1_000_000).padStart(6, '0')
 }
 
 function digest(value: string): Buffer {
@@ -210,6 +218,7 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
   let activeMessages = 0
   const activeOperations = new Set<ActiveOperation>()
   let stopped = false
+  let sessionAvailable = options.sessionAvailable ?? true
 
   const findCapability = (candidate: string): Capability | undefined => {
     const timestamp = now()
@@ -253,6 +262,8 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
   }
 
   const createPairing = async (request: Request): Promise<Response> => {
+    if (!sessionAvailable)
+      return jsonResponse(401, { error: 'pc_signed_out' }, options.allowedOrigin)
     if (request.headers.get('content-type')?.split(';', 1)[0] !== 'application/json') {
       return jsonResponse(415, { error: 'unsupported_media_type' }, options.allowedOrigin)
     }
@@ -306,6 +317,7 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
     }
     const id = opaqueValue()
     const pollingSecret = opaqueValue()
+    const code = verificationCode()
     pairings.set(id, {
       id,
       pollingSecretHash: digest(pollingSecret),
@@ -313,11 +325,17 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
       origin: options.allowedOrigin,
       expiresAt: timestamp + pairingTtlMs,
       status: 'pending',
+      verificationCode: code,
     })
     createTimes.push(timestamp)
     return jsonResponse(
       202,
-      { pairing_id: id, polling_secret: pollingSecret, expires_in: Math.ceil(pairingTtlMs / 1000) },
+      {
+        pairing_id: id,
+        polling_secret: pollingSecret,
+        verification_code: code,
+        expires_in: Math.ceil(pairingTtlMs / 1000),
+      },
       options.allowedOrigin,
     )
   }
@@ -331,6 +349,11 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
     if (entry.expiresAt <= now()) {
       pairings.delete(id)
       return jsonResponse(200, { status: 'expired' }, options.allowedOrigin)
+    }
+    if (!sessionAvailable) {
+      pairings.delete(id)
+      capabilities = []
+      return jsonResponse(200, { status: 'signed_out' }, options.allowedOrigin)
     }
     if (entry.status === 'pending') {
       return jsonResponse(200, { status: 'pending' }, options.allowedOrigin)
@@ -501,6 +524,7 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
           pairingId: entry.id,
           hostLabel: entry.hostLabel,
           origin: entry.origin,
+          verificationCode: entry.verificationCode,
         }))
     },
     approve(pairingId, hasValidSession) {
@@ -522,6 +546,14 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
       capabilities = []
       for (const controller of [...activePairingControllers]) controller.abort()
       for (const operation of [...activeOperations]) operation.abort()
+    },
+    setSessionAvailable(available) {
+      sessionAvailable = available
+      if (!available) {
+        capabilities = []
+        for (const controller of activePairingControllers) controller.abort()
+        for (const operation of [...activeOperations]) operation.abort()
+      }
     },
     shutdown() {
       stopped = true

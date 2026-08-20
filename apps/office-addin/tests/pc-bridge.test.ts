@@ -11,7 +11,12 @@ describe('PC bridge session', () => {
       .fn()
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ pairing_id: 'pair', polling_secret: 'poll', expires_in: 120 }),
+          JSON.stringify({
+            pairing_id: 'pair',
+            polling_secret: 'poll',
+            verification_code: '123456',
+            expires_in: 120,
+          }),
           { status: 202 },
         ),
       )
@@ -35,18 +40,34 @@ describe('PC bridge session', () => {
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ pairing_id: 'p1', polling_secret: 's1', expires_in: 120 }), {
-          status: 202,
-        }),
+        new Response(
+          JSON.stringify({
+            pairing_id: 'p1',
+            polling_secret: 's1',
+            verification_code: '123456',
+            expires_in: 120,
+          }),
+          {
+            status: 202,
+          },
+        ),
       )
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ status: 'approved', capability: 'cap1', expires_in: 900 })),
       )
       .mockReturnValueOnce(new Promise<Response>((resolve) => (releaseOld = resolve)))
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ pairing_id: 'p2', polling_secret: 's2', expires_in: 120 }), {
-          status: 202,
-        }),
+        new Response(
+          JSON.stringify({
+            pairing_id: 'p2',
+            polling_secret: 's2',
+            verification_code: '234567',
+            expires_in: 120,
+          }),
+          {
+            status: 202,
+          },
+        ),
       )
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ status: 'approved', capability: 'cap2', expires_in: 900 })),
@@ -75,7 +96,12 @@ describe('PC bridge session', () => {
               .fn()
               .mockResolvedValueOnce(
                 new Response(
-                  JSON.stringify({ pairing_id: 'p', polling_secret: 's', expires_in: 120 }),
+                  JSON.stringify({
+                    pairing_id: 'p',
+                    polling_secret: 's',
+                    verification_code: '123456',
+                    expires_in: 120,
+                  }),
                   { status: 202 },
                 ),
               )
@@ -141,9 +167,17 @@ describe('PC bridge session', () => {
       const fetch = vi
         .fn()
         .mockResolvedValueOnce(
-          new Response(JSON.stringify({ pairing_id: 'p', polling_secret: 's', expires_in: 120 }), {
-            status: 202,
-          }),
+          new Response(
+            JSON.stringify({
+              pairing_id: 'p',
+              polling_secret: 's',
+              verification_code: '123456',
+              expires_in: 120,
+            }),
+            {
+              status: 202,
+            },
+          ),
         )
         .mockResolvedValueOnce(new Response(body))
       const session = createPcBridgeSession({ endpoint, fetch, delay: async () => undefined })
@@ -156,7 +190,12 @@ describe('PC bridge session', () => {
       .fn()
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ pairing_id: 'pair', polling_secret: 'poll', expires_in: 120 }),
+          JSON.stringify({
+            pairing_id: 'pair',
+            polling_secret: 'poll',
+            verification_code: '123456',
+            expires_in: 120,
+          }),
           { status: 202 },
         ),
       )
@@ -166,13 +205,18 @@ describe('PC bridge session', () => {
       )
     const session = createPcBridgeSession({ endpoint, fetch, delay: async () => undefined })
     const states: string[] = []
-    session.subscribe(() => states.push(session.snapshot().status))
+    const snapshots: unknown[] = []
+    session.subscribe(() => {
+      states.push(session.snapshot().status)
+      snapshots.push(session.snapshot())
+    })
 
     await session.connect('word')
 
     expect(JSON.parse(fetch.mock.calls[0]![1].body)).toEqual({ host_label: 'Word' })
     expect(new Headers(fetch.mock.calls[1]![1].headers).get('authorization')).toBe('Pairing poll')
     expect(states).toContain('pending')
+    expect(snapshots).toContainEqual({ status: 'pending', verificationCode: '123456' })
     expect(session.snapshot().status).toBe('connected')
   })
 
@@ -183,7 +227,12 @@ describe('PC bridge session', () => {
         .fn()
         .mockResolvedValueOnce(
           new Response(
-            JSON.stringify({ pairing_id: 'pair', polling_secret: 'poll', expires_in: 120 }),
+            JSON.stringify({
+              pairing_id: 'pair',
+              polling_secret: 'poll',
+              verification_code: '123456',
+              expires_in: 120,
+            }),
             { status: 202 },
           ),
         )
@@ -202,7 +251,12 @@ describe('PC bridge session', () => {
       .fn()
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ pairing_id: 'pair', polling_secret: 'poll', expires_in: 120 }),
+          JSON.stringify({
+            pairing_id: 'pair',
+            polling_secret: 'poll',
+            verification_code: '123456',
+            expires_in: 120,
+          }),
           { status: 202 },
         ),
       )
@@ -232,9 +286,17 @@ describe('PC bridge session', () => {
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ pairing_id: 'p', polling_secret: 's', expires_in: 1 }), {
-          status: 202,
-        }),
+        new Response(
+          JSON.stringify({
+            pairing_id: 'p',
+            polling_secret: 's',
+            verification_code: '123456',
+            expires_in: 1,
+          }),
+          {
+            status: 202,
+          },
+        ),
       )
       .mockResolvedValueOnce(new Response('', { status: 401 }))
     const signedOut = createPcBridgeSession({ endpoint, fetch, delay: async () => undefined })

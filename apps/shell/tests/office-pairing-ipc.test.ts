@@ -12,7 +12,12 @@ describe('Office pairing IPC', () => {
     const trusted = { id: 1 }
     const bridge = { approve: vi.fn(() => true), reject: vi.fn(() => true) }
     const pending = [
-      { pairingId: 'valid_pairing-id', hostLabel: 'Word', origin: 'https://office.example' },
+      {
+        pairingId: 'valid_pairing-id',
+        hostLabel: 'Word',
+        origin: 'https://office.example',
+        verificationCode: '123456',
+      },
     ]
     const getValidAccountStatus = vi.fn(async () => ({ loggedIn: true }))
     registerOfficePairingIpc({

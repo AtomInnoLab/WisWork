@@ -7,17 +7,46 @@ export interface OfficeBridgeHttpServer {
   stop(): Promise<void>
 }
 
-function requestBody(request: IncomingMessage): ReadableStream<Uint8Array> | undefined {
+async function readInboundBody(
+  request: IncomingMessage,
+  maximum: number,
+  timeoutMs = 5_000,
+): Promise<Uint8Array | undefined> {
   if (request.method === 'GET' || request.method === 'HEAD' || request.method === 'OPTIONS') return
-  return new ReadableStream({
-    start(controller) {
-      request.on('data', (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
-      request.on('end', () => controller.close())
-      request.on('error', (error) => controller.error(error))
-    },
-    cancel() {
-      request.destroy()
-    },
+  const declared = Number(request.headers['content-length'])
+  if (Number.isFinite(declared) && declared > maximum) throw new Error('body_too_large')
+  const chunks: Buffer[] = []
+  let size = 0
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timeout)
+      request.off('data', onData)
+      request.off('end', onEnd)
+      request.off('error', onError)
+    }
+    const fail = (code: string) => {
+      request.pause()
+      cleanup()
+      reject(new Error(code))
+    }
+    const onData = (raw: Buffer) => {
+      request.pause()
+      const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw)
+      size += chunk.byteLength
+      if (size > maximum) return fail('body_too_large')
+      chunks.push(chunk)
+      queueMicrotask(() => request.resume())
+    }
+    const onEnd = () => {
+      cleanup()
+      resolve(new Uint8Array(Buffer.concat(chunks, size)))
+    }
+    const onError = () => fail('request_error')
+    const timeout = setTimeout(() => fail('request_timeout'), timeoutMs)
+    request.on('data', onData)
+    request.once('end', onEnd)
+    request.once('error', onError)
+    request.resume()
   })
 }
 
@@ -84,6 +113,9 @@ export async function startOfficeBridgeHttpServer(options: {
   bridge: OfficeBridge
   host: string
   port: number
+  allowedOrigin: string
+  maxBodyBytes?: number
+  inboundTimeoutMs?: number
   onPending?: (pairing: PendingPairing) => void
 }): Promise<OfficeBridgeHttpServer> {
   const host = assertLoopbackHost(options.host)
@@ -95,13 +127,42 @@ export async function startOfficeBridgeHttpServer(options: {
     outgoing.on('close', () => controller.abort())
     outgoing.on('error', () => controller.abort())
     try {
+      const path = (incoming.url ?? '/').split('?', 1)[0]
+      const method = incoming.method ?? 'GET'
+      const known =
+        (path === '/v1/office/pairings' && (method === 'POST' || method === 'OPTIONS')) ||
+        (/^\/v1\/office\/pairings\/[A-Za-z0-9_-]+$/.test(path) &&
+          (method === 'GET' || method === 'OPTIONS')) ||
+        (path === '/v1/office/messages' && (method === 'POST' || method === 'OPTIONS'))
+      if (incoming.headers.origin !== options.allowedOrigin || !known) {
+        outgoing.statusCode = incoming.headers.origin === options.allowedOrigin ? 404 : 403
+        outgoing.setHeader('content-type', 'application/json; charset=utf-8')
+        outgoing.setHeader('connection', 'close')
+        incoming.pause()
+        outgoing.end('{"error":"request_denied"}')
+        return
+      }
       const pendingBefore = new Set(options.bridge.listPending().map((entry) => entry.pairingId))
       const headers = new Headers()
       for (const [name, value] of Object.entries(incoming.headers)) {
         if (Array.isArray(value)) value.forEach((item) => headers.append(name, item))
         else if (value !== undefined) headers.set(name, value)
       }
-      const body = requestBody(incoming)
+      let body: Uint8Array | undefined
+      try {
+        body = await readInboundBody(
+          incoming,
+          options.maxBodyBytes ?? 256 * 1024,
+          options.inboundTimeoutMs ?? 5_000,
+        )
+      } catch (error) {
+        outgoing.statusCode =
+          error instanceof Error && error.message === 'body_too_large' ? 413 : 408
+        outgoing.setHeader('content-type', 'application/json; charset=utf-8')
+        outgoing.setHeader('connection', 'close')
+        outgoing.end('{"error":"invalid_body"}')
+        return
+      }
       const request = new Request(`http://${host}:${options.port}${incoming.url ?? '/'}`, {
         method: incoming.method,
         headers,

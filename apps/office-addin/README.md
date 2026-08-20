@@ -42,9 +42,10 @@ A valid configured build emits `dist/manifest.xml`. An unconfigured or invalid b
 
 - **PC offline:** Office shows **Open WisWork PC** and can retry after the app starts.
 - **PC signed out:** approval is refused; sign in through the existing WisWork PC flow first.
-- **Approval:** every new task-pane session requires visible approval in WisWork PC.
+- **Approval:** every new task-pane session requires visible approval in WisWork PC. Approve only when the same six-digit verification code is visible in both Office and the PC confirmation dialog.
 - **Revocation:** Office logout/disconnect drops the in-memory capability. PC logout, bridge shutdown, or PC restart revokes every pairing and active stream.
 - **Port conflict:** the PC app reports bridge startup failure and does not fall back to another address or public bind. Stop the conflicting process or deliberately configure the same new port in both PC and a rebuilt add-in.
+- **Diagnostics:** the trusted WisWork account menu reports the local bridge as `disabled`, `ready`, or `error`; `error` includes port conflicts without exposing network or authentication details.
 - **Rollback:** unset `WISWORK_OFFICE_BRIDGE_ENABLED` (or set it to `0`) and deploy the prior add-in build. Restarting WisWork PC clears all in-memory grants; no data migration is required.
 
 ## Manual Windows/macOS acceptance

@@ -9,6 +9,78 @@ import {
 } from '../src/main/office-bridge-http'
 
 describe('Office bridge HTTP adapter', () => {
+  it('rejects denied and oversized raw bodies before invoking the bridge', async () => {
+    const bridge = createOfficeBridge({
+      allowedOrigin: 'https://office.example.test',
+      proxy: vi.fn(),
+    })
+    const handle = vi.spyOn(bridge, 'handle')
+    const server = await startOfficeBridgeHttpServer({
+      bridge,
+      host: '127.0.0.1',
+      port: 0,
+      allowedOrigin: 'https://office.example.test',
+      maxBodyBytes: 32,
+    })
+    const raw = (origin: string, body: string) =>
+      new Promise<number>((resolve, reject) => {
+        const req = httpRequest(
+          {
+            host: '127.0.0.1',
+            port: server.port,
+            path: '/v1/office/pairings',
+            method: 'POST',
+            headers: { origin, 'content-type': 'application/json' },
+          },
+          (response) => {
+            response.resume()
+            response.on('end', () => resolve(response.statusCode ?? 0))
+          },
+        )
+        req.on('error', reject)
+        req.end(body)
+      })
+    await expect(raw('https://evil.example', 'x'.repeat(1000))).resolves.toBe(403)
+    await expect(raw('https://office.example.test', 'x'.repeat(1000))).resolves.toBe(413)
+    expect(handle).not.toHaveBeenCalled()
+    await server.stop()
+  })
+
+  it('times out a slow incomplete inbound body before bridge allocation', async () => {
+    const bridge = createOfficeBridge({
+      allowedOrigin: 'https://office.example.test',
+      proxy: vi.fn(),
+    })
+    const handle = vi.spyOn(bridge, 'handle')
+    const server = await startOfficeBridgeHttpServer({
+      bridge,
+      host: '127.0.0.1',
+      port: 0,
+      allowedOrigin: 'https://office.example.test',
+      inboundTimeoutMs: 20,
+    })
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = httpRequest(
+        {
+          host: '127.0.0.1',
+          port: server.port,
+          path: '/v1/office/pairings',
+          method: 'POST',
+          headers: { origin: 'https://office.example.test', 'content-type': 'application/json' },
+        },
+        (response) => {
+          response.resume()
+          response.on('end', () => resolve(response.statusCode ?? 0))
+        },
+      )
+      req.on('error', reject)
+      req.write('{')
+    })
+    expect(status).toBe(408)
+    expect(handle).not.toHaveBeenCalled()
+    await server.stop()
+  })
+
   it('cancels a streaming response immediately when a backpressured client closes', async () => {
     let cancelled = false
     const body = new ReadableStream<Uint8Array>({
@@ -61,12 +133,24 @@ describe('Office bridge HTTP adapter', () => {
       approve: () => false,
       reject: () => false,
       revokeAll() {},
+      setSessionAvailable() {},
       shutdown() {},
     }
-    const server = await startOfficeBridgeHttpServer({ bridge, host: '127.0.0.1', port: 0 })
+    const server = await startOfficeBridgeHttpServer({
+      bridge,
+      host: '127.0.0.1',
+      port: 0,
+      allowedOrigin: 'https://office.example.test',
+    })
     await new Promise<void>((resolve, reject) => {
       const req = httpRequest(
-        { host: '127.0.0.1', port: server.port, path: '/stream' },
+        {
+          host: '127.0.0.1',
+          port: server.port,
+          path: '/v1/office/messages',
+          method: 'POST',
+          headers: { origin: 'https://office.example.test', 'content-type': 'application/json' },
+        },
         (response) => {
           response.once('data', () => {
             response.destroy()
@@ -88,13 +172,19 @@ describe('Office bridge HTTP adapter', () => {
     })
     const onPending = vi.fn()
     await expect(
-      startOfficeBridgeHttpServer({ bridge, host: '0.0.0.0', port: 43127 }),
+      startOfficeBridgeHttpServer({
+        bridge,
+        host: '0.0.0.0',
+        port: 43127,
+        allowedOrigin: 'https://office.example.test',
+      }),
     ).rejects.toThrow('loopback_host_required')
 
     const server = await startOfficeBridgeHttpServer({
       bridge,
       host: '127.0.0.1',
       port: 0,
+      allowedOrigin: 'https://office.example.test',
       onPending,
     })
     const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {

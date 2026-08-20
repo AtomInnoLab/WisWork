@@ -6,6 +6,7 @@ const pairing = (pairingId: string, hostLabel: 'Word' | 'Excel' = 'Word') => ({
   pairingId,
   hostLabel,
   origin: 'https://office.example.test',
+  verificationCode: '123456',
 })
 
 describe('Office pairing renderer recovery', () => {

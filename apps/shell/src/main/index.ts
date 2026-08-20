@@ -164,11 +164,9 @@ import { isUpdateChannel, type UpdateChannel } from '../shared/update-api'
 import { startOfficeBridgeHttpServer, type OfficeBridgeHttpServer } from './office-bridge-http'
 import {
   createOfficeMessagesProxy,
-  logoutAndRevokeOfficeBridge,
   officeBridgeEnabled,
   officeBridgePortFromEnv,
   officeOriginFromEnv,
-  validAccountStatusOrRevoke,
 } from './office-bridge-runtime'
 import { registerOfficePairingIpc } from './office-pairing-ipc'
 
@@ -273,6 +271,7 @@ registerLatexProtocolScheme(protocol)
 let authRuntime: ReturnType<typeof initializeElectronAuthRuntime> | null = null
 let officeBridge: OfficeBridge | null = null
 let officeBridgeServer: OfficeBridgeHttpServer | null = null
+let officeBridgeDiagnostic: 'disabled' | 'ready' | 'error' = 'disabled'
 const requireAuthRuntime = (): ReturnType<typeof initializeElectronAuthRuntime> => {
   if (!authRuntime) throw new AuthError('auth_not_initialized')
   return authRuntime
@@ -1739,7 +1738,12 @@ function registerHomeIpc(): void {
   })
   ipcMain.handle(HOME_CHANNELS.accountLogout, (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
-    return logoutAndRevokeOfficeBridge(officeBridge, () => requireAuthRuntime().client.logout())
+    officeBridge?.setSessionAvailable(false)
+    return requireAuthRuntime().client.logout()
+  })
+  ipcMain.handle(HOME_CHANNELS.officeBridgeStatus, (event, ...args: unknown[]) => {
+    assertHomeAuthIpc(event, args)
+    return officeBridgeDiagnostic
   })
 
   ipcMain.handle(HOME_CHANNELS.getAppVersion, (): string => app.getVersion())
@@ -2458,11 +2462,16 @@ app.whenReady().then(async () => {
     openExternal: (url) => shell.openExternal(url),
   })
   if (officeBridgeEnabled(process.env)) {
+    officeBridgeDiagnostic = 'error'
+    const initialAccount = await requireAuthRuntime()
+      .client.getValidAccountStatus()
+      .catch(() => ({ loggedIn: false }))
     const initializedOfficeBridge = createOfficeBridge({
       allowedOrigin: officeOriginFromEnv(process.env),
+      sessionAvailable: initialAccount.loggedIn,
       proxy: createOfficeMessagesProxy({
         fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
-        onTerminalAuthLoss: () => officeBridge?.revokeAll(),
+        onTerminalAuthLoss: () => officeBridge?.setSessionAvailable(false),
       }),
     })
     officeBridge = initializedOfficeBridge
@@ -2470,10 +2479,21 @@ app.whenReady().then(async () => {
       ipcMain,
       bridge: initializedOfficeBridge,
       listPending: () => initializedOfficeBridge.listPending(),
-      getValidAccountStatus: () =>
-        validAccountStatusOrRevoke(initializedOfficeBridge, () =>
-          requireAuthRuntime().client.getValidAccountStatus(),
-        ),
+      getValidAccountStatus: async () => {
+        try {
+          const status = await requireAuthRuntime().client.getValidAccountStatus()
+          initializedOfficeBridge.setSessionAvailable(status.loggedIn)
+          return status
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            (error.message === 'auth_required' ||
+              (error as Error & { code?: string }).code === 'auth_required')
+          )
+            initializedOfficeBridge.setSessionAvailable(false)
+          throw error
+        }
+      },
       isTrustedSender: (sender) => Boolean(shellWindow && sender === shellWindow.webContents),
     })
     try {
@@ -2481,12 +2501,14 @@ app.whenReady().then(async () => {
         bridge: initializedOfficeBridge,
         host: '127.0.0.1',
         port: officeBridgePortFromEnv(process.env),
+        allowedOrigin: officeOriginFromEnv(process.env),
         onPending: (pairing) => {
           if (!shellWindow || shellWindow.isDestroyed()) return
           shellWindow.webContents.send(OFFICE_PAIRING_CHANNELS.requested, pairing)
           revealShellWindow()
         },
       })
+      officeBridgeDiagnostic = 'ready'
     } catch {
       initializedOfficeBridge.shutdown()
       officeBridge = null

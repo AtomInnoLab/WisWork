@@ -533,6 +533,9 @@ function AccountEntry() {
   const langCloseTimer = useRef<number | null>(null)
   const [loggingOut, setLoggingOut] = useState(false)
   const [appVersion, setAppVersion] = useState('')
+  const [officeBridgeStatus, setOfficeBridgeStatus] = useState<'disabled' | 'ready' | 'error'>(
+    'disabled',
+  )
 
   // query login state + app version once on mount
   useEffect(() => {
@@ -547,6 +550,9 @@ function AccountEntry() {
       })
     void window.aiOffice.getAppVersion?.().then((v) => {
       if (alive && v) setAppVersion(v)
+    })
+    void window.aiOffice.officeBridgeStatus().then((value) => {
+      if (alive) setOfficeBridgeStatus(value)
     })
     return () => {
       alive = false
@@ -824,6 +830,9 @@ function AccountEntry() {
               <span className="version-row-value">{appVersion}</span>
             </div>
           )}
+          <div className="account-menu-version" role="status">
+            Office bridge: {officeBridgeStatus}
+          </div>
           {loggedIn && (
             <button
               className="account-menu-item danger"
@@ -947,6 +956,7 @@ export function Home() {
   const [confirmDelete, setConfirmDelete] = useState<string[] | null>(null)
   const [officePairings, setOfficePairings] = useState<OfficePairingRequest[]>([])
   const [officePairingBusy, setOfficePairingBusy] = useState(false)
+  const [officePairingError, setOfficePairingError] = useState(false)
   // name in the greeting; omitted when logged out
   const [accountName, setAccountName] = useState('')
   const [greetAskKey] = useState(
@@ -2019,12 +2029,18 @@ export function Home() {
               requesting to use your signed-in WisWork account. Your Wispaper token stays on this
               PC.
             </p>
+            <p className="office-pairing-code" aria-label="Office verification code">
+              {officePairings[0].verificationCode}
+            </p>
+            <p>Only allow if Office displays this exact same code.</p>
+            {officePairingError && <p role="alert">Sign in to WisWork PC before allowing.</p>}
             <div className="modal-buttons">
               <button
                 className="btn btn-secondary"
                 disabled={officePairingBusy}
                 onClick={() => {
                   setOfficePairingBusy(true)
+                  setOfficePairingError(false)
                   const pairingId = officePairings[0].pairingId
                   void window.aiOffice.rejectOfficePairing(pairingId).finally(() => {
                     setOfficePairings((current) =>
@@ -2049,6 +2065,7 @@ export function Home() {
                         setOfficePairings((current) =>
                           current.filter((entry) => entry.pairingId !== pairingId),
                         )
+                      else setOfficePairingError(true)
                     })
                     .finally(() => setOfficePairingBusy(false))
                 }}

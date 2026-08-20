@@ -219,7 +219,9 @@ function ConfiguredApp() {
     const detail = {
       offline: 'Open WisWork PC, sign in, then retry.',
       signed_out: 'Sign in to WisWork PC first.',
-      pending: 'Approve this connection in WisWork PC.',
+      pending: bridgeState.verificationCode
+        ? `Confirm code ${bridgeState.verificationCode} in WisWork PC, then approve.`
+        : 'Approve this connection in WisWork PC.',
       rejected: 'The connection was rejected in WisWork PC.',
       expired: 'The connection request expired. Try again.',
     }[bridgeState.status]

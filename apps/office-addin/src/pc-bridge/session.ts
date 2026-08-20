@@ -12,6 +12,7 @@ export type PcBridgeStatus =
   'offline' | 'signed_out' | 'pending' | 'rejected' | 'expired' | 'connected'
 export interface PcBridgeSnapshot {
   status: PcBridgeStatus
+  verificationCode?: string
 }
 export interface PcBridgeSession {
   snapshot(): PcBridgeSnapshot
@@ -159,12 +160,15 @@ export function createPcBridgeSession(dependencies: Dependencies = {}): PcBridge
         if (
           !validOpaque(pairing.pairing_id) ||
           !validOpaque(pairing.polling_secret) ||
+          typeof pairing.verification_code !== 'string' ||
+          !/^\d{6}$/.test(pairing.verification_code) ||
           !validExpiry(pairing.expires_in, 120)
         ) {
           finish(epoch, operation, 'offline')
           return
         }
-        publish('pending')
+        state = { status: 'pending', verificationCode: pairing.verification_code }
+        listeners.forEach((listener) => listener())
         const protocolDeadline = now() + pairing.expires_in * 1000
         let pause = 500
         stage = 'poll'
