@@ -5,6 +5,7 @@ import {
   createDialogStartUrl,
   createBrowserOfficeDialogRuntime,
   forwardOAuthCallbackToParent,
+  dialogMessageOriginIsTrusted,
   type OfficeAuthDialog,
   type OfficeDialogRuntime,
 } from '../src/auth/office-dialog-auth.js'
@@ -126,12 +127,12 @@ describe('Office dialog OAuth', () => {
     expect(auth.cancelAuthorization).toHaveBeenCalledOnce()
   })
 
-  it('fails closed before opening on clients without DialogOrigin 1.1', async () => {
-    const runtime = createBrowserOfficeDialogRuntime(callbackUrl, {
-      supportsDialogOrigin: () => false,
-    })
-
-    await expect(runtime.open('https://auth.example/oidc/auth')).rejects.toThrow('sign_in_failed')
+  it('accepts an unavailable origin only in the legacy DialogOrigin compatibility path', () => {
+    expect(dialogMessageOriginIsTrusted(undefined, 'https://office.example', false)).toBe(true)
+    expect(dialogMessageOriginIsTrusted(undefined, 'https://office.example', true)).toBe(false)
+    expect(
+      dialogMessageOriginIsTrusted('https://attacker.example', 'https://office.example', false),
+    ).toBe(false)
   })
 
   it('forwards only an exact callback URL to the parent task pane', () => {

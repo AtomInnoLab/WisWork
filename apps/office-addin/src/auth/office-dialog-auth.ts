@@ -145,6 +145,14 @@ interface BrowserOfficeDialogDependencies {
   supportsDialogOrigin?: () => boolean
 }
 
+export function dialogMessageOriginIsTrusted(
+  origin: string | undefined,
+  trustedOrigin: string,
+  supportsDialogOrigin: boolean,
+): boolean {
+  return origin === trustedOrigin || (!supportsDialogOrigin && origin === undefined)
+}
+
 export function createBrowserOfficeDialogRuntime(
   callbackUrl: string,
   dependencies: BrowserOfficeDialogDependencies = {},
@@ -155,7 +163,7 @@ export function createBrowserOfficeDialogRuntime(
     (() => Office.context.requirements.isSetSupported('DialogOrigin', '1.1'))
   return {
     open(url) {
-      if (!supportsDialogOrigin()) return Promise.reject(new Error('sign_in_failed'))
+      const hasDialogOrigin = supportsDialogOrigin()
       return new Promise((resolve, reject) => {
         Office.context.ui.displayDialogAsync(
           createDialogStartUrl(url, callbackUrl),
@@ -172,7 +180,14 @@ export function createBrowserOfficeDialogRuntime(
                 const handler = (
                   event: { message: string; origin: string | undefined } | { error: number },
                 ) => {
-                  if ('message' in event && event.origin === trustedCallbackOrigin)
+                  if (
+                    'message' in event &&
+                    dialogMessageOriginIsTrusted(
+                      event.origin,
+                      trustedCallbackOrigin,
+                      hasDialogOrigin,
+                    )
+                  )
                     listener(event.message)
                 }
                 dialog.addEventHandler(Office.EventType.DialogMessageReceived, handler)
@@ -192,7 +207,9 @@ export function createBrowserOfficeDialogRuntime(
 }
 
 export function forwardBrowserOAuthCallback(currentUrl: string, callbackUrl: string): boolean {
-  return forwardOAuthCallbackToParent(currentUrl, callbackUrl, (message, targetOrigin) =>
-    Office.context.ui.messageParent(message, { targetOrigin }),
-  )
+  const hasDialogOrigin = Office.context.requirements.isSetSupported('DialogOrigin', '1.1')
+  return forwardOAuthCallbackToParent(currentUrl, callbackUrl, (message, targetOrigin) => {
+    if (hasDialogOrigin) Office.context.ui.messageParent(message, { targetOrigin })
+    else Office.context.ui.messageParent(message)
+  })
 }

@@ -38,7 +38,7 @@ A build with all validated environment values emits `dist/manifest.xml` using th
 
 The deployment host must serve `/oauth/callback` as `text/html; charset=utf-8`, or rewrite that exact route (including its query string) internally to `/oauth/callback.html`. The Vite development and preview servers already perform this exact rewrite. Never redirect the callback to the `.html` URL: an HTTP redirect can propagate the authorization code in browser or intermediary history.
 
-Sign-in opens Wispaper in the Office Dialog API through the same-origin `/oauth/dialog-start.html` bootstrap. After Wispaper redirects to `/oauth/callback`, that page sends the callback to the original task pane, which exchanges the code, closes the dialog, and shows the Agent conversation. The Office client must support the `DialogOrigin 1.1` requirement set; unsupported clients fail closed before opening the login dialog.
+Sign-in opens Wispaper in the Office Dialog API through the same-origin `/oauth/dialog-start.html` bootstrap. After Wispaper redirects to `/oauth/callback`, that page sends the callback to the original task pane, which exchanges the code, closes the dialog, and shows the Agent conversation. Clients with `DialogOrigin 1.1` additionally enforce the callback message origin; older clients use the exact callback URL plus OAuth state and PKCE validation.
 
 ## Gateway prerequisites
 
