@@ -38,6 +38,10 @@ describe('Office Add-in manifest and routes', () => {
     { VITE_WISWORK_ADDIN_ORIGIN: 'https://office.example/path' },
     { VITE_WISWORK_ADDIN_ORIGIN: 'http://office.example' },
     { VITE_WISWORK_ADDIN_ORIGIN: 'https://*.example' },
+    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORT: '0' },
+    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORT: '65536' },
+    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORT: '1.5' },
+    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORT: '43127/path' },
   ])('rejects unsafe deployment configuration', (env) => {
     expect(deploymentConfig(env)).toBeUndefined()
   })
@@ -45,10 +49,20 @@ describe('Office Add-in manifest and routes', () => {
   it('allows only the numeric loopback bridge in taskpane connections', async () => {
     const viteConfig = await readFile(resolve(import.meta.dirname, '../vite.config.ts'), 'utf8')
     const taskpane = await readFile(resolve(import.meta.dirname, '../src/taskpane.html'), 'utf8')
-    expect(deploymentConnectOrigins()).toBe('http://127.0.0.1:43127')
+    expect(deploymentConnectOrigins({})).toBe('http://127.0.0.1:43127')
+    expect(deploymentConnectOrigins({ VITE_WISWORK_PC_BRIDGE_PORT: '44000' })).toBe(
+      'http://127.0.0.1:44000',
+    )
     expect(viteConfig).not.toContain('oauth/callback')
     expect(taskpane).toContain("connect-src 'self' __WISWORK_CONNECT_ORIGINS__")
     expect(taskpane).not.toMatch(/auth\.dev|wisusage|callback/i)
     expect(viteConfig).not.toContain("'Access-Control-Allow-Origin': '*'")
+  })
+
+  it('documents the exact PC runtime environment names used by the shell', async () => {
+    const readme = await readFile(resolve(import.meta.dirname, '../README.md'), 'utf8')
+    expect(readme).toContain('WISWORK_OFFICE_ORIGIN=')
+    expect(readme).toContain('WISWORK_OFFICE_BRIDGE_PORT=')
+    expect(readme).not.toContain('WISWORK_OFFICE_ALLOWED_ORIGIN')
   })
 })

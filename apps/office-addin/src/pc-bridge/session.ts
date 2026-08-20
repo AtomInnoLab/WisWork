@@ -1,6 +1,7 @@
 import type { OfficeHost } from '../office-document.js'
+import { officeBridgeEndpoint } from '../../build-config.js'
 
-export const PC_BRIDGE_ENDPOINT = 'http://127.0.0.1:43127'
+export const PC_BRIDGE_ENDPOINT = officeBridgeEndpoint(import.meta.env)
 const PAIRINGS_PATH = '/v1/office/pairings'
 const MESSAGES_PATH = '/v1/office/messages'
 const CONNECT_DEADLINE_MS = 120_000

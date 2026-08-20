@@ -9,6 +9,7 @@ const dist = resolve(appRoot, 'dist')
 beforeAll(async () => {
   const configured = {
     VITE_WISWORK_ADDIN_ORIGIN: 'https://office.example',
+    VITE_WISWORK_PC_BRIDGE_PORT: '44000',
   }
   const prior = Object.fromEntries(Object.keys(configured).map((key) => [key, process.env[key]]))
   Object.assign(process.env, configured)
@@ -34,14 +35,18 @@ describe('configured Office build output', () => {
   it('emits one task pane with an exact loopback-only connect policy and no legacy auth assets', async () => {
     const taskpane = await readFile(resolve(dist, 'taskpane.html'), 'utf8')
     const files = await readdir(dist, { recursive: true })
-    expect(taskpane).toContain("connect-src 'self' http://127.0.0.1:43127")
+    expect(taskpane).toContain("connect-src 'self' http://127.0.0.1:44000")
+    const scriptPath = taskpane.match(/src="(\/assets\/taskpane-[^"]+\.js)"/)?.[1]
+    expect(scriptPath).toBeDefined()
+    const script = await readFile(resolve(dist, scriptPath!.replace(/^\//, '')), 'utf8')
+    expect(script).toMatch(/VITE_WISWORK_PC_BRIDGE_PORT\s*:\s*["']44000["']/)
     expect(taskpane).not.toMatch(/oauth|callback|auth\.dev|wisusage/i)
     expect(files).not.toContain('oauth')
     expect(files.some((file) => file.endsWith('.map'))).toBe(false)
   })
 
   it('omits a deployable manifest from an unconfigured build', async () => {
-    const keys = ['VITE_WISWORK_ADDIN_ORIGIN']
+    const keys = ['VITE_WISWORK_ADDIN_ORIGIN', 'VITE_WISWORK_PC_BRIDGE_PORT']
     const prior = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
     for (const key of keys) process.env[key] = ''
     try {

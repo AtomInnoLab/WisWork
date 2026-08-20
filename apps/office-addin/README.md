@@ -8,12 +8,12 @@ The Office bridge is disabled by default. Start the PC app with an exact HTTPS a
 
 ```bash
 WISWORK_OFFICE_BRIDGE_ENABLED=1 \
-WISWORK_OFFICE_ALLOWED_ORIGIN=https://office.example \
+WISWORK_OFFICE_ORIGIN=https://office.example \
 WISWORK_OFFICE_BRIDGE_PORT=43127 \
 npm run dev -w @wiswork/shell
 ```
 
-`WISWORK_OFFICE_ALLOWED_ORIGIN` must exactly match the deployed task-pane origin. The port defaults to `43127`; changing it requires rebuilding the add-in because its endpoint and CSP are deliberately fixed. The bridge binds only `127.0.0.1` and never exposes PC access or refresh tokens.
+`WISWORK_OFFICE_ORIGIN` must exactly match the deployed task-pane origin. The port defaults to `43127`; changing it requires setting the same port in the PC runtime and add-in build. The bridge binds only `127.0.0.1` and never exposes PC access or refresh tokens.
 
 ## Develop and sideload
 
@@ -24,17 +24,19 @@ npm install
 npm run dev:office
 ```
 
-The development server uses trusted local HTTPS on port 3000. Start the PC bridge with `WISWORK_OFFICE_ALLOWED_ORIGIN=https://localhost:3000`, sideload `apps/office-addin/public/manifest.xml`, and open **WisWork Office Agent**. Click **Connect to WisWork PC**, then approve the request in the PC app.
+The development server uses trusted local HTTPS on port 3000. Start the PC bridge with `WISWORK_OFFICE_ORIGIN=https://localhost:3000`, sideload `apps/office-addin/public/manifest.xml`, and open **WisWork Office Agent**. Click **Connect to WisWork PC**, then approve the request in the PC app.
 
 ## Deployment build
 
 Only the public add-in origin is build configuration:
 
 ```bash
-VITE_WISWORK_ADDIN_ORIGIN=https://office.example npm run build -w @wiswork/office-addin
+VITE_WISWORK_ADDIN_ORIGIN=https://office.example \
+VITE_WISWORK_PC_BRIDGE_PORT=43127 \
+npm run build -w @wiswork/office-addin
 ```
 
-A valid configured build emits `dist/manifest.xml`. An unconfigured or invalid build emits no deployable manifest. The generated manifest contains only the exact add-in HTTPS origin; task-pane CSP permits connections only to itself and `http://127.0.0.1:43127`. There are no OAuth callback pages, auth domains, direct WisUsage connection, wildcard origins, or source maps in the deployment output.
+A valid configured build emits `dist/manifest.xml`. An unconfigured or invalid build emits no deployable manifest. `VITE_WISWORK_PC_BRIDGE_PORT` defaults to `43127` and accepts only an integer from 1 through 65535. It must equal PC runtime `WISWORK_OFFICE_BRIDGE_PORT`. The generated manifest contains only the exact add-in HTTPS origin; task-pane CSP permits connections only to itself and the numeric loopback endpoint at that port. There are no OAuth callback pages, auth domains, direct WisUsage connection, wildcard origins, or source maps in the deployment output.
 
 ## Operational behavior
 
