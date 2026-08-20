@@ -163,9 +163,10 @@ import { applyUpdateChannel, initAutoUpdater } from './updater'
 import { isUpdateChannel, type UpdateChannel } from '../shared/update-api'
 import { startOfficeBridgeHttpServer, type OfficeBridgeHttpServer } from './office-bridge-http'
 import {
+  bindOfficeBridgePortPool,
   createOfficeMessagesProxy,
   officeBridgeEnabled,
-  officeBridgePortFromEnv,
+  officeBridgePortsFromEnv,
   officeOriginFromEnv,
   syncOfficeBridgeAvailability,
 } from './office-bridge-runtime'
@@ -272,7 +273,7 @@ registerLatexProtocolScheme(protocol)
 let authRuntime: ReturnType<typeof initializeElectronAuthRuntime> | null = null
 let officeBridge: OfficeBridge | null = null
 let officeBridgeServer: OfficeBridgeHttpServer | null = null
-let officeBridgeDiagnostic: 'disabled' | 'ready' | 'error' = 'disabled'
+let officeBridgeDiagnostic = 'disabled'
 const requireAuthRuntime = (): ReturnType<typeof initializeElectronAuthRuntime> => {
   if (!authRuntime) throw new AuthError('auth_not_initialized')
   return authRuntime
@@ -2500,19 +2501,23 @@ app.whenReady().then(async () => {
       isTrustedSender: (sender) => Boolean(shellWindow && sender === shellWindow.webContents),
     })
     try {
-      officeBridgeServer = await startOfficeBridgeHttpServer({
-        bridge: initializedOfficeBridge,
-        host: '127.0.0.1',
-        port: officeBridgePortFromEnv(process.env),
-        allowedOrigin: officeOriginFromEnv(process.env),
-        onPending: (pairing) => {
-          if (!shellWindow || shellWindow.isDestroyed()) return
-          shellWindow.webContents.send(OFFICE_PAIRING_CHANNELS.requested, pairing)
-          revealShellWindow()
-        },
-      })
-      officeBridgeDiagnostic = 'ready'
+      const bound = await bindOfficeBridgePortPool(officeBridgePortsFromEnv(process.env), (port) =>
+        startOfficeBridgeHttpServer({
+          bridge: initializedOfficeBridge,
+          host: '127.0.0.1',
+          port,
+          allowedOrigin: officeOriginFromEnv(process.env),
+          onPending: (pairing) => {
+            if (!shellWindow || shellWindow.isDestroyed()) return
+            shellWindow.webContents.send(OFFICE_PAIRING_CHANNELS.requested, pairing)
+            revealShellWindow()
+          },
+        }),
+      )
+      officeBridgeServer = bound.server
+      officeBridgeDiagnostic = `ready:${bound.port}`
     } catch {
+      officeBridgeDiagnostic = 'error:pool_exhausted'
       initializedOfficeBridge.shutdown()
       officeBridge = null
       console.error('[office-bridge] failed to start on loopback')

@@ -34,6 +34,18 @@ async function createPairing(bridge: ReturnType<typeof createOfficeBridge>) {
 }
 
 describe('loopback and browser boundary', () => {
+  it('exposes only a stable unauthenticated health protocol', async () => {
+    const bridge = createOfficeBridge({
+      allowedOrigin: origin,
+      proxy: vi.fn(),
+      sessionAvailable: false,
+    })
+    const response = await bridge.handle(request('/v1/office/health'))
+    expect(response.status).toBe(200)
+    const text = await response.text()
+    expect(JSON.parse(text)).toEqual({ service: 'wiswork-office-bridge', version: 1 })
+    expect(text).not.toMatch(/token|session|user|email/i)
+  })
   it('accepts only the numeric IPv4 loopback bind host', () => {
     expect(assertLoopbackHost('127.0.0.1')).toBe('127.0.0.1')
     expect(() => assertLoopbackHost('localhost')).toThrow('loopback_host_required')

@@ -157,7 +157,7 @@ export interface OfficePairingRequest {
   verificationCode: string
 }
 
-export type OfficeBridgeStatus = 'disabled' | 'ready' | 'error'
+export type OfficeBridgeStatus = 'disabled' | `ready:${number}` | 'error:pool_exhausted'
 
 export interface RenameResult {
   ok: boolean

@@ -533,9 +533,7 @@ function AccountEntry() {
   const langCloseTimer = useRef<number | null>(null)
   const [loggingOut, setLoggingOut] = useState(false)
   const [appVersion, setAppVersion] = useState('')
-  const [officeBridgeStatus, setOfficeBridgeStatus] = useState<'disabled' | 'ready' | 'error'>(
-    'disabled',
-  )
+  const [officeBridgeStatus, setOfficeBridgeStatus] = useState('disabled')
 
   // query login state + app version once on mount
   useEffect(() => {

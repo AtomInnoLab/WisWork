@@ -2,6 +2,12 @@ import { WISWORK_MESSAGES_URL } from '@wiswork/ai-provider'
 import type { MessagesProxy, OfficeBridge } from '@wiswork/office-bridge'
 
 export const DEFAULT_OFFICE_BRIDGE_PORT = 43_127
+export const DEFAULT_OFFICE_BRIDGE_PORTS = [
+  DEFAULT_OFFICE_BRIDGE_PORT,
+  ...Array.from({ length: 64 }, (_, index) => 43_120 + index).filter(
+    (port) => port !== DEFAULT_OFFICE_BRIDGE_PORT,
+  ),
+]
 export const DEFAULT_OFFICE_ORIGIN = 'https://office.8-216-134-194.sslip.io'
 
 export function officeBridgeEnabled(env: Record<string, string | undefined>): boolean {
@@ -15,6 +21,32 @@ export function officeBridgePortFromEnv(env: Record<string, string | undefined>)
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535)
     throw new Error('invalid_office_bridge_port')
   return port
+}
+
+export function officeBridgePortsFromEnv(env: Record<string, string | undefined>): number[] {
+  const raw = env.WISWORK_OFFICE_BRIDGE_PORTS
+  if (raw === undefined) return [...DEFAULT_OFFICE_BRIDGE_PORTS]
+  const parts = raw.split(',')
+  if (parts.length < 1 || parts.length > 128 || parts.some((part) => !/^\d+$/.test(part)))
+    throw new Error('invalid_office_bridge_ports')
+  const ports = parts.map(Number)
+  if (ports.some((port) => port < 1 || port > 65_535) || new Set(ports).size !== ports.length)
+    throw new Error('invalid_office_bridge_ports')
+  return ports
+}
+
+export async function bindOfficeBridgePortPool<T>(
+  ports: readonly number[],
+  start: (port: number) => Promise<T>,
+): Promise<{ port: number; server: T }> {
+  for (const port of ports) {
+    try {
+      return { port, server: await start(port) }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'EADDRINUSE') throw error
+    }
+  }
+  throw Object.assign(new Error('office_bridge_pool_exhausted'), { code: 'EADDRINUSE' })
 }
 
 export function officeOriginFromEnv(env: Record<string, string | undefined>): string {

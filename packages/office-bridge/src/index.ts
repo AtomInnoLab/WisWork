@@ -231,11 +231,14 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
   const handlePreflight = (request: Request): Response => {
     const path = new URL(request.url).pathname
     const pairingPoll = /^\/v1\/office\/pairings\/[A-Za-z0-9_-]+$/.test(path)
-    const expectedMethod = pairingPoll
-      ? 'GET'
-      : path === '/v1/office/pairings' || path === '/v1/office/messages'
-        ? 'POST'
-        : null
+    const expectedMethod =
+      path === '/v1/office/health'
+        ? 'GET'
+        : pairingPoll
+          ? 'GET'
+          : path === '/v1/office/pairings' || path === '/v1/office/messages'
+            ? 'POST'
+            : null
     const requestedMethod = request.headers.get('access-control-request-method')?.toUpperCase()
     const requestedHeaders = (request.headers.get('access-control-request-headers') ?? '')
       .split(',')
@@ -503,6 +506,13 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
       }
       if (request.method === 'OPTIONS') return handlePreflight(request)
       const path = new URL(request.url).pathname
+      if (request.method === 'GET' && path === '/v1/office/health') {
+        return jsonResponse(
+          200,
+          { service: 'wiswork-office-bridge', version: 1 },
+          options.allowedOrigin,
+        )
+      }
       if (request.method === 'POST' && path === '/v1/office/pairings') {
         return createPairing(request)
       }
@@ -511,7 +521,12 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
       if (request.method === 'POST' && path === '/v1/office/messages') {
         return proxyMessages(request)
       }
-      if (path === '/v1/office/pairings' || path === '/v1/office/messages' || pairingMatch) {
+      if (
+        path === '/v1/office/health' ||
+        path === '/v1/office/pairings' ||
+        path === '/v1/office/messages' ||
+        pairingMatch
+      ) {
         return jsonResponse(405, { error: 'method_not_allowed' }, options.allowedOrigin)
       }
       return jsonResponse(404, { error: 'not_found' }, options.allowedOrigin)

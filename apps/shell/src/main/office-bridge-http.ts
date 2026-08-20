@@ -130,6 +130,7 @@ export async function startOfficeBridgeHttpServer(options: {
       const path = (incoming.url ?? '/').split('?', 1)[0]
       const method = incoming.method ?? 'GET'
       const known =
+        (path === '/v1/office/health' && (method === 'GET' || method === 'OPTIONS')) ||
         (path === '/v1/office/pairings' && (method === 'POST' || method === 'OPTIONS')) ||
         (/^\/v1\/office\/pairings\/[A-Za-z0-9_-]+$/.test(path) &&
           (method === 'GET' || method === 'OPTIONS')) ||

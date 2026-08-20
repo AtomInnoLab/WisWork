@@ -10,9 +10,31 @@ import {
   validAccountStatusOrRevoke,
   syncOfficeBridgeAvailability,
   officeBridgeEnabled,
+  officeBridgePortsFromEnv,
+  bindOfficeBridgePortPool,
 } from '../src/main/office-bridge-runtime'
 
 describe('Office bridge shell runtime', () => {
+  it('parses the strict port pool and falls back only after address-in-use', async () => {
+    const defaults = officeBridgePortsFromEnv({})
+    expect(defaults).toHaveLength(64)
+    expect(defaults[0]).toBe(43127)
+    expect(() => officeBridgePortsFromEnv({ WISWORK_OFFICE_BRIDGE_PORTS: '43127,43127' })).toThrow()
+    expect(() => officeBridgePortsFromEnv({ WISWORK_OFFICE_BRIDGE_PORTS: '43127,' })).toThrow()
+    const start = vi.fn(async (port: number) => {
+      if (port === 43127) throw Object.assign(new Error('busy'), { code: 'EADDRINUSE' })
+      return 'server'
+    })
+    await expect(bindOfficeBridgePortPool([43127, 43128], start)).resolves.toEqual({
+      port: 43128,
+      server: 'server',
+    })
+    await expect(
+      bindOfficeBridgePortPool([1, 2], async () => {
+        throw Object.assign(new Error('denied'), { code: 'EACCES' })
+      }),
+    ).rejects.toThrow('denied')
+  })
   it('is fail-closed unless explicitly enabled', () => {
     expect(officeBridgeEnabled({})).toBe(false)
     expect(officeBridgeEnabled({ WISWORK_OFFICE_BRIDGE_ENABLED: '0' })).toBe(false)
