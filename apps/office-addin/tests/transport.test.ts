@@ -7,6 +7,7 @@ import {
   MAX_STREAM_TOOL_INPUT_LENGTH,
   STREAM_RESPONSE_TIMEOUT_MS,
   createOfficeAgentTransport,
+  createPcBridgeAgentTransport,
 } from '../src/agent/transport.js'
 import type { BrowserAuth } from '../src/auth/browser-auth.js'
 import type { RuntimeConfig } from '../src/config.js'
@@ -31,6 +32,21 @@ function callbacks() {
 }
 
 describe('Office Agent transport', () => {
+  it('streams through the local PC bridge without provider credentials', async () => {
+    const authenticatedFetch = vi.fn().mockResolvedValue(sse([]))
+    const cb = callbacks()
+    createPcBridgeAgentTransport({ authenticatedFetch } as never).stream(
+      { system: 'sys', messages: [{ role: 'user', text: 'hi' }], tools: [] },
+      cb,
+    )
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(authenticatedFetch).toHaveBeenCalledWith(
+      '/v1/office/messages',
+      expect.objectContaining({ method: 'POST', signal: expect.any(AbortSignal) }),
+    )
+    const headers = new Headers(authenticatedFetch.mock.calls[0]![1].headers)
+    expect(headers.has('authorization')).toBe(false)
+  })
   it('uses the trusted endpoint and fixed model/region', async () => {
     const authenticatedFetch = vi.fn().mockResolvedValue(sse([]))
     const auth = { authenticatedFetch } as unknown as BrowserAuth

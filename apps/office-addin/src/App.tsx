@@ -1,19 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { createOfficeSkill } from './agent/office-skill.js'
 import { createProposalController } from './agent/proposal-controller.js'
-import { createOfficeAgentTransport } from './agent/transport.js'
+import { createPcBridgeAgentTransport } from './agent/transport.js'
 import {
   createOfficeAgentSession,
-  bindAuthLoss,
   useOfficeAgent,
   type OfficeAgentSession,
 } from './agent/use-office-agent.js'
-import {
-  createBrowserAuth,
-  startAuthorizationInCurrentWindow,
-  type BrowserAuth,
-} from './auth/browser-auth.js'
-import { loadRuntimeConfig, type RuntimeConfig } from './config.js'
+import { createPcBridgeSession } from './pc-bridge/session.js'
 import {
   createBrowserOfficeRuntime,
   createOfficeDocumentClient,
@@ -27,19 +21,12 @@ const hostLabels: Record<OfficeHost, string> = {
   unknown: 'Office',
 }
 
-const safeAuthError = (error: unknown) =>
-  error instanceof Error &&
-  (['invalid_callback', 'token_exchange_failed'].includes(error.message) ||
-    /^office_dialog_120(?:0[2-7]|09|11)$/.test(error.message))
-    ? error.message
-    : 'sign_in_failed'
-
 function AgentWorkspace(props: {
   session: OfficeAgentSession
-  auth: BrowserAuth
+  disconnect: () => void
   host: OfficeHost
 }) {
-  const { session, auth, host } = props
+  const { session, disconnect, host } = props
   const state = useOfficeAgent(session)
   const [instruction, setInstruction] = useState('')
 
@@ -69,7 +56,7 @@ function AgentWorkspace(props: {
           className="quiet"
           disabled={state.applying}
           onClick={() => {
-            auth.logout()
+            disconnect()
           }}
         >
           Log out
@@ -174,43 +161,29 @@ function AgentWorkspace(props: {
   )
 }
 
-function ConfiguredApp({
-  config,
-  oauthCallback,
-}: {
-  config: RuntimeConfig
-  oauthCallback?: string
-}) {
+function ConfiguredApp() {
   const document = useMemo(() => createOfficeDocumentClient(createBrowserOfficeRuntime()), [])
-  const auth = useMemo(() => createBrowserAuth(config), [config])
+  const bridge = useMemo(() => createPcBridgeSession(), [])
+  const bridgeState = useSyncExternalStore(bridge.subscribe, bridge.snapshot, bridge.snapshot)
   const proposals = useMemo(() => createProposalController(document), [document])
   const session = useMemo(
     () =>
       createOfficeAgentSession({
-        transport: createOfficeAgentTransport(config, auth),
+        transport: createPcBridgeAgentTransport(bridge),
         skill: createOfficeSkill(document, proposals),
         proposals,
       }),
-    [auth, config, document, proposals],
+    [bridge, document, proposals],
   )
   const [host, setHost] = useState<OfficeHost>('unknown')
   const [hostSupported, setHostSupported] = useState(false)
-  const [signedIn, setSignedIn] = useState(auth.isAuthenticated())
   const [status, setStatus] = useState('Connecting to Office…')
   const [busy, setBusy] = useState(true)
-
-  useEffect(() => {
-    return bindAuthLoss(auth, session, () => setSignedIn(false))
-  }, [auth, session])
 
   useEffect(() => {
     let active = true
     void (async () => {
       try {
-        if (oauthCallback) {
-          await auth.consumeCallback(oauthCallback)
-          if (active) setSignedIn(true)
-        }
         const activeHost = await document.initialize()
         if (active) {
           setHost(activeHost)
@@ -221,8 +194,8 @@ function ConfiguredApp({
               : `${hostLabels[activeHost]} is ready`,
           )
         }
-      } catch (error) {
-        if (active) setStatus(safeAuthError(error))
+      } catch {
+        if (active) setStatus('office_unavailable')
       } finally {
         if (active) setBusy(false)
       }
@@ -230,7 +203,11 @@ function ConfiguredApp({
     return () => {
       active = false
     }
-  }, [auth, document, oauthCallback])
+  }, [document])
+
+  useEffect(() => {
+    if (bridgeState.status !== 'connected') session.authenticationLost()
+  }, [bridgeState.status, session])
 
   if (busy) return <StatusScreen title="Starting WisWork Agent" detail={status} busy />
   if (!hostSupported) {
@@ -238,26 +215,42 @@ function ConfiguredApp({
       <StatusScreen title="Unsupported Office host" detail="This host cannot use document tools." />
     )
   }
-  if (!signedIn) {
+  if (bridgeState.status !== 'connected') {
+    const detail = {
+      offline: 'Open WisWork PC, sign in, then retry.',
+      signed_out: 'Sign in to WisWork PC first.',
+      pending: 'Approve this connection in WisWork PC.',
+      rejected: 'The connection was rejected in WisWork PC.',
+      expired: 'The connection request expired. Try again.',
+    }[bridgeState.status]
     return (
-      <StatusScreen title="WisWork Agent for Office" detail={status}>
+      <StatusScreen
+        title="Connect to WisWork PC"
+        detail={detail}
+        busy={bridgeState.status === 'pending'}
+      >
         <button
           type="button"
+          disabled={bridgeState.status === 'pending'}
           onClick={() => {
-            setBusy(true)
-            void startAuthorizationInCurrentWindow(auth, (url) => window.location.assign(url))
-              .catch((error) => {
-                setStatus(safeAuthError(error))
-                setBusy(false)
-              })
+            void bridge.connect(host)
           }}
         >
-          Sign in with WisWork
+          {bridgeState.status === 'offline' ? 'Connect to WisWork PC' : 'Try again'}
         </button>
       </StatusScreen>
     )
   }
-  return <AgentWorkspace session={session} auth={auth} host={host} />
+  return (
+    <AgentWorkspace
+      session={session}
+      disconnect={() => {
+        session.logout()
+        bridge.disconnect()
+      }}
+      host={host}
+    />
+  )
 }
 
 function StatusScreen(props: {
@@ -279,18 +272,6 @@ function StatusScreen(props: {
   )
 }
 
-export function App({ oauthCallback }: { oauthCallback?: string }) {
-  const runtime = useMemo(
-    () => loadRuntimeConfig(import.meta.env, { production: import.meta.env.PROD }),
-    [],
-  )
-  if (runtime.status === 'unavailable') {
-    return (
-      <StatusScreen
-        title="Agent unavailable"
-        detail="This add-in is not configured for the WisWork Gateway. Contact your administrator."
-      />
-    )
-  }
-  return <ConfiguredApp config={runtime.config} oauthCallback={oauthCallback} />
+export function App() {
+  return <ConfiguredApp />
 }

@@ -12,6 +12,7 @@ import {
 } from '@wiswork/ai-provider'
 import type { BrowserAuth } from '../auth/browser-auth.js'
 import type { RuntimeConfig } from '../config.js'
+import type { PcBridgeSession } from '../pc-bridge/session.js'
 
 const MAX_TOKENS = 8192
 export const MAX_STREAM_TOOL_INPUT_LENGTH = 16 * 1024
@@ -301,6 +302,75 @@ export function createOfficeAgentTransport(
               error instanceof TransportError ? error.publicMessage() : safeError(error),
             )
           }
+        } finally {
+          if (timeout !== undefined) clearTimeout(timeout)
+          if (cancelListener) controller.signal.removeEventListener('abort', cancelListener)
+          done()
+        }
+      })()
+      return { cancel: () => controller.abort() }
+    },
+  }
+}
+
+/** PC-backed transport: provider credentials remain in WisWork PC. */
+export function createPcBridgeAgentTransport(bridge: PcBridgeSession): AgentTransport {
+  return createTransport((init) => bridge.authenticatedFetch('/v1/office/messages', init))
+}
+
+function createTransport(fetchMessages: (init: RequestInit) => Promise<Response>): AgentTransport {
+  return {
+    stream(request: AgentStreamRequest, callbacks: AgentStreamCallbacks) {
+      const controller = new AbortController()
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      let cancelListener: (() => void) | undefined
+      let completed = false
+      const done = () => {
+        if (!completed) {
+          completed = true
+          callbacks.onDone()
+        }
+      }
+      void (async () => {
+        try {
+          const body = JSON.stringify({
+            model: WISWORK_DEFAULT_MODEL,
+            max_tokens: MAX_TOKENS,
+            system: request.system,
+            messages: messagesForProvider(request.messages),
+            tools: request.tools.map((tool) => ({
+              name: tool.name,
+              description: tool.description,
+              input_schema: tool.inputSchema,
+            })),
+            stream: true,
+          })
+          if (body.length > MAX_REQUEST_BODY_LENGTH)
+            throw new TransportError('transport_request_too_large')
+          const operation = fetchMessages({
+            method: 'POST',
+            signal: controller.signal,
+            headers: { 'content-type': 'application/json' },
+            body,
+          }).then((response) => consumeStream(response, callbacks, controller.signal))
+          const expired = new Promise<never>((_resolve, reject) => {
+            timeout = setTimeout(() => {
+              reject(new TransportError('transport_timeout'))
+              controller.abort()
+            }, STREAM_RESPONSE_TIMEOUT_MS)
+          })
+          const cancelled = new Promise<never>((_resolve, reject) => {
+            cancelListener = () => reject(new DOMException('Aborted', 'AbortError'))
+            controller.signal.addEventListener('abort', cancelListener, { once: true })
+          })
+          await Promise.race([operation, expired, cancelled])
+        } catch (error) {
+          if (error instanceof TransportError && error.code === 'transport_timeout')
+            callbacks.onError(error.publicMessage())
+          else if (!controller.signal.aborted)
+            callbacks.onError(
+              error instanceof TransportError ? error.publicMessage() : safeError(error),
+            )
         } finally {
           if (timeout !== undefined) clearTimeout(timeout)
           if (cancelListener) controller.signal.removeEventListener('abort', cancelListener)
