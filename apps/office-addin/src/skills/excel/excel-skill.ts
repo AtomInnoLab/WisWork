@@ -534,7 +534,10 @@ function targets(name: string, input: Json): string[] {
       `sheet:${input.sheetId}!${input.destinationRange}`,
     ]
   if (name === 'set_cell_range')
-    return [`sheet:${input.sheetId}!${input.copyToRange ?? input.range}`]
+    return [
+      `sheet:${input.sheetId}!${input.range}`,
+      ...(input.copyToRange ? [`sheet:${input.sheetId}!${input.copyToRange}`] : []),
+    ]
   if (name === 'modify_sheet_structure')
     return [
       `structure:${input.sheetId}:${input.operation}:${input.dimension}:${input.reference ?? ''}:${input.count ?? 1}`,
@@ -545,6 +548,19 @@ function targets(name: string, input: Json): string[] {
   if (name === 'modify_object')
     return [`sheet:${input.sheetId}!object:${input.id ?? input.properties?.name ?? 'new'}`]
   return [`sheet:${input.sheetId}!${input.range ?? '*'}`]
+}
+function writeTargets(name: string, input: Json): string[] {
+  if (name === 'copy_to') return [`sheet:${input.sheetId}!${input.destinationRange}`]
+  if (name === 'set_cell_range') return targets(name, input)
+  if (name === 'modify_sheet_structure')
+    return [
+      `structure:${input.sheetId}:${input.dimension}:${input.reference ?? ''}:${input.count ?? 1}`,
+    ]
+  if (name === 'modify_workbook_structure')
+    return [`workbook:sheet:${input.sheetId ?? input.sheetName ?? ''}`]
+  if (name === 'modify_object')
+    return [`sheet:${input.sheetId}!object:${input.id ?? input.properties?.name ?? 'new'}`]
+  return targets(name, input)
 }
 function cellCount(name: string, input: Json) {
   if (name === 'set_cell_range') return input.cells.reduce((n: number, r: any[]) => n + r.length, 0)
@@ -649,6 +665,15 @@ export function createExcelSkill(options: {
           const before = await options.adapter.fingerprint(affected, signal)
           check(signal)
           let expectedFingerprint: string | undefined
+          const operationPrestates: unknown[] = []
+          const finalWriter = new Map<string, number>()
+          program.operations.forEach((operation, index) => {
+            for (const target of writeTargets(operation.op, operation.input))
+              finalWriter.set(target, index)
+          })
+          const finalOperationIndexes = [...new Set([...finalWriter.values()])].sort(
+            (a, b) => a - b,
+          )
           const proposal = options.proposals.propose({
             operation: call.name,
             toolName: call.name,
@@ -663,22 +688,32 @@ export function createExcelSkill(options: {
             execute: async (confirmSignal) => {
               for (const operation of program.operations) {
                 check(confirmSignal)
+                operationPrestates.push(
+                  await options.adapter.captureMutation(
+                    operation.op,
+                    operation.input,
+                    confirmSignal,
+                  ),
+                )
+                check(confirmSignal)
                 await methods[operation.op](operation.input, confirmSignal)
               }
               check(confirmSignal)
               expectedFingerprint = await options.adapter.fingerprint(affected, confirmSignal)
             },
             verify: async (confirmSignal) => {
-              for (const operation of program.operations)
+              for (const index of finalOperationIndexes) {
+                const operation = program.operations[index]
                 if (
                   !(await options.adapter.verifyMutation(
                     operation.op,
                     operation.input,
-                    before,
+                    operationPrestates[index],
                     confirmSignal,
                   ))
                 )
                   throw new Error('office_verify_failed')
+              }
               if (
                 !expectedFingerprint ||
                 (await options.adapter.fingerprint(affected, confirmSignal)) !== expectedFingerprint
@@ -723,6 +758,9 @@ export function createExcelSkill(options: {
               throw new Error('office_read_failed')
             return {
               output: JSON.stringify({ mime: image.mime }),
+              modelContent: [
+                { type: 'image' as const, image: { mime: image.mime, base64: image.base64 } },
+              ],
               display: {
                 kind: 'images',
                 items: [{ url: `data:${image.mime};base64,${image.base64}` }],
@@ -735,6 +773,8 @@ export function createExcelSkill(options: {
         }
         const affected = targets(call.name, input)
         const before = await options.adapter.fingerprint(affected, signal)
+        check(signal)
+        const operationBefore = await options.adapter.captureMutation(call.name, input, signal)
         check(signal)
         let expectedFingerprint: string | undefined
         const proposal = options.proposals.propose({
@@ -767,7 +807,7 @@ export function createExcelSkill(options: {
           verify: async (s) => {
             check(s)
             try {
-              if (!(await options.adapter.verifyMutation(call.name, input, before, s)))
+              if (!(await options.adapter.verifyMutation(call.name, input, operationBefore, s)))
                 throw new Error('office_verify_failed')
               if (call.name === 'modify_object')
                 await options.adapter.verifyObjects({ sheetId: input.sheetId, id: input.id }, s)
