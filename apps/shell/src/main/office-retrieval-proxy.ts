@@ -3,9 +3,16 @@ const MAX_QUERY_CHARS = 4_096
 const MAX_FETCH_CONTENT_CHARS = 256 * 1024
 const MAX_RESULTS = 20
 const REQUEST_TIMEOUT_MS = 15_000
-// Intentionally empty until the retrieval service owner publishes the canonical production URL.
-// Adding an endpoint is a reviewed build-time change; runtime configuration cannot widen it.
-export const OFFICE_RETRIEVAL_ENDPOINTS: readonly string[] = []
+// Intentionally empty until the service owner publishes both the canonical URL and this contract.
+// The service—not this client—must resolve DNS safely on every connection, reject DNS rebinding,
+// and validate every redirect hop before fetching. Runtime configuration cannot widen this map.
+export interface OfficeRetrievalServiceAttestation {
+  contract: 'wiswork-office-retrieval-v1'
+  ssrfProtection: 'dns-rebinding-and-redirect-hops-v1'
+}
+export const OFFICE_RETRIEVAL_SERVICES: Readonly<
+  Record<string, OfficeRetrievalServiceAttestation>
+> = {}
 
 export type OfficeWebCapability = 'web-search.v1' | 'web-fetch.v1' | 'image-search.v1'
 export type OfficeRetrievalProxy = (
@@ -39,7 +46,9 @@ const maxResults = (value: unknown): number => {
 
 export function officeRetrievalEndpointFromEnv(
   env: Record<string, string | undefined>,
-  allowedEndpoints: readonly string[] = OFFICE_RETRIEVAL_ENDPOINTS,
+  allowedServices: Readonly<
+    Record<string, OfficeRetrievalServiceAttestation>
+  > = OFFICE_RETRIEVAL_SERVICES,
 ): string | null {
   const configured = env.WISWORK_OFFICE_RETRIEVAL_URL
   if (!configured) return null
@@ -55,7 +64,8 @@ export function officeRetrievalEndpointFromEnv(
     url.password ||
     url.hash ||
     url.href !== configured ||
-    !allowedEndpoints.includes(configured)
+    allowedServices[configured]?.contract !== 'wiswork-office-retrieval-v1' ||
+    allowedServices[configured]?.ssrfProtection !== 'dns-rebinding-and-redirect-hops-v1'
   )
     throw new Error('invalid_office_retrieval_url')
   return configured
@@ -72,19 +82,60 @@ function safeHttpsUrl(value: unknown): string {
   if (url.protocol !== 'https:' || url.username || url.password || url.href !== raw)
     throw new Error('retrieval_invalid_request')
   const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  if (
-    hostname === 'localhost' ||
-    hostname === '::1' ||
-    hostname.startsWith('127.') ||
-    hostname.startsWith('10.') ||
-    hostname.startsWith('192.168.') ||
-    /^169\.254\./.test(hostname) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
-    /^0\./.test(hostname) ||
-    hostname === '0.0.0.0'
-  )
+  if (hostname === 'localhost' || unsafeIpLiteral(hostname))
     throw new Error('retrieval_invalid_request')
   return raw
+}
+
+function unsafeIpLiteral(hostname: string): boolean {
+  const kind = isIP(hostname)
+  if (kind === 4) {
+    const [a, b, c] = hostname.split('.').map(Number)
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 0 && c === 0) ||
+      (a === 192 && b === 0 && c === 2) ||
+      (a === 192 && b === 88 && c === 99) ||
+      (a === 192 && b === 168) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      (a === 198 && b === 51 && c === 100) ||
+      (a === 203 && b === 0 && c === 113) ||
+      a >= 224
+    )
+  }
+  if (kind !== 6) return false
+  const groups = expandIpv6(hostname)
+  if (!groups) return true
+  const [first, second] = groups
+  const mapped = groups.slice(0, 5).every((value) => value === 0) && groups[5] === 0xffff
+  return (
+    groups.every((value) => value === 0) ||
+    (groups.slice(0, 7).every((value) => value === 0) && groups[7] === 1) ||
+    mapped ||
+    (first & 0xfe00) === 0xfc00 ||
+    (first & 0xffc0) === 0xfe80 ||
+    (first & 0xff00) === 0xff00 ||
+    (first === 0x2001 && second === 0x0db8) ||
+    (first === 0x0064 && second === 0xff9b) ||
+    (first === 0x0100 && second === 0)
+  )
+}
+
+function expandIpv6(value: string): number[] | null {
+  const halves = value.split('::')
+  if (halves.length > 2) return null
+  const left = halves[0] ? halves[0].split(':') : []
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : []
+  const missing = 8 - left.length - right.length
+  if ((halves.length === 1 && missing !== 0) || (halves.length === 2 && missing < 1)) return null
+  const raw = [...left, ...Array.from({ length: missing }, () => '0'), ...right]
+  if (raw.length !== 8 || raw.some((group) => !/^[0-9a-f]{1,4}$/i.test(group))) return null
+  return raw.map((group) => Number.parseInt(group, 16))
 }
 
 function requestFor(capability: string, input: unknown) {
@@ -253,3 +304,4 @@ export function createOfficeRetrievalProxy(options: {
     }
   }
 }
+import { isIP } from 'node:net'

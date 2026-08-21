@@ -5,25 +5,33 @@ import {
 } from '../src/main/office-retrieval-proxy'
 
 const TEST_ENDPOINT = 'https://retrieval.test.invalid/v1/office/retrieval'
+const TEST_SERVICES = {
+  [TEST_ENDPOINT]: {
+    contract: 'wiswork-office-retrieval-v1',
+    ssrfProtection: 'dns-rebinding-and-redirect-hops-v1',
+  },
+} as const
 
 describe('Office fixed retrieval proxy', () => {
   it('is disabled without configuration and accepts only a compile-allowlisted exact endpoint', () => {
-    expect(officeRetrievalEndpointFromEnv({}, [TEST_ENDPOINT])).toBeNull()
+    expect(officeRetrievalEndpointFromEnv({}, TEST_SERVICES)).toBeNull()
     expect(() =>
-      officeRetrievalEndpointFromEnv({ WISWORK_OFFICE_RETRIEVAL_URL: 'http://127.0.0.1' }, [
-        TEST_ENDPOINT,
-      ]),
+      officeRetrievalEndpointFromEnv(
+        { WISWORK_OFFICE_RETRIEVAL_URL: 'http://127.0.0.1' },
+        TEST_SERVICES,
+      ),
     ).toThrow('invalid_office_retrieval_url')
     expect(() =>
       officeRetrievalEndpointFromEnv(
         { WISWORK_OFFICE_RETRIEVAL_URL: 'https://attacker.invalid/retrieval' },
-        [TEST_ENDPOINT],
+        TEST_SERVICES,
       ),
     ).toThrow('invalid_office_retrieval_url')
     expect(
-      officeRetrievalEndpointFromEnv({ WISWORK_OFFICE_RETRIEVAL_URL: TEST_ENDPOINT }, [
-        TEST_ENDPOINT,
-      ]),
+      officeRetrievalEndpointFromEnv(
+        { WISWORK_OFFICE_RETRIEVAL_URL: TEST_ENDPOINT },
+        TEST_SERVICES,
+      ),
     ).toBe(TEST_ENDPOINT)
   })
 
@@ -66,6 +74,13 @@ describe('Office fixed retrieval proxy', () => {
     ['web-fetch.v1', { url: 'https://127.0.0.1/private' }],
     ['web-fetch.v1', { url: 'https://169.254.169.254/latest/meta-data' }],
     ['web-fetch.v1', { url: 'https://[::1]/private' }],
+    ['web-fetch.v1', { url: 'https://2130706433/private' }],
+    ['web-fetch.v1', { url: 'https://0x7f000001/private' }],
+    ['web-fetch.v1', { url: 'https://0177.0.0.1/private' }],
+    ['web-fetch.v1', { url: 'https://[::ffff:127.0.0.1]/private' }],
+    ['web-fetch.v1', { url: 'https://[fc00::1]/private' }],
+    ['web-fetch.v1', { url: 'https://[fe80::1]/private' }],
+    ['web-fetch.v1', { url: 'https://[2001:db8::1]/private' }],
     ['web-search.v1', { query: 'x', max_results: 21 }],
     ['image-search.v1', { query: 'x', max_results: 0 }],
   ])('rejects invalid or literal-private input for %s', async (capability, body) => {

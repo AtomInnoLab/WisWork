@@ -2546,6 +2546,7 @@ app.whenReady().then(async () => {
       getAccessToken: () => requireAuthRuntime().client.getAccessToken(),
       proxy: officeMessagesProxy,
       retrievalProxy,
+      negotiateCapabilities: true,
       onPending: notifyOfficePairing,
       onPendingExpired: (pairingId) => {
         if (!shellWindow || shellWindow.isDestroyed()) return

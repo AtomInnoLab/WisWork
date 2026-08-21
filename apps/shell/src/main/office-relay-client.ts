@@ -18,6 +18,7 @@ const RELAY_ERROR_CODES = new Set([
   'already_claimed',
   'binary_not_supported',
   'chunk_too_large',
+  'capability_not_negotiated',
   'claim_limit',
   'claim_rate_limited',
   'create_rate_limited',
@@ -100,6 +101,7 @@ export function createOfficeRelayClient(options: {
   getAccessToken(): Promise<string | null>
   proxy: MessagesProxy
   retrievalProxy?: OfficeRetrievalProxy
+  negotiateCapabilities?: boolean
   onPending(pairing: OfficePairingRequest): void
   onPendingExpired?: (pairingId: string) => void
   onStatus?: (status: OfficeRelayStatus) => void
@@ -108,12 +110,16 @@ export function createOfficeRelayClient(options: {
   const connect = options.connect ?? connectAuthenticatedRelaySocket
   let socket: RelaySocket | null = null
   let diagnostic: OfficeRelayStatus = 'disconnected'
-  const protocolVersion = options.retrievalProxy ? 2 : 1
+  let protocolVersion: 1 | 2 = 1
+  const negotiateCapabilities =
+    options.negotiateCapabilities === true || Boolean(options.retrievalProxy)
+  const offeredCapabilities = options.retrievalProxy ? [...V2_CAPABILITIES] : ['agent.v1']
   let pending: (OfficePairingRequest & { capabilities?: string[] }) | null = null
   let session: { sessionId: string; capability: string; capabilities: string[] } | null = null
   let active: { requestId: string; controller: AbortController; remoteCancelled: boolean } | null =
     null
   let claimedCode: string | null = null
+  let negotiationPending = false
   const requestIds = new Set<string>()
   const terminalRequestIds = new Set<string>()
   const terminalRequestOrder: string[] = []
@@ -159,6 +165,7 @@ export function createOfficeRelayClient(options: {
     pending = null
     approvalSentFor = null
     claimedCode = null
+    negotiationPending = false
     session = null
     requestIds.clear()
     terminalRequestIds.clear()
@@ -299,6 +306,50 @@ export function createOfficeRelayClient(options: {
     } catch {
       return clear('protocol_violation', true)
     }
+    const candidate = frame as Record<string, unknown>
+    if (candidate.version === 2 && candidate.type === 'pc.negotiated') {
+      if (
+        !negotiateCapabilities ||
+        !negotiationPending ||
+        diagnostic !== 'claiming' ||
+        !claimedCode ||
+        !exact(candidate, ['version', 'type', 'pairing_version', 'capabilities']) ||
+        (candidate.pairing_version !== 1 && candidate.pairing_version !== 2) ||
+        !Array.isArray(candidate.capabilities) ||
+        candidate.capabilities.length < 1 ||
+        candidate.capabilities.length > offeredCapabilities.length ||
+        candidate.capabilities.some(
+          (value, index, values) =>
+            typeof value !== 'string' ||
+            !offeredCapabilities.includes(value) ||
+            values.indexOf(value) !== index,
+        ) ||
+        (candidate.pairing_version === 1 &&
+          JSON.stringify(candidate.capabilities) !== JSON.stringify(['agent.v1']))
+      )
+        return clear('protocol_violation', true)
+      protocolVersion = candidate.pairing_version
+      negotiationPending = false
+      send({
+        version: protocolVersion,
+        type: 'pc.claim',
+        verification_code: claimedCode,
+        ...(protocolVersion === 2 ? { capabilities: offeredCapabilities } : {}),
+      })
+      return
+    }
+    if (
+      negotiateCapabilities &&
+      negotiationPending &&
+      diagnostic === 'claiming' &&
+      candidate.version === 2 &&
+      candidate.type === 'relay.error' &&
+      exact(candidate, ['version', 'type', 'code']) &&
+      typeof candidate.code === 'string' &&
+      RELAY_ERROR_CODES.has(candidate.code)
+    )
+      return clear('relay_error', true)
+    if (negotiationPending) return clear('protocol_violation', true)
     if (
       !frame ||
       typeof frame !== 'object' ||
@@ -499,11 +550,12 @@ export function createOfficeRelayClient(options: {
       if (owner !== generation) throw new Error('relay_connection_failed')
       claimedCode = code
       setStatus('claiming')
+      negotiationPending = negotiateCapabilities
       send({
-        version: protocolVersion,
-        type: 'pc.claim',
+        version: negotiateCapabilities ? 2 : protocolVersion,
+        type: negotiateCapabilities ? 'pc.negotiate' : 'pc.claim',
         verification_code: code,
-        ...(protocolVersion === 2 ? { capabilities: V2_CAPABILITIES } : {}),
+        ...(negotiateCapabilities ? { capabilities: offeredCapabilities } : {}),
       })
     },
     async approve(pairingId) {
