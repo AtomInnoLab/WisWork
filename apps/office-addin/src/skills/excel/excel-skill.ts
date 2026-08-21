@@ -227,19 +227,44 @@ function schemaFor(fields: Record<string, string>) {
                     }
                   : Object.hasOwn(enums, kind)
                     ? { type: 'string', enum: enums[kind] }
-                    : kind === 'code'
-                      ? { type: 'string', minLength: 1, maxLength: MAX_CODE }
-                      : kind === 'explanation'
-                        ? { type: 'string', maxLength: 50 }
-                        : kind === 'codeExplanation'
-                          ? { type: 'string', maxLength: 100 }
-                          : kind === 'limit'
-                            ? { type: 'integer', minimum: 1, maximum: 2_000 }
-                            : kind === 'rows'
-                              ? { type: 'integer', minimum: 1, maximum: 500 }
-                              : kind === 'offset'
-                                ? { type: 'integer', minimum: 0, maximum: 1_000_000 }
-                                : { type: 'string' }
+                    : kind === 'properties'
+                      ? {
+                          type: 'object',
+                          properties: {
+                            name: { type: 'string', maxLength: 256 },
+                            source: { type: 'string', maxLength: 512 },
+                            range: { type: 'string', maxLength: MAX_RANGE },
+                            anchor: { type: 'string', maxLength: MAX_RANGE },
+                            title: { type: 'string', maxLength: 256 },
+                            chartType: {
+                              type: 'string',
+                              enum: [
+                                'columnClustered',
+                                'barClustered',
+                                'line',
+                                'pie',
+                                'scatter',
+                                'area',
+                                'doughnut',
+                              ],
+                            },
+                          },
+                          required: [],
+                          additionalProperties: false,
+                        }
+                      : kind === 'code'
+                        ? { type: 'string', minLength: 1, maxLength: MAX_CODE }
+                        : kind === 'explanation'
+                          ? { type: 'string', maxLength: 50 }
+                          : kind === 'codeExplanation'
+                            ? { type: 'string', maxLength: 100 }
+                            : kind === 'limit'
+                              ? { type: 'integer', minimum: 1, maximum: 2_000 }
+                              : kind === 'rows'
+                                ? { type: 'integer', minimum: 1, maximum: 500 }
+                                : kind === 'offset'
+                                  ? { type: 'integer', minimum: 0, maximum: 1_000_000 }
+                                  : { type: 'string' }
   }
   return { type: 'object', properties, required, additionalProperties: false }
 }
@@ -263,6 +288,15 @@ function integer(value: unknown, min: number, max: number) {
   if (!Number.isInteger(value) || (value as number) < min || (value as number) > max) invalid()
   return value as number
 }
+function range(value: unknown): string {
+  const text = string(value, MAX_RANGE, 1)
+  if (
+    !/^\$?[A-Z]{1,3}\$?[1-9]\d*(?::\$?[A-Z]{1,3}\$?[1-9]\d*)?$/i.test(text) &&
+    !/^(?:[A-Z]{1,3}:[A-Z]{1,3}|[1-9]\d*:[1-9]\d*)$/i.test(text)
+  )
+    invalid()
+  return text
+}
 function exact(input: unknown, fields: Record<string, string>): Json {
   if (!input || typeof input !== 'object' || Array.isArray(input)) invalid()
   const source = input as Json
@@ -280,10 +314,14 @@ function exact(input: unknown, fields: Record<string, string>): Json {
     else if (kind === 'boolean') {
       if (typeof value !== 'boolean') invalid()
       result[key] = value
-    } else if (kind === 'range') result[key] = string(value, MAX_RANGE, 1)
+    } else if (kind === 'range') result[key] = range(value)
     else if (kind === 'ranges') {
       if (!Array.isArray(value) || value.length < 1 || value.length > MAX_RANGES) invalid()
-      result[key] = value.map((item) => string(item, MAX_RANGE, 1))
+      result[key] = value.map((item) => {
+        const parsed = range(item)
+        if (/^[A-Z]+:[A-Z]+$|^\d+:\d+$/i.test(parsed)) invalid()
+        return parsed
+      })
     } else if (kind === 'limit') result[key] = integer(value, 1, 2_000)
     else if (kind === 'rows') result[key] = integer(value, 1, 500)
     else if (kind === 'offset') result[key] = integer(value, 0, 1_000_000)
@@ -357,6 +395,7 @@ function parseCells(value: unknown): Json[][] {
     return row.map((cell) => {
       if (!cell || typeof cell !== 'object' || Array.isArray(cell)) invalid()
       const item = cell as Json
+      if (Object.hasOwn(item, 'value') && Object.hasOwn(item, 'formula')) invalid()
       if (
         Object.keys(item).some(
           (k) => !['value', 'formula', 'note', 'cellStyles', 'borderStyles'].includes(k),
@@ -411,39 +450,10 @@ function parseCells(value: unknown): Json[][] {
 function parseProperties(value: unknown): Json {
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalid()
   const item = value as Json
-  const allowed = [
-    'name',
-    'source',
-    'range',
-    'anchor',
-    'rows',
-    'columns',
-    'values',
-    'title',
-    'chartType',
-  ]
+  const allowed = ['name', 'source', 'range', 'anchor', 'title', 'chartType']
   if (Object.keys(item).some((k) => !allowed.includes(k))) invalid()
   for (const key of ['name', 'source', 'range', 'anchor', 'title', 'chartType'])
     if (item[key] !== undefined) string(item[key], key === 'source' ? 512 : 256, 1)
-  for (const key of ['rows', 'columns', 'values']) {
-    if (item[key] === undefined) continue
-    if (!Array.isArray(item[key]) || item[key].length > 64) invalid()
-    for (const field of item[key]) {
-      if (
-        !field ||
-        typeof field !== 'object' ||
-        Array.isArray(field) ||
-        Object.keys(field).some((name) => !['field', 'summarizeBy'].includes(name))
-      )
-        invalid()
-      string(field.field, 256, 1)
-      if (
-        field.summarizeBy !== undefined &&
-        !['sum', 'count', 'average', 'max', 'min'].includes(field.summarizeBy)
-      )
-        invalid()
-    }
-  }
   if (new TextEncoder().encode(JSON.stringify(item)).byteLength > 16 * 1024) invalid()
   return JSON.parse(JSON.stringify(item))
 }
@@ -472,10 +482,18 @@ function safeError(error: unknown, write = false) {
       : 'office_read_failed'
 }
 function targets(name: string, input: Json): string[] {
-  if (name === 'copy_to') return [`sheet:${input.sheetId}!${input.destinationRange}`]
+  if (name === 'copy_to')
+    return [
+      `sheet:${input.sheetId}!${input.sourceRange}`,
+      `sheet:${input.sheetId}!${input.destinationRange}`,
+    ]
   if (name === 'set_cell_range')
     return [`sheet:${input.sheetId}!${input.copyToRange ?? input.range}`]
-  if (name === 'modify_sheet_structure') return [`sheet:${input.sheetId}!*`]
+  if (name === 'modify_sheet_structure')
+    return [
+      `structure:${input.sheetId}:${input.operation}:${input.dimension}:${input.reference ?? ''}:${input.count ?? 1}`,
+    ]
+  if (name === 'resize_range') return [`resize:${input.sheetId}!${input.range ?? 'A1:XFD1048576'}`]
   if (name === 'modify_workbook_structure')
     return [`workbook:${input.operation}:${input.sheetId ?? input.sheetName ?? ''}`]
   if (name === 'modify_object')
@@ -494,10 +512,32 @@ function semantics(name: string, input: Json) {
   }
   if (name === 'modify_sheet_structure' && input.operation !== 'unfreeze' && !input.reference)
     invalid()
+  if (
+    name === 'modify_sheet_structure' &&
+    input.reference &&
+    (input.dimension === 'rows'
+      ? !/^[1-9]\d*$/.test(input.reference)
+      : !/^[A-Z]{1,3}$/i.test(input.reference))
+  )
+    invalid()
   if (name === 'resize_range' && !input.width && !input.height) invalid()
   if (name === 'modify_object') {
     if (input.operation !== 'create' && !input.id) invalid()
     if (input.operation !== 'delete' && !input.properties) invalid()
+    if (input.objectType === 'pivotTable' && input.operation === 'update')
+      throw new Error('office_api_unsupported')
+    if (
+      input.operation === 'create' &&
+      input.objectType === 'chart' &&
+      (!input.properties.chartType || !input.properties.source)
+    )
+      invalid()
+    if (
+      input.operation === 'create' &&
+      input.objectType === 'pivotTable' &&
+      (!input.properties.name || !input.properties.source || !input.properties.range)
+    )
+      invalid()
   }
 }
 
@@ -572,6 +612,7 @@ export function createExcelSkill(options: {
           resize_range: options.adapter.resizeRange.bind(options.adapter),
           modify_object: options.adapter.modifyObject.bind(options.adapter),
         }
+        let expectedFingerprint: string | undefined
         const proposal = options.proposals.propose({
           operation: call.name,
           toolName: call.name,
@@ -591,6 +632,8 @@ export function createExcelSkill(options: {
             try {
               await methods[call.name](input, s)
               check(s)
+              expectedFingerprint = await options.adapter.fingerprint(affected, s)
+              check(s)
             } catch (error) {
               // Do not attach the raw Office exception: it can contain document data.
               // eslint-disable-next-line preserve-caught-error
@@ -604,8 +647,15 @@ export function createExcelSkill(options: {
                 await options.adapter.verifyObjects({ sheetId: input.sheetId, id: input.id }, s)
               else if (call.name === 'modify_workbook_structure')
                 await options.adapter.verifyWorkbook(s)
+              else if (call.name === 'modify_sheet_structure' || call.name === 'resize_range')
+                await options.adapter.fingerprint(affected, s)
               else await options.adapter.verifyRanges(affected, s)
               check(s)
+              if (
+                !expectedFingerprint ||
+                (await options.adapter.fingerprint(affected, s)) !== expectedFingerprint
+              )
+                throw new Error('office_verify_failed')
             } catch {
               throw new Error('office_verify_failed')
             }

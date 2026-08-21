@@ -115,7 +115,7 @@ describe('Excel compatibility skill', () => {
     const pending = proposals.pending()!
     expect(pending.impact).toEqual({ host: 'Excel', targets: ['sheet:1!A1:B1'], count: 2 })
     await proposals.confirm(pending.id)
-    expect(fake.fingerprint).toHaveBeenCalledTimes(2)
+    expect(fake.fingerprint).toHaveBeenCalledTimes(4)
     expect(fake.setCellRange).toHaveBeenCalledOnce()
     expect(fake.verifyRanges).toHaveBeenCalledOnce()
   })
@@ -182,9 +182,13 @@ describe('Excel compatibility skill', () => {
     ]
     for (const [name, input] of cases) {
       const proposals = createStructuredProposalController()
-      await expect(
-        createExcelSkill({ adapter: adapter(), proposals }).executeTool(call(name, input)),
-      ).resolves.toMatchObject({ mutated: false, output: expect.stringContaining('proposalId') })
+      const outcome = await createExcelSkill({ adapter: adapter(), proposals }).executeTool(
+        call(name, input),
+      )
+      expect(outcome, name).toMatchObject({
+        mutated: false,
+        output: expect.stringContaining('proposalId'),
+      })
       expect(proposals.pending()?.toolName).toBe(name)
     }
     await expect(
@@ -234,19 +238,83 @@ describe('browser Excel adapter', () => {
       address: 'Data!A1:B3',
       load: vi.fn(),
     }
-    const sheet = { id: '1', name: 'Data', load: vi.fn(), getRange: vi.fn().mockReturnValue(range) }
+    const sheet = {
+      id: '1',
+      name: 'Data',
+      load: vi.fn(),
+      getRangeByIndexes: vi.fn().mockReturnValue(range),
+    }
     Object.assign(globalThis, {
       Office: {
         context: { host: 'Excel', requirements: { isSetSupported: vi.fn().mockReturnValue(true) } },
       },
       Excel: {
         run: (cb: (ctx: unknown) => unknown) =>
-          cb({ workbook: { worksheets: { getItem: () => sheet } }, sync: vi.fn() }),
+          cb({ workbook: { worksheets: { getItemAt: () => sheet } }, sync: vi.fn() }),
       },
     })
     await expect(
       new BrowserExcelAdapter().getRangeAsCsv({ sheetId: 1, range: 'A1:B3', maxRows: 1 }),
     ).resolves.toMatchObject({ csv: 'h1,h2', rowCount: 1, hasMore: true })
+    expect(sheet.getRangeByIndexes).toHaveBeenCalledWith(0, 0, 1, 2)
     expect(range.load).toHaveBeenCalledWith('values,rowCount,columnCount,address')
+  })
+
+  it('rejects malformed ranges before entering Excel.run', async () => {
+    const run = vi.fn()
+    Object.assign(globalThis, {
+      Office: {
+        context: { host: 'Excel', requirements: { isSetSupported: vi.fn().mockReturnValue(true) } },
+      },
+      Excel: { run },
+    })
+    await expect(
+      new BrowserExcelAdapter().getRangeAsCsv({ sheetId: 1, range: '*' }),
+    ).rejects.toThrow('invalid_tool_input')
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it('paginates search by a monotonic raw-cell cursor without rescanning matches', async () => {
+    const matrix = [
+      ['x', 'no'],
+      ['x', 'x'],
+      ['tail', 'x'],
+    ]
+    const sheet = {
+      name: 'Data',
+      load: vi.fn(),
+      getRangeByIndexes: vi.fn((row: number, column: number, rows: number, columns: number) => ({
+        values: Array.from({ length: rows }, (_, r) =>
+          matrix[row + r].slice(column, column + columns),
+        ),
+        formulas: Array.from({ length: rows }, () => Array.from({ length: columns }, () => null)),
+        load: vi.fn(),
+      })),
+    }
+    Object.assign(globalThis, {
+      Office: {
+        context: { host: 'Excel', requirements: { isSetSupported: vi.fn().mockReturnValue(true) } },
+      },
+      Excel: {
+        run: (cb: (ctx: unknown) => unknown) =>
+          cb({ workbook: { worksheets: { getItemAt: () => sheet } }, sync: vi.fn() }),
+      },
+    })
+    const adapter = new BrowserExcelAdapter()
+    const first = (await adapter.searchData({
+      searchTerm: 'x',
+      sheetId: 1,
+      range: 'A1:B3',
+      options: { maxResults: 1 },
+    })) as { nextOffset: number; matches: Array<{ address: string }> }
+    expect(first).toMatchObject({ nextOffset: 1, matches: [{ address: 'A1' }] })
+    const second = (await adapter.searchData({
+      searchTerm: 'x',
+      sheetId: 1,
+      range: 'A1:B3',
+      offset: first.nextOffset,
+      options: { maxResults: 1 },
+    })) as { nextOffset: number; matches: Array<{ address: string }> }
+    expect(second).toMatchObject({ nextOffset: 3, matches: [{ address: 'A2' }] })
   })
 })
