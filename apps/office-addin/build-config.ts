@@ -14,6 +14,15 @@ export interface DeploymentConfig {
 }
 
 export type OfficeTransportMode = 'relay' | 'loopback'
+export type OfficeWorkspaceMode = 'workspace' | 'legacy'
+
+export function officeWorkspaceMode(env: BuildEnv): OfficeWorkspaceMode {
+  const value = env.VITE_WISWORK_OFFICE_WORKSPACE
+  if (value === undefined || value === '' || value === '1') return 'workspace'
+  if (value === '0') return 'legacy'
+  throw new Error('invalid_office_workspace_mode')
+}
+
 export function officeTransportMode(env: BuildEnv): OfficeTransportMode {
   const value = env.VITE_WISWORK_OFFICE_TRANSPORT
   if (value === undefined || value === '' || value === 'relay') return 'relay'
@@ -45,6 +54,7 @@ export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
   let mode: OfficeTransportMode
   try {
     mode = officeTransportMode(env)
+    void officeWorkspaceMode(env)
   } catch {
     return undefined
   }

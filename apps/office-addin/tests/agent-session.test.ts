@@ -191,6 +191,88 @@ describe('Office agent session', () => {
     ).toEqual(['Try this', 'Try this'])
   })
 
+  it.each([
+    ['authenticationLost', 'resolve'],
+    ['newTask', 'reject'],
+    ['logout', 'resolve'],
+  ] as const)(
+    'does not repopulate presentation after %s races an in-flight confirmation that later %s',
+    async (reset, outcome) => {
+      const harness = transportHarness()
+      const proposals = proposalsHarness()
+      proposals.setPending()
+      let settle!: () => void
+      proposals.controller.confirm.mockImplementation(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            settle = () => (outcome === 'resolve' ? resolve() : reject(new Error('proposal_stale')))
+          }),
+      )
+      const session = createOfficeAgentSession({
+        transport: harness.transport,
+        skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+        proposals: proposals.controller,
+      })
+
+      const confirmation = session.confirm('p1')
+      expect(session.snapshot().applying).toBe(true)
+      session[reset]()
+      expect(session.snapshot()).toMatchObject({
+        applying: false,
+        status: 'idle',
+        activity: '',
+        timeline: [],
+        error: undefined,
+      })
+
+      settle()
+      await confirmation
+      expect(session.snapshot()).toMatchObject({
+        applying: false,
+        status: 'idle',
+        activity: '',
+        timeline: [],
+        error: undefined,
+      })
+    },
+  )
+
+  it('maps arbitrary transport failures to a stable code, safe copy, and retry policy', async () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+    })
+
+    session.send('Fail safely')
+    await Promise.resolve()
+    harness.callbacks().onError('/Users/alice/private token=secret')
+
+    expect(session.snapshot()).toMatchObject({
+      error: 'agent_run_failed',
+      errorMessage: 'The Agent could not complete this request. Try again.',
+      retryable: true,
+    })
+    expect(JSON.stringify(session.snapshot())).not.toContain('alice')
+    expect(JSON.stringify(session.snapshot())).not.toContain('secret')
+  })
+
+  it('does not retry a known non-retryable authentication failure', async () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+    })
+    session.send('Protected request')
+    await Promise.resolve()
+    harness.callbacks().onError('auth_required')
+    session.retry()
+    expect(session.snapshot()).toMatchObject({ error: 'auth_required', retryable: false })
+    expect(session.snapshot().timeline.filter((event) => event.kind === 'user')).toHaveLength(1)
+  })
+
   it('clears presentation state atomically for new task and logout', async () => {
     const harness = transportHarness()
     const proposals = proposalsHarness()
@@ -340,13 +422,11 @@ describe('Office agent session', () => {
     session.send('race')
     session.reject()
     session.stop()
-    session.logout()
 
     expect(session.snapshot().applying).toBe(true)
     expect(proposals.controller.confirm).toHaveBeenCalledOnce()
     expect(proposals.controller.newTurn).not.toHaveBeenCalled()
     expect(proposals.controller.reject).not.toHaveBeenCalled()
-    expect(proposals.controller.logout).not.toHaveBeenCalled()
     expect(harness.cancel).not.toHaveBeenCalled()
 
     settle()

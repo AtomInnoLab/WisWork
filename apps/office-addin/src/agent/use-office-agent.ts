@@ -24,6 +24,8 @@ export interface OfficeAgentSnapshot {
   applying: boolean
   status: AgentSessionStatus
   error?: string
+  errorMessage?: string
+  retryable: boolean
   proposal?: OfficeProposal | StructuredProposal
   timeline: OfficePresentationTimeline
 }
@@ -41,10 +43,65 @@ export interface OfficeAgentSession {
   authenticationLost(): void
 }
 
-const safeConfirmationError = (error: unknown): string =>
-  error instanceof Error && ['proposal_missing', 'proposal_stale'].includes(error.message)
-    ? error.message
-    : 'office_write_failed'
+interface SafeSessionError {
+  code: string
+  message: string
+  retryable: boolean
+}
+
+const confirmationErrors: Readonly<Record<string, SafeSessionError>> = Object.freeze({
+  proposal_missing: {
+    code: 'proposal_missing',
+    message: 'This proposed change is no longer available.',
+    retryable: false,
+  },
+  proposal_stale: {
+    code: 'proposal_stale',
+    message: 'The document changed. Ask the Agent to prepare a fresh proposal.',
+    retryable: false,
+  },
+})
+
+const runErrors: Readonly<Record<string, SafeSessionError>> = Object.freeze({
+  auth_required: {
+    code: 'auth_required',
+    message: 'Sign in to WisWork PC, reconnect, and try again.',
+    retryable: false,
+  },
+  network_error: {
+    code: 'network_error',
+    message: 'The connection was interrupted. Check WisWork PC and try again.',
+    retryable: true,
+  },
+  provider_unavailable: {
+    code: 'provider_unavailable',
+    message: 'The Agent service is temporarily unavailable. Try again.',
+    retryable: true,
+  },
+  request_timeout: {
+    code: 'request_timeout',
+    message: 'The Agent took too long to respond. Try again.',
+    retryable: true,
+  },
+})
+
+const safeConfirmationError = (error: unknown): SafeSessionError => {
+  const code = error instanceof Error ? error.message : ''
+  return (
+    confirmationErrors[code] ?? {
+      code: 'office_write_failed',
+      message: 'The approved change could not be applied.',
+      retryable: false,
+    }
+  )
+}
+
+const safeRunError = (error: string): SafeSessionError =>
+  runErrors[error] ?? {
+    code: 'agent_run_failed',
+    message: 'The Agent could not complete this request. Try again.',
+    retryable: true,
+  }
 
 export function createOfficeAgentSession(dependencies: {
   transport: AgentTransport
@@ -59,6 +116,7 @@ export function createOfficeAgentSession(dependencies: {
     busy: false,
     applying: false,
     status: 'idle',
+    retryable: false,
     timeline: emptyPresentationTimeline(),
   }
   let cached: OfficeAgentSnapshot = { ...state, proposal: proposals.pending() }
@@ -70,6 +128,7 @@ export function createOfficeAgentSession(dependencies: {
   }
 
   let nextEventId = 0
+  let sessionEpoch = 0
   let activeAssistantId: string | undefined
   let lastInstruction = ''
   const eventId = () => `event-${++nextEventId}`
@@ -107,6 +166,8 @@ export function createOfficeAgentSession(dependencies: {
       applying: false,
       status: 'idle',
       error: undefined,
+      errorMessage: undefined,
+      retryable: false,
       timeline: emptyPresentationTimeline(),
     }
   }
@@ -181,10 +242,22 @@ export function createOfficeAgentSession(dependencies: {
         })
       },
       onError: (error) => {
-        const safeError = boundedText(error)
+        const safeError = safeRunError(error)
         activeAssistantId = undefined
-        append({ id: eventId(), kind: 'error', text: safeError, code: safeError })
-        publish({ busy: false, activity: '', status: 'error', error: safeError })
+        append({
+          id: eventId(),
+          kind: 'error',
+          text: safeError.message,
+          code: safeError.code,
+        })
+        publish({
+          busy: false,
+          activity: '',
+          status: 'error',
+          error: safeError.code,
+          errorMessage: safeError.message,
+          retryable: safeError.retryable,
+        })
       },
     },
   })
@@ -202,6 +275,8 @@ export function createOfficeAgentSession(dependencies: {
       busy: true,
       status: 'working',
       error: undefined,
+      errorMessage: undefined,
+      retryable: false,
     })
     loop.run(value)
   }
@@ -221,29 +296,47 @@ export function createOfficeAgentSession(dependencies: {
     },
     async confirm(id) {
       if (state.applying || loop.busy) return
+      const epoch = sessionEpoch
       const event = pendingProposalEvent()
       if (event?.proposal.id === id) {
         replace(event.id, (item) =>
           item.kind === 'proposal' ? { ...item, state: 'applying', error: undefined } : item,
         )
       }
-      publish({ applying: true, error: undefined })
+      publish({
+        applying: true,
+        error: undefined,
+        errorMessage: undefined,
+        retryable: false,
+      })
       try {
         await proposals.confirm(id)
+        if (epoch !== sessionEpoch) return
         if (event)
           replace(event.id, (item) =>
             item.kind === 'proposal' ? { ...item, state: 'applied' } : item,
           )
-        publish({ activity: 'Document updated', error: undefined })
+        publish({
+          activity: 'Document updated',
+          error: undefined,
+          errorMessage: undefined,
+          retryable: false,
+        })
       } catch (error) {
+        if (epoch !== sessionEpoch) return
         const safeError = safeConfirmationError(error)
         if (event)
           replace(event.id, (item) =>
-            item.kind === 'proposal' ? { ...item, state: 'error', error: safeError } : item,
+            item.kind === 'proposal' ? { ...item, state: 'error', error: safeError.message } : item,
           )
-        publish({ error: safeError, status: 'error' })
+        publish({
+          error: safeError.code,
+          errorMessage: safeError.message,
+          retryable: safeError.retryable,
+          status: 'error',
+        })
       } finally {
-        publish({ applying: false })
+        if (epoch === sessionEpoch) publish({ applying: false })
       }
     },
     reject() {
@@ -254,10 +347,15 @@ export function createOfficeAgentSession(dependencies: {
         replace(event.id, (item) =>
           item.kind === 'proposal' ? { ...item, state: 'rejected' } : item,
         )
-      publish({ activity: 'Proposal rejected', error: undefined })
+      publish({
+        activity: 'Proposal rejected',
+        error: undefined,
+        errorMessage: undefined,
+        retryable: false,
+      })
     },
     newTask() {
-      if (state.applying) return
+      sessionEpoch += 1
       loop.reset()
       proposals.logout()
       lastInstruction = ''
@@ -265,12 +363,12 @@ export function createOfficeAgentSession(dependencies: {
       publish()
     },
     retry() {
-      if (!lastInstruction || loop.busy || state.applying) return
+      if (!lastInstruction || !state.retryable || loop.busy || state.applying) return
       const instruction = lastInstruction
       startRun(instruction)
     },
     logout() {
-      if (state.applying) return
+      sessionEpoch += 1
       loop.reset()
       proposals.logout()
       lastInstruction = ''
@@ -278,6 +376,7 @@ export function createOfficeAgentSession(dependencies: {
       publish()
     },
     authenticationLost() {
+      sessionEpoch += 1
       loop.reset()
       proposals.logout()
       lastInstruction = ''

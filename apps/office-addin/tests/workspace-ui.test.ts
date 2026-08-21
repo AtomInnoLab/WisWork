@@ -1,7 +1,18 @@
+// @vitest-environment jsdom
+
 import React from 'react'
+import { act } from 'react'
+import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentWorkspace, composerKeyAction, type WorkspacePanelName } from '../src/App.js'
+import {
+  AgentWorkspace,
+  composerKeyAction,
+  createOfficeWorkspaceUi,
+  focusWorkspacePanel,
+  type OfficeWorkspaceUi,
+  type WorkspacePanelName,
+} from '../src/App.js'
 import type { OfficeAgentSession, OfficeAgentSnapshot } from '../src/agent/use-office-agent.js'
 import type { OfficeHostRuntime } from '../src/agent/host-runtime.js'
 
@@ -20,6 +31,7 @@ function workspaceMarkup(overrides: Partial<OfficeAgentSnapshot> = {}, panel?: W
     busy: false,
     applying: false,
     status: 'done',
+    retryable: false,
     proposal,
     timeline: Object.freeze([
       Object.freeze({ id: 'u1', kind: 'user' as const, text: 'Rewrite this' }),
@@ -53,14 +65,16 @@ function workspaceMarkup(overrides: Partial<OfficeAgentSnapshot> = {}, panel?: W
     logout: vi.fn(),
     authenticationLost: vi.fn(),
   }
-  const runtime = {
-    vfs: { list: () => ['/home/user/source.docx'] },
-    skills: { list: () => [{ name: 'Editorial review' }] },
-  } as unknown as OfficeHostRuntime
+  const ui: OfficeWorkspaceUi = Object.freeze({
+    attachments: () => Object.freeze(['/home/user/source.docx']),
+    skills: () => Object.freeze(['Editorial review']),
+    upload: vi.fn(),
+    clear: vi.fn(),
+  })
   return renderToStaticMarkup(
     React.createElement(AgentWorkspace, {
       session,
-      runtime,
+      ui,
       disconnect: vi.fn(),
       host: 'word',
       initialPanel: panel,
@@ -102,9 +116,111 @@ describe('Office Agent workspace UI', () => {
     expect(applying).toContain('Applying approved change')
     expect(applying).toContain('Applying…')
 
-    const failed = workspaceMarkup({ status: 'error', error: 'office_write_failed' })
-    expect(failed).toContain('>Retry<')
+    expect(applying).toMatch(/aria-label="Attachments"[^>]*disabled/)
+    expect(applying).toMatch(/>Skills<\/button>/)
+    expect(applying).toMatch(/aria-expanded="false" disabled/)
+    const applyingPanel = workspaceMarkup({ applying: true }, 'attachments')
+    expect(applyingPanel).toMatch(/class="upload-button"[^>]*aria-disabled="true"/)
+    expect(applyingPanel).toMatch(/id="session-upload"[^>]*disabled/)
+
+    const failed = workspaceMarkup({
+      status: 'error',
+      error: 'office_write_failed',
+      errorMessage: 'The approved change could not be applied.',
+      retryable: false,
+    })
+    expect(failed).toContain('The approved change could not be applied.')
+    expect(failed).not.toContain('>Retry<')
     expect(failed).toContain('role="alert"')
+
+    const retryable = workspaceMarkup({
+      status: 'error',
+      error: 'network_error',
+      errorMessage: 'The connection was interrupted. Check WisWork PC and try again.',
+      retryable: true,
+    })
+    expect(retryable).toContain('>Retry<')
+  })
+
+  it('uses a frozen UI-only facade instead of exposing the Office runtime', () => {
+    const runtime = {
+      vfs: { list: () => ['/home/user/a.txt'] },
+      skills: { list: () => [{ name: 'Review' }] },
+      uploadFile: vi.fn(),
+      installSkill: vi.fn(),
+      clearSession: vi.fn(),
+    } as unknown as OfficeHostRuntime
+    const ui = createOfficeWorkspaceUi(runtime)
+    expect(Object.isFrozen(ui)).toBe(true)
+    expect(Object.isFrozen(ui.attachments())).toBe(true)
+    expect(Object.isFrozen(ui.skills())).toBe(true)
+    expect(ui).not.toHaveProperty('vfs')
+    expect(ui).not.toHaveProperty('runtime')
+    expect(ui).not.toHaveProperty('proposals')
+  })
+
+  it('focuses the panel heading on open and restores the opener on close', () => {
+    const heading = { focus: vi.fn() }
+    const opener = { focus: vi.fn() }
+    const restore = focusWorkspacePanel(heading, opener)
+    expect(heading.focus).toHaveBeenCalledOnce()
+    restore()
+    expect(opener.focus).toHaveBeenCalledOnce()
+  })
+
+  it('moves real DOM focus into an opened panel and restores it after Escape', async () => {
+    const snapshot: OfficeAgentSnapshot = {
+      assistantText: '',
+      activity: '',
+      busy: false,
+      applying: false,
+      status: 'idle',
+      retryable: false,
+      timeline: Object.freeze([]),
+    }
+    const session: OfficeAgentSession = {
+      snapshot: () => snapshot,
+      subscribe: () => () => undefined,
+      send: vi.fn(),
+      stop: vi.fn(),
+      confirm: vi.fn(),
+      reject: vi.fn(),
+      newTask: vi.fn(),
+      retry: vi.fn(),
+      logout: vi.fn(),
+      authenticationLost: vi.fn(),
+    }
+    const ui: OfficeWorkspaceUi = Object.freeze({
+      attachments: () => Object.freeze([]),
+      skills: () => Object.freeze([]),
+      upload: vi.fn(),
+      clear: vi.fn(),
+    })
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    await act(async () => {
+      root.render(
+        React.createElement(AgentWorkspace, {
+          session,
+          ui,
+          disconnect: vi.fn(),
+          host: 'word',
+        }),
+      )
+    })
+    const opener = container.querySelector<HTMLButtonElement>('[aria-label="Attachments"]')!
+    await act(async () => opener.click())
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"]')!
+    expect(document.activeElement).toBe(dialog.querySelector('h2'))
+
+    await act(async () => {
+      dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+    expect(container.querySelector('[role="dialog"]')).toBeNull()
+    expect(document.activeElement).toBe(opener)
+    await act(async () => root.unmount())
+    container.remove()
   })
 
   it('sends on Enter, preserves multiline input on Shift+Enter, and ignores composition', () => {

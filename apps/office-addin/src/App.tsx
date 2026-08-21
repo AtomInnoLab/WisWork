@@ -20,6 +20,7 @@ import {
   createOfficeDocumentClient,
   type OfficeHost,
 } from './office-document.js'
+import { officeWorkspaceMode } from '../build-config.js'
 
 const hostLabels: Record<OfficeHost, string> = {
   word: 'Microsoft Word',
@@ -84,6 +85,22 @@ interface SessionFile {
   text(): Promise<string>
 }
 
+export interface OfficeWorkspaceUi {
+  readonly attachments: () => readonly string[]
+  readonly skills: () => readonly string[]
+  readonly upload: (file: SessionFile) => Promise<void>
+  readonly clear: () => void
+}
+
+export function createOfficeWorkspaceUi(runtime: OfficeHostRuntime): OfficeWorkspaceUi {
+  return Object.freeze({
+    attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
+    skills: () => Object.freeze(runtime.skills.list().map((skill) => skill.name)),
+    upload: (file: SessionFile) => uploadSessionFile(runtime, file),
+    clear: () => runtime.clearSession(),
+  })
+}
+
 export function uploadSessionFile(runtime: OfficeHostRuntime, file: SessionFile): Promise<void> {
   if (file.name === 'SKILL.md') {
     if (file.size > MAX_SKILL_BYTES) return Promise.reject(new Error('invalid_skill_package'))
@@ -102,6 +119,15 @@ export function composerKeyAction(event: {
 }): 'send' | 'newline' | 'none' {
   if (event.key !== 'Enter') return 'none'
   return event.shiftKey || event.isComposing ? 'newline' : 'send'
+}
+
+interface FocusTarget {
+  focus(): void
+}
+
+export function focusWorkspacePanel(heading: FocusTarget, opener: FocusTarget): () => void {
+  heading.focus()
+  return () => opener.focus()
 }
 
 const starterPrompts: Record<OfficeHost, string[]> = {
@@ -228,24 +254,32 @@ function TimelineEvent(props: {
 
 export function AgentWorkspace(props: {
   session: OfficeAgentSession
-  runtime: OfficeHostRuntime
+  ui: OfficeWorkspaceUi
   disconnect: () => void
   host: OfficeHost
   initialPanel?: WorkspacePanelName
 }) {
-  const { session, runtime, disconnect, host } = props
+  const { session, ui, disconnect, host } = props
   const state = useOfficeAgent(session)
   const [instruction, setInstruction] = useState('')
-  const [files, setFiles] = useState<string[]>(runtime.vfs.list('/home/user'))
+  const [files, setFiles] = useState<readonly string[]>(ui.attachments())
   const [uploadError, setUploadError] = useState('')
   const [panel, setPanel] = useState<WorkspacePanelName | undefined>(props.initialPanel)
   const mounted = useRef(true)
+  const panelHeading = useRef<HTMLHeadingElement>(null)
+  const panelOpener = useRef<HTMLButtonElement | undefined>(undefined)
   useEffect(
     () => () => {
       mounted.current = false
     },
     [],
   )
+  useEffect(() => {
+    const heading = panelHeading.current
+    const opener = panelOpener.current
+    if (!panel || !heading || !opener) return
+    return focusWorkspacePanel(heading, opener)
+  }, [panel])
 
   function send() {
     if (!instruction.trim()) return
@@ -274,7 +308,7 @@ export function AgentWorkspace(props: {
             disabled={state.applying}
             onClick={() => {
               session.newTask()
-              runtime.clearSession()
+              ui.clear()
               setFiles([])
               setPanel(undefined)
               setUploadError('')
@@ -357,17 +391,22 @@ export function AgentWorkspace(props: {
               reject={() => session.reject()}
             />
           )}
-        {state.error && (
+        {state.error && state.errorMessage && (
           <div className="error-banner" role="alert">
-            <p>{state.error}</p>
-            <button
-              type="button"
-              className="secondary"
-              disabled={state.applying}
-              onClick={() => session.retry()}
-            >
-              Retry
-            </button>
+            <div>
+              <p>{state.errorMessage}</p>
+              <span className="error-code">{state.error}</span>
+            </div>
+            {state.retryable && (
+              <button
+                type="button"
+                className="secondary"
+                disabled={state.applying}
+                onClick={() => session.retry()}
+              >
+                Retry
+              </button>
+            )}
           </div>
         )}
       </section>
@@ -383,7 +422,7 @@ export function AgentWorkspace(props: {
           }}
         >
           <div className="panel-heading">
-            <h2 id="panel-title">
+            <h2 id="panel-title" ref={panelHeading} tabIndex={-1}>
               {panel === 'attachments' ? 'Session attachments' : 'Installed skills'}
             </h2>
             <button
@@ -397,19 +436,25 @@ export function AgentWorkspace(props: {
           </div>
           {panel === 'attachments' ? (
             <>
-              <label className="upload-button" htmlFor="session-upload">
+              <label
+                className="upload-button"
+                htmlFor="session-upload"
+                aria-disabled={state.applying}
+              >
                 Add attachment
               </label>
               <input
                 id="session-upload"
                 className="visually-hidden"
                 type="file"
+                disabled={state.applying}
                 onChange={(event) => {
                   const file = event.currentTarget.files?.[0]
                   if (!file) return
                   setUploadError('')
-                  void uploadSessionFile(runtime, file)
-                    .then(() => mounted.current && setFiles(runtime.vfs.list('/home/user')))
+                  void ui
+                    .upload(file)
+                    .then(() => mounted.current && setFiles(ui.attachments()))
                     .catch(
                       (error: unknown) => mounted.current && setUploadError(safeUploadError(error)),
                     )
@@ -432,11 +477,11 @@ export function AgentWorkspace(props: {
             <>
               <p>Installed instructions can guide the Agent but cannot add Office authority.</p>
               <ul>
-                {runtime.skills.list().map((skill) => (
-                  <li key={skill.name}>{skill.name}</li>
+                {ui.skills().map((skill) => (
+                  <li key={skill}>{skill}</li>
                 ))}
               </ul>
-              {!runtime.skills.list().length && <p>No installed skills.</p>}
+              {!ui.skills().length && <p>No installed skills.</p>}
             </>
           )}
         </section>
@@ -474,7 +519,11 @@ export function AgentWorkspace(props: {
               className="icon-button"
               aria-label="Attachments"
               aria-expanded={panel === 'attachments'}
-              onClick={() => setPanel(panel === 'attachments' ? undefined : 'attachments')}
+              disabled={state.applying}
+              onClick={(event) => {
+                panelOpener.current = event.currentTarget
+                setPanel(panel === 'attachments' ? undefined : 'attachments')
+              }}
             >
               ＋
             </button>
@@ -482,7 +531,11 @@ export function AgentWorkspace(props: {
               type="button"
               className="tool-button"
               aria-expanded={panel === 'skills'}
-              onClick={() => setPanel(panel === 'skills' ? undefined : 'skills')}
+              disabled={state.applying}
+              onClick={(event) => {
+                panelOpener.current = event.currentTarget
+                setPanel(panel === 'skills' ? undefined : 'skills')
+              }}
             >
               Skills
             </button>
@@ -513,6 +566,113 @@ export function AgentWorkspace(props: {
   )
 }
 
+export function LegacyAgentWorkspace(props: {
+  session: OfficeAgentSession
+  ui: OfficeWorkspaceUi
+  disconnect: () => void
+  host: OfficeHost
+}) {
+  const state = useOfficeAgent(props.session)
+  const [instruction, setInstruction] = useState('')
+  const [files, setFiles] = useState<readonly string[]>(props.ui.attachments())
+  const [uploadError, setUploadError] = useState('')
+  const proposal = state.proposal
+  return (
+    <main className="taskpane legacy-workspace">
+      <header className="app-header">
+        <div>
+          <span className="eyebrow">WisWork Agent</span>
+          <h1>Work with your selection</h1>
+          <p>{hostLabels[props.host]} is connected. Edits always require your approval.</p>
+        </div>
+        <button
+          type="button"
+          className="quiet"
+          disabled={state.applying}
+          onClick={props.disconnect}
+        >
+          Log out
+        </button>
+      </header>
+      <section className="agent-status" aria-live="polite">
+        <strong>{state.busy ? 'Agent is working' : 'Agent is ready'}</strong>
+        <span>{state.activity}</span>
+      </section>
+      {state.assistantText && <p className="assistant-text">{state.assistantText}</p>}
+      {state.errorMessage && (
+        <p className="error-text" role="alert">
+          {state.errorMessage}
+        </p>
+      )}
+      {proposal && (
+        <ProposalReview
+          event={{ id: `legacy-${proposal.id}`, kind: 'proposal', proposal, state: 'pending' }}
+          activeProposalId={proposal.id}
+          busy={state.busy}
+          applying={state.applying}
+          confirm={(id) => void props.session.confirm(id)}
+          reject={() => props.session.reject()}
+        />
+      )}
+      <section className="management-panel" aria-label="Session files">
+        <label className="upload-button" htmlFor="legacy-session-upload">
+          Add session file
+        </label>
+        <input
+          id="legacy-session-upload"
+          type="file"
+          disabled={state.applying}
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0]
+            if (!file) return
+            setUploadError('')
+            void props.ui
+              .upload(file)
+              .then(() => setFiles(props.ui.attachments()))
+              .catch((error: unknown) => setUploadError(safeUploadError(error)))
+          }}
+        />
+        {uploadError && <p className="error-text">{uploadError}</p>}
+        <p>{files.length ? files.join(', ') : 'No uploaded files in this session.'}</p>
+        <p>Installed skills: {props.ui.skills().join(', ') || 'none'}</p>
+      </section>
+      <section className="composer-shell" aria-label="Message WisWork Agent">
+        <label htmlFor="legacy-instruction">What should the Agent do?</label>
+        <textarea
+          id="legacy-instruction"
+          value={instruction}
+          onChange={(event) => setInstruction(event.target.value)}
+          rows={4}
+          maxLength={12_000}
+          disabled={state.busy || state.applying}
+        />
+        <div className="actions">
+          {state.busy ? (
+            <button type="button" className="secondary" onClick={() => props.session.stop()}>
+              Stop
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={!instruction.trim() || state.applying}
+              onClick={() => {
+                props.session.send(instruction)
+                setInstruction('')
+              }}
+            >
+              Send
+            </button>
+          )}
+        </div>
+      </section>
+    </main>
+  )
+}
+
+export function workspaceComponentForMode(mode: 'workspace' | 'legacy') {
+  return mode === 'legacy' ? LegacyAgentWorkspace : AgentWorkspace
+}
+
 function ConfiguredApp() {
   const document = useMemo(() => createOfficeDocumentClient(createBrowserOfficeRuntime()), [])
   const bridge = useMemo(
@@ -528,8 +688,9 @@ function ConfiguredApp() {
     () => bridge.snapshot(),
   )
   const [workspace, setWorkspace] = useState<
-    { runtime: OfficeHostRuntime; session: OfficeAgentSession } | undefined
+    { runtime: OfficeHostRuntime; session: OfficeAgentSession; ui: OfficeWorkspaceUi } | undefined
   >()
+  const workspaceMode = useMemo(() => officeWorkspaceMode(import.meta.env), [])
   const [host, setHost] = useState<OfficeHost>('unknown')
   const [hostSupported, setHostSupported] = useState(false)
   const [status, setStatus] = useState('Connecting to Office…')
@@ -537,7 +698,8 @@ function ConfiguredApp() {
 
   useEffect(() => {
     let active = true
-    let created: { runtime: OfficeHostRuntime; session: OfficeAgentSession } | undefined
+    let created:
+      { runtime: OfficeHostRuntime; session: OfficeAgentSession; ui: OfficeWorkspaceUi } | undefined
     void (async () => {
       try {
         const activeHost = await document.initialize()
@@ -554,7 +716,7 @@ function ConfiguredApp() {
               skill: runtime.skill,
               proposals: runtime.proposals,
             })
-            created = { runtime, session }
+            created = { runtime, session, ui: createOfficeWorkspaceUi(runtime) }
             setWorkspace(created)
           }
           setStatus(
@@ -628,15 +790,17 @@ function ConfiguredApp() {
   }
   if (!workspace)
     return <StatusScreen title="Starting WisWork Agent" detail="Loading tools…" busy />
+  const disconnect = () => {
+    workspace.session.logout()
+    workspace.runtime.dispose()
+    bridge.disconnect()
+  }
+  const WorkspaceComponent = workspaceComponentForMode(workspaceMode)
   return (
-    <AgentWorkspace
+    <WorkspaceComponent
       session={workspace.session}
-      runtime={workspace.runtime}
-      disconnect={() => {
-        workspace.session.logout()
-        workspace.runtime.dispose()
-        bridge.disconnect()
-      }}
+      ui={workspace.ui}
+      disconnect={disconnect}
       host={host}
     />
   )

@@ -75,6 +75,11 @@ The new host/shared registries are enabled by default. Build with
 `VITE_WISWORK_OFFICE_HOST_SKILLS=0` to roll back to the legacy selection-only skill without
 changing the PC bridge, identity, manifest, or stored user data.
 
+The Agent conversation workspace has an independent fail-closed rollback. Build with the exact
+flag `VITE_WISWORK_OFFICE_WORKSPACE=0` to retain the legacy task-pane presentation while leaving
+Relay identity, the Agent harness, host tools, and confirmation semantics unchanged. Omit the flag
+or set it to `1` for the new workspace; other values invalidate the deployment configuration.
+
 ## Operational behavior
 
 The connected add-in uses the same task-oriented interaction hierarchy as WisWork PC: a compact

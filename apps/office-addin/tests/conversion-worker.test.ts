@@ -32,14 +32,16 @@ async function zip(entries: Record<string, string>): Promise<Uint8Array> {
 
 async function docx(text = 'Hello world'): Promise<Uint8Array> {
   return zip({
-    '[Content_Types].xml': '<Types/>',
+    '[Content_Types].xml':
+      '<Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
     'word/document.xml': `<w:document xmlns:w="w"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>`,
   })
 }
 
 async function xlsx(cell = 'B2'): Promise<Uint8Array> {
   return zip({
-    '[Content_Types].xml': '<Types/>',
+    '[Content_Types].xml':
+      '<Types><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/></Types>',
     'xl/workbook.xml':
       '<workbook xmlns:r="r"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets></workbook>',
     'xl/_rels/workbook.xml.rels':
@@ -47,6 +49,56 @@ async function xlsx(cell = 'B2'): Promise<Uint8Array> {
     'xl/sharedStrings.xml': '<sst><si><t>Hello</t></si></sst>',
     'xl/worksheets/sheet1.xml': `<worksheet><sheetData><row r="2"><c r="${cell}" t="s"><v>0</v></c></row></sheetData></worksheet>`,
   })
+}
+
+function centralOffsets(bytes: Uint8Array): number[] {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const offsets: number[] = []
+  for (let offset = 0; offset <= bytes.byteLength - 46; offset += 1) {
+    if (view.getUint32(offset, true) === 0x02014b50) {
+      offsets.push(offset)
+      offset += 45 + view.getUint16(offset + 28, true) + view.getUint16(offset + 30, true)
+    }
+  }
+  return offsets
+}
+
+function forgeDeclaredSize(bytes: Uint8Array, size: number): Uint8Array {
+  const forged = bytes.slice()
+  const view = new DataView(forged.buffer)
+  const central = centralOffsets(forged).find((offset) => {
+    const length = view.getUint16(offset + 28, true)
+    return (
+      new TextDecoder().decode(forged.subarray(offset + 46, offset + 46 + length)) ===
+      'word/document.xml'
+    )
+  })!
+  const local = view.getUint32(central + 42, true)
+  view.setUint32(central + 24, size, true)
+  view.setUint32(local + 22, size, true)
+  return forged
+}
+
+function forgeFlags(bytes: Uint8Array, flags: number): Uint8Array {
+  const forged = bytes.slice()
+  const view = new DataView(forged.buffer)
+  const central = centralOffsets(forged)[0]
+  const local = view.getUint32(central + 42, true)
+  view.setUint16(central + 8, flags, true)
+  view.setUint16(local + 6, flags, true)
+  return forged
+}
+
+function forgeDuplicateCentralName(bytes: Uint8Array, from: string, to: string): Uint8Array {
+  expect(from.length).toBe(to.length)
+  const forged = bytes.slice()
+  const view = new DataView(forged.buffer)
+  const target = centralOffsets(forged).find((offset) => {
+    const length = view.getUint16(offset + 28, true)
+    return new TextDecoder().decode(forged.subarray(offset + 46, offset + 46 + length)) === from
+  })!
+  forged.set(new TextEncoder().encode(to), target + 46)
+  return forged
 }
 
 describe('bounded conversion engine', () => {
@@ -65,6 +117,25 @@ describe('bounded conversion engine', () => {
     expect(converted).toHaveLength(1)
     expect(converted[0].path).toBe('book-Data.csv')
     expect(new TextDecoder().decode(converted[0].bytes)).toBe(',\n,Hello')
+  })
+
+  it('accepts a consistent data-descriptor archive', async () => {
+    const archive = new JSZip()
+    archive.file(
+      '[Content_Types].xml',
+      '<Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+    )
+    archive.file('word/document.xml', '<w:document><w:t>streamed</w:t></w:document>')
+    const bytes = await archive.generateAsync({
+      type: 'uint8array',
+      compression: 'DEFLATE',
+      streamFiles: true,
+    })
+    const output = await convertDocument(
+      { kind: 'docx-to-text', inputName: 'streamed.docx', bytes },
+      limits,
+    )
+    expect(new TextDecoder().decode(output[0].bytes)).toBe('streamed')
   })
 
   it('extracts text from a bounded PDF fixture', async () => {
@@ -105,6 +176,101 @@ describe('bounded conversion engine', () => {
     ).rejects.toThrow('conversion_archive_unsafe')
   })
 
+  it('stops incremental inflate when forged sizes understate actual output', async () => {
+    const actual = await docx('x'.repeat(32_000))
+    const forged = forgeDeclaredSize(actual, 32)
+    await expect(
+      convertDocument(
+        { kind: 'docx-to-text', inputName: 'forged.docx', bytes: forged },
+        { ...limits, maxEntryBytes: 1_024, maxArchiveBytes: 2_048 },
+      ),
+    ).rejects.toThrow('conversion_limit')
+    await expect(
+      convertDocument(
+        { kind: 'docx-to-text', inputName: 'forged.docx', bytes: forged },
+        { ...limits, maxEntryBytes: 64 * 1024, maxArchiveBytes: 1_024 },
+      ),
+    ).rejects.toThrow('conversion_limit')
+  })
+
+  it('rejects encrypted entries and inconsistent data descriptors', async () => {
+    const plain = await docx()
+    for (const bytes of [forgeFlags(plain, 0x0001), forgeFlags(plain, 0x0008)]) {
+      await expect(
+        convertDocument({ kind: 'docx-to-text', inputName: 'bad.docx', bytes }, limits),
+      ).rejects.toThrow('conversion_archive_unsafe')
+    }
+  })
+
+  it('rejects duplicate and Unicode/case-colliding central-directory paths', async () => {
+    const duplicateBase = await zip({
+      '[Content_Types].xml': '<Types/>',
+      'word/document.xml': '<w:document/>',
+      'word/first.xml': 'a',
+      'word/other.xml': 'b',
+    })
+    const duplicate = forgeDuplicateCentralName(duplicateBase, 'word/other.xml', 'word/first.xml')
+    const collision = await zip({
+      '[Content_Types].xml': '<Types/>',
+      'word/document.xml': '<w:document/>',
+      'word/Case.xml': 'a',
+      'word/case.xml': 'b',
+    })
+    const unicodeCollision = await zip({
+      '[Content_Types].xml': '<Types/>',
+      'word/document.xml': '<w:document/>',
+      'word/É.xml': 'a',
+      'word/é.xml': 'b',
+    })
+    for (const bytes of [duplicate, collision, unicodeCollision]) {
+      await expect(
+        convertDocument({ kind: 'docx-to-text', inputName: 'bad.docx', bytes }, limits),
+      ).rejects.toThrow('conversion_archive_unsafe')
+    }
+  })
+
+  it('rejects symlink and DOS special-file metadata', async () => {
+    const symlinkZip = new JSZip()
+    symlinkZip.file('[Content_Types].xml', '<Types/>')
+    symlinkZip.file('word/document.xml', '<w:document/>')
+    symlinkZip.file('word/link', 'target', { unixPermissions: 0o120777 })
+    const symlink = await symlinkZip.generateAsync({ type: 'uint8array', platform: 'UNIX' })
+
+    const dos = (
+      await zip({ '[Content_Types].xml': '<Types/>', 'word/document.xml': '<w:document/>' })
+    ).slice()
+    const dosView = new DataView(dos.buffer)
+    dosView.setUint32(centralOffsets(dos)[0] + 38, 0x08, true)
+    for (const bytes of [symlink, dos]) {
+      await expect(
+        convertDocument({ kind: 'docx-to-text', inputName: 'bad.docx', bytes }, limits),
+      ).rejects.toThrow('conversion_archive_unsafe')
+    }
+  })
+
+  it('validates input extension, magic signature, and OOXML content type', async () => {
+    await expect(
+      convertDocument(
+        { kind: 'docx-to-text', inputName: 'paper.zip', bytes: await docx() },
+        limits,
+      ),
+    ).rejects.toThrow('conversion_invalid_document')
+    await expect(
+      convertDocument(
+        { kind: 'pdf-to-text', inputName: 'paper.pdf', bytes: new TextEncoder().encode('not-pdf') },
+        limits,
+      ),
+    ).rejects.toThrow('conversion_invalid_document')
+    const wrongType = await zip({
+      '[Content_Types].xml':
+        '<Types><Override PartName="/word/document.xml" ContentType="application/not-docx"/></Types>',
+      'word/document.xml': '<w:document/>',
+    })
+    await expect(
+      convertDocument({ kind: 'docx-to-text', inputName: 'paper.docx', bytes: wrongType }, limits),
+    ).rejects.toThrow('conversion_invalid_document')
+  })
+
   it('enforces archive entry and conversion output byte limits', async () => {
     const tooMany = await zip({
       'word/document.xml': '<w:document><w:t>x</w:t></w:document>',
@@ -129,7 +295,7 @@ describe('bounded conversion engine', () => {
     const getPage = vi.fn()
     await expect(
       convertDocument(
-        { kind: 'pdf-to-text', inputName: 'long.pdf', bytes: Uint8Array.of(1) },
+        { kind: 'pdf-to-text', inputName: 'long.pdf', bytes: new TextEncoder().encode('%PDF-') },
         limits,
         { loadPdf: async () => ({ numPages: 5, getPage, destroy: vi.fn() }) },
       ),
@@ -148,7 +314,7 @@ describe('bounded conversion engine', () => {
     }
     await expect(
       convertDocument(
-        { kind: 'pdf-to-images', inputName: 'huge.pdf', bytes: Uint8Array.of(1) },
+        { kind: 'pdf-to-images', inputName: 'huge.pdf', bytes: new TextEncoder().encode('%PDF-') },
         limits,
         { loadPdf: async () => pdf, renderPdfPage: vi.fn() },
       ),
@@ -214,6 +380,31 @@ describe('conversion worker runtime', () => {
     }
     const runtime = new ConversionWorkerRuntime(vfs, { workerFactory: () => worker })
     await expect(runtime.run('docx-to-text', '/home/user/input.docx')).rejects.toThrow('vfs_limit')
+    expect(vfs.list('/home/user')).toEqual(['/home/user/input.docx'])
+  })
+
+  it('ignores partial worker outputs attached to a failed conversion', async () => {
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/input.docx', Uint8Array.of(1))
+    const worker = new FakeWorker(true)
+    worker.postMessage = function (message: { id: string }): void {
+      queueMicrotask(() =>
+        this.onmessage?.(
+          new MessageEvent('message', {
+            data: {
+              id: message.id,
+              ok: false,
+              error: 'conversion_limit',
+              outputs: [{ path: 'partial.txt', bytes: Uint8Array.of(1) }],
+            },
+          }),
+        ),
+      )
+    }
+    const runtime = new ConversionWorkerRuntime(vfs, { workerFactory: () => worker })
+    await expect(runtime.run('docx-to-text', '/home/user/input.docx')).rejects.toThrow(
+      'conversion_limit',
+    )
     expect(vfs.list('/home/user')).toEqual(['/home/user/input.docx'])
   })
 

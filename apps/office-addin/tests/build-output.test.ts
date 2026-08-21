@@ -62,4 +62,27 @@ describe('configured Office build output', () => {
     }
     await expect(access(resolve(dist, 'manifest.xml'))).rejects.toThrow()
   }, 15_000)
+
+  it('can build the retained legacy workspace with only its independent rollback flag', async () => {
+    const configured = {
+      VITE_WISWORK_ADDIN_ORIGIN: 'https://office.example',
+      VITE_WISWORK_OFFICE_WORKSPACE: '0',
+    }
+    const prior = Object.fromEntries(Object.keys(configured).map((key) => [key, process.env[key]]))
+    Object.assign(process.env, configured)
+    try {
+      await build({ configFile: resolve(appRoot, 'vite.config.ts'), logLevel: 'silent' })
+      const taskpane = await readFile(resolve(dist, 'taskpane.html'), 'utf8')
+      const scriptPath = taskpane.match(/src="(\/assets\/taskpane-[^"]+\.js)"/)?.[1]
+      expect(scriptPath).toBeDefined()
+      const script = await readFile(resolve(dist, scriptPath!.replace(/^\//, '')), 'utf8')
+      expect(script).toContain('Work with your selection')
+      expect(script).toContain('legacy-workspace')
+    } finally {
+      for (const [key, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+  }, 15_000)
 })

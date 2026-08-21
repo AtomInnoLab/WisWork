@@ -931,7 +931,6 @@ async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'st
     if session.office != conn || session.office_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
-    renew_session(session, app.inner.config.session_ttl);
     let capability_name = if protocol == PROTOCOL_V2 {
         let name = string(&m, "capability_name")?;
         if !session.capabilities.iter().any(|item| item == name) {
@@ -951,6 +950,7 @@ async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'st
     if session.used_requests.iter().any(|used| used == rid) {
         return Err("duplicate_request");
     }
+    renew_session(session, app.inner.config.session_ttl);
     if session.used_requests.len() == 256 {
         session.used_requests.pop_front();
     }
@@ -1011,10 +1011,10 @@ async fn cancel(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'sta
     if session.office != conn || session.office_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
-    renew_session(session, app.inner.config.session_ttl);
     if session.active.as_ref().map(|a| a.id.as_str()) != Some(rid) {
         return Err("invalid_request");
     }
+    renew_session(session, app.inner.config.session_ttl);
     session.active = None;
     send(
         &session.pc_tx,
@@ -1051,22 +1051,24 @@ async fn chunk(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
-    renew_session(session, app.inner.config.session_ttl);
-    let active = session.active.as_mut().ok_or("invalid_request")?;
+    let active = session.active.as_ref().ok_or("invalid_request")?;
     if active.id != rid || !active.started || active.sequence != seq {
         return Err("invalid_sequence");
     }
     if active.deadline <= Instant::now() {
         return Err("request_timeout");
     }
-    active.sequence += 1;
-    active.bytes = active
+    let next_bytes = active
         .bytes
         .checked_add(decoded.len())
         .ok_or("response_too_large")?;
-    if active.bytes > RESPONSE_MAX {
+    if next_bytes > RESPONSE_MAX {
         return Err("response_too_large");
     }
+    renew_session(session, app.inner.config.session_ttl);
+    let active = session.active.as_mut().ok_or("invalid_request")?;
+    active.sequence += 1;
+    active.bytes = next_bytes;
     send(
         &session.office_tx,
         json!({"version":protocol,"type":"relay.chunk","session_id":sid,"request_id":rid,"sequence":seq,"data":data}),
@@ -1106,11 +1108,12 @@ async fn start(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
-    renew_session(session, app.inner.config.session_ttl);
-    let active = session.active.as_mut().ok_or("invalid_request")?;
+    let active = session.active.as_ref().ok_or("invalid_request")?;
     if active.id != rid || active.started {
         return Err("invalid_request");
     }
+    renew_session(session, app.inner.config.session_ttl);
+    let active = session.active.as_mut().ok_or("invalid_request")?;
     active.started = true;
     send(
         &session.office_tx,
@@ -1132,7 +1135,6 @@ async fn done(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stati
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
-    renew_session(session, app.inner.config.session_ttl);
     if !session
         .active
         .as_ref()
@@ -1140,6 +1142,7 @@ async fn done(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stati
     {
         return Err("invalid_request");
     }
+    renew_session(session, app.inner.config.session_ttl);
     session.active = None;
     send(
         &session.office_tx,
@@ -1175,10 +1178,10 @@ async fn pc_error(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'s
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
-    renew_session(session, app.inner.config.session_ttl);
     if session.active.as_ref().map(|a| a.id.as_str()) != Some(rid) {
         return Err("invalid_request");
     }
+    renew_session(session, app.inner.config.session_ttl);
     session.active = None;
     send(
         &session.office_tx,
