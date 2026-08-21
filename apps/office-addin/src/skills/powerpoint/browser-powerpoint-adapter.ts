@@ -451,6 +451,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       if (applyMaster && (!masters || !(slide.layout as RuntimeRecord | undefined)))
         throw new Error('office_api_unsupported')
       const affectedLayouts = new Map<string, number>()
+      const originalLayouts = new Map<string, RuntimeRecord>()
       if (applyMaster && masters) {
         const sourceLayout = slide.layout as RuntimeRecord
         ;(masters.load as (properties: string) => void)('items')
@@ -482,7 +483,10 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         for (const item of slideItems) {
           const layoutId = string((item.layout as RuntimeRecord).id)
           const ordinal = sourceOrdinals.get(layoutId)
-          if (ordinal !== undefined) affectedLayouts.set(string(item.id), ordinal)
+          if (ordinal !== undefined) {
+            affectedLayouts.set(string(item.id), ordinal)
+            originalLayouts.set(string(item.id), item.layout as RuntimeRecord)
+          }
         }
       }
       if (typeof slide.exportAsBase64 !== 'function') throw new Error('office_api_unsupported')
@@ -552,61 +556,81 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         throw new Error('office_verify_failed')
       }
       if (applyMaster) {
-        const insertedLayout = inserted.layout as RuntimeRecord | undefined
-        if (
-          !masters ||
-          !insertedLayout ||
-          typeof masters.load !== 'function' ||
-          typeof insertedLayout.load !== 'function'
-        )
-          throw new Error('office_api_unsupported')
-        ;(masters.load as (properties: string) => void)('items')
-        ;(slides.load as (properties: string) => void)('items')
-        ;(insertedLayout.load as (properties: string) => void)('id,name')
-        await sync(context, signal)
-        const masterItems = masters.items as RuntimeRecord[]
-        const slideItems = slides.items as RuntimeRecord[]
-        for (const master of masterItems) {
-          const layouts = master.layouts as RuntimeRecord
-          ;(layouts.load as (properties: string) => void)('items/id,items/name')
-        }
-        for (const item of slideItems) {
-          const layout = item.layout as RuntimeRecord
-          ;(layout.load as (properties: string) => void)('id,name')
-        }
-        await sync(context, signal)
-        const primary = masterItems.find((master) =>
-          (((master.layouts as RuntimeRecord).items as RuntimeRecord[]) ?? []).some(
-            (layout) => layout.id === insertedLayout.id,
-          ),
-        )
-        if (!primary) throw new Error('office_verify_failed')
-        const primaryLayouts = ((primary.layouts as RuntimeRecord).items as RuntimeRecord[]) ?? []
-        cancelled(signal)
-        for (const item of slideItems) {
-          const intendedOrdinal = affectedLayouts.get(string(item.id))
-          const intended =
-            intendedOrdinal === undefined ? undefined : primaryLayouts[intendedOrdinal]
-          if (intended && typeof item.applyLayout === 'function')
-            (item.applyLayout as (target: RuntimeRecord) => void)(intended)
-        }
-        await sync(context, signal)
-        for (const item of slideItems) {
-          if (affectedLayouts.has(string(item.id))) {
-            ;((item.layout as RuntimeRecord).load as (properties: string) => void)('id,name')
-          }
-        }
-        await sync(context, signal)
-        const primaryLayoutIds = new Set(primaryLayouts.map((layout) => string(layout.id)))
-        for (const item of slideItems) {
-          const expectedOrdinal = affectedLayouts.get(string(item.id))
-          if (expectedOrdinal === undefined) continue
-          const layout = item.layout as RuntimeRecord
+        try {
+          const insertedLayout = inserted.layout as RuntimeRecord | undefined
           if (
-            string(layout.id) !== string(primaryLayouts[expectedOrdinal]?.id) ||
-            !primaryLayoutIds.has(string(layout.id))
+            !masters ||
+            !insertedLayout ||
+            typeof masters.load !== 'function' ||
+            typeof insertedLayout.load !== 'function'
           )
-            throw new Error('office_verify_failed')
+            throw new Error('office_api_unsupported')
+          ;(masters.load as (properties: string) => void)('items')
+          ;(slides.load as (properties: string) => void)('items')
+          ;(insertedLayout.load as (properties: string) => void)('id,name')
+          await sync(context, signal)
+          const masterItems = masters.items as RuntimeRecord[]
+          const slideItems = slides.items as RuntimeRecord[]
+          for (const master of masterItems) {
+            const layouts = master.layouts as RuntimeRecord
+            ;(layouts.load as (properties: string) => void)('items/id,items/name')
+          }
+          for (const item of slideItems) {
+            const layout = item.layout as RuntimeRecord
+            ;(layout.load as (properties: string) => void)('id,name')
+          }
+          await sync(context, signal)
+          const primary = masterItems.find((master) =>
+            (((master.layouts as RuntimeRecord).items as RuntimeRecord[]) ?? []).some(
+              (layout) => layout.id === insertedLayout.id,
+            ),
+          )
+          if (!primary) throw new Error('office_verify_failed')
+          const primaryLayouts = ((primary.layouts as RuntimeRecord).items as RuntimeRecord[]) ?? []
+          cancelled(signal)
+          for (const item of slideItems) {
+            const intendedOrdinal = affectedLayouts.get(string(item.id))
+            const intended =
+              intendedOrdinal === undefined ? undefined : primaryLayouts[intendedOrdinal]
+            if (intended && typeof item.applyLayout === 'function')
+              (item.applyLayout as (target: RuntimeRecord) => void)(intended)
+          }
+          await sync(context, signal)
+          for (const item of slideItems) {
+            if (affectedLayouts.has(string(item.id))) {
+              ;((item.layout as RuntimeRecord).load as (properties: string) => void)('id,name')
+            }
+          }
+          await sync(context, signal)
+          const primaryLayoutIds = new Set(primaryLayouts.map((layout) => string(layout.id)))
+          for (const item of slideItems) {
+            const expectedOrdinal = affectedLayouts.get(string(item.id))
+            if (expectedOrdinal === undefined) continue
+            const layout = item.layout as RuntimeRecord
+            if (
+              string(layout.id) !== string(primaryLayouts[expectedOrdinal]?.id) ||
+              !primaryLayoutIds.has(string(layout.id))
+            )
+              throw new Error('office_verify_failed')
+          }
+        } catch {
+          const recoverySlides = slides.items as RuntimeRecord[]
+          for (const item of recoverySlides) {
+            const originalLayout = originalLayouts.get(string(item.id))
+            if (originalLayout && typeof item.applyLayout === 'function')
+              (item.applyLayout as (layout: RuntimeRecord) => void)(originalLayout)
+          }
+          ;(
+            presentation.insertSlidesFromBase64 as (
+              value: string,
+              options?: { targetSlideId: string },
+            ) => void
+          )(original.value, previous ? { targetSlideId: string(previous.id) } : undefined)
+          if (typeof inserted.delete === 'function') (inserted.delete as () => void)()
+          await sync(context)
+          if ((await getSlideCount(context, slides)) !== beforeCount)
+            throw new Error('office_recovery_failed')
+          throw new Error('office_write_failed')
         }
       }
       return { slideId: string(inserted.id) }

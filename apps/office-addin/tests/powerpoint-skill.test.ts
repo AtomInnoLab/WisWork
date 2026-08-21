@@ -6,6 +6,7 @@ import {
   type PowerPointAdapter,
 } from '../src/skills/powerpoint/browser-powerpoint-adapter.js'
 import { createPowerPointSkill } from '../src/skills/powerpoint/powerpoint-skill.js'
+import { editPowerPointPackage } from '../src/skills/powerpoint/powerpoint-package.js'
 
 const png = 'iVBORw0KGgoAAAA='
 
@@ -93,7 +94,8 @@ describe('PowerPoint compatibility skill', () => {
       skill.executeTool(call('screenshot_slide', { slide_index: 0 })),
     ).resolves.toMatchObject({
       mutated: false,
-      output: expect.stringContaining('"visualAvailableToModel":false'),
+      output: expect.stringContaining('"visualAvailableToModel":true'),
+      modelContent: [{ type: 'image', image: { mime: 'image/png', base64: png } }],
       display: { kind: 'images', items: [{ url: `data:image/png;base64,${png}` }] },
     })
     await expect(skill.executeTool(call('verify_slides', { nope: true }))).resolves.toMatchObject({
@@ -592,6 +594,90 @@ describe('browser PowerPoint adapter', () => {
     ).rejects.toThrow('cancelled')
     expect(insertSlidesFromBase64).not.toHaveBeenCalled()
     expect(remove).not.toHaveBeenCalled()
+  })
+
+  it('restores the original slide and layouts when master propagation sync fails', async () => {
+    const packageZip = new JSZip()
+    packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
+    const originalPackage = await packageZip.generateAsync({ type: 'base64' })
+    const expected = await editPowerPointPackage(originalPackage, 'slide', [
+      { path: 'ppt/slides/slide1.xml', xml: '<p:sld xmlns:p="urn:p"><p:cSld/></p:sld>' },
+    ])
+    const oldLayout = { id: 'old-layout', name: '', load: vi.fn() }
+    const newLayout = { id: 'new-layout', name: '', load: vi.fn() }
+    const slides: {
+      items: any[]
+      getCount: ReturnType<typeof vi.fn>
+      getItemAt: ReturnType<typeof vi.fn>
+      load: ReturnType<typeof vi.fn>
+    } = {
+      items: [],
+      getCount: vi.fn(() => ({ value: slides.items.length })),
+      getItemAt: vi.fn((index: number) => slides.items[index]),
+      load: vi.fn(),
+    }
+    const makeSlide = (id: string, layout: any, exported = 'original') => {
+      const item: any = {
+        id,
+        layout,
+        load: vi.fn(),
+        exportAsBase64: vi.fn(() => ({ value: exported })),
+        applyLayout: vi.fn((next) => {
+          item.layout = next
+        }),
+      }
+      item.delete = vi.fn(() => {
+        slides.items = slides.items.filter((slide) => slide !== item)
+      })
+      return item
+    }
+    const original = makeSlide('s1', oldLayout, originalPackage)
+    const sibling = makeSlide('s-other', oldLayout)
+    slides.items = [original, sibling]
+    const oldMaster = { layouts: { items: [oldLayout], load: vi.fn() } }
+    const newMaster = { layouts: { items: [newLayout], load: vi.fn() } }
+    const masters = { items: [oldMaster, newMaster], load: vi.fn() }
+    let propagationStarted = false
+    sibling.applyLayout.mockImplementation((next: unknown) => {
+      sibling.layout = next
+      propagationStarted = true
+    })
+    let failed = false
+    const sync = vi.fn().mockImplementation(async () => {
+      if (propagationStarted && !failed) {
+        failed = true
+        throw new Error('host failure')
+      }
+    })
+    const insertSlidesFromBase64 = vi.fn((base64: string) => {
+      const inserted = makeSlide(
+        base64 === expected.base64 ? 's2' : 's1-restored',
+        base64 === expected.base64 ? newLayout : oldLayout,
+        base64,
+      )
+      slides.items.splice(0, 0, inserted)
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({
+            presentation: { slides, slideMasters: masters, insertSlidesFromBase64 },
+            sync,
+          }),
+      },
+    })
+    await expect(
+      new BrowserPowerPointAdapter().replaceSlidePackage(0, expected.base64, true, expected),
+    ).rejects.toThrow('office_write_failed')
+    expect(sibling.layout).toBe(oldLayout)
+    expect(slides.items).toHaveLength(2)
+    expect(slides.items[0].id).toBe('s1-restored')
   })
 
   it('treats a text-only change as stale even when slide geometry is unchanged', async () => {

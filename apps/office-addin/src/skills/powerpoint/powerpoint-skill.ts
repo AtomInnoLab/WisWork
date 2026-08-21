@@ -444,8 +444,9 @@ export function createPowerPointSkill(options: {
               mime: result.mime,
               bytes: base64Bytes(result.base64),
               fingerprint: fingerprint(result.base64),
-              visualAvailableToModel: false,
+              visualAvailableToModel: true,
             }),
+            modelContent: [{ type: 'image', image: { mime: result.mime, base64: result.base64 } }],
             display: {
               kind: 'images',
               items: [{ url: `data:${result.mime};base64,${result.base64}` }],
