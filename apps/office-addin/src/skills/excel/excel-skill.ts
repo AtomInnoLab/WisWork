@@ -273,7 +273,9 @@ const tools = descriptors.map(([name, fields]) => ({
   description:
     name === 'eval_officejs'
       ? 'Compatibility placeholder; unavailable until an audited hardened evaluator exists.'
-      : `Bounded Excel operation: ${name}.`,
+      : name === 'screenshot_range'
+        ? 'Compatibility placeholder; unavailable until an audited bounded image renderer exists.'
+        : `Bounded Excel operation: ${name}.`,
   inputSchema: schemaFor(fields),
 }))
 

@@ -100,6 +100,9 @@ function csv(value: unknown): string {
 function safe(value: unknown, max = 12_000): string {
   return typeof value === 'string' ? value.slice(0, max) : ''
 }
+function cellValue(value: unknown): unknown {
+  return typeof value === 'string' ? safe(value) : (value ?? null)
+}
 type Box = { row: number; column: number; rows: number; columns: number }
 function columnNumber(value: string): number {
   return value.split('').reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1
@@ -152,9 +155,9 @@ export class BrowserExcelAdapter implements ExcelAdapter {
             for (let column = 0; column < range.columnCount; column++) {
               const result: RuntimeRecord = {
                 address: cellAddress(box.row + row, box.column + column),
-                value: range.values?.[row]?.[column] ?? null,
-                formula: range.formulas?.[row]?.[column] ?? null,
-                numberFormat: range.numberFormat?.[row]?.[column] ?? null,
+                value: cellValue(range.values?.[row]?.[column]),
+                formula: cellValue(range.formulas?.[row]?.[column]),
+                numberFormat: safe(range.numberFormat?.[row]?.[column], 256),
               }
               cells.push(result)
               if (input.includeStyles !== false) {
@@ -197,7 +200,11 @@ export class BrowserExcelAdapter implements ExcelAdapter {
     const box = parseA1(input.range)
     const skip = input.includeHeaders === false ? 1 : 0
     const maximum = Math.min(input.maxRows ?? MAX_EXCEL_ROWS, MAX_EXCEL_ROWS)
-    const loadedRows = Math.max(0, Math.min(maximum, box.rows - skip))
+    const loadedColumns = Math.min(box.columns, MAX_EXCEL_CELLS)
+    const loadedRows = Math.max(
+      0,
+      Math.min(maximum, box.rows - skip, Math.floor(MAX_EXCEL_CELLS / loadedColumns)),
+    )
     return this.run(async (context) => {
       const ws = sheet(context, input.sheetId)
       ws.load('name')
@@ -205,7 +212,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         box.row + skip,
         box.column,
         Math.max(loadedRows, 1),
-        box.columns,
+        loadedColumns,
       )
       range.load('values,rowCount,columnCount,address')
       await sync(context, signal)
@@ -219,8 +226,8 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         address: cleanAddress(range.address),
         csv: rows.join('\n'),
         rowCount: rows.length,
-        columnCount: range.columnCount,
-        hasMore: box.rows - skip > loadedRows,
+        columnCount: loadedColumns,
+        hasMore: box.rows - skip > loadedRows || box.columns > loadedColumns,
       }
     })
   }
