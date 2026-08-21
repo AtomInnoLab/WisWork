@@ -137,6 +137,7 @@ export function validateSkillZip(
 
     if (u32(view, localOffset) !== LOCAL) invalid()
     const localFlags = u16(view, localOffset + 6)
+    const localNeeded = u16(view, localOffset + 4)
     const localMethod = u16(view, localOffset + 8)
     const localNameLength = u16(view, localOffset + 26)
     const localExtraLength = u16(view, localOffset + 28)
@@ -147,6 +148,7 @@ export function validateSkillZip(
     )
     extra(bytes, localOffset + 30 + localNameLength, localExtraLength)
     if (
+      localNeeded !== needed ||
       localFlags !== flags ||
       localMethod !== method ||
       localName !== entryName ||

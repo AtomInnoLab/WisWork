@@ -1,4 +1,5 @@
 import JSZip from 'jszip'
+import { deflateSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
 import { parseSkillArchive, SKILL_PACKAGE_LIMITS } from '../src/skills/shared/skill-package.js'
 import { InMemoryVfs } from '../src/skills/shared/vfs.js'
@@ -10,24 +11,56 @@ import {
 
 const manifest = '---\nname: writer\ndescription: Helps edit prose\n---\nBe concise.'
 const png = (() => {
-  const value = new Uint8Array(57)
-  value.set([137, 80, 78, 71, 13, 10, 26, 10])
-  const view = new DataView(value.buffer)
-  view.setUint32(8, 13)
-  value.set([73, 72, 68, 82], 12)
-  view.setUint32(16, 1)
-  view.setUint32(20, 1)
-  value.set([8, 2, 0, 0, 0], 24)
-  value.set([73, 68, 65, 84], 37)
-  value.set([73, 69, 78, 68], 49)
+  const table = Uint32Array.from({ length: 256 }, (_, value) => {
+    let crc = value
+    for (let bit = 0; bit < 8; bit++) crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1
+    return crc >>> 0
+  })
+  const chunk = (type: string, data: Uint8Array) => {
+    const value = new Uint8Array(12 + data.length)
+    const view = new DataView(value.buffer)
+    view.setUint32(0, data.length)
+    value.set(
+      [...type].map((letter) => letter.charCodeAt(0)),
+      4,
+    )
+    value.set(data, 8)
+    let crc = 0xffffffff
+    for (const byte of value.subarray(4, 8 + data.length))
+      crc = table[(crc ^ byte) & 0xff] ^ (crc >>> 8)
+    view.setUint32(8 + data.length, (crc ^ 0xffffffff) >>> 0)
+    return value
+  }
+  const header = new Uint8Array(13)
+  const headerView = new DataView(header.buffer)
+  headerView.setUint32(0, 1)
+  headerView.setUint32(4, 1)
+  header.set([8, 2, 0, 0, 0], 8)
+  const parts = [
+    Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', header),
+    chunk('IDAT', deflateSync(Uint8Array.from([0, 0, 0, 0]))),
+    chunk('IEND', new Uint8Array()),
+  ]
+  const value = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0))
+  let offset = 0
+  for (const part of parts) {
+    value.set(part, offset)
+    offset += part.length
+  }
   return value
 })()
 const jpeg = Uint8Array.from([
-  0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0, 0xff, 0xd9,
+  0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0, 0xff, 0xda, 0, 8, 1, 1, 0, 0, 63, 0,
+  0, 0xff, 0xd9,
 ])
-const webp = Uint8Array.from([
+const metadataOnlyWebp = Uint8Array.from([
   82, 73, 70, 70, 22, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 88, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
   0, 0,
+])
+const webp = Uint8Array.from([
+  82, 73, 70, 70, 36, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 88, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 86, 80, 56, 76, 6, 0, 0, 0, 47, 0, 0, 0, 0, 0,
 ])
 
 async function archive(
@@ -139,21 +172,26 @@ describe('bounded skill archive parser', () => {
     }
   })
 
-  it.each(['flag mismatch', 'ZIP64 sentinel', 'local name mismatch', 'overlapping range'] as const)(
-    'rejects inconsistent raw ZIP metadata: %s',
-    async (mode) => {
-      const bytes = await archive([{ path: 'SKILL.md', value: manifest }])
-      const view = new DataView(bytes.buffer)
-      const central = findSignature(bytes, 0x02014b50)
-      const local = findSignature(bytes, 0x04034b50)
-      if (mode === 'flag mismatch')
-        view.setUint16(local + 6, view.getUint16(local + 6, true) ^ 0x8, true)
-      if (mode === 'ZIP64 sentinel') view.setUint32(central + 24, 0xffffffff, true)
-      if (mode === 'local name mismatch') bytes[local + 30] ^= 1
-      if (mode === 'overlapping range') view.setUint32(central + 42, 1, true)
-      await expect(parseSkillArchive(bytes)).rejects.toThrow('invalid_skill_package')
-    },
-  )
+  it.each([
+    'flag mismatch',
+    'version mismatch',
+    'ZIP64 sentinel',
+    'local name mismatch',
+    'overlapping range',
+  ] as const)('rejects inconsistent raw ZIP metadata: %s', async (mode) => {
+    const bytes = await archive([{ path: 'SKILL.md', value: manifest }])
+    const view = new DataView(bytes.buffer)
+    const central = findSignature(bytes, 0x02014b50)
+    const local = findSignature(bytes, 0x04034b50)
+    if (mode === 'flag mismatch')
+      view.setUint16(local + 6, view.getUint16(local + 6, true) ^ 0x8, true)
+    if (mode === 'version mismatch')
+      view.setUint16(local + 4, view.getUint16(local + 4, true) + 1, true)
+    if (mode === 'ZIP64 sentinel') view.setUint32(central + 24, 0xffffffff, true)
+    if (mode === 'local name mismatch') bytes[local + 30] ^= 1
+    if (mode === 'overlapping range') view.setUint32(central + 42, 1, true)
+    await expect(parseSkillArchive(bytes)).rejects.toThrow('invalid_skill_package')
+  })
 
   it('rejects entry count and compressed, per-file, and aggregate uncompressed limits', async () => {
     const many = [{ path: 'SKILL.md', value: manifest }]
@@ -252,6 +290,27 @@ describe('bounded skill archive parser', () => {
         ]),
       ),
     ).rejects.toThrow('invalid_skill_package')
+  })
+
+  it('rejects metadata-only WebP and malformed PNG/JPEG semantic structures', async () => {
+    const badCrc = png.slice()
+    badCrc[32] ^= 1
+    const noSos = jpeg.slice(0, 17)
+    noSos.set([0xff, 0xd9], noSos.length - 2)
+    for (const [path, value] of [
+      ['metadata.webp', metadataOnlyWebp],
+      ['bad-crc.png', badCrc],
+      ['no-sos.jpg', noSos],
+    ] as const) {
+      await expect(
+        parseSkillArchive(
+          await archive([
+            { path: 'SKILL.md', value: manifest },
+            { path, value },
+          ]),
+        ),
+      ).rejects.toThrow('invalid_skill_package')
+    }
   })
 
   it('honors cancellation without returning partial output', async () => {
