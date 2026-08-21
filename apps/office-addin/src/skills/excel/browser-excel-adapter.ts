@@ -40,6 +40,10 @@ export interface ExcelMutation {
   input: Record<string, any>
   targets: string[]
 }
+export interface ExcelBatchOperation {
+  op: 'set_cell_range' | 'clear_cell_range'
+  input: Record<string, any>
+}
 export interface ExcelAdapter {
   getCellRanges(input: RangeRequest, signal?: AbortSignal): Promise<unknown>
   getRangeAsCsv(input: CsvRequest, signal?: AbortSignal): Promise<unknown>
@@ -68,6 +72,7 @@ export interface ExcelAdapter {
     signal?: AbortSignal,
     verifyCells?: string[],
   ): Promise<boolean>
+  executeBatch(operations: ExcelBatchOperation[], signal?: AbortSignal): Promise<void>
 }
 
 function cancelled(signal?: AbortSignal) {
@@ -592,6 +597,49 @@ export class BrowserExcelAdapter implements ExcelAdapter {
       await action(ws, context)
       await sync(context, signal)
     }, version)
+  }
+  async executeBatch(operations: ExcelBatchOperation[], signal?: AbortSignal): Promise<void> {
+    cancelled(signal)
+    for (const operation of operations) {
+      if (!['set_cell_range', 'clear_cell_range'].includes(operation.op))
+        throw new Error('office_api_unsupported')
+      if (operation.op === 'set_cell_range') parseA1(operation.input.range)
+      else parseA1(operation.input.range)
+    }
+    await this.run(async (context) => {
+      const worksheets = new Map<number, RuntimeRecord>()
+      for (const operation of operations) {
+        const ws = sheet(context, operation.input.sheetId)
+        ws.protection.load('protected')
+        worksheets.set(operation.input.sheetId, ws)
+      }
+      await sync(context, signal)
+      if ([...worksheets.values()].some((ws) => ws.protection.protected))
+        throw new Error('office_write_failed')
+      for (const operation of operations) {
+        cancelled(signal)
+        const ws = sheet(context, operation.input.sheetId)
+        if (operation.op === 'clear_cell_range') {
+          const types: RuntimeRecord = { contents: 'Contents', formats: 'Formats', all: 'All' }
+          ws.getRange(operation.input.range).clear(types[operation.input.clearType ?? 'contents'])
+          continue
+        }
+        const rows = operation.input.cells.length
+        const columns = operation.input.cells[0].length
+        const target = ws
+          .getRange(operation.input.range)
+          .getCell(0, 0)
+          .getResizedRange(rows - 1, columns - 1)
+        for (let row = 0; row < rows; row++)
+          for (let column = 0; column < columns; column++) {
+            cancelled(signal)
+            const source = operation.input.cells[row][column]
+            const cell = target.getCell(row, column)
+            if (Object.hasOwn(source, 'value')) cell.values = [[source.value]]
+          }
+      }
+      await sync(context, signal)
+    }, '1.4')
   }
   setCellRange(input: Record<string, any>, signal?: AbortSignal) {
     parseA1(input.range)
