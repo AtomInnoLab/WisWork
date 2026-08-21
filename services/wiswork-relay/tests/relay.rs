@@ -1,5 +1,8 @@
 use axum::response::IntoResponse;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::{SinkExt, StreamExt};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio_tungstenite::{
@@ -9,13 +12,17 @@ use tokio_tungstenite::{
 use wiswork_relay::{Config, app};
 
 const ORIGIN: &str = "https://office.8-216-134-194.sslip.io";
+const TEST_ISSUER: &str = "https://issuer.example.test";
+const TEST_AUDIENCE: &str = "relay-test-client";
+const TEST_PRIVATE_KEY_DER: &str = "MIG2AgEAMBAGByqGSM49AgEGBSuBBAAiBIGeMIGbAgEBBDBi2P/vImpNt3oyLprNPTVoaYRvIaJWVxDjsjoRF0YfAmwKUhtjGdj0qh0NWGlbVVOhZANiAAQ1aooGczWALsnMxfjM77d43rpKPqBtQEHPDrizP7fpwi/SbkZ2T/czW8Ye+5Ix3WIYFMM60AKyMtLQXT8V4VjQb0jM9wRkC/JEa0C50q9dk8APUPfbJMDbcsqcyW0bl2w=";
 
 async fn server() -> String {
     let auth_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let auth_addr = auth_listener.local_addr().unwrap();
-    let auth = axum::Router::new().route(
-        "/oidc/me",
-        axum::routing::get(|headers: axum::http::HeaderMap| async move {
+    let auth = axum::Router::new()
+        .route(
+            "/oidc/me",
+            axum::routing::get(|headers: axum::http::HeaderMap| async move {
             if headers.get("authorization").and_then(|v| v.to_str().ok())
                 == Some("Bearer valid-test-token")
             {
@@ -27,13 +34,22 @@ async fn server() -> String {
             } else {
                 axum::http::StatusCode::UNAUTHORIZED.into_response()
             }
-        }),
-    );
+            }),
+        )
+        .route(
+            "/oidc/jwks",
+            axum::routing::get(|| async {
+                axum::Json(json!({"keys":[{"kty":"EC","crv":"P-384","kid":"test-key","use":"sig","alg":"ES384","x":"NWqKBnM1gC7JzMX4zO-3eN66Sj6gbUBBzw64sz-36cIv0m5Gdk_3M1vGHvuSMd1i","y":"GBTDOtACsjLS0F0_FeFY0G9IzPcEZAvyRGtAudKvXZPAD1D32yTA23LKnMltG5ds"}]}))
+            }),
+        );
     tokio::spawn(async move { axum::serve(auth_listener, auth).await.unwrap() });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let config = Config {
         auth_url: format!("http://{auth_addr}/oidc/me"),
+        jwks_url: format!("http://{auth_addr}/oidc/jwks"),
+        issuer: TEST_ISSUER.into(),
+        audience: TEST_AUDIENCE.into(),
         ..Config::default()
     };
     tokio::spawn(async move {
@@ -66,6 +82,44 @@ async fn pc_socket(
         .headers_mut()
         .insert("authorization", "Bearer valid-test-token".parse().unwrap());
     connect_async(request).await.unwrap().0
+}
+
+async fn pc_socket_with_token(
+    url: &str,
+    token: &str,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    tokio_tungstenite::tungstenite::Error,
+> {
+    let mut request = url.into_client_request().unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", format!("Bearer {token}").parse().unwrap());
+    connect_async(request).await.map(|value| value.0)
+}
+
+#[derive(Serialize)]
+struct TestClaims<'a> {
+    sub: &'a str,
+    iss: &'a str,
+    aud: &'a str,
+    exp: u64,
+}
+
+fn id_token(issuer: &str, audience: &str, expires_at: u64) -> String {
+    let mut header = Header::new(Algorithm::ES384);
+    header.kid = Some("test-key".into());
+    encode(
+        &header,
+        &TestClaims {
+            sub: "jwt-test-user",
+            iss: issuer,
+            aud: audience,
+            exp: expires_at,
+        },
+        &EncodingKey::from_ec_der(&STANDARD.decode(TEST_PRIVATE_KEY_DER).unwrap()),
+    )
+    .unwrap()
 }
 
 async fn send(
@@ -121,6 +175,32 @@ async fn health_and_exact_origin() {
         .await
         .is_err()
     );
+}
+
+#[tokio::test]
+async fn authenticates_gateway_id_tokens_with_fixed_oidc_jwks() {
+    let url = server().await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let valid = id_token(TEST_ISSUER, TEST_AUDIENCE, now + 300);
+    let mut pc = pc_socket_with_token(&url, &valid).await.unwrap();
+    send(
+        &mut pc,
+        json!({"version":1,"type":"pc.claim","verification_code":"999999"}),
+    )
+    .await;
+    assert_eq!(recv(&mut pc).await["code"], "invalid_code");
+
+    let wrong_audience = id_token(TEST_ISSUER, "other-client", now + 300);
+    assert!(pc_socket_with_token(&url, &wrong_audience).await.is_err());
+
+    let wrong_issuer = id_token("https://attacker.example.test", TEST_AUDIENCE, now + 300);
+    assert!(pc_socket_with_token(&url, &wrong_issuer).await.is_err());
+
+    let expired = id_token(TEST_ISSUER, TEST_AUDIENCE, now - 120);
+    assert!(pc_socket_with_token(&url, &expired).await.is_err());
 }
 
 #[tokio::test]

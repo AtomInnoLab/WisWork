@@ -10,7 +10,9 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::{SinkExt, StreamExt};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
 use rand::{Rng, distr::Alphanumeric};
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -38,6 +40,9 @@ pub struct Config {
     pub request_ttl: Duration,
     pub max_claim_attempts: u8,
     pub auth_url: String,
+    pub jwks_url: String,
+    pub issuer: String,
+    pub audience: String,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -47,6 +52,9 @@ impl Default for Config {
             request_ttl: Duration::from_secs(120),
             max_claim_attempts: 5,
             auth_url: "https://auth.dev.wispaper.ai/oidc/me".into(),
+            jwks_url: "https://auth.dev.wispaper.ai/oidc/jwks".into(),
+            issuer: "https://auth.dev.wispaper.ai/oidc".into(),
+            audience: "y3xpwx3ytskxf66p0wztm".into(),
         }
     }
 }
@@ -217,6 +225,11 @@ async fn allow_preauth(app: &App, ip: IpAddr) -> bool {
 }
 
 async fn authenticate_pc(app: &App, token: &str) -> Option<[u8; 32]> {
+    if token.split('.').count() == 3
+        && let Some(subject) = authenticate_id_token(app, token).await
+    {
+        return Some(subject);
+    }
     let Ok(url) = reqwest::Url::parse(&app.inner.config.auth_url) else {
         return None;
     };
@@ -253,6 +266,61 @@ async fn authenticate_pc(app: &App, token: &str) -> Option<[u8; 32]> {
         return None;
     }
     Some(Sha256::digest(sub.as_bytes()).into())
+}
+
+#[derive(Deserialize)]
+struct IdTokenClaims {
+    sub: String,
+}
+
+async fn authenticate_id_token(app: &App, token: &str) -> Option<[u8; 32]> {
+    let header = decode_header(token).ok()?;
+    if header.alg != Algorithm::ES384 {
+        return None;
+    }
+    let kid = header
+        .kid
+        .as_deref()
+        .filter(|value| !value.is_empty() && value.len() <= 128)?;
+    let url = reqwest::Url::parse(&app.inner.config.jwks_url).ok()?;
+    let allowed = url.as_str() == "https://auth.dev.wispaper.ai/oidc/jwks"
+        || (url.scheme() == "http"
+            && url.host_str().is_some_and(|host| host == "127.0.0.1")
+            && url.path() == "/oidc/jwks");
+    if !allowed {
+        return None;
+    }
+    let mut response = app.inner.http.get(url).send().await.ok()?;
+    if !response.status().is_success()
+        || response
+            .content_length()
+            .is_some_and(|size| size > CONTROL_MAX as u64)
+    {
+        return None;
+    }
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) if body.len() + chunk.len() <= CONTROL_MAX => {
+                body.extend_from_slice(&chunk)
+            }
+            Ok(None) => break,
+            _ => return None,
+        }
+    }
+    let set: JwkSet = serde_json::from_slice(&body).ok()?;
+    let key = set.find(kid)?;
+    let decoding_key = DecodingKey::from_jwk(key).ok()?;
+    let mut validation = Validation::new(Algorithm::ES384);
+    validation.set_issuer(&[app.inner.config.issuer.as_str()]);
+    validation.set_audience(&[app.inner.config.audience.as_str()]);
+    let claims = decode::<IdTokenClaims>(token, &decoding_key, &validation)
+        .ok()?
+        .claims;
+    if claims.sub.is_empty() || claims.sub.len() > 512 {
+        return None;
+    }
+    Some(Sha256::digest(claims.sub.as_bytes()).into())
 }
 
 async fn connection(
