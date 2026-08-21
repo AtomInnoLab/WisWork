@@ -236,9 +236,7 @@ export function createWordSkill(options: {
             throw new Error('office_read_failed')
           return {
             output: JSON.stringify({ mime: result.mime }),
-            modelContent: [
-              { type: 'image', image: { mime: result.mime, base64: result.base64 } },
-            ],
+            modelContent: [{ type: 'image', image: { mime: result.mime, base64: result.base64 } }],
             display: {
               kind: 'images',
               items: [{ url: `data:${result.mime};base64,${result.base64}` }],
