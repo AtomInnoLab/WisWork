@@ -6,7 +6,6 @@ import type {
   AgentTransport,
 } from '@wiswork/agent-core'
 import { WISWORK_DEFAULT_MODEL } from '@wiswork/ai-provider'
-import type { PcBridgeSession } from '../pc-bridge/session.js'
 
 const MAX_TOKENS = 8192
 export const MAX_STREAM_TOOL_INPUT_LENGTH = 16 * 1024
@@ -142,7 +141,11 @@ async function consumeStream(
   callbacks: AgentStreamCallbacks,
   signal: AbortSignal,
 ): Promise<void> {
-  if (!response.ok || !response.body) throw new TransportError('transport_http', response.status)
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new TransportError('transport_http', response.status)
+  }
+  if (!response.body) throw new TransportError('transport_http', response.status)
   const pending = new Map<number, { id: string; name: string; json: string }>()
   let stopReason: string | undefined
   let eventCount = 0
@@ -223,7 +226,9 @@ async function consumeStream(
 }
 
 /** PC-backed transport: provider credentials remain in WisWork PC. */
-export function createPcBridgeAgentTransport(bridge: PcBridgeSession): AgentTransport {
+export function createPcBridgeAgentTransport(bridge: {
+  authenticatedFetch(path: '/v1/office/messages', init: RequestInit): Promise<Response>
+}): AgentTransport {
   return createTransport((init) => bridge.authenticatedFetch('/v1/office/messages', init))
 }
 

@@ -5,6 +5,7 @@ import type {
   AccountStatus,
   OfficePairingRequest,
   OfficeBridgeStatus,
+  OfficeRelayStatus,
   HomeApi,
   LatexRecentProjectEntry,
   RecentEntry,
@@ -201,6 +202,13 @@ const homeApi: HomeApi = {
     ipcRenderer.on(OFFICE_PAIRING_CHANNELS.requested, listener)
     return () => ipcRenderer.removeListener(OFFICE_PAIRING_CHANNELS.requested, listener)
   },
+  onOfficePairingExpired(handler) {
+    const listener = (_event: IpcRendererEvent, value: unknown) => {
+      if (typeof value === 'string' && /^[A-Za-z0-9_-]{8,128}$/.test(value)) handler(value)
+    }
+    ipcRenderer.on(OFFICE_PAIRING_CHANNELS.expired, listener)
+    return () => ipcRenderer.removeListener(OFFICE_PAIRING_CHANNELS.expired, listener)
+  },
   async listOfficePairings() {
     const result: unknown = await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.list)
     if (!Array.isArray(result)) return []
@@ -236,6 +244,35 @@ const homeApi: HomeApi = {
         ? value
         : 'error:bind_failed'
     ) as OfficeBridgeStatus
+  },
+  async claimOfficeRelay(code) {
+    if (!/^\d{6}$/.test(code)) throw new Error('Invalid verification code.')
+    await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.relayClaim, { code })
+  },
+  async officeRelayStatus() {
+    const result: unknown = await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.relayStatus)
+    const safe = new Set<OfficeRelayStatus>([
+      'disconnected',
+      'connecting',
+      'claiming',
+      'awaiting_approval',
+      'paired',
+      'disconnected:auth_required',
+      'disconnected:logout',
+      'disconnected:network_error',
+      'disconnected:new_claim',
+      'disconnected:pairing_expired',
+      'disconnected:protocol_violation',
+      'disconnected:rejected',
+      'disconnected:relay_error',
+      'disconnected:relay_closed',
+      'disconnected:session_expired',
+      'disconnected:shutdown',
+      'error:invalid_config',
+    ])
+    return typeof result === 'string' && safe.has(result as OfficeRelayStatus)
+      ? (result as OfficeRelayStatus)
+      : 'disconnected'
   },
   async getAppVersion() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getAppVersion)

@@ -13,10 +13,10 @@ export const DEFAULT_OFFICE_ORIGIN = 'https://office.8-216-134-194.sslip.io'
 
 export function officeBridgeEnabled(
   env: Record<string, string | undefined>,
-  isPackaged = false,
+  _isPackaged = false,
 ): boolean {
   const configured = env.WISWORK_OFFICE_BRIDGE_ENABLED
-  if (configured === undefined) return isPackaged
+  if (configured === undefined) return false
   return configured === '1'
 }
 

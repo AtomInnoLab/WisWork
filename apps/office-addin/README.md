@@ -1,6 +1,8 @@
 # WisWork Office Agent
 
-An Office.js task pane for Word, Excel, and PowerPoint. It reuses the signed-in WisWork PC account and Agent transport through a consented local bridge. Wispaper credentials remain in the PC process; the task pane keeps only a short-lived bridge capability in memory. Document writes still require an explicit before/after confirmation.
+An Office.js task pane for Word, Excel, and PowerPoint. It reuses the signed-in WisWork PC account
+through a consented cloud Relay. Wispaper credentials remain in the PC process; the task pane keeps
+only a short-lived socket-bound capability in memory. Document writes still require confirmation.
 
 ## Shipped tool surface
 
@@ -32,24 +34,12 @@ Supported mutations show a structured title, impact, before/after data, preview,
 present, and execute only after explicit confirmation. Logout or bridge loss disposes proposals,
 uploaded VFS files, and installed-skill session state.
 
-## Start WisWork PC
+## Connect WisWork PC
 
-The Office bridge is enabled by default in official packaged WisWork builds. Source development
-runs remain opt-in; start the PC app with an exact HTTPS add-in origin:
-
-```bash
-WISWORK_OFFICE_BRIDGE_ENABLED=1 \
-WISWORK_OFFICE_ORIGIN=https://office.example \
-npm run dev -w @wiswork/shell
-```
-
-`WISWORK_OFFICE_ORIGIN` must exactly match the deployed task-pane origin. By default, the PC app tries a 64-port pool (`43127` first, then the remaining ports in `43120–43183`) and binds the first available port. The bridge binds only `127.0.0.1` and never exposes PC access or refresh tokens.
-
-To use a custom pool, configure the same ordered, comma-separated list on PC and in the add-in build. Lists must contain 1–128 unique decimal ports from 1 through 65535:
-
-```bash
-WISWORK_OFFICE_BRIDGE_PORTS=43127,43128,43129
-```
+The task pane connects by default to the fixed secure Relay at
+`wss://office.8-216-134-194.sslip.io/office-relay`. Office and WisWork PC both make outbound WSS
+connections; no inbound port is opened on the user's computer. Enter the six-digit Office code in
+the signed-in PC app and approve the matching host/code. Credentials remain in WisWork PC.
 
 ## Develop and sideload
 
@@ -60,19 +50,26 @@ npm install
 npm run dev:office
 ```
 
-The development server uses trusted local HTTPS on port 3000. Start the PC bridge with `WISWORK_OFFICE_ORIGIN=https://localhost:3000`, sideload `apps/office-addin/public/manifest.xml`, and open **WisWork Office Agent**. Click **Connect to WisWork PC**, then approve the request in the PC app.
+The development server uses trusted local HTTPS on port 3000. Sideload
+`apps/office-addin/public/manifest.xml`, open **WisWork Office Agent**, enter its code in WisWork PC,
+then approve the matching request.
 
 ## Deployment build
 
-Configure the deployment origin and, when needed, the bridge port pool shared with WisWork PC:
+Configure only the deployment origin for the default Relay build:
 
 ```bash
 VITE_WISWORK_ADDIN_ORIGIN=https://office.example \
-VITE_WISWORK_PC_BRIDGE_PORTS=43127,43128,43129 \
 npm run build -w @wiswork/office-addin
 ```
 
-A valid configured build emits `dist/manifest.xml`. An unconfigured or invalid build emits no deployable manifest. If omitted, `VITE_WISWORK_PC_BRIDGE_PORTS` uses the default 64-port pool. A custom list must exactly match PC runtime `WISWORK_OFFICE_BRIDGE_PORTS`. The generated manifest contains only the exact add-in HTTPS origin; task-pane CSP explicitly enumerates the numeric loopback endpoints in the pool. There are no OAuth callback pages, auth domains, direct WisUsage connection, wildcard origins, or source maps in the deployment output.
+A valid configured build emits `dist/manifest.xml`; an invalid build emits no deployable manifest.
+The task-pane CSP allows only the fixed WSS Relay. There are no OAuth callback pages, direct
+WisUsage connections, wildcard origins, or source maps in the deployment output.
+
+The local HTTP bridge is rollback-only. It is never selected automatically. A coordinated rollback
+build must set `VITE_WISWORK_OFFICE_TRANSPORT=loopback` and configure the same bounded port list on
+Office and PC. Remove that flag to return to Relay mode.
 
 The new host/shared registries are enabled by default. Build with
 `VITE_WISWORK_OFFICE_HOST_SKILLS=0` to roll back to the legacy selection-only skill without
@@ -80,29 +77,29 @@ changing the PC bridge, identity, manifest, or stored user data.
 
 ## Operational behavior
 
-- **PC offline:** Office shows **Open WisWork PC** and can retry after the app starts.
+- **PC offline:** Office keeps the short-lived code visible so it can be entered after PC starts.
 - **PC signed out:** approval is refused; sign in through the existing WisWork PC flow first.
 - **Approval:** every new task-pane session requires visible approval in WisWork PC. Approve only when the same six-digit verification code is visible in both Office and the PC confirmation dialog.
 - **Revocation:** Office logout/disconnect drops the in-memory capability. PC logout, bridge shutdown, or PC restart revokes every pairing and active stream.
-- **Port conflict:** the PC app tries the next configured loopback port only when a port is already occupied. It never falls back to another address or a public bind. Startup fails if the whole pool is occupied or a non-conflict bind error occurs.
-- **Diagnostics:** the trusted WisWork account menu reports the local bridge as `disabled`, `ready:<port>`, or `error`; errors do not expose network or authentication details.
-- **Rollback:** set `WISWORK_OFFICE_BRIDGE_ENABLED=0` in a packaged deployment (or leave it unset in development) and deploy the prior add-in build. Restarting WisWork PC clears all in-memory grants; no data migration is required.
+- **Relay restart/network loss:** the in-memory session is revoked; reconnect creates a new pairing.
+- **Rollback:** deploy Office and PC rollback settings together. There is no silent HTTP downgrade.
 
-## Manual Windows/macOS acceptance
+## Manual Office acceptance
 
-Private Network Access and Office WebView behavior must be checked on both supported desktop platforms before release:
+Relay behavior must be checked on Windows and macOS desktop Office and Word Web before release:
 
-1. Start WisWork PC signed in with the bridge environment above; sideload the configured manifest in Word, Excel, and PowerPoint.
-2. Confirm the HTTPS task pane discovers the selected endpoint through the bounded `/v1/office/health` probe and can preflight/fetch it, including `Access-Control-Allow-Private-Network: true` where the WebView requests it.
+1. Start WisWork PC signed in; sideload the configured manifest in Word, Excel, and PowerPoint.
+2. Confirm the task pane opens only the fixed WSS Relay and needs no loopback/PNA exception.
 3. Connect, approve in PC, and verify the Agent conversation appears and streams using the same Wispaper account and credits as PC.
 4. Verify Reject never changes the document, stale proposals fail, and Confirm applies exactly one replacement or append.
 5. Log out of WisWork PC during an active stream. Verify the stream stops, Office clears conversation/proposals, and reconnect requires a new approval.
-6. Stop WisWork PC and verify Office returns to its offline state without retaining a capability. Restart and reconnect.
-7. Occupy `43127`; verify PC selects the next free configured port and Office still connects. Then occupy the entire configured pool and verify startup fails without listening publicly.
-8. Inspect Office storage, logs, and network responses: no Wispaper access token, refresh token, authorization code, or upstream secret may appear.
+6. Stop WisWork PC and verify Office returns to its offline state without retaining a capability. Restart and pair again.
+7. Restart the Relay and verify both clients revoke in-memory state and require a new pairing.
+8. Repeat pairing and one streamed request in Word Web.
+9. Inspect Office storage, logs, and network frames: no Wispaper credential may appear.
 
 For the host-tool release candidate, also complete these checks on both Windows and macOS desktop
-Office (Office Web remains blocked pending PNA and API-set acceptance):
+Office (with host-specific API-set acceptance still required):
 
 1. Verify each host advertises only shared `read`/`bash` plus its exact inventory above, with no
    cross-host tools.

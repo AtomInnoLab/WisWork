@@ -125,10 +125,15 @@ export interface HomeApi {
   accountLogout(): Promise<void>
   /** Observe explicit Office connection requests awaiting approval on this PC. */
   onOfficePairingRequested(handler: (pairing: OfficePairingRequest) => void): () => void
+  onOfficePairingExpired(handler: (pairingId: string) => void): () => void
   listOfficePairings(): Promise<OfficePairingRequest[]>
   approveOfficePairing(pairingId: string): Promise<boolean>
   rejectOfficePairing(pairingId: string): Promise<boolean>
   officeBridgeStatus(): Promise<OfficeBridgeStatus>
+  /** Claim a cloud Office pairing using the six-digit code shown in Office. */
+  claimOfficeRelay(code: string): Promise<void>
+  /** Non-sensitive cloud relay lifecycle diagnostic. */
+  officeRelayStatus(): Promise<OfficeRelayStatus>
   getAppVersion(): Promise<string>
   onboardingSeen(): Promise<boolean>
   setOnboardingSeen(): Promise<void>
@@ -163,6 +168,25 @@ export type OfficeBridgeStatus =
   | 'error:pool_exhausted'
   | 'error:invalid_config'
   | 'error:bind_failed'
+
+export type OfficeRelayStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'claiming'
+  | 'awaiting_approval'
+  | 'paired'
+  | 'disconnected:auth_required'
+  | 'disconnected:logout'
+  | 'disconnected:network_error'
+  | 'disconnected:new_claim'
+  | 'disconnected:pairing_expired'
+  | 'disconnected:protocol_violation'
+  | 'disconnected:rejected'
+  | 'disconnected:relay_error'
+  | 'disconnected:relay_closed'
+  | 'disconnected:session_expired'
+  | 'disconnected:shutdown'
+  | 'error:invalid_config'
 
 export interface RenameResult {
   ok: boolean
@@ -261,7 +285,10 @@ export const PROJECT_CHANNELS = {
 
 export const OFFICE_PAIRING_CHANNELS = {
   requested: 'home:office-pairing-requested',
+  expired: 'home:office-pairing-expired',
   list: 'home:office-pairing-list',
   approve: 'home:office-pairing-approve',
   reject: 'home:office-pairing-reject',
+  relayClaim: 'home:office-relay-claim',
+  relayStatus: 'home:office-relay-status',
 } as const

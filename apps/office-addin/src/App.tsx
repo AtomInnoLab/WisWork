@@ -10,6 +10,7 @@ import {
   type OfficeAgentSession,
 } from './agent/use-office-agent.js'
 import { createPcBridgeSession } from './pc-bridge/session.js'
+import { createOfficeRelaySession, officeTransportMode } from './relay/session.js'
 import {
   createBrowserOfficeRuntime,
   createOfficeDocumentClient,
@@ -287,8 +288,18 @@ export function AgentWorkspace(props: {
 
 function ConfiguredApp() {
   const document = useMemo(() => createOfficeDocumentClient(createBrowserOfficeRuntime()), [])
-  const bridge = useMemo(() => createPcBridgeSession(), [])
-  const bridgeState = useSyncExternalStore(bridge.subscribe, bridge.snapshot, bridge.snapshot)
+  const bridge = useMemo(
+    () =>
+      officeTransportMode(import.meta.env) === 'loopback'
+        ? createPcBridgeSession()
+        : createOfficeRelaySession(),
+    [],
+  )
+  const bridgeState = useSyncExternalStore(
+    (listener) => bridge.subscribe(listener),
+    () => bridge.snapshot(),
+    () => bridge.snapshot(),
+  )
   const [workspace, setWorkspace] = useState<
     { runtime: OfficeHostRuntime; session: OfficeAgentSession } | undefined
   >()
@@ -335,6 +346,7 @@ function ConfiguredApp() {
       active = false
       created?.session.authenticationLost()
       created?.runtime.dispose()
+      bridge.disconnect()
     }
   }, [bridge, document])
 
@@ -353,13 +365,15 @@ function ConfiguredApp() {
   }
   if (bridgeState.status !== 'connected') {
     const detail = {
-      offline:
-        'Open or update WisWork PC, sign in, and confirm Office bridge shows ready, then retry.',
-      connecting: 'Looking for the WisWork PC bridge on this computer…',
+      offline: 'Connect again to create a new secure pairing with WisWork PC.',
+      connecting: 'Connecting securely to the WisWork Office Relay…',
       signed_out: 'Sign in to WisWork PC first.',
       pending: bridgeState.verificationCode
-        ? `Confirm code ${bridgeState.verificationCode} in WisWork PC, then approve.`
-        : 'Approve this connection in WisWork PC.',
+        ? `Enter code ${bridgeState.verificationCode} in WisWork PC, then approve the matching request.`
+        : 'Enter the pairing code in WisWork PC.',
+      waiting_for_pc: bridgeState.verificationCode
+        ? `Enter code ${bridgeState.verificationCode} in WisWork PC to continue.`
+        : 'Waiting for a signed-in WisWork PC.',
       rejected: 'The connection was rejected in WisWork PC.',
       expired: 'The connection request expired. Try again.',
     }[bridgeState.status]

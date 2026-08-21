@@ -172,6 +172,11 @@ import {
   syncOfficeBridgeAvailability,
 } from './office-bridge-runtime'
 import { registerOfficePairingIpc } from './office-pairing-ipc'
+import {
+  createOfficeRelayClient,
+  officeRelayEndpointFromEnv,
+  type OfficeRelayClient,
+} from './office-relay-client'
 
 /**
  * WisWork unified shell: ONE Electron app, ONE BrowserWindow, hosting the
@@ -275,6 +280,8 @@ let authRuntime: ReturnType<typeof initializeElectronAuthRuntime> | null = null
 let officeBridge: OfficeBridge | null = null
 let officeBridgeServer: OfficeBridgeHttpServer | null = null
 let officeBridgeDiagnostic = 'disabled'
+let officeRelay: OfficeRelayClient | null = null
+let officeRelayDiagnostic = 'disconnected'
 const requireAuthRuntime = (): ReturnType<typeof initializeElectronAuthRuntime> => {
   if (!authRuntime) throw new AuthError('auth_not_initialized')
   return authRuntime
@@ -1714,9 +1721,11 @@ function registerHomeIpc(): void {
   let pendingLoginUrl = ''
   ipcMain.handle(HOME_CHANNELS.accountStatus, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
-    return syncOfficeBridgeAvailability(officeBridge, () =>
+    const status = await syncOfficeBridgeAvailability(officeBridge, () =>
       requireAuthRuntime().client.getValidAccountStatus(),
     )
+    if (!status.loggedIn) officeRelay?.revoke('auth_required')
+    return status
   })
   ipcMain.handle(HOME_CHANNELS.accountLogin, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
@@ -1744,11 +1753,31 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.accountLogout, (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
     officeBridge?.setSessionAvailable(false)
+    officeRelay?.revoke('logout')
     return requireAuthRuntime().client.logout()
   })
   ipcMain.handle(HOME_CHANNELS.officeBridgeStatus, (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
     return officeBridgeDiagnostic
+  })
+  ipcMain.handle(OFFICE_PAIRING_CHANNELS.relayStatus, (event, ...args: unknown[]) => {
+    assertHomeAuthIpc(event, args)
+    return officeRelay?.status() ?? officeRelayDiagnostic
+  })
+  ipcMain.handle(OFFICE_PAIRING_CHANNELS.relayClaim, async (event, ...args: unknown[]) => {
+    if (!shellWindow || event.sender !== shellWindow.webContents)
+      throw new Error('Untrusted IPC sender.')
+    const input = args[0] as { code?: unknown } | null
+    if (
+      args.length !== 1 ||
+      !input ||
+      Object.keys(input).length !== 1 ||
+      typeof input.code !== 'string' ||
+      !/^\d{6}$/.test(input.code)
+    )
+      throw new Error('Invalid relay claim IPC payload.')
+    if (!officeRelay) throw new Error('office_relay_unavailable')
+    await officeRelay.claim(input.code)
   })
 
   ipcMain.handle(HOME_CHANNELS.getAppVersion, (): string => app.getVersion())
@@ -2466,6 +2495,58 @@ app.whenReady().then(async () => {
     safeStorage,
     openExternal: (url) => shell.openExternal(url),
   })
+  const asOfficePairing = (pairing: {
+    pairingId: string
+    hostLabel: string
+    origin: string
+    verificationCode: string
+  }): import('../shared/home-api').OfficePairingRequest | null => {
+    if (
+      pairing.hostLabel !== 'Word' &&
+      pairing.hostLabel !== 'Excel' &&
+      pairing.hostLabel !== 'PowerPoint'
+    )
+      return null
+    return { ...pairing, hostLabel: pairing.hostLabel }
+  }
+  const notifyOfficePairing = (raw: {
+    pairingId: string
+    hostLabel: string
+    origin: string
+    verificationCode: string
+  }) => {
+    const pairing = asOfficePairing(raw)
+    if (!pairing) return
+    if (!shellWindow || shellWindow.isDestroyed()) return
+    shellWindow.webContents.send(OFFICE_PAIRING_CHANNELS.requested, pairing)
+    revealShellWindow()
+  }
+  const officeMessagesProxy = createOfficeMessagesProxy({
+    fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+    onTerminalAuthLoss: () => {
+      officeBridge?.setSessionAvailable(false)
+      officeRelay?.revoke('auth_required')
+    },
+  })
+  try {
+    officeRelay = createOfficeRelayClient({
+      endpoint: officeRelayEndpointFromEnv(process.env),
+      getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
+      getAccessToken: () => requireAuthRuntime().client.getAccessToken(),
+      proxy: officeMessagesProxy,
+      onPending: notifyOfficePairing,
+      onPendingExpired: (pairingId) => {
+        if (!shellWindow || shellWindow.isDestroyed()) return
+        shellWindow.webContents.send(OFFICE_PAIRING_CHANNELS.expired, pairingId)
+      },
+      onStatus: (status) => {
+        officeRelayDiagnostic = status
+      },
+    })
+  } catch {
+    officeRelayDiagnostic = 'error:invalid_config'
+    console.error('[office-relay] invalid endpoint configuration')
+  }
   if (officeBridgeEnabled(process.env, app.isPackaged)) {
     officeBridgeDiagnostic = 'error'
     const initialAccount = await requireAuthRuntime()
@@ -2474,33 +2555,9 @@ app.whenReady().then(async () => {
     const initializedOfficeBridge = createOfficeBridge({
       allowedOrigin: officeOriginFromEnv(process.env),
       sessionAvailable: initialAccount.loggedIn,
-      proxy: createOfficeMessagesProxy({
-        fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
-        onTerminalAuthLoss: () => officeBridge?.setSessionAvailable(false),
-      }),
+      proxy: officeMessagesProxy,
     })
     officeBridge = initializedOfficeBridge
-    registerOfficePairingIpc({
-      ipcMain,
-      bridge: initializedOfficeBridge,
-      listPending: () => initializedOfficeBridge.listPending(),
-      getValidAccountStatus: async () => {
-        try {
-          const status = await requireAuthRuntime().client.getValidAccountStatus()
-          initializedOfficeBridge.setSessionAvailable(status.loggedIn)
-          return status
-        } catch (error) {
-          if (
-            error instanceof Error &&
-            (error.message === 'auth_required' ||
-              (error as Error & { code?: string }).code === 'auth_required')
-          )
-            initializedOfficeBridge.setSessionAvailable(false)
-          throw error
-        }
-      },
-      isTrustedSender: (sender) => Boolean(shellWindow && sender === shellWindow.webContents),
-    })
     try {
       const bound = await bindOfficeBridgePortPool(officeBridgePortsFromEnv(process.env), (port) =>
         startOfficeBridgeHttpServer({
@@ -2508,11 +2565,7 @@ app.whenReady().then(async () => {
           host: '127.0.0.1',
           port,
           allowedOrigin: officeOriginFromEnv(process.env),
-          onPending: (pairing) => {
-            if (!shellWindow || shellWindow.isDestroyed()) return
-            shellWindow.webContents.send(OFFICE_PAIRING_CHANNELS.requested, pairing)
-            revealShellWindow()
-          },
+          onPending: notifyOfficePairing,
         }),
       )
       officeBridgeServer = bound.server
@@ -2524,6 +2577,30 @@ app.whenReady().then(async () => {
       console.error('[office-bridge] failed to start on loopback')
     }
   }
+  registerOfficePairingIpc({
+    ipcMain,
+    bridge: {
+      async approve(id, accountValid) {
+        if (officeRelay?.listPending().some((entry) => entry.pairingId === id)) {
+          return accountValid && (await officeRelay.approve(id))
+        }
+        return officeBridge?.approve(id, accountValid) ?? false
+      },
+      reject(id) {
+        return officeRelay?.reject(id) || officeBridge?.reject(id) || false
+      },
+    },
+    listPending: () => [
+      ...(officeRelay?.listPending() ?? []),
+      ...(officeBridge?.listPending() ?? [])
+        .map(asOfficePairing)
+        .filter(
+          (entry): entry is import('../shared/home-api').OfficePairingRequest => entry !== null,
+        ),
+    ],
+    getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
+    isTrustedSender: (sender) => Boolean(shellWindow && sender === shellWindow.webContents),
+  })
   void authDeepLinks.initialize(async (callback) => {
     await requireAuthRuntime().client.consumeCallback(callback)
     await syncOfficeBridgeAvailability(officeBridge, () =>
@@ -2580,5 +2657,6 @@ app.on('before-quit', () => {
   stopSheetsSidecar()
   officeBridge?.revokeAll()
   officeBridge?.shutdown()
+  officeRelay?.revoke('shutdown')
   void officeBridgeServer?.stop()
 })
