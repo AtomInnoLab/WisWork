@@ -63,13 +63,25 @@ function validatePath(rawPath: string): string {
   return path
 }
 
-function validateMode(mode: number | string | null | undefined, directory: boolean): void {
+function validateUnixMode(mode: number | string | null | undefined, directory: boolean): void {
   const numeric = typeof mode === 'string' ? Number.parseInt(mode, 8) : mode
   if (typeof numeric !== 'number' || !Number.isFinite(numeric)) return
   const type = numeric & 0o170000
   if (
     (type !== 0 && type !== 0o100000 && type !== 0o040000) ||
     (!directory && (numeric & 0o111) !== 0)
+  )
+    invalid()
+}
+
+function validateDosAttributes(attributes: number | null | undefined, directory: boolean): void {
+  if (attributes === null || attributes === undefined) return
+  if (
+    !Number.isInteger(attributes) ||
+    (attributes & 0x04) !== 0 ||
+    (attributes & 0x08) !== 0 ||
+    Boolean(attributes & 0x10) !== directory ||
+    (attributes & ~(0x01 | 0x02 | 0x10 | 0x20)) !== 0
   )
     invalid()
 }
@@ -459,8 +471,8 @@ export async function parseSkillArchive(
     if (names.has(collisionKey)) invalid()
     names.add(collisionKey)
     if (!entry.dir && path.toLocaleLowerCase('en-US') === 'skill.md') manifestCount += 1
-    validateMode(entry.unixPermissions, entry.dir)
-    validateMode(entry.dosPermissions, entry.dir)
+    validateUnixMode(entry.unixPermissions, entry.dir)
+    validateDosAttributes(entry.dosPermissions, entry.dir)
     if (entry.dir) continue
     const declared = metadata.get(entry.name)
     if (!declared || declared.directory !== entry.dir) invalid()

@@ -78,6 +78,12 @@ async function archive(
   return new Uint8Array(await zip.generateAsync({ type: 'arraybuffer', platform: 'UNIX' }))
 }
 
+async function dosReadOnlyArchive() {
+  const zip = new JSZip()
+  zip.file('SKILL.md', manifest, { dosPermissions: 0x01 })
+  return new Uint8Array(await zip.generateAsync({ type: 'arraybuffer', platform: 'DOS' }))
+}
+
 function findSignature(bytes: Uint8Array, signature: number): number {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   for (let offset = 0; offset + 4 <= bytes.length; offset++)
@@ -86,6 +92,12 @@ function findSignature(bytes: Uint8Array, signature: number): number {
 }
 
 describe('bounded skill archive parser', () => {
+  it('accepts a DOS read-only file attribute without treating it as Unix executable', async () => {
+    await expect(parseSkillArchive(await dosReadOnlyArchive())).resolves.toMatchObject({
+      skill: { metadata: { name: 'writer' } },
+    })
+  })
+
   it('accepts exactly one root SKILL.md plus allowlisted text and image assets', async () => {
     const result = await parseSkillArchive(
       await archive([
