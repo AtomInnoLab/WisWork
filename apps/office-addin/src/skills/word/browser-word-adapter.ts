@@ -263,7 +263,27 @@ function summarizeOoxml(
   }
 }
 
+async function readBodyOoxml(signal?: AbortSignal): Promise<string> {
+  cancelled(signal)
+  const { word } = runtime()
+  return (word.run as (callback: (context: RuntimeRecord) => unknown) => Promise<unknown>)(
+    async (context) => {
+      const body = (context.document as RuntimeRecord).body as RuntimeRecord
+      if (typeof body.getOoxml !== 'function') throw new Error('office_api_unsupported')
+      const result = (body.getOoxml as () => RuntimeRecord)()
+      await sync(context, signal)
+      if (
+        typeof result.value !== 'string' ||
+        new TextEncoder().encode(result.value).byteLength > MAX_WORD_OOXML_BYTES
+      )
+        throw new Error('office_read_failed')
+      return result.value
+    },
+  ) as Promise<string>
+}
+
 export class BrowserWordAdapter implements WordAdapter {
+  private expectedText: string | undefined
   constructor(
     private readonly screenshotDependencies: {
       exportPdf?: (signal?: AbortSignal) => Promise<Uint8Array>
@@ -405,20 +425,7 @@ export class BrowserWordAdapter implements WordAdapter {
     options: { startChild?: number; endChild?: number },
     signal?: AbortSignal,
   ): Promise<WordOoxmlResult> {
-    cancelled(signal)
-    const { word } = runtime()
-    const xml = (word.run as (callback: (context: RuntimeRecord) => unknown) => Promise<unknown>)(
-      async (context) => {
-        const document = context.document as RuntimeRecord
-        const body = document.body as RuntimeRecord
-        if (typeof body.getOoxml !== 'function') throw new Error('office_api_unsupported')
-        const result = (body.getOoxml as () => RuntimeRecord)()
-        await sync(context, signal)
-        if (typeof result.value !== 'string') throw new Error('office_read_failed')
-        return result.value
-      },
-    ) as Promise<string>
-    return summarizeOoxml(await xml, options)
+    return summarizeOoxml(await readBodyOoxml(signal), options)
   }
 
   async screenshotDocument(page: number, signal?: AbortSignal): Promise<WordScreenshotResult> {
@@ -434,13 +441,10 @@ export class BrowserWordAdapter implements WordAdapter {
 
   async fingerprint(signal?: AbortSignal): Promise<string> {
     cancelled(signal)
-    const value = (await this.getOoxml({}, signal)).xml
-    let hash = 0x811c9dc5
-    for (let index = 0; index < value.length; index += 1) {
-      hash ^= value.charCodeAt(index)
-      hash = Math.imul(hash, 0x01000193)
-    }
-    return `${value.length}:${(hash >>> 0).toString(16)}`
+    const value = await readBodyOoxml(signal)
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+    cancelled(signal)
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
   }
 
   async executeOperations(
@@ -448,38 +452,67 @@ export class BrowserWordAdapter implements WordAdapter {
     signal?: AbortSignal,
   ): Promise<void> {
     cancelled(signal)
+    this.expectedText = undefined
     const { word } = runtime()
     await (word.run as (callback: (context: RuntimeRecord) => unknown) => Promise<unknown>)(
       async (context) => {
         const body = (context.document as RuntimeRecord).body as RuntimeRecord
-        for (const operation of operations) {
-          cancelled(signal)
+        if (
+          typeof body.insertText !== 'function' ||
+          typeof body.search !== 'function' ||
+          typeof body.getOoxml !== 'function'
+        )
+          throw new Error('office_api_unsupported')
+        const snapshot = (body.getOoxml as () => RuntimeRecord)()
+        const searches = operations.map((operation) => {
+          if (operation.op !== 'replace_all') return undefined
+          const result = (body.search as (value: string, options: object) => RuntimeRecord)(
+            operation.search,
+            { matchCase: operation.matchCase },
+          )
+          ;(result.load as (properties: string) => void)('items')
+          return result
+        })
+        await sync(context, signal)
+        if (
+          typeof snapshot.value !== 'string' ||
+          new TextEncoder().encode(snapshot.value).byteLength > MAX_WORD_OOXML_BYTES
+        )
+          throw new Error('office_write_failed')
+        let expected = ooxmlText(snapshot.value)
+        let replacementCount = 0
+        for (let index = 0; index < operations.length; index += 1) {
+          const operation = operations[index]
+          const items = searches[index]?.items as RuntimeRecord[] | undefined
+          replacementCount += items?.length ?? 0
+          if (
+            replacementCount > 1_000 ||
+            items?.some((item) => typeof item.insertText !== 'function')
+          )
+            throw new Error('office_write_failed')
+          expected = applyTextOperation(expected, operation, items?.length)
+        }
+        if (new TextEncoder().encode(expected).byteLength > MAX_WORD_OOXML_BYTES)
+          throw new Error('office_write_failed')
+        cancelled(signal)
+        for (let index = 0; index < operations.length; index += 1) {
+          const operation = operations[index]
           if (operation.op === 'insert_text') {
-            if (typeof body.insertText !== 'function') throw new Error('office_api_unsupported')
             ;(body.insertText as (value: string, location: string) => void)(
               operation.text,
               { start: 'Start', end: 'End', replace: 'Replace' }[operation.location],
             )
           } else {
-            if (typeof body.search !== 'function') throw new Error('office_api_unsupported')
-            const results = (body.search as (value: string, options: object) => RuntimeRecord)(
-              operation.search,
-              { matchCase: operation.matchCase },
-            )
-            ;(results.load as (properties: string) => void)('items')
-            await sync(context, signal)
-            const items = results.items as RuntimeRecord[]
-            if (items.length > 1_000) throw new Error('office_write_failed')
-            for (const item of items) {
-              cancelled(signal)
-              ;(item.insertText as (value: string, location: string) => void)(
+            for (const item of searches[index]?.items as RuntimeRecord[])
+              (item.insertText as (value: string, location: string) => void)(
                 operation.replacement,
                 'Replace',
               )
-            }
           }
         }
+        cancelled(signal)
         await sync(context, signal)
+        this.expectedText = expected
       },
     )
   }
@@ -489,12 +522,68 @@ export class BrowserWordAdapter implements WordAdapter {
     signal?: AbortSignal,
   ): Promise<boolean> {
     cancelled(signal)
-    const result = await this.getDocumentText({ includeFormatting: false }, signal)
-    const body = result.paragraphs.map((paragraph) => paragraph.text).join('\n')
-    return operations.every((operation) =>
-      operation.op === 'insert_text'
-        ? operation.text.length === 0 || body.includes(operation.text)
-        : !body.includes(operation.search) || body.includes(operation.replacement),
-    )
+    void operations
+    const expected = this.expectedText
+    this.expectedText = undefined
+    if (expected === undefined) return false
+    return ooxmlText(await readBodyOoxml(signal)) === expected
   }
+}
+
+function ooxmlText(xml: string): string {
+  const paragraphs = [...xml.matchAll(/<w:p(?:\s[^>]*)?>([\s\S]*?)<\/w:p>/g)]
+  if (paragraphs.length === 0 && /<w:t(?:\s[^>]*)?>/.test(xml))
+    throw new Error('office_read_failed')
+  return paragraphs
+    .map((paragraph) =>
+      [...paragraph[1].matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:(tab|br|cr)\s*\/>/g)]
+        .map((token) => (token[2] === 'tab' ? '\t' : token[2] ? '\n' : decodeXml(token[1])))
+        .join(''),
+    )
+    .join('\n')
+}
+
+function decodeXml(value: string): string {
+  return value.replace(/&(lt|gt|amp|quot|apos|#\d+|#x[\da-f]+);/gi, (entity, code: string) => {
+    const named: Record<string, string> = {
+      lt: '<',
+      gt: '>',
+      amp: '&',
+      quot: '"',
+      apos: "'",
+    }
+    const normalized = code.toLowerCase()
+    if (normalized in named) return named[normalized]
+    const numeric = normalized.startsWith('#x')
+      ? Number.parseInt(normalized.slice(2), 16)
+      : Number.parseInt(normalized.slice(1), 10)
+    return Number.isFinite(numeric) && numeric >= 0 && numeric <= 0x10ffff
+      ? String.fromCodePoint(numeric)
+      : entity
+  })
+}
+
+function applyTextOperation(
+  value: string,
+  operation: WordDeclarativeOperation,
+  expectedMatches?: number,
+): string {
+  if (operation.op === 'insert_text')
+    return operation.location === 'start'
+      ? `${operation.text}${value}`
+      : operation.location === 'end'
+        ? `${value}${operation.text}`
+        : operation.text
+  if (expectedMatches === 0) return value
+  const escaped = operation.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const expression = new RegExp(escaped, operation.matchCase ? 'g' : 'gi')
+  let replaced = 0
+  const result = value.replace(expression, (match) => {
+    if (expectedMatches !== undefined && replaced >= expectedMatches) return match
+    replaced += 1
+    return operation.replacement
+  })
+  if (expectedMatches !== undefined && replaced !== expectedMatches)
+    throw new Error('office_write_failed')
+  return result
 }

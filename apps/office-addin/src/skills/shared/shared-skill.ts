@@ -1,7 +1,6 @@
 import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
 import { exactObject, stringField } from '../../agent/tool-schema.js'
 import { createSandboxCommands } from './commands.js'
-import { createConversionCommands } from './conversions.js'
 import { InMemoryVfs, MAX_VFS_FILE_BYTES } from './vfs.js'
 import type { SkillRegistry } from './skill-registry.js'
 
@@ -22,9 +21,7 @@ export function createSharedBrowserSkill(options: {
   maxReadBytes?: number
 }): AgentSkill {
   const maxReadBytes = options.maxReadBytes ?? 64 * 1024
-  const commands = createSandboxCommands(options.vfs, {
-    extraCommands: createConversionCommands(options.vfs),
-  })
+  const commands = createSandboxCommands(options.vfs)
   return {
     id: 'office-shared-browser',
     systemPrompt:
@@ -57,6 +54,7 @@ export function createSharedBrowserSkill(options: {
       try {
         if (call.name === 'read') {
           const { path } = readInput(call.input)
+          if (path.toLowerCase().endsWith('.gif')) throw new Error('image_mime_unsupported')
           const mime = imageMime(path)
           if (mime) {
             const bytes = options.vfs.readBytes(path, { maxBytes: MAX_VFS_FILE_BYTES + 1 })
@@ -100,7 +98,6 @@ function imageMime(path: string): string | undefined {
     png: 'image/png',
     jpg: 'image/jpeg',
     jpeg: 'image/jpeg',
-    gif: 'image/gif',
     webp: 'image/webp',
   }[extension ?? '']
 }

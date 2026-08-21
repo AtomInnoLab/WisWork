@@ -484,4 +484,87 @@ describe('browser Word adapter', () => {
     ).rejects.toThrow('invalid_tool_input')
     expect(paragraphs.load).toHaveBeenLastCalledWith({ $skip: 998, $top: 1 })
   })
+
+  it('preflights every declarative operation before queuing any Word mutation', async () => {
+    const insertText = vi.fn()
+    const replacement = vi.fn()
+    const sync = vi.fn().mockResolvedValue(undefined)
+    const oversizedResults = {
+      items: Array.from({ length: 1_001 }, () => ({ insertText: replacement })),
+      load: vi.fn(),
+    }
+    const body = {
+      insertText,
+      getOoxml: vi.fn(() => ({
+        value:
+          '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>before</w:t></w:r></w:p></w:body></w:document>',
+      })),
+      search: vi.fn(() => oversizedResults),
+    }
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'Word',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserWordAdapter().executeOperations([
+        { op: 'insert_text', location: 'end', text: 'queued-too-early' },
+        { op: 'replace_all', search: 'before', replacement: 'after', matchCase: true },
+      ]),
+    ).rejects.toThrow('office_write_failed')
+    expect(sync).toHaveBeenCalledOnce()
+    expect(insertText).not.toHaveBeenCalled()
+    expect(replacement).not.toHaveBeenCalled()
+  })
+
+  it('verifies the exact full bounded Word text after a declarative write', async () => {
+    const paragraph = (text: string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`
+    let current = `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${Array.from(
+      { length: 501 },
+      (_, index) => paragraph(`p${index}`),
+    ).join('')}</w:body></w:document>`
+    let pending = ''
+    const body = {
+      insertText: vi.fn((value: string) => {
+        pending += value
+      }),
+      getOoxml: vi.fn(() => ({ value: current })),
+      search: vi.fn(() => ({ items: [], load: vi.fn() })),
+    }
+    const sync = vi.fn(async () => {
+      if (!pending) return
+      current = current.replace(
+        '</w:t></w:r></w:p></w:body>',
+        `${pending}</w:t></w:r></w:p></w:body>`,
+      )
+      pending = ''
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'Word',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+    const subject = new BrowserWordAdapter()
+    const operation = { op: 'insert_text', location: 'end', text: 'done' } as const
+
+    await subject.executeOperations([operation])
+    await expect(subject.verifyOperations([operation])).resolves.toBe(true)
+
+    await subject.executeOperations([operation])
+    current = current.replace('<w:t>p0</w:t>', '<w:t>changed</w:t>')
+    await expect(subject.verifyOperations([operation])).resolves.toBe(false)
+  })
 })

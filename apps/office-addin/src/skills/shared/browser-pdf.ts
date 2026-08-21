@@ -22,18 +22,27 @@ export async function renderPdfPageToPng(
     maxImageSize: MAX_PAGE_PIXELS,
     stopAtErrors: true,
   })
+  let abortDestroy: Promise<void> | undefined
+  const abortLoading = () => {
+    abortDestroy ??= loading.destroy()
+  }
+  signal?.addEventListener('abort', abortLoading, { once: true })
   try {
     const pdf = await loading.promise
     if (pageNumber > pdf.numPages) throw new Error('invalid_tool_input')
     const page = await pdf.getPage(pageNumber)
     const original = page.getViewport({ scale: 1 })
+    if (!Number.isFinite(original.width) || !Number.isFinite(original.height))
+      throw new Error('office_read_failed')
     const scale = Math.min(2, Math.sqrt(MAX_PAGE_PIXELS / (original.width * original.height)))
     const viewport = page.getViewport({ scale })
-    if (viewport.width * viewport.height > MAX_PAGE_PIXELS + 1)
+    const canvasWidth = Math.ceil(viewport.width)
+    const canvasHeight = Math.ceil(viewport.height)
+    if (canvasWidth < 1 || canvasHeight < 1 || canvasWidth * canvasHeight > MAX_PAGE_PIXELS)
       throw new Error('office_read_failed')
     const canvas = document.createElement('canvas')
-    canvas.width = Math.ceil(viewport.width)
-    canvas.height = Math.ceil(viewport.height)
+    canvas.width = canvasWidth
+    canvas.height = canvasHeight
     const context = canvas.getContext('2d', { alpha: false })
     if (!context) throw new Error('office_read_failed')
     const render = page.render({ canvas, canvasContext: context, viewport })
@@ -57,39 +66,8 @@ export async function renderPdfPageToPng(
       throw error
     throw new Error('office_read_failed', { cause: error })
   } finally {
-    await loading.destroy()
-  }
-}
-
-export async function pdfToText(source: Uint8Array, signal?: AbortSignal): Promise<string> {
-  cancelled(signal)
-  if (source.byteLength < 5 || source.byteLength > MAX_PDF_BYTES) throw new Error('command_failed')
-  GlobalWorkerOptions.workerSrc = workerUrl
-  const loading = getDocument({
-    data: source.slice(),
-    useWorkerFetch: false,
-    useWasm: false,
-    maxImageSize: MAX_PAGE_PIXELS,
-    stopAtErrors: true,
-  })
-  try {
-    const pdf = await loading.promise
-    if (pdf.numPages > 100) throw new Error('vfs_limit')
-    const pages: string[] = []
-    let bytes = 0
-    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-      cancelled(signal)
-      const page = await pdf.getPage(pageNumber)
-      const content = await page.getTextContent()
-      const value = content.items.map((item) => ('str' in item ? item.str : '')).join(' ')
-      bytes += new TextEncoder().encode(value).byteLength
-      if (bytes > 2 * 1024 * 1024) throw new Error('vfs_limit')
-      pages.push(value)
-      page.cleanup()
-    }
-    return pages.join('\n\n')
-  } finally {
-    await loading.destroy()
+    signal?.removeEventListener('abort', abortLoading)
+    await (abortDestroy ?? loading.destroy())
   }
 }
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs'

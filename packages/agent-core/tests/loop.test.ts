@@ -176,6 +176,47 @@ describe('AgentLoop', () => {
     })
   })
 
+  it('turns invalid model-visible content into a stable tool error and keeps running', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 't1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+      (cb) => {
+        cb.onDelta('recovered')
+        cb.onDone()
+      },
+    ])
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(() => ({
+        output: 'captured',
+        summary: 'image',
+        modelContent: [
+          { type: 'image', image: { base64: 'R0lGODlhAQABAAAAACw=', mime: 'image/gif' } },
+        ],
+      })),
+    })
+
+    loop.run('capture')
+    await flush()
+    await flush()
+
+    expect(loop.busy).toBe(false)
+    expect(loop.messages).toContainEqual({
+      role: 'tool',
+      results: [
+        {
+          id: 't1',
+          name: 'do_thing',
+          output: 'invalid_tool_output',
+          isError: true,
+        },
+      ],
+    })
+    expect(loop.messages.at(-1)).toEqual({ role: 'assistant', text: 'recovered' })
+  })
+
   it('emits onToolStart before each execution, paired with onToolExecuted', async () => {
     const transport = scriptedTransport([
       (cb) => {

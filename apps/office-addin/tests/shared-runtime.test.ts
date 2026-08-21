@@ -5,7 +5,6 @@ import { createSandboxCommands } from '../src/skills/shared/commands.js'
 import { createSharedBrowserSkill } from '../src/skills/shared/shared-skill.js'
 import { parseSkillPackage, SkillRegistry } from '../src/skills/shared/skill-registry.js'
 import { InMemoryVfs } from '../src/skills/shared/vfs.js'
-import JSZip from 'jszip'
 
 describe('exact schema helpers', () => {
   it('rejects unknown, missing, and oversized fields', () => {
@@ -127,38 +126,19 @@ describe('shared browser skill', () => {
     })
   })
 
-  it('runs a real bounded DOCX-to-text conversion entirely inside the VFS', async () => {
-    const zip = new JSZip()
-    zip.file(
-      'word/document.xml',
-      '<w:document><w:body><w:p><w:r><w:t>Hello</w:t></w:r></w:p></w:body></w:document>',
-    )
+  it('rejects GIF image reads with a stable error instead of unsupported model content', async () => {
     const vfs = new InMemoryVfs()
-    vfs.writeFile('/home/user/input.docx', await zip.generateAsync({ type: 'uint8array' }))
+    vfs.writeFile('/home/user/pixel.gif', Uint8Array.from([71, 73, 70, 56, 57, 97]))
     const skill = createSharedBrowserSkill({ vfs })
-    await expect(
-      skill.executeTool({
-        id: 'convert',
-        name: 'bash',
-        input: { command: 'docx-to-text /home/user/input.docx /home/user/output.txt' },
-      }),
-    ).resolves.toMatchObject({ output: '/home/user/output.txt', mutated: false })
-    expect(vfs.readText('/home/user/output.txt')).toBe('Hello')
-  })
 
-  it('runs a real XLSX-to-CSV conversion with shared strings and CSV escaping', async () => {
-    const zip = new JSZip()
-    zip.file('xl/workbook.xml', '<workbook><sheets><sheet name="Data" r:id="r1"/></sheets></workbook>')
-    zip.file('xl/_rels/workbook.xml.rels', '<Relationships><Relationship Id="r1" Target="worksheets/sheet1.xml"/></Relationships>')
-    zip.file('xl/sharedStrings.xml', '<sst><si><t>A, B</t></si></sst>')
-    zip.file('xl/worksheets/sheet1.xml', '<worksheet><sheetData><row><c r="A1" t="s"><v>0</v></c><c r="B1"><v>2</v></c></row></sheetData></worksheet>')
-    const vfs = new InMemoryVfs()
-    vfs.writeFile('/home/user/input.xlsx', await zip.generateAsync({ type: 'uint8array' }))
-    const skill = createSharedBrowserSkill({ vfs })
-    await skill.executeTool({ id: 'convert', name: 'bash', input: {
-      command: 'xlsx-to-csv /home/user/input.xlsx /home/user/output.csv',
-    } })
-    expect(vfs.readText('/home/user/output.csv')).toBe('# Data\n"A, B",2')
+    await expect(
+      skill.executeTool({ id: 'gif', name: 'read', input: { path: '/home/user/pixel.gif' } }),
+    ).resolves.toEqual({
+      output: 'image_mime_unsupported',
+      isError: true,
+      mutated: false,
+      summary: 'read',
+    })
   })
 
   it('denies native/global/network syntax and supports cancellation and timeout', async () => {

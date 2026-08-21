@@ -597,6 +597,17 @@ export class AgentLoop<TSnapshot = unknown> {
         }
       }
       if (generation !== this.generation) return // reset while a tool was running
+      let content: AgentToolContent[] | undefined
+      try {
+        content = boundedToolContent(execution.modelContent)
+      } catch {
+        execution = {
+          output: 'invalid_tool_output',
+          isError: true,
+          mutated: false,
+          summary: call.name,
+        }
+      }
       const firstMutation = !!execution.mutated && !this.mutationSeen
       if (execution.mutated) this.mutationSeen = true
       results.push({
@@ -604,7 +615,7 @@ export class AgentLoop<TSnapshot = unknown> {
         name: call.name,
         output: execution.output,
         isError: execution.isError,
-        content: boundedToolContent(execution.modelContent),
+        content,
       })
       events?.onToolExecuted?.({
         call,

@@ -7,8 +7,7 @@ An Office.js task pane for Word, Excel, and PowerPoint. It reuses the signed-in 
 After `Office.onReady()`, the task pane composes the shared browser skill with exactly one Word,
 Excel, or PowerPoint skill. Unsupported hosts fail closed.
 
-- Shared: bounded VFS `read`, sandboxed `bash` (`pwd`, `ls`, `cat`, `pdf-to-text`,
-  `pdf-to-images`, `docx-to-text`, and `xlsx-to-csv`), session-file
+- Shared: bounded VFS `read`, sandboxed `bash` (`pwd`, `ls`, and `cat`), session-file
   upload, and strict single-file `SKILL.md` installation. Installed skill metadata is added to the
   Agent context dynamically; package folders and auxiliary files are not yet exposed in the UI.
 - Word: `get_document_text`, `get_document_structure`, `get_ooxml`, `screenshot_document`,
@@ -24,8 +23,10 @@ Excel, or PowerPoint skill. Unsupported hosts fail closed.
 Word screenshot exports a bounded PDF through Office.js and renders a bounded page to a
 model-visible PNG. Word `execute_office_js` accepts only a JSON declarative program (version 1,
 maximum 32 allowlisted operations); it never evaluates JavaScript. PowerPoint package operations
-are tracked separately. Web retrieval remains blocked because there is no fixed authenticated PC
-bridge route, so no web tool is advertised. Browser `bash` is not a
+are tracked separately. File conversions remain blocked until they run in a terminateable worker
+with ZIP metadata, decompression, cell, pixel, and output quotas. Web retrieval remains blocked
+because there is no fixed authenticated PC bridge route, so neither capability is advertised.
+Browser `bash` is not a
 native shell and has no PC filesystem, process, socket, credential, or package-install access.
 Supported mutations show a structured title, impact, before/after data, preview, and code when
 present, and execute only after explicit confirmation. Logout or bridge loss disposes proposals,
@@ -116,12 +117,13 @@ Office (Office Web remains blocked pending PNA and API-set acceptance):
 
 ## Browser conversion dependency audit
 
-The conversion/screenshot runtime uses already repository-pinned browser libraries: PDF.js
-5.7.284 (Apache-2.0), JSZip 3.10.1 (MIT), and fast-xml-parser 5.3.4 (MIT). Inputs remain inside the
-session VFS; PDF loading disables worker fetch and WebAssembly, sets parser/image/page/output
-bounds, and uses a fixed bundled worker URL. The configured production build emits no source map;
-its expected large artifacts are the PDF worker (about 1.29 MB minified) and lazy PDF renderer
-chunk. Any version change requires repeating license, CSP, bundle-size, and vulnerability review.
+The Word screenshot runtime uses the exactly pinned PDF.js 5.7.284 package (Apache-2.0). PDF input
+comes only from Office's bounded document export; loading disables worker fetch and WebAssembly,
+sets image/page/output bounds, and uses a fixed bundled worker URL. JSZip 3.10.1
+(`MIT OR GPL-3.0-or-later`) and
+fast-xml-parser 5.10.1 (MIT) are pinned for the separately reviewed PowerPoint package runtime, not
+as generally available converters. The configured production build emits no source map. Any
+version change requires repeating license, CSP, bundle-size, and vulnerability review.
 
 ## Checks
 
