@@ -77,6 +77,14 @@ changing the PC bridge, identity, manifest, or stored user data.
 
 ## Operational behavior
 
+The connected add-in uses the same task-oriented interaction hierarchy as WisWork PC: a compact
+host/connection header, a bounded multi-turn timeline, observable tool activity, inline proposal
+review, and a sticky multiline composer. Enter sends, Shift+Enter inserts a line break, and Stop
+cancels the active run. Attachments and installed skills live in temporary management panels and
+are cleared with the conversation by **New task**, logout, Relay loss, or disposal. The workspace
+is designed for 280–500 px task panes and follows the shared light/dark tokens, forced-colors, and
+reduced-motion preferences. Every document mutation still requires an explicit inline confirmation.
+
 - **PC offline:** Office keeps the short-lived code visible so it can be entered after PC starts.
 - **PC signed out:** approval is refused; sign in through the existing WisWork PC flow first.
 - **Approval:** every new task-pane session requires visible approval in WisWork PC. Approve only when the same six-digit verification code is visible in both Office and the PC confirmation dialog.
