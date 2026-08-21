@@ -272,7 +272,15 @@ describe('Excel import/export proposals', () => {
     await skill.executeTool(
       call('csv-to-sheet', { path: '/home/user/in.csv', sheetId: 1, startCell: 'A1' }),
     )
-    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow()
+    let visible: unknown
+    try {
+      await proposals.confirm(proposals.pending()!.id)
+    } catch (error) {
+      visible = error
+    }
+    expect(visible).toBeInstanceOf(Error)
+    expect((visible as Error).message).toBe('office_write_failed')
+    expect((visible as Error).message).not.toContain('document data')
     expect(fake.verifyRangeValues).not.toHaveBeenCalled()
     expect(fake.restoreRange).toHaveBeenCalledOnce()
     expect(fake.verifyRangeSnapshot).toHaveBeenCalledOnce()

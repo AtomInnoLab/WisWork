@@ -118,10 +118,8 @@ export async function readBoundedImage(vfs: InMemoryVfs, path: string): Promise<
     ;({ width, height } = await validateSkillPackageImage(extension, bytes))
   } catch (error) {
     if (error instanceof Error && error.message === 'skill_package_limit')
-      throw new Error('image_limit', { cause: new Error('media_limit') })
-    throw new Error('invalid_image', {
-      cause: new Error(error instanceof Error ? error.message : 'media_validation_failed'),
-    })
+      throw new Error('image_limit', { cause: error })
+    throw new Error('invalid_image', { cause: error })
   }
   if (
     !width ||

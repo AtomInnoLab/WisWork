@@ -197,21 +197,9 @@ export class BrowserExcelImportMediaAdapter implements ExcelImportMediaAdapter {
           if (recovered.size !== beforeIds.size || [...recovered].some((id) => !beforeIds.has(id)))
             throw new Error('office_recovery_failed')
         } catch (recoveryError) {
-          throw new Error('office_recovery_failed', {
-            cause: new Error(
-              recoveryError instanceof Error && recoveryError.message === 'office_recovery_failed'
-                ? 'office_recovery_failed'
-                : 'office_host_error',
-            ),
-          })
+          throw new Error('office_recovery_failed', { cause: recoveryError })
         }
-        throw new Error('office_write_failed', {
-          cause: new Error(
-            writeError instanceof Error && writeError.message === 'cancelled'
-              ? 'cancelled'
-              : 'office_host_error',
-          ),
-        })
+        throw new Error('office_write_failed', { cause: writeError })
       }
     })
   }

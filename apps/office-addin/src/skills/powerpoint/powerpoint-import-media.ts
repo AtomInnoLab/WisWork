@@ -62,16 +62,6 @@ const tool = {
     additionalProperties: false,
   },
 }
-function stableCause(error: unknown): Error {
-  const message =
-    error instanceof Error &&
-    ['cancelled', 'office_verify_failed', 'office_write_failed', 'office_recovery_failed'].includes(
-      error.message,
-    )
-      ? error.message
-      : 'office_host_error'
-  return new Error(message)
-}
 function failed(name: string, error: unknown): ToolExecution {
   const message = error instanceof Error ? error.message : ''
   const code = [
@@ -121,7 +111,7 @@ export function createPowerPointImportMediaSkill(options: {
             if (!(await options.adapter.verifyImageAbsent(value.slide_index, id)))
               throw new Error('office_recovery_failed')
           } catch (error) {
-            throw new Error('office_recovery_failed', { cause: stableCause(error) })
+            throw new Error('office_recovery_failed', { cause: error })
           }
         }
         const proposal = options.proposals.propose({
@@ -154,7 +144,7 @@ export function createPowerPointImportMediaSkill(options: {
             } catch (error) {
               if (error instanceof Error && error.message === 'office_recovery_failed') throw error
               throw new Error(s?.aborted ? 'cancelled' : 'office_write_failed', {
-                cause: stableCause(error),
+                cause: error,
               })
             }
           },
@@ -167,7 +157,7 @@ export function createPowerPointImportMediaSkill(options: {
             } catch (error) {
               await recover()
               throw new Error(s?.aborted ? 'cancelled' : 'office_verify_failed', {
-                cause: stableCause(error),
+                cause: error,
               })
             }
           },
