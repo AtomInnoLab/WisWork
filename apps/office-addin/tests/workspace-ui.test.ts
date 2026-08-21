@@ -104,6 +104,9 @@ describe('Office Agent workspace UI', () => {
     const skills = workspaceMarkup({}, 'skills')
     expect(skills).toContain('Installed skills')
     expect(skills).toContain('Editorial review')
+    expect(skills).toContain('Install skill package')
+    expect(skills).toContain('accept=".zip,application/zip"')
+    expect(skills).toContain('>Remove</button>')
   })
 
   it('renders distinct accessible working, applying, stop, and retry states', () => {

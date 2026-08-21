@@ -1,4 +1,5 @@
 import { InMemoryVfs } from './vfs.js'
+import type { ParsedSkillArchive } from './skill-package.js'
 
 export interface SkillMetadata {
   name: string
@@ -66,6 +67,21 @@ export class SkillRegistry {
     return { ...parsed.metadata }
   }
 
+  installPackage(pkg: ParsedSkillArchive): SkillMetadata {
+    const metadata = pkg.skill.metadata
+    if (this.#skills.has(metadata.name)) throw new Error('skill_already_installed')
+    const root = `/home/skills/${metadata.name}`
+    this.vfs.mountReadOnlyBatch(pkg.files.map((file) => [`${root}/${file.path}`, file.bytes]))
+    this.#skills.set(metadata.name, Object.freeze({ ...metadata }))
+    return { ...metadata }
+  }
+
+  uninstall(name: string): void {
+    if (!this.#skills.has(name)) throw new Error('skill_not_installed')
+    this.vfs.unmountReadOnlyTree(`/home/skills/${name}`)
+    this.#skills.delete(name)
+  }
+
   prompt(): string {
     return [...this.#skills.values()]
       .sort((a, b) => a.name.localeCompare(b.name))
@@ -80,6 +96,7 @@ export class SkillRegistry {
   }
 
   clear(): void {
+    for (const name of this.#skills.keys()) this.vfs.unmountReadOnlyTree(`/home/skills/${name}`)
     this.#skills.clear()
   }
 }

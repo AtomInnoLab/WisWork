@@ -175,6 +175,19 @@ export class InMemoryVfs {
     return [...this.#files.keys()].filter((name) => name.startsWith(prefix)).sort()
   }
 
+  unmountReadOnlyTree(path: string): void {
+    const root = this.normalize(path)
+    if (!root.startsWith('/home/skills/')) denied()
+    const prefix = `${root.replace(/\/$/, '')}/`
+    for (const name of [...this.#files.keys()]) {
+      if (name === root || name.startsWith(prefix)) {
+        if (!this.#readOnly.has(name)) denied()
+        this.#files.delete(name)
+        this.#readOnly.delete(name)
+      }
+    }
+  }
+
   clear(): void {
     this.#files.clear()
     this.#readOnly.clear()

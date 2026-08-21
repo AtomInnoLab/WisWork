@@ -73,6 +73,9 @@ export function safeUploadError(error: unknown): string {
     'vfs_path_denied',
     'invalid_skill_package',
     'skill_already_installed',
+    'skill_not_installed',
+    'skill_package_limit',
+    'skill_package_timeout',
   ].includes(code)
     ? code
     : 'upload_failed'
@@ -89,6 +92,7 @@ export interface OfficeWorkspaceUi {
   readonly attachments: () => readonly string[]
   readonly skills: () => readonly string[]
   readonly upload: (file: SessionFile) => Promise<void>
+  readonly uninstallSkill?: (name: string) => void
   readonly clear: () => void
 }
 
@@ -97,11 +101,15 @@ export function createOfficeWorkspaceUi(runtime: OfficeHostRuntime): OfficeWorks
     attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
     skills: () => Object.freeze(runtime.skills.list().map((skill) => skill.name)),
     upload: (file: SessionFile) => uploadSessionFile(runtime, file),
+    uninstallSkill: (name: string) => runtime.uninstallSkill(name),
     clear: () => runtime.clearSession(),
   })
 }
 
 export function uploadSessionFile(runtime: OfficeHostRuntime, file: SessionFile): Promise<void> {
+  if (file.name.toLowerCase().endsWith('.zip')) {
+    return runtime.installSkillPackage(file.arrayBuffer())
+  }
   if (file.name === 'SKILL.md') {
     if (file.size > MAX_SKILL_BYTES) return Promise.reject(new Error('invalid_skill_package'))
     return runtime.installSkill(file.text())
@@ -263,6 +271,7 @@ export function AgentWorkspace(props: {
   const state = useOfficeAgent(session)
   const [instruction, setInstruction] = useState('')
   const [files, setFiles] = useState<readonly string[]>(ui.attachments())
+  const [skills, setSkills] = useState<readonly string[]>(ui.skills())
   const [uploadError, setUploadError] = useState('')
   const [panel, setPanel] = useState<WorkspacePanelName | undefined>(props.initialPanel)
   const mounted = useRef(true)
@@ -310,6 +319,7 @@ export function AgentWorkspace(props: {
               session.newTask()
               ui.clear()
               setFiles([])
+              setSkills([])
               setPanel(undefined)
               setUploadError('')
             }}
@@ -475,13 +485,60 @@ export function AgentWorkspace(props: {
             </>
           ) : (
             <>
+              <label
+                className="upload-button"
+                htmlFor="skill-package-upload"
+                aria-disabled={state.applying}
+              >
+                Install skill package
+              </label>
+              <input
+                id="skill-package-upload"
+                className="visually-hidden"
+                type="file"
+                accept=".zip,application/zip"
+                disabled={state.applying}
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0]
+                  if (!file) return
+                  setUploadError('')
+                  void ui
+                    .upload(file)
+                    .then(() => mounted.current && setSkills(ui.skills()))
+                    .catch(
+                      (error: unknown) => mounted.current && setUploadError(safeUploadError(error)),
+                    )
+                }}
+              />
               <p>Installed instructions can guide the Agent but cannot add Office authority.</p>
+              {uploadError && (
+                <p className="error-text" role="alert">
+                  {uploadError}
+                </p>
+              )}
               <ul>
-                {ui.skills().map((skill) => (
-                  <li key={skill}>{skill}</li>
+                {skills.map((skill) => (
+                  <li key={skill}>
+                    <span>{skill}</span>
+                    <button
+                      type="button"
+                      className="quiet"
+                      disabled={state.applying}
+                      onClick={() => {
+                        try {
+                          ui.uninstallSkill?.(skill)
+                          setSkills(ui.skills())
+                        } catch (error) {
+                          setUploadError(safeUploadError(error))
+                        }
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </li>
                 ))}
               </ul>
-              {!ui.skills().length && <p>No installed skills.</p>}
+              {!skills.length && <p>No installed skills.</p>}
             </>
           )}
         </section>

@@ -11,6 +11,7 @@ import { BrowserPowerPointAdapter } from '../skills/powerpoint/browser-powerpoin
 import { createPowerPointSkill } from '../skills/powerpoint/powerpoint-skill.js'
 import { createSharedBrowserSkill } from '../skills/shared/shared-skill.js'
 import { MAX_SKILL_BYTES, SkillRegistry } from '../skills/shared/skill-registry.js'
+import { SkillPackageWorkerRuntime } from '../skills/shared/skill-package-runtime.js'
 import { InMemoryVfs, MAX_VFS_FILE_BYTES } from '../skills/shared/vfs.js'
 import { BrowserWordAdapter } from '../skills/word/browser-word-adapter.js'
 import { createWordSkill } from '../skills/word/word-skill.js'
@@ -30,6 +31,8 @@ export interface OfficeHostRuntime {
   skills: SkillRegistry
   uploadFile(name: string, content: Promise<ArrayBuffer>): Promise<void>
   installSkill(source: Promise<string>): Promise<void>
+  installSkillPackage(source: Promise<ArrayBuffer>, signal?: AbortSignal): Promise<void>
+  uninstallSkill(name: string): void
   clearSession(): void
   dispose(): void
 }
@@ -62,6 +65,7 @@ function lifecycle(
   vfs: InMemoryVfs,
   skills: SkillRegistry,
 ): OfficeHostRuntime {
+  const packageRuntime = new SkillPackageWorkerRuntime()
   let epoch = 0
   let disposed = false
   const check = (captured: number) => {
@@ -95,6 +99,17 @@ function lifecycle(
       if (new TextEncoder().encode(value).byteLength > MAX_SKILL_BYTES)
         throw new Error('invalid_skill_package')
       skills.install(value)
+    },
+    async installSkillPackage(source, signal) {
+      const captured = epoch
+      const value = await source
+      check(captured)
+      const pkg = await packageRuntime.parse(value, signal)
+      check(captured)
+      skills.installPackage(pkg)
+    },
+    uninstallSkill(name) {
+      skills.uninstall(name)
     },
     clearSession,
     dispose() {

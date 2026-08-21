@@ -11,8 +11,9 @@ Excel, or PowerPoint skill. Unsupported hosts fail closed.
 
 - Shared: bounded VFS `read`, sandboxed `bash` (`pwd`, `ls`, `cat`, `pdf-to-text`,
   `pdf-to-images`, `docx-to-text`, and `xlsx-to-csv`), session-file
-  upload, and strict single-file `SKILL.md` installation. Installed skill metadata is added to the
-  Agent context dynamically; package folders and auxiliary files are not yet exposed in the UI.
+  upload, and bounded ZIP skill-package installation/removal. A package contains exactly one root
+  `SKILL.md` plus allowlisted UTF-8 text, PNG, JPEG, or WebP resources. Installed skill metadata is
+  added to Agent context dynamically and package resources are mounted read-only in the session VFS.
 - Word: `get_document_text`, `get_document_structure`, `get_ooxml`, `screenshot_document`,
   `execute_office_js`.
 - Excel: `get_cell_ranges`, `get_range_as_csv`, `search_data`, `screenshot_range`,
@@ -41,6 +42,13 @@ page/text/image limits are enforced in the same terminateable worker. `pdf-to-im
 `conversion_unsupported` when the Office WebView has no `OffscreenCanvas`; it never falls back to
 main-thread rendering. Logout or bridge loss disposes proposals,
 uploaded VFS files, and installed-skill session state.
+
+Skill packages are parsed in a terminateable worker. Compressed input, entry count, normalized path,
+per-file and aggregate inflated bytes are hard bounded; inflate is streamed and stops at the first
+limit breach. Traversal, Unicode/case collisions, links, executable/special entries, invalid UTF-8,
+unsupported formats, and duplicate packages fail atomically. Packages can contribute instructions
+and declarative resources only: they cannot register tools, code, commands, network destinations,
+Office APIs, or any additional authority. New task, logout, and disposal remove all package mounts.
 
 ## Connect WisWork PC
 
@@ -129,8 +137,9 @@ Office (with host-specific API-set acceptance still required):
 3. Create a supported Excel mutation and PowerPoint text/duplicate mutation. Verify title, impact,
    targets, before/after or preview, Reject, stale-state rejection, and exactly-once Confirm.
 4. Exercise every release-blocked tool and verify its documented error and zero mutation.
-5. Upload and read a session file, install a valid file named `SKILL.md`, verify its metadata enters
-   the next Agent request, then verify traversal and native-shell/network syntax are denied.
+5. Upload and read a session file; install and remove a valid bounded skill ZIP; verify its metadata
+   enters the next Agent request and its assets are read-only. Verify traversal, collisions,
+   executable entries, unsupported assets, and native-shell/network syntax are denied.
 6. Log out during an active stream and pending confirmation; verify conversation, proposal, VFS,
    and installed-skill state are cleared before reconnecting.
 
