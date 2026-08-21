@@ -51,6 +51,9 @@ export default defineConfig(async ({ command, mode }) => {
     envDir: here,
     publicDir: false as const,
     plugins: [react(), officeIconPlugin, securityConfigPlugin],
+    worker: {
+      format: 'es' as const,
+    },
     build: {
       outDir: resolve(here, 'dist'),
       emptyOutDir: true,

@@ -42,7 +42,9 @@ describe('configured Office build output', () => {
     const script = await readFile(resolve(dist, scriptPath!.replace(/^\//, '')), 'utf8')
     expect(script).toContain('wss://office.8-216-134-194.sslip.io/office-relay')
     expect(taskpane).not.toMatch(/oauth|callback|auth\.dev|wisusage/i)
+    expect(taskpane).not.toContain("'unsafe-eval'")
     expect(files).not.toContain('oauth')
+    expect(files.some((file) => file.startsWith('assets/conversion-worker-'))).toBe(true)
     expect(files.some((file) => file.endsWith('.map'))).toBe(false)
   })
 
@@ -59,5 +61,5 @@ describe('configured Office build output', () => {
       }
     }
     await expect(access(resolve(dist, 'manifest.xml'))).rejects.toThrow()
-  })
+  }, 15_000)
 })

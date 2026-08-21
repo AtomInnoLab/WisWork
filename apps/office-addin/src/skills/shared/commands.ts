@@ -1,10 +1,44 @@
 import { InMemoryVfs } from './vfs.js'
+import type { ConversionKind } from './conversion-engine.js'
+import { ConversionWorkerRuntime } from './conversion-runtime.js'
 
 export interface CommandResult {
   output: string
   error?: string
 }
 type Command = (args: string[], signal?: AbortSignal) => CommandResult | Promise<CommandResult>
+
+const CONVERSIONS = Object.freeze([
+  'pdf-to-text',
+  'pdf-to-images',
+  'docx-to-text',
+  'xlsx-to-csv',
+] satisfies ConversionKind[])
+
+export function createConversionCommands(
+  runtime: Pick<ConversionWorkerRuntime, 'run'>,
+): Record<ConversionKind, Command> {
+  return Object.fromEntries(
+    CONVERSIONS.map((kind) => [
+      kind,
+      async (args: string[], signal?: AbortSignal): Promise<CommandResult> => {
+        if (args.length !== 1) return { output: '', error: 'sandbox_denied' }
+        try {
+          const outputs = await runtime.run(kind, args[0], signal)
+          return { output: outputs.join('\n') }
+        } catch (error) {
+          const code = error instanceof Error ? error.message : ''
+          return {
+            output: '',
+            error: /^(?:cancelled|command_timeout|conversion_[a-z_]+|vfs_[a-z_]+)$/.test(code)
+              ? code
+              : 'command_failed',
+          }
+        }
+      },
+    ]),
+  ) as Record<ConversionKind, Command>
+}
 
 export function createSandboxCommands(
   vfs: InMemoryVfs,

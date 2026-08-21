@@ -1,6 +1,7 @@
 import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
 import { exactObject, stringField } from '../../agent/tool-schema.js'
-import { createSandboxCommands } from './commands.js'
+import { createConversionCommands, createSandboxCommands } from './commands.js'
+import { ConversionWorkerRuntime } from './conversion-runtime.js'
 import { InMemoryVfs, MAX_VFS_FILE_BYTES } from './vfs.js'
 import type { SkillRegistry } from './skill-registry.js'
 
@@ -19,9 +20,14 @@ export function createSharedBrowserSkill(options: {
   vfs: InMemoryVfs
   skills?: SkillRegistry
   maxReadBytes?: number
+  conversionRuntime?: Pick<ConversionWorkerRuntime, 'run'>
 }): AgentSkill {
   const maxReadBytes = options.maxReadBytes ?? 64 * 1024
-  const commands = createSandboxCommands(options.vfs)
+  const conversionRuntime = options.conversionRuntime ?? new ConversionWorkerRuntime(options.vfs)
+  const commands = createSandboxCommands(options.vfs, {
+    timeoutMs: 20_000,
+    extraCommands: createConversionCommands(conversionRuntime),
+  })
   return {
     id: 'office-shared-browser',
     systemPrompt:
