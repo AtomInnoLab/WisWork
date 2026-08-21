@@ -1,4 +1,8 @@
-import { verifyPowerPointPackage, type PackageEditResult } from './powerpoint-package.js'
+import {
+  capturePowerPointPackage,
+  verifyPowerPointPackage,
+  type PackageEditResult,
+} from './powerpoint-package.js'
 
 export const MAX_POWERPOINT_SHAPES = 1_000
 export const MAX_POWERPOINT_TEXT = 12_000
@@ -452,6 +456,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         throw new Error('office_api_unsupported')
       const affectedLayouts = new Map<string, number>()
       const originalLayouts = new Map<string, RuntimeRecord>()
+      const originalLayoutIds = new Map<string, string>()
       if (applyMaster && masters) {
         const sourceLayout = slide.layout as RuntimeRecord
         ;(masters.load as (properties: string) => void)('items')
@@ -466,7 +471,10 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           ;(layouts.load as (properties: string) => void)('items/id,items/name')
         }
         for (const item of slideItems) {
-          ;((item.layout as RuntimeRecord).load as (properties: string) => void)('id')
+          const layout = item.layout as RuntimeRecord
+          if (typeof layout?.load !== 'function' || typeof item.applyLayout !== 'function')
+            throw new Error('office_api_unsupported')
+          ;(layout.load as (properties: string) => void)('id')
         }
         await sync(context, signal)
         const sourceMaster = masterItems.find((master) =>
@@ -486,6 +494,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           if (ordinal !== undefined) {
             affectedLayouts.set(string(item.id), ordinal)
             originalLayouts.set(string(item.id), item.layout as RuntimeRecord)
+            originalLayoutIds.set(string(item.id), layoutId)
           }
         }
       }
@@ -498,6 +507,39 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         original.value.length > MAX_POWERPOINT_SNAPSHOT_BASE64
       )
         throw new Error('office_read_failed')
+      const originalExpected = await capturePowerPointPackage(original.value, signal)
+      const originalSlideId = string(slide.id)
+
+      const proveRecovery = async (verifyLayouts: boolean): Promise<void> => {
+        if ((await getSlideCount(context, slides)) !== beforeCount)
+          throw new Error('office_recovery_failed')
+        const restored = await getSlide(context, slides, slideIndex)
+        if (typeof restored.exportAsBase64 !== 'function') throw new Error('office_recovery_failed')
+        const restoredExport = (restored.exportAsBase64 as () => RuntimeRecord)()
+        await sync(context)
+        if (
+          typeof restoredExport.value !== 'string' ||
+          !(await verifyPowerPointPackage(restoredExport.value, originalExpected))
+        )
+          throw new Error('office_recovery_failed')
+        if (!verifyLayouts) return
+        if (typeof slides.load !== 'function') throw new Error('office_recovery_failed')
+        ;(slides.load as (properties: string) => void)('items/id')
+        await sync(context)
+        const survivors = ((slides.items as RuntimeRecord[]) ?? []).filter(
+          (item) => string(item.id) !== originalSlideId && originalLayoutIds.has(string(item.id)),
+        )
+        for (const item of survivors) {
+          const layout = item.layout as RuntimeRecord
+          if (typeof layout?.load !== 'function') throw new Error('office_recovery_failed')
+          ;(layout.load as (properties: string) => void)('id')
+        }
+        await sync(context)
+        for (const item of survivors) {
+          if (string((item.layout as RuntimeRecord).id) !== originalLayoutIds.get(string(item.id)))
+            throw new Error('office_recovery_failed')
+        }
+      }
       cancelled(signal)
       ;(
         presentation.insertSlidesFromBase64 as (
@@ -526,7 +568,21 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             ) => void
           )(original.value, previous ? { targetSlideId: string(previous.id) } : undefined)
           await sync(context)
+        } else {
+          // The host may have committed both operations before reporting a batch failure.
+          // Canonically replace whatever occupies the approved index with the captured source.
+          const uncertain = await getSlide(context, slides, slideIndex)
+          if (typeof uncertain.delete !== 'function') throw new Error('office_recovery_failed')
+          ;(
+            presentation.insertSlidesFromBase64 as (
+              value: string,
+              options?: { targetSlideId: string },
+            ) => void
+          )(original.value, previous ? { targetSlideId: string(previous.id) } : undefined)
+          ;(uncertain.delete as () => void)()
+          await sync(context)
         }
+        await proveRecovery(false)
         throw new Error('office_write_failed')
       }
       if ((await getSlideCount(context, slides, signal)) !== beforeCount)
@@ -551,8 +607,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         )(original.value, previous ? { targetSlideId: string(previous.id) } : undefined)
         ;(inserted.delete as () => void)()
         await sync(context)
-        if ((await getSlideCount(context, slides)) !== beforeCount)
-          throw new Error('office_recovery_failed')
+        await proveRecovery(false)
         throw new Error('office_verify_failed')
       }
       if (applyMaster) {
@@ -628,8 +683,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           )(original.value, previous ? { targetSlideId: string(previous.id) } : undefined)
           if (typeof inserted.delete === 'function') (inserted.delete as () => void)()
           await sync(context)
-          if ((await getSlideCount(context, slides)) !== beforeCount)
-            throw new Error('office_recovery_failed')
+          await proveRecovery(true)
           throw new Error('office_write_failed')
         }
       }

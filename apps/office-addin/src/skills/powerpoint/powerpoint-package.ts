@@ -195,3 +195,16 @@ export async function verifyPowerPointPackage(
     return false
   }
 }
+
+export async function capturePowerPointPackage(
+  base64: string,
+  signal?: AbortSignal,
+): Promise<Pick<PackageEditResult, 'changedPaths' | 'afterHashes' | 'preservedHashes'>> {
+  const zip = await loadBoundedZip(base64, signal)
+  const preservedHashes: Record<string, string> = {}
+  for (const [path, file] of Object.entries(zip.files)) {
+    if (signal?.aborted) throw new Error('cancelled')
+    if (!file.dir) preservedHashes[path] = hash(await file.async('uint8array'))
+  }
+  return { changedPaths: [], afterHashes: {}, preservedHashes }
+}

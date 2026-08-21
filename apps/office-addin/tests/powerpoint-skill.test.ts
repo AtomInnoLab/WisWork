@@ -596,7 +596,11 @@ describe('browser PowerPoint adapter', () => {
     expect(remove).not.toHaveBeenCalled()
   })
 
-  it('restores the original slide and layouts when master propagation sync fails', async () => {
+  it.each([
+    { mode: 'sync-failure', expectedError: 'office_write_failed' },
+    { mode: 'ignored-layout-recovery', expectedError: 'office_recovery_failed' },
+    { mode: 'wrong-restored-slide', expectedError: 'office_recovery_failed' },
+  ])('proves package and layout recovery after $mode', async ({ mode, expectedError }) => {
     const packageZip = new JSZip()
     packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
     const originalPackage = await packageZip.generateAsync({ type: 'base64' })
@@ -605,6 +609,7 @@ describe('browser PowerPoint adapter', () => {
     ])
     const oldLayout = { id: 'old-layout', name: '', load: vi.fn() }
     const newLayout = { id: 'new-layout', name: '', load: vi.fn() }
+    const wrongLayout = { id: 'wrong-layout', name: '', load: vi.fn() }
     const slides: {
       items: any[]
       getCount: ReturnType<typeof vi.fn>
@@ -639,12 +644,16 @@ describe('browser PowerPoint adapter', () => {
     const masters = { items: [oldMaster, newMaster], load: vi.fn() }
     let propagationStarted = false
     sibling.applyLayout.mockImplementation((next: unknown) => {
-      sibling.layout = next
+      if (mode === 'ignored-layout-recovery') {
+        if (next === newLayout) sibling.layout = wrongLayout
+      } else {
+        sibling.layout = next
+      }
       propagationStarted = true
     })
     let failed = false
     const sync = vi.fn().mockImplementation(async () => {
-      if (propagationStarted && !failed) {
+      if (mode !== 'ignored-layout-recovery' && propagationStarted && !failed) {
         failed = true
         throw new Error('host failure')
       }
@@ -653,7 +662,7 @@ describe('browser PowerPoint adapter', () => {
       const inserted = makeSlide(
         base64 === expected.base64 ? 's2' : 's1-restored',
         base64 === expected.base64 ? newLayout : oldLayout,
-        base64,
+        mode === 'wrong-restored-slide' && base64 === originalPackage ? expected.base64 : base64,
       )
       slides.items.splice(0, 0, inserted)
     })
@@ -674,8 +683,8 @@ describe('browser PowerPoint adapter', () => {
     })
     await expect(
       new BrowserPowerPointAdapter().replaceSlidePackage(0, expected.base64, true, expected),
-    ).rejects.toThrow('office_write_failed')
-    expect(sibling.layout).toBe(oldLayout)
+    ).rejects.toThrow(expectedError)
+    if (mode === 'sync-failure') expect(sibling.layout).toBe(oldLayout)
     expect(slides.items).toHaveLength(2)
     expect(slides.items[0].id).toBe('s1-restored')
   })
