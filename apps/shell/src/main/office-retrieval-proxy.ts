@@ -116,11 +116,16 @@ function unsafeIpLiteral(hostname: string): boolean {
   return (
     groups.every((value) => value === 0) ||
     (groups.slice(0, 7).every((value) => value === 0) && groups[7] === 1) ||
+    first === 0 ||
     mapped ||
     (first & 0xfe00) === 0xfc00 ||
     (first & 0xffc0) === 0xfe80 ||
+    (first & 0xffc0) === 0xfec0 ||
     (first & 0xff00) === 0xff00 ||
+    (first === 0x2001 && second === 0) ||
+    (first === 0x2001 && second === 2) ||
     (first === 0x2001 && second === 0x0db8) ||
+    (first & 0xfff0) === 0x3ff0 ||
     (first === 0x0064 && second === 0xff9b) ||
     (first === 0x0100 && second === 0)
   )
