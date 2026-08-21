@@ -11,7 +11,7 @@ export interface ParsedSkill {
   source: string
 }
 
-const MAX_SKILL_BYTES = 64 * 1024
+export const MAX_SKILL_BYTES = 64 * 1024
 const NAME = /^[a-z0-9][a-z0-9-]{0,62}$/
 
 export function parseSkillPackage(source: string): ParsedSkill {

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
 import type { OfficeProposal, StructuredProposal } from './agent/proposal-controller.js'
+import { MAX_SKILL_BYTES } from './skills/shared/skill-registry.js'
+import { MAX_VFS_FILE_BYTES } from './skills/shared/vfs.js'
 import { createPcBridgeAgentTransport } from './agent/transport.js'
 import {
   createOfficeAgentSession,
@@ -68,6 +70,22 @@ export function safeUploadError(error: unknown): string {
   ].includes(code)
     ? code
     : 'upload_failed'
+}
+
+interface SessionFile {
+  name: string
+  size: number
+  arrayBuffer(): Promise<ArrayBuffer>
+  text(): Promise<string>
+}
+
+export function uploadSessionFile(runtime: OfficeHostRuntime, file: SessionFile): Promise<void> {
+  if (file.name === 'SKILL.md') {
+    if (file.size > MAX_SKILL_BYTES) return Promise.reject(new Error('invalid_skill_package'))
+    return runtime.installSkill(file.text())
+  }
+  if (file.size > MAX_VFS_FILE_BYTES) return Promise.reject(new Error('vfs_limit'))
+  return runtime.uploadFile(file.name, file.arrayBuffer())
 }
 
 export function AgentWorkspace(props: {
@@ -206,10 +224,7 @@ export function AgentWorkspace(props: {
             const file = event.currentTarget.files?.[0]
             if (!file) return
             setUploadError('')
-            const operation =
-              file.name === 'SKILL.md'
-                ? runtime.installSkill(file.text())
-                : runtime.uploadFile(file.name, file.arrayBuffer())
+            const operation = uploadSessionFile(runtime, file)
             void operation
               .then(() => {
                 if (mounted.current) setFiles(runtime.vfs.list('/home/user'))

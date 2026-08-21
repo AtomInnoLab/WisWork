@@ -10,8 +10,8 @@ import { createExcelSkill } from '../skills/excel/excel-skill.js'
 import { BrowserPowerPointAdapter } from '../skills/powerpoint/browser-powerpoint-adapter.js'
 import { createPowerPointSkill } from '../skills/powerpoint/powerpoint-skill.js'
 import { createSharedBrowserSkill } from '../skills/shared/shared-skill.js'
-import { SkillRegistry } from '../skills/shared/skill-registry.js'
-import { InMemoryVfs } from '../skills/shared/vfs.js'
+import { MAX_SKILL_BYTES, SkillRegistry } from '../skills/shared/skill-registry.js'
+import { InMemoryVfs, MAX_VFS_FILE_BYTES } from '../skills/shared/vfs.js'
 import { BrowserWordAdapter } from '../skills/word/browser-word-adapter.js'
 import { createWordSkill } from '../skills/word/word-skill.js'
 import { createOfficeSkill } from './office-skill.js'
@@ -82,14 +82,18 @@ function lifecycle(
       const captured = epoch
       if (!name || name.length > 128 || name.includes('/') || name.includes('\\'))
         throw new Error('vfs_path_denied')
-      const bytes = new Uint8Array(await content)
+      const buffer = await content
       check(captured)
+      if (buffer.byteLength > MAX_VFS_FILE_BYTES) throw new Error('vfs_limit')
+      const bytes = new Uint8Array(buffer)
       vfs.writeFile(`/home/user/${name}`, bytes)
     },
     async installSkill(source) {
       const captured = epoch
       const value = await source
       check(captured)
+      if (new TextEncoder().encode(value).byteLength > MAX_SKILL_BYTES)
+        throw new Error('invalid_skill_package')
       skills.install(value)
     },
     clearSession,

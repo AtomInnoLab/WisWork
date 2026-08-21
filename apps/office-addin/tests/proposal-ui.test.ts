@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { proposalPresentation, safeUploadError } from '../src/App.js'
+import { describe, expect, it, vi } from 'vitest'
+import { proposalPresentation, safeUploadError, uploadSessionFile } from '../src/App.js'
+import type { OfficeHostRuntime } from '../src/agent/host-runtime.js'
 
 describe('generic proposal presentation', () => {
   it('preserves structured impact, preview, before, after, and code', () => {
@@ -42,5 +43,21 @@ describe('generic proposal presentation', () => {
   it('maps upload failures to stable UI-safe errors', () => {
     expect(safeUploadError(new Error('invalid_skill_package'))).toBe('invalid_skill_package')
     expect(safeUploadError(new Error('/Users/alice/private'))).toBe('upload_failed')
+  })
+
+  it.each([
+    ['large.bin', 2 * 1024 * 1024 + 1, 'vfs_limit'],
+    ['SKILL.md', 64 * 1024 + 1, 'invalid_skill_package'],
+  ] as const)('rejects %s by File.size before loading its content', async (name, size, code) => {
+    const arrayBuffer = vi.fn()
+    const text = vi.fn()
+    const runtime = { uploadFile: vi.fn(), installSkill: vi.fn() } as unknown as OfficeHostRuntime
+    await expect(uploadSessionFile(runtime, { name, size, arrayBuffer, text })).rejects.toThrow(
+      code,
+    )
+    expect(arrayBuffer).not.toHaveBeenCalled()
+    expect(text).not.toHaveBeenCalled()
+    expect(runtime.uploadFile).not.toHaveBeenCalled()
+    expect(runtime.installSkill).not.toHaveBeenCalled()
   })
 })
