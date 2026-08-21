@@ -365,8 +365,7 @@ function ConfiguredApp() {
   }
   if (bridgeState.status !== 'connected') {
     const detail = {
-      offline:
-        'Connect again to create a new secure pairing with WisWork PC.',
+      offline: 'Connect again to create a new secure pairing with WisWork PC.',
       connecting: 'Connecting securely to the WisWork Office Relay…',
       signed_out: 'Sign in to WisWork PC first.',
       pending: bridgeState.verificationCode

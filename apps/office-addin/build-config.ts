@@ -43,7 +43,11 @@ export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
   const value = env.VITE_WISWORK_ADDIN_ORIGIN?.trim()
   if (!value) return undefined
   let mode: OfficeTransportMode
-  try { mode = officeTransportMode(env) } catch { return undefined }
+  try {
+    mode = officeTransportMode(env)
+  } catch {
+    return undefined
+  }
   const bridgePorts = officeBridgePorts(env)
   if (!bridgePorts) return undefined
   try {

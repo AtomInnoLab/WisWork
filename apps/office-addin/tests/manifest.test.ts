@@ -69,12 +69,12 @@ describe('Office Add-in manifest and routes', () => {
       44000, 44001,
     ])
     expect(deploymentConnectOrigins({})).toBe('wss://office.8-216-134-194.sslip.io')
-    expect(deploymentConnectOrigins({
-      VITE_WISWORK_OFFICE_TRANSPORT: 'loopback',
-      VITE_WISWORK_PC_BRIDGE_PORTS: '44000,44001',
-    })).toBe(
-      'http://127.0.0.1:44000 http://127.0.0.1:44001',
-    )
+    expect(
+      deploymentConnectOrigins({
+        VITE_WISWORK_OFFICE_TRANSPORT: 'loopback',
+        VITE_WISWORK_PC_BRIDGE_PORTS: '44000,44001',
+      }),
+    ).toBe('http://127.0.0.1:44000 http://127.0.0.1:44001')
     expect(viteConfig).not.toContain('oauth/callback')
     expect(taskpane).toContain("connect-src 'self' __WISWORK_CONNECT_ORIGINS__")
     expect(taskpane).not.toMatch(/auth\.dev|wisusage|callback/i)

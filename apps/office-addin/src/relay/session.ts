@@ -24,13 +24,7 @@ export interface RelayWebSocket {
 }
 
 export type OfficeRelayStatus =
-  | 'offline'
-  | 'connecting'
-  | 'pending'
-  | 'waiting_for_pc'
-  | 'rejected'
-  | 'expired'
-  | 'connected'
+  'offline' | 'connecting' | 'pending' | 'waiting_for_pc' | 'rejected' | 'expired' | 'connected'
 
 export interface OfficeRelaySnapshot {
   status: OfficeRelayStatus
@@ -108,7 +102,11 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     clearTimeout(active.timer)
     if (active.abort && active.signal) active.signal.removeEventListener('abort', active.abort)
     if (active.responseResolved && active.controller) {
-      try { error ? active.controller.error(new Error(error)) : active.controller.close() } catch { /* cancelled */ }
+      try {
+        error ? active.controller.error(new Error(error)) : active.controller.close()
+      } catch {
+        /* cancelled */
+      }
     } else active.reject(new Error(error ?? 'relay_disconnected'))
   }
   const revoke = (status: OfficeRelayStatus = 'offline', close = true) => {
@@ -130,7 +128,8 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   const send = (value: Record<string, unknown>) => {
     if (!socket || socket.readyState !== 1) throw new Error('relay_disconnected')
     const encoded = JSON.stringify(value)
-    if (encoder.encode(encoded).byteLength > MAX_REQUEST_BYTES + 4096) throw new Error('relay_request_too_large')
+    if (encoder.encode(encoded).byteLength > MAX_REQUEST_BYTES + 4096)
+      throw new Error('relay_request_too_large')
     socket.send(encoded)
   }
 
@@ -157,7 +156,8 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
         typeof frame.verification_code !== 'string' ||
         !/^\d{6}$/.test(frame.verification_code) ||
         !expiry(frame.expires_in, 120)
-      ) return protocolFailure()
+      )
+        return protocolFailure()
       pairingId = frame.pairing_id
       if (pairingTimer !== undefined) clearTimeout(pairingTimer)
       pairingTimer = setTimeout(() => revoke('expired'), frame.expires_in * 1000)
@@ -173,7 +173,8 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
         !opaque(frame.session_id) ||
         !opaque(frame.capability) ||
         !expiry(frame.expires_in, 1800)
-      ) return protocolFailure()
+      )
+        return protocolFailure()
       sessionId = frame.session_id
       capability = frame.capability
       pairingId = undefined
@@ -184,28 +185,74 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       publish({ status: 'connected' })
       return
     }
-    if (frame.type === 'office.rejected' || frame.type === 'office.expired' || frame.type === 'office.pc_offline') {
-      if (frameBytes > MAX_CONTROL_FRAME_BYTES || !exactKeys(frame, ['version', 'type'])) return protocolFailure()
-      const status = frame.type === 'office.rejected' ? 'rejected' : frame.type === 'office.expired' ? 'expired' : 'waiting_for_pc'
+    if (
+      frame.type === 'office.rejected' ||
+      frame.type === 'office.expired' ||
+      frame.type === 'office.pc_offline'
+    ) {
+      if (frameBytes > MAX_CONTROL_FRAME_BYTES || !exactKeys(frame, ['version', 'type']))
+        return protocolFailure()
+      const status =
+        frame.type === 'office.rejected'
+          ? 'rejected'
+          : frame.type === 'office.expired'
+            ? 'expired'
+            : 'waiting_for_pc'
       if (status === 'waiting_for_pc') publish({ status, verificationCode: state.verificationCode })
       else revoke(status)
       return
     }
     const active = request
-    if (!active || frame.request_id !== active.id || frame.session_id !== sessionId) return protocolFailure()
+    if (!active || frame.request_id !== active.id || frame.session_id !== sessionId)
+      return protocolFailure()
     if (frame.type === 'relay.start') {
-      if (active.controller || !exactKeys(frame, ['version', 'type', 'session_id', 'request_id', 'status', 'content_type']) || !Number.isSafeInteger(frame.status) || (frame.status as number) < 200 || (frame.status as number) > 599 || frame.status === 204 || frame.status === 205 || frame.status === 304 || typeof frame.content_type !== 'string' || frame.content_type.length < 1 || frame.content_type.length > 128) return protocolFailure()
+      if (
+        active.controller ||
+        !exactKeys(frame, [
+          'version',
+          'type',
+          'session_id',
+          'request_id',
+          'status',
+          'content_type',
+        ]) ||
+        !Number.isSafeInteger(frame.status) ||
+        (frame.status as number) < 200 ||
+        (frame.status as number) > 599 ||
+        frame.status === 204 ||
+        frame.status === 205 ||
+        frame.status === 304 ||
+        typeof frame.content_type !== 'string' ||
+        frame.content_type.length < 1 ||
+        frame.content_type.length > 128
+      )
+        return protocolFailure()
       const body = new ReadableStream<Uint8Array>({
-        start(controller) { active.controller = controller },
+        start(controller) {
+          active.controller = controller
+        },
         cancel() {
           if (request?.id === active.id) {
-            try { send({ version: 1, type: 'office.cancel', session_id: sessionId, capability, request_id: active.id }) } catch { /* revoked */ }
+            try {
+              send({
+                version: 1,
+                type: 'office.cancel',
+                session_id: sessionId,
+                capability,
+                request_id: active.id,
+              })
+            } catch {
+              /* revoked */
+            }
             finishRequest('relay_cancelled')
           }
         },
       })
       try {
-        const response = new Response(body, { status: frame.status as number, headers: { 'content-type': frame.content_type } })
+        const response = new Response(body, {
+          status: frame.status as number,
+          headers: { 'content-type': frame.content_type },
+        })
         active.responseResolved = true
         active.resolve(response)
       } catch {
@@ -220,27 +267,44 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
         !exactKeys(frame, ['version', 'type', 'session_id', 'request_id', 'sequence', 'data']) ||
         frame.sequence !== active.sequence ||
         typeof frame.data !== 'string'
-      ) return protocolFailure()
-      if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(frame.data)) return protocolFailure()
+      )
+        return protocolFailure()
+      if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(frame.data))
+        return protocolFailure()
       let chunk: Uint8Array
       try {
         const decoded = atob(frame.data)
         if (btoa(decoded) !== frame.data) return protocolFailure()
         chunk = Uint8Array.from(decoded, (character) => character.charCodeAt(0))
-      } catch { return protocolFailure() }
-      if (chunk.byteLength > MAX_CHUNK_BYTES || active.bytes + chunk.byteLength > MAX_RESPONSE_BYTES) return protocolFailure()
+      } catch {
+        return protocolFailure()
+      }
+      if (
+        chunk.byteLength > MAX_CHUNK_BYTES ||
+        active.bytes + chunk.byteLength > MAX_RESPONSE_BYTES
+      )
+        return protocolFailure()
       active.sequence += 1
       active.bytes += chunk.byteLength
       active.controller.enqueue(chunk)
       return
     }
     if (frame.type === 'relay.done') {
-      if (!active.responseResolved || !active.controller || !exactKeys(frame, ['version', 'type', 'session_id', 'request_id'])) return protocolFailure()
+      if (
+        !active.responseResolved ||
+        !active.controller ||
+        !exactKeys(frame, ['version', 'type', 'session_id', 'request_id'])
+      )
+        return protocolFailure()
       finishRequest()
       return
     }
     if (frame.type === 'relay.error') {
-      if (!exactKeys(frame, ['version', 'type', 'session_id', 'request_id', 'code']) || !opaque(frame.code)) return protocolFailure()
+      if (
+        !exactKeys(frame, ['version', 'type', 'session_id', 'request_id', 'code']) ||
+        !opaque(frame.code)
+      )
+        return protocolFailure()
       finishRequest('relay_error')
       return
     }
@@ -249,7 +313,10 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
 
   return {
     snapshot: () => state,
-    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
     connect(host) {
       revoke('offline')
       if (host === 'unknown') return Promise.resolve()
@@ -258,38 +325,87 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       return new Promise<void>((resolve) => {
         settleConnect = resolve
         let opened: RelayWebSocket
-        try { opened = createSocket(OFFICE_RELAY_URL) } catch { revoke('offline'); return }
+        try {
+          opened = createSocket(OFFICE_RELAY_URL)
+        } catch {
+          revoke('offline')
+          return
+        }
         socket = opened
         opened.onopen = () => {
           if (epoch !== generation) return
-          try { send({ version: 1, type: 'office.create', host: hostLabels[host] }) } catch { protocolFailure() }
+          try {
+            send({ version: 1, type: 'office.create', host: hostLabels[host] })
+          } catch {
+            protocolFailure()
+          }
         }
         opened.onmessage = (event) => handleFrame(event.data, epoch)
-        opened.onerror = () => { if (epoch === generation) revoke('offline') }
-        opened.onclose = () => { if (epoch === generation) revoke('offline', false) }
+        opened.onerror = () => {
+          if (epoch === generation) revoke('offline')
+        }
+        opened.onclose = () => {
+          if (epoch === generation) revoke('offline', false)
+        }
       })
     },
-    disconnect() { revoke('offline') },
+    disconnect() {
+      revoke('offline')
+    },
     async authenticatedFetch(path, init) {
-      if (path !== MESSAGES_PATH || !socket || !sessionId || !capability || state.status !== 'connected') throw new Error('relay_disconnected')
+      if (
+        path !== MESSAGES_PATH ||
+        !socket ||
+        !sessionId ||
+        !capability ||
+        state.status !== 'connected'
+      )
+        throw new Error('relay_disconnected')
       if (request) throw new Error('relay_busy')
-      if (init.method !== 'POST' || typeof init.body !== 'string') throw new Error('relay_invalid_request')
-      if (encoder.encode(init.body).byteLength > MAX_REQUEST_BYTES) throw new Error('relay_request_too_large')
+      if (init.method !== 'POST' || typeof init.body !== 'string')
+        throw new Error('relay_invalid_request')
+      if (encoder.encode(init.body).byteLength > MAX_REQUEST_BYTES)
+        throw new Error('relay_request_too_large')
       let parsedBody: unknown
-      try { parsedBody = JSON.parse(init.body) } catch { throw new Error('relay_invalid_request') }
-      if (!parsedBody || typeof parsedBody !== 'object' || Array.isArray(parsedBody)) throw new Error('relay_invalid_request')
+      try {
+        parsedBody = JSON.parse(init.body)
+      } catch {
+        throw new Error('relay_invalid_request')
+      }
+      if (!parsedBody || typeof parsedBody !== 'object' || Array.isArray(parsedBody))
+        throw new Error('relay_invalid_request')
       const id = randomUUID()
       return new Promise<Response>((resolve, reject) => {
         const timer = setTimeout(() => {
           if (request?.id !== id) return
-          try { send({ version: 1, type: 'office.cancel', session_id: sessionId, capability, request_id: id }) } catch { /* revoked */ }
+          try {
+            send({
+              version: 1,
+              type: 'office.cancel',
+              session_id: sessionId,
+              capability,
+              request_id: id,
+            })
+          } catch {
+            /* revoked */
+          }
           finishRequest('relay_timeout')
         }, REQUEST_TIMEOUT_MS)
         request = { id, sequence: 0, bytes: 0, responseResolved: false, resolve, reject, timer }
         if (init.signal) {
           const abort = () => {
             if (request?.id !== id) return
-            try { send({ version: 1, type: 'office.cancel', session_id: sessionId, capability, request_id: id }) } catch { /* revoked */ }
+            try {
+              send({
+                version: 1,
+                type: 'office.cancel',
+                session_id: sessionId,
+                capability,
+                request_id: id,
+              })
+            } catch {
+              /* revoked */
+            }
             finishRequest('relay_cancelled')
           }
           request.abort = abort
@@ -299,7 +415,14 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
         }
         if (request?.id === id) {
           try {
-            send({ version: 1, type: 'office.request', session_id: sessionId, capability, request_id: id, body: parsedBody })
+            send({
+              version: 1,
+              type: 'office.request',
+              session_id: sessionId,
+              capability,
+              request_id: id,
+              body: parsedBody,
+            })
           } catch {
             protocolFailure()
           }
