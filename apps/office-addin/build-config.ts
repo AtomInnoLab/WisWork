@@ -1,4 +1,5 @@
 export const PREFERRED_OFFICE_BRIDGE_PORT = 43_127
+export const OFFICE_RELAY_CONNECT_ORIGIN = 'wss://office.8-216-134-194.sslip.io'
 export const DEFAULT_OFFICE_BRIDGE_PORTS = Object.freeze([
   PREFERRED_OFFICE_BRIDGE_PORT,
   ...Array.from({ length: 64 }, (_, index) => 43_120 + index).filter(
@@ -10,6 +11,14 @@ type BuildEnv = Record<string, string | undefined>
 export interface DeploymentConfig {
   addinOrigin: string
   bridgePorts: readonly number[]
+}
+
+export type OfficeTransportMode = 'relay' | 'loopback'
+export function officeTransportMode(env: BuildEnv): OfficeTransportMode {
+  const value = env.VITE_WISWORK_OFFICE_TRANSPORT
+  if (value === undefined || value === '' || value === 'relay') return 'relay'
+  if (value === 'loopback') return 'loopback'
+  throw new Error('invalid_office_transport')
 }
 
 export function officeBridgePorts(env: BuildEnv): readonly number[] | undefined {
@@ -33,6 +42,8 @@ export function officeBridgeEndpoints(env: BuildEnv): readonly string[] {
 export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
   const value = env.VITE_WISWORK_ADDIN_ORIGIN?.trim()
   if (!value) return undefined
+  let mode: OfficeTransportMode
+  try { mode = officeTransportMode(env) } catch { return undefined }
   const bridgePorts = officeBridgePorts(env)
   if (!bridgePorts) return undefined
   try {
@@ -45,6 +56,7 @@ export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
       url.hostname.includes('*')
     )
       return undefined
+    void mode
     return { addinOrigin: url.origin, bridgePorts }
   } catch {
     return undefined
@@ -53,7 +65,9 @@ export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
 
 export function deploymentConnectOrigins(env: BuildEnv): string {
   try {
-    return officeBridgeEndpoints(env).join(' ')
+    return officeTransportMode(env) === 'relay'
+      ? OFFICE_RELAY_CONNECT_ORIGIN
+      : officeBridgeEndpoints(env).join(' ')
   } catch {
     return ''
   }

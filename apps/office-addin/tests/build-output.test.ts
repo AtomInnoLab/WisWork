@@ -9,7 +9,6 @@ const dist = resolve(appRoot, 'dist')
 beforeAll(async () => {
   const configured = {
     VITE_WISWORK_ADDIN_ORIGIN: 'https://office.example',
-    VITE_WISWORK_PC_BRIDGE_PORTS: '44000,44001',
   }
   const prior = Object.fromEntries(Object.keys(configured).map((key) => [key, process.env[key]]))
   Object.assign(process.env, configured)
@@ -26,21 +25,22 @@ beforeAll(async () => {
 describe('configured Office build output', () => {
   it('emits only configured origins in the deployment manifest', async () => {
     const manifest = await readFile(resolve(dist, 'manifest.xml'), 'utf8')
-    expect(manifest).toContain('<Version>0.2.0.0</Version>')
-    expect(manifest).toContain('https://office.example/taskpane.html?v=0.2.0')
+    expect(manifest).toContain('<Version>0.3.0.0</Version>')
+    expect(manifest).toContain('https://office.example/taskpane.html?v=0.3.0')
     expect(manifest).not.toContain('auth.example')
     expect(manifest).not.toContain('localhost')
     expect(manifest).not.toContain('*')
   })
 
-  it('emits one task pane with an exact loopback-only connect policy and no legacy auth assets', async () => {
+  it('emits one task pane with the fixed relay policy and no legacy auth assets', async () => {
     const taskpane = await readFile(resolve(dist, 'taskpane.html'), 'utf8')
     const files = await readdir(dist, { recursive: true })
-    expect(taskpane).toContain("connect-src 'self' http://127.0.0.1:44000 http://127.0.0.1:44001")
+    expect(taskpane).toContain("connect-src 'self' wss://office.8-216-134-194.sslip.io")
+    expect(taskpane).not.toContain('http://127.0.0.1')
     const scriptPath = taskpane.match(/src="(\/assets\/taskpane-[^"]+\.js)"/)?.[1]
     expect(scriptPath).toBeDefined()
     const script = await readFile(resolve(dist, scriptPath!.replace(/^\//, '')), 'utf8')
-    expect(script).toMatch(/VITE_WISWORK_PC_BRIDGE_PORTS\s*:\s*["']44000,44001["']/)
+    expect(script).toContain('wss://office.8-216-134-194.sslip.io/office-relay')
     expect(taskpane).not.toMatch(/oauth|callback|auth\.dev|wisusage/i)
     expect(files).not.toContain('oauth')
     expect(files.some((file) => file.endsWith('.map'))).toBe(false)
