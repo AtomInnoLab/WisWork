@@ -76,7 +76,7 @@ export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapt
             (item.shapes.items as Runtime[]).map((shape) => String(shape.id)),
           )
           if (recovered.size !== beforeIds.size || [...recovered].some((id) => !beforeIds.has(id)))
-            throw new Error('office_recovery_failed')
+            throw new Error('office_recovery_failed', { cause: writeError })
         } catch (recoveryError) {
           throw new Error('office_recovery_failed', { cause: recoveryError })
         }
