@@ -1,3 +1,4 @@
+use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -10,9 +11,39 @@ use wiswork_relay::{Config, app};
 const ORIGIN: &str = "https://office.8-216-134-194.sslip.io";
 
 async fn server() -> String {
+    let auth_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let auth_addr = auth_listener.local_addr().unwrap();
+    let auth = axum::Router::new().route(
+        "/oidc/me",
+        axum::routing::get(|headers: axum::http::HeaderMap| async move {
+            if headers.get("authorization").and_then(|v| v.to_str().ok())
+                == Some("Bearer valid-test-token")
+            {
+                (
+                    axum::http::StatusCode::OK,
+                    axum::Json(json!({"sub":"test-user"})),
+                )
+                    .into_response()
+            } else {
+                axum::http::StatusCode::UNAUTHORIZED.into_response()
+            }
+        }),
+    );
+    tokio::spawn(async move { axum::serve(auth_listener, auth).await.unwrap() });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app(Config::default())).await.unwrap() });
+    let config = Config {
+        auth_url: format!("http://{auth_addr}/oidc/me"),
+        ..Config::default()
+    };
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app(config).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
     format!("ws://{addr}/office-relay")
 }
 
@@ -30,7 +61,11 @@ async fn socket(
 async fn pc_socket(
     url: &str,
 ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
-    connect_async(url).await.unwrap().0
+    let mut request = url.into_client_request().unwrap();
+    request
+        .headers_mut()
+        .insert("authorization", "Bearer valid-test-token".parse().unwrap());
+    connect_async(request).await.unwrap().0
 }
 
 async fn send(

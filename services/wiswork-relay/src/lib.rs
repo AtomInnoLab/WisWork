@@ -1,7 +1,7 @@
 use axum::{
     Router,
     extract::{
-        State,
+        ConnectInfo, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, StatusCode},
@@ -12,15 +12,17 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::{SinkExt, StreamExt};
 use rand::{Rng, distr::Alphanumeric};
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
+    net::{IpAddr, SocketAddr},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, Notify, mpsc};
 
 pub const OFFICE_ORIGIN: &str = "https://office.8-216-134-194.sslip.io";
 const CONTROL_MAX: usize = 16 * 1024;
@@ -34,6 +36,7 @@ pub struct Config {
     pub session_ttl: Duration,
     pub request_ttl: Duration,
     pub max_claim_attempts: u8,
+    pub auth_url: String,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -42,6 +45,7 @@ impl Default for Config {
             session_ttl: Duration::from_secs(1800),
             request_ttl: Duration::from_secs(120),
             max_claim_attempts: 5,
+            auth_url: "https://auth.dev.wispaper.ai/oidc/me".into(),
         }
     }
 }
@@ -54,8 +58,13 @@ struct Inner {
     state: Mutex<Store>,
     next: AtomicU64,
     config: Config,
+    http: reqwest::Client,
 }
-type Tx = mpsc::Sender<Message>;
+#[derive(Clone)]
+struct Tx {
+    sender: mpsc::Sender<Message>,
+    failed: Arc<Notify>,
+}
 struct Pairing {
     id: String,
     code: String,
@@ -89,7 +98,11 @@ struct Store {
     pairings: HashMap<String, Pairing>,
     codes: HashMap<String, String>,
     sessions: HashMap<String, Session>,
-    claim_attempts: HashMap<u64, u8>,
+    claim_attempts: HashMap<[u8; 32], (Instant, u8)>,
+    create_attempts: HashMap<IpAddr, (Instant, u8)>,
+    global_claims: (Option<Instant>, u32),
+    global_creates: (Option<Instant>, u32),
+    connection_pairings: HashMap<u64, u8>,
 }
 
 pub fn app(config: Config) -> Router {
@@ -98,6 +111,12 @@ pub fn app(config: Config) -> Router {
             state: Mutex::new(Store::default()),
             next: AtomicU64::new(1),
             config,
+            http: reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(3))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("fixed HTTP client"),
         }),
     };
     let sweeper = state.clone();
@@ -117,6 +136,7 @@ pub fn app(config: Config) -> Router {
 
 async fn upgrade(
     State(app): State<App>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
@@ -127,32 +147,132 @@ async fn upgrade(
     if origin.as_deref().is_some_and(|v| v != OFFICE_ORIGIN) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    let authorization = headers.get("authorization").and_then(|v| v.to_str().ok());
+    let subject = if origin.is_some() {
+        if authorization.is_some() {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+        None
+    } else {
+        let Some(token) = authorization
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .filter(|v| !v.is_empty() && v.len() <= 4096)
+        else {
+            return StatusCode::UNAUTHORIZED.into_response();
+        };
+        let Some(subject) = authenticate_pc(&app, token).await else {
+            return StatusCode::UNAUTHORIZED.into_response();
+        };
+        Some(subject)
+    };
+    let client_ip = match headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+        Some(value) if peer.ip().is_loopback() => match value.parse() {
+            Ok(ip) => ip,
+            Err(_) => return StatusCode::FORBIDDEN.into_response(),
+        },
+        Some(_) => return StatusCode::FORBIDDEN.into_response(),
+        None => peer.ip(),
+    };
     ws.max_message_size(CONTROL_MAX.max(REQUEST_MAX))
-        .on_upgrade(move |socket| connection(app, socket, origin))
+        .on_upgrade(move |socket| connection(app, socket, origin, client_ip, subject))
         .into_response()
 }
 
-async fn connection(app: App, socket: WebSocket, origin: Option<String>) {
+async fn authenticate_pc(app: &App, token: &str) -> Option<[u8; 32]> {
+    let Ok(url) = reqwest::Url::parse(&app.inner.config.auth_url) else {
+        return None;
+    };
+    let allowed = url.as_str() == "https://auth.dev.wispaper.ai/oidc/me"
+        || (url.scheme() == "http"
+            && url.host_str().is_some_and(|h| h == "127.0.0.1")
+            && url.path() == "/oidc/me");
+    if !allowed {
+        return None;
+    }
+    let Ok(mut response) = app.inner.http.get(url).bearer_auth(token).send().await else {
+        return None;
+    };
+    if !response.status().is_success()
+        || response
+            .content_length()
+            .is_some_and(|n| n > CONTROL_MAX as u64)
+    {
+        return None;
+    }
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) if body.len() + chunk.len() <= CONTROL_MAX => {
+                body.extend_from_slice(&chunk)
+            }
+            Ok(None) => break,
+            _ => return None,
+        }
+    }
+    let value: Value = serde_json::from_slice(&body).ok()?;
+    let sub = value.as_object()?.get("sub")?.as_str()?;
+    if sub.is_empty() || sub.len() > 512 {
+        return None;
+    }
+    Some(Sha256::digest(sub.as_bytes()).into())
+}
+
+async fn connection(
+    app: App,
+    socket: WebSocket,
+    origin: Option<String>,
+    peer: IpAddr,
+    subject: Option<[u8; 32]>,
+) {
     let id = app.inner.next.fetch_add(1, Ordering::Relaxed);
     let (mut sink, mut stream) = socket.split();
-    let (tx, mut rx) = mpsc::channel(64);
+    let (sender, mut rx) = mpsc::channel(64);
+    let tx = Tx {
+        sender,
+        failed: Arc::new(Notify::new()),
+    };
+    let writer_failed = tx.failed.clone();
     let writer = tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
-            if sink.send(message).await.is_err() {
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(10), sink.send(message)).await,
+                Ok(Ok(()))
+            ) {
+                writer_failed.notify_one();
                 break;
             }
         }
     });
-    while let Some(Ok(message)) = stream.next().await {
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(20));
+    heartbeat.tick().await;
+    loop {
+        let message = tokio::select! {
+            _ = tx.failed.notified() => break,
+            _ = heartbeat.tick() => { if tx.sender.try_send(Message::Ping(Vec::new().into())).is_err() { break; } continue; },
+            value = tokio::time::timeout(Duration::from_secs(60), stream.next()) => match value { Ok(value) => value, Err(_) => break },
+        };
+        let Some(Ok(message)) = message else { break };
         match message {
             Message::Text(text) if text.len() <= REQUEST_MAX => {
-                if let Err(code) = process(&app, id, &tx, origin.as_deref(), text.as_str()).await {
+                if let Err(code) = process(
+                    &app,
+                    id,
+                    &tx,
+                    origin.as_deref(),
+                    peer,
+                    subject,
+                    text.as_str(),
+                )
+                .await
+                {
                     error(&tx, code);
                     break;
                 }
             }
             Message::Ping(data) => {
-                let _ = tx.try_send(Message::Pong(data));
+                tx.sender
+                    .try_send(Message::Pong(data))
+                    .unwrap_or_else(|_| tx.failed.notify_one());
             }
             Message::Close(_) => break,
             Message::Binary(_) => {
@@ -194,7 +314,13 @@ fn token() -> String {
         .collect()
 }
 fn send(tx: &Tx, value: Value) {
-    let _ = tx.try_send(Message::Text(value.to_string().into()));
+    if tx
+        .sender
+        .try_send(Message::Text(value.to_string().into()))
+        .is_err()
+    {
+        tx.failed.notify_one();
+    }
 }
 fn error(tx: &Tx, code: &str) {
     send(tx, json!({"version":1,"type":"relay.error","code":code}));
@@ -209,6 +335,8 @@ async fn process(
     conn: u64,
     tx: &Tx,
     origin: Option<&str>,
+    peer: IpAddr,
+    subject: Option<[u8; 32]>,
     text: &str,
 ) -> Result<(), &'static str> {
     let map = object(text, REQUEST_MAX)?;
@@ -226,8 +354,8 @@ async fn process(
         return Err("role_not_allowed");
     }
     match kind {
-        "office.create" => create(app, conn, tx, origin, map).await,
-        "pc.claim" => claim(app, conn, tx, map).await,
+        "office.create" => create(app, conn, tx, origin, peer, map).await,
+        "pc.claim" => claim(app, conn, tx, subject.ok_or("auth_required")?, map).await,
         "pc.approve" => approve(app, conn, tx, map).await,
         "pc.reject" => reject(app, conn, map).await,
         "office.request" => request(app, conn, map, text.len()).await,
@@ -245,6 +373,7 @@ async fn create(
     conn: u64,
     tx: &Tx,
     origin: Option<&str>,
+    peer: IpAddr,
     m: Map<String, Value>,
 ) -> Result<(), &'static str> {
     if !exact(&m, &["version", "type", "host"]) || origin != Some(OFFICE_ORIGIN) {
@@ -256,11 +385,37 @@ async fn create(
     }
     let mut store = app.inner.state.lock().await;
     expire(&mut store);
+    let per_connection = store.connection_pairings.entry(conn).or_default();
+    if *per_connection >= 4 {
+        return Err("pairing_limit");
+    }
+    *per_connection += 1;
+    let per_ip = store
+        .create_attempts
+        .entry(peer)
+        .or_insert((Instant::now(), 0));
+    if per_ip.0.elapsed() > app.inner.config.pairing_ttl {
+        *per_ip = (Instant::now(), 0);
+    }
+    per_ip.1 = per_ip.1.saturating_add(1);
+    if per_ip.1 > 10 {
+        return Err("create_rate_limited");
+    }
+    if store
+        .global_creates
+        .0
+        .is_none_or(|start| start.elapsed() > app.inner.config.pairing_ttl)
+    {
+        store.global_creates = (Some(Instant::now()), 0);
+    }
+    store.global_creates.1 = store.global_creates.1.saturating_add(1);
+    if store.global_creates.1 > 1_000 {
+        return Err("relay_busy");
+    }
     if store.pairings.len() >= 10_000 {
         return Err("relay_busy");
     }
     let id = token();
-    let secret = token();
     let mut rng = rand::rng();
     let mut code = format!("{:06}", rng.random_range(0..1_000_000));
     while store.codes.contains_key(&code) {
@@ -280,12 +435,18 @@ async fn create(
     store.pairings.insert(id.clone(), pairing);
     send(
         tx,
-        json!({"version":1,"type":"office.created","pairing_id":id,"polling_secret":secret,"verification_code":code,"expires_in":app.inner.config.pairing_ttl.as_secs()}),
+        json!({"version":1,"type":"office.created","pairing_id":id,"verification_code":code,"expires_in":app.inner.config.pairing_ttl.as_secs()}),
     );
     Ok(())
 }
 
-async fn claim(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result<(), &'static str> {
+async fn claim(
+    app: &App,
+    conn: u64,
+    tx: &Tx,
+    subject: [u8; 32],
+    m: Map<String, Value>,
+) -> Result<(), &'static str> {
     if !exact(&m, &["version", "type", "verification_code"]) {
         return Err("invalid_frame");
     }
@@ -294,9 +455,25 @@ async fn claim(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result<(
         return Err("invalid_code");
     }
     let mut s = app.inner.state.lock().await;
-    let attempts = s.claim_attempts.entry(conn).or_default();
-    *attempts = attempts.saturating_add(1);
-    if *attempts > app.inner.config.max_claim_attempts {
+    if s.global_claims
+        .0
+        .is_none_or(|start| start.elapsed() > app.inner.config.pairing_ttl)
+    {
+        s.global_claims = (Some(Instant::now()), 0);
+    }
+    s.global_claims.1 = s.global_claims.1.saturating_add(1);
+    if s.global_claims.1 > 1_000 {
+        return Err("claim_rate_limited");
+    }
+    let attempts = s
+        .claim_attempts
+        .entry(subject)
+        .or_insert((Instant::now(), 0));
+    if attempts.0.elapsed() > app.inner.config.pairing_ttl {
+        *attempts = (Instant::now(), 0);
+    }
+    attempts.1 = attempts.1.saturating_add(1);
+    if attempts.1 > app.inner.config.max_claim_attempts {
         return Err("claim_limit");
     }
     expire(&mut s);
@@ -422,6 +599,9 @@ async fn request(
     }
     if session.active.is_some() {
         return Err("request_active");
+    }
+    if session.used_requests.len() >= 10_000 {
+        return Err("request_limit");
     }
     if !session.used_requests.insert(rid.to_owned()) {
         return Err("duplicate_request");
@@ -677,6 +857,7 @@ fn expire(s: &mut Store) {
 }
 async fn cleanup(app: &App, conn: u64) {
     let mut s = app.inner.state.lock().await;
+    s.connection_pairings.remove(&conn);
     let pids: Vec<_> = s
         .pairings
         .iter()
