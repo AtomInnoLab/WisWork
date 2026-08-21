@@ -1,8 +1,18 @@
 import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
 import { exactObject, integerField, optionalField, stringField } from '../../agent/tool-schema.js'
+import { parseDeclarativeProgram } from '../shared/declarative-program.js'
 import type { PowerPointAdapter } from './browser-powerpoint-adapter.js'
-import { MAX_POWERPOINT_RESULT_BYTES } from './browser-powerpoint-adapter.js'
+import {
+  MAX_POWERPOINT_RESULT_BYTES,
+  type PowerPointDeclarativeOperation,
+} from './browser-powerpoint-adapter.js'
+import {
+  editPowerPointPackage,
+  verifyPowerPointPackage,
+  type PackageEditKind,
+  type XmlReplacement,
+} from './powerpoint-package.js'
 
 const MAX_SLIDE_INDEX = 100_000
 const MAX_CODE = 32 * 1024
@@ -89,7 +99,7 @@ const tools = [
   {
     name: 'execute_office_js',
     description:
-      'Raw Office.js compatibility entry; disabled until an audited hardened evaluator is available.',
+      'Execute a confirmation-gated bounded declarative PowerPoint JSON program; JavaScript syntax and ambient authority are rejected.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -116,7 +126,7 @@ const tools = [
   },
   {
     name: 'edit_slide_xml',
-    description: 'OOXML compatibility entry; disabled pending audited ZIP support.',
+    description: 'Propose bounded allowlisted slide XML replacements in an exported slide package.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -129,7 +139,8 @@ const tools = [
   },
   {
     name: 'edit_slide_chart',
-    description: 'Chart OOXML compatibility entry; disabled pending audited ZIP support.',
+    description:
+      'Propose bounded allowlisted chart XML replacements while preserving package relationships.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -142,7 +153,7 @@ const tools = [
   },
   {
     name: 'edit_slide_master',
-    description: 'Master OOXML compatibility entry; disabled pending audited ZIP support.',
+    description: 'Propose bounded allowlisted master, layout, or theme XML replacements.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -211,14 +222,127 @@ function fingerprint(value: string): string {
   return `${value.length}:${(result >>> 0).toString(16).padStart(8, '0')}`
 }
 
+function exactRecord(value: unknown, keys: string[]): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('invalid_tool_input')
+  const record = value as Record<string, unknown>
+  if (Object.keys(record).some((key) => !keys.includes(key))) throw new Error('invalid_tool_input')
+  return record
+}
+
+function parseXmlProgram(code: string): XmlReplacement[] {
+  return parseDeclarativeProgram(code, (value) => {
+    const operation = exactRecord(value, ['op', 'path', 'xml'])
+    if (
+      operation.op !== 'replace_xml' ||
+      typeof operation.path !== 'string' ||
+      !operation.path ||
+      operation.path.length > 256 ||
+      typeof operation.xml !== 'string' ||
+      !operation.xml
+    )
+      throw new Error('invalid_tool_input')
+    return { path: operation.path, xml: operation.xml }
+  }).operations
+}
+
+function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperation {
+  const operation = exactRecord(value, ['op', 'slide_index', 'shape_id', 'text'])
+  if (
+    !Number.isInteger(operation.slide_index) ||
+    (operation.slide_index as number) < 0 ||
+    (operation.slide_index as number) > MAX_SLIDE_INDEX
+  )
+    throw new Error('invalid_tool_input')
+  if (operation.op === 'duplicate_slide') {
+    if (operation.shape_id !== undefined || operation.text !== undefined)
+      throw new Error('invalid_tool_input')
+    return { op: 'duplicate_slide', slide_index: operation.slide_index as number }
+  }
+  if (
+    operation.op !== 'set_shape_text' ||
+    typeof operation.shape_id !== 'string' ||
+    !operation.shape_id ||
+    operation.shape_id.length > 256 ||
+    typeof operation.text !== 'string' ||
+    operation.text.length > 12_000
+  )
+    throw new Error('invalid_tool_input')
+  return {
+    op: 'set_shape_text',
+    slide_index: operation.slide_index as number,
+    shape_id: operation.shape_id,
+    text: operation.text,
+  }
+}
+
 export function createPowerPointSkill(options: {
   adapter: PowerPointAdapter
   proposals: StructuredProposalController
 }): AgentSkill {
+  async function proposePackageEdit(
+    toolName: string,
+    kind: PackageEditKind,
+    slideIndex: number,
+    replacements: XmlReplacement[],
+    explanation: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<ToolExecution> {
+    await options.adapter.verifySlides(signal)
+    const before = await options.adapter.exportSlidePackage(slideIndex, signal)
+    const edited = await editPowerPointPackage(before.base64, kind, replacements, signal)
+    const proposal = options.proposals.propose({
+      operation: toolName,
+      toolName,
+      title: explanation || `Edit PowerPoint ${kind} XML`,
+      preview: {
+        kind,
+        slideIndex,
+        changedPaths: edited.changedPaths,
+        beforeHashes: edited.beforeHashes,
+        afterHashes: edited.afterHashes,
+      },
+      impact: {
+        host: 'powerpoint',
+        targets: edited.changedPaths,
+        count: edited.changedPaths.length,
+      },
+      fingerprint: before.fingerprint,
+      before: { slideId: before.slideId, hashes: edited.beforeHashes },
+      after: { hashes: edited.afterHashes },
+      code: JSON.stringify({
+        version: 1,
+        operations: replacements.map((item) => ({ op: 'replace_xml', ...item })),
+      }),
+      validate: async (confirmSignal) =>
+        (await options.adapter.exportSlidePackage(slideIndex, confirmSignal)).fingerprint ===
+        before.fingerprint,
+      execute: async (confirmSignal) => {
+        await options.adapter.replaceSlidePackage(
+          slideIndex,
+          edited.base64,
+          kind === 'master',
+          confirmSignal,
+        )
+      },
+      verify: async (confirmSignal) => {
+        const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
+        if (!(await verifyPowerPointPackage(current.base64, edited, confirmSignal)))
+          throw new Error('office_verify_failed')
+        await options.adapter.verifySlides(confirmSignal)
+      },
+    })
+    return {
+      output: boundedJson(proposal),
+      mutated: false,
+      summary: `Proposed PowerPoint ${kind} XML edit`,
+    }
+  }
+
   return {
     id: 'office-powerpoint',
     systemPrompt:
-      'PowerPoint reads are bounded. Every supported write creates an explicit proposal and is verified after confirmation. Raw JavaScript and unaudited OOXML operations fail closed.',
+      'PowerPoint reads are bounded. Every write creates an explicit proposal and is semantically verified after confirmation. execute_office_js accepts only a versioned declarative JSON program; JavaScript and ambient browser authority are rejected. XML tools accept only allowlisted bounded package parts.',
     tools: [...tools],
     async executeTool(call, signal) {
       if (call.inputError || call.truncated) return failure(call.name, 'invalid_tool_input')
@@ -369,16 +493,120 @@ export function createPowerPointSkill(options: {
           }
         }
         if (call.name === 'execute_office_js') {
-          codeInput(call.input)
-          return failure(call.name, 'office_api_unsupported')
+          const input = codeInput(call.input)
+          const program = parseDeclarativeProgram(input.code, parsePowerPointOperation)
+          if (
+            program.operations.some((operation) => operation.op === 'duplicate_slide') &&
+            program.operations.length !== 1
+          )
+            throw new Error('invalid_tool_input')
+          await options.adapter.verifySlides(signal)
+          const slideIndexes = [
+            ...new Set(program.operations.map((operation) => operation.slide_index)),
+          ]
+          if (slideIndexes.length > 8) throw new Error('invalid_tool_input')
+          const snapshots = await Promise.all(
+            slideIndexes.map((index) => options.adapter.exportSlidePackage(index, signal)),
+          )
+          if (snapshots.reduce((total, item) => total + item.base64.length, 0) > 16 * 1024 * 1024)
+            throw new Error('invalid_tool_input')
+          const beforeTexts = await Promise.all(
+            program.operations.flatMap((operation) =>
+              operation.op === 'set_shape_text'
+                ? [options.adapter.readSlideText(operation.slide_index, operation.shape_id, signal)]
+                : [],
+            ),
+          )
+          const combined = snapshots.map((item) => item.fingerprint).join('|')
+          const proposal = options.proposals.propose({
+            operation: call.name,
+            toolName: call.name,
+            title: input.explanation || 'Execute declarative PowerPoint operations',
+            preview: { version: 1, operations: program.operations },
+            impact: {
+              host: 'powerpoint',
+              targets: program.operations.map((operation) =>
+                operation.op === 'set_shape_text'
+                  ? `${operation.slide_index}/${operation.shape_id}`
+                  : `${operation.slide_index}`,
+              ),
+              count: program.operations.length,
+            },
+            fingerprint: fingerprint(combined),
+            code: input.code,
+            before: {
+              slides: snapshots.map(({ slideId, fingerprint: value }) => ({
+                slideId,
+                fingerprint: value,
+              })),
+              texts: beforeTexts.map((item) => ({
+                slideId: item.slideId,
+                shapeId: item.shapeId,
+                text: item.text,
+              })),
+            },
+            after: { operations: program.operations },
+            validate: async (confirmSignal) => {
+              const current = await Promise.all(
+                slideIndexes.map((index) =>
+                  options.adapter.exportSlidePackage(index, confirmSignal),
+                ),
+              )
+              return current.every(
+                (item, index) => item.fingerprint === snapshots[index].fingerprint,
+              )
+            },
+            execute: (confirmSignal) =>
+              options.adapter.executeDeclarative(program.operations, confirmSignal),
+            verify: async (confirmSignal) => {
+              for (const operation of program.operations)
+                if (operation.op === 'set_shape_text') {
+                  const current = await options.adapter.readSlideText(
+                    operation.slide_index,
+                    operation.shape_id,
+                    confirmSignal,
+                  )
+                  if (current.text !== operation.text) throw new Error('office_verify_failed')
+                }
+              if (program.operations[0]?.op === 'duplicate_slide') {
+                const operation = program.operations[0]
+                const inserted = await options.adapter.listSlideShapes(
+                  operation.slide_index + 1,
+                  confirmSignal,
+                )
+                if (inserted.slideId === snapshots[0].slideId)
+                  throw new Error('office_verify_failed')
+              }
+              await options.adapter.verifySlides(confirmSignal)
+            },
+          })
+          return {
+            output: boundedJson(proposal),
+            mutated: false,
+            summary: 'Proposed declarative PowerPoint execution',
+          }
         }
         if (call.name === 'edit_slide_master') {
-          masterCodeInput(call.input)
-          return failure(call.name, 'office_api_unsupported')
+          const input = masterCodeInput(call.input)
+          return await proposePackageEdit(
+            call.name,
+            'master',
+            0,
+            parseXmlProgram(input.code),
+            input.explanation,
+            signal,
+          )
         }
         if (call.name === 'edit_slide_xml' || call.name === 'edit_slide_chart') {
-          slideCodeInput(call.input)
-          return failure(call.name, 'office_api_unsupported')
+          const input = slideCodeInput(call.input)
+          return await proposePackageEdit(
+            call.name,
+            call.name === 'edit_slide_chart' ? 'chart' : 'slide',
+            input.slide_index,
+            parseXmlProgram(input.code),
+            input.explanation,
+            signal,
+          )
         }
         return failure(call.name, 'invalid_tool_input')
       } catch (error) {

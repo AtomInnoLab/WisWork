@@ -70,7 +70,25 @@ export interface PowerPointAdapter {
     signal?: AbortSignal,
   ): Promise<void>
   duplicateSlide(slideIndex: number, signal?: AbortSignal): Promise<{ slideId: string }>
+  exportSlidePackage(
+    slideIndex: number,
+    signal?: AbortSignal,
+  ): Promise<{ slideId: string; base64: string; fingerprint: string }>
+  replaceSlidePackage(
+    slideIndex: number,
+    base64: string,
+    applyMaster?: boolean,
+    signal?: AbortSignal,
+  ): Promise<{ slideId: string }>
+  executeDeclarative(
+    operations: PowerPointDeclarativeOperation[],
+    signal?: AbortSignal,
+  ): Promise<void>
 }
+
+export type PowerPointDeclarativeOperation =
+  | { op: 'set_shape_text'; slide_index: number; shape_id: string; text: string }
+  | { op: 'duplicate_slide'; slide_index: number }
 
 type RuntimeRecord = Record<string, unknown>
 
@@ -344,6 +362,158 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         throw new Error('office_read_failed')
       const slideId = string(slide.id)
       return { slideId, fingerprint: `${slideId}:${hash(exported.value)}` }
+    })
+  }
+
+  async exportSlidePackage(
+    slideIndex: number,
+    signal?: AbortSignal,
+  ): Promise<{ slideId: string; base64: string; fingerprint: string }> {
+    cancelled(signal)
+    return this.run('1.8', async (context) => {
+      const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+      const slide = await getSlide(context, slides, slideIndex, signal)
+      if (typeof slide.exportAsBase64 !== 'function') throw new Error('office_api_unsupported')
+      const exported = (slide.exportAsBase64 as () => RuntimeRecord)()
+      await sync(context, signal)
+      if (
+        typeof exported.value !== 'string' ||
+        !exported.value ||
+        exported.value.length > MAX_POWERPOINT_SNAPSHOT_BASE64
+      )
+        throw new Error('office_read_failed')
+      const slideId = string(slide.id)
+      return { slideId, base64: exported.value, fingerprint: `${slideId}:${hash(exported.value)}` }
+    })
+  }
+
+  async replaceSlidePackage(
+    slideIndex: number,
+    base64: string,
+    applyMaster = false,
+    signal?: AbortSignal,
+  ): Promise<{ slideId: string }> {
+    cancelled(signal)
+    if (!base64 || base64.length > MAX_POWERPOINT_SNAPSHOT_BASE64)
+      throw new Error('office_write_failed')
+    return this.run('1.8', async (context) => {
+      const presentation = context.presentation as RuntimeRecord
+      const slides = presentation.slides as RuntimeRecord
+      const slide = await getSlide(context, slides, slideIndex, signal)
+      const previous =
+        slideIndex > 0 ? await getSlide(context, slides, slideIndex - 1, signal) : undefined
+      if (
+        typeof presentation.insertSlidesFromBase64 !== 'function' ||
+        typeof slide.delete !== 'function'
+      )
+        throw new Error('office_api_unsupported')
+      const masters = applyMaster
+        ? (presentation.slideMasters as RuntimeRecord | undefined)
+        : undefined
+      if (applyMaster && (!masters || !(slide.layout as RuntimeRecord | undefined)))
+        throw new Error('office_api_unsupported')
+      cancelled(signal)
+      ;(
+        presentation.insertSlidesFromBase64 as (
+          value: string,
+          options?: { targetSlideId: string },
+        ) => void
+      )(base64, previous ? { targetSlideId: string(previous.id) } : undefined)
+      ;(slide.delete as () => void)()
+      await sync(context, signal)
+      const inserted = await getSlide(context, slides, slideIndex, signal)
+      if (applyMaster) {
+        const insertedLayout = inserted.layout as RuntimeRecord | undefined
+        if (
+          !masters ||
+          !insertedLayout ||
+          typeof masters.load !== 'function' ||
+          typeof insertedLayout.load !== 'function'
+        )
+          throw new Error('office_api_unsupported')
+        ;(masters.load as (properties: string) => void)('items')
+        ;(slides.load as (properties: string) => void)('items')
+        ;(insertedLayout.load as (properties: string) => void)('id,name')
+        await sync(context, signal)
+        const masterItems = masters.items as RuntimeRecord[]
+        const slideItems = slides.items as RuntimeRecord[]
+        for (const master of masterItems) {
+          const layouts = master.layouts as RuntimeRecord
+          ;(layouts.load as (properties: string) => void)('items/id,items/name')
+        }
+        for (const item of slideItems) {
+          const layout = item.layout as RuntimeRecord
+          ;(layout.load as (properties: string) => void)('id,name')
+        }
+        await sync(context, signal)
+        const primary = masterItems.find((master) =>
+          (((master.layouts as RuntimeRecord).items as RuntimeRecord[]) ?? []).some(
+            (layout) => layout.id === insertedLayout.id,
+          ),
+        )
+        if (!primary) throw new Error('office_verify_failed')
+        const primaryLayouts = ((primary.layouts as RuntimeRecord).items as RuntimeRecord[]) ?? []
+        cancelled(signal)
+        for (const item of slideItems) {
+          const layout = item.layout as RuntimeRecord
+          const matching = primaryLayouts.find((candidate) => candidate.name === layout.name)
+          if (matching && typeof item.applyLayout === 'function')
+            (item.applyLayout as (target: RuntimeRecord) => void)(matching)
+        }
+        await sync(context, signal)
+      }
+      return { slideId: string(inserted.id) }
+    })
+  }
+
+  async executeDeclarative(
+    operations: PowerPointDeclarativeOperation[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    cancelled(signal)
+    await this.run('1.8', async (context) => {
+      const presentation = context.presentation as RuntimeRecord
+      const slides = presentation.slides as RuntimeRecord
+      const queued: Array<() => void> = []
+      for (const operation of operations) {
+        const slide = await getSlide(context, slides, operation.slide_index, signal)
+        if (operation.op === 'set_shape_text') {
+          const shapes = slide.shapes as RuntimeRecord
+          if (typeof shapes.getItem !== 'function') throw new Error('office_api_unsupported')
+          const shape = (shapes.getItem as (id: string) => RuntimeRecord)(operation.shape_id)
+          const textRange = (shape.textFrame as RuntimeRecord | undefined)?.textRange as
+            RuntimeRecord | undefined
+          if (!textRange) throw new Error('office_api_unsupported')
+          queued.push(() => {
+            textRange.text = operation.text
+          })
+        } else {
+          if (
+            typeof slide.exportAsBase64 !== 'function' ||
+            typeof presentation.insertSlidesFromBase64 !== 'function'
+          )
+            throw new Error('office_api_unsupported')
+          const exported = (slide.exportAsBase64 as () => RuntimeRecord)()
+          await sync(context, signal)
+          if (
+            typeof exported.value !== 'string' ||
+            !exported.value ||
+            exported.value.length > MAX_POWERPOINT_SNAPSHOT_BASE64
+          )
+            throw new Error('office_write_failed')
+          queued.push(() =>
+            (
+              presentation.insertSlidesFromBase64 as (
+                value: string,
+                options: { targetSlideId: string },
+              ) => void
+            )(exported.value as string, { targetSlideId: string(slide.id) }),
+          )
+        }
+      }
+      cancelled(signal)
+      for (const write of queued) write()
+      await sync(context, signal)
     })
   }
 
