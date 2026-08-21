@@ -139,6 +139,43 @@ describe('AgentLoop', () => {
     expect(transport.requests[1].messageCount).toBe(3)
   })
 
+  it('preserves model-visible tool image content in history for the next request', async () => {
+    const image = { base64: 'iVBORw0KGgo=', mime: 'image/png' }
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 't1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+      (cb) => {
+        cb.onDelta('seen')
+        cb.onDone()
+      },
+    ])
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(() => ({
+        output: 'captured',
+        summary: 'image',
+        modelContent: [{ type: 'image', image }],
+      })),
+    })
+    loop.run('capture')
+    await flush()
+    await flush()
+    expect(loop.messages).toContainEqual({
+      role: 'tool',
+      results: [
+        {
+          id: 't1',
+          name: 'do_thing',
+          output: 'captured',
+          isError: undefined,
+          content: [{ type: 'image', image }],
+        },
+      ],
+    })
+  })
+
   it('emits onToolStart before each execution, paired with onToolExecuted', async () => {
     const transport = scriptedTransport([
       (cb) => {

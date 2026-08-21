@@ -194,7 +194,19 @@ function anthropicMessages(messages: AgentMessage[]): unknown[] {
       content: m.results.map((r) => ({
         type: 'tool_result',
         tool_use_id: r.id,
-        content: r.output,
+        content: r.content?.length
+          ? [
+              { type: 'text', text: r.output },
+              ...r.content.map((block) => ({
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: block.image.mime,
+                  data: block.image.base64,
+                },
+              })),
+            ]
+          : r.output,
         ...(r.isError ? { is_error: true } : {}),
       })),
     }
@@ -468,12 +480,17 @@ function geminiContents(messages: AgentMessage[]): unknown[] {
     }
     return {
       role: 'user',
-      parts: m.results.map((r) => ({
-        functionResponse: {
-          name: r.name,
-          response: r.isError ? { error: r.output } : { result: r.output },
+      parts: m.results.flatMap((r) => [
+        {
+          functionResponse: {
+            name: r.name,
+            response: r.isError ? { error: r.output } : { result: r.output },
+          },
         },
-      })),
+        ...(r.content ?? []).map((block) => ({
+          inline_data: { mime_type: block.image.mime, data: block.image.base64 },
+        })),
+      ]),
     }
   })
 }
@@ -701,6 +718,15 @@ function openAiMessages(system: string, messages: AgentMessage[]): unknown[] {
       for (const r of m.results) {
         out.push({ role: 'tool', tool_call_id: r.id, content: r.output })
       }
+      const images = m.results.flatMap((result) => result.content ?? [])
+      if (images.length)
+        out.push({
+          role: 'user',
+          content: images.map((block) => ({
+            type: 'image_url',
+            image_url: { url: `data:${block.image.mime};base64,${block.image.base64}` },
+          })),
+        })
     }
   }
   return out

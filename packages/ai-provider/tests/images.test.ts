@@ -19,7 +19,7 @@ function callbacks() {
 
 /** run one turn against a stubbed fetch and return the parsed request body */
 async function requestBodyFor(
-  provider: 'anthropic' | 'gemini',
+  provider: 'anthropic' | 'gemini' | 'openai',
   messages: AgentMessage[],
 ): Promise<any> {
   const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
@@ -78,5 +78,31 @@ describe('gemini user message with images', () => {
   it('keeps single text part when no images (existing behavior)', async () => {
     const body = await requestBodyFor('gemini', [{ role: 'user', text: 'hi' }])
     expect(body.contents[0]).toEqual({ role: 'user', parts: [{ text: 'hi' }] })
+  })
+})
+
+describe.each(['anthropic', 'gemini', 'openai'] as const)('%s tool-result images', (provider) => {
+  it('serializes model-visible tool image blocks into the actual provider request', async () => {
+    const body = await requestBodyFor(provider, [
+      {
+        role: 'assistant',
+        text: '',
+        toolCalls: [{ id: 't1', name: 'screenshot_range', input: {} }],
+      },
+      {
+        role: 'tool',
+        results: [
+          {
+            id: 't1',
+            name: 'screenshot_range',
+            output: 'captured',
+            content: [{ type: 'image', image: IMAGE }],
+          },
+        ],
+      },
+    ])
+    const serialized = JSON.stringify(body)
+    expect(serialized).toContain('aGVsbG8=')
+    expect(serialized).toContain('image/png')
   })
 })

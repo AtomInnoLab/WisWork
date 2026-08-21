@@ -143,6 +143,28 @@ describe('registerWisworkModelIpc', () => {
       }),
     ).rejects.toMatchObject({ code: 'payload_too_large' })
   })
+
+  it('accepts bounded tool image content and rejects oversized tool images', async () => {
+    const { invoke } = harness()
+    const messages: any[] = [
+      {
+        role: 'tool',
+        results: [
+          {
+            id: 't1',
+            name: 'shot',
+            output: 'ok',
+            content: [{ type: 'image', image: { mime: 'image/png', base64: 'AAAA' } }],
+          },
+        ],
+      },
+    ]
+    await expect(invoke('stream', 1, { ...validRequest(), messages })).resolves.toBeUndefined()
+    messages[0].results[0].content[0].image.base64 = 'x'.repeat(AI_IPC_LIMITS.maxImageChars + 1)
+    await expect(invoke('stream', 1, { ...validRequest(), messages })).rejects.toMatchObject({
+      code: 'payload_too_large',
+    })
+  })
   it('rejects duplicate request ids and cross-sender cancellation', async () => {
     let release!: () => void
     vi.stubGlobal(

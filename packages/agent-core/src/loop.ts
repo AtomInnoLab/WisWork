@@ -4,6 +4,7 @@ import type {
   AgentMessage,
   AgentStreamHandle,
   AgentToolCall,
+  AgentToolContent,
   AgentToolResult,
   AgentTransport,
   ToolExecution,
@@ -80,6 +81,29 @@ const STALE_TOOL_OUTPUT_MAX = 1_000
 
 /** Cap on consecutive tool-input parse failures (a successful parse resets it); abort beyond it (keeps the model from burning turns on bad JSON) */
 const MAX_INPUT_PARSE_RETRIES = 3
+const MAX_TOOL_CONTENT_IMAGES = 4
+const MAX_TOOL_IMAGE_BYTES = 4 * 1024 * 1024
+const TOOL_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+
+function boundedToolContent(content?: AgentToolContent[]): AgentToolContent[] | undefined {
+  if (!content?.length) return undefined
+  if (content.length > MAX_TOOL_CONTENT_IMAGES) throw new Error('invalid_tool_output')
+  return content.map((block) => {
+    const { base64, mime } = block.image
+    const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
+    const bytes = (base64.length / 4) * 3 - padding
+    if (
+      block.type !== 'image' ||
+      !TOOL_IMAGE_MIMES.has(mime) ||
+      base64.length % 4 !== 0 ||
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(base64) ||
+      bytes <= 0 ||
+      bytes > MAX_TOOL_IMAGE_BYTES
+    )
+      throw new Error('invalid_tool_output')
+    return { type: 'image', image: { base64, mime } }
+  })
+}
 
 const TURN_LIMIT_NOTE =
   '[System] The tool-call turn limit for this request has been reached; no more tools may be called this turn. ' +
@@ -580,6 +604,7 @@ export class AgentLoop<TSnapshot = unknown> {
         name: call.name,
         output: execution.output,
         isError: execution.isError,
+        content: boundedToolContent(execution.modelContent),
       })
       events?.onToolExecuted?.({
         call,

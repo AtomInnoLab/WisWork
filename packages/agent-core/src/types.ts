@@ -22,6 +22,8 @@ export interface AgentToolResult {
   name: string
   output: string
   isError?: boolean | undefined
+  /** bounded multimodal blocks returned to the model with this tool result */
+  content?: AgentToolContent[] | undefined
 }
 
 /** inline image attached to a user turn, fed to vision-capable providers as multimodal input */
@@ -31,6 +33,8 @@ export interface AgentImage {
   /** e.g. "image/png" */
   mime: string
 }
+
+export type AgentToolContent = { type: 'image'; image: AgentImage }
 
 export type AgentMessage =
   | { role: 'user'; text: string; images?: AgentImage[] | undefined }
@@ -58,6 +62,8 @@ export interface ToolExecution {
   mutated?: boolean
   /** short human-readable label for activity UI */
   summary: string
+  /** bounded content sent to the model; unlike display, this enters model history */
+  modelContent?: AgentToolContent[]
   /**
    * Side-channel display: for UI only, never enters the LLM context.
    * Ignored when tool results are assembled into an AgentMessage.
