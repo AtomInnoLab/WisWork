@@ -25,6 +25,13 @@ The six-digit code is a human verification value, not the authorization secret. 
 ## Protocol and limits
 
 - JSON control frames use `version: 1`, exact message types, exact keys, and stable error codes.
+- Client frames are exactly:
+  - Office: `office.create {version,type,host}`; `office.request {version,type,session_id,capability,request_id,body}`; `office.cancel {version,type,session_id,capability,request_id}`.
+  - PC: `pc.claim {version,type,verification_code}`; `pc.approve|pc.reject {version,type,pairing_id}`; `pc.chunk {version,type,session_id,capability,request_id,sequence,data}`; `pc.done {version,type,session_id,capability,request_id,status,content_type}`; `pc.error {version,type,session_id,capability,request_id,code}`.
+- Server frames are exactly:
+  - Office: `office.created {version,type,pairing_id,polling_secret,verification_code,expires_in}`; `office.approved {version,type,session_id,capability,expires_in}`; `office.rejected|office.expired|office.pc_offline`; `relay.chunk|relay.done|relay.error` with the corresponding request/session fields.
+  - PC: `pc.claimed {version,type,pairing_id,host,origin,verification_code,expires_in}`; `pc.approved {version,type,session_id,capability,expires_in}`; `relay.request {version,type,session_id,request_id,body}`; `relay.cancel {version,type,session_id,request_id}`.
+- `polling_secret` authorizes only the originating Office socket and is never sent to PC. PC and Office capabilities are independent and bound to their respective live sockets; a socket reconnect requires a new pairing in version 1.
 - Binary frames are not accepted in the first version.
 - Control frame: 16 KiB maximum.
 - Agent request: 256 KiB maximum; streamed response: 16 MiB maximum; chunk: 64 KiB maximum.
