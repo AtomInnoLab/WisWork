@@ -21,6 +21,16 @@ export interface ParsedSkillArchive {
   readonly files: readonly SkillPackageFile[]
 }
 
+export interface DecodedSkillImage {
+  readonly width: number
+  readonly height: number
+  close(): void
+}
+export type SkillImageDecoder = (
+  bytes: Uint8Array,
+  mime: 'image/png' | 'image/jpeg' | 'image/webp',
+) => Promise<DecodedSkillImage>
+
 interface ZipStreamEntry extends JSZip.JSZipObject {
   internalStream(type: 'uint8array'): JSZip.JSZipStreamHelper<Uint8Array>
 }
@@ -64,7 +74,11 @@ function validateMode(mode: number | string | null | undefined, directory: boole
     invalid()
 }
 
-async function validateImage(extension: string, bytes: Uint8Array): Promise<void> {
+export async function validateSkillPackageImage(
+  extension: string,
+  bytes: Uint8Array,
+  decode: SkillImageDecoder = decodeBrowserImage,
+): Promise<{ width: number; height: number }> {
   const starts = (...values: number[]) => values.every((value, index) => bytes[index] === value)
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   let width = 0
@@ -84,6 +98,7 @@ async function validateImage(extension: string, bytes: Uint8Array): Promise<void
       const size = view.getUint32(offset)
       const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8))
       if (offset + 12 + size > bytes.length) invalid()
+      if (!/^[A-Za-z]{4}$/.test(type) || type[2] !== type[2].toUpperCase()) invalid()
       if (/^[A-Z]/.test(type) && !['IHDR', 'PLTE', 'IDAT', 'IEND'].includes(type)) invalid()
       if (
         pngCrc(bytes.subarray(offset + 4, offset + 8 + size)) !== view.getUint32(offset + 8 + size)
@@ -121,7 +136,16 @@ async function validateImage(extension: string, bytes: Uint8Array): Promise<void
         first = false
       } else if (type === 'IHDR') invalid()
       if (type === 'PLTE') {
-        if (hasImageData || !size || size % 3 || size > 768) invalid()
+        if (
+          palette ||
+          hasImageData ||
+          !size ||
+          size % 3 ||
+          size > 768 ||
+          [0, 4].includes(colorType) ||
+          (colorType === 3 && size / 3 > 2 ** bitDepth)
+        )
+          invalid()
         palette = true
       }
       if (type === 'IDAT') {
@@ -269,6 +293,38 @@ async function validateImage(extension: string, bytes: Uint8Array): Promise<void
       invalid()
   }
   if (!width || !height || width * height > SKILL_PACKAGE_LIMITS.maxImagePixels) invalid()
+  const mime =
+    extension === 'png' ? 'image/png' : extension === 'webp' ? 'image/webp' : 'image/jpeg'
+  let decoded: DecodedSkillImage | undefined
+  try {
+    decoded = await decode(bytes, mime)
+    if (
+      typeof decoded.close !== 'function' ||
+      decoded.width !== width ||
+      decoded.height !== height ||
+      decoded.width * decoded.height > SKILL_PACKAGE_LIMITS.maxImagePixels
+    )
+      invalid()
+  } catch {
+    invalid()
+  } finally {
+    try {
+      decoded?.close()
+    } catch {
+      invalid()
+    }
+  }
+  return { width, height }
+}
+
+async function decodeBrowserImage(
+  bytes: Uint8Array,
+  mime: 'image/png' | 'image/jpeg' | 'image/webp',
+): Promise<DecodedSkillImage> {
+  if (typeof createImageBitmap !== 'function') invalid()
+  const copy = new Uint8Array(bytes.length)
+  copy.set(bytes)
+  return createImageBitmap(new Blob([copy.buffer], { type: mime }))
 }
 
 function pngCrc(bytes: Uint8Array): number {
@@ -372,6 +428,7 @@ async function inflateBounded(
 export async function parseSkillArchive(
   source: Uint8Array,
   signal?: AbortSignal,
+  imageDecoder?: SkillImageDecoder,
 ): Promise<ParsedSkillArchive> {
   checkCancelled(signal)
   if (!(source instanceof Uint8Array)) invalid()
@@ -434,7 +491,7 @@ export async function parseSkillArchive(
         invalid()
       }
     } else if (IMAGE_EXTENSIONS.has(extension)) {
-      await validateImage(extension, bytes)
+      await validateSkillPackageImage(extension, bytes, imageDecoder)
     }
     files.push(Object.freeze({ path: entry.name, bytes: bytes.slice() }))
   }

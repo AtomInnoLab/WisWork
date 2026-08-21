@@ -1,7 +1,10 @@
 import JSZip from 'jszip'
 import { deflateSync } from 'node:zlib'
-import { describe, expect, it } from 'vitest'
-import { parseSkillArchive, SKILL_PACKAGE_LIMITS } from '../src/skills/shared/skill-package.js'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  parseSkillArchive as parseSkillArchiveRaw,
+  SKILL_PACKAGE_LIMITS,
+} from '../src/skills/shared/skill-package.js'
 import { InMemoryVfs } from '../src/skills/shared/vfs.js'
 import { SkillRegistry } from '../src/skills/shared/skill-registry.js'
 import {
@@ -10,6 +13,9 @@ import {
 } from '../src/skills/shared/skill-package-runtime.js'
 
 const manifest = '---\nname: writer\ndescription: Helps edit prose\n---\nBe concise.'
+const decoded = vi.fn(async () => ({ width: 1, height: 1, close: vi.fn() }))
+const parseSkillArchive = (source: Uint8Array, signal?: AbortSignal) =>
+  parseSkillArchiveRaw(source, signal, decoded)
 const png = (() => {
   const table = Uint32Array.from({ length: 256 }, (_, value) => {
     let crc = value
@@ -50,18 +56,19 @@ const png = (() => {
   }
   return value
 })()
-const jpeg = Uint8Array.from([
-  0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0, 0xff, 0xda, 0, 8, 1, 1, 0, 0, 63, 0,
-  0, 0xff, 0xd9,
-])
+const jpeg = Uint8Array.from(
+  Buffer.from(
+    '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD5/ooooA//2Q==',
+    'base64',
+  ),
+)
 const metadataOnlyWebp = Uint8Array.from([
   82, 73, 70, 70, 22, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 88, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
   0, 0,
 ])
-const webp = Uint8Array.from([
-  82, 73, 70, 70, 36, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 88, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-  0, 0, 86, 80, 56, 76, 6, 0, 0, 0, 47, 0, 0, 0, 0, 0,
-])
+const webp = Uint8Array.from(
+  Buffer.from('UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAUAmJaQAA3AA/v02aAA=', 'base64'),
+)
 
 async function archive(
   entries: Array<{ path: string; value: string | Uint8Array; options?: JSZip.JSZipFileOptions }>,
@@ -311,6 +318,34 @@ describe('bounded skill archive parser', () => {
         ),
       ).rejects.toThrow('invalid_skill_package')
     }
+  })
+
+  it('fails closed when the actual image decoder is missing or rejects pseudo payloads', async () => {
+    const source = await archive([
+      { path: 'SKILL.md', value: manifest },
+      { path: 'pixel.jpg', value: jpeg },
+    ])
+    await expect(parseSkillArchiveRaw(source)).rejects.toThrow('invalid_skill_package')
+    await expect(
+      parseSkillArchiveRaw(source, undefined, async () => {
+        throw new Error('decode_failed')
+      }),
+    ).rejects.toThrow('invalid_skill_package')
+  })
+
+  it('requires decoded dimensions to match preflight and always closes the bitmap', async () => {
+    const close = vi.fn()
+    await expect(
+      parseSkillArchiveRaw(
+        await archive([
+          { path: 'SKILL.md', value: manifest },
+          { path: 'pixel.webp', value: webp },
+        ]),
+        undefined,
+        async () => ({ width: 2, height: 1, close }),
+      ),
+    ).rejects.toThrow('invalid_skill_package')
+    expect(close).toHaveBeenCalledOnce()
   })
 
   it('honors cancellation without returning partial output', async () => {
