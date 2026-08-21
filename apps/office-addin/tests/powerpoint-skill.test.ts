@@ -298,6 +298,69 @@ describe('PowerPoint compatibility skill', () => {
     )
   })
 
+  it('accepts strict declarative geometry, text-box creation, and shape deletion families', async () => {
+    const fake = adapter({
+      exportSlidePackage: vi.fn().mockResolvedValue({
+        slideId: 's1',
+        base64: 'ppt',
+        fingerprint: 'same',
+      }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    const code = JSON.stringify({
+      version: 1,
+      operations: [
+        {
+          op: 'set_shape_geometry',
+          slide_index: 0,
+          shape_id: '2',
+          left: 1,
+          top: 2,
+          width: 3,
+          height: 4,
+        },
+        {
+          op: 'add_text_box',
+          slide_index: 0,
+          name: 'Agent box',
+          text: 'Hi',
+          left: 5,
+          top: 6,
+          width: 70,
+          height: 20,
+        },
+        { op: 'delete_shape', slide_index: 0, shape_id: '9' },
+      ],
+    })
+    await expect(skill.executeTool(call('execute_office_js', { code }))).resolves.toMatchObject({
+      mutated: false,
+      output: expect.stringContaining('set_shape_geometry'),
+    })
+    expect(proposals.pending()?.impact.count).toBe(3)
+    proposals.reject()
+    await expect(
+      skill.executeTool(
+        call('execute_office_js', {
+          code: JSON.stringify({
+            version: 1,
+            operations: [
+              {
+                op: 'set_shape_geometry',
+                slide_index: 0,
+                shape_id: '2',
+                left: 1,
+                top: 2,
+                width: -1,
+                height: 4,
+              },
+            ],
+          }),
+        }),
+      ),
+    ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+  })
+
   it('maps adapter internals to stable errors and validates screenshots', async () => {
     const skill = createPowerPointSkill({
       adapter: adapter({

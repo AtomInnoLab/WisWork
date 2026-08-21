@@ -247,7 +247,18 @@ function parseXmlProgram(code: string): XmlReplacement[] {
 }
 
 function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperation {
-  const operation = exactRecord(value, ['op', 'slide_index', 'shape_id', 'text'])
+  const root = exactRecord(value, [
+    'op',
+    'slide_index',
+    'shape_id',
+    'name',
+    'text',
+    'left',
+    'top',
+    'width',
+    'height',
+  ])
+  const operation = root
   if (
     !Number.isInteger(operation.slide_index) ||
     (operation.slide_index as number) < 0 ||
@@ -255,12 +266,82 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
   )
     throw new Error('invalid_tool_input')
   if (operation.op === 'duplicate_slide') {
-    if (operation.shape_id !== undefined || operation.text !== undefined)
+    if (Object.keys(operation).some((key) => !['op', 'slide_index'].includes(key)))
       throw new Error('invalid_tool_input')
     return { op: 'duplicate_slide', slide_index: operation.slide_index as number }
   }
+  const finiteGeometry = () => {
+    for (const key of ['left', 'top', 'width', 'height'] as const)
+      if (typeof operation[key] !== 'number' || !Number.isFinite(operation[key]))
+        throw new Error('invalid_tool_input')
+    if ((operation.width as number) <= 0 || (operation.height as number) <= 0)
+      throw new Error('invalid_tool_input')
+  }
+  if (operation.op === 'set_shape_geometry') {
+    if (
+      Object.keys(operation).some(
+        (key) => !['op', 'slide_index', 'shape_id', 'left', 'top', 'width', 'height'].includes(key),
+      ) ||
+      typeof operation.shape_id !== 'string' ||
+      !operation.shape_id ||
+      operation.shape_id.length > 256
+    )
+      throw new Error('invalid_tool_input')
+    finiteGeometry()
+    return {
+      op: 'set_shape_geometry',
+      slide_index: operation.slide_index as number,
+      shape_id: operation.shape_id,
+      left: operation.left as number,
+      top: operation.top as number,
+      width: operation.width as number,
+      height: operation.height as number,
+    }
+  }
+  if (operation.op === 'add_text_box') {
+    if (
+      Object.keys(operation).some(
+        (key) =>
+          !['op', 'slide_index', 'name', 'text', 'left', 'top', 'width', 'height'].includes(key),
+      ) ||
+      typeof operation.name !== 'string' ||
+      !operation.name ||
+      operation.name.length > 256 ||
+      typeof operation.text !== 'string' ||
+      operation.text.length > 12_000
+    )
+      throw new Error('invalid_tool_input')
+    finiteGeometry()
+    return {
+      op: 'add_text_box',
+      slide_index: operation.slide_index as number,
+      name: operation.name,
+      text: operation.text,
+      left: operation.left as number,
+      top: operation.top as number,
+      width: operation.width as number,
+      height: operation.height as number,
+    }
+  }
+  if (operation.op === 'delete_shape') {
+    if (
+      Object.keys(operation).some((key) => !['op', 'slide_index', 'shape_id'].includes(key)) ||
+      typeof operation.shape_id !== 'string' ||
+      !operation.shape_id ||
+      operation.shape_id.length > 256
+    )
+      throw new Error('invalid_tool_input')
+    return {
+      op: 'delete_shape',
+      slide_index: operation.slide_index as number,
+      shape_id: operation.shape_id,
+    }
+  }
   if (
     operation.op !== 'set_shape_text' ||
+    Object.keys(operation).some(
+      (key) => !['op', 'slide_index', 'shape_id', 'text'].includes(key),
+    ) ||
     typeof operation.shape_id !== 'string' ||
     !operation.shape_id ||
     operation.shape_id.length > 256 ||
@@ -288,7 +369,7 @@ export function createPowerPointSkill(options: {
     explanation: string | undefined,
     signal?: AbortSignal,
   ): Promise<ToolExecution> {
-    await options.adapter.verifySlides(signal)
+    const deck = await options.adapter.verifySlides(signal)
     const before = await options.adapter.exportSlidePackage(slideIndex, signal)
     const edited = await editPowerPointPackage(before.base64, kind, replacements, signal)
     const proposal = options.proposals.propose({
@@ -304,8 +385,11 @@ export function createPowerPointSkill(options: {
       },
       impact: {
         host: 'powerpoint',
-        targets: edited.changedPaths,
-        count: edited.changedPaths.length,
+        targets:
+          kind === 'master'
+            ? deck.slides.map((slide) => `slide:${slide.slideId}`)
+            : edited.changedPaths,
+        count: kind === 'master' ? deck.slides.length : edited.changedPaths.length,
       },
       fingerprint: before.fingerprint,
       before: { slideId: before.slideId, hashes: edited.beforeHashes },
@@ -559,7 +643,7 @@ export function createPowerPointSkill(options: {
             execute: (confirmSignal) =>
               options.adapter.executeDeclarative(program.operations, confirmSignal),
             verify: async (confirmSignal) => {
-              for (const operation of program.operations)
+              for (const operation of program.operations) {
                 if (operation.op === 'set_shape_text') {
                   const current = await options.adapter.readSlideText(
                     operation.slide_index,
@@ -567,7 +651,35 @@ export function createPowerPointSkill(options: {
                     confirmSignal,
                   )
                   if (current.text !== operation.text) throw new Error('office_verify_failed')
+                } else if (operation.op !== 'duplicate_slide') {
+                  const current = await options.adapter.listSlideShapes(
+                    operation.slide_index,
+                    confirmSignal,
+                  )
+                  const shape =
+                    operation.op === 'add_text_box'
+                      ? current.shapes.find((item) => item.name === operation.name)
+                      : current.shapes.find((item) => item.id === operation.shape_id)
+                  if (operation.op === 'delete_shape') {
+                    if (shape) throw new Error('office_verify_failed')
+                  } else if (
+                    !shape ||
+                    shape.left !== operation.left ||
+                    shape.top !== operation.top ||
+                    shape.width !== operation.width ||
+                    shape.height !== operation.height
+                  ) {
+                    throw new Error('office_verify_failed')
+                  } else if (operation.op === 'add_text_box') {
+                    const text = await options.adapter.readSlideText(
+                      operation.slide_index,
+                      shape.id,
+                      confirmSignal,
+                    )
+                    if (text.text !== operation.text) throw new Error('office_verify_failed')
+                  }
                 }
+              }
               if (program.operations[0]?.op === 'duplicate_slide') {
                 const operation = program.operations[0]
                 const inserted = await options.adapter.listSlideShapes(

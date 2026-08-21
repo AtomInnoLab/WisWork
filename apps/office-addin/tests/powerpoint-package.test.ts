@@ -31,6 +31,14 @@ describe('bounded PowerPoint package editing', () => {
     expect(
       await verifyPowerPointPackage(await tampered.generateAsync({ type: 'base64' }), edit),
     ).toBe(false)
+    const relationshipTamper = await JSZip.loadAsync(edit.base64, { base64: true })
+    relationshipTamper.file('ppt/slides/_rels/slide1.xml.rels', '<Relationships/>')
+    expect(
+      await verifyPowerPointPackage(
+        await relationshipTamper.generateAsync({ type: 'base64' }),
+        edit,
+      ),
+    ).toBe(false)
     const before = await JSZip.loadAsync(input, { base64: true })
     const after = await JSZip.loadAsync(edit.base64, { base64: true })
     expect(await after.file('ppt/slides/_rels/slide1.xml.rels')!.async('string')).toBe(

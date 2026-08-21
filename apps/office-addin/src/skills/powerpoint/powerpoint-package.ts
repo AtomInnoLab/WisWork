@@ -16,6 +16,7 @@ export interface PackageEditResult {
   changedPaths: string[]
   beforeHashes: Record<string, string>
   afterHashes: Record<string, string>
+  preservedHashes: Record<string, string>
 }
 
 function hash(value: string | Uint8Array): string {
@@ -56,19 +57,9 @@ function compressedMetadata(file: unknown): { compressed?: number; uncompressed?
   }
 }
 
-export async function editPowerPointPackage(
-  base64: string,
-  kind: PackageEditKind,
-  replacements: XmlReplacement[],
-  signal?: AbortSignal,
-): Promise<PackageEditResult> {
+async function loadBoundedZip(base64: string, signal?: AbortSignal): Promise<JSZip> {
   if (signal?.aborted) throw new Error('cancelled')
-  if (
-    !base64 ||
-    base64.length > Math.ceil(MAX_PPTX_PACKAGE_BYTES / 3) * 4 ||
-    replacements.length < 1 ||
-    replacements.length > 32
-  )
+  if (!base64 || base64.length > Math.ceil(MAX_PPTX_PACKAGE_BYTES / 3) * 4)
     throw new Error('invalid_tool_input')
   let zip: JSZip
   try {
@@ -98,9 +89,21 @@ export async function editPowerPointPackage(
     total += metadata.uncompressed
     if (total > MAX_PPTX_PACKAGE_BYTES) throw new Error('invalid_tool_input')
   }
+  return zip
+}
+
+export async function editPowerPointPackage(
+  base64: string,
+  kind: PackageEditKind,
+  replacements: XmlReplacement[],
+  signal?: AbortSignal,
+): Promise<PackageEditResult> {
+  if (replacements.length < 1 || replacements.length > 32) throw new Error('invalid_tool_input')
+  const zip = await loadBoundedZip(base64, signal)
   const changedPaths = new Set<string>()
   const beforeHashes: Record<string, string> = {}
   const afterHashes: Record<string, string> = {}
+  const preservedHashes: Record<string, string> = {}
   for (const replacement of replacements) {
     if (signal?.aborted) throw new Error('cancelled')
     if (
@@ -121,6 +124,11 @@ export async function editPowerPointPackage(
     zip.file(replacement.path, replacement.xml)
     changedPaths.add(replacement.path)
   }
+  for (const [path, file] of Object.entries(zip.files)) {
+    if (signal?.aborted) throw new Error('cancelled')
+    if (!file.dir && !changedPaths.has(path))
+      preservedHashes[path] = hash(await file.async('uint8array'))
+  }
   const output = await zip.generateAsync({
     type: 'base64',
     compression: 'DEFLATE',
@@ -129,26 +137,36 @@ export async function editPowerPointPackage(
   if (signal?.aborted) throw new Error('cancelled')
   if (!output || output.length > Math.ceil(MAX_PPTX_PACKAGE_BYTES / 3) * 4)
     throw new Error('invalid_tool_input')
-  return { base64: output, changedPaths: [...changedPaths], beforeHashes, afterHashes }
+  return {
+    base64: output,
+    changedPaths: [...changedPaths],
+    beforeHashes,
+    afterHashes,
+    preservedHashes,
+  }
 }
 
 export async function verifyPowerPointPackage(
   base64: string,
-  expected: Pick<PackageEditResult, 'changedPaths' | 'afterHashes'>,
+  expected: Pick<PackageEditResult, 'changedPaths' | 'afterHashes' | 'preservedHashes'>,
   signal?: AbortSignal,
 ): Promise<boolean> {
   if (signal?.aborted) throw new Error('cancelled')
-  let zip: JSZip
   try {
-    zip = await JSZip.loadAsync(base64, { base64: true, checkCRC32: true })
-  } catch {
+    const zip = await loadBoundedZip(base64, signal)
+    for (const path of expected.changedPaths) {
+      if (signal?.aborted) throw new Error('cancelled')
+      const file = zip.file(path)
+      if (!file || hash(await file.async('string')) !== expected.afterHashes[path]) return false
+    }
+    for (const [path, expectedHash] of Object.entries(expected.preservedHashes)) {
+      if (signal?.aborted) throw new Error('cancelled')
+      const file = zip.file(path)
+      if (!file || hash(await file.async('uint8array')) !== expectedHash) return false
+    }
+    return true
+  } catch (error) {
+    if (error instanceof Error && error.message === 'cancelled') throw error
     return false
   }
-  for (const path of expected.changedPaths) {
-    if (signal?.aborted) throw new Error('cancelled')
-    const file = zip.file(path)
-    if (!file) return false
-    if (hash(await file.async('string')) !== expected.afterHashes[path]) return false
-  }
-  return true
 }

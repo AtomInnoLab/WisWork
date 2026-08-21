@@ -89,6 +89,26 @@ export interface PowerPointAdapter {
 export type PowerPointDeclarativeOperation =
   | { op: 'set_shape_text'; slide_index: number; shape_id: string; text: string }
   | { op: 'duplicate_slide'; slide_index: number }
+  | {
+      op: 'set_shape_geometry'
+      slide_index: number
+      shape_id: string
+      left: number
+      top: number
+      width: number
+      height: number
+    }
+  | {
+      op: 'add_text_box'
+      slide_index: number
+      name: string
+      text: string
+      left: number
+      top: number
+      width: number
+      height: number
+    }
+  | { op: 'delete_shape'; slide_index: number; shape_id: string }
 
 type RuntimeRecord = Record<string, unknown>
 
@@ -183,6 +203,19 @@ async function getSlide(
   ;(slide.load as (properties: string) => void)('id')
   await sync(context, signal)
   return slide
+}
+
+async function getSlideCount(
+  context: RuntimeRecord,
+  slides: RuntimeRecord,
+  signal?: AbortSignal,
+): Promise<number> {
+  if (typeof slides.getCount !== 'function') throw new Error('office_api_unsupported')
+  const count = (slides.getCount as () => RuntimeRecord)()
+  await sync(context, signal)
+  if (!Number.isSafeInteger(count.value) || (count.value as number) < 0)
+    throw new Error('office_read_failed')
+  return count.value as number
 }
 
 function hash(value: string): string {
@@ -399,6 +432,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     return this.run('1.8', async (context) => {
       const presentation = context.presentation as RuntimeRecord
       const slides = presentation.slides as RuntimeRecord
+      const beforeCount = await getSlideCount(context, slides, signal)
       const slide = await getSlide(context, slides, slideIndex, signal)
       const previous =
         slideIndex > 0 ? await getSlide(context, slides, slideIndex - 1, signal) : undefined
@@ -412,6 +446,50 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         : undefined
       if (applyMaster && (!masters || !(slide.layout as RuntimeRecord | undefined)))
         throw new Error('office_api_unsupported')
+      const affectedLayouts = new Map<string, string>()
+      if (applyMaster && masters) {
+        const sourceLayout = slide.layout as RuntimeRecord
+        ;(masters.load as (properties: string) => void)('items')
+        ;(slides.load as (properties: string) => void)('items/id')
+        ;(sourceLayout.load as (properties: string) => void)('id')
+        await sync(context, signal)
+        const masterItems = masters.items as RuntimeRecord[]
+        const slideItems = slides.items as RuntimeRecord[]
+        for (const master of masterItems) {
+          const layouts = master.layouts as RuntimeRecord
+          if (typeof layouts.load !== 'function') throw new Error('office_api_unsupported')
+          ;(layouts.load as (properties: string) => void)('items/id,items/name')
+        }
+        for (const item of slideItems) {
+          ;((item.layout as RuntimeRecord).load as (properties: string) => void)('id')
+        }
+        await sync(context, signal)
+        const sourceMaster = masterItems.find((master) =>
+          (((master.layouts as RuntimeRecord).items as RuntimeRecord[]) ?? []).some(
+            (layout) => layout.id === sourceLayout.id,
+          ),
+        )
+        if (!sourceMaster) throw new Error('office_api_unsupported')
+        const sourceLayouts =
+          ((sourceMaster.layouts as RuntimeRecord).items as RuntimeRecord[]) ?? []
+        const sourceNames = new Map(
+          sourceLayouts.map((layout) => [string(layout.id), string(layout.name)]),
+        )
+        for (const item of slideItems) {
+          const layoutId = string((item.layout as RuntimeRecord).id)
+          const layoutName = sourceNames.get(layoutId)
+          if (layoutName) affectedLayouts.set(string(item.id), layoutName)
+        }
+      }
+      if (typeof slide.exportAsBase64 !== 'function') throw new Error('office_api_unsupported')
+      const original = (slide.exportAsBase64 as () => RuntimeRecord)()
+      await sync(context, signal)
+      if (
+        typeof original.value !== 'string' ||
+        !original.value ||
+        original.value.length > MAX_POWERPOINT_SNAPSHOT_BASE64
+      )
+        throw new Error('office_read_failed')
       cancelled(signal)
       ;(
         presentation.insertSlidesFromBase64 as (
@@ -420,7 +498,31 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         ) => void
       )(base64, previous ? { targetSlideId: string(previous.id) } : undefined)
       ;(slide.delete as () => void)()
-      await sync(context, signal)
+      try {
+        await sync(context, signal)
+      } catch {
+        // Office.js may commit a prefix of a failed batch. Restore the original slide count
+        // before surfacing failure; recovery intentionally ignores the cancelled signal.
+        const currentCount = await getSlideCount(context, slides)
+        if (currentCount > beforeCount) {
+          const extra = await getSlide(context, slides, slideIndex)
+          if (extra.id !== slide.id && typeof extra.delete === 'function') {
+            ;(extra.delete as () => void)()
+            await sync(context)
+          }
+        } else if (currentCount < beforeCount) {
+          ;(
+            presentation.insertSlidesFromBase64 as (
+              value: string,
+              options?: { targetSlideId: string },
+            ) => void
+          )(original.value, previous ? { targetSlideId: string(previous.id) } : undefined)
+          await sync(context)
+        }
+        throw new Error('office_write_failed')
+      }
+      if ((await getSlideCount(context, slides, signal)) !== beforeCount)
+        throw new Error('office_verify_failed')
       const inserted = await getSlide(context, slides, slideIndex, signal)
       if (applyMaster) {
         const insertedLayout = inserted.layout as RuntimeRecord | undefined
@@ -455,12 +557,28 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         const primaryLayouts = ((primary.layouts as RuntimeRecord).items as RuntimeRecord[]) ?? []
         cancelled(signal)
         for (const item of slideItems) {
-          const layout = item.layout as RuntimeRecord
-          const matching = primaryLayouts.find((candidate) => candidate.name === layout.name)
-          if (matching && typeof item.applyLayout === 'function')
-            (item.applyLayout as (target: RuntimeRecord) => void)(matching)
+          const intendedName = affectedLayouts.get(string(item.id))
+          const intended = intendedName
+            ? primaryLayouts.find((candidate) => candidate.name === intendedName)
+            : undefined
+          if (intended && typeof item.applyLayout === 'function')
+            (item.applyLayout as (target: RuntimeRecord) => void)(intended)
         }
         await sync(context, signal)
+        for (const item of slideItems) {
+          if (affectedLayouts.has(string(item.id))) {
+            ;((item.layout as RuntimeRecord).load as (properties: string) => void)('id,name')
+          }
+        }
+        await sync(context, signal)
+        const primaryLayoutIds = new Set(primaryLayouts.map((layout) => string(layout.id)))
+        for (const item of slideItems) {
+          const expectedName = affectedLayouts.get(string(item.id))
+          if (!expectedName) continue
+          const layout = item.layout as RuntimeRecord
+          if (!primaryLayoutIds.has(string(layout.id)) || string(layout.name) !== expectedName)
+            throw new Error('office_verify_failed')
+        }
       }
       return { slideId: string(inserted.id) }
     })
@@ -477,15 +595,45 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       const queued: Array<() => void> = []
       for (const operation of operations) {
         const slide = await getSlide(context, slides, operation.slide_index, signal)
-        if (operation.op === 'set_shape_text') {
+        if (
+          operation.op === 'set_shape_text' ||
+          operation.op === 'set_shape_geometry' ||
+          operation.op === 'delete_shape'
+        ) {
           const shapes = slide.shapes as RuntimeRecord
           if (typeof shapes.getItem !== 'function') throw new Error('office_api_unsupported')
           const shape = (shapes.getItem as (id: string) => RuntimeRecord)(operation.shape_id)
-          const textRange = (shape.textFrame as RuntimeRecord | undefined)?.textRange as
-            RuntimeRecord | undefined
-          if (!textRange) throw new Error('office_api_unsupported')
+          if (operation.op === 'set_shape_text') {
+            const textRange = (shape.textFrame as RuntimeRecord | undefined)?.textRange as
+              RuntimeRecord | undefined
+            if (!textRange) throw new Error('office_api_unsupported')
+            queued.push(() => {
+              textRange.text = operation.text
+            })
+          } else if (operation.op === 'set_shape_geometry') {
+            queued.push(() => {
+              shape.left = operation.left
+              shape.top = operation.top
+              shape.width = operation.width
+              shape.height = operation.height
+            })
+          } else {
+            if (typeof shape.delete !== 'function') throw new Error('office_api_unsupported')
+            queued.push(() => (shape.delete as () => void)())
+          }
+        } else if (operation.op === 'add_text_box') {
+          const shapes = slide.shapes as RuntimeRecord
+          if (typeof shapes.addTextBox !== 'function') throw new Error('office_api_unsupported')
           queued.push(() => {
-            textRange.text = operation.text
+            const created = (
+              shapes.addTextBox as (text: string, options: Record<string, number>) => RuntimeRecord
+            )(operation.text, {
+              left: operation.left,
+              top: operation.top,
+              width: operation.width,
+              height: operation.height,
+            })
+            created.name = operation.name
           })
         } else {
           if (
