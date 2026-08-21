@@ -233,7 +233,72 @@ describe('Excel compatibility skill', () => {
       expect.objectContaining({ cells: [[{ value: 2 }]] }),
       'second-prestate',
       expect.any(AbortSignal),
+      ['A1'],
     )
+  })
+
+  it('reduces overlapping declarative ranges to the final writer at normalized cell level', async () => {
+    const fake = adapter()
+    const proposals = createStructuredProposalController()
+    await createExcelSkill({ adapter: fake, proposals }).executeTool(
+      call('eval_officejs', {
+        code: JSON.stringify({
+          version: 1,
+          operations: [
+            {
+              op: 'set_cell_range',
+              input: {
+                sheetId: 1,
+                range: '$A$1',
+                cells: [[{ value: 1 }, { value: 2 }]],
+              },
+            },
+            {
+              op: 'clear_cell_range',
+              input: { sheetId: 1, range: 'B1:C1', clearType: 'all' },
+            },
+          ],
+        }),
+      }),
+    )
+    await proposals.confirm(proposals.pending()!.id)
+    expect(fake.verifyMutation).toHaveBeenNthCalledWith(
+      1,
+      'set_cell_range',
+      expect.any(Object),
+      'operation-fp',
+      expect.any(AbortSignal),
+      ['A1'],
+    )
+    expect(fake.verifyMutation).toHaveBeenNthCalledWith(
+      2,
+      'clear_cell_range',
+      expect.any(Object),
+      'operation-fp',
+      expect.any(AbortSignal),
+      ['B1', 'C1'],
+    )
+  })
+
+  it('rejects declarative programs exceeding the aggregate cell budget before host reads', async () => {
+    const fake = adapter()
+    const cells = Array.from({ length: 3 }, () => Array.from({ length: 334 }, () => ({ value: 1 })))
+    const result = await createExcelSkill({
+      adapter: fake,
+      proposals: createStructuredProposalController(),
+    }).executeTool(
+      call('eval_officejs', {
+        code: JSON.stringify({
+          version: 1,
+          operations: [
+            { op: 'set_cell_range', input: { sheetId: 1, range: 'A1', cells } },
+            { op: 'set_cell_range', input: { sheetId: 1, range: 'A10', cells } },
+          ],
+        }),
+      }),
+    )
+    expect(result).toMatchObject({ output: 'invalid_tool_input', isError: true })
+    expect(fake.fingerprint).not.toHaveBeenCalled()
   })
 
   it('returns a bounded model-visible PNG for screenshot_range', async () => {
@@ -701,10 +766,10 @@ describe('browser Excel adapter', () => {
         ],
       })
       .mockResolvedValueOnce({
-        ranges: [
-          { cells: [{ value: 1, formula: null, numberFormat: 'General', style: {} }] },
-          { cells: [{ value: 1, formula: null, numberFormat: 'General', style: {} }] },
-        ],
+        ranges: [{ cells: [{ value: 1, formula: null, numberFormat: 'General', style: {} }] }],
+      })
+      .mockResolvedValueOnce({
+        ranges: [{ cells: [{ value: 1, formula: null, numberFormat: 'General', style: {} }] }],
       })
     await expect(
       excel.verifyMutation(
@@ -788,6 +853,66 @@ describe('browser Excel adapter', () => {
           properties: { chartType: 'area', title: 'Updated' },
         },
         'same-fingerprint',
+      ),
+    ).resolves.toBe(true)
+  })
+
+  it('verifies copied relative formulas by formulaR1C1 semantics', async () => {
+    const excel = new BrowserExcelAdapter()
+    vi.spyOn(excel, 'getCellRanges').mockResolvedValue({
+      ranges: [
+        {
+          cells: [
+            {
+              address: 'A1',
+              value: 2,
+              formula: '=B1+1',
+              formulaR1C1: '=RC[1]+1',
+              numberFormat: 'General',
+              style: {},
+            },
+          ],
+        },
+      ],
+    })
+    ;(excel.getCellRanges as any)
+      .mockResolvedValueOnce({
+        ranges: [
+          {
+            cells: [
+              {
+                address: 'A1',
+                value: 2,
+                formula: '=B1+1',
+                formulaR1C1: '=RC[1]+1',
+                numberFormat: 'General',
+                style: {},
+              },
+            ],
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ranges: [
+          {
+            cells: [
+              {
+                address: 'D1',
+                value: 2,
+                formula: '=E1+1',
+                formulaR1C1: '=RC[1]+1',
+                numberFormat: 'General',
+                style: {},
+              },
+            ],
+          },
+        ],
+      })
+    await expect(
+      excel.verifyMutation(
+        'copy_to',
+        { sheetId: 1, sourceRange: 'A1', destinationRange: 'D1' },
+        'prestate',
       ),
     ).resolves.toBe(true)
   })

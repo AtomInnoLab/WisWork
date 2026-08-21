@@ -562,6 +562,63 @@ function writeTargets(name: string, input: Json): string[] {
     return [`sheet:${input.sheetId}!object:${input.id ?? input.properties?.name ?? 'new'}`]
   return targets(name, input)
 }
+type CellBox = { row: number; column: number; rows: number; columns: number }
+function columnIndex(letters: string): number {
+  return letters
+    .toUpperCase()
+    .split('')
+    .reduce((value, letter) => value * 26 + letter.charCodeAt(0) - 64, 0)
+}
+function columnLetters(index: number): string {
+  let result = ''
+  for (let value = index; value > 0; value = Math.floor((value - 1) / 26))
+    result = String.fromCharCode(((value - 1) % 26) + 65) + result
+  return result
+}
+function cellBox(value: string): CellBox {
+  const match = /^\$?([A-Z]{1,3})\$?([1-9]\d*)(?::\$?([A-Z]{1,3})\$?([1-9]\d*))?$/i.exec(value)
+  if (!match) invalid()
+  const row = Number(match[2])
+  const column = columnIndex(match[1])
+  const endRow = Number(match[4] ?? match[2])
+  const endColumn = columnIndex(match[3] ?? match[1])
+  if (endRow < row || endColumn < column) invalid()
+  return { row, column, rows: endRow - row + 1, columns: endColumn - column + 1 }
+}
+function boxCells(sheetId: number, box: CellBox): string[] {
+  if (box.rows * box.columns > 2_000) invalid()
+  const cells: string[] = []
+  for (let row = 0; row < box.rows; row++)
+    for (let column = 0; column < box.columns; column++)
+      cells.push(`sheet:${sheetId}!${columnLetters(box.column + column)}${box.row + row}`)
+  return cells
+}
+function operationCells(name: string, input: Json): string[] | undefined {
+  if (name === 'set_cell_range') {
+    const start = cellBox(input.range)
+    const written = { ...start, rows: input.cells.length, columns: input.cells[0].length }
+    return [
+      ...boxCells(input.sheetId, written),
+      ...(input.copyToRange
+        ? boxCells(input.sheetId, {
+            ...cellBox(input.copyToRange),
+            rows: written.rows,
+            columns: written.columns,
+          })
+        : []),
+    ]
+  }
+  if (name === 'clear_cell_range') return boxCells(input.sheetId, cellBox(input.range))
+  if (name === 'copy_to') {
+    const source = cellBox(input.sourceRange)
+    return boxCells(input.sheetId, {
+      ...cellBox(input.destinationRange),
+      rows: source.rows,
+      columns: source.columns,
+    })
+  }
+  return undefined
+}
 function cellCount(name: string, input: Json) {
   if (name === 'set_cell_range') return input.cells.reduce((n: number, r: any[]) => n + r.length, 0)
   return 1
@@ -659,6 +716,11 @@ export function createExcelSkill(options: {
         }
         if (call.name === 'eval_officejs') {
           const program = parseDeclarativeProgram(input.code, parseExcelOperation)
+          const operationCellWrites = program.operations.map((operation) =>
+            operationCells(operation.op, operation.input),
+          )
+          const distinctCells = new Set(operationCellWrites.flatMap((cells) => cells ?? []))
+          if (distinctCells.size > 2_000) invalid()
           const affected = [
             ...new Set(program.operations.flatMap((item) => targets(item.op, item.input))),
           ]
@@ -668,7 +730,8 @@ export function createExcelSkill(options: {
           const operationPrestates: unknown[] = []
           const finalWriter = new Map<string, number>()
           program.operations.forEach((operation, index) => {
-            for (const target of writeTargets(operation.op, operation.input))
+            for (const target of operationCellWrites[index] ??
+              writeTargets(operation.op, operation.input))
               finalWriter.set(target, index)
           })
           const finalOperationIndexes = [...new Set([...finalWriter.values()])].sort(
@@ -704,12 +767,16 @@ export function createExcelSkill(options: {
             verify: async (confirmSignal) => {
               for (const index of finalOperationIndexes) {
                 const operation = program.operations[index]
+                const ownedCells = operationCellWrites[index]?.filter(
+                  (cell) => finalWriter.get(cell) === index,
+                )
                 if (
                   !(await options.adapter.verifyMutation(
                     operation.op,
                     operation.input,
                     operationPrestates[index],
                     confirmSignal,
+                    ownedCells?.map((cell) => cell.split('!')[1]),
                   ))
                 )
                   throw new Error('office_verify_failed')

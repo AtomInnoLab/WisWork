@@ -66,6 +66,7 @@ export interface ExcelAdapter {
     input: Record<string, any>,
     beforeState: unknown,
     signal?: AbortSignal,
+    verifyCells?: string[],
   ): Promise<boolean>
 }
 
@@ -134,6 +135,12 @@ function cellAddress(row: number, column: number): string {
     letters = String.fromCharCode(((n - 1) % 26) + 65) + letters
   return `${letters}${row + 1}`
 }
+function resizedAddress(value: string, rows: number, columns: number): string {
+  const box = parseA1(value)
+  const start = cellAddress(box.row, box.column)
+  const end = cellAddress(box.row + rows - 1, box.column + columns - 1)
+  return start === end ? start : `${start}:${end}`
+}
 
 export class BrowserExcelAdapter implements ExcelAdapter {
   private run<T>(callback: (context: RuntimeRecord) => Promise<T>, version = '1.3'): Promise<T> {
@@ -154,7 +161,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
           const rows = Math.min(box.rows, Math.max(1, Math.floor(budget / columns)))
           budget = Math.max(0, budget - rows * columns)
           const r = ws.getRangeByIndexes(box.row, box.column, rows, columns)
-          r.load('values,formulas,numberFormat,address,rowCount,columnCount')
+          r.load('values,formulas,formulasR1C1,numberFormat,address,rowCount,columnCount')
           return [{ range: r, box }]
         })
         await sync(context, signal)
@@ -167,6 +174,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
                 address: cellAddress(box.row + row, box.column + column),
                 value: cellValue(range.values?.[row]?.[column]),
                 formula: cellValue(range.formulas?.[row]?.[column]),
+                formulaR1C1: cellValue(range.formulasR1C1?.[row]?.[column]),
                 numberFormat: safe(range.numberFormat?.[row]?.[column], 256),
               }
               cells.push(result)
@@ -530,6 +538,20 @@ export class BrowserExcelAdapter implements ExcelAdapter {
     input: Record<string, any>,
     signal?: AbortSignal,
   ): Promise<unknown> {
+    if (tool === 'copy_to') {
+      return {
+        kind: 'cells',
+        state: await this.getCellRanges(
+          {
+            sheetId: input.sheetId,
+            ranges: [input.sourceRange],
+            includeStyles: true,
+            cellLimit: MAX_EXCEL_CELLS,
+          },
+          signal,
+        ),
+      }
+    }
     if (tool === 'modify_workbook_structure' && input.operation === 'delete') {
       const state = (await this.verifyWorkbook(signal)) as RuntimeRecord
       const item = state.sheets.find((candidate: RuntimeRecord) => candidate.id === input.sheetId)
@@ -986,17 +1008,30 @@ export class BrowserExcelAdapter implements ExcelAdapter {
     input: Record<string, any>,
     beforeState: unknown,
     signal?: AbortSignal,
+    verifyCells?: string[],
   ): Promise<boolean> {
     if (tool === 'set_cell_range') {
-      const result = (await this.getCellRanges(
-        {
-          sheetId: input.sheetId,
-          ranges: [input.range, ...(input.copyToRange ? [input.copyToRange] : [])],
-          includeStyles: true,
-          cellLimit: input.cells.length * input.cells[0].length * (input.copyToRange ? 2 : 1),
-        },
-        signal,
-      )) as RuntimeRecord
+      const writtenRange = resizedAddress(input.range, input.cells.length, input.cells[0].length)
+      const addresses = [
+        writtenRange,
+        ...(input.copyToRange
+          ? [resizedAddress(input.copyToRange, input.cells.length, input.cells[0].length)]
+          : []),
+      ]
+      const results = (await Promise.all(
+        addresses.map((address) =>
+          this.getCellRanges(
+            {
+              sheetId: input.sheetId,
+              ranges: [address],
+              includeStyles: true,
+              cellLimit: input.cells.length * input.cells[0].length,
+            },
+            signal,
+          ),
+        ),
+      )) as RuntimeRecord[]
+      const allowed = verifyCells ? new Set(verifyCells) : undefined
       const styleMatches = (expected: RuntimeRecord, actual: RuntimeRecord) => {
         const style = expected.cellStyles
         if (style) {
@@ -1043,18 +1078,20 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         }
         return true
       }
-      const valuesMatch = result.ranges.every((rangeResult: RuntimeRecord) =>
-        input.cells
-          .flat()
-          .every(
-            (expected: RuntimeRecord, index: number) =>
-              (!Object.hasOwn(expected, 'value') ||
-                rangeResult.cells[index]?.value === expected.value) &&
-              (!Object.hasOwn(expected, 'formula') ||
-                rangeResult.cells[index]?.formula === expected.formula) &&
-              styleMatches(expected, rangeResult.cells[index] ?? {}),
+      const expected = input.cells.flat()
+      const valuesMatch = results
+        .flatMap((result) => result.ranges)
+        .every((rangeResult: RuntimeRecord) =>
+          rangeResult.cells.every(
+            (actual: RuntimeRecord, index: number) =>
+              (!!allowed && !allowed.has(actual.address)) ||
+              ((!Object.hasOwn(expected[index], 'value') ||
+                actual.value === expected[index].value) &&
+                (!Object.hasOwn(expected[index], 'formula') ||
+                  actual.formula === expected[index].formula) &&
+                styleMatches(expected[index], actual)),
           ),
-      )
+        )
       if (!valuesMatch) return false
       const notes: Array<{ index: number; content: string }> = input.cells
         .flat()
@@ -1095,6 +1132,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         signal,
       )) as RuntimeRecord
       return result.ranges[0].cells.every((cell: RuntimeRecord) => {
+        if (verifyCells && !verifyCells.includes(cell.address)) return true
         const contentsClear =
           (cell.value === null || cell.value === '') &&
           (cell.formula === null || cell.formula === '')
@@ -1126,24 +1164,41 @@ export class BrowserExcelAdapter implements ExcelAdapter {
       })
     }
     if (tool === 'copy_to') {
-      const result = (await this.getCellRanges(
-        {
-          sheetId: input.sheetId,
-          ranges: [input.sourceRange, input.destinationRange],
-          includeStyles: true,
-          cellLimit: MAX_EXCEL_CELLS,
-        },
-        signal,
-      )) as RuntimeRecord
+      const sourceBox = parseA1(input.sourceRange)
+      const [sourceResult, destinationResult] = (await Promise.all(
+        [
+          input.sourceRange,
+          resizedAddress(input.destinationRange, sourceBox.rows, sourceBox.columns),
+        ].map((address) =>
+          this.getCellRanges(
+            {
+              sheetId: input.sheetId,
+              ranges: [address],
+              includeStyles: true,
+              cellLimit: MAX_EXCEL_CELLS,
+            },
+            signal,
+          ),
+        ),
+      )) as RuntimeRecord[]
       const comparable = (cell: RuntimeRecord) => ({
         value: cell.value,
-        formula: cell.formula,
+        formulaR1C1: cell.formulaR1C1,
         numberFormat: cell.numberFormat,
         style: cell.style,
       })
-      return (
-        JSON.stringify(result.ranges[0]?.cells?.map(comparable)) ===
-        JSON.stringify(result.ranges[1]?.cells?.map(comparable))
+      const captured =
+        beforeState &&
+        typeof beforeState === 'object' &&
+        (beforeState as RuntimeRecord).kind === 'cells'
+          ? ((beforeState as RuntimeRecord).state as RuntimeRecord).ranges?.[0]?.cells
+          : undefined
+      const source = captured ?? sourceResult.ranges[0]?.cells ?? []
+      const destination = destinationResult.ranges[0]?.cells ?? []
+      return destination.every(
+        (cell: RuntimeRecord, index: number) =>
+          (!!verifyCells && !verifyCells.includes(cell.address)) ||
+          JSON.stringify(comparable(source[index])) === JSON.stringify(comparable(cell)),
       )
     }
     if (tool === 'resize_range')
