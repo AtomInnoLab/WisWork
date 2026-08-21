@@ -11,6 +11,7 @@ import type {
   AppTheme,
   HomeApi,
   LatexRecentProjectEntry,
+  OfficePairingRequest,
   ProjectHomeApi,
   ProjectSummaryEntry,
   RecentEntry,
@@ -18,6 +19,7 @@ import type {
 import { fileCountKey, latexProjectCountKey, visiblePageCount } from './counts'
 import { formatAccountLoginDiagnostic, loginErrorKind } from './login-diagnostic'
 import { LoginDiagnostic } from './LoginDiagnostic'
+import { mergeOfficePairings } from './office-pairings'
 import { useI18n } from './locale'
 import type { I18n, StringKey } from './locale'
 
@@ -531,6 +533,7 @@ function AccountEntry() {
   const langCloseTimer = useRef<number | null>(null)
   const [loggingOut, setLoggingOut] = useState(false)
   const [appVersion, setAppVersion] = useState('')
+  const [officeBridgeStatus, setOfficeBridgeStatus] = useState('disabled')
 
   // query login state + app version once on mount
   useEffect(() => {
@@ -545,6 +548,9 @@ function AccountEntry() {
       })
     void window.aiOffice.getAppVersion?.().then((v) => {
       if (alive && v) setAppVersion(v)
+    })
+    void window.aiOffice.officeBridgeStatus().then((value) => {
+      if (alive) setOfficeBridgeStatus(value)
     })
     return () => {
       alive = false
@@ -822,6 +828,9 @@ function AccountEntry() {
               <span className="version-row-value">{appVersion}</span>
             </div>
           )}
+          <div className="account-menu-version" role="status">
+            Office bridge: {officeBridgeStatus}
+          </div>
           {loggedIn && (
             <button
               className="account-menu-item danger"
@@ -943,6 +952,12 @@ export function Home() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string[] | null>(null)
+  const [officePairings, setOfficePairings] = useState<OfficePairingRequest[]>([])
+  const [officePairingBusy, setOfficePairingBusy] = useState(false)
+  const [officePairingError, setOfficePairingError] = useState(false)
+  const [officePairingAccountLoggedIn, setOfficePairingAccountLoggedIn] = useState<boolean | null>(
+    null,
+  )
   // name in the greeting; omitted when logged out
   const [accountName, setAccountName] = useState('')
   const [greetAskKey] = useState(
@@ -957,6 +972,36 @@ export function Home() {
         setAccountName(name ? name[0].toUpperCase() + name.slice(1) : '')
       })
       .catch(() => setAccountName(''))
+  }, [])
+
+  useEffect(() => {
+    if (officePairings.length === 0) {
+      setOfficePairingAccountLoggedIn(null)
+      return
+    }
+    let active = true
+    void window.aiOffice
+      .accountStatus()
+      .then((account) => {
+        if (active) setOfficePairingAccountLoggedIn(account.loggedIn)
+      })
+      .catch(() => {
+        if (active) setOfficePairingAccountLoggedIn(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [officePairings.length])
+
+  useEffect(() => {
+    const add = (pairing: OfficePairingRequest) =>
+      setOfficePairings((current) => mergeOfficePairings(current, [pairing]))
+    const off = window.aiOffice.onOfficePairingRequested(add)
+    void window.aiOffice
+      .listOfficePairings()
+      .then((pending) => setOfficePairings((current) => mergeOfficePairings(current, pending)))
+      .catch(() => undefined)
+    return off
   }, [])
 
   // ── Project state ──
@@ -1985,6 +2030,71 @@ export function Home() {
               </button>
               <button className="btn btn-danger" onClick={confirmDeleteNow}>
                 {t('delete')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {officePairings[0] && (
+        <div className="modal-overlay">
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Office connection request"
+          >
+            <h3>Connect WisWork Office Agent?</h3>
+            <p>
+              {officePairings[0].hostLabel} from {new URL(officePairings[0].origin).host} is
+              requesting to use your signed-in WisWork account. Your Wispaper token stays on this
+              PC.
+            </p>
+            <p className="office-pairing-code" aria-label="Office verification code">
+              {officePairings[0].verificationCode}
+            </p>
+            <p>Only allow if Office displays this exact same code.</p>
+            {officePairingAccountLoggedIn === false && (
+              <p role="alert">Sign in to WisWork PC to enable Allow.</p>
+            )}
+            {officePairingAccountLoggedIn === null && <p role="status">Checking account…</p>}
+            {officePairingError && <p role="alert">Sign in to WisWork PC before allowing.</p>}
+            <div className="modal-buttons">
+              <button
+                className="btn btn-secondary"
+                disabled={officePairingBusy}
+                onClick={() => {
+                  setOfficePairingBusy(true)
+                  setOfficePairingError(false)
+                  const pairingId = officePairings[0].pairingId
+                  void window.aiOffice.rejectOfficePairing(pairingId).finally(() => {
+                    setOfficePairings((current) =>
+                      current.filter((entry) => entry.pairingId !== pairingId),
+                    )
+                    setOfficePairingBusy(false)
+                  })
+                }}
+              >
+                Reject
+              </button>
+              <button
+                className="btn btn-office-allow"
+                disabled={officePairingBusy || officePairingAccountLoggedIn !== true}
+                onClick={() => {
+                  setOfficePairingBusy(true)
+                  const pairingId = officePairings[0].pairingId
+                  void window.aiOffice
+                    .approveOfficePairing(pairingId)
+                    .then((approved) => {
+                      if (approved)
+                        setOfficePairings((current) =>
+                          current.filter((entry) => entry.pairingId !== pairingId),
+                        )
+                      else setOfficePairingError(true)
+                    })
+                    .finally(() => setOfficePairingBusy(false))
+                }}
+              >
+                Allow
               </button>
             </div>
           </div>

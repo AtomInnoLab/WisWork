@@ -34,6 +34,7 @@ import {
   initializeElectronAuthRuntime,
   extractCallbackUrl,
 } from '@wiswork/auth'
+import { createOfficeBridge, type OfficeBridge } from '@wiswork/office-bridge'
 import { createI18n, isLang, normalizeLang, setUiLang, type Lang } from '@wiswork/i18n'
 import {
   appMenuLabels,
@@ -141,6 +142,7 @@ import type {
   RenameResult,
 } from '../shared/home-api'
 import { HOME_CHANNELS } from '../shared/home-api'
+import { OFFICE_PAIRING_CHANNELS } from '../shared/home-api'
 import type { TabKind } from '../shared/tabs-api'
 import { TABS_CHANNELS } from '../shared/tabs-api'
 import { showErrorDialog } from './error-dialog'
@@ -159,6 +161,17 @@ import { createAuthDeepLinkQueue } from './auth-deep-link-queue'
 import { createThemeController, registerThemeIpc } from './theme-controller'
 import { applyUpdateChannel, initAutoUpdater } from './updater'
 import { isUpdateChannel, type UpdateChannel } from '../shared/update-api'
+import { startOfficeBridgeHttpServer, type OfficeBridgeHttpServer } from './office-bridge-http'
+import {
+  bindOfficeBridgePortPool,
+  createOfficeMessagesProxy,
+  officeBridgeEnabled,
+  officeBridgePortsFromEnv,
+  officeBridgeDiagnosticForError,
+  officeOriginFromEnv,
+  syncOfficeBridgeAvailability,
+} from './office-bridge-runtime'
+import { registerOfficePairingIpc } from './office-pairing-ipc'
 
 /**
  * WisWork unified shell: ONE Electron app, ONE BrowserWindow, hosting the
@@ -259,6 +272,9 @@ configureLatexRuntime({
 registerLatexProtocolScheme(protocol)
 
 let authRuntime: ReturnType<typeof initializeElectronAuthRuntime> | null = null
+let officeBridge: OfficeBridge | null = null
+let officeBridgeServer: OfficeBridgeHttpServer | null = null
+let officeBridgeDiagnostic = 'disabled'
 const requireAuthRuntime = (): ReturnType<typeof initializeElectronAuthRuntime> => {
   if (!authRuntime) throw new AuthError('auth_not_initialized')
   return authRuntime
@@ -1696,9 +1712,11 @@ function registerHomeIpc(): void {
       throw new Error('Untrusted IPC sender.')
   }
   let pendingLoginUrl = ''
-  ipcMain.handle(HOME_CHANNELS.accountStatus, (event, ...args: unknown[]) => {
+  ipcMain.handle(HOME_CHANNELS.accountStatus, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
-    return requireAuthRuntime().client.getValidAccountStatus()
+    return syncOfficeBridgeAvailability(officeBridge, () =>
+      requireAuthRuntime().client.getValidAccountStatus(),
+    )
   })
   ipcMain.handle(HOME_CHANNELS.accountLogin, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
@@ -1725,7 +1743,12 @@ function registerHomeIpc(): void {
   })
   ipcMain.handle(HOME_CHANNELS.accountLogout, (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
+    officeBridge?.setSessionAvailable(false)
     return requireAuthRuntime().client.logout()
+  })
+  ipcMain.handle(HOME_CHANNELS.officeBridgeStatus, (event, ...args: unknown[]) => {
+    assertHomeAuthIpc(event, args)
+    return officeBridgeDiagnostic
   })
 
   ipcMain.handle(HOME_CHANNELS.getAppVersion, (): string => app.getVersion())
@@ -2443,7 +2466,70 @@ app.whenReady().then(async () => {
     safeStorage,
     openExternal: (url) => shell.openExternal(url),
   })
-  void authDeepLinks.initialize((callback) => requireAuthRuntime().client.consumeCallback(callback))
+  if (officeBridgeEnabled(process.env)) {
+    officeBridgeDiagnostic = 'error'
+    const initialAccount = await requireAuthRuntime()
+      .client.getValidAccountStatus()
+      .catch(() => ({ loggedIn: false }))
+    const initializedOfficeBridge = createOfficeBridge({
+      allowedOrigin: officeOriginFromEnv(process.env),
+      sessionAvailable: initialAccount.loggedIn,
+      proxy: createOfficeMessagesProxy({
+        fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+        onTerminalAuthLoss: () => officeBridge?.setSessionAvailable(false),
+      }),
+    })
+    officeBridge = initializedOfficeBridge
+    registerOfficePairingIpc({
+      ipcMain,
+      bridge: initializedOfficeBridge,
+      listPending: () => initializedOfficeBridge.listPending(),
+      getValidAccountStatus: async () => {
+        try {
+          const status = await requireAuthRuntime().client.getValidAccountStatus()
+          initializedOfficeBridge.setSessionAvailable(status.loggedIn)
+          return status
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            (error.message === 'auth_required' ||
+              (error as Error & { code?: string }).code === 'auth_required')
+          )
+            initializedOfficeBridge.setSessionAvailable(false)
+          throw error
+        }
+      },
+      isTrustedSender: (sender) => Boolean(shellWindow && sender === shellWindow.webContents),
+    })
+    try {
+      const bound = await bindOfficeBridgePortPool(officeBridgePortsFromEnv(process.env), (port) =>
+        startOfficeBridgeHttpServer({
+          bridge: initializedOfficeBridge,
+          host: '127.0.0.1',
+          port,
+          allowedOrigin: officeOriginFromEnv(process.env),
+          onPending: (pairing) => {
+            if (!shellWindow || shellWindow.isDestroyed()) return
+            shellWindow.webContents.send(OFFICE_PAIRING_CHANNELS.requested, pairing)
+            revealShellWindow()
+          },
+        }),
+      )
+      officeBridgeServer = bound.server
+      officeBridgeDiagnostic = `ready:${bound.port}`
+    } catch (error) {
+      officeBridgeDiagnostic = officeBridgeDiagnosticForError(error)
+      initializedOfficeBridge.shutdown()
+      officeBridge = null
+      console.error('[office-bridge] failed to start on loopback')
+    }
+  }
+  void authDeepLinks.initialize(async (callback) => {
+    await requireAuthRuntime().client.consumeCallback(callback)
+    await syncOfficeBridgeAvailability(officeBridge, () =>
+      requireAuthRuntime().client.getValidAccountStatus(),
+    )
+  })
 
   app.setAccessibilitySupportEnabled(true)
   // Settle the shared uiLang from saved settings BEFORE any tab renderer can
@@ -2492,4 +2578,7 @@ app.on('before-quit', () => {
   // No close prompt may fall through to "Save" during shutdown
   markSheetsShuttingDown()
   stopSheetsSidecar()
+  officeBridge?.revokeAll()
+  officeBridge?.shutdown()
+  void officeBridgeServer?.stop()
 })

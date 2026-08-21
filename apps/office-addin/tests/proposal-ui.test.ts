@@ -1,0 +1,63 @@
+import { describe, expect, it, vi } from 'vitest'
+import { proposalPresentation, safeUploadError, uploadSessionFile } from '../src/App.js'
+import type { OfficeHostRuntime } from '../src/agent/host-runtime.js'
+
+describe('generic proposal presentation', () => {
+  it('preserves structured impact, preview, before, after, and code', () => {
+    expect(
+      proposalPresentation({
+        id: 'p1',
+        operation: 'edit_slide_xml',
+        title: 'Edit XML',
+        impact: { host: 'powerpoint', targets: ['slide-1'], count: 1 },
+        preview: { nodes: 2 },
+        fingerprint: 'fp',
+        before: '<old/>',
+        after: '<new/>',
+        code: 'sync()',
+      }),
+    ).toEqual({
+      title: 'Edit XML',
+      host: 'powerpoint',
+      count: 1,
+      targets: ['slide-1'],
+      before: '<old/>',
+      after: '<new/>',
+      preview: '{\n  "nodes": 2\n}',
+      code: 'sync()',
+    })
+  })
+
+  it('keeps the legacy append preview compatible', () => {
+    expect(
+      proposalPresentation({
+        id: 'p2',
+        operation: 'append',
+        before: 'old',
+        value: ' new',
+        fingerprint: 'fp',
+      }),
+    ).toMatchObject({ title: 'Append to selection', before: 'old', after: 'old new' })
+  })
+
+  it('maps upload failures to stable UI-safe errors', () => {
+    expect(safeUploadError(new Error('invalid_skill_package'))).toBe('invalid_skill_package')
+    expect(safeUploadError(new Error('/Users/alice/private'))).toBe('upload_failed')
+  })
+
+  it.each([
+    ['large.bin', 2 * 1024 * 1024 + 1, 'vfs_limit'],
+    ['SKILL.md', 64 * 1024 + 1, 'invalid_skill_package'],
+  ] as const)('rejects %s by File.size before loading its content', async (name, size, code) => {
+    const arrayBuffer = vi.fn()
+    const text = vi.fn()
+    const runtime = { uploadFile: vi.fn(), installSkill: vi.fn() } as unknown as OfficeHostRuntime
+    await expect(uploadSessionFile(runtime, { name, size, arrayBuffer, text })).rejects.toThrow(
+      code,
+    )
+    expect(arrayBuffer).not.toHaveBeenCalled()
+    expect(text).not.toHaveBeenCalled()
+    expect(runtime.uploadFile).not.toHaveBeenCalled()
+    expect(runtime.installSkill).not.toHaveBeenCalled()
+  })
+})

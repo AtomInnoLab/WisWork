@@ -3,6 +3,8 @@ import type { IpcRendererEvent } from 'electron'
 import type {
   AccountLoginEvent,
   AccountStatus,
+  OfficePairingRequest,
+  OfficeBridgeStatus,
   HomeApi,
   LatexRecentProjectEntry,
   RecentEntry,
@@ -14,7 +16,7 @@ import type {
   UiLanguage,
   AppTheme,
 } from '../shared/home-api'
-import { HOME_CHANNELS, PROJECT_CHANNELS } from '../shared/home-api'
+import { HOME_CHANNELS, OFFICE_PAIRING_CHANNELS, PROJECT_CHANNELS } from '../shared/home-api'
 import type { TabsApi, TabSummary } from '../shared/tabs-api'
 import { TABS_CHANNELS } from '../shared/tabs-api'
 
@@ -182,6 +184,58 @@ const homeApi: HomeApi = {
   },
   async accountLogout() {
     await ipcRenderer.invoke(HOME_CHANNELS.accountLogout)
+  },
+  onOfficePairingRequested(handler) {
+    const listener = (_event: IpcRendererEvent, value: unknown) => {
+      if (!value || typeof value !== 'object') return
+      const pairing = value as Partial<OfficePairingRequest>
+      if (
+        typeof pairing.pairingId === 'string' &&
+        ['Word', 'Excel', 'PowerPoint'].includes(pairing.hostLabel ?? '') &&
+        typeof pairing.origin === 'string' &&
+        typeof pairing.verificationCode === 'string' &&
+        /^\d{6}$/.test(pairing.verificationCode)
+      )
+        handler(pairing as OfficePairingRequest)
+    }
+    ipcRenderer.on(OFFICE_PAIRING_CHANNELS.requested, listener)
+    return () => ipcRenderer.removeListener(OFFICE_PAIRING_CHANNELS.requested, listener)
+  },
+  async listOfficePairings() {
+    const result: unknown = await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.list)
+    if (!Array.isArray(result)) return []
+    return result.filter((value): value is OfficePairingRequest => {
+      if (!value || typeof value !== 'object') return false
+      const pairing = value as Partial<OfficePairingRequest>
+      return (
+        typeof pairing.pairingId === 'string' &&
+        ['Word', 'Excel', 'PowerPoint'].includes(pairing.hostLabel ?? '') &&
+        typeof pairing.origin === 'string' &&
+        typeof pairing.verificationCode === 'string' &&
+        /^\d{6}$/.test(pairing.verificationCode)
+      )
+    })
+  },
+  async approveOfficePairing(pairingId) {
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(pairingId)) throw new Error('Invalid pairing ID.')
+    return (await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.approve, { pairingId })) === true
+  },
+  async rejectOfficePairing(pairingId) {
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(pairingId)) throw new Error('Invalid pairing ID.')
+    return (await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.reject, { pairingId })) === true
+  },
+  async officeBridgeStatus() {
+    const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.officeBridgeStatus)
+    const value = String(result)
+    return (
+      value === 'disabled' ||
+      value === 'error:pool_exhausted' ||
+      value === 'error:invalid_config' ||
+      value === 'error:bind_failed' ||
+      /^ready:\d+$/.test(value)
+        ? value
+        : 'error:bind_failed'
+    ) as OfficeBridgeStatus
   },
   async getAppVersion() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getAppVersion)

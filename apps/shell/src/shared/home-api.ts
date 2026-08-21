@@ -123,6 +123,12 @@ export interface HomeApi {
   openLoginUrl(): Promise<void>
   /** Clear the encrypted WisWork session. */
   accountLogout(): Promise<void>
+  /** Observe explicit Office connection requests awaiting approval on this PC. */
+  onOfficePairingRequested(handler: (pairing: OfficePairingRequest) => void): () => void
+  listOfficePairings(): Promise<OfficePairingRequest[]>
+  approveOfficePairing(pairingId: string): Promise<boolean>
+  rejectOfficePairing(pairingId: string): Promise<boolean>
+  officeBridgeStatus(): Promise<OfficeBridgeStatus>
   getAppVersion(): Promise<string>
   onboardingSeen(): Promise<boolean>
   setOnboardingSeen(): Promise<void>
@@ -143,6 +149,20 @@ export interface AccountLoginEvent {
     httpStatus?: number
   }
 }
+
+export interface OfficePairingRequest {
+  pairingId: string
+  hostLabel: 'Word' | 'Excel' | 'PowerPoint'
+  origin: string
+  verificationCode: string
+}
+
+export type OfficeBridgeStatus =
+  | 'disabled'
+  | `ready:${number}`
+  | 'error:pool_exhausted'
+  | 'error:invalid_config'
+  | 'error:bind_failed'
 
 export interface RenameResult {
   ok: boolean
@@ -223,6 +243,7 @@ export const HOME_CHANNELS = {
   accountLoginEvent: 'home:account-login-event',
   accountLoginOpenUrl: 'home:account-login-open-url',
   accountLogout: 'home:account-logout',
+  officeBridgeStatus: 'home:office-bridge-status',
   getAppVersion: 'home:get-app-version',
   onboardingSeen: 'home:onboarding-seen',
   setOnboardingSeen: 'home:set-onboarding-seen',
@@ -236,4 +257,11 @@ export const PROJECT_CHANNELS = {
   delete: 'project:delete',
   moveFile: 'project:moveFile',
   timeline: 'project:timeline',
+} as const
+
+export const OFFICE_PAIRING_CHANNELS = {
+  requested: 'home:office-pairing-requested',
+  list: 'home:office-pairing-list',
+  approve: 'home:office-pairing-approve',
+  reject: 'home:office-pairing-reject',
 } as const

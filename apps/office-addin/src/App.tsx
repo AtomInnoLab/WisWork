@@ -1,16 +1,15 @@
-import { useEffect, useMemo, useState } from 'react'
-import { createOfficeSkill } from './agent/office-skill.js'
-import { createProposalController } from './agent/proposal-controller.js'
-import { createOfficeAgentTransport } from './agent/transport.js'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
+import type { OfficeProposal, StructuredProposal } from './agent/proposal-controller.js'
+import { MAX_SKILL_BYTES } from './skills/shared/skill-registry.js'
+import { MAX_VFS_FILE_BYTES } from './skills/shared/vfs.js'
+import { createPcBridgeAgentTransport } from './agent/transport.js'
 import {
   createOfficeAgentSession,
-  bindAuthLoss,
   useOfficeAgent,
   type OfficeAgentSession,
 } from './agent/use-office-agent.js'
-import { createBrowserAuth, type BrowserAuth } from './auth/browser-auth.js'
-import { captureAndScrubOAuthCallback } from './auth/oauth-callback.js'
-import { loadRuntimeConfig, type RuntimeConfig } from './config.js'
+import { createPcBridgeSession } from './pc-bridge/session.js'
 import {
   createBrowserOfficeRuntime,
   createOfficeDocumentClient,
@@ -24,19 +23,89 @@ const hostLabels: Record<OfficeHost, string> = {
   unknown: 'Office',
 }
 
-const safeAuthError = (error: unknown) =>
-  error instanceof Error && ['invalid_callback', 'token_exchange_failed'].includes(error.message)
-    ? error.message
-    : 'sign_in_failed'
+type DisplayProposal = OfficeProposal | StructuredProposal
 
-function AgentWorkspace(props: {
+function isLegacyProposal(proposal: DisplayProposal): proposal is OfficeProposal {
+  return 'value' in proposal
+}
+
+function previewText(value: unknown): string {
+  if (value === undefined) return ''
+  if (typeof value === 'string') return value
+  return JSON.stringify(value, null, 2)
+}
+
+export function proposalPresentation(proposal: DisplayProposal) {
+  const legacy = isLegacyProposal(proposal)
+  return {
+    title: legacy
+      ? proposal.operation === 'replace'
+        ? 'Replace selection'
+        : 'Append to selection'
+      : proposal.title,
+    host: legacy ? undefined : proposal.impact.host,
+    count: legacy ? undefined : proposal.impact.count,
+    targets: legacy ? [] : [...proposal.impact.targets],
+    before: previewText(proposal.before),
+    after: previewText(
+      legacy
+        ? proposal.operation === 'replace'
+          ? proposal.value
+          : `${proposal.before}${proposal.value}`
+        : proposal.after,
+    ),
+    preview: legacy ? '' : previewText(proposal.preview),
+    code: legacy ? undefined : proposal.code,
+  }
+}
+
+export function safeUploadError(error: unknown): string {
+  const code = error instanceof Error ? error.message : ''
+  return [
+    'upload_cancelled',
+    'vfs_limit',
+    'vfs_path_denied',
+    'invalid_skill_package',
+    'skill_already_installed',
+  ].includes(code)
+    ? code
+    : 'upload_failed'
+}
+
+interface SessionFile {
+  name: string
+  size: number
+  arrayBuffer(): Promise<ArrayBuffer>
+  text(): Promise<string>
+}
+
+export function uploadSessionFile(runtime: OfficeHostRuntime, file: SessionFile): Promise<void> {
+  if (file.name === 'SKILL.md') {
+    if (file.size > MAX_SKILL_BYTES) return Promise.reject(new Error('invalid_skill_package'))
+    return runtime.installSkill(file.text())
+  }
+  if (file.size > MAX_VFS_FILE_BYTES) return Promise.reject(new Error('vfs_limit'))
+  return runtime.uploadFile(file.name, file.arrayBuffer())
+}
+
+export function AgentWorkspace(props: {
   session: OfficeAgentSession
-  auth: BrowserAuth
+  runtime: OfficeHostRuntime
+  disconnect: () => void
   host: OfficeHost
 }) {
-  const { session, auth, host } = props
+  const { session, runtime, disconnect, host } = props
   const state = useOfficeAgent(session)
   const [instruction, setInstruction] = useState('')
+  const [files, setFiles] = useState<string[]>(runtime.vfs.list('/home/user'))
+  const [uploadError, setUploadError] = useState('')
+  const mounted = useRef(true)
+  useEffect(
+    () => () => {
+      mounted.current = false
+    },
+    [],
+  )
 
   function send() {
     if (!instruction.trim()) return
@@ -45,11 +114,7 @@ function AgentWorkspace(props: {
   }
 
   const proposal = state.proposal
-  const after = proposal
-    ? proposal.operation === 'replace'
-      ? proposal.value
-      : `${proposal.before}${proposal.value}`
-    : ''
+  const presentation = proposal ? proposalPresentation(proposal) : undefined
 
   return (
     <main className="taskpane">
@@ -64,7 +129,7 @@ function AgentWorkspace(props: {
           className="quiet"
           disabled={state.applying}
           onClick={() => {
-            auth.logout()
+            disconnect()
           }}
         >
           Log out
@@ -99,18 +164,37 @@ function AgentWorkspace(props: {
         <section className="proposal-card" aria-label="Proposed document change">
           <div className="proposal-heading">
             <span className="eyebrow">Approval required</span>
-            <h2>
-              {proposal.operation === 'replace' ? 'Replace selection' : 'Append to selection'}
-            </h2>
+            <h2>{presentation?.title}</h2>
           </div>
+          {!isLegacyProposal(proposal) && (
+            <div className="preview-block">
+              <strong>Impact</strong>
+              <p>
+                {presentation?.host}: {presentation?.count} item(s)
+              </p>
+              <pre>{presentation?.targets.join('\n') || '(no named targets)'}</pre>
+            </div>
+          )}
           <div className="preview-block">
             <strong>Before</strong>
-            <pre>{proposal.before || '(empty selection)'}</pre>
+            <pre>{presentation?.before || '(not available)'}</pre>
           </div>
           <div className="preview-block after">
             <strong>After</strong>
-            <pre>{after}</pre>
+            <pre>{presentation?.after || '(described by preview)'}</pre>
           </div>
+          {!isLegacyProposal(proposal) && (
+            <div className="preview-block">
+              <strong>Preview</strong>
+              <pre>{presentation?.preview}</pre>
+            </div>
+          )}
+          {!isLegacyProposal(proposal) && proposal.code && (
+            <div className="preview-block code-preview">
+              <strong>Code</strong>
+              <pre>{presentation?.code}</pre>
+            </div>
+          )}
           <div className="actions">
             <button
               type="button"
@@ -130,6 +214,38 @@ function AgentWorkspace(props: {
           </div>
         </section>
       )}
+
+      <section className="composer-card" aria-label="Session files">
+        <label htmlFor="session-upload">Session files</label>
+        <input
+          id="session-upload"
+          type="file"
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0]
+            if (!file) return
+            setUploadError('')
+            const operation = uploadSessionFile(runtime, file)
+            void operation
+              .then(() => {
+                if (mounted.current) setFiles(runtime.vfs.list('/home/user'))
+              })
+              .catch((error: unknown) => {
+                if (!mounted.current) return
+                setUploadError(safeUploadError(error))
+              })
+          }}
+        />
+        <p>Upload a file, or upload a file named SKILL.md to install its bounded skill package.</p>
+        {uploadError && <p className="error-text">{uploadError}</p>}
+        <p>{files.length ? files.join(', ') : 'No uploaded files in this session.'}</p>
+        <p>
+          Installed skills:{' '}
+          {runtime.skills
+            .list()
+            .map((skill) => skill.name)
+            .join(', ') || 'none'}
+        </p>
+      </section>
 
       <section className="composer-card">
         <label htmlFor="instruction">What should the Agent do?</label>
@@ -169,62 +285,65 @@ function AgentWorkspace(props: {
   )
 }
 
-function ConfiguredApp({ config }: { config: RuntimeConfig }) {
+function ConfiguredApp() {
   const document = useMemo(() => createOfficeDocumentClient(createBrowserOfficeRuntime()), [])
-  const auth = useMemo(() => createBrowserAuth(config), [config])
-  const proposals = useMemo(() => createProposalController(document), [document])
-  const session = useMemo(
-    () =>
-      createOfficeAgentSession({
-        transport: createOfficeAgentTransport(config, auth),
-        skill: createOfficeSkill(document, proposals),
-        proposals,
-      }),
-    [auth, config, document, proposals],
-  )
+  const bridge = useMemo(() => createPcBridgeSession(), [])
+  const bridgeState = useSyncExternalStore(bridge.subscribe, bridge.snapshot, bridge.snapshot)
+  const [workspace, setWorkspace] = useState<
+    { runtime: OfficeHostRuntime; session: OfficeAgentSession } | undefined
+  >()
   const [host, setHost] = useState<OfficeHost>('unknown')
   const [hostSupported, setHostSupported] = useState(false)
-  const [signedIn, setSignedIn] = useState(auth.isAuthenticated())
   const [status, setStatus] = useState('Connecting to Office…')
   const [busy, setBusy] = useState(true)
 
   useEffect(() => {
-    return bindAuthLoss(auth, session, () => setSignedIn(false))
-  }, [auth, session])
-
-  useEffect(() => {
     let active = true
+    let created: { runtime: OfficeHostRuntime; session: OfficeAgentSession } | undefined
     void (async () => {
       try {
-        const capturedCallback = captureAndScrubOAuthCallback(
-          config.callbackUrl,
-          window.location.href,
-          (cleanUrl) => window.history.replaceState({}, '', cleanUrl),
-        )
-        if (capturedCallback) {
-          await auth.consumeCallback(capturedCallback)
-          if (active) setSignedIn(true)
-        }
         const activeHost = await document.initialize()
         if (active) {
           setHost(activeHost)
           setHostSupported(activeHost !== 'unknown')
+          if (activeHost !== 'unknown') {
+            const runtime = createOfficeHostRuntime(activeHost, {
+              enableHostSkills: import.meta.env.VITE_WISWORK_OFFICE_HOST_SKILLS !== '0',
+              document,
+            })
+            const session = createOfficeAgentSession({
+              transport: createPcBridgeAgentTransport(bridge),
+              skill: runtime.skill,
+              proposals: runtime.proposals,
+            })
+            created = { runtime, session }
+            setWorkspace(created)
+          }
           setStatus(
             activeHost === 'unknown'
               ? 'office_host_unsupported'
               : `${hostLabels[activeHost]} is ready`,
           )
         }
-      } catch (error) {
-        if (active) setStatus(safeAuthError(error))
+      } catch {
+        if (active) setStatus('office_unavailable')
       } finally {
         if (active) setBusy(false)
       }
     })()
     return () => {
       active = false
+      created?.session.authenticationLost()
+      created?.runtime.dispose()
     }
-  }, [auth, config.callbackUrl, document])
+  }, [bridge, document])
+
+  useEffect(() => {
+    if (bridgeState.status !== 'connected' && workspace) {
+      workspace.session.authenticationLost()
+      workspace.runtime.clearSession()
+    }
+  }, [bridgeState.status, workspace])
 
   if (busy) return <StatusScreen title="Starting WisWork Agent" detail={status} busy />
   if (!hostSupported) {
@@ -232,28 +351,48 @@ function ConfiguredApp({ config }: { config: RuntimeConfig }) {
       <StatusScreen title="Unsupported Office host" detail="This host cannot use document tools." />
     )
   }
-  if (!signedIn) {
+  if (bridgeState.status !== 'connected') {
+    const detail = {
+      offline: 'Open WisWork PC, sign in, then retry.',
+      signed_out: 'Sign in to WisWork PC first.',
+      pending: bridgeState.verificationCode
+        ? `Confirm code ${bridgeState.verificationCode} in WisWork PC, then approve.`
+        : 'Approve this connection in WisWork PC.',
+      rejected: 'The connection was rejected in WisWork PC.',
+      expired: 'The connection request expired. Try again.',
+    }[bridgeState.status]
     return (
-      <StatusScreen title="WisWork Agent for Office" detail={status}>
+      <StatusScreen
+        title="Connect to WisWork PC"
+        detail={detail}
+        busy={bridgeState.status === 'pending'}
+      >
         <button
           type="button"
+          disabled={bridgeState.status === 'pending'}
           onClick={() => {
-            setBusy(true)
-            void auth
-              .startAuthorization()
-              .then((url) => window.location.assign(url))
-              .catch((error) => {
-                setStatus(safeAuthError(error))
-                setBusy(false)
-              })
+            void bridge.connect(host)
           }}
         >
-          Sign in with WisWork
+          {bridgeState.status === 'offline' ? 'Connect to WisWork PC' : 'Try again'}
         </button>
       </StatusScreen>
     )
   }
-  return <AgentWorkspace session={session} auth={auth} host={host} />
+  if (!workspace)
+    return <StatusScreen title="Starting WisWork Agent" detail="Loading tools…" busy />
+  return (
+    <AgentWorkspace
+      session={workspace.session}
+      runtime={workspace.runtime}
+      disconnect={() => {
+        workspace.session.logout()
+        workspace.runtime.dispose()
+        bridge.disconnect()
+      }}
+      host={host}
+    />
+  )
 }
 
 function StatusScreen(props: {
@@ -276,17 +415,5 @@ function StatusScreen(props: {
 }
 
 export function App() {
-  const runtime = useMemo(
-    () => loadRuntimeConfig(import.meta.env, { production: import.meta.env.PROD }),
-    [],
-  )
-  if (runtime.status === 'unavailable') {
-    return (
-      <StatusScreen
-        title="Agent unavailable"
-        detail="This add-in is not configured for the WisWork Gateway. Contact your administrator."
-      />
-    )
-  }
-  return <ConfiguredApp config={runtime.config} />
+  return <ConfiguredApp />
 }

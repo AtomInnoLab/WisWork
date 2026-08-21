@@ -5,13 +5,8 @@ import type {
   AgentToolCall,
   AgentTransport,
 } from '@wiswork/agent-core'
-import {
-  WISWORK_DEFAULT_MODEL,
-  WISWORK_MESSAGES_URL,
-  WISWORK_REQUEST_LOCATION,
-} from '@wiswork/ai-provider'
-import type { BrowserAuth } from '../auth/browser-auth.js'
-import type { RuntimeConfig } from '../config.js'
+import { WISWORK_DEFAULT_MODEL } from '@wiswork/ai-provider'
+import type { PcBridgeSession } from '../pc-bridge/session.js'
 
 const MAX_TOKENS = 8192
 export const MAX_STREAM_TOOL_INPUT_LENGTH = 16 * 1024
@@ -45,14 +40,6 @@ class TransportError extends Error {
 
   publicMessage(): string {
     return this.code === 'transport_http' ? `transport_http_${this.status ?? 0}` : this.code
-  }
-}
-
-function trustedMessagesUrl(value: string): boolean {
-  try {
-    return new URL(value).href === new URL(WISWORK_MESSAGES_URL).href
-  } catch {
-    return false
   }
 }
 
@@ -235,12 +222,12 @@ async function consumeStream(
   if (stopReason) callbacks.onStopReason?.(stopReason)
 }
 
-export function createOfficeAgentTransport(
-  config: RuntimeConfig,
-  auth: BrowserAuth,
-): AgentTransport {
-  if (!trustedMessagesUrl(config.messagesUrl)) throw new Error('transport_unavailable')
+/** PC-backed transport: provider credentials remain in WisWork PC. */
+export function createPcBridgeAgentTransport(bridge: PcBridgeSession): AgentTransport {
+  return createTransport((init) => bridge.authenticatedFetch('/v1/office/messages', init))
+}
 
+function createTransport(fetchMessages: (init: RequestInit) => Promise<Response>): AgentTransport {
   return {
     stream(request: AgentStreamRequest, callbacks: AgentStreamCallbacks) {
       const controller = new AbortController()
@@ -248,40 +235,33 @@ export function createOfficeAgentTransport(
       let cancelListener: (() => void) | undefined
       let completed = false
       const done = () => {
-        if (completed) return
-        completed = true
-        callbacks.onDone()
+        if (!completed) {
+          completed = true
+          callbacks.onDone()
+        }
       }
       void (async () => {
         try {
-          const operation = (async () => {
-            const body = JSON.stringify({
-              model: WISWORK_DEFAULT_MODEL,
-              max_tokens: MAX_TOKENS,
-              system: request.system,
-              messages: messagesForProvider(request.messages),
-              tools: request.tools.map((tool) => ({
-                name: tool.name,
-                description: tool.description,
-                input_schema: tool.inputSchema,
-              })),
-              stream: true,
-            })
-            if (body.length > MAX_REQUEST_BODY_LENGTH) {
-              throw new TransportError('transport_request_too_large')
-            }
-            const response = await auth.authenticatedFetch(WISWORK_MESSAGES_URL, {
-              method: 'POST',
-              signal: controller.signal,
-              headers: {
-                'content-type': 'application/json',
-                'x-req-location': WISWORK_REQUEST_LOCATION,
-              },
-              body,
-            })
-            if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
-            await consumeStream(response, callbacks, controller.signal)
-          })()
+          const body = JSON.stringify({
+            model: WISWORK_DEFAULT_MODEL,
+            max_tokens: MAX_TOKENS,
+            system: request.system,
+            messages: messagesForProvider(request.messages),
+            tools: request.tools.map((tool) => ({
+              name: tool.name,
+              description: tool.description,
+              input_schema: tool.inputSchema,
+            })),
+            stream: true,
+          })
+          if (body.length > MAX_REQUEST_BODY_LENGTH)
+            throw new TransportError('transport_request_too_large')
+          const operation = fetchMessages({
+            method: 'POST',
+            signal: controller.signal,
+            headers: { 'content-type': 'application/json' },
+            body,
+          }).then((response) => consumeStream(response, callbacks, controller.signal))
           const expired = new Promise<never>((_resolve, reject) => {
             timeout = setTimeout(() => {
               reject(new TransportError('transport_timeout'))
@@ -294,13 +274,12 @@ export function createOfficeAgentTransport(
           })
           await Promise.race([operation, expired, cancelled])
         } catch (error) {
-          if (error instanceof TransportError && error.code === 'transport_timeout') {
+          if (error instanceof TransportError && error.code === 'transport_timeout')
             callbacks.onError(error.publicMessage())
-          } else if (!controller.signal.aborted) {
+          else if (!controller.signal.aborted)
             callbacks.onError(
               error instanceof TransportError ? error.publicMessage() : safeError(error),
             )
-          }
         } finally {
           if (timeout !== undefined) clearTimeout(timeout)
           if (cancelListener) controller.signal.removeEventListener('abort', cancelListener)

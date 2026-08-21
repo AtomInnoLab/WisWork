@@ -1,6 +1,11 @@
 import { AgentLoop, type AgentSkill, type AgentTransport } from '@wiswork/agent-core'
 import { useSyncExternalStore } from 'react'
-import type { OfficeProposal, ProposalController } from './proposal-controller.js'
+import type {
+  OfficeProposal,
+  ProposalController,
+  StructuredProposal,
+  StructuredProposalController,
+} from './proposal-controller.js'
 
 export type AgentSessionStatus = 'idle' | 'working' | 'done' | 'cancelled' | 'error'
 
@@ -11,7 +16,7 @@ export interface OfficeAgentSnapshot {
   applying: boolean
   status: AgentSessionStatus
   error?: string
-  proposal?: OfficeProposal
+  proposal?: OfficeProposal | StructuredProposal
 }
 
 export interface OfficeAgentSession {
@@ -33,7 +38,7 @@ const safeConfirmationError = (error: unknown): string =>
 export function createOfficeAgentSession(dependencies: {
   transport: AgentTransport
   skill: AgentSkill
-  proposals: ProposalController
+  proposals: ProposalController | StructuredProposalController
 }): OfficeAgentSession {
   const { proposals } = dependencies
   const listeners = new Set<() => void>()

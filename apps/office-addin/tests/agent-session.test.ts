@@ -1,6 +1,7 @@
 import type { AgentStreamCallbacks, AgentTransport } from '@wiswork/agent-core'
 import { describe, expect, it, vi } from 'vitest'
 import { bindAuthLoss, createOfficeAgentSession } from '../src/agent/use-office-agent.js'
+import type { StructuredProposal } from '../src/agent/proposal-controller.js'
 
 function transportHarness() {
   let callbacks: AgentStreamCallbacks | undefined
@@ -52,6 +53,36 @@ function proposalsHarness() {
 }
 
 describe('Office agent session', () => {
+  it('exposes generic structured proposal fields without legacy coercion', () => {
+    const harness = transportHarness()
+    const proposal: StructuredProposal = Object.freeze({
+      id: 'structured',
+      operation: 'edit_slide_xml',
+      toolName: 'edit_slide_xml',
+      title: 'Update slide XML',
+      preview: { nodes: 2 },
+      impact: { host: 'powerpoint', targets: ['slide-1'], count: 1 },
+      fingerprint: 'fp',
+      before: '<old/>',
+      after: '<new/>',
+      code: 'context.sync()',
+    })
+    const controller = {
+      pending: () => proposal,
+      propose: vi.fn(),
+      confirm: vi.fn(),
+      reject: vi.fn(),
+      newTurn: vi.fn(),
+      logout: vi.fn(),
+    }
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: controller,
+    })
+    expect(session.snapshot().proposal).toEqual(proposal)
+  })
+
   it('streams assistant text and reports completion', async () => {
     const harness = transportHarness()
     const proposals = proposalsHarness()

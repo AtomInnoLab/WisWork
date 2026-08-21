@@ -2,20 +2,15 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_OFFICE_BRIDGE_PORTS,
   deploymentConfig,
+  deploymentConnectOrigins,
+  officeBridgePorts,
   renderDeploymentManifest,
-  rewriteOAuthCallbackRequest,
 } from '../build-config.js'
 
 const manifestPath = resolve(import.meta.dirname, '../public/manifest.xml')
-const validEnv = {
-  VITE_WISWORK_AUTHORIZATION_URL: 'https://auth.example/oauth/authorize',
-  VITE_WISWORK_TOKEN_URL: 'https://auth.example/oauth/token',
-  VITE_WISWORK_CALLBACK_URL: 'https://office.example/oauth/callback',
-  VITE_WISWORK_CLIENT_ID: 'office-public',
-  VITE_WISWORK_ISSUER: 'https://auth.example',
-  VITE_WISWORK_MESSAGES_URL: 'https://wisusage.dev.atominnolab.com/v1/messages',
-}
+const validEnv = { VITE_WISWORK_ADDIN_ORIGIN: 'https://office.example' }
 
 describe('Office Add-in manifest and routes', () => {
   it('keeps the source manifest explicitly local-development-only', async () => {
@@ -35,34 +30,61 @@ describe('Office Add-in manifest and routes', () => {
     )
     expect(manifest).toContain('<IconUrl DefaultValue="https://office.example/assets/icon.png" />')
     expect(manifest).toContain('<AppDomain>https://office.example</AppDomain>')
-    expect(manifest).toContain('<AppDomain>https://auth.example</AppDomain>')
-    expect(manifest).toContain('<AppDomain>https://wisusage.dev.atominnolab.com</AppDomain>')
+    expect(manifest).not.toContain('auth.example')
+    expect(manifest).not.toContain('wisusage.dev.atominnolab.com')
     expect(manifest).not.toContain('localhost')
     expect(manifest).not.toContain('*')
   })
 
   it.each([
-    { ...validEnv, VITE_WISWORK_CALLBACK_URL: 'https://office.example/not-callback' },
-    { ...validEnv, VITE_WISWORK_MESSAGES_URL: 'https://attacker.example/v1/messages' },
-    { ...validEnv, VITE_WISWORK_AUTHORIZATION_URL: 'https://*.example/oauth' },
+    { VITE_WISWORK_ADDIN_ORIGIN: 'https://office.example/path' },
+    { VITE_WISWORK_ADDIN_ORIGIN: 'http://office.example' },
+    { VITE_WISWORK_ADDIN_ORIGIN: 'https://*.example' },
+    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORTS: '0' },
+    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORTS: '65536' },
+    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORTS: '1.5' },
+    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORTS: '43127,43127' },
+    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORTS: '43127,' },
+    { ...validEnv, VITE_WISWORK_PC_BRIDGE_PORTS: '' },
+    {
+      ...validEnv,
+      VITE_WISWORK_PC_BRIDGE_PORTS: Array.from({ length: 129 }, (_, index) =>
+        String(10_000 + index),
+      ).join(','),
+    },
   ])('rejects unsafe deployment configuration', (env) => {
     expect(deploymentConfig(env)).toBeUndefined()
   })
 
-  it('declares callback entry and deterministic exact-route handling', async () => {
-    const callback = await readFile(
-      resolve(import.meta.dirname, '../src/oauth/callback.html'),
-      'utf8',
-    )
+  it('allows only the numeric loopback bridge in taskpane connections', async () => {
     const viteConfig = await readFile(resolve(import.meta.dirname, '../vite.config.ts'), 'utf8')
-    expect(callback).toContain('../main.tsx')
-    expect(callback).not.toMatch(/access[_-]?token|refresh[_-]?token/i)
-    expect(viteConfig).toContain("fileName: 'oauth/callback'")
-    expect(rewriteOAuthCallbackRequest('/oauth/callback?code=secret&state=s')).toBe(
-      '/oauth/callback.html?code=secret&state=s',
+    const taskpane = await readFile(resolve(import.meta.dirname, '../src/taskpane.html'), 'utf8')
+    expect(DEFAULT_OFFICE_BRIDGE_PORTS).toHaveLength(64)
+    expect(DEFAULT_OFFICE_BRIDGE_PORTS[0]).toBe(43127)
+    expect(new Set(DEFAULT_OFFICE_BRIDGE_PORTS)).toEqual(
+      new Set(Array.from({ length: 64 }, (_, index) => 43120 + index)),
     )
-    expect(rewriteOAuthCallbackRequest('/oauth/callback/other')).toBe('/oauth/callback/other')
-    expect(viteConfig).toContain('configurePreviewServer')
+    expect(officeBridgePorts({ VITE_WISWORK_PC_BRIDGE_PORTS: '44000,44001' })).toEqual([
+      44000, 44001,
+    ])
+    const origins = deploymentConnectOrigins({}).split(' ')
+    expect(origins).toHaveLength(64)
+    expect(origins[0]).toBe('http://127.0.0.1:43127')
+    expect(origins).toContain('http://127.0.0.1:43120')
+    expect(origins.every((origin) => /^http:\/\/127\.0\.0\.1:\d+$/.test(origin))).toBe(true)
+    expect(deploymentConnectOrigins({ VITE_WISWORK_PC_BRIDGE_PORTS: '44000,44001' })).toBe(
+      'http://127.0.0.1:44000 http://127.0.0.1:44001',
+    )
+    expect(viteConfig).not.toContain('oauth/callback')
+    expect(taskpane).toContain("connect-src 'self' __WISWORK_CONNECT_ORIGINS__")
+    expect(taskpane).not.toMatch(/auth\.dev|wisusage|callback/i)
     expect(viteConfig).not.toContain("'Access-Control-Allow-Origin': '*'")
+  })
+
+  it('documents the exact PC runtime environment names used by the shell', async () => {
+    const readme = await readFile(resolve(import.meta.dirname, '../README.md'), 'utf8')
+    expect(readme).toContain('WISWORK_OFFICE_ORIGIN=')
+    expect(readme).toContain('WISWORK_OFFICE_BRIDGE_PORTS=')
+    expect(readme).not.toContain('WISWORK_OFFICE_ALLOWED_ORIGIN')
   })
 })

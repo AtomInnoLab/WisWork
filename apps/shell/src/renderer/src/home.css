@@ -1231,6 +1231,28 @@ body.vib .home {
   background: var(--color-error-hover);
 }
 
+.btn-office-allow {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--color-btn-primary-text);
+}
+
+.btn-office-allow:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+}
+
+.office-pairing-code {
+  margin: 16px 0 8px;
+  font:
+    700 32px/1 ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+  letter-spacing: 0.18em;
+  color: var(--accent);
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;

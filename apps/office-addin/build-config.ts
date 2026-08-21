@@ -1,78 +1,65 @@
-const FIXED_MESSAGES_URL = 'https://wisusage.dev.atominnolab.com/v1/messages'
+export const PREFERRED_OFFICE_BRIDGE_PORT = 43_127
+export const DEFAULT_OFFICE_BRIDGE_PORTS = Object.freeze([
+  PREFERRED_OFFICE_BRIDGE_PORT,
+  ...Array.from({ length: 64 }, (_, index) => 43_120 + index).filter(
+    (port) => port !== PREFERRED_OFFICE_BRIDGE_PORT,
+  ),
+])
 
 type BuildEnv = Record<string, string | undefined>
-
 export interface DeploymentConfig {
   addinOrigin: string
-  authorizationOrigin: string
-  tokenOrigin: string
-  issuerOrigin: string
+  bridgePorts: readonly number[]
 }
 
-function secureUrl(value: string | undefined): URL | undefined {
+export function officeBridgePorts(env: BuildEnv): readonly number[] | undefined {
+  const configured = env.VITE_WISWORK_PC_BRIDGE_PORTS
+  if (configured === undefined) return DEFAULT_OFFICE_BRIDGE_PORTS
+  if (configured !== configured.trim()) return undefined
+  const values = configured.split(',')
+  if (values.length < 1 || values.length > 128) return undefined
+  if (values.some((value) => !/^(?:[1-9]\d{0,4})$/.test(value))) return undefined
+  const ports = values.map(Number)
+  if (ports.some((port) => port > 65_535) || new Set(ports).size !== ports.length) return undefined
+  return Object.freeze(ports)
+}
+
+export function officeBridgeEndpoints(env: BuildEnv): readonly string[] {
+  const ports = officeBridgePorts(env)
+  if (!ports) throw new Error('invalid_office_bridge_ports')
+  return ports.map((port) => `http://127.0.0.1:${port}`)
+}
+
+export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
+  const value = env.VITE_WISWORK_ADDIN_ORIGIN?.trim()
   if (!value) return undefined
+  const bridgePorts = officeBridgePorts(env)
+  if (!bridgePorts) return undefined
   try {
     const url = new URL(value)
-    if (url.protocol !== 'https:' || url.username || url.password || url.hostname.includes('*')) {
+    if (
+      url.protocol !== 'https:' ||
+      url.origin !== value ||
+      url.username ||
+      url.password ||
+      url.hostname.includes('*')
+    )
       return undefined
-    }
-    return url
+    return { addinOrigin: url.origin, bridgePorts }
   } catch {
     return undefined
   }
 }
 
-export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
-  const authorization = secureUrl(env.VITE_WISWORK_AUTHORIZATION_URL)
-  const token = secureUrl(env.VITE_WISWORK_TOKEN_URL)
-  const callback = secureUrl(env.VITE_WISWORK_CALLBACK_URL)
-  const issuer = secureUrl(env.VITE_WISWORK_ISSUER)
-  const messages = secureUrl(env.VITE_WISWORK_MESSAGES_URL)
-  if (
-    !authorization ||
-    !token ||
-    !callback ||
-    !issuer ||
-    !messages ||
-    !env.VITE_WISWORK_CLIENT_ID?.trim() ||
-    callback.pathname !== '/oauth/callback' ||
-    callback.search ||
-    callback.hash ||
-    messages.href !== FIXED_MESSAGES_URL
-  ) {
-    return undefined
+export function deploymentConnectOrigins(env: BuildEnv): string {
+  try {
+    return officeBridgeEndpoints(env).join(' ')
+  } catch {
+    return ''
   }
-  return {
-    addinOrigin: callback.origin,
-    authorizationOrigin: authorization.origin,
-    tokenOrigin: token.origin,
-    issuerOrigin: issuer.origin,
-  }
-}
-
-export function deploymentConnectOrigins(config: DeploymentConfig): string {
-  return [
-    ...new Set([
-      config.authorizationOrigin,
-      config.tokenOrigin,
-      config.issuerOrigin,
-      new URL(FIXED_MESSAGES_URL).origin,
-    ]),
-  ].join(' ')
 }
 
 export function renderDeploymentManifest(template: string, config: DeploymentConfig): string {
-  const domains = [
-    ...new Set([
-      config.addinOrigin,
-      config.authorizationOrigin,
-      config.tokenOrigin,
-      config.issuerOrigin,
-      new URL(FIXED_MESSAGES_URL).origin,
-    ]),
-  ]
-    .map((origin) => `    <AppDomain>${origin}</AppDomain>`)
-    .join('\n')
   return template
     .replace(
       '<!-- DEVELOPMENT-ONLY MANIFEST: production builds generate origin-specific dist/manifest.xml. -->\n',
@@ -81,14 +68,6 @@ export function renderDeploymentManifest(template: string, config: DeploymentCon
     .replaceAll('https://localhost:3000', config.addinOrigin)
     .replace(
       / {2}<AppDomains>[\s\S]*?<\/AppDomains>/,
-      `  <AppDomains>\n${domains}\n  </AppDomains>`,
+      `  <AppDomains>\n    <AppDomain>${config.addinOrigin}</AppDomain>\n  </AppDomains>`,
     )
-}
-
-export function rewriteOAuthCallbackRequest(requestUrl: string | undefined): string | undefined {
-  if (!requestUrl) return requestUrl
-  const queryIndex = requestUrl.indexOf('?')
-  const pathname = queryIndex === -1 ? requestUrl : requestUrl.slice(0, queryIndex)
-  if (pathname !== '/oauth/callback') return requestUrl
-  return `/oauth/callback.html${queryIndex === -1 ? '' : requestUrl.slice(queryIndex)}`
 }

@@ -8,14 +8,13 @@ import {
   deploymentConfig,
   deploymentConnectOrigins,
   renderDeploymentManifest,
-  rewriteOAuthCallbackRequest,
 } from './build-config.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 export default defineConfig(async ({ command, mode }) => {
   const env = loadEnv(mode, here, '')
   const deployment = deploymentConfig(env)
-  const allowedConnectOrigins = deployment ? deploymentConnectOrigins(deployment) : ''
+  const allowedConnectOrigins = deploymentConnectOrigins(env)
   const icon = await readFile(resolve(here, '../shell/src/main/assets/menu-docx@2x.png'))
   const manifestTemplate = await readFile(resolve(here, 'public/manifest.xml'), 'utf8')
   const officeIconPlugin: Plugin = {
@@ -36,24 +35,7 @@ export default defineConfig(async ({ command, mode }) => {
     transformIndexHtml(html) {
       return html.replaceAll('__WISWORK_CONNECT_ORIGINS__', allowedConnectOrigins)
     },
-    configureServer(server) {
-      server.middlewares.use((request, _response, next) => {
-        request.url = rewriteOAuthCallbackRequest(request.url)
-        next()
-      })
-    },
-    configurePreviewServer(server) {
-      server.middlewares.use((request, _response, next) => {
-        request.url = rewriteOAuthCallbackRequest(request.url)
-        next()
-      })
-    },
-    generateBundle(_options, bundle) {
-      const callback = Object.values(bundle).find(
-        (entry) => entry.type === 'asset' && entry.fileName === 'oauth/callback.html',
-      )
-      if (!callback || callback.type !== 'asset') this.error('OAuth callback HTML was not emitted')
-      this.emitFile({ type: 'asset', fileName: 'oauth/callback', source: callback.source })
+    generateBundle() {
       if (deployment) {
         this.emitFile({
           type: 'asset',
@@ -72,11 +54,10 @@ export default defineConfig(async ({ command, mode }) => {
     build: {
       outDir: resolve(here, 'dist'),
       emptyOutDir: true,
-      sourcemap: true,
+      sourcemap: false,
       rollupOptions: {
         input: {
           taskpane: resolve(here, 'src/taskpane.html'),
-          callback: resolve(here, 'src/oauth/callback.html'),
         },
       },
     },
