@@ -469,6 +469,77 @@ async fn valid_activity_renews_idle_ttl_but_never_the_absolute_session_lifetime(
 }
 
 #[tokio::test]
+async fn unknown_only_claim_does_not_mutate_or_notify_the_pairing() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.create","host":"Word","capabilities":["agent.v1"]}),
+    )
+    .await;
+    let created = recv(&mut office).await;
+    let code = created["verification_code"].clone();
+
+    let mut attacker = pc_socket(&url).await;
+    send(
+        &mut attacker,
+        json!({"version":2,"type":"pc.claim","verification_code":code,"capabilities":["future-capability.v9"]}),
+    )
+    .await;
+    assert_eq!(
+        recv(&mut attacker).await["code"],
+        "capability_not_negotiated"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), recv(&mut office))
+            .await
+            .is_err()
+    );
+
+    let mut legitimate = pc_socket(&url).await;
+    send(
+        &mut legitimate,
+        json!({"version":2,"type":"pc.claim","verification_code":code,"capabilities":["agent.v1"]}),
+    )
+    .await;
+    assert_eq!(recv(&mut legitimate).await["type"], "pc.claimed");
+}
+
+#[tokio::test]
+async fn pc_response_activity_cannot_revive_an_idle_expired_session() {
+    let url =
+        server_with_session_ttls(Some((Duration::from_millis(100), Duration::from_secs(1)))).await;
+    let mut office = socket(&url, ORIGIN).await;
+    send(
+        &mut office,
+        json!({"version":1,"type":"office.create","host":"Excel"}),
+    )
+    .await;
+    let created = recv(&mut office).await;
+    let mut pc = pc_socket(&url).await;
+    send(
+        &mut pc,
+        json!({"version":1,"type":"pc.claim","verification_code":created["verification_code"]}),
+    )
+    .await;
+    let claimed = recv(&mut pc).await;
+    send(
+        &mut pc,
+        json!({"version":1,"type":"pc.approve","pairing_id":claimed["pairing_id"]}),
+    )
+    .await;
+    let pc_ready = recv(&mut pc).await;
+    let office_ready = recv(&mut office).await;
+    send(&mut office, json!({"version":1,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"idle_response","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["request_id"], "idle_response");
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    send(&mut pc, json!({"version":1,"type":"pc.start","session_id":pc_ready["session_id"],"capability":pc_ready["capability"],"request_id":"idle_response","status":200,"content_type":"application/json"})).await;
+    let expired = recv(&mut office).await;
+    assert_eq!(expired["code"], "session_expired");
+}
+
+#[tokio::test]
 async fn rejects_extra_keys_malformed_binary_and_pc_spoofed_origin() {
     let url = server().await;
     let mut spoof = socket(&url, ORIGIN).await;

@@ -772,16 +772,17 @@ async fn claim(
     if p.pc.is_some() {
         return Err("already_claimed");
     }
-    p.pc = Some((conn, tx.clone()));
-    p.negotiated_capabilities = p
+    let negotiated_capabilities: Vec<_> = p
         .requested_capabilities
         .iter()
         .filter(|name| offered.contains(name))
         .cloned()
         .collect();
-    if p.negotiated_capabilities.is_empty() {
+    if negotiated_capabilities.is_empty() {
         return Err("capability_not_negotiated");
     }
+    p.pc = Some((conn, tx.clone()));
+    p.negotiated_capabilities = negotiated_capabilities;
     send(
         tx,
         if protocol == PROTOCOL_V2 {
@@ -1007,6 +1008,7 @@ async fn cancel(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'sta
     }
     let (sid, cap, rid) = session_fields(&m)?;
     let mut st = app.inner.state.lock().await;
+    expire(&mut st, app.inner.config.pairing_ttl);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.office != conn || session.office_cap != cap || session.version != protocol {
         return Err("invalid_capability");
@@ -1047,6 +1049,7 @@ async fn chunk(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
         return Err("chunk_too_large");
     }
     let mut st = app.inner.state.lock().await;
+    expire(&mut st, app.inner.config.pairing_ttl);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
@@ -1104,6 +1107,7 @@ async fn start(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
         return Err("invalid_content_type");
     }
     let mut store = app.inner.state.lock().await;
+    expire(&mut store, app.inner.config.pairing_ttl);
     let session = store.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
@@ -1131,6 +1135,7 @@ async fn done(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stati
     }
     let (sid, cap, rid) = session_fields(&m)?;
     let mut st = app.inner.state.lock().await;
+    expire(&mut st, app.inner.config.pairing_ttl);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
@@ -1174,6 +1179,7 @@ async fn pc_error(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'s
         return Err("invalid_frame");
     }
     let mut st = app.inner.state.lock().await;
+    expire(&mut st, app.inner.config.pairing_ttl);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
