@@ -7,6 +7,7 @@ Standalone Rust WebSocket relay for pairing the Office task pane with a signed-i
 ```bash
 CARGO_TARGET_DIR=/tmp/wiswork-relay-target cargo test --locked --manifest-path services/wiswork-relay/Cargo.toml
 CARGO_TARGET_DIR=/tmp/wiswork-relay-target cargo clippy --locked --manifest-path services/wiswork-relay/Cargo.toml --all-targets -- -D warnings
+cargo deny --manifest-path services/wiswork-relay/Cargo.toml check licenses
 ```
 
 The process binds only `127.0.0.1`. `WISWORK_RELAY_PORT` defaults to `43190` and must be a decimal port from 1 through 65535 when set.
