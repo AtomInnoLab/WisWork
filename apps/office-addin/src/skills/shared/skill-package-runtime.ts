@@ -17,6 +17,7 @@ export interface PackageWorkerLike {
 export class SkillPackageWorkerRuntime {
   readonly #workerFactory: () => PackageWorkerLike
   readonly #timeoutMs: number
+  readonly #active = new Set<(code: string) => void>()
 
   constructor(options: { workerFactory?: () => PackageWorkerLike; timeoutMs?: number } = {}) {
     this.#workerFactory =
@@ -36,6 +37,7 @@ export class SkillPackageWorkerRuntime {
         settled = true
         clearTimeout(timer)
         signal?.removeEventListener('abort', cancel)
+        this.#active.delete(finish)
         worker.terminate()
         if (error) reject(new Error(error))
         else if (pkg) resolve(pkg)
@@ -43,6 +45,7 @@ export class SkillPackageWorkerRuntime {
       }
       const cancel = () => finish('upload_cancelled')
       const timer = setTimeout(() => finish('skill_package_timeout'), this.#timeoutMs)
+      this.#active.add(finish)
       signal?.addEventListener('abort', cancel, { once: true })
       worker.onerror = () => finish('invalid_skill_package')
       worker.onmessage = (event) => {
@@ -53,7 +56,19 @@ export class SkillPackageWorkerRuntime {
         )
       }
       const bytes = new Uint8Array(source.slice(0))
-      worker.postMessage({ id, bytes }, [bytes.buffer])
+      let posted = false
+      try {
+        worker.postMessage({ id, bytes }, [bytes.buffer])
+        posted = true
+      } catch {
+        // The stable failure is finalized below so termination cannot be skipped.
+      } finally {
+        if (!posted) finish('invalid_skill_package')
+      }
     })
+  }
+
+  cancelAll(): void {
+    for (const finish of [...this.#active]) finish('upload_cancelled')
   }
 }

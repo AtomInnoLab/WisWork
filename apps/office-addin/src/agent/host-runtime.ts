@@ -49,7 +49,11 @@ export interface OfficeHostRuntime {
 
 export function createOfficeHostRuntime(
   host: OfficeHost,
-  options: { enableHostSkills?: boolean; document?: OfficeDocumentClient } = {},
+  options: {
+    enableHostSkills?: boolean
+    document?: OfficeDocumentClient
+    packageRuntime?: Pick<SkillPackageWorkerRuntime, 'parse' | 'cancelAll'>
+  } = {},
 ): OfficeHostRuntime {
   if (host === 'unknown') throw new Error('office_host_unsupported')
   const vfs = new InMemoryVfs()
@@ -57,7 +61,13 @@ export function createOfficeHostRuntime(
   if (options.enableHostSkills === false) {
     const document = options.document ?? createOfficeDocumentClient(createBrowserOfficeRuntime())
     const proposals = createProposalController(document)
-    return lifecycle(createOfficeSkill(document, proposals), proposals, vfs, skills)
+    return lifecycle(
+      createOfficeSkill(document, proposals),
+      proposals,
+      vfs,
+      skills,
+      options.packageRuntime,
+    )
   }
   const proposals = createStructuredProposalController()
   const shared = createSharedBrowserSkill({ vfs, skills })
@@ -85,7 +95,13 @@ export function createOfficeHostRuntime(
             }),
           ]
         : []
-  return lifecycle(composeOfficeSkills(hostSkill, shared, extensions), proposals, vfs, skills)
+  return lifecycle(
+    composeOfficeSkills(hostSkill, shared, extensions),
+    proposals,
+    vfs,
+    skills,
+    options.packageRuntime,
+  )
 }
 
 function lifecycle(
@@ -93,8 +109,9 @@ function lifecycle(
   proposals: ProposalController | StructuredProposalController,
   vfs: InMemoryVfs,
   skills: SkillRegistry,
+  suppliedPackageRuntime?: Pick<SkillPackageWorkerRuntime, 'parse' | 'cancelAll'>,
 ): OfficeHostRuntime {
-  const packageRuntime = new SkillPackageWorkerRuntime()
+  const packageRuntime = suppliedPackageRuntime ?? new SkillPackageWorkerRuntime()
   let epoch = 0
   let disposed = false
   const check = (captured: number) => {

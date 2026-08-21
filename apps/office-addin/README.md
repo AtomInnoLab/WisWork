@@ -56,9 +56,13 @@ uploaded VFS files, and installed-skill session state.
 
 Skill packages are parsed in a terminateable worker. Compressed input, entry count, normalized path,
 per-file and aggregate inflated bytes are hard bounded; inflate is streamed and stops at the first
-limit breach. Traversal, Unicode/case collisions, links, executable/special entries, invalid UTF-8,
+limit breach. Raw central/local headers, names, flags, methods, offsets, ranges, data descriptors,
+sizes and CRCs must agree, and every ZIP64 form is refused. Traversal, Unicode/case collisions,
+links, executable/special entries, invalid UTF-8,
 unsupported formats, and duplicate packages fail atomically. Packages can contribute instructions
-and declarative resources only: they cannot register tools, code, commands, network destinations,
+and declarative resources only. PNG/JPEG/WebP structure and dimensions are validated under a pixel
+cap. The exact bounded `SKILL.md` body enters Agent context; packages cannot register tools, code,
+commands, network destinations,
 Office APIs, or any additional authority. New task, logout, and disposal remove all package mounts.
 
 ## Connect WisWork PC

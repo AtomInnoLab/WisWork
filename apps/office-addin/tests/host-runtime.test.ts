@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createOfficeHostRuntime } from '../src/agent/host-runtime.js'
 
 const inventories = {
@@ -79,6 +79,25 @@ describe('host runtime composition', () => {
     await expect(upload).rejects.toThrow('upload_cancelled')
     expect(runtime.vfs.list('/home/user')).toEqual([])
   })
+
+  it.each(['clearSession', 'dispose'] as const)(
+    '%s cancels active package parsing and rejects late installation',
+    async (action) => {
+      let reject!: (error: Error) => void
+      const cancelAll = vi.fn(() => reject(new Error('upload_cancelled')))
+      const packageRuntime = {
+        parse: vi.fn(() => new Promise<never>((_resolve, next) => (reject = next))),
+        cancelAll,
+      }
+      const runtime = createOfficeHostRuntime('word', { packageRuntime })
+      const pending = runtime.installSkillPackage(Promise.resolve(new ArrayBuffer(1)))
+      await Promise.resolve()
+      runtime[action]()
+      await expect(pending).rejects.toThrow('upload_cancelled')
+      expect(cancelAll).toHaveBeenCalledOnce()
+      expect(runtime.skills.list()).toEqual([])
+    },
+  )
 
   it('installs a bounded SKILL.md and exposes it dynamically to Agent context', async () => {
     const runtime = createOfficeHostRuntime('word')

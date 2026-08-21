@@ -9,6 +9,17 @@ import {
 } from '../src/skills/shared/skill-package-runtime.js'
 
 const manifest = '---\nname: writer\ndescription: Helps edit prose\n---\nBe concise.'
+const png = Uint8Array.from([
+  137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 73, 69, 78, 68, 0, 0, 0, 0,
+])
+const jpeg = Uint8Array.from([
+  0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0, 0xff, 0xd9,
+])
+const webp = Uint8Array.from([
+  82, 73, 70, 70, 22, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 88, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0,
+])
 
 async function archive(
   entries: Array<{ path: string; value: string | Uint8Array; options?: JSZip.JSZipFileOptions }>,
@@ -18,13 +29,20 @@ async function archive(
   return new Uint8Array(await zip.generateAsync({ type: 'arraybuffer', platform: 'UNIX' }))
 }
 
+function findSignature(bytes: Uint8Array, signature: number): number {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  for (let offset = 0; offset + 4 <= bytes.length; offset++)
+    if (view.getUint32(offset, true) === signature) return offset
+  throw new Error('fixture_signature_missing')
+}
+
 describe('bounded skill archive parser', () => {
   it('accepts exactly one root SKILL.md plus allowlisted text and image assets', async () => {
     const result = await parseSkillArchive(
       await archive([
         { path: 'SKILL.md', value: manifest },
         { path: 'references/style.txt', value: 'Plain language.' },
-        { path: 'assets/example.PNG', value: Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]) },
+        { path: 'assets/example.PNG', value: png },
       ]),
     )
     expect(result.skill.metadata.name).toBe('writer')
@@ -112,6 +130,22 @@ describe('bounded skill archive parser', () => {
     }
   })
 
+  it.each(['flag mismatch', 'ZIP64 sentinel', 'local name mismatch', 'overlapping range'] as const)(
+    'rejects inconsistent raw ZIP metadata: %s',
+    async (mode) => {
+      const bytes = await archive([{ path: 'SKILL.md', value: manifest }])
+      const view = new DataView(bytes.buffer)
+      const central = findSignature(bytes, 0x02014b50)
+      const local = findSignature(bytes, 0x04034b50)
+      if (mode === 'flag mismatch')
+        view.setUint16(local + 6, view.getUint16(local + 6, true) ^ 0x8, true)
+      if (mode === 'ZIP64 sentinel') view.setUint32(central + 24, 0xffffffff, true)
+      if (mode === 'local name mismatch') bytes[local + 30] ^= 1
+      if (mode === 'overlapping range') view.setUint32(central + 42, 1, true)
+      await expect(parseSkillArchive(bytes)).rejects.toThrow('invalid_skill_package')
+    },
+  )
+
   it('rejects entry count and compressed, per-file, and aggregate uncompressed limits', async () => {
     const many = [{ path: 'SKILL.md', value: manifest }]
     for (let index = 0; index < SKILL_PACKAGE_LIMITS.maxEntries; index++)
@@ -162,6 +196,55 @@ describe('bounded skill archive parser', () => {
     ).rejects.toThrow('invalid_skill_package')
   })
 
+  it('rejects truncated and excessive-dimension images', async () => {
+    await expect(
+      parseSkillArchive(
+        await archive([
+          { path: 'SKILL.md', value: manifest },
+          { path: 'bad.png', value: png.slice(0, 20) },
+        ]),
+      ),
+    ).rejects.toThrow('invalid_skill_package')
+    const huge = png.slice()
+    new DataView(huge.buffer).setUint32(16, 100_000)
+    new DataView(huge.buffer).setUint32(20, 100_000)
+    await expect(
+      parseSkillArchive(
+        await archive([
+          { path: 'SKILL.md', value: manifest },
+          { path: 'huge.png', value: huge },
+        ]),
+      ),
+    ).rejects.toThrow('invalid_skill_package')
+  })
+
+  it.each([
+    ['jpeg', jpeg],
+    ['webp', webp],
+  ])('accepts a structurally bounded %s image', async (extension, value) => {
+    await expect(
+      parseSkillArchive(
+        await archive([
+          { path: 'SKILL.md', value: manifest },
+          { path: `asset.${extension}`, value },
+        ]),
+      ),
+    ).resolves.toMatchObject({ skill: { metadata: { name: 'writer' } } })
+  })
+
+  it('rejects inconsistent WebP RIFF/chunk lengths', async () => {
+    const malformed = webp.slice()
+    new DataView(malformed.buffer).setUint32(4, 999, true)
+    await expect(
+      parseSkillArchive(
+        await archive([
+          { path: 'SKILL.md', value: manifest },
+          { path: 'bad.webp', value: malformed },
+        ]),
+      ),
+    ).rejects.toThrow('invalid_skill_package')
+  })
+
   it('honors cancellation without returning partial output', async () => {
     const controller = new AbortController()
     controller.abort()
@@ -191,6 +274,41 @@ describe('terminateable skill package worker runtime', () => {
     )
     expect(terminated).toBe(true)
   })
+
+  it('terminates active workers on clear and rejects late results', async () => {
+    let terminated = false
+    const worker: PackageWorkerLike = {
+      onmessage: null,
+      onerror: null,
+      postMessage() {},
+      terminate() {
+        terminated = true
+      },
+    }
+    const runtime = new SkillPackageWorkerRuntime({ workerFactory: () => worker })
+    const pending = runtime.parse(new ArrayBuffer(1))
+    runtime.cancelAll()
+    await expect(pending).rejects.toThrow('upload_cancelled')
+    expect(terminated).toBe(true)
+  })
+
+  it('terminates immediately when postMessage throws synchronously', async () => {
+    let terminated = false
+    const runtime = new SkillPackageWorkerRuntime({
+      workerFactory: () => ({
+        onmessage: null,
+        onerror: null,
+        postMessage() {
+          throw new Error('clone failed')
+        },
+        terminate() {
+          terminated = true
+        },
+      }),
+    })
+    await expect(runtime.parse(new ArrayBuffer(1))).rejects.toThrow('invalid_skill_package')
+    expect(terminated).toBe(true)
+  })
 })
 
 describe('skill package registry lifecycle', () => {
@@ -205,12 +323,23 @@ describe('skill package registry lifecycle', () => {
     )
     registry.installPackage(parsed)
     expect(vfs.readText('/home/skills/writer/notes.txt')).toBe('x')
+    expect(registry.prompt()).toContain('## writer\nBe concise.')
     expect(() => registry.installPackage(parsed)).toThrow('skill_already_installed')
     registry.uninstall('writer')
     expect(vfs.list('/home/skills/writer')).toEqual([])
     registry.installPackage(parsed)
     registry.clear()
     expect(vfs.list('/home/skills')).toEqual([])
+  })
+
+  it('preserves the exact bounded body in the next Agent context', () => {
+    const vfs = new InMemoryVfs()
+    const registry = new SkillRegistry(vfs)
+    const body = 'First rule.\n\nSecond rule: use references/style.txt.'
+    registry.install(`---\nname: exact\ndescription: Exact instructions\n---\n${body}`)
+    expect(registry.prompt()).toBe(
+      `exact: Exact instructions (/home/skills/exact/SKILL.md)\n## exact\n${body}`,
+    )
   })
 
   it('rolls back registry and VFS state when mounting fails', async () => {
