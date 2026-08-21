@@ -98,6 +98,12 @@ async fn health_and_exact_origin() {
         .await
         .unwrap();
     assert_eq!(health.status(), 200);
+    assert!(connect_async(&url).await.is_err());
+    let mut invalid_pc = url.as_str().into_client_request().unwrap();
+    invalid_pc
+        .headers_mut()
+        .insert("authorization", "Bearer invalid".parse().unwrap());
+    assert!(connect_async(invalid_pc).await.is_err());
     let mut no_origin = pc_socket(&url).await;
     send(
         &mut no_origin,
@@ -115,6 +121,44 @@ async fn health_and_exact_origin() {
         .await
         .is_err()
     );
+}
+
+#[tokio::test]
+async fn rate_limits_claims_across_reconnects_and_pairings_per_connection() {
+    let url = server().await;
+    for attempt in 0..6 {
+        let mut pc = pc_socket(&url).await;
+        send(
+            &mut pc,
+            json!({"version":1,"type":"pc.claim","verification_code":"999999"}),
+        )
+        .await;
+        let response = recv(&mut pc).await;
+        assert_eq!(
+            response["code"],
+            if attempt < 5 {
+                "invalid_code"
+            } else {
+                "claim_limit"
+            }
+        );
+    }
+
+    let mut office = socket(&url, ORIGIN).await;
+    for _ in 0..4 {
+        send(
+            &mut office,
+            json!({"version":1,"type":"office.create","host":"Word"}),
+        )
+        .await;
+        assert_eq!(recv(&mut office).await["type"], "office.created");
+    }
+    send(
+        &mut office,
+        json!({"version":1,"type":"office.create","host":"Word"}),
+    )
+    .await;
+    assert_eq!(recv(&mut office).await["code"], "pairing_limit");
 }
 
 #[tokio::test]
