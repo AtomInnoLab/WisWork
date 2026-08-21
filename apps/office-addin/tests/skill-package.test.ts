@@ -9,10 +9,19 @@ import {
 } from '../src/skills/shared/skill-package-runtime.js'
 
 const manifest = '---\nname: writer\ndescription: Helps edit prose\n---\nBe concise.'
-const png = Uint8Array.from([
-  137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0,
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 73, 69, 78, 68, 0, 0, 0, 0,
-])
+const png = (() => {
+  const value = new Uint8Array(57)
+  value.set([137, 80, 78, 71, 13, 10, 26, 10])
+  const view = new DataView(value.buffer)
+  view.setUint32(8, 13)
+  value.set([73, 72, 68, 82], 12)
+  view.setUint32(16, 1)
+  view.setUint32(20, 1)
+  value.set([8, 2, 0, 0, 0], 24)
+  value.set([73, 68, 65, 84], 37)
+  value.set([73, 69, 78, 68], 49)
+  return value
+})()
 const jpeg = Uint8Array.from([
   0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0, 0xff, 0xd9,
 ])

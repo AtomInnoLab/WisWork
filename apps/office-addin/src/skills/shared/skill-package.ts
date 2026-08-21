@@ -74,6 +74,7 @@ function validateImage(extension: string, bytes: Uint8Array): void {
     let offset = 8
     let first = true
     let ended = false
+    let hasImageData = false
     while (offset + 12 <= bytes.length) {
       const size = view.getUint32(offset)
       const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8))
@@ -84,6 +85,7 @@ function validateImage(extension: string, bytes: Uint8Array): void {
         height = view.getUint32(offset + 12)
         first = false
       }
+      if (type === 'IDAT') hasImageData = true
       offset += 12 + size
       if (type === 'IEND') {
         if (size !== 0 || offset !== bytes.length) invalid()
@@ -91,7 +93,7 @@ function validateImage(extension: string, bytes: Uint8Array): void {
         break
       }
     }
-    if (!ended) invalid()
+    if (!ended || !hasImageData) invalid()
   } else if (extension === 'jpg' || extension === 'jpeg') {
     if (bytes.length < 10 || !starts(0xff, 0xd8) || bytes.at(-2) !== 0xff || bytes.at(-1) !== 0xd9)
       invalid()
@@ -131,6 +133,22 @@ function validateImage(extension: string, bytes: Uint8Array): void {
       if (type === 'VP8X' && size >= 10) {
         width = 1 + bytes[offset + 12] + (bytes[offset + 13] << 8) + (bytes[offset + 14] << 16)
         height = 1 + bytes[offset + 15] + (bytes[offset + 16] << 8) + (bytes[offset + 17] << 16)
+      } else if (
+        type === 'VP8 ' &&
+        size >= 10 &&
+        bytes[offset + 11] === 0x9d &&
+        bytes[offset + 12] === 0x01 &&
+        bytes[offset + 13] === 0x2a
+      ) {
+        width = view.getUint16(offset + 14, true) & 0x3fff
+        height = view.getUint16(offset + 16, true) & 0x3fff
+      } else if (type === 'VP8L' && size >= 5 && bytes[offset + 8] === 0x2f) {
+        width = 1 + bytes[offset + 9] + ((bytes[offset + 10] & 0x3f) << 8)
+        height =
+          1 +
+          (bytes[offset + 10] >> 6) +
+          (bytes[offset + 11] << 2) +
+          ((bytes[offset + 12] & 0x0f) << 10)
       }
       offset += 8 + size + (size & 1)
     }
