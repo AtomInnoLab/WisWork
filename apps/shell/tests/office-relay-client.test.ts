@@ -59,6 +59,9 @@ describe('Office relay PC client', () => {
       officeRelayEndpointFromEnv({ WISWORK_OFFICE_RELAY_URL: 'ws://localhost/relay' }),
     ).toThrow('invalid_office_relay_url')
     expect(() =>
+      officeRelayEndpointFromEnv({ WISWORK_OFFICE_RELAY_URL: 'wss://dev.example/office-relay' }),
+    ).toThrow('invalid_office_relay_url')
+    expect(() =>
       officeRelayEndpointFromEnv({
         WISWORK_OFFICE_RELAY_URL: 'wss://user:secret@example.com/relay',
       }),
@@ -212,7 +215,10 @@ describe('Office relay PC client', () => {
     const socket = new FakeSocket()
     const client = createOfficeRelayClient({
       endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
-      connect: () => socket,
+      connect: () => {
+        queueMicrotask(() => socket.open())
+        return socket
+      },
       getValidAccountStatus: async () => ({ loggedIn: true }),
       getAccessToken: async () => 'token',
       proxy: async () => ({ status: 200, body: new Uint8Array() }),
@@ -320,6 +326,58 @@ describe('Office relay PC client', () => {
     })
   })
 
+  it.each([100, 199, 204, 205, 304])(
+    'returns request_failed without ending the session for non-streaming status %i',
+    async (status) => {
+      const socket = new FakeSocket()
+      const client = createOfficeRelayClient({
+        endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+        connect: () => socket,
+        getValidAccountStatus: async () => ({ loggedIn: true }),
+        getAccessToken: async () => 'token',
+        proxy: async () => ({ status, body: new Uint8Array() }),
+        onPending() {},
+      })
+      const claiming = client.claim('123456')
+      await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+      socket.open()
+      await claiming
+      socket.message({
+        version: 1,
+        type: 'pc.claimed',
+        pairing_id: 'pairing_12345678',
+        host: 'Word',
+        origin: 'https://office.8-216-134-194.sslip.io',
+        verification_code: '123456',
+        expires_in: 120,
+      })
+      await client.approve('pairing_12345678')
+      socket.message({
+        version: 1,
+        type: 'pc.approved',
+        session_id: 'session_12345678',
+        capability: 'secret-capability',
+        expires_in: 1800,
+      })
+      socket.message({
+        version: 1,
+        type: 'relay.request',
+        session_id: 'session_12345678',
+        request_id: 'request_12345678',
+        body: {},
+      })
+      await vi.waitFor(() =>
+        expect(socket.sent.some((raw) => JSON.parse(raw).type === 'pc.error')).toBe(true),
+      )
+      const frames = socket.sent.map((raw) => JSON.parse(raw))
+      expect(frames).not.toContainEqual(expect.objectContaining({ type: 'pc.start' }))
+      expect(frames).toContainEqual(
+        expect.objectContaining({ type: 'pc.error', code: 'request_failed' }),
+      )
+      expect(client.status()).toBe('paired')
+    },
+  )
+
   it('aborts active upstream work on relay.cancel', async () => {
     const socket = new FakeSocket()
     let aborted = false
@@ -375,6 +433,66 @@ describe('Office relay PC client', () => {
     await vi.waitFor(() => expect(aborted).toBe(true))
     expect(socket.sent.map((raw) => JSON.parse(raw).type)).not.toContain('pc.error')
     expect(client.status()).toBe('paired')
+  })
+
+  it('lets Relay own the 120s deadline and tolerates its late cancel after the 125s watchdog', async () => {
+    vi.useFakeTimers()
+    const socket = new FakeSocket()
+    let aborted = false
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => {
+        queueMicrotask(() => socket.open())
+        return socket
+      },
+      getValidAccountStatus: async () => ({ loggedIn: true }),
+      getAccessToken: async () => 'token',
+      proxy: ({ signal }) =>
+        new Promise((_resolve, reject) =>
+          signal.addEventListener('abort', () => {
+            aborted = true
+            reject(new Error('aborted'))
+          }),
+        ),
+      onPending() {},
+    })
+    await client.claim('123456')
+    socket.message({
+      version: 1,
+      type: 'pc.claimed',
+      pairing_id: 'pairing_12345678',
+      host: 'Word',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      verification_code: '123456',
+      expires_in: 120,
+    })
+    await client.approve('pairing_12345678')
+    socket.message({
+      version: 1,
+      type: 'pc.approved',
+      session_id: 'session_12345678',
+      capability: 'secret-capability',
+      expires_in: 1800,
+    })
+    socket.message({
+      version: 1,
+      type: 'relay.request',
+      session_id: 'session_12345678',
+      request_id: 'request_12345678',
+      body: {},
+    })
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(aborted).toBe(true)
+    socket.message({
+      version: 1,
+      type: 'relay.cancel',
+      session_id: 'session_12345678',
+      request_id: 'request_12345678',
+    })
+    expect(client.status()).toBe('paired')
+    vi.useRealTimers()
   })
 
   it('expires a pending pairing and removes its approval prompt', async () => {

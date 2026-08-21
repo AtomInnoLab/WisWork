@@ -7,23 +7,44 @@ const MAX_CONTROL_BYTES = 16 * 1024
 const MAX_REQUEST_BYTES = 256 * 1024
 const MAX_CHUNK_BYTES = 64 * 1024
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024
-const REQUEST_TIMEOUT_MS = 120_000
+// Relay owns the 120s deadline; this only handles a lost relay.cancel.
+const REQUEST_TIMEOUT_MS = 125_000
 const CONNECT_TIMEOUT_MS = 10_000
 const IDENTIFIER = /^[A-Za-z0-9_-]{8,128}$/
 const HOSTS = new Set(['Word', 'Excel', 'PowerPoint'])
 const MAX_REQUEST_IDS = 2_048
 const RELAY_ERROR_CODES = new Set([
+  'already_claimed',
   'binary_not_supported',
+  'chunk_too_large',
+  'claim_limit',
+  'claim_rate_limited',
+  'create_rate_limited',
+  'duplicate_request',
   'frame_too_large',
+  'invalid_capability',
   'invalid_code',
+  'invalid_content_type',
   'invalid_frame',
   'invalid_pairing',
+  'invalid_request',
+  'invalid_sequence',
+  'pairing_limit',
+  'peer_unavailable',
   'relay_busy',
+  'request_active',
+  'request_limit',
+  'request_timeout',
+  'request_too_large',
+  'response_too_large',
   'role_not_allowed',
   'session_expired',
   'session_revoked',
-  'unauthorized',
+  'unknown_type',
+  'unsupported_host',
 ])
+const TERMINAL_REQUEST_CACHE_SIZE = 64
+const PRODUCTION_RELAY_ENDPOINT = 'wss://office.8-216-134-194.sslip.io/office-relay'
 
 export interface RelaySocket {
   readyState: number
@@ -64,10 +85,9 @@ function jsonObject(value: unknown): value is Record<string, unknown> {
 }
 
 export function officeRelayEndpointFromEnv(env: Record<string, string | undefined>): string {
-  const value = env.WISWORK_OFFICE_RELAY_URL ?? 'wss://office.8-216-134-194.sslip.io/office-relay'
+  const value = env.WISWORK_OFFICE_RELAY_URL ?? PRODUCTION_RELAY_ENDPOINT
   const url = new URL(value)
-  if (url.protocol !== 'wss:' || url.username || url.password || url.search || url.hash)
-    throw new Error('invalid_office_relay_url')
+  if (url.href !== PRODUCTION_RELAY_ENDPOINT) throw new Error('invalid_office_relay_url')
   return url.href
 }
 
@@ -91,6 +111,8 @@ export function createOfficeRelayClient(options: {
     null
   let claimedCode: string | null = null
   const requestIds = new Set<string>()
+  const terminalRequestIds = new Set<string>()
+  const terminalRequestOrder: string[] = []
   let generation = 0
   let approvalSentFor: string | null = null
   let pairingTimer: ReturnType<typeof setTimeout> | null = null
@@ -113,6 +135,13 @@ export function createOfficeRelayClient(options: {
     pairingTimer = null
     sessionTimer = null
   }
+  const rememberTerminalRequest = (requestId: string) => {
+    if (terminalRequestIds.has(requestId)) return
+    terminalRequestIds.add(requestId)
+    terminalRequestOrder.push(requestId)
+    while (terminalRequestOrder.length > TERMINAL_REQUEST_CACHE_SIZE)
+      terminalRequestIds.delete(terminalRequestOrder.shift()!)
+  }
   const cancelActive = (remoteCancelled = false) => {
     if (!active) return
     active.remoteCancelled ||= remoteCancelled
@@ -128,6 +157,8 @@ export function createOfficeRelayClient(options: {
     claimedCode = null
     session = null
     requestIds.clear()
+    terminalRequestIds.clear()
+    terminalRequestOrder.length = 0
     clearTimers()
     const current = socket
     socket = null
@@ -159,8 +190,15 @@ export function createOfficeRelayClient(options: {
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
     try {
       const response = await options.proxy({ body: frame.body, signal: controller.signal })
-      if (!Number.isSafeInteger(response.status) || response.status < 100 || response.status > 599)
-        throw new Error('invalid_upstream_status')
+      if (
+        !Number.isSafeInteger(response.status) ||
+        response.status < 200 ||
+        response.status > 599 ||
+        response.status === 204 ||
+        response.status === 205 ||
+        response.status === 304
+      )
+        throw new Error('unsupported_stream_status')
       const contentType = response.contentType ?? 'application/octet-stream'
       if (!/^[\x20-\x7e]{1,128}$/.test(contentType)) throw new Error('invalid_content_type')
       send({
@@ -213,7 +251,9 @@ export function createOfficeRelayClient(options: {
       const code =
         error instanceof Error && error.message === 'auth_required'
           ? 'auth_required'
-          : 'upstream_error'
+          : error instanceof Error && error.message === 'unsupported_stream_status'
+            ? 'request_failed'
+            : 'upstream_error'
       if (code === 'auth_required') return clear(code, true)
       send({
         version: 1,
@@ -225,6 +265,7 @@ export function createOfficeRelayClient(options: {
       })
     } finally {
       clearTimeout(timeout)
+      rememberTerminalRequest(frame.request_id as string)
       if (active?.requestId === frame.request_id) active = null
     }
   }
@@ -334,9 +375,11 @@ export function createOfficeRelayClient(options: {
       if (
         !exact(frame, ['version', 'type', 'session_id', 'request_id']) ||
         typed.session_id !== session?.sessionId ||
-        typed.request_id !== active?.requestId
+        !validId(typed.request_id)
       )
         return clear('protocol_violation', true)
+      if (terminalRequestIds.has(typed.request_id)) return
+      if (typed.request_id !== active?.requestId) return clear('protocol_violation', true)
       cancelActive(true)
       return
     }
@@ -346,7 +389,7 @@ export function createOfficeRelayClient(options: {
       typeof typed.code === 'string' &&
       RELAY_ERROR_CODES.has(typed.code)
     )
-      return clear(typed.code, true)
+      return clear('relay_error', true)
     clear('protocol_violation', true)
   }
 
