@@ -7,7 +7,8 @@ An Office.js task pane for Word, Excel, and PowerPoint. It reuses the signed-in 
 After `Office.onReady()`, the task pane composes the shared browser skill with exactly one Word,
 Excel, or PowerPoint skill. Unsupported hosts fail closed.
 
-- Shared: bounded VFS `read`, sandboxed `bash` (`pwd`, `ls`, and `cat` only), session-file
+- Shared: bounded VFS `read`, sandboxed `bash` (`pwd`, `ls`, `cat`, `pdf-to-text`,
+  `pdf-to-images`, `docx-to-text`, and `xlsx-to-csv`), session-file
   upload, and strict single-file `SKILL.md` installation. Installed skill metadata is added to the
   Agent context dynamically; package folders and auxiliary files are not yet exposed in the UI.
 - Word: `get_document_text`, `get_document_structure`, `get_ooxml`, `screenshot_document`,
@@ -20,10 +21,11 @@ Excel, or PowerPoint skill. Unsupported hosts fail closed.
   `edit_slide_text`, `duplicate_slide`, `edit_slide_xml`, `edit_slide_chart`,
   `edit_slide_master`, `execute_office_js`.
 
-Raw Office.js, Word screenshot, PowerPoint XML/chart/master edits, file conversion commands, and
-web retrieval remain release blockers. There is no fixed authenticated web bridge route yet, so no
-web tool is advertised. Blocked advertised tools return stable `office_api_unsupported` or
-`command_unsupported` errors and must not be described as successful. Browser `bash` is not a
+Word screenshot exports a bounded PDF through Office.js and renders a bounded page to a
+model-visible PNG. Word `execute_office_js` accepts only a JSON declarative program (version 1,
+maximum 32 allowlisted operations); it never evaluates JavaScript. PowerPoint package operations
+are tracked separately. Web retrieval remains blocked because there is no fixed authenticated PC
+bridge route, so no web tool is advertised. Browser `bash` is not a
 native shell and has no PC filesystem, process, socket, credential, or package-install access.
 Supported mutations show a structured title, impact, before/after data, preview, and code when
 present, and execute only after explicit confirmation. Logout or bridge loss disposes proposals,
@@ -111,6 +113,15 @@ Office (Office Web remains blocked pending PNA and API-set acceptance):
    the next Agent request, then verify traversal and native-shell/network syntax are denied.
 6. Log out during an active stream and pending confirmation; verify conversation, proposal, VFS,
    and installed-skill state are cleared before reconnecting.
+
+## Browser conversion dependency audit
+
+The conversion/screenshot runtime uses already repository-pinned browser libraries: PDF.js
+5.7.284 (Apache-2.0), JSZip 3.10.1 (MIT), and fast-xml-parser 5.3.4 (MIT). Inputs remain inside the
+session VFS; PDF loading disables worker fetch and WebAssembly, sets parser/image/page/output
+bounds, and uses a fixed bundled worker URL. The configured production build emits no source map;
+its expected large artifacts are the PDF worker (about 1.29 MB minified) and lazy PDF renderer
+chunk. Any version change requires repeating license, CSP, bundle-size, and vulnerability review.
 
 ## Checks
 

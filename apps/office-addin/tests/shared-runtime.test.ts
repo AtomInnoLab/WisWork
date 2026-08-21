@@ -5,6 +5,7 @@ import { createSandboxCommands } from '../src/skills/shared/commands.js'
 import { createSharedBrowserSkill } from '../src/skills/shared/shared-skill.js'
 import { parseSkillPackage, SkillRegistry } from '../src/skills/shared/skill-registry.js'
 import { InMemoryVfs } from '../src/skills/shared/vfs.js'
+import JSZip from 'jszip'
 
 describe('exact schema helpers', () => {
   it('rejects unknown, missing, and oversized fields', () => {
@@ -111,6 +112,37 @@ describe('shared browser skill', () => {
         input: { path: '/home/user/a.txt', extra: true },
       }),
     ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+  })
+
+  it('returns uploaded images through model-visible display data', async () => {
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/page.png', Uint8Array.from([137, 80, 78, 71]))
+    const skill = createSharedBrowserSkill({ vfs })
+    await expect(
+      skill.executeTool({ id: 'image', name: 'read', input: { path: '/home/user/page.png' } }),
+    ).resolves.toMatchObject({
+      output: '{"path":"/home/user/page.png","mime":"image/png","bytes":4}',
+      display: { kind: 'images', items: [{ url: 'data:image/png;base64,iVBORw==' }] },
+    })
+  })
+
+  it('runs a real bounded DOCX-to-text conversion entirely inside the VFS', async () => {
+    const zip = new JSZip()
+    zip.file(
+      'word/document.xml',
+      '<w:document><w:body><w:p><w:r><w:t>Hello</w:t></w:r></w:p></w:body></w:document>',
+    )
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/input.docx', await zip.generateAsync({ type: 'uint8array' }))
+    const skill = createSharedBrowserSkill({ vfs })
+    await expect(
+      skill.executeTool({
+        id: 'convert',
+        name: 'bash',
+        input: { command: 'docx-to-text /home/user/input.docx /home/user/output.txt' },
+      }),
+    ).resolves.toMatchObject({ output: '/home/user/output.txt', mutated: false })
+    expect(vfs.readText('/home/user/output.txt')).toBe('Hello')
   })
 
   it('denies native/global/network syntax and supports cancellation and timeout', async () => {

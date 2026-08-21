@@ -35,6 +35,9 @@ function adapter(overrides: Partial<WordAdapter> = {}): WordAdapter {
       children: [{ index: 0, type: 'p', line: 1, paragraphIndex: 0, text: 'Title' }],
     } satisfies WordOoxmlResult),
     screenshotDocument: vi.fn().mockRejectedValue(new Error('office_api_unsupported')),
+    fingerprint: vi.fn().mockResolvedValue('before'),
+    executeOperations: vi.fn().mockResolvedValue(undefined),
+    verifyOperations: vi.fn().mockResolvedValue(true),
     ...overrides,
   }
 }
@@ -238,6 +241,24 @@ describe('Word compatibility skill', () => {
     })
   })
 
+  it('returns a valid Word screenshot as model-visible image data', async () => {
+    const base64 = 'iVBORw0KGgoAAAA='
+    const skill = createWordSkill({
+      adapter: adapter({
+        screenshotDocument: vi.fn().mockResolvedValue({ base64, mime: 'image/png' }),
+      }),
+      vfs: new InMemoryVfs(),
+      proposals: createStructuredProposalController(),
+    })
+    await expect(
+      skill.executeTool(call('screenshot_document', { page: 1 })),
+    ).resolves.toMatchObject({
+      output: '{"mime":"image/png"}',
+      display: { kind: 'images', items: [{ url: `data:image/png;base64,${base64}` }] },
+      mutated: false,
+    })
+  })
+
   it('does not write OOXML when the success summary exceeds its bound', async () => {
     const vfs = new InMemoryVfs()
     const skill = createWordSkill({
@@ -262,15 +283,57 @@ describe('Word compatibility skill', () => {
     expect(() => vfs.readText('/home/user/ooxml/body.xml')).toThrow('vfs_not_found')
   })
 
-  it('keeps raw Office.js visible but disabled without an audited hardened evaluator', async () => {
+  it('turns an allowlisted declarative Word program into a confirmation-gated mutation', async () => {
+    const proposals = createStructuredProposalController()
+    const fake = adapter()
+    const skill = createWordSkill({ adapter: fake, vfs: new InMemoryVfs(), proposals })
+    const code = JSON.stringify({
+      version: 1,
+      operations: [{ op: 'insert_text', location: 'end', text: 'hello' }],
+    })
+    await expect(skill.executeTool(call('execute_office_js', { code }))).resolves.toMatchObject({
+      mutated: false,
+      output: expect.stringContaining('proposalId'),
+    })
+    const proposal = proposals.pending()!
+    expect(proposal).toMatchObject({ code, impact: { host: 'word', count: 1 } })
+    expect(fake.executeOperations).not.toHaveBeenCalled()
+    await proposals.confirm(proposal.id)
+    expect(fake.executeOperations).toHaveBeenCalledWith(
+      [{ op: 'insert_text', location: 'end', text: 'hello' }],
+      expect.any(AbortSignal),
+    )
+  })
+
+  it('rejects JavaScript and unallowlisted declarative operations without a proposal', async () => {
     const proposals = createStructuredProposalController()
     const skill = createWordSkill({ adapter: adapter(), vfs: new InMemoryVfs(), proposals })
-    await expect(
-      skill.executeTool(
-        call('execute_office_js', { code: 'context.document.body.insertText("x", "End")' }),
-      ),
-    ).resolves.toMatchObject({ output: 'office_api_unsupported', isError: true, mutated: false })
+    for (const code of [
+      'context.document.body.insertText("x", "End")',
+      '{"version":1,"operations":[{"op":"fetch","url":"https://example.com"}]}',
+    ]) {
+      await expect(skill.executeTool(call('execute_office_js', { code }))).resolves.toMatchObject({
+        output: 'invalid_tool_input',
+        isError: true,
+        mutated: false,
+      })
+    }
     expect(proposals.pending()).toBeUndefined()
+  })
+
+  it('refuses a stale declarative Word proposal before execution', async () => {
+    const fake = adapter({
+      fingerprint: vi.fn().mockResolvedValueOnce('before').mockResolvedValueOnce('changed'),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createWordSkill({ adapter: fake, vfs: new InMemoryVfs(), proposals })
+    await skill.executeTool(
+      call('execute_office_js', {
+        code: '{"version":1,"operations":[{"op":"insert_text","location":"end","text":"x"}]}',
+      }),
+    )
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+    expect(fake.executeOperations).not.toHaveBeenCalled()
   })
 })
 
@@ -305,6 +368,38 @@ describe('browser Word adapter', () => {
       'office_api_unsupported',
     )
     expect(run).not.toHaveBeenCalled()
+  })
+
+  it('exports bounded PDF slices and renders the requested page to PNG', async () => {
+    const closeAsync = vi.fn((callback: () => void) => callback())
+    const getSliceAsync = vi.fn((index: number, callback: (result: unknown) => void) =>
+      callback({ status: 'succeeded', value: { data: index === 0 ? [37, 80] : [68, 70] } }),
+    )
+    const getFileAsync = vi.fn(
+      (_type: unknown, _options: unknown, callback: (result: unknown) => void) =>
+        callback({
+          status: 'succeeded',
+          value: { size: 4, sliceCount: 2, getSliceAsync, closeAsync },
+        }),
+    )
+    Object.assign(globalThis, {
+      Office: {
+        FileType: { Pdf: 'pdf' },
+        context: {
+          host: 'Word',
+          document: { getFileAsync },
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      Word: { run: vi.fn() },
+    })
+    const renderPage = vi.fn().mockResolvedValue('iVBORw0KGgoAAA=')
+    await expect(new BrowserWordAdapter({ renderPage }).screenshotDocument(2)).resolves.toEqual({
+      base64: 'iVBORw0KGgoAAA=',
+      mime: 'image/png',
+    })
+    expect(renderPage).toHaveBeenCalledWith(Uint8Array.from([37, 80, 68, 70]), 2, undefined)
+    expect(closeAsync).toHaveBeenCalledOnce()
   })
 
   it('normalizes paragraph style and list metadata through real Word.run request contexts', async () => {

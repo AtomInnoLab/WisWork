@@ -2,7 +2,8 @@ import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
 import { exactObject, integerField, optionalField, stringField } from '../../agent/tool-schema.js'
 import type { InMemoryVfs } from '../shared/vfs.js'
-import type { WordAdapter } from './browser-word-adapter.js'
+import { parseDeclarativeProgram } from '../shared/declarative-program.js'
+import type { WordAdapter, WordDeclarativeOperation } from './browser-word-adapter.js'
 import { MAX_WORD_RESULT_BYTES } from './browser-word-adapter.js'
 
 const MAX_INDEX = 1_000_000
@@ -131,6 +132,51 @@ function validPngBase64(value: unknown): value is string {
   return (value.length / 4) * 3 - padding <= MAX_SCREENSHOT_BYTES
 }
 
+function parseWordOperation(value: unknown): WordDeclarativeOperation {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) invalidProposal()
+  const input = value as Record<string, unknown>
+  if (input.op === 'insert_text') {
+    if (
+      Object.keys(input).some((key) => !['op', 'location', 'text'].includes(key)) ||
+      !['start', 'end', 'replace'].includes(String(input.location)) ||
+      typeof input.text !== 'string' ||
+      input.text.length < 1 ||
+      input.text.length > 12_000
+    )
+      invalidProposal()
+    return {
+      op: 'insert_text',
+      location: input.location as 'start' | 'end' | 'replace',
+      text: input.text,
+    }
+  }
+  if (input.op === 'replace_all') {
+    if (
+      Object.keys(input).some(
+        (key) => !['op', 'search', 'replacement', 'matchCase'].includes(key),
+      ) ||
+      typeof input.search !== 'string' ||
+      input.search.length < 1 ||
+      input.search.length > 1_000 ||
+      typeof input.replacement !== 'string' ||
+      input.replacement.length > 12_000 ||
+      (input.matchCase !== undefined && typeof input.matchCase !== 'boolean')
+    )
+      invalidProposal()
+    return {
+      op: 'replace_all',
+      search: input.search,
+      replacement: input.replacement,
+      matchCase: input.matchCase === true,
+    }
+  }
+  invalidProposal()
+}
+
+function invalidProposal(): never {
+  throw new Error('invalid_tool_input')
+}
+
 export function createWordSkill(options: {
   adapter: WordAdapter
   vfs: InMemoryVfs
@@ -199,10 +245,40 @@ export function createWordSkill(options: {
           }
         }
         if (call.name === 'execute_office_js') {
-          codeInput(call.input)
-          // A proposal must never be created unless its captured execution closure is backed by
-          // an audited SES compartment. This is the stable release-blocker behavior.
-          return failure(call.name, 'office_api_unsupported')
+          const input = codeInput(call.input)
+          const program = parseDeclarativeProgram(input.code, parseWordOperation)
+          const fingerprint = await options.adapter.fingerprint(signal)
+          assertNotCancelled(signal)
+          const proposal = options.proposals.propose({
+            operation: 'execute_office_js',
+            toolName: call.name,
+            title: input.explanation || 'Execute declarative Word operations',
+            preview: { version: program.version, operations: program.operations },
+            impact: {
+              host: 'word',
+              targets: program.operations.map((operation) =>
+                operation.op === 'insert_text'
+                  ? `document:${operation.location}`
+                  : `document:search:${operation.search.slice(0, 64)}`,
+              ),
+              count: program.operations.length,
+            },
+            fingerprint,
+            code: input.code,
+            validate: async (confirmSignal) =>
+              (await options.adapter.fingerprint(confirmSignal)) === fingerprint,
+            execute: (confirmSignal) =>
+              options.adapter.executeOperations(program.operations, confirmSignal),
+            verify: async (confirmSignal) => {
+              if (!(await options.adapter.verifyOperations(program.operations, confirmSignal)))
+                throw new Error('office_verify_failed')
+            },
+          })
+          return {
+            output: JSON.stringify({ proposalId: proposal.id, mutated: false }),
+            mutated: false,
+            summary: 'Proposed declarative Word operations',
+          }
         }
         return failure(call.name, 'invalid_tool_input')
       } catch (error) {

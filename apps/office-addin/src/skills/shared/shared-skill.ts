@@ -1,7 +1,8 @@
 import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
 import { exactObject, stringField } from '../../agent/tool-schema.js'
 import { createSandboxCommands } from './commands.js'
-import { InMemoryVfs } from './vfs.js'
+import { createConversionCommands } from './conversions.js'
+import { InMemoryVfs, MAX_VFS_FILE_BYTES } from './vfs.js'
 import type { SkillRegistry } from './skill-registry.js'
 
 const MAX_PATH = 512
@@ -21,7 +22,9 @@ export function createSharedBrowserSkill(options: {
   maxReadBytes?: number
 }): AgentSkill {
   const maxReadBytes = options.maxReadBytes ?? 64 * 1024
-  const commands = createSandboxCommands(options.vfs)
+  const commands = createSandboxCommands(options.vfs, {
+    extraCommands: createConversionCommands(options.vfs),
+  })
   return {
     id: 'office-shared-browser',
     systemPrompt:
@@ -54,6 +57,17 @@ export function createSharedBrowserSkill(options: {
       try {
         if (call.name === 'read') {
           const { path } = readInput(call.input)
+          const mime = imageMime(path)
+          if (mime) {
+            const bytes = options.vfs.readBytes(path, { maxBytes: MAX_VFS_FILE_BYTES + 1 })
+            if (bytes.byteLength > MAX_VFS_FILE_BYTES) throw new Error('vfs_limit')
+            return {
+              output: JSON.stringify({ path, mime, bytes: bytes.byteLength }),
+              display: { kind: 'images', items: [{ url: `data:${mime};base64,${base64(bytes)}` }] },
+              mutated: false,
+              summary: `Read ${path}`,
+            }
+          }
           return {
             output: options.vfs.readText(path, { maxBytes: maxReadBytes }),
             mutated: false,
@@ -77,4 +91,22 @@ export function createSharedBrowserSkill(options: {
       }
     },
   }
+}
+
+function imageMime(path: string): string | undefined {
+  const extension = path.split('.').pop()?.toLowerCase()
+  return {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+  }[extension ?? '']
+}
+
+function base64(bytes: Uint8Array): string {
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 32 * 1024)
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32 * 1024))
+  return btoa(binary)
 }
