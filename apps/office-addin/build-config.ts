@@ -15,6 +15,28 @@ export interface DeploymentConfig {
 
 export type OfficeTransportMode = 'relay' | 'loopback'
 export type OfficeWorkspaceMode = 'workspace' | 'legacy'
+export interface OfficeCapabilityFlags {
+  conversions: boolean
+  skillPackages: boolean
+  importMedia: boolean
+  webTools: boolean
+}
+
+function exactFlag(value: string | undefined, defaultValue: boolean): boolean {
+  if (value === undefined || value === '') return defaultValue
+  if (value === '1') return true
+  if (value === '0') return false
+  throw new Error('invalid_office_capability_flags')
+}
+
+export function officeCapabilityFlags(env: BuildEnv): OfficeCapabilityFlags {
+  return Object.freeze({
+    conversions: exactFlag(env.VITE_WISWORK_OFFICE_CONVERSIONS, true),
+    skillPackages: exactFlag(env.VITE_WISWORK_OFFICE_SKILL_PACKAGES, true),
+    importMedia: exactFlag(env.VITE_WISWORK_OFFICE_IMPORT_MEDIA, true),
+    webTools: exactFlag(env.VITE_WISWORK_OFFICE_WEB_TOOLS, false),
+  })
+}
 
 export function officeWorkspaceMode(env: BuildEnv): OfficeWorkspaceMode {
   const value = env.VITE_WISWORK_OFFICE_WORKSPACE
@@ -55,6 +77,7 @@ export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
   try {
     mode = officeTransportMode(env)
     void officeWorkspaceMode(env)
+    void officeCapabilityFlags(env)
   } catch {
     return undefined
   }

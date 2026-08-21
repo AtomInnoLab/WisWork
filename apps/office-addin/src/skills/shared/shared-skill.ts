@@ -21,12 +21,14 @@ export function createSharedBrowserSkill(options: {
   skills?: SkillRegistry
   maxReadBytes?: number
   conversionRuntime?: Pick<ConversionWorkerRuntime, 'run'>
+  enableConversions?: boolean
 }): AgentSkill {
   const maxReadBytes = options.maxReadBytes ?? 64 * 1024
   const conversionRuntime = options.conversionRuntime ?? new ConversionWorkerRuntime(options.vfs)
   const commands = createSandboxCommands(options.vfs, {
     timeoutMs: 20_000,
-    extraCommands: createConversionCommands(conversionRuntime),
+    extraCommands:
+      options.enableConversions === false ? undefined : createConversionCommands(conversionRuntime),
   })
   return {
     id: 'office-shared-browser',

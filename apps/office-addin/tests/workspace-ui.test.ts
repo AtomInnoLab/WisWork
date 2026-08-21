@@ -68,6 +68,7 @@ function workspaceMarkup(overrides: Partial<OfficeAgentSnapshot> = {}, panel?: W
   const ui: OfficeWorkspaceUi = Object.freeze({
     attachments: () => Object.freeze(['/home/user/source.docx']),
     skills: () => Object.freeze(['Editorial review']),
+    skillPackagesEnabled: true,
     upload: vi.fn(),
     clear: vi.fn(),
   })
@@ -149,6 +150,7 @@ describe('Office Agent workspace UI', () => {
     const runtime = {
       vfs: { list: () => ['/home/user/a.txt'] },
       skills: { list: () => [{ name: 'Review' }] },
+      skillPackagesEnabled: true,
       uploadFile: vi.fn(),
       installSkill: vi.fn(),
       clearSession: vi.fn(),
@@ -196,6 +198,7 @@ describe('Office Agent workspace UI', () => {
     const ui: OfficeWorkspaceUi = Object.freeze({
       attachments: () => Object.freeze([]),
       skills: () => Object.freeze([]),
+      skillPackagesEnabled: true,
       upload: vi.fn(),
       clear: vi.fn(),
     })

@@ -123,4 +123,3 @@ or retain partial VFS/package output.
 - Manual acceptance runs Word/Excel/PowerPoint on Windows and macOS plus Word Web, including Relay
   pairing, multi-turn chat, each capability family, rejection/confirmation, logout, offline, and
   accessibility smoke checks.
-

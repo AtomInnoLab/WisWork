@@ -40,6 +40,7 @@ export interface OfficeHostRuntime {
   proposals: ProposalController | StructuredProposalController
   vfs: InMemoryVfs
   skills: SkillRegistry
+  readonly skillPackagesEnabled: boolean
   uploadFile(name: string, content: Promise<ArrayBuffer>): Promise<void>
   installSkill(source: Promise<string>): Promise<void>
   installSkillPackage(source: Promise<ArrayBuffer>, signal?: AbortSignal): Promise<void>
@@ -54,6 +55,9 @@ export function createOfficeHostRuntime(
     enableHostSkills?: boolean
     document?: OfficeDocumentClient
     packageRuntime?: Pick<SkillPackageWorkerRuntime, 'parse' | 'cancelAll'>
+    enableConversions?: boolean
+    enableSkillPackages?: boolean
+    enableImportMedia?: boolean
   } = {},
 ): OfficeHostRuntime {
   if (host === 'unknown') throw new Error('office_host_unsupported')
@@ -71,7 +75,11 @@ export function createOfficeHostRuntime(
     )
   }
   const proposals = createStructuredProposalController()
-  const shared = createSharedBrowserSkill({ vfs, skills })
+  const shared = createSharedBrowserSkill({
+    vfs,
+    skills,
+    enableConversions: options.enableConversions,
+  })
   const powerPointAdapter = host === 'powerpoint' ? new BrowserPowerPointAdapter() : undefined
   const hostSkill = {
     word: () => createWordSkill({ adapter: new BrowserWordAdapter(), vfs, proposals }),
@@ -79,33 +87,36 @@ export function createOfficeHostRuntime(
     powerpoint: () => createPowerPointSkill({ adapter: powerPointAdapter!, proposals }),
   }[host]()
   const extensions =
-    host === 'excel' && supportsExcelImportMedia()
-      ? [
-          createExcelImportMediaSkill({
-            adapter: new BrowserExcelImportMediaAdapter(),
-            proposals,
-            vfs,
-            enableImage: supportsBrowserMediaValidation(),
-          }),
-        ]
-      : host === 'powerpoint' &&
-          powerPointAdapter &&
-          supportsPowerPointImportMedia() &&
-          supportsBrowserMediaValidation()
+    options.enableImportMedia === false
+      ? []
+      : host === 'excel' && supportsExcelImportMedia()
         ? [
-            createPowerPointImportMediaSkill({
-              adapter: new BrowserPowerPointImportMediaAdapter(powerPointAdapter),
+            createExcelImportMediaSkill({
+              adapter: new BrowserExcelImportMediaAdapter(),
               proposals,
               vfs,
+              enableImage: supportsBrowserMediaValidation(),
             }),
           ]
-        : []
+        : host === 'powerpoint' &&
+            powerPointAdapter &&
+            supportsPowerPointImportMedia() &&
+            supportsBrowserMediaValidation()
+          ? [
+              createPowerPointImportMediaSkill({
+                adapter: new BrowserPowerPointImportMediaAdapter(powerPointAdapter),
+                proposals,
+                vfs,
+              }),
+            ]
+          : []
   return lifecycle(
     composeOfficeSkills(hostSkill, shared, extensions),
     proposals,
     vfs,
     skills,
     options.packageRuntime,
+    options.enableSkillPackages !== false,
   )
 }
 
@@ -115,6 +126,7 @@ function lifecycle(
   vfs: InMemoryVfs,
   skills: SkillRegistry,
   suppliedPackageRuntime?: Pick<SkillPackageWorkerRuntime, 'parse' | 'cancelAll'>,
+  skillPackagesEnabled = true,
 ): OfficeHostRuntime {
   const packageRuntime = suppliedPackageRuntime ?? new SkillPackageWorkerRuntime()
   let epoch = 0
@@ -134,6 +146,7 @@ function lifecycle(
     proposals,
     vfs,
     skills,
+    skillPackagesEnabled,
     async uploadFile(name, content) {
       const captured = epoch
       if (!name || name.length > 128 || name.includes('/') || name.includes('\\'))
@@ -153,6 +166,7 @@ function lifecycle(
       skills.install(value)
     },
     async installSkillPackage(source, signal) {
+      if (!skillPackagesEnabled) throw new Error('office_capability_disabled')
       const captured = epoch
       const value = await source
       check(captured)

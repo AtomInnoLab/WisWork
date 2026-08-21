@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
+import { officeCapabilityFlags, officeWorkspaceMode } from '../build-config.js'
 import type { OfficeProposal, StructuredProposal } from './agent/proposal-controller.js'
 import { MAX_SKILL_BYTES } from './skills/shared/skill-registry.js'
 import { MAX_VFS_FILE_BYTES } from './skills/shared/vfs.js'
@@ -20,7 +21,6 @@ import {
   createOfficeDocumentClient,
   type OfficeHost,
 } from './office-document.js'
-import { officeWorkspaceMode } from '../build-config.js'
 
 const hostLabels: Record<OfficeHost, string> = {
   word: 'Microsoft Word',
@@ -91,6 +91,7 @@ interface SessionFile {
 export interface OfficeWorkspaceUi {
   readonly attachments: () => readonly string[]
   readonly skills: () => readonly string[]
+  readonly skillPackagesEnabled: boolean
   readonly upload: (file: SessionFile) => Promise<void>
   readonly uninstallSkill?: (name: string) => void
   readonly clear: () => void
@@ -100,6 +101,7 @@ export function createOfficeWorkspaceUi(runtime: OfficeHostRuntime): OfficeWorks
   return Object.freeze({
     attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
     skills: () => Object.freeze(runtime.skills.list().map((skill) => skill.name)),
+    skillPackagesEnabled: runtime.skillPackagesEnabled,
     upload: (file: SessionFile) => uploadSessionFile(runtime, file),
     uninstallSkill: (name: string) => runtime.uninstallSkill(name),
     clear: () => runtime.clearSession(),
@@ -485,31 +487,36 @@ export function AgentWorkspace(props: {
             </>
           ) : (
             <>
-              <label
-                className="upload-button"
-                htmlFor="skill-package-upload"
-                aria-disabled={state.applying}
-              >
-                Install skill package
-              </label>
-              <input
-                id="skill-package-upload"
-                className="visually-hidden"
-                type="file"
-                accept=".zip,application/zip"
-                disabled={state.applying}
-                onChange={(event) => {
-                  const file = event.currentTarget.files?.[0]
-                  if (!file) return
-                  setUploadError('')
-                  void ui
-                    .upload(file)
-                    .then(() => mounted.current && setSkills(ui.skills()))
-                    .catch(
-                      (error: unknown) => mounted.current && setUploadError(safeUploadError(error)),
-                    )
-                }}
-              />
+              {ui.skillPackagesEnabled && (
+                <>
+                  <label
+                    className="upload-button"
+                    htmlFor="skill-package-upload"
+                    aria-disabled={state.applying}
+                  >
+                    Install skill package
+                  </label>
+                  <input
+                    id="skill-package-upload"
+                    className="visually-hidden"
+                    type="file"
+                    accept=".zip,application/zip"
+                    disabled={state.applying}
+                    onChange={(event) => {
+                      const file = event.currentTarget.files?.[0]
+                      if (!file) return
+                      setUploadError('')
+                      void ui
+                        .upload(file)
+                        .then(() => mounted.current && setSkills(ui.skills()))
+                        .catch(
+                          (error: unknown) =>
+                            mounted.current && setUploadError(safeUploadError(error)),
+                        )
+                    }}
+                  />
+                </>
+              )}
               <p>Installed instructions can guide the Agent but cannot add Office authority.</p>
               {uploadError && (
                 <p className="error-text" role="alert">
@@ -748,6 +755,7 @@ function ConfiguredApp() {
     { runtime: OfficeHostRuntime; session: OfficeAgentSession; ui: OfficeWorkspaceUi } | undefined
   >()
   const workspaceMode = useMemo(() => officeWorkspaceMode(import.meta.env), [])
+  const capabilityFlags = useMemo(() => officeCapabilityFlags(import.meta.env), [])
   const [host, setHost] = useState<OfficeHost>('unknown')
   const [hostSupported, setHostSupported] = useState(false)
   const [status, setStatus] = useState('Connecting to Office…')
@@ -766,6 +774,9 @@ function ConfiguredApp() {
           if (activeHost !== 'unknown') {
             const runtime = createOfficeHostRuntime(activeHost, {
               enableHostSkills: import.meta.env.VITE_WISWORK_OFFICE_HOST_SKILLS !== '0',
+              enableConversions: capabilityFlags.conversions,
+              enableSkillPackages: capabilityFlags.skillPackages,
+              enableImportMedia: capabilityFlags.importMedia,
               document,
             })
             const session = createOfficeAgentSession({
@@ -794,7 +805,7 @@ function ConfiguredApp() {
       created?.runtime.dispose()
       bridge.disconnect()
     }
-  }, [bridge, document])
+  }, [bridge, capabilityFlags, document])
 
   useEffect(() => {
     if (bridgeState.status !== 'connected' && workspace) {

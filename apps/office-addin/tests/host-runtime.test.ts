@@ -118,4 +118,25 @@ describe('host runtime composition', () => {
       'read_selection',
     ])
   })
+
+  it('independently disables conversion, package, and import/media capability families', async () => {
+    const runtime = createOfficeHostRuntime('excel', {
+      enableConversions: false,
+      enableSkillPackages: false,
+      enableImportMedia: false,
+    })
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain('csv-to-sheet')
+    const bash = await runtime.skill.executeTool(
+      {
+        id: 'disabled-conversion',
+        name: 'bash',
+        input: { command: 'pdf-to-text /home/user/a.pdf' },
+      },
+      new AbortController().signal,
+    )
+    expect(bash.output).toBe('sandbox_denied')
+    await expect(runtime.installSkillPackage(Promise.resolve(new ArrayBuffer(1)))).rejects.toThrow(
+      'office_capability_disabled',
+    )
+  })
 })

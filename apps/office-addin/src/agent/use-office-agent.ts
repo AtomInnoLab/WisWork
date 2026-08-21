@@ -60,6 +60,21 @@ const confirmationErrors: Readonly<Record<string, SafeSessionError>> = Object.fr
     message: 'The document changed. Ask the Agent to prepare a fresh proposal.',
     retryable: false,
   },
+  office_write_failed: {
+    code: 'office_write_failed',
+    message: 'The approved change could not be applied.',
+    retryable: false,
+  },
+  office_verify_failed: {
+    code: 'office_verify_failed',
+    message: 'The approved change could not be verified.',
+    retryable: false,
+  },
+  office_recovery_failed: {
+    code: 'office_recovery_failed',
+    message: 'The document could not be restored after the failed change.',
+    retryable: false,
+  },
 })
 
 const runErrors: Readonly<Record<string, SafeSessionError>> = Object.freeze({

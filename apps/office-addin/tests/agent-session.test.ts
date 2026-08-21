@@ -397,6 +397,28 @@ describe('Office agent session', () => {
     expect(session.snapshot().proposal).toBeUndefined()
   })
 
+  it.each([
+    ['office_verify_failed', 'The approved change could not be verified.'],
+    ['office_recovery_failed', 'The document could not be restored after the failed change.'],
+  ])('preserves the terminal confirmation code %s with safe copy', async (code, message) => {
+    const proposals = proposalsHarness()
+    proposals.controller.confirm.mockRejectedValue(new Error(code))
+    proposals.setPending()
+    const session = createOfficeAgentSession({
+      transport: transportHarness().transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposals.controller,
+    })
+
+    await session.confirm('p1')
+
+    expect(session.snapshot()).toMatchObject({
+      error: code,
+      errorMessage: message,
+      retryable: false,
+    })
+  })
+
   it('allows only one confirmation and blocks competing actions until the write settles', async () => {
     const harness = transportHarness()
     const proposals = proposalsHarness()

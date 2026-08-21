@@ -103,4 +103,3 @@ Rust tests/clippy/deny; lint, format, theme, diff and configured/unconfigured pr
 artifact scan for credentials, eval, native shell, wildcard origins, source maps and raw colors.
 Perform broad independent review and fix Critical/Important findings. Manual Windows/macOS/Web
 acceptance remains an explicit release gate. Final scoped release commit and branch handoff.
-

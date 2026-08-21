@@ -109,6 +109,17 @@ The new host/shared registries are enabled by default. Build with
 `VITE_WISWORK_OFFICE_HOST_SKILLS=0` to roll back to the legacy selection-only skill without
 changing the PC bridge, identity, manifest, or stored user data.
 
+Capability families have independent exact build-time rollback flags. Set any flag to `0` to
+remove that family without rolling back the workspace or Relay identity:
+
+- `VITE_WISWORK_OFFICE_CONVERSIONS=0`
+- `VITE_WISWORK_OFFICE_SKILL_PACKAGES=0`
+- `VITE_WISWORK_OFFICE_IMPORT_MEDIA=0`
+- `VITE_WISWORK_OFFICE_WEB_TOOLS=0` (the default; Web tools additionally require a compiled,
+  reviewed retrieval-service attestation)
+
+Only `0` and `1` are accepted; invalid values make the deployment fail closed.
+
 The Agent conversation workspace has an independent fail-closed rollback. Build with the exact
 flag `VITE_WISWORK_OFFICE_WORKSPACE=0` to retain the legacy task-pane presentation while leaving
 Relay identity, the Agent harness, host tools, and confirmation semantics unchanged. Omit the flag
