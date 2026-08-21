@@ -393,6 +393,10 @@ async fn v2_negotiates_exact_capabilities_and_denies_unnegotiated_requests() {
     assert_eq!(recv(&mut office).await["version"], 2);
     send(&mut pc, json!({"version":2,"type":"pc.done","session_id":office_ready["session_id"],"capability":pc_ready["capability"],"request_id":"web_request_2"})).await;
     assert_eq!(recv(&mut office).await["version"], 2);
+    pc.close(None).await.unwrap();
+    let revoked = recv(&mut office).await;
+    assert_eq!(revoked["version"], 2);
+    assert_eq!(revoked["code"], "session_revoked");
 }
 
 #[tokio::test]

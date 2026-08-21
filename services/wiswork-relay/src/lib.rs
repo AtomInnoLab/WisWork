@@ -444,6 +444,12 @@ fn try_send(tx: &Tx, value: Value) -> Result<(), ()> {
 fn error(tx: &Tx, code: &str) {
     send(tx, json!({"version":1,"type":"relay.error","code":code}));
 }
+fn versioned_error(tx: &Tx, version: u64, code: &str) {
+    send(
+        tx,
+        json!({"version":version,"type":"relay.error","code":code}),
+    );
+}
 fn valid_base(m: &Map<String, Value>) -> bool {
     matches!(
         m.get("version").and_then(Value::as_u64),
@@ -769,18 +775,22 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
 }
 
 async fn reject(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
+    let protocol = version(&m)?;
     if !exact(&m, &["version", "type", "pairing_id"]) {
         return Err("invalid_frame");
     }
     let id = string(&m, "pairing_id")?;
     let mut s = app.inner.state.lock().await;
     let p = s.pairings.get(id).ok_or("invalid_pairing")?;
-    if p.pc.as_ref().map(|v| v.0) != Some(conn) {
+    if p.pc.as_ref().map(|v| v.0) != Some(conn) || p.version != protocol {
         return Err("invalid_pairing");
     }
     let p = s.pairings.remove(id).unwrap();
     s.codes.remove(&p.code);
-    send(&p.office_tx, json!({"version":1,"type":"office.rejected"}));
+    send(
+        &p.office_tx,
+        json!({"version":protocol,"type":"office.rejected"}),
+    );
     Ok(())
 }
 
@@ -1085,7 +1095,10 @@ fn expire(s: &mut Store, ttl: Duration) {
     for id in dead {
         if let Some(p) = s.pairings.remove(&id) {
             s.codes.remove(&p.code);
-            send(&p.office_tx, json!({"version":1,"type":"office.expired"}));
+            send(
+                &p.office_tx,
+                json!({"version":p.version,"type":"office.expired"}),
+            );
         }
     }
     let expired_sessions: Vec<_> = s
@@ -1096,11 +1109,11 @@ fn expire(s: &mut Store, ttl: Duration) {
         .collect();
     for id in expired_sessions {
         if let Some(x) = s.sessions.remove(&id) {
-            error(&x.office_tx, "session_expired");
+            versioned_error(&x.office_tx, x.version, "session_expired");
             if let Some(active) = x.active {
                 send(
                     &x.pc_tx,
-                    json!({"version":1,"type":"relay.cancel","session_id":id,"request_id":active.id}),
+                    json!({"version":x.version,"type":"relay.cancel","session_id":id,"request_id":active.id}),
                 );
             }
         }
@@ -1131,7 +1144,7 @@ async fn cleanup(app: &App, conn: u64) {
             pairing.pc = None;
             send(
                 &pairing.office_tx,
-                json!({"version":1,"type":"office.pc_offline"}),
+                json!({"version":pairing.version,"type":"office.pc_offline"}),
             );
         }
     }
@@ -1144,12 +1157,12 @@ async fn cleanup(app: &App, conn: u64) {
     for id in ids {
         if let Some(x) = s.sessions.remove(&id) {
             if x.office != conn {
-                error(&x.office_tx, "session_revoked")
+                versioned_error(&x.office_tx, x.version, "session_revoked")
             }
             if x.pc != conn {
                 send(
                     &x.pc_tx,
-                    json!({"version":1,"type":"relay.error","code":"session_revoked"}),
+                    json!({"version":x.version,"type":"relay.error","code":"session_revoked"}),
                 );
             }
             if x.pc != conn
@@ -1157,7 +1170,7 @@ async fn cleanup(app: &App, conn: u64) {
             {
                 send(
                     &x.pc_tx,
-                    json!({"version":1,"type":"relay.cancel","session_id":id,"request_id":a.id}),
+                    json!({"version":x.version,"type":"relay.cancel","session_id":id,"request_id":a.id}),
                 );
             }
         }
