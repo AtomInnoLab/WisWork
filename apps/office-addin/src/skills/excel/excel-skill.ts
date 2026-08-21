@@ -425,6 +425,32 @@ function parseCells(value: unknown): Json[][] {
           'numberFormat',
         ]
         if (Object.keys(item.cellStyles).some((key) => !allowed.includes(key))) invalid()
+        const styles = item.cellStyles as Json
+        if (styles.fontWeight !== undefined && !['normal', 'bold'].includes(styles.fontWeight))
+          invalid()
+        if (styles.fontStyle !== undefined && !['normal', 'italic'].includes(styles.fontStyle))
+          invalid()
+        if (
+          styles.fontLine !== undefined &&
+          !['none', 'underline', 'line-through'].includes(styles.fontLine)
+        )
+          invalid()
+        if (
+          styles.horizontalAlignment !== undefined &&
+          !['left', 'center', 'right'].includes(styles.horizontalAlignment)
+        )
+          invalid()
+        if (
+          styles.fontSize !== undefined &&
+          (typeof styles.fontSize !== 'number' ||
+            !Number.isFinite(styles.fontSize) ||
+            styles.fontSize < 1 ||
+            styles.fontSize > 409)
+        )
+          invalid()
+        for (const key of ['fontFamily', 'fontColor', 'backgroundColor', 'numberFormat'])
+          if (styles[key] !== undefined)
+            string(styles[key], key === 'fontFamily' || key === 'numberFormat' ? 256 : 64, 1)
       }
       if (item.borderStyles !== undefined) {
         if (
@@ -436,7 +462,7 @@ function parseCells(value: unknown): Json[][] {
           )
         )
           invalid()
-        for (const border of Object.values(item.borderStyles))
+        for (const border of Object.values(item.borderStyles)) {
           if (
             !border ||
             typeof border !== 'object' ||
@@ -444,6 +470,16 @@ function parseCells(value: unknown): Json[][] {
             Object.keys(border as Json).some((key) => !['style', 'weight', 'color'].includes(key))
           )
             invalid()
+          const config = border as Json
+          if (
+            config.style !== undefined &&
+            !['solid', 'dashed', 'dotted', 'double'].includes(config.style)
+          )
+            invalid()
+          if (config.weight !== undefined && !['thin', 'medium', 'thick'].includes(config.weight))
+            invalid()
+          if (config.color !== undefined) string(config.color, 64, 1)
+        }
       }
       return JSON.parse(JSON.stringify(item))
     })
@@ -456,6 +492,14 @@ function parseProperties(value: unknown): Json {
   if (Object.keys(item).some((k) => !allowed.includes(k))) invalid()
   for (const key of ['name', 'source', 'range', 'anchor', 'title', 'chartType'])
     if (item[key] !== undefined) string(item[key], key === 'source' ? 512 : 256, 1)
+  if (
+    item.chartType !== undefined &&
+    !['columnClustered', 'barClustered', 'line', 'pie', 'scatter', 'area', 'doughnut'].includes(
+      item.chartType,
+    )
+  )
+    invalid()
+  for (const key of ['source', 'range', 'anchor']) if (item[key] !== undefined) range(item[key])
   if (new TextEncoder().encode(JSON.stringify(item)).byteLength > 16 * 1024) invalid()
   return JSON.parse(JSON.stringify(item))
 }
@@ -645,6 +689,8 @@ export function createExcelSkill(options: {
           verify: async (s) => {
             check(s)
             try {
+              if (!(await options.adapter.verifyMutation(call.name, input, before, s)))
+                throw new Error('office_verify_failed')
               if (call.name === 'modify_object')
                 await options.adapter.verifyObjects({ sheetId: input.sheetId, id: input.id }, s)
               else if (call.name === 'modify_workbook_structure')

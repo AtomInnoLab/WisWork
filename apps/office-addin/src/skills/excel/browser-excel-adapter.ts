@@ -57,6 +57,12 @@ export interface ExcelAdapter {
   verifyRanges(targets: string[], signal?: AbortSignal): Promise<unknown>
   verifyObjects(input: ObjectRequest, signal?: AbortSignal): Promise<unknown>
   verifyWorkbook(signal?: AbortSignal): Promise<unknown>
+  verifyMutation(
+    tool: string,
+    input: Record<string, any>,
+    beforeFingerprint: string,
+    signal?: AbortSignal,
+  ): Promise<boolean>
 }
 
 function cancelled(signal?: AbortSignal) {
@@ -141,7 +147,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         const ranges = boxes.flatMap((box) => {
           if (budget <= 0) return []
           const columns = Math.min(box.columns, Math.max(1, budget))
-          const rows = Math.min(box.rows, Math.max(1, Math.ceil(budget / columns)))
+          const rows = Math.min(box.rows, Math.max(1, Math.floor(budget / columns)))
           budget = Math.max(0, budget - rows * columns)
           const r = ws.getRangeByIndexes(box.row, box.column, rows, columns)
           r.load('values,formulas,numberFormat,address,rowCount,columnCount')
@@ -433,7 +439,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
               columnHidden: range.columnHidden ?? null,
               frozen: frozen.isNullObject ? null : cleanAddress(frozen.address),
             }
-          }, '1.4')
+          }, '1.7')
         const resize = /^resize:(\d+)!(.+)$/.exec(target)
         if (resize)
           return this.run(async (context) => {
@@ -611,7 +617,9 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         }
       },
       signal,
-      '1.4',
+      input.cells.some((row: RuntimeRecord[]) => row.some((cell) => cell.note !== undefined))
+        ? '1.18'
+        : '1.4',
     )
   }
   clearCellRange(input: Record<string, any>, signal?: AbortSignal) {
@@ -681,7 +689,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         else throw new Error('office_api_unsupported')
       },
       signal,
-      '1.4',
+      ['freeze', 'unfreeze'].includes(input.operation) ? '1.7' : '1.4',
     )
   }
   async modifyWorkbookStructure(input: Record<string, any>, signal?: AbortSignal) {
@@ -736,7 +744,19 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         cancelled(signal)
         if (input.operation === 'delete') collection.getItem(input.id).delete()
         else if (input.operation === 'create' && input.objectType === 'chart') {
-          const chart = collection.add(input.properties.chartType, input.properties.source)
+          const types: RuntimeRecord = {
+            columnClustered: 'ColumnClustered',
+            barClustered: 'BarClustered',
+            line: 'Line',
+            pie: 'Pie',
+            scatter: 'XYScatter',
+            area: 'Area',
+            doughnut: 'Doughnut',
+          }
+          const chart = collection.add(
+            types[input.properties.chartType],
+            ws.getRange(input.properties.source),
+          )
           if (input.properties.anchor) {
             cancelled(signal)
             chart.setPosition(input.properties.anchor)
@@ -761,7 +781,17 @@ export class BrowserExcelAdapter implements ExcelAdapter {
           }
           if (input.properties.chartType) {
             cancelled(signal)
-            chart.chartType = input.properties.chartType
+            chart.chartType = (
+              {
+                columnClustered: 'ColumnClustered',
+                barClustered: 'BarClustered',
+                line: 'Line',
+                pie: 'Pie',
+                scatter: 'XYScatter',
+                area: 'Area',
+                doughnut: 'Doughnut',
+              } as RuntimeRecord
+            )[input.properties.chartType]
           }
           if (input.properties.anchor) {
             cancelled(signal)
@@ -815,5 +845,94 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         hasMore: (sheets.items ?? []).length > MAX_EXCEL_OBJECTS,
       }
     })
+  }
+  async verifyMutation(
+    tool: string,
+    input: Record<string, any>,
+    beforeFingerprint: string,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const mutationTargets =
+      tool === 'copy_to'
+        ? [
+            `sheet:${input.sheetId}!${input.sourceRange}`,
+            `sheet:${input.sheetId}!${input.destinationRange}`,
+          ]
+        : tool === 'modify_workbook_structure'
+          ? [`workbook:${input.operation}:${input.sheetId ?? input.sheetName ?? ''}`]
+          : tool === 'modify_object'
+            ? [`sheet:${input.sheetId}!object:${input.id ?? input.properties?.name ?? 'new'}`]
+            : tool === 'modify_sheet_structure'
+              ? [
+                  `structure:${input.sheetId}:${input.operation}:${input.dimension}:${input.reference ?? ''}:${input.count ?? 1}`,
+                ]
+              : tool === 'resize_range'
+                ? [`resize:${input.sheetId}!${input.range ?? 'A1:XFD1048576'}`]
+                : [`sheet:${input.sheetId}!${input.copyToRange ?? input.range}`]
+    if ((await this.fingerprint(mutationTargets, signal)) === beforeFingerprint) return false
+    if (tool === 'set_cell_range') {
+      const result = (await this.getCellRanges(
+        {
+          sheetId: input.sheetId,
+          ranges: [input.copyToRange ?? input.range],
+          includeStyles: true,
+          cellLimit: input.cells.length * input.cells[0].length,
+        },
+        signal,
+      )) as RuntimeRecord
+      const cells = result.ranges[0]?.cells ?? []
+      return input.cells
+        .flat()
+        .every(
+          (expected: RuntimeRecord, index: number) =>
+            (!Object.hasOwn(expected, 'value') || cells[index]?.value === expected.value) &&
+            (!Object.hasOwn(expected, 'formula') || cells[index]?.formula === expected.formula),
+        )
+    }
+    if (tool === 'clear_cell_range' && input.clearType !== 'formats') {
+      const result = (await this.getCellRanges(
+        {
+          sheetId: input.sheetId,
+          ranges: [input.range],
+          includeStyles: false,
+          cellLimit: MAX_EXCEL_CELLS,
+        },
+        signal,
+      )) as RuntimeRecord
+      return result.ranges[0].cells.every(
+        (cell: RuntimeRecord) =>
+          (cell.value === null || cell.value === '') &&
+          (cell.formula === null || cell.formula === ''),
+      )
+    }
+    if (tool === 'copy_to') {
+      const result = (await this.getCellRanges(
+        {
+          sheetId: input.sheetId,
+          ranges: [input.sourceRange, input.destinationRange],
+          includeStyles: false,
+          cellLimit: MAX_EXCEL_CELLS,
+        },
+        signal,
+      )) as RuntimeRecord
+      return (
+        JSON.stringify(
+          result.ranges[0]?.cells.map((cell: RuntimeRecord) => [cell.value, cell.formula]),
+        ) ===
+        JSON.stringify(
+          result.ranges[1]?.cells.map((cell: RuntimeRecord) => [cell.value, cell.formula]),
+        )
+      )
+    }
+    if (tool === 'modify_object') {
+      const result = (await this.getAllObjects(
+        { sheetId: input.sheetId, id: input.id ?? input.properties?.name },
+        signal,
+      )) as RuntimeRecord
+      return input.operation === 'delete'
+        ? result.objects.length === 0
+        : result.objects.length === 1
+    }
+    return true
   }
 }

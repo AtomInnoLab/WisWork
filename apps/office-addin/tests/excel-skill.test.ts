@@ -43,6 +43,7 @@ function adapter(overrides: Partial<ExcelAdapter> = {}): ExcelAdapter {
     verifyRanges: vi.fn().mockResolvedValue({ ranges: [readResult], hasMore: false }),
     verifyObjects: vi.fn().mockResolvedValue({ objects: [], hasMore: false }),
     verifyWorkbook: vi.fn().mockResolvedValue({ sheets: [], hasMore: false }),
+    verifyMutation: vi.fn().mockResolvedValue(true),
     ...overrides,
   }
 }
@@ -139,6 +140,22 @@ describe('Excel compatibility skill', () => {
         controller.signal,
       ),
     ).resolves.toMatchObject({ output: 'cancelled', isError: true })
+  })
+
+  it('fails confirmation when request-semantic post-write verification detects a no-op', async () => {
+    const fake = adapter({ verifyMutation: vi.fn().mockResolvedValue(false) })
+    const proposals = createStructuredProposalController()
+    const skill = createExcelSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('clear_cell_range', { sheetId: 1, range: 'A1', clearType: 'contents' }),
+    )
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('office_verify_failed')
+    expect(fake.verifyMutation).toHaveBeenCalledWith(
+      'clear_cell_range',
+      expect.objectContaining({ range: 'A1' }),
+      'fp',
+      expect.any(AbortSignal),
+    )
   })
 
   it('keeps eval_officejs stable and fail-closed without eval or Function', async () => {
