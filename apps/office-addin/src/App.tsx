@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
-import { createOfficeSkill } from './agent/office-skill.js'
-import { createProposalController } from './agent/proposal-controller.js'
+import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
+import type { OfficeProposal, StructuredProposal } from './agent/proposal-controller.js'
 import { createPcBridgeAgentTransport } from './agent/transport.js'
 import {
   createOfficeAgentSession,
@@ -21,14 +21,52 @@ const hostLabels: Record<OfficeHost, string> = {
   unknown: 'Office',
 }
 
-function AgentWorkspace(props: {
+type DisplayProposal = OfficeProposal | StructuredProposal
+
+function isLegacyProposal(proposal: DisplayProposal): proposal is OfficeProposal {
+  return 'value' in proposal
+}
+
+function previewText(value: unknown): string {
+  if (value === undefined) return ''
+  if (typeof value === 'string') return value
+  return JSON.stringify(value, null, 2)
+}
+
+export function proposalPresentation(proposal: DisplayProposal) {
+  const legacy = isLegacyProposal(proposal)
+  return {
+    title: legacy
+      ? proposal.operation === 'replace'
+        ? 'Replace selection'
+        : 'Append to selection'
+      : proposal.title,
+    host: legacy ? undefined : proposal.impact.host,
+    count: legacy ? undefined : proposal.impact.count,
+    targets: legacy ? [] : [...proposal.impact.targets],
+    before: previewText(proposal.before),
+    after: previewText(
+      legacy
+        ? proposal.operation === 'replace'
+          ? proposal.value
+          : `${proposal.before}${proposal.value}`
+        : proposal.after,
+    ),
+    preview: legacy ? '' : previewText(proposal.preview),
+    code: legacy ? undefined : proposal.code,
+  }
+}
+
+export function AgentWorkspace(props: {
   session: OfficeAgentSession
+  runtime: OfficeHostRuntime
   disconnect: () => void
   host: OfficeHost
 }) {
-  const { session, disconnect, host } = props
+  const { session, runtime, disconnect, host } = props
   const state = useOfficeAgent(session)
   const [instruction, setInstruction] = useState('')
+  const [files, setFiles] = useState<string[]>(runtime.vfs.list('/home/user'))
 
   function send() {
     if (!instruction.trim()) return
@@ -37,11 +75,7 @@ function AgentWorkspace(props: {
   }
 
   const proposal = state.proposal
-  const after = proposal
-    ? proposal.operation === 'replace'
-      ? proposal.value
-      : `${proposal.before}${proposal.value}`
-    : ''
+  const presentation = proposal ? proposalPresentation(proposal) : undefined
 
   return (
     <main className="taskpane">
@@ -91,18 +125,37 @@ function AgentWorkspace(props: {
         <section className="proposal-card" aria-label="Proposed document change">
           <div className="proposal-heading">
             <span className="eyebrow">Approval required</span>
-            <h2>
-              {proposal.operation === 'replace' ? 'Replace selection' : 'Append to selection'}
-            </h2>
+            <h2>{presentation?.title}</h2>
           </div>
+          {!isLegacyProposal(proposal) && (
+            <div className="preview-block">
+              <strong>Impact</strong>
+              <p>
+                {presentation?.host}: {presentation?.count} item(s)
+              </p>
+              <pre>{presentation?.targets.join('\n') || '(no named targets)'}</pre>
+            </div>
+          )}
           <div className="preview-block">
             <strong>Before</strong>
-            <pre>{proposal.before || '(empty selection)'}</pre>
+            <pre>{presentation?.before || '(not available)'}</pre>
           </div>
           <div className="preview-block after">
             <strong>After</strong>
-            <pre>{after}</pre>
+            <pre>{presentation?.after || '(described by preview)'}</pre>
           </div>
+          {!isLegacyProposal(proposal) && (
+            <div className="preview-block">
+              <strong>Preview</strong>
+              <pre>{presentation?.preview}</pre>
+            </div>
+          )}
+          {!isLegacyProposal(proposal) && proposal.code && (
+            <div className="preview-block code-preview">
+              <strong>Code</strong>
+              <pre>{presentation?.code}</pre>
+            </div>
+          )}
           <div className="actions">
             <button
               type="button"
@@ -122,6 +175,30 @@ function AgentWorkspace(props: {
           </div>
         </section>
       )}
+
+      <section className="composer-card" aria-label="Session files">
+        <label htmlFor="session-upload">Session files</label>
+        <input
+          id="session-upload"
+          type="file"
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0]
+            if (!file) return
+            void file.arrayBuffer().then((content) => {
+              runtime.vfs.writeFile(`/home/user/${file.name}`, new Uint8Array(content))
+              setFiles(runtime.vfs.list('/home/user'))
+            })
+          }}
+        />
+        <p>{files.length ? files.join(', ') : 'No uploaded files in this session.'}</p>
+        <p>
+          Installed skills:{' '}
+          {runtime.skills
+            .list()
+            .map((skill) => skill.name)
+            .join(', ') || 'none'}
+        </p>
+      </section>
 
       <section className="composer-card">
         <label htmlFor="instruction">What should the Agent do?</label>
@@ -165,16 +242,9 @@ function ConfiguredApp() {
   const document = useMemo(() => createOfficeDocumentClient(createBrowserOfficeRuntime()), [])
   const bridge = useMemo(() => createPcBridgeSession(), [])
   const bridgeState = useSyncExternalStore(bridge.subscribe, bridge.snapshot, bridge.snapshot)
-  const proposals = useMemo(() => createProposalController(document), [document])
-  const session = useMemo(
-    () =>
-      createOfficeAgentSession({
-        transport: createPcBridgeAgentTransport(bridge),
-        skill: createOfficeSkill(document, proposals),
-        proposals,
-      }),
-    [bridge, document, proposals],
-  )
+  const [workspace, setWorkspace] = useState<
+    { runtime: OfficeHostRuntime; session: OfficeAgentSession } | undefined
+  >()
   const [host, setHost] = useState<OfficeHost>('unknown')
   const [hostSupported, setHostSupported] = useState(false)
   const [status, setStatus] = useState('Connecting to Office…')
@@ -182,12 +252,26 @@ function ConfiguredApp() {
 
   useEffect(() => {
     let active = true
+    let created: { runtime: OfficeHostRuntime; session: OfficeAgentSession } | undefined
     void (async () => {
       try {
         const activeHost = await document.initialize()
         if (active) {
           setHost(activeHost)
           setHostSupported(activeHost !== 'unknown')
+          if (activeHost !== 'unknown') {
+            const runtime = createOfficeHostRuntime(activeHost, {
+              enableHostSkills: import.meta.env.VITE_WISWORK_OFFICE_HOST_SKILLS !== '0',
+              document,
+            })
+            const session = createOfficeAgentSession({
+              transport: createPcBridgeAgentTransport(bridge),
+              skill: runtime.skill,
+              proposals: runtime.proposals,
+            })
+            created = { runtime, session }
+            setWorkspace(created)
+          }
           setStatus(
             activeHost === 'unknown'
               ? 'office_host_unsupported'
@@ -202,12 +286,17 @@ function ConfiguredApp() {
     })()
     return () => {
       active = false
+      created?.session.authenticationLost()
+      created?.runtime.dispose()
     }
-  }, [document])
+  }, [bridge, document])
 
   useEffect(() => {
-    if (bridgeState.status !== 'connected') session.authenticationLost()
-  }, [bridgeState.status, session])
+    if (bridgeState.status !== 'connected' && workspace) {
+      workspace.session.authenticationLost()
+      workspace.runtime.dispose()
+    }
+  }, [bridgeState.status, workspace])
 
   if (busy) return <StatusScreen title="Starting WisWork Agent" detail={status} busy />
   if (!hostSupported) {
@@ -243,11 +332,15 @@ function ConfiguredApp() {
       </StatusScreen>
     )
   }
+  if (!workspace)
+    return <StatusScreen title="Starting WisWork Agent" detail="Loading tools…" busy />
   return (
     <AgentWorkspace
-      session={session}
+      session={workspace.session}
+      runtime={workspace.runtime}
       disconnect={() => {
-        session.logout()
+        workspace.session.logout()
+        workspace.runtime.dispose()
         bridge.disconnect()
       }}
       host={host}

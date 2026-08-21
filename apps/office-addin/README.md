@@ -2,6 +2,30 @@
 
 An Office.js task pane for Word, Excel, and PowerPoint. It reuses the signed-in WisWork PC account and Agent transport through a consented local bridge. Wispaper credentials remain in the PC process; the task pane keeps only a short-lived bridge capability in memory. Document writes still require an explicit before/after confirmation.
 
+## Shipped tool surface
+
+After `Office.onReady()`, the task pane composes the shared browser skill with exactly one Word,
+Excel, or PowerPoint skill. Unsupported hosts fail closed.
+
+- Shared: bounded VFS `read` and sandboxed `bash` (`pwd`, `ls`, and `cat` only).
+- Word: `get_document_text`, `get_document_structure`, `get_ooxml`, `screenshot_document`,
+  `execute_office_js`.
+- Excel: `get_cell_ranges`, `get_range_as_csv`, `search_data`, `screenshot_range`,
+  `get_all_objects`, `set_cell_range`, `clear_cell_range`, `copy_to`,
+  `modify_sheet_structure`, `modify_workbook_structure`, `resize_range`, `modify_object`,
+  `eval_officejs`.
+- PowerPoint: `screenshot_slide`, `list_slide_shapes`, `read_slide_text`, `verify_slides`,
+  `edit_slide_text`, `duplicate_slide`, `edit_slide_xml`, `edit_slide_chart`,
+  `edit_slide_master`, `execute_office_js`.
+
+Raw Office.js, Word screenshot, PowerPoint XML/chart/master edits, and file conversion/web
+commands remain release blockers. They return stable `office_api_unsupported` or
+`command_unsupported` errors and must not be described as successful. Browser `bash` is not a
+native shell and has no PC filesystem, process, socket, credential, or package-install access.
+Supported mutations show a structured title, impact, before/after data, preview, and code when
+present, and execute only after explicit confirmation. Logout or bridge loss disposes proposals,
+uploaded VFS files, and installed-skill session state.
+
 ## Start WisWork PC
 
 The Office bridge is disabled by default. Start the PC app with an exact HTTPS add-in origin:
@@ -43,6 +67,10 @@ npm run build -w @wiswork/office-addin
 
 A valid configured build emits `dist/manifest.xml`. An unconfigured or invalid build emits no deployable manifest. If omitted, `VITE_WISWORK_PC_BRIDGE_PORTS` uses the default 64-port pool. A custom list must exactly match PC runtime `WISWORK_OFFICE_BRIDGE_PORTS`. The generated manifest contains only the exact add-in HTTPS origin; task-pane CSP explicitly enumerates the numeric loopback endpoints in the pool. There are no OAuth callback pages, auth domains, direct WisUsage connection, wildcard origins, or source maps in the deployment output.
 
+The new host/shared registries are enabled by default. Build with
+`VITE_WISWORK_OFFICE_HOST_SKILLS=0` to roll back to the legacy selection-only skill without
+changing the PC bridge, identity, manifest, or stored user data.
+
 ## Operational behavior
 
 - **PC offline:** Office shows **Open WisWork PC** and can retry after the app starts.
@@ -65,6 +93,20 @@ Private Network Access and Office WebView behavior must be checked on both suppo
 6. Stop WisWork PC and verify Office returns to its offline state without retaining a capability. Restart and reconnect.
 7. Occupy `43127`; verify PC selects the next free configured port and Office still connects. Then occupy the entire configured pool and verify startup fails without listening publicly.
 8. Inspect Office storage, logs, and network responses: no Wispaper access token, refresh token, authorization code, or upstream secret may appear.
+
+For the host-tool release candidate, also complete these checks on both Windows and macOS desktop
+Office (Office Web remains blocked pending PNA and API-set acceptance):
+
+1. Verify each host advertises only shared `read`/`bash` plus its exact inventory above, with no
+   cross-host tools.
+2. Run one supported read and screenshot; if the required API is unavailable, verify the stable
+   unsupported result rather than a success claim.
+3. Create a supported Excel mutation and PowerPoint text/duplicate mutation. Verify title, impact,
+   targets, before/after or preview, Reject, stale-state rejection, and exactly-once Confirm.
+4. Exercise every release-blocked tool and verify its documented error and zero mutation.
+5. Upload and read a session file, then verify traversal and native-shell/network syntax are denied.
+6. Log out during an active stream and pending confirmation; verify conversation, proposal, VFS,
+   and installed-skill state are cleared before reconnecting.
 
 ## Checks
 

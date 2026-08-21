@@ -72,4 +72,14 @@ export class SkillRegistry {
       .map((skill) => `${skill.name}: ${skill.description} (/home/skills/${skill.name}/SKILL.md)`)
       .join('\n')
   }
+
+  list(): SkillMetadata[] {
+    return [...this.#skills.values()]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((skill) => ({ ...skill }))
+  }
+
+  clear(): void {
+    this.#skills.clear()
+  }
 }

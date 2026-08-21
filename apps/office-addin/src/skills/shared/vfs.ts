@@ -151,4 +151,9 @@ export class InMemoryVfs {
     const prefix = `${this.normalize(path).replace(/\/$/, '')}/`
     return [...this.#files.keys()].filter((name) => name.startsWith(prefix)).sort()
   }
+
+  clear(): void {
+    this.#files.clear()
+    this.#readOnly.clear()
+  }
 }
