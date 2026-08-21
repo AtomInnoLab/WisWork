@@ -43,10 +43,12 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Cache cargo (xlsx-sidecar)
+      - name: Cache cargo (Rust workspaces)
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          workspaces: apps/sheets/native/xlsx-engine
+          workspaces: |
+            apps/sheets/native/xlsx-engine
+            services/wiswork-relay
 
       - name: Install dependencies
         run: npm ci
@@ -62,6 +64,12 @@ jobs:
         with:
           command: check licenses
           manifest-path: apps/sheets/native/xlsx-engine/Cargo.toml
+
+      - name: Check Rust dependency licenses (Office relay)
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check licenses
+          manifest-path: services/wiswork-relay/Cargo.toml
 
       - name: Check formatting
         env:
@@ -90,6 +98,11 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Check Office relay
+        run: |
+          cargo test --locked --manifest-path services/wiswork-relay/Cargo.toml
+          cargo clippy --locked --manifest-path services/wiswork-relay/Cargo.toml --all-targets -- -D warnings
 
       - name: Regenerate test fixtures
         run: npm run fixtures
