@@ -139,14 +139,32 @@ function utf8Size(s: string): number {
   return n
 }
 
+function imagePayloadSize(image: AgentImage): number {
+  const padding = image.base64.endsWith('==') ? 2 : image.base64.endsWith('=') ? 1 : 0
+  const decoded = Math.max(0, (image.base64.length / 4) * 3 - padding)
+  // Count both the encoded request and decoded media footprints so images
+  // cannot bypass the text-oriented history budget.
+  return utf8Size(image.base64) + decoded + utf8Size(image.mime) + 32
+}
+
 /** Approximate byte cost of one message (text + tool inputs/outputs + image base64) */
 function messageSize(m: AgentMessage): number {
   if (m.role === 'tool') {
-    return m.results.reduce((n, r) => n + utf8Size(r.output) + 40, 0)
+    return m.results.reduce(
+      (size, result) =>
+        size +
+        utf8Size(result.output) +
+        40 +
+        (result.content?.reduce(
+          (mediaSize, block) => mediaSize + imagePayloadSize(block.image),
+          0,
+        ) ?? 0),
+      0,
+    )
   }
   let n = utf8Size(m.text)
   if (m.role === 'user' && m.images) {
-    n += m.images.reduce((s, img) => s + img.base64.length, 0)
+    n += m.images.reduce((size, image) => size + imagePayloadSize(image), 0)
   }
   if (m.role === 'assistant' && m.toolCalls) {
     for (const c of m.toolCalls) {
@@ -373,9 +391,9 @@ export class AgentLoop<TSnapshot = unknown> {
       if (m.role === 'tool') {
         return {
           role: 'tool' as const,
-          results: m.results.map((r) => ({
-            ...r,
-            output: r.output.slice(0, SUMMARIZE_TOOL_OUTPUT_MAX),
+          results: m.results.map(({ content: _content, ...result }) => ({
+            ...result,
+            output: result.output.slice(0, SUMMARIZE_TOOL_OUTPUT_MAX),
           })),
         }
       }
@@ -429,6 +447,21 @@ export class AgentLoop<TSnapshot = unknown> {
     if (!this.compactionEnabled()) return
     const { maxBytes } = this.compactBudget()
     if (historySize(this.history) <= maxBytes) return
+    // Media from prior tool rounds has already been shown to the model. Drop it
+    // oldest-first while preserving the newest round for its first provider turn.
+    let newestToolIndex = -1
+    for (let i = this.history.length - 1; i >= 0; i--) {
+      if (this.history[i]!.role !== 'tool') continue
+      newestToolIndex = i
+      break
+    }
+    for (let i = 0; i < newestToolIndex && historySize(this.history) > maxBytes; i++) {
+      const message = this.history[i]!
+      if (message.role !== 'tool') continue
+      message.results = message.results.map((result) =>
+        result.content?.length ? { ...result, content: undefined } : result,
+      )
+    }
     let recent = 0
     for (let i = this.history.length - 1; i >= 0; i--) {
       const m = this.history[i]!

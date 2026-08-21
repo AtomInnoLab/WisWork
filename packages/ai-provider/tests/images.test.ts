@@ -106,3 +106,37 @@ describe.each(['anthropic', 'gemini', 'openai'] as const)('%s tool-result images
     expect(serialized).toContain('image/png')
   })
 })
+
+describe('OpenAI tool-result image association', () => {
+  it('labels each image with its originating tool result id and name', async () => {
+    const body = await requestBodyFor('openai', [
+      {
+        role: 'tool',
+        results: [
+          {
+            id: 'first',
+            name: 'screenshot_document',
+            output: 'one',
+            content: [{ type: 'image', image: IMAGE }],
+          },
+          {
+            id: 'second',
+            name: 'screenshot_range',
+            output: 'two',
+            content: [{ type: 'image', image: { ...IMAGE, base64: 'd29ybGQ=' } }],
+          },
+        ],
+      },
+    ])
+
+    expect(body.messages.slice(-1)[0]).toEqual({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Image from tool result screenshot_document (first).' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } },
+        { type: 'text', text: 'Image from tool result screenshot_range (second).' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,d29ybGQ=' } },
+      ],
+    })
+  })
+})

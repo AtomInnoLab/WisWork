@@ -718,14 +718,24 @@ function openAiMessages(system: string, messages: AgentMessage[]): unknown[] {
       for (const r of m.results) {
         out.push({ role: 'tool', tool_call_id: r.id, content: r.output })
       }
-      const images = m.results.flatMap((result) => result.content ?? [])
-      if (images.length)
+      const imageContent = m.results.flatMap((result) =>
+        result.content?.length
+          ? [
+              {
+                type: 'text',
+                text: `Image from tool result ${result.name} (${result.id}).`,
+              },
+              ...result.content.map((block) => ({
+                type: 'image_url',
+                image_url: { url: `data:${block.image.mime};base64,${block.image.base64}` },
+              })),
+            ]
+          : [],
+      )
+      if (imageContent.length)
         out.push({
           role: 'user',
-          content: images.map((block) => ({
-            type: 'image_url',
-            image_url: { url: `data:${block.image.mime};base64,${block.image.base64}` },
-          })),
+          content: imageContent,
         })
     }
   }

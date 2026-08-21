@@ -788,6 +788,52 @@ describe('AgentLoop compaction', () => {
     expect(last.results[0]!.output).toBe(big)
   })
 
+  it('counts and drops stale tool media before the next provider request', async () => {
+    const requests: AgentMessage[][] = []
+    let turn = 0
+    const transport: AgentTransport = {
+      stream(request, callbacks) {
+        requests.push(request.messages)
+        const current = turn++
+        queueMicrotask(() => {
+          if (current < 2) callbacks.onToolCall({ id: `t${current}`, name: 'do_thing', input: {} })
+          else callbacks.onDelta('done')
+          callbacks.onDone()
+        })
+        return { cancel: vi.fn() }
+      },
+    }
+    const images = ['A'.repeat(400), 'B'.repeat(400)]
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill((call) => ({
+        output: 'captured',
+        summary: 'image',
+        modelContent: [
+          {
+            type: 'image',
+            image: { base64: images[Number(call.id.slice(1))]!, mime: 'image/png' },
+          },
+        ],
+      })),
+      compaction: { maxBytes: 650, keepRecentBytes: 300, disableLlmSummary: true },
+    })
+
+    loop.run('capture twice')
+    await flush()
+    await flush()
+    await flush()
+
+    const thirdRequest = JSON.stringify(requests[2])
+    expect(thirdRequest).not.toContain(images[0])
+    expect(thirdRequest).toContain(images[1])
+    const oldResult = loop.messages.filter((message) => message.role === 'tool').at(0) as Extract<
+      AgentMessage,
+      { role: 'tool' }
+    >
+    expect(oldResult.results[0]!.content).toBeUndefined()
+  })
+
   it('compaction: false disables both folding and truncation', async () => {
     const transport = scriptedTransport([
       (cb) => {
