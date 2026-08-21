@@ -1834,7 +1834,7 @@ body.vib .home {
   min-width: 0;
   width: 92px;
   padding: 6px 8px;
-  border: 1px solid var(--border-color, #d0d0d0);
+  border: 1px solid var(--border);
   border-radius: 4px;
   letter-spacing: 0.15em;
 }
