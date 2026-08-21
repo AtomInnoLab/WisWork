@@ -19,7 +19,6 @@ export interface OfficeCapabilityFlags {
   conversions: boolean
   skillPackages: boolean
   importMedia: boolean
-  webTools: boolean
 }
 
 function exactFlag(value: string | undefined, defaultValue: boolean): boolean {
@@ -34,7 +33,6 @@ export function officeCapabilityFlags(env: BuildEnv): OfficeCapabilityFlags {
     conversions: exactFlag(env.VITE_WISWORK_OFFICE_CONVERSIONS, true),
     skillPackages: exactFlag(env.VITE_WISWORK_OFFICE_SKILL_PACKAGES, true),
     importMedia: exactFlag(env.VITE_WISWORK_OFFICE_IMPORT_MEDIA, true),
-    webTools: exactFlag(env.VITE_WISWORK_OFFICE_WEB_TOOLS, false),
   })
 }
 

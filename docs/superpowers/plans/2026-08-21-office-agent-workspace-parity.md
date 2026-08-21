@@ -95,8 +95,9 @@ Files: manifests/build config, capability flags, deployment/runbooks, manual acc
 version notes.
 
 Deliverable: capability negotiation prevents older PC/Relay clients from seeing unavailable tools;
-new workspace and each capability family have independent rollback flags; deployment order and
-diagnostics are documented.
+new workspace and each shipped capability family have independent rollback flags; the blocked Web
+family receives its flag only in the same change that activates an attested service and Office v2
+composition. Deployment order and diagnostics are documented.
 
 Verification: fresh full repository tests; Office/agent-core/ai-provider/shell/Relay typechecks;
 Rust tests/clippy/deny; lint, format, theme, diff and configured/unconfigured production builds;

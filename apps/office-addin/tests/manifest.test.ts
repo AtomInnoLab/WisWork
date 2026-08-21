@@ -87,16 +87,14 @@ describe('Office Add-in manifest and routes', () => {
       conversions: true,
       skillPackages: true,
       importMedia: true,
-      webTools: false,
     })
     expect(
       officeCapabilityFlags({
         VITE_WISWORK_OFFICE_CONVERSIONS: '0',
         VITE_WISWORK_OFFICE_SKILL_PACKAGES: '0',
         VITE_WISWORK_OFFICE_IMPORT_MEDIA: '0',
-        VITE_WISWORK_OFFICE_WEB_TOOLS: '0',
       }),
-    ).toEqual({ conversions: false, skillPackages: false, importMedia: false, webTools: false })
+    ).toEqual({ conversions: false, skillPackages: false, importMedia: false })
     expect(() => officeCapabilityFlags({ VITE_WISWORK_OFFICE_CONVERSIONS: 'false' })).toThrow(
       'invalid_office_capability_flags',
     )

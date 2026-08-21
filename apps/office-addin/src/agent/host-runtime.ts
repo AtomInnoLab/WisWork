@@ -158,6 +158,7 @@ function lifecycle(
       vfs.writeFile(`/home/user/${name}`, bytes)
     },
     async installSkill(source) {
+      if (!skillPackagesEnabled) throw new Error('office_capability_disabled')
       const captured = epoch
       const value = await source
       check(captured)

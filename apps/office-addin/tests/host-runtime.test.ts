@@ -138,5 +138,8 @@ describe('host runtime composition', () => {
     await expect(runtime.installSkillPackage(Promise.resolve(new ArrayBuffer(1)))).rejects.toThrow(
       'office_capability_disabled',
     )
+    await expect(
+      runtime.installSkill(Promise.resolve('---\nname: disabled\ndescription: disabled\n---\nNo.')),
+    ).rejects.toThrow('office_capability_disabled')
   })
 })

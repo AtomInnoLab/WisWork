@@ -99,10 +99,11 @@ instructions and declarative metadata only; they cannot add executable code or a
 
 ## Failure handling and rollback
 
-Each capability has an independent feature flag. The entire workspace can roll back to the current
-Office UI without changing Relay identity, document formats, or stored data. Conversion and skill
-state is memory-only. Relay/web protocol additions are versioned and ignored by older clients.
-Deployment rolls PC/Relay support out before advertising web tools in Office.
+Each shipped capability has an independent feature flag. The entire workspace can roll back to the
+current Office UI without changing Relay identity, document formats, or stored data. Conversion and
+skill state is memory-only. Relay/web protocol additions are versioned and ignored by older clients.
+Web retrieval remains unshipped until a canonical service is attested; its activation must add the
+Office flag and v2 composition atomically after PC/Relay support is deployed.
 
 Timeout, cancellation, logout, offline, malformed output, quota violation, unsupported API, stale
 proposal, write failure, and verification failure all fail closed. No error path may claim a write

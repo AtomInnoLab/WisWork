@@ -115,10 +115,12 @@ remove that family without rolling back the workspace or Relay identity:
 - `VITE_WISWORK_OFFICE_CONVERSIONS=0`
 - `VITE_WISWORK_OFFICE_SKILL_PACKAGES=0`
 - `VITE_WISWORK_OFFICE_IMPORT_MEDIA=0`
-- `VITE_WISWORK_OFFICE_WEB_TOOLS=0` (the default; Web tools additionally require a compiled,
-  reviewed retrieval-service attestation)
 
 Only `0` and `1` are accepted; invalid values make the deployment fail closed.
+
+Web tools remain unadvertised because there is no compiled, reviewed retrieval-service
+attestation. Their activation change must add its capability flag and Office v2 composition in the
+same deployment; this build intentionally exposes no no-op Web flag.
 
 The Agent conversation workspace has an independent fail-closed rollback. Build with the exact
 flag `VITE_WISWORK_OFFICE_WORKSPACE=0` to retain the legacy task-pane presentation while leaving

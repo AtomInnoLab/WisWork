@@ -76,6 +76,7 @@ export function safeUploadError(error: unknown): string {
     'skill_not_installed',
     'skill_package_limit',
     'skill_package_timeout',
+    'office_capability_disabled',
   ].includes(code)
     ? code
     : 'upload_failed'
