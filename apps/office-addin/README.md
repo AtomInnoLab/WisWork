@@ -31,7 +31,10 @@ formula-like cells before quoting so opening the CSV cannot execute formula payl
 accept only magic-validated PNG/JPEG bytes from the session VFS, capped at 2 MiB, 8,192 pixels per
 dimension and 16,777,216 decoded pixels. Imports are immutable proposals: Confirm rechecks the
 range/slide fingerprint, dispatches once, and verifies the exact cells or created image ID and
-geometry. Word advertises no import/media command because the approved reference inventory has no
+geometry. CSV writes retain a bounded formulas/value snapshot; image writes retain the pre-write
+shape IDs. A partial write, cancellation, or semantic mismatch restores the range or deletes the
+inserted shape and proves recovery before returning; an unprovable recovery is terminal
+`office_recovery_failed`. Word advertises no import/media command because the approved inventory has no
 corresponding Word tool contract. Older Office API sets keep these tools unadvertised rather than
 simulating support.
 

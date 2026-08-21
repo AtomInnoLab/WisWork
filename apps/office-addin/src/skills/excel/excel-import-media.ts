@@ -6,6 +6,19 @@ import { exportSafeCsv, readBoundedCsv, readBoundedImage } from '../shared/impor
 import type { InMemoryVfs } from '../shared/vfs.js'
 
 export interface ExcelImportMediaAdapter {
+  captureRange(sheetId: number, range: string, signal?: AbortSignal): Promise<unknown>
+  restoreRange(
+    sheetId: number,
+    range: string,
+    snapshot: unknown,
+    signal?: AbortSignal,
+  ): Promise<void>
+  verifyRangeSnapshot(
+    sheetId: number,
+    range: string,
+    snapshot: unknown,
+    signal?: AbortSignal,
+  ): Promise<boolean>
   fingerprintRange(sheetId: number, range: string, signal?: AbortSignal): Promise<string>
   readRangeValues(sheetId: number, range: string, signal?: AbortSignal): Promise<unknown[][]>
   writeRangeValues(
@@ -26,6 +39,8 @@ export interface ExcelImportMediaAdapter {
     signal?: AbortSignal,
   ): Promise<{ id: string }>
   verifyImage(input: ExcelImageInsertion, id: string, signal?: AbortSignal): Promise<boolean>
+  removeImage(input: ExcelImageInsertion, id: string, signal?: AbortSignal): Promise<void>
+  verifyImageAbsent(input: ExcelImageInsertion, id: string, signal?: AbortSignal): Promise<boolean>
 }
 
 export interface ExcelImageInsertion {
@@ -191,7 +206,19 @@ export function createExcelImportMediaSkill(options: {
           const values = readBoundedCsv(options.vfs, input.path)
           const targetRange = destinationRange(input.startCell, values.length, values[0].length)
           const before = await options.adapter.fingerprintRange(input.sheetId, targetRange, signal)
+          const snapshot = await options.adapter.captureRange(input.sheetId, targetRange, signal)
           cancelled(signal)
+          const recover = async () => {
+            try {
+              await options.adapter.restoreRange(input.sheetId, targetRange, snapshot)
+              if (
+                !(await options.adapter.verifyRangeSnapshot(input.sheetId, targetRange, snapshot))
+              )
+                throw new Error('office_recovery_failed')
+            } catch {
+              throw new Error('office_recovery_failed')
+            }
+          }
           const proposal = options.proposals.propose({
             operation: call.name,
             toolName: call.name,
@@ -220,8 +247,13 @@ export function createExcelImportMediaSkill(options: {
               try {
                 await options.adapter.writeRangeValues(input.sheetId, input.startCell, values, s)
               } catch {
+                await recover()
                 if (s?.aborted) throw new Error('cancelled')
                 throw new Error('office_write_failed')
+              }
+              if (s?.aborted) {
+                await recover()
+                throw new Error('cancelled')
               }
             },
             verify: async (s) => {
@@ -232,8 +264,10 @@ export function createExcelImportMediaSkill(options: {
                   values,
                   s,
                 ))
-              )
+              ) {
+                await recover()
                 throw new Error('office_verify_failed')
+              }
             },
           })
           return {
@@ -253,6 +287,16 @@ export function createExcelImportMediaSkill(options: {
           }
           const before = await options.adapter.fingerprintRange(input.sheetId, input.cell, signal)
           let id: string | undefined
+          const recover = async () => {
+            if (!id) throw new Error('office_recovery_failed')
+            try {
+              await options.adapter.removeImage(insertion, id)
+              if (!(await options.adapter.verifyImageAbsent(insertion, id)))
+                throw new Error('office_recovery_failed')
+            } catch {
+              throw new Error('office_recovery_failed')
+            }
+          }
           const proposal = options.proposals.propose({
             operation: call.name,
             toolName: call.name,
@@ -274,14 +318,22 @@ export function createExcelImportMediaSkill(options: {
               cancelled(s)
               try {
                 id = (await options.adapter.insertImage(insertion, image.base64, s)).id
-              } catch {
+                if (s?.aborted) {
+                  await recover()
+                  throw new Error('cancelled')
+                }
+              } catch (error) {
+                if (error instanceof Error && error.message === 'office_recovery_failed')
+                  throw error
                 if (s?.aborted) throw new Error('cancelled')
                 throw new Error('office_write_failed')
               }
             },
             verify: async (s) => {
-              if (!id || !(await options.adapter.verifyImage(insertion, id, s)))
+              if (!id || !(await options.adapter.verifyImage(insertion, id, s))) {
+                await recover()
                 throw new Error('office_verify_failed')
+              }
             },
           })
           return {

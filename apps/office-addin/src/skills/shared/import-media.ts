@@ -38,10 +38,13 @@ export function readBoundedCsv(vfs: InMemoryVfs, path: string): string[][] {
     else if (character === '"') throw new Error('invalid_csv')
     else if (character === ',') {
       row.push(field)
+      if (row.length > MAX_CSV_COLUMNS) throw new Error('import_limit')
       field = ''
     } else if (character === '\n' || character === '\r' || character === undefined) {
       if (character === '\r' && source[index + 1] === '\n') index += 1
       row.push(field)
+      if (row.length > MAX_CSV_COLUMNS || (rows.length + 1) * row.length > MAX_CSV_CELLS)
+        throw new Error('import_limit')
       field = ''
       if (!(character === undefined && row.length === 1 && row[0] === '' && rows.length > 0))
         rows.push(row)
@@ -100,9 +103,7 @@ export function readBoundedImage(vfs: InMemoryVfs, path: string): BoundedImage {
   let height: number
   if (png) {
     mime = 'image/png'
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-    width = view.getUint32(16)
-    height = view.getUint32(20)
+    ;({ width, height } = pngDimensions(bytes))
   } else if (bytes[0] === 0xff && bytes[1] === 0xd8) {
     mime = 'image/jpeg'
     ;({ width, height } = jpegDimensions(bytes))
@@ -125,24 +126,128 @@ export function readBoundedImage(vfs: InMemoryVfs, path: string): BoundedImage {
   }
 }
 
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff
+  for (const byte of bytes) {
+    crc ^= byte
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0)
+  }
+  return (crc ^ 0xffffffff) >>> 0
+}
+
+function pngDimensions(bytes: Uint8Array): { width: number; height: number } {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  let offset = 8
+  let chunks = 0
+  let sawData = false
+  let sawPalette = false
+  let colorType = -1
+  let width = 0
+  let height = 0
+  while (offset + 12 <= bytes.length) {
+    const length = view.getUint32(offset)
+    const end = offset + 12 + length
+    if (end > bytes.length) throw new Error('invalid_image')
+    const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8))
+    if (!/^[A-Za-z]{4}$/.test(type)) throw new Error('invalid_image')
+    if (
+      view.getUint32(offset + 8 + length) !== crc32(bytes.subarray(offset + 4, offset + 8 + length))
+    )
+      throw new Error('invalid_image')
+    if (chunks++ === 0) {
+      if (type !== 'IHDR' || length !== 13) throw new Error('invalid_image')
+      width = view.getUint32(offset + 8)
+      height = view.getUint32(offset + 12)
+      const bitDepth = bytes[offset + 16]
+      colorType = bytes[offset + 17]
+      const allowedDepths: Record<number, number[]> = {
+        0: [1, 2, 4, 8, 16],
+        2: [8, 16],
+        3: [1, 2, 4, 8],
+        4: [8, 16],
+        6: [8, 16],
+      }
+      if (
+        !allowedDepths[colorType]?.includes(bitDepth) ||
+        bytes[offset + 18] !== 0 ||
+        bytes[offset + 19] !== 0 ||
+        bytes[offset + 20] > 1
+      )
+        throw new Error('invalid_image')
+    } else if (type === 'IHDR') throw new Error('invalid_image')
+    if (type === 'PLTE') {
+      if (sawPalette || sawData || length < 3 || length > 768 || length % 3 !== 0)
+        throw new Error('invalid_image')
+      sawPalette = true
+    } else if (type === 'IDAT') {
+      if (!length || (colorType === 3 && !sawPalette)) throw new Error('invalid_image')
+      sawData = true
+    } else if (!['IHDR', 'IEND'].includes(type) && type[0] === type[0].toUpperCase()) {
+      throw new Error('invalid_image')
+    }
+    if (type === 'IEND') {
+      if (length !== 0 || !sawData || end !== bytes.length) throw new Error('invalid_image')
+      return { width, height }
+    }
+    offset = end
+  }
+  throw new Error('invalid_image')
+}
+
 function jpegDimensions(bytes: Uint8Array): { width: number; height: number } {
   let offset = 2
-  while (offset + 9 < bytes.length) {
-    if (bytes[offset] !== 0xff) throw new Error('invalid_image')
-    const marker = bytes[offset + 1]
-    const length = (bytes[offset + 2] << 8) | bytes[offset + 3]
-    if (length < 2 || offset + 2 + length > bytes.length) throw new Error('invalid_image')
+  let width = 0
+  let height = 0
+  let sawSos = false
+  while (offset < bytes.length) {
+    if (bytes[offset++] !== 0xff) throw new Error('invalid_image')
+    while (bytes[offset] === 0xff) offset += 1
+    const marker = bytes[offset++]
+    if (marker === 0xd9) {
+      if (!width || !height || !sawSos || offset !== bytes.length) throw new Error('invalid_image')
+      return { width, height }
+    }
+    if (
+      marker === 0x00 ||
+      marker === undefined ||
+      marker === 0xd8 ||
+      (marker >= 0xd0 && marker <= 0xd7)
+    )
+      throw new Error('invalid_image')
+    if (offset + 2 > bytes.length) throw new Error('invalid_image')
+    const length = (bytes[offset] << 8) | bytes[offset + 1]
+    if (length < 2 || offset + length > bytes.length) throw new Error('invalid_image')
     if (
       [0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(
         marker,
       )
     ) {
-      return {
-        height: (bytes[offset + 5] << 8) | bytes[offset + 6],
-        width: (bytes[offset + 7] << 8) | bytes[offset + 8],
+      const components = bytes[offset + 7]
+      if (width || height || !components || length !== 8 + 3 * components)
+        throw new Error('invalid_image')
+      height = (bytes[offset + 3] << 8) | bytes[offset + 4]
+      width = (bytes[offset + 5] << 8) | bytes[offset + 6]
+    }
+    if (marker === 0xda) {
+      const components = bytes[offset + 2]
+      if (!width || !height || !components || length !== 6 + 2 * components)
+        throw new Error('invalid_image')
+    }
+    offset += length
+    if (marker === 0xda) {
+      sawSos = true
+      while (offset < bytes.length) {
+        if (bytes[offset++] !== 0xff) continue
+        while (bytes[offset] === 0xff) offset += 1
+        const next = bytes[offset]
+        if (next === 0x00 || (next >= 0xd0 && next <= 0xd7)) {
+          offset += 1
+          continue
+        }
+        offset -= 1
+        break
       }
     }
-    offset += 2 + length
   }
   throw new Error('invalid_image')
 }

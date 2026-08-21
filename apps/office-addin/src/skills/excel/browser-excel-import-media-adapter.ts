@@ -59,6 +59,36 @@ export class BrowserExcelImportMediaAdapter implements ExcelImportMediaAdapter {
       })
     })
   }
+  async captureRange(sheetId: number, range: string, signal?: AbortSignal): Promise<unknown> {
+    return this.run(async (context) => {
+      const item = worksheet(context, sheetId).getRange(range)
+      item.load('address,formulas,rowCount,columnCount')
+      await sync(context, signal)
+      if (item.rowCount * item.columnCount > 10_000 || !Array.isArray(item.formulas))
+        throw new Error('office_api_unsupported')
+      return { address: item.address, formulas: item.formulas.map((row: unknown[]) => row.slice()) }
+    })
+  }
+  async restoreRange(sheetId: number, range: string, snapshot: unknown): Promise<void> {
+    await this.run(async (context) => {
+      const saved = snapshot as Runtime
+      if (!Array.isArray(saved?.formulas)) throw new Error('office_recovery_failed')
+      worksheet(context, sheetId).getRange(range).formulas = saved.formulas
+      await sync(context)
+    })
+  }
+  async verifyRangeSnapshot(sheetId: number, range: string, snapshot: unknown): Promise<boolean> {
+    return this.run(async (context) => {
+      const item = worksheet(context, sheetId).getRange(range)
+      item.load('address,formulas')
+      await sync(context)
+      const saved = snapshot as Runtime
+      return (
+        item.address === saved.address &&
+        JSON.stringify(item.formulas) === JSON.stringify(saved.formulas)
+      )
+    })
+  }
   async readRangeValues(
     sheetId: number,
     range: string,
@@ -120,19 +150,38 @@ export class BrowserExcelImportMediaAdapter implements ExcelImportMediaAdapter {
       const sheet = worksheet(context, input.sheetId)
       const shapes = sheet.shapes
       if (typeof shapes?.addImage !== 'function') throw new Error('office_api_unsupported')
+      shapes.load('items/id')
       const anchor = sheet.getRange(input.cell)
       anchor.load('left,top')
       await sync(context, signal)
+      const beforeIds = new Set((shapes.items as Runtime[]).map((shape) => String(shape.id)))
       cancelled(signal)
-      const shape = shapes.addImage(base64)
-      shape.left = anchor.left
-      shape.top = anchor.top
-      shape.width = input.width
-      shape.height = input.height
-      shape.load('id')
-      await sync(context, signal)
-      if (!shape.id) throw new Error('office_write_failed')
-      return { id: String(shape.id) }
+      try {
+        const shape = shapes.addImage(base64)
+        shape.left = anchor.left
+        shape.top = anchor.top
+        shape.width = input.width
+        shape.height = input.height
+        shape.load('id')
+        await sync(context, signal)
+        if (!shape.id) throw new Error('office_write_failed')
+        return { id: String(shape.id) }
+      } catch {
+        try {
+          shapes.load('items/id')
+          await sync(context)
+          for (const shape of shapes.items as Runtime[])
+            if (!beforeIds.has(String(shape.id))) shape.delete()
+          await sync(context)
+          shapes.load('items/id')
+          await sync(context)
+          if ((shapes.items as Runtime[]).some((shape) => !beforeIds.has(String(shape.id))))
+            throw new Error('office_recovery_failed')
+        } catch {
+          throw new Error('office_recovery_failed')
+        }
+        throw new Error('office_write_failed')
+      }
     })
   }
   async verifyImage(
@@ -155,6 +204,22 @@ export class BrowserExcelImportMediaAdapter implements ExcelImportMediaAdapter {
         shape.width === input.width &&
         shape.height === input.height
       )
+    })
+  }
+  async removeImage(input: ExcelImageInsertion, id: string): Promise<void> {
+    await this.run(async (context) => {
+      const shape = worksheet(context, input.sheetId).shapes.getItem(id)
+      if (typeof shape.delete !== 'function') throw new Error('office_api_unsupported')
+      shape.delete()
+      await sync(context)
+    })
+  }
+  async verifyImageAbsent(input: ExcelImageInsertion, id: string): Promise<boolean> {
+    return this.run(async (context) => {
+      const shapes = worksheet(context, input.sheetId).shapes
+      shapes.load('items/id')
+      await sync(context)
+      return !(shapes.items as Runtime[]).some((shape) => String(shape.id) === id)
     })
   }
 }

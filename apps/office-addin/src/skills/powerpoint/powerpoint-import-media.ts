@@ -21,6 +21,8 @@ export interface PowerPointImageAdapter {
     geometry: ImageGeometry,
     signal?: AbortSignal,
   ): Promise<boolean>
+  removeImage(slideIndex: number, id: string, signal?: AbortSignal): Promise<void>
+  verifyImageAbsent(slideIndex: number, id: string, signal?: AbortSignal): Promise<boolean>
 }
 export interface ImageGeometry {
   left: number
@@ -102,6 +104,16 @@ export function createPowerPointImportMediaSkill(options: {
         }
         const before = await options.adapter.snapshotSlide(value.slide_index, signal)
         let id: string | undefined
+        const recover = async () => {
+          if (!id) throw new Error('office_recovery_failed')
+          try {
+            await options.adapter.removeImage(value.slide_index, id)
+            if (!(await options.adapter.verifyImageAbsent(value.slide_index, id)))
+              throw new Error('office_recovery_failed')
+          } catch {
+            throw new Error('office_recovery_failed')
+          }
+        }
         const proposal = options.proposals.propose({
           operation: call.name,
           toolName: call.name,
@@ -125,14 +137,21 @@ export function createPowerPointImportMediaSkill(options: {
             try {
               id = (await options.adapter.insertImage(value.slide_index, image.base64, geometry, s))
                 .id
-            } catch {
+              if (s?.aborted) {
+                await recover()
+                throw new Error('cancelled')
+              }
+            } catch (error) {
+              if (error instanceof Error && error.message === 'office_recovery_failed') throw error
               if (s?.aborted) throw new Error('cancelled')
               throw new Error('office_write_failed')
             }
           },
           verify: async (s) => {
-            if (!id || !(await options.adapter.verifyImage(value.slide_index, id, geometry, s)))
+            if (!id || !(await options.adapter.verifyImage(value.slide_index, id, geometry, s))) {
+              await recover()
               throw new Error('office_verify_failed')
+            }
           },
         })
         return {

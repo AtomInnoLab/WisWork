@@ -52,12 +52,32 @@ export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapt
     return runtime().run(async (context: Runtime) => {
       const item = await slide(context, index, signal)
       if (typeof item.shapes?.addImage !== 'function') throw new Error('office_api_unsupported')
-      cancelled(signal)
-      const shape = item.shapes.addImage(base64, geometry)
-      shape.load('id')
+      item.shapes.load('items/id')
       await sync(context, signal)
-      if (!shape.id) throw new Error('office_write_failed')
-      return { id: String(shape.id) }
+      const beforeIds = new Set((item.shapes.items as Runtime[]).map((shape) => String(shape.id)))
+      cancelled(signal)
+      try {
+        const shape = item.shapes.addImage(base64, geometry)
+        shape.load('id')
+        await sync(context, signal)
+        if (!shape.id) throw new Error('office_write_failed')
+        return { id: String(shape.id) }
+      } catch {
+        try {
+          item.shapes.load('items/id')
+          await sync(context)
+          for (const shape of item.shapes.items as Runtime[])
+            if (!beforeIds.has(String(shape.id))) shape.delete()
+          await sync(context)
+          item.shapes.load('items/id')
+          await sync(context)
+          if ((item.shapes.items as Runtime[]).some((shape) => !beforeIds.has(String(shape.id))))
+            throw new Error('office_recovery_failed')
+        } catch {
+          throw new Error('office_recovery_failed')
+        }
+        throw new Error('office_write_failed')
+      }
     })
   }
   async verifyImage(
@@ -80,6 +100,23 @@ export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapt
         shape.width === geometry.width &&
         shape.height === geometry.height
       )
+    })
+  }
+  async removeImage(index: number, id: string): Promise<void> {
+    await runtime().run(async (context: Runtime) => {
+      const item = await slide(context, index)
+      const shape = item.shapes.getItem(id)
+      if (typeof shape.delete !== 'function') throw new Error('office_api_unsupported')
+      shape.delete()
+      await sync(context)
+    })
+  }
+  async verifyImageAbsent(index: number, id: string): Promise<boolean> {
+    return runtime().run(async (context: Runtime) => {
+      const item = await slide(context, index)
+      item.shapes.load('items/id')
+      await sync(context)
+      return !(item.shapes.items as Runtime[]).some((shape) => String(shape.id) === id)
     })
   }
 }
