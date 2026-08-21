@@ -19,10 +19,21 @@ Excel, or PowerPoint skill. Unsupported hosts fail closed.
 - Excel: `get_cell_ranges`, `get_range_as_csv`, `search_data`, `screenshot_range`,
   `get_all_objects`, `set_cell_range`, `clear_cell_range`, `copy_to`,
   `modify_sheet_structure`, `modify_workbook_structure`, `resize_range`, `modify_object`,
-  `eval_officejs`.
+  `eval_officejs`; when ExcelApi 1.9 is present, also `csv-to-sheet`, `sheet-to-csv`, and
+  `image-to-sheet`.
 - PowerPoint: `screenshot_slide`, `list_slide_shapes`, `read_slide_text`, `verify_slides`,
   `edit_slide_text`, `duplicate_slide`, `edit_slide_xml`, `edit_slide_chart`,
-  `edit_slide_master`, `execute_office_js`.
+  `edit_slide_master`, `execute_office_js`; when PowerPointApi 1.8 is present, also
+  `insert-image`.
+
+CSV import/export is capped at 500 rows, 100 columns, 10,000 cells, and 2 MiB. Export prefixes
+formula-like cells before quoting so opening the CSV cannot execute formula payloads. Image tools
+accept only magic-validated PNG/JPEG bytes from the session VFS, capped at 2 MiB, 8,192 pixels per
+dimension and 16,777,216 decoded pixels. Imports are immutable proposals: Confirm rechecks the
+range/slide fingerprint, dispatches once, and verifies the exact cells or created image ID and
+geometry. Word advertises no import/media command because the approved reference inventory has no
+corresponding Word tool contract. Older Office API sets keep these tools unadvertised rather than
+simulating support.
 
 Word screenshot exports a bounded PDF through Office.js and renders a bounded page to a
 model-visible PNG. Word `execute_office_js` accepts only a JSON declarative program (version 1,

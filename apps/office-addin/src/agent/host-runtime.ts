@@ -6,8 +6,18 @@ import {
   type OfficeHost,
 } from '../office-document.js'
 import { BrowserExcelAdapter } from '../skills/excel/browser-excel-adapter.js'
+import {
+  BrowserExcelImportMediaAdapter,
+  supportsExcelImportMedia,
+} from '../skills/excel/browser-excel-import-media-adapter.js'
+import { createExcelImportMediaSkill } from '../skills/excel/excel-import-media.js'
 import { createExcelSkill } from '../skills/excel/excel-skill.js'
 import { BrowserPowerPointAdapter } from '../skills/powerpoint/browser-powerpoint-adapter.js'
+import {
+  BrowserPowerPointImportMediaAdapter,
+  supportsPowerPointImportMedia,
+} from '../skills/powerpoint/browser-powerpoint-import-media-adapter.js'
+import { createPowerPointImportMediaSkill } from '../skills/powerpoint/powerpoint-import-media.js'
 import { createPowerPointSkill } from '../skills/powerpoint/powerpoint-skill.js'
 import { createSharedBrowserSkill } from '../skills/shared/shared-skill.js'
 import { MAX_SKILL_BYTES, SkillRegistry } from '../skills/shared/skill-registry.js'
@@ -51,12 +61,31 @@ export function createOfficeHostRuntime(
   }
   const proposals = createStructuredProposalController()
   const shared = createSharedBrowserSkill({ vfs, skills })
+  const powerPointAdapter = host === 'powerpoint' ? new BrowserPowerPointAdapter() : undefined
   const hostSkill = {
     word: () => createWordSkill({ adapter: new BrowserWordAdapter(), vfs, proposals }),
     excel: () => createExcelSkill({ adapter: new BrowserExcelAdapter(), proposals }),
-    powerpoint: () => createPowerPointSkill({ adapter: new BrowserPowerPointAdapter(), proposals }),
+    powerpoint: () => createPowerPointSkill({ adapter: powerPointAdapter!, proposals }),
   }[host]()
-  return lifecycle(composeOfficeSkills(hostSkill, shared), proposals, vfs, skills)
+  const extensions =
+    host === 'excel' && supportsExcelImportMedia()
+      ? [
+          createExcelImportMediaSkill({
+            adapter: new BrowserExcelImportMediaAdapter(),
+            proposals,
+            vfs,
+          }),
+        ]
+      : host === 'powerpoint' && powerPointAdapter && supportsPowerPointImportMedia()
+        ? [
+            createPowerPointImportMediaSkill({
+              adapter: new BrowserPowerPointImportMediaAdapter(powerPointAdapter),
+              proposals,
+              vfs,
+            }),
+          ]
+        : []
+  return lifecycle(composeOfficeSkills(hostSkill, shared, extensions), proposals, vfs, skills)
 }
 
 function lifecycle(
@@ -73,6 +102,7 @@ function lifecycle(
   }
   const clearSession = () => {
     epoch += 1
+    packageRuntime.cancelAll()
     proposals.logout()
     skills.clear()
     vfs.clear()
