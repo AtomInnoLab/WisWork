@@ -112,7 +112,7 @@ describe('packaging integration', () => {
       expect(source).not.toContain('withEmail')
     }
     const shell = readRepo('apps/shell/src/main/index.ts')
-    expect(shell.match(/assertHomeAuthIpc\(event, args\)/g)).toHaveLength(4)
+    expect(shell.match(/assertHomeAuthIpc\(event, args\)/g)).toHaveLength(5)
   })
 
   it('declares the wiswork protocol only in the packaged Shell', () => {
