@@ -551,6 +551,24 @@ function cellCount(name: string, input: Json) {
   return 1
 }
 function semantics(name: string, input: Json) {
+  if (
+    name === 'set_cell_range' &&
+    (input.copyToRange ||
+      input.resizeWidth ||
+      input.resizeHeight ||
+      input.cells.flat().some((cell: Json) => cell.note || cell.cellStyles || cell.borderStyles))
+  )
+    throw new Error('office_api_unsupported')
+  if (name === 'clear_cell_range' && input.clearType && input.clearType !== 'contents')
+    throw new Error('office_api_unsupported')
+  if (name === 'copy_to') throw new Error('office_api_unsupported')
+  if (
+    name === 'resize_range' &&
+    (input.width?.type === 'standard' || input.height?.type === 'standard')
+  )
+    throw new Error('office_api_unsupported')
+  if (name === 'modify_sheet_structure' && ['insert', 'delete'].includes(input.operation))
+    throw new Error('office_api_unsupported')
   if (name === 'modify_workbook_structure') {
     if (input.operation === 'create' && !input.sheetName) invalid()
     if (input.operation !== 'create' && input.sheetId === undefined) invalid()
@@ -572,6 +590,7 @@ function semantics(name: string, input: Json) {
     if (input.operation !== 'delete' && !input.properties) invalid()
     if (input.objectType === 'pivotTable' && input.operation === 'update')
       throw new Error('office_api_unsupported')
+    if (input.operation !== 'delete') throw new Error('office_api_unsupported')
     if (
       input.operation === 'create' &&
       input.objectType === 'chart' &&

@@ -60,7 +60,7 @@ export interface ExcelAdapter {
   verifyMutation(
     tool: string,
     input: Record<string, any>,
-    beforeFingerprint: string,
+    _beforeFingerprint: string,
     signal?: AbortSignal,
   ): Promise<boolean>
 }
@@ -421,25 +421,32 @@ export class BrowserExcelAdapter implements ExcelAdapter {
     const values = await Promise.all(
       targets.map(async (target) => {
         if (target.startsWith('workbook:')) return this.verifyWorkbook(signal)
-        const structure = /^structure:(\d+):[^:]+:(rows|columns):([^:]*):(\d+)$/.exec(target)
+        const structure = /^structure:(\d+):([^:]+):(rows|columns):([^:]*):(\d+)$/.exec(target)
         if (structure)
-          return this.run(async (context) => {
-            const ws = sheet(context, Number(structure[1]))
-            const used = ws.getUsedRangeOrNullObject()
-            used.load('address,isNullObject')
-            const reference = structure[3] || '1'
-            const range = ws.getRange(`${reference}:${reference}`)
-            range.load('rowHidden,columnHidden')
-            const frozen = ws.freezePanes.getLocationOrNullObject()
-            frozen.load('address,isNullObject')
-            await sync(context, signal)
-            return {
-              used: used.isNullObject ? null : cleanAddress(used.address),
-              rowHidden: range.rowHidden ?? null,
-              columnHidden: range.columnHidden ?? null,
-              frozen: frozen.isNullObject ? null : cleanAddress(frozen.address),
-            }
-          }, '1.7')
+          return this.run(
+            async (context) => {
+              const ws = sheet(context, Number(structure[1]))
+              const used = ws.getUsedRangeOrNullObject()
+              used.load('address,isNullObject')
+              const reference = structure[4] || '1'
+              const range = ws.getRange(`${reference}:${reference}`)
+              range.load('rowHidden,columnHidden')
+              const frozen = ['freeze', 'unfreeze'].includes(structure[2])
+                ? ws.freezePanes.getLocationOrNullObject()
+                : undefined
+              frozen?.load('address,isNullObject')
+              await sync(context, signal)
+              return {
+                used: used.isNullObject ? null : cleanAddress(used.address),
+                rowHidden: range.rowHidden ?? null,
+                columnHidden: range.columnHidden ?? null,
+                ...(frozen && {
+                  frozen: frozen.isNullObject ? null : cleanAddress(frozen.address),
+                }),
+              }
+            },
+            ['freeze', 'unfreeze'].includes(structure[2]) ? '1.7' : '1.4',
+          )
         const resize = /^resize:(\d+)!(.+)$/.exec(target)
         if (resize)
           return this.run(async (context) => {
@@ -836,12 +843,15 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         ws.load('id,name,visibility,tabColor')
       await sync(context, signal)
       return {
-        sheets: (sheets.items ?? []).slice(0, MAX_EXCEL_OBJECTS).map((ws: RuntimeRecord) => ({
-          id: safe(ws.id, 256),
-          name: safe(ws.name, 256),
-          visibility: safe(ws.visibility, 32),
-          tabColor: safe(ws.tabColor, 64),
-        })),
+        sheets: (sheets.items ?? [])
+          .slice(0, MAX_EXCEL_OBJECTS)
+          .map((ws: RuntimeRecord, index: number) => ({
+            id: index + 1,
+            officeId: safe(ws.id, 256),
+            name: safe(ws.name, 256),
+            visibility: safe(ws.visibility, 32),
+            tabColor: safe(ws.tabColor, 64),
+          })),
         hasMore: (sheets.items ?? []).length > MAX_EXCEL_OBJECTS,
       }
     })
@@ -852,24 +862,6 @@ export class BrowserExcelAdapter implements ExcelAdapter {
     beforeFingerprint: string,
     signal?: AbortSignal,
   ): Promise<boolean> {
-    const mutationTargets =
-      tool === 'copy_to'
-        ? [
-            `sheet:${input.sheetId}!${input.sourceRange}`,
-            `sheet:${input.sheetId}!${input.destinationRange}`,
-          ]
-        : tool === 'modify_workbook_structure'
-          ? [`workbook:${input.operation}:${input.sheetId ?? input.sheetName ?? ''}`]
-          : tool === 'modify_object'
-            ? [`sheet:${input.sheetId}!object:${input.id ?? input.properties?.name ?? 'new'}`]
-            : tool === 'modify_sheet_structure'
-              ? [
-                  `structure:${input.sheetId}:${input.operation}:${input.dimension}:${input.reference ?? ''}:${input.count ?? 1}`,
-                ]
-              : tool === 'resize_range'
-                ? [`resize:${input.sheetId}!${input.range ?? 'A1:XFD1048576'}`]
-                : [`sheet:${input.sheetId}!${input.copyToRange ?? input.range}`]
-    if ((await this.fingerprint(mutationTargets, signal)) === beforeFingerprint) return false
     if (tool === 'set_cell_range') {
       const result = (await this.getCellRanges(
         {
@@ -905,24 +897,41 @@ export class BrowserExcelAdapter implements ExcelAdapter {
           (cell.formula === null || cell.formula === ''),
       )
     }
-    if (tool === 'copy_to') {
-      const result = (await this.getCellRanges(
-        {
-          sheetId: input.sheetId,
-          ranges: [input.sourceRange, input.destinationRange],
-          includeStyles: false,
-          cellLimit: MAX_EXCEL_CELLS,
-        },
-        signal,
-      )) as RuntimeRecord
-      return (
-        JSON.stringify(
-          result.ranges[0]?.cells.map((cell: RuntimeRecord) => [cell.value, cell.formula]),
-        ) ===
-        JSON.stringify(
-          result.ranges[1]?.cells.map((cell: RuntimeRecord) => [cell.value, cell.formula]),
+    if (tool === 'resize_range')
+      return this.run(async (context) => {
+        const format = sheet(context, input.sheetId).getRange(input.range ?? 'A:XFD').format
+        format.load('columnWidth,rowHeight')
+        await sync(context, signal)
+        return (
+          (!input.width || Math.abs(format.columnWidth - input.width.value) < 0.01) &&
+          (!input.height || Math.abs(format.rowHeight - input.height.value) < 0.01)
         )
-      )
+      })
+    if (tool === 'modify_sheet_structure')
+      return this.run(async (context) => {
+        const ws = sheet(context, input.sheetId)
+        if (['hide', 'unhide'].includes(input.operation)) {
+          const range = ws.getRange(`${input.reference}:${input.reference}`)
+          range.load('rowHidden,columnHidden')
+          await sync(context, signal)
+          return (
+            range[input.dimension === 'rows' ? 'rowHidden' : 'columnHidden'] ===
+            (input.operation === 'hide')
+          )
+        }
+        const frozen = ws.freezePanes.getLocationOrNullObject()
+        frozen.load('isNullObject')
+        await sync(context, signal)
+        return input.operation === 'unfreeze' ? frozen.isNullObject : !frozen.isNullObject
+      }, '1.7')
+    if (tool === 'modify_workbook_structure') {
+      const state = (await this.verifyWorkbook(signal)) as RuntimeRecord
+      const names = state.sheets.map((item: RuntimeRecord) => item.name)
+      if (input.operation === 'create') return names.includes(input.sheetName)
+      if (input.operation === 'rename' || input.operation === 'duplicate')
+        return names.includes(input.newName)
+      if (input.operation === 'delete')
+        return !state.sheets.some((item: RuntimeRecord) => item.id === input.sheetId)
     }
     if (tool === 'modify_object') {
       const result = (await this.getAllObjects(

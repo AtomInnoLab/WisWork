@@ -169,17 +169,14 @@ describe('Excel compatibility skill', () => {
 
   it('accepts every documented structured mutation shape and rejects incomplete/unknown nested input', async () => {
     const cases: Array<[string, Record<string, unknown>]> = [
-      ['clear_cell_range', { sheetId: 1, range: 'A1', clearType: 'formats' }],
-      ['copy_to', { sheetId: 1, sourceRange: 'A1', destinationRange: 'B1' }],
+      ['clear_cell_range', { sheetId: 1, range: 'A1', clearType: 'contents' }],
       [
         'modify_sheet_structure',
         {
           sheetId: 1,
-          operation: 'insert',
+          operation: 'hide',
           dimension: 'rows',
           reference: '5',
-          count: 1,
-          position: 'before',
         },
       ],
       [
@@ -190,10 +187,10 @@ describe('Excel compatibility skill', () => {
       [
         'modify_object',
         {
-          operation: 'create',
+          operation: 'delete',
           sheetId: 1,
           objectType: 'chart',
-          properties: { chartType: 'line', source: 'A1:B5', anchor: 'D1' },
+          id: 'Chart 1',
         },
       ],
     ]
