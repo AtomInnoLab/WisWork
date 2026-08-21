@@ -7,10 +7,15 @@ import {
 import type { OfficeDocumentClient } from '../src/office-document.js'
 
 function document(selection = 'before') {
+  let current = selection
   return {
-    readSelection: vi.fn().mockResolvedValue(selection),
-    replaceSelection: vi.fn().mockResolvedValue(undefined),
-    appendText: vi.fn().mockResolvedValue(undefined),
+    readSelection: vi.fn(async () => current),
+    replaceSelection: vi.fn(async (value: string) => {
+      current = value
+    }),
+    appendText: vi.fn(async (before: string, value: string) => {
+      current = `${before}${value}`
+    }),
   } as unknown as OfficeDocumentClient
 }
 
@@ -77,6 +82,39 @@ describe('proposal controller', () => {
     await controller.confirm(proposal.id)
     expect(doc.appendText).toHaveBeenCalledWith('before', 'more')
     await expect(controller.confirm(proposal.id)).rejects.toThrow('proposal_missing')
+  })
+
+  it('fails verification when a legacy Office write does not produce the previewed state', async () => {
+    const doc = document()
+    vi.mocked(doc.readSelection)
+      .mockResolvedValueOnce('before')
+      .mockResolvedValueOnce('before')
+      .mockResolvedValueOnce('unchanged')
+    const controller = createProposalController(doc)
+    const proposal = await controller.propose('replace', 'after')
+    await expect(controller.confirm(proposal.id)).rejects.toThrow('office_verify_failed')
+    expect(doc.readSelection).toHaveBeenCalledTimes(3)
+  })
+
+  it('re-reads but never reports success when logout occurs during a legacy Office callback', async () => {
+    const doc = document()
+    let finish!: () => void
+    vi.mocked(doc.readSelection)
+      .mockResolvedValueOnce('before')
+      .mockResolvedValueOnce('before')
+      .mockResolvedValueOnce('after')
+    vi.mocked(doc.replaceSelection).mockImplementation(
+      () => new Promise<void>((resolve) => (finish = resolve)),
+    )
+    const controller = createProposalController(doc)
+    const proposal = await controller.propose('replace', 'after')
+    const confirmation = controller.confirm(proposal.id)
+    const rejected = expect(confirmation).rejects.toThrow('proposal_stale')
+    await vi.waitFor(() => expect(doc.replaceSelection).toHaveBeenCalledOnce())
+    controller.logout()
+    finish()
+    await rejected
+    expect(doc.readSelection).toHaveBeenCalledTimes(3)
   })
 
   it('does not let mutation of the propose result change the confirmed write', async () => {

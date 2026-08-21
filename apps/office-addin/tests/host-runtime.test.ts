@@ -70,6 +70,27 @@ describe('host runtime composition', () => {
     expect(runtime.proposals.pending()).toBeUndefined()
   })
 
+  it('ignores an upload that settles after the runtime is disposed', async () => {
+    const runtime = createOfficeHostRuntime('word')
+    let resolve!: (value: ArrayBuffer) => void
+    const upload = runtime.uploadFile('late.txt', new Promise((next) => (resolve = next)))
+    runtime.dispose()
+    resolve(new TextEncoder().encode('secret').buffer as ArrayBuffer)
+    await expect(upload).rejects.toThrow('upload_cancelled')
+    expect(runtime.vfs.list('/home/user')).toEqual([])
+  })
+
+  it('installs a bounded SKILL.md and exposes it dynamically to Agent context', async () => {
+    const runtime = createOfficeHostRuntime('word')
+    await runtime.installSkill(
+      Promise.resolve('---\nname: writer\ndescription: Helps edit prose\n---\nBe concise.'),
+    )
+    expect(runtime.skills.list()).toMatchObject([{ name: 'writer' }])
+    expect(runtime.skill.buildContext?.()).toContain(
+      'writer: Helps edit prose (/home/skills/writer/SKILL.md)',
+    )
+  })
+
   it('keeps the legacy selection skill as an explicit rollback gate', () => {
     const runtime = createOfficeHostRuntime('excel', { enableHostSkills: false })
     expect(runtime.skill.tools.map((tool) => tool.name).sort()).toEqual([

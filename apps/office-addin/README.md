@@ -7,7 +7,9 @@ An Office.js task pane for Word, Excel, and PowerPoint. It reuses the signed-in 
 After `Office.onReady()`, the task pane composes the shared browser skill with exactly one Word,
 Excel, or PowerPoint skill. Unsupported hosts fail closed.
 
-- Shared: bounded VFS `read` and sandboxed `bash` (`pwd`, `ls`, and `cat` only).
+- Shared: bounded VFS `read`, sandboxed `bash` (`pwd`, `ls`, and `cat` only), session-file
+  upload, and strict single-file `SKILL.md` installation. Installed skill metadata is added to the
+  Agent context dynamically; package folders and auxiliary files are not yet exposed in the UI.
 - Word: `get_document_text`, `get_document_structure`, `get_ooxml`, `screenshot_document`,
   `execute_office_js`.
 - Excel: `get_cell_ranges`, `get_range_as_csv`, `search_data`, `screenshot_range`,
@@ -18,8 +20,9 @@ Excel, or PowerPoint skill. Unsupported hosts fail closed.
   `edit_slide_text`, `duplicate_slide`, `edit_slide_xml`, `edit_slide_chart`,
   `edit_slide_master`, `execute_office_js`.
 
-Raw Office.js, Word screenshot, PowerPoint XML/chart/master edits, and file conversion/web
-commands remain release blockers. They return stable `office_api_unsupported` or
+Raw Office.js, Word screenshot, PowerPoint XML/chart/master edits, file conversion commands, and
+web retrieval remain release blockers. There is no fixed authenticated web bridge route yet, so no
+web tool is advertised. Blocked advertised tools return stable `office_api_unsupported` or
 `command_unsupported` errors and must not be described as successful. Browser `bash` is not a
 native shell and has no PC filesystem, process, socket, credential, or package-install access.
 Supported mutations show a structured title, impact, before/after data, preview, and code when
@@ -104,7 +107,8 @@ Office (Office Web remains blocked pending PNA and API-set acceptance):
 3. Create a supported Excel mutation and PowerPoint text/duplicate mutation. Verify title, impact,
    targets, before/after or preview, Reject, stale-state rejection, and exactly-once Confirm.
 4. Exercise every release-blocked tool and verify its documented error and zero mutation.
-5. Upload and read a session file, then verify traversal and native-shell/network syntax are denied.
+5. Upload and read a session file, install a valid file named `SKILL.md`, verify its metadata enters
+   the next Agent request, then verify traversal and native-shell/network syntax are denied.
 6. Log out during an active stream and pending confirmation; verify conversation, proposal, VFS,
    and installed-skill state are cleared before reconnecting.
 

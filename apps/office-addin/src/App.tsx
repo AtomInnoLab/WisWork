@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
 import type { OfficeProposal, StructuredProposal } from './agent/proposal-controller.js'
 import { createPcBridgeAgentTransport } from './agent/transport.js'
@@ -57,6 +57,19 @@ export function proposalPresentation(proposal: DisplayProposal) {
   }
 }
 
+export function safeUploadError(error: unknown): string {
+  const code = error instanceof Error ? error.message : ''
+  return [
+    'upload_cancelled',
+    'vfs_limit',
+    'vfs_path_denied',
+    'invalid_skill_package',
+    'skill_already_installed',
+  ].includes(code)
+    ? code
+    : 'upload_failed'
+}
+
 export function AgentWorkspace(props: {
   session: OfficeAgentSession
   runtime: OfficeHostRuntime
@@ -67,6 +80,14 @@ export function AgentWorkspace(props: {
   const state = useOfficeAgent(session)
   const [instruction, setInstruction] = useState('')
   const [files, setFiles] = useState<string[]>(runtime.vfs.list('/home/user'))
+  const [uploadError, setUploadError] = useState('')
+  const mounted = useRef(true)
+  useEffect(
+    () => () => {
+      mounted.current = false
+    },
+    [],
+  )
 
   function send() {
     if (!instruction.trim()) return
@@ -184,12 +205,23 @@ export function AgentWorkspace(props: {
           onChange={(event) => {
             const file = event.currentTarget.files?.[0]
             if (!file) return
-            void file.arrayBuffer().then((content) => {
-              runtime.vfs.writeFile(`/home/user/${file.name}`, new Uint8Array(content))
-              setFiles(runtime.vfs.list('/home/user'))
-            })
+            setUploadError('')
+            const operation =
+              file.name === 'SKILL.md'
+                ? runtime.installSkill(file.text())
+                : runtime.uploadFile(file.name, file.arrayBuffer())
+            void operation
+              .then(() => {
+                if (mounted.current) setFiles(runtime.vfs.list('/home/user'))
+              })
+              .catch((error: unknown) => {
+                if (!mounted.current) return
+                setUploadError(safeUploadError(error))
+              })
           }}
         />
+        <p>Upload a file, or upload a file named SKILL.md to install its bounded skill package.</p>
+        {uploadError && <p className="error-text">{uploadError}</p>}
         <p>{files.length ? files.join(', ') : 'No uploaded files in this session.'}</p>
         <p>
           Installed skills:{' '}
@@ -294,7 +326,7 @@ function ConfiguredApp() {
   useEffect(() => {
     if (bridgeState.status !== 'connected' && workspace) {
       workspace.session.authenticationLost()
-      workspace.runtime.dispose()
+      workspace.runtime.clearSession()
     }
   }, [bridgeState.status, workspace])
 

@@ -2,6 +2,7 @@ import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
 import { exactObject, stringField } from '../../agent/tool-schema.js'
 import { createSandboxCommands } from './commands.js'
 import { InMemoryVfs } from './vfs.js'
+import type { SkillRegistry } from './skill-registry.js'
 
 const MAX_PATH = 512
 const MAX_COMMAND = 2_048
@@ -16,6 +17,7 @@ const invalid = (summary: string): ToolExecution => ({
 
 export function createSharedBrowserSkill(options: {
   vfs: InMemoryVfs
+  skills?: SkillRegistry
   maxReadBytes?: number
 }): AgentSkill {
   const maxReadBytes = options.maxReadBytes ?? 64 * 1024
@@ -24,6 +26,7 @@ export function createSharedBrowserSkill(options: {
     id: 'office-shared-browser',
     systemPrompt:
       'read and bash operate only on the bounded browser VFS. bash is not a native shell.',
+    buildContext: () => options.skills?.prompt() ?? '',
     tools: [
       {
         name: 'read',

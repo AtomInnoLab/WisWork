@@ -181,6 +181,7 @@ export function createProposalController(document: OfficeDocumentClient): Propos
       const before = await document.readSelection()
       if (before.length > MAX_PROPOSAL_SELECTION_LENGTH) throw new Error('selection_too_large')
       const fingerprint = selectionFingerprint(before)
+      const expected = operation === 'replace' ? value : `${before}${value}`
       return legacy(
         structured.propose({
           operation,
@@ -190,15 +191,27 @@ export function createProposalController(document: OfficeDocumentClient): Propos
           impact: { host: 'office', targets: ['selection'], count: 1 },
           fingerprint,
           before,
-          after: operation === 'replace' ? value : `${before}${value}`,
-          validate: async () => {
+          after: expected,
+          validate: async (signal) => {
+            if (signal?.aborted) return false
             const current = await document.readSelection()
-            return current === before && selectionFingerprint(current) === fingerprint
+            return (
+              !signal?.aborted &&
+              current === before &&
+              selectionFingerprint(current) === fingerprint
+            )
           },
-          execute: async () =>
-            operation === 'replace'
+          execute: async (signal) => {
+            if (signal?.aborted) throw new Error('proposal_stale')
+            await (operation === 'replace'
               ? document.replaceSelection(value)
-              : document.appendText(before, value),
+              : document.appendText(before, value))
+            // Office callbacks cannot be revoked after dispatch. Always re-read before reporting
+            // completion, including when logout/cancellation happened during the callback.
+            const current = await document.readSelection()
+            if (signal?.aborted) throw new Error('proposal_stale')
+            if (current !== expected) throw new Error('office_verify_failed')
+          },
         }),
       )
     },

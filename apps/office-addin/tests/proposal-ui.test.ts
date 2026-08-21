@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { proposalPresentation } from '../src/App.js'
+import { proposalPresentation, safeUploadError } from '../src/App.js'
 
 describe('generic proposal presentation', () => {
   it('preserves structured impact, preview, before, after, and code', () => {
@@ -37,5 +37,10 @@ describe('generic proposal presentation', () => {
         fingerprint: 'fp',
       }),
     ).toMatchObject({ title: 'Append to selection', before: 'old', after: 'old new' })
+  })
+
+  it('maps upload failures to stable UI-safe errors', () => {
+    expect(safeUploadError(new Error('invalid_skill_package'))).toBe('invalid_skill_package')
+    expect(safeUploadError(new Error('/Users/alice/private'))).toBe('upload_failed')
   })
 })

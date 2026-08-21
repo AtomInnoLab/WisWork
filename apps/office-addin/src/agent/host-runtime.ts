@@ -28,6 +28,9 @@ export interface OfficeHostRuntime {
   proposals: ProposalController | StructuredProposalController
   vfs: InMemoryVfs
   skills: SkillRegistry
+  uploadFile(name: string, content: Promise<ArrayBuffer>): Promise<void>
+  installSkill(source: Promise<string>): Promise<void>
+  clearSession(): void
   dispose(): void
 }
 
@@ -44,7 +47,7 @@ export function createOfficeHostRuntime(
     return lifecycle(createOfficeSkill(document, proposals), proposals, vfs, skills)
   }
   const proposals = createStructuredProposalController()
-  const shared = createSharedBrowserSkill({ vfs })
+  const shared = createSharedBrowserSkill({ vfs, skills })
   const hostSkill = {
     word: () => createWordSkill({ adapter: new BrowserWordAdapter(), vfs, proposals }),
     excel: () => createExcelSkill({ adapter: new BrowserExcelAdapter(), proposals }),
@@ -59,15 +62,40 @@ function lifecycle(
   vfs: InMemoryVfs,
   skills: SkillRegistry,
 ): OfficeHostRuntime {
+  let epoch = 0
+  let disposed = false
+  const check = (captured: number) => {
+    if (disposed || captured !== epoch) throw new Error('upload_cancelled')
+  }
+  const clearSession = () => {
+    epoch += 1
+    proposals.logout()
+    skills.clear()
+    vfs.clear()
+  }
   return {
     skill,
     proposals,
     vfs,
     skills,
+    async uploadFile(name, content) {
+      const captured = epoch
+      if (!name || name.length > 128 || name.includes('/') || name.includes('\\'))
+        throw new Error('vfs_path_denied')
+      const bytes = new Uint8Array(await content)
+      check(captured)
+      vfs.writeFile(`/home/user/${name}`, bytes)
+    },
+    async installSkill(source) {
+      const captured = epoch
+      const value = await source
+      check(captured)
+      skills.install(value)
+    },
+    clearSession,
     dispose() {
-      proposals.logout()
-      skills.clear()
-      vfs.clear()
+      clearSession()
+      disposed = true
     },
   }
 }
