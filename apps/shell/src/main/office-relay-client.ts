@@ -11,6 +11,8 @@ const MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 // Relay owns the 120s deadline; this only handles a lost relay.cancel.
 const REQUEST_TIMEOUT_MS = 125_000
 const CONNECT_TIMEOUT_MS = 10_000
+// Relay owns the renewable idle TTL. PC keeps only a bounded absolute-lifetime watchdog.
+const SESSION_ABSOLUTE_MAX_MS = 8 * 60 * 60 * 1_000
 const IDENTIFIER = /^[A-Za-z0-9_-]{8,128}$/
 const HOSTS = new Set(['Word', 'Excel', 'PowerPoint'])
 const MAX_REQUEST_IDS = 2_048
@@ -454,10 +456,7 @@ export function createOfficeRelayClient(options: {
       pairingTimer = null
       pending = null
       approvalSentFor = null
-      sessionTimer = setTimeout(
-        () => clear('session_expired', true),
-        Number(typed.expires_in) * 1_000,
-      )
+      sessionTimer = setTimeout(() => clear('session_expired', true), SESSION_ABSOLUTE_MAX_MS)
       setStatus('paired')
       return
     }

@@ -83,7 +83,9 @@ describe('Office fixed retrieval proxy', () => {
     ['web-fetch.v1', { url: 'https://[fe80::1]/private' }],
     ['web-fetch.v1', { url: 'https://[fec0::1]/private' }],
     ['web-fetch.v1', { url: 'https://[2001::1]/private' }],
+    ['web-fetch.v1', { url: 'https://[2001:20::1]/private' }],
     ['web-fetch.v1', { url: 'https://[2001:db8::1]/private' }],
+    ['web-fetch.v1', { url: 'https://[2002:7f00:1::]/private' }],
     ['web-search.v1', { query: 'x', max_results: 21 }],
     ['image-search.v1', { query: 'x', max_results: 0 }],
   ])('rejects invalid or literal-private input for %s', async (capability, body) => {

@@ -556,6 +556,36 @@ describe('Office relay PC client', () => {
     expect(client.status()).toBe('disconnected:auth_required')
   })
 
+  it('does not apply the renewable 30 minute Relay idle TTL as a local hard expiry', async () => {
+    vi.useFakeTimers()
+    const { client, socket } = setup()
+    const claiming = client.claim('123456')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.open()
+    await claiming
+    socket.message({
+      version: 1,
+      type: 'pc.claimed',
+      pairing_id: 'pairing_12345678',
+      host: 'Word',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      verification_code: '123456',
+      expires_in: 120,
+    })
+    await client.approve('pairing_12345678')
+    socket.message({
+      version: 1,
+      type: 'pc.approved',
+      session_id: 'session_12345678',
+      capability: 'secret-capability',
+      expires_in: 1800,
+    })
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1_000)
+    expect(client.status()).toBe('paired')
+    client.revoke('test_complete')
+    vi.useRealTimers()
+  })
+
   it('uses v2 only with a fixed retrieval proxy and dispatches negotiated web requests', async () => {
     const socket = new FakeSocket()
     const retrievalProxy = vi.fn(async () => new TextEncoder().encode('{"results":[]}'))
