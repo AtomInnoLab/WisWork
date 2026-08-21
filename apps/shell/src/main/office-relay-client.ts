@@ -1,5 +1,7 @@
 import type { MessagesProxy } from '@wiswork/office-bridge'
-import type { OfficePairingRequest } from '../shared/home-api'
+import WebSocket from 'ws'
+import type { OfficePairingRequest, OfficeRelayStatus } from '../shared/home-api'
+export type { OfficeRelayStatus } from '../shared/home-api'
 
 const MAX_CONTROL_BYTES = 16 * 1024
 const MAX_REQUEST_BYTES = 256 * 1024
@@ -9,6 +11,19 @@ const REQUEST_TIMEOUT_MS = 120_000
 const CONNECT_TIMEOUT_MS = 10_000
 const IDENTIFIER = /^[A-Za-z0-9_-]{8,128}$/
 const HOSTS = new Set(['Word', 'Excel', 'PowerPoint'])
+const MAX_REQUEST_IDS = 2_048
+const RELAY_ERROR_CODES = new Set([
+  'binary_not_supported',
+  'frame_too_large',
+  'invalid_code',
+  'invalid_frame',
+  'invalid_pairing',
+  'relay_busy',
+  'role_not_allowed',
+  'session_expired',
+  'session_revoked',
+  'unauthorized',
+])
 
 export interface RelaySocket {
   readyState: number
@@ -17,15 +32,6 @@ export interface RelaySocket {
   close(code?: number, reason?: string): void
 }
 
-export type OfficeRelayStatus =
-  | 'disconnected'
-  | 'connecting'
-  | 'claiming'
-  | 'awaiting_approval'
-  | 'paired'
-  | `disconnected:${string}`
-  | `error:${string}`
-
 export interface OfficeRelayClient {
   claim(code: string): Promise<void>
   approve(pairingId: string): Promise<boolean>
@@ -33,6 +39,10 @@ export interface OfficeRelayClient {
   listPending(): OfficePairingRequest[]
   status(): OfficeRelayStatus
   revoke(reason?: string): void
+}
+
+export function connectAuthenticatedRelaySocket(url: string, accessToken: string): RelaySocket {
+  return new WebSocket(url, { headers: { Authorization: `Bearer ${accessToken}` } }) as RelaySocket
 }
 
 function exact(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
@@ -49,6 +59,10 @@ function validId(value: unknown): value is string {
   return typeof value === 'string' && IDENTIFIER.test(value)
 }
 
+function jsonObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
 export function officeRelayEndpointFromEnv(env: Record<string, string | undefined>): string {
   const value = env.WISWORK_OFFICE_RELAY_URL ?? 'wss://office.8-216-134-194.sslip.io/office-relay'
   const url = new URL(value)
@@ -59,21 +73,28 @@ export function officeRelayEndpointFromEnv(env: Record<string, string | undefine
 
 export function createOfficeRelayClient(options: {
   endpoint: string
-  connect?: (url: string) => RelaySocket
+  connect?: (url: string, accessToken: string) => RelaySocket
   getValidAccountStatus(): Promise<{ loggedIn: boolean }>
+  getAccessToken(): Promise<string | null>
   proxy: MessagesProxy
   onPending(pairing: OfficePairingRequest): void
+  onPendingExpired?: (pairingId: string) => void
   onStatus?: (status: OfficeRelayStatus) => void
+  maxRequestIds?: number
 }): OfficeRelayClient {
-  const connect = options.connect ?? ((url) => new WebSocket(url) as unknown as RelaySocket)
+  const connect = options.connect ?? connectAuthenticatedRelaySocket
   let socket: RelaySocket | null = null
   let diagnostic: OfficeRelayStatus = 'disconnected'
   let pending: OfficePairingRequest | null = null
   let session: { sessionId: string; capability: string } | null = null
-  let active: { requestId: string; controller: AbortController } | null = null
+  let active: { requestId: string; controller: AbortController; remoteCancelled: boolean } | null =
+    null
   let claimedCode: string | null = null
   const requestIds = new Set<string>()
   let generation = 0
+  let approvalSentFor: string | null = null
+  let pairingTimer: ReturnType<typeof setTimeout> | null = null
+  let sessionTimer: ReturnType<typeof setTimeout> | null = null
 
   const setStatus = (value: OfficeRelayStatus) => {
     diagnostic = value
@@ -86,21 +107,33 @@ export function createOfficeRelayClient(options: {
       throw new Error('control_frame_too_large')
     socket.send(raw)
   }
-  const cancelActive = () => {
-    active?.controller.abort()
-    active = null
+  const clearTimers = () => {
+    if (pairingTimer) clearTimeout(pairingTimer)
+    if (sessionTimer) clearTimeout(sessionTimer)
+    pairingTimer = null
+    sessionTimer = null
+  }
+  const cancelActive = (remoteCancelled = false) => {
+    if (!active) return
+    active.remoteCancelled ||= remoteCancelled
+    active.controller.abort()
   }
   const clear = (reason: string, close: boolean) => {
     generation += 1
     cancelActive()
+    active = null
+    const expiredPendingId = pending?.pairingId
     pending = null
+    approvalSentFor = null
     claimedCode = null
     session = null
     requestIds.clear()
+    clearTimers()
     const current = socket
     socket = null
     if (close && current && current.readyState < 2) current.close(1000, 'session_revoked')
-    setStatus(`disconnected:${reason}`)
+    if (expiredPendingId) options.onPendingExpired?.(expiredPendingId)
+    setStatus(`disconnected:${reason}` as OfficeRelayStatus)
   }
 
   const runRequest = async (frame: Record<string, unknown>, owner: number) => {
@@ -111,12 +144,18 @@ export function createOfficeRelayClient(options: {
       !validId(frame.request_id)
     )
       return clear('protocol_violation', true)
-    if (active || requestIds.has(frame.request_id)) return clear('protocol_violation', true)
+    if (
+      active ||
+      requestIds.has(frame.request_id) ||
+      requestIds.size >= (options.maxRequestIds ?? MAX_REQUEST_IDS)
+    )
+      return clear('protocol_violation', true)
+    if (!jsonObject(frame.body)) return clear('protocol_violation', true)
     requestIds.add(frame.request_id)
     const bodyBytes = Buffer.byteLength(JSON.stringify(frame.body))
     if (bodyBytes > MAX_REQUEST_BYTES) return clear('request_too_large', true)
     const controller = new AbortController()
-    active = { requestId: frame.request_id, controller }
+    active = { requestId: frame.request_id, controller, remoteCancelled: false }
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
     try {
       const response = await options.proxy({ body: frame.body, signal: controller.signal })
@@ -169,12 +208,12 @@ export function createOfficeRelayClient(options: {
       })
     } catch (error) {
       if (owner !== generation || !session) return
+      if (active?.requestId === frame.request_id && active.remoteCancelled) return
+      if (controller.signal.aborted) return
       const code =
         error instanceof Error && error.message === 'auth_required'
           ? 'auth_required'
-          : controller.signal.aborted
-            ? 'cancelled'
-            : 'upstream_error'
+          : 'upstream_error'
       if (code === 'auth_required') return clear(code, true)
       send({
         version: 1,
@@ -229,7 +268,9 @@ export function createOfficeRelayClient(options: {
         typed.verification_code !== claimedCode ||
         !Number.isSafeInteger(typed.expires_in) ||
         Number(typed.expires_in) < 1 ||
-        Number(typed.expires_in) > 120
+        Number(typed.expires_in) > 120 ||
+        diagnostic !== 'claiming' ||
+        pending !== null
       )
         return clear('protocol_violation', true)
       try {
@@ -245,6 +286,12 @@ export function createOfficeRelayClient(options: {
         origin: typed.origin,
         verificationCode: typed.verification_code as string,
       }
+      pairingTimer = setTimeout(
+        () => {
+          clear('pairing_expired', true)
+        },
+        Number(typed.expires_in) * 1_000,
+      )
       setStatus('awaiting_approval')
       options.onPending(pending)
       return
@@ -256,16 +303,29 @@ export function createOfficeRelayClient(options: {
         !validId(typed.capability) ||
         !Number.isSafeInteger(typed.expires_in) ||
         Number(typed.expires_in) < 1 ||
-        Number(typed.expires_in) > 1_800
+        Number(typed.expires_in) > 1_800 ||
+        !pending ||
+        approvalSentFor !== pending.pairingId ||
+        diagnostic !== 'awaiting_approval'
       )
         return clear('protocol_violation', true)
       session = { sessionId: typed.session_id, capability: typed.capability }
+      if (pairingTimer) clearTimeout(pairingTimer)
+      pairingTimer = null
       pending = null
+      approvalSentFor = null
+      sessionTimer = setTimeout(
+        () => clear('session_expired', true),
+        Number(typed.expires_in) * 1_000,
+      )
       setStatus('paired')
       return
     }
     if (typed.type === 'relay.request') {
-      if (!exact(frame, ['version', 'type', 'session_id', 'request_id', 'body']))
+      if (
+        !exact(frame, ['version', 'type', 'session_id', 'request_id', 'body']) ||
+        !jsonObject(typed.body)
+      )
         return clear('protocol_violation', true)
       void runRequest(typed, owner)
       return
@@ -277,22 +337,46 @@ export function createOfficeRelayClient(options: {
         typed.request_id !== active?.requestId
       )
         return clear('protocol_violation', true)
-      cancelActive()
+      cancelActive(true)
       return
     }
-    clear(typeof typed.code === 'string' ? typed.code : 'protocol_violation', true)
+    if (
+      typed.type === 'relay.error' &&
+      exact(frame, ['version', 'type', 'code']) &&
+      typeof typed.code === 'string' &&
+      RELAY_ERROR_CODES.has(typed.code)
+    )
+      return clear(typed.code, true)
+    clear('protocol_violation', true)
   }
 
   return {
     async claim(code) {
       if (!/^\d{6}$/.test(code)) throw new Error('invalid_verification_code')
       const account = await options.getValidAccountStatus()
-      if (!account.loggedIn) throw new Error('auth_required')
+      if (!account.loggedIn) {
+        clear('auth_required', true)
+        throw new Error('auth_required')
+      }
+      const accessToken = await options.getAccessToken().catch((error) => {
+        clear('auth_required', true)
+        throw error
+      })
+      if (!accessToken || !/^[\x21-\x7e]+$/.test(accessToken)) {
+        clear('auth_required', true)
+        throw new Error('auth_required')
+      }
       clear('new_claim', true)
       generation += 1
       const owner = generation
       setStatus('connecting')
-      const next = connect(options.endpoint)
+      let next: RelaySocket
+      try {
+        next = connect(options.endpoint, accessToken)
+      } catch {
+        clear('network_error', true)
+        throw new Error('relay_connection_failed')
+      }
       socket = next
       next.addEventListener('message', (event) => receive(event, owner))
       next.addEventListener('close', () => {
@@ -337,6 +421,8 @@ export function createOfficeRelayClient(options: {
         return false
       }
       if (!pending || pending.pairingId !== pairingId) return false
+      if (approvalSentFor) return false
+      approvalSentFor = pairingId
       send({ version: 1, type: 'pc.approve', pairing_id: pairingId })
       return true
     },

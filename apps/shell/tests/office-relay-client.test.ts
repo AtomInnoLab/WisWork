@@ -45,6 +45,7 @@ function setup(loggedIn = true) {
     endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
     connect: () => socket,
     getValidAccountStatus: async () => ({ loggedIn }),
+    getAccessToken: async () => (loggedIn ? 'access-token' : null),
     proxy,
     onPending: pending,
   })
@@ -67,6 +68,41 @@ describe('Office relay PC client', () => {
   it('requires sign-in and an exact six-digit code before connecting', async () => {
     await expect(setup(false).client.claim('123456')).rejects.toThrow('auth_required')
     await expect(setup().client.claim('12345')).rejects.toThrow('invalid_verification_code')
+  })
+
+  it('passes a freshly loaded access token to the authenticated socket factory on every claim', async () => {
+    const sockets = [new FakeSocket(), new FakeSocket()]
+    const connect = vi.fn((_url: string, _token: string) => sockets.shift()!)
+    const getAccessToken = vi
+      .fn()
+      .mockResolvedValueOnce('token-one')
+      .mockResolvedValueOnce('token-two')
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect,
+      getValidAccountStatus: async () => ({ loggedIn: true }),
+      getAccessToken,
+      proxy: async () => ({ status: 200, body: new Uint8Array() }),
+      onPending() {},
+    })
+    const first = client.claim('123456')
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(1))
+    connect.mock.results[0]!.value.open()
+    await first
+    const second = client.claim('654321')
+    await vi.waitFor(() => expect(connect).toHaveBeenCalledTimes(2))
+    connect.mock.results[1]!.value.open()
+    await second
+    expect(connect).toHaveBeenNthCalledWith(
+      1,
+      'wss://office.8-216-134-194.sslip.io/office-relay',
+      'token-one',
+    )
+    expect(connect).toHaveBeenNthCalledWith(
+      2,
+      'wss://office.8-216-134-194.sslip.io/office-relay',
+      'token-two',
+    )
   })
 
   it('claims, shows the relay-asserted host and code, and requires explicit approval', async () => {
@@ -120,6 +156,106 @@ describe('Office relay PC client', () => {
     })
     expect(pending).not.toHaveBeenCalled()
     expect(client.status()).toBe('disconnected:protocol_violation')
+  })
+
+  it('rejects approval before the exact pending pairing was locally approved', async () => {
+    const { client, socket } = setup()
+    const claiming = client.claim('123456')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await claiming
+    socket.message({
+      version: 1,
+      type: 'pc.approved',
+      session_id: 'session_12345678',
+      capability: 'secret-capability',
+      expires_in: 1800,
+    })
+    expect(client.status()).toBe('disconnected:protocol_violation')
+  })
+
+  it('rejects non-object agent request bodies without invoking the proxy', async () => {
+    const { client, socket, proxy } = setup()
+    const claiming = client.claim('123456')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await claiming
+    socket.message({
+      version: 1,
+      type: 'pc.claimed',
+      pairing_id: 'pairing_12345678',
+      host: 'Word',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      verification_code: '123456',
+      expires_in: 120,
+    })
+    await client.approve('pairing_12345678')
+    socket.message({
+      version: 1,
+      type: 'pc.approved',
+      session_id: 'session_12345678',
+      capability: 'secret-capability',
+      expires_in: 1800,
+    })
+    socket.message({
+      version: 1,
+      type: 'relay.request',
+      session_id: 'session_12345678',
+      request_id: 'request_12345678',
+      body: '{"messages":[]}',
+    })
+    expect(proxy).not.toHaveBeenCalled()
+    expect(client.status()).toBe('disconnected:protocol_violation')
+  })
+
+  it('bounds remembered request identifiers and rejects unknown relay error codes', async () => {
+    const socket = new FakeSocket()
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => socket,
+      getValidAccountStatus: async () => ({ loggedIn: true }),
+      getAccessToken: async () => 'token',
+      proxy: async () => ({ status: 200, body: new Uint8Array() }),
+      onPending() {},
+      maxRequestIds: 0,
+    })
+    const claiming = client.claim('123456')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await claiming
+    socket.message({
+      version: 1,
+      type: 'pc.claimed',
+      pairing_id: 'pairing_12345678',
+      host: 'Word',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      verification_code: '123456',
+      expires_in: 120,
+    })
+    await client.approve('pairing_12345678')
+    socket.message({
+      version: 1,
+      type: 'pc.approved',
+      session_id: 'session_12345678',
+      capability: 'secret-capability',
+      expires_in: 1800,
+    })
+    socket.message({
+      version: 1,
+      type: 'relay.request',
+      session_id: 'session_12345678',
+      request_id: 'request_12345678',
+      body: {},
+    })
+    expect(client.status()).toBe('disconnected:protocol_violation')
+
+    const second = setup()
+    const secondClaim = second.client.claim('123456')
+    await vi.waitFor(() => expect(second.socket.listeners.has('open')).toBe(true))
+    second.socket.open()
+    await secondClaim
+    second.socket.message({ version: 1, type: 'relay.error', code: 'attacker_supplied_status' })
+    expect(second.client.status()).toBe('disconnected:protocol_violation')
   })
 
   it('proxies bounded requests, streams base64 chunks, and mirrors completion metadata', async () => {
@@ -191,6 +327,7 @@ describe('Office relay PC client', () => {
       endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
       connect: () => socket,
       getValidAccountStatus: async () => ({ loggedIn: true }),
+      getAccessToken: async () => 'access-token',
       proxy: ({ signal }) =>
         new Promise((_resolve, reject) => {
           signal.addEventListener('abort', () => {
@@ -236,6 +373,41 @@ describe('Office relay PC client', () => {
       request_id: 'request_12345678',
     })
     await vi.waitFor(() => expect(aborted).toBe(true))
+    expect(socket.sent.map((raw) => JSON.parse(raw).type)).not.toContain('pc.error')
+    expect(client.status()).toBe('paired')
+  })
+
+  it('expires a pending pairing and removes its approval prompt', async () => {
+    vi.useFakeTimers()
+    const socket = new FakeSocket()
+    const expired = vi.fn()
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => socket,
+      getValidAccountStatus: async () => ({ loggedIn: true }),
+      getAccessToken: async () => 'token',
+      proxy: async () => ({ status: 200, body: new Uint8Array() }),
+      onPending() {},
+      onPendingExpired: expired,
+    })
+    const claiming = client.claim('123456')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.open()
+    await claiming
+    socket.message({
+      version: 1,
+      type: 'pc.claimed',
+      pairing_id: 'pairing_12345678',
+      host: 'Word',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      verification_code: '123456',
+      expires_in: 1,
+    })
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(expired).toHaveBeenCalledWith('pairing_12345678')
+    expect(client.listPending()).toEqual([])
+    expect(client.status()).toBe('disconnected:pairing_expired')
+    vi.useRealTimers()
   })
 
   it('closes the capability on logout or authentication loss', async () => {

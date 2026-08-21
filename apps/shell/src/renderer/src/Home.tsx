@@ -1053,11 +1053,17 @@ export function Home() {
     const add = (pairing: OfficePairingRequest) =>
       setOfficePairings((current) => mergeOfficePairings(current, [pairing]))
     const off = window.aiOffice.onOfficePairingRequested(add)
+    const offExpired = window.aiOffice.onOfficePairingExpired((pairingId) =>
+      setOfficePairings((current) => current.filter((entry) => entry.pairingId !== pairingId)),
+    )
     void window.aiOffice
       .listOfficePairings()
       .then((pending) => setOfficePairings((current) => mergeOfficePairings(current, pending)))
       .catch(() => undefined)
-    return off
+    return () => {
+      off()
+      offExpired()
+    }
   }, [])
 
   // ── Project state ──

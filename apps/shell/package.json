@@ -18,6 +18,9 @@
     "dist:win": "electron-vite build && electron-builder --win",
     "dist:linux": "electron-vite build && electron-builder --linux"
   },
+  "dependencies": {
+    "ws": "^8.21.1"
+  },
   "devDependencies": {
     "@wiswork/agent-core": "*",
     "@wiswork/ai-provider": "*",

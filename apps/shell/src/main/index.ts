@@ -2532,8 +2532,13 @@ app.whenReady().then(async () => {
     officeRelay = createOfficeRelayClient({
       endpoint: officeRelayEndpointFromEnv(process.env),
       getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
+      getAccessToken: () => requireAuthRuntime().client.getAccessToken(),
       proxy: officeMessagesProxy,
       onPending: notifyOfficePairing,
+      onPendingExpired: (pairingId) => {
+        if (!shellWindow || shellWindow.isDestroyed()) return
+        shellWindow.webContents.send(OFFICE_PAIRING_CHANNELS.expired, pairingId)
+      },
       onStatus: (status) => {
         officeRelayDiagnostic = status
       },

@@ -125,6 +125,7 @@ export interface HomeApi {
   accountLogout(): Promise<void>
   /** Observe explicit Office connection requests awaiting approval on this PC. */
   onOfficePairingRequested(handler: (pairing: OfficePairingRequest) => void): () => void
+  onOfficePairingExpired(handler: (pairingId: string) => void): () => void
   listOfficePairings(): Promise<OfficePairingRequest[]>
   approveOfficePairing(pairingId: string): Promise<boolean>
   rejectOfficePairing(pairingId: string): Promise<boolean>
@@ -174,8 +175,26 @@ export type OfficeRelayStatus =
   | 'claiming'
   | 'awaiting_approval'
   | 'paired'
-  | `disconnected:${string}`
-  | `error:${string}`
+  | 'disconnected:auth_required'
+  | 'disconnected:binary_not_supported'
+  | 'disconnected:frame_too_large'
+  | 'disconnected:invalid_code'
+  | 'disconnected:invalid_frame'
+  | 'disconnected:invalid_pairing'
+  | 'disconnected:logout'
+  | 'disconnected:network_error'
+  | 'disconnected:new_claim'
+  | 'disconnected:pairing_expired'
+  | 'disconnected:protocol_violation'
+  | 'disconnected:rejected'
+  | 'disconnected:relay_busy'
+  | 'disconnected:relay_closed'
+  | 'disconnected:role_not_allowed'
+  | 'disconnected:session_expired'
+  | 'disconnected:session_revoked'
+  | 'disconnected:shutdown'
+  | 'disconnected:unauthorized'
+  | 'error:invalid_config'
 
 export interface RenameResult {
   ok: boolean
@@ -274,6 +293,7 @@ export const PROJECT_CHANNELS = {
 
 export const OFFICE_PAIRING_CHANNELS = {
   requested: 'home:office-pairing-requested',
+  expired: 'home:office-pairing-expired',
   list: 'home:office-pairing-list',
   approve: 'home:office-pairing-approve',
   reject: 'home:office-pairing-reject',
