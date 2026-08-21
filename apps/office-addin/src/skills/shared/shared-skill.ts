@@ -63,6 +63,7 @@ export function createSharedBrowserSkill(options: {
             if (bytes.byteLength > MAX_VFS_FILE_BYTES) throw new Error('vfs_limit')
             return {
               output: JSON.stringify({ path, mime, bytes: bytes.byteLength }),
+              modelContent: [{ type: 'image', image: { mime, base64: base64(bytes) } }],
               display: { kind: 'images', items: [{ url: `data:${mime};base64,${base64(bytes)}` }] },
               mutated: false,
               summary: `Read ${path}`,

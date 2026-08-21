@@ -254,6 +254,7 @@ describe('Word compatibility skill', () => {
       skill.executeTool(call('screenshot_document', { page: 1 })),
     ).resolves.toMatchObject({
       output: '{"mime":"image/png"}',
+      modelContent: [{ type: 'image', image: { mime: 'image/png', base64 } }],
       display: { kind: 'images', items: [{ url: `data:image/png;base64,${base64}` }] },
       mutated: false,
     })

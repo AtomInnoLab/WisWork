@@ -122,6 +122,7 @@ describe('shared browser skill', () => {
       skill.executeTool({ id: 'image', name: 'read', input: { path: '/home/user/page.png' } }),
     ).resolves.toMatchObject({
       output: '{"path":"/home/user/page.png","mime":"image/png","bytes":4}',
+      modelContent: [{ type: 'image', image: { mime: 'image/png', base64: 'iVBORw==' } }],
       display: { kind: 'images', items: [{ url: 'data:image/png;base64,iVBORw==' }] },
     })
   })
