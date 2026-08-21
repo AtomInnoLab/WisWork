@@ -594,10 +594,6 @@ async fn negotiate(
     let id = store.codes.get(code).cloned().ok_or("invalid_code")?;
     let maximum = app.inner.config.max_claim_attempts;
     let pairing = store.pairings.get_mut(&id).ok_or("invalid_code")?;
-    pairing.attempts = pairing.attempts.saturating_add(1);
-    if pairing.attempts > maximum {
-        return Err("claim_limit");
-    }
     if pairing.pc.is_some() {
         return Err("already_claimed");
     }
@@ -609,6 +605,10 @@ async fn negotiate(
         .collect();
     if negotiated.is_empty() {
         return Err("capability_not_negotiated");
+    }
+    pairing.attempts = pairing.attempts.saturating_add(1);
+    if pairing.attempts > maximum {
+        return Err("claim_limit");
     }
     send(
         tx,
@@ -765,10 +765,6 @@ async fn claim(
     if p.version != protocol {
         return Err("invalid_frame");
     }
-    p.attempts += 1;
-    if p.attempts > max {
-        return Err("claim_limit");
-    };
     if p.pc.is_some() {
         return Err("already_claimed");
     }
@@ -781,6 +777,10 @@ async fn claim(
     if negotiated_capabilities.is_empty() {
         return Err("capability_not_negotiated");
     }
+    p.attempts += 1;
+    if p.attempts > max {
+        return Err("claim_limit");
+    };
     p.pc = Some((conn, tx.clone()));
     p.negotiated_capabilities = negotiated_capabilities;
     send(

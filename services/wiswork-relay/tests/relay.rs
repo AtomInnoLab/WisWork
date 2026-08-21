@@ -24,12 +24,15 @@ async fn server_with_session_ttls(session_ttls: Option<(Duration, Duration)>) ->
         .route(
             "/oidc/me",
             axum::routing::get(|headers: axum::http::HeaderMap| async move {
-            if headers.get("authorization").and_then(|v| v.to_str().ok())
-                == Some("Bearer valid-test-token")
-            {
+            let subject = match headers.get("authorization").and_then(|v| v.to_str().ok()) {
+                Some("Bearer valid-test-token") => Some("test-user"),
+                Some("Bearer legitimate-test-token") => Some("legitimate-user"),
+                _ => None,
+            };
+            if let Some(subject) = subject {
                 (
                     axum::http::StatusCode::OK,
-                    axum::Json(json!({"sub":"test-user"})),
+                    axum::Json(json!({"sub":subject})),
                 )
                     .into_response()
             } else {
@@ -480,23 +483,32 @@ async fn unknown_only_claim_does_not_mutate_or_notify_the_pairing() {
     let created = recv(&mut office).await;
     let code = created["verification_code"].clone();
 
-    let mut attacker = pc_socket(&url).await;
-    send(
-        &mut attacker,
-        json!({"version":2,"type":"pc.claim","verification_code":code,"capabilities":["future-capability.v9"]}),
-    )
-    .await;
-    assert_eq!(
-        recv(&mut attacker).await["code"],
-        "capability_not_negotiated"
-    );
+    for attempt in 0..5 {
+        let mut attacker = pc_socket(&url).await;
+        let message_type = if attempt % 2 == 0 {
+            "pc.negotiate"
+        } else {
+            "pc.claim"
+        };
+        send(
+            &mut attacker,
+            json!({"version":2,"type":message_type,"verification_code":code,"capabilities":["future-capability.v9"]}),
+        )
+        .await;
+        assert_eq!(
+            recv(&mut attacker).await["code"],
+            "capability_not_negotiated"
+        );
+    }
     assert!(
         tokio::time::timeout(Duration::from_millis(50), recv(&mut office))
             .await
             .is_err()
     );
 
-    let mut legitimate = pc_socket(&url).await;
+    let mut legitimate = pc_socket_with_token(&url, "legitimate-test-token")
+        .await
+        .unwrap();
     send(
         &mut legitimate,
         json!({"version":2,"type":"pc.claim","verification_code":code,"capabilities":["agent.v1"]}),
