@@ -145,6 +145,21 @@ describe('shared browser skill', () => {
     expect(vfs.readText('/home/user/output.txt')).toBe('Hello')
   })
 
+  it('runs a real XLSX-to-CSV conversion with shared strings and CSV escaping', async () => {
+    const zip = new JSZip()
+    zip.file('xl/workbook.xml', '<workbook><sheets><sheet name="Data" r:id="r1"/></sheets></workbook>')
+    zip.file('xl/_rels/workbook.xml.rels', '<Relationships><Relationship Id="r1" Target="worksheets/sheet1.xml"/></Relationships>')
+    zip.file('xl/sharedStrings.xml', '<sst><si><t>A, B</t></si></sst>')
+    zip.file('xl/worksheets/sheet1.xml', '<worksheet><sheetData><row><c r="A1" t="s"><v>0</v></c><c r="B1"><v>2</v></c></row></sheetData></worksheet>')
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/input.xlsx', await zip.generateAsync({ type: 'uint8array' }))
+    const skill = createSharedBrowserSkill({ vfs })
+    await skill.executeTool({ id: 'convert', name: 'bash', input: {
+      command: 'xlsx-to-csv /home/user/input.xlsx /home/user/output.csv',
+    } })
+    expect(vfs.readText('/home/user/output.csv')).toBe('# Data\n"A, B",2')
+  })
+
   it('denies native/global/network syntax and supports cancellation and timeout', async () => {
     const vfs = new InMemoryVfs()
     vfs.writeFile('/home/user/a.txt', 'hello')

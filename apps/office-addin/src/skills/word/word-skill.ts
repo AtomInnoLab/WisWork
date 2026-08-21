@@ -81,7 +81,7 @@ const tools = [
   {
     name: 'execute_office_js',
     description:
-      'Propose raw Word Office.js code for explicit confirmation. Disabled until a hardened evaluator passes security review.',
+      'Propose a version-1 JSON declarative Word operation program for explicit confirmation. JavaScript is rejected.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -185,7 +185,7 @@ export function createWordSkill(options: {
   return {
     id: 'office-word',
     systemPrompt:
-      'Word reads are bounded and automatic. execute_office_js is a compatibility placeholder that fails closed until hardened execution is enabled; never claim it changed the document.',
+      'Word reads and screenshots are bounded. execute_office_js accepts only a version-1 JSON declarative program with allowlisted insert_text or replace_all operations; JavaScript and ambient authority are rejected. Every write requires confirmation, stale-state validation, and semantic verification.',
     tools: [...tools],
     async executeTool(call, signal) {
       if (call.inputError || call.truncated) return failure(call.name, 'invalid_tool_input')
