@@ -39,6 +39,11 @@ describe('bounded PowerPoint package editing', () => {
         edit,
       ),
     ).toBe(false)
+    const extraPart = await JSZip.loadAsync(edit.base64, { base64: true })
+    extraPart.file('ppt/media/unexpected.bin', 'unexpected')
+    expect(
+      await verifyPowerPointPackage(await extraPart.generateAsync({ type: 'base64' }), edit),
+    ).toBe(false)
     const before = await JSZip.loadAsync(input, { base64: true })
     const after = await JSZip.loadAsync(edit.base64, { base64: true })
     expect(await after.file('ppt/slides/_rels/slide1.xml.rels')!.async('string')).toBe(
@@ -70,6 +75,14 @@ describe('bounded PowerPoint package editing', () => {
     await expect(
       editPowerPointPackage(input, 'chart', [{ path: 'ppt/slides/slide1.xml', xml: '<x/>' }]),
     ).rejects.toThrow('invalid_tool_input')
+    await expect(
+      editPowerPointPackage(input, 'master', [
+        {
+          path: 'ppt/slideMasters/slideMaster1.xml',
+          xml: '<p:sldMaster xmlns:p="urn:p" xmlns:r="urn:r"><p:sldLayoutIdLst><p:sldLayoutId r:id="rId9"/></p:sldLayoutIdLst></p:sldMaster>',
+        },
+      ]),
+    ).rejects.toThrow('office_api_unsupported')
   })
 
   it('rejects malformed XML, traversal paths, excessive entries, and declared zip bombs', async () => {

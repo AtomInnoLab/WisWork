@@ -280,7 +280,7 @@ describe('PowerPoint compatibility skill', () => {
       exportSlidePackage: vi
         .fn()
         .mockResolvedValue({ slideId: 's1', base64: 'ppt', fingerprint: 'same' }),
-      executeDeclarative: vi.fn().mockResolvedValue(undefined),
+      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: [] }),
       readSlideText: vi
         .fn()
         .mockResolvedValue({ slideId: 's1', shapeId: '2', text: 'New', paragraphs: ['New'] }),
@@ -582,7 +582,13 @@ describe('browser PowerPoint adapter', () => {
       },
     })
     await expect(
-      new BrowserPowerPointAdapter().replaceSlidePackage(0, 'ppt', false, controller.signal),
+      new BrowserPowerPointAdapter().replaceSlidePackage(
+        0,
+        'ppt',
+        false,
+        undefined,
+        controller.signal,
+      ),
     ).rejects.toThrow('cancelled')
     expect(insertSlidesFromBase64).not.toHaveBeenCalled()
     expect(remove).not.toHaveBeenCalled()

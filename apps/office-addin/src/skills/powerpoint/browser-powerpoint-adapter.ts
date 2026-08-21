@@ -1,3 +1,5 @@
+import { verifyPowerPointPackage, type PackageEditResult } from './powerpoint-package.js'
+
 export const MAX_POWERPOINT_SHAPES = 1_000
 export const MAX_POWERPOINT_TEXT = 12_000
 export const MAX_POWERPOINT_RESULT_BYTES = 256 * 1024
@@ -78,12 +80,13 @@ export interface PowerPointAdapter {
     slideIndex: number,
     base64: string,
     applyMaster?: boolean,
+    expected?: PackageEditResult,
     signal?: AbortSignal,
   ): Promise<{ slideId: string }>
   executeDeclarative(
     operations: PowerPointDeclarativeOperation[],
     signal?: AbortSignal,
-  ): Promise<void>
+  ): Promise<{ createdShapeIds: string[] }>
 }
 
 export type PowerPointDeclarativeOperation =
@@ -424,6 +427,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     slideIndex: number,
     base64: string,
     applyMaster = false,
+    expected?: PackageEditResult,
     signal?: AbortSignal,
   ): Promise<{ slideId: string }> {
     cancelled(signal)
@@ -446,7 +450,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         : undefined
       if (applyMaster && (!masters || !(slide.layout as RuntimeRecord | undefined)))
         throw new Error('office_api_unsupported')
-      const affectedLayouts = new Map<string, string>()
+      const affectedLayouts = new Map<string, number>()
       if (applyMaster && masters) {
         const sourceLayout = slide.layout as RuntimeRecord
         ;(masters.load as (properties: string) => void)('items')
@@ -472,13 +476,13 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         if (!sourceMaster) throw new Error('office_api_unsupported')
         const sourceLayouts =
           ((sourceMaster.layouts as RuntimeRecord).items as RuntimeRecord[]) ?? []
-        const sourceNames = new Map(
-          sourceLayouts.map((layout) => [string(layout.id), string(layout.name)]),
+        const sourceOrdinals = new Map(
+          sourceLayouts.map((layout, index) => [string(layout.id), index]),
         )
         for (const item of slideItems) {
           const layoutId = string((item.layout as RuntimeRecord).id)
-          const layoutName = sourceNames.get(layoutId)
-          if (layoutName) affectedLayouts.set(string(item.id), layoutName)
+          const ordinal = sourceOrdinals.get(layoutId)
+          if (ordinal !== undefined) affectedLayouts.set(string(item.id), ordinal)
         }
       }
       if (typeof slide.exportAsBase64 !== 'function') throw new Error('office_api_unsupported')
@@ -524,6 +528,29 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       if ((await getSlideCount(context, slides, signal)) !== beforeCount)
         throw new Error('office_verify_failed')
       const inserted = await getSlide(context, slides, slideIndex, signal)
+      if (!expected || typeof inserted.exportAsBase64 !== 'function')
+        throw new Error('office_api_unsupported')
+      const imported = (inserted.exportAsBase64 as () => RuntimeRecord)()
+      await sync(context, signal)
+      if (
+        typeof imported.value !== 'string' ||
+        !(await verifyPowerPointPackage(imported.value, expected, signal))
+      ) {
+        // Restore the captured original package even when insert+delete both committed but
+        // the imported package is semantically different from the approved replacement.
+        cancelled(signal)
+        ;(
+          presentation.insertSlidesFromBase64 as (
+            value: string,
+            options?: { targetSlideId: string },
+          ) => void
+        )(original.value, previous ? { targetSlideId: string(previous.id) } : undefined)
+        ;(inserted.delete as () => void)()
+        await sync(context)
+        if ((await getSlideCount(context, slides)) !== beforeCount)
+          throw new Error('office_recovery_failed')
+        throw new Error('office_verify_failed')
+      }
       if (applyMaster) {
         const insertedLayout = inserted.layout as RuntimeRecord | undefined
         if (
@@ -557,10 +584,9 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         const primaryLayouts = ((primary.layouts as RuntimeRecord).items as RuntimeRecord[]) ?? []
         cancelled(signal)
         for (const item of slideItems) {
-          const intendedName = affectedLayouts.get(string(item.id))
-          const intended = intendedName
-            ? primaryLayouts.find((candidate) => candidate.name === intendedName)
-            : undefined
+          const intendedOrdinal = affectedLayouts.get(string(item.id))
+          const intended =
+            intendedOrdinal === undefined ? undefined : primaryLayouts[intendedOrdinal]
           if (intended && typeof item.applyLayout === 'function')
             (item.applyLayout as (target: RuntimeRecord) => void)(intended)
         }
@@ -573,10 +599,13 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         await sync(context, signal)
         const primaryLayoutIds = new Set(primaryLayouts.map((layout) => string(layout.id)))
         for (const item of slideItems) {
-          const expectedName = affectedLayouts.get(string(item.id))
-          if (!expectedName) continue
+          const expectedOrdinal = affectedLayouts.get(string(item.id))
+          if (expectedOrdinal === undefined) continue
           const layout = item.layout as RuntimeRecord
-          if (!primaryLayoutIds.has(string(layout.id)) || string(layout.name) !== expectedName)
+          if (
+            string(layout.id) !== string(primaryLayouts[expectedOrdinal]?.id) ||
+            !primaryLayoutIds.has(string(layout.id))
+          )
             throw new Error('office_verify_failed')
         }
       }
@@ -587,12 +616,13 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
   async executeDeclarative(
     operations: PowerPointDeclarativeOperation[],
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<{ createdShapeIds: string[] }> {
     cancelled(signal)
-    await this.run('1.8', async (context) => {
+    return this.run('1.8', async (context) => {
       const presentation = context.presentation as RuntimeRecord
       const slides = presentation.slides as RuntimeRecord
       const queued: Array<() => void> = []
+      const createdShapes: RuntimeRecord[] = []
       for (const operation of operations) {
         const slide = await getSlide(context, slides, operation.slide_index, signal)
         if (
@@ -634,6 +664,9 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
               height: operation.height,
             })
             created.name = operation.name
+            if (typeof created.load !== 'function') throw new Error('office_api_unsupported')
+            ;(created.load as (properties: string) => void)('id')
+            createdShapes.push(created)
           })
         } else {
           if (
@@ -662,6 +695,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       cancelled(signal)
       for (const write of queued) write()
       await sync(context, signal)
+      return { createdShapeIds: createdShapes.map((shape) => string(shape.id)) }
     })
   }
 

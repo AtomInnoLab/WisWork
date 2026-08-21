@@ -406,6 +406,7 @@ export function createPowerPointSkill(options: {
           slideIndex,
           edited.base64,
           kind === 'master',
+          edited,
           confirmSignal,
         )
       },
@@ -602,6 +603,7 @@ export function createPowerPointSkill(options: {
             ),
           )
           const combined = snapshots.map((item) => item.fingerprint).join('|')
+          let declarativeResult: { createdShapeIds: string[] } | undefined
           const proposal = options.proposals.propose({
             operation: call.name,
             toolName: call.name,
@@ -640,9 +642,14 @@ export function createPowerPointSkill(options: {
                 (item, index) => item.fingerprint === snapshots[index].fingerprint,
               )
             },
-            execute: (confirmSignal) =>
-              options.adapter.executeDeclarative(program.operations, confirmSignal),
+            execute: async (confirmSignal) => {
+              declarativeResult = await options.adapter.executeDeclarative(
+                program.operations,
+                confirmSignal,
+              )
+            },
             verify: async (confirmSignal) => {
+              let createdShapeIndex = 0
               for (const operation of program.operations) {
                 if (operation.op === 'set_shape_text') {
                   const current = await options.adapter.readSlideText(
@@ -658,7 +665,10 @@ export function createPowerPointSkill(options: {
                   )
                   const shape =
                     operation.op === 'add_text_box'
-                      ? current.shapes.find((item) => item.name === operation.name)
+                      ? current.shapes.find(
+                          (item) =>
+                            item.id === declarativeResult?.createdShapeIds[createdShapeIndex++],
+                        )
                       : current.shapes.find((item) => item.id === operation.shape_id)
                   if (operation.op === 'delete_shape') {
                     if (shape) throw new Error('office_verify_failed')

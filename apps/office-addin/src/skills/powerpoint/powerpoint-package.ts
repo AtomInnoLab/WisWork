@@ -49,6 +49,12 @@ function allowed(kind: PackageEditKind, path: string): boolean {
   )
 }
 
+function masterLayoutIdentity(xml: string): string[] {
+  return [...xml.matchAll(/<p:sldLayoutId\b[^>]*\br:id=["']([^"']+)["'][^>]*\/?\s*>/g)].map(
+    (match) => match[1],
+  )
+}
+
 function compressedMetadata(file: unknown): { compressed?: number; uncompressed?: number } {
   const data = (file as { _data?: { compressedSize?: unknown; uncompressedSize?: unknown } })._data
   return {
@@ -119,6 +125,13 @@ export async function editPowerPointPackage(
     if (!file) throw new Error('invalid_tool_input')
     const before = await file.async('string')
     if (signal?.aborted) throw new Error('cancelled')
+    if (
+      kind === 'master' &&
+      replacement.path.startsWith('ppt/slideMasters/') &&
+      JSON.stringify(masterLayoutIdentity(before)) !==
+        JSON.stringify(masterLayoutIdentity(replacement.xml))
+    )
+      throw new Error('office_api_unsupported')
     beforeHashes[replacement.path] = hash(before)
     afterHashes[replacement.path] = hash(replacement.xml)
     zip.file(replacement.path, replacement.xml)
@@ -154,6 +167,18 @@ export async function verifyPowerPointPackage(
   if (signal?.aborted) throw new Error('cancelled')
   try {
     const zip = await loadBoundedZip(base64, signal)
+    const expectedPaths = new Set([
+      ...expected.changedPaths,
+      ...Object.keys(expected.preservedHashes),
+    ])
+    const actualPaths = Object.values(zip.files)
+      .filter((file) => !file.dir)
+      .map((file) => file.name)
+    if (
+      actualPaths.length !== expectedPaths.size ||
+      actualPaths.some((path) => !expectedPaths.has(path))
+    )
+      return false
     for (const path of expected.changedPaths) {
       if (signal?.aborted) throw new Error('cancelled')
       const file = zip.file(path)
