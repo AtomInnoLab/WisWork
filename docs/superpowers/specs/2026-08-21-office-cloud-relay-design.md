@@ -27,12 +27,13 @@ The six-digit code is a human verification value, not the authorization secret. 
 - JSON control frames use `version: 1`, exact message types, exact keys, and stable error codes.
 - Client frames are exactly:
   - Office: `office.create {version,type,host}`; `office.request {version,type,session_id,capability,request_id,body}`; `office.cancel {version,type,session_id,capability,request_id}`.
-  - PC: `pc.claim {version,type,verification_code}`; `pc.approve|pc.reject {version,type,pairing_id}`; `pc.chunk {version,type,session_id,capability,request_id,sequence,data}`; `pc.done {version,type,session_id,capability,request_id,status,content_type}`; `pc.error {version,type,session_id,capability,request_id,code}`.
+  - PC: `pc.claim {version,type,verification_code}`; `pc.approve|pc.reject {version,type,pairing_id}`; `pc.start {version,type,session_id,capability,request_id,status,content_type}`; `pc.chunk {version,type,session_id,capability,request_id,sequence,data}`; `pc.done {version,type,session_id,capability,request_id}`; `pc.error {version,type,session_id,capability,request_id,code}`.
 - Server frames are exactly:
-  - Office: `office.created {version,type,pairing_id,polling_secret,verification_code,expires_in}`; `office.approved {version,type,session_id,capability,expires_in}`; `office.rejected|office.expired|office.pc_offline`; `relay.chunk|relay.done|relay.error` with the corresponding request/session fields.
+  - Office: `office.created {version,type,pairing_id,polling_secret,verification_code,expires_in}`; `office.approved {version,type,session_id,capability,expires_in}`; `office.rejected|office.expired|office.pc_offline`; `relay.start|relay.chunk|relay.done|relay.error` with the corresponding request/session fields. `relay.start` carries status/content type and resolves the streaming Response before any chunks; chunks are then enqueued immediately and `relay.done` closes the stream.
   - PC: `pc.claimed {version,type,pairing_id,host,origin,verification_code,expires_in}`; `pc.approved {version,type,session_id,capability,expires_in}`; `relay.request {version,type,session_id,request_id,body}`; `relay.cancel {version,type,session_id,request_id}`.
 - `polling_secret` authorizes only the originating Office socket and is never sent to PC. PC and Office capabilities are independent and bound to their respective live sockets; a socket reconnect requires a new pairing in version 1.
 - Binary frames are not accepted in the first version.
+- Chunk `data` is strict standard Base64, decodes to at most 64 KiB, and `sequence` starts at zero and increases by one without gaps.
 - Control frame: 16 KiB maximum.
 - Agent request: 256 KiB maximum; streamed response: 16 MiB maximum; chunk: 64 KiB maximum.
 - One active agent request per session; 120 second request deadline.
