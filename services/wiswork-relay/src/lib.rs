@@ -22,7 +22,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::sync::{Mutex, Notify, mpsc};
+use tokio::sync::{Mutex, Notify, Semaphore, mpsc};
 
 pub const OFFICE_ORIGIN: &str = "https://office.8-216-134-194.sslip.io";
 const CONTROL_MAX: usize = 16 * 1024;
@@ -59,6 +59,7 @@ struct Inner {
     next: AtomicU64,
     config: Config,
     http: reqwest::Client,
+    auth_slots: Arc<Semaphore>,
 }
 #[derive(Clone)]
 struct Tx {
@@ -103,6 +104,8 @@ struct Store {
     global_claims: (Option<Instant>, u32),
     global_creates: (Option<Instant>, u32),
     connection_pairings: HashMap<u64, u8>,
+    preauth_attempts: HashMap<IpAddr, (Instant, u8)>,
+    global_preauth: (Option<Instant>, u32),
 }
 
 pub fn app(config: Config) -> Router {
@@ -117,6 +120,7 @@ pub fn app(config: Config) -> Router {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .expect("fixed HTTP client"),
+            auth_slots: Arc::new(Semaphore::new(32)),
         }),
     };
     let sweeper = state.clone();
@@ -125,7 +129,7 @@ pub fn app(config: Config) -> Router {
         loop {
             interval.tick().await;
             let mut store = sweeper.inner.state.lock().await;
-            expire(&mut store);
+            expire(&mut store, sweeper.inner.config.pairing_ttl);
         }
     });
     Router::new()
@@ -147,6 +151,14 @@ async fn upgrade(
     if origin.as_deref().is_some_and(|v| v != OFFICE_ORIGIN) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    let client_ip = match headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+        Some(value) if peer.ip().is_loopback() => match value.parse() {
+            Ok(ip) => ip,
+            Err(_) => return StatusCode::FORBIDDEN.into_response(),
+        },
+        Some(_) => return StatusCode::FORBIDDEN.into_response(),
+        None => peer.ip(),
+    };
     let authorization = headers.get("authorization").and_then(|v| v.to_str().ok());
     let subject = if origin.is_some() {
         if authorization.is_some() {
@@ -154,6 +166,12 @@ async fn upgrade(
         }
         None
     } else {
+        if !allow_preauth(&app, client_ip).await {
+            return StatusCode::TOO_MANY_REQUESTS.into_response();
+        }
+        let Ok(_permit) = app.inner.auth_slots.clone().try_acquire_owned() else {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        };
         let Some(token) = authorization
             .and_then(|v| v.strip_prefix("Bearer "))
             .filter(|v| !v.is_empty() && v.len() <= 4096)
@@ -165,17 +183,36 @@ async fn upgrade(
         };
         Some(subject)
     };
-    let client_ip = match headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
-        Some(value) if peer.ip().is_loopback() => match value.parse() {
-            Ok(ip) => ip,
-            Err(_) => return StatusCode::FORBIDDEN.into_response(),
-        },
-        Some(_) => return StatusCode::FORBIDDEN.into_response(),
-        None => peer.ip(),
-    };
     ws.max_message_size(CONTROL_MAX.max(REQUEST_MAX))
         .on_upgrade(move |socket| connection(app, socket, origin, client_ip, subject))
         .into_response()
+}
+
+async fn allow_preauth(app: &App, ip: IpAddr) -> bool {
+    let mut store = app.inner.state.lock().await;
+    let ttl = app.inner.config.pairing_ttl;
+    if store
+        .global_preauth
+        .0
+        .is_none_or(|start| start.elapsed() > ttl)
+    {
+        store.global_preauth = (Some(Instant::now()), 0);
+    }
+    store.global_preauth.1 = store.global_preauth.1.saturating_add(1);
+    if store.global_preauth.1 > 1_000
+        || (store.preauth_attempts.len() >= 10_000 && !store.preauth_attempts.contains_key(&ip))
+    {
+        return false;
+    }
+    let entry = store
+        .preauth_attempts
+        .entry(ip)
+        .or_insert((Instant::now(), 0));
+    if entry.0.elapsed() > ttl {
+        *entry = (Instant::now(), 0);
+    }
+    entry.1 = entry.1.saturating_add(1);
+    entry.1 <= 20
 }
 
 async fn authenticate_pc(app: &App, token: &str) -> Option<[u8; 32]> {
@@ -314,13 +351,14 @@ fn token() -> String {
         .collect()
 }
 fn send(tx: &Tx, value: Value) {
-    if tx
-        .sender
-        .try_send(Message::Text(value.to_string().into()))
-        .is_err()
-    {
+    if try_send(tx, value).is_err() {
         tx.failed.notify_one();
     }
+}
+fn try_send(tx: &Tx, value: Value) -> Result<(), ()> {
+    tx.sender
+        .try_send(Message::Text(value.to_string().into()))
+        .map_err(|_| ())
 }
 fn error(tx: &Tx, code: &str) {
     send(tx, json!({"version":1,"type":"relay.error","code":code}));
@@ -384,12 +422,15 @@ async fn create(
         return Err("unsupported_host");
     }
     let mut store = app.inner.state.lock().await;
-    expire(&mut store);
+    expire(&mut store, app.inner.config.pairing_ttl);
     let per_connection = store.connection_pairings.entry(conn).or_default();
     if *per_connection >= 4 {
         return Err("pairing_limit");
     }
     *per_connection += 1;
+    if store.create_attempts.len() >= 10_000 && !store.create_attempts.contains_key(&peer) {
+        return Err("relay_busy");
+    }
     let per_ip = store
         .create_attempts
         .entry(peer)
@@ -455,6 +496,7 @@ async fn claim(
         return Err("invalid_code");
     }
     let mut s = app.inner.state.lock().await;
+    expire(&mut s, app.inner.config.pairing_ttl);
     if s.global_claims
         .0
         .is_none_or(|start| start.elapsed() > app.inner.config.pairing_ttl)
@@ -464,6 +506,9 @@ async fn claim(
     s.global_claims.1 = s.global_claims.1.saturating_add(1);
     if s.global_claims.1 > 1_000 {
         return Err("claim_rate_limited");
+    }
+    if s.claim_attempts.len() >= 10_000 && !s.claim_attempts.contains_key(&subject) {
+        return Err("relay_busy");
     }
     let attempts = s
         .claim_attempts
@@ -476,7 +521,6 @@ async fn claim(
     if attempts.1 > app.inner.config.max_claim_attempts {
         return Err("claim_limit");
     }
-    expire(&mut s);
     let Some(id) = s.codes.get(code).cloned() else {
         return Err("invalid_code");
     };
@@ -503,7 +547,7 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
     }
     let id = string(&m, "pairing_id")?.to_owned();
     let mut s = app.inner.state.lock().await;
-    expire(&mut s);
+    expire(&mut s, app.inner.config.pairing_ttl);
     if s.sessions.len() >= 10_000 {
         return Err("relay_busy");
     }
@@ -512,19 +556,19 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
         s.pairings.insert(id, p);
         return Err("invalid_pairing");
     }
-    s.codes.remove(&p.code);
     let sid = token();
     let oc = token();
     let pc = token();
     let expires = app.inner.config.session_ttl;
-    send(
-        &p.office_tx,
-        json!({"version":1,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs()}),
-    );
-    send(
-        tx,
-        json!({"version":1,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs()}),
-    );
+    if tx.sender.capacity() == 0 || p.office_tx.sender.capacity() == 0
+        || try_send(tx, json!({"version":1,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs()})).is_err()
+        || try_send(&p.office_tx, json!({"version":1,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs()})).is_err()
+    {
+        tx.failed.notify_one();
+        p.office_tx.failed.notify_one();
+        return Err("peer_unavailable");
+    }
+    s.codes.remove(&p.code);
     s.sessions.insert(
         sid,
         Session {
@@ -592,7 +636,7 @@ async fn request(
         return Err("invalid_frame");
     }
     let mut st = app.inner.state.lock().await;
-    expire(&mut st);
+    expire(&mut st, app.inner.config.pairing_ttl);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.office != conn || session.office_cap != cap {
         return Err("invalid_capability");
@@ -733,7 +777,7 @@ async fn start(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
     let (sid, cap, rid) = session_fields(&m)?;
     let status = m["status"]
         .as_u64()
-        .filter(|v| (100..=599).contains(v))
+        .filter(|v| (200..=599).contains(v) && !matches!(v, 204 | 205 | 304))
         .ok_or("invalid_status")?;
     let content_type = string(&m, "content_type")?;
     if content_type.is_empty()
@@ -823,7 +867,7 @@ async fn pc_error(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'s
     Ok(())
 }
 
-fn expire(s: &mut Store) {
+fn expire(s: &mut Store, ttl: Duration) {
     let now = Instant::now();
     let dead: Vec<_> = s
         .pairings
@@ -854,6 +898,12 @@ fn expire(s: &mut Store) {
             }
         }
     }
+    s.claim_attempts
+        .retain(|_, (started, _)| started.elapsed() <= ttl);
+    s.create_attempts
+        .retain(|_, (started, _)| started.elapsed() <= ttl);
+    s.preauth_attempts
+        .retain(|_, (started, _)| started.elapsed() <= ttl);
 }
 async fn cleanup(app: &App, conn: u64) {
     let mut s = app.inner.state.lock().await;
@@ -861,18 +911,21 @@ async fn cleanup(app: &App, conn: u64) {
     let pids: Vec<_> = s
         .pairings
         .iter()
-        .filter(|(_, p)| p.office == conn || p.pc.as_ref().is_some_and(|v| v.0 == conn))
+        .filter(|(_, p)| p.office == conn)
         .map(|(id, _)| id.clone())
         .collect();
     for id in pids {
         if let Some(p) = s.pairings.remove(&id) {
             s.codes.remove(&p.code);
-            if p.office != conn {
-                send(
-                    &p.office_tx,
-                    json!({"version":1,"type":"office.pc_offline"}),
-                );
-            }
+        }
+    }
+    for pairing in s.pairings.values_mut() {
+        if pairing.pc.as_ref().is_some_and(|value| value.0 == conn) {
+            pairing.pc = None;
+            send(
+                &pairing.office_tx,
+                json!({"version":1,"type":"office.pc_offline"}),
+            );
         }
     }
     let ids: Vec<_> = s
@@ -885,6 +938,12 @@ async fn cleanup(app: &App, conn: u64) {
         if let Some(x) = s.sessions.remove(&id) {
             if x.office != conn {
                 error(&x.office_tx, "session_revoked")
+            }
+            if x.pc != conn {
+                send(
+                    &x.pc_tx,
+                    json!({"version":1,"type":"relay.error","code":"session_revoked"}),
+                );
             }
             if x.pc != conn
                 && let Some(a) = x.active

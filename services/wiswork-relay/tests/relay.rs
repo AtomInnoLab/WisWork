@@ -162,6 +162,37 @@ async fn rate_limits_claims_across_reconnects_and_pairings_per_connection() {
 }
 
 #[tokio::test]
+async fn pc_disconnect_releases_claim_but_preserves_code_and_attempts() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    send(
+        &mut office,
+        json!({"version":1,"type":"office.create","host":"Excel"}),
+    )
+    .await;
+    let created = recv(&mut office).await;
+    let code = created["verification_code"].as_str().unwrap();
+
+    let mut first = pc_socket(&url).await;
+    send(
+        &mut first,
+        json!({"version":1,"type":"pc.claim","verification_code":code}),
+    )
+    .await;
+    assert_eq!(recv(&mut first).await["type"], "pc.claimed");
+    first.close(None).await.unwrap();
+    assert_eq!(recv(&mut office).await["type"], "office.pc_offline");
+
+    let mut second = pc_socket(&url).await;
+    send(
+        &mut second,
+        json!({"version":1,"type":"pc.claim","verification_code":code}),
+    )
+    .await;
+    assert_eq!(recv(&mut second).await["type"], "pc.claimed");
+}
+
+#[tokio::test]
 async fn pairs_only_after_claim_and_approval_then_forwards_and_cancels() {
     let url = server().await;
     let mut office = socket(&url, ORIGIN).await;
