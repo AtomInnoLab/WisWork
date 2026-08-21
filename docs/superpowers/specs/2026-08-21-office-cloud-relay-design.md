@@ -15,12 +15,12 @@ Connect desktop and web Office task panes to the signed-in WisWork PC agent with
 
 1. Office opens a WebSocket with the exact deployed Origin and sends `office.create` with a supported host label.
 2. Relay returns a random opaque pairing id, a random polling secret, a six-digit verification code, and a short expiry.
-3. The user enters the six-digit code in WisWork PC. PC must have a valid local Wispaper session before it can claim.
+3. The user enters the six-digit code in WisWork PC. PC must have a valid local Wispaper session before it can claim. Its WebSocket upgrade carries the current Bearer token; Relay validates it against the fixed Wispaper OIDC userinfo endpoint with a short timeout, then immediately discards it.
 4. PC sends `pc.claim` with the code. Relay returns the Office host/origin and waits for explicit approval.
 5. PC sends `pc.approve` with the pairing id. Relay binds the two live sockets and sends each side an opaque, short-lived session capability.
 6. Office sends bounded agent requests through that session. Relay forwards them to PC; PC uses its existing Wispaper access token, agent harness, and credits, then streams bounded events back.
 
-The six-digit code is a human verification value, not the authorization secret. Pairing ids, polling secrets, and capabilities are independent cryptographically random values. Codes are one-use, short-lived, rate-limited, and claim attempts are capped.
+The six-digit code is a human verification value, not the authorization secret. Pairing ids and capabilities are independent cryptographically random values. Codes are one-use, short-lived, globally rate-limited across reconnects, and claim attempts are capped.
 
 ## Protocol and limits
 
@@ -29,9 +29,9 @@ The six-digit code is a human verification value, not the authorization secret. 
   - Office: `office.create {version,type,host}`; `office.request {version,type,session_id,capability,request_id,body}`; `office.cancel {version,type,session_id,capability,request_id}`.
   - PC: `pc.claim {version,type,verification_code}`; `pc.approve|pc.reject {version,type,pairing_id}`; `pc.start {version,type,session_id,capability,request_id,status,content_type}`; `pc.chunk {version,type,session_id,capability,request_id,sequence,data}`; `pc.done {version,type,session_id,capability,request_id}`; `pc.error {version,type,session_id,capability,request_id,code}`.
 - Server frames are exactly:
-  - Office: `office.created {version,type,pairing_id,polling_secret,verification_code,expires_in}`; `office.approved {version,type,session_id,capability,expires_in}`; `office.rejected|office.expired|office.pc_offline`; `relay.start|relay.chunk|relay.done|relay.error` with the corresponding request/session fields. `relay.start` carries status/content type and resolves the streaming Response before any chunks; chunks are then enqueued immediately and `relay.done` closes the stream.
+  - Office: `office.created {version,type,pairing_id,verification_code,expires_in}`; `office.approved {version,type,session_id,capability,expires_in}`; `office.rejected|office.expired|office.pc_offline`; `relay.start|relay.chunk|relay.done|relay.error` with the corresponding request/session fields. `relay.start` carries status/content type and resolves the streaming Response before any chunks; chunks are then enqueued immediately and `relay.done` closes the stream.
   - PC: `pc.claimed {version,type,pairing_id,host,origin,verification_code,expires_in}`; `pc.approved {version,type,session_id,capability,expires_in}`; `relay.request {version,type,session_id,request_id,body}`; `relay.cancel {version,type,session_id,request_id}`.
-- `polling_secret` authorizes only the originating Office socket and is never sent to PC. PC and Office capabilities are independent and bound to their respective live sockets; a socket reconnect requires a new pairing in version 1.
+- PC and Office capabilities are independent and bound to their respective live sockets; a socket reconnect requires a new pairing in version 1.
 - Binary frames are not accepted in the first version.
 - Chunk `data` is strict standard Base64, decodes to at most 64 KiB, and `sequence` starts at zero and increases by one without gaps.
 - Control frame: 16 KiB maximum.
@@ -45,7 +45,7 @@ The six-digit code is a human verification value, not the authorization secret. 
 
 - nginx terminates public TLS; relay trusts only its local reverse proxy and validates the WebSocket Origin itself.
 - Office is unauthenticated before pairing. Therefore pending requests are never broadcast to PCs; the user explicitly enters the code on one signed-in PC.
-- Relay does not receive Wispaper credentials. PC remains the identity, billing, and model-execution boundary.
+- Relay receives a Wispaper Bearer token only during the PC WebSocket upgrade, validates it using the fixed OIDC userinfo endpoint, and must neither log nor retain it. PC remains the billing and model-execution boundary; document/model traffic never carries the token.
 - TLS protects the first version from network observers. Application-layer end-to-end encryption is deferred and must be added before treating the relay operator as untrusted.
 
 ## Failure behavior
