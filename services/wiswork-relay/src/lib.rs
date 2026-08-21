@@ -14,7 +14,7 @@ use rand::{Rng, distr::Alphanumeric};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, VecDeque},
     net::{IpAddr, SocketAddr},
     sync::{
         Arc,
@@ -27,6 +27,7 @@ use tokio::sync::{Mutex, Notify, Semaphore, mpsc};
 pub const OFFICE_ORIGIN: &str = "https://office.8-216-134-194.sslip.io";
 const CONTROL_MAX: usize = 16 * 1024;
 const REQUEST_MAX: usize = 256 * 1024;
+const FRAME_MAX: usize = REQUEST_MAX + CONTROL_MAX;
 const CHUNK_MAX: usize = 64 * 1024;
 const RESPONSE_MAX: usize = 16 * 1024 * 1024;
 
@@ -92,7 +93,7 @@ struct Session {
     pc_cap: String,
     expires: Instant,
     active: Option<Active>,
-    used_requests: HashSet<String>,
+    used_requests: VecDeque<String>,
 }
 #[derive(Default)]
 struct Store {
@@ -183,7 +184,7 @@ async fn upgrade(
         };
         Some(subject)
     };
-    ws.max_message_size(CONTROL_MAX.max(REQUEST_MAX))
+    ws.max_message_size(FRAME_MAX)
         .on_upgrade(move |socket| connection(app, socket, origin, client_ip, subject))
         .into_response()
 }
@@ -290,7 +291,7 @@ async fn connection(
         };
         let Some(Ok(message)) = message else { break };
         match message {
-            Message::Text(text) if text.len() <= REQUEST_MAX => {
+            Message::Text(text) if text.len() <= FRAME_MAX => {
                 if let Err(code) = process(
                     &app,
                     id,
@@ -377,7 +378,7 @@ async fn process(
     subject: Option<[u8; 32]>,
     text: &str,
 ) -> Result<(), &'static str> {
-    let map = object(text, REQUEST_MAX)?;
+    let map = object(text, FRAME_MAX)?;
     if !valid_base(&map) {
         return Err("invalid_frame");
     }
@@ -396,7 +397,7 @@ async fn process(
         "pc.claim" => claim(app, conn, tx, subject.ok_or("auth_required")?, map).await,
         "pc.approve" => approve(app, conn, tx, map).await,
         "pc.reject" => reject(app, conn, map).await,
-        "office.request" => request(app, conn, map, text.len()).await,
+        "office.request" => request(app, conn, map).await,
         "office.cancel" => cancel(app, conn, map).await,
         "pc.chunk" => chunk(app, conn, map).await,
         "pc.start" => start(app, conn, map).await,
@@ -580,7 +581,7 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
             pc_cap: pc,
             expires: Instant::now() + expires,
             active: None,
-            used_requests: HashSet::new(),
+            used_requests: VecDeque::new(),
         },
     );
     Ok(())
@@ -609,12 +610,7 @@ fn session_fields(m: &Map<String, Value>) -> Result<(&str, &str, &str), &'static
         string(m, "request_id")?,
     ))
 }
-async fn request(
-    app: &App,
-    conn: u64,
-    m: Map<String, Value>,
-    size: usize,
-) -> Result<(), &'static str> {
+async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
     if !exact(
         &m,
         &[
@@ -628,7 +624,11 @@ async fn request(
     ) {
         return Err("invalid_frame");
     }
-    if size > REQUEST_MAX {
+    if serde_json::to_vec(&m["body"])
+        .map_err(|_| "invalid_frame")?
+        .len()
+        > REQUEST_MAX
+    {
         return Err("request_too_large");
     }
     let (sid, cap, rid) = session_fields(&m)?;
@@ -644,12 +644,13 @@ async fn request(
     if session.active.is_some() {
         return Err("request_active");
     }
-    if session.used_requests.len() >= 10_000 {
-        return Err("request_limit");
-    }
-    if !session.used_requests.insert(rid.to_owned()) {
+    if session.used_requests.iter().any(|used| used == rid) {
         return Err("duplicate_request");
     }
+    if session.used_requests.len() == 256 {
+        session.used_requests.pop_front();
+    }
+    session.used_requests.push_back(rid.to_owned());
     session.active = Some(Active {
         id: rid.into(),
         sequence: 0,
