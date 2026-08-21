@@ -66,9 +66,9 @@ describe('Office bridge shell runtime', () => {
       officeBridgeDiagnosticForError(Object.assign(new Error('denied'), { code: 'EACCES' })),
     ).toBe('error:bind_failed')
   })
-  it('enables official packaged builds while keeping development opt-in and rollbackable', () => {
+  it('keeps the loopback rollback bridge explicitly opt-in in every build', () => {
     expect(officeBridgeEnabled({}, false)).toBe(false)
-    expect(officeBridgeEnabled({}, true)).toBe(true)
+    expect(officeBridgeEnabled({}, true)).toBe(false)
     expect(officeBridgeEnabled({ WISWORK_OFFICE_BRIDGE_ENABLED: '0' }, true)).toBe(false)
     expect(officeBridgeEnabled({ WISWORK_OFFICE_BRIDGE_ENABLED: '1' }, false)).toBe(true)
   })

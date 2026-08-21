@@ -1,0 +1,353 @@
+import type { MessagesProxy } from '@wiswork/office-bridge'
+import type { OfficePairingRequest } from '../shared/home-api'
+
+const MAX_CONTROL_BYTES = 16 * 1024
+const MAX_REQUEST_BYTES = 256 * 1024
+const MAX_CHUNK_BYTES = 64 * 1024
+const MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+const REQUEST_TIMEOUT_MS = 120_000
+const CONNECT_TIMEOUT_MS = 10_000
+const IDENTIFIER = /^[A-Za-z0-9_-]{8,128}$/
+const HOSTS = new Set(['Word', 'Excel', 'PowerPoint'])
+
+export interface RelaySocket {
+  readyState: number
+  addEventListener(name: string, listener: (event: any) => void): void
+  send(data: string): void
+  close(code?: number, reason?: string): void
+}
+
+export type OfficeRelayStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'claiming'
+  | 'awaiting_approval'
+  | 'paired'
+  | `disconnected:${string}`
+  | `error:${string}`
+
+export interface OfficeRelayClient {
+  claim(code: string): Promise<void>
+  approve(pairingId: string): Promise<boolean>
+  reject(pairingId: string): boolean
+  listPending(): OfficePairingRequest[]
+  status(): OfficeRelayStatus
+  revoke(reason?: string): void
+}
+
+function exact(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === keys.length &&
+    keys.every((key) => Object.prototype.hasOwnProperty.call(value, key)),
+  )
+}
+
+function validId(value: unknown): value is string {
+  return typeof value === 'string' && IDENTIFIER.test(value)
+}
+
+export function officeRelayEndpointFromEnv(env: Record<string, string | undefined>): string {
+  const value = env.WISWORK_OFFICE_RELAY_URL ?? 'wss://office.8-216-134-194.sslip.io/office-relay'
+  const url = new URL(value)
+  if (url.protocol !== 'wss:' || url.username || url.password || url.search || url.hash)
+    throw new Error('invalid_office_relay_url')
+  return url.href
+}
+
+export function createOfficeRelayClient(options: {
+  endpoint: string
+  connect?: (url: string) => RelaySocket
+  getValidAccountStatus(): Promise<{ loggedIn: boolean }>
+  proxy: MessagesProxy
+  onPending(pairing: OfficePairingRequest): void
+  onStatus?: (status: OfficeRelayStatus) => void
+}): OfficeRelayClient {
+  const connect = options.connect ?? ((url) => new WebSocket(url) as unknown as RelaySocket)
+  let socket: RelaySocket | null = null
+  let diagnostic: OfficeRelayStatus = 'disconnected'
+  let pending: OfficePairingRequest | null = null
+  let session: { sessionId: string; capability: string } | null = null
+  let active: { requestId: string; controller: AbortController } | null = null
+  let claimedCode: string | null = null
+  const requestIds = new Set<string>()
+  let generation = 0
+
+  const setStatus = (value: OfficeRelayStatus) => {
+    diagnostic = value
+    options.onStatus?.(value)
+  }
+  const send = (frame: Record<string, unknown>) => {
+    if (!socket || socket.readyState !== 1) throw new Error('relay_disconnected')
+    const raw = JSON.stringify(frame)
+    if (Buffer.byteLength(raw) > MAX_CONTROL_BYTES && frame.type !== 'pc.chunk')
+      throw new Error('control_frame_too_large')
+    socket.send(raw)
+  }
+  const cancelActive = () => {
+    active?.controller.abort()
+    active = null
+  }
+  const clear = (reason: string, close: boolean) => {
+    generation += 1
+    cancelActive()
+    pending = null
+    claimedCode = null
+    session = null
+    requestIds.clear()
+    const current = socket
+    socket = null
+    if (close && current && current.readyState < 2) current.close(1000, 'session_revoked')
+    setStatus(`disconnected:${reason}`)
+  }
+
+  const runRequest = async (frame: Record<string, unknown>, owner: number) => {
+    if (
+      !session ||
+      !validId(frame.session_id) ||
+      frame.session_id !== session.sessionId ||
+      !validId(frame.request_id)
+    )
+      return clear('protocol_violation', true)
+    if (active || requestIds.has(frame.request_id)) return clear('protocol_violation', true)
+    requestIds.add(frame.request_id)
+    const bodyBytes = Buffer.byteLength(JSON.stringify(frame.body))
+    if (bodyBytes > MAX_REQUEST_BYTES) return clear('request_too_large', true)
+    const controller = new AbortController()
+    active = { requestId: frame.request_id, controller }
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+    try {
+      const response = await options.proxy({ body: frame.body, signal: controller.signal })
+      if (!Number.isSafeInteger(response.status) || response.status < 100 || response.status > 599)
+        throw new Error('invalid_upstream_status')
+      const contentType = response.contentType ?? 'application/octet-stream'
+      if (!/^[\x20-\x7e]{1,128}$/.test(contentType)) throw new Error('invalid_content_type')
+      send({
+        version: 1,
+        type: 'pc.start',
+        session_id: session.sessionId,
+        capability: session.capability,
+        request_id: frame.request_id,
+        status: response.status,
+        content_type: contentType,
+      })
+      let sequence = 0
+      let total = 0
+      const responseBody: AsyncIterable<Uint8Array> =
+        response.body instanceof Uint8Array
+          ? (async function* () {
+              yield response.body as Uint8Array
+            })()
+          : response.body
+      for await (const source of responseBody) {
+        for (let offset = 0; offset < source.byteLength; offset += MAX_CHUNK_BYTES) {
+          if (owner !== generation || controller.signal.aborted || !session) return
+          const chunk = source.subarray(offset, offset + MAX_CHUNK_BYTES)
+          total += chunk.byteLength
+          if (total > MAX_RESPONSE_BYTES) throw new Error('response_too_large')
+          send({
+            version: 1,
+            type: 'pc.chunk',
+            session_id: session.sessionId,
+            capability: session.capability,
+            request_id: frame.request_id,
+            sequence,
+            data: Buffer.from(chunk).toString('base64'),
+          })
+          sequence += 1
+        }
+      }
+      if (owner !== generation || controller.signal.aborted || !session) return
+      send({
+        version: 1,
+        type: 'pc.done',
+        session_id: session.sessionId,
+        capability: session.capability,
+        request_id: frame.request_id,
+      })
+    } catch (error) {
+      if (owner !== generation || !session) return
+      const code =
+        error instanceof Error && error.message === 'auth_required'
+          ? 'auth_required'
+          : controller.signal.aborted
+            ? 'cancelled'
+            : 'upstream_error'
+      if (code === 'auth_required') return clear(code, true)
+      send({
+        version: 1,
+        type: 'pc.error',
+        session_id: session.sessionId,
+        capability: session.capability,
+        request_id: frame.request_id,
+        code,
+      })
+    } finally {
+      clearTimeout(timeout)
+      if (active?.requestId === frame.request_id) active = null
+    }
+  }
+
+  const receive = (event: { data?: unknown }, owner: number) => {
+    if (owner !== generation || typeof event.data !== 'string')
+      return clear('protocol_violation', true)
+    const frameBytes = Buffer.byteLength(event.data)
+    if (frameBytes > MAX_REQUEST_BYTES + MAX_CONTROL_BYTES) return clear('protocol_violation', true)
+    let frame: unknown
+    try {
+      frame = JSON.parse(event.data)
+    } catch {
+      return clear('protocol_violation', true)
+    }
+    if (
+      !frame ||
+      typeof frame !== 'object' ||
+      (frame as any).version !== 1 ||
+      typeof (frame as any).type !== 'string'
+    )
+      return clear('protocol_violation', true)
+    const typed = frame as Record<string, unknown>
+    if (frameBytes > MAX_CONTROL_BYTES && typed.type !== 'relay.request')
+      return clear('protocol_violation', true)
+    if (typed.type === 'pc.claimed') {
+      const keys = [
+        'version',
+        'type',
+        'pairing_id',
+        'host',
+        'origin',
+        'verification_code',
+        'expires_in',
+      ]
+      if (
+        !exact(frame, keys) ||
+        !validId(typed.pairing_id) ||
+        !HOSTS.has(String(typed.host)) ||
+        typeof typed.origin !== 'string' ||
+        typed.verification_code !== claimedCode ||
+        !Number.isSafeInteger(typed.expires_in) ||
+        Number(typed.expires_in) < 1 ||
+        Number(typed.expires_in) > 120
+      )
+        return clear('protocol_violation', true)
+      try {
+        const origin = new URL(typed.origin)
+        if (origin.protocol !== 'https:' || origin.origin !== typed.origin)
+          return clear('protocol_violation', true)
+      } catch {
+        return clear('protocol_violation', true)
+      }
+      pending = {
+        pairingId: typed.pairing_id,
+        hostLabel: typed.host as OfficePairingRequest['hostLabel'],
+        origin: typed.origin,
+        verificationCode: typed.verification_code as string,
+      }
+      setStatus('awaiting_approval')
+      options.onPending(pending)
+      return
+    }
+    if (typed.type === 'pc.approved') {
+      if (
+        !exact(frame, ['version', 'type', 'session_id', 'capability', 'expires_in']) ||
+        !validId(typed.session_id) ||
+        !validId(typed.capability) ||
+        !Number.isSafeInteger(typed.expires_in) ||
+        Number(typed.expires_in) < 1 ||
+        Number(typed.expires_in) > 1_800
+      )
+        return clear('protocol_violation', true)
+      session = { sessionId: typed.session_id, capability: typed.capability }
+      pending = null
+      setStatus('paired')
+      return
+    }
+    if (typed.type === 'relay.request') {
+      if (!exact(frame, ['version', 'type', 'session_id', 'request_id', 'body']))
+        return clear('protocol_violation', true)
+      void runRequest(typed, owner)
+      return
+    }
+    if (typed.type === 'relay.cancel') {
+      if (
+        !exact(frame, ['version', 'type', 'session_id', 'request_id']) ||
+        typed.session_id !== session?.sessionId ||
+        typed.request_id !== active?.requestId
+      )
+        return clear('protocol_violation', true)
+      cancelActive()
+      return
+    }
+    clear(typeof typed.code === 'string' ? typed.code : 'protocol_violation', true)
+  }
+
+  return {
+    async claim(code) {
+      if (!/^\d{6}$/.test(code)) throw new Error('invalid_verification_code')
+      const account = await options.getValidAccountStatus()
+      if (!account.loggedIn) throw new Error('auth_required')
+      clear('new_claim', true)
+      generation += 1
+      const owner = generation
+      setStatus('connecting')
+      const next = connect(options.endpoint)
+      socket = next
+      next.addEventListener('message', (event) => receive(event, owner))
+      next.addEventListener('close', () => {
+        if (owner === generation) clear('relay_closed', false)
+      })
+      next.addEventListener('error', () => {
+        if (owner === generation) clear('network_error', true)
+      })
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error('relay_connection_timeout')),
+          CONNECT_TIMEOUT_MS,
+        )
+        next.addEventListener('open', () => {
+          clearTimeout(timeout)
+          resolve()
+        })
+        next.addEventListener('error', () => {
+          clearTimeout(timeout)
+          reject(new Error('relay_connection_failed'))
+        })
+        next.addEventListener('close', () => {
+          clearTimeout(timeout)
+          reject(new Error('relay_connection_failed'))
+        })
+      }).catch((error) => {
+        if (owner === generation) clear('network_error', true)
+        throw error
+      })
+      if (owner !== generation) throw new Error('relay_connection_failed')
+      claimedCode = code
+      setStatus('claiming')
+      send({ version: 1, type: 'pc.claim', verification_code: code })
+    },
+    async approve(pairingId) {
+      const account = await options.getValidAccountStatus().catch((error) => {
+        clear('auth_required', true)
+        throw error
+      })
+      if (!account.loggedIn) {
+        clear('auth_required', true)
+        return false
+      }
+      if (!pending || pending.pairingId !== pairingId) return false
+      send({ version: 1, type: 'pc.approve', pairing_id: pairingId })
+      return true
+    },
+    reject(pairingId) {
+      if (!pending || pending.pairingId !== pairingId) return false
+      send({ version: 1, type: 'pc.reject', pairing_id: pairingId })
+      clear('rejected', true)
+      return true
+    },
+    listPending: () => (pending ? [pending] : []),
+    status: () => diagnostic,
+    revoke: (reason = 'revoked') => clear(reason, true),
+  }
+}

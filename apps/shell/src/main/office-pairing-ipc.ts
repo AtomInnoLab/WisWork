@@ -1,4 +1,4 @@
-import type { OfficeBridge } from '@wiswork/office-bridge'
+import type { OfficePairingRequest } from '../shared/home-api'
 import { OFFICE_PAIRING_CHANNELS } from '../shared/home-api'
 
 const PAIRING_ID = /^[A-Za-z0-9_-]{8,128}$/
@@ -23,8 +23,11 @@ export function registerOfficePairingIpc(options: {
       listener: (event: { sender: unknown }, ...args: unknown[]) => unknown,
     ): unknown
   }
-  bridge: Pick<OfficeBridge, 'approve' | 'reject'>
-  listPending(): ReturnType<OfficeBridge['listPending']>
+  bridge: {
+    approve(id: string, accountValid: boolean): boolean | Promise<boolean>
+    reject(id: string): boolean
+  }
+  listPending(): OfficePairingRequest[]
   getValidAccountStatus(): Promise<{ loggedIn: boolean }>
   isTrustedSender(sender: unknown): boolean
 }): void {

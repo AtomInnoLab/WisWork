@@ -129,6 +129,10 @@ export interface HomeApi {
   approveOfficePairing(pairingId: string): Promise<boolean>
   rejectOfficePairing(pairingId: string): Promise<boolean>
   officeBridgeStatus(): Promise<OfficeBridgeStatus>
+  /** Claim a cloud Office pairing using the six-digit code shown in Office. */
+  claimOfficeRelay(code: string): Promise<void>
+  /** Non-sensitive cloud relay lifecycle diagnostic. */
+  officeRelayStatus(): Promise<OfficeRelayStatus>
   getAppVersion(): Promise<string>
   onboardingSeen(): Promise<boolean>
   setOnboardingSeen(): Promise<void>
@@ -163,6 +167,15 @@ export type OfficeBridgeStatus =
   | 'error:pool_exhausted'
   | 'error:invalid_config'
   | 'error:bind_failed'
+
+export type OfficeRelayStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'claiming'
+  | 'awaiting_approval'
+  | 'paired'
+  | `disconnected:${string}`
+  | `error:${string}`
 
 export interface RenameResult {
   ok: boolean
@@ -264,4 +277,6 @@ export const OFFICE_PAIRING_CHANNELS = {
   list: 'home:office-pairing-list',
   approve: 'home:office-pairing-approve',
   reject: 'home:office-pairing-reject',
+  relayClaim: 'home:office-relay-claim',
+  relayStatus: 'home:office-relay-status',
 } as const

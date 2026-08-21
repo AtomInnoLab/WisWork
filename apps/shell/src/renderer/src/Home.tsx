@@ -534,6 +534,10 @@ function AccountEntry() {
   const [loggingOut, setLoggingOut] = useState(false)
   const [appVersion, setAppVersion] = useState('')
   const [officeBridgeStatus, setOfficeBridgeStatus] = useState('disabled')
+  const [officeRelayStatus, setOfficeRelayStatus] = useState('disconnected')
+  const [officeRelayCode, setOfficeRelayCode] = useState('')
+  const [officeRelayBusy, setOfficeRelayBusy] = useState(false)
+  const [officeRelayError, setOfficeRelayError] = useState('')
 
   // query login state + app version once on mount
   useEffect(() => {
@@ -551,6 +555,9 @@ function AccountEntry() {
     })
     void window.aiOffice.officeBridgeStatus().then((value) => {
       if (alive) setOfficeBridgeStatus(value)
+    })
+    void window.aiOffice.officeRelayStatus().then((value) => {
+      if (alive) setOfficeRelayStatus(value)
     })
     return () => {
       alive = false
@@ -607,6 +614,14 @@ function AccountEntry() {
     }, LOGIN_POLL_MS)
     return () => clearInterval(timer)
   }, [waiting, loginNonce])
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const refresh = () => void window.aiOffice.officeRelayStatus().then(setOfficeRelayStatus)
+    refresh()
+    const timer = window.setInterval(refresh, 1_000)
+    return () => window.clearInterval(timer)
+  }, [menuOpen])
 
   // close the menu on outside click
   useEffect(() => {
@@ -831,6 +846,47 @@ function AccountEntry() {
           <div className="account-menu-version" role="status">
             Office bridge: {officeBridgeStatus}
           </div>
+          {loggedIn && (
+            <div className="office-relay-claim">
+              <label htmlFor="office-relay-code">Connect Office with its 6-digit code</label>
+              <div className="office-relay-claim-row">
+                <input
+                  id="office-relay-code"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  value={officeRelayCode}
+                  placeholder="000000"
+                  onChange={(event) => {
+                    setOfficeRelayCode(event.target.value.replace(/\D/g, '').slice(0, 6))
+                    setOfficeRelayError('')
+                  }}
+                />
+                <button
+                  className="btn btn-office-allow"
+                  disabled={officeRelayBusy || !/^\d{6}$/.test(officeRelayCode)}
+                  onClick={() => {
+                    setOfficeRelayBusy(true)
+                    setOfficeRelayError('')
+                    void window.aiOffice
+                      .claimOfficeRelay(officeRelayCode)
+                      .then(() => {
+                        setOfficeRelayStatus('claiming')
+                        setOfficeRelayCode('')
+                      })
+                      .catch((error) =>
+                        setOfficeRelayError(error instanceof Error ? error.message : 'relay_error'),
+                      )
+                      .finally(() => setOfficeRelayBusy(false))
+                  }}
+                >
+                  Connect
+                </button>
+              </div>
+              <div role="status">Office relay: {officeRelayStatus}</div>
+              {officeRelayError && <div role="alert">Could not claim code: {officeRelayError}</div>}
+            </div>
+          )}
           {loggedIn && (
             <button
               className="account-menu-item danger"

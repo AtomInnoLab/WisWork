@@ -5,6 +5,7 @@ import type {
   AccountStatus,
   OfficePairingRequest,
   OfficeBridgeStatus,
+  OfficeRelayStatus,
   HomeApi,
   LatexRecentProjectEntry,
   RecentEntry,
@@ -236,6 +237,14 @@ const homeApi: HomeApi = {
         ? value
         : 'error:bind_failed'
     ) as OfficeBridgeStatus
+  },
+  async claimOfficeRelay(code) {
+    if (!/^\d{6}$/.test(code)) throw new Error('Invalid verification code.')
+    await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.relayClaim, { code })
+  },
+  async officeRelayStatus() {
+    const result: unknown = await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.relayStatus)
+    return (typeof result === 'string' ? result : 'error:invalid_status') as OfficeRelayStatus
   },
   async getAppVersion() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getAppVersion)
