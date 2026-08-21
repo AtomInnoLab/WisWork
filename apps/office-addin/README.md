@@ -9,7 +9,8 @@ only a short-lived socket-bound capability in memory. Document writes still requ
 After `Office.onReady()`, the task pane composes the shared browser skill with exactly one Word,
 Excel, or PowerPoint skill. Unsupported hosts fail closed.
 
-- Shared: bounded VFS `read`, sandboxed `bash` (`pwd`, `ls`, and `cat`), session-file
+- Shared: bounded VFS `read`, sandboxed `bash` (`pwd`, `ls`, `cat`, `pdf-to-text`,
+  `pdf-to-images`, `docx-to-text`, and `xlsx-to-csv`), session-file
   upload, and strict single-file `SKILL.md` installation. Installed skill metadata is added to the
   Agent context dynamically; package folders and auxiliary files are not yet exposed in the UI.
 - Word: `get_document_text`, `get_document_structure`, `get_ooxml`, `screenshot_document`,
@@ -25,13 +26,20 @@ Excel, or PowerPoint skill. Unsupported hosts fail closed.
 Word screenshot exports a bounded PDF through Office.js and renders a bounded page to a
 model-visible PNG. Word `execute_office_js` accepts only a JSON declarative program (version 1,
 maximum 32 allowlisted operations); it never evaluates JavaScript. PowerPoint package operations
-are tracked separately. File conversions remain blocked until they run in a terminateable worker
-with ZIP metadata, decompression, cell, pixel, and output quotas. Web retrieval remains blocked
-because there is no fixed authenticated PC bridge route, so neither capability is advertised.
-Browser `bash` is not a
+are tracked separately. File conversions run only in the bounded terminateable worker described
+below. Web retrieval remains independently capability-negotiated through the authenticated PC
+Relay route. Browser `bash` is not a
 native shell and has no PC filesystem, process, socket, credential, or package-install access.
 Supported mutations show a structured title, impact, before/after data, preview, and code when
-present, and execute only after explicit confirmation. Logout or bridge loss disposes proposals,
+present, and execute only after explicit confirmation. Conversion commands accept one matching
+file from the session VFS and mount outputs atomically only after a dedicated Web Worker completes.
+DOCX/XLSX archives are rejected before inflate for invalid central/local metadata, duplicate or
+case-colliding normalized paths, traversal, encryption, special file types, unsupported methods,
+or claimed quotas. Selected entries are then inflated incrementally; the stream is paused and the
+worker fails before retaining bytes beyond the per-entry or aggregate actual-output limits. PDF
+page/text/image limits are enforced in the same terminateable worker. `pdf-to-images` fails with
+`conversion_unsupported` when the Office WebView has no `OffscreenCanvas`; it never falls back to
+main-thread rendering. Logout or bridge loss disposes proposals,
 uploaded VFS files, and installed-skill session state.
 
 ## Connect WisWork PC
@@ -130,11 +138,16 @@ Office (with host-specific API-set acceptance still required):
 
 The Word screenshot runtime uses the exactly pinned PDF.js 5.7.284 package (Apache-2.0). PDF input
 comes only from Office's bounded document export; loading disables worker fetch and WebAssembly,
-sets image/page/output bounds, and uses a fixed bundled worker URL. JSZip 3.10.1
-(`MIT OR GPL-3.0-or-later`) and
-fast-xml-parser 5.10.1 (MIT) are pinned for the separately reviewed PowerPoint package runtime, not
-as generally available converters. The configured production build emits no source map. Any
-version change requires repeating license, CSP, bundle-size, and vulnerability review.
+sets image/page/output bounds, and uses a fixed bundled worker URL. The conversion worker also uses
+that exact PDF.js version with worker fetch, font loading, and eval support disabled. JSZip 3.10.1
+(`MIT OR GPL-3.0-or-later`) is pinned for raw ZIP parsing plus incremental DEFLATE/STORE streams;
+WisWork validates raw central and local records before handing the bytes to JSZip and never calls
+the eager `entry.async()` conversion path. fast-xml-parser 5.10.1 (MIT) is pinned for validated,
+bounded OOXML parts. These packages are also used by the separately reviewed PowerPoint package
+runtime. All are already production dependencies covered by `npm run licenses`; this change adds
+no native module or remote runtime dependency. The configured production build emits separate
+conversion/PDF worker chunks and no source map. Any version change requires repeating license,
+CSP, bundle-size, forged-archive, and vulnerability review.
 
 ## Checks
 
