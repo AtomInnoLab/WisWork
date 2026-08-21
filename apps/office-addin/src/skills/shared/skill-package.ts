@@ -165,7 +165,7 @@ export async function validateSkillPackageImage(
     const rowBytes = Math.ceil((width * channels * bitDepth) / 8)
     const expected = height * (rowBytes + 1)
     if (!Number.isSafeInteger(expected) || expected > SKILL_PACKAGE_LIMITS.maxImagePixels * 8)
-      invalid()
+      limited()
     const joined = new Uint8Array(compressed.reduce((sum, value) => sum + value.length, 0))
     let joinedOffset = 0
     for (const value of compressed) {
@@ -292,7 +292,8 @@ export async function validateSkillPackageImage(
     if (payloads !== 1 || (canvasWidth && (canvasWidth !== width || canvasHeight !== height)))
       invalid()
   }
-  if (!width || !height || width * height > SKILL_PACKAGE_LIMITS.maxImagePixels) invalid()
+  if (!width || !height) invalid()
+  if (width * height > SKILL_PACKAGE_LIMITS.maxImagePixels) limited()
   const mime =
     extension === 'png' ? 'image/png' : extension === 'webp' ? 'image/webp' : 'image/jpeg'
   let decoded: DecodedSkillImage | undefined

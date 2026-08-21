@@ -6,7 +6,11 @@ import { exportSafeCsv, readBoundedCsv, readBoundedImage } from '../shared/impor
 import type { InMemoryVfs } from '../shared/vfs.js'
 
 export interface ExcelImportMediaAdapter {
-  captureRange(sheetId: number, range: string, signal?: AbortSignal): Promise<unknown>
+  captureRangeState(
+    sheetId: number,
+    range: string,
+    signal?: AbortSignal,
+  ): Promise<{ fingerprint: string; snapshot: unknown }>
   restoreRange(
     sheetId: number,
     range: string,
@@ -137,6 +141,16 @@ function numberSchema() {
 function cancelled(signal?: AbortSignal) {
   if (signal?.aborted) throw new Error('cancelled')
 }
+function stableCause(error: unknown): Error {
+  const message =
+    error instanceof Error &&
+    ['cancelled', 'office_verify_failed', 'office_write_failed', 'office_recovery_failed'].includes(
+      error.message,
+    )
+      ? error.message
+      : 'office_host_error'
+  return new Error(message)
+}
 function destinationRange(startCell: string, rows: number, columns: number): string {
   const match = /^([A-Z]{1,3})([1-9]\d*)$/.exec(startCell)
   if (!match) throw new Error('invalid_tool_input')
@@ -175,12 +189,15 @@ export function createExcelImportMediaSkill(options: {
   adapter: ExcelImportMediaAdapter
   proposals: StructuredProposalController
   vfs: InMemoryVfs
+  enableImage?: boolean
 }): AgentSkill {
+  const enabledTools =
+    options.enableImage === false ? tools.filter((tool) => tool.name !== 'image-to-sheet') : tools
   return {
     id: 'office-excel-import-media',
     systemPrompt:
       'CSV and image imports use bounded VFS data and require confirmation. CSV exports neutralize spreadsheet formulas.',
-    tools,
+    tools: enabledTools,
     async executeTool(call, signal) {
       if (call.inputError || call.truncated)
         return failed(call.name, new Error('invalid_tool_input'))
@@ -205,8 +222,12 @@ export function createExcelImportMediaSkill(options: {
           const input = csvToSheet(call.input)
           const values = readBoundedCsv(options.vfs, input.path)
           const targetRange = destinationRange(input.startCell, values.length, values[0].length)
-          const before = await options.adapter.fingerprintRange(input.sheetId, targetRange, signal)
-          const snapshot = await options.adapter.captureRange(input.sheetId, targetRange, signal)
+          const captured = await options.adapter.captureRangeState(
+            input.sheetId,
+            targetRange,
+            signal,
+          )
+          const { fingerprint: before, snapshot } = captured
           cancelled(signal)
           const recover = async () => {
             try {
@@ -215,8 +236,8 @@ export function createExcelImportMediaSkill(options: {
                 !(await options.adapter.verifyRangeSnapshot(input.sheetId, targetRange, snapshot))
               )
                 throw new Error('office_recovery_failed')
-            } catch {
-              throw new Error('office_recovery_failed')
+            } catch (error) {
+              throw new Error('office_recovery_failed', { cause: stableCause(error) })
             }
           }
           const proposal = options.proposals.propose({
@@ -246,10 +267,11 @@ export function createExcelImportMediaSkill(options: {
               cancelled(s)
               try {
                 await options.adapter.writeRangeValues(input.sheetId, input.startCell, values, s)
-              } catch {
+              } catch (error) {
                 await recover()
-                if (s?.aborted) throw new Error('cancelled')
-                throw new Error('office_write_failed')
+                throw new Error(s?.aborted ? 'cancelled' : 'office_write_failed', {
+                  cause: stableCause(error),
+                })
               }
               if (s?.aborted) {
                 await recover()
@@ -257,16 +279,23 @@ export function createExcelImportMediaSkill(options: {
               }
             },
             verify: async (s) => {
-              if (
-                !(await options.adapter.verifyRangeValues(
-                  input.sheetId,
-                  input.startCell,
-                  values,
-                  s,
-                ))
-              ) {
+              try {
+                cancelled(s)
+                if (
+                  !(await options.adapter.verifyRangeValues(
+                    input.sheetId,
+                    input.startCell,
+                    values,
+                    s,
+                  ))
+                )
+                  throw new Error('office_verify_failed')
+                cancelled(s)
+              } catch (error) {
                 await recover()
-                throw new Error('office_verify_failed')
+                throw new Error(s?.aborted ? 'cancelled' : 'office_verify_failed', {
+                  cause: stableCause(error),
+                })
               }
             },
           })
@@ -277,8 +306,9 @@ export function createExcelImportMediaSkill(options: {
           }
         }
         if (call.name === 'image-to-sheet') {
+          if (options.enableImage === false) throw new Error('office_api_unsupported')
           const input = imageToSheet(call.input)
-          const image = readBoundedImage(options.vfs, input.path)
+          const image = await readBoundedImage(options.vfs, input.path)
           const insertion = {
             sheetId: input.sheetId,
             cell: input.cell,
@@ -293,8 +323,8 @@ export function createExcelImportMediaSkill(options: {
               await options.adapter.removeImage(insertion, id)
               if (!(await options.adapter.verifyImageAbsent(insertion, id)))
                 throw new Error('office_recovery_failed')
-            } catch {
-              throw new Error('office_recovery_failed')
+            } catch (error) {
+              throw new Error('office_recovery_failed', { cause: stableCause(error) })
             }
           }
           const proposal = options.proposals.propose({
@@ -325,14 +355,22 @@ export function createExcelImportMediaSkill(options: {
               } catch (error) {
                 if (error instanceof Error && error.message === 'office_recovery_failed')
                   throw error
-                if (s?.aborted) throw new Error('cancelled')
-                throw new Error('office_write_failed')
+                throw new Error(s?.aborted ? 'cancelled' : 'office_write_failed', {
+                  cause: stableCause(error),
+                })
               }
             },
             verify: async (s) => {
-              if (!id || !(await options.adapter.verifyImage(insertion, id, s))) {
+              try {
+                cancelled(s)
+                if (!id || !(await options.adapter.verifyImage(insertion, id, s)))
+                  throw new Error('office_verify_failed')
+                cancelled(s)
+              } catch (error) {
                 await recover()
-                throw new Error('office_verify_failed')
+                throw new Error(s?.aborted ? 'cancelled' : 'office_verify_failed', {
+                  cause: stableCause(error),
+                })
               }
             },
           })

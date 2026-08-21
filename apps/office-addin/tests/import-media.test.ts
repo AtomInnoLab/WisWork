@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { deflateSync } from 'node:zlib'
+import { PNG } from 'pngjs'
 import { createOfficeHostRuntime } from '../src/agent/host-runtime.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import { createExcelImportMediaSkill } from '../src/skills/excel/excel-import-media.js'
@@ -11,12 +13,19 @@ import {
 import { InMemoryVfs } from '../src/skills/shared/vfs.js'
 
 const png = (width = 1, height = 1) => {
+  if (width * height <= 10_000) {
+    const image = new PNG({ width, height })
+    image.data.fill(0)
+    return new Uint8Array(PNG.sync.write(image))
+  }
   const crc32 = (bytes: Uint8Array) => {
+    const table = Uint32Array.from({ length: 256 }, (_, value) => {
+      let item = value
+      for (let bit = 0; bit < 8; bit += 1) item = item & 1 ? 0xedb88320 ^ (item >>> 1) : item >>> 1
+      return item >>> 0
+    })
     let crc = 0xffffffff
-    for (const byte of bytes) {
-      crc ^= byte
-      for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0)
-    }
+    for (const byte of bytes) crc = table[(crc ^ byte) & 0xff] ^ (crc >>> 8)
     return (crc ^ 0xffffffff) >>> 0
   }
   const chunk = (name: string, data: Uint8Array) => {
@@ -32,11 +41,14 @@ const png = (width = 1, height = 1) => {
   const view = new DataView(ihdr.buffer)
   view.setUint32(0, width)
   view.setUint32(4, height)
-  ihdr.set([8, 6, 0, 0, 0], 8)
+  ihdr.set([8, 2, 0, 0, 0], 8)
   const parts = [
     new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
     chunk('IHDR', ihdr),
-    chunk('IDAT', new Uint8Array([0])),
+    chunk(
+      'IDAT',
+      deflateSync(new Uint8Array(width * height <= 10_000 ? height * (1 + width * 3) : 1)),
+    ),
     chunk('IEND', new Uint8Array()),
   ]
   const result = new Uint8Array(parts.reduce((sum, item) => sum + item.length, 0))
@@ -49,10 +61,20 @@ const png = (width = 1, height = 1) => {
 }
 const call = (name: string, input: Record<string, unknown>) => ({ id: 'c1', name, input })
 
+beforeEach(() => {
+  ;(globalThis as Record<string, unknown>).createImageBitmap = vi.fn(async (blob: Blob) => {
+    const bytes = new Uint8Array(await blob.arrayBuffer())
+    const dimensions =
+      bytes[0] === 137 ? PNG.sync.read(Buffer.from(bytes)) : { width: 1, height: 1 }
+    return { width: dimensions.width, height: dimensions.height, close: vi.fn() }
+  })
+})
+
 afterEach(() => {
   delete (globalThis as Record<string, unknown>).Office
   delete (globalThis as Record<string, unknown>).Excel
   delete (globalThis as Record<string, unknown>).PowerPoint
+  delete (globalThis as Record<string, unknown>).createImageBitmap
 })
 
 describe('host capability advertisement', () => {
@@ -116,33 +138,35 @@ describe('bounded CSV and image contracts', () => {
     )
   })
 
-  it('checks image magic, dimensions, pixels and bytes rather than file extension', () => {
+  it('checks image magic, dimensions, pixels and bytes rather than file extension', async () => {
     const vfs = new InMemoryVfs()
     vfs.writeFile('/home/user/not-really.jpg', png(10, 20))
-    expect(readBoundedImage(vfs, '/home/user/not-really.jpg')).toMatchObject({
+    await expect(readBoundedImage(vfs, '/home/user/not-really.jpg')).resolves.toMatchObject({
       mime: 'image/png',
       width: 10,
       height: 20,
     })
     vfs.writeFile('/home/user/huge.png', png(8192, 8192))
-    expect(() => readBoundedImage(vfs, '/home/user/huge.png')).toThrow('image_limit')
+    await expect(readBoundedImage(vfs, '/home/user/huge.png')).rejects.toThrow('image_limit')
     vfs.writeFile('/home/user/fake.png', new Uint8Array([1, 2, 3]))
-    expect(() => readBoundedImage(vfs, '/home/user/fake.png')).toThrow('image_mime_unsupported')
+    await expect(readBoundedImage(vfs, '/home/user/fake.png')).rejects.toThrow(
+      'image_mime_unsupported',
+    )
     const corrupt = png(10, 10)
     corrupt[corrupt.length - 1] ^= 1
     vfs.writeFile('/home/user/corrupt.png', corrupt)
-    expect(() => readBoundedImage(vfs, '/home/user/corrupt.png')).toThrow('invalid_image')
+    await expect(readBoundedImage(vfs, '/home/user/corrupt.png')).rejects.toThrow('invalid_image')
     vfs.writeFile(
       '/home/user/truncated.jpg',
       new Uint8Array([0xff, 0xd8, 0xff, 0xc0, 0, 17, 8, 0, 1, 0, 1]),
     )
-    expect(() => readBoundedImage(vfs, '/home/user/truncated.jpg')).toThrow('invalid_image')
+    await expect(readBoundedImage(vfs, '/home/user/truncated.jpg')).rejects.toThrow('invalid_image')
     const jpeg = new Uint8Array([
       0xff, 0xd8, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00,
       0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00, 0x00, 0xff, 0xd9,
     ])
     vfs.writeFile('/home/user/valid.jpg', jpeg)
-    expect(readBoundedImage(vfs, '/home/user/valid.jpg')).toMatchObject({
+    await expect(readBoundedImage(vfs, '/home/user/valid.jpg')).resolves.toMatchObject({
       mime: 'image/jpeg',
       width: 1,
       height: 1,
@@ -158,7 +182,10 @@ describe('Excel import/export proposals', () => {
     verifyRangeValues: vi.fn().mockResolvedValue(true),
     insertImage: vi.fn().mockResolvedValue({ id: 'image-1' }),
     verifyImage: vi.fn().mockResolvedValue(true),
-    captureRange: vi.fn().mockResolvedValue({ formulas: [['old']] }),
+    captureRangeState: vi.fn().mockResolvedValue({
+      fingerprint: 'before',
+      snapshot: { formulas: [['old']] },
+    }),
     restoreRange: vi.fn().mockResolvedValue(undefined),
     verifyRangeSnapshot: vi.fn().mockResolvedValue(true),
     removeImage: vi.fn().mockResolvedValue(undefined),
@@ -208,7 +235,7 @@ describe('Excel import/export proposals', () => {
     const vfs = new InMemoryVfs()
     vfs.writeFile('/home/user/in.csv', 'a')
     const fake = adapter()
-    fake.fingerprintRange.mockResolvedValueOnce('before').mockResolvedValueOnce('changed')
+    fake.fingerprintRange.mockResolvedValue('changed')
     const proposals = createStructuredProposalController()
     const skill = createExcelImportMediaSkill({ adapter: fake, proposals, vfs })
     await skill.executeTool(

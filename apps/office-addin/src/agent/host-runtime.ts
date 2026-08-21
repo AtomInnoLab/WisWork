@@ -20,6 +20,7 @@ import {
 import { createPowerPointImportMediaSkill } from '../skills/powerpoint/powerpoint-import-media.js'
 import { createPowerPointSkill } from '../skills/powerpoint/powerpoint-skill.js'
 import { createSharedBrowserSkill } from '../skills/shared/shared-skill.js'
+import { supportsBrowserMediaValidation } from '../skills/shared/import-media.js'
 import { MAX_SKILL_BYTES, SkillRegistry } from '../skills/shared/skill-registry.js'
 import { SkillPackageWorkerRuntime } from '../skills/shared/skill-package-runtime.js'
 import { InMemoryVfs, MAX_VFS_FILE_BYTES } from '../skills/shared/vfs.js'
@@ -84,9 +85,13 @@ export function createOfficeHostRuntime(
             adapter: new BrowserExcelImportMediaAdapter(),
             proposals,
             vfs,
+            enableImage: supportsBrowserMediaValidation(),
           }),
         ]
-      : host === 'powerpoint' && powerPointAdapter && supportsPowerPointImportMedia()
+      : host === 'powerpoint' &&
+          powerPointAdapter &&
+          supportsPowerPointImportMedia() &&
+          supportsBrowserMediaValidation()
         ? [
             createPowerPointImportMediaSkill({
               adapter: new BrowserPowerPointImportMediaAdapter(powerPointAdapter),

@@ -1,10 +1,11 @@
 import type { InMemoryVfs } from './vfs.js'
+import { validateSkillPackageImage } from './skill-package.js'
 
 export const MAX_IMPORT_BYTES = 2 * 1024 * 1024
 export const MAX_CSV_ROWS = 500
 export const MAX_CSV_COLUMNS = 100
 export const MAX_CSV_CELLS = 10_000
-export const MAX_IMAGE_PIXELS = 16_777_216
+export const MAX_IMAGE_PIXELS = 16_000_000
 export const MAX_IMAGE_DIMENSION = 8_192
 
 const decoder = new TextDecoder('utf-8', { fatal: true })
@@ -92,22 +93,36 @@ export interface BoundedImage {
   fingerprint: string
 }
 
-export function readBoundedImage(vfs: InMemoryVfs, path: string): BoundedImage {
+export function supportsBrowserMediaValidation(): boolean {
+  return typeof createImageBitmap === 'function' && typeof DecompressionStream === 'function'
+}
+
+export async function readBoundedImage(vfs: InMemoryVfs, path: string): Promise<BoundedImage> {
   const bytes = vfs.readBytes(path, { maxBytes: MAX_IMPORT_BYTES + 1 })
   if (bytes.byteLength > MAX_IMPORT_BYTES) throw new Error('image_limit')
   const png =
     bytes.length >= 24 &&
     [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value)
   let mime: BoundedImage['mime']
-  let width: number
-  let height: number
+  let extension: 'png' | 'jpeg'
   if (png) {
     mime = 'image/png'
-    ;({ width, height } = pngDimensions(bytes))
+    extension = 'png'
   } else if (bytes[0] === 0xff && bytes[1] === 0xd8) {
     mime = 'image/jpeg'
-    ;({ width, height } = jpegDimensions(bytes))
+    extension = 'jpeg'
   } else throw new Error('image_mime_unsupported')
+  let width: number
+  let height: number
+  try {
+    ;({ width, height } = await validateSkillPackageImage(extension, bytes))
+  } catch (error) {
+    if (error instanceof Error && error.message === 'skill_package_limit')
+      throw new Error('image_limit', { cause: new Error('media_limit') })
+    throw new Error('invalid_image', {
+      cause: new Error(error instanceof Error ? error.message : 'media_validation_failed'),
+    })
+  }
   if (
     !width ||
     !height ||
@@ -124,132 +139,6 @@ export function readBoundedImage(vfs: InMemoryVfs, path: string): BoundedImage {
     height,
     fingerprint: hash(bytes),
   }
-}
-
-function crc32(bytes: Uint8Array): number {
-  let crc = 0xffffffff
-  for (const byte of bytes) {
-    crc ^= byte
-    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0)
-  }
-  return (crc ^ 0xffffffff) >>> 0
-}
-
-function pngDimensions(bytes: Uint8Array): { width: number; height: number } {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  let offset = 8
-  let chunks = 0
-  let sawData = false
-  let sawPalette = false
-  let colorType = -1
-  let width = 0
-  let height = 0
-  while (offset + 12 <= bytes.length) {
-    const length = view.getUint32(offset)
-    const end = offset + 12 + length
-    if (end > bytes.length) throw new Error('invalid_image')
-    const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8))
-    if (!/^[A-Za-z]{4}$/.test(type)) throw new Error('invalid_image')
-    if (
-      view.getUint32(offset + 8 + length) !== crc32(bytes.subarray(offset + 4, offset + 8 + length))
-    )
-      throw new Error('invalid_image')
-    if (chunks++ === 0) {
-      if (type !== 'IHDR' || length !== 13) throw new Error('invalid_image')
-      width = view.getUint32(offset + 8)
-      height = view.getUint32(offset + 12)
-      const bitDepth = bytes[offset + 16]
-      colorType = bytes[offset + 17]
-      const allowedDepths: Record<number, number[]> = {
-        0: [1, 2, 4, 8, 16],
-        2: [8, 16],
-        3: [1, 2, 4, 8],
-        4: [8, 16],
-        6: [8, 16],
-      }
-      if (
-        !allowedDepths[colorType]?.includes(bitDepth) ||
-        bytes[offset + 18] !== 0 ||
-        bytes[offset + 19] !== 0 ||
-        bytes[offset + 20] > 1
-      )
-        throw new Error('invalid_image')
-    } else if (type === 'IHDR') throw new Error('invalid_image')
-    if (type === 'PLTE') {
-      if (sawPalette || sawData || length < 3 || length > 768 || length % 3 !== 0)
-        throw new Error('invalid_image')
-      sawPalette = true
-    } else if (type === 'IDAT') {
-      if (!length || (colorType === 3 && !sawPalette)) throw new Error('invalid_image')
-      sawData = true
-    } else if (!['IHDR', 'IEND'].includes(type) && type[0] === type[0].toUpperCase()) {
-      throw new Error('invalid_image')
-    }
-    if (type === 'IEND') {
-      if (length !== 0 || !sawData || end !== bytes.length) throw new Error('invalid_image')
-      return { width, height }
-    }
-    offset = end
-  }
-  throw new Error('invalid_image')
-}
-
-function jpegDimensions(bytes: Uint8Array): { width: number; height: number } {
-  let offset = 2
-  let width = 0
-  let height = 0
-  let sawSos = false
-  while (offset < bytes.length) {
-    if (bytes[offset++] !== 0xff) throw new Error('invalid_image')
-    while (bytes[offset] === 0xff) offset += 1
-    const marker = bytes[offset++]
-    if (marker === 0xd9) {
-      if (!width || !height || !sawSos || offset !== bytes.length) throw new Error('invalid_image')
-      return { width, height }
-    }
-    if (
-      marker === 0x00 ||
-      marker === undefined ||
-      marker === 0xd8 ||
-      (marker >= 0xd0 && marker <= 0xd7)
-    )
-      throw new Error('invalid_image')
-    if (offset + 2 > bytes.length) throw new Error('invalid_image')
-    const length = (bytes[offset] << 8) | bytes[offset + 1]
-    if (length < 2 || offset + length > bytes.length) throw new Error('invalid_image')
-    if (
-      [0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(
-        marker,
-      )
-    ) {
-      const components = bytes[offset + 7]
-      if (width || height || !components || length !== 8 + 3 * components)
-        throw new Error('invalid_image')
-      height = (bytes[offset + 3] << 8) | bytes[offset + 4]
-      width = (bytes[offset + 5] << 8) | bytes[offset + 6]
-    }
-    if (marker === 0xda) {
-      const components = bytes[offset + 2]
-      if (!width || !height || !components || length !== 6 + 2 * components)
-        throw new Error('invalid_image')
-    }
-    offset += length
-    if (marker === 0xda) {
-      sawSos = true
-      while (offset < bytes.length) {
-        if (bytes[offset++] !== 0xff) continue
-        while (bytes[offset] === 0xff) offset += 1
-        const next = bytes[offset]
-        if (next === 0x00 || (next >= 0xd0 && next <= 0xd7)) {
-          offset += 1
-          continue
-        }
-        offset -= 1
-        break
-      }
-    }
-  }
-  throw new Error('invalid_image')
 }
 
 function toBase64(bytes: Uint8Array): string {

@@ -62,6 +62,16 @@ const tool = {
     additionalProperties: false,
   },
 }
+function stableCause(error: unknown): Error {
+  const message =
+    error instanceof Error &&
+    ['cancelled', 'office_verify_failed', 'office_write_failed', 'office_recovery_failed'].includes(
+      error.message,
+    )
+      ? error.message
+      : 'office_host_error'
+  return new Error(message)
+}
 function failed(name: string, error: unknown): ToolExecution {
   const message = error instanceof Error ? error.message : ''
   const code = [
@@ -95,7 +105,7 @@ export function createPowerPointImportMediaSkill(options: {
         if (call.name !== 'insert-image') throw new Error('invalid_tool_input')
         const value = input(call.input)
         if (value.width < 1 || value.height < 1) throw new Error('invalid_tool_input')
-        const image = readBoundedImage(options.vfs, value.path)
+        const image = await readBoundedImage(options.vfs, value.path)
         const geometry = {
           left: value.left,
           top: value.top,
@@ -110,8 +120,8 @@ export function createPowerPointImportMediaSkill(options: {
             await options.adapter.removeImage(value.slide_index, id)
             if (!(await options.adapter.verifyImageAbsent(value.slide_index, id)))
               throw new Error('office_recovery_failed')
-          } catch {
-            throw new Error('office_recovery_failed')
+          } catch (error) {
+            throw new Error('office_recovery_failed', { cause: stableCause(error) })
           }
         }
         const proposal = options.proposals.propose({
@@ -143,14 +153,22 @@ export function createPowerPointImportMediaSkill(options: {
               }
             } catch (error) {
               if (error instanceof Error && error.message === 'office_recovery_failed') throw error
-              if (s?.aborted) throw new Error('cancelled')
-              throw new Error('office_write_failed')
+              throw new Error(s?.aborted ? 'cancelled' : 'office_write_failed', {
+                cause: stableCause(error),
+              })
             }
           },
           verify: async (s) => {
-            if (!id || !(await options.adapter.verifyImage(value.slide_index, id, geometry, s))) {
+            try {
+              if (s?.aborted) throw new Error('cancelled')
+              if (!id || !(await options.adapter.verifyImage(value.slide_index, id, geometry, s)))
+                throw new Error('office_verify_failed')
+              if (s?.aborted) throw new Error('cancelled')
+            } catch (error) {
               await recover()
-              throw new Error('office_verify_failed')
+              throw new Error(s?.aborted ? 'cancelled' : 'office_verify_failed', {
+                cause: stableCause(error),
+              })
             }
           },
         })

@@ -56,27 +56,43 @@ export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapt
       await sync(context, signal)
       const beforeIds = new Set((item.shapes.items as Runtime[]).map((shape) => String(shape.id)))
       cancelled(signal)
+      let created: Runtime | undefined
       try {
-        const shape = item.shapes.addImage(base64, geometry)
-        shape.load('id')
+        created = item.shapes.addImage(base64, geometry)
+        if (typeof created?.delete !== 'function') throw new Error('office_api_unsupported')
+        created.load('id')
         await sync(context, signal)
-        if (!shape.id) throw new Error('office_write_failed')
-        return { id: String(shape.id) }
-      } catch {
+        if (!created.id) throw new Error('office_write_failed')
+        return { id: String(created.id) }
+      } catch (writeError) {
         try {
+          if (created) {
+            created.delete()
+            await sync(context)
+          }
           item.shapes.load('items/id')
           await sync(context)
-          for (const shape of item.shapes.items as Runtime[])
-            if (!beforeIds.has(String(shape.id))) shape.delete()
-          await sync(context)
-          item.shapes.load('items/id')
-          await sync(context)
-          if ((item.shapes.items as Runtime[]).some((shape) => !beforeIds.has(String(shape.id))))
+          const recovered = new Set(
+            (item.shapes.items as Runtime[]).map((shape) => String(shape.id)),
+          )
+          if (recovered.size !== beforeIds.size || [...recovered].some((id) => !beforeIds.has(id)))
             throw new Error('office_recovery_failed')
-        } catch {
-          throw new Error('office_recovery_failed')
+        } catch (recoveryError) {
+          throw new Error('office_recovery_failed', {
+            cause: new Error(
+              recoveryError instanceof Error && recoveryError.message === 'office_recovery_failed'
+                ? 'office_recovery_failed'
+                : 'office_host_error',
+            ),
+          })
         }
-        throw new Error('office_write_failed')
+        throw new Error('office_write_failed', {
+          cause: new Error(
+            writeError instanceof Error && writeError.message === 'cancelled'
+              ? 'cancelled'
+              : 'office_host_error',
+          ),
+        })
       }
     })
   }

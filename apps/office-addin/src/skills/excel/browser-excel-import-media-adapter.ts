@@ -59,14 +59,31 @@ export class BrowserExcelImportMediaAdapter implements ExcelImportMediaAdapter {
       })
     })
   }
-  async captureRange(sheetId: number, range: string, signal?: AbortSignal): Promise<unknown> {
+  async captureRangeState(
+    sheetId: number,
+    range: string,
+    signal?: AbortSignal,
+  ): Promise<{ fingerprint: string; snapshot: unknown }> {
     return this.run(async (context) => {
       const item = worksheet(context, sheetId).getRange(range)
-      item.load('address,formulas,rowCount,columnCount')
+      item.load('address,values,formulas,rowCount,columnCount')
       await sync(context, signal)
       if (item.rowCount * item.columnCount > 10_000 || !Array.isArray(item.formulas))
         throw new Error('office_api_unsupported')
-      return { address: item.address, formulas: item.formulas.map((row: unknown[]) => row.slice()) }
+      const snapshot = {
+        address: item.address,
+        formulas: item.formulas.map((row: unknown[]) => row.slice()),
+      }
+      return {
+        fingerprint: hash({
+          address: item.address,
+          values: item.values,
+          formulas: item.formulas,
+          rows: item.rowCount,
+          columns: item.columnCount,
+        }),
+        snapshot,
+      }
     })
   }
   async restoreRange(sheetId: number, range: string, snapshot: unknown): Promise<void> {
@@ -156,31 +173,45 @@ export class BrowserExcelImportMediaAdapter implements ExcelImportMediaAdapter {
       await sync(context, signal)
       const beforeIds = new Set((shapes.items as Runtime[]).map((shape) => String(shape.id)))
       cancelled(signal)
+      let created: Runtime | undefined
       try {
-        const shape = shapes.addImage(base64)
-        shape.left = anchor.left
-        shape.top = anchor.top
-        shape.width = input.width
-        shape.height = input.height
-        shape.load('id')
+        created = shapes.addImage(base64)
+        if (typeof created?.delete !== 'function') throw new Error('office_api_unsupported')
+        created.left = anchor.left
+        created.top = anchor.top
+        created.width = input.width
+        created.height = input.height
+        created.load('id')
         await sync(context, signal)
-        if (!shape.id) throw new Error('office_write_failed')
-        return { id: String(shape.id) }
-      } catch {
+        if (!created.id) throw new Error('office_write_failed')
+        return { id: String(created.id) }
+      } catch (writeError) {
         try {
+          if (created) {
+            created.delete()
+            await sync(context)
+          }
           shapes.load('items/id')
           await sync(context)
-          for (const shape of shapes.items as Runtime[])
-            if (!beforeIds.has(String(shape.id))) shape.delete()
-          await sync(context)
-          shapes.load('items/id')
-          await sync(context)
-          if ((shapes.items as Runtime[]).some((shape) => !beforeIds.has(String(shape.id))))
+          const recovered = new Set((shapes.items as Runtime[]).map((shape) => String(shape.id)))
+          if (recovered.size !== beforeIds.size || [...recovered].some((id) => !beforeIds.has(id)))
             throw new Error('office_recovery_failed')
-        } catch {
-          throw new Error('office_recovery_failed')
+        } catch (recoveryError) {
+          throw new Error('office_recovery_failed', {
+            cause: new Error(
+              recoveryError instanceof Error && recoveryError.message === 'office_recovery_failed'
+                ? 'office_recovery_failed'
+                : 'office_host_error',
+            ),
+          })
         }
-        throw new Error('office_write_failed')
+        throw new Error('office_write_failed', {
+          cause: new Error(
+            writeError instanceof Error && writeError.message === 'cancelled'
+              ? 'cancelled'
+              : 'office_host_error',
+          ),
+        })
       }
     })
   }
