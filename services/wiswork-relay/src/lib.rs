@@ -876,19 +876,21 @@ async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'st
                 .is_some_and(|a| a.id == deadline_rid)
         {
             session.active = None;
+            let protocol = session.version;
             send(
                 &session.pc_tx,
-                json!({"version":1,"type":"relay.cancel","session_id":deadline_sid,"request_id":deadline_rid}),
+                json!({"version":protocol,"type":"relay.cancel","session_id":deadline_sid,"request_id":deadline_rid}),
             );
             send(
                 &session.office_tx,
-                json!({"version":1,"type":"relay.error","session_id":deadline_sid,"request_id":deadline_rid,"code":"request_timeout"}),
+                json!({"version":protocol,"type":"relay.error","session_id":deadline_sid,"request_id":deadline_rid,"code":"request_timeout"}),
             );
         }
     });
     Ok(())
 }
 async fn cancel(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
+    let protocol = version(&m)?;
     if !exact(
         &m,
         &["version", "type", "session_id", "capability", "request_id"],
@@ -898,7 +900,7 @@ async fn cancel(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'sta
     let (sid, cap, rid) = session_fields(&m)?;
     let mut st = app.inner.state.lock().await;
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
-    if session.office != conn || session.office_cap != cap {
+    if session.office != conn || session.office_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
     if session.active.as_ref().map(|a| a.id.as_str()) != Some(rid) {
@@ -907,12 +909,13 @@ async fn cancel(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'sta
     session.active = None;
     send(
         &session.pc_tx,
-        json!({"version":1,"type":"relay.cancel","session_id":sid,"request_id":rid}),
+        json!({"version":protocol,"type":"relay.cancel","session_id":sid,"request_id":rid}),
     );
     Ok(())
 }
 
 async fn chunk(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
+    let protocol = version(&m)?;
     if !exact(
         &m,
         &[
@@ -936,7 +939,7 @@ async fn chunk(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
     }
     let mut st = app.inner.state.lock().await;
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
-    if session.pc != conn || session.pc_cap != cap {
+    if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
     let active = session.active.as_mut().ok_or("invalid_request")?;
@@ -956,11 +959,12 @@ async fn chunk(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
     }
     send(
         &session.office_tx,
-        json!({"version":1,"type":"relay.chunk","session_id":sid,"request_id":rid,"sequence":seq,"data":data}),
+        json!({"version":protocol,"type":"relay.chunk","session_id":sid,"request_id":rid,"sequence":seq,"data":data}),
     );
     Ok(())
 }
 async fn start(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
+    let protocol = version(&m)?;
     if !exact(
         &m,
         &[
@@ -989,7 +993,7 @@ async fn start(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
     }
     let mut store = app.inner.state.lock().await;
     let session = store.sessions.get_mut(sid).ok_or("invalid_session")?;
-    if session.pc != conn || session.pc_cap != cap {
+    if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
     let active = session.active.as_mut().ok_or("invalid_request")?;
@@ -999,11 +1003,12 @@ async fn start(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
     active.started = true;
     send(
         &session.office_tx,
-        json!({"version":1,"type":"relay.start","session_id":sid,"request_id":rid,"status":status,"content_type":content_type}),
+        json!({"version":protocol,"type":"relay.start","session_id":sid,"request_id":rid,"status":status,"content_type":content_type}),
     );
     Ok(())
 }
 async fn done(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
+    let protocol = version(&m)?;
     if !exact(
         &m,
         &["version", "type", "session_id", "capability", "request_id"],
@@ -1013,7 +1018,7 @@ async fn done(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stati
     let (sid, cap, rid) = session_fields(&m)?;
     let mut st = app.inner.state.lock().await;
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
-    if session.pc != conn || session.pc_cap != cap {
+    if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
     if !session
@@ -1026,11 +1031,12 @@ async fn done(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stati
     session.active = None;
     send(
         &session.office_tx,
-        json!({"version":1,"type":"relay.done","session_id":sid,"request_id":rid}),
+        json!({"version":protocol,"type":"relay.done","session_id":sid,"request_id":rid}),
     );
     Ok(())
 }
 async fn pc_error(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
+    let protocol = version(&m)?;
     if !exact(
         &m,
         &[
@@ -1054,7 +1060,7 @@ async fn pc_error(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'s
     }
     let mut st = app.inner.state.lock().await;
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
-    if session.pc != conn || session.pc_cap != cap {
+    if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
     if session.active.as_ref().map(|a| a.id.as_str()) != Some(rid) {
@@ -1063,7 +1069,7 @@ async fn pc_error(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'s
     session.active = None;
     send(
         &session.office_tx,
-        json!({"version":1,"type":"relay.error","session_id":sid,"request_id":rid,"code":code}),
+        json!({"version":protocol,"type":"relay.error","session_id":sid,"request_id":rid,"code":code}),
     );
     Ok(())
 }

@@ -387,6 +387,12 @@ async fn v2_negotiates_exact_capabilities_and_denies_unnegotiated_requests() {
         json!({"query":"office agents","max_results":5})
     );
     assert_eq!(pc_ready["capabilities"], office_ready["capabilities"]);
+    send(&mut pc, json!({"version":2,"type":"pc.start","session_id":office_ready["session_id"],"capability":pc_ready["capability"],"request_id":"web_request_2","status":200,"content_type":"application/json"})).await;
+    assert_eq!(recv(&mut office).await["version"], 2);
+    send(&mut pc, json!({"version":2,"type":"pc.chunk","session_id":office_ready["session_id"],"capability":pc_ready["capability"],"request_id":"web_request_2","sequence":0,"data":"e30="})).await;
+    assert_eq!(recv(&mut office).await["version"], 2);
+    send(&mut pc, json!({"version":2,"type":"pc.done","session_id":office_ready["session_id"],"capability":pc_ready["capability"],"request_id":"web_request_2"})).await;
+    assert_eq!(recv(&mut office).await["version"], 2);
 }
 
 #[tokio::test]
