@@ -152,9 +152,8 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       if (
         state.status !== 'connecting' ||
         frameBytes > MAX_CONTROL_FRAME_BYTES ||
-        !exactKeys(frame, ['version', 'type', 'pairing_id', 'polling_secret', 'verification_code', 'expires_in']) ||
+        !exactKeys(frame, ['version', 'type', 'pairing_id', 'verification_code', 'expires_in']) ||
         !opaque(frame.pairing_id) ||
-        !opaque(frame.polling_secret) ||
         typeof frame.verification_code !== 'string' ||
         !/^\d{6}$/.test(frame.verification_code) ||
         !expiry(frame.expires_in, 120)

@@ -43,7 +43,7 @@ describe('Office cloud relay session', () => {
     expect(session.snapshot()).toEqual({ status: 'connecting' })
     socket.open()
     expect(frame(socket, 0)).toEqual({ version: 1, type: 'office.create', host: 'Word' })
-    socket.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'pair_1', polling_secret: 'poll_1', verification_code: '123456', expires_in: 120 }))
+    socket.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'pair_1', verification_code: '123456', expires_in: 120 }))
     expect(session.snapshot()).toEqual({ status: 'pending', verificationCode: '123456' })
     socket.receive(JSON.stringify({ version: 1, type: 'office.approved', session_id: 'session_1', capability: 'cap_1', expires_in: 1800 }))
     await connecting
@@ -54,7 +54,7 @@ describe('Office cloud relay session', () => {
     const socket = new FakeSocket()
     const session = createOfficeRelaySession({ createSocket: () => socket })
     const connecting = session.connect('excel'); socket.open()
-    socket.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p', polling_secret: 's', verification_code: '654321', expires_in: 120 }))
+    socket.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p', verification_code: '654321', expires_in: 120 }))
     socket.receive(JSON.stringify({ version: 1, type: 'office.approved', session_id: 'session', capability: 'cap', expires_in: 1800 }))
     await connecting
     const controller = new AbortController()
@@ -76,7 +76,7 @@ describe('Office cloud relay session', () => {
       const socket = new FakeSocket(); made.push(socket); return socket
     } })
     const first = session.connect('powerpoint'); made[0]!.open()
-    made[0]!.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p1', polling_secret: 's1', verification_code: '111111', expires_in: 120 }))
+    made[0]!.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p1', verification_code: '111111', expires_in: 120 }))
     made[0]!.receive(JSON.stringify({ version: 1, type: 'office.approved', session_id: 'session1', capability: 'c1', expires_in: 1800 }))
     await first
     const controller = new AbortController()
@@ -88,7 +88,7 @@ describe('Office cloud relay session', () => {
     expect(session.snapshot()).toEqual({ status: 'offline' })
 
     const second = session.connect('powerpoint'); made[1]!.open()
-    made[1]!.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p2', polling_secret: 's2', verification_code: '222222', expires_in: 120 }))
+    made[1]!.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p2', verification_code: '222222', expires_in: 120 }))
     made[1]!.receive(JSON.stringify({ version: 1, type: 'office.approved', session_id: 'session2', capability: 'c2', expires_in: 1800 }))
     await second
     expect(session.snapshot()).toEqual({ status: 'connected' })
@@ -109,7 +109,7 @@ describe('Office cloud relay session', () => {
     const socket = new FakeSocket()
     const session = createOfficeRelaySession({ createSocket: () => socket })
     const connecting = session.connect('word'); socket.open()
-    socket.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p', polling_secret: 's', verification_code: '123456', expires_in: 120 }))
+    socket.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p', verification_code: '123456', expires_in: 120 }))
     socket.receive(JSON.stringify({ version: 1, type: 'office.approved', session_id: 'sid', capability: 'cap', expires_in: 1800 }))
     await connecting
     await expect(session.authenticatedFetch('/v1/office/messages', { method: 'POST', body: 'x'.repeat(256 * 1024 + 1) })).rejects.toThrow('relay_request_too_large')
@@ -126,7 +126,7 @@ describe('Office cloud relay session', () => {
     const socket = new FakeSocket()
     const session = createOfficeRelaySession({ createSocket: () => socket })
     const connecting = session.connect('word'); socket.open()
-    socket.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p', polling_secret: 's', verification_code: '123456', expires_in: 120 }))
+    socket.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p', verification_code: '123456', expires_in: 120 }))
     socket.receive(JSON.stringify({ version: 1, type: 'office.approved', session_id: 'sid', capability: 'cap', expires_in: 1800 }))
     await connecting
     await expect(session.authenticatedFetch('/v1/office/messages', { method: 'POST', body })).rejects.toThrow('relay_invalid_request')
@@ -137,7 +137,7 @@ describe('Office cloud relay session', () => {
     const socket = new FakeSocket()
     const session = createOfficeRelaySession({ createSocket: () => socket })
     const connecting = session.connect('word'); socket.open()
-    socket.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p', polling_secret: 's', verification_code: '123456', expires_in: 120 }))
+    socket.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p', verification_code: '123456', expires_in: 120 }))
     socket.receive(JSON.stringify({ version: 1, type: 'office.approved', session_id: 'sid', capability: 'cap', expires_in: 1800 }))
     await connecting
     const response = session.authenticatedFetch('/v1/office/messages', { method: 'POST', body: '{}' })
@@ -158,7 +158,7 @@ describe('Office cloud relay session', () => {
     const throwing = new FakeSocket()
     const connected = createOfficeRelaySession({ createSocket: () => throwing })
     const pairing = connected.connect('word'); throwing.open()
-    throwing.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p', polling_secret: 's', verification_code: '123456', expires_in: 120 }))
+    throwing.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p', verification_code: '123456', expires_in: 120 }))
     throwing.receive(JSON.stringify({ version: 1, type: 'office.approved', session_id: 'sid', capability: 'cap', expires_in: 1800 }))
     await pairing
     throwing.send = () => { throw new Error('socket failed') }
