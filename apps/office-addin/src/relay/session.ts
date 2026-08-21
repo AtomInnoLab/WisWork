@@ -103,7 +103,8 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     if (active.abort && active.signal) active.signal.removeEventListener('abort', active.abort)
     if (active.responseResolved && active.controller) {
       try {
-        error ? active.controller.error(new Error(error)) : active.controller.close()
+        if (error) active.controller.error(new Error(error))
+        else active.controller.close()
       } catch {
         /* cancelled */
       }
