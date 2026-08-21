@@ -7,7 +7,7 @@ An Office.js task pane for Word, Excel, and PowerPoint. It reuses the signed-in 
 After `Office.onReady()`, the task pane composes the shared browser skill with exactly one Word,
 Excel, or PowerPoint skill. Unsupported hosts fail closed.
 
-- Shared: bounded VFS `read`, sandboxed `bash` (`pwd`, `ls`, and `cat` only), session-file
+- Shared: bounded VFS `read`, sandboxed `bash` (`pwd`, `ls`, and `cat`), session-file
   upload, and strict single-file `SKILL.md` installation. Installed skill metadata is added to the
   Agent context dynamically; package folders and auxiliary files are not yet exposed in the UI.
 - Word: `get_document_text`, `get_document_structure`, `get_ooxml`, `screenshot_document`,
@@ -20,10 +20,13 @@ Excel, or PowerPoint skill. Unsupported hosts fail closed.
   `edit_slide_text`, `duplicate_slide`, `edit_slide_xml`, `edit_slide_chart`,
   `edit_slide_master`, `execute_office_js`.
 
-Raw Office.js, Word screenshot, PowerPoint XML/chart/master edits, file conversion commands, and
-web retrieval remain release blockers. There is no fixed authenticated web bridge route yet, so no
-web tool is advertised. Blocked advertised tools return stable `office_api_unsupported` or
-`command_unsupported` errors and must not be described as successful. Browser `bash` is not a
+Word screenshot exports a bounded PDF through Office.js and renders a bounded page to a
+model-visible PNG. Word `execute_office_js` accepts only a JSON declarative program (version 1,
+maximum 32 allowlisted operations); it never evaluates JavaScript. PowerPoint package operations
+are tracked separately. File conversions remain blocked until they run in a terminateable worker
+with ZIP metadata, decompression, cell, pixel, and output quotas. Web retrieval remains blocked
+because there is no fixed authenticated PC bridge route, so neither capability is advertised.
+Browser `bash` is not a
 native shell and has no PC filesystem, process, socket, credential, or package-install access.
 Supported mutations show a structured title, impact, before/after data, preview, and code when
 present, and execute only after explicit confirmation. Logout or bridge loss disposes proposals,
@@ -31,7 +34,8 @@ uploaded VFS files, and installed-skill session state.
 
 ## Start WisWork PC
 
-The Office bridge is disabled by default. Start the PC app with an exact HTTPS add-in origin:
+The Office bridge is enabled by default in official packaged WisWork builds. Source development
+runs remain opt-in; start the PC app with an exact HTTPS add-in origin:
 
 ```bash
 WISWORK_OFFICE_BRIDGE_ENABLED=1 \
@@ -82,7 +86,7 @@ changing the PC bridge, identity, manifest, or stored user data.
 - **Revocation:** Office logout/disconnect drops the in-memory capability. PC logout, bridge shutdown, or PC restart revokes every pairing and active stream.
 - **Port conflict:** the PC app tries the next configured loopback port only when a port is already occupied. It never falls back to another address or a public bind. Startup fails if the whole pool is occupied or a non-conflict bind error occurs.
 - **Diagnostics:** the trusted WisWork account menu reports the local bridge as `disabled`, `ready:<port>`, or `error`; errors do not expose network or authentication details.
-- **Rollback:** unset `WISWORK_OFFICE_BRIDGE_ENABLED` (or set it to `0`) and deploy the prior add-in build. Restarting WisWork PC clears all in-memory grants; no data migration is required.
+- **Rollback:** set `WISWORK_OFFICE_BRIDGE_ENABLED=0` in a packaged deployment (or leave it unset in development) and deploy the prior add-in build. Restarting WisWork PC clears all in-memory grants; no data migration is required.
 
 ## Manual Windows/macOS acceptance
 
@@ -111,6 +115,16 @@ Office (Office Web remains blocked pending PNA and API-set acceptance):
    the next Agent request, then verify traversal and native-shell/network syntax are denied.
 6. Log out during an active stream and pending confirmation; verify conversation, proposal, VFS,
    and installed-skill state are cleared before reconnecting.
+
+## Browser conversion dependency audit
+
+The Word screenshot runtime uses the exactly pinned PDF.js 5.7.284 package (Apache-2.0). PDF input
+comes only from Office's bounded document export; loading disables worker fetch and WebAssembly,
+sets image/page/output bounds, and uses a fixed bundled worker URL. JSZip 3.10.1
+(`MIT OR GPL-3.0-or-later`) and
+fast-xml-parser 5.10.1 (MIT) are pinned for the separately reviewed PowerPoint package runtime, not
+as generally available converters. The configured production build emits no source map. Any
+version change requires repeating license, CSP, bundle-size, and vulnerability review.
 
 ## Checks
 

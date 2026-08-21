@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import JSZip from 'jszip'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import {
   BrowserPowerPointAdapter,
   type PowerPointAdapter,
 } from '../src/skills/powerpoint/browser-powerpoint-adapter.js'
 import { createPowerPointSkill } from '../src/skills/powerpoint/powerpoint-skill.js'
+import { editPowerPointPackage } from '../src/skills/powerpoint/powerpoint-package.js'
 
 const png = 'iVBORw0KGgoAAAA='
 
@@ -32,6 +34,9 @@ function adapter(overrides: Partial<PowerPointAdapter> = {}): PowerPointAdapter 
     snapshotSlide: vi.fn().mockResolvedValue({ slideId: 'slide-1', fingerprint: 'slide-1:1' }),
     editSlideText: vi.fn().mockResolvedValue(undefined),
     duplicateSlide: vi.fn().mockResolvedValue({ slideId: 'slide-copy' }),
+    exportSlidePackage: vi.fn().mockRejectedValue(new Error('office_api_unsupported')),
+    replaceSlidePackage: vi.fn().mockRejectedValue(new Error('office_api_unsupported')),
+    executeDeclarative: vi.fn().mockRejectedValue(new Error('office_api_unsupported')),
     ...overrides,
   }
 }
@@ -89,7 +94,8 @@ describe('PowerPoint compatibility skill', () => {
       skill.executeTool(call('screenshot_slide', { slide_index: 0 })),
     ).resolves.toMatchObject({
       mutated: false,
-      output: expect.stringContaining('"visualAvailableToModel":false'),
+      output: expect.stringContaining('"visualAvailableToModel":true'),
+      modelContent: [{ type: 'image', image: { mime: 'image/png', base64: png } }],
       display: { kind: 'images', items: [{ url: `data:image/png;base64,${png}` }] },
     })
     await expect(skill.executeTool(call('verify_slides', { nope: true }))).resolves.toMatchObject({
@@ -176,22 +182,185 @@ describe('PowerPoint compatibility skill', () => {
     })
   })
 
-  it('keeps unaudited raw-code and OOXML tools visible but fails closed without proposals', async () => {
+  it('rejects JavaScript syntax and unknown declarative authority without proposals', async () => {
     const proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: adapter(), proposals })
-    for (const [name, input] of [
-      ['execute_office_js', { code: 'return context.presentation' }],
-      ['edit_slide_xml', { slide_index: 0, code: 'zip.file("x")' }],
-      ['edit_slide_chart', { slide_index: 0, code: 'markDirty()' }],
-      ['edit_slide_master', { code: 'markDirty()' }],
-    ] as const) {
-      await expect(skill.executeTool(call(name, input))).resolves.toMatchObject({
-        output: 'office_api_unsupported',
+    for (const input of [
+      { code: 'return context.presentation' },
+      { code: '{"version":1,"operations":[{"op":"fetch","url":"https://x"}]}' },
+    ]) {
+      await expect(skill.executeTool(call('execute_office_js', input))).resolves.toMatchObject({
+        output: 'invalid_tool_input',
         isError: true,
         mutated: false,
       })
       expect(proposals.pending()).toBeUndefined()
     }
+  })
+
+  it('proposes and semantically verifies bounded XML, chart, and master package edits', async () => {
+    const zip = new JSZip()
+    zip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
+    zip.file('ppt/charts/chart1.xml', '<c:chart xmlns:c="urn:c"/>')
+    zip.file('ppt/slideMasters/slideMaster1.xml', '<p:sldMaster xmlns:p="urn:p"/>')
+    let current = await zip.generateAsync({ type: 'base64' })
+    const fake = adapter({
+      exportSlidePackage: vi.fn().mockImplementation(() =>
+        Promise.resolve({
+          slideId: 's1',
+          base64: current,
+          fingerprint: `${current.length}:${current.slice(-8)}`,
+        }),
+      ),
+      replaceSlidePackage: vi.fn().mockImplementation((_index, base64) => {
+        current = base64
+        return Promise.resolve({ slideId: 's2' })
+      }),
+    })
+    for (const [name, input] of [
+      [
+        'edit_slide_xml',
+        {
+          slide_index: 0,
+          code: JSON.stringify({
+            version: 1,
+            operations: [
+              {
+                op: 'replace_xml',
+                path: 'ppt/slides/slide1.xml',
+                xml: '<p:sld xmlns:p="urn:p"><p:cSld/></p:sld>',
+              },
+            ],
+          }),
+        },
+      ],
+      [
+        'edit_slide_chart',
+        {
+          slide_index: 0,
+          code: JSON.stringify({
+            version: 1,
+            operations: [
+              {
+                op: 'replace_xml',
+                path: 'ppt/charts/chart1.xml',
+                xml: '<c:chart xmlns:c="urn:c"><c:title/></c:chart>',
+              },
+            ],
+          }),
+        },
+      ],
+      [
+        'edit_slide_master',
+        {
+          code: JSON.stringify({
+            version: 1,
+            operations: [
+              {
+                op: 'replace_xml',
+                path: 'ppt/slideMasters/slideMaster1.xml',
+                xml: '<p:sldMaster xmlns:p="urn:p"><p:cSld/></p:sldMaster>',
+              },
+            ],
+          }),
+        },
+      ],
+    ] as const) {
+      const proposals = createStructuredProposalController()
+      const skill = createPowerPointSkill({ adapter: fake, proposals })
+      await expect(skill.executeTool(call(name, input))).resolves.toMatchObject({
+        mutated: false,
+        summary: expect.stringContaining('Proposed'),
+      })
+      await proposals.confirm(proposals.pending()!.id)
+    }
+    expect(fake.replaceSlidePackage).toHaveBeenCalledTimes(3)
+  })
+
+  it('executes only confirmed declarative PowerPoint operations and verifies text', async () => {
+    const fake = adapter({
+      exportSlidePackage: vi
+        .fn()
+        .mockResolvedValue({ slideId: 's1', base64: 'ppt', fingerprint: 'same' }),
+      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: [] }),
+      readSlideText: vi
+        .fn()
+        .mockResolvedValue({ slideId: 's1', shapeId: '2', text: 'New', paragraphs: ['New'] }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    const code =
+      '{"version":1,"operations":[{"op":"set_shape_text","slide_index":0,"shape_id":"2","text":"New"}]}'
+    await skill.executeTool(call('execute_office_js', { code }))
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
+    await proposals.confirm(proposals.pending()!.id)
+    expect(fake.executeDeclarative).toHaveBeenCalledWith(
+      [{ op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'New' }],
+      expect.any(AbortSignal),
+    )
+  })
+
+  it('accepts strict declarative geometry, text-box creation, and shape deletion families', async () => {
+    const fake = adapter({
+      exportSlidePackage: vi.fn().mockResolvedValue({
+        slideId: 's1',
+        base64: 'ppt',
+        fingerprint: 'same',
+      }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    const code = JSON.stringify({
+      version: 1,
+      operations: [
+        {
+          op: 'set_shape_geometry',
+          slide_index: 0,
+          shape_id: '2',
+          left: 1,
+          top: 2,
+          width: 3,
+          height: 4,
+        },
+        {
+          op: 'add_text_box',
+          slide_index: 0,
+          name: 'Agent box',
+          text: 'Hi',
+          left: 5,
+          top: 6,
+          width: 70,
+          height: 20,
+        },
+        { op: 'delete_shape', slide_index: 0, shape_id: '9' },
+      ],
+    })
+    await expect(skill.executeTool(call('execute_office_js', { code }))).resolves.toMatchObject({
+      mutated: false,
+      output: expect.stringContaining('set_shape_geometry'),
+    })
+    expect(proposals.pending()?.impact.count).toBe(3)
+    proposals.reject()
+    await expect(
+      skill.executeTool(
+        call('execute_office_js', {
+          code: JSON.stringify({
+            version: 1,
+            operations: [
+              {
+                op: 'set_shape_geometry',
+                slide_index: 0,
+                shape_id: '2',
+                left: 1,
+                top: 2,
+                width: -1,
+                height: 4,
+              },
+            ],
+          }),
+        }),
+      ),
+    ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
   })
 
   it('maps adapter internals to stable errors and validates screenshots', async () => {
@@ -388,6 +557,136 @@ describe('browser PowerPoint adapter', () => {
     slide.exportAsBase64.mockReturnValueOnce({ value: 'ppt' })
     await expect(subject.duplicateSlide(0, controller.signal)).rejects.toThrow('cancelled')
     expect(insertSlidesFromBase64).not.toHaveBeenCalled()
+  })
+
+  it('cancels package replacement before queuing its irreversible insert/delete batch', async () => {
+    const controller = new AbortController()
+    const sync = vi.fn().mockImplementation(async () => {
+      if (sync.mock.calls.length === 2) controller.abort()
+    })
+    const remove = vi.fn()
+    const slide = { id: 's1', load: vi.fn(), delete: remove }
+    const slides = {
+      getCount: vi.fn(() => ({ value: 1 })),
+      getItemAt: vi.fn(() => slide),
+    }
+    const insertSlidesFromBase64 = vi.fn()
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides, insertSlidesFromBase64 }, sync }),
+      },
+    })
+    await expect(
+      new BrowserPowerPointAdapter().replaceSlidePackage(
+        0,
+        'ppt',
+        false,
+        undefined,
+        controller.signal,
+      ),
+    ).rejects.toThrow('cancelled')
+    expect(insertSlidesFromBase64).not.toHaveBeenCalled()
+    expect(remove).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { mode: 'sync-failure', expectedError: 'office_write_failed' },
+    { mode: 'ignored-layout-recovery', expectedError: 'office_recovery_failed' },
+    { mode: 'wrong-restored-slide', expectedError: 'office_recovery_failed' },
+  ])('proves package and layout recovery after $mode', async ({ mode, expectedError }) => {
+    const packageZip = new JSZip()
+    packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
+    const originalPackage = await packageZip.generateAsync({ type: 'base64' })
+    const expected = await editPowerPointPackage(originalPackage, 'slide', [
+      { path: 'ppt/slides/slide1.xml', xml: '<p:sld xmlns:p="urn:p"><p:cSld/></p:sld>' },
+    ])
+    const oldLayout = { id: 'old-layout', name: '', load: vi.fn() }
+    const newLayout = { id: 'new-layout', name: '', load: vi.fn() }
+    const wrongLayout = { id: 'wrong-layout', name: '', load: vi.fn() }
+    const slides: {
+      items: any[]
+      getCount: ReturnType<typeof vi.fn>
+      getItemAt: ReturnType<typeof vi.fn>
+      load: ReturnType<typeof vi.fn>
+    } = {
+      items: [],
+      getCount: vi.fn(() => ({ value: slides.items.length })),
+      getItemAt: vi.fn((index: number) => slides.items[index]),
+      load: vi.fn(),
+    }
+    const makeSlide = (id: string, layout: any, exported = 'original') => {
+      const item: any = {
+        id,
+        layout,
+        load: vi.fn(),
+        exportAsBase64: vi.fn(() => ({ value: exported })),
+        applyLayout: vi.fn((next) => {
+          item.layout = next
+        }),
+      }
+      item.delete = vi.fn(() => {
+        slides.items = slides.items.filter((slide) => slide !== item)
+      })
+      return item
+    }
+    const original = makeSlide('s1', oldLayout, originalPackage)
+    const sibling = makeSlide('s-other', oldLayout)
+    slides.items = [original, sibling]
+    const oldMaster = { layouts: { items: [oldLayout], load: vi.fn() } }
+    const newMaster = { layouts: { items: [newLayout], load: vi.fn() } }
+    const masters = { items: [oldMaster, newMaster], load: vi.fn() }
+    let propagationStarted = false
+    sibling.applyLayout.mockImplementation((next: unknown) => {
+      if (mode === 'ignored-layout-recovery') {
+        if (next === newLayout) sibling.layout = wrongLayout
+      } else {
+        sibling.layout = next
+      }
+      propagationStarted = true
+    })
+    let failed = false
+    const sync = vi.fn().mockImplementation(async () => {
+      if (mode !== 'ignored-layout-recovery' && propagationStarted && !failed) {
+        failed = true
+        throw new Error('host failure')
+      }
+    })
+    const insertSlidesFromBase64 = vi.fn((base64: string) => {
+      const inserted = makeSlide(
+        base64 === expected.base64 ? 's2' : 's1-restored',
+        base64 === expected.base64 ? newLayout : oldLayout,
+        mode === 'wrong-restored-slide' && base64 === originalPackage ? expected.base64 : base64,
+      )
+      slides.items.splice(0, 0, inserted)
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({
+            presentation: { slides, slideMasters: masters, insertSlidesFromBase64 },
+            sync,
+          }),
+      },
+    })
+    await expect(
+      new BrowserPowerPointAdapter().replaceSlidePackage(0, expected.base64, true, expected),
+    ).rejects.toThrow(expectedError)
+    if (mode === 'sync-failure') expect(sibling.layout).toBe(oldLayout)
+    expect(slides.items).toHaveLength(2)
+    expect(slides.items[0].id).toBe('s1-restored')
   })
 
   it('treats a text-only change as stale even when slide geometry is unchanged', async () => {

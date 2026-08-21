@@ -2466,7 +2466,7 @@ app.whenReady().then(async () => {
     safeStorage,
     openExternal: (url) => shell.openExternal(url),
   })
-  if (officeBridgeEnabled(process.env)) {
+  if (officeBridgeEnabled(process.env, app.isPackaged)) {
     officeBridgeDiagnostic = 'error'
     const initialAccount = await requireAuthRuntime()
       .client.getValidAccountStatus()

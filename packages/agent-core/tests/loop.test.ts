@@ -139,6 +139,84 @@ describe('AgentLoop', () => {
     expect(transport.requests[1].messageCount).toBe(3)
   })
 
+  it('preserves model-visible tool image content in history for the next request', async () => {
+    const image = { base64: 'iVBORw0KGgo=', mime: 'image/png' }
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 't1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+      (cb) => {
+        cb.onDelta('seen')
+        cb.onDone()
+      },
+    ])
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(() => ({
+        output: 'captured',
+        summary: 'image',
+        modelContent: [{ type: 'image', image }],
+      })),
+    })
+    loop.run('capture')
+    await flush()
+    await flush()
+    expect(loop.messages).toContainEqual({
+      role: 'tool',
+      results: [
+        {
+          id: 't1',
+          name: 'do_thing',
+          output: 'captured',
+          isError: undefined,
+          content: [{ type: 'image', image }],
+        },
+      ],
+    })
+  })
+
+  it('turns invalid model-visible content into a stable tool error and keeps running', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 't1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+      (cb) => {
+        cb.onDelta('recovered')
+        cb.onDone()
+      },
+    ])
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(() => ({
+        output: 'captured',
+        summary: 'image',
+        modelContent: [
+          { type: 'image', image: { base64: 'R0lGODlhAQABAAAAACw=', mime: 'image/gif' } },
+        ],
+      })),
+    })
+
+    loop.run('capture')
+    await flush()
+    await flush()
+
+    expect(loop.busy).toBe(false)
+    expect(loop.messages).toContainEqual({
+      role: 'tool',
+      results: [
+        {
+          id: 't1',
+          name: 'do_thing',
+          output: 'invalid_tool_output',
+          isError: true,
+        },
+      ],
+    })
+    expect(loop.messages.at(-1)).toEqual({ role: 'assistant', text: 'recovered' })
+  })
+
   it('emits onToolStart before each execution, paired with onToolExecuted', async () => {
     const transport = scriptedTransport([
       (cb) => {
@@ -708,6 +786,52 @@ describe('AgentLoop compaction', () => {
     expect(first.results[0]!.output).toContain('…(output truncated: too long)')
     expect(first.results[0]!.output.length).toBeLessThan(1_200)
     expect(last.results[0]!.output).toBe(big)
+  })
+
+  it('counts and drops stale tool media before the next provider request', async () => {
+    const requests: AgentMessage[][] = []
+    let turn = 0
+    const transport: AgentTransport = {
+      stream(request, callbacks) {
+        requests.push(request.messages)
+        const current = turn++
+        queueMicrotask(() => {
+          if (current < 2) callbacks.onToolCall({ id: `t${current}`, name: 'do_thing', input: {} })
+          else callbacks.onDelta('done')
+          callbacks.onDone()
+        })
+        return { cancel: vi.fn() }
+      },
+    }
+    const images = ['A'.repeat(400), 'B'.repeat(400)]
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill((call) => ({
+        output: 'captured',
+        summary: 'image',
+        modelContent: [
+          {
+            type: 'image',
+            image: { base64: images[Number(call.id.slice(1))]!, mime: 'image/png' },
+          },
+        ],
+      })),
+      compaction: { maxBytes: 650, keepRecentBytes: 300, disableLlmSummary: true },
+    })
+
+    loop.run('capture twice')
+    await flush()
+    await flush()
+    await flush()
+
+    const thirdRequest = JSON.stringify(requests[2])
+    expect(thirdRequest).not.toContain(images[0])
+    expect(thirdRequest).toContain(images[1])
+    const oldResult = loop.messages.filter((message) => message.role === 'tool').at(0) as Extract<
+      AgentMessage,
+      { role: 'tool' }
+    >
+    expect(oldResult.results[0]!.content).toBeUndefined()
   })
 
   it('compaction: false disables both folding and truncation', async () => {

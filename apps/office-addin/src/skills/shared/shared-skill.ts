@@ -1,7 +1,7 @@
 import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
 import { exactObject, stringField } from '../../agent/tool-schema.js'
 import { createSandboxCommands } from './commands.js'
-import { InMemoryVfs } from './vfs.js'
+import { InMemoryVfs, MAX_VFS_FILE_BYTES } from './vfs.js'
 import type { SkillRegistry } from './skill-registry.js'
 
 const MAX_PATH = 512
@@ -54,6 +54,19 @@ export function createSharedBrowserSkill(options: {
       try {
         if (call.name === 'read') {
           const { path } = readInput(call.input)
+          if (path.toLowerCase().endsWith('.gif')) throw new Error('image_mime_unsupported')
+          const mime = imageMime(path)
+          if (mime) {
+            const bytes = options.vfs.readBytes(path, { maxBytes: MAX_VFS_FILE_BYTES + 1 })
+            if (bytes.byteLength > MAX_VFS_FILE_BYTES) throw new Error('vfs_limit')
+            return {
+              output: JSON.stringify({ path, mime, bytes: bytes.byteLength }),
+              modelContent: [{ type: 'image', image: { mime, base64: base64(bytes) } }],
+              display: { kind: 'images', items: [{ url: `data:${mime};base64,${base64(bytes)}` }] },
+              mutated: false,
+              summary: `Read ${path}`,
+            }
+          }
           return {
             output: options.vfs.readText(path, { maxBytes: maxReadBytes }),
             mutated: false,
@@ -77,4 +90,21 @@ export function createSharedBrowserSkill(options: {
       }
     },
   }
+}
+
+function imageMime(path: string): string | undefined {
+  const extension = path.split('.').pop()?.toLowerCase()
+  return {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp',
+  }[extension ?? '']
+}
+
+function base64(bytes: Uint8Array): string {
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 32 * 1024)
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32 * 1024))
+  return btoa(binary)
 }

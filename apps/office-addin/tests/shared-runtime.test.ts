@@ -113,6 +113,34 @@ describe('shared browser skill', () => {
     ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
   })
 
+  it('returns uploaded images through model-visible display data', async () => {
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/page.png', Uint8Array.from([137, 80, 78, 71]))
+    const skill = createSharedBrowserSkill({ vfs })
+    await expect(
+      skill.executeTool({ id: 'image', name: 'read', input: { path: '/home/user/page.png' } }),
+    ).resolves.toMatchObject({
+      output: '{"path":"/home/user/page.png","mime":"image/png","bytes":4}',
+      modelContent: [{ type: 'image', image: { mime: 'image/png', base64: 'iVBORw==' } }],
+      display: { kind: 'images', items: [{ url: 'data:image/png;base64,iVBORw==' }] },
+    })
+  })
+
+  it('rejects GIF image reads with a stable error instead of unsupported model content', async () => {
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/pixel.gif', Uint8Array.from([71, 73, 70, 56, 57, 97]))
+    const skill = createSharedBrowserSkill({ vfs })
+
+    await expect(
+      skill.executeTool({ id: 'gif', name: 'read', input: { path: '/home/user/pixel.gif' } }),
+    ).resolves.toEqual({
+      output: 'image_mime_unsupported',
+      isError: true,
+      mutated: false,
+      summary: 'read',
+    })
+  })
+
   it('denies native/global/network syntax and supports cancellation and timeout', async () => {
     const vfs = new InMemoryVfs()
     vfs.writeFile('/home/user/a.txt', 'hello')

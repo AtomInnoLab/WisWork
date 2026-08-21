@@ -7,6 +7,7 @@ export type {
   AgentToolCall,
   AgentToolDef,
   AgentToolResult,
+  AgentToolContent,
   AgentTransport,
   ToolDisplay,
   ToolExecution,

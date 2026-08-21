@@ -353,7 +353,9 @@ function ConfiguredApp() {
   }
   if (bridgeState.status !== 'connected') {
     const detail = {
-      offline: 'Open WisWork PC, sign in, then retry.',
+      offline:
+        'Open or update WisWork PC, sign in, and confirm Office bridge shows ready, then retry.',
+      connecting: 'Looking for the WisWork PC bridge on this computer…',
       signed_out: 'Sign in to WisWork PC first.',
       pending: bridgeState.verificationCode
         ? `Confirm code ${bridgeState.verificationCode} in WisWork PC, then approve.`
@@ -365,16 +367,20 @@ function ConfiguredApp() {
       <StatusScreen
         title="Connect to WisWork PC"
         detail={detail}
-        busy={bridgeState.status === 'pending'}
+        busy={bridgeState.status === 'connecting' || bridgeState.status === 'pending'}
       >
         <button
           type="button"
-          disabled={bridgeState.status === 'pending'}
+          disabled={bridgeState.status === 'connecting' || bridgeState.status === 'pending'}
           onClick={() => {
             void bridge.connect(host)
           }}
         >
-          {bridgeState.status === 'offline' ? 'Connect to WisWork PC' : 'Try again'}
+          {bridgeState.status === 'offline'
+            ? 'Connect to WisWork PC'
+            : bridgeState.status === 'connecting'
+              ? 'Looking for WisWork PC…'
+              : 'Try again'}
         </button>
       </StatusScreen>
     )

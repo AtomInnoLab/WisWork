@@ -217,12 +217,27 @@ function validateMessages(value: unknown, state: { chars: number; nodes: number 
       }
       for (const rawResult of message.results) {
         const result = record(rawResult)
-        exact(result, ['id', 'name', 'output', 'isError'])
+        exact(result, ['id', 'name', 'output', 'isError', 'content'])
         boundedString(result.id, 256, state)
         boundedString(result.name, 256, state)
         boundedString(result.output, AI_IPC_LIMITS.maxMessageChars, state)
         if (result.isError !== undefined && typeof result.isError !== 'boolean') {
           throw new AiIpcError('invalid_payload')
+        }
+        if (result.content !== undefined) {
+          if (!Array.isArray(result.content) || result.content.length > 4)
+            throw new AiIpcError('payload_too_large')
+          for (const rawBlock of result.content) {
+            const block = record(rawBlock)
+            exact(block, ['type', 'image'])
+            if (block.type !== 'image') throw new AiIpcError('invalid_payload')
+            const image = record(block.image)
+            exact(image, ['base64', 'mime'])
+            boundedString(image.base64, AI_IPC_LIMITS.maxImageChars, state)
+            boundedString(image.mime, 64, state)
+            if (!['image/png', 'image/jpeg', 'image/webp'].includes(image.mime as string))
+              throw new AiIpcError('invalid_payload')
+          }
         }
       }
     } else {

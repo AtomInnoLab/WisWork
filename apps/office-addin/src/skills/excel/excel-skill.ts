@@ -1,6 +1,7 @@
 import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
 import { selectionFingerprint } from '../../agent/proposal-controller.js'
+import { parseDeclarativeProgram } from '../shared/declarative-program.js'
 import type { ExcelAdapter } from './browser-excel-adapter.js'
 
 const MAX_RANGE = 128,
@@ -9,6 +10,7 @@ const MAX_RANGE = 128,
   MAX_RESULT = 256 * 1024
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
 type Json = Record<string, any>
+type ExcelProgramOperation = { op: string; input: Json }
 const descriptors = [
   [
     'get_cell_ranges',
@@ -272,10 +274,8 @@ const tools = descriptors.map(([name, fields]) => ({
   name,
   description:
     name === 'eval_officejs'
-      ? 'Compatibility placeholder; unavailable until an audited hardened evaluator exists.'
-      : name === 'screenshot_range'
-        ? 'Compatibility placeholder; unavailable until an audited bounded image renderer exists.'
-        : `Bounded Excel operation: ${name}.`,
+      ? 'Execute a confirmation-gated bounded declarative Excel JSON program; JavaScript syntax and ambient authority are rejected.'
+      : `Bounded Excel operation: ${name}.`,
   inputSchema: schemaFor(fields),
 }))
 
@@ -534,7 +534,10 @@ function targets(name: string, input: Json): string[] {
       `sheet:${input.sheetId}!${input.destinationRange}`,
     ]
   if (name === 'set_cell_range')
-    return [`sheet:${input.sheetId}!${input.copyToRange ?? input.range}`]
+    return [
+      `sheet:${input.sheetId}!${input.range}`,
+      ...(input.copyToRange ? [`sheet:${input.sheetId}!${input.copyToRange}`] : []),
+    ]
   if (name === 'modify_sheet_structure')
     return [
       `structure:${input.sheetId}:${input.operation}:${input.dimension}:${input.reference ?? ''}:${input.count ?? 1}`,
@@ -546,29 +549,81 @@ function targets(name: string, input: Json): string[] {
     return [`sheet:${input.sheetId}!object:${input.id ?? input.properties?.name ?? 'new'}`]
   return [`sheet:${input.sheetId}!${input.range ?? '*'}`]
 }
+function writeTargets(name: string, input: Json): string[] {
+  if (name === 'copy_to') return [`sheet:${input.sheetId}!${input.destinationRange}`]
+  if (name === 'set_cell_range') return targets(name, input)
+  if (name === 'modify_sheet_structure')
+    return [
+      `structure:${input.sheetId}:${input.dimension}:${input.reference ?? ''}:${input.count ?? 1}`,
+    ]
+  if (name === 'modify_workbook_structure')
+    return [`workbook:sheet:${input.sheetId ?? input.sheetName ?? ''}`]
+  if (name === 'modify_object')
+    return [`sheet:${input.sheetId}!object:${input.id ?? input.properties?.name ?? 'new'}`]
+  return targets(name, input)
+}
+type CellBox = { row: number; column: number; rows: number; columns: number }
+function columnIndex(letters: string): number {
+  return letters
+    .toUpperCase()
+    .split('')
+    .reduce((value, letter) => value * 26 + letter.charCodeAt(0) - 64, 0)
+}
+function columnLetters(index: number): string {
+  let result = ''
+  for (let value = index; value > 0; value = Math.floor((value - 1) / 26))
+    result = String.fromCharCode(((value - 1) % 26) + 65) + result
+  return result
+}
+function cellBox(value: string): CellBox {
+  const match = /^\$?([A-Z]{1,3})\$?([1-9]\d*)(?::\$?([A-Z]{1,3})\$?([1-9]\d*))?$/i.exec(value)
+  if (!match) invalid()
+  const row = Number(match[2])
+  const column = columnIndex(match[1])
+  const endRow = Number(match[4] ?? match[2])
+  const endColumn = columnIndex(match[3] ?? match[1])
+  if (endRow < row || endColumn < column) invalid()
+  return { row, column, rows: endRow - row + 1, columns: endColumn - column + 1 }
+}
+function boxCells(sheetId: number, box: CellBox): string[] {
+  if (box.rows * box.columns > 2_000) invalid()
+  const cells: string[] = []
+  for (let row = 0; row < box.rows; row++)
+    for (let column = 0; column < box.columns; column++)
+      cells.push(`sheet:${sheetId}!${columnLetters(box.column + column)}${box.row + row}`)
+  return cells
+}
+function operationCells(name: string, input: Json): string[] | undefined {
+  if (name === 'set_cell_range') {
+    const start = cellBox(input.range)
+    const written = { ...start, rows: input.cells.length, columns: input.cells[0].length }
+    return [
+      ...boxCells(input.sheetId, written),
+      ...(input.copyToRange
+        ? boxCells(input.sheetId, {
+            ...cellBox(input.copyToRange),
+            rows: written.rows,
+            columns: written.columns,
+          })
+        : []),
+    ]
+  }
+  if (name === 'clear_cell_range') return boxCells(input.sheetId, cellBox(input.range))
+  if (name === 'copy_to') {
+    const source = cellBox(input.sourceRange)
+    return boxCells(input.sheetId, {
+      ...cellBox(input.destinationRange),
+      rows: source.rows,
+      columns: source.columns,
+    })
+  }
+  return undefined
+}
 function cellCount(name: string, input: Json) {
   if (name === 'set_cell_range') return input.cells.reduce((n: number, r: any[]) => n + r.length, 0)
   return 1
 }
 function semantics(name: string, input: Json) {
-  if (
-    name === 'set_cell_range' &&
-    (input.copyToRange ||
-      input.resizeWidth ||
-      input.resizeHeight ||
-      input.cells.flat().some((cell: Json) => cell.note || cell.cellStyles || cell.borderStyles))
-  )
-    throw new Error('office_api_unsupported')
-  if (name === 'clear_cell_range' && input.clearType && input.clearType !== 'contents')
-    throw new Error('office_api_unsupported')
-  if (name === 'copy_to') throw new Error('office_api_unsupported')
-  if (
-    name === 'resize_range' &&
-    (input.width?.type === 'standard' || input.height?.type === 'standard')
-  )
-    throw new Error('office_api_unsupported')
-  if (name === 'modify_sheet_structure' && ['insert', 'delete'].includes(input.operation))
-    throw new Error('office_api_unsupported')
   if (name === 'modify_workbook_structure') {
     if (input.operation === 'create' && !input.sheetName) invalid()
     if (input.operation !== 'create' && input.sheetId === undefined) invalid()
@@ -588,9 +643,6 @@ function semantics(name: string, input: Json) {
   if (name === 'modify_object') {
     if (input.operation !== 'create' && !input.id) invalid()
     if (input.operation !== 'delete' && !input.properties) invalid()
-    if (input.objectType === 'pivotTable' && input.operation === 'update')
-      throw new Error('office_api_unsupported')
-    if (input.operation !== 'delete') throw new Error('office_api_unsupported')
     if (
       input.operation === 'create' &&
       input.objectType === 'chart' &&
@@ -603,9 +655,38 @@ function semantics(name: string, input: Json) {
       (!input.properties.name || !input.properties.source || !input.properties.range)
     )
       invalid()
+    if (input.operation === 'update' && Object.keys(input.properties).length === 0) invalid()
+    if (
+      input.operation === 'update' &&
+      input.objectType === 'pivotTable' &&
+      ((input.properties.source && !input.properties.range) ||
+        (!input.properties.source && input.properties.range))
+    )
+      invalid()
   }
 }
 
+const mutationNames = new Set([
+  'set_cell_range',
+  'clear_cell_range',
+  'copy_to',
+  'modify_sheet_structure',
+  'modify_workbook_structure',
+  'resize_range',
+  'modify_object',
+])
+
+function parseExcelOperation(value: unknown): ExcelProgramOperation {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) invalid()
+  const operation = value as Json
+  if (Object.keys(operation).some((key) => !['op', 'input'].includes(key))) invalid()
+  if (typeof operation.op !== 'string' || !mutationNames.has(operation.op)) invalid()
+  const descriptor = descriptors.find(([name]) => name === operation.op)
+  if (!descriptor) invalid()
+  const input = exact(operation.input, descriptor[1])
+  semantics(operation.op, input)
+  return { op: operation.op, input }
+}
 export function createExcelSkill(options: {
   adapter: ExcelAdapter
   proposals: StructuredProposalController
@@ -613,7 +694,7 @@ export function createExcelSkill(options: {
   return {
     id: 'office-excel',
     systemPrompt:
-      'Excel reads are bounded. Every mutation is only a proposal until confirmed and verified. eval_officejs is a release-blocked compatibility placeholder.',
+      'Excel reads and screenshots are bounded. Every mutation is only a proposal until confirmed and semantically verified. eval_officejs uses the shared declarative execution runtime when available.',
     tools,
     async executeTool(call, signal) {
       if (call.inputError || call.truncated) return fail(call.name, 'invalid_tool_input')
@@ -623,7 +704,96 @@ export function createExcelSkill(options: {
         check(signal)
         const input = exact(call.input, descriptor[1])
         semantics(call.name, input)
-        if (call.name === 'eval_officejs') return fail(call.name, 'office_api_unsupported')
+        const methods: Record<string, (data: Json, signal?: AbortSignal) => Promise<void>> = {
+          set_cell_range: options.adapter.setCellRange.bind(options.adapter),
+          clear_cell_range: options.adapter.clearCellRange.bind(options.adapter),
+          copy_to: options.adapter.copyTo.bind(options.adapter),
+          modify_sheet_structure: options.adapter.modifySheetStructure.bind(options.adapter),
+          modify_workbook_structure: options.adapter.modifyWorkbookStructure.bind(options.adapter),
+          resize_range: options.adapter.resizeRange.bind(options.adapter),
+          modify_object: options.adapter.modifyObject.bind(options.adapter),
+        }
+        if (call.name === 'eval_officejs') {
+          const program = parseDeclarativeProgram(input.code, parseExcelOperation)
+          if (program.operations.length > 1) throw new Error('office_api_unsupported')
+          const operationCellWrites = program.operations.map((operation) =>
+            operationCells(operation.op, operation.input),
+          )
+          const distinctCells = new Set(operationCellWrites.flatMap((cells) => cells ?? []))
+          if (distinctCells.size > 2_000) invalid()
+          const affected = [
+            ...new Set(program.operations.flatMap((item) => targets(item.op, item.input))),
+          ]
+          const before = await options.adapter.fingerprint(affected, signal)
+          check(signal)
+          let expectedFingerprint: string | undefined
+          const operationPrestates: unknown[] = []
+          const finalWriter = new Map<string, number>()
+          program.operations.forEach((operation, index) => {
+            for (const target of operationCellWrites[index] ??
+              writeTargets(operation.op, operation.input))
+              finalWriter.set(target, index)
+          })
+          const finalOperationIndexes = [...new Set([...finalWriter.values()])].sort(
+            (a, b) => a - b,
+          )
+          const proposal = options.proposals.propose({
+            operation: call.name,
+            toolName: call.name,
+            title: input.explanation || 'Execute declarative Excel operations',
+            preview: { version: program.version, operations: program.operations },
+            impact: { host: 'Excel', targets: affected, count: program.operations.length },
+            fingerprint: selectionFingerprint(before),
+            before,
+            code: input.code,
+            validate: async (confirmSignal) =>
+              (await options.adapter.fingerprint(affected, confirmSignal)) === before,
+            execute: async (confirmSignal) => {
+              for (const operation of program.operations) {
+                check(confirmSignal)
+                operationPrestates.push(
+                  await options.adapter.captureMutation(
+                    operation.op,
+                    operation.input,
+                    confirmSignal,
+                  ),
+                )
+                check(confirmSignal)
+              }
+              await methods[program.operations[0].op](program.operations[0].input, confirmSignal)
+              check(confirmSignal)
+              expectedFingerprint = await options.adapter.fingerprint(affected, confirmSignal)
+            },
+            verify: async (confirmSignal) => {
+              for (const index of finalOperationIndexes) {
+                const operation = program.operations[index]
+                const ownedCells = operationCellWrites[index]?.filter(
+                  (cell) => finalWriter.get(cell) === index,
+                )
+                if (
+                  !(await options.adapter.verifyMutation(
+                    operation.op,
+                    operation.input,
+                    operationPrestates[index],
+                    confirmSignal,
+                    ownedCells?.map((cell) => cell.split('!')[1]),
+                  ))
+                )
+                  throw new Error('office_verify_failed')
+              }
+              if (
+                !expectedFingerprint ||
+                (await options.adapter.fingerprint(affected, confirmSignal)) !== expectedFingerprint
+              )
+                throw new Error('office_verify_failed')
+            },
+          })
+          return {
+            output: JSON.stringify({ proposalId: proposal.id, mutated: false }),
+            mutated: false,
+            summary: 'Proposed declarative Excel execution',
+          }
+        }
         const reads: Record<string, () => Promise<unknown>> = {
           get_cell_ranges: () => options.adapter.getCellRanges(input as any, signal),
           get_range_as_csv: () => options.adapter.getRangeAsCsv(input as any, signal),
@@ -655,6 +825,9 @@ export function createExcelSkill(options: {
               throw new Error('office_read_failed')
             return {
               output: JSON.stringify({ mime: image.mime }),
+              modelContent: [
+                { type: 'image' as const, image: { mime: image.mime, base64: image.base64 } },
+              ],
               display: {
                 kind: 'images',
                 items: [{ url: `data:${image.mime};base64,${image.base64}` }],
@@ -668,15 +841,8 @@ export function createExcelSkill(options: {
         const affected = targets(call.name, input)
         const before = await options.adapter.fingerprint(affected, signal)
         check(signal)
-        const methods: Record<string, (data: Json, signal?: AbortSignal) => Promise<void>> = {
-          set_cell_range: options.adapter.setCellRange.bind(options.adapter),
-          clear_cell_range: options.adapter.clearCellRange.bind(options.adapter),
-          copy_to: options.adapter.copyTo.bind(options.adapter),
-          modify_sheet_structure: options.adapter.modifySheetStructure.bind(options.adapter),
-          modify_workbook_structure: options.adapter.modifyWorkbookStructure.bind(options.adapter),
-          resize_range: options.adapter.resizeRange.bind(options.adapter),
-          modify_object: options.adapter.modifyObject.bind(options.adapter),
-        }
+        const operationBefore = await options.adapter.captureMutation(call.name, input, signal)
+        check(signal)
         let expectedFingerprint: string | undefined
         const proposal = options.proposals.propose({
           operation: call.name,
@@ -708,7 +874,7 @@ export function createExcelSkill(options: {
           verify: async (s) => {
             check(s)
             try {
-              if (!(await options.adapter.verifyMutation(call.name, input, before, s)))
+              if (!(await options.adapter.verifyMutation(call.name, input, operationBefore, s)))
                 throw new Error('office_verify_failed')
               if (call.name === 'modify_object')
                 await options.adapter.verifyObjects({ sheetId: input.sheetId, id: input.id }, s)

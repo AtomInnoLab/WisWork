@@ -33,6 +33,7 @@ function adapter(overrides: Partial<ExcelAdapter> = {}): ExcelAdapter {
     screenshotRange: vi.fn().mockRejectedValue(new Error('office_api_unsupported')),
     getAllObjects: vi.fn().mockResolvedValue({ objects: [], hasMore: false }),
     fingerprint: vi.fn().mockResolvedValue('fp'),
+    captureMutation: vi.fn().mockResolvedValue('operation-fp'),
     setCellRange: vi.fn().mockResolvedValue(undefined),
     clearCellRange: vi.fn().mockResolvedValue(undefined),
     copyTo: vi.fn().mockResolvedValue(undefined),
@@ -153,18 +154,274 @@ describe('Excel compatibility skill', () => {
     expect(fake.verifyMutation).toHaveBeenCalledWith(
       'clear_cell_range',
       expect.objectContaining({ range: 'A1' }),
-      'fp',
+      'operation-fp',
       expect.any(AbortSignal),
     )
   })
 
-  it('keeps eval_officejs stable and fail-closed without eval or Function', async () => {
+  it('rejects JavaScript but proposes an allowlisted declarative eval_officejs program', async () => {
     const proposals = createStructuredProposalController()
-    const skill = createExcelSkill({ adapter: adapter(), proposals })
+    const fake = adapter()
+    const skill = createExcelSkill({ adapter: fake, proposals })
     await expect(
       skill.executeTool(call('eval_officejs', { code: 'return context.workbook' })),
-    ).resolves.toMatchObject({ output: 'office_api_unsupported', isError: true, mutated: false })
+    ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true, mutated: false })
+    await expect(
+      skill.executeTool(
+        call('eval_officejs', {
+          code: JSON.stringify({
+            version: 1,
+            operations: [
+              {
+                op: 'set_cell_range',
+                input: {
+                  sheetId: 1,
+                  range: 'A1',
+                  cells: [[{ value: 'safe' }]],
+                  allow_overwrite: true,
+                },
+              },
+            ],
+          }),
+        }),
+      ),
+    ).resolves.toMatchObject({ output: expect.stringContaining('proposalId'), mutated: false })
+    await proposals.confirm(proposals.pending()!.id)
+    expect(fake.setCellRange).toHaveBeenCalledOnce()
+  })
+
+  it('rejects every multi-operation declarative program before host reads or writes', async () => {
+    const fake = adapter()
+    const proposals = createStructuredProposalController()
+    const result = await createExcelSkill({ adapter: fake, proposals }).executeTool(
+      call('eval_officejs', {
+        code: JSON.stringify({
+          version: 1,
+          operations: [
+            {
+              op: 'set_cell_range',
+              input: {
+                sheetId: 1,
+                range: '$A$1',
+                cells: [[{ value: 1 }, { value: 2 }]],
+                allow_overwrite: true,
+              },
+            },
+            {
+              op: 'clear_cell_range',
+              input: { sheetId: 1, range: 'B1:C1', clearType: 'all' },
+            },
+          ],
+        }),
+      }),
+    )
+    expect(result).toMatchObject({ output: 'office_api_unsupported', isError: true })
     expect(proposals.pending()).toBeUndefined()
+    expect(fake.fingerprint).not.toHaveBeenCalled()
+    expect(fake.captureMutation).not.toHaveBeenCalled()
+    expect(fake.setCellRange).not.toHaveBeenCalled()
+    await expect(
+      createExcelSkill({ adapter: fake, proposals }).executeTool(
+        call('eval_officejs', {
+          code: JSON.stringify({
+            version: 1,
+            operations: [
+              {
+                op: 'clear_cell_range',
+                input: { sheetId: 1, range: 'A1', clearType: 'contents' },
+              },
+              {
+                op: 'clear_cell_range',
+                input: { sheetId: 1, range: 'B1', clearType: 'contents' },
+              },
+            ],
+          }),
+        }),
+        AbortSignal.abort(),
+      ),
+    ).resolves.toMatchObject({ output: 'cancelled', isError: true })
+    expect(fake.clearCellRange).not.toHaveBeenCalled()
+  })
+
+  it('rejects declarative programs exceeding the aggregate cell budget before host reads', async () => {
+    const fake = adapter()
+    const cells = Array.from({ length: 3 }, () => Array.from({ length: 334 }, () => ({ value: 1 })))
+    const result = await createExcelSkill({
+      adapter: fake,
+      proposals: createStructuredProposalController(),
+    }).executeTool(
+      call('eval_officejs', {
+        code: JSON.stringify({
+          version: 1,
+          operations: [
+            {
+              op: 'set_cell_range',
+              input: { sheetId: 1, range: 'A1', cells, allow_overwrite: true },
+            },
+            {
+              op: 'set_cell_range',
+              input: { sheetId: 1, range: 'A10', cells, allow_overwrite: true },
+            },
+          ],
+        }),
+      }),
+    )
+    expect(result).toMatchObject({ output: 'office_api_unsupported', isError: true })
+    expect(fake.fingerprint).not.toHaveBeenCalled()
+  })
+
+  it('rejects non-batchable declarative combinations before proposal or mutation', async () => {
+    const fake = adapter()
+    const proposals = createStructuredProposalController()
+    const result = await createExcelSkill({ adapter: fake, proposals }).executeTool(
+      call('eval_officejs', {
+        code: JSON.stringify({
+          version: 1,
+          operations: [
+            {
+              op: 'set_cell_range',
+              input: { sheetId: 1, range: 'A1', cells: [[{ value: 1 }]], allow_overwrite: true },
+            },
+            {
+              op: 'resize_range',
+              input: { sheetId: 1, range: 'A:A', width: { type: 'standard', value: 0 } },
+            },
+          ],
+        }),
+      }),
+    )
+    expect(result).toMatchObject({ output: 'office_api_unsupported', isError: true })
+    expect(proposals.pending()).toBeUndefined()
+    expect(fake.fingerprint).not.toHaveBeenCalled()
+    expect(fake.setCellRange).not.toHaveBeenCalled()
+  })
+
+  it('returns a bounded model-visible PNG for screenshot_range', async () => {
+    const png = 'iVBORw0KGgoAAA=='
+    const skill = createExcelSkill({
+      adapter: adapter({
+        screenshotRange: vi.fn().mockResolvedValue({ mime: 'image/png', base64: png }),
+      }),
+      proposals: createStructuredProposalController(),
+    })
+    await expect(
+      skill.executeTool(call('screenshot_range', { sheetId: 1, range: 'A1:B2' })),
+    ).resolves.toMatchObject({
+      mutated: false,
+      display: { kind: 'images', items: [{ url: `data:image/png;base64,${png}` }] },
+      modelContent: [{ type: 'image', image: { mime: 'image/png', base64: png } }],
+    })
+  })
+
+  it('snapshots both source and destination for set_cell_range copyToRange', async () => {
+    const fake = adapter()
+    const proposals = createStructuredProposalController()
+    await createExcelSkill({ adapter: fake, proposals }).executeTool(
+      call('set_cell_range', {
+        sheetId: 1,
+        range: 'A1:B1',
+        cells: [[{ value: 1 }, { value: 2 }]],
+        copyToRange: 'D1:E1',
+        allow_overwrite: true,
+      }),
+    )
+    expect(proposals.pending()?.impact.targets).toEqual(['sheet:1!A1:B1', 'sheet:1!D1:E1'])
+    expect(fake.fingerprint).toHaveBeenCalledWith(['sheet:1!A1:B1', 'sheet:1!D1:E1'], undefined)
+  })
+
+  it.each([
+    [
+      'styled range with note, border, copy, and autofit',
+      'set_cell_range',
+      {
+        sheetId: 1,
+        range: 'A1',
+        cells: [
+          [
+            {
+              value: 'x',
+              note: 'reviewed',
+              cellStyles: { fontWeight: 'bold', backgroundColor: '#ffeeaa' },
+              borderStyles: { bottom: { style: 'double', weight: 'medium', color: '#112233' } },
+            },
+          ],
+        ],
+        copyToRange: 'B1',
+        resizeWidth: { type: 'standard', value: 0 },
+        resizeHeight: { type: 'standard', value: 0 },
+        allow_overwrite: true,
+      },
+    ],
+    ['clear formats', 'clear_cell_range', { sheetId: 1, range: 'A1', clearType: 'formats' }],
+    ['clear all', 'clear_cell_range', { sheetId: 1, range: 'A1', clearType: 'all' }],
+    ['copy range', 'copy_to', { sheetId: 1, sourceRange: 'A1:B2', destinationRange: 'D1:E2' }],
+    [
+      'insert rows',
+      'modify_sheet_structure',
+      { sheetId: 1, operation: 'insert', dimension: 'rows', reference: '5', count: 2 },
+    ],
+    [
+      'delete columns',
+      'modify_sheet_structure',
+      { sheetId: 1, operation: 'delete', dimension: 'columns', reference: 'C', count: 2 },
+    ],
+    [
+      'standard autofit',
+      'resize_range',
+      {
+        sheetId: 1,
+        range: 'A:D',
+        width: { type: 'standard', value: 0 },
+        height: { type: 'standard', value: 0 },
+      },
+    ],
+    [
+      'create chart',
+      'modify_object',
+      {
+        operation: 'create',
+        sheetId: 1,
+        objectType: 'chart',
+        properties: { name: 'Sales', source: 'A1:B4', chartType: 'line', title: 'Sales' },
+      },
+    ],
+    [
+      'update chart',
+      'modify_object',
+      {
+        operation: 'update',
+        sheetId: 1,
+        objectType: 'chart',
+        id: 'Sales',
+        properties: { chartType: 'area', title: 'Updated' },
+      },
+    ],
+    [
+      'create pivot',
+      'modify_object',
+      {
+        operation: 'create',
+        sheetId: 1,
+        objectType: 'pivotTable',
+        properties: { name: 'Pivot', source: 'A1:B4', range: 'D1' },
+      },
+    ],
+    [
+      'update pivot',
+      'modify_object',
+      {
+        operation: 'update',
+        sheetId: 1,
+        objectType: 'pivotTable',
+        id: 'Pivot',
+        properties: { name: 'Pivot2' },
+      },
+    ],
+  ])('accepts documented %s payloads', async (_label, name, input) => {
+    const proposals = createStructuredProposalController()
+    await expect(
+      createExcelSkill({ adapter: adapter(), proposals }).executeTool(call(name, input)),
+    ).resolves.toMatchObject({ output: expect.stringContaining('proposalId'), mutated: false })
   })
 
   it('accepts every documented structured mutation shape and rejects incomplete/unknown nested input', async () => {
@@ -286,6 +543,398 @@ describe('browser Excel adapter', () => {
       new BrowserExcelAdapter().getRangeAsCsv({ sheetId: 1, range: '*' }),
     ).rejects.toThrow('invalid_tool_input')
     expect(run).not.toHaveBeenCalled()
+  })
+
+  it('captures a range image using the exact ExcelApi gate and checks cancellation before sync', async () => {
+    const result = { value: 'iVBORw0KGgoAAA==' }
+    const range = {
+      rowCount: 2,
+      columnCount: 2,
+      width: 100,
+      height: 40,
+      load: vi.fn(),
+      getImage: vi.fn().mockReturnValue(result),
+    }
+    const isSetSupported = vi.fn().mockReturnValue(true)
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Excel', requirements: { isSetSupported } } },
+      Excel: {
+        run: (cb: (ctx: unknown) => unknown) =>
+          cb({
+            workbook: { worksheets: { getItemAt: () => ({ getRange: () => range }) } },
+            sync: vi.fn(),
+          }),
+      },
+    })
+    await expect(
+      new BrowserExcelAdapter().screenshotRange({ sheetId: 1, range: 'A1:B2' }),
+    ).resolves.toEqual({ mime: 'image/png', base64: result.value })
+    expect(isSetSupported).toHaveBeenCalledWith('ExcelApi', '1.7')
+    expect(range.getImage).toHaveBeenCalledOnce()
+  })
+
+  it('rejects oversized screenshot ranges before Excel.run and pixel-heavy ranges before getImage', async () => {
+    const run = vi.fn()
+    Object.assign(globalThis, {
+      Office: {
+        context: { host: 'Excel', requirements: { isSetSupported: vi.fn().mockReturnValue(true) } },
+      },
+      Excel: { run },
+    })
+    await expect(
+      new BrowserExcelAdapter().screenshotRange({ sheetId: 1, range: 'A1:XFD1048576' }),
+    ).rejects.toThrow('invalid_tool_input')
+    expect(run).not.toHaveBeenCalled()
+
+    const getImage = vi.fn()
+    const range = {
+      width: 20_000,
+      height: 20_000,
+      rowCount: 2,
+      columnCount: 2,
+      load: vi.fn(),
+      getImage,
+    }
+    Object.assign(globalThis, {
+      Excel: {
+        run: (cb: (ctx: unknown) => unknown) =>
+          cb({
+            workbook: { worksheets: { getItemAt: () => ({ getRange: () => range }) } },
+            sync: vi.fn(),
+          }),
+      },
+    })
+    await expect(
+      new BrowserExcelAdapter().screenshotRange({ sheetId: 1, range: 'A1:B2' }),
+    ).rejects.toThrow('office_read_failed')
+    expect(getImage).not.toHaveBeenCalled()
+  })
+
+  it('applies styles, borders, notes, copy and standard sizing behind the notes API gate', async () => {
+    const border = {}
+    const target = {
+      values: undefined,
+      formulas: undefined,
+      numberFormat: undefined,
+      load: vi.fn(),
+      address: 'Data!A1',
+      getResizedRange: vi.fn(),
+      format: {
+        font: {},
+        fill: {},
+        borders: { getItem: vi.fn().mockReturnValue(border) },
+      },
+    }
+    const format = {
+      autofitColumns: vi.fn(),
+      autofitRows: vi.fn(),
+    }
+    const source = {
+      format,
+      getCell: vi.fn().mockReturnValue(target),
+      getResizedRange: vi.fn(),
+    }
+    source.getResizedRange.mockReturnValue(source)
+    target.getResizedRange.mockReturnValue(source)
+    const destination = { format, copyFrom: vi.fn() }
+    const notes = {
+      add: vi.fn(),
+      getItemOrNullObject: vi.fn().mockReturnValue({ isNullObject: true, load: vi.fn() }),
+    }
+    const worksheet = {
+      notes,
+      getRange: vi.fn((address: string) => (address === 'B1' ? destination : source)),
+    }
+    const isSetSupported = vi.fn().mockReturnValue(true)
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Excel', requirements: { isSetSupported } } },
+      Excel: {
+        run: (cb: (ctx: unknown) => unknown) =>
+          cb({
+            workbook: { worksheets: { getItemAt: () => worksheet } },
+            sync: vi.fn(),
+          }),
+      },
+    })
+    await new BrowserExcelAdapter().setCellRange({
+      sheetId: 1,
+      range: 'A1',
+      cells: [
+        [
+          {
+            value: 'x',
+            note: 'note',
+            cellStyles: { fontWeight: 'bold', backgroundColor: '#fff' },
+            borderStyles: { bottom: { style: 'double', weight: 'medium' } },
+          },
+        ],
+      ],
+      copyToRange: 'B1',
+      resizeWidth: { type: 'standard', value: 0 },
+      resizeHeight: { type: 'standard', value: 0 },
+      allow_overwrite: true,
+    })
+    expect(isSetSupported).toHaveBeenCalledWith('ExcelApi', '1.18')
+    expect(target.values).toEqual([['x']])
+    expect(target.format.font).toMatchObject({ bold: true })
+    expect(target.format.fill).toMatchObject({ color: '#fff' })
+    expect(border).toMatchObject({ style: 'Double', weight: 'Medium' })
+    expect(notes.add).toHaveBeenCalledWith('A1', 'note')
+    expect(destination.copyFrom).toHaveBeenCalledWith(source, 'All')
+    expect(format.autofitColumns).toHaveBeenCalledOnce()
+    expect(format.autofitRows).toHaveBeenCalledOnce()
+  })
+
+  it('cancels before entering Excel.run for every write family', async () => {
+    const run = vi.fn()
+    Object.assign(globalThis, {
+      Office: {
+        context: { host: 'Excel', requirements: { isSetSupported: vi.fn().mockReturnValue(true) } },
+      },
+      Excel: { run },
+    })
+    const signal = AbortSignal.abort()
+    const excel = new BrowserExcelAdapter()
+    await expect(
+      excel.copyTo({ sheetId: 1, sourceRange: 'A1', destinationRange: 'B1' }, signal),
+    ).rejects.toThrow('cancelled')
+    await expect(
+      excel.modifyObject(
+        { operation: 'delete', sheetId: 1, objectType: 'chart', id: 'Chart' },
+        signal,
+      ),
+    ).rejects.toThrow('cancelled')
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it('semantically verifies idempotent styles, clear, copy, autofit, and object updates', async () => {
+    const excel = new BrowserExcelAdapter()
+    vi.spyOn(excel, 'getCellRanges')
+      .mockResolvedValueOnce({
+        ranges: [
+          {
+            cells: [
+              {
+                value: 'x',
+                formula: null,
+                numberFormat: 'General',
+                style: {
+                  bold: true,
+                  italic: false,
+                  underline: 'None',
+                  strikethrough: false,
+                  backgroundColor: '#ffeeaa',
+                  borders: [
+                    { side: 'EdgeBottom', style: 'Double', weight: 'Medium', color: '#112233' },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ranges: [
+          {
+            cells: [
+              {
+                value: '',
+                formula: '',
+                numberFormat: 'General',
+                style: {
+                  styleName: 'Normal',
+                  bold: false,
+                  italic: false,
+                  underline: 'None',
+                  strikethrough: false,
+                  fontFamily: 'Aptos',
+                  fontSize: 11,
+                  fontColor: '#000000',
+                  backgroundColor: '#000000',
+                  fillPattern: 'None',
+                  horizontalAlignment: 'General',
+                  borders: [{ side: 'EdgeTop', style: 'None', weight: 'Thin', color: '#000000' }],
+                },
+              },
+            ],
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ranges: [{ cells: [{ value: 1, formula: null, numberFormat: 'General', style: {} }] }],
+      })
+      .mockResolvedValueOnce({
+        ranges: [{ cells: [{ value: 1, formula: null, numberFormat: 'General', style: {} }] }],
+      })
+    await expect(
+      excel.verifyMutation(
+        'set_cell_range',
+        {
+          sheetId: 1,
+          range: 'A1',
+          cells: [
+            [
+              {
+                value: 'x',
+                cellStyles: { fontWeight: 'bold', backgroundColor: '#ffeeaa' },
+                borderStyles: {
+                  bottom: { style: 'double', weight: 'medium', color: '#112233' },
+                },
+              },
+            ],
+          ],
+        },
+        'same-fingerprint',
+      ),
+    ).resolves.toBe(true)
+    await expect(
+      excel.verifyMutation(
+        'clear_cell_range',
+        { sheetId: 1, range: 'A1', clearType: 'all' },
+        'same-fingerprint',
+      ),
+    ).resolves.toBe(true)
+    await expect(
+      excel.verifyMutation(
+        'copy_to',
+        { sheetId: 1, sourceRange: 'A1', destinationRange: 'B1' },
+        'same-fingerprint',
+      ),
+    ).resolves.toBe(true)
+    vi.spyOn(excel, 'getCellRanges').mockResolvedValueOnce({
+      ranges: [
+        {
+          cells: [
+            {
+              value: '',
+              formula: '',
+              numberFormat: 'General',
+              style: {
+                styleName: 'Normal',
+                bold: false,
+                italic: false,
+                underline: 'None',
+                strikethrough: false,
+                fontFamily: 'Aptos',
+                fontSize: 11,
+                fontColor: '#000000',
+                fillPattern: 'None',
+                horizontalAlignment: 'General',
+                borders: [{ side: 'EdgeBottom', style: 'Continuous' }],
+              },
+            },
+          ],
+        },
+      ],
+    })
+    await expect(
+      excel.verifyMutation(
+        'clear_cell_range',
+        { sheetId: 1, range: 'A1', clearType: 'formats' },
+        'same-fingerprint',
+      ),
+    ).resolves.toBe(false)
+    vi.spyOn(excel, 'getAllObjects').mockResolvedValue({
+      objects: [{ type: 'chart', name: 'Sales', chartType: 'Area', title: 'Updated' }],
+    })
+    await expect(
+      excel.verifyMutation(
+        'modify_object',
+        {
+          sheetId: 1,
+          operation: 'update',
+          objectType: 'chart',
+          id: 'Sales',
+          properties: { chartType: 'area', title: 'Updated' },
+        },
+        'same-fingerprint',
+      ),
+    ).resolves.toBe(true)
+  })
+
+  it('verifies copied relative formulas by formulaR1C1 semantics', async () => {
+    const excel = new BrowserExcelAdapter()
+    vi.spyOn(excel, 'getCellRanges').mockResolvedValue({
+      ranges: [
+        {
+          cells: [
+            {
+              address: 'A1',
+              value: 2,
+              formula: '=B1+1',
+              formulaR1C1: '=RC[1]+1',
+              numberFormat: 'General',
+              style: {},
+            },
+          ],
+        },
+      ],
+    })
+    ;(excel.getCellRanges as any)
+      .mockResolvedValueOnce({
+        ranges: [
+          {
+            cells: [
+              {
+                address: 'A1',
+                value: 2,
+                formula: '=B1+1',
+                formulaR1C1: '=RC[1]+1',
+                numberFormat: 'General',
+                style: {},
+              },
+            ],
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ranges: [
+          {
+            cells: [
+              {
+                address: 'D1',
+                value: 2,
+                formula: '=E1+1',
+                formulaR1C1: '=RC[1]+1',
+                numberFormat: 'General',
+                style: {},
+              },
+            ],
+          },
+        ],
+      })
+    await expect(
+      excel.verifyMutation(
+        'copy_to',
+        { sheetId: 1, sourceRange: 'A1', destinationRange: 'D1' },
+        'prestate',
+      ),
+    ).resolves.toBe(true)
+  })
+
+  it('verifies workbook deletion by stable worksheet identity rather than regenerated position', async () => {
+    const excel = new BrowserExcelAdapter()
+    vi.spyOn(excel, 'verifyWorkbook').mockResolvedValue({
+      sheets: [
+        { id: 1, officeId: 'stable-next-sheet', name: 'Next' },
+        { id: 2, officeId: 'stable-last-sheet', name: 'Last' },
+      ],
+      hasMore: false,
+    })
+    await expect(
+      excel.verifyMutation(
+        'modify_workbook_structure',
+        { operation: 'delete', sheetId: 1 },
+        { officeId: 'deleted-stable-id', name: 'Deleted' },
+      ),
+    ).resolves.toBe(true)
+    await expect(
+      excel.verifyMutation(
+        'modify_workbook_structure',
+        { operation: 'delete', sheetId: 1 },
+        { officeId: 'stable-next-sheet', name: 'Next' },
+      ),
+    ).resolves.toBe(false)
   })
 
   it('paginates search by a monotonic raw-cell cursor without rescanning matches', async () => {
