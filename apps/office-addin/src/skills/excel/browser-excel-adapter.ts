@@ -112,7 +112,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
       ws.load('name')
       const limit = Math.min(input.cellLimit ?? MAX_EXCEL_CELLS, MAX_EXCEL_CELLS)
       const ranges: RuntimeRecord[] = input.ranges.map((address) => {
-        const r = ws.getRange(address)
+        const r = address === '*' ? ws.getUsedRangeOrNullObject() : ws.getRange(address)
         r.load('values,formulas,numberFormat,address,rowCount,columnCount')
         return r
       })
@@ -120,6 +120,15 @@ export class BrowserExcelAdapter implements ExcelAdapter {
       let remaining = limit
       let truncated = false
       const output = ranges.map((range) => {
+        if (range.isNullObject)
+          return {
+            sheetId: input.sheetId,
+            sheetName: safe(ws.name, 256),
+            address: 'A1',
+            rows: 0,
+            columns: 0,
+            cells: [],
+          }
         const cells: unknown[] = []
         for (let row = 0; row < range.rowCount; row++)
           for (let column = 0; column < range.columnCount; column++) {

@@ -27,6 +27,10 @@ const codeInput = exactObject({
   code: stringField({ minLength: 1, maxLength: MAX_CODE }),
   explanation: optionalField(stringField({ maxLength: 100 })),
 })
+const masterCodeInput = exactObject({
+  code: stringField({ minLength: 1, maxLength: MAX_CODE }),
+  explanation: optionalField(stringField({ maxLength: 50 })),
+})
 const slideCodeInput = exactObject({
   slide_index: integerField({ min: 0, max: MAX_SLIDE_INDEX }),
   code: stringField({ minLength: 1, maxLength: MAX_CODE }),
@@ -40,7 +44,8 @@ const slideProperties = {
 const tools = [
   {
     name: 'screenshot_slide',
-    description: 'Take a bounded PNG screenshot of one slide.',
+    description:
+      'Take a bounded PNG screenshot for the task-pane UI and return model-visible MIME, byte count, and fingerprint metadata.',
     inputSchema: {
       type: 'object',
       properties: slideProperties,
@@ -192,6 +197,20 @@ function validPng(value: unknown): value is string {
   return (value.length / 4) * 3 - padding <= MAX_SCREENSHOT_BYTES
 }
 
+function base64Bytes(value: string): number {
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0
+  return (value.length / 4) * 3 - padding
+}
+
+function fingerprint(value: string): string {
+  let result = 0x811c9dc5
+  for (let index = 0; index < value.length; index += 1) {
+    result ^= value.charCodeAt(index)
+    result = Math.imul(result, 0x01000193)
+  }
+  return `${value.length}:${(result >>> 0).toString(16).padStart(8, '0')}`
+}
+
 export function createPowerPointSkill(options: {
   adapter: PowerPointAdapter
   proposals: StructuredProposalController
@@ -212,7 +231,12 @@ export function createPowerPointSkill(options: {
           if (result.mime !== 'image/png' || !validPng(result.base64))
             throw new Error('office_read_failed')
           return {
-            output: boundedJson({ mime: result.mime }),
+            output: boundedJson({
+              mime: result.mime,
+              bytes: base64Bytes(result.base64),
+              fingerprint: fingerprint(result.base64),
+              visualAvailableToModel: false,
+            }),
             display: {
               kind: 'images',
               items: [{ url: `data:${result.mime};base64,${result.base64}` }],
@@ -269,9 +293,19 @@ export function createPowerPointSkill(options: {
             fingerprint: snapshot.fingerprint,
             before: before.text,
             after: input.text,
-            validate: async (confirmSignal) =>
-              (await options.adapter.snapshotSlide(input.slide_index, confirmSignal))
-                .fingerprint === snapshot.fingerprint,
+            validate: async (confirmSignal) => {
+              const currentSnapshot = await options.adapter.snapshotSlide(
+                input.slide_index,
+                confirmSignal,
+              )
+              if (currentSnapshot.fingerprint !== snapshot.fingerprint) return false
+              const currentText = await options.adapter.readSlideText(
+                input.slide_index,
+                input.shape_id,
+                confirmSignal,
+              )
+              return currentText.slideId === before.slideId && currentText.text === before.text
+            },
             execute: (confirmSignal) =>
               options.adapter.editSlideText(
                 input.slide_index,
@@ -280,6 +314,13 @@ export function createPowerPointSkill(options: {
                 confirmSignal,
               ),
             verify: async (confirmSignal) => {
+              const result = await options.adapter.readSlideText(
+                input.slide_index,
+                input.shape_id,
+                confirmSignal,
+              )
+              if (result.slideId !== before.slideId || result.text !== input.text)
+                throw new Error('office_verify_failed')
               await options.adapter.verifySlides(confirmSignal)
             },
           })
@@ -292,6 +333,7 @@ export function createPowerPointSkill(options: {
         if (call.name === 'duplicate_slide') {
           const input = slideInput(call.input)
           const snapshot = await options.adapter.snapshotSlide(input.slide_index, signal)
+          let insertedSlideId: string | undefined
           const proposal = options.proposals.propose({
             operation: 'duplicate_slide',
             toolName: call.name,
@@ -304,9 +346,17 @@ export function createPowerPointSkill(options: {
               (await options.adapter.snapshotSlide(input.slide_index, confirmSignal))
                 .fingerprint === snapshot.fingerprint,
             execute: async (confirmSignal) => {
-              await options.adapter.duplicateSlide(input.slide_index, confirmSignal)
+              insertedSlideId = (
+                await options.adapter.duplicateSlide(input.slide_index, confirmSignal)
+              ).slideId
             },
             verify: async (confirmSignal) => {
+              if (!insertedSlideId) throw new Error('office_verify_failed')
+              const inserted = await options.adapter.listSlideShapes(
+                input.slide_index + 1,
+                confirmSignal,
+              )
+              if (inserted.slideId !== insertedSlideId) throw new Error('office_verify_failed')
               await options.adapter.verifySlides(confirmSignal)
             },
           })
@@ -316,8 +366,12 @@ export function createPowerPointSkill(options: {
             summary: 'Proposed PowerPoint slide duplication',
           }
         }
-        if (call.name === 'execute_office_js' || call.name === 'edit_slide_master') {
+        if (call.name === 'execute_office_js') {
           codeInput(call.input)
+          return failure(call.name, 'office_api_unsupported')
+        }
+        if (call.name === 'edit_slide_master') {
+          masterCodeInput(call.input)
           return failure(call.name, 'office_api_unsupported')
         }
         if (call.name === 'edit_slide_xml' || call.name === 'edit_slide_chart') {

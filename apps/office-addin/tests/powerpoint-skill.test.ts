@@ -89,6 +89,7 @@ describe('PowerPoint compatibility skill', () => {
       skill.executeTool(call('screenshot_slide', { slide_index: 0 })),
     ).resolves.toMatchObject({
       mutated: false,
+      output: expect.stringContaining('"visualAvailableToModel":false'),
       display: { kind: 'images', items: [{ url: `data:image/png;base64,${png}` }] },
     })
     await expect(skill.executeTool(call('verify_slides', { nope: true }))).resolves.toMatchObject({
@@ -98,7 +99,28 @@ describe('PowerPoint compatibility skill', () => {
   })
 
   it('gates text edits behind immutable stale-checked proposals and verifies after confirmation', async () => {
-    const fake = adapter()
+    const fake = adapter({
+      readSlideText: vi
+        .fn()
+        .mockResolvedValueOnce({
+          slideId: 'slide-1',
+          shapeId: '2',
+          text: 'Hello',
+          paragraphs: ['Hello'],
+        })
+        .mockResolvedValueOnce({
+          slideId: 'slide-1',
+          shapeId: '2',
+          text: 'Hello',
+          paragraphs: ['Hello'],
+        })
+        .mockResolvedValue({
+          slideId: 'slide-1',
+          shapeId: '2',
+          text: 'New',
+          paragraphs: ['New'],
+        }),
+    })
     const proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: fake, proposals })
     const proposed = await skill.executeTool(
@@ -122,7 +144,15 @@ describe('PowerPoint compatibility skill', () => {
   })
 
   it('refuses stale or cancelled writes before mutation', async () => {
-    const fake = adapter()
+    const fake = adapter({
+      listSlideShapes: vi.fn().mockImplementation((index: number) =>
+        Promise.resolve({
+          slideId: index === 1 ? 'slide-copy' : 'slide-1',
+          slideIndex: index,
+          shapes: [],
+        }),
+      ),
+    })
     const proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: fake, proposals })
     await skill.executeTool(call('duplicate_slide', { slide_index: 0 }))
@@ -199,6 +229,24 @@ describe('browser PowerPoint adapter', () => {
     expect(run).not.toHaveBeenCalled()
   })
 
+  it('requires the per-operation PowerPoint API set', async () => {
+    const run = vi.fn()
+    const supports = vi.fn((_name: string, version: string) => version === '1.4')
+    Object.assign(globalThis, {
+      Office: { context: { host: 'PowerPoint', requirements: { isSetSupported: supports } } },
+      PowerPoint: { run },
+    })
+    await expect(new BrowserPowerPointAdapter().screenshotSlide(0)).rejects.toThrow(
+      'office_api_unsupported',
+    )
+    await expect(new BrowserPowerPointAdapter().verifySlides()).rejects.toThrow(
+      'office_api_unsupported',
+    )
+    expect(run).not.toHaveBeenCalled()
+    expect(supports).toHaveBeenCalledWith('PowerPointApi', '1.8')
+    expect(supports).toHaveBeenCalledWith('PowerPointApi', '1.10')
+  })
+
   it('returns stable IDs/geometry and verifies negative, overflow, and overlap geometry', async () => {
     const sync = vi.fn().mockResolvedValue(undefined)
     const shapes = {
@@ -263,7 +311,9 @@ describe('browser PowerPoint adapter', () => {
       exportAsBase64: vi.fn(() => ({ value: 'ppt' })),
     }
     const slides = { load: vi.fn(), items: [slide], getItemAt: vi.fn(() => slide) }
-    const insertSlidesFromBase64 = vi.fn()
+    const insertSlidesFromBase64 = vi.fn(() => {
+      slides.items.splice(1, 0, { ...slide, id: 's2' })
+    })
     Object.assign(globalThis, {
       Office: {
         context: {
@@ -277,9 +327,13 @@ describe('browser PowerPoint adapter', () => {
       },
     })
     const subject = new BrowserPowerPointAdapter()
+    await expect(subject.snapshotSlide(0)).resolves.toMatchObject({
+      slideId: 's1',
+      fingerprint: expect.stringMatching(/^s1:\d+:[0-9a-f]{8}$/),
+    })
     await subject.editSlideText(0, '2', 'New')
     expect(textRange.text).toBe('New')
-    await subject.duplicateSlide(0)
+    await expect(subject.duplicateSlide(0)).resolves.toEqual({ slideId: 's2' })
     expect(insertSlidesFromBase64).toHaveBeenCalledWith('ppt', { targetSlideId: 's1' })
 
     const controller = new AbortController()
@@ -288,5 +342,22 @@ describe('browser PowerPoint adapter', () => {
       'cancelled',
     )
     expect(textRange.text).toBe('New')
+  })
+
+  it('treats a text-only change as stale even when slide geometry is unchanged', async () => {
+    const fake = adapter()
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Replacement' }),
+    )
+    ;(fake.readSlideText as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      slideId: 'slide-1',
+      shapeId: '2',
+      text: 'Changed elsewhere',
+      paragraphs: ['Changed elsewhere'],
+    })
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+    expect(fake.editSlideText).not.toHaveBeenCalled()
   })
 })

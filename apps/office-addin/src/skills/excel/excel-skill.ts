@@ -7,6 +7,7 @@ const MAX_RANGE = 128,
   MAX_RANGES = 32,
   MAX_CODE = 32 * 1024,
   MAX_RESULT = 256 * 1024
+const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
 type Json = Record<string, any>
 const descriptors = [
   [
@@ -530,10 +531,21 @@ export function createExcelSkill(options: {
           check(signal)
           if (call.name === 'screenshot_range') {
             const image = result as any
+            const padding =
+              typeof image.base64 === 'string' && image.base64.endsWith('==')
+                ? 2
+                : typeof image.base64 === 'string' && image.base64.endsWith('=')
+                  ? 1
+                  : 0
+            const bytes =
+              typeof image.base64 === 'string' ? (image.base64.length / 4) * 3 - padding : Infinity
             if (
               image.mime !== 'image/png' ||
               typeof image.base64 !== 'string' ||
-              !image.base64.startsWith('iVBORw0KGgo')
+              image.base64.length % 4 !== 0 ||
+              !/^[A-Za-z0-9+/]*={0,2}$/.test(image.base64) ||
+              !image.base64.startsWith('iVBORw0KGgo') ||
+              bytes > MAX_SCREENSHOT_BYTES
             )
               throw new Error('office_read_failed')
             return {
