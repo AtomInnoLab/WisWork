@@ -78,6 +78,62 @@ describe('Office cloud relay session', () => {
     expect(session.snapshot()).toEqual({ status: 'connected' })
   })
 
+  it('advertises only Relay-v2 capabilities and blocks unnegotiated requests', async () => {
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1', 'web-search.v1', 'web-fetch.v1'],
+      randomUUID: () => 'request_12345678',
+    })
+    const connecting = session.connect('word')
+    socket.open()
+    expect(frame(socket, 0)).toEqual({
+      version: 2,
+      type: 'office.create',
+      host: 'Word',
+      capabilities: ['agent.v1', 'web-search.v1', 'web-fetch.v1'],
+    })
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pair_12345678',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.approved',
+        session_id: 'session_12345678',
+        capability: 'capability_12345678',
+        expires_in: 1800,
+        capabilities: ['agent.v1', 'web-search.v1'],
+      }),
+    )
+    await connecting
+    expect(session.snapshot()).toEqual({
+      status: 'connected',
+      capabilities: ['agent.v1', 'web-search.v1'],
+    })
+    await expect(
+      session.capabilityFetch('web-fetch.v1', { url: 'https://example.com' }),
+    ).rejects.toThrow('relay_capability_unavailable')
+    const pending = session.capabilityFetch('web-search.v1', { query: 'office', max_results: 3 })
+    expect(frame(socket, 1)).toEqual({
+      version: 2,
+      type: 'office.request',
+      session_id: 'session_12345678',
+      capability: 'capability_12345678',
+      request_id: 'request_12345678',
+      capability_name: 'web-search.v1',
+      body: { query: 'office', max_results: 3 },
+    })
+    session.disconnect()
+    await expect(pending).rejects.toThrow('relay_disconnected')
+  })
+
   it('streams bounded SSE events, sends cancel, and completes once', async () => {
     const socket = new FakeSocket()
     const session = createOfficeRelaySession({ createSocket: () => socket })

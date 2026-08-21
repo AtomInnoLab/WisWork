@@ -29,6 +29,7 @@ export type OfficeRelayStatus =
 export interface OfficeRelaySnapshot {
   status: OfficeRelayStatus
   verificationCode?: string
+  capabilities?: readonly string[]
 }
 
 export interface OfficeRelaySession {
@@ -37,11 +38,20 @@ export interface OfficeRelaySession {
   connect(host: OfficeHost): Promise<void>
   disconnect(): void
   authenticatedFetch(path: typeof MESSAGES_PATH, init: RequestInit): Promise<Response>
+  capabilityFetch(
+    capability: OfficeRelayCapability,
+    body: unknown,
+    signal?: AbortSignal,
+  ): Promise<Response>
 }
+
+export type OfficeRelayCapability =
+  'agent.v1' | 'web-search.v1' | 'web-fetch.v1' | 'image-search.v1'
 
 interface Dependencies {
   createSocket?: (url: string) => RelayWebSocket
   randomUUID?: () => string
+  capabilities?: readonly OfficeRelayCapability[]
 }
 
 interface ActiveRequest {
@@ -80,12 +90,15 @@ function browserSocket(url: string): RelayWebSocket {
 export function createOfficeRelaySession(dependencies: Dependencies = {}): OfficeRelaySession {
   const createSocket = dependencies.createSocket ?? browserSocket
   const randomUUID = dependencies.randomUUID ?? (() => crypto.randomUUID())
+  const requestedCapabilities = [...(dependencies.capabilities ?? [])]
+  const protocolVersion = requestedCapabilities.length > 0 ? 2 : 1
   const listeners = new Set<() => void>()
   let state: OfficeRelaySnapshot = { status: 'offline' }
   let socket: RelayWebSocket | undefined
   let pairingId: string | undefined
   let sessionId: string | undefined
   let capability: string | undefined
+  let negotiatedCapabilities: OfficeRelayCapability[] = []
   let request: ActiveRequest | undefined
   let generation = 0
   let settleConnect: (() => void) | undefined
@@ -116,6 +129,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     pairingId = undefined
     sessionId = undefined
     capability = undefined
+    negotiatedCapabilities = []
     if (pairingTimer !== undefined) clearTimeout(pairingTimer)
     pairingTimer = undefined
     const activeSocket = socket
@@ -146,7 +160,8 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     } catch {
       return protocolFailure()
     }
-    if (frame.version !== 1 || typeof frame.type !== 'string') return protocolFailure()
+    if (frame.version !== protocolVersion || typeof frame.type !== 'string')
+      return protocolFailure()
 
     if (frame.type === 'office.created') {
       if (
@@ -166,24 +181,47 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       return
     }
     if (frame.type === 'office.approved') {
+      const approvedKeys = ['version', 'type', 'session_id', 'capability', 'expires_in']
+      if (protocolVersion === 2) approvedKeys.push('capabilities')
+      const approvedCapabilities =
+        protocolVersion === 2 &&
+        Array.isArray(frame.capabilities) &&
+        frame.capabilities.length > 0 &&
+        frame.capabilities.every(
+          (value, index, values) =>
+            typeof value === 'string' &&
+            requestedCapabilities.includes(value as OfficeRelayCapability) &&
+            values.indexOf(value) === index,
+        )
+          ? (frame.capabilities as OfficeRelayCapability[])
+          : protocolVersion === 1
+            ? (['agent.v1'] as OfficeRelayCapability[])
+            : undefined
       if (
         (state.status !== 'pending' && state.status !== 'waiting_for_pc') ||
         frameBytes > MAX_CONTROL_FRAME_BYTES ||
         !pairingId ||
-        !exactKeys(frame, ['version', 'type', 'session_id', 'capability', 'expires_in']) ||
+        !exactKeys(frame, approvedKeys) ||
         !opaque(frame.session_id) ||
         !opaque(frame.capability) ||
-        !expiry(frame.expires_in, 1800)
+        !expiry(frame.expires_in, 1800) ||
+        !approvedCapabilities
       )
         return protocolFailure()
       sessionId = frame.session_id
       capability = frame.capability
+      negotiatedCapabilities = approvedCapabilities
       pairingId = undefined
       if (pairingTimer !== undefined) clearTimeout(pairingTimer)
       pairingTimer = undefined
       settleConnect?.()
       settleConnect = undefined
-      publish({ status: 'connected' })
+      publish({
+        status: 'connected',
+        ...(protocolVersion === 2
+          ? { capabilities: Object.freeze([...negotiatedCapabilities]) }
+          : {}),
+      })
       return
     }
     if (
@@ -236,7 +274,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
           if (request?.id === active.id) {
             try {
               send({
-                version: 1,
+                version: protocolVersion,
                 type: 'office.cancel',
                 session_id: sessionId,
                 capability,
@@ -312,7 +350,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     protocolFailure()
   }
 
-  return {
+  const api: OfficeRelaySession = {
     snapshot: () => state,
     subscribe(listener) {
       listeners.add(listener)
@@ -336,7 +374,12 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
         opened.onopen = () => {
           if (epoch !== generation) return
           try {
-            send({ version: 1, type: 'office.create', host: hostLabels[host] })
+            send({
+              version: protocolVersion,
+              type: 'office.create',
+              host: hostLabels[host],
+              ...(protocolVersion === 2 ? { capabilities: requestedCapabilities } : {}),
+            })
           } catch {
             protocolFailure()
           }
@@ -375,13 +418,29 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       }
       if (!parsedBody || typeof parsedBody !== 'object' || Array.isArray(parsedBody))
         throw new Error('relay_invalid_request')
+      return api.capabilityFetch('agent.v1', parsedBody, init.signal ?? undefined)
+    },
+    async capabilityFetch(capabilityName, parsedBody, signal) {
+      if (
+        !socket ||
+        !sessionId ||
+        !capability ||
+        state.status !== 'connected' ||
+        !negotiatedCapabilities.includes(capabilityName)
+      )
+        throw new Error('relay_capability_unavailable')
+      if (request) throw new Error('relay_busy')
+      if (!parsedBody || typeof parsedBody !== 'object' || Array.isArray(parsedBody))
+        throw new Error('relay_invalid_request')
+      const bodyBytes = encoder.encode(JSON.stringify(parsedBody)).byteLength
+      if (bodyBytes > MAX_REQUEST_BYTES) throw new Error('relay_request_too_large')
       const id = randomUUID()
       return new Promise<Response>((resolve, reject) => {
         const timer = setTimeout(() => {
           if (request?.id !== id) return
           try {
             send({
-              version: 1,
+              version: protocolVersion,
               type: 'office.cancel',
               session_id: sessionId,
               capability,
@@ -393,12 +452,12 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
           finishRequest('relay_timeout')
         }, REQUEST_TIMEOUT_MS)
         request = { id, sequence: 0, bytes: 0, responseResolved: false, resolve, reject, timer }
-        if (init.signal) {
+        if (signal) {
           const abort = () => {
             if (request?.id !== id) return
             try {
               send({
-                version: 1,
+                version: protocolVersion,
                 type: 'office.cancel',
                 session_id: sessionId,
                 capability,
@@ -410,18 +469,19 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
             finishRequest('relay_cancelled')
           }
           request.abort = abort
-          request.signal = init.signal
-          if (init.signal.aborted) abort()
-          else init.signal.addEventListener('abort', abort, { once: true })
+          request.signal = signal
+          if (signal.aborted) abort()
+          else signal.addEventListener('abort', abort, { once: true })
         }
         if (request?.id === id) {
           try {
             send({
-              version: 1,
+              version: protocolVersion,
               type: 'office.request',
               session_id: sessionId,
               capability,
               request_id: id,
+              ...(protocolVersion === 2 ? { capability_name: capabilityName } : {}),
               body: parsedBody,
             })
           } catch {
@@ -431,4 +491,5 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       })
     },
   }
+  return api
 }
