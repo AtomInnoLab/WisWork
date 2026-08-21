@@ -1,9 +1,11 @@
-export const MAX_POWERPOINT_SLIDES = 500
 export const MAX_POWERPOINT_SHAPES = 1_000
 export const MAX_POWERPOINT_TEXT = 12_000
 export const MAX_POWERPOINT_RESULT_BYTES = 256 * 1024
 export const MAX_POWERPOINT_SNAPSHOT_BASE64 = 8 * 1024 * 1024
 export const MAX_POWERPOINT_VERIFY_OVERLAPS = 1_000
+export const MAX_POWERPOINT_VERIFY_SLIDES = 20
+export const MAX_POWERPOINT_VERIFY_SHAPES = 100
+export const MAX_POWERPOINT_VERIFY_OVERFLOWS = 2_000
 
 export interface PowerPointShape {
   id: string
@@ -32,6 +34,7 @@ export interface SlideVerification {
   slideId: string
   slideIndex: number
   shapes: PowerPointShape[]
+  shapesTruncated: boolean
   overflows: Array<{
     shapeId: string
     edge: 'left' | 'top' | 'right' | 'bottom'
@@ -125,24 +128,43 @@ function shapeInfo(value: RuntimeRecord): PowerPointShape {
   }
 }
 
-function assertSlide(slides: RuntimeRecord, index: number): RuntimeRecord {
-  const items = slides.items as RuntimeRecord[] | undefined
-  if (!items || index < 0 || index >= items.length) throw new Error('invalid_tool_input')
-  return items[index]
-}
-
 function loadSlides(slides: RuntimeRecord): void {
   ;(slides.load as (properties: unknown) => void)({
-    $top: MAX_POWERPOINT_SLIDES + 1,
-    $select: 'id',
+    $top: MAX_POWERPOINT_VERIFY_SLIDES + 1,
+    id: true,
   })
 }
 
-function loadShapes(shapes: RuntimeRecord): void {
+function loadShapes(shapes: RuntimeRecord, limit = MAX_POWERPOINT_VERIFY_SHAPES): void {
   ;(shapes.load as (properties: unknown) => void)({
-    $top: MAX_POWERPOINT_SHAPES + 1,
-    $select: 'id,name,type,left,top,width,height',
+    $top: limit + 1,
+    id: true,
+    name: true,
+    type: true,
+    left: true,
+    top: true,
+    width: true,
+    height: true,
   })
+}
+
+async function getSlide(
+  context: RuntimeRecord,
+  slides: RuntimeRecord,
+  index: number,
+  signal?: AbortSignal,
+): Promise<RuntimeRecord> {
+  if (typeof slides.getCount !== 'function' || typeof slides.getItemAt !== 'function')
+    throw new Error('office_api_unsupported')
+  const count = (slides.getCount as () => RuntimeRecord)()
+  await sync(context, signal)
+  if (!Number.isSafeInteger(count.value) || index < 0 || index >= (count.value as number))
+    throw new Error('invalid_tool_input')
+  const slide = (slides.getItemAt as (position: number) => RuntimeRecord)(index)
+  if (typeof slide.load !== 'function') throw new Error('office_api_unsupported')
+  ;(slide.load as (properties: string) => void)('id')
+  await sync(context, signal)
+  return slide
 }
 
 function hash(value: string): string {
@@ -170,11 +192,9 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     return this.run('1.4', async (context) => {
       const presentation = context.presentation as RuntimeRecord
       const slides = presentation.slides as RuntimeRecord
-      loadSlides(slides)
-      await sync(context, signal)
-      const slide = assertSlide(slides, slideIndex)
+      const slide = await getSlide(context, slides, slideIndex, signal)
       const shapes = slide.shapes as RuntimeRecord
-      loadShapes(shapes)
+      loadShapes(shapes, MAX_POWERPOINT_SHAPES)
       await sync(context, signal)
       const items = shapes.items as RuntimeRecord[]
       if (items.length > MAX_POWERPOINT_SHAPES) throw new Error('office_read_failed')
@@ -189,9 +209,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     cancelled(signal)
     return this.run('1.8', async (context) => {
       const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
-      loadSlides(slides)
-      await sync(context, signal)
-      const slide = assertSlide(slides, slideIndex)
+      const slide = await getSlide(context, slides, slideIndex, signal)
       if (typeof slide.getImageAsBase64 !== 'function') throw new Error('office_api_unsupported')
       const image = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
         width: 960,
@@ -210,9 +228,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     cancelled(signal)
     return this.run('1.4', async (context) => {
       const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
-      loadSlides(slides)
-      await sync(context, signal)
-      const slide = assertSlide(slides, slideIndex)
+      const slide = await getSlide(context, slides, slideIndex, signal)
       const shapes = slide.shapes as RuntimeRecord
       if (typeof shapes.getItem !== 'function') throw new Error('office_api_unsupported')
       const shape = (shapes.getItem as (id: string) => RuntimeRecord)(shapeId)
@@ -237,7 +253,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       ;(pageSetup.load as (properties: string[]) => void)(['slideWidth', 'slideHeight'])
       await sync(context, signal)
       const slideItems = slides.items as RuntimeRecord[]
-      const boundedSlides = slideItems.slice(0, MAX_POWERPOINT_SLIDES)
+      const boundedSlides = slideItems.slice(0, MAX_POWERPOINT_VERIFY_SLIDES)
       for (const slide of boundedSlides) {
         const shapes = slide.shapes as RuntimeRecord
         loadShapes(shapes)
@@ -245,23 +261,25 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       await sync(context, signal)
       const slideWidth = finite(pageSetup.slideWidth)
       const slideHeight = finite(pageSetup.slideHeight)
+      let remainingOverlaps = MAX_POWERPOINT_VERIFY_OVERLAPS
+      let remainingOverflows = MAX_POWERPOINT_VERIFY_OVERFLOWS
       const results = boundedSlides.map((slide, slideIndex): SlideVerification => {
         const raw = ((slide.shapes as RuntimeRecord).items as RuntimeRecord[]) ?? []
-        if (raw.length > MAX_POWERPOINT_SHAPES) throw new Error('office_read_failed')
-        const shapes = raw.map(shapeInfo)
+        const shapesTruncated = raw.length > MAX_POWERPOINT_VERIFY_SHAPES
+        const shapes = raw.slice(0, MAX_POWERPOINT_VERIFY_SHAPES).map(shapeInfo)
         const overflows: SlideVerification['overflows'] = []
         for (const shape of shapes) {
-          if (shape.left < 0)
+          if (shape.left < 0 && remainingOverflows-- > 0)
             overflows.push({ shapeId: shape.id, edge: 'left', overflowBy: -shape.left })
-          if (shape.top < 0)
+          if (shape.top < 0 && remainingOverflows-- > 0)
             overflows.push({ shapeId: shape.id, edge: 'top', overflowBy: -shape.top })
-          if (shape.left + shape.width > slideWidth)
+          if (shape.left + shape.width > slideWidth && remainingOverflows-- > 0)
             overflows.push({
               shapeId: shape.id,
               edge: 'right',
               overflowBy: shape.left + shape.width - slideWidth,
             })
-          if (shape.top + shape.height > slideHeight)
+          if (shape.top + shape.height > slideHeight && remainingOverflows-- > 0)
             overflows.push({
               shapeId: shape.id,
               edge: 'bottom',
@@ -269,23 +287,27 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             })
         }
         const overlaps: SlideVerification['overlaps'] = []
-        let overlapsTruncated = false
+        let overlapsTruncated = remainingOverlaps <= 0
         for (let first = 0; first < shapes.length; first += 1)
           for (let second = first + 1; second < shapes.length; second += 1) {
+            if (remainingOverlaps <= 0) {
+              overlapsTruncated = true
+              break
+            }
             const a = shapes[first]
             const b = shapes[second]
             const overlapX = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left)
             const overlapY = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top)
             if (overlapX > 0 && overlapY > 0) {
-              if (overlaps.length < MAX_POWERPOINT_VERIFY_OVERLAPS)
-                overlaps.push({ shapeAId: a.id, shapeBId: b.id, overlapX, overlapY })
-              else overlapsTruncated = true
+              overlaps.push({ shapeAId: a.id, shapeBId: b.id, overlapX, overlapY })
+              remainingOverlaps -= 1
             }
           }
         return {
           slideId: string(slide.id),
           slideIndex,
           shapes,
+          shapesTruncated,
           overflows,
           overlaps,
           overlapsTruncated,
@@ -295,7 +317,10 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         slideWidth,
         slideHeight,
         slides: results,
-        truncated: slideItems.length > MAX_POWERPOINT_SLIDES,
+        truncated:
+          slideItems.length > MAX_POWERPOINT_VERIFY_SLIDES ||
+          remainingOverlaps <= 0 ||
+          remainingOverflows <= 0,
       }
     })
   }
@@ -307,9 +332,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     cancelled(signal)
     return this.run('1.8', async (context) => {
       const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
-      loadSlides(slides)
-      await sync(context, signal)
-      const slide = assertSlide(slides, slideIndex)
+      const slide = await getSlide(context, slides, slideIndex, signal)
       if (typeof slide.exportAsBase64 !== 'function') throw new Error('office_api_unsupported')
       const exported = (slide.exportAsBase64 as () => RuntimeRecord)()
       await sync(context, signal)
@@ -333,9 +356,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     cancelled(signal)
     await this.run('1.4', async (context) => {
       const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
-      loadSlides(slides)
-      await sync(context, signal)
-      const slide = assertSlide(slides, slideIndex)
+      const slide = await getSlide(context, slides, slideIndex, signal)
       const shapes = slide.shapes as RuntimeRecord
       if (typeof shapes.getItem !== 'function') throw new Error('office_api_unsupported')
       const shape = (shapes.getItem as (id: string) => RuntimeRecord)(shapeId)
@@ -353,9 +374,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     return this.run('1.8', async (context) => {
       const presentation = context.presentation as RuntimeRecord
       const slides = presentation.slides as RuntimeRecord
-      loadSlides(slides)
-      await sync(context, signal)
-      const slide = assertSlide(slides, slideIndex)
+      const slide = await getSlide(context, slides, slideIndex, signal)
       if (
         typeof slide.exportAsBase64 !== 'function' ||
         typeof presentation.insertSlidesFromBase64 !== 'function'
@@ -372,9 +391,8 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         ) => void
       )(exported.value, { targetSlideId: string(slide.id) })
       await sync(context, signal)
-      loadSlides(slides)
-      await sync(context, signal)
-      return { slideId: string(assertSlide(slides, slideIndex + 1).id) }
+      const inserted = await getSlide(context, slides, slideIndex + 1, signal)
+      return { slideId: string(inserted.id) }
     })
   }
 }

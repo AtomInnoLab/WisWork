@@ -140,7 +140,7 @@ describe('PowerPoint compatibility skill', () => {
     })
     await proposals.confirm(pending.id)
     expect(fake.editSlideText).toHaveBeenCalledWith(0, '2', 'New', expect.any(AbortSignal))
-    expect(fake.verifySlides).toHaveBeenCalledTimes(1)
+    expect(fake.verifySlides).toHaveBeenCalledTimes(2)
   })
 
   it('refuses stale or cancelled writes before mutation', async () => {
@@ -258,7 +258,8 @@ describe('browser PowerPoint adapter', () => {
     }
     const slides = {
       load: vi.fn(),
-      items: [{ id: 's1', shapes }],
+      items: [{ id: 's1', shapes, load: vi.fn() }],
+      getCount: vi.fn(() => ({ value: 1 })),
       getItemAt: vi.fn((i) => slides.items[i]),
     }
     Object.assign(globalThis, {
@@ -307,10 +308,16 @@ describe('browser PowerPoint adapter', () => {
     const shape = { id: '2', textFrame: { textRange } }
     const slide = {
       id: 's1',
+      load: vi.fn(),
       shapes: { getItem: vi.fn(() => shape) },
       exportAsBase64: vi.fn(() => ({ value: 'ppt' })),
     }
-    const slides = { load: vi.fn(), items: [slide], getItemAt: vi.fn(() => slide) }
+    const slides = {
+      load: vi.fn(),
+      items: [slide],
+      getCount: vi.fn(() => ({ value: slides.items.length })),
+      getItemAt: vi.fn((index: number) => slides.items[index]),
+    }
     const insertSlidesFromBase64 = vi.fn(() => {
       slides.items.splice(1, 0, { ...slide, id: 's2' })
     })

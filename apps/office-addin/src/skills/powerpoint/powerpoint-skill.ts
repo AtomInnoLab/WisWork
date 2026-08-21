@@ -273,6 +273,7 @@ export function createPowerPointSkill(options: {
         }
         if (call.name === 'edit_slide_text') {
           const input = textEditInput(call.input)
+          await options.adapter.verifySlides(signal)
           const before = await options.adapter.readSlideText(
             input.slide_index,
             input.shape_id,
@@ -332,6 +333,7 @@ export function createPowerPointSkill(options: {
         }
         if (call.name === 'duplicate_slide') {
           const input = slideInput(call.input)
+          await options.adapter.verifySlides(signal)
           const snapshot = await options.adapter.snapshotSlide(input.slide_index, signal)
           let insertedSlideId: string | undefined
           const proposal = options.proposals.propose({
