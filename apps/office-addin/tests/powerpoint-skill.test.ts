@@ -351,6 +351,45 @@ describe('browser PowerPoint adapter', () => {
     expect(textRange.text).toBe('New')
   })
 
+  it('rejects empty or oversized duplicate exports before insertion', async () => {
+    const sync = vi.fn().mockResolvedValue(undefined)
+    const slide = {
+      id: 's1',
+      load: vi.fn(),
+      exportAsBase64: vi.fn(() => ({ value: '' })),
+    }
+    const slides = {
+      items: [slide],
+      getCount: vi.fn(() => ({ value: 1 })),
+      getItemAt: vi.fn(() => slide),
+    }
+    const insertSlidesFromBase64 = vi.fn()
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides, insertSlidesFromBase64 }, sync }),
+      },
+    })
+    const subject = new BrowserPowerPointAdapter()
+    await expect(subject.duplicateSlide(0)).rejects.toThrow('office_write_failed')
+    slide.exportAsBase64.mockReturnValueOnce({ value: 'x'.repeat(8 * 1024 * 1024 + 1) })
+    await expect(subject.duplicateSlide(0)).rejects.toThrow('office_write_failed')
+    const controller = new AbortController()
+    sync.mockClear()
+    sync.mockImplementation(async () => {
+      if (sync.mock.calls.length === 3) controller.abort()
+    })
+    slide.exportAsBase64.mockReturnValueOnce({ value: 'ppt' })
+    await expect(subject.duplicateSlide(0, controller.signal)).rejects.toThrow('cancelled')
+    expect(insertSlidesFromBase64).not.toHaveBeenCalled()
+  })
+
   it('treats a text-only change as stale even when slide geometry is unchanged', async () => {
     const fake = adapter()
     const proposals = createStructuredProposalController()

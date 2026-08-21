@@ -382,7 +382,12 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         throw new Error('office_api_unsupported')
       const exported = (slide.exportAsBase64 as () => RuntimeRecord)()
       await sync(context, signal)
-      if (typeof exported.value !== 'string') throw new Error('office_write_failed')
+      if (
+        typeof exported.value !== 'string' ||
+        exported.value.length === 0 ||
+        exported.value.length > MAX_POWERPOINT_SNAPSHOT_BASE64
+      )
+        throw new Error('office_write_failed')
       cancelled(signal)
       ;(
         presentation.insertSlidesFromBase64 as (
