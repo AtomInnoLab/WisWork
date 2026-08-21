@@ -45,7 +45,6 @@ function adapter(overrides: Partial<ExcelAdapter> = {}): ExcelAdapter {
     verifyObjects: vi.fn().mockResolvedValue({ objects: [], hasMore: false }),
     verifyWorkbook: vi.fn().mockResolvedValue({ sheets: [], hasMore: false }),
     verifyMutation: vi.fn().mockResolvedValue(true),
-    executeBatch: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   }
 }
@@ -182,73 +181,19 @@ describe('Excel compatibility skill', () => {
                   allow_overwrite: true,
                 },
               },
-              {
-                op: 'clear_cell_range',
-                input: { sheetId: 1, range: 'B1', clearType: 'contents' },
-              },
             ],
           }),
         }),
       ),
     ).resolves.toMatchObject({ output: expect.stringContaining('proposalId'), mutated: false })
     await proposals.confirm(proposals.pending()!.id)
-    expect(fake.executeBatch).toHaveBeenCalledOnce()
-    expect(fake.setCellRange).not.toHaveBeenCalled()
+    expect(fake.setCellRange).toHaveBeenCalledOnce()
   })
 
-  it('verifies only the final declarative state per target with each operation prestate', async () => {
-    const fake = adapter({
-      captureMutation: vi
-        .fn()
-        .mockResolvedValueOnce('first-prestate')
-        .mockResolvedValueOnce('second-prestate'),
-    })
-    const proposals = createStructuredProposalController()
-    const skill = createExcelSkill({ adapter: fake, proposals })
-    await skill.executeTool(
-      call('eval_officejs', {
-        code: JSON.stringify({
-          version: 1,
-          operations: [
-            {
-              op: 'set_cell_range',
-              input: { sheetId: 1, range: 'A1', cells: [[{ value: 1 }]], allow_overwrite: true },
-            },
-            {
-              op: 'set_cell_range',
-              input: { sheetId: 1, range: 'A1', cells: [[{ value: 2 }]], allow_overwrite: true },
-            },
-          ],
-        }),
-      }),
-    )
-    await proposals.confirm(proposals.pending()!.id)
-    expect(fake.captureMutation).toHaveBeenNthCalledWith(
-      1,
-      'set_cell_range',
-      expect.objectContaining({ cells: [[{ value: 1 }]] }),
-      expect.any(AbortSignal),
-    )
-    expect(fake.captureMutation).toHaveBeenNthCalledWith(
-      2,
-      'set_cell_range',
-      expect.objectContaining({ cells: [[{ value: 2 }]] }),
-      expect.any(AbortSignal),
-    )
-    expect(fake.verifyMutation).toHaveBeenCalledTimes(1)
-    expect(fake.verifyMutation).toHaveBeenCalledWith(
-      'set_cell_range',
-      expect.objectContaining({ cells: [[{ value: 2 }]] }),
-      'second-prestate',
-      expect.any(AbortSignal),
-      ['A1'],
-    )
-  })
-
-  it('reduces overlapping declarative ranges to the final writer at normalized cell level', async () => {
+  it('rejects every multi-operation declarative program before host reads or writes', async () => {
     const fake = adapter()
     const proposals = createStructuredProposalController()
-    await createExcelSkill({ adapter: fake, proposals }).executeTool(
+    const result = await createExcelSkill({ adapter: fake, proposals }).executeTool(
       call('eval_officejs', {
         code: JSON.stringify({
           version: 1,
@@ -270,23 +215,32 @@ describe('Excel compatibility skill', () => {
         }),
       }),
     )
-    await proposals.confirm(proposals.pending()!.id)
-    expect(fake.verifyMutation).toHaveBeenNthCalledWith(
-      1,
-      'set_cell_range',
-      expect.any(Object),
-      'operation-fp',
-      expect.any(AbortSignal),
-      ['A1'],
-    )
-    expect(fake.verifyMutation).toHaveBeenNthCalledWith(
-      2,
-      'clear_cell_range',
-      expect.any(Object),
-      'operation-fp',
-      expect.any(AbortSignal),
-      ['B1', 'C1'],
-    )
+    expect(result).toMatchObject({ output: 'office_api_unsupported', isError: true })
+    expect(proposals.pending()).toBeUndefined()
+    expect(fake.fingerprint).not.toHaveBeenCalled()
+    expect(fake.captureMutation).not.toHaveBeenCalled()
+    expect(fake.setCellRange).not.toHaveBeenCalled()
+    await expect(
+      createExcelSkill({ adapter: fake, proposals }).executeTool(
+        call('eval_officejs', {
+          code: JSON.stringify({
+            version: 1,
+            operations: [
+              {
+                op: 'clear_cell_range',
+                input: { sheetId: 1, range: 'A1', clearType: 'contents' },
+              },
+              {
+                op: 'clear_cell_range',
+                input: { sheetId: 1, range: 'B1', clearType: 'contents' },
+              },
+            ],
+          }),
+        }),
+        AbortSignal.abort(),
+      ),
+    ).resolves.toMatchObject({ output: 'cancelled', isError: true })
+    expect(fake.clearCellRange).not.toHaveBeenCalled()
   })
 
   it('rejects declarative programs exceeding the aggregate cell budget before host reads', async () => {
@@ -312,7 +266,7 @@ describe('Excel compatibility skill', () => {
         }),
       }),
     )
-    expect(result).toMatchObject({ output: 'invalid_tool_input', isError: true })
+    expect(result).toMatchObject({ output: 'office_api_unsupported', isError: true })
     expect(fake.fingerprint).not.toHaveBeenCalled()
   })
 
@@ -751,48 +705,6 @@ describe('browser Excel adapter', () => {
       ),
     ).rejects.toThrow('cancelled')
     expect(run).not.toHaveBeenCalled()
-  })
-
-  it('executes compatible declarative writes in one Office batch sync', async () => {
-    const sync = vi.fn()
-    const cells = Array.from({ length: 2 }, () => ({ values: undefined, formulas: undefined }))
-    const writeRange = {
-      getCell: vi.fn((row: number, column: number) => cells[row * 2 + column]),
-    }
-    const setRange = { getCell: vi.fn(() => ({ getResizedRange: () => writeRange })) }
-    const clear = vi.fn()
-    const worksheet = {
-      protection: { protected: false, load: vi.fn() },
-      getRange: vi.fn((address: string) => (address === 'C1:D1' ? { clear } : setRange)),
-    }
-    Object.assign(globalThis, {
-      Office: {
-        context: { host: 'Excel', requirements: { isSetSupported: vi.fn().mockReturnValue(true) } },
-      },
-      Excel: {
-        run: (cb: (ctx: unknown) => unknown) =>
-          cb({ workbook: { worksheets: { getItemAt: () => worksheet } }, sync }),
-      },
-    })
-    await new BrowserExcelAdapter().executeBatch([
-      {
-        op: 'set_cell_range',
-        input: {
-          sheetId: 1,
-          range: 'A1',
-          cells: [[{ value: 1 }, { value: 2 }]],
-          allow_overwrite: true,
-        },
-      },
-      {
-        op: 'clear_cell_range',
-        input: { sheetId: 1, range: 'C1:D1', clearType: 'all' },
-      },
-    ])
-    expect(sync).toHaveBeenCalledTimes(2)
-    expect(cells[0].values).toEqual([[1]])
-    expect(cells[1].values).toEqual([[2]])
-    expect(clear).toHaveBeenCalledWith('All')
   })
 
   it('semantically verifies idempotent styles, clear, copy, autofit, and object updates', async () => {

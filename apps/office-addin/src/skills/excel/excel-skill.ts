@@ -687,22 +687,6 @@ function parseExcelOperation(value: unknown): ExcelProgramOperation {
   semantics(operation.op, input)
   return { op: operation.op, input }
 }
-function batchCompatible(operation: ExcelProgramOperation): boolean {
-  if (operation.op === 'clear_cell_range') return true
-  if (operation.op !== 'set_cell_range' || operation.input.allow_overwrite !== true) return false
-  if (operation.input.copyToRange || operation.input.resizeWidth || operation.input.resizeHeight)
-    return false
-  return operation.input.cells
-    .flat()
-    .every(
-      (cell: Json) =>
-        Object.keys(cell).every((key) => key === 'value') &&
-        (!Object.hasOwn(cell, 'value') ||
-          cell.value === null ||
-          ['string', 'number', 'boolean'].includes(typeof cell.value)),
-    )
-}
-
 export function createExcelSkill(options: {
   adapter: ExcelAdapter
   proposals: StructuredProposalController
@@ -731,9 +715,7 @@ export function createExcelSkill(options: {
         }
         if (call.name === 'eval_officejs') {
           const program = parseDeclarativeProgram(input.code, parseExcelOperation)
-          const isBatch = program.operations.length > 1
-          if (isBatch && !program.operations.every(batchCompatible))
-            throw new Error('office_api_unsupported')
+          if (program.operations.length > 1) throw new Error('office_api_unsupported')
           const operationCellWrites = program.operations.map((operation) =>
             operationCells(operation.op, operation.input),
           )
@@ -778,10 +760,7 @@ export function createExcelSkill(options: {
                 )
                 check(confirmSignal)
               }
-              if (isBatch)
-                await options.adapter.executeBatch(program.operations as any, confirmSignal)
-              else
-                await methods[program.operations[0].op](program.operations[0].input, confirmSignal)
+              await methods[program.operations[0].op](program.operations[0].input, confirmSignal)
               check(confirmSignal)
               expectedFingerprint = await options.adapter.fingerprint(affected, confirmSignal)
             },
