@@ -145,7 +145,9 @@ describe('registerWisworkModelIpc', () => {
   })
 
   it('accepts bounded tool image content and rejects oversized tool images', async () => {
-    const { invoke } = harness()
+    const { invoke } = harness({
+      fetchWithAuth: async () => okResponse(sseStream([])),
+    })
     const messages: any[] = [
       {
         role: 'tool',
