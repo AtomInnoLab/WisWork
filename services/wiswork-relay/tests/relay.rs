@@ -4,6 +4,7 @@ use futures_util::{SinkExt, StreamExt};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{
     connect_async,
@@ -16,7 +17,7 @@ const TEST_ISSUER: &str = "https://issuer.example.test";
 const TEST_AUDIENCE: &str = "relay-test-client";
 const TEST_PRIVATE_KEY_DER: &str = "MIG2AgEAMBAGByqGSM49AgEGBSuBBAAiBIGeMIGbAgEBBDBi2P/vImpNt3oyLprNPTVoaYRvIaJWVxDjsjoRF0YfAmwKUhtjGdj0qh0NWGlbVVOhZANiAAQ1aooGczWALsnMxfjM77d43rpKPqBtQEHPDrizP7fpwi/SbkZ2T/czW8Ye+5Ix3WIYFMM60AKyMtLQXT8V4VjQb0jM9wRkC/JEa0C50q9dk8APUPfbJMDbcsqcyW0bl2w=";
 
-async fn server() -> String {
+async fn server_with_session_ttls(session_ttls: Option<(Duration, Duration)>) -> String {
     let auth_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let auth_addr = auth_listener.local_addr().unwrap();
     let auth = axum::Router::new()
@@ -45,13 +46,17 @@ async fn server() -> String {
     tokio::spawn(async move { axum::serve(auth_listener, auth).await.unwrap() });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let config = Config {
+    let mut config = Config {
         auth_url: format!("http://{auth_addr}/oidc/me"),
         jwks_url: format!("http://{auth_addr}/oidc/jwks"),
         issuer: TEST_ISSUER.into(),
         audience: TEST_AUDIENCE.into(),
         ..Config::default()
     };
+    if let Some((idle, maximum)) = session_ttls {
+        config.session_ttl = idle;
+        config.session_max_ttl = maximum;
+    }
     tokio::spawn(async move {
         axum::serve(
             listener,
@@ -61,6 +66,10 @@ async fn server() -> String {
         .unwrap()
     });
     format!("ws://{addr}/office-relay")
+}
+
+async fn server() -> String {
+    server_with_session_ttls(None).await
 }
 
 async fn socket(
@@ -337,7 +346,7 @@ async fn v2_negotiates_exact_capabilities_and_denies_unnegotiated_requests() {
     let mut office = socket(&url, ORIGIN).await;
     send(
         &mut office,
-        json!({"version":2,"type":"office.create","host":"Word","capabilities":["agent.v1","web-search.v1","web-fetch.v1"]}),
+        json!({"version":2,"type":"office.create","host":"Word","capabilities":["agent.v1","web-search.v1","web-fetch.v1","future-capability.v9"]}),
     )
     .await;
     let created = recv(&mut office).await;
@@ -345,6 +354,18 @@ async fn v2_negotiates_exact_capabilities_and_denies_unnegotiated_requests() {
     let code = created["verification_code"].as_str().unwrap();
 
     let mut pc = pc_socket(&url).await;
+    send(
+        &mut pc,
+        json!({"version":2,"type":"pc.negotiate","verification_code":code,"capabilities":["agent.v1","web-search.v1","image-search.v1","future-capability.v9"]}),
+    )
+    .await;
+    let negotiated = recv(&mut pc).await;
+    assert_eq!(negotiated["type"], "pc.negotiated");
+    assert_eq!(negotiated["pairing_version"], 2);
+    assert_eq!(
+        negotiated["capabilities"],
+        json!(["agent.v1", "web-search.v1"])
+    );
     send(
         &mut pc,
         json!({"version":2,"type":"pc.claim","verification_code":code,"capabilities":["agent.v1","web-search.v1","image-search.v1"]}),
@@ -400,6 +421,54 @@ async fn v2_negotiates_exact_capabilities_and_denies_unnegotiated_requests() {
 }
 
 #[tokio::test]
+async fn valid_activity_renews_idle_ttl_but_never_the_absolute_session_lifetime() {
+    let url = server_with_session_ttls(Some((
+        Duration::from_millis(150),
+        Duration::from_millis(450),
+    )))
+    .await;
+    let mut office = socket(&url, ORIGIN).await;
+    send(
+        &mut office,
+        json!({"version":1,"type":"office.create","host":"Word"}),
+    )
+    .await;
+    let created = recv(&mut office).await;
+    let mut pc = pc_socket(&url).await;
+    send(
+        &mut pc,
+        json!({"version":1,"type":"pc.claim","verification_code":created["verification_code"]}),
+    )
+    .await;
+    let claimed = recv(&mut pc).await;
+    send(
+        &mut pc,
+        json!({"version":1,"type":"pc.approve","pairing_id":claimed["pairing_id"]}),
+    )
+    .await;
+    let pc_ready = recv(&mut pc).await;
+    let office_ready = recv(&mut office).await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    send(&mut office, json!({"version":1,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"renew_request_1","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["request_id"], "renew_request_1");
+    send(&mut office, json!({"version":1,"type":"office.cancel","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"renew_request_1"})).await;
+    assert_eq!(recv(&mut pc).await["type"], "relay.cancel");
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    send(&mut office, json!({"version":1,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"renew_request_2","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["request_id"], "renew_request_2");
+    send(&mut office, json!({"version":1,"type":"office.cancel","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"renew_request_2"})).await;
+    assert_eq!(recv(&mut pc).await["type"], "relay.cancel");
+
+    tokio::time::sleep(Duration::from_millis(270)).await;
+    send(&mut office, json!({"version":1,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"past_absolute","body":{}})).await;
+    let expired = recv(&mut office).await;
+    assert_eq!(expired["code"], "session_expired");
+    assert_eq!(pc_ready["session_id"], office_ready["session_id"]);
+}
+
+#[tokio::test]
 async fn rejects_extra_keys_malformed_binary_and_pc_spoofed_origin() {
     let url = server().await;
     let mut spoof = socket(&url, ORIGIN).await;
@@ -415,7 +484,9 @@ async fn rejects_extra_keys_malformed_binary_and_pc_spoofed_origin() {
         json!({"version":2,"type":"office.create","host":"Word","extra":1}),
     )
     .await;
-    assert_eq!(recv(&mut invalid).await["code"], "invalid_frame");
+    let invalid_frame = recv(&mut invalid).await;
+    assert_eq!(invalid_frame["version"], 2);
+    assert_eq!(invalid_frame["code"], "invalid_frame");
     let mut binary = socket(&url, ORIGIN).await;
     binary
         .send(Message::Binary(vec![1, 2, 3].into()))

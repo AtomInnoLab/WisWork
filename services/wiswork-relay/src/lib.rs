@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     net::{IpAddr, SocketAddr},
     sync::{
         Arc,
@@ -44,6 +44,7 @@ const SUPPORTED_CAPABILITIES: &[&str] = &[
 pub struct Config {
     pub pairing_ttl: Duration,
     pub session_ttl: Duration,
+    pub session_max_ttl: Duration,
     pub request_ttl: Duration,
     pub max_claim_attempts: u8,
     pub auth_url: String,
@@ -56,6 +57,7 @@ impl Default for Config {
         Self {
             pairing_ttl: Duration::from_secs(120),
             session_ttl: Duration::from_secs(1800),
+            session_max_ttl: Duration::from_secs(8 * 60 * 60),
             request_ttl: Duration::from_secs(120),
             max_claim_attempts: 5,
             auth_url: "https://auth.dev.wispaper.ai/oidc/me".into(),
@@ -111,6 +113,7 @@ struct Session {
     office_cap: String,
     pc_cap: String,
     expires: Instant,
+    absolute_expires: Instant,
     active: Option<Active>,
     used_requests: VecDeque<String>,
     capabilities: Vec<String>,
@@ -383,7 +386,7 @@ async fn connection(
                 )
                 .await
                 {
-                    error(&tx, code);
+                    error_for_text(&tx, text.as_str(), code);
                     break;
                 }
             }
@@ -444,11 +447,22 @@ fn try_send(tx: &Tx, value: Value) -> Result<(), ()> {
 fn error(tx: &Tx, code: &str) {
     send(tx, json!({"version":1,"type":"relay.error","code":code}));
 }
+fn error_for_text(tx: &Tx, text: &str, code: &str) {
+    let frame_version = serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|value| value.get("version").and_then(Value::as_u64))
+        .filter(|value| *value == PROTOCOL_V2)
+        .unwrap_or(1);
+    versioned_error(tx, frame_version, code);
+}
 fn versioned_error(tx: &Tx, version: u64, code: &str) {
     send(
         tx,
         json!({"version":version,"type":"relay.error","code":code}),
     );
+}
+fn renew_session(session: &mut Session, idle_ttl: Duration) {
+    session.expires = (Instant::now() + idle_ttl).min(session.absolute_expires);
 }
 fn valid_base(m: &Map<String, Value>) -> bool {
     matches!(
@@ -469,16 +483,25 @@ fn capabilities(m: &Map<String, Value>) -> Result<Vec<String>, &'static str> {
         .get("capabilities")
         .and_then(Value::as_array)
         .ok_or("invalid_frame")?;
-    if values.is_empty() || values.len() > SUPPORTED_CAPABILITIES.len() {
+    if values.is_empty() || values.len() > 16 {
         return Err("invalid_frame");
     }
     let mut result = Vec::with_capacity(values.len());
+    let mut seen = HashSet::with_capacity(values.len());
     for value in values {
         let name = value.as_str().ok_or("invalid_frame")?;
-        if !SUPPORTED_CAPABILITIES.contains(&name) || result.iter().any(|item| item == name) {
+        if name.is_empty()
+            || name.len() > 64
+            || !name.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-')
+            })
+            || !seen.insert(name)
+        {
             return Err("invalid_frame");
         }
-        result.push(name.to_owned());
+        if SUPPORTED_CAPABILITIES.contains(&name) {
+            result.push(name.to_owned());
+        }
     }
     Ok(result)
 }
@@ -508,6 +531,7 @@ async fn process(
     }
     match kind {
         "office.create" => create(app, conn, tx, origin, peer, map).await,
+        "pc.negotiate" => negotiate(app, tx, subject.ok_or("auth_required")?, map).await,
         "pc.claim" => claim(app, conn, tx, subject.ok_or("auth_required")?, map).await,
         "pc.approve" => approve(app, conn, tx, map).await,
         "pc.reject" => reject(app, conn, map).await,
@@ -519,6 +543,78 @@ async fn process(
         "pc.error" => pc_error(app, conn, map).await,
         _ => Err("unknown_type"),
     }
+}
+
+async fn negotiate(
+    app: &App,
+    tx: &Tx,
+    subject: [u8; 32],
+    m: Map<String, Value>,
+) -> Result<(), &'static str> {
+    if version(&m)? != PROTOCOL_V2
+        || !exact(
+            &m,
+            &["version", "type", "verification_code", "capabilities"],
+        )
+    {
+        return Err("invalid_frame");
+    }
+    let offered = capabilities(&m)?;
+    let code = string(&m, "verification_code")?;
+    if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("invalid_code");
+    }
+    let mut store = app.inner.state.lock().await;
+    expire(&mut store, app.inner.config.pairing_ttl);
+    if store
+        .global_claims
+        .0
+        .is_none_or(|start| start.elapsed() > app.inner.config.pairing_ttl)
+    {
+        store.global_claims = (Some(Instant::now()), 0);
+    }
+    store.global_claims.1 = store.global_claims.1.saturating_add(1);
+    if store.global_claims.1 > 1_000 {
+        return Err("claim_rate_limited");
+    }
+    if store.claim_attempts.len() >= 10_000 && !store.claim_attempts.contains_key(&subject) {
+        return Err("relay_busy");
+    }
+    let attempts = store
+        .claim_attempts
+        .entry(subject)
+        .or_insert((Instant::now(), 0));
+    if attempts.0.elapsed() > app.inner.config.pairing_ttl {
+        *attempts = (Instant::now(), 0);
+    }
+    attempts.1 = attempts.1.saturating_add(1);
+    if attempts.1 > app.inner.config.max_claim_attempts {
+        return Err("claim_limit");
+    }
+    let id = store.codes.get(code).cloned().ok_or("invalid_code")?;
+    let maximum = app.inner.config.max_claim_attempts;
+    let pairing = store.pairings.get_mut(&id).ok_or("invalid_code")?;
+    pairing.attempts = pairing.attempts.saturating_add(1);
+    if pairing.attempts > maximum {
+        return Err("claim_limit");
+    }
+    if pairing.pc.is_some() {
+        return Err("already_claimed");
+    }
+    let negotiated: Vec<_> = pairing
+        .requested_capabilities
+        .iter()
+        .filter(|name| offered.contains(name))
+        .cloned()
+        .collect();
+    if negotiated.is_empty() {
+        return Err("capability_not_negotiated");
+    }
+    send(
+        tx,
+        json!({"version":PROTOCOL_V2,"type":"pc.negotiated","pairing_version":pairing.version,"capabilities":negotiated}),
+    );
+    Ok(())
 }
 
 async fn create(
@@ -708,33 +804,33 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
         return Err("invalid_frame");
     }
     let id = string(&m, "pairing_id")?.to_owned();
+    let approved_capabilities = if protocol == PROTOCOL_V2 {
+        capabilities(&m)?
+    } else {
+        vec!["agent.v1".to_owned()]
+    };
     let mut s = app.inner.state.lock().await;
     expire(&mut s, app.inner.config.pairing_ttl);
     if s.sessions.len() >= 10_000 {
         return Err("relay_busy");
     }
+    let pending = s.pairings.get(&id).ok_or("invalid_pairing")?;
+    if pending.version != protocol || pending.pc.as_ref().map(|x| x.0) != Some(conn) {
+        return Err("invalid_pairing");
+    }
+    if approved_capabilities != pending.negotiated_capabilities {
+        return Err("capability_not_negotiated");
+    }
     let p = s.pairings.remove(&id).ok_or("invalid_pairing")?;
-    if p.version != protocol {
-        s.pairings.insert(id, p);
-        return Err("invalid_pairing");
-    }
-    if p.pc.as_ref().map(|x| x.0) != Some(conn) {
-        s.pairings.insert(id, p);
-        return Err("invalid_pairing");
-    }
-    let approved_capabilities = if protocol == PROTOCOL_V2 {
-        let approved = capabilities(&m)?;
-        if approved != p.negotiated_capabilities {
-            return Err("capability_not_negotiated");
-        }
-        approved
-    } else {
-        vec!["agent.v1".to_owned()]
-    };
     let sid = token();
     let oc = token();
     let pc = token();
-    let expires = app.inner.config.session_ttl;
+    let expires = app
+        .inner
+        .config
+        .session_ttl
+        .min(app.inner.config.session_max_ttl);
+    let now = Instant::now();
     let pc_approved = if protocol == PROTOCOL_V2 {
         json!({"version":protocol,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs(),"capabilities":approved_capabilities})
     } else {
@@ -765,7 +861,8 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
             pc_tx: tx.clone(),
             office_cap: oc,
             pc_cap: pc,
-            expires: Instant::now() + expires,
+            expires: now + expires,
+            absolute_expires: now + app.inner.config.session_max_ttl,
             active: None,
             used_requests: VecDeque::new(),
             capabilities: approved_capabilities,
@@ -834,6 +931,7 @@ async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'st
     if session.office != conn || session.office_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
+    renew_session(session, app.inner.config.session_ttl);
     let capability_name = if protocol == PROTOCOL_V2 {
         let name = string(&m, "capability_name")?;
         if !session.capabilities.iter().any(|item| item == name) {
@@ -913,6 +1011,7 @@ async fn cancel(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'sta
     if session.office != conn || session.office_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
+    renew_session(session, app.inner.config.session_ttl);
     if session.active.as_ref().map(|a| a.id.as_str()) != Some(rid) {
         return Err("invalid_request");
     }
@@ -952,6 +1051,7 @@ async fn chunk(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
+    renew_session(session, app.inner.config.session_ttl);
     let active = session.active.as_mut().ok_or("invalid_request")?;
     if active.id != rid || !active.started || active.sequence != seq {
         return Err("invalid_sequence");
@@ -1006,6 +1106,7 @@ async fn start(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
+    renew_session(session, app.inner.config.session_ttl);
     let active = session.active.as_mut().ok_or("invalid_request")?;
     if active.id != rid || active.started {
         return Err("invalid_request");
@@ -1031,6 +1132,7 @@ async fn done(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stati
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
+    renew_session(session, app.inner.config.session_ttl);
     if !session
         .active
         .as_ref()
@@ -1073,6 +1175,7 @@ async fn pc_error(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'s
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
+    renew_session(session, app.inner.config.session_ttl);
     if session.active.as_ref().map(|a| a.id.as_str()) != Some(rid) {
         return Err("invalid_request");
     }
