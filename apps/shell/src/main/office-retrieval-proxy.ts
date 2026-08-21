@@ -300,8 +300,8 @@ export function createOfficeRetrievalProxy(options: {
       return new TextEncoder().encode(JSON.stringify(output))
     } catch (error) {
       if (error instanceof Error && error.message === 'auth_required') throw error
-      if (signal?.aborted) throw new Error('retrieval_cancelled')
-      throw new Error('retrieval_upstream_error')
+      if (signal?.aborted) throw new Error('retrieval_cancelled', { cause: error })
+      throw new Error('retrieval_upstream_error', { cause: error })
     } finally {
       active -= 1
       clearTimeout(timer)
