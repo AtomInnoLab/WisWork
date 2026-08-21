@@ -56,3 +56,29 @@ Any new evaluator, parser, archive, image, PDF, or document-conversion dependenc
 ## Rollback and release
 
 Keep the existing selection-only skill behind a build feature flag until all host acceptance checks pass. Disabling the new host/shared registries returns to the current behavior without changing PC Bridge or user identity. Release first to sideloaded desktop Office; Office Web remains unsupported until PNA and API-set acceptance passes.
+
+## Completion phase — remove release-time unsupported gaps
+
+The initial safe implementation exposed the reference inventory but deliberately failed closed where an audited browser implementation or reliable post-write verification was absent. Complete parity means these paths perform their documented core semantics; merely retaining a tool name that returns `office_api_unsupported` does not satisfy this phase.
+
+### Task 6 — Shared declarative execution and browser conversion runtime
+
+Implement a bounded, cancellable declarative Office-operation program format for the raw-code tool names. It must cover the reference project's documented examples without `eval`, `Function`, dynamic import, native shell, DOM/network/storage authority, or direct bridge access. Add audited browser-only PDF/DOCX/XLSX/CSV/image conversion and screenshot helpers where feasible, with fixed VFS inputs, byte/page/pixel/time/concurrency limits, licenses and bundle-size evidence. Web commands must use an explicit bounded PC bridge route; otherwise keep them absent rather than advertising success.
+
+Acceptance: RED then GREEN tests cover parser/operation allowlists, authority denial, cancellation, quotas, conversion outputs, image/model transport, CSP preservation, and license/build checks. Scoped commit and independent review required.
+
+### Task 7 — Complete Word and Excel functional parity
+
+Word must provide real bounded screenshot output and confirmation-gated declarative execution. Excel must provide real screenshot output and every documented mutation variant, including styles, borders, notes, copy, clear formats/all, structural insert/delete, autofit, and chart/pivot create/update, with operation-specific snapshots and semantic post-write verification. Unsupported Office API sets may still return `office_api_unsupported`; supported hosts may not reject a valid documented payload merely because implementation or verification is missing.
+
+Acceptance: contract and adapter tests exercise each documented payload family, idempotent success, stale/cancel/logout races, model-visible screenshot content, and failure-safe verification. Scoped commits and independent reviews required.
+
+### Task 8 — Complete PowerPoint functional parity
+
+Implement bounded slide package export/import for `edit_slide_xml`, `edit_slide_chart`, and `edit_slide_master`, preserving relationships and unrelated package parts. Implement confirmation-gated declarative execution for `execute_office_js`. Every write captures a bounded pre-state, validates the modified package/XML, re-reads affected slide/master state, and rejects false success.
+
+Acceptance: fixture-backed package round trips, malformed XML/archive/path traversal/zip bomb bounds, chart/master relationship preservation, cancellation before irreversible writes, and semantic verification. Scoped commit and independent review required.
+
+### Task 9 — Final integration and release gate
+
+Remove placeholder unsupported branches for supported API sets, update skill prompts/docs to advertise only executable semantics, inspect CSP and production artifacts, and run Office/bridge/shell plus root verification. Manual Windows and macOS Word/Excel/PowerPoint acceptance remains mandatory before declaring production parity. The feature flag remains the rollback boundary.
