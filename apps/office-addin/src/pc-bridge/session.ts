@@ -12,7 +12,7 @@ const DISCOVERY_BATCH_SIZE = 8
 const PROBE_TIMEOUT_MS = 400
 
 export type PcBridgeStatus =
-  'offline' | 'signed_out' | 'pending' | 'rejected' | 'expired' | 'connected'
+  'offline' | 'connecting' | 'signed_out' | 'pending' | 'rejected' | 'expired' | 'connected'
 export interface PcBridgeSnapshot {
   status: PcBridgeStatus
   verificationCode?: string
@@ -254,6 +254,7 @@ export function createPcBridgeSession(dependencies: Dependencies = {}): PcBridge
       if (host === 'unknown') return
       const operation = new AbortController()
       controller = operation
+      publish('connecting')
       const timer = setTimeout(() => operation.abort(), CONNECT_DEADLINE_MS)
       let stage: 'create' | 'poll' = 'create'
       try {

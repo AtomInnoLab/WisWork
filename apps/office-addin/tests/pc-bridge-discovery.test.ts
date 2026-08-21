@@ -103,4 +103,20 @@ describe('PC bridge discovery', () => {
     expect(fetch).toHaveBeenCalledTimes(1)
     expect(session.snapshot()).toEqual({ status: 'offline' })
   })
+
+  it('publishes connecting immediately while bridge discovery is in flight', async () => {
+    let resolveHealth!: (response: Response) => void
+    const fetch = vi.fn(() => new Promise<Response>((resolve) => (resolveHealth = resolve)))
+    const session = createPcBridgeSession({
+      endpoints: [endpoints[0]!],
+      fetch,
+      probeTimeoutMs: 500,
+    })
+
+    const connecting = session.connect('word')
+    expect(session.snapshot()).toEqual({ status: 'connecting' })
+    resolveHealth(new Response('', { status: 503 }))
+    await connecting
+    expect(session.snapshot()).toEqual({ status: 'offline' })
+  })
 })
