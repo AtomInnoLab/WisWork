@@ -346,6 +346,7 @@ function ConfiguredApp() {
       active = false
       created?.session.authenticationLost()
       created?.runtime.dispose()
+      bridge.disconnect()
     }
   }, [bridge, document])
 

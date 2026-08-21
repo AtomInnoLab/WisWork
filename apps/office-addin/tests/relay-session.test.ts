@@ -60,7 +60,7 @@ describe('Office cloud relay session', () => {
     const controller = new AbortController()
     const responsePending = session.authenticatedFetch('/v1/office/messages', { method: 'POST', body: '{"model":"fixed"}', signal: controller.signal })
     const request = frame(socket, 1)
-    expect(request).toMatchObject({ version: 1, type: 'office.request', session_id: 'session', capability: 'cap', body: '{"model":"fixed"}' })
+    expect(request).toMatchObject({ version: 1, type: 'office.request', session_id: 'session', capability: 'cap', body: { model: 'fixed' } })
     socket.receive(JSON.stringify({ version: 1, type: 'relay.start', session_id: 'session', request_id: request.request_id, status: 200, content_type: 'text/event-stream' }))
     const response = await responsePending
     socket.receive(JSON.stringify({ version: 1, type: 'relay.chunk', session_id: 'session', request_id: request.request_id, sequence: 0, data: btoa('data: [DONE]\n') }))
@@ -120,5 +120,49 @@ describe('Office cloud relay session', () => {
     socket.receive(JSON.stringify({ version: 1, type: 'relay.chunk', session_id: 'sid', request_id: request.request_id, sequence: 0, data: btoa('data') }))
     await expect(response).rejects.toThrow('relay_disconnected')
     expect(session.snapshot()).toEqual({ status: 'offline' })
+  })
+
+  it.each(['{', '[]', 'null', '"text"'])('rejects non-object request JSON %s before send', async (body) => {
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({ createSocket: () => socket })
+    const connecting = session.connect('word'); socket.open()
+    socket.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p', polling_secret: 's', verification_code: '123456', expires_in: 120 }))
+    socket.receive(JSON.stringify({ version: 1, type: 'office.approved', session_id: 'sid', capability: 'cap', expires_in: 1800 }))
+    await connecting
+    await expect(session.authenticatedFetch('/v1/office/messages', { method: 'POST', body })).rejects.toThrow('relay_invalid_request')
+    expect(socket.sent).toHaveLength(1)
+  })
+
+  it.each([204, 205, 304])('fails closed when relay.start has non-streaming status %i', async (status) => {
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({ createSocket: () => socket })
+    const connecting = session.connect('word'); socket.open()
+    socket.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p', polling_secret: 's', verification_code: '123456', expires_in: 120 }))
+    socket.receive(JSON.stringify({ version: 1, type: 'office.approved', session_id: 'sid', capability: 'cap', expires_in: 1800 }))
+    await connecting
+    const response = session.authenticatedFetch('/v1/office/messages', { method: 'POST', body: '{}' })
+    const request = frame(socket, 1)
+    socket.receive(JSON.stringify({ version: 1, type: 'relay.start', session_id: 'sid', request_id: request.request_id, status, content_type: 'text/event-stream' }))
+    await expect(response).rejects.toThrow('relay_disconnected')
+    expect(session.snapshot()).toEqual({ status: 'offline' })
+  })
+
+  it('cleans up when request send throws and enforces pairing frame order', async () => {
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({ createSocket: () => socket })
+    const connecting = session.connect('word'); socket.open()
+    socket.receive(JSON.stringify({ version: 1, type: 'office.approved', session_id: 'sid', capability: 'cap', expires_in: 1800 }))
+    await connecting
+    expect(session.snapshot()).toEqual({ status: 'offline' })
+
+    const throwing = new FakeSocket()
+    const connected = createOfficeRelaySession({ createSocket: () => throwing })
+    const pairing = connected.connect('word'); throwing.open()
+    throwing.receive(JSON.stringify({ version: 1, type: 'office.created', pairing_id: 'p', polling_secret: 's', verification_code: '123456', expires_in: 120 }))
+    throwing.receive(JSON.stringify({ version: 1, type: 'office.approved', session_id: 'sid', capability: 'cap', expires_in: 1800 }))
+    await pairing
+    throwing.send = () => { throw new Error('socket failed') }
+    await expect(connected.authenticatedFetch('/v1/office/messages', { method: 'POST', body: '{}' })).rejects.toThrow('relay_disconnected')
+    expect(connected.snapshot()).toEqual({ status: 'offline' })
   })
 })

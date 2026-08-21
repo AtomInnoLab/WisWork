@@ -55,6 +55,7 @@ interface ActiveRequest {
   sequence: number
   bytes: number
   controller?: ReadableStreamDefaultController<Uint8Array>
+  responseResolved: boolean
   resolve: (response: Response) => void
   reject: (error: Error) => void
   timer: ReturnType<typeof setTimeout>
@@ -106,7 +107,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     request = undefined
     clearTimeout(active.timer)
     if (active.abort && active.signal) active.signal.removeEventListener('abort', active.abort)
-    if (active.controller) {
+    if (active.responseResolved && active.controller) {
       try { error ? active.controller.error(new Error(error)) : active.controller.close() } catch { /* cancelled */ }
     } else active.reject(new Error(error ?? 'relay_disconnected'))
   }
@@ -149,6 +150,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
 
     if (frame.type === 'office.created') {
       if (
+        state.status !== 'connecting' ||
         frameBytes > MAX_CONTROL_FRAME_BYTES ||
         !exactKeys(frame, ['version', 'type', 'pairing_id', 'polling_secret', 'verification_code', 'expires_in']) ||
         !opaque(frame.pairing_id) ||
@@ -165,6 +167,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     }
     if (frame.type === 'office.approved') {
       if (
+        (state.status !== 'pending' && state.status !== 'waiting_for_pc') ||
         frameBytes > MAX_CONTROL_FRAME_BYTES ||
         !pairingId ||
         !exactKeys(frame, ['version', 'type', 'session_id', 'capability', 'expires_in']) ||
@@ -174,6 +177,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       ) return protocolFailure()
       sessionId = frame.session_id
       capability = frame.capability
+      pairingId = undefined
       if (pairingTimer !== undefined) clearTimeout(pairingTimer)
       pairingTimer = undefined
       settleConnect?.()
@@ -191,7 +195,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     const active = request
     if (!active || frame.request_id !== active.id || frame.session_id !== sessionId) return protocolFailure()
     if (frame.type === 'relay.start') {
-      if (active.controller || !exactKeys(frame, ['version', 'type', 'session_id', 'request_id', 'status', 'content_type']) || !Number.isSafeInteger(frame.status) || (frame.status as number) < 100 || (frame.status as number) > 599 || typeof frame.content_type !== 'string' || frame.content_type.length < 1 || frame.content_type.length > 128) return protocolFailure()
+      if (active.controller || !exactKeys(frame, ['version', 'type', 'session_id', 'request_id', 'status', 'content_type']) || !Number.isSafeInteger(frame.status) || (frame.status as number) < 200 || (frame.status as number) > 599 || frame.status === 204 || frame.status === 205 || frame.status === 304 || typeof frame.content_type !== 'string' || frame.content_type.length < 1 || frame.content_type.length > 128) return protocolFailure()
       const body = new ReadableStream<Uint8Array>({
         start(controller) { active.controller = controller },
         cancel() {
@@ -201,11 +205,18 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
           }
         },
       })
-      active.resolve(new Response(body, { status: frame.status as number, headers: { 'content-type': frame.content_type } }))
+      try {
+        const response = new Response(body, { status: frame.status as number, headers: { 'content-type': frame.content_type } })
+        active.responseResolved = true
+        active.resolve(response)
+      } catch {
+        protocolFailure()
+      }
       return
     }
     if (frame.type === 'relay.chunk') {
       if (
+        !active.responseResolved ||
         !active.controller ||
         !exactKeys(frame, ['version', 'type', 'session_id', 'request_id', 'sequence', 'data']) ||
         frame.sequence !== active.sequence ||
@@ -225,7 +236,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       return
     }
     if (frame.type === 'relay.done') {
-      if (!active.controller || !exactKeys(frame, ['version', 'type', 'session_id', 'request_id'])) return protocolFailure()
+      if (!active.responseResolved || !active.controller || !exactKeys(frame, ['version', 'type', 'session_id', 'request_id'])) return protocolFailure()
       finishRequest()
       return
     }
@@ -265,6 +276,9 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       if (request) throw new Error('relay_busy')
       if (init.method !== 'POST' || typeof init.body !== 'string') throw new Error('relay_invalid_request')
       if (encoder.encode(init.body).byteLength > MAX_REQUEST_BYTES) throw new Error('relay_request_too_large')
+      let parsedBody: unknown
+      try { parsedBody = JSON.parse(init.body) } catch { throw new Error('relay_invalid_request') }
+      if (!parsedBody || typeof parsedBody !== 'object' || Array.isArray(parsedBody)) throw new Error('relay_invalid_request')
       const id = randomUUID()
       return new Promise<Response>((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -272,7 +286,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
           try { send({ version: 1, type: 'office.cancel', session_id: sessionId, capability, request_id: id }) } catch { /* revoked */ }
           finishRequest('relay_timeout')
         }, REQUEST_TIMEOUT_MS)
-        request = { id, sequence: 0, bytes: 0, resolve, reject, timer }
+        request = { id, sequence: 0, bytes: 0, responseResolved: false, resolve, reject, timer }
         if (init.signal) {
           const abort = () => {
             if (request?.id !== id) return
@@ -284,8 +298,13 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
           if (init.signal.aborted) abort()
           else init.signal.addEventListener('abort', abort, { once: true })
         }
-        if (request?.id === id)
-          send({ version: 1, type: 'office.request', session_id: sessionId, capability, request_id: id, body: init.body })
+        if (request?.id === id) {
+          try {
+            send({ version: 1, type: 'office.request', session_id: sessionId, capability, request_id: id, body: parsedBody })
+          } catch {
+            protocolFailure()
+          }
+        }
       })
     },
   }
