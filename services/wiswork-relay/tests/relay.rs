@@ -332,6 +332,64 @@ async fn pairs_only_after_claim_and_approval_then_forwards_and_cancels() {
 }
 
 #[tokio::test]
+async fn v2_negotiates_exact_capabilities_and_denies_unnegotiated_requests() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.create","host":"Word","capabilities":["agent.v1","web-search.v1","web-fetch.v1"]}),
+    )
+    .await;
+    let created = recv(&mut office).await;
+    assert_eq!(created["version"], 2);
+    let code = created["verification_code"].as_str().unwrap();
+
+    let mut pc = pc_socket(&url).await;
+    send(
+        &mut pc,
+        json!({"version":2,"type":"pc.claim","verification_code":code,"capabilities":["agent.v1","web-search.v1","image-search.v1"]}),
+    )
+    .await;
+    let claimed = recv(&mut pc).await;
+    assert_eq!(
+        claimed["capabilities"],
+        json!(["agent.v1", "web-search.v1"])
+    );
+    send(
+        &mut pc,
+        json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1","web-search.v1"]}),
+    )
+    .await;
+    let pc_ready = recv(&mut pc).await;
+    let office_ready = recv(&mut office).await;
+    assert_eq!(
+        office_ready["capabilities"],
+        json!(["agent.v1", "web-search.v1"])
+    );
+
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"web_request_1","capability_name":"web-fetch.v1","body":{"url":"https://example.com"}}),
+    )
+    .await;
+    assert_eq!(recv(&mut office).await["code"], "capability_not_negotiated");
+
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"web_request_2","capability_name":"web-search.v1","body":{"query":"office agents","max_results":5}}),
+    )
+    .await;
+    let forwarded = recv(&mut pc).await;
+    assert_eq!(forwarded["version"], 2);
+    assert_eq!(forwarded["capability_name"], "web-search.v1");
+    assert_eq!(
+        forwarded["body"],
+        json!({"query":"office agents","max_results":5})
+    );
+    assert_eq!(pc_ready["capabilities"], office_ready["capabilities"]);
+}
+
+#[tokio::test]
 async fn rejects_extra_keys_malformed_binary_and_pc_spoofed_origin() {
     let url = server().await;
     let mut spoof = socket(&url, ORIGIN).await;

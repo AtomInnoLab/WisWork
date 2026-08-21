@@ -32,6 +32,13 @@ const REQUEST_MAX: usize = 256 * 1024;
 const FRAME_MAX: usize = REQUEST_MAX + CONTROL_MAX;
 const CHUNK_MAX: usize = 64 * 1024;
 const RESPONSE_MAX: usize = 16 * 1024 * 1024;
+const PROTOCOL_V2: u64 = 2;
+const SUPPORTED_CAPABILITIES: &[&str] = &[
+    "agent.v1",
+    "web-search.v1",
+    "web-fetch.v1",
+    "image-search.v1",
+];
 
 #[derive(Clone)]
 pub struct Config {
@@ -76,6 +83,7 @@ struct Tx {
     failed: Arc<Notify>,
 }
 struct Pairing {
+    version: u64,
     id: String,
     code: String,
     host: String,
@@ -84,6 +92,8 @@ struct Pairing {
     pc: Option<(u64, Tx)>,
     expires: Instant,
     attempts: u8,
+    requested_capabilities: Vec<String>,
+    negotiated_capabilities: Vec<String>,
 }
 struct Active {
     id: String,
@@ -93,6 +103,7 @@ struct Active {
     started: bool,
 }
 struct Session {
+    version: u64,
     office: u64,
     office_tx: Tx,
     pc: u64,
@@ -102,6 +113,7 @@ struct Session {
     expires: Instant,
     active: Option<Active>,
     used_requests: VecDeque<String>,
+    capabilities: Vec<String>,
 }
 #[derive(Default)]
 struct Store {
@@ -433,8 +445,36 @@ fn error(tx: &Tx, code: &str) {
     send(tx, json!({"version":1,"type":"relay.error","code":code}));
 }
 fn valid_base(m: &Map<String, Value>) -> bool {
-    m.get("version").and_then(Value::as_u64) == Some(1)
-        && m.get("type").and_then(Value::as_str).is_some()
+    matches!(
+        m.get("version").and_then(Value::as_u64),
+        Some(1 | PROTOCOL_V2)
+    ) && m.get("type").and_then(Value::as_str).is_some()
+}
+
+fn version(m: &Map<String, Value>) -> Result<u64, &'static str> {
+    m.get("version")
+        .and_then(Value::as_u64)
+        .filter(|value| *value == 1 || *value == PROTOCOL_V2)
+        .ok_or("invalid_frame")
+}
+
+fn capabilities(m: &Map<String, Value>) -> Result<Vec<String>, &'static str> {
+    let values = m
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .ok_or("invalid_frame")?;
+    if values.is_empty() || values.len() > SUPPORTED_CAPABILITIES.len() {
+        return Err("invalid_frame");
+    }
+    let mut result = Vec::with_capacity(values.len());
+    for value in values {
+        let name = value.as_str().ok_or("invalid_frame")?;
+        if !SUPPORTED_CAPABILITIES.contains(&name) || result.iter().any(|item| item == name) {
+            return Err("invalid_frame");
+        }
+        result.push(name.to_owned());
+    }
+    Ok(result)
 }
 
 async fn process(
@@ -483,9 +523,20 @@ async fn create(
     peer: IpAddr,
     m: Map<String, Value>,
 ) -> Result<(), &'static str> {
-    if !exact(&m, &["version", "type", "host"]) || origin != Some(OFFICE_ORIGIN) {
+    let protocol = version(&m)?;
+    let expected: &[&str] = if protocol == PROTOCOL_V2 {
+        &["version", "type", "host", "capabilities"]
+    } else {
+        &["version", "type", "host"]
+    };
+    if !exact(&m, expected) || origin != Some(OFFICE_ORIGIN) {
         return Err("invalid_frame");
     }
+    let requested_capabilities = if protocol == PROTOCOL_V2 {
+        capabilities(&m)?
+    } else {
+        vec!["agent.v1".to_owned()]
+    };
     let host = string(&m, "host")?;
     if !matches!(host, "Word" | "Excel" | "PowerPoint") {
         return Err("unsupported_host");
@@ -532,6 +583,7 @@ async fn create(
         code = format!("{:06}", rng.random_range(0..1_000_000));
     }
     let pairing = Pairing {
+        version: protocol,
         id: id.clone(),
         code: code.clone(),
         host: host.into(),
@@ -540,12 +592,14 @@ async fn create(
         pc: None,
         expires: Instant::now() + app.inner.config.pairing_ttl,
         attempts: 0,
+        requested_capabilities,
+        negotiated_capabilities: Vec::new(),
     };
     store.codes.insert(code.clone(), id.clone());
     store.pairings.insert(id.clone(), pairing);
     send(
         tx,
-        json!({"version":1,"type":"office.created","pairing_id":id,"verification_code":code,"expires_in":app.inner.config.pairing_ttl.as_secs()}),
+        json!({"version":protocol,"type":"office.created","pairing_id":id,"verification_code":code,"expires_in":app.inner.config.pairing_ttl.as_secs()}),
     );
     Ok(())
 }
@@ -557,9 +611,20 @@ async fn claim(
     subject: [u8; 32],
     m: Map<String, Value>,
 ) -> Result<(), &'static str> {
-    if !exact(&m, &["version", "type", "verification_code"]) {
+    let protocol = version(&m)?;
+    let expected: &[&str] = if protocol == PROTOCOL_V2 {
+        &["version", "type", "verification_code", "capabilities"]
+    } else {
+        &["version", "type", "verification_code"]
+    };
+    if !exact(&m, expected) {
         return Err("invalid_frame");
     }
+    let offered = if protocol == PROTOCOL_V2 {
+        capabilities(&m)?
+    } else {
+        vec!["agent.v1".to_owned()]
+    };
     let code = string(&m, "verification_code")?;
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
         return Err("invalid_code");
@@ -595,6 +660,9 @@ async fn claim(
     };
     let max = app.inner.config.max_claim_attempts;
     let p = s.pairings.get_mut(&id).ok_or("invalid_code")?;
+    if p.version != protocol {
+        return Err("invalid_frame");
+    }
     p.attempts += 1;
     if p.attempts > max {
         return Err("claim_limit");
@@ -603,15 +671,34 @@ async fn claim(
         return Err("already_claimed");
     }
     p.pc = Some((conn, tx.clone()));
+    p.negotiated_capabilities = p
+        .requested_capabilities
+        .iter()
+        .filter(|name| offered.contains(name))
+        .cloned()
+        .collect();
+    if p.negotiated_capabilities.is_empty() {
+        return Err("capability_not_negotiated");
+    }
     send(
         tx,
-        json!({"version":1,"type":"pc.claimed","pairing_id":p.id,"host":p.host,"origin":OFFICE_ORIGIN,"verification_code":p.code,"expires_in":p.expires.saturating_duration_since(Instant::now()).as_secs()}),
+        if protocol == PROTOCOL_V2 {
+            json!({"version":protocol,"type":"pc.claimed","pairing_id":p.id,"host":p.host,"origin":OFFICE_ORIGIN,"verification_code":p.code,"expires_in":p.expires.saturating_duration_since(Instant::now()).as_secs(),"capabilities":p.negotiated_capabilities})
+        } else {
+            json!({"version":1,"type":"pc.claimed","pairing_id":p.id,"host":p.host,"origin":OFFICE_ORIGIN,"verification_code":p.code,"expires_in":p.expires.saturating_duration_since(Instant::now()).as_secs()})
+        },
     );
     Ok(())
 }
 
 async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result<(), &'static str> {
-    if !exact(&m, &["version", "type", "pairing_id"]) {
+    let protocol = version(&m)?;
+    let expected: &[&str] = if protocol == PROTOCOL_V2 {
+        &["version", "type", "pairing_id", "capabilities"]
+    } else {
+        &["version", "type", "pairing_id"]
+    };
+    if !exact(&m, expected) {
         return Err("invalid_frame");
     }
     let id = string(&m, "pairing_id")?.to_owned();
@@ -621,17 +708,41 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
         return Err("relay_busy");
     }
     let p = s.pairings.remove(&id).ok_or("invalid_pairing")?;
+    if p.version != protocol {
+        s.pairings.insert(id, p);
+        return Err("invalid_pairing");
+    }
     if p.pc.as_ref().map(|x| x.0) != Some(conn) {
         s.pairings.insert(id, p);
         return Err("invalid_pairing");
     }
+    let approved_capabilities = if protocol == PROTOCOL_V2 {
+        let approved = capabilities(&m)?;
+        if approved != p.negotiated_capabilities {
+            return Err("capability_not_negotiated");
+        }
+        approved
+    } else {
+        vec!["agent.v1".to_owned()]
+    };
     let sid = token();
     let oc = token();
     let pc = token();
     let expires = app.inner.config.session_ttl;
-    if tx.sender.capacity() == 0 || p.office_tx.sender.capacity() == 0
-        || try_send(tx, json!({"version":1,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs()})).is_err()
-        || try_send(&p.office_tx, json!({"version":1,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs()})).is_err()
+    let pc_approved = if protocol == PROTOCOL_V2 {
+        json!({"version":protocol,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs(),"capabilities":approved_capabilities})
+    } else {
+        json!({"version":1,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs()})
+    };
+    let office_approved = if protocol == PROTOCOL_V2 {
+        json!({"version":protocol,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs(),"capabilities":approved_capabilities})
+    } else {
+        json!({"version":1,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs()})
+    };
+    if tx.sender.capacity() == 0
+        || p.office_tx.sender.capacity() == 0
+        || try_send(tx, pc_approved).is_err()
+        || try_send(&p.office_tx, office_approved).is_err()
     {
         tx.failed.notify_one();
         p.office_tx.failed.notify_one();
@@ -641,6 +752,7 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
     s.sessions.insert(
         sid,
         Session {
+            version: protocol,
             office: p.office,
             office_tx: p.office_tx,
             pc: conn,
@@ -650,6 +762,7 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
             expires: Instant::now() + expires,
             active: None,
             used_requests: VecDeque::new(),
+            capabilities: approved_capabilities,
         },
     );
     Ok(())
@@ -679,17 +792,19 @@ fn session_fields(m: &Map<String, Value>) -> Result<(&str, &str, &str), &'static
     ))
 }
 async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
-    if !exact(
-        &m,
-        &[
-            "version",
-            "type",
-            "session_id",
-            "capability",
-            "request_id",
-            "body",
-        ],
-    ) {
+    let protocol = version(&m)?;
+    let mut expected = vec![
+        "version",
+        "type",
+        "session_id",
+        "capability",
+        "request_id",
+        "body",
+    ];
+    if protocol == PROTOCOL_V2 {
+        expected.push("capability_name");
+    }
+    if !exact(&m, &expected) {
         return Err("invalid_frame");
     }
     if serde_json::to_vec(&m["body"])
@@ -706,9 +821,22 @@ async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'st
     let mut st = app.inner.state.lock().await;
     expire(&mut st, app.inner.config.pairing_ttl);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
-    if session.office != conn || session.office_cap != cap {
+    if session.office != conn || session.office_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
+    let capability_name = if protocol == PROTOCOL_V2 {
+        let name = string(&m, "capability_name")?;
+        if !session.capabilities.iter().any(|item| item == name) {
+            send(
+                &session.office_tx,
+                json!({"version":protocol,"type":"relay.error","session_id":sid,"request_id":rid,"code":"capability_not_negotiated"}),
+            );
+            return Ok(());
+        }
+        Some(name.to_owned())
+    } else {
+        None
+    };
     if session.active.is_some() {
         return Err("request_active");
     }
@@ -728,7 +856,11 @@ async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'st
     });
     send(
         &session.pc_tx,
-        json!({"version":1,"type":"relay.request","session_id":sid,"request_id":rid,"body":m["body"]}),
+        if let Some(name) = capability_name {
+            json!({"version":protocol,"type":"relay.request","session_id":sid,"request_id":rid,"capability_name":name,"body":m["body"]})
+        } else {
+            json!({"version":1,"type":"relay.request","session_id":sid,"request_id":rid,"body":m["body"]})
+        },
     );
     let deadline_app = app.clone();
     let deadline_sid = sid.to_owned();
