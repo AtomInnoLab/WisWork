@@ -168,8 +168,10 @@ export class BrowserExcelAdapter implements ExcelAdapter {
               cells.push(result)
               if (input.includeStyles !== false) {
                 const cell = range.getCell(row, column)
-                cell.format.font.load('name,size,color,bold,italic,underline')
+                cell.format.load('horizontalAlignment')
+                cell.format.font.load('name,size,color,bold,italic,underline,strikethrough')
                 cell.format.fill.load('color')
+                cell.format.borders.load('items/sideIndex,items/style,items/weight,items/color')
                 styleCells.push({ cell, output: result })
               }
             }
@@ -192,7 +194,15 @@ export class BrowserExcelAdapter implements ExcelAdapter {
               bold: cell.format.font.bold ?? null,
               italic: cell.format.font.italic ?? null,
               underline: safe(cell.format.font.underline, 32),
+              strikethrough: cell.format.font.strikethrough ?? null,
               backgroundColor: safe(cell.format.fill.color, 64),
+              horizontalAlignment: safe(cell.format.horizontalAlignment, 32),
+              borders: (cell.format.borders.items ?? []).map((border: RuntimeRecord) => ({
+                side: safe(border.sideIndex, 32),
+                style: safe(border.style, 32),
+                weight: safe(border.weight, 32),
+                color: safe(border.color, 64),
+              })),
             }
         }
         const requested = boxes.reduce((sum, box) => sum + box.rows * box.columns, 0)
@@ -361,9 +371,19 @@ export class BrowserExcelAdapter implements ExcelAdapter {
       }
     })
   }
-  async screenshotRange(): Promise<{ base64: string; mime: 'image/png' }> {
-    runtime('1.9')
-    throw new Error('office_api_unsupported')
+  async screenshotRange(
+    input: { sheetId: number; range: string },
+    signal?: AbortSignal,
+  ): Promise<{ base64: string; mime: 'image/png' }> {
+    cancelled(signal)
+    parseA1(input.range)
+    return this.run(async (context) => {
+      const image = sheet(context, input.sheetId).getRange(input.range).getImage()
+      await sync(context, signal)
+      const base64 = safe(image.value, 6 * 1024 * 1024).replace(/^data:image\/png;base64,/, '')
+      if (!base64) throw new Error('office_read_failed')
+      return { base64, mime: 'image/png' }
+    }, '1.7')
   }
   async getAllObjects(input: ObjectRequest, signal?: AbortSignal): Promise<unknown> {
     cancelled(signal)
@@ -400,7 +420,10 @@ export class BrowserExcelAdapter implements ExcelAdapter {
           type: 'pivotTable',
         })),
       ])
-      for (const item of pending) item.object.load('id,name')
+      for (const item of pending) {
+        item.object.load(item.type === 'chart' ? 'id,name,chartType' : 'id,name')
+        if (item.type === 'chart') item.object.title.load('text,visible')
+      }
       await sync(context, signal)
       const objects = pending.map(({ ws, sheetId, object, type }) => ({
         sheetId,
@@ -409,6 +432,10 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         officeId: safe(object.id, 256),
         name: safe(object.name, 256),
         type,
+        ...(type === 'chart' && {
+          chartType: safe(object.chartType, 64),
+          title: object.title?.visible ? safe(object.title.text, 256) : '',
+        }),
       }))
       const filtered = input.id ? objects.filter((item: any) => item.id === input.id) : objects
       return {
@@ -496,13 +523,25 @@ export class BrowserExcelAdapter implements ExcelAdapter {
       async (ws, context) => {
         const rows = input.cells.length
         const columns = input.cells[0].length
+        const box = parseA1(input.range)
         const r = ws
           .getRange(input.range)
           .getCell(0, 0)
           .getResizedRange(rows - 1, columns - 1)
+        const notes = new Map<string, RuntimeRecord>()
+        for (let row = 0; row < rows; row++)
+          for (let column = 0; column < columns; column++)
+            if (input.cells[row][column].note !== undefined) {
+              const address = cellAddress(box.row + row, box.column + column)
+              const note = ws.notes.getItemOrNullObject(address)
+              note.load('isNullObject')
+              notes.set(address, note)
+            }
         if (!input.allow_overwrite) {
           r.load('values')
-          await sync(context, signal)
+        }
+        if (!input.allow_overwrite || notes.size) await sync(context, signal)
+        if (!input.allow_overwrite) {
           if (
             r.values.some((row: unknown[]) => row.some((value) => value !== null && value !== ''))
           )
@@ -551,7 +590,15 @@ export class BrowserExcelAdapter implements ExcelAdapter {
                 [target.format.font, 'name', style.fontFamily],
                 [target.format.font, 'color', style.fontColor],
                 [target.format.fill, 'color', style.backgroundColor],
-                [target.format, 'horizontalAlignment', style.horizontalAlignment],
+                [
+                  target.format,
+                  'horizontalAlignment',
+                  style.horizontalAlignment === undefined
+                    ? undefined
+                    : ({ left: 'Left', center: 'Center', right: 'Right' } as RuntimeRecord)[
+                        style.horizontalAlignment
+                      ],
+                ],
                 [
                   target,
                   'numberFormat',
@@ -601,10 +648,11 @@ export class BrowserExcelAdapter implements ExcelAdapter {
                 }
               }
             if (source.note) {
-              target.load('address')
-              await sync(context, signal)
               cancelled(signal)
-              ws.notes.add(cleanAddress(target.address), source.note)
+              const address = cellAddress(box.row + row, box.column + column)
+              const existing = notes.get(address)
+              if (existing && !existing.isNullObject) existing.content = source.note
+              else ws.notes.add(address, source.note)
             }
           }
         if (input.copyToRange) {
@@ -635,7 +683,8 @@ export class BrowserExcelAdapter implements ExcelAdapter {
       input,
       (ws) => {
         cancelled(signal)
-        ws.getRange(input.range).clear(input.clearType ?? 'Contents')
+        const types: RuntimeRecord = { contents: 'Contents', formats: 'Formats', all: 'All' }
+        ws.getRange(input.range).clear(types[input.clearType ?? 'contents'])
       },
       signal,
       '1.4',
@@ -809,6 +858,26 @@ export class BrowserExcelAdapter implements ExcelAdapter {
             chart.title.text = input.properties.title
             chart.title.visible = true
           }
+        } else if (input.operation === 'update' && input.objectType === 'pivotTable') {
+          const pivot = collection.getItem(input.id)
+          if (input.properties.source && input.properties.range) {
+            cancelled(signal)
+            pivot.delete()
+            const replacement = collection.add(
+              input.properties.name ?? input.id,
+              input.properties.source,
+              input.properties.range,
+            )
+            cancelled(signal)
+            replacement.refresh()
+          } else {
+            if (input.properties.name) {
+              cancelled(signal)
+              pivot.name = input.properties.name
+            }
+            cancelled(signal)
+            pivot.refresh()
+          }
         } else throw new Error('office_api_unsupported')
       },
       signal,
@@ -873,28 +942,130 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         signal,
       )) as RuntimeRecord
       const cells = result.ranges[0]?.cells ?? []
-      return input.cells
+      const styleMatches = (expected: RuntimeRecord, actual: RuntimeRecord) => {
+        const style = expected.cellStyles
+        if (style) {
+          const normalized: RuntimeRecord = {
+            fontWeight: actual.style?.bold ? 'bold' : 'normal',
+            fontStyle: actual.style?.italic ? 'italic' : 'normal',
+            fontLine: actual.style?.strikethrough
+              ? 'line-through'
+              : actual.style?.underline && actual.style.underline !== 'None'
+                ? 'underline'
+                : 'none',
+            fontSize: actual.style?.fontSize,
+            fontFamily: actual.style?.fontFamily,
+            fontColor: actual.style?.fontColor,
+            backgroundColor: actual.style?.backgroundColor,
+            horizontalAlignment: String(actual.style?.horizontalAlignment ?? '').toLowerCase(),
+            numberFormat: actual.numberFormat,
+          }
+          if (Object.entries(style).some(([key, value]) => normalized[key] !== value)) return false
+        }
+        const borderMap: RuntimeRecord = {
+          EdgeTop: 'top',
+          EdgeBottom: 'bottom',
+          EdgeLeft: 'left',
+          EdgeRight: 'right',
+        }
+        const styles: RuntimeRecord = {
+          Continuous: 'solid',
+          Dash: 'dashed',
+          Dot: 'dotted',
+          Double: 'double',
+        }
+        const weights: RuntimeRecord = { Thin: 'thin', Medium: 'medium', Thick: 'thick' }
+        for (const [side, config] of Object.entries(expected.borderStyles ?? {}) as Array<
+          [string, RuntimeRecord]
+        >) {
+          const actualBorder = actual.style?.borders?.find(
+            (border: RuntimeRecord) => borderMap[border.side] === side,
+          )
+          if (!actualBorder) return false
+          if (config.style && styles[actualBorder.style] !== config.style) return false
+          if (config.weight && weights[actualBorder.weight] !== config.weight) return false
+          if (config.color && actualBorder.color !== config.color) return false
+        }
+        return true
+      }
+      const valuesMatch = input.cells
         .flat()
         .every(
           (expected: RuntimeRecord, index: number) =>
             (!Object.hasOwn(expected, 'value') || cells[index]?.value === expected.value) &&
-            (!Object.hasOwn(expected, 'formula') || cells[index]?.formula === expected.formula),
+            (!Object.hasOwn(expected, 'formula') || cells[index]?.formula === expected.formula) &&
+            styleMatches(expected, cells[index] ?? {}),
         )
+      if (!valuesMatch) return false
+      const notes: Array<{ index: number; content: string }> = input.cells
+        .flat()
+        .flatMap((row: RuntimeRecord, index: number) =>
+          row.note === undefined ? [] : [{ index, content: row.note }],
+        )
+      if (!notes.length) return true
+      return this.run(async (context) => {
+        const box = parseA1(input.copyToRange ?? input.range)
+        const ws = sheet(context, input.sheetId)
+        const loaded: Array<{ note: RuntimeRecord; content: string }> = notes.map(
+          ({ index, content }) => {
+            const address = cellAddress(
+              box.row + Math.floor(index / input.cells[0].length),
+              box.column + (index % input.cells[0].length),
+            )
+            const note = ws.notes.getItemOrNullObject(address)
+            note.load('content,isNullObject')
+            return { note, content }
+          },
+        )
+        await sync(context, signal)
+        return loaded.every(({ note, content }) => !note.isNullObject && note.content === content)
+      }, '1.18')
     }
-    if (tool === 'clear_cell_range' && input.clearType !== 'formats') {
+    if (tool === 'clear_cell_range') {
       const result = (await this.getCellRanges(
         {
           sheetId: input.sheetId,
           ranges: [input.range],
-          includeStyles: false,
+          includeStyles: input.clearType !== 'contents',
           cellLimit: MAX_EXCEL_CELLS,
         },
         signal,
       )) as RuntimeRecord
-      return result.ranges[0].cells.every(
-        (cell: RuntimeRecord) =>
+      return result.ranges[0].cells.every((cell: RuntimeRecord) => {
+        const contentsClear =
           (cell.value === null || cell.value === '') &&
-          (cell.formula === null || cell.formula === ''),
+          (cell.formula === null || cell.formula === '')
+        const formatsClear =
+          cell.numberFormat === 'General' &&
+          !cell.style?.bold &&
+          !cell.style?.italic &&
+          !cell.style?.strikethrough
+        return input.clearType === 'formats'
+          ? formatsClear
+          : input.clearType === 'all'
+            ? contentsClear && formatsClear
+            : contentsClear
+      })
+    }
+    if (tool === 'copy_to') {
+      const result = (await this.getCellRanges(
+        {
+          sheetId: input.sheetId,
+          ranges: [input.sourceRange, input.destinationRange],
+          includeStyles: true,
+          cellLimit: MAX_EXCEL_CELLS,
+        },
+        signal,
+      )) as RuntimeRecord
+      const comparable = (cell: RuntimeRecord) => ({
+        value: cell.value,
+        formula: cell.formula,
+        numberFormat: cell.numberFormat,
+        style: cell.style,
+      })
+      return (
+        JSON.stringify(result.ranges[0]?.cells?.map(comparable)) ===
+        JSON.stringify(result.ranges[1]?.cells?.map(comparable))
       )
     }
     if (tool === 'resize_range')
@@ -903,27 +1074,43 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         format.load('columnWidth,rowHeight')
         await sync(context, signal)
         return (
-          (!input.width || Math.abs(format.columnWidth - input.width.value) < 0.01) &&
-          (!input.height || Math.abs(format.rowHeight - input.height.value) < 0.01)
+          (!input.width ||
+            (input.width.type === 'standard'
+              ? Number.isFinite(format.columnWidth) && format.columnWidth > 0
+              : Math.abs(format.columnWidth - input.width.value) < 0.01)) &&
+          (!input.height ||
+            (input.height.type === 'standard'
+              ? Number.isFinite(format.rowHeight) && format.rowHeight > 0
+              : Math.abs(format.rowHeight - input.height.value) < 0.01))
         )
       })
     if (tool === 'modify_sheet_structure')
-      return this.run(async (context) => {
-        const ws = sheet(context, input.sheetId)
-        if (['hide', 'unhide'].includes(input.operation)) {
-          const range = ws.getRange(`${input.reference}:${input.reference}`)
-          range.load('rowHidden,columnHidden')
+      if (['insert', 'delete'].includes(input.operation))
+        return (
+          (await this.fingerprint(
+            [
+              `structure:${input.sheetId}:${input.operation}:${input.dimension}:${input.reference}:${input.count ?? 1}`,
+            ],
+            signal,
+          )) !== beforeFingerprint
+        )
+      else
+        return this.run(async (context) => {
+          const ws = sheet(context, input.sheetId)
+          if (['hide', 'unhide'].includes(input.operation)) {
+            const range = ws.getRange(`${input.reference}:${input.reference}`)
+            range.load('rowHidden,columnHidden')
+            await sync(context, signal)
+            return (
+              range[input.dimension === 'rows' ? 'rowHidden' : 'columnHidden'] ===
+              (input.operation === 'hide')
+            )
+          }
+          const frozen = ws.freezePanes.getLocationOrNullObject()
+          frozen.load('isNullObject')
           await sync(context, signal)
-          return (
-            range[input.dimension === 'rows' ? 'rowHidden' : 'columnHidden'] ===
-            (input.operation === 'hide')
-          )
-        }
-        const frozen = ws.freezePanes.getLocationOrNullObject()
-        frozen.load('isNullObject')
-        await sync(context, signal)
-        return input.operation === 'unfreeze' ? frozen.isNullObject : !frozen.isNullObject
-      }, '1.7')
+          return input.operation === 'unfreeze' ? frozen.isNullObject : !frozen.isNullObject
+        }, '1.7')
     if (tool === 'modify_workbook_structure') {
       const state = (await this.verifyWorkbook(signal)) as RuntimeRecord
       const names = state.sheets.map((item: RuntimeRecord) => item.name)
@@ -935,12 +1122,33 @@ export class BrowserExcelAdapter implements ExcelAdapter {
     }
     if (tool === 'modify_object') {
       const result = (await this.getAllObjects(
-        { sheetId: input.sheetId, id: input.id ?? input.properties?.name },
+        {
+          sheetId: input.sheetId,
+          id: input.operation === 'delete' ? input.id : (input.properties?.name ?? input.id),
+        },
         signal,
       )) as RuntimeRecord
-      return input.operation === 'delete'
-        ? result.objects.length === 0
-        : result.objects.length === 1
+      if (input.operation === 'delete') return result.objects.length === 0
+      const expectedName = input.properties?.name ?? input.id
+      return result.objects.some(
+        (object: RuntimeRecord) =>
+          object.type === input.objectType &&
+          (!expectedName || object.name === expectedName) &&
+          (!input.properties?.chartType ||
+            object.chartType ===
+              (
+                {
+                  columnClustered: 'ColumnClustered',
+                  barClustered: 'BarClustered',
+                  line: 'Line',
+                  pie: 'Pie',
+                  scatter: 'XYScatter',
+                  area: 'Area',
+                  doughnut: 'Doughnut',
+                } as RuntimeRecord
+              )[input.properties.chartType]) &&
+          (!input.properties?.title || object.title === input.properties.title),
+      )
     }
     return true
   }
