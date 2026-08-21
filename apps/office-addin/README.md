@@ -34,7 +34,8 @@ uploaded VFS files, and installed-skill session state.
 
 ## Start WisWork PC
 
-The Office bridge is disabled by default. Start the PC app with an exact HTTPS add-in origin:
+The Office bridge is enabled by default in official packaged WisWork builds. Source development
+runs remain opt-in; start the PC app with an exact HTTPS add-in origin:
 
 ```bash
 WISWORK_OFFICE_BRIDGE_ENABLED=1 \
@@ -85,7 +86,7 @@ changing the PC bridge, identity, manifest, or stored user data.
 - **Revocation:** Office logout/disconnect drops the in-memory capability. PC logout, bridge shutdown, or PC restart revokes every pairing and active stream.
 - **Port conflict:** the PC app tries the next configured loopback port only when a port is already occupied. It never falls back to another address or a public bind. Startup fails if the whole pool is occupied or a non-conflict bind error occurs.
 - **Diagnostics:** the trusted WisWork account menu reports the local bridge as `disabled`, `ready:<port>`, or `error`; errors do not expose network or authentication details.
-- **Rollback:** unset `WISWORK_OFFICE_BRIDGE_ENABLED` (or set it to `0`) and deploy the prior add-in build. Restarting WisWork PC clears all in-memory grants; no data migration is required.
+- **Rollback:** set `WISWORK_OFFICE_BRIDGE_ENABLED=0` in a packaged deployment (or leave it unset in development) and deploy the prior add-in build. Restarting WisWork PC clears all in-memory grants; no data migration is required.
 
 ## Manual Windows/macOS acceptance
 

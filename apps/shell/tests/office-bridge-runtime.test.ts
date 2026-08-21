@@ -66,10 +66,11 @@ describe('Office bridge shell runtime', () => {
       officeBridgeDiagnosticForError(Object.assign(new Error('denied'), { code: 'EACCES' })),
     ).toBe('error:bind_failed')
   })
-  it('is fail-closed unless explicitly enabled', () => {
-    expect(officeBridgeEnabled({})).toBe(false)
-    expect(officeBridgeEnabled({ WISWORK_OFFICE_BRIDGE_ENABLED: '0' })).toBe(false)
-    expect(officeBridgeEnabled({ WISWORK_OFFICE_BRIDGE_ENABLED: '1' })).toBe(true)
+  it('enables official packaged builds while keeping development opt-in and rollbackable', () => {
+    expect(officeBridgeEnabled({}, false)).toBe(false)
+    expect(officeBridgeEnabled({}, true)).toBe(true)
+    expect(officeBridgeEnabled({ WISWORK_OFFICE_BRIDGE_ENABLED: '0' }, true)).toBe(false)
+    expect(officeBridgeEnabled({ WISWORK_OFFICE_BRIDGE_ENABLED: '1' }, false)).toBe(true)
   })
   it('uses a validated fixed configurable port', () => {
     expect(officeBridgePortFromEnv({})).toBe(43127)

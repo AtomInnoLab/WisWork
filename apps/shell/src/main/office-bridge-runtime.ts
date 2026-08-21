@@ -11,8 +11,13 @@ export const DEFAULT_OFFICE_BRIDGE_PORTS = [
 ]
 export const DEFAULT_OFFICE_ORIGIN = 'https://office.8-216-134-194.sslip.io'
 
-export function officeBridgeEnabled(env: Record<string, string | undefined>): boolean {
-  return env.WISWORK_OFFICE_BRIDGE_ENABLED === '1'
+export function officeBridgeEnabled(
+  env: Record<string, string | undefined>,
+  isPackaged = false,
+): boolean {
+  const configured = env.WISWORK_OFFICE_BRIDGE_ENABLED
+  if (configured === undefined) return isPackaged
+  return configured === '1'
 }
 
 export function officeBridgePortFromEnv(env: Record<string, string | undefined>): number {
