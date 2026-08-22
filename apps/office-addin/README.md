@@ -15,7 +15,7 @@ Excel, or PowerPoint skill. Unsupported hosts fail closed.
   `SKILL.md` plus allowlisted UTF-8 text, PNG, JPEG, or WebP resources. Installed skill metadata is
   added to Agent context dynamically and package resources are mounted read-only in the session VFS.
 - Word: `get_document_text`, `get_document_structure`, `get_ooxml`, `screenshot_document`,
-  `execute_office_js`.
+  `write_document`, `execute_office_js`.
 - Excel: `get_cell_ranges`, `get_range_as_csv`, `search_data`, `screenshot_range`,
   `get_all_objects`, `set_cell_range`, `clear_cell_range`, `copy_to`,
   `modify_sheet_structure`, `modify_workbook_structure`, `resize_range`, `modify_object`,
@@ -45,6 +45,10 @@ are tracked separately. File conversions run only in the bounded terminateable w
 below. Web retrieval remains independently capability-negotiated through the authenticated PC
 Relay route. Browser `bash` is not a
 native shell and has no PC filesystem, process, socket, credential, or package-install access.
+For ordinary drafting, Word uses the structured `write_document` tool with bounded text and an
+exact `replace`, `append`, or `prepend` mode. It creates one confirmation card and reports
+`awaiting_user_confirmation` as success; repeated writes while that card is pending reuse it rather
+than replacing the proposal or retrying the document mutation.
 Supported mutations show a structured title, impact, before/after data, preview, and code when
 present, and execute only after explicit confirmation. Conversion commands accept one matching
 file from the session VFS and mount outputs atomically only after a dedicated Web Worker completes.

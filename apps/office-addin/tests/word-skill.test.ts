@@ -58,6 +58,7 @@ describe('Word compatibility skill', () => {
       'get_document_structure',
       'get_ooxml',
       'screenshot_document',
+      'write_document',
       'execute_office_js',
     ])
     expect(skill.tools.map((tool) => ({ name: tool.name, schema: tool.inputSchema }))).toEqual([
@@ -99,6 +100,19 @@ describe('Word compatibility skill', () => {
             explanation: { type: 'string', maxLength: 50 },
           },
           required: [],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: 'write_document',
+        schema: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', minLength: 1, maxLength: 12_000 },
+            mode: { type: 'string', enum: ['replace', 'append', 'prepend'] },
+            explanation: { type: 'string', maxLength: 100 },
+          },
+          required: ['text', 'mode'],
           additionalProperties: false,
         },
       },
@@ -302,6 +316,57 @@ describe('Word compatibility skill', () => {
     await proposals.confirm(proposal.id)
     expect(fake.executeOperations).toHaveBeenCalledWith(
       [{ op: 'insert_text', location: 'end', text: 'hello' }],
+      expect.any(AbortSignal),
+    )
+  })
+
+  it('offers a direct structured writing tool and treats a pending proposal as success', async () => {
+    const proposals = createStructuredProposalController()
+    const fake = adapter()
+    const skill = createWordSkill({ adapter: fake, vfs: new InMemoryVfs(), proposals })
+
+    const first = await skill.executeTool(
+      call('write_document', {
+        text: 'Large language models generate text from learned patterns.',
+        mode: 'replace',
+        explanation: 'Write an introduction to LLMs',
+      }),
+    )
+    expect(JSON.parse(first.output)).toMatchObject({
+      status: 'awaiting_user_confirmation',
+      mutated: false,
+    })
+    expect(first).toMatchObject({ mutated: false, summary: 'Awaiting confirmation' })
+    const pending = proposals.pending()!
+    expect(pending).toMatchObject({
+      toolName: 'write_document',
+      title: 'Write an introduction to LLMs',
+      preview: {
+        mode: 'replace',
+        text: 'Large language models generate text from learned patterns.',
+      },
+    })
+
+    const duplicate = await skill.executeTool(
+      call('write_document', { text: 'A duplicate attempt', mode: 'append' }),
+    )
+    expect(JSON.parse(duplicate.output)).toEqual({
+      proposalId: pending.id,
+      status: 'awaiting_user_confirmation',
+      mutated: false,
+    })
+    expect(proposals.pending()?.id).toBe(pending.id)
+    expect(fake.fingerprint).toHaveBeenCalledOnce()
+
+    await proposals.confirm(pending.id)
+    expect(fake.executeOperations).toHaveBeenCalledWith(
+      [
+        {
+          op: 'insert_text',
+          location: 'replace',
+          text: 'Large language models generate text from learned patterns.',
+        },
+      ],
       expect.any(AbortSignal),
     )
   })

@@ -76,7 +76,9 @@ describe('configured Office build output', () => {
       const scriptPath = taskpane.match(/src="(\/assets\/taskpane-[^"]+\.js)"/)?.[1]
       expect(scriptPath).toBeDefined()
       const script = await readFile(resolve(dist, scriptPath!.replace(/^\//, '')), 'utf8')
-      expect(script).toContain('Work with your selection')
+      expect(script).toContain('WisWork Agent')
+      expect(script).not.toContain('Work with your selection')
+      expect(script).not.toContain('Session files')
       expect(script).toContain('legacy-workspace')
     } finally {
       for (const [key, value] of Object.entries(prior)) {

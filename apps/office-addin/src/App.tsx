@@ -142,10 +142,10 @@ export function focusWorkspacePanel(heading: FocusTarget, opener: FocusTarget): 
 }
 
 const starterPrompts: Record<OfficeHost, string[]> = {
-  word: ['Summarize this document', 'Make the selected text clearer'],
-  excel: ['Explain the selected data', 'Find patterns in this workbook'],
-  powerpoint: ['Review this presentation', 'Improve the selected slide'],
-  unknown: ['Help with this document'],
+  word: ['帮我写一份项目周报', '写一篇产品发布公告', '列一个活动策划提纲'],
+  excel: ['分析这份表格的数据', '整理一份项目进度表', '找出数据中的异常'],
+  powerpoint: ['起草一份项目汇报', '优化这份演示文稿', '列一个路演演示提纲'],
+  unknown: ['帮我起草一份文档', '总结当前内容', '优化这份材料'],
 }
 
 function ProposalReview(props: {
@@ -279,7 +279,7 @@ export function AgentWorkspace(props: {
   const [panel, setPanel] = useState<WorkspacePanelName | undefined>(props.initialPanel)
   const mounted = useRef(true)
   const panelHeading = useRef<HTMLHeadingElement>(null)
-  const panelOpener = useRef<HTMLButtonElement | undefined>(undefined)
+  const panelOpener = useRef<HTMLElement | undefined>(undefined)
   useEffect(
     () => () => {
       mounted.current = false
@@ -301,65 +301,87 @@ export function AgentWorkspace(props: {
 
   const proposal = state.proposal
   const hasTimeline = state.timeline.length > 0
+  const showConversationChrome =
+    hasTimeline || state.busy || state.applying || Boolean(state.error) || Boolean(proposal)
+  const showStatus =
+    state.busy || state.applying || Boolean(state.activity) || state.status === 'cancelled'
 
   return (
-    <main className="agent-workspace" aria-busy={state.busy || state.applying}>
-      <header className="app-header">
-        <div>
-          <span className="eyebrow">WisWork Agent</span>
-          <h1>{hostLabels[host]}</h1>
-          <p className="connection-line">
-            <span className="connection-dot" />
-            PC connected
-          </p>
-        </div>
-        <div className="header-actions">
-          <button
-            type="button"
-            className="quiet"
-            disabled={state.applying}
-            onClick={() => {
-              session.newTask()
-              ui.clear()
-              setFiles([])
-              setSkills([])
-              setPanel(undefined)
-              setUploadError('')
-            }}
-          >
-            New task
-          </button>
-          <details className="session-menu">
-            <summary aria-label="Session menu">•••</summary>
-            <button type="button" disabled={state.applying} onClick={disconnect}>
-              Log out
+    <main
+      className={`agent-workspace ${showConversationChrome ? 'has-conversation' : 'is-empty'}`}
+      aria-busy={state.busy || state.applying}
+    >
+      {showConversationChrome && (
+        <header className="app-header">
+          <div>
+            <span className="eyebrow">WisWork Agent</span>
+            <h1>{hostLabels[host]}</h1>
+            <p className="connection-line">
+              <span className="connection-dot" />
+              PC connected
+            </p>
+          </div>
+          <div className="header-actions">
+            <button
+              type="button"
+              className="quiet"
+              disabled={state.applying}
+              onClick={() => {
+                session.newTask()
+                ui.clear()
+                setFiles([])
+                setSkills([])
+                setPanel(undefined)
+                setUploadError('')
+              }}
+            >
+              New task
             </button>
-          </details>
-        </div>
-      </header>
+            <details className="session-menu">
+              <summary aria-label="Session menu">•••</summary>
+              <button
+                type="button"
+                disabled={state.applying}
+                onClick={(event) => {
+                  panelOpener.current =
+                    event.currentTarget.closest('details')?.querySelector('summary') ??
+                    event.currentTarget
+                  setPanel('skills')
+                  event.currentTarget.closest('details')?.removeAttribute('open')
+                }}
+              >
+                管理技能
+              </button>
+              <button type="button" disabled={state.applying} onClick={disconnect}>
+                Log out
+              </button>
+            </details>
+          </div>
+        </header>
+      )}
 
-      <section className="agent-status" aria-live="polite">
-        <span className={`status-dot ${state.busy || state.applying ? 'busy' : ''}`} />
-        <strong>
-          {state.applying
-            ? 'Applying approved change'
-            : state.busy
-              ? 'Agent is working'
-              : 'Agent is ready'}
-        </strong>
-        <span>{state.activity || (state.status === 'cancelled' ? 'Run stopped' : '')}</span>
-      </section>
+      {showStatus && (
+        <section className="agent-status" aria-live="polite">
+          <span className={`status-dot ${state.busy || state.applying ? 'busy' : ''}`} />
+          <strong>
+            {state.applying
+              ? 'Applying approved change'
+              : state.busy
+                ? 'Agent is working'
+                : 'Agent is ready'}
+          </strong>
+          <span>{state.activity || (state.status === 'cancelled' ? 'Run stopped' : '')}</span>
+        </section>
+      )}
 
       <section className="agent-timeline" aria-label="Agent conversation" aria-live="polite">
         {!hasTimeline && (
           <div className="empty-state">
-            <span className="agent-mark" aria-hidden="true">
-              W
-            </span>
-            <h2>What are we working on?</h2>
+            <h2>让 AI 帮你从零起草</h2>
             <p>
-              Ask WisWork to read, explain, or prepare a change. Document edits always need
-              approval.
+              描述主题、要点或粘贴参考素材，
+              <br />
+              AI 直接为你写出初稿。
             </p>
             <div className="starter-prompts">
               {starterPrompts[host].map((prompt) => (
@@ -367,7 +389,7 @@ export function AgentWorkspace(props: {
                   key={prompt}
                   type="button"
                   className="prompt-chip"
-                  onClick={() => session.send(prompt)}
+                  onClick={() => setInstruction(prompt)}
                 >
                   {prompt}
                 </button>
@@ -572,7 +594,7 @@ export function AgentWorkspace(props: {
               send()
             }
           }}
-          placeholder={`Ask about ${hostLabels[host]}…`}
+          placeholder="描述修改、写作要求，或直接提问"
           rows={3}
           maxLength={12_000}
           disabled={state.busy || state.applying}
@@ -590,20 +612,12 @@ export function AgentWorkspace(props: {
                 setPanel(panel === 'attachments' ? undefined : 'attachments')
               }}
             >
-              ＋
+              📎
             </button>
-            <button
-              type="button"
-              className="tool-button"
-              aria-expanded={panel === 'skills'}
-              disabled={state.applying}
-              onClick={(event) => {
-                panelOpener.current = event.currentTarget
-                setPanel(panel === 'skills' ? undefined : 'skills')
-              }}
-            >
-              Skills
-            </button>
+            <span className="confirmation-chip">
+              <span aria-hidden="true" />
+              更改需确认
+            </span>
           </div>
           {state.busy ? (
             <button
@@ -639,15 +653,13 @@ export function LegacyAgentWorkspace(props: {
 }) {
   const state = useOfficeAgent(props.session)
   const [instruction, setInstruction] = useState('')
-  const [files, setFiles] = useState<readonly string[]>(props.ui.attachments())
-  const [uploadError, setUploadError] = useState('')
   const proposal = state.proposal
   return (
     <main className="taskpane legacy-workspace">
       <header className="app-header">
         <div>
           <span className="eyebrow">WisWork Agent</span>
-          <h1>Work with your selection</h1>
+          <h1>{hostLabels[props.host]}</h1>
           <p>{hostLabels[props.host]} is connected. Edits always require your approval.</p>
         </div>
         <button
@@ -679,35 +691,16 @@ export function LegacyAgentWorkspace(props: {
           reject={() => props.session.reject()}
         />
       )}
-      <section className="management-panel" aria-label="Session files">
-        <label className="upload-button" htmlFor="legacy-session-upload">
-          Add session file
-        </label>
-        <input
-          id="legacy-session-upload"
-          type="file"
-          disabled={state.applying}
-          onChange={(event) => {
-            const file = event.currentTarget.files?.[0]
-            if (!file) return
-            setUploadError('')
-            void props.ui
-              .upload(file)
-              .then(() => setFiles(props.ui.attachments()))
-              .catch((error: unknown) => setUploadError(safeUploadError(error)))
-          }}
-        />
-        {uploadError && <p className="error-text">{uploadError}</p>}
-        <p>{files.length ? files.join(', ') : 'No uploaded files in this session.'}</p>
-        <p>Installed skills: {props.ui.skills().join(', ') || 'none'}</p>
-      </section>
       <section className="composer-shell" aria-label="Message WisWork Agent">
-        <label htmlFor="legacy-instruction">What should the Agent do?</label>
+        <label className="visually-hidden" htmlFor="legacy-instruction">
+          Message WisWork Agent
+        </label>
         <textarea
           id="legacy-instruction"
           value={instruction}
           onChange={(event) => setInstruction(event.target.value)}
           rows={4}
+          placeholder="描述修改、写作要求，或直接提问"
           maxLength={12_000}
           disabled={state.busy || state.applying}
         />

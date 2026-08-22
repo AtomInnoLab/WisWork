@@ -95,6 +95,26 @@ describe('Office Agent workspace UI', () => {
     expect(html).toContain('aria-label="Message WisWork Agent"')
   })
 
+  it('matches the WisWork writing-first empty state without legacy selection or session-file chrome', () => {
+    const html = workspaceMarkup({
+      assistantText: '',
+      status: 'idle',
+      proposal: undefined,
+      timeline: Object.freeze([]),
+    })
+    expect(html).toContain('让 AI 帮你从零起草')
+    expect(html).toContain('描述主题、要点或粘贴参考素材')
+    expect(html).toContain('帮我写一份项目周报')
+    expect(html).toContain('写一篇产品发布公告')
+    expect(html).toContain('列一个活动策划提纲')
+    expect(html).toContain('描述修改、写作要求，或直接提问')
+    expect(html).toContain('更改需确认')
+    expect(html).not.toContain('Work with your selection')
+    expect(html).not.toContain('Session files')
+    expect(html).not.toContain('Agent is ready')
+    expect(html).not.toContain('class="app-header"')
+  })
+
   it('exposes bounded attachment and skill management panels without permanent vertical chrome', () => {
     const files = workspaceMarkup({}, 'attachments')
     expect(files).toContain('role="dialog"')
@@ -121,8 +141,7 @@ describe('Office Agent workspace UI', () => {
     expect(applying).toContain('Applying…')
 
     expect(applying).toMatch(/aria-label="Attachments"[^>]*disabled/)
-    expect(applying).toMatch(/>Skills<\/button>/)
-    expect(applying).toMatch(/aria-expanded="false" disabled/)
+    expect(applying).toMatch(/<button type="button" disabled="">管理技能<\/button>/)
     const applyingPanel = workspaceMarkup({ applying: true }, 'attachments')
     expect(applyingPanel).toMatch(/class="upload-button"[^>]*aria-disabled="true"/)
     expect(applyingPanel).toMatch(/id="session-upload"[^>]*disabled/)

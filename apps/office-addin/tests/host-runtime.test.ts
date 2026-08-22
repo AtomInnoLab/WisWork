@@ -10,6 +10,7 @@ const inventories = {
     'get_ooxml',
     'read',
     'screenshot_document',
+    'write_document',
   ],
   excel: [
     'bash',

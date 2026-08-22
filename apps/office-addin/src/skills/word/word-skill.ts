@@ -30,6 +30,15 @@ const codeInput = exactObject({
   code: stringField({ minLength: 1, maxLength: MAX_CODE }),
   explanation: optionalField(stringField({ maxLength: 100 })),
 })
+const writeInput = exactObject({
+  text: stringField({ minLength: 1, maxLength: 12_000 }),
+  mode: (value) => {
+    if (!['replace', 'append', 'prepend'].includes(String(value)))
+      throw new Error('invalid_tool_input')
+    return value as 'replace' | 'append' | 'prepend'
+  },
+  explanation: optionalField(stringField({ maxLength: 100 })),
+})
 
 const tools = [
   {
@@ -75,6 +84,21 @@ const tools = [
         explanation: { type: 'string', maxLength: 50 },
       },
       required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'write_document',
+    description:
+      'Write drafted text to the Word document after explicit user confirmation. Use this for normal writing instead of execute_office_js. A returned awaiting_user_confirmation status is success; do not call another write tool in the same turn.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', minLength: 1, maxLength: 12_000 },
+        mode: { type: 'string', enum: ['replace', 'append', 'prepend'] },
+        explanation: { type: 'string', maxLength: 100 },
+      },
+      required: ['text', 'mode'],
       additionalProperties: false,
     },
   },
@@ -182,10 +206,81 @@ export function createWordSkill(options: {
   vfs: InMemoryVfs
   proposals: StructuredProposalController
 }): AgentSkill {
+  const awaitingConfirmation = (): ToolExecution | undefined => {
+    const pending = options.proposals.pending()
+    return pending
+      ? {
+          output: JSON.stringify({
+            proposalId: pending.id,
+            status: 'awaiting_user_confirmation',
+            mutated: false,
+          }),
+          mutated: false,
+          summary: 'Awaiting confirmation',
+        }
+      : undefined
+  }
+
+  const proposeOperations = async (
+    toolName: string,
+    title: string,
+    operations: WordDeclarativeOperation[],
+    signal?: AbortSignal,
+    code?: string,
+  ): Promise<ToolExecution> => {
+    const existing = awaitingConfirmation()
+    if (existing) return existing
+    const fingerprint = await options.adapter.fingerprint(signal)
+    assertNotCancelled(signal)
+    const proposal = options.proposals.propose({
+      operation: toolName,
+      toolName,
+      title,
+      preview:
+        toolName === 'write_document'
+          ? {
+              mode: {
+                replace: 'replace',
+                end: 'append',
+                start: 'prepend',
+              }[operations[0]?.op === 'insert_text' ? operations[0].location : 'replace'],
+              text: operations[0]?.op === 'insert_text' ? operations[0].text : '',
+            }
+          : { version: 1, operations },
+      impact: {
+        host: 'word',
+        targets: operations.map((operation) =>
+          operation.op === 'insert_text'
+            ? `document:${operation.location}`
+            : `document:search:${operation.search.slice(0, 64)}`,
+        ),
+        count: operations.length,
+      },
+      fingerprint,
+      code,
+      validate: async (confirmSignal) =>
+        (await options.adapter.fingerprint(confirmSignal)) === fingerprint,
+      execute: (confirmSignal) => options.adapter.executeOperations(operations, confirmSignal),
+      verify: async (confirmSignal) => {
+        if (!(await options.adapter.verifyOperations(operations, confirmSignal)))
+          throw new Error('office_verify_failed')
+      },
+    })
+    return {
+      output: JSON.stringify({
+        proposalId: proposal.id,
+        status: 'awaiting_user_confirmation',
+        mutated: false,
+      }),
+      mutated: false,
+      summary: 'Awaiting confirmation',
+    }
+  }
+
   return {
     id: 'office-word',
     systemPrompt:
-      'Word reads and screenshots are bounded. execute_office_js accepts only a version-1 JSON declarative program with allowlisted insert_text or replace_all operations; JavaScript and ambient authority are rejected. Every write requires confirmation, stale-state validation, and semantic verification.',
+      'Word reads and screenshots are bounded. For ordinary drafting and document writing, always call write_document with structured text and mode. execute_office_js accepts only a version-1 JSON declarative program with allowlisted insert_text or replace_all operations; JavaScript and ambient authority are rejected. Every write requires confirmation, stale-state validation, and semantic verification. A tool result with status awaiting_user_confirmation means the write proposal succeeded: stop calling write tools and ask the user to confirm the visible proposal.',
     tools: [...tools],
     async executeTool(call, signal) {
       if (call.inputError || call.truncated) return failure(call.name, 'invalid_tool_input')
@@ -245,41 +340,27 @@ export function createWordSkill(options: {
             summary: 'Rendered Word page',
           }
         }
+        if (call.name === 'write_document') {
+          const input = writeInput(call.input)
+          const location = { replace: 'replace', append: 'end', prepend: 'start' }[input.mode] as
+            'replace' | 'end' | 'start'
+          return await proposeOperations(
+            call.name,
+            input.explanation || 'Write drafted text to the document',
+            [{ op: 'insert_text', location, text: input.text }],
+            signal,
+          )
+        }
         if (call.name === 'execute_office_js') {
           const input = codeInput(call.input)
           const program = parseDeclarativeProgram(input.code, parseWordOperation)
-          const fingerprint = await options.adapter.fingerprint(signal)
-          assertNotCancelled(signal)
-          const proposal = options.proposals.propose({
-            operation: 'execute_office_js',
-            toolName: call.name,
-            title: input.explanation || 'Execute declarative Word operations',
-            preview: { version: program.version, operations: program.operations },
-            impact: {
-              host: 'word',
-              targets: program.operations.map((operation) =>
-                operation.op === 'insert_text'
-                  ? `document:${operation.location}`
-                  : `document:search:${operation.search.slice(0, 64)}`,
-              ),
-              count: program.operations.length,
-            },
-            fingerprint,
-            code: input.code,
-            validate: async (confirmSignal) =>
-              (await options.adapter.fingerprint(confirmSignal)) === fingerprint,
-            execute: (confirmSignal) =>
-              options.adapter.executeOperations(program.operations, confirmSignal),
-            verify: async (confirmSignal) => {
-              if (!(await options.adapter.verifyOperations(program.operations, confirmSignal)))
-                throw new Error('office_verify_failed')
-            },
-          })
-          return {
-            output: JSON.stringify({ proposalId: proposal.id, mutated: false }),
-            mutated: false,
-            summary: 'Proposed declarative Word operations',
-          }
+          return await proposeOperations(
+            call.name,
+            input.explanation || 'Execute declarative Word operations',
+            program.operations,
+            signal,
+            input.code,
+          )
         }
         return failure(call.name, 'invalid_tool_input')
       } catch (error) {
