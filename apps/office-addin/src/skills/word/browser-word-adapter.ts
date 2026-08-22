@@ -60,11 +60,17 @@ export interface WordScreenshotResult {
   mime: 'image/png'
 }
 
+export interface WordDocumentSnapshot {
+  text: string
+  fingerprint: string
+}
+
 export type WordDeclarativeOperation =
   | { op: 'insert_text'; location: 'start' | 'end' | 'replace'; text: string }
   | { op: 'replace_all'; search: string; replacement: string; matchCase: boolean }
 
 export interface WordAdapter {
+  getDocumentSnapshot(signal?: AbortSignal): Promise<WordDocumentSnapshot>
   getDocumentText(
     options: { startParagraph?: number; endParagraph?: number; includeFormatting?: boolean },
     signal?: AbortSignal,
@@ -440,11 +446,20 @@ export class BrowserWordAdapter implements WordAdapter {
   }
 
   async fingerprint(signal?: AbortSignal): Promise<string> {
+    return (await this.getDocumentSnapshot(signal)).fingerprint
+  }
+
+  async getDocumentSnapshot(signal?: AbortSignal): Promise<WordDocumentSnapshot> {
     cancelled(signal)
     const value = await readBodyOoxml(signal)
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
     cancelled(signal)
-    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+    return {
+      text: ooxmlText(value),
+      fingerprint: [...new Uint8Array(digest)]
+        .map((byte) => byte.toString(16).padStart(2, '0'))
+        .join(''),
+    }
   }
 
   async executeOperations(

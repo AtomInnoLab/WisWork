@@ -17,7 +17,10 @@ const TEST_ISSUER: &str = "https://issuer.example.test";
 const TEST_AUDIENCE: &str = "relay-test-client";
 const TEST_PRIVATE_KEY_DER: &str = "MIG2AgEAMBAGByqGSM49AgEGBSuBBAAiBIGeMIGbAgEBBDBi2P/vImpNt3oyLprNPTVoaYRvIaJWVxDjsjoRF0YfAmwKUhtjGdj0qh0NWGlbVVOhZANiAAQ1aooGczWALsnMxfjM77d43rpKPqBtQEHPDrizP7fpwi/SbkZ2T/czW8Ye+5Ix3WIYFMM60AKyMtLQXT8V4VjQb0jM9wRkC/JEa0C50q9dk8APUPfbJMDbcsqcyW0bl2w=";
 
-async fn server_with_session_ttls(session_ttls: Option<(Duration, Duration)>) -> String {
+async fn server_with_limits(
+    session_ttls: Option<(Duration, Duration)>,
+    max_global_claims: Option<u32>,
+) -> String {
     let auth_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let auth_addr = auth_listener.local_addr().unwrap();
     let auth = axum::Router::new()
@@ -60,6 +63,9 @@ async fn server_with_session_ttls(session_ttls: Option<(Duration, Duration)>) ->
         config.session_ttl = idle;
         config.session_max_ttl = maximum;
     }
+    if let Some(maximum) = max_global_claims {
+        config.max_global_claims = maximum;
+    }
     tokio::spawn(async move {
         axum::serve(
             listener,
@@ -69,6 +75,10 @@ async fn server_with_session_ttls(session_ttls: Option<(Duration, Duration)>) ->
         .unwrap()
     });
     format!("ws://{addr}/office-relay")
+}
+
+async fn server_with_session_ttls(session_ttls: Option<(Duration, Duration)>) -> String {
+    server_with_limits(session_ttls, None).await
 }
 
 async fn server() -> String {
@@ -424,6 +434,106 @@ async fn v2_negotiates_exact_capabilities_and_denies_unnegotiated_requests() {
     let revoked = recv(&mut office).await;
     assert_eq!(revoked["version"], 2);
     assert_eq!(revoked["code"], "session_revoked");
+}
+
+#[tokio::test]
+async fn three_valid_v2_negotiations_and_claims_share_one_subject_budget() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    let mut pcs = Vec::new();
+
+    for host in ["Word", "Excel", "PowerPoint"] {
+        send(
+            &mut office,
+            json!({"version":2,"type":"office.create","host":host,"capabilities":["agent.v1"]}),
+        )
+        .await;
+        let created = recv(&mut office).await;
+        let code = created["verification_code"].clone();
+        let mut pc = pc_socket(&url).await;
+        send(
+            &mut pc,
+            json!({"version":2,"type":"pc.negotiate","verification_code":code,"capabilities":["agent.v1"]}),
+        )
+        .await;
+        let negotiated = recv(&mut pc).await;
+        assert_eq!(negotiated["type"], "pc.negotiated", "{negotiated}");
+        send(
+            &mut pc,
+            json!({"version":2,"type":"pc.claim","verification_code":code,"capabilities":["agent.v1"]}),
+        )
+        .await;
+        assert_eq!(recv(&mut pc).await["type"], "pc.claimed");
+        pcs.push(pc);
+    }
+}
+
+#[tokio::test]
+async fn negotiated_claims_do_not_double_consume_the_global_claim_budget() {
+    let url = server_with_limits(None, Some(3)).await;
+    let mut office = socket(&url, ORIGIN).await;
+    let mut pcs = Vec::new();
+
+    for host in ["Word", "Excel"] {
+        send(
+            &mut office,
+            json!({"version":2,"type":"office.create","host":host,"capabilities":["agent.v1"]}),
+        )
+        .await;
+        let created = recv(&mut office).await;
+        let code = created["verification_code"].clone();
+        let mut pc = pc_socket(&url).await;
+        send(
+            &mut pc,
+            json!({"version":2,"type":"pc.negotiate","verification_code":code,"capabilities":["agent.v1"]}),
+        )
+        .await;
+        assert_eq!(recv(&mut pc).await["type"], "pc.negotiated");
+        send(
+            &mut pc,
+            json!({"version":2,"type":"pc.claim","verification_code":code,"capabilities":["agent.v1"]}),
+        )
+        .await;
+        assert_eq!(recv(&mut pc).await["type"], "pc.claimed");
+        pcs.push(pc);
+    }
+
+    let mut invalid = pc_socket(&url).await;
+    send(
+        &mut invalid,
+        json!({"version":1,"type":"pc.claim","verification_code":"999999"}),
+    )
+    .await;
+    assert_eq!(recv(&mut invalid).await["code"], "invalid_code");
+
+    let mut limited = pc_socket(&url).await;
+    send(
+        &mut limited,
+        json!({"version":1,"type":"pc.claim","verification_code":"999999"}),
+    )
+    .await;
+    assert_eq!(recv(&mut limited).await["code"], "claim_rate_limited");
+}
+
+#[tokio::test]
+async fn invalid_v2_codes_remain_subject_limited_across_reconnects() {
+    let url = server().await;
+    for attempt in 0..6 {
+        let mut pc = pc_socket(&url).await;
+        send(
+            &mut pc,
+            json!({"version":2,"type":"pc.negotiate","verification_code":"999999","capabilities":["agent.v1"]}),
+        )
+        .await;
+        assert_eq!(
+            recv(&mut pc).await["code"],
+            if attempt < 5 {
+                "invalid_code"
+            } else {
+                "claim_limit"
+            }
+        );
+    }
 }
 
 #[tokio::test]

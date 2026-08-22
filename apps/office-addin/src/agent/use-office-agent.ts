@@ -57,8 +57,8 @@ const confirmationErrors: Readonly<Record<string, SafeSessionError>> = Object.fr
   },
   proposal_stale: {
     code: 'proposal_stale',
-    message: 'The document changed. Ask the Agent to prepare a fresh proposal.',
-    retryable: false,
+    message: '文档内容已发生变化，刚才的修改未应用。',
+    retryable: true,
   },
   office_write_failed: {
     code: 'office_write_failed',
@@ -117,6 +117,17 @@ const safeRunError = (error: string): SafeSessionError =>
     message: 'The Agent could not complete this request. Try again.',
     retryable: true,
   }
+
+function toolActivity(name: string, state: 'running' | 'complete' | 'error'): string {
+  const attachment = name === 'read' || name === 'bash'
+  const read = /^(?:get_|read_|list_|search_|screenshot_|verify_)/.test(name)
+  const action = attachment ? '处理附件' : read ? '读取内容' : '准备修改'
+  return state === 'running'
+    ? `正在${action}…`
+    : state === 'error'
+      ? `${action}未完成`
+      : `已${action}`
+}
 
 export function createOfficeAgentSession(dependencies: {
   transport: AgentTransport
@@ -214,32 +225,39 @@ export function createOfficeAgentSession(dependencies: {
           replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
           activeAssistantId = undefined
         }
+        const summary = toolActivity(call.name, 'running')
         append({
           id: eventId(),
           kind: 'tool',
           callId: call.id,
           name: boundedText(call.name),
-          summary: `Running ${boundedText(call.name)}`,
+          summary,
           state: 'running',
         })
-        publish({ activity: `Running ${call.name}` })
+        publish({ activity: summary })
       },
       onToolExecuted: (event) => {
         const tool = [...state.timeline]
           .reverse()
           .find((item) => item.kind === 'tool' && item.callId === event.call.id)
         if (tool) {
+          const summary = toolActivity(
+            event.call.name,
+            event.execution.isError ? 'error' : 'complete',
+          )
           replace(tool.id, (item) => {
             if (item.kind !== 'tool') return item
             return {
               ...item,
-              summary: boundedText(event.execution.summary),
+              summary,
               state: event.execution.isError ? 'error' : 'complete',
             }
           })
         }
         appendPendingProposal()
-        publish({ activity: event.execution.summary })
+        publish({
+          activity: toolActivity(event.call.name, event.execution.isError ? 'error' : 'complete'),
+        })
       },
       onTurnEnd: () => {
         activeAssistantId = undefined

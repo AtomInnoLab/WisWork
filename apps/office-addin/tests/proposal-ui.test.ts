@@ -3,7 +3,7 @@ import { proposalPresentation, safeUploadError, uploadSessionFile } from '../src
 import type { OfficeHostRuntime } from '../src/agent/host-runtime.js'
 
 describe('generic proposal presentation', () => {
-  it('preserves structured impact, preview, before, after, and code', () => {
+  it('presents structured impact as a readable comparison without protocol JSON or code', () => {
     expect(
       proposalPresentation({
         id: 'p1',
@@ -23,8 +23,42 @@ describe('generic proposal presentation', () => {
       targets: ['slide-1'],
       before: '<old/>',
       after: '<new/>',
-      preview: '{\n  "nodes": 2\n}',
-      code: 'sync()',
+      preview: '',
+      code: undefined,
+    })
+  })
+
+  it('turns a preview-only structured proposal into readable copy', () => {
+    expect(
+      proposalPresentation({
+        id: 'p3',
+        operation: 'write_document',
+        title: 'Append text',
+        impact: { host: 'word', targets: ['document:end'], count: 1 },
+        preview: { mode: 'append', text: 'New paragraph' },
+        fingerprint: 'fp',
+        code: '{"version":1}',
+      }),
+    ).toMatchObject({
+      preview: 'Mode: append\nText: New paragraph',
+      code: undefined,
+    })
+  })
+
+  it('keeps the actionable preview when only an internal before snapshot exists', () => {
+    expect(
+      proposalPresentation({
+        id: 'p4',
+        operation: 'duplicate_slide',
+        title: 'Duplicate slide',
+        impact: { host: 'powerpoint', targets: ['slide-1'], count: 1 },
+        preview: { slideIndex: 3, slideId: 'slide-1' },
+        fingerprint: 'fp',
+        before: { fingerprint: 'internal-hash', slideId: 'slide-1' },
+      }),
+    ).toMatchObject({
+      preview: 'SlideIndex: 3\nSlideId: slide-1',
+      after: '',
     })
   })
 

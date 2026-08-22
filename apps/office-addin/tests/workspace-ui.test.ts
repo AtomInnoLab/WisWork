@@ -7,9 +7,11 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import {
   AgentWorkspace,
+  LegacyAgentWorkspace,
   composerKeyAction,
   createOfficeWorkspaceUi,
   focusWorkspacePanel,
+  isTimelineNearBottom,
   type OfficeWorkspaceUi,
   type WorkspacePanelName,
 } from '../src/App.js'
@@ -24,7 +26,11 @@ const proposal = {
   fingerprint: 'fp',
 }
 
-function workspaceMarkup(overrides: Partial<OfficeAgentSnapshot> = {}, panel?: WorkspacePanelName) {
+function workspaceMarkup(
+  overrides: Partial<OfficeAgentSnapshot> = {},
+  panel?: WorkspacePanelName,
+  host: 'word' | 'excel' | 'powerpoint' | 'unknown' = 'word',
+) {
   const snapshot: OfficeAgentSnapshot = {
     assistantText: 'Draft ready',
     activity: '',
@@ -77,7 +83,7 @@ function workspaceMarkup(overrides: Partial<OfficeAgentSnapshot> = {}, panel?: W
       session,
       ui,
       disconnect: vi.fn(),
-      host: 'word',
+      host,
       initialPanel: panel,
     }),
   )
@@ -91,8 +97,80 @@ describe('Office Agent workspace UI', () => {
     expect(html).toContain('Prepared change')
     expect(html.indexOf('Prepared change')).toBeLessThan(html.indexOf('Approval required'))
     expect(html).toContain('Confirm change')
-    expect(html).toContain('New task')
+    expect(html).toContain('新对话')
+    expect(html).toContain('AI Word')
+    expect(html).not.toContain('WisWork Agent</span>')
+    expect(html).not.toContain('Microsoft Word is connected')
+    expect(html).not.toContain('Edits always require your approval')
     expect(html).toContain('aria-label="Message WisWork Agent"')
+  })
+
+  it('uses the corresponding compact PC editor identity for every Office host', () => {
+    expect(workspaceMarkup({}, undefined, 'word')).toContain('AI Word')
+    expect(workspaceMarkup({}, undefined, 'excel')).toContain('AI Sheets')
+    expect(workspaceMarkup({}, undefined, 'powerpoint')).toContain('AI Slides')
+    expect(workspaceMarkup({}, undefined, 'unknown')).toContain('WisWork AI')
+  })
+
+  it('keeps the rollback workspace compact without the legacy explanatory masthead', () => {
+    const snapshot = {
+      assistantText: '',
+      activity: '',
+      busy: false,
+      applying: false,
+      status: 'idle' as const,
+      retryable: false,
+      timeline: Object.freeze([{ id: 'u1', kind: 'user' as const, text: 'Hello' }]),
+    }
+    const session = {
+      snapshot: () => snapshot,
+      subscribe: () => () => undefined,
+      send: vi.fn(),
+      stop: vi.fn(),
+      confirm: vi.fn(),
+      reject: vi.fn(),
+      newTask: vi.fn(),
+      retry: vi.fn(),
+      logout: vi.fn(),
+      authenticationLost: vi.fn(),
+    }
+    const html = renderToStaticMarkup(
+      React.createElement(LegacyAgentWorkspace, {
+        session,
+        ui: Object.freeze({
+          attachments: () => Object.freeze([]),
+          skills: () => Object.freeze([]),
+          skillPackagesEnabled: false,
+          upload: vi.fn(),
+          clear: vi.fn(),
+        }),
+        disconnect: vi.fn(),
+        host: 'word',
+      }),
+    )
+    expect(html).toContain('AI Word')
+    expect(html).not.toContain('Microsoft Word is connected')
+    expect(html).not.toContain('Edits always require your approval')
+  })
+
+  it('matches the WisWork writing-first empty state without legacy selection or session-file chrome', () => {
+    const html = workspaceMarkup({
+      assistantText: '',
+      status: 'idle',
+      proposal: undefined,
+      timeline: Object.freeze([]),
+    })
+    expect(html).toContain('让 AI 帮你从零起草')
+    expect(html).toContain('描述主题、要点或粘贴参考素材')
+    expect(html).toContain('帮我写一份项目周报')
+    expect(html).toContain('写一篇产品发布公告')
+    expect(html).toContain('列一个活动策划提纲')
+    expect(html).toContain('描述修改、写作要求，或直接提问')
+    expect(html).toContain('更改需确认')
+    expect(html).not.toContain('Work with your selection')
+    expect(html).not.toContain('Session files')
+    expect(html).not.toContain('Agent is ready')
+    expect(html).not.toContain('class="app-header"')
   })
 
   it('exposes bounded attachment and skill management panels without permanent vertical chrome', () => {
@@ -121,8 +199,7 @@ describe('Office Agent workspace UI', () => {
     expect(applying).toContain('Applying…')
 
     expect(applying).toMatch(/aria-label="Attachments"[^>]*disabled/)
-    expect(applying).toMatch(/>Skills<\/button>/)
-    expect(applying).toMatch(/aria-expanded="false" disabled/)
+    expect(applying).toMatch(/<button type="button" disabled="">管理技能<\/button>/)
     const applyingPanel = workspaceMarkup({ applying: true }, 'attachments')
     expect(applyingPanel).toMatch(/class="upload-button"[^>]*aria-disabled="true"/)
     expect(applyingPanel).toMatch(/id="session-upload"[^>]*disabled/)
@@ -137,6 +214,17 @@ describe('Office Agent workspace UI', () => {
     expect(failed).not.toContain('>Retry<')
     expect(failed).toContain('role="alert"')
 
+    const stale = workspaceMarkup({
+      status: 'error',
+      error: 'proposal_stale',
+      errorMessage: '文档内容已发生变化，刚才的修改未应用。',
+      retryable: true,
+      proposal: undefined,
+    })
+    expect(stale).toContain('>重新生成<')
+    expect(stale).toContain('id="instruction"')
+    expect(stale).not.toContain('proposal_stale')
+
     const retryable = workspaceMarkup({
       status: 'error',
       error: 'network_error',
@@ -144,6 +232,65 @@ describe('Office Agent workspace UI', () => {
       retryable: true,
     })
     expect(retryable).toContain('>Retry<')
+  })
+
+  it('keeps internal tool names out of the user-facing activity row', () => {
+    const html = workspaceMarkup()
+    expect(html).toContain('Prepared change')
+    expect(html).not.toContain('>replace<')
+  })
+
+  it('shows a readable preview instead of an internal before-only snapshot', () => {
+    const structured = {
+      id: 'structured-1',
+      operation: 'duplicate_slide',
+      title: 'Duplicate slide',
+      impact: { host: 'powerpoint', targets: ['slide-1'], count: 1 },
+      preview: { slideIndex: 3, slideId: 'slide-1' },
+      fingerprint: 'fp',
+      before: { fingerprint: 'internal-hash', slideId: 'slide-1' },
+    }
+    const html = workspaceMarkup({
+      proposal: structured,
+      timeline: Object.freeze([
+        Object.freeze({
+          id: 'p-structured',
+          kind: 'proposal' as const,
+          proposal: structured,
+          state: 'pending' as const,
+        }),
+      ]),
+    })
+    expect(html).toContain('SlideIndex: 3')
+    expect(html).not.toContain('internal-hash')
+    expect(html).not.toContain('(described by preview)')
+  })
+
+  it('shows the complete proposed draft when writing into an empty document', () => {
+    const emptyDraft = {
+      id: 'empty-draft',
+      operation: 'write_document',
+      title: 'Write document',
+      impact: { host: 'word', targets: ['document:replace'], count: 1 },
+      preview: { mode: 'replace' },
+      fingerprint: 'fp',
+      before: '',
+      after: '这是完整草稿。',
+    }
+    const html = workspaceMarkup({
+      proposal: emptyDraft,
+      timeline: Object.freeze([
+        Object.freeze({
+          id: 'p-empty',
+          kind: 'proposal' as const,
+          proposal: emptyDraft,
+          state: 'pending' as const,
+        }),
+      ]),
+    })
+    expect(html).toContain('(empty document)')
+    expect(html).toContain('这是完整草稿。')
+    expect(html).not.toContain('Mode: replace')
   })
 
   it('uses a frozen UI-only facade instead of exposing the Office runtime', () => {
@@ -234,5 +381,14 @@ describe('Office Agent workspace UI', () => {
     expect(composerKeyAction({ key: 'Enter', shiftKey: true, isComposing: false })).toBe('newline')
     expect(composerKeyAction({ key: 'Enter', shiftKey: false, isComposing: true })).toBe('newline')
     expect(composerKeyAction({ key: 'Escape', shiftKey: false, isComposing: false })).toBe('none')
+  })
+
+  it('keeps automatic scrolling only while the reader remains near the latest turn', () => {
+    expect(isTimelineNearBottom({ scrollHeight: 900, scrollTop: 580, clientHeight: 300 })).toBe(
+      true,
+    )
+    expect(isTimelineNearBottom({ scrollHeight: 900, scrollTop: 300, clientHeight: 300 })).toBe(
+      false,
+    )
   })
 })

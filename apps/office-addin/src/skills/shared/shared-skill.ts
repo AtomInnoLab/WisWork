@@ -33,8 +33,14 @@ export function createSharedBrowserSkill(options: {
   return {
     id: 'office-shared-browser',
     systemPrompt:
-      'read and bash operate only on the bounded browser VFS. bash is not a native shell.',
-    buildContext: () => options.skills?.prompt() ?? '',
+      'read and bash operate only on the bounded browser VFS. bash is not a native shell. Never run pwd or ls and never probe the environment for orientation. Use VFS tools only when the user request needs a listed attachment, an installed skill names a path, or a conversion is required.',
+    buildContext: () => {
+      const files = options.vfs.list('/home/user')
+      const attachments = files.length
+        ? `Attachments:\n${files.map((path) => `- ${path}`).join('\n')}`
+        : ''
+      return [attachments, options.skills?.prompt() ?? ''].filter(Boolean).join('\n\n')
+    },
     tools: [
       {
         name: 'read',
@@ -84,11 +90,12 @@ export function createSharedBrowserSkill(options: {
         if (call.name === 'bash') {
           const { command } = bashInput(call.input)
           const result = await commands.run(command, signal)
+          const commandName = command.trim().split(/\s+/, 1)[0]
           return {
             output: result.error ?? result.output,
             isError: Boolean(result.error),
             mutated: false,
-            summary: command,
+            summary: commandName === 'cat' ? 'Read attachment' : 'Converted attachment',
           }
         }
         return invalid(call.name)

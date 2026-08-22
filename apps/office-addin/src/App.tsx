@@ -29,20 +29,55 @@ const hostLabels: Record<OfficeHost, string> = {
   unknown: 'Office',
 }
 
+const agentProductLabels: Record<OfficeHost, string> = {
+  word: 'AI Word',
+  excel: 'AI Sheets',
+  powerpoint: 'AI Slides',
+  unknown: 'WisWork AI',
+}
+
 type DisplayProposal = OfficeProposal | StructuredProposal
 
 function isLegacyProposal(proposal: DisplayProposal): proposal is OfficeProposal {
   return 'value' in proposal
 }
 
-function previewText(value: unknown): string {
+function previewText(value: unknown, depth = 0): string {
   if (value === undefined) return ''
   if (typeof value === 'string') return value
-  return JSON.stringify(value, null, 2)
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (value === null) return 'None'
+  if (Array.isArray(value)) {
+    return value
+      .map((item, index) => {
+        const rendered = previewText(item, depth + 1)
+        return `${index + 1}. ${rendered.replaceAll('\n', ' · ')}`
+      })
+      .join('\n')
+  }
+  if (typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => {
+        const label = key.replaceAll('_', ' ').replace(/^./, (character) => character.toUpperCase())
+        const rendered = previewText(item, depth + 1)
+        return depth > 0 ? `${label}: ${rendered.replaceAll('\n', ' · ')}` : `${label}: ${rendered}`
+      })
+      .join('\n')
+  }
+  return String(value)
 }
 
 export function proposalPresentation(proposal: DisplayProposal) {
   const legacy = isLegacyProposal(proposal)
+  const hasComparison = legacy || (proposal.before !== undefined && proposal.after !== undefined)
+  const before = previewText(proposal.before)
+  const after = previewText(
+    legacy
+      ? proposal.operation === 'replace'
+        ? proposal.value
+        : `${proposal.before}${proposal.value}`
+      : proposal.after,
+  )
   return {
     title: legacy
       ? proposal.operation === 'replace'
@@ -52,16 +87,11 @@ export function proposalPresentation(proposal: DisplayProposal) {
     host: legacy ? undefined : proposal.impact.host,
     count: legacy ? undefined : proposal.impact.count,
     targets: legacy ? [] : [...proposal.impact.targets],
-    before: previewText(proposal.before),
-    after: previewText(
-      legacy
-        ? proposal.operation === 'replace'
-          ? proposal.value
-          : `${proposal.before}${proposal.value}`
-        : proposal.after,
-    ),
-    preview: legacy ? '' : previewText(proposal.preview),
-    code: legacy ? undefined : proposal.code,
+    before,
+    after,
+    preview: hasComparison ? '' : previewText(proposal.preview),
+    // Declarative code is an internal safety protocol, not user-facing review content.
+    code: undefined,
   }
 }
 
@@ -141,11 +171,19 @@ export function focusWorkspacePanel(heading: FocusTarget, opener: FocusTarget): 
   return () => opener.focus()
 }
 
+export function isTimelineNearBottom(viewport: {
+  scrollHeight: number
+  scrollTop: number
+  clientHeight: number
+}): boolean {
+  return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 48
+}
+
 const starterPrompts: Record<OfficeHost, string[]> = {
-  word: ['Summarize this document', 'Make the selected text clearer'],
-  excel: ['Explain the selected data', 'Find patterns in this workbook'],
-  powerpoint: ['Review this presentation', 'Improve the selected slide'],
-  unknown: ['Help with this document'],
+  word: ['帮我写一份项目周报', '写一篇产品发布公告', '列一个活动策划提纲'],
+  excel: ['分析这份表格的数据', '整理一份项目进度表', '找出数据中的异常'],
+  powerpoint: ['起草一份项目汇报', '优化这份演示文稿', '列一个路演演示提纲'],
+  unknown: ['帮我起草一份文档', '总结当前内容', '优化这份材料'],
 }
 
 function ProposalReview(props: {
@@ -158,6 +196,9 @@ function ProposalReview(props: {
 }) {
   const { event } = props
   const presentation = proposalPresentation(event.proposal)
+  const hasComparison =
+    isLegacyProposal(event.proposal) ||
+    (event.proposal.before !== undefined && event.proposal.after !== undefined)
   const canReview = event.state === 'pending' && props.activeProposalId === event.proposal.id
   return (
     <article
@@ -187,16 +228,18 @@ function ProposalReview(props: {
       )}
       <details className="proposal-preview" open>
         <summary>Review exact impact</summary>
-        <div className="proposal-diff">
-          <div className="preview-block">
-            <strong>Before</strong>
-            <pre>{presentation.before || '(not available)'}</pre>
+        {hasComparison && (
+          <div className="proposal-diff">
+            <div className="preview-block">
+              <strong>Before</strong>
+              <pre>{presentation.before || '(empty document)'}</pre>
+            </div>
+            <div className="preview-block after">
+              <strong>After</strong>
+              <pre>{presentation.after || '(empty document)'}</pre>
+            </div>
           </div>
-          <div className="preview-block after">
-            <strong>After</strong>
-            <pre>{presentation.after || '(described by preview)'}</pre>
-          </div>
-        </div>
+        )}
         {presentation.preview && <pre>{presentation.preview}</pre>}
         {presentation.code && <pre className="code-preview">{presentation.code}</pre>}
       </details>
@@ -237,15 +280,9 @@ function TimelineEvent(props: {
   if (event.kind === 'proposal') return <ProposalReview {...props} event={event} />
   if (event.kind === 'tool') {
     return (
-      <article
-        className={`tool-event tool-${event.state}`}
-        aria-label={`${event.name} tool activity`}
-      >
+      <article className={`tool-event tool-${event.state}`} aria-label="Agent activity">
         <span className="tool-indicator" aria-hidden="true" />
-        <div>
-          <strong>{event.name}</strong>
-          <p>{event.summary}</p>
-        </div>
+        <p>{event.summary}</p>
       </article>
     )
   }
@@ -269,6 +306,7 @@ export function AgentWorkspace(props: {
   disconnect: () => void
   host: OfficeHost
   initialPanel?: WorkspacePanelName
+  legacy?: boolean
 }) {
   const { session, ui, disconnect, host } = props
   const state = useOfficeAgent(session)
@@ -279,7 +317,9 @@ export function AgentWorkspace(props: {
   const [panel, setPanel] = useState<WorkspacePanelName | undefined>(props.initialPanel)
   const mounted = useRef(true)
   const panelHeading = useRef<HTMLHeadingElement>(null)
-  const panelOpener = useRef<HTMLButtonElement | undefined>(undefined)
+  const panelOpener = useRef<HTMLElement | undefined>(undefined)
+  const timeline = useRef<HTMLElement>(null)
+  const followLatest = useRef(true)
   useEffect(
     () => () => {
       mounted.current = false
@@ -292,6 +332,11 @@ export function AgentWorkspace(props: {
     if (!panel || !heading || !opener) return
     return focusWorkspacePanel(heading, opener)
   }, [panel])
+  useEffect(() => {
+    const viewport = timeline.current
+    if (!viewport || !followLatest.current || typeof viewport.scrollTo !== 'function') return
+    viewport.scrollTo({ top: viewport.scrollHeight, behavior: state.busy ? 'auto' : 'smooth' })
+  }, [state.busy, state.timeline])
 
   function send() {
     if (!instruction.trim()) return
@@ -301,65 +346,92 @@ export function AgentWorkspace(props: {
 
   const proposal = state.proposal
   const hasTimeline = state.timeline.length > 0
+  const showConversationChrome =
+    hasTimeline || state.busy || state.applying || Boolean(state.error) || Boolean(proposal)
+  const showStatus =
+    state.busy || state.applying || Boolean(state.activity) || state.status === 'cancelled'
 
   return (
-    <main className="agent-workspace" aria-busy={state.busy || state.applying}>
-      <header className="app-header">
-        <div>
-          <span className="eyebrow">WisWork Agent</span>
-          <h1>{hostLabels[host]}</h1>
-          <p className="connection-line">
-            <span className="connection-dot" />
-            PC connected
-          </p>
-        </div>
-        <div className="header-actions">
-          <button
-            type="button"
-            className="quiet"
-            disabled={state.applying}
-            onClick={() => {
-              session.newTask()
-              ui.clear()
-              setFiles([])
-              setSkills([])
-              setPanel(undefined)
-              setUploadError('')
-            }}
-          >
-            New task
-          </button>
-          <details className="session-menu">
-            <summary aria-label="Session menu">•••</summary>
-            <button type="button" disabled={state.applying} onClick={disconnect}>
-              Log out
+    <main
+      className={`agent-workspace ${props.legacy ? 'legacy-workspace ' : ''}${panel ? 'has-management ' : ''}${showConversationChrome ? 'has-conversation' : 'is-empty'}`}
+      aria-busy={state.busy || state.applying}
+    >
+      {showConversationChrome && (
+        <header className="app-header">
+          <div className="editor-identity">
+            <span className="connection-dot" aria-hidden="true" />
+            <h1>{agentProductLabels[host]}</h1>
+            <span className="visually-hidden">Connected to WisWork PC</span>
+          </div>
+          <div className="header-actions">
+            <button
+              type="button"
+              className="quiet"
+              disabled={state.applying}
+              onClick={() => {
+                session.newTask()
+                ui.clear()
+                setFiles([])
+                setSkills([])
+                setPanel(undefined)
+                setUploadError('')
+              }}
+            >
+              新对话
             </button>
-          </details>
-        </div>
-      </header>
+            <details className="session-menu">
+              <summary aria-label="Session menu">•••</summary>
+              <button
+                type="button"
+                disabled={state.applying}
+                onClick={(event) => {
+                  panelOpener.current =
+                    event.currentTarget.closest('details')?.querySelector('summary') ??
+                    event.currentTarget
+                  setPanel('skills')
+                  event.currentTarget.closest('details')?.removeAttribute('open')
+                }}
+              >
+                管理技能
+              </button>
+              <button type="button" disabled={state.applying} onClick={disconnect}>
+                退出登录
+              </button>
+            </details>
+          </div>
+        </header>
+      )}
 
-      <section className="agent-status" aria-live="polite">
-        <span className={`status-dot ${state.busy || state.applying ? 'busy' : ''}`} />
-        <strong>
-          {state.applying
-            ? 'Applying approved change'
-            : state.busy
-              ? 'Agent is working'
-              : 'Agent is ready'}
-        </strong>
-        <span>{state.activity || (state.status === 'cancelled' ? 'Run stopped' : '')}</span>
-      </section>
+      {showStatus && (
+        <section className="agent-status" aria-live="polite">
+          <span className={`status-dot ${state.busy || state.applying ? 'busy' : ''}`} />
+          <strong>
+            {state.applying
+              ? 'Applying approved change'
+              : state.busy
+                ? 'Agent is working'
+                : 'Agent is ready'}
+          </strong>
+          <span>{state.activity || (state.status === 'cancelled' ? 'Run stopped' : '')}</span>
+        </section>
+      )}
 
-      <section className="agent-timeline" aria-label="Agent conversation" aria-live="polite">
+      <section
+        ref={timeline}
+        className="agent-timeline"
+        aria-label="Agent conversation"
+        aria-live="polite"
+        onScroll={(event) => {
+          followLatest.current = isTimelineNearBottom(event.currentTarget)
+        }}
+      >
         {!hasTimeline && (
           <div className="empty-state">
-            <span className="agent-mark" aria-hidden="true">
-              W
-            </span>
-            <h2>What are we working on?</h2>
+            <h2>让 AI 帮你从零起草</h2>
             <p>
-              Ask WisWork to read, explain, or prepare a change. Document edits always need
-              approval.
+              描述主题、要点或粘贴参考素材，
+              <br />
+              AI 直接为你写出初稿。
             </p>
             <div className="starter-prompts">
               {starterPrompts[host].map((prompt) => (
@@ -367,7 +439,7 @@ export function AgentWorkspace(props: {
                   key={prompt}
                   type="button"
                   className="prompt-chip"
-                  onClick={() => session.send(prompt)}
+                  onClick={() => setInstruction(prompt)}
                 >
                   {prompt}
                 </button>
@@ -408,7 +480,6 @@ export function AgentWorkspace(props: {
           <div className="error-banner" role="alert">
             <div>
               <p>{state.errorMessage}</p>
-              <span className="error-code">{state.error}</span>
             </div>
             {state.retryable && (
               <button
@@ -417,7 +488,7 @@ export function AgentWorkspace(props: {
                 disabled={state.applying}
                 onClick={() => session.retry()}
               >
-                Retry
+                {state.error === 'proposal_stale' ? '重新生成' : 'Retry'}
               </button>
             )}
           </div>
@@ -572,7 +643,7 @@ export function AgentWorkspace(props: {
               send()
             }
           }}
-          placeholder={`Ask about ${hostLabels[host]}…`}
+          placeholder="描述修改、写作要求，或直接提问"
           rows={3}
           maxLength={12_000}
           disabled={state.busy || state.applying}
@@ -590,20 +661,12 @@ export function AgentWorkspace(props: {
                 setPanel(panel === 'attachments' ? undefined : 'attachments')
               }}
             >
-              ＋
+              📎
             </button>
-            <button
-              type="button"
-              className="tool-button"
-              aria-expanded={panel === 'skills'}
-              disabled={state.applying}
-              onClick={(event) => {
-                panelOpener.current = event.currentTarget
-                setPanel(panel === 'skills' ? undefined : 'skills')
-              }}
-            >
-              Skills
-            </button>
+            <span className="confirmation-chip">
+              <span aria-hidden="true" />
+              更改需确认
+            </span>
           </div>
           {state.busy ? (
             <button
@@ -637,101 +700,7 @@ export function LegacyAgentWorkspace(props: {
   disconnect: () => void
   host: OfficeHost
 }) {
-  const state = useOfficeAgent(props.session)
-  const [instruction, setInstruction] = useState('')
-  const [files, setFiles] = useState<readonly string[]>(props.ui.attachments())
-  const [uploadError, setUploadError] = useState('')
-  const proposal = state.proposal
-  return (
-    <main className="taskpane legacy-workspace">
-      <header className="app-header">
-        <div>
-          <span className="eyebrow">WisWork Agent</span>
-          <h1>Work with your selection</h1>
-          <p>{hostLabels[props.host]} is connected. Edits always require your approval.</p>
-        </div>
-        <button
-          type="button"
-          className="quiet"
-          disabled={state.applying}
-          onClick={props.disconnect}
-        >
-          Log out
-        </button>
-      </header>
-      <section className="agent-status" aria-live="polite">
-        <strong>{state.busy ? 'Agent is working' : 'Agent is ready'}</strong>
-        <span>{state.activity}</span>
-      </section>
-      {state.assistantText && <p className="assistant-text">{state.assistantText}</p>}
-      {state.errorMessage && (
-        <p className="error-text" role="alert">
-          {state.errorMessage}
-        </p>
-      )}
-      {proposal && (
-        <ProposalReview
-          event={{ id: `legacy-${proposal.id}`, kind: 'proposal', proposal, state: 'pending' }}
-          activeProposalId={proposal.id}
-          busy={state.busy}
-          applying={state.applying}
-          confirm={(id) => void props.session.confirm(id)}
-          reject={() => props.session.reject()}
-        />
-      )}
-      <section className="management-panel" aria-label="Session files">
-        <label className="upload-button" htmlFor="legacy-session-upload">
-          Add session file
-        </label>
-        <input
-          id="legacy-session-upload"
-          type="file"
-          disabled={state.applying}
-          onChange={(event) => {
-            const file = event.currentTarget.files?.[0]
-            if (!file) return
-            setUploadError('')
-            void props.ui
-              .upload(file)
-              .then(() => setFiles(props.ui.attachments()))
-              .catch((error: unknown) => setUploadError(safeUploadError(error)))
-          }}
-        />
-        {uploadError && <p className="error-text">{uploadError}</p>}
-        <p>{files.length ? files.join(', ') : 'No uploaded files in this session.'}</p>
-        <p>Installed skills: {props.ui.skills().join(', ') || 'none'}</p>
-      </section>
-      <section className="composer-shell" aria-label="Message WisWork Agent">
-        <label htmlFor="legacy-instruction">What should the Agent do?</label>
-        <textarea
-          id="legacy-instruction"
-          value={instruction}
-          onChange={(event) => setInstruction(event.target.value)}
-          rows={4}
-          maxLength={12_000}
-          disabled={state.busy || state.applying}
-        />
-        <div className="actions">
-          {state.busy ? (
-            <button type="button" className="secondary" onClick={() => props.session.stop()}>
-              Stop
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled={!instruction.trim() || state.applying}
-              onClick={() => {
-                props.session.send(instruction)
-                setInstruction('')
-              }}
-            >
-              Send
-            </button>
-          )}
-        </div>
-      </section>
-    </main>
-  )
+  return <AgentWorkspace {...props} legacy />
 }
 
 export function workspaceComponentForMode(mode: 'workspace' | 'legacy') {
