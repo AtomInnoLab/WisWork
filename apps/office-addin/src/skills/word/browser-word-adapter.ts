@@ -452,7 +452,10 @@ export class BrowserWordAdapter implements WordAdapter {
   async getDocumentSnapshot(signal?: AbortSignal): Promise<WordDocumentSnapshot> {
     cancelled(signal)
     const value = await readBodyOoxml(signal)
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+    const digest = await crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(stableFingerprintOoxml(value)),
+    )
     cancelled(signal)
     return {
       text: ooxmlText(value),
@@ -543,6 +546,16 @@ export class BrowserWordAdapter implements WordAdapter {
     if (expected === undefined) return false
     return ooxmlText(await readBodyOoxml(signal)) === expected
   }
+}
+
+function stableFingerprintOoxml(xml: string): string {
+  return xml
+    .replace(
+      /\s+(?:w:rsid(?:R|RPr|Del|P|Sect|Tr|RDefault)|w14:(?:paraId|textId))=(?:"[^"]*"|'[^']*')/g,
+      '',
+    )
+    .replace(/<w:(?:proofErr|lastRenderedPageBreak)\b[^>]*\/>/g, '')
+    .replace(/>\s+</g, '><')
 }
 
 function ooxmlText(xml: string): string {

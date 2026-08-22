@@ -562,6 +562,40 @@ describe('browser Word adapter', () => {
     expect(sync).toHaveBeenCalledTimes(2)
   })
 
+  it('keeps Word fingerprints stable across volatile OOXML metadata but detects real edits', async () => {
+    const wrap = (paragraph: string) =>
+      `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"><w:body>${paragraph}</w:body></w:document>`
+    let current = wrap(
+      '<w:p w:rsidR="00112233" w14:paraId="11111111" w14:textId="22222222"><w:r><w:t>Hello</w:t></w:r><w:proofErr w:type="spellStart"/><w:lastRenderedPageBreak/></w:p>',
+    )
+    const body = { getOoxml: vi.fn(() => ({ value: current })) }
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'Word',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      Word: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ document: { body }, sync: vi.fn().mockResolvedValue(undefined) }),
+      },
+    })
+    const subject = new BrowserWordAdapter()
+    const before = await subject.fingerprint()
+
+    current = wrap(
+      '<w:p w14:textId="BBBBBBBB" w14:paraId="AAAAAAAA" w:rsidR="99887766"><w:r><w:t>Hello</w:t></w:r></w:p>',
+    )
+    const metadataOnly = await subject.fingerprint()
+    expect(metadataOnly).toBe(before)
+
+    current = wrap('<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Hello</w:t></w:r></w:p>')
+    await expect(subject.fingerprint()).resolves.not.toBe(before)
+    current = wrap('<w:p><w:r><w:t>Hello changed</w:t></w:r></w:p>')
+    await expect(subject.fingerprint()).resolves.not.toBe(before)
+  })
+
   it('marks bounded paragraph pages as incomplete and rejects out-of-range starts', async () => {
     const makeParagraph = (index: number) => ({ text: `p${index}`, load: vi.fn() })
     const paragraphs = {
