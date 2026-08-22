@@ -432,16 +432,13 @@ p {
   border-color: var(--color-border-brand);
 }
 
-pre {
+.proposal-copy {
   max-height: 150px;
   overflow: auto;
   margin: 5px 0 0;
   color: var(--color-text-primary);
-  font:
-    11px/1.5 ui-monospace,
-    SFMono-Regular,
-    Consolas,
-    monospace;
+  font-size: 12px;
+  line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -519,6 +516,9 @@ pre {
 }
 
 .composer-shell {
+  position: relative;
+  z-index: 3;
+  min-height: 0;
   padding: 10px 12px 12px;
   border-top: 1px solid var(--color-border-default);
   background: var(--color-bg-page);
@@ -692,6 +692,28 @@ pre {
 
   .prompt-chip {
     font-size: 14px;
+  }
+}
+
+@media (max-height: 520px) {
+  .agent-timeline {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  .composer-shell {
+    padding-top: 7px;
+    padding-bottom: 7px;
+  }
+
+  .composer-shell textarea,
+  .is-empty .composer-shell textarea {
+    min-height: 44px;
+    max-height: 72px;
+  }
+
+  .is-empty .composer-shell {
+    margin-bottom: 8px;
   }
 }
 

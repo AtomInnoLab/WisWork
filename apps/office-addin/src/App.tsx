@@ -38,6 +38,12 @@ const agentProductLabels: Record<OfficeHost, string> = {
 
 type DisplayProposal = OfficeProposal | StructuredProposal
 
+const proposalHostLabels: Record<StructuredProposal['impact']['host'], string> = {
+  word: 'Word',
+  excel: 'Excel',
+  powerpoint: 'PowerPoint',
+}
+
 function isLegacyProposal(proposal: DisplayProposal): proposal is OfficeProposal {
   return 'value' in proposal
 }
@@ -67,6 +73,20 @@ function previewText(value: unknown, depth = 0): string {
   return String(value)
 }
 
+function proposalTarget(target: string): string {
+  if (target === 'document:end') return 'End of document'
+  if (target === 'document:start') return 'Start of document'
+  if (target === 'document') return 'Document'
+  if (target === 'selection') return 'Current selection'
+  const slide = /^slide[-:](\d+)$/i.exec(target)
+  if (slide) return `Slide ${slide[1]}`
+  return target
+    .replaceAll(':', ' · ')
+    .replaceAll('_', ' ')
+    .replaceAll('-', ' ')
+    .replace(/^./, (character) => character.toUpperCase())
+}
+
 export function proposalPresentation(proposal: DisplayProposal) {
   const legacy = isLegacyProposal(proposal)
   const hasComparison = legacy || (proposal.before !== undefined && proposal.after !== undefined)
@@ -84,9 +104,9 @@ export function proposalPresentation(proposal: DisplayProposal) {
         ? 'Replace selection'
         : 'Append to selection'
       : proposal.title,
-    host: legacy ? undefined : proposal.impact.host,
+    host: legacy ? undefined : proposalHostLabels[proposal.impact.host],
     count: legacy ? undefined : proposal.impact.count,
-    targets: legacy ? [] : [...proposal.impact.targets],
+    targets: legacy ? [] : proposal.impact.targets.map(proposalTarget),
     before,
     after,
     preview: hasComparison ? '' : previewText(proposal.preview),
@@ -232,16 +252,15 @@ function ProposalReview(props: {
           <div className="proposal-diff">
             <div className="preview-block">
               <strong>Before</strong>
-              <pre>{presentation.before || '(empty document)'}</pre>
+              <p className="proposal-copy">{presentation.before || '(empty document)'}</p>
             </div>
             <div className="preview-block after">
               <strong>After</strong>
-              <pre>{presentation.after || '(empty document)'}</pre>
+              <p className="proposal-copy">{presentation.after || '(empty document)'}</p>
             </div>
           </div>
         )}
-        {presentation.preview && <pre>{presentation.preview}</pre>}
-        {presentation.code && <pre className="code-preview">{presentation.code}</pre>}
+        {presentation.preview && <p className="proposal-copy">{presentation.preview}</p>}
       </details>
       {event.error && <p className="error-text">{event.error}</p>}
       {canReview && (
@@ -256,7 +275,7 @@ function ProposalReview(props: {
           </button>
           <button
             type="button"
-            disabled={props.busy || props.applying}
+            disabled={props.applying}
             onClick={() => props.confirm(event.proposal.id)}
           >
             {props.applying ? 'Applying…' : 'Confirm change'}

@@ -103,6 +103,16 @@ describe('Office Agent workspace UI', () => {
     expect(html).not.toContain('Microsoft Word is connected')
     expect(html).not.toContain('Edits always require your approval')
     expect(html).toContain('aria-label="Message WisWork Agent"')
+    expect(html).not.toContain('<pre')
+  })
+
+  it('keeps approval actionable while the agent loop is suspended', () => {
+    const waiting = workspaceMarkup({ busy: true, status: 'working' })
+    expect(waiting).toMatch(/<button type="button" class="secondary">Reject<\/button>/)
+    expect(waiting).toMatch(/<button type="button">Confirm change<\/button>/)
+
+    const applying = workspaceMarkup({ busy: true, applying: true, status: 'working' })
+    expect(applying).toMatch(/<button type="button" class="secondary" disabled="">Reject<\/button>/)
   })
 
   it('uses the corresponding compact PC editor identity for every Office host', () => {

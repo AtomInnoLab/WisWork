@@ -18,9 +18,9 @@ describe('generic proposal presentation', () => {
       }),
     ).toEqual({
       title: 'Edit XML',
-      host: 'powerpoint',
+      host: 'PowerPoint',
       count: 1,
-      targets: ['slide-1'],
+      targets: ['Slide 1'],
       before: '<old/>',
       after: '<new/>',
       preview: '',
@@ -40,6 +40,8 @@ describe('generic proposal presentation', () => {
         code: '{"version":1}',
       }),
     ).toMatchObject({
+      host: 'Word',
+      targets: ['End of document'],
       preview: 'Mode: append\nText: New paragraph',
       code: undefined,
     })
