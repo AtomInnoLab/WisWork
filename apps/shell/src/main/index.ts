@@ -177,6 +177,7 @@ import {
   officeRelayEndpointFromEnv,
   type OfficeRelayClient,
 } from './office-relay-client'
+import { createOfficeRelayPool } from './office-relay-pool'
 import {
   createOfficeRetrievalProxy,
   officeRetrievalEndpointFromEnv,
@@ -2540,13 +2541,20 @@ app.whenReady().then(async () => {
           fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
         })
       : undefined
-    officeRelay = createOfficeRelayClient({
-      endpoint: officeRelayEndpointFromEnv(process.env),
-      getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
-      getAccessToken: () => requireAuthRuntime().client.getAccessToken(),
-      proxy: officeMessagesProxy,
-      retrievalProxy,
-      negotiateCapabilities: true,
+    const endpoint = officeRelayEndpointFromEnv(process.env)
+    officeRelay = createOfficeRelayPool({
+      createClient: (events) =>
+        createOfficeRelayClient({
+          endpoint,
+          getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
+          getAccessToken: () => requireAuthRuntime().client.getAccessToken(),
+          proxy: officeMessagesProxy,
+          retrievalProxy,
+          negotiateCapabilities: true,
+          onPending: events.onPending,
+          onPendingExpired: events.onPendingExpired,
+          onStatus: events.onStatus,
+        }),
       onPending: notifyOfficePairing,
       onPendingExpired: (pairingId) => {
         if (!shellWindow || shellWindow.isDestroyed()) return
