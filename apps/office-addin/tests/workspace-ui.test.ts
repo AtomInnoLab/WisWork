@@ -113,6 +113,9 @@ describe('Office Agent workspace UI', () => {
 
     const applying = workspaceMarkup({ busy: true, applying: true, status: 'working' })
     expect(applying).toMatch(/<button type="button" class="secondary" disabled="">Reject<\/button>/)
+    expect(applying).toMatch(/<button type="button" class="quiet">新对话<\/button>/)
+    expect(applying).toContain('<button type="button">退出登录</button>')
+    expect(applying).toMatch(/<button type="button" class="stop-button">Stop<\/button>/)
   })
 
   it('uses the corresponding compact PC editor identity for every Office host', () => {

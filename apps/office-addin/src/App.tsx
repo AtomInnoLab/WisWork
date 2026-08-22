@@ -402,7 +402,6 @@ export function AgentWorkspace(props: {
             <button
               type="button"
               className="quiet"
-              disabled={state.applying}
               onClick={() => {
                 session.newTask()
                 ui.clear()
@@ -429,7 +428,7 @@ export function AgentWorkspace(props: {
               >
                 管理技能
               </button>
-              <button type="button" disabled={state.applying} onClick={disconnect}>
+              <button type="button" onClick={disconnect}>
                 退出登录
               </button>
             </details>
@@ -704,12 +703,7 @@ export function AgentWorkspace(props: {
             </span>
           </div>
           {state.busy ? (
-            <button
-              type="button"
-              className="stop-button"
-              disabled={state.applying}
-              onClick={() => session.stop()}
-            >
+            <button type="button" className="stop-button" onClick={() => session.stop()}>
               Stop
             </button>
           ) : (

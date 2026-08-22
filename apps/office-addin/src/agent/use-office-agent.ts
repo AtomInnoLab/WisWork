@@ -219,6 +219,7 @@ export function createOfficeAgentSession(dependencies: {
       isError: decision.status === 'cancelled',
       mutated: false,
       summary: decision.status === 'rejected' ? 'Change rejected' : initial.summary,
+      stopToolBatch: decision.status === 'rejected',
     }
   }
 
@@ -384,8 +385,19 @@ export function createOfficeAgentSession(dependencies: {
       startRun(instruction)
     },
     stop() {
-      if (state.applying) return
       const event = pendingProposalEvent()
+      if (state.applying) {
+        sessionEpoch += 1
+        proposals.newTurn()
+        loop.cancel()
+        if (event) {
+          replace(event.id, (item) =>
+            item.kind === 'proposal' ? { ...item, state: 'rejected' } : item,
+          )
+        }
+        publish({ applying: false, activity: '', status: 'cancelled' })
+        return
+      }
       if (event) {
         proposals.newTurn()
         replace(event.id, (item) =>

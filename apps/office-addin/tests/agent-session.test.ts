@@ -1,10 +1,7 @@
 import type { AgentStreamCallbacks, AgentTransport, ToolExecution } from '@wiswork/agent-core'
 import { describe, expect, it, vi } from 'vitest'
 import { bindAuthLoss, createOfficeAgentSession } from '../src/agent/use-office-agent.js'
-import type {
-  ProposalDecision,
-  StructuredProposal,
-} from '../src/agent/proposal-controller.js'
+import type { ProposalDecision, StructuredProposal } from '../src/agent/proposal-controller.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 
 function transportHarness() {
@@ -300,28 +297,29 @@ describe('Office agent session', () => {
     const harness = transportHarness()
     const proposals = createStructuredProposalController()
     const execute = vi.fn(async () => undefined)
+    const executeTool = vi.fn(() => {
+      const proposal = proposals.propose({
+        operation: 'write_document',
+        title: 'Write document',
+        preview: {},
+        impact: { host: 'word', targets: ['document'], count: 1 },
+        fingerprint: 'v1',
+        validate: async () => true,
+        execute,
+      })
+      return {
+        output: JSON.stringify({ proposalId: proposal.id }),
+        mutated: false,
+        summary: 'Awaiting confirmation',
+      }
+    })
     const session = createOfficeAgentSession({
       transport: harness.transport,
       skill: {
         id: 'word',
         systemPrompt: 'test',
         tools: [{ name: 'write_document', description: 'write', inputSchema: { type: 'object' } }],
-        executeTool: () => {
-          const proposal = proposals.propose({
-            operation: 'write_document',
-            title: 'Write document',
-            preview: {},
-            impact: { host: 'word', targets: ['document'], count: 1 },
-            fingerprint: 'v1',
-            validate: async () => true,
-            execute,
-          })
-          return {
-            output: JSON.stringify({ proposalId: proposal.id }),
-            mutated: false,
-            summary: 'Awaiting confirmation',
-          }
-        },
+        executeTool,
       },
       proposals,
     })
@@ -329,6 +327,7 @@ describe('Office agent session', () => {
     session.send('write')
     await Promise.resolve()
     harness.callbacks().onToolCall({ id: 'write-1', name: 'write_document', input: {} })
+    harness.callbacks().onToolCall({ id: 'write-2', name: 'write_document', input: {} })
     harness.callbacks().onDone()
     await vi.waitFor(() => expect(session.snapshot().proposal).toBeDefined())
 
@@ -336,6 +335,7 @@ describe('Office agent session', () => {
     await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
 
     expect(execute).not.toHaveBeenCalled()
+    expect(executeTool).toHaveBeenCalledOnce()
     expect(session.snapshot().timeline).toEqual(
       expect.arrayContaining([expect.objectContaining({ kind: 'proposal', state: 'rejected' })]),
     )
@@ -529,7 +529,7 @@ describe('Office agent session', () => {
     })
   })
 
-  it('allows only one confirmation and blocks competing actions until the write settles', async () => {
+  it('allows only one confirmation, blocks competing writes, and lets Stop abort applying', async () => {
     const harness = transportHarness()
     const proposals = proposalsHarness()
     proposals.setPending()
@@ -555,9 +555,9 @@ describe('Office agent session', () => {
     session.reject()
     session.stop()
 
-    expect(session.snapshot().applying).toBe(true)
+    expect(session.snapshot()).toMatchObject({ applying: false, status: 'cancelled' })
     expect(proposals.controller.confirm).toHaveBeenCalledOnce()
-    expect(proposals.controller.newTurn).not.toHaveBeenCalled()
+    expect(proposals.controller.newTurn).toHaveBeenCalledOnce()
     expect(proposals.controller.reject).not.toHaveBeenCalled()
     expect(harness.cancel).not.toHaveBeenCalled()
 
@@ -602,9 +602,7 @@ describe('Office agent session', () => {
     expect(proposals.controller.confirm).toHaveBeenCalledOnce()
     await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
     expect(session.snapshot().timeline).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: 'proposal', state: 'applied' }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ kind: 'proposal', state: 'applied' })]),
     )
 
     harness.callbacks().onDelta('The approved change is now applied.')
