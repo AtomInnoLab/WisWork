@@ -74,6 +74,19 @@ function invalidProposal(): never {
   throw new Error('invalid_tool_input')
 }
 
+const PROPOSAL_ERROR_CODES = new Set([
+  'proposal_missing',
+  'proposal_stale',
+  'office_write_failed',
+  'office_verify_failed',
+  'office_recovery_failed',
+])
+
+function stableProposalError(error: unknown): string {
+  const code = error instanceof Error ? error.message : ''
+  return PROPOSAL_ERROR_CODES.has(code) ? code : 'office_write_failed'
+}
+
 function boundedCopy<T>(value: T): T {
   let serialized: string | undefined
   try {
@@ -193,7 +206,7 @@ export function createStructuredProposalController(): StructuredProposalControll
         await proposal.request.verify?.(controller.signal)
         settle(proposal.decision, { status: 'confirmed' })
       } catch (error) {
-        const code = error instanceof Error ? error.message : 'office_write_failed'
+        const code = stableProposalError(error)
         settle(proposal.decision, { status: 'failed', error: code })
         throw error
       } finally {

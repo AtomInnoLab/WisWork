@@ -79,6 +79,27 @@ describe('proposal controller', () => {
     await expect(decision).resolves.toEqual({ status: 'failed', error: 'proposal_stale' })
   })
 
+  it('never exposes an arbitrary Office error through a suspended decision', async () => {
+    const controller = createStructuredProposalController()
+    const proposal = controller.propose({
+      operation: 'edit',
+      title: 'Edit document',
+      preview: {},
+      impact: { host: 'word', targets: ['document'], count: 1 },
+      fingerprint: 'v1',
+      validate: async () => true,
+      execute: async () => {
+        throw new Error('/Users/alice/private.docx access token secret')
+      },
+    })
+    const decision = controller.waitForDecision(proposal.id)
+    await expect(controller.confirm(proposal.id)).rejects.toThrow('alice')
+    await expect(decision).resolves.toEqual({
+      status: 'failed',
+      error: 'office_write_failed',
+    })
+  })
+
   it('keeps one pending proposal and captures selection state', async () => {
     const controller = createProposalController(document())
     const first = await controller.propose('replace', 'after')

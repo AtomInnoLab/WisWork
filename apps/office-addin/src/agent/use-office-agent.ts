@@ -204,7 +204,7 @@ export function createOfficeAgentSession(dependencies: {
     }
     if (decision.status === 'failed') {
       return {
-        output: decision.error,
+        output: JSON.stringify({ proposalId, status: 'failed', error: decision.error }),
         isError: true,
         mutated: false,
         summary: 'Approved change failed',
