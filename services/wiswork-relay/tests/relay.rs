@@ -427,6 +427,59 @@ async fn v2_negotiates_exact_capabilities_and_denies_unnegotiated_requests() {
 }
 
 #[tokio::test]
+async fn three_valid_v2_negotiations_and_claims_share_one_subject_budget() {
+    let url = server().await;
+    let mut office = socket(&url, ORIGIN).await;
+    let mut pcs = Vec::new();
+
+    for host in ["Word", "Excel", "PowerPoint"] {
+        send(
+            &mut office,
+            json!({"version":2,"type":"office.create","host":host,"capabilities":["agent.v1"]}),
+        )
+        .await;
+        let created = recv(&mut office).await;
+        let code = created["verification_code"].clone();
+        let mut pc = pc_socket(&url).await;
+        send(
+            &mut pc,
+            json!({"version":2,"type":"pc.negotiate","verification_code":code,"capabilities":["agent.v1"]}),
+        )
+        .await;
+        let negotiated = recv(&mut pc).await;
+        assert_eq!(negotiated["type"], "pc.negotiated", "{negotiated}");
+        send(
+            &mut pc,
+            json!({"version":2,"type":"pc.claim","verification_code":code,"capabilities":["agent.v1"]}),
+        )
+        .await;
+        assert_eq!(recv(&mut pc).await["type"], "pc.claimed");
+        pcs.push(pc);
+    }
+}
+
+#[tokio::test]
+async fn invalid_v2_codes_remain_subject_limited_across_reconnects() {
+    let url = server().await;
+    for attempt in 0..6 {
+        let mut pc = pc_socket(&url).await;
+        send(
+            &mut pc,
+            json!({"version":2,"type":"pc.negotiate","verification_code":"999999","capabilities":["agent.v1"]}),
+        )
+        .await;
+        assert_eq!(
+            recv(&mut pc).await["code"],
+            if attempt < 5 {
+                "invalid_code"
+            } else {
+                "claim_limit"
+            }
+        );
+    }
+}
+
+#[tokio::test]
 async fn valid_activity_renews_idle_ttl_but_never_the_absolute_session_lifetime() {
     let url = server_with_session_ttls(Some((
         Duration::from_millis(150),

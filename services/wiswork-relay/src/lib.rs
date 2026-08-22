@@ -96,6 +96,7 @@ struct Pairing {
     attempts: u8,
     requested_capabilities: Vec<String>,
     negotiated_capabilities: Vec<String>,
+    negotiated_subject: Option<[u8; 32]>,
 }
 struct Active {
     id: String,
@@ -610,6 +611,8 @@ async fn negotiate(
     if pairing.attempts > maximum {
         return Err("claim_limit");
     }
+    pairing.negotiated_capabilities.clone_from(&negotiated);
+    pairing.negotiated_subject = Some(subject);
     send(
         tx,
         json!({"version":PROTOCOL_V2,"type":"pc.negotiated","pairing_version":pairing.version,"capabilities":negotiated}),
@@ -696,6 +699,7 @@ async fn create(
         attempts: 0,
         requested_capabilities,
         negotiated_capabilities: Vec::new(),
+        negotiated_subject: None,
     };
     store.codes.insert(code.clone(), id.clone());
     store.pairings.insert(id.clone(), pairing);
@@ -743,19 +747,36 @@ async fn claim(
     if s.global_claims.1 > 1_000 {
         return Err("claim_rate_limited");
     }
-    if s.claim_attempts.len() >= 10_000 && !s.claim_attempts.contains_key(&subject) {
-        return Err("relay_busy");
-    }
-    let attempts = s
-        .claim_attempts
-        .entry(subject)
-        .or_insert((Instant::now(), 0));
-    if attempts.0.elapsed() > app.inner.config.pairing_ttl {
-        *attempts = (Instant::now(), 0);
-    }
-    attempts.1 = attempts.1.saturating_add(1);
-    if attempts.1 > app.inner.config.max_claim_attempts {
-        return Err("claim_limit");
+    let negotiated_claim = s
+        .codes
+        .get(code)
+        .and_then(|id| s.pairings.get(id))
+        .is_some_and(|pairing| {
+            pairing.version == PROTOCOL_V2
+                && pairing.negotiated_subject == Some(subject)
+                && pairing.negotiated_capabilities
+                    == pairing
+                        .requested_capabilities
+                        .iter()
+                        .filter(|name| offered.contains(name))
+                        .cloned()
+                        .collect::<Vec<_>>()
+        });
+    if !negotiated_claim {
+        if s.claim_attempts.len() >= 10_000 && !s.claim_attempts.contains_key(&subject) {
+            return Err("relay_busy");
+        }
+        let attempts = s
+            .claim_attempts
+            .entry(subject)
+            .or_insert((Instant::now(), 0));
+        if attempts.0.elapsed() > app.inner.config.pairing_ttl {
+            *attempts = (Instant::now(), 0);
+        }
+        attempts.1 = attempts.1.saturating_add(1);
+        if attempts.1 > app.inner.config.max_claim_attempts {
+            return Err("claim_limit");
+        }
     }
     let Some(id) = s.codes.get(code).cloned() else {
         return Err("invalid_code");
@@ -777,12 +798,15 @@ async fn claim(
     if negotiated_capabilities.is_empty() {
         return Err("capability_not_negotiated");
     }
-    p.attempts += 1;
-    if p.attempts > max {
-        return Err("claim_limit");
-    };
+    if !negotiated_claim {
+        p.attempts = p.attempts.saturating_add(1);
+        if p.attempts > max {
+            return Err("claim_limit");
+        }
+    }
     p.pc = Some((conn, tx.clone()));
     p.negotiated_capabilities = negotiated_capabilities;
+    p.negotiated_subject = None;
     send(
         tx,
         if protocol == PROTOCOL_V2 {
