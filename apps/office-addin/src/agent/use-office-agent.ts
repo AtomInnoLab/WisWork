@@ -21,6 +21,7 @@ import {
   type OfficePresentationTimeline,
   type ProposalPresentationEvent,
 } from './presentation-state.js'
+import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
 
 export type AgentSessionStatus = 'idle' | 'working' | 'done' | 'cancelled' | 'error'
 
@@ -140,8 +141,19 @@ export function createOfficeAgentSession(dependencies: {
   transport: AgentTransport
   skill: AgentSkill
   proposals: ProposalController | StructuredProposalController
+  diagnostics?: Pick<OfficeDiagnostics, 'startTrace' | 'setTool' | 'record' | 'clear'>
 }): OfficeAgentSession {
   const { proposals } = dependencies
+  const diagnose = (
+    action: (diagnostics: NonNullable<typeof dependencies.diagnostics>) => void,
+  ) => {
+    if (!dependencies.diagnostics) return
+    try {
+      action(dependencies.diagnostics)
+    } catch {
+      /* diagnostics never changes an Agent run */
+    }
+  }
   const listeners = new Set<() => void>()
   let state: Omit<OfficeAgentSnapshot, 'proposal'> = {
     assistantText: '',
@@ -272,6 +284,7 @@ export function createOfficeAgentSession(dependencies: {
         publish({ assistantText: boundedText(assistantText) })
       },
       onToolStart: (call) => {
+        diagnose((diagnostics) => diagnostics.setTool(call.name))
         if (activeAssistantId) {
           replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
           activeAssistantId = undefined
@@ -288,6 +301,16 @@ export function createOfficeAgentSession(dependencies: {
         publish({ activity: summary })
       },
       onToolExecuted: (event) => {
+        if (event.execution.isError) {
+          let errorCode = 'agent_run_failed'
+          try {
+            const output = JSON.parse(event.execution.output) as { error?: unknown }
+            if (typeof output.error === 'string') errorCode = output.error
+          } catch {
+            /* bounded fallback */
+          }
+          diagnose((diagnostics) => diagnostics.record({ phase: 'tool', errorCode }))
+        }
         const tool = [...state.timeline]
           .reverse()
           .find((item) => item.kind === 'tool' && item.callId === event.call.id)
@@ -327,6 +350,9 @@ export function createOfficeAgentSession(dependencies: {
       },
       onError: (error) => {
         const safeError = safeRunError(error)
+        diagnose((diagnostics) =>
+          diagnostics.record({ phase: 'transport', errorCode: safeError.code }),
+        )
         activeAssistantId = undefined
         append({
           id: eventId(),
@@ -359,6 +385,7 @@ export function createOfficeAgentSession(dependencies: {
   const startRun = (instruction: string) => {
     const value = instruction.trim()
     if (!value || loop.busy || state.applying) return
+    diagnose((diagnostics) => diagnostics.startTrace())
     proposals.newTurn()
     lastInstruction = value
     activeAssistantId = undefined
@@ -481,6 +508,7 @@ export function createOfficeAgentSession(dependencies: {
     },
     logout() {
       sessionEpoch += 1
+      diagnose((diagnostics) => diagnostics.clear())
       loop.reset()
       proposals.logout()
       lastInstruction = ''
@@ -489,6 +517,7 @@ export function createOfficeAgentSession(dependencies: {
     },
     authenticationLost() {
       sessionEpoch += 1
+      diagnose((diagnostics) => diagnostics.clear())
       loop.reset()
       proposals.logout()
       lastInstruction = ''

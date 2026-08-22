@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Markdown } from '@wiswork/ui'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
-import { officeCapabilityFlags, officeWorkspaceMode } from '../build-config.js'
+import {
+  officeCapabilityFlags,
+  officeRemoteDiagnosticsEnabled,
+  officeWorkspaceMode,
+} from '../build-config.js'
+import {
+  createOfficeDiagnostics,
+  officeDiagnosticEnvironment,
+  type OfficeDiagnostics,
+} from './diagnostics/office-diagnostics.js'
 import type { OfficeProposal, StructuredProposal } from './agent/proposal-controller.js'
 import { MAX_SKILL_BYTES } from './skills/shared/skill-registry.js'
 import { MAX_VFS_FILE_BYTES } from './skills/shared/vfs.js'
@@ -161,16 +170,31 @@ export interface OfficeWorkspaceUi {
   readonly skills: () => readonly string[]
   readonly skillPackagesEnabled: boolean
   readonly upload: (file: SessionFile) => Promise<void>
+  readonly copyDiagnostics?: () => Promise<void>
   readonly uninstallSkill?: (name: string) => void
   readonly clear: () => void
 }
 
-export function createOfficeWorkspaceUi(runtime: OfficeHostRuntime): OfficeWorkspaceUi {
+export function createOfficeWorkspaceUi(
+  runtime: OfficeHostRuntime,
+  diagnostics?: Pick<OfficeDiagnostics, 'exportJson'>,
+  clipboard: { writeText(value: string): Promise<void> } | undefined = globalThis.navigator
+    ?.clipboard,
+): OfficeWorkspaceUi {
   return Object.freeze({
     attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
     skills: () => Object.freeze(runtime.skills.list().map((skill) => skill.name)),
     skillPackagesEnabled: runtime.skillPackagesEnabled,
     upload: (file: SessionFile) => uploadSessionFile(runtime, file),
+    ...(diagnostics
+      ? {
+          copyDiagnostics: async () => {
+            if (!clipboard || typeof clipboard.writeText !== 'function')
+              throw new Error('diagnostic_copy_failed')
+            await clipboard.writeText(diagnostics.exportJson())
+          },
+        }
+      : {}),
     uninstallSkill: (name: string) => runtime.uninstallSkill(name),
     clear: () => runtime.clearSession(),
   })
@@ -350,6 +374,7 @@ export function AgentWorkspace(props: {
   const [files, setFiles] = useState<readonly string[]>(ui.attachments())
   const [skills, setSkills] = useState<readonly string[]>(ui.skills())
   const [uploadError, setUploadError] = useState('')
+  const [diagnosticStatus, setDiagnosticStatus] = useState('')
   const [panel, setPanel] = useState<WorkspacePanelName | undefined>(props.initialPanel)
   const mounted = useRef(true)
   const panelHeading = useRef<HTMLHeadingElement>(null)
@@ -429,12 +454,33 @@ export function AgentWorkspace(props: {
               >
                 管理技能
               </button>
+              {ui.copyDiagnostics && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    setDiagnosticStatus('')
+                    void ui
+                      .copyDiagnostics?.()
+                      .then(() => mounted.current && setDiagnosticStatus('诊断信息已复制'))
+                      .catch(() => mounted.current && setDiagnosticStatus('复制诊断信息失败'))
+                    event.currentTarget.closest('details')?.removeAttribute('open')
+                  }}
+                >
+                  复制诊断信息
+                </button>
+              )}
               <button type="button" onClick={disconnect}>
                 退出登录
               </button>
             </details>
           </div>
         </header>
+      )}
+
+      {diagnosticStatus && (
+        <p className="visually-hidden" role="status">
+          {diagnosticStatus}
+        </p>
       )}
 
       {showStatus && (
@@ -739,12 +785,19 @@ export function workspaceComponentForMode(mode: 'workspace' | 'legacy') {
 
 function ConfiguredApp() {
   const document = useMemo(() => createOfficeDocumentClient(createBrowserOfficeRuntime()), [])
+  const transportMode = useMemo(() => officeTransportMode(import.meta.env), [])
+  const remoteDiagnosticsEnabled = useMemo(
+    () => transportMode === 'relay' && officeRemoteDiagnosticsEnabled(import.meta.env),
+    [transportMode],
+  )
   const bridge = useMemo(
     () =>
-      officeTransportMode(import.meta.env) === 'loopback'
+      transportMode === 'loopback'
         ? createPcBridgeSession()
-        : createOfficeRelaySession(),
-    [],
+        : createOfficeRelaySession({
+            ...(remoteDiagnosticsEnabled ? { capabilities: ['agent.v1'] } : {}),
+          }),
+    [remoteDiagnosticsEnabled, transportMode],
   )
   const bridgeState = useSyncExternalStore(
     (listener) => bridge.subscribe(listener),
@@ -772,19 +825,33 @@ function ConfiguredApp() {
           setHost(activeHost)
           setHostSupported(activeHost !== 'unknown')
           if (activeHost !== 'unknown') {
+            const environment = officeDiagnosticEnvironment(activeHost)
+            const diagnostics = createOfficeDiagnostics({
+              host: activeHost,
+              platform: environment.platform,
+              build: import.meta.env.VITE_WISWORK_OFFICE_BUILD_ID ?? 'unknown',
+              requirementSets: environment.requirementSets,
+              remoteEnabled: remoteDiagnosticsEnabled,
+              send: (event) => {
+                if (!('sendDiagnostic' in bridge) || !bridge.sendDiagnostic(event))
+                  throw new Error('diagnostic_upload_failed')
+              },
+            })
             const runtime = createOfficeHostRuntime(activeHost, {
               enableHostSkills: import.meta.env.VITE_WISWORK_OFFICE_HOST_SKILLS !== '0',
               enableConversions: capabilityFlags.conversions,
               enableSkillPackages: capabilityFlags.skillPackages,
               enableImportMedia: capabilityFlags.importMedia,
               document,
+              diagnostics,
             })
             const session = createOfficeAgentSession({
               transport: createPcBridgeAgentTransport(bridge),
               skill: runtime.skill,
               proposals: runtime.proposals,
+              diagnostics,
             })
-            created = { runtime, session, ui: createOfficeWorkspaceUi(runtime) }
+            created = { runtime, session, ui: createOfficeWorkspaceUi(runtime, diagnostics) }
             setWorkspace(created)
           }
           setStatus(
@@ -805,7 +872,7 @@ function ConfiguredApp() {
       created?.runtime.dispose()
       bridge.disconnect()
     }
-  }, [bridge, capabilityFlags, document])
+  }, [bridge, capabilityFlags, document, remoteDiagnosticsEnabled])
 
   useEffect(() => {
     if (bridgeState.status !== 'connected' && workspace) {

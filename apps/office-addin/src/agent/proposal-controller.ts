@@ -1,4 +1,5 @@
 import type { OfficeDocumentClient } from '../office-document.js'
+import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
 
 export type ProposalOperation = 'replace' | 'append'
 export const MAX_PROPOSAL_SELECTION_LENGTH = 12_000
@@ -111,7 +112,16 @@ function deepFreeze<T>(value: T): T {
   return value
 }
 
-export function createStructuredProposalController(): StructuredProposalController {
+export function createStructuredProposalController(
+  diagnostics?: Pick<OfficeDiagnostics, 'setTool' | 'record'>,
+): StructuredProposalController {
+  const diagnose = (action: () => void) => {
+    try {
+      action()
+    } catch {
+      /* diagnostics never changes document behavior */
+    }
+  }
   let current:
     | {
         snapshot: StructuredProposal
@@ -141,7 +151,8 @@ export function createStructuredProposalController(): StructuredProposalControll
       return () => listeners.delete(listener)
     },
     waitForDecision(id) {
-      if (!current || current.snapshot.id !== id) return Promise.reject(new Error('proposal_missing'))
+      if (!current || current.snapshot.id !== id)
+        return Promise.reject(new Error('proposal_missing'))
       return current.decision.promise
     },
     propose(request) {
@@ -176,6 +187,7 @@ export function createStructuredProposalController(): StructuredProposalControll
         after: request.after,
         code: request.code,
       })
+      diagnose(() => diagnostics?.setTool(request.toolName ?? request.operation))
       if (current) settle(current.decision, { status: 'cancelled' })
       let resolve!: (value: ProposalDecision) => void
       const promise = new Promise<ProposalDecision>((next) => {
@@ -197,16 +209,26 @@ export function createStructuredProposalController(): StructuredProposalControll
       publish()
       const controller = new AbortController()
       confirming = controller
+      let phase: 'validate' | 'write' | 'verify' = 'validate'
       try {
         if (!(await proposal.request.validate(controller.signal)) || controller.signal.aborted) {
           throw new Error('proposal_stale')
         }
+        phase = 'write'
         await proposal.request.execute(controller.signal)
         if (controller.signal.aborted) throw new Error('proposal_stale')
+        phase = 'verify'
         await proposal.request.verify?.(controller.signal)
         settle(proposal.decision, { status: 'confirmed' })
       } catch (error) {
         const code = stableProposalError(error)
+        diagnose(() =>
+          diagnostics?.record({
+            phase: code === 'office_recovery_failed' ? 'recovery' : phase,
+            errorCode: code,
+            error,
+          }),
+        )
         settle(proposal.decision, { status: 'failed', error: code })
         throw error
       } finally {
@@ -228,8 +250,11 @@ export function selectionFingerprint(value: string): string {
   return `${value.length}:${(hash >>> 0).toString(16).padStart(8, '0')}`
 }
 
-export function createProposalController(document: OfficeDocumentClient): ProposalController {
-  const structured = createStructuredProposalController()
+export function createProposalController(
+  document: OfficeDocumentClient,
+  diagnostics?: Pick<OfficeDiagnostics, 'setTool' | 'record'>,
+): ProposalController {
+  const structured = createStructuredProposalController(diagnostics)
   const legacy = (proposal: StructuredProposal): OfficeProposal => {
     const preview = proposal.preview as { value: string }
     return Object.freeze({

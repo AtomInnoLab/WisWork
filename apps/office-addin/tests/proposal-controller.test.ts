@@ -80,7 +80,8 @@ describe('proposal controller', () => {
   })
 
   it('never exposes an arbitrary Office error through a suspended decision', async () => {
-    const controller = createStructuredProposalController()
+    const record = vi.fn()
+    const controller = createStructuredProposalController({ setTool: vi.fn(), record })
     const proposal = controller.propose({
       operation: 'edit',
       title: 'Edit document',
@@ -98,6 +99,76 @@ describe('proposal controller', () => {
       status: 'failed',
       error: 'office_write_failed',
     })
+    expect(record).toHaveBeenCalledWith({
+      phase: 'write',
+      errorCode: 'office_write_failed',
+      error: expect.objectContaining({ message: expect.stringContaining('alice') }),
+    })
+  })
+
+  it('diagnoses validation and verification at their exact safe phases', async () => {
+    const record = vi.fn()
+    const validation = createStructuredProposalController({ setTool: vi.fn(), record })
+    const stale = validation.propose({
+      operation: 'write_document',
+      toolName: 'write_document',
+      title: 'Write',
+      preview: {},
+      impact: { host: 'word', targets: ['document'], count: 1 },
+      fingerprint: 'v1',
+      validate: async () => false,
+      execute: async () => undefined,
+    })
+    await expect(validation.confirm(stale.id)).rejects.toThrow('proposal_stale')
+    expect(record).toHaveBeenLastCalledWith({
+      phase: 'validate',
+      errorCode: 'proposal_stale',
+      error: expect.any(Error),
+    })
+
+    const verification = createStructuredProposalController({ setTool: vi.fn(), record })
+    const failed = verification.propose({
+      operation: 'set_cell_range',
+      toolName: 'set_cell_range',
+      title: 'Write cells',
+      preview: {},
+      impact: { host: 'Excel', targets: ['sheet:1!A1'], count: 1 },
+      fingerprint: 'v1',
+      validate: async () => true,
+      execute: async () => undefined,
+      verify: async () => {
+        throw new Error('office_verify_failed')
+      },
+    })
+    await expect(verification.confirm(failed.id)).rejects.toThrow('office_verify_failed')
+    expect(record).toHaveBeenLastCalledWith({
+      phase: 'verify',
+      errorCode: 'office_verify_failed',
+      error: expect.any(Error),
+    })
+  })
+
+  it('never lets a broken diagnostic sink replace the document failure', async () => {
+    const controller = createStructuredProposalController({
+      setTool: () => {
+        throw new Error('diagnostic down')
+      },
+      record: () => {
+        throw new Error('diagnostic down')
+      },
+    })
+    const proposal = controller.propose({
+      operation: 'edit',
+      title: 'Edit',
+      preview: {},
+      impact: { host: 'word', targets: ['document'], count: 1 },
+      fingerprint: 'v1',
+      validate: async () => true,
+      execute: async () => {
+        throw new Error('office_write_failed')
+      },
+    })
+    await expect(controller.confirm(proposal.id)).rejects.toThrow('office_write_failed')
   })
 
   it('keeps one pending proposal and captures selection state', async () => {

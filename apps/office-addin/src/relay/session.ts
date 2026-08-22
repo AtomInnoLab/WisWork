@@ -1,4 +1,5 @@
 import type { OfficeHost } from '../office-document.js'
+import type { OfficeDiagnosticEvent } from '../diagnostics/office-diagnostics.js'
 import { officeTransportMode, type OfficeTransportMode } from '../../build-config.js'
 
 export const OFFICE_RELAY_URL = 'wss://office.8-216-134-194.sslip.io/office-relay'
@@ -10,6 +11,15 @@ const MAX_RELAY_FRAME_BYTES = Math.ceil((MAX_CHUNK_BYTES * 4) / 3) + 4096
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 const REQUEST_TIMEOUT_MS = 120_000
 const MAX_OPAQUE_LENGTH = 512
+const MAX_DIAGNOSTIC_EVENT_BYTES = 4 * 1024
+const MAX_PENDING_DIAGNOSTICS = 16
+const DIAGNOSTIC_ERROR_CODES = new Set([
+  'diagnostic_limit',
+  'diagnostic_too_large',
+  'invalid_capability',
+  'invalid_frame',
+  'invalid_session',
+])
 
 export { officeTransportMode, type OfficeTransportMode }
 
@@ -43,6 +53,7 @@ export interface OfficeRelaySession {
     body: unknown,
     signal?: AbortSignal,
   ): Promise<Response>
+  sendDiagnostic(event: OfficeDiagnosticEvent): boolean
 }
 
 export type OfficeRelayCapability =
@@ -103,6 +114,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   let generation = 0
   let settleConnect: (() => void) | undefined
   let pairingTimer: ReturnType<typeof setTimeout> | undefined
+  const pendingDiagnostics = new Set<string>()
 
   const publish = (next: OfficeRelaySnapshot) => {
     state = next
@@ -130,6 +142,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     sessionId = undefined
     capability = undefined
     negotiatedCapabilities = []
+    pendingDiagnostics.clear()
     if (pairingTimer !== undefined) clearTimeout(pairingTimer)
     pairingTimer = undefined
     const activeSocket = socket
@@ -162,6 +175,29 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     }
     if (frame.version !== protocolVersion || typeof frame.type !== 'string')
       return protocolFailure()
+
+    if (frame.type === 'office.diagnostic.accepted') {
+      if (
+        protocolVersion !== 2 ||
+        frameBytes > MAX_CONTROL_FRAME_BYTES ||
+        !exactKeys(frame, ['version', 'type', 'event_id']) ||
+        typeof frame.event_id !== 'string' ||
+        !pendingDiagnostics.delete(frame.event_id)
+      )
+        return protocolFailure()
+      return
+    }
+    if (
+      frame.type === 'relay.error' &&
+      exactKeys(frame, ['version', 'type', 'code']) &&
+      typeof frame.code === 'string' &&
+      DIAGNOSTIC_ERROR_CODES.has(frame.code) &&
+      pendingDiagnostics.size > 0
+    ) {
+      const oldest = pendingDiagnostics.values().next().value as string | undefined
+      if (oldest) pendingDiagnostics.delete(oldest)
+      return
+    }
 
     if (frame.type === 'office.created') {
       if (
@@ -489,6 +525,58 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
           }
         }
       })
+    },
+    sendDiagnostic(event) {
+      if (
+        protocolVersion !== 2 ||
+        !socket ||
+        !sessionId ||
+        !capability ||
+        state.status !== 'connected' ||
+        pendingDiagnostics.size >= MAX_PENDING_DIAGNOSTICS ||
+        pendingDiagnostics.has(event.event_id)
+      )
+        return false
+      const safeEvent: OfficeDiagnosticEvent = {
+        event_id: event.event_id,
+        trace_id: event.trace_id,
+        timestamp_ms: event.timestamp_ms,
+        host: event.host,
+        platform: event.platform,
+        build: event.build,
+        tool: event.tool,
+        phase: event.phase,
+        outcome: event.outcome,
+        error_code: event.error_code,
+        ...(event.office_error_code ? { office_error_code: event.office_error_code } : {}),
+        ...(event.office_error_name ? { office_error_name: event.office_error_name } : {}),
+        ...(event.office_error_location
+          ? { office_error_location: event.office_error_location }
+          : {}),
+        duration_ms: event.duration_ms,
+        requirement_sets: { ...event.requirement_sets },
+      }
+      let serialized: string
+      try {
+        serialized = JSON.stringify(safeEvent)
+      } catch {
+        return false
+      }
+      if (encoder.encode(serialized).byteLength > MAX_DIAGNOSTIC_EVENT_BYTES) return false
+      try {
+        pendingDiagnostics.add(event.event_id)
+        send({
+          version: 2,
+          type: 'office.diagnostic',
+          session_id: sessionId,
+          capability,
+          ...safeEvent,
+        })
+        return true
+      } catch {
+        pendingDiagnostics.delete(event.event_id)
+        return false
+      }
     },
   }
   return api

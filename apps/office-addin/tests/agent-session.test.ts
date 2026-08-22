@@ -76,6 +76,42 @@ function proposalsHarness() {
 }
 
 describe('Office agent session', () => {
+  it('correlates a run and records a stable tool failure without retaining output', async () => {
+    const harness = transportHarness()
+    const diagnostics = {
+      startTrace: vi.fn(() => 'trace'),
+      setTool: vi.fn(),
+      record: vi.fn(),
+      clear: vi.fn(),
+    }
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'write_document', description: 'write', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(async () => ({
+          output: JSON.stringify({ success: false, error: 'office_api_unsupported', secret: 'x' }),
+          isError: true,
+          summary: 'failed',
+        })),
+      },
+      proposals: proposalsHarness().controller,
+      diagnostics,
+    })
+    session.send('write my secret article')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({ id: 'call', name: 'write_document', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(diagnostics.record).toHaveBeenCalled())
+    expect(diagnostics.startTrace).toHaveBeenCalledOnce()
+    expect(diagnostics.setTool).toHaveBeenCalledWith('write_document')
+    expect(diagnostics.record).toHaveBeenCalledWith({
+      phase: 'tool',
+      errorCode: 'office_api_unsupported',
+    })
+    expect(JSON.stringify(diagnostics.record.mock.calls)).not.toContain('write my secret article')
+  })
   it('keeps a bounded immutable two-turn user and assistant presentation timeline', async () => {
     const harness = transportHarness()
     const proposals = proposalsHarness()

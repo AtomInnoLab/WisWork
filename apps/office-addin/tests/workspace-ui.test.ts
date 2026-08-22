@@ -76,6 +76,7 @@ function workspaceMarkup(
     skills: () => Object.freeze(['Editorial review']),
     skillPackagesEnabled: true,
     upload: vi.fn(),
+    copyDiagnostics: vi.fn(),
     clear: vi.fn(),
   })
   return renderToStaticMarkup(
@@ -334,7 +335,7 @@ describe('Office Agent workspace UI', () => {
     expect(html).not.toContain('Mode: replace')
   })
 
-  it('uses a frozen UI-only facade instead of exposing the Office runtime', () => {
+  it('uses a frozen UI-only facade instead of exposing the Office runtime', async () => {
     const runtime = {
       vfs: { list: () => ['/home/user/a.txt'] },
       skills: { list: () => [{ name: 'Review' }] },
@@ -343,13 +344,23 @@ describe('Office Agent workspace UI', () => {
       installSkill: vi.fn(),
       clearSession: vi.fn(),
     } as unknown as OfficeHostRuntime
-    const ui = createOfficeWorkspaceUi(runtime)
+    const writeText = vi.fn(async () => undefined)
+    const diagnostics = { exportJson: vi.fn(() => '{"version":1}') }
+    const ui = createOfficeWorkspaceUi(runtime, diagnostics, { writeText })
     expect(Object.isFrozen(ui)).toBe(true)
     expect(Object.isFrozen(ui.attachments())).toBe(true)
     expect(Object.isFrozen(ui.skills())).toBe(true)
     expect(ui).not.toHaveProperty('vfs')
     expect(ui).not.toHaveProperty('runtime')
     expect(ui).not.toHaveProperty('proposals')
+    await expect(ui.copyDiagnostics!()).resolves.toBeUndefined()
+    expect(writeText).toHaveBeenCalledWith('{"version":1}')
+  })
+
+  it('offers a direct copy-diagnostics action without exposing diagnostic state', () => {
+    const html = workspaceMarkup()
+    expect(html).toContain('复制诊断信息')
+    expect(html).not.toContain('trace_id')
   })
 
   it('focuses the panel heading on open and restores the opener on close', () => {

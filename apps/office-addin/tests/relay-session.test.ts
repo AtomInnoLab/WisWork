@@ -5,6 +5,7 @@ import {
   officeTransportMode,
   type RelayWebSocket,
 } from '../src/relay/session.js'
+import type { OfficeDiagnosticEvent } from '../src/diagnostics/office-diagnostics.js'
 
 class FakeSocket implements RelayWebSocket {
   static readonly OPEN = 1
@@ -34,6 +35,23 @@ class FakeSocket implements RelayWebSocket {
 const frame = (socket: FakeSocket, index: number) => JSON.parse(socket.sent[index]!)
 
 describe('Office cloud relay session', () => {
+  const diagnostic: OfficeDiagnosticEvent = {
+    event_id: '00000000-0000-4000-8000-000000000001',
+    trace_id: '00000000-0000-4000-8000-000000000002',
+    timestamp_ms: 1_777_000_000_000,
+    host: 'word',
+    platform: 'mac',
+    build: 'build-123',
+    tool: 'write_document',
+    phase: 'write',
+    outcome: 'failed',
+    error_code: 'office_write_failed',
+    office_error_code: 'InvalidArgument',
+    office_error_location: 'Body.insertText',
+    duration_ms: 25,
+    requirement_sets: { WordApi: true },
+  }
+
   it('uses the fixed secure relay by default and loopback only as explicit rollback', () => {
     expect(OFFICE_RELAY_URL).toBe('wss://office.8-216-134-194.sslip.io/office-relay')
     expect(officeTransportMode({})).toBe('relay')
@@ -132,6 +150,124 @@ describe('Office cloud relay session', () => {
     })
     session.disconnect()
     await expect(pending).rejects.toThrow('relay_disconnected')
+  })
+
+  it('sends bounded diagnostics only over an approved v2 session', async () => {
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1'],
+    })
+    const connecting = session.connect('word')
+    expect(session.sendDiagnostic(diagnostic)).toBe(false)
+    socket.open()
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pair_12345678',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.approved',
+        session_id: 'session_12345678',
+        capability: 'capability_12345678',
+        expires_in: 1800,
+        capabilities: ['agent.v1'],
+      }),
+    )
+    await connecting
+    expect(session.sendDiagnostic(diagnostic)).toBe(true)
+    expect(frame(socket, 1)).toEqual({
+      version: 2,
+      type: 'office.diagnostic',
+      session_id: 'session_12345678',
+      capability: 'capability_12345678',
+      ...diagnostic,
+    })
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.diagnostic.accepted',
+        event_id: diagnostic.event_id,
+      }),
+    )
+    expect(session.snapshot().status).toBe('connected')
+    expect(session.sendDiagnostic({ ...diagnostic, tool: 'x'.repeat(5_000) })).toBe(false)
+    expect(socket.sent).toHaveLength(2)
+  })
+
+  it('keeps Agent streaming usable after a nonfatal diagnostic limit response', async () => {
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1'],
+      randomUUID: () => 'request_12345678',
+    })
+    const connecting = session.connect('excel')
+    socket.open()
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pair_12345678',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.approved',
+        session_id: 'session_12345678',
+        capability: 'capability_12345678',
+        expires_in: 1800,
+        capabilities: ['agent.v1'],
+      }),
+    )
+    await connecting
+    expect(session.sendDiagnostic({ ...diagnostic, host: 'excel' })).toBe(true)
+    socket.receive(JSON.stringify({ version: 2, type: 'relay.error', code: 'diagnostic_limit' }))
+    expect(session.snapshot().status).toBe('connected')
+    const pending = session.authenticatedFetch('/v1/office/messages', {
+      method: 'POST',
+      body: '{"model":"fixed"}',
+    })
+    expect(frame(socket, 2).type).toBe('office.request')
+    session.disconnect()
+    await expect(pending).rejects.toThrow('relay_disconnected')
+  })
+
+  it('does not send diagnostics over a v1 rollback session', async () => {
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({ createSocket: () => socket })
+    const connecting = session.connect('word')
+    socket.open()
+    socket.receive(
+      JSON.stringify({
+        version: 1,
+        type: 'office.created',
+        pairing_id: 'pair',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    socket.receive(
+      JSON.stringify({
+        version: 1,
+        type: 'office.approved',
+        session_id: 'session',
+        capability: 'capability',
+        expires_in: 1800,
+      }),
+    )
+    await connecting
+    expect(session.sendDiagnostic(diagnostic)).toBe(false)
+    expect(socket.sent).toHaveLength(1)
   })
 
   it('streams bounded SSE events, sends cancel, and completes once', async () => {

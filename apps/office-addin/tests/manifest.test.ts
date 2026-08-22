@@ -7,6 +7,7 @@ import {
   deploymentConnectOrigins,
   officeBridgePorts,
   officeCapabilityFlags,
+  officeRemoteDiagnosticsEnabled,
   renderDeploymentManifest,
 } from '../build-config.js'
 
@@ -100,6 +101,22 @@ describe('Office Add-in manifest and routes', () => {
     )
     expect(
       deploymentConfig({ ...validEnv, VITE_WISWORK_OFFICE_SKILL_PACKAGES: 'false' }),
+    ).toBeUndefined()
+  })
+
+  it('enables safe remote diagnostics by default with an exact rollback flag', () => {
+    expect(officeRemoteDiagnosticsEnabled({})).toBe(true)
+    expect(officeRemoteDiagnosticsEnabled({ VITE_WISWORK_OFFICE_REMOTE_DIAGNOSTICS: '1' })).toBe(
+      true,
+    )
+    expect(officeRemoteDiagnosticsEnabled({ VITE_WISWORK_OFFICE_REMOTE_DIAGNOSTICS: '0' })).toBe(
+      false,
+    )
+    expect(() =>
+      officeRemoteDiagnosticsEnabled({ VITE_WISWORK_OFFICE_REMOTE_DIAGNOSTICS: 'true' }),
+    ).toThrow('invalid_office_remote_diagnostics')
+    expect(
+      deploymentConfig({ ...validEnv, VITE_WISWORK_OFFICE_REMOTE_DIAGNOSTICS: 'true' }),
     ).toBeUndefined()
   })
 

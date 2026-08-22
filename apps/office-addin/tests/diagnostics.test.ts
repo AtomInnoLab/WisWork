@@ -1,0 +1,131 @@
+import { describe, expect, it, vi } from 'vitest'
+import {
+  createOfficeDiagnostics,
+  officeDiagnosticEnvironment,
+} from '../src/diagnostics/office-diagnostics.js'
+
+describe('Office safe diagnostics', () => {
+  it('normalizes Office platform and exposes only the active known requirement set', () => {
+    const isSetSupported = vi.fn(
+      (name: string, version: string) => name === 'WordApi' && version === '1.3',
+    )
+    expect(
+      officeDiagnosticEnvironment('word', {
+        Office: { context: { platform: 'Mac', requirements: { isSetSupported } } },
+      }),
+    ).toEqual({ platform: 'mac', requirementSets: { WordApi: true } })
+    expect(officeDiagnosticEnvironment('excel', {})).toEqual({
+      platform: 'unknown',
+      requirementSets: { ExcelApi: false },
+    })
+  })
+  it('retains a bounded local ring and exports no document or raw error content', () => {
+    let id = 0
+    const diagnostics = createOfficeDiagnostics({
+      host: 'word',
+      platform: 'mac',
+      build: 'build-123',
+      now: () => 1_000 + id,
+      randomUUID: () => `00000000-0000-4000-8000-${String(++id).padStart(12, '0')}`,
+      requirementSets: { WordApi: true },
+    })
+    diagnostics.startTrace()
+    diagnostics.setTool('write_document')
+    for (let index = 0; index < 205; index += 1)
+      diagnostics.record({
+        phase: 'write',
+        error: Object.assign(new Error('document secret'), {
+          code: 'InvalidArgument',
+          debugInfo: {
+            errorLocation: 'Body.insertText',
+            statement: 'insert super secret document text',
+          },
+        }),
+        errorCode: 'office_write_failed',
+        durationMs: index,
+        prohibitedPrompt: 'never retain me',
+      } as never)
+
+    const snapshot = diagnostics.snapshot()
+    expect(snapshot.events).toHaveLength(200)
+    expect(snapshot.events[0]?.duration_ms).toBe(5)
+    expect(snapshot.events.at(-1)).toMatchObject({
+      host: 'word',
+      platform: 'mac',
+      build: 'build-123',
+      tool: 'write_document',
+      phase: 'write',
+      outcome: 'failed',
+      error_code: 'office_write_failed',
+      office_error_code: 'InvalidArgument',
+      office_error_name: 'Error',
+      office_error_location: 'Body.insertText',
+      requirement_sets: { WordApi: true },
+    })
+    const exported = diagnostics.exportJson()
+    expect(new TextEncoder().encode(exported).byteLength).toBeLessThanOrEqual(256 * 1024)
+    expect(exported).not.toContain('document secret')
+    expect(exported).not.toContain('super secret')
+    expect(exported).not.toContain('never retain me')
+  })
+
+  it('uploads only bounded failure events and isolates upload failures', async () => {
+    const sent: unknown[] = []
+    const diagnostics = createOfficeDiagnostics({
+      host: 'excel',
+      platform: 'unknown',
+      build: 'dev',
+      remoteEnabled: true,
+      send: async (event) => {
+        sent.push(event)
+        throw new Error('relay secret failure')
+      },
+      randomUUID: () => '00000000-0000-4000-8000-000000000001',
+      now: () => 10,
+    })
+    diagnostics.startTrace()
+    diagnostics.setTool('set_cell_range')
+    expect(() =>
+      diagnostics.record({
+        phase: 'verify',
+        errorCode: 'office_verify_failed',
+        error: { message: 'cell A1 contains payroll', stack: 'secret stack' },
+      }),
+    ).not.toThrow()
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    expect(JSON.stringify(sent)).not.toContain('payroll')
+    expect(JSON.stringify(sent)).not.toContain('secret stack')
+    expect(diagnostics.snapshot().events.at(-1)?.error_code).toBe('diagnostic_upload_failed')
+  })
+
+  it('clears traces and records stable unsupported and cancellation outcomes', () => {
+    const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'dev' })
+    diagnostics.startTrace()
+    diagnostics.record({ phase: 'tool', errorCode: 'office_api_unsupported' })
+    diagnostics.record({ phase: 'transport', errorCode: 'cancelled' })
+    expect(diagnostics.snapshot().events.map((event) => event.outcome)).toEqual([
+      'unsupported',
+      'cancelled',
+    ])
+    diagnostics.clear()
+    expect(diagnostics.snapshot().events).toEqual([])
+    expect(diagnostics.snapshot().trace_id).toBeUndefined()
+  })
+
+  it('ignores hostile Office error accessors without affecting the failure record', () => {
+    const diagnostics = createOfficeDiagnostics({ host: 'word', build: 'dev' })
+    const hostile = Object.defineProperty({}, 'debugInfo', {
+      get() {
+        throw new Error('secret getter')
+      },
+    })
+    expect(() =>
+      diagnostics.record({
+        phase: 'write',
+        errorCode: 'office_write_failed',
+        error: hostile,
+      }),
+    ).not.toThrow()
+    expect(diagnostics.snapshot().events[0]).not.toHaveProperty('office_error_location')
+  })
+})
