@@ -71,6 +71,31 @@ export interface ToolExecution {
   display?: ToolDisplay
 }
 
+/**
+ * A tool can suspend its final execution while it waits for an external
+ * decision (for example, user approval). The loop keeps the current tool call
+ * open and does not make another provider request until `result` settles.
+ */
+export interface ToolExecutionSuspension extends ToolExecution {
+  kind: 'tool-execution-suspension'
+  result: Promise<ToolExecution>
+}
+
+export type ToolExecutionOutcome = ToolExecution | ToolExecutionSuspension
+
+/** Create the only supported, bounded shape for a suspended tool execution. */
+export function suspendToolExecution(result: Promise<ToolExecution>): ToolExecutionSuspension {
+  // The placeholder ToolExecution fields preserve source compatibility for
+  // direct skill consumers. AgentLoop detects `kind` and never publishes this
+  // placeholder to model history or execution events.
+  return {
+    kind: 'tool-execution-suspension',
+    result,
+    output: 'tool_execution_suspended',
+    summary: 'Awaiting tool execution',
+  }
+}
+
 // ---- run phase (drives the in-progress status line in chat UIs) ----
 
 export type AgentPhaseKind =
