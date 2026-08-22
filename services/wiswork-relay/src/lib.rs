@@ -50,6 +50,8 @@ pub struct Config {
     pub request_ttl: Duration,
     pub max_claim_attempts: u8,
     pub max_global_claims: u32,
+    pub diagnostic_window: Duration,
+    pub max_diagnostics_per_window: u8,
     pub auth_url: String,
     pub jwks_url: String,
     pub issuer: String,
@@ -64,6 +66,8 @@ impl Default for Config {
             request_ttl: Duration::from_secs(120),
             max_claim_attempts: 5,
             max_global_claims: 1_000,
+            diagnostic_window: Duration::from_secs(1),
+            max_diagnostics_per_window: 10,
             auth_url: "https://auth.dev.wispaper.ai/oidc/me".into(),
             jwks_url: "https://auth.dev.wispaper.ai/oidc/jwks".into(),
             issuer: "https://auth.dev.wispaper.ai/oidc".into(),
@@ -111,6 +115,7 @@ struct Active {
 }
 struct Session {
     version: u64,
+    host: String,
     office: u64,
     office_tx: Tx,
     pc: u64,
@@ -123,6 +128,8 @@ struct Session {
     used_requests: VecDeque<String>,
     capabilities: Vec<String>,
     diagnostics: u16,
+    diagnostic_window_started: Instant,
+    diagnostic_window_count: u8,
 }
 #[derive(Default)]
 struct Store {
@@ -526,7 +533,9 @@ async fn process(
         return Err("invalid_frame");
     }
     let kind = string(&map, "type")?;
-    if text.len() > CONTROL_MAX && !matches!(kind, "office.request" | "pc.chunk") {
+    if text.len() > CONTROL_MAX
+        && !matches!(kind, "office.request" | "office.diagnostic" | "pc.chunk")
+    {
         return Err("frame_too_large");
     }
     if origin.is_some() && !kind.starts_with("office.") {
@@ -891,6 +900,7 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
         sid,
         Session {
             version: protocol,
+            host: p.host,
             office: p.office,
             office_tx: p.office_tx,
             pc: conn,
@@ -903,6 +913,8 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
             used_requests: VecDeque::new(),
             capabilities: approved_capabilities,
             diagnostics: 0,
+            diagnostic_window_started: now,
+            diagnostic_window_count: 0,
         },
     );
     Ok(())
@@ -1079,34 +1091,50 @@ async fn diagnostic(
     if session.office != conn || session.office_cap != cap || session.version != PROTOCOL_V2 {
         return Err("invalid_capability");
     }
+    let expected_host = match session.host.as_str() {
+        "Word" => "word",
+        "Excel" => "excel",
+        "PowerPoint" => "powerpoint",
+        _ => return Err("diagnostic_host_mismatch"),
+    };
+    if host != expected_host {
+        return Err("diagnostic_host_mismatch");
+    }
     if session.diagnostics >= DIAGNOSTIC_SESSION_MAX {
         return Err("diagnostic_limit");
     }
+    if session.diagnostic_window_started.elapsed() >= app.inner.config.diagnostic_window {
+        session.diagnostic_window_started = Instant::now();
+        session.diagnostic_window_count = 0;
+    }
+    if session.diagnostic_window_count >= app.inner.config.max_diagnostics_per_window {
+        return Err("diagnostic_rate_limited");
+    }
     session.diagnostics += 1;
+    session.diagnostic_window_count += 1;
 
-    eprintln!(
-        "{}",
-        json!({
-            "event": "office_diagnostic",
-            "connection_id": conn,
-            "session_id": sid,
-            "event_id": event_id,
-            "trace_id": trace_id,
-            "timestamp_ms": timestamp_ms,
-            "host": host,
-            "platform": platform,
-            "build": build,
-            "tool": tool,
-            "phase": phase,
-            "outcome": outcome,
-            "error_code": error_code,
-            "office_error_code": office_error_code,
-            "office_error_name": office_error_name,
-            "office_error_location": office_error_location,
-            "duration_ms": duration_ms,
-            "requirement_sets": requirement_sets,
-        })
-    );
+    let log_entry = json!({
+        "event": "office_diagnostic",
+        "connection_id": conn,
+        "session_id": sid,
+        "event_id": event_id,
+        "trace_id": trace_id,
+        "timestamp_ms": timestamp_ms,
+        "host": host,
+        "platform": platform,
+        "build": build,
+        "tool": tool,
+        "phase": phase,
+        "outcome": outcome,
+        "error_code": error_code,
+        "office_error_code": office_error_code,
+        "office_error_name": office_error_name,
+        "office_error_location": office_error_location,
+        "duration_ms": duration_ms,
+        "requirement_sets": requirement_sets,
+    });
+    drop(store);
+    eprintln!("{log_entry}");
     send(
         tx,
         json!({

@@ -17,9 +17,10 @@ const TEST_ISSUER: &str = "https://issuer.example.test";
 const TEST_AUDIENCE: &str = "relay-test-client";
 const TEST_PRIVATE_KEY_DER: &str = "MIG2AgEAMBAGByqGSM49AgEGBSuBBAAiBIGeMIGbAgEBBDBi2P/vImpNt3oyLprNPTVoaYRvIaJWVxDjsjoRF0YfAmwKUhtjGdj0qh0NWGlbVVOhZANiAAQ1aooGczWALsnMxfjM77d43rpKPqBtQEHPDrizP7fpwi/SbkZ2T/czW8Ye+5Ix3WIYFMM60AKyMtLQXT8V4VjQb0jM9wRkC/JEa0C50q9dk8APUPfbJMDbcsqcyW0bl2w=";
 
-async fn server_with_limits(
+async fn server_with_all_limits(
     session_ttls: Option<(Duration, Duration)>,
     max_global_claims: Option<u32>,
+    diagnostic_rate: Option<(u8, Duration)>,
 ) -> String {
     let auth_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let auth_addr = auth_listener.local_addr().unwrap();
@@ -66,6 +67,10 @@ async fn server_with_limits(
     if let Some(maximum) = max_global_claims {
         config.max_global_claims = maximum;
     }
+    if let Some((maximum, window)) = diagnostic_rate {
+        config.max_diagnostics_per_window = maximum;
+        config.diagnostic_window = window;
+    }
     tokio::spawn(async move {
         axum::serve(
             listener,
@@ -75,6 +80,17 @@ async fn server_with_limits(
         .unwrap()
     });
     format!("ws://{addr}/office-relay")
+}
+
+async fn server_with_limits(
+    session_ttls: Option<(Duration, Duration)>,
+    max_global_claims: Option<u32>,
+) -> String {
+    server_with_all_limits(session_ttls, max_global_claims, None).await
+}
+
+async fn server_with_diagnostic_rate(maximum: u8, window: Duration) -> String {
+    server_with_all_limits(None, None, Some((maximum, window))).await
 }
 
 async fn server_with_session_ttls(session_ttls: Option<(Duration, Duration)>) -> String {
@@ -797,6 +813,35 @@ async fn accepts_capability_bound_diagnostic_without_forwarding_or_disturbing_re
 }
 
 #[tokio::test]
+async fn oversized_diagnostic_is_nonfatal_while_an_agent_request_is_active() {
+    let url = server().await;
+    let (mut office, mut pc, office_ready, _) = approved_v2_session(&url).await;
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"active_during_oversize","capability_name":"agent.v1","body":{}}),
+    )
+    .await;
+    assert_eq!(recv(&mut pc).await["request_id"], "active_during_oversize");
+
+    let mut oversized = diagnostic(&office_ready, "04685f50-15c0-4392-a361-b0f36a84a719");
+    oversized["office_error_location"] = json!("a".repeat(17 * 1024));
+    send(&mut office, oversized).await;
+    assert_eq!(recv(&mut office).await["code"], "diagnostic_too_large");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), recv(&mut pc))
+            .await
+            .is_err()
+    );
+
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.cancel","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"active_during_oversize"}),
+    )
+    .await;
+    assert_eq!(recv(&mut pc).await["type"], "relay.cancel");
+}
+
+#[tokio::test]
 async fn rejects_unbound_or_non_v2_diagnostics_without_ending_the_office_connection() {
     let url = server().await;
     let (mut office, mut pc, office_ready, _) = approved_v2_session(&url).await;
@@ -857,8 +902,70 @@ async fn rejects_unknown_sensitive_and_unbounded_diagnostic_fields() {
 }
 
 #[tokio::test]
-async fn caps_diagnostics_at_one_hundred_per_session_without_mutating_request_state() {
+async fn rate_limits_diagnostic_bursts_and_recovers_without_disturbing_requests() {
+    let url = server_with_diagnostic_rate(10, Duration::from_millis(100)).await;
+    let (mut office, mut pc, office_ready, _) = approved_v2_session(&url).await;
+
+    for index in 0..10 {
+        let event_id = format!("10000000-0000-4000-8000-{index:012}");
+        send(&mut office, diagnostic(&office_ready, &event_id)).await;
+        assert_eq!(
+            recv(&mut office).await["type"],
+            "office.diagnostic.accepted"
+        );
+    }
+    send(
+        &mut office,
+        diagnostic(&office_ready, "10000000-0000-4000-8000-000000000010"),
+    )
+    .await;
+    assert_eq!(recv(&mut office).await["code"], "diagnostic_rate_limited");
+
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"during_rate_limit","capability_name":"agent.v1","body":{}}),
+    )
+    .await;
+    assert_eq!(recv(&mut pc).await["request_id"], "during_rate_limit");
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.cancel","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"during_rate_limit"}),
+    )
+    .await;
+    assert_eq!(recv(&mut pc).await["type"], "relay.cancel");
+
+    tokio::time::sleep(Duration::from_millis(110)).await;
+    send(
+        &mut office,
+        diagnostic(&office_ready, "10000000-0000-4000-8000-000000000011"),
+    )
+    .await;
+    assert_eq!(
+        recv(&mut office).await["type"],
+        "office.diagnostic.accepted"
+    );
+}
+
+#[tokio::test]
+async fn diagnostic_host_must_match_the_approved_pairing_host() {
     let url = server().await;
+    let (mut office, mut pc, office_ready, _) = approved_v2_session(&url).await;
+    let mut mismatched = diagnostic(&office_ready, "72447ee2-b34f-432e-9835-ab0ae7674546");
+    mismatched["host"] = json!("excel");
+    send(&mut office, mismatched).await;
+    assert_eq!(recv(&mut office).await["code"], "diagnostic_host_mismatch");
+
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"after_host_mismatch","capability_name":"agent.v1","body":{}}),
+    )
+    .await;
+    assert_eq!(recv(&mut pc).await["request_id"], "after_host_mismatch");
+}
+
+#[tokio::test]
+async fn caps_diagnostics_at_one_hundred_per_session_without_mutating_request_state() {
+    let url = server_with_diagnostic_rate(100, Duration::from_secs(1)).await;
     let (mut office, mut pc, office_ready, _) = approved_v2_session(&url).await;
 
     for index in 0..100 {
