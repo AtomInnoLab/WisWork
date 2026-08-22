@@ -75,7 +75,12 @@ function harness(maxClients = 12) {
         },
         emitStatus(next) {
           status = next
-          if (next.startsWith('disconnected:')) entries = []
+          if (next === 'paired') entries = []
+          if (next.startsWith('disconnected:')) {
+            const expiredIds = entries.map((entry) => entry.pairingId)
+            entries = []
+            expiredIds.forEach(events.onPendingExpired)
+          }
           events.onStatus(next)
         },
       }
@@ -203,6 +208,34 @@ describe('Office relay pool', () => {
     expect(pool.reject('pairing_word_123')).toBe(true)
     expect(children[0]!.reject).toHaveBeenCalledWith('pairing_word_123')
     expect(pool.reject('unknown_pairing')).toBe(false)
+  })
+
+  it('keeps approval ownership until the child confirms or expires without reviving the snapshot', async () => {
+    const { pool, children, expired } = harness()
+    await pool.claim('111111')
+    children[0]!.emitPending('pairing_word_123', 'Word')
+
+    await expect(pool.approve('pairing_word_123')).resolves.toBe(true)
+    expect(pool.listPending()).toEqual([])
+    await expect(pool.approve('pairing_word_123')).resolves.toBe(false)
+    expect(pool.reject('pairing_word_123')).toBe(false)
+
+    children[0]!.emitStatus('disconnected:pairing_expired')
+    expect(expired).toHaveBeenCalledOnce()
+    expect(expired).toHaveBeenCalledWith('pairing_word_123')
+    expect(pool.listPending()).toEqual([])
+  })
+
+  it('clears approval ownership only after pc.approved transitions the child to paired', async () => {
+    const { pool, children, expired } = harness()
+    await pool.claim('111111')
+    children[0]!.emitPending('pairing_word_123', 'Word')
+    await pool.approve('pairing_word_123')
+
+    children[0]!.emitStatus('paired')
+    children[0]!.emitStatus('disconnected:relay_closed')
+    expect(expired).not.toHaveBeenCalled()
+    expect(pool.listPending()).toEqual([])
   })
 
   it('isolates a child disconnect and preserves aggregate paired status', async () => {

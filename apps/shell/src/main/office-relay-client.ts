@@ -493,22 +493,32 @@ export function createOfficeRelayClient(options: {
   return {
     async claim(code) {
       if (!/^\d{6}$/.test(code)) throw new Error('invalid_verification_code')
-      const account = await options.getValidAccountStatus()
+      clear('new_claim', true)
+      generation += 1
+      const owner = generation
+      const ensureCurrent = () => {
+        if (owner !== generation) throw new Error('relay_connection_failed')
+      }
+      const account = await options.getValidAccountStatus().catch((error) => {
+        ensureCurrent()
+        clear('auth_required', true)
+        throw error
+      })
+      ensureCurrent()
       if (!account.loggedIn) {
         clear('auth_required', true)
         throw new Error('auth_required')
       }
       const accessToken = await options.getAccessToken().catch((error) => {
+        ensureCurrent()
         clear('auth_required', true)
         throw error
       })
+      ensureCurrent()
       if (!accessToken || !/^[\x21-\x7e]+$/.test(accessToken)) {
         clear('auth_required', true)
         throw new Error('auth_required')
       }
-      clear('new_claim', true)
-      generation += 1
-      const owner = generation
       setStatus('connecting')
       let next: RelaySocket
       try {

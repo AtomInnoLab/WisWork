@@ -53,6 +53,43 @@ function setup(loggedIn = true) {
 }
 
 describe('Office relay PC client', () => {
+  it.each(['account', 'token'] as const)(
+    'does not connect when revoked while awaiting %s validation',
+    async (phase) => {
+      let releaseAccount!: (value: { loggedIn: boolean }) => void
+      let releaseToken!: (value: string | null) => void
+      const account = new Promise<{ loggedIn: boolean }>((resolve) => {
+        releaseAccount = resolve
+      })
+      const token = new Promise<string | null>((resolve) => {
+        releaseToken = resolve
+      })
+      const connect = vi.fn(() => new FakeSocket())
+      const getAccessToken = vi.fn(() => token)
+      const client = createOfficeRelayClient({
+        endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+        connect,
+        getValidAccountStatus: () => account,
+        getAccessToken,
+        proxy: async () => ({ status: 200, body: new Uint8Array() }),
+        onPending() {},
+      })
+
+      const claim = client.claim('123456')
+      if (phase === 'token') {
+        releaseAccount({ loggedIn: true })
+        await vi.waitFor(() => expect(getAccessToken).toHaveBeenCalledOnce())
+      }
+      client.revoke('logout')
+      releaseAccount({ loggedIn: true })
+      releaseToken('access-token')
+
+      await expect(claim).rejects.toThrow('relay_connection_failed')
+      expect(connect).not.toHaveBeenCalled()
+      expect(client.status()).toBe('disconnected:logout')
+    },
+  )
+
   it('accepts only secure relay endpoint configuration without embedded credentials', () => {
     expect(officeRelayEndpointFromEnv({})).toBe('wss://office.8-216-134-194.sslip.io/office-relay')
     expect(() =>

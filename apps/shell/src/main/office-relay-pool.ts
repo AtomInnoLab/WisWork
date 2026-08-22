@@ -30,6 +30,7 @@ export function createOfficeRelayPool(options: {
 
   const slots = new Set<Slot>()
   const pairingOwners = new Map<string, Slot>()
+  const approving = new Set<string>()
   let fallbackStatus: OfficeRelayStatus = 'disconnected'
   let publishedStatus: OfficeRelayStatus = 'disconnected'
   let revoking = false
@@ -52,7 +53,10 @@ export function createOfficeRelayPool(options: {
 
   const remove = (slot: Slot) => {
     if (!slots.delete(slot)) return
-    for (const pairingId of slot.pairings) pairingOwners.delete(pairingId)
+    for (const pairingId of slot.pairings) {
+      pairingOwners.delete(pairingId)
+      approving.delete(pairingId)
+    }
     slot.pairings.clear()
   }
 
@@ -60,9 +64,12 @@ export function createOfficeRelayPool(options: {
     if (revoking) return
     revoking = true
     const children = [...slots]
+    const pendingIds = [...pairingOwners.keys()]
     slots.clear()
     pairingOwners.clear()
+    approving.clear()
     fallbackStatus = `disconnected:${reason}` as OfficeRelayStatus
+    for (const pairingId of pendingIds) options.onPendingExpired?.(pairingId)
     for (const slot of children) slot.client?.revoke(reason)
     revoking = false
     publish()
@@ -92,6 +99,7 @@ export function createOfficeRelayPool(options: {
             if (pairingOwners.get(pairingId) !== slot) return
             pairingOwners.delete(pairingId)
             slot.pairings.delete(pairingId)
+            approving.delete(pairingId)
             options.onPendingExpired?.(pairingId)
           },
           onStatus(status) {
@@ -104,6 +112,13 @@ export function createOfficeRelayPool(options: {
             if (status === 'disconnected:auth_required') {
               revokeAll('auth_required')
               return
+            }
+            if (status === 'paired') {
+              for (const pairingId of slot.pairings) {
+                pairingOwners.delete(pairingId)
+                approving.delete(pairingId)
+              }
+              slot.pairings.clear()
             }
             if (status === 'disconnected' || status.startsWith('disconnected:')) {
               fallbackStatus = status
@@ -120,21 +135,22 @@ export function createOfficeRelayPool(options: {
       }
     },
     async approve(pairingId) {
+      if (approving.has(pairingId)) return false
       const owner = pairingOwners.get(pairingId)
       if (!owner?.client) return false
       const approved = await owner.client.approve(pairingId)
-      if (approved) {
-        pairingOwners.delete(pairingId)
-        owner.pairings.delete(pairingId)
-      }
+      if (approved) approving.add(pairingId)
       return approved
     },
     reject(pairingId) {
+      if (approving.has(pairingId)) return false
       const owner = pairingOwners.get(pairingId)
       return owner?.client ? owner.client.reject(pairingId) : false
     },
     listPending() {
-      return [...slots].flatMap((slot) => slot.client?.listPending() ?? [])
+      return [...slots].flatMap((slot) =>
+        (slot.client?.listPending() ?? []).filter((entry) => !approving.has(entry.pairingId)),
+      )
     },
     status: aggregate,
     revoke: revokeAll,
