@@ -271,7 +271,8 @@ describe('Office Agent workspace UI', () => {
         }),
       ]),
     })
-    expect(html).toContain('SlideIndex: 3')
+    expect(html).toContain('Slide index: 3')
+    expect(html).toContain('Slide ID: Slide 1')
     expect(html).not.toContain('internal-hash')
     expect(html).not.toContain('(described by preview)')
   })

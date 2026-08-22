@@ -38,39 +38,44 @@ const agentProductLabels: Record<OfficeHost, string> = {
 
 type DisplayProposal = OfficeProposal | StructuredProposal
 
-const proposalHostLabels: Record<StructuredProposal['impact']['host'], string> = {
-  word: 'Word',
-  excel: 'Excel',
-  powerpoint: 'PowerPoint',
-}
-
 function isLegacyProposal(proposal: DisplayProposal): proposal is OfficeProposal {
   return 'value' in proposal
 }
 
-function previewText(value: unknown, depth = 0): string {
-  if (value === undefined) return ''
-  if (typeof value === 'string') return value
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  if (value === null) return 'None'
-  if (Array.isArray(value)) {
-    return value
-      .map((item, index) => {
-        const rendered = previewText(item, depth + 1)
-        return `${index + 1}. ${rendered.replaceAll('\n', ' · ')}`
-      })
-      .join('\n')
+function humanLabel(value: string): string {
+  const words = value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replaceAll('_', ' ')
+    .replaceAll('-', ' ')
+    .toLowerCase()
+    .replace(/\bid\b/g, 'ID')
+  return words.replace(/^./, (character) => character.toUpperCase())
+}
+
+function proposalHostLabel(host: string): string {
+  const normalized = host
+    .trim()
+    .toLowerCase()
+    .replace(/^microsoft\s+/, '')
+  if (normalized === 'word') return 'Word'
+  if (normalized === 'excel') return 'Excel'
+  if (normalized === 'powerpoint' || normalized === 'power point') return 'PowerPoint'
+  return 'Office'
+}
+
+const INTERNAL_PREVIEW_KEY = /(fingerprint|hash|code|xml|operation|program|payload|request)/i
+
+function previewSummary(preview: Readonly<Record<string, unknown>>): string {
+  const lines: string[] = []
+  for (const [key, value] of Object.entries(preview)) {
+    if (lines.length >= 12 || INTERNAL_PREVIEW_KEY.test(key)) continue
+    if (!['string', 'number', 'boolean'].includes(typeof value) && value !== null) continue
+    const rendered = value === null ? 'None' : String(value).replaceAll('\n', ' · ')
+    const readable =
+      /id$/i.test(key) && typeof value === 'string' ? proposalTarget(rendered) : rendered
+    lines.push(`${humanLabel(key)}: ${readable}`)
   }
-  if (typeof value === 'object') {
-    return Object.entries(value as Record<string, unknown>)
-      .map(([key, item]) => {
-        const label = key.replaceAll('_', ' ').replace(/^./, (character) => character.toUpperCase())
-        const rendered = previewText(item, depth + 1)
-        return depth > 0 ? `${label}: ${rendered.replaceAll('\n', ' · ')}` : `${label}: ${rendered}`
-      })
-      .join('\n')
-  }
-  return String(value)
+  return lines.join('\n').slice(0, 2_000)
 }
 
 function proposalTarget(target: string): string {
@@ -81,35 +86,38 @@ function proposalTarget(target: string): string {
   const slide = /^slide[-:](\d+)$/i.exec(target)
   if (slide) return `Slide ${slide[1]}`
   return target
-    .replaceAll(':', ' · ')
-    .replaceAll('_', ' ')
-    .replaceAll('-', ' ')
-    .replace(/^./, (character) => character.toUpperCase())
+    .split('/')
+    .filter(Boolean)
+    .map((part) => (/^[A-Z]+\d+(?::[A-Z]+\d+)?$/i.test(part) ? part : humanLabel(part)))
+    .join(' · ')
 }
 
 export function proposalPresentation(proposal: DisplayProposal) {
   const legacy = isLegacyProposal(proposal)
-  const hasComparison = legacy || (proposal.before !== undefined && proposal.after !== undefined)
-  const before = previewText(proposal.before)
-  const after = previewText(
-    legacy
-      ? proposal.operation === 'replace'
-        ? proposal.value
-        : `${proposal.before}${proposal.value}`
-      : proposal.after,
-  )
+  const hasComparison =
+    legacy || (typeof proposal.before === 'string' && typeof proposal.after === 'string')
+  const before = hasComparison && typeof proposal.before === 'string' ? proposal.before : ''
+  const after = hasComparison
+    ? String(
+        legacy
+          ? proposal.operation === 'replace'
+            ? proposal.value
+            : `${proposal.before}${proposal.value}`
+          : proposal.after,
+      )
+    : ''
   return {
     title: legacy
       ? proposal.operation === 'replace'
         ? 'Replace selection'
         : 'Append to selection'
       : proposal.title,
-    host: legacy ? undefined : proposalHostLabels[proposal.impact.host],
+    host: legacy ? undefined : proposalHostLabel(proposal.impact.host),
     count: legacy ? undefined : proposal.impact.count,
     targets: legacy ? [] : proposal.impact.targets.map(proposalTarget),
     before,
     after,
-    preview: hasComparison ? '' : previewText(proposal.preview),
+    preview: hasComparison || legacy ? '' : previewSummary(proposal.preview),
     // Declarative code is an internal safety protocol, not user-facing review content.
     code: undefined,
   }

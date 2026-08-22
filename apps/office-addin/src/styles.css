@@ -433,8 +433,6 @@ p {
 }
 
 .proposal-copy {
-  max-height: 150px;
-  overflow: auto;
   margin: 5px 0 0;
   color: var(--color-text-primary);
   font-size: 12px;
