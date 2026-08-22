@@ -101,13 +101,16 @@ async fn pc_socket_with_token(
     token: &str,
 ) -> Result<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    tokio_tungstenite::tungstenite::Error,
+    Box<tokio_tungstenite::tungstenite::Error>,
 > {
     let mut request = url.into_client_request().unwrap();
     request
         .headers_mut()
         .insert("authorization", format!("Bearer {token}").parse().unwrap());
-    connect_async(request).await.map(|value| value.0)
+    connect_async(request)
+        .await
+        .map(|value| value.0)
+        .map_err(Box::new)
 }
 
 #[derive(Serialize)]
