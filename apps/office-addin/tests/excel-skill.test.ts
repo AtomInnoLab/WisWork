@@ -513,21 +513,33 @@ describe('browser Excel adapter', () => {
       id: '1',
       name: 'Data',
       load: vi.fn(),
-      getRangeByIndexes: vi.fn().mockReturnValue(range),
+      getRange: vi.fn().mockReturnValue(range),
+      getRangeByIndexes: vi.fn(() => {
+        throw new Error('unsupported on this host')
+      }),
+    }
+    const worksheets = {
+      items: [sheet],
+      load: vi.fn(),
+      getItemAt: vi.fn(() => {
+        throw new Error('non-standard API must not be called')
+      }),
     }
     Object.assign(globalThis, {
       Office: {
         context: { host: 'Excel', requirements: { isSetSupported: vi.fn().mockReturnValue(true) } },
       },
       Excel: {
-        run: (cb: (ctx: unknown) => unknown) =>
-          cb({ workbook: { worksheets: { getItemAt: () => sheet } }, sync: vi.fn() }),
+        run: (cb: (ctx: unknown) => unknown) => cb({ workbook: { worksheets }, sync: vi.fn() }),
       },
     })
     await expect(
       new BrowserExcelAdapter().getRangeAsCsv({ sheetId: 1, range: 'A1:B3', maxRows: 1 }),
     ).resolves.toMatchObject({ csv: 'h1,h2', rowCount: 1, hasMore: true })
-    expect(sheet.getRangeByIndexes).toHaveBeenCalledWith(0, 0, 1, 2)
+    expect(sheet.getRange).toHaveBeenCalledWith('A1:B1')
+    expect(sheet.getRangeByIndexes).not.toHaveBeenCalled()
+    expect(worksheets.load).toHaveBeenCalledWith({ $skip: 0, $top: 1 })
+    expect(worksheets.getItemAt).not.toHaveBeenCalled()
     expect(range.load).toHaveBeenCalledWith('values,rowCount,columnCount,address')
   })
 
@@ -543,6 +555,22 @@ describe('browser Excel adapter', () => {
       new BrowserExcelAdapter().getRangeAsCsv({ sheetId: 1, range: '*' }),
     ).rejects.toThrow('invalid_tool_input')
     expect(run).not.toHaveBeenCalled()
+  })
+
+  it('preserves bounded Office identifiers for diagnostics without exposing raw error text', async () => {
+    const officeError = Object.assign(new Error('Workbook contains secret customer data'), {
+      name: 'RichApi.Error',
+      code: 'InvalidArgument',
+      debugInfo: { errorLocation: 'Worksheet.getRange' },
+    })
+    const result = await createExcelSkill({
+      adapter: adapter({ getCellRanges: vi.fn().mockRejectedValue(officeError) }),
+      proposals: createStructuredProposalController(),
+    }).executeTool(call('get_cell_ranges', { sheetId: 1, ranges: ['A1'] }))
+
+    expect(result).toMatchObject({ output: 'office_read_failed', isError: true })
+    expect(result).toHaveProperty('diagnosticError', officeError)
+    expect(JSON.stringify(result)).not.toContain('secret customer data')
   })
 
   it('captures a range image using the exact ExcelApi gate and checks cancellation before sync', async () => {
@@ -946,13 +974,22 @@ describe('browser Excel adapter', () => {
     const sheet = {
       name: 'Data',
       load: vi.fn(),
-      getRangeByIndexes: vi.fn((row: number, column: number, rows: number, columns: number) => ({
-        values: Array.from({ length: rows }, (_, r) =>
-          matrix[row + r].slice(column, column + columns),
-        ),
-        formulas: Array.from({ length: rows }, () => Array.from({ length: columns }, () => null)),
-        load: vi.fn(),
-      })),
+      getRange: vi.fn((address: string) => {
+        const match = /^([A-Z])(\d+)(?::([A-Z])(\d+))?$/.exec(address)!
+        const row = Number(match[2]) - 1
+        const column = match[1].charCodeAt(0) - 65
+        const endRow = Number(match[4] ?? match[2]) - 1
+        const endColumn = (match[3] ?? match[1]).charCodeAt(0) - 65
+        const rows = endRow - row + 1
+        const columns = endColumn - column + 1
+        return {
+          values: Array.from({ length: rows }, (_, r) =>
+            matrix[row + r].slice(column, column + columns),
+          ),
+          formulas: Array.from({ length: rows }, () => Array.from({ length: columns }, () => null)),
+          load: vi.fn(),
+        }
+      }),
     }
     Object.assign(globalThis, {
       Office: {

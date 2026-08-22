@@ -358,6 +358,9 @@ export function createOfficeAgentSession(dependencies: {
             diagnostics.record({
               phase: 'tool',
               errorCode,
+              ...(event.execution.diagnosticError === undefined
+                ? {}
+                : { error: event.execution.diagnosticError }),
               durationMs: Math.max(
                 0,
                 Date.now() - (toolStartedAt.get(event.call.id) ?? Date.now()),
