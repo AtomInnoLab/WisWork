@@ -134,6 +134,52 @@ describe('Office agent session', () => {
     })
     expect(JSON.stringify(diagnostics.record.mock.calls)).not.toContain('write my secret article')
   })
+
+  it('forwards an in-memory Office diagnostic cause without adding it to model output', async () => {
+    const harness = transportHarness()
+    const officeError = Object.assign(new Error('secret workbook value'), {
+      name: 'RichApi.Error',
+      code: 'InvalidArgument',
+      debugInfo: { errorLocation: 'Worksheet.getRange' },
+    })
+    const diagnostics = {
+      startTrace: vi.fn(() => 'trace'),
+      setTool: vi.fn(),
+      record: vi.fn(),
+      clear: vi.fn(),
+    }
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'excel',
+        systemPrompt: 'test',
+        tools: [{ name: 'get_cell_ranges', description: 'read', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(async () => ({
+          output: 'office_read_failed',
+          isError: true,
+          summary: 'failed',
+          diagnosticError: officeError,
+        })),
+      },
+      proposals: proposalsHarness().controller,
+      diagnostics,
+    })
+    session.send('read cells')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({ id: 'call', name: 'get_cell_ranges', input: {} })
+    harness.callbacks().onDone()
+
+    await vi.waitFor(() =>
+      expect(diagnostics.record).toHaveBeenCalledWith({
+        phase: 'tool',
+        errorCode: 'office_read_failed',
+        error: officeError,
+        durationMs: expect.any(Number),
+      }),
+    )
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+    expect(JSON.stringify(harness.stream.mock.calls[1])).not.toContain('secret workbook value')
+  })
   it('keeps a bounded immutable two-turn user and assistant presentation timeline', async () => {
     const harness = transportHarness()
     const proposals = proposalsHarness()

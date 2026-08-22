@@ -94,8 +94,23 @@ async function sync(context: RuntimeRecord, signal?: AbortSignal) {
   await context.sync()
   cancelled(signal)
 }
-function sheet(context: RuntimeRecord, id: number): RuntimeRecord {
-  return context.workbook.worksheets.getItemAt(id - 1)
+async function sheet(
+  context: RuntimeRecord,
+  id: number,
+  signal?: AbortSignal,
+): Promise<RuntimeRecord> {
+  const worksheets = context.workbook.worksheets as RuntimeRecord
+  if (typeof worksheets.load === 'function') {
+    worksheets.load({ $skip: id - 1, $top: 1 })
+    await sync(context, signal)
+    const selected = worksheets.items?.[0]
+    if (!selected) throw new Error('office_read_failed')
+    return selected
+  }
+  // Injectable legacy test adapters may still expose the former shim. The
+  // browser Office.js path above never calls this non-standard method.
+  if (typeof worksheets.getItemAt === 'function') return worksheets.getItemAt(id - 1)
+  throw new Error('office_api_unsupported')
 }
 function cleanAddress(value: unknown): string {
   return (
@@ -141,6 +156,11 @@ function resizedAddress(value: string, rows: number, columns: number): string {
   const end = cellAddress(box.row + rows - 1, box.column + columns - 1)
   return start === end ? start : `${start}:${end}`
 }
+function indexedAddress(row: number, column: number, rows: number, columns: number): string {
+  const start = cellAddress(row, column)
+  const end = cellAddress(row + rows - 1, column + columns - 1)
+  return start === end ? start : `${start}:${end}`
+}
 
 export class BrowserExcelAdapter implements ExcelAdapter {
   private run<T>(callback: (context: RuntimeRecord) => Promise<T>, version = '1.3'): Promise<T> {
@@ -151,7 +171,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
     const boxes = input.ranges.map(parseA1)
     return this.run(
       async (context) => {
-        const ws = sheet(context, input.sheetId)
+        const ws = await sheet(context, input.sheetId, signal)
         ws.load('name')
         const limit = Math.min(input.cellLimit ?? MAX_EXCEL_CELLS, MAX_EXCEL_CELLS)
         let budget = limit
@@ -160,7 +180,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
           const columns = Math.min(box.columns, Math.max(1, budget))
           const rows = Math.min(box.rows, Math.max(1, Math.floor(budget / columns)))
           budget = Math.max(0, budget - rows * columns)
-          const r = ws.getRangeByIndexes(box.row, box.column, rows, columns)
+          const r = ws.getRange(indexedAddress(box.row, box.column, rows, columns))
           r.load('values,formulas,formulasR1C1,numberFormat,address,rowCount,columnCount')
           return [{ range: r, box }]
         })
@@ -237,13 +257,10 @@ export class BrowserExcelAdapter implements ExcelAdapter {
       Math.min(maximum, box.rows - skip, Math.floor(MAX_EXCEL_CELLS / loadedColumns)),
     )
     return this.run(async (context) => {
-      const ws = sheet(context, input.sheetId)
+      const ws = await sheet(context, input.sheetId, signal)
       ws.load('name')
-      const range = ws.getRangeByIndexes(
-        box.row + skip,
-        box.column,
-        Math.max(loadedRows, 1),
-        loadedColumns,
+      const range = ws.getRange(
+        indexedAddress(box.row + skip, box.column, Math.max(loadedRows, 1), loadedColumns),
       )
       range.load('values,rowCount,columnCount,address')
       await sync(context, signal)
@@ -277,7 +294,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
       throw new Error('invalid_tool_input')
     }
     return this.run(async (context) => {
-      const ws = sheet(context, input.sheetId ?? 1)
+      const ws = await sheet(context, input.sheetId ?? 1, signal)
       ws.load('name')
       let box = explicit
       if (!box) {
@@ -301,11 +318,8 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         row: number
         column: number
       }> = []
-      const first = ws.getRangeByIndexes(
-        box.row + startRow,
-        box.column + startColumn,
-        1,
-        firstRowCells,
+      const first = ws.getRange(
+        indexedAddress(box.row + startRow, box.column + startColumn, 1, firstRowCells),
       )
       first.load('values,formulas')
       ranges.push({
@@ -318,11 +332,8 @@ export class BrowserExcelAdapter implements ExcelAdapter {
       if (remaining > 0) {
         const fullRows = Math.floor(remaining / box.columns)
         if (fullRows > 0) {
-          const middle = ws.getRangeByIndexes(
-            box.row + startRow + 1,
-            box.column,
-            fullRows,
-            box.columns,
+          const middle = ws.getRange(
+            indexedAddress(box.row + startRow + 1, box.column, fullRows, box.columns),
           )
           middle.load('values,formulas')
           ranges.push({
@@ -334,11 +345,8 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         }
         const tail = remaining % box.columns
         if (tail > 0) {
-          const tailRange = ws.getRangeByIndexes(
-            box.row + startRow + 1 + fullRows,
-            box.column,
-            1,
-            tail,
+          const tailRange = ws.getRange(
+            indexedAddress(box.row + startRow + 1 + fullRows, box.column, 1, tail),
           )
           tailRange.load('values,formulas')
           ranges.push({
@@ -394,7 +402,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
     const box = parseA1(input.range)
     if (box.rows * box.columns > MAX_SCREENSHOT_CELLS) throw new Error('invalid_tool_input')
     return this.run(async (context) => {
-      const range = sheet(context, input.sheetId).getRange(input.range)
+      const range = (await sheet(context, input.sheetId, signal)).getRange(input.range)
       range.load('rowCount,columnCount,width,height')
       await sync(context, signal)
       if (
@@ -422,7 +430,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
       const sheets =
         input.sheetId === undefined
           ? context.workbook.worksheets
-          : { items: [sheet(context, input.sheetId)], load() {} }
+          : { items: [await sheet(context, input.sheetId, signal)], load() {} }
       sheets.load?.({ $top: MAX_EXCEL_OBJECTS + 1 })
       await sync(context, signal)
       const selected = (sheets.items ?? ([] as RuntimeRecord[])).slice(0, MAX_EXCEL_OBJECTS)
@@ -483,7 +491,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         if (structure)
           return this.run(
             async (context) => {
-              const ws = sheet(context, Number(structure[1]))
+              const ws = await sheet(context, Number(structure[1]), signal)
               const used = ws.getUsedRangeOrNullObject()
               used.load('address,isNullObject')
               const reference = structure[4] || '1'
@@ -508,7 +516,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         const resize = /^resize:(\d+)!(.+)$/.exec(target)
         if (resize)
           return this.run(async (context) => {
-            const range = sheet(context, Number(resize[1])).getRange(resize[2])
+            const range = (await sheet(context, Number(resize[1]), signal)).getRange(resize[2])
             range.format.load('columnWidth,rowHeight')
             await sync(context, signal)
             return {
@@ -588,7 +596,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
   ) {
     cancelled(signal)
     await this.run(async (context) => {
-      const ws = sheet(context, input.sheetId)
+      const ws = await sheet(context, input.sheetId, signal)
       await action(ws, context)
       await sync(context, signal)
     }, version)
@@ -839,7 +847,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
             created.tabColor = input.tabColor
           }
         } else {
-          const ws = sheet(context, input.sheetId)
+          const ws = await sheet(context, input.sheetId, signal)
           cancelled(signal)
           if (input.operation === 'delete') ws.delete()
           else if (input.operation === 'rename') ws.name = input.newName
@@ -1100,7 +1108,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         )
       if (!notes.length) return true
       return this.run(async (context) => {
-        const ws = sheet(context, input.sheetId)
+        const ws = await sheet(context, input.sheetId, signal)
         const loaded: Array<{ note: RuntimeRecord; content: string }> = [
           input.range,
           ...(input.copyToRange ? [input.copyToRange] : []),
@@ -1203,7 +1211,9 @@ export class BrowserExcelAdapter implements ExcelAdapter {
     }
     if (tool === 'resize_range')
       return this.run(async (context) => {
-        const format = sheet(context, input.sheetId).getRange(input.range ?? 'A:XFD').format
+        const format = (await sheet(context, input.sheetId, signal)).getRange(
+          input.range ?? 'A:XFD',
+        ).format
         format.load('columnWidth,rowHeight')
         await sync(context, signal)
         return (
@@ -1229,7 +1239,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         )
       else
         return this.run(async (context) => {
-          const ws = sheet(context, input.sheetId)
+          const ws = await sheet(context, input.sheetId, signal)
           if (['hide', 'unhide'].includes(input.operation)) {
             const range = ws.getRange(`${input.reference}:${input.reference}`)
             range.load('rowHidden,columnHidden')

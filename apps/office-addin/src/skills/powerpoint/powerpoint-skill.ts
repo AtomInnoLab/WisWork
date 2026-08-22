@@ -490,7 +490,9 @@ export function createPowerPointSkill(options: {
             signal,
           )
           assertNotCancelled(signal)
-          const snapshot = await options.adapter.snapshotSlide(input.slide_index, signal)
+          const stableTextFingerprint = fingerprint(
+            JSON.stringify([before.slideId, before.shapeId, before.text, before.paragraphs]),
+          )
           const proposal = options.proposals.propose({
             operation: 'edit_slide_text',
             toolName: call.name,
@@ -498,24 +500,28 @@ export function createPowerPointSkill(options: {
             preview: { shapeId: input.shape_id, before: before.text, after: input.text },
             impact: {
               host: 'powerpoint',
-              targets: [`${snapshot.slideId}/${input.shape_id}`],
+              targets: [`${before.slideId}/${input.shape_id}`],
               count: 1,
             },
-            fingerprint: snapshot.fingerprint,
+            fingerprint: stableTextFingerprint,
             before: before.text,
             after: input.text,
             validate: async (confirmSignal) => {
-              const currentSnapshot = await options.adapter.snapshotSlide(
-                input.slide_index,
-                confirmSignal,
-              )
-              if (currentSnapshot.fingerprint !== snapshot.fingerprint) return false
               const currentText = await options.adapter.readSlideText(
                 input.slide_index,
                 input.shape_id,
                 confirmSignal,
               )
-              return currentText.slideId === before.slideId && currentText.text === before.text
+              return (
+                fingerprint(
+                  JSON.stringify([
+                    currentText.slideId,
+                    currentText.shapeId,
+                    currentText.text,
+                    currentText.paragraphs,
+                  ]),
+                ) === stableTextFingerprint
+              )
             },
             execute: (confirmSignal) =>
               options.adapter.editSlideText(

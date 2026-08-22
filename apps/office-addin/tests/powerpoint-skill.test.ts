@@ -146,6 +146,7 @@ describe('PowerPoint compatibility skill', () => {
     })
     await proposals.confirm(pending.id)
     expect(fake.editSlideText).toHaveBeenCalledWith(0, '2', 'New', expect.any(AbortSignal))
+    expect(fake.snapshotSlide).not.toHaveBeenCalled()
     expect(fake.verifySlides).toHaveBeenCalledTimes(2)
   })
 

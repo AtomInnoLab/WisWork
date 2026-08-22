@@ -68,6 +68,11 @@ export interface ToolExecution {
   stopToolBatch?: boolean
   /** short human-readable label for activity UI */
   summary: string
+  /**
+   * In-memory diagnostic cause. Never serialized into AgentMessage/tool output;
+   * consumers may extract only allowlisted identifiers from it.
+   */
+  diagnosticError?: unknown
   /** bounded content sent to the model; unlike display, this enters model history */
   modelContent?: AgentToolContent[]
   /**

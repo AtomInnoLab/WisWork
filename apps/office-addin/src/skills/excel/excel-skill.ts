@@ -503,8 +503,8 @@ function parseProperties(value: unknown): Json {
   if (new TextEncoder().encode(JSON.stringify(item)).byteLength > 16 * 1024) invalid()
   return JSON.parse(JSON.stringify(item))
 }
-function fail(name: string, code: string): ToolExecution {
-  return { output: code, isError: true, mutated: false, summary: name }
+function fail(name: string, code: string, diagnosticError?: unknown): ToolExecution {
+  return { output: code, isError: true, mutated: false, summary: name, diagnosticError }
 }
 function check(signal?: AbortSignal) {
   if (signal?.aborted) throw new Error('cancelled')
@@ -866,9 +866,9 @@ export function createExcelSkill(options: {
               expectedFingerprint = await options.adapter.fingerprint(affected, s)
               check(s)
             } catch (error) {
-              // Do not attach the raw Office exception: it can contain document data.
-              // eslint-disable-next-line preserve-caught-error
-              throw new Error(safeError(error, true))
+              // The cause stays in memory for allowlisted diagnostic identifiers;
+              // its message is never serialized into the tool result.
+              throw new Error(safeError(error, true), { cause: error })
             }
           },
           verify: async (s) => {
@@ -889,8 +889,8 @@ export function createExcelSkill(options: {
                 (await options.adapter.fingerprint(affected, s)) !== expectedFingerprint
               )
                 throw new Error('office_verify_failed')
-            } catch {
-              throw new Error('office_verify_failed')
+            } catch (error) {
+              throw new Error('office_verify_failed', { cause: error })
             }
           },
         })
@@ -900,7 +900,7 @@ export function createExcelSkill(options: {
           summary: `Proposed ${call.name}`,
         }
       } catch (error) {
-        return fail(call.name, safeError(error))
+        return fail(call.name, safeError(error), error)
       }
     },
   }
