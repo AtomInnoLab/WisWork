@@ -1,4 +1,4 @@
-import type { AgentStreamCallbacks, AgentTransport } from '@wiswork/agent-core'
+import type { AgentStreamCallbacks, AgentTransport, ToolExecution } from '@wiswork/agent-core'
 import { describe, expect, it, vi } from 'vitest'
 import { bindAuthLoss, createOfficeAgentSession } from '../src/agent/use-office-agent.js'
 import type { StructuredProposal } from '../src/agent/proposal-controller.js'
@@ -166,6 +166,38 @@ describe('Office agent session', () => {
 
     await session.confirm('p1')
     expect(session.snapshot().timeline[3]).toMatchObject({ kind: 'proposal', state: 'applied' })
+  })
+
+  it('never exposes internal tool identifiers while a tool is running or fails', async () => {
+    const harness = transportHarness()
+    let failTool!: () => void
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'bash', description: 'internal', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(
+          () =>
+            new Promise<ToolExecution>((resolve) => {
+              failTool = () => resolve({ output: 'sandbox_denied', isError: true, summary: 'bash' })
+            }),
+        ),
+      },
+      proposals: proposalsHarness().controller,
+    })
+
+    session.send('Open my attachment')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({ id: 'tool-private', name: 'bash', input: {} })
+    harness.callbacks().onDone()
+    await Promise.resolve()
+    expect(JSON.stringify(session.snapshot())).not.toContain('Running bash')
+    expect(session.snapshot().activity).toBe('正在处理附件…')
+    failTool()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(JSON.stringify(session.snapshot())).not.toContain('"summary":"bash"')
   })
 
   it('retries the last bounded instruction after a stable run error', async () => {
@@ -393,7 +425,11 @@ describe('Office agent session', () => {
     expect(harness.cancel).toHaveBeenCalledOnce()
     harness.callbacks().onDone()
     await session.confirm('p1')
-    expect(session.snapshot().error).toBe('proposal_stale')
+    expect(session.snapshot()).toMatchObject({
+      error: 'proposal_stale',
+      errorMessage: '文档内容已发生变化，刚才的修改未应用。',
+      retryable: true,
+    })
     expect(session.snapshot().proposal).toBeUndefined()
   })
 

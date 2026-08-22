@@ -214,6 +214,17 @@ describe('Office Agent workspace UI', () => {
     expect(failed).not.toContain('>Retry<')
     expect(failed).toContain('role="alert"')
 
+    const stale = workspaceMarkup({
+      status: 'error',
+      error: 'proposal_stale',
+      errorMessage: '文档内容已发生变化，刚才的修改未应用。',
+      retryable: true,
+      proposal: undefined,
+    })
+    expect(stale).toContain('>重新生成<')
+    expect(stale).toContain('id="instruction"')
+    expect(stale).not.toContain('proposal_stale')
+
     const retryable = workspaceMarkup({
       status: 'error',
       error: 'network_error',
@@ -221,6 +232,65 @@ describe('Office Agent workspace UI', () => {
       retryable: true,
     })
     expect(retryable).toContain('>Retry<')
+  })
+
+  it('keeps internal tool names out of the user-facing activity row', () => {
+    const html = workspaceMarkup()
+    expect(html).toContain('Prepared change')
+    expect(html).not.toContain('>replace<')
+  })
+
+  it('shows a readable preview instead of an internal before-only snapshot', () => {
+    const structured = {
+      id: 'structured-1',
+      operation: 'duplicate_slide',
+      title: 'Duplicate slide',
+      impact: { host: 'powerpoint', targets: ['slide-1'], count: 1 },
+      preview: { slideIndex: 3, slideId: 'slide-1' },
+      fingerprint: 'fp',
+      before: { fingerprint: 'internal-hash', slideId: 'slide-1' },
+    }
+    const html = workspaceMarkup({
+      proposal: structured,
+      timeline: Object.freeze([
+        Object.freeze({
+          id: 'p-structured',
+          kind: 'proposal' as const,
+          proposal: structured,
+          state: 'pending' as const,
+        }),
+      ]),
+    })
+    expect(html).toContain('SlideIndex: 3')
+    expect(html).not.toContain('internal-hash')
+    expect(html).not.toContain('(described by preview)')
+  })
+
+  it('shows the complete proposed draft when writing into an empty document', () => {
+    const emptyDraft = {
+      id: 'empty-draft',
+      operation: 'write_document',
+      title: 'Write document',
+      impact: { host: 'word', targets: ['document:replace'], count: 1 },
+      preview: { mode: 'replace' },
+      fingerprint: 'fp',
+      before: '',
+      after: '这是完整草稿。',
+    }
+    const html = workspaceMarkup({
+      proposal: emptyDraft,
+      timeline: Object.freeze([
+        Object.freeze({
+          id: 'p-empty',
+          kind: 'proposal' as const,
+          proposal: emptyDraft,
+          state: 'pending' as const,
+        }),
+      ]),
+    })
+    expect(html).toContain('(empty document)')
+    expect(html).toContain('这是完整草稿。')
+    expect(html).not.toContain('Mode: replace')
   })
 
   it('uses a frozen UI-only facade instead of exposing the Office runtime', () => {

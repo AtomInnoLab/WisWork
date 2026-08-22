@@ -56,9 +56,6 @@ export function createSandboxCommands(
   let unavailable = false
   const denied = (): CommandResult => ({ output: '', error: 'sandbox_denied' })
   const builtins: Record<string, Command> = {
-    pwd: (args) => (args.length ? denied() : { output: '/home/user' }),
-    ls: (args) =>
-      args.length > 1 ? denied() : { output: vfs.list(args[0] ?? '/home/user').join('\n') },
     cat: (args) =>
       args.length !== 1
         ? denied()

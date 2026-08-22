@@ -101,9 +101,14 @@ describe('shared browser skill', () => {
     vfs.writeFile('/home/user/a.txt', 'abcdef')
     const skill = createSharedBrowserSkill({ vfs, maxReadBytes: 3 })
     expect(skill.tools.map((tool) => tool.name)).toEqual(['read', 'bash'])
+    expect(skill.systemPrompt).toContain('Never run pwd or ls')
+    expect(skill.buildContext?.()).toContain('/home/user/a.txt')
     await expect(
       skill.executeTool({ id: '1', name: 'read', input: { path: '/home/user/a.txt' } }),
     ).resolves.toMatchObject({ output: 'abc', mutated: false })
+    await expect(
+      skill.executeTool({ id: 'cat', name: 'bash', input: { command: 'cat /home/user/a.txt' } }),
+    ).resolves.toMatchObject({ output: 'abcdef', summary: 'Read attachment' })
     await expect(
       skill.executeTool({
         id: '2',
@@ -111,6 +116,14 @@ describe('shared browser skill', () => {
         input: { path: '/home/user/a.txt', extra: true },
       }),
     ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+  })
+
+  it('does not expose environment-discovery commands', async () => {
+    const commands = createSandboxCommands(new InMemoryVfs())
+    expect(commands.names).not.toContain('pwd')
+    expect(commands.names).not.toContain('ls')
+    await expect(commands.run('pwd')).resolves.toMatchObject({ error: 'sandbox_denied' })
+    await expect(commands.run('ls')).resolves.toMatchObject({ error: 'sandbox_denied' })
   })
 
   it('returns uploaded images through model-visible display data', async () => {

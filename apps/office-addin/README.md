@@ -9,7 +9,7 @@ only a short-lived socket-bound capability in memory. Document writes still requ
 After `Office.onReady()`, the task pane composes the shared browser skill with exactly one Word,
 Excel, or PowerPoint skill. Unsupported hosts fail closed.
 
-- Shared: bounded VFS `read`, sandboxed `bash` (`pwd`, `ls`, `cat`, `pdf-to-text`,
+- Shared: bounded VFS `read`, sandboxed `bash` (`cat`, `pdf-to-text`,
   `pdf-to-images`, `docx-to-text`, and `xlsx-to-csv`), session-file
   upload, and bounded ZIP skill-package installation/removal. A package contains exactly one root
   `SKILL.md` plus allowlisted UTF-8 text, PNG, JPEG, or WebP resources. Installed skill metadata is
@@ -49,8 +49,9 @@ For ordinary drafting, Word uses the structured `write_document` tool with bound
 exact `replace`, `append`, or `prepend` mode. It creates one confirmation card and reports
 `awaiting_user_confirmation` as success; repeated writes while that card is pending reuse it rather
 than replacing the proposal or retrying the document mutation.
-Supported mutations show a structured title, impact, before/after data, preview, and code when
-present, and execute only after explicit confirmation. Conversion commands accept one matching
+Supported mutations show a structured title, impact, and bounded before/after comparison or
+readable preview; declarative code remains an internal protocol and is never shown as approval UI.
+They execute only after explicit confirmation. Conversion commands accept one matching
 file from the session VFS and mount outputs atomically only after a dedicated Web Worker completes.
 DOCX/XLSX archives are rejected before inflate for invalid central/local metadata, duplicate or
 case-colliding normalized paths, traversal, encryption, special file types, unsupported methods,

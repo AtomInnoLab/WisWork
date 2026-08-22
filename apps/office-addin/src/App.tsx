@@ -42,14 +42,42 @@ function isLegacyProposal(proposal: DisplayProposal): proposal is OfficeProposal
   return 'value' in proposal
 }
 
-function previewText(value: unknown): string {
+function previewText(value: unknown, depth = 0): string {
   if (value === undefined) return ''
   if (typeof value === 'string') return value
-  return JSON.stringify(value, null, 2)
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (value === null) return 'None'
+  if (Array.isArray(value)) {
+    return value
+      .map((item, index) => {
+        const rendered = previewText(item, depth + 1)
+        return `${index + 1}. ${rendered.replaceAll('\n', ' · ')}`
+      })
+      .join('\n')
+  }
+  if (typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => {
+        const label = key.replaceAll('_', ' ').replace(/^./, (character) => character.toUpperCase())
+        const rendered = previewText(item, depth + 1)
+        return depth > 0 ? `${label}: ${rendered.replaceAll('\n', ' · ')}` : `${label}: ${rendered}`
+      })
+      .join('\n')
+  }
+  return String(value)
 }
 
 export function proposalPresentation(proposal: DisplayProposal) {
   const legacy = isLegacyProposal(proposal)
+  const hasComparison = legacy || (proposal.before !== undefined && proposal.after !== undefined)
+  const before = previewText(proposal.before)
+  const after = previewText(
+    legacy
+      ? proposal.operation === 'replace'
+        ? proposal.value
+        : `${proposal.before}${proposal.value}`
+      : proposal.after,
+  )
   return {
     title: legacy
       ? proposal.operation === 'replace'
@@ -59,16 +87,11 @@ export function proposalPresentation(proposal: DisplayProposal) {
     host: legacy ? undefined : proposal.impact.host,
     count: legacy ? undefined : proposal.impact.count,
     targets: legacy ? [] : [...proposal.impact.targets],
-    before: previewText(proposal.before),
-    after: previewText(
-      legacy
-        ? proposal.operation === 'replace'
-          ? proposal.value
-          : `${proposal.before}${proposal.value}`
-        : proposal.after,
-    ),
-    preview: legacy ? '' : previewText(proposal.preview),
-    code: legacy ? undefined : proposal.code,
+    before,
+    after,
+    preview: hasComparison ? '' : previewText(proposal.preview),
+    // Declarative code is an internal safety protocol, not user-facing review content.
+    code: undefined,
   }
 }
 
@@ -173,6 +196,9 @@ function ProposalReview(props: {
 }) {
   const { event } = props
   const presentation = proposalPresentation(event.proposal)
+  const hasComparison =
+    isLegacyProposal(event.proposal) ||
+    (event.proposal.before !== undefined && event.proposal.after !== undefined)
   const canReview = event.state === 'pending' && props.activeProposalId === event.proposal.id
   return (
     <article
@@ -202,16 +228,18 @@ function ProposalReview(props: {
       )}
       <details className="proposal-preview" open>
         <summary>Review exact impact</summary>
-        <div className="proposal-diff">
-          <div className="preview-block">
-            <strong>Before</strong>
-            <pre>{presentation.before || '(not available)'}</pre>
+        {hasComparison && (
+          <div className="proposal-diff">
+            <div className="preview-block">
+              <strong>Before</strong>
+              <pre>{presentation.before || '(empty document)'}</pre>
+            </div>
+            <div className="preview-block after">
+              <strong>After</strong>
+              <pre>{presentation.after || '(empty document)'}</pre>
+            </div>
           </div>
-          <div className="preview-block after">
-            <strong>After</strong>
-            <pre>{presentation.after || '(described by preview)'}</pre>
-          </div>
-        </div>
+        )}
         {presentation.preview && <pre>{presentation.preview}</pre>}
         {presentation.code && <pre className="code-preview">{presentation.code}</pre>}
       </details>
@@ -252,15 +280,9 @@ function TimelineEvent(props: {
   if (event.kind === 'proposal') return <ProposalReview {...props} event={event} />
   if (event.kind === 'tool') {
     return (
-      <article
-        className={`tool-event tool-${event.state}`}
-        aria-label={`${event.name} tool activity`}
-      >
+      <article className={`tool-event tool-${event.state}`} aria-label="Agent activity">
         <span className="tool-indicator" aria-hidden="true" />
-        <div>
-          <strong>{event.name}</strong>
-          <p>{event.summary}</p>
-        </div>
+        <p>{event.summary}</p>
       </article>
     )
   }
@@ -331,7 +353,7 @@ export function AgentWorkspace(props: {
 
   return (
     <main
-      className={`agent-workspace ${props.legacy ? 'legacy-workspace ' : ''}${showConversationChrome ? 'has-conversation' : 'is-empty'}`}
+      className={`agent-workspace ${props.legacy ? 'legacy-workspace ' : ''}${panel ? 'has-management ' : ''}${showConversationChrome ? 'has-conversation' : 'is-empty'}`}
       aria-busy={state.busy || state.applying}
     >
       {showConversationChrome && (
@@ -458,7 +480,6 @@ export function AgentWorkspace(props: {
           <div className="error-banner" role="alert">
             <div>
               <p>{state.errorMessage}</p>
-              <span className="error-code">{state.error}</span>
             </div>
             {state.retryable && (
               <button
@@ -467,7 +488,7 @@ export function AgentWorkspace(props: {
                 disabled={state.applying}
                 onClick={() => session.retry()}
               >
-                Retry
+                {state.error === 'proposal_stale' ? '重新生成' : 'Retry'}
               </button>
             )}
           </div>

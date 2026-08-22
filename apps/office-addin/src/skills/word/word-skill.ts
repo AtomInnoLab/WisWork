@@ -201,6 +201,39 @@ function invalidProposal(): never {
   throw new Error('invalid_tool_input')
 }
 
+const MAX_WORD_COMPARISON_BYTES = 6_000
+const COMPARISON_ELLIPSIS = '…\n'
+
+function documentPreviewText(value: string, operation: WordDeclarativeOperation): string {
+  const encoder = new TextEncoder()
+  if (encoder.encode(value).byteLength <= MAX_WORD_COMPARISON_BYTES) return value
+  const budget = MAX_WORD_COMPARISON_BYTES - encoder.encode(COMPARISON_ELLIPSIS).byteLength
+  const characters = Array.from(value)
+  const fromEnd = operation.op === 'insert_text' && operation.location === 'end'
+  const selected: string[] = []
+  let bytes = 0
+  for (
+    let index = fromEnd ? characters.length - 1 : 0;
+    fromEnd ? index >= 0 : index < characters.length;
+    index += fromEnd ? -1 : 1
+  ) {
+    const character = characters[index]
+    const size = encoder.encode(character).byteLength
+    if (bytes + size > budget) break
+    if (fromEnd) selected.unshift(character)
+    else selected.push(character)
+    bytes += size
+  }
+  return fromEnd ? `${COMPARISON_ELLIPSIS}${selected.join('')}` : `${selected.join('')}\n…`
+}
+
+function previewInsert(before: string, operation: WordDeclarativeOperation): string {
+  if (operation.op !== 'insert_text') return before
+  if (operation.location === 'start') return `${operation.text}${before}`
+  if (operation.location === 'end') return `${before}${operation.text}`
+  return operation.text
+}
+
 export function createWordSkill(options: {
   adapter: WordAdapter
   vfs: InMemoryVfs
@@ -230,7 +263,15 @@ export function createWordSkill(options: {
   ): Promise<ToolExecution> => {
     const existing = awaitingConfirmation()
     if (existing) return existing
-    const fingerprint = await options.adapter.fingerprint(signal)
+    const isDirectWrite = toolName === 'write_document'
+    const documentSnapshot = isDirectWrite
+      ? await options.adapter.getDocumentSnapshot(signal)
+      : undefined
+    assertNotCancelled(signal)
+    const before = isDirectWrite
+      ? documentPreviewText(documentSnapshot!.text, operations[0])
+      : undefined
+    const fingerprint = documentSnapshot?.fingerprint ?? (await options.adapter.fingerprint(signal))
     assertNotCancelled(signal)
     const proposal = options.proposals.propose({
       operation: toolName,
@@ -244,7 +285,6 @@ export function createWordSkill(options: {
                 end: 'append',
                 start: 'prepend',
               }[operations[0]?.op === 'insert_text' ? operations[0].location : 'replace'],
-              text: operations[0]?.op === 'insert_text' ? operations[0].text : '',
             }
           : { version: 1, operations },
       impact: {
@@ -257,6 +297,8 @@ export function createWordSkill(options: {
         count: operations.length,
       },
       fingerprint,
+      before,
+      after: before === undefined ? undefined : previewInsert(before, operations[0]),
       code,
       validate: async (confirmSignal) =>
         (await options.adapter.fingerprint(confirmSignal)) === fingerprint,

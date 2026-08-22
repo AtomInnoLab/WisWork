@@ -10,6 +10,7 @@ import { createWordSkill } from '../src/skills/word/word-skill.js'
 
 function adapter(overrides: Partial<WordAdapter> = {}): WordAdapter {
   return {
+    getDocumentSnapshot: vi.fn().mockResolvedValue({ text: 'Title\nFirst', fingerprint: 'before' }),
     getDocumentText: vi.fn().mockResolvedValue({
       totalParagraphs: 2,
       totalParagraphsExact: true,
@@ -341,9 +342,10 @@ describe('Word compatibility skill', () => {
     expect(pending).toMatchObject({
       toolName: 'write_document',
       title: 'Write an introduction to LLMs',
+      before: 'Title\nFirst',
+      after: 'Large language models generate text from learned patterns.',
       preview: {
         mode: 'replace',
-        text: 'Large language models generate text from learned patterns.',
       },
     })
 
@@ -356,9 +358,11 @@ describe('Word compatibility skill', () => {
       mutated: false,
     })
     expect(proposals.pending()?.id).toBe(pending.id)
-    expect(fake.fingerprint).toHaveBeenCalledOnce()
+    expect(fake.fingerprint).not.toHaveBeenCalled()
+    expect(fake.getDocumentSnapshot).toHaveBeenCalledWith(undefined)
 
     await proposals.confirm(pending.id)
+    expect(fake.fingerprint).toHaveBeenCalledOnce()
     expect(fake.executeOperations).toHaveBeenCalledWith(
       [
         {
@@ -369,6 +373,49 @@ describe('Word compatibility skill', () => {
       ],
       expect.any(AbortSignal),
     )
+  })
+
+  it('keeps long-document comparisons bounded while preserving the edited edge', async () => {
+    const proposals = createStructuredProposalController()
+    const skill = createWordSkill({
+      adapter: adapter({
+        getDocumentSnapshot: vi
+          .fn()
+          .mockResolvedValue({ text: `START${'x'.repeat(100_000)}END`, fingerprint: 'before' }),
+      }),
+      vfs: new InMemoryVfs(),
+      proposals,
+    })
+
+    const result = await skill.executeTool(
+      call('write_document', { text: 'APPENDED', mode: 'append' }),
+    )
+    expect(result).not.toHaveProperty('isError')
+    expect(proposals.pending()).toMatchObject({
+      before: expect.stringMatching(/^…\n.*END$/s),
+      after: expect.stringMatching(/^…\n.*ENDAPPENDED$/s),
+    })
+    expect(String(proposals.pending()?.before).length).toBeLessThanOrEqual(8_002)
+  })
+
+  it('accepts the maximum non-ASCII draft without exceeding the proposal byte budget', async () => {
+    const proposals = createStructuredProposalController()
+    const skill = createWordSkill({
+      adapter: adapter({
+        getDocumentSnapshot: vi.fn().mockResolvedValue({
+          text: '旧'.repeat(20_000),
+          fingerprint: 'before',
+        }),
+      }),
+      vfs: new InMemoryVfs(),
+      proposals,
+    })
+    const draft = '新'.repeat(12_000)
+
+    const result = await skill.executeTool(call('write_document', { text: draft, mode: 'replace' }))
+
+    expect(result).not.toHaveProperty('isError')
+    expect(proposals.pending()?.after).toBe(draft)
   })
 
   it('rejects JavaScript and unallowlisted declarative operations without a proposal', async () => {
