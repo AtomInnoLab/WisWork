@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { Markdown } from '@wiswork/ui'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
 import { officeCapabilityFlags, officeWorkspaceMode } from '../build-config.js'
 import type { OfficeProposal, StructuredProposal } from './agent/proposal-controller.js'
@@ -327,7 +328,7 @@ function TimelineEvent(props: {
       {...(event.kind === 'error' ? { role: 'alert' } : {})}
     >
       <span className="message-role">{event.kind === 'user' ? 'You' : 'WisWork'}</span>
-      <p>{event.text}</p>
+      {event.kind === 'assistant' ? <Markdown text={event.text} /> : <p>{event.text}</p>}
       {event.kind === 'assistant' && event.streaming && (
         <span className="streaming-cursor" aria-label="Response streaming" />
       )}

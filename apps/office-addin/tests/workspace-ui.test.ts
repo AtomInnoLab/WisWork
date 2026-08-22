@@ -106,6 +106,33 @@ describe('Office Agent workspace UI', () => {
     expect(html).not.toContain('<pre')
   })
 
+  it('renders Markdown only for assistant timeline messages', () => {
+    const html = workspaceMarkup({
+      timeline: Object.freeze([
+        Object.freeze({
+          id: 'assistant-markdown',
+          kind: 'assistant' as const,
+          text: '# Result\n\n- **safe** `code`',
+          streaming: true,
+        }),
+        Object.freeze({ id: 'user-plain', kind: 'user' as const, text: '**user stays plain**' }),
+        Object.freeze({
+          id: 'error-plain',
+          kind: 'error' as const,
+          text: '*error stays plain*',
+        }),
+      ]),
+    })
+    expect(html).toContain('<div class="ai-md">')
+    expect(html).toContain('<p class="ai-md-h">Result</p>')
+    expect(html).toContain('<ul><li><strong>safe</strong> <code>code</code></li></ul>')
+    expect(html).toContain('<span class="streaming-cursor" aria-label="Response streaming"></span>')
+    expect(html).toContain('<p>**user stays plain**</p>')
+    expect(html).toContain('<p>*error stays plain*</p>')
+    expect(html).not.toContain('<strong>user stays plain</strong>')
+    expect(html).not.toContain('<em>error stays plain</em>')
+  })
+
   it('keeps approval actionable while the agent loop is suspended', () => {
     const waiting = workspaceMarkup({ busy: true, status: 'working' })
     expect(waiting).toMatch(/<button type="button" class="secondary">Reject<\/button>/)

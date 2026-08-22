@@ -7,21 +7,30 @@ import { Fragment, type ReactNode } from 'react'
  */
 
 const INLINE_RE = /(`[^`\n]+`|\*\*[^*\n]+?\*\*|\*[^*\n]+?\*)/g
+const UNSUPPORTED_INLINE_RE = /[<>]|!?\[[^\]\n]*\]\([^\n)]*\)|```/
+const INCOMPLETE_INLINE_RE = /[*`]/
 
 function renderInline(text: string): ReactNode[] {
+  if (UNSUPPORTED_INLINE_RE.test(text)) return [text]
   const out: ReactNode[] = []
   let last = 0
   let key = 0
   for (const m of text.matchAll(INLINE_RE)) {
     const i = m.index ?? 0
-    if (i > last) out.push(text.slice(last, i))
+    const prefix = text.slice(last, i)
+    // Streaming may stop between delimiters. In that case, preserve the
+    // entire line instead of accidentally pairing a later delimiter.
+    if (INCOMPLETE_INLINE_RE.test(prefix)) return [text]
+    if (prefix) out.push(prefix)
     const tok = m[0] ?? ''
     if (tok.startsWith('`')) out.push(<code key={key++}>{tok.slice(1, -1)}</code>)
     else if (tok.startsWith('**')) out.push(<strong key={key++}>{tok.slice(2, -2)}</strong>)
     else out.push(<em key={key++}>{tok.slice(1, -1)}</em>)
     last = i + tok.length
   }
-  if (last < text.length) out.push(text.slice(last))
+  const suffix = text.slice(last)
+  if (INCOMPLETE_INLINE_RE.test(suffix)) return [text]
+  if (suffix) out.push(suffix)
   return out
 }
 
