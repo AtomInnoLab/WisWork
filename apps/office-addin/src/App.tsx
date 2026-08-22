@@ -33,7 +33,7 @@ const agentProductLabels: Record<OfficeHost, string> = {
   word: 'AI Word',
   excel: 'AI Sheets',
   powerpoint: 'AI Slides',
-  unknown: 'AI Office',
+  unknown: 'WisWork AI',
 }
 
 type DisplayProposal = OfficeProposal | StructuredProposal

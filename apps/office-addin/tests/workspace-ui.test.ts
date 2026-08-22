@@ -29,7 +29,7 @@ const proposal = {
 function workspaceMarkup(
   overrides: Partial<OfficeAgentSnapshot> = {},
   panel?: WorkspacePanelName,
-  host: 'word' | 'excel' | 'powerpoint' = 'word',
+  host: 'word' | 'excel' | 'powerpoint' | 'unknown' = 'word',
 ) {
   const snapshot: OfficeAgentSnapshot = {
     assistantText: 'Draft ready',
@@ -109,6 +109,7 @@ describe('Office Agent workspace UI', () => {
     expect(workspaceMarkup({}, undefined, 'word')).toContain('AI Word')
     expect(workspaceMarkup({}, undefined, 'excel')).toContain('AI Sheets')
     expect(workspaceMarkup({}, undefined, 'powerpoint')).toContain('AI Slides')
+    expect(workspaceMarkup({}, undefined, 'unknown')).toContain('WisWork AI')
   })
 
   it('keeps the rollback workspace compact without the legacy explanatory masthead', () => {
