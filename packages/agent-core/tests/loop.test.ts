@@ -278,7 +278,7 @@ describe('AgentLoop', () => {
     expect(onToolExecuted).toHaveBeenCalledTimes(1)
     expect(onToolExecuted).toHaveBeenCalledWith(
       expect.objectContaining({
-        execution: expect.objectContaining({ output: 'invalid_tool_suspension', isError: true }),
+        execution: expect.objectContaining({ output: 'invalid_tool_output', isError: true }),
       }),
     )
     expect(transport.requests).toHaveLength(2)
@@ -306,9 +306,47 @@ describe('AgentLoop', () => {
     await flush()
     expect(onToolExecuted).toHaveBeenCalledTimes(1)
     expect(onToolExecuted.mock.calls[0]?.[0].execution).toMatchObject({
-      output: 'invalid_tool_suspension',
+      output: 'invalid_tool_output',
       isError: true,
     })
+  })
+
+  it('fails closed when a suspended Promise has a throwing then getter', async () => {
+    const target = Promise.resolve({ output: 'must not escape', summary: 'bad' })
+    const hostileResult = new Proxy(target, {
+      get(value, property, receiver) {
+        if (property === 'then') throw new Error('hostile then getter')
+        return Reflect.get(value, property, receiver)
+      },
+    })
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 'approval-1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+      (cb) => {
+        cb.onDelta('Recovered')
+        cb.onDone()
+      },
+    ])
+    const onDone = vi.fn()
+    const onToolExecuted = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(() => suspendToolExecution(hostileResult)),
+      events: { onDone, onToolExecuted },
+    })
+
+    loop.run('write it')
+    await flush()
+    await flush()
+    expect(onToolExecuted).toHaveBeenCalledTimes(1)
+    expect(onToolExecuted.mock.calls[0]?.[0].execution).toMatchObject({
+      output: 'invalid_tool_output',
+      isError: true,
+    })
+    expect(onDone).toHaveBeenCalledWith({ text: 'Recovered', cancelled: false, turnLimit: false })
+    expect(loop.busy).toBe(false)
   })
 
   it('preserves model-visible tool image content in history for the next request', async () => {

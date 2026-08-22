@@ -110,10 +110,10 @@ function isFinalToolExecution(value: unknown): value is ToolExecution {
   )
 }
 
-const INVALID_TOOL_SUSPENSION: ToolExecution = {
-  output: 'invalid_tool_suspension',
+const INVALID_TOOL_OUTPUT: ToolExecution = {
+  output: 'invalid_tool_output',
   isError: true,
-  summary: 'invalid tool suspension',
+  summary: 'invalid tool output',
 }
 
 function boundedToolContent(content?: AgentToolContent[]): AgentToolContent[] | undefined {
@@ -662,28 +662,32 @@ export class AgentLoop<TSnapshot = unknown> {
       }
       if (generation !== this.generation) return // reset while a tool was running
       let execution: ToolExecution
-      if (isToolExecutionSuspension(outcome)) {
-        const suspended = await this.waitForSuspension(outcome, this.abortController?.signal)
-        if (generation !== this.generation) return // reset while awaiting approval
-        if (suspended === null) {
-          results.push({
-            id: call.id,
-            name: call.name,
-            output: '(the user stopped the run; this tool was not executed)',
-            isError: true,
-          })
-          continue
+      try {
+        if (isToolExecutionSuspension(outcome)) {
+          const suspended = await this.waitForSuspension(outcome, this.abortController?.signal)
+          if (generation !== this.generation) return // reset while awaiting approval
+          if (suspended === null) {
+            results.push({
+              id: call.id,
+              name: call.name,
+              output: '(the user stopped the run; this tool was not executed)',
+              isError: true,
+            })
+            continue
+          }
+          execution = suspended
+        } else if (
+          typeof outcome === 'object' &&
+          outcome !== null &&
+          'kind' in outcome &&
+          outcome.kind === 'tool-execution-suspension'
+        ) {
+          execution = INVALID_TOOL_OUTPUT
+        } else {
+          execution = outcome
         }
-        execution = suspended
-      } else if (
-        typeof outcome === 'object' &&
-        outcome !== null &&
-        'kind' in outcome &&
-        outcome.kind === 'tool-execution-suspension'
-      ) {
-        execution = INVALID_TOOL_SUSPENSION
-      } else {
-        execution = outcome
+      } catch {
+        execution = INVALID_TOOL_OUTPUT
       }
       let content: AgentToolContent[] | undefined
       try {
@@ -756,14 +760,19 @@ export class AgentLoop<TSnapshot = unknown> {
       removeAbortListener = () => signal.removeEventListener('abort', onAbort)
     })
     try {
-      const result = await Promise.race([
-        suspension.result.then(
-          (execution): ToolExecution =>
-            isFinalToolExecution(execution) ? execution : INVALID_TOOL_SUSPENSION,
-          (): ToolExecution => INVALID_TOOL_SUSPENSION,
-        ),
-        aborted,
-      ])
+      const settled = new Promise<ToolExecution>((resolve) => {
+        try {
+          Promise.prototype.then.call(
+            suspension.result,
+            (execution) =>
+              resolve(isFinalToolExecution(execution) ? execution : INVALID_TOOL_OUTPUT),
+            () => resolve(INVALID_TOOL_OUTPUT),
+          )
+        } catch {
+          resolve(INVALID_TOOL_OUTPUT)
+        }
+      })
+      const result = await Promise.race([settled, aborted])
       return result
     } finally {
       removeAbortListener?.()
