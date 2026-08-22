@@ -1,4 +1,11 @@
-import { AgentLoop, type AgentSkill, type AgentTransport } from '@wiswork/agent-core'
+import {
+  AgentLoop,
+  suspendToolExecution,
+  type AgentSkill,
+  type AgentTransport,
+  type ToolExecution,
+  type ToolExecutionOutcome,
+} from '@wiswork/agent-core'
 import { useSyncExternalStore } from 'react'
 import type {
   OfficeProposal,
@@ -182,6 +189,49 @@ export function createOfficeAgentSession(dependencies: {
       append({ id: eventId(), kind: 'proposal', proposal, state: 'pending' })
     }
   }
+
+  const finalProposalExecution = async (
+    proposalId: string,
+    initial: ToolExecution,
+  ): Promise<ToolExecution> => {
+    const decision = await proposals.waitForDecision(proposalId)
+    if (decision.status === 'confirmed') {
+      return {
+        output: JSON.stringify({ proposalId, status: 'applied' }),
+        mutated: true,
+        summary: 'Applied approved change',
+      }
+    }
+    if (decision.status === 'failed') {
+      return {
+        output: decision.error,
+        isError: true,
+        mutated: false,
+        summary: 'Approved change failed',
+      }
+    }
+    return {
+      output: JSON.stringify({
+        proposalId,
+        status: decision.status === 'rejected' ? 'user_rejected_change' : 'cancelled',
+        instruction: 'Do not retry this write in the current turn.',
+      }),
+      isError: decision.status === 'cancelled',
+      mutated: false,
+      summary: decision.status === 'rejected' ? 'Change rejected' : initial.summary,
+    }
+  }
+
+  const sessionSkill: AgentSkill = {
+    ...dependencies.skill,
+    async executeTool(call, signal): Promise<ToolExecutionOutcome> {
+      const outcome = await dependencies.skill.executeTool(call, signal)
+      if ('kind' in outcome && outcome.kind === 'tool-execution-suspension') return outcome
+      const proposal = proposals.pending()
+      if (!proposal) return outcome
+      return suspendToolExecution(finalProposalExecution(proposal.id, outcome))
+    },
+  }
   const clearConversation = () => {
     activeAssistantId = undefined
     state = {
@@ -200,7 +250,7 @@ export function createOfficeAgentSession(dependencies: {
 
   const loop = new AgentLoop({
     transport: dependencies.transport,
-    skill: dependencies.skill,
+    skill: sessionSkill,
     events: {
       onText: (assistantText) => {
         if (!activeAssistantId) {
@@ -295,6 +345,16 @@ export function createOfficeAgentSession(dependencies: {
     },
   })
 
+  proposals.subscribe(() => {
+    const pending = proposals.pending()
+    if (pending) {
+      appendPendingProposal()
+      publish({ activity: 'Waiting for your approval' })
+    } else {
+      publish()
+    }
+  })
+
   const startRun = (instruction: string) => {
     const value = instruction.trim()
     if (!value || loop.busy || state.applying) return
@@ -325,10 +385,17 @@ export function createOfficeAgentSession(dependencies: {
     },
     stop() {
       if (state.applying) return
+      const event = pendingProposalEvent()
+      if (event) {
+        proposals.newTurn()
+        replace(event.id, (item) =>
+          item.kind === 'proposal' ? { ...item, state: 'rejected' } : item,
+        )
+      }
       loop.cancel()
     },
     async confirm(id) {
-      if (state.applying || loop.busy) return
+      if (state.applying || (loop.busy && proposals.pending()?.id !== id)) return
       const epoch = sessionEpoch
       const event = pendingProposalEvent()
       if (event?.proposal.id === id) {

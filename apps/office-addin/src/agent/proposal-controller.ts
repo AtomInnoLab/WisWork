@@ -29,8 +29,21 @@ export interface StructuredProposalRequest extends Omit<StructuredProposal, 'id'
   verify?(signal?: AbortSignal): void | Promise<void>
 }
 
+export type ProposalDecision =
+  | { status: 'confirmed' }
+  | { status: 'rejected' | 'cancelled' }
+  | { status: 'failed'; error: string }
+
+interface ProposalDecisionLifecycle {
+  promise: Promise<ProposalDecision>
+  resolve(value: ProposalDecision): void
+  settled: boolean
+}
+
 export interface StructuredProposalController {
   pending(): StructuredProposal | undefined
+  subscribe(listener: () => void): () => void
+  waitForDecision(id: string): Promise<ProposalDecision>
   propose(request: StructuredProposalRequest): StructuredProposal
   confirm(id: string): Promise<void>
   reject(): void
@@ -48,6 +61,8 @@ export interface OfficeProposal {
 
 export interface ProposalController {
   pending(): OfficeProposal | undefined
+  subscribe(listener: () => void): () => void
+  waitForDecision(id: string): Promise<ProposalDecision>
   propose(operation: ProposalOperation, value: string): Promise<OfficeProposal>
   confirm(id: string): Promise<void>
   reject(): void
@@ -84,15 +99,38 @@ function deepFreeze<T>(value: T): T {
 }
 
 export function createStructuredProposalController(): StructuredProposalController {
-  let current: { snapshot: StructuredProposal; request: StructuredProposalRequest } | undefined
+  let current:
+    | {
+        snapshot: StructuredProposal
+        request: StructuredProposalRequest
+        decision: ProposalDecisionLifecycle
+      }
+    | undefined
   let confirming: AbortController | undefined
+  const listeners = new Set<() => void>()
   const snapshot = (value: StructuredProposal) => deepFreeze(boundedCopy(value))
-  const invalidate = () => {
+  const publish = () => listeners.forEach((listener) => listener())
+  const settle = (decision: ProposalDecisionLifecycle, value: ProposalDecision) => {
+    if (decision.settled) return
+    decision.settled = true
+    decision.resolve(value)
+  }
+  const invalidate = (status: 'rejected' | 'cancelled') => {
+    if (current) settle(current.decision, { status })
     current = undefined
     confirming?.abort()
+    publish()
   }
   return {
     pending: () => (current ? snapshot(current.snapshot) : undefined),
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    waitForDecision(id) {
+      if (!current || current.snapshot.id !== id) return Promise.reject(new Error('proposal_missing'))
+      return current.decision.promise
+    },
     propose(request) {
       if (confirming) throw new Error('proposal_confirmation_in_progress')
       if (
@@ -125,7 +163,17 @@ export function createStructuredProposalController(): StructuredProposalControll
         after: request.after,
         code: request.code,
       })
-      current = { snapshot: publicValue, request: { ...request } }
+      if (current) settle(current.decision, { status: 'cancelled' })
+      let resolve!: (value: ProposalDecision) => void
+      const promise = new Promise<ProposalDecision>((next) => {
+        resolve = next
+      })
+      current = {
+        snapshot: publicValue,
+        request: { ...request },
+        decision: { promise, resolve, settled: false },
+      }
+      publish()
       return snapshot(publicValue)
     },
     async confirm(id) {
@@ -133,6 +181,7 @@ export function createStructuredProposalController(): StructuredProposalControll
       const proposal = current
       if (!proposal || proposal.snapshot.id !== id) throw new Error('proposal_missing')
       current = undefined
+      publish()
       const controller = new AbortController()
       confirming = controller
       try {
@@ -142,13 +191,18 @@ export function createStructuredProposalController(): StructuredProposalControll
         await proposal.request.execute(controller.signal)
         if (controller.signal.aborted) throw new Error('proposal_stale')
         await proposal.request.verify?.(controller.signal)
+        settle(proposal.decision, { status: 'confirmed' })
+      } catch (error) {
+        const code = error instanceof Error ? error.message : 'office_write_failed'
+        settle(proposal.decision, { status: 'failed', error: code })
+        throw error
       } finally {
         if (confirming === controller) confirming = undefined
       }
     },
-    reject: invalidate,
-    newTurn: invalidate,
-    logout: invalidate,
+    reject: () => invalidate('rejected'),
+    newTurn: () => invalidate('cancelled'),
+    logout: () => invalidate('cancelled'),
   }
 }
 
@@ -177,6 +231,8 @@ export function createProposalController(document: OfficeDocumentClient): Propos
       const proposal = structured.pending()
       return proposal ? legacy(proposal) : undefined
     },
+    subscribe: structured.subscribe,
+    waitForDecision: structured.waitForDecision,
     async propose(operation, value) {
       const before = await document.readSelection()
       if (before.length > MAX_PROPOSAL_SELECTION_LENGTH) throw new Error('selection_too_large')

@@ -20,6 +20,65 @@ function document(selection = 'before') {
 }
 
 describe('proposal controller', () => {
+  it('publishes proposal lifecycle changes and exposes the eventual user decision', async () => {
+    const controller = createStructuredProposalController()
+    const snapshots: Array<string | undefined> = []
+    const unsubscribe = controller.subscribe(() => snapshots.push(controller.pending()?.id))
+    const proposal = controller.propose({
+      operation: 'edit',
+      title: 'Edit document',
+      preview: {},
+      impact: { host: 'word', targets: ['document'], count: 1 },
+      fingerprint: 'v1',
+      validate: async () => true,
+      execute: async () => undefined,
+    })
+    const decision = controller.waitForDecision(proposal.id)
+
+    expect(snapshots).toEqual([proposal.id])
+    await controller.confirm(proposal.id)
+    await expect(decision).resolves.toEqual({ status: 'confirmed' })
+    expect(snapshots).toEqual([proposal.id, undefined])
+
+    unsubscribe()
+  })
+
+  it.each([
+    ['reject', 'rejected'],
+    ['newTurn', 'cancelled'],
+    ['logout', 'cancelled'],
+  ] as const)('settles a suspended proposal as %s on %s', async (action, status) => {
+    const controller = createStructuredProposalController()
+    const proposal = controller.propose({
+      operation: 'edit',
+      title: 'Edit document',
+      preview: {},
+      impact: { host: 'word', targets: ['document'], count: 1 },
+      fingerprint: 'v1',
+      validate: async () => true,
+      execute: async () => undefined,
+    })
+    const decision = controller.waitForDecision(proposal.id)
+    controller[action]()
+    await expect(decision).resolves.toEqual({ status })
+  })
+
+  it('settles a failed confirmation with its stable error code', async () => {
+    const controller = createStructuredProposalController()
+    const proposal = controller.propose({
+      operation: 'edit',
+      title: 'Edit document',
+      preview: {},
+      impact: { host: 'word', targets: ['document'], count: 1 },
+      fingerprint: 'v1',
+      validate: async () => false,
+      execute: async () => undefined,
+    })
+    const decision = controller.waitForDecision(proposal.id)
+    await expect(controller.confirm(proposal.id)).rejects.toThrow('proposal_stale')
+    await expect(decision).resolves.toEqual({ status: 'failed', error: 'proposal_stale' })
+  })
+
   it('keeps one pending proposal and captures selection state', async () => {
     const controller = createProposalController(document())
     const first = await controller.propose('replace', 'after')
