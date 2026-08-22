@@ -47,6 +47,7 @@ pub struct Config {
     pub session_max_ttl: Duration,
     pub request_ttl: Duration,
     pub max_claim_attempts: u8,
+    pub max_global_claims: u32,
     pub auth_url: String,
     pub jwks_url: String,
     pub issuer: String,
@@ -60,6 +61,7 @@ impl Default for Config {
             session_max_ttl: Duration::from_secs(8 * 60 * 60),
             request_ttl: Duration::from_secs(120),
             max_claim_attempts: 5,
+            max_global_claims: 1_000,
             auth_url: "https://auth.dev.wispaper.ai/oidc/me".into(),
             jwks_url: "https://auth.dev.wispaper.ai/oidc/jwks".into(),
             issuer: "https://auth.dev.wispaper.ai/oidc".into(),
@@ -575,7 +577,7 @@ async fn negotiate(
         store.global_claims = (Some(Instant::now()), 0);
     }
     store.global_claims.1 = store.global_claims.1.saturating_add(1);
-    if store.global_claims.1 > 1_000 {
+    if store.global_claims.1 > app.inner.config.max_global_claims {
         return Err("claim_rate_limited");
     }
     if store.claim_attempts.len() >= 10_000 && !store.claim_attempts.contains_key(&subject) {
@@ -737,16 +739,6 @@ async fn claim(
     }
     let mut s = app.inner.state.lock().await;
     expire(&mut s, app.inner.config.pairing_ttl);
-    if s.global_claims
-        .0
-        .is_none_or(|start| start.elapsed() > app.inner.config.pairing_ttl)
-    {
-        s.global_claims = (Some(Instant::now()), 0);
-    }
-    s.global_claims.1 = s.global_claims.1.saturating_add(1);
-    if s.global_claims.1 > 1_000 {
-        return Err("claim_rate_limited");
-    }
     let negotiated_claim = s
         .codes
         .get(code)
@@ -763,6 +755,16 @@ async fn claim(
                         .collect::<Vec<_>>()
         });
     if !negotiated_claim {
+        if s.global_claims
+            .0
+            .is_none_or(|start| start.elapsed() > app.inner.config.pairing_ttl)
+        {
+            s.global_claims = (Some(Instant::now()), 0);
+        }
+        s.global_claims.1 = s.global_claims.1.saturating_add(1);
+        if s.global_claims.1 > app.inner.config.max_global_claims {
+            return Err("claim_rate_limited");
+        }
         if s.claim_attempts.len() >= 10_000 && !s.claim_attempts.contains_key(&subject) {
             return Err("relay_busy");
         }
