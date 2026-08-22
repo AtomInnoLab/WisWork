@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import {
   AgentWorkspace,
+  DiagnosticCopyButton,
   LegacyAgentWorkspace,
   composerKeyAction,
   createOfficeWorkspaceUi,
@@ -480,6 +481,22 @@ describe('Office Agent workspace UI', () => {
     await act(async () => copy.click())
     expect(copyDiagnostics).toHaveBeenCalledOnce()
     expect(container.querySelector('.diagnostic-status')?.textContent).toBe('诊断信息已复制')
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
+  it('offers the same diagnostic copy feedback on a disconnected status screen', async () => {
+    const copyDiagnostics = vi.fn(async () => undefined)
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    await act(async () => {
+      root.render(React.createElement(DiagnosticCopyButton, { copyDiagnostics }))
+    })
+    const button = container.querySelector('button')!
+    await act(async () => button.click())
+    expect(copyDiagnostics).toHaveBeenCalledOnce()
+    expect(container.querySelector('[role="status"]')?.textContent).toBe('诊断信息已复制')
     await act(async () => root.unmount())
     container.remove()
   })

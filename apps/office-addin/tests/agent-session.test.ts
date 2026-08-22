@@ -76,6 +76,27 @@ function proposalsHarness() {
 }
 
 describe('Office agent session', () => {
+  it('preserves bounded local diagnostics when Relay authentication is lost', () => {
+    const diagnostics = {
+      startTrace: vi.fn(() => 'trace'),
+      setTool: vi.fn(),
+      record: vi.fn(),
+      clear: vi.fn(),
+    }
+    const session = createOfficeAgentSession({
+      transport: transportHarness().transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+      diagnostics,
+    })
+
+    session.authenticationLost()
+
+    expect(diagnostics.clear).not.toHaveBeenCalled()
+    session.logout()
+    expect(diagnostics.clear).toHaveBeenCalledOnce()
+  })
+
   it('correlates a run and records a stable tool failure without retaining output', async () => {
     const harness = transportHarness()
     const diagnostics = {

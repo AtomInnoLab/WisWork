@@ -474,6 +474,11 @@ fn versioned_error(tx: &Tx, version: u64, code: &str) {
         json!({"version":version,"type":"relay.error","code":code}),
     );
 }
+fn diagnostic_response(tx: &Tx, value: Value) {
+    // Diagnostics are optional observability. A saturated client queue must never
+    // revoke or slow the Agent session merely because an ACK cannot be delivered.
+    let _ = try_send(tx, value);
+}
 fn renew_session(session: &mut Session, idle_ttl: Duration) {
     session.expires = (Instant::now() + idle_ttl).min(session.absolute_expires);
 }
@@ -554,7 +559,10 @@ async fn process(
         "office.cancel" => cancel(app, conn, map).await,
         "office.diagnostic" => {
             if let Err(code) = diagnostic(app, conn, tx, map, text.len()).await {
-                versioned_error(tx, PROTOCOL_V2, code);
+                diagnostic_response(
+                    tx,
+                    json!({"version":PROTOCOL_V2,"type":"relay.error","code":code}),
+                );
             }
             Ok(())
         }
@@ -1135,7 +1143,7 @@ async fn diagnostic(
     });
     drop(store);
     eprintln!("{log_entry}");
-    send(
+    diagnostic_response(
         tx,
         json!({
             "version": PROTOCOL_V2,
@@ -1560,5 +1568,34 @@ async fn cleanup(app: &App, conn: u64) {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn saturated_diagnostic_response_never_marks_connection_failed() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let failed = Arc::new(Notify::new());
+        let tx = Tx {
+            sender,
+            failed: failed.clone(),
+        };
+        tx.sender
+            .try_send(Message::Ping(Vec::new().into()))
+            .unwrap();
+
+        diagnostic_response(
+            &tx,
+            json!({"version":2,"type":"office.diagnostic.accepted","event_id":"event"}),
+        );
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), failed.notified())
+                .await
+                .is_err()
+        );
     }
 }

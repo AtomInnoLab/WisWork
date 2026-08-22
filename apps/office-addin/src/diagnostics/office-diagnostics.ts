@@ -132,24 +132,31 @@ function officeIdentifiers(
   OfficeDiagnosticEvent,
   'office_error_code' | 'office_error_name' | 'office_error_location'
 > {
-  if (!error || (typeof error !== 'object' && typeof error !== 'function')) return {}
-  try {
-    const value = error as Record<string, unknown>
-    const debugInfo =
-      value.debugInfo && typeof value.debugInfo === 'object'
-        ? (value.debugInfo as Record<string, unknown>)
-        : undefined
-    const code = identifier(value.code, '')
-    const name = identifier(value.name, '')
-    const location = identifier(debugInfo?.errorLocation, '')
-    return {
-      ...(code ? { office_error_code: code } : {}),
-      ...(name ? { office_error_name: name } : {}),
-      ...(location ? { office_error_location: location } : {}),
+  const result: Record<string, string> = {}
+  const seen = new Set<unknown>()
+  let current = error
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (!current || (typeof current !== 'object' && typeof current !== 'function')) break
+    if (seen.has(current)) break
+    seen.add(current)
+    try {
+      const value = current as Record<string, unknown>
+      const debugInfo =
+        value.debugInfo && typeof value.debugInfo === 'object'
+          ? (value.debugInfo as Record<string, unknown>)
+          : undefined
+      const code = identifier(value.code, '')
+      const name = identifier(value.name, '')
+      const location = identifier(debugInfo?.errorLocation, '')
+      if (code && !result.office_error_code) result.office_error_code = code
+      if (name && !result.office_error_name) result.office_error_name = name
+      if (location && !result.office_error_location) result.office_error_location = location
+      current = value.cause
+    } catch {
+      break
     }
-  } catch {
-    return {}
   }
+  return result
 }
 
 function requirementSets(value: Readonly<Record<string, boolean>> | undefined) {

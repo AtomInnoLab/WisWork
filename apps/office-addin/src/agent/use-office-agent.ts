@@ -553,7 +553,6 @@ export function createOfficeAgentSession(dependencies: {
     },
     authenticationLost() {
       sessionEpoch += 1
-      diagnose((diagnostics) => diagnostics.clear())
       loop.reset()
       proposals.logout()
       lastInstruction = ''

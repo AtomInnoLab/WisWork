@@ -49,7 +49,7 @@ Limits:
 
 ## Local Diagnostic Export
 
-The taskpane exposes “Copy diagnostics” from its management panel. Export is bounded JSON containing build/host/platform/requirement support and recent sanitized events. Clipboard failure is shown locally with a stable safe message. New task may retain diagnostic history for troubleshooting; logout, session revocation, and taskpane disposal clear it.
+The taskpane exposes “Copy diagnostics” from its management panel and from the disconnected screen. Export is bounded JSON containing build/host/platform/requirement support and recent sanitized events. Clipboard failure is shown locally with a stable safe message. New task and transport/session revocation retain the safe ring so a connection failure remains diagnosable; explicit logout and taskpane disposal clear it.
 
 ## Error Capture
 

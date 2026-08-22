@@ -128,4 +128,21 @@ describe('Office safe diagnostics', () => {
     ).not.toThrow()
     expect(diagnostics.snapshot().events[0]).not.toHaveProperty('office_error_location')
   })
+
+  it('extracts only allowlisted identifiers from a shallow wrapped Office error', () => {
+    const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'dev' })
+    const cause = Object.assign(new Error('secret document content'), {
+      code: 'InvalidArgument',
+      debugInfo: { errorLocation: 'ShapeCollection.add' },
+    })
+    const wrapped = new Error('office_write_failed', { cause })
+    diagnostics.record({ phase: 'write', errorCode: 'office_write_failed', error: wrapped })
+
+    expect(diagnostics.snapshot().events[0]).toMatchObject({
+      office_error_code: 'InvalidArgument',
+      office_error_name: 'Error',
+      office_error_location: 'ShapeCollection.add',
+    })
+    expect(diagnostics.exportJson()).not.toContain('secret document content')
+  })
 })

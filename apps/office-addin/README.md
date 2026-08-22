@@ -127,7 +127,8 @@ Safe remote failure diagnostics are enabled by default for Relay builds. They co
 host/build/tool/phase identifiers, stable error codes, requirement-set support, and allowlisted
 Office error identifiers; prompts, document content, tool inputs, formulas, OOXML, screenshots,
 tokens, raw error messages, and stacks are never sent. Use **复制诊断信息** in the task-pane session
-menu to copy the bounded local diagnostic ring. Set the exact build flag
+menu or disconnected screen to copy the bounded local diagnostic ring. Relay loss preserves this
+safe ring for troubleshooting; explicit logout and taskpane disposal clear it. Set the exact build flag
 `VITE_WISWORK_OFFICE_REMOTE_DIAGNOSTICS=0` to retain local export while rolling remote diagnostics
 back; other values invalidate the deployment configuration. Relay operators can correlate a copied
 `trace_id` with structured `office_diagnostic` service-log events. Logs should be retained for no

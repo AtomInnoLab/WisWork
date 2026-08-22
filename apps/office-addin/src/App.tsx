@@ -175,6 +175,33 @@ export interface OfficeWorkspaceUi {
   readonly clear: () => void
 }
 
+export function DiagnosticCopyButton(props: {
+  copyDiagnostics: () => Promise<void>
+}): React.ReactElement {
+  const [status, setStatus] = useState('')
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          setStatus('')
+          void props
+            .copyDiagnostics()
+            .then(() => setStatus('诊断信息已复制'))
+            .catch(() => setStatus('复制诊断信息失败'))
+        }}
+      >
+        复制诊断信息
+      </button>
+      {status && (
+        <p className="diagnostic-status" role="status">
+          {status}
+        </p>
+      )}
+    </>
+  )
+}
+
 export function createOfficeWorkspaceUi(
   runtime: OfficeHostRuntime,
   diagnostics?: Pick<OfficeDiagnostics, 'exportJson'>,
@@ -920,6 +947,9 @@ function ConfiguredApp() {
               ? 'Looking for WisWork PC…'
               : 'Try again'}
         </button>
+        {workspace?.ui.copyDiagnostics && (
+          <DiagnosticCopyButton copyDiagnostics={workspace.ui.copyDiagnostics} />
+        )}
       </StatusScreen>
     )
   }

@@ -17,6 +17,16 @@ const TEST_ISSUER: &str = "https://issuer.example.test";
 const TEST_AUDIENCE: &str = "relay-test-client";
 const TEST_PRIVATE_KEY_DER: &str = "MIG2AgEAMBAGByqGSM49AgEGBSuBBAAiBIGeMIGbAgEBBDBi2P/vImpNt3oyLprNPTVoaYRvIaJWVxDjsjoRF0YfAmwKUhtjGdj0qh0NWGlbVVOhZANiAAQ1aooGczWALsnMxfjM77d43rpKPqBtQEHPDrizP7fpwi/SbkZ2T/czW8Ye+5Ix3WIYFMM60AKyMtLQXT8V4VjQb0jM9wRkC/JEa0C50q9dk8APUPfbJMDbcsqcyW0bl2w=";
 
+#[test]
+fn deployment_bounds_diagnostic_journal_retention() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let unit = std::fs::read_to_string(root.join("deploy/wiswork-relay.service")).unwrap();
+    let journal = std::fs::read_to_string(root.join("deploy/journald@wiswork-relay.conf")).unwrap();
+    assert!(unit.contains("LogNamespace=wiswork-relay"));
+    assert!(journal.contains("MaxRetentionSec=7day"));
+    assert!(journal.contains("SystemMaxUse=64M"));
+}
+
 async fn server_with_all_limits(
     session_ttls: Option<(Duration, Duration)>,
     max_global_claims: Option<u32>,
