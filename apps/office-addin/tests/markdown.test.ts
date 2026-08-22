@@ -36,13 +36,29 @@ describe('safe shared Markdown', () => {
   })
 
   it('keeps fenced HTML and incomplete streaming syntax literal', () => {
-    const html = markup('```html\n<script>bad()</script>\n```\n\n**partial and *still partial')
+    const html = markup(
+      '```html\n<script>bad()</script>\n**inside fence**\n```\n\n**partial and *still partial',
+    )
     expect(html).toContain('```html')
     expect(html).toContain('&lt;script&gt;bad()&lt;/script&gt;')
+    expect(html).toContain('**inside fence**')
     expect(html).toContain('**partial and *still partial')
     expect(html).not.toContain('<script>')
     expect(html).not.toContain('<strong>')
     expect(html).not.toContain('<em>')
     expect(html).not.toContain('<code>')
+  })
+
+  it('keeps incomplete streaming links and images literal', () => {
+    const html = markup(
+      '[**partial link**](https://example.invalid/page\n' +
+        '![*partial image*](https://example.invalid/image.png',
+    )
+    expect(html).toContain('[**partial link**](https://example.invalid/page')
+    expect(html).toContain('![*partial image*](https://example.invalid/image.png')
+    expect(html).not.toContain('<strong>')
+    expect(html).not.toContain('<em>')
+    expect(html).not.toContain('<a')
+    expect(html).not.toContain('<img')
   })
 })

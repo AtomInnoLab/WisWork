@@ -7,7 +7,7 @@ import { Fragment, type ReactNode } from 'react'
  */
 
 const INLINE_RE = /(`[^`\n]+`|\*\*[^*\n]+?\*\*|\*[^*\n]+?\*)/g
-const UNSUPPORTED_INLINE_RE = /[<>]|!?\[[^\]\n]*\]\([^\n)]*\)|```/
+const UNSUPPORTED_INLINE_RE = /[<>]|\[|```/
 const INCOMPLETE_INLINE_RE = /[*`]/
 
 function renderInline(text: string): ReactNode[] {
@@ -39,10 +39,14 @@ type MdBlock =
   | { kind: 'ul'; items: string[] }
   | { kind: 'ol'; items: string[] }
   | { kind: 'h'; text: string }
+  | { kind: 'raw'; lines: string[] }
+
+const FENCE_RE = /^\s*```/
 
 function parseBlocks(text: string): MdBlock[] {
   const blocks: MdBlock[] = []
   let cur: MdBlock | null = null
+  let fencedLines: string[] | null = null
   const flush = (): void => {
     if (cur) {
       blocks.push(cur)
@@ -51,6 +55,19 @@ function parseBlocks(text: string): MdBlock[] {
   }
   for (const raw of text.split('\n')) {
     const line = raw.trimEnd()
+    if (fencedLines) {
+      fencedLines.push(line)
+      if (FENCE_RE.test(line)) {
+        blocks.push({ kind: 'raw', lines: fencedLines })
+        fencedLines = null
+      }
+      continue
+    }
+    if (FENCE_RE.test(line)) {
+      flush()
+      fencedLines = [line]
+      continue
+    }
     if (!line.trim()) {
       flush()
       continue
@@ -86,6 +103,7 @@ function parseBlocks(text: string): MdBlock[] {
     cur.lines.push(line)
   }
   flush()
+  if (fencedLines) blocks.push({ kind: 'raw', lines: fencedLines })
   return blocks
 }
 
@@ -93,6 +111,18 @@ export function Markdown({ text }: { text: string }): React.JSX.Element {
   return (
     <div className="ai-md">
       {parseBlocks(text).map((b, i) => {
+        if (b.kind === 'raw') {
+          return (
+            <p key={i}>
+              {b.lines.map((line, j) => (
+                <Fragment key={j}>
+                  {j > 0 && <br />}
+                  {line}
+                </Fragment>
+              ))}
+            </p>
+          )
+        }
         if (b.kind === 'h') {
           return (
             <p key={i} className="ai-md-h">

@@ -37,6 +37,9 @@ describe('Office workspace styling', () => {
     expect(styles).toMatch(/\.agent-timeline\s*\{[\s\S]*touch-action:\s*pan-y/)
     expect(styles).not.toMatch(/\.proposal-copy\s*\{[^}]*overflow:\s*(?:auto|scroll)/)
     expect(styles).not.toMatch(/\.proposal-copy\s*\{[^}]*max-height:/)
+    expect(styles).toMatch(
+      /\.message-assistant \.ai-md li,[\s\S]*\.message-assistant \.ai-md code\s*\{[\s\S]*min-width:\s*0;[\s\S]*overflow-wrap:\s*anywhere;/,
+    )
     expect(styles).toMatch(/\.composer-shell\s*\{[\s\S]*position:\s*relative/)
     expect(styles).toMatch(/@media\s*\(max-height:\s*520px\)/)
     expect(styles).toMatch(
