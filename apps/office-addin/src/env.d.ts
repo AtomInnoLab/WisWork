@@ -1,0 +1,1 @@
+declare const __WISWORK_OFFICE_BUILD_ID__: string

@@ -91,7 +91,7 @@ describe('Office agent session', () => {
         systemPrompt: 'test',
         tools: [{ name: 'write_document', description: 'write', inputSchema: { type: 'object' } }],
         executeTool: vi.fn(async () => ({
-          output: JSON.stringify({ success: false, error: 'office_api_unsupported', secret: 'x' }),
+          output: 'office_api_unsupported',
           isError: true,
           summary: 'failed',
         })),
@@ -109,6 +109,7 @@ describe('Office agent session', () => {
     expect(diagnostics.record).toHaveBeenCalledWith({
       phase: 'tool',
       errorCode: 'office_api_unsupported',
+      durationMs: expect.any(Number),
     })
     expect(JSON.stringify(diagnostics.record.mock.calls)).not.toContain('write my secret article')
   })

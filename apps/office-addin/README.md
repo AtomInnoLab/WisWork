@@ -132,6 +132,9 @@ menu to copy the bounded local diagnostic ring. Set the exact build flag
 back; other values invalidate the deployment configuration. Relay operators can correlate a copied
 `trace_id` with structured `office_diagnostic` service-log events. Logs should be retained for no
 more than seven days by the deployment log policy.
+The production build identifier defaults to `GITHUB_SHA` (or the current short Git commit outside
+CI) and can be set explicitly with a 3–96 character alphanumeric
+`VITE_WISWORK_OFFICE_BUILD_ID`; it is used only for bundle-to-trace correlation.
 
 Web tools remain unadvertised because there is no compiled, reviewed retrieval-service
 attestation. Their activation change must add its capability flag and Office v2 composition in the

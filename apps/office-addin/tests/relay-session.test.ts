@@ -159,7 +159,7 @@ describe('Office cloud relay session', () => {
       capabilities: ['agent.v1'],
     })
     const connecting = session.connect('word')
-    expect(session.sendDiagnostic(diagnostic)).toBe(false)
+    await expect(session.sendDiagnostic(diagnostic)).rejects.toThrow('diagnostic_unavailable')
     socket.open()
     socket.receive(
       JSON.stringify({
@@ -181,7 +181,7 @@ describe('Office cloud relay session', () => {
       }),
     )
     await connecting
-    expect(session.sendDiagnostic(diagnostic)).toBe(true)
+    const accepted = session.sendDiagnostic(diagnostic)
     expect(frame(socket, 1)).toEqual({
       version: 2,
       type: 'office.diagnostic',
@@ -196,8 +196,11 @@ describe('Office cloud relay session', () => {
         event_id: diagnostic.event_id,
       }),
     )
+    await expect(accepted).resolves.toBeUndefined()
     expect(session.snapshot().status).toBe('connected')
-    expect(session.sendDiagnostic({ ...diagnostic, tool: 'x'.repeat(5_000) })).toBe(false)
+    await expect(
+      session.sendDiagnostic({ ...diagnostic, tool: 'x'.repeat(5_000) }),
+    ).rejects.toThrow('diagnostic_too_large')
     expect(socket.sent).toHaveLength(2)
   })
 
@@ -230,14 +233,26 @@ describe('Office cloud relay session', () => {
       }),
     )
     await connecting
-    expect(session.sendDiagnostic({ ...diagnostic, host: 'excel' })).toBe(true)
-    socket.receive(JSON.stringify({ version: 2, type: 'relay.error', code: 'diagnostic_limit' }))
+    const rejected = session.sendDiagnostic({ ...diagnostic, host: 'excel' })
+    socket.receive(
+      JSON.stringify({ version: 2, type: 'relay.error', code: 'diagnostic_rate_limited' }),
+    )
+    await expect(rejected).rejects.toThrow('diagnostic_rate_limited')
+    const hostMismatch = session.sendDiagnostic({
+      ...diagnostic,
+      event_id: '00000000-0000-4000-8000-000000000003',
+      host: 'excel',
+    })
+    socket.receive(
+      JSON.stringify({ version: 2, type: 'relay.error', code: 'diagnostic_host_mismatch' }),
+    )
+    await expect(hostMismatch).rejects.toThrow('diagnostic_host_mismatch')
     expect(session.snapshot().status).toBe('connected')
     const pending = session.authenticatedFetch('/v1/office/messages', {
       method: 'POST',
       body: '{"model":"fixed"}',
     })
-    expect(frame(socket, 2).type).toBe('office.request')
+    expect(frame(socket, 3).type).toBe('office.request')
     session.disconnect()
     await expect(pending).rejects.toThrow('relay_disconnected')
   })
@@ -266,7 +281,7 @@ describe('Office cloud relay session', () => {
       }),
     )
     await connecting
-    expect(session.sendDiagnostic(diagnostic)).toBe(false)
+    await expect(session.sendDiagnostic(diagnostic)).rejects.toThrow('diagnostic_unavailable')
     expect(socket.sent).toHaveLength(1)
   })
 

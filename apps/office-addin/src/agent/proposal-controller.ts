@@ -210,14 +210,17 @@ export function createStructuredProposalController(
       const controller = new AbortController()
       confirming = controller
       let phase: 'validate' | 'write' | 'verify' = 'validate'
+      let phaseStartedAt = Date.now()
       try {
         if (!(await proposal.request.validate(controller.signal)) || controller.signal.aborted) {
           throw new Error('proposal_stale')
         }
         phase = 'write'
+        phaseStartedAt = Date.now()
         await proposal.request.execute(controller.signal)
         if (controller.signal.aborted) throw new Error('proposal_stale')
         phase = 'verify'
+        phaseStartedAt = Date.now()
         await proposal.request.verify?.(controller.signal)
         settle(proposal.decision, { status: 'confirmed' })
       } catch (error) {
@@ -227,6 +230,7 @@ export function createStructuredProposalController(
             phase: code === 'office_recovery_failed' ? 'recovery' : phase,
             errorCode: code,
             error,
+            durationMs: Math.max(0, Date.now() - phaseStartedAt),
           }),
         )
         settle(proposal.decision, { status: 'failed', error: code })

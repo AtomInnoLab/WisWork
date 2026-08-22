@@ -6,6 +6,7 @@ import {
   deploymentConfig,
   deploymentConnectOrigins,
   officeBridgePorts,
+  officeBuildId,
   officeCapabilityFlags,
   officeRemoteDiagnosticsEnabled,
   renderDeploymentManifest,
@@ -118,6 +119,19 @@ describe('Office Add-in manifest and routes', () => {
     expect(
       deploymentConfig({ ...validEnv, VITE_WISWORK_OFFICE_REMOTE_DIAGNOSTICS: 'true' }),
     ).toBeUndefined()
+  })
+
+  it('uses a validated deploy build identifier instead of an uncorrelated unknown value', async () => {
+    expect(officeBuildId({ VITE_WISWORK_OFFICE_BUILD_ID: 'abc123def456' }, 'fallback')).toBe(
+      'abc123def456',
+    )
+    expect(officeBuildId({}, 'abc123def456')).toBe('abc123def456')
+    expect(() =>
+      officeBuildId({ VITE_WISWORK_OFFICE_BUILD_ID: 'bad build id' }, 'fallback'),
+    ).toThrow('invalid_office_build_id')
+    const viteConfig = await readFile(resolve(import.meta.dirname, '../vite.config.ts'), 'utf8')
+    expect(viteConfig).toContain('__WISWORK_OFFICE_BUILD_ID__')
+    expect(viteConfig).toContain("rev-parse', '--short=12', 'HEAD")
   })
 
   it('documents Relay default and the explicit rollback switch', async () => {

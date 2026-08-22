@@ -15,6 +15,8 @@ const MAX_DIAGNOSTIC_EVENT_BYTES = 4 * 1024
 const MAX_PENDING_DIAGNOSTICS = 16
 const DIAGNOSTIC_ERROR_CODES = new Set([
   'diagnostic_limit',
+  'diagnostic_rate_limited',
+  'diagnostic_host_mismatch',
   'diagnostic_too_large',
   'invalid_capability',
   'invalid_frame',
@@ -53,7 +55,7 @@ export interface OfficeRelaySession {
     body: unknown,
     signal?: AbortSignal,
   ): Promise<Response>
-  sendDiagnostic(event: OfficeDiagnosticEvent): boolean
+  sendDiagnostic(event: OfficeDiagnosticEvent): Promise<void>
 }
 
 export type OfficeRelayCapability =
@@ -114,7 +116,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   let generation = 0
   let settleConnect: (() => void) | undefined
   let pairingTimer: ReturnType<typeof setTimeout> | undefined
-  const pendingDiagnostics = new Set<string>()
+  const pendingDiagnostics = new Map<string, { resolve(): void; reject(error: Error): void }>()
 
   const publish = (next: OfficeRelaySnapshot) => {
     state = next
@@ -142,6 +144,8 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     sessionId = undefined
     capability = undefined
     negotiatedCapabilities = []
+    for (const pending of pendingDiagnostics.values())
+      pending.reject(new Error('diagnostic_unavailable'))
     pendingDiagnostics.clear()
     if (pairingTimer !== undefined) clearTimeout(pairingTimer)
     pairingTimer = undefined
@@ -182,9 +186,12 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
         frameBytes > MAX_CONTROL_FRAME_BYTES ||
         !exactKeys(frame, ['version', 'type', 'event_id']) ||
         typeof frame.event_id !== 'string' ||
-        !pendingDiagnostics.delete(frame.event_id)
+        !pendingDiagnostics.has(frame.event_id)
       )
         return protocolFailure()
+      const pending = pendingDiagnostics.get(frame.event_id)!
+      pendingDiagnostics.delete(frame.event_id)
+      pending.resolve()
       return
     }
     if (
@@ -194,8 +201,12 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       DIAGNOSTIC_ERROR_CODES.has(frame.code) &&
       pendingDiagnostics.size > 0
     ) {
-      const oldest = pendingDiagnostics.values().next().value as string | undefined
-      if (oldest) pendingDiagnostics.delete(oldest)
+      const oldest = pendingDiagnostics.entries().next().value as
+        [string, { reject(error: Error): void }] | undefined
+      if (oldest) {
+        pendingDiagnostics.delete(oldest[0])
+        oldest[1].reject(new Error(frame.code))
+      }
       return
     }
 
@@ -536,7 +547,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
         pendingDiagnostics.size >= MAX_PENDING_DIAGNOSTICS ||
         pendingDiagnostics.has(event.event_id)
       )
-        return false
+        return Promise.reject(new Error('diagnostic_unavailable'))
       const safeEvent: OfficeDiagnosticEvent = {
         event_id: event.event_id,
         trace_id: event.trace_id,
@@ -556,27 +567,35 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
         duration_ms: event.duration_ms,
         requirement_sets: { ...event.requirement_sets },
       }
+      const wireFrame = {
+        version: 2,
+        type: 'office.diagnostic',
+        session_id: sessionId,
+        capability,
+        ...safeEvent,
+      }
       let serialized: string
       try {
-        serialized = JSON.stringify(safeEvent)
+        serialized = JSON.stringify(wireFrame)
       } catch {
-        return false
+        return Promise.reject(new Error('diagnostic_invalid'))
       }
-      if (encoder.encode(serialized).byteLength > MAX_DIAGNOSTIC_EVENT_BYTES) return false
+      if (encoder.encode(serialized).byteLength > MAX_DIAGNOSTIC_EVENT_BYTES)
+        return Promise.reject(new Error('diagnostic_too_large'))
+      let resolve!: () => void
+      let reject!: (error: Error) => void
+      const result = new Promise<void>((next, fail) => {
+        resolve = next
+        reject = fail
+      })
+      pendingDiagnostics.set(event.event_id, { resolve, reject })
       try {
-        pendingDiagnostics.add(event.event_id)
-        send({
-          version: 2,
-          type: 'office.diagnostic',
-          session_id: sessionId,
-          capability,
-          ...safeEvent,
-        })
-        return true
+        send(wireFrame)
       } catch {
         pendingDiagnostics.delete(event.event_id)
-        return false
+        reject(new Error('diagnostic_unavailable'))
       }
+      return result
     },
   }
   return api

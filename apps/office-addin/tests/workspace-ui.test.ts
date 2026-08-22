@@ -428,6 +428,62 @@ describe('Office Agent workspace UI', () => {
     container.remove()
   })
 
+  it('shows sighted users whether copying the bounded diagnostic export succeeded', async () => {
+    const snapshot: OfficeAgentSnapshot = {
+      assistantText: 'Done',
+      activity: '',
+      busy: false,
+      applying: false,
+      status: 'done',
+      retryable: false,
+      timeline: Object.freeze([
+        Object.freeze({ id: 'a1', kind: 'assistant' as const, text: 'Done' }),
+      ]),
+    }
+    const session = {
+      snapshot: () => snapshot,
+      subscribe: () => () => undefined,
+      send: vi.fn(),
+      stop: vi.fn(),
+      confirm: vi.fn(),
+      reject: vi.fn(),
+      newTask: vi.fn(),
+      retry: vi.fn(),
+      logout: vi.fn(),
+      authenticationLost: vi.fn(),
+    } satisfies OfficeAgentSession
+    const copyDiagnostics = vi.fn(async () => undefined)
+    const ui: OfficeWorkspaceUi = Object.freeze({
+      attachments: () => Object.freeze([]),
+      skills: () => Object.freeze([]),
+      skillPackagesEnabled: true,
+      upload: vi.fn(),
+      copyDiagnostics,
+      clear: vi.fn(),
+    })
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    await act(async () => {
+      root.render(
+        React.createElement(AgentWorkspace, {
+          session,
+          ui,
+          disconnect: vi.fn(),
+          host: 'word',
+        }),
+      )
+    })
+    const copy = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === '复制诊断信息',
+    )!
+    await act(async () => copy.click())
+    expect(copyDiagnostics).toHaveBeenCalledOnce()
+    expect(container.querySelector('.diagnostic-status')?.textContent).toBe('诊断信息已复制')
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
   it('sends on Enter, preserves multiline input on Shift+Enter, and ignores composition', () => {
     expect(composerKeyAction({ key: 'Enter', shiftKey: false, isComposing: false })).toBe('send')
     expect(composerKeyAction({ key: 'Enter', shiftKey: true, isComposing: false })).toBe('newline')

@@ -137,6 +137,29 @@ function toolActivity(name: string, state: 'running' | 'complete' | 'error'): st
       : `已${action}`
 }
 
+const DIAGNOSTIC_TOOL_ERRORS = new Set([
+  'cancelled',
+  'office_api_unsupported',
+  'office_read_failed',
+  'office_recovery_failed',
+  'office_verify_failed',
+  'office_write_failed',
+  'proposal_missing',
+  'proposal_stale',
+])
+
+function diagnosticToolError(output: string): string {
+  if (DIAGNOSTIC_TOOL_ERRORS.has(output)) return output
+  try {
+    const parsed = JSON.parse(output) as { error?: unknown }
+    return typeof parsed.error === 'string' && DIAGNOSTIC_TOOL_ERRORS.has(parsed.error)
+      ? parsed.error
+      : 'agent_run_failed'
+  } catch {
+    return 'agent_run_failed'
+  }
+}
+
 export function createOfficeAgentSession(dependencies: {
   transport: AgentTransport
   skill: AgentSkill
@@ -176,6 +199,8 @@ export function createOfficeAgentSession(dependencies: {
   let sessionEpoch = 0
   let activeAssistantId: string | undefined
   let lastInstruction = ''
+  let runStartedAt = 0
+  const toolStartedAt = new Map<string, number>()
   const eventId = () => `event-${++nextEventId}`
   const append = (event: Parameters<typeof appendPresentationEvent>[1]) => {
     state = { ...state, timeline: appendPresentationEvent(state.timeline, event) }
@@ -284,6 +309,7 @@ export function createOfficeAgentSession(dependencies: {
         publish({ assistantText: boundedText(assistantText) })
       },
       onToolStart: (call) => {
+        toolStartedAt.set(call.id, Date.now())
         diagnose((diagnostics) => diagnostics.setTool(call.name))
         if (activeAssistantId) {
           replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
@@ -302,15 +328,19 @@ export function createOfficeAgentSession(dependencies: {
       },
       onToolExecuted: (event) => {
         if (event.execution.isError) {
-          let errorCode = 'agent_run_failed'
-          try {
-            const output = JSON.parse(event.execution.output) as { error?: unknown }
-            if (typeof output.error === 'string') errorCode = output.error
-          } catch {
-            /* bounded fallback */
-          }
-          diagnose((diagnostics) => diagnostics.record({ phase: 'tool', errorCode }))
+          const errorCode = diagnosticToolError(event.execution.output)
+          diagnose((diagnostics) =>
+            diagnostics.record({
+              phase: 'tool',
+              errorCode,
+              durationMs: Math.max(
+                0,
+                Date.now() - (toolStartedAt.get(event.call.id) ?? Date.now()),
+              ),
+            }),
+          )
         }
+        toolStartedAt.delete(event.call.id)
         const tool = [...state.timeline]
           .reverse()
           .find((item) => item.kind === 'tool' && item.callId === event.call.id)
@@ -338,6 +368,7 @@ export function createOfficeAgentSession(dependencies: {
         publish({ activity: 'Thinking…' })
       },
       onDone: (result) => {
+        toolStartedAt.clear()
         if (activeAssistantId) {
           replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
           activeAssistantId = undefined
@@ -351,7 +382,11 @@ export function createOfficeAgentSession(dependencies: {
       onError: (error) => {
         const safeError = safeRunError(error)
         diagnose((diagnostics) =>
-          diagnostics.record({ phase: 'transport', errorCode: safeError.code }),
+          diagnostics.record({
+            phase: 'transport',
+            errorCode: safeError.code,
+            durationMs: Math.max(0, Date.now() - runStartedAt),
+          }),
         )
         activeAssistantId = undefined
         append({
@@ -386,6 +421,7 @@ export function createOfficeAgentSession(dependencies: {
     const value = instruction.trim()
     if (!value || loop.busy || state.applying) return
     diagnose((diagnostics) => diagnostics.startTrace())
+    runStartedAt = Date.now()
     proposals.newTurn()
     lastInstruction = value
     activeAssistantId = undefined

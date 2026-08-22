@@ -103,6 +103,7 @@ describe('proposal controller', () => {
       phase: 'write',
       errorCode: 'office_write_failed',
       error: expect.objectContaining({ message: expect.stringContaining('alice') }),
+      durationMs: expect.any(Number),
     })
   })
 
@@ -124,6 +125,7 @@ describe('proposal controller', () => {
       phase: 'validate',
       errorCode: 'proposal_stale',
       error: expect.any(Error),
+      durationMs: expect.any(Number),
     })
 
     const verification = createStructuredProposalController({ setTool: vi.fn(), record })
@@ -145,6 +147,7 @@ describe('proposal controller', () => {
       phase: 'verify',
       errorCode: 'office_verify_failed',
       error: expect.any(Error),
+      durationMs: expect.any(Number),
     })
   })
 

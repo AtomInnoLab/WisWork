@@ -478,7 +478,7 @@ export function AgentWorkspace(props: {
       )}
 
       {diagnosticStatus && (
-        <p className="visually-hidden" role="status">
+        <p className="diagnostic-status" role="status">
           {diagnosticStatus}
         </p>
       )}
@@ -829,12 +829,12 @@ function ConfiguredApp() {
             const diagnostics = createOfficeDiagnostics({
               host: activeHost,
               platform: environment.platform,
-              build: import.meta.env.VITE_WISWORK_OFFICE_BUILD_ID ?? 'unknown',
+              build: __WISWORK_OFFICE_BUILD_ID__,
               requirementSets: environment.requirementSets,
               remoteEnabled: remoteDiagnosticsEnabled,
               send: (event) => {
-                if (!('sendDiagnostic' in bridge) || !bridge.sendDiagnostic(event))
-                  throw new Error('diagnostic_upload_failed')
+                if (!('sendDiagnostic' in bridge)) throw new Error('diagnostic_upload_failed')
+                return bridge.sendDiagnostic(event)
               },
             })
             const runtime = createOfficeHostRuntime(activeHost, {
