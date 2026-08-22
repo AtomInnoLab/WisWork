@@ -399,6 +399,57 @@ describe('Office agent session', () => {
     )
   })
 
+  it('does not create another Word write proposal after stale validation in the same run', async () => {
+    const harness = transportHarness()
+    const proposals = createStructuredProposalController()
+    const executeTool = vi.fn(() => {
+      const proposal = proposals.propose({
+        operation: 'write_document',
+        title: 'Write document',
+        preview: {},
+        impact: { host: 'word', targets: ['document'], count: 1 },
+        fingerprint: 'v1',
+        validate: async () => false,
+        execute: vi.fn(),
+      })
+      return {
+        output: JSON.stringify({ proposalId: proposal.id }),
+        mutated: false,
+        summary: 'Awaiting confirmation',
+      }
+    })
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'word',
+        systemPrompt: 'test',
+        tools: [{ name: 'write_document', description: 'write', inputSchema: { type: 'object' } }],
+        executeTool,
+      },
+      proposals,
+    })
+
+    session.send('write')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({ id: 'write-1', name: 'write_document', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(session.snapshot().proposal).toBeDefined())
+    await session.confirm(session.snapshot().proposal!.id)
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+
+    harness.callbacks().onToolCall({ id: 'write-2', name: 'write_document', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(3))
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect(session.snapshot().proposal).toBeUndefined()
+
+    harness.callbacks().onDelta('The document changed before the edit could be applied.')
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(session.snapshot().busy).toBe(false))
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect(session.snapshot().proposal).toBeUndefined()
+  })
+
   it('maps arbitrary transport failures to a stable code, safe copy, and retry policy', async () => {
     const harness = transportHarness()
     const session = createOfficeAgentSession({

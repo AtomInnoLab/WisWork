@@ -4,7 +4,7 @@
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:type="TaskPaneApp">
   <Id>c9231e2a-3e40-48f3-b18a-a8d73de726dd</Id>
-  <Version>0.3.0.0</Version>
+  <Version>0.3.1.0</Version>
   <ProviderName>AtomInnoLab</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="WisWork Office Agent" />
@@ -20,7 +20,7 @@
     <Host Name="Presentation" />
   </Hosts>
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://localhost:3000/taskpane.html?v=0.3.0" />
+    <SourceLocation DefaultValue="https://localhost:3000/taskpane.html?v=0.3.1" />
   </DefaultSettings>
   <Permissions>ReadWriteDocument</Permissions>
 </OfficeApp>

@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import { InMemoryVfs } from '../src/skills/shared/vfs.js'
@@ -563,10 +565,11 @@ describe('browser Word adapter', () => {
   })
 
   it('keeps Word fingerprints stable across volatile OOXML metadata but detects real edits', async () => {
-    const wrap = (paragraph: string) =>
-      `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"><w:body>${paragraph}</w:body></w:document>`
-    let current = wrap(
-      '<w:p w:rsidR="00112233" w14:paraId="11111111" w14:textId="22222222"><w:r><w:t>Hello</w:t></w:r><w:proofErr w:type="spellStart"/><w:lastRenderedPageBreak/></w:p>',
+    const flatOpc = (paragraph: string, modified: string) =>
+      `<?xml version="1.0"?><pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage"><pkg:part pkg:name="/docProps/core.xml" pkg:contentType="application/xml"><pkg:xmlData><cp:coreProperties xmlns:cp="urn:core"><dcterms:modified xmlns:dcterms="urn:terms">${modified}</dcterms:modified></cp:coreProperties></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/document.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"><pkg:xmlData><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"><w:body>${paragraph}<w:sectPr w:rsidR="12345678" w:rsidSect="23456789"/></w:body></w:document></pkg:xmlData></pkg:part></pkg:package>`
+    let current = flatOpc(
+      '<w:p w:rsidR="00112233" w:rsidRDefault="33445566" w14:paraId="11111111" w14:textId="22222222"><w:r><w:t>Hello</w:t></w:r><w:proofErr w:type="spellStart"></w:proofErr><w:lastRenderedPageBreak></w:lastRenderedPageBreak></w:p>',
+      '2026-08-22T10:00:00Z',
     )
     const body = { getOoxml: vi.fn(() => ({ value: current })) }
     Object.assign(globalThis, {
@@ -584,15 +587,19 @@ describe('browser Word adapter', () => {
     const subject = new BrowserWordAdapter()
     const before = await subject.fingerprint()
 
-    current = wrap(
-      '<w:p w14:textId="BBBBBBBB" w14:paraId="AAAAAAAA" w:rsidR="99887766"><w:r><w:t>Hello</w:t></w:r></w:p>',
+    current = flatOpc(
+      '<w:p w14:textId="BBBBBBBB" w14:paraId="AAAAAAAA" w:rsidRDefault="88776655" w:rsidR="99887766"><w:r><w:t>Hello</w:t></w:r></w:p>',
+      '2026-08-22T10:01:00Z',
     )
     const metadataOnly = await subject.fingerprint()
     expect(metadataOnly).toBe(before)
 
-    current = wrap('<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Hello</w:t></w:r></w:p>')
+    current = flatOpc(
+      '<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Hello</w:t></w:r></w:p>',
+      '2026-08-22T10:02:00Z',
+    )
     await expect(subject.fingerprint()).resolves.not.toBe(before)
-    current = wrap('<w:p><w:r><w:t>Hello changed</w:t></w:r></w:p>')
+    current = flatOpc('<w:p><w:r><w:t>Hello changed</w:t></w:r></w:p>', '2026-08-22T10:03:00Z')
     await expect(subject.fingerprint()).resolves.not.toBe(before)
   })
 

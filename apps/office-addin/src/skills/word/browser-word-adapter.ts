@@ -4,6 +4,9 @@ export const MAX_WORD_OOXML_BYTES = 1024 * 1024
 export const MAX_WORD_RESULT_BYTES = 256 * 1024
 export const MAX_WORD_PDF_BYTES = 16 * 1024 * 1024
 const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+const W14_NS = 'http://schemas.microsoft.com/office/word/2010/wordml'
+const PKG_NS = 'http://schemas.microsoft.com/office/2006/xmlPackage'
+const XMLNS_NS = 'http://www.w3.org/2000/xmlns/'
 
 export interface WordParagraph {
   index: number
@@ -549,13 +552,90 @@ export class BrowserWordAdapter implements WordAdapter {
 }
 
 function stableFingerprintOoxml(xml: string): string {
-  return xml
-    .replace(
-      /\s+(?:w:rsid(?:R|RPr|Del|P|Sect|Tr|RDefault)|w14:(?:paraId|textId))=(?:"[^"]*"|'[^']*')/g,
-      '',
+  if (typeof DOMParser === 'undefined') throw new Error('office_api_unsupported')
+  const document = new DOMParser().parseFromString(xml, 'text/xml')
+  if (document.getElementsByTagName('parsererror').length) throw new Error('office_read_failed')
+  const root = document.documentElement
+  let wordDocument: Element | undefined
+  if (root.namespaceURI === PKG_NS && root.localName === 'package') {
+    const parts = Array.from(document.getElementsByTagNameNS(PKG_NS, 'part')).filter(
+      (part) => part.getAttributeNS(PKG_NS, 'name') === '/word/document.xml',
     )
-    .replace(/<w:(?:proofErr|lastRenderedPageBreak)\b[^>]*\/>/g, '')
-    .replace(/>\s+</g, '><')
+    if (parts.length !== 1) throw new Error('office_read_failed')
+    const xmlData = directElements(parts[0]).filter(
+      (element) => element.namespaceURI === PKG_NS && element.localName === 'xmlData',
+    )
+    if (xmlData.length !== 1) throw new Error('office_read_failed')
+    const documents = directElements(xmlData[0]).filter(
+      (element) => element.namespaceURI === W_NS && element.localName === 'document',
+    )
+    if (documents.length !== 1) throw new Error('office_read_failed')
+    wordDocument = documents[0]
+  } else if (root.namespaceURI === W_NS && root.localName === 'document') {
+    wordDocument = root
+  }
+  const bodies = wordDocument
+    ? directElements(wordDocument).filter(
+        (element) => element.namespaceURI === W_NS && element.localName === 'body',
+      )
+    : root.namespaceURI === W_NS && root.localName === 'body'
+      ? [root]
+      : []
+  if (bodies.length !== 1) throw new Error('office_read_failed')
+  return JSON.stringify(canonicalWordNode(bodies[0]))
+}
+
+function directElements(parent: Element): Element[] {
+  return Array.from(parent.childNodes).filter((node): node is Element => node.nodeType === 1)
+}
+
+type CanonicalWordNode =
+  | { element: string; attributes: Array<[string, string]>; children: CanonicalWordNode[] }
+  | { text: string }
+
+function canonicalWordNode(node: Node): CanonicalWordNode {
+  if (node.nodeType === 3) return { text: node.nodeValue ?? '' }
+  const element = node as Element
+  const preserveWhitespace =
+    element.namespaceURI === W_NS &&
+    (element.localName === 't' ||
+      element.localName === 'delText' ||
+      element.localName === 'instrText')
+  const children = Array.from(element.childNodes).flatMap((child): CanonicalWordNode[] => {
+    if (child.nodeType === 1) {
+      const childElement = child as Element
+      if (
+        childElement.namespaceURI === W_NS &&
+        (childElement.localName === 'proofErr' ||
+          childElement.localName === 'lastRenderedPageBreak')
+      )
+        return []
+      return [canonicalWordNode(child)]
+    }
+    if (child.nodeType !== 3) return []
+    const value = child.nodeValue ?? ''
+    if (!preserveWhitespace && /^\s*$/.test(value)) return []
+    return [{ text: value }]
+  })
+  const attributes = Array.from(element.attributes)
+    .filter((attribute) => {
+      if (attribute.namespaceURI === XMLNS_NS || attribute.name === 'xmlns') return false
+      if (attribute.namespaceURI === W_NS && attribute.localName.startsWith('rsid')) return false
+      return !(
+        attribute.namespaceURI === W14_NS &&
+        (attribute.localName === 'paraId' || attribute.localName === 'textId')
+      )
+    })
+    .map((attribute): [string, string] => [
+      `{${attribute.namespaceURI ?? ''}}${attribute.localName}`,
+      attribute.value,
+    ])
+    .sort(([left], [right]) => left.localeCompare(right))
+  return {
+    element: `{${element.namespaceURI ?? ''}}${element.localName}`,
+    attributes,
+    children,
+  }
 }
 
 function ooxmlText(xml: string): string {

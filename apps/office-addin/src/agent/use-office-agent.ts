@@ -200,6 +200,7 @@ export function createOfficeAgentSession(dependencies: {
   let activeAssistantId: string | undefined
   let lastInstruction = ''
   let runStartedAt = 0
+  const staleTools = new Set<string>()
   const toolStartedAt = new Map<string, number>()
   const eventId = () => `event-${++nextEventId}`
   const append = (event: Parameters<typeof appendPresentationEvent>[1]) => {
@@ -230,6 +231,7 @@ export function createOfficeAgentSession(dependencies: {
   const finalProposalExecution = async (
     proposalId: string,
     initial: ToolExecution,
+    toolName: string,
   ): Promise<ToolExecution> => {
     const decision = await proposals.waitForDecision(proposalId)
     if (decision.status === 'confirmed') {
@@ -240,11 +242,21 @@ export function createOfficeAgentSession(dependencies: {
       }
     }
     if (decision.status === 'failed') {
+      if (decision.error === 'proposal_stale') staleTools.add(toolName)
       return {
-        output: JSON.stringify({ proposalId, status: 'failed', error: decision.error }),
+        output: JSON.stringify({
+          proposalId,
+          status: 'failed',
+          error: decision.error,
+          instruction:
+            decision.error === 'proposal_stale'
+              ? 'Do not retry this write in the current turn.'
+              : undefined,
+        }),
         isError: true,
         mutated: false,
         summary: 'Approved change failed',
+        stopToolBatch: decision.error === 'proposal_stale',
       }
     }
     return {
@@ -263,11 +275,24 @@ export function createOfficeAgentSession(dependencies: {
   const sessionSkill: AgentSkill = {
     ...dependencies.skill,
     async executeTool(call, signal): Promise<ToolExecutionOutcome> {
+      if (staleTools.has(call.name)) {
+        return {
+          output: JSON.stringify({
+            status: 'failed',
+            error: 'proposal_stale',
+            instruction: 'Do not retry this write in the current turn.',
+          }),
+          isError: true,
+          mutated: false,
+          summary: 'Write blocked after stale validation',
+          stopToolBatch: true,
+        }
+      }
       const outcome = await dependencies.skill.executeTool(call, signal)
       if ('kind' in outcome && outcome.kind === 'tool-execution-suspension') return outcome
       const proposal = proposals.pending()
       if (!proposal) return outcome
-      return suspendToolExecution(finalProposalExecution(proposal.id, outcome))
+      return suspendToolExecution(finalProposalExecution(proposal.id, outcome, call.name))
     },
   }
   const clearConversation = () => {
@@ -421,6 +446,7 @@ export function createOfficeAgentSession(dependencies: {
     const value = instruction.trim()
     if (!value || loop.busy || state.applying) return
     diagnose((diagnostics) => diagnostics.startTrace())
+    staleTools.clear()
     runStartedAt = Date.now()
     proposals.newTurn()
     lastInstruction = value
