@@ -111,6 +111,28 @@ describe('generic proposal presentation', () => {
     },
   )
 
+  it('turns PowerPoint indices and package paths into slide-aware targets', () => {
+    const indexed = proposalPresentation({
+      id: 'ppt-index',
+      operation: 'edit_shape',
+      title: 'Edit shape',
+      impact: { host: 'PowerPoint', targets: ['0/2'], count: 1 },
+      preview: { text: 'Updated title' },
+      fingerprint: 'fp',
+    })
+    expect(indexed.targets).toEqual(['Slide 1 · Shape 2'])
+
+    const packaged = proposalPresentation({
+      id: 'ppt-package',
+      operation: 'edit_slide_xml',
+      title: 'Edit slide',
+      impact: { host: 'powerpoint', targets: ['ppt/slides/slide1.xml'], count: 1 },
+      preview: { nodes: 2 },
+      fingerprint: 'fp',
+    })
+    expect(packaged.targets).toEqual(['Slide 1 package'])
+  })
+
   it('keeps the legacy append preview compatible', () => {
     expect(
       proposalPresentation({

@@ -78,7 +78,13 @@ function previewSummary(preview: Readonly<Record<string, unknown>>): string {
   return lines.join('\n').slice(0, 2_000)
 }
 
-function proposalTarget(target: string): string {
+function proposalTarget(target: string, host?: string): string {
+  if (host && proposalHostLabel(host) === 'PowerPoint') {
+    const indexedShape = /^(\d+)\/(\d+)$/.exec(target)
+    if (indexedShape) return `Slide ${Number(indexedShape[1]) + 1} · Shape ${indexedShape[2]}`
+    const packageSlide = /^ppt\/slides\/slide(\d+)\.xml$/i.exec(target)
+    if (packageSlide) return `Slide ${packageSlide[1]} package`
+  }
   if (target === 'document:end') return 'End of document'
   if (target === 'document:start') return 'Start of document'
   if (target === 'document') return 'Document'
@@ -114,7 +120,9 @@ export function proposalPresentation(proposal: DisplayProposal) {
       : proposal.title,
     host: legacy ? undefined : proposalHostLabel(proposal.impact.host),
     count: legacy ? undefined : proposal.impact.count,
-    targets: legacy ? [] : proposal.impact.targets.map(proposalTarget),
+    targets: legacy
+      ? []
+      : proposal.impact.targets.map((target) => proposalTarget(target, proposal.impact.host)),
     before,
     after,
     preview: hasComparison || legacy ? '' : previewSummary(proposal.preview),
