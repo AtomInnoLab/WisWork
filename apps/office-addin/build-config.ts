@@ -43,6 +43,19 @@ export function officeWorkspaceMode(env: BuildEnv): OfficeWorkspaceMode {
   throw new Error('invalid_office_workspace_mode')
 }
 
+export function officeRemoteDiagnosticsEnabled(env: BuildEnv): boolean {
+  const value = env.VITE_WISWORK_OFFICE_REMOTE_DIAGNOSTICS
+  if (value === undefined || value === '' || value === '1') return true
+  if (value === '0') return false
+  throw new Error('invalid_office_remote_diagnostics')
+}
+
+export function officeBuildId(env: BuildEnv, fallback: string): string {
+  const value = env.VITE_WISWORK_OFFICE_BUILD_ID || fallback
+  if (!/^[A-Za-z0-9_.-]{3,96}$/.test(value)) throw new Error('invalid_office_build_id')
+  return value
+}
+
 export function officeTransportMode(env: BuildEnv): OfficeTransportMode {
   const value = env.VITE_WISWORK_OFFICE_TRANSPORT
   if (value === undefined || value === '' || value === 'relay') return 'relay'
@@ -76,6 +89,8 @@ export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
     mode = officeTransportMode(env)
     void officeWorkspaceMode(env)
     void officeCapabilityFlags(env)
+    void officeRemoteDiagnosticsEnabled(env)
+    void officeBuildId(env, 'development')
   } catch {
     return undefined
   }

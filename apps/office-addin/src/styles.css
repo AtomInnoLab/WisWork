@@ -68,6 +68,7 @@ p {
 }
 
 .agent-workspace {
+  position: relative;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto auto;
   height: 100%;
@@ -241,6 +242,25 @@ p {
   top: 64px;
 }
 
+.session-menu button:nth-of-type(3) {
+  top: 98px;
+}
+
+.diagnostic-status {
+  position: absolute;
+  z-index: 4;
+  top: 48px;
+  right: 12px;
+  max-width: calc(100% - 24px);
+  padding: 6px 9px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-8);
+  color: var(--color-text-secondary);
+  background: var(--color-bg-page);
+  box-shadow: var(--office-shadow);
+  font-size: 12px;
+}
+
 .agent-status {
   min-height: 32px;
   padding: 6px 14px;
@@ -333,8 +353,51 @@ p {
 
 .timeline-message p {
   color: var(--color-text-primary);
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.timeline-message:not(.message-assistant) p {
+  white-space: pre-wrap;
+}
+
+.message-assistant .ai-md {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.message-assistant .ai-md p,
+.message-assistant .ai-md ul,
+.message-assistant .ai-md ol {
+  margin: 0;
+}
+
+.message-assistant .ai-md ul,
+.message-assistant .ai-md ol {
+  padding-left: 22px;
+  color: var(--color-text-primary);
+  line-height: 1.5;
+}
+
+.message-assistant .ai-md li,
+.message-assistant .ai-md code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.message-assistant .ai-md-h {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.message-assistant .ai-md code {
+  padding: 1px 4px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-6);
+  background: var(--color-bg-subtle);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
 }
 
 .message-user {
@@ -432,16 +495,11 @@ p {
   border-color: var(--color-border-brand);
 }
 
-pre {
-  max-height: 150px;
-  overflow: auto;
+.proposal-copy {
   margin: 5px 0 0;
   color: var(--color-text-primary);
-  font:
-    11px/1.5 ui-monospace,
-    SFMono-Regular,
-    Consolas,
-    monospace;
+  font-size: 12px;
+  line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -519,6 +577,9 @@ pre {
 }
 
 .composer-shell {
+  position: relative;
+  z-index: 3;
+  min-height: 0;
   padding: 10px 12px 12px;
   border-top: 1px solid var(--color-border-default);
   background: var(--color-bg-page);
@@ -692,6 +753,28 @@ pre {
 
   .prompt-chip {
     font-size: 14px;
+  }
+}
+
+@media (max-height: 520px) {
+  .agent-timeline {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  .composer-shell {
+    padding-top: 7px;
+    padding-bottom: 7px;
+  }
+
+  .composer-shell textarea,
+  .is-empty .composer-shell textarea {
+    min-height: 44px;
+    max-height: 72px;
+  }
+
+  .is-empty .composer-shell {
+    margin-bottom: 8px;
   }
 }
 

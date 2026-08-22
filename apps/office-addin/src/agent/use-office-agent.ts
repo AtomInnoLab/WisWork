@@ -1,4 +1,11 @@
-import { AgentLoop, type AgentSkill, type AgentTransport } from '@wiswork/agent-core'
+import {
+  AgentLoop,
+  suspendToolExecution,
+  type AgentSkill,
+  type AgentTransport,
+  type ToolExecution,
+  type ToolExecutionOutcome,
+} from '@wiswork/agent-core'
 import { useSyncExternalStore } from 'react'
 import type {
   OfficeProposal,
@@ -14,6 +21,7 @@ import {
   type OfficePresentationTimeline,
   type ProposalPresentationEvent,
 } from './presentation-state.js'
+import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
 
 export type AgentSessionStatus = 'idle' | 'working' | 'done' | 'cancelled' | 'error'
 
@@ -129,12 +137,46 @@ function toolActivity(name: string, state: 'running' | 'complete' | 'error'): st
       : `已${action}`
 }
 
+const DIAGNOSTIC_TOOL_ERRORS = new Set([
+  'cancelled',
+  'office_api_unsupported',
+  'office_read_failed',
+  'office_recovery_failed',
+  'office_verify_failed',
+  'office_write_failed',
+  'proposal_missing',
+  'proposal_stale',
+])
+
+function diagnosticToolError(output: string): string {
+  if (DIAGNOSTIC_TOOL_ERRORS.has(output)) return output
+  try {
+    const parsed = JSON.parse(output) as { error?: unknown }
+    return typeof parsed.error === 'string' && DIAGNOSTIC_TOOL_ERRORS.has(parsed.error)
+      ? parsed.error
+      : 'agent_run_failed'
+  } catch {
+    return 'agent_run_failed'
+  }
+}
+
 export function createOfficeAgentSession(dependencies: {
   transport: AgentTransport
   skill: AgentSkill
   proposals: ProposalController | StructuredProposalController
+  diagnostics?: Pick<OfficeDiagnostics, 'startTrace' | 'setTool' | 'record' | 'clear'>
 }): OfficeAgentSession {
   const { proposals } = dependencies
+  const diagnose = (
+    action: (diagnostics: NonNullable<typeof dependencies.diagnostics>) => void,
+  ) => {
+    if (!dependencies.diagnostics) return
+    try {
+      action(dependencies.diagnostics)
+    } catch {
+      /* diagnostics never changes an Agent run */
+    }
+  }
   const listeners = new Set<() => void>()
   let state: Omit<OfficeAgentSnapshot, 'proposal'> = {
     assistantText: '',
@@ -157,6 +199,9 @@ export function createOfficeAgentSession(dependencies: {
   let sessionEpoch = 0
   let activeAssistantId: string | undefined
   let lastInstruction = ''
+  let runStartedAt = 0
+  const staleTools = new Set<string>()
+  const toolStartedAt = new Map<string, number>()
   const eventId = () => `event-${++nextEventId}`
   const append = (event: Parameters<typeof appendPresentationEvent>[1]) => {
     state = { ...state, timeline: appendPresentationEvent(state.timeline, event) }
@@ -182,6 +227,74 @@ export function createOfficeAgentSession(dependencies: {
       append({ id: eventId(), kind: 'proposal', proposal, state: 'pending' })
     }
   }
+
+  const finalProposalExecution = async (
+    proposalId: string,
+    initial: ToolExecution,
+    toolName: string,
+  ): Promise<ToolExecution> => {
+    const decision = await proposals.waitForDecision(proposalId)
+    if (decision.status === 'confirmed') {
+      return {
+        output: JSON.stringify({ proposalId, status: 'applied' }),
+        mutated: true,
+        summary: 'Applied approved change',
+      }
+    }
+    if (decision.status === 'failed') {
+      if (decision.error === 'proposal_stale') staleTools.add(toolName)
+      return {
+        output: JSON.stringify({
+          proposalId,
+          status: 'failed',
+          error: decision.error,
+          instruction:
+            decision.error === 'proposal_stale'
+              ? 'Do not retry this write in the current turn.'
+              : undefined,
+        }),
+        isError: true,
+        mutated: false,
+        summary: 'Approved change failed',
+        stopToolBatch: decision.error === 'proposal_stale',
+      }
+    }
+    return {
+      output: JSON.stringify({
+        proposalId,
+        status: decision.status === 'rejected' ? 'user_rejected_change' : 'cancelled',
+        instruction: 'Do not retry this write in the current turn.',
+      }),
+      isError: decision.status === 'cancelled',
+      mutated: false,
+      summary: decision.status === 'rejected' ? 'Change rejected' : initial.summary,
+      stopToolBatch: decision.status === 'rejected',
+    }
+  }
+
+  const sessionSkill: AgentSkill = {
+    ...dependencies.skill,
+    async executeTool(call, signal): Promise<ToolExecutionOutcome> {
+      if (staleTools.has(call.name)) {
+        return {
+          output: JSON.stringify({
+            status: 'failed',
+            error: 'proposal_stale',
+            instruction: 'Do not retry this write in the current turn.',
+          }),
+          isError: true,
+          mutated: false,
+          summary: 'Write blocked after stale validation',
+          stopToolBatch: true,
+        }
+      }
+      const outcome = await dependencies.skill.executeTool(call, signal)
+      if ('kind' in outcome && outcome.kind === 'tool-execution-suspension') return outcome
+      const proposal = proposals.pending()
+      if (!proposal) return outcome
+      return suspendToolExecution(finalProposalExecution(proposal.id, outcome, call.name))
+    },
+  }
   const clearConversation = () => {
     activeAssistantId = undefined
     state = {
@@ -200,7 +313,7 @@ export function createOfficeAgentSession(dependencies: {
 
   const loop = new AgentLoop({
     transport: dependencies.transport,
-    skill: dependencies.skill,
+    skill: sessionSkill,
     events: {
       onText: (assistantText) => {
         if (!activeAssistantId) {
@@ -221,6 +334,8 @@ export function createOfficeAgentSession(dependencies: {
         publish({ assistantText: boundedText(assistantText) })
       },
       onToolStart: (call) => {
+        toolStartedAt.set(call.id, Date.now())
+        diagnose((diagnostics) => diagnostics.setTool(call.name))
         if (activeAssistantId) {
           replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
           activeAssistantId = undefined
@@ -237,6 +352,20 @@ export function createOfficeAgentSession(dependencies: {
         publish({ activity: summary })
       },
       onToolExecuted: (event) => {
+        if (event.execution.isError) {
+          const errorCode = diagnosticToolError(event.execution.output)
+          diagnose((diagnostics) =>
+            diagnostics.record({
+              phase: 'tool',
+              errorCode,
+              durationMs: Math.max(
+                0,
+                Date.now() - (toolStartedAt.get(event.call.id) ?? Date.now()),
+              ),
+            }),
+          )
+        }
+        toolStartedAt.delete(event.call.id)
         const tool = [...state.timeline]
           .reverse()
           .find((item) => item.kind === 'tool' && item.callId === event.call.id)
@@ -264,6 +393,7 @@ export function createOfficeAgentSession(dependencies: {
         publish({ activity: 'Thinking…' })
       },
       onDone: (result) => {
+        toolStartedAt.clear()
         if (activeAssistantId) {
           replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
           activeAssistantId = undefined
@@ -276,6 +406,13 @@ export function createOfficeAgentSession(dependencies: {
       },
       onError: (error) => {
         const safeError = safeRunError(error)
+        diagnose((diagnostics) =>
+          diagnostics.record({
+            phase: 'transport',
+            errorCode: safeError.code,
+            durationMs: Math.max(0, Date.now() - runStartedAt),
+          }),
+        )
         activeAssistantId = undefined
         append({
           id: eventId(),
@@ -295,9 +432,22 @@ export function createOfficeAgentSession(dependencies: {
     },
   })
 
+  proposals.subscribe(() => {
+    const pending = proposals.pending()
+    if (pending) {
+      appendPendingProposal()
+      publish({ activity: 'Waiting for your approval' })
+    } else {
+      publish()
+    }
+  })
+
   const startRun = (instruction: string) => {
     const value = instruction.trim()
     if (!value || loop.busy || state.applying) return
+    diagnose((diagnostics) => diagnostics.startTrace())
+    staleTools.clear()
+    runStartedAt = Date.now()
     proposals.newTurn()
     lastInstruction = value
     activeAssistantId = undefined
@@ -324,11 +474,29 @@ export function createOfficeAgentSession(dependencies: {
       startRun(instruction)
     },
     stop() {
-      if (state.applying) return
+      const event = pendingProposalEvent()
+      if (state.applying) {
+        sessionEpoch += 1
+        proposals.newTurn()
+        loop.cancel()
+        if (event) {
+          replace(event.id, (item) =>
+            item.kind === 'proposal' ? { ...item, state: 'rejected' } : item,
+          )
+        }
+        publish({ applying: false, activity: '', status: 'cancelled' })
+        return
+      }
+      if (event) {
+        proposals.newTurn()
+        replace(event.id, (item) =>
+          item.kind === 'proposal' ? { ...item, state: 'rejected' } : item,
+        )
+      }
       loop.cancel()
     },
     async confirm(id) {
-      if (state.applying || loop.busy) return
+      if (state.applying || (loop.busy && proposals.pending()?.id !== id)) return
       const epoch = sessionEpoch
       const event = pendingProposalEvent()
       if (event?.proposal.id === id) {
@@ -402,6 +570,7 @@ export function createOfficeAgentSession(dependencies: {
     },
     logout() {
       sessionEpoch += 1
+      diagnose((diagnostics) => diagnostics.clear())
       loop.reset()
       proposals.logout()
       lastInstruction = ''

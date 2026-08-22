@@ -6,7 +6,9 @@ import {
   deploymentConfig,
   deploymentConnectOrigins,
   officeBridgePorts,
+  officeBuildId,
   officeCapabilityFlags,
+  officeRemoteDiagnosticsEnabled,
   renderDeploymentManifest,
 } from '../build-config.js'
 
@@ -26,9 +28,9 @@ describe('Office Add-in manifest and routes', () => {
     expect(config).toBeDefined()
     const manifest = renderDeploymentManifest(template, config!)
 
-    expect(manifest).toContain('<Version>0.3.0.0</Version>')
+    expect(manifest).toContain('<Version>0.3.1.0</Version>')
     expect(manifest).toContain(
-      '<SourceLocation DefaultValue="https://office.example/taskpane.html?v=0.3.0" />',
+      '<SourceLocation DefaultValue="https://office.example/taskpane.html?v=0.3.1" />',
     )
     expect(manifest).toContain('<IconUrl DefaultValue="https://office.example/assets/icon.png" />')
     expect(manifest).toContain('<AppDomain>https://office.example</AppDomain>')
@@ -101,6 +103,35 @@ describe('Office Add-in manifest and routes', () => {
     expect(
       deploymentConfig({ ...validEnv, VITE_WISWORK_OFFICE_SKILL_PACKAGES: 'false' }),
     ).toBeUndefined()
+  })
+
+  it('enables safe remote diagnostics by default with an exact rollback flag', () => {
+    expect(officeRemoteDiagnosticsEnabled({})).toBe(true)
+    expect(officeRemoteDiagnosticsEnabled({ VITE_WISWORK_OFFICE_REMOTE_DIAGNOSTICS: '1' })).toBe(
+      true,
+    )
+    expect(officeRemoteDiagnosticsEnabled({ VITE_WISWORK_OFFICE_REMOTE_DIAGNOSTICS: '0' })).toBe(
+      false,
+    )
+    expect(() =>
+      officeRemoteDiagnosticsEnabled({ VITE_WISWORK_OFFICE_REMOTE_DIAGNOSTICS: 'true' }),
+    ).toThrow('invalid_office_remote_diagnostics')
+    expect(
+      deploymentConfig({ ...validEnv, VITE_WISWORK_OFFICE_REMOTE_DIAGNOSTICS: 'true' }),
+    ).toBeUndefined()
+  })
+
+  it('uses a validated deploy build identifier instead of an uncorrelated unknown value', async () => {
+    expect(officeBuildId({ VITE_WISWORK_OFFICE_BUILD_ID: 'abc123def456' }, 'fallback')).toBe(
+      'abc123def456',
+    )
+    expect(officeBuildId({}, 'abc123def456')).toBe('abc123def456')
+    expect(() =>
+      officeBuildId({ VITE_WISWORK_OFFICE_BUILD_ID: 'bad build id' }, 'fallback'),
+    ).toThrow('invalid_office_build_id')
+    const viteConfig = await readFile(resolve(import.meta.dirname, '../vite.config.ts'), 'utf8')
+    expect(viteConfig).toContain('__WISWORK_OFFICE_BUILD_ID__')
+    expect(viteConfig).toContain("rev-parse', '--short=12', 'HEAD")
   })
 
   it('documents Relay default and the explicit rollback switch', async () => {

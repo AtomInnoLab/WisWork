@@ -1,4 +1,5 @@
 import type { AgentSkill } from '@wiswork/agent-core'
+import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
 import {
   createOfficeDocumentClient,
   createBrowserOfficeRuntime,
@@ -58,6 +59,7 @@ export function createOfficeHostRuntime(
     enableConversions?: boolean
     enableSkillPackages?: boolean
     enableImportMedia?: boolean
+    diagnostics?: Pick<OfficeDiagnostics, 'setTool' | 'record'>
   } = {},
 ): OfficeHostRuntime {
   if (host === 'unknown') throw new Error('office_host_unsupported')
@@ -65,7 +67,7 @@ export function createOfficeHostRuntime(
   const skills = new SkillRegistry(vfs)
   if (options.enableHostSkills === false) {
     const document = options.document ?? createOfficeDocumentClient(createBrowserOfficeRuntime())
-    const proposals = createProposalController(document)
+    const proposals = createProposalController(document, options.diagnostics)
     return lifecycle(
       createOfficeSkill(document, proposals),
       proposals,
@@ -74,7 +76,7 @@ export function createOfficeHostRuntime(
       options.packageRuntime,
     )
   }
-  const proposals = createStructuredProposalController()
+  const proposals = createStructuredProposalController(options.diagnostics)
   const shared = createSharedBrowserSkill({
     vfs,
     skills,

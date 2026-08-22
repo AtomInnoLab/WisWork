@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import {
   AgentWorkspace,
+  DiagnosticCopyButton,
   LegacyAgentWorkspace,
   composerKeyAction,
   createOfficeWorkspaceUi,
@@ -76,6 +77,7 @@ function workspaceMarkup(
     skills: () => Object.freeze(['Editorial review']),
     skillPackagesEnabled: true,
     upload: vi.fn(),
+    copyDiagnostics: vi.fn(),
     clear: vi.fn(),
   })
   return renderToStaticMarkup(
@@ -103,6 +105,46 @@ describe('Office Agent workspace UI', () => {
     expect(html).not.toContain('Microsoft Word is connected')
     expect(html).not.toContain('Edits always require your approval')
     expect(html).toContain('aria-label="Message WisWork Agent"')
+    expect(html).not.toContain('<pre')
+  })
+
+  it('renders Markdown only for assistant timeline messages', () => {
+    const html = workspaceMarkup({
+      timeline: Object.freeze([
+        Object.freeze({
+          id: 'assistant-markdown',
+          kind: 'assistant' as const,
+          text: '# Result\n\n- **safe** `code`',
+          streaming: true,
+        }),
+        Object.freeze({ id: 'user-plain', kind: 'user' as const, text: '**user stays plain**' }),
+        Object.freeze({
+          id: 'error-plain',
+          kind: 'error' as const,
+          text: '*error stays plain*',
+        }),
+      ]),
+    })
+    expect(html).toContain('<div class="ai-md">')
+    expect(html).toContain('<p class="ai-md-h">Result</p>')
+    expect(html).toContain('<ul><li><strong>safe</strong> <code>code</code></li></ul>')
+    expect(html).toContain('<span class="streaming-cursor" aria-label="Response streaming"></span>')
+    expect(html).toContain('<p>**user stays plain**</p>')
+    expect(html).toContain('<p>*error stays plain*</p>')
+    expect(html).not.toContain('<strong>user stays plain</strong>')
+    expect(html).not.toContain('<em>error stays plain</em>')
+  })
+
+  it('keeps approval actionable while the agent loop is suspended', () => {
+    const waiting = workspaceMarkup({ busy: true, status: 'working' })
+    expect(waiting).toMatch(/<button type="button" class="secondary">Reject<\/button>/)
+    expect(waiting).toMatch(/<button type="button">Confirm change<\/button>/)
+
+    const applying = workspaceMarkup({ busy: true, applying: true, status: 'working' })
+    expect(applying).toMatch(/<button type="button" class="secondary" disabled="">Reject<\/button>/)
+    expect(applying).toMatch(/<button type="button" class="quiet">新对话<\/button>/)
+    expect(applying).toContain('<button type="button">退出登录</button>')
+    expect(applying).toMatch(/<button type="button" class="stop-button">Stop<\/button>/)
   })
 
   it('uses the corresponding compact PC editor identity for every Office host', () => {
@@ -261,7 +303,8 @@ describe('Office Agent workspace UI', () => {
         }),
       ]),
     })
-    expect(html).toContain('SlideIndex: 3')
+    expect(html).toContain('Slide index: 3')
+    expect(html).toContain('Slide ID: Slide 1')
     expect(html).not.toContain('internal-hash')
     expect(html).not.toContain('(described by preview)')
   })
@@ -293,7 +336,7 @@ describe('Office Agent workspace UI', () => {
     expect(html).not.toContain('Mode: replace')
   })
 
-  it('uses a frozen UI-only facade instead of exposing the Office runtime', () => {
+  it('uses a frozen UI-only facade instead of exposing the Office runtime', async () => {
     const runtime = {
       vfs: { list: () => ['/home/user/a.txt'] },
       skills: { list: () => [{ name: 'Review' }] },
@@ -302,13 +345,23 @@ describe('Office Agent workspace UI', () => {
       installSkill: vi.fn(),
       clearSession: vi.fn(),
     } as unknown as OfficeHostRuntime
-    const ui = createOfficeWorkspaceUi(runtime)
+    const writeText = vi.fn(async () => undefined)
+    const diagnostics = { exportJson: vi.fn(() => '{"version":1}') }
+    const ui = createOfficeWorkspaceUi(runtime, diagnostics, { writeText })
     expect(Object.isFrozen(ui)).toBe(true)
     expect(Object.isFrozen(ui.attachments())).toBe(true)
     expect(Object.isFrozen(ui.skills())).toBe(true)
     expect(ui).not.toHaveProperty('vfs')
     expect(ui).not.toHaveProperty('runtime')
     expect(ui).not.toHaveProperty('proposals')
+    await expect(ui.copyDiagnostics!()).resolves.toBeUndefined()
+    expect(writeText).toHaveBeenCalledWith('{"version":1}')
+  })
+
+  it('offers a direct copy-diagnostics action without exposing diagnostic state', () => {
+    const html = workspaceMarkup()
+    expect(html).toContain('复制诊断信息')
+    expect(html).not.toContain('trace_id')
   })
 
   it('focuses the panel heading on open and restores the opener on close', () => {
@@ -372,6 +425,78 @@ describe('Office Agent workspace UI', () => {
     })
     expect(container.querySelector('[role="dialog"]')).toBeNull()
     expect(document.activeElement).toBe(opener)
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
+  it('shows sighted users whether copying the bounded diagnostic export succeeded', async () => {
+    const snapshot: OfficeAgentSnapshot = {
+      assistantText: 'Done',
+      activity: '',
+      busy: false,
+      applying: false,
+      status: 'done',
+      retryable: false,
+      timeline: Object.freeze([
+        Object.freeze({ id: 'a1', kind: 'assistant' as const, text: 'Done' }),
+      ]),
+    }
+    const session = {
+      snapshot: () => snapshot,
+      subscribe: () => () => undefined,
+      send: vi.fn(),
+      stop: vi.fn(),
+      confirm: vi.fn(),
+      reject: vi.fn(),
+      newTask: vi.fn(),
+      retry: vi.fn(),
+      logout: vi.fn(),
+      authenticationLost: vi.fn(),
+    } satisfies OfficeAgentSession
+    const copyDiagnostics = vi.fn(async () => undefined)
+    const ui: OfficeWorkspaceUi = Object.freeze({
+      attachments: () => Object.freeze([]),
+      skills: () => Object.freeze([]),
+      skillPackagesEnabled: true,
+      upload: vi.fn(),
+      copyDiagnostics,
+      clear: vi.fn(),
+    })
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    await act(async () => {
+      root.render(
+        React.createElement(AgentWorkspace, {
+          session,
+          ui,
+          disconnect: vi.fn(),
+          host: 'word',
+        }),
+      )
+    })
+    const copy = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === '复制诊断信息',
+    )!
+    await act(async () => copy.click())
+    expect(copyDiagnostics).toHaveBeenCalledOnce()
+    expect(container.querySelector('.diagnostic-status')?.textContent).toBe('诊断信息已复制')
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
+  it('offers the same diagnostic copy feedback on a disconnected status screen', async () => {
+    const copyDiagnostics = vi.fn(async () => undefined)
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    await act(async () => {
+      root.render(React.createElement(DiagnosticCopyButton, { copyDiagnostics }))
+    })
+    const button = container.querySelector('button')!
+    await act(async () => button.click())
+    expect(copyDiagnostics).toHaveBeenCalledOnce()
+    expect(container.querySelector('[role="status"]')?.textContent).toBe('诊断信息已复制')
     await act(async () => root.unmount())
     container.remove()
   })

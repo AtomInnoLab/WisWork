@@ -1,6 +1,16 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { Markdown } from '@wiswork/ui'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
-import { officeCapabilityFlags, officeWorkspaceMode } from '../build-config.js'
+import {
+  officeCapabilityFlags,
+  officeRemoteDiagnosticsEnabled,
+  officeWorkspaceMode,
+} from '../build-config.js'
+import {
+  createOfficeDiagnostics,
+  officeDiagnosticEnvironment,
+  type OfficeDiagnostics,
+} from './diagnostics/office-diagnostics.js'
 import type { OfficeProposal, StructuredProposal } from './agent/proposal-controller.js'
 import { MAX_SKILL_BYTES } from './skills/shared/skill-registry.js'
 import { MAX_VFS_FILE_BYTES } from './skills/shared/vfs.js'
@@ -42,54 +52,90 @@ function isLegacyProposal(proposal: DisplayProposal): proposal is OfficeProposal
   return 'value' in proposal
 }
 
-function previewText(value: unknown, depth = 0): string {
-  if (value === undefined) return ''
-  if (typeof value === 'string') return value
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
-  if (value === null) return 'None'
-  if (Array.isArray(value)) {
-    return value
-      .map((item, index) => {
-        const rendered = previewText(item, depth + 1)
-        return `${index + 1}. ${rendered.replaceAll('\n', ' · ')}`
-      })
-      .join('\n')
+function humanLabel(value: string): string {
+  const words = value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replaceAll('_', ' ')
+    .replaceAll('-', ' ')
+    .toLowerCase()
+    .replace(/\bid\b/g, 'ID')
+  return words.replace(/^./, (character) => character.toUpperCase())
+}
+
+function proposalHostLabel(host: string): string {
+  const normalized = host
+    .trim()
+    .toLowerCase()
+    .replace(/^microsoft\s+/, '')
+  if (normalized === 'word') return 'Word'
+  if (normalized === 'excel') return 'Excel'
+  if (normalized === 'powerpoint' || normalized === 'power point') return 'PowerPoint'
+  return 'Office'
+}
+
+const INTERNAL_PREVIEW_KEY = /(fingerprint|hash|code|xml|operation|program|payload|request)/i
+
+function previewSummary(preview: Readonly<Record<string, unknown>>): string {
+  const lines: string[] = []
+  for (const [key, value] of Object.entries(preview)) {
+    if (lines.length >= 12 || INTERNAL_PREVIEW_KEY.test(key)) continue
+    if (!['string', 'number', 'boolean'].includes(typeof value) && value !== null) continue
+    const rendered = value === null ? 'None' : String(value).replaceAll('\n', ' · ')
+    const readable =
+      /id$/i.test(key) && typeof value === 'string' ? proposalTarget(rendered) : rendered
+    lines.push(`${humanLabel(key)}: ${readable}`)
   }
-  if (typeof value === 'object') {
-    return Object.entries(value as Record<string, unknown>)
-      .map(([key, item]) => {
-        const label = key.replaceAll('_', ' ').replace(/^./, (character) => character.toUpperCase())
-        const rendered = previewText(item, depth + 1)
-        return depth > 0 ? `${label}: ${rendered.replaceAll('\n', ' · ')}` : `${label}: ${rendered}`
-      })
-      .join('\n')
+  return lines.join('\n').slice(0, 2_000)
+}
+
+function proposalTarget(target: string, host?: string): string {
+  if (host && proposalHostLabel(host) === 'PowerPoint') {
+    const indexedShape = /^(\d+)\/(\d+)$/.exec(target)
+    if (indexedShape) return `Slide ${Number(indexedShape[1]) + 1} · Shape ${indexedShape[2]}`
+    const packageSlide = /^ppt\/slides\/slide(\d+)\.xml$/i.exec(target)
+    if (packageSlide) return `Slide ${packageSlide[1]} package`
   }
-  return String(value)
+  if (target === 'document:end') return 'End of document'
+  if (target === 'document:start') return 'Start of document'
+  if (target === 'document') return 'Document'
+  if (target === 'selection') return 'Current selection'
+  const slide = /^slide[-:](\d+)$/i.exec(target)
+  if (slide) return `Slide ${slide[1]}`
+  return target
+    .split('/')
+    .filter(Boolean)
+    .map((part) => (/^[A-Z]+\d+(?::[A-Z]+\d+)?$/i.test(part) ? part : humanLabel(part)))
+    .join(' · ')
 }
 
 export function proposalPresentation(proposal: DisplayProposal) {
   const legacy = isLegacyProposal(proposal)
-  const hasComparison = legacy || (proposal.before !== undefined && proposal.after !== undefined)
-  const before = previewText(proposal.before)
-  const after = previewText(
-    legacy
-      ? proposal.operation === 'replace'
-        ? proposal.value
-        : `${proposal.before}${proposal.value}`
-      : proposal.after,
-  )
+  const hasComparison =
+    legacy || (typeof proposal.before === 'string' && typeof proposal.after === 'string')
+  const before = hasComparison && typeof proposal.before === 'string' ? proposal.before : ''
+  const after = hasComparison
+    ? String(
+        legacy
+          ? proposal.operation === 'replace'
+            ? proposal.value
+            : `${proposal.before}${proposal.value}`
+          : proposal.after,
+      )
+    : ''
   return {
     title: legacy
       ? proposal.operation === 'replace'
         ? 'Replace selection'
         : 'Append to selection'
       : proposal.title,
-    host: legacy ? undefined : proposal.impact.host,
+    host: legacy ? undefined : proposalHostLabel(proposal.impact.host),
     count: legacy ? undefined : proposal.impact.count,
-    targets: legacy ? [] : [...proposal.impact.targets],
+    targets: legacy
+      ? []
+      : proposal.impact.targets.map((target) => proposalTarget(target, proposal.impact.host)),
     before,
     after,
-    preview: hasComparison ? '' : previewText(proposal.preview),
+    preview: hasComparison || legacy ? '' : previewSummary(proposal.preview),
     // Declarative code is an internal safety protocol, not user-facing review content.
     code: undefined,
   }
@@ -124,16 +170,58 @@ export interface OfficeWorkspaceUi {
   readonly skills: () => readonly string[]
   readonly skillPackagesEnabled: boolean
   readonly upload: (file: SessionFile) => Promise<void>
+  readonly copyDiagnostics?: () => Promise<void>
   readonly uninstallSkill?: (name: string) => void
   readonly clear: () => void
 }
 
-export function createOfficeWorkspaceUi(runtime: OfficeHostRuntime): OfficeWorkspaceUi {
+export function DiagnosticCopyButton(props: {
+  copyDiagnostics: () => Promise<void>
+}): React.ReactElement {
+  const [status, setStatus] = useState('')
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          setStatus('')
+          void props
+            .copyDiagnostics()
+            .then(() => setStatus('诊断信息已复制'))
+            .catch(() => setStatus('复制诊断信息失败'))
+        }}
+      >
+        复制诊断信息
+      </button>
+      {status && (
+        <p className="diagnostic-status" role="status">
+          {status}
+        </p>
+      )}
+    </>
+  )
+}
+
+export function createOfficeWorkspaceUi(
+  runtime: OfficeHostRuntime,
+  diagnostics?: Pick<OfficeDiagnostics, 'exportJson'>,
+  clipboard: { writeText(value: string): Promise<void> } | undefined = globalThis.navigator
+    ?.clipboard,
+): OfficeWorkspaceUi {
   return Object.freeze({
     attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
     skills: () => Object.freeze(runtime.skills.list().map((skill) => skill.name)),
     skillPackagesEnabled: runtime.skillPackagesEnabled,
     upload: (file: SessionFile) => uploadSessionFile(runtime, file),
+    ...(diagnostics
+      ? {
+          copyDiagnostics: async () => {
+            if (!clipboard || typeof clipboard.writeText !== 'function')
+              throw new Error('diagnostic_copy_failed')
+            await clipboard.writeText(diagnostics.exportJson())
+          },
+        }
+      : {}),
     uninstallSkill: (name: string) => runtime.uninstallSkill(name),
     clear: () => runtime.clearSession(),
   })
@@ -232,16 +320,15 @@ function ProposalReview(props: {
           <div className="proposal-diff">
             <div className="preview-block">
               <strong>Before</strong>
-              <pre>{presentation.before || '(empty document)'}</pre>
+              <p className="proposal-copy">{presentation.before || '(empty document)'}</p>
             </div>
             <div className="preview-block after">
               <strong>After</strong>
-              <pre>{presentation.after || '(empty document)'}</pre>
+              <p className="proposal-copy">{presentation.after || '(empty document)'}</p>
             </div>
           </div>
         )}
-        {presentation.preview && <pre>{presentation.preview}</pre>}
-        {presentation.code && <pre className="code-preview">{presentation.code}</pre>}
+        {presentation.preview && <p className="proposal-copy">{presentation.preview}</p>}
       </details>
       {event.error && <p className="error-text">{event.error}</p>}
       {canReview && (
@@ -256,7 +343,7 @@ function ProposalReview(props: {
           </button>
           <button
             type="button"
-            disabled={props.busy || props.applying}
+            disabled={props.applying}
             onClick={() => props.confirm(event.proposal.id)}
           >
             {props.applying ? 'Applying…' : 'Confirm change'}
@@ -292,7 +379,7 @@ function TimelineEvent(props: {
       {...(event.kind === 'error' ? { role: 'alert' } : {})}
     >
       <span className="message-role">{event.kind === 'user' ? 'You' : 'WisWork'}</span>
-      <p>{event.text}</p>
+      {event.kind === 'assistant' ? <Markdown text={event.text} /> : <p>{event.text}</p>}
       {event.kind === 'assistant' && event.streaming && (
         <span className="streaming-cursor" aria-label="Response streaming" />
       )}
@@ -314,6 +401,7 @@ export function AgentWorkspace(props: {
   const [files, setFiles] = useState<readonly string[]>(ui.attachments())
   const [skills, setSkills] = useState<readonly string[]>(ui.skills())
   const [uploadError, setUploadError] = useState('')
+  const [diagnosticStatus, setDiagnosticStatus] = useState('')
   const [panel, setPanel] = useState<WorkspacePanelName | undefined>(props.initialPanel)
   const mounted = useRef(true)
   const panelHeading = useRef<HTMLHeadingElement>(null)
@@ -367,7 +455,6 @@ export function AgentWorkspace(props: {
             <button
               type="button"
               className="quiet"
-              disabled={state.applying}
               onClick={() => {
                 session.newTask()
                 ui.clear()
@@ -394,12 +481,33 @@ export function AgentWorkspace(props: {
               >
                 管理技能
               </button>
-              <button type="button" disabled={state.applying} onClick={disconnect}>
+              {ui.copyDiagnostics && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    setDiagnosticStatus('')
+                    void ui
+                      .copyDiagnostics?.()
+                      .then(() => mounted.current && setDiagnosticStatus('诊断信息已复制'))
+                      .catch(() => mounted.current && setDiagnosticStatus('复制诊断信息失败'))
+                    event.currentTarget.closest('details')?.removeAttribute('open')
+                  }}
+                >
+                  复制诊断信息
+                </button>
+              )}
+              <button type="button" onClick={disconnect}>
                 退出登录
               </button>
             </details>
           </div>
         </header>
+      )}
+
+      {diagnosticStatus && (
+        <p className="diagnostic-status" role="status">
+          {diagnosticStatus}
+        </p>
       )}
 
       {showStatus && (
@@ -669,12 +777,7 @@ export function AgentWorkspace(props: {
             </span>
           </div>
           {state.busy ? (
-            <button
-              type="button"
-              className="stop-button"
-              disabled={state.applying}
-              onClick={() => session.stop()}
-            >
+            <button type="button" className="stop-button" onClick={() => session.stop()}>
               Stop
             </button>
           ) : (
@@ -709,12 +812,19 @@ export function workspaceComponentForMode(mode: 'workspace' | 'legacy') {
 
 function ConfiguredApp() {
   const document = useMemo(() => createOfficeDocumentClient(createBrowserOfficeRuntime()), [])
+  const transportMode = useMemo(() => officeTransportMode(import.meta.env), [])
+  const remoteDiagnosticsEnabled = useMemo(
+    () => transportMode === 'relay' && officeRemoteDiagnosticsEnabled(import.meta.env),
+    [transportMode],
+  )
   const bridge = useMemo(
     () =>
-      officeTransportMode(import.meta.env) === 'loopback'
+      transportMode === 'loopback'
         ? createPcBridgeSession()
-        : createOfficeRelaySession(),
-    [],
+        : createOfficeRelaySession({
+            ...(remoteDiagnosticsEnabled ? { capabilities: ['agent.v1'] } : {}),
+          }),
+    [remoteDiagnosticsEnabled, transportMode],
   )
   const bridgeState = useSyncExternalStore(
     (listener) => bridge.subscribe(listener),
@@ -742,19 +852,33 @@ function ConfiguredApp() {
           setHost(activeHost)
           setHostSupported(activeHost !== 'unknown')
           if (activeHost !== 'unknown') {
+            const environment = officeDiagnosticEnvironment(activeHost)
+            const diagnostics = createOfficeDiagnostics({
+              host: activeHost,
+              platform: environment.platform,
+              build: __WISWORK_OFFICE_BUILD_ID__,
+              requirementSets: environment.requirementSets,
+              remoteEnabled: remoteDiagnosticsEnabled,
+              send: (event) => {
+                if (!('sendDiagnostic' in bridge)) throw new Error('diagnostic_upload_failed')
+                return bridge.sendDiagnostic(event)
+              },
+            })
             const runtime = createOfficeHostRuntime(activeHost, {
               enableHostSkills: import.meta.env.VITE_WISWORK_OFFICE_HOST_SKILLS !== '0',
               enableConversions: capabilityFlags.conversions,
               enableSkillPackages: capabilityFlags.skillPackages,
               enableImportMedia: capabilityFlags.importMedia,
               document,
+              diagnostics,
             })
             const session = createOfficeAgentSession({
               transport: createPcBridgeAgentTransport(bridge),
               skill: runtime.skill,
               proposals: runtime.proposals,
+              diagnostics,
             })
-            created = { runtime, session, ui: createOfficeWorkspaceUi(runtime) }
+            created = { runtime, session, ui: createOfficeWorkspaceUi(runtime, diagnostics) }
             setWorkspace(created)
           }
           setStatus(
@@ -775,7 +899,7 @@ function ConfiguredApp() {
       created?.runtime.dispose()
       bridge.disconnect()
     }
-  }, [bridge, capabilityFlags, document])
+  }, [bridge, capabilityFlags, document, remoteDiagnosticsEnabled])
 
   useEffect(() => {
     if (bridgeState.status !== 'connected' && workspace) {
@@ -823,6 +947,9 @@ function ConfiguredApp() {
               ? 'Looking for WisWork PC…'
               : 'Try again'}
         </button>
+        {workspace?.ui.copyDiagnostics && (
+          <DiagnosticCopyButton copyDiagnostics={workspace.ui.copyDiagnostics} />
+        )}
       </StatusScreen>
     )
   }

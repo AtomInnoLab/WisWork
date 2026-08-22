@@ -24,6 +24,7 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 MemoryMax=256M
 TasksMax=64
+LogNamespace=wiswork-relay
 
 [Install]
 WantedBy=multi-user.target

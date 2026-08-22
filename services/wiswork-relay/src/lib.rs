@@ -32,6 +32,8 @@ const REQUEST_MAX: usize = 256 * 1024;
 const FRAME_MAX: usize = REQUEST_MAX + CONTROL_MAX;
 const CHUNK_MAX: usize = 64 * 1024;
 const RESPONSE_MAX: usize = 16 * 1024 * 1024;
+const DIAGNOSTIC_MAX: usize = 4 * 1024;
+const DIAGNOSTIC_SESSION_MAX: u16 = 100;
 const PROTOCOL_V2: u64 = 2;
 const SUPPORTED_CAPABILITIES: &[&str] = &[
     "agent.v1",
@@ -48,6 +50,8 @@ pub struct Config {
     pub request_ttl: Duration,
     pub max_claim_attempts: u8,
     pub max_global_claims: u32,
+    pub diagnostic_window: Duration,
+    pub max_diagnostics_per_window: u8,
     pub auth_url: String,
     pub jwks_url: String,
     pub issuer: String,
@@ -62,6 +66,8 @@ impl Default for Config {
             request_ttl: Duration::from_secs(120),
             max_claim_attempts: 5,
             max_global_claims: 1_000,
+            diagnostic_window: Duration::from_secs(1),
+            max_diagnostics_per_window: 10,
             auth_url: "https://auth.dev.wispaper.ai/oidc/me".into(),
             jwks_url: "https://auth.dev.wispaper.ai/oidc/jwks".into(),
             issuer: "https://auth.dev.wispaper.ai/oidc".into(),
@@ -109,6 +115,7 @@ struct Active {
 }
 struct Session {
     version: u64,
+    host: String,
     office: u64,
     office_tx: Tx,
     pc: u64,
@@ -120,6 +127,9 @@ struct Session {
     active: Option<Active>,
     used_requests: VecDeque<String>,
     capabilities: Vec<String>,
+    diagnostics: u16,
+    diagnostic_window_started: Instant,
+    diagnostic_window_count: u8,
 }
 #[derive(Default)]
 struct Store {
@@ -464,6 +474,11 @@ fn versioned_error(tx: &Tx, version: u64, code: &str) {
         json!({"version":version,"type":"relay.error","code":code}),
     );
 }
+fn diagnostic_response(tx: &Tx, value: Value) {
+    // Diagnostics are optional observability. A saturated client queue must never
+    // revoke or slow the Agent session merely because an ACK cannot be delivered.
+    let _ = try_send(tx, value);
+}
 fn renew_session(session: &mut Session, idle_ttl: Duration) {
     session.expires = (Instant::now() + idle_ttl).min(session.absolute_expires);
 }
@@ -523,7 +538,9 @@ async fn process(
         return Err("invalid_frame");
     }
     let kind = string(&map, "type")?;
-    if text.len() > CONTROL_MAX && !matches!(kind, "office.request" | "pc.chunk") {
+    if text.len() > CONTROL_MAX
+        && !matches!(kind, "office.request" | "office.diagnostic" | "pc.chunk")
+    {
         return Err("frame_too_large");
     }
     if origin.is_some() && !kind.starts_with("office.") {
@@ -540,6 +557,15 @@ async fn process(
         "pc.reject" => reject(app, conn, map).await,
         "office.request" => request(app, conn, map).await,
         "office.cancel" => cancel(app, conn, map).await,
+        "office.diagnostic" => {
+            if let Err(code) = diagnostic(app, conn, tx, map, text.len()).await {
+                diagnostic_response(
+                    tx,
+                    json!({"version":PROTOCOL_V2,"type":"relay.error","code":code}),
+                );
+            }
+            Ok(())
+        }
         "pc.chunk" => chunk(app, conn, map).await,
         "pc.start" => start(app, conn, map).await,
         "pc.done" => done(app, conn, map).await,
@@ -882,6 +908,7 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
         sid,
         Session {
             version: protocol,
+            host: p.host,
             office: p.office,
             office_tx: p.office_tx,
             pc: conn,
@@ -893,7 +920,236 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
             active: None,
             used_requests: VecDeque::new(),
             capabilities: approved_capabilities,
+            diagnostics: 0,
+            diagnostic_window_started: now,
+            diagnostic_window_count: 0,
         },
+    );
+    Ok(())
+}
+
+const DIAGNOSTIC_REQUIRED_KEYS: &[&str] = &[
+    "version",
+    "type",
+    "session_id",
+    "capability",
+    "event_id",
+    "trace_id",
+    "timestamp_ms",
+    "host",
+    "platform",
+    "build",
+    "tool",
+    "phase",
+    "outcome",
+    "error_code",
+    "duration_ms",
+    "requirement_sets",
+];
+const DIAGNOSTIC_OPTIONAL_KEYS: &[&str] = &[
+    "office_error_code",
+    "office_error_name",
+    "office_error_location",
+];
+const DIAGNOSTIC_ERROR_CODES: &[&str] = &[
+    "office_api_unsupported",
+    "office_read_failed",
+    "office_write_failed",
+    "office_verify_failed",
+    "office_recovery_failed",
+    "proposal_missing",
+    "proposal_stale",
+    "auth_required",
+    "network_error",
+    "provider_unavailable",
+    "request_timeout",
+    "agent_run_failed",
+    "cancelled",
+    "diagnostic_upload_failed",
+    "user_rejected_change",
+];
+
+fn diagnostic_keys_are_exact(m: &Map<String, Value>) -> bool {
+    DIAGNOSTIC_REQUIRED_KEYS
+        .iter()
+        .all(|key| m.contains_key(*key))
+        && m.keys().all(|key| {
+            DIAGNOSTIC_REQUIRED_KEYS.contains(&key.as_str())
+                || DIAGNOSTIC_OPTIONAL_KEYS.contains(&key.as_str())
+        })
+}
+
+fn uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
+fn bounded_identifier(value: &str, maximum: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'.' | b'_' | b'-' | b':' | b'/' | b'(' | b')' | b'[' | b']'
+                )
+        })
+}
+
+fn optional_identifier(m: &Map<String, Value>, key: &str) -> Result<Option<String>, &'static str> {
+    match m.get(key) {
+        None => Ok(None),
+        Some(value) => {
+            let value = value.as_str().ok_or("invalid_frame")?;
+            if !bounded_identifier(value, 128) {
+                return Err("invalid_frame");
+            }
+            Ok(Some(value.to_owned()))
+        }
+    }
+}
+
+async fn diagnostic(
+    app: &App,
+    conn: u64,
+    tx: &Tx,
+    m: Map<String, Value>,
+    wire_size: usize,
+) -> Result<(), &'static str> {
+    if wire_size > DIAGNOSTIC_MAX {
+        return Err("diagnostic_too_large");
+    }
+    if version(&m)? != PROTOCOL_V2 || !diagnostic_keys_are_exact(&m) {
+        return Err("invalid_frame");
+    }
+    let sid = string(&m, "session_id")?;
+    let cap = string(&m, "capability")?;
+    let event_id = string(&m, "event_id")?;
+    let trace_id = string(&m, "trace_id")?;
+    if !uuid(event_id) || !uuid(trace_id) {
+        return Err("invalid_frame");
+    }
+    let timestamp_ms = m
+        .get("timestamp_ms")
+        .and_then(Value::as_u64)
+        .ok_or("invalid_frame")?;
+    let duration_ms = m
+        .get("duration_ms")
+        .and_then(Value::as_u64)
+        .filter(|value| *value <= 86_400_000)
+        .ok_or("invalid_frame")?;
+    let host = string(&m, "host")?;
+    if !matches!(host, "word" | "excel" | "powerpoint") {
+        return Err("invalid_frame");
+    }
+    let platform = string(&m, "platform")?;
+    if !matches!(
+        platform,
+        "pc" | "mac" | "office_online" | "ios" | "android" | "universal" | "unknown"
+    ) {
+        return Err("invalid_frame");
+    }
+    let build = string(&m, "build")?;
+    let tool = string(&m, "tool")?;
+    if !bounded_identifier(build, 96) || !(tool == "unknown" || bounded_identifier(tool, 96)) {
+        return Err("invalid_frame");
+    }
+    let phase = string(&m, "phase")?;
+    if !matches!(
+        phase,
+        "tool" | "proposal" | "validate" | "write" | "verify" | "recovery" | "transport"
+    ) {
+        return Err("invalid_frame");
+    }
+    let outcome = string(&m, "outcome")?;
+    if !matches!(outcome, "failed" | "unsupported" | "cancelled") {
+        return Err("invalid_frame");
+    }
+    let error_code = string(&m, "error_code")?;
+    if !DIAGNOSTIC_ERROR_CODES.contains(&error_code) {
+        return Err("invalid_frame");
+    }
+    let office_error_code = optional_identifier(&m, "office_error_code")?;
+    let office_error_name = optional_identifier(&m, "office_error_name")?;
+    let office_error_location = optional_identifier(&m, "office_error_location")?;
+    let requirement_sets = m
+        .get("requirement_sets")
+        .and_then(Value::as_object)
+        .ok_or("invalid_frame")?;
+    if requirement_sets.len() > 4
+        || requirement_sets.iter().any(|(name, value)| {
+            !matches!(
+                name.as_str(),
+                "OfficeApi" | "WordApi" | "ExcelApi" | "PowerPointApi"
+            ) || !value.is_boolean()
+        })
+    {
+        return Err("invalid_frame");
+    }
+
+    let mut store = app.inner.state.lock().await;
+    expire(&mut store, app.inner.config.pairing_ttl);
+    let session = store.sessions.get_mut(sid).ok_or("invalid_session")?;
+    if session.office != conn || session.office_cap != cap || session.version != PROTOCOL_V2 {
+        return Err("invalid_capability");
+    }
+    let expected_host = match session.host.as_str() {
+        "Word" => "word",
+        "Excel" => "excel",
+        "PowerPoint" => "powerpoint",
+        _ => return Err("diagnostic_host_mismatch"),
+    };
+    if host != expected_host {
+        return Err("diagnostic_host_mismatch");
+    }
+    if session.diagnostics >= DIAGNOSTIC_SESSION_MAX {
+        return Err("diagnostic_limit");
+    }
+    if session.diagnostic_window_started.elapsed() >= app.inner.config.diagnostic_window {
+        session.diagnostic_window_started = Instant::now();
+        session.diagnostic_window_count = 0;
+    }
+    if session.diagnostic_window_count >= app.inner.config.max_diagnostics_per_window {
+        return Err("diagnostic_rate_limited");
+    }
+    session.diagnostics += 1;
+    session.diagnostic_window_count += 1;
+
+    let log_entry = json!({
+        "event": "office_diagnostic",
+        "connection_id": conn,
+        "session_id": sid,
+        "event_id": event_id,
+        "trace_id": trace_id,
+        "timestamp_ms": timestamp_ms,
+        "host": host,
+        "platform": platform,
+        "build": build,
+        "tool": tool,
+        "phase": phase,
+        "outcome": outcome,
+        "error_code": error_code,
+        "office_error_code": office_error_code,
+        "office_error_name": office_error_name,
+        "office_error_location": office_error_location,
+        "duration_ms": duration_ms,
+        "requirement_sets": requirement_sets,
+    });
+    drop(store);
+    eprintln!("{log_entry}");
+    diagnostic_response(
+        tx,
+        json!({
+            "version": PROTOCOL_V2,
+            "type": "office.diagnostic.accepted",
+            "event_id": event_id,
+        }),
     );
     Ok(())
 }
@@ -1312,5 +1568,34 @@ async fn cleanup(app: &App, conn: u64) {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn saturated_diagnostic_response_never_marks_connection_failed() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let failed = Arc::new(Notify::new());
+        let tx = Tx {
+            sender,
+            failed: failed.clone(),
+        };
+        tx.sender
+            .try_send(Message::Ping(Vec::new().into()))
+            .unwrap();
+
+        diagnostic_response(
+            &tx,
+            json!({"version":2,"type":"office.diagnostic.accepted","event_id":"event"}),
+        );
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), failed.notified())
+                .await
+                .is_err()
+        );
     }
 }

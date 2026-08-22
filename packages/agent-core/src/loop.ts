@@ -8,6 +8,8 @@ import type {
   AgentToolResult,
   AgentTransport,
   ToolExecution,
+  ToolExecutionOutcome,
+  ToolExecutionSuspension,
 } from './types'
 
 export interface ToolExecutedEvent<TSnapshot> {
@@ -84,6 +86,36 @@ const MAX_INPUT_PARSE_RETRIES = 3
 const MAX_TOOL_CONTENT_IMAGES = 4
 const MAX_TOOL_IMAGE_BYTES = 4 * 1024 * 1024
 const TOOL_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+
+function isToolExecutionSuspension(
+  outcome: ToolExecutionOutcome,
+): outcome is ToolExecutionSuspension {
+  const candidate = outcome as Partial<ToolExecutionSuspension>
+  return (
+    typeof outcome === 'object' &&
+    outcome !== null &&
+    candidate.kind === 'tool-execution-suspension' &&
+    candidate.result instanceof Promise
+  )
+}
+
+function isFinalToolExecution(value: unknown): value is ToolExecution {
+  if (typeof value !== 'object' || value === null) return false
+  const execution = value as Partial<ToolExecution>
+  return (
+    typeof execution.output === 'string' &&
+    typeof execution.summary === 'string' &&
+    (execution.isError === undefined || typeof execution.isError === 'boolean') &&
+    (execution.mutated === undefined || typeof execution.mutated === 'boolean') &&
+    (execution.stopToolBatch === undefined || typeof execution.stopToolBatch === 'boolean')
+  )
+}
+
+const INVALID_TOOL_OUTPUT: ToolExecution = {
+  output: 'invalid_tool_output',
+  isError: true,
+  summary: 'invalid tool output',
+}
 
 function boundedToolContent(content?: AgentToolContent[]): AgentToolContent[] | undefined {
   if (!content?.length) return undefined
@@ -590,6 +622,7 @@ export class AgentLoop<TSnapshot = unknown> {
     this.history.push({ role: 'assistant', text: this.turnText, toolCalls })
     const generation = this.generation
     const results: AgentToolResult[] = []
+    let stopToolBatch = false
     for (const call of toolCalls) {
       // The user hit stop while an earlier tool was running: skip remaining tools,
       // but fill in paired error results to keep tool_use/tool_result pairs valid for the next request
@@ -598,6 +631,15 @@ export class AgentLoop<TSnapshot = unknown> {
           id: call.id,
           name: call.name,
           output: '(the user stopped the run; this tool was not executed)',
+          isError: true,
+        })
+        continue
+      }
+      if (stopToolBatch) {
+        results.push({
+          id: call.id,
+          name: call.name,
+          output: '(a previous tool result stopped this tool batch; this tool was not executed)',
           isError: true,
         })
         continue
@@ -619,17 +661,46 @@ export class AgentLoop<TSnapshot = unknown> {
       this.inputParseFails = 0
       events?.onToolStart?.(call)
       const snapshot = !this.mutationSeen ? captureSnapshot?.() : undefined
-      let execution: ToolExecution
+      let outcome: ToolExecutionOutcome
       try {
-        execution = await skill.executeTool(call, this.abortController?.signal)
+        outcome = await skill.executeTool(call, this.abortController?.signal)
       } catch (e) {
-        execution = {
+        outcome = {
           output: e instanceof Error ? e.message : String(e),
           isError: true,
           summary: call.name,
         }
       }
       if (generation !== this.generation) return // reset while a tool was running
+      let execution: ToolExecution
+      try {
+        if (isToolExecutionSuspension(outcome)) {
+          const suspended = await this.waitForSuspension(outcome, this.abortController?.signal)
+          if (generation !== this.generation) return // reset while awaiting approval
+          if (suspended === null) {
+            results.push({
+              id: call.id,
+              name: call.name,
+              output: '(the user stopped the run; this tool was not executed)',
+              isError: true,
+            })
+            continue
+          }
+          execution = suspended
+        } else if (
+          typeof outcome === 'object' &&
+          outcome !== null &&
+          'kind' in outcome &&
+          outcome.kind === 'tool-execution-suspension'
+        ) {
+          execution = INVALID_TOOL_OUTPUT
+        } else {
+          execution = outcome
+        }
+      } catch {
+        execution = INVALID_TOOL_OUTPUT
+      }
+      if (!isFinalToolExecution(execution)) execution = INVALID_TOOL_OUTPUT
       let content: AgentToolContent[] | undefined
       try {
         content = boundedToolContent(execution.modelContent)
@@ -655,6 +726,7 @@ export class AgentLoop<TSnapshot = unknown> {
         execution,
         snapshotBefore: firstMutation ? snapshot : undefined,
       })
+      if (execution.stopToolBatch) stopToolBatch = true
     }
     this.history.push({ role: 'tool', results })
 
@@ -686,6 +758,38 @@ export class AgentLoop<TSnapshot = unknown> {
     this.squashStaleToolOutputs()
     events?.onTurnEnd?.()
     this.startTurn()
+  }
+
+  private async waitForSuspension(
+    suspension: ToolExecutionSuspension,
+    signal?: AbortSignal,
+  ): Promise<ToolExecution | null> {
+    if (signal?.aborted) return null
+    let removeAbortListener: (() => void) | undefined
+    const aborted = new Promise<null>((resolve) => {
+      if (!signal) return
+      const onAbort = () => resolve(null)
+      signal.addEventListener('abort', onAbort, { once: true })
+      removeAbortListener = () => signal.removeEventListener('abort', onAbort)
+    })
+    try {
+      const settled = new Promise<ToolExecution>((resolve) => {
+        try {
+          Promise.prototype.then.call(
+            suspension.result,
+            (execution) =>
+              resolve(isFinalToolExecution(execution) ? execution : INVALID_TOOL_OUTPUT),
+            () => resolve(INVALID_TOOL_OUTPUT),
+          )
+        } catch {
+          resolve(INVALID_TOOL_OUTPUT)
+        }
+      })
+      const result = await Promise.race([settled, aborted])
+      return result
+    } finally {
+      removeAbortListener?.()
+    }
   }
 }
 

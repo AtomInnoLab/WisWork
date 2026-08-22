@@ -18,9 +18,9 @@ describe('generic proposal presentation', () => {
       }),
     ).toEqual({
       title: 'Edit XML',
-      host: 'powerpoint',
+      host: 'PowerPoint',
       count: 1,
-      targets: ['slide-1'],
+      targets: ['Slide 1'],
       before: '<old/>',
       after: '<new/>',
       preview: '',
@@ -40,6 +40,8 @@ describe('generic proposal presentation', () => {
         code: '{"version":1}',
       }),
     ).toMatchObject({
+      host: 'Word',
+      targets: ['End of document'],
       preview: 'Mode: append\nText: New paragraph',
       code: undefined,
     })
@@ -57,9 +59,78 @@ describe('generic proposal presentation', () => {
         before: { fingerprint: 'internal-hash', slideId: 'slide-1' },
       }),
     ).toMatchObject({
-      preview: 'SlideIndex: 3\nSlideId: slide-1',
+      preview: 'Slide index: 3\nSlide ID: Slide 1',
+      before: '',
       after: '',
     })
+  })
+
+  it('does not expose structured snapshots, fingerprints, hashes, or raw operations', () => {
+    const presentation = proposalPresentation({
+      id: 'p5',
+      operation: 'execute_office_program',
+      title: 'Update cells',
+      impact: { host: 'Excel', targets: ['/worksheets/Q1/range/A1:B2'], count: 4 },
+      preview: {
+        rangeAddress: 'A1:B2',
+        rowCount: 2,
+        fingerprint: 'secret-fingerprint',
+        payloadHash: 'secret-hash',
+        operation: 'raw-operation',
+        nested: { private: 'value' },
+      },
+      fingerprint: 'top-secret',
+      before: { fingerprint: 'before-secret', values: [['old']] },
+      after: { hash: 'after-secret', values: [['new']] },
+    })
+
+    expect(presentation).toMatchObject({
+      host: 'Excel',
+      targets: ['Worksheets · Q1 · Range · A1:B2'],
+      before: '',
+      after: '',
+      preview: 'Range address: A1:B2\nRow count: 2',
+    })
+    expect(JSON.stringify(presentation)).not.toMatch(
+      /secret|raw-operation|nested|fingerprint|hash/i,
+    )
+  })
+
+  it.each(['WORD', 'Microsoft Word', 'excel', 'Excel', 'POWERPOINT', 'Microsoft PowerPoint'])(
+    'normalizes the real Office host spelling %s',
+    (host) => {
+      const presentation = proposalPresentation({
+        id: 'host',
+        operation: 'write',
+        title: 'Write',
+        impact: { host, targets: ['selection'], count: 1 },
+        preview: { text: 'Hello' },
+        fingerprint: 'fp',
+      })
+      expect(['Word', 'Excel', 'PowerPoint']).toContain(presentation.host)
+    },
+  )
+
+  it('turns PowerPoint indices and package paths into slide-aware targets', () => {
+    const indexed = proposalPresentation({
+      id: 'ppt-index',
+      operation: 'edit_shape',
+      title: 'Edit shape',
+      impact: { host: 'PowerPoint', targets: ['0/2'], count: 1 },
+      preview: { text: 'Updated title' },
+      fingerprint: 'fp',
+    })
+    expect(indexed.targets).toEqual(['Slide 1 · Shape 2'])
+
+    const packaged = proposalPresentation({
+      id: 'ppt-package',
+      operation: 'edit_slide_xml',
+      title: 'Edit slide',
+      impact: { host: 'powerpoint', targets: ['ppt/slides/slide1.xml'], count: 1 },
+      preview: { nodes: 2 },
+      fingerprint: 'fp',
+    })
+    expect(packaged.targets).toEqual(['Slide 1 package'])
   })
 
   it('keeps the legacy append preview compatible', () => {
