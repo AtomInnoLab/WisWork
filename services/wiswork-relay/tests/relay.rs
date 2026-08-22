@@ -165,6 +165,62 @@ async fn recv(
     serde_json::from_str(&text).unwrap()
 }
 
+async fn approved_v2_session(
+    url: &str,
+) -> (
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    Value,
+    Value,
+) {
+    let mut office = socket(url, ORIGIN).await;
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.create","host":"Word","capabilities":["agent.v1"]}),
+    )
+    .await;
+    let created = recv(&mut office).await;
+    let mut pc = pc_socket(url).await;
+    send(
+        &mut pc,
+        json!({"version":2,"type":"pc.claim","verification_code":created["verification_code"],"capabilities":["agent.v1"]}),
+    )
+    .await;
+    let claimed = recv(&mut pc).await;
+    send(
+        &mut pc,
+        json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1"]}),
+    )
+    .await;
+    let pc_ready = recv(&mut pc).await;
+    let office_ready = recv(&mut office).await;
+    (office, pc, office_ready, pc_ready)
+}
+
+fn diagnostic(ready: &Value, event_id: &str) -> Value {
+    json!({
+        "version": 2,
+        "type": "office.diagnostic",
+        "session_id": ready["session_id"],
+        "capability": ready["capability"],
+        "event_id": event_id,
+        "trace_id": "b74ed23d-13a7-4a43-9f86-8d50c7279fa5",
+        "timestamp_ms": 1_787_373_000_000_u64,
+        "host": "word",
+        "platform": "mac",
+        "build": "taskpane-BrwOZlpi",
+        "tool": "word_write_document",
+        "phase": "write",
+        "outcome": "failed",
+        "error_code": "office_write_failed",
+        "office_error_code": "InvalidArgument",
+        "office_error_name": "OfficeExtension.Error",
+        "office_error_location": "Body.insertText",
+        "duration_ms": 42,
+        "requirement_sets": {"OfficeApi": true, "WordApi": true}
+    })
+}
+
 #[tokio::test]
 async fn health_and_exact_origin() {
     let url = server().await;
@@ -689,4 +745,141 @@ async fn rejects_extra_keys_malformed_binary_and_pc_spoofed_origin() {
         .await
         .unwrap();
     assert_eq!(recv(&mut binary).await["code"], "binary_not_supported");
+}
+
+#[tokio::test]
+async fn accepts_capability_bound_diagnostic_without_forwarding_or_disturbing_requests() {
+    let url = server().await;
+    let (mut office, mut pc, office_ready, _) = approved_v2_session(&url).await;
+
+    send(
+        &mut office,
+        diagnostic(&office_ready, "7c24d89e-c125-43d1-baf5-017f517fe269"),
+    )
+    .await;
+    let accepted = recv(&mut office).await;
+    assert_eq!(accepted["version"], 2);
+    assert_eq!(accepted["type"], "office.diagnostic.accepted");
+    assert_eq!(accepted["event_id"], "7c24d89e-c125-43d1-baf5-017f517fe269");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), recv(&mut pc))
+            .await
+            .is_err()
+    );
+
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"after_diagnostic","capability_name":"agent.v1","body":{}}),
+    )
+    .await;
+    assert_eq!(recv(&mut pc).await["request_id"], "after_diagnostic");
+
+    send(
+        &mut office,
+        diagnostic(&office_ready, "b6811fa8-e737-47b8-ae6a-27881720a977"),
+    )
+    .await;
+    assert_eq!(
+        recv(&mut office).await["type"],
+        "office.diagnostic.accepted"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), recv(&mut pc))
+            .await
+            .is_err()
+    );
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.cancel","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"after_diagnostic"}),
+    )
+    .await;
+    assert_eq!(recv(&mut pc).await["type"], "relay.cancel");
+}
+
+#[tokio::test]
+async fn rejects_unbound_or_non_v2_diagnostics_without_ending_the_office_connection() {
+    let url = server().await;
+    let (mut office, mut pc, office_ready, _) = approved_v2_session(&url).await;
+
+    let mut wrong_capability = diagnostic(&office_ready, "c7a49ea2-349c-42d8-b1db-87668d2ec8e2");
+    wrong_capability["capability"] = json!("not-the-office-capability");
+    send(&mut office, wrong_capability).await;
+    assert_eq!(recv(&mut office).await["code"], "invalid_capability");
+
+    let mut wrong_session = diagnostic(&office_ready, "bdba1cbd-a72f-4858-a924-f6a06981041b");
+    wrong_session["session_id"] = json!("not-the-session");
+    send(&mut office, wrong_session).await;
+    assert_eq!(recv(&mut office).await["code"], "invalid_session");
+
+    let mut old_protocol = diagnostic(&office_ready, "83c03510-6b4b-430f-afce-a98f4c5346a4");
+    old_protocol["version"] = json!(1);
+    send(&mut office, old_protocol).await;
+    assert_eq!(recv(&mut office).await["code"], "invalid_frame");
+
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"still_alive","capability_name":"agent.v1","body":{}}),
+    )
+    .await;
+    assert_eq!(recv(&mut pc).await["request_id"], "still_alive");
+}
+
+#[tokio::test]
+async fn rejects_unknown_sensitive_and_unbounded_diagnostic_fields() {
+    let url = server().await;
+    let (mut office, mut pc, office_ready, _) = approved_v2_session(&url).await;
+
+    let mut sensitive = diagnostic(&office_ready, "63878550-b3c8-46a2-a137-4473d3a2fcd3");
+    sensitive["message"] = json!("secret document text");
+    send(&mut office, sensitive).await;
+    assert_eq!(recv(&mut office).await["code"], "invalid_frame");
+
+    let mut unknown_error = diagnostic(&office_ready, "e1ee1f53-b40e-4852-a208-81292f044abb");
+    unknown_error["error_code"] = json!("contains_user_content");
+    send(&mut office, unknown_error).await;
+    assert_eq!(recv(&mut office).await["code"], "invalid_frame");
+
+    let mut unsafe_identifier = diagnostic(&office_ready, "0314e2c2-f916-4826-a7c4-e0ffc7f58b2d");
+    unsafe_identifier["office_error_location"] = json!("Body.insertText\nsecret");
+    send(&mut office, unsafe_identifier).await;
+    assert_eq!(recv(&mut office).await["code"], "invalid_frame");
+
+    let mut oversized = diagnostic(&office_ready, "85c91123-b569-42d4-9d0a-39a2df9a6d71");
+    oversized["office_error_location"] = json!("a".repeat(3_900));
+    send(&mut office, oversized).await;
+    assert_eq!(recv(&mut office).await["code"], "diagnostic_too_large");
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), recv(&mut pc))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn caps_diagnostics_at_one_hundred_per_session_without_mutating_request_state() {
+    let url = server().await;
+    let (mut office, mut pc, office_ready, _) = approved_v2_session(&url).await;
+
+    for index in 0..100 {
+        let event_id = format!("00000000-0000-4000-8000-{index:012}");
+        send(&mut office, diagnostic(&office_ready, &event_id)).await;
+        assert_eq!(
+            recv(&mut office).await["type"],
+            "office.diagnostic.accepted"
+        );
+    }
+    send(
+        &mut office,
+        diagnostic(&office_ready, "00000000-0000-4000-8000-000000000100"),
+    )
+    .await;
+    assert_eq!(recv(&mut office).await["code"], "diagnostic_limit");
+
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"after_limit","capability_name":"agent.v1","body":{}}),
+    )
+    .await;
+    assert_eq!(recv(&mut pc).await["request_id"], "after_limit");
 }

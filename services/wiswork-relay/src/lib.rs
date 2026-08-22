@@ -32,6 +32,8 @@ const REQUEST_MAX: usize = 256 * 1024;
 const FRAME_MAX: usize = REQUEST_MAX + CONTROL_MAX;
 const CHUNK_MAX: usize = 64 * 1024;
 const RESPONSE_MAX: usize = 16 * 1024 * 1024;
+const DIAGNOSTIC_MAX: usize = 4 * 1024;
+const DIAGNOSTIC_SESSION_MAX: u16 = 100;
 const PROTOCOL_V2: u64 = 2;
 const SUPPORTED_CAPABILITIES: &[&str] = &[
     "agent.v1",
@@ -120,6 +122,7 @@ struct Session {
     active: Option<Active>,
     used_requests: VecDeque<String>,
     capabilities: Vec<String>,
+    diagnostics: u16,
 }
 #[derive(Default)]
 struct Store {
@@ -540,6 +543,12 @@ async fn process(
         "pc.reject" => reject(app, conn, map).await,
         "office.request" => request(app, conn, map).await,
         "office.cancel" => cancel(app, conn, map).await,
+        "office.diagnostic" => {
+            if let Err(code) = diagnostic(app, conn, tx, map, text.len()).await {
+                versioned_error(tx, PROTOCOL_V2, code);
+            }
+            Ok(())
+        }
         "pc.chunk" => chunk(app, conn, map).await,
         "pc.start" => start(app, conn, map).await,
         "pc.done" => done(app, conn, map).await,
@@ -893,7 +902,218 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
             active: None,
             used_requests: VecDeque::new(),
             capabilities: approved_capabilities,
+            diagnostics: 0,
         },
+    );
+    Ok(())
+}
+
+const DIAGNOSTIC_REQUIRED_KEYS: &[&str] = &[
+    "version",
+    "type",
+    "session_id",
+    "capability",
+    "event_id",
+    "trace_id",
+    "timestamp_ms",
+    "host",
+    "platform",
+    "build",
+    "tool",
+    "phase",
+    "outcome",
+    "error_code",
+    "duration_ms",
+    "requirement_sets",
+];
+const DIAGNOSTIC_OPTIONAL_KEYS: &[&str] = &[
+    "office_error_code",
+    "office_error_name",
+    "office_error_location",
+];
+const DIAGNOSTIC_ERROR_CODES: &[&str] = &[
+    "office_api_unsupported",
+    "office_read_failed",
+    "office_write_failed",
+    "office_verify_failed",
+    "office_recovery_failed",
+    "proposal_missing",
+    "proposal_stale",
+    "auth_required",
+    "network_error",
+    "provider_unavailable",
+    "request_timeout",
+    "agent_run_failed",
+    "cancelled",
+    "diagnostic_upload_failed",
+    "user_rejected_change",
+];
+
+fn diagnostic_keys_are_exact(m: &Map<String, Value>) -> bool {
+    DIAGNOSTIC_REQUIRED_KEYS
+        .iter()
+        .all(|key| m.contains_key(*key))
+        && m.keys().all(|key| {
+            DIAGNOSTIC_REQUIRED_KEYS.contains(&key.as_str())
+                || DIAGNOSTIC_OPTIONAL_KEYS.contains(&key.as_str())
+        })
+}
+
+fn uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
+fn bounded_identifier(value: &str, maximum: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'.' | b'_' | b'-' | b':' | b'/' | b'(' | b')' | b'[' | b']'
+                )
+        })
+}
+
+fn optional_identifier(m: &Map<String, Value>, key: &str) -> Result<Option<String>, &'static str> {
+    match m.get(key) {
+        None => Ok(None),
+        Some(value) => {
+            let value = value.as_str().ok_or("invalid_frame")?;
+            if !bounded_identifier(value, 128) {
+                return Err("invalid_frame");
+            }
+            Ok(Some(value.to_owned()))
+        }
+    }
+}
+
+async fn diagnostic(
+    app: &App,
+    conn: u64,
+    tx: &Tx,
+    m: Map<String, Value>,
+    wire_size: usize,
+) -> Result<(), &'static str> {
+    if wire_size > DIAGNOSTIC_MAX {
+        return Err("diagnostic_too_large");
+    }
+    if version(&m)? != PROTOCOL_V2 || !diagnostic_keys_are_exact(&m) {
+        return Err("invalid_frame");
+    }
+    let sid = string(&m, "session_id")?;
+    let cap = string(&m, "capability")?;
+    let event_id = string(&m, "event_id")?;
+    let trace_id = string(&m, "trace_id")?;
+    if !uuid(event_id) || !uuid(trace_id) {
+        return Err("invalid_frame");
+    }
+    let timestamp_ms = m
+        .get("timestamp_ms")
+        .and_then(Value::as_u64)
+        .ok_or("invalid_frame")?;
+    let duration_ms = m
+        .get("duration_ms")
+        .and_then(Value::as_u64)
+        .filter(|value| *value <= 86_400_000)
+        .ok_or("invalid_frame")?;
+    let host = string(&m, "host")?;
+    if !matches!(host, "word" | "excel" | "powerpoint") {
+        return Err("invalid_frame");
+    }
+    let platform = string(&m, "platform")?;
+    if !matches!(
+        platform,
+        "pc" | "mac" | "office_online" | "ios" | "android" | "universal" | "unknown"
+    ) {
+        return Err("invalid_frame");
+    }
+    let build = string(&m, "build")?;
+    let tool = string(&m, "tool")?;
+    if !bounded_identifier(build, 96) || !(tool == "unknown" || bounded_identifier(tool, 96)) {
+        return Err("invalid_frame");
+    }
+    let phase = string(&m, "phase")?;
+    if !matches!(
+        phase,
+        "tool" | "proposal" | "validate" | "write" | "verify" | "recovery" | "transport"
+    ) {
+        return Err("invalid_frame");
+    }
+    let outcome = string(&m, "outcome")?;
+    if !matches!(outcome, "failed" | "unsupported" | "cancelled") {
+        return Err("invalid_frame");
+    }
+    let error_code = string(&m, "error_code")?;
+    if !DIAGNOSTIC_ERROR_CODES.contains(&error_code) {
+        return Err("invalid_frame");
+    }
+    let office_error_code = optional_identifier(&m, "office_error_code")?;
+    let office_error_name = optional_identifier(&m, "office_error_name")?;
+    let office_error_location = optional_identifier(&m, "office_error_location")?;
+    let requirement_sets = m
+        .get("requirement_sets")
+        .and_then(Value::as_object)
+        .ok_or("invalid_frame")?;
+    if requirement_sets.len() > 4
+        || requirement_sets.iter().any(|(name, value)| {
+            !matches!(
+                name.as_str(),
+                "OfficeApi" | "WordApi" | "ExcelApi" | "PowerPointApi"
+            ) || !value.is_boolean()
+        })
+    {
+        return Err("invalid_frame");
+    }
+
+    let mut store = app.inner.state.lock().await;
+    expire(&mut store, app.inner.config.pairing_ttl);
+    let session = store.sessions.get_mut(sid).ok_or("invalid_session")?;
+    if session.office != conn || session.office_cap != cap || session.version != PROTOCOL_V2 {
+        return Err("invalid_capability");
+    }
+    if session.diagnostics >= DIAGNOSTIC_SESSION_MAX {
+        return Err("diagnostic_limit");
+    }
+    session.diagnostics += 1;
+
+    eprintln!(
+        "{}",
+        json!({
+            "event": "office_diagnostic",
+            "connection_id": conn,
+            "session_id": sid,
+            "event_id": event_id,
+            "trace_id": trace_id,
+            "timestamp_ms": timestamp_ms,
+            "host": host,
+            "platform": platform,
+            "build": build,
+            "tool": tool,
+            "phase": phase,
+            "outcome": outcome,
+            "error_code": error_code,
+            "office_error_code": office_error_code,
+            "office_error_name": office_error_name,
+            "office_error_location": office_error_location,
+            "duration_ms": duration_ms,
+            "requirement_sets": requirement_sets,
+        })
+    );
+    send(
+        tx,
+        json!({
+            "version": PROTOCOL_V2,
+            "type": "office.diagnostic.accepted",
+            "event_id": event_id,
+        }),
     );
     Ok(())
 }
