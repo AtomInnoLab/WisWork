@@ -7,9 +7,11 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import {
   AgentWorkspace,
+  LegacyAgentWorkspace,
   composerKeyAction,
   createOfficeWorkspaceUi,
   focusWorkspacePanel,
+  isTimelineNearBottom,
   type OfficeWorkspaceUi,
   type WorkspacePanelName,
 } from '../src/App.js'
@@ -24,7 +26,11 @@ const proposal = {
   fingerprint: 'fp',
 }
 
-function workspaceMarkup(overrides: Partial<OfficeAgentSnapshot> = {}, panel?: WorkspacePanelName) {
+function workspaceMarkup(
+  overrides: Partial<OfficeAgentSnapshot> = {},
+  panel?: WorkspacePanelName,
+  host: 'word' | 'excel' | 'powerpoint' = 'word',
+) {
   const snapshot: OfficeAgentSnapshot = {
     assistantText: 'Draft ready',
     activity: '',
@@ -77,7 +83,7 @@ function workspaceMarkup(overrides: Partial<OfficeAgentSnapshot> = {}, panel?: W
       session,
       ui,
       disconnect: vi.fn(),
-      host: 'word',
+      host,
       initialPanel: panel,
     }),
   )
@@ -91,8 +97,59 @@ describe('Office Agent workspace UI', () => {
     expect(html).toContain('Prepared change')
     expect(html.indexOf('Prepared change')).toBeLessThan(html.indexOf('Approval required'))
     expect(html).toContain('Confirm change')
-    expect(html).toContain('New task')
+    expect(html).toContain('新对话')
+    expect(html).toContain('AI Word')
+    expect(html).not.toContain('WisWork Agent</span>')
+    expect(html).not.toContain('Microsoft Word is connected')
+    expect(html).not.toContain('Edits always require your approval')
     expect(html).toContain('aria-label="Message WisWork Agent"')
+  })
+
+  it('uses the corresponding compact PC editor identity for every Office host', () => {
+    expect(workspaceMarkup({}, undefined, 'word')).toContain('AI Word')
+    expect(workspaceMarkup({}, undefined, 'excel')).toContain('AI Sheets')
+    expect(workspaceMarkup({}, undefined, 'powerpoint')).toContain('AI Slides')
+  })
+
+  it('keeps the rollback workspace compact without the legacy explanatory masthead', () => {
+    const snapshot = {
+      assistantText: '',
+      activity: '',
+      busy: false,
+      applying: false,
+      status: 'idle' as const,
+      retryable: false,
+      timeline: Object.freeze([{ id: 'u1', kind: 'user' as const, text: 'Hello' }]),
+    }
+    const session = {
+      snapshot: () => snapshot,
+      subscribe: () => () => undefined,
+      send: vi.fn(),
+      stop: vi.fn(),
+      confirm: vi.fn(),
+      reject: vi.fn(),
+      newTask: vi.fn(),
+      retry: vi.fn(),
+      logout: vi.fn(),
+      authenticationLost: vi.fn(),
+    }
+    const html = renderToStaticMarkup(
+      React.createElement(LegacyAgentWorkspace, {
+        session,
+        ui: Object.freeze({
+          attachments: () => Object.freeze([]),
+          skills: () => Object.freeze([]),
+          skillPackagesEnabled: false,
+          upload: vi.fn(),
+          clear: vi.fn(),
+        }),
+        disconnect: vi.fn(),
+        host: 'word',
+      }),
+    )
+    expect(html).toContain('AI Word')
+    expect(html).not.toContain('Microsoft Word is connected')
+    expect(html).not.toContain('Edits always require your approval')
   })
 
   it('matches the WisWork writing-first empty state without legacy selection or session-file chrome', () => {
@@ -253,5 +310,14 @@ describe('Office Agent workspace UI', () => {
     expect(composerKeyAction({ key: 'Enter', shiftKey: true, isComposing: false })).toBe('newline')
     expect(composerKeyAction({ key: 'Enter', shiftKey: false, isComposing: true })).toBe('newline')
     expect(composerKeyAction({ key: 'Escape', shiftKey: false, isComposing: false })).toBe('none')
+  })
+
+  it('keeps automatic scrolling only while the reader remains near the latest turn', () => {
+    expect(isTimelineNearBottom({ scrollHeight: 900, scrollTop: 580, clientHeight: 300 })).toBe(
+      true,
+    )
+    expect(isTimelineNearBottom({ scrollHeight: 900, scrollTop: 300, clientHeight: 300 })).toBe(
+      false,
+    )
   })
 })
