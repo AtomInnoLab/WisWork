@@ -106,7 +106,8 @@ function isFinalToolExecution(value: unknown): value is ToolExecution {
     typeof execution.output === 'string' &&
     typeof execution.summary === 'string' &&
     (execution.isError === undefined || typeof execution.isError === 'boolean') &&
-    (execution.mutated === undefined || typeof execution.mutated === 'boolean')
+    (execution.mutated === undefined || typeof execution.mutated === 'boolean') &&
+    (execution.stopToolBatch === undefined || typeof execution.stopToolBatch === 'boolean')
   )
 }
 
@@ -621,6 +622,7 @@ export class AgentLoop<TSnapshot = unknown> {
     this.history.push({ role: 'assistant', text: this.turnText, toolCalls })
     const generation = this.generation
     const results: AgentToolResult[] = []
+    let stopToolBatch = false
     for (const call of toolCalls) {
       // The user hit stop while an earlier tool was running: skip remaining tools,
       // but fill in paired error results to keep tool_use/tool_result pairs valid for the next request
@@ -629,6 +631,15 @@ export class AgentLoop<TSnapshot = unknown> {
           id: call.id,
           name: call.name,
           output: '(the user stopped the run; this tool was not executed)',
+          isError: true,
+        })
+        continue
+      }
+      if (stopToolBatch) {
+        results.push({
+          id: call.id,
+          name: call.name,
+          output: '(a previous tool result stopped this tool batch; this tool was not executed)',
           isError: true,
         })
         continue
@@ -689,6 +700,7 @@ export class AgentLoop<TSnapshot = unknown> {
       } catch {
         execution = INVALID_TOOL_OUTPUT
       }
+      if (!isFinalToolExecution(execution)) execution = INVALID_TOOL_OUTPUT
       let content: AgentToolContent[] | undefined
       try {
         content = boundedToolContent(execution.modelContent)
@@ -714,6 +726,7 @@ export class AgentLoop<TSnapshot = unknown> {
         execution,
         snapshotBefore: firstMutation ? snapshot : undefined,
       })
+      if (execution.stopToolBatch) stopToolBatch = true
     }
     this.history.push({ role: 'tool', results })
 

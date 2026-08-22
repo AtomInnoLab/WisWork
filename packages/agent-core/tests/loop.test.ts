@@ -349,6 +349,96 @@ describe('AgentLoop', () => {
     expect(loop.busy).toBe(false)
   })
 
+  it('stops the current tool batch after a controlling execution and resumes the provider once', async () => {
+    let resolveExecution!: (execution: ToolExecution) => void
+    const result = new Promise<ToolExecution>((resolve) => {
+      resolveExecution = resolve
+    })
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 'write-1', name: 'do_thing', input: { text: 'first' } })
+        cb.onToolCall({ id: 'write-2', name: 'do_thing', input: { text: 'second' } })
+        cb.onDone()
+      },
+      (cb) => {
+        cb.onDelta('Stopped after rejection')
+        cb.onDone()
+      },
+    ])
+    const executeTool = vi.fn((call: AgentToolCall) =>
+      call.id === 'write-1'
+        ? suspendToolExecution(result)
+        : { output: 'must not execute', summary: 'bad', mutated: true },
+    )
+    const onToolStart = vi.fn()
+    const onToolExecuted = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(executeTool),
+      events: { onToolStart, onToolExecuted },
+    })
+
+    loop.run('make two writes')
+    await flush()
+    resolveExecution({
+      output: 'user_rejected_change',
+      summary: 'Change rejected',
+      isError: true,
+      stopToolBatch: true,
+    })
+    await flush()
+    await flush()
+
+    expect(executeTool).toHaveBeenCalledTimes(1)
+    expect(onToolStart).toHaveBeenCalledTimes(1)
+    expect(onToolExecuted).toHaveBeenCalledTimes(1)
+    expect(transport.requests).toHaveLength(2)
+    const toolMessage = loop.messages[2] as Extract<AgentMessage, { role: 'tool' }>
+    expect(toolMessage.results).toHaveLength(2)
+    expect(toolMessage.results[0]).toMatchObject({
+      id: 'write-1',
+      output: 'user_rejected_change',
+      isError: true,
+    })
+    expect(toolMessage.results[1]).toMatchObject({
+      id: 'write-2',
+      isError: true,
+    })
+    expect(toolMessage.results[1]?.output).toContain('tool batch')
+  })
+
+  it('fails closed when stopToolBatch is not a boolean', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 'write-1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+      (cb) => cb.onDone(),
+    ])
+    const onToolExecuted = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(
+        () =>
+          ({
+            output: 'bad control',
+            summary: 'bad',
+            stopToolBatch: 'yes',
+          }) as unknown as ToolExecution,
+      ),
+      events: { onToolExecuted },
+    })
+
+    loop.run('write')
+    await flush()
+    await flush()
+    expect(onToolExecuted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        execution: expect.objectContaining({ output: 'invalid_tool_output', isError: true }),
+      }),
+    )
+  })
+
   it('preserves model-visible tool image content in history for the next request', async () => {
     const image = { base64: 'iVBORw0KGgo=', mime: 'image/png' }
     const transport = scriptedTransport([

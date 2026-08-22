@@ -60,6 +60,12 @@ export interface ToolExecution {
   isError?: boolean
   /** true when the tool changed the underlying artifact (document / sheet / deck) */
   mutated?: boolean
+  /**
+   * Stop executing later calls emitted in the same provider tool batch. The
+   * loop still pairs every skipped call with an error result before returning
+   * the completed batch to the provider.
+   */
+  stopToolBatch?: boolean
   /** short human-readable label for activity UI */
   summary: string
   /** bounded content sent to the model; unlike display, this enters model history */
