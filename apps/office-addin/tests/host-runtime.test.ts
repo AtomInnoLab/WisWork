@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createOfficeHostRuntime } from '../src/agent/host-runtime.js'
 
 const inventories = {
@@ -80,6 +80,25 @@ describe('host runtime composition', () => {
     expect(runtime.vfs.list('/home/user')).toEqual([])
   })
 
+  it.each(['clearSession', 'dispose'] as const)(
+    '%s cancels active package parsing and rejects late installation',
+    async (action) => {
+      let reject!: (error: Error) => void
+      const cancelAll = vi.fn(() => reject(new Error('upload_cancelled')))
+      const packageRuntime = {
+        parse: vi.fn(() => new Promise<never>((_resolve, next) => (reject = next))),
+        cancelAll,
+      }
+      const runtime = createOfficeHostRuntime('word', { packageRuntime })
+      const pending = runtime.installSkillPackage(Promise.resolve(new ArrayBuffer(1)))
+      await Promise.resolve()
+      runtime[action]()
+      await expect(pending).rejects.toThrow('upload_cancelled')
+      expect(cancelAll).toHaveBeenCalledOnce()
+      expect(runtime.skills.list()).toEqual([])
+    },
+  )
+
   it('installs a bounded SKILL.md and exposes it dynamically to Agent context', async () => {
     const runtime = createOfficeHostRuntime('word')
     await runtime.installSkill(
@@ -98,5 +117,29 @@ describe('host runtime composition', () => {
       'propose_replace_selection',
       'read_selection',
     ])
+  })
+
+  it('independently disables conversion, package, and import/media capability families', async () => {
+    const runtime = createOfficeHostRuntime('excel', {
+      enableConversions: false,
+      enableSkillPackages: false,
+      enableImportMedia: false,
+    })
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain('csv-to-sheet')
+    const bash = await runtime.skill.executeTool(
+      {
+        id: 'disabled-conversion',
+        name: 'bash',
+        input: { command: 'pdf-to-text /home/user/a.pdf' },
+      },
+      new AbortController().signal,
+    )
+    expect(bash.output).toBe('sandbox_denied')
+    await expect(runtime.installSkillPackage(Promise.resolve(new ArrayBuffer(1)))).rejects.toThrow(
+      'office_capability_disabled',
+    )
+    await expect(
+      runtime.installSkill(Promise.resolve('---\nname: disabled\ndescription: disabled\n---\nNo.')),
+    ).rejects.toThrow('office_capability_disabled')
   })
 })

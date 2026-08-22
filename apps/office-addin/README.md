@@ -9,30 +9,64 @@ only a short-lived socket-bound capability in memory. Document writes still requ
 After `Office.onReady()`, the task pane composes the shared browser skill with exactly one Word,
 Excel, or PowerPoint skill. Unsupported hosts fail closed.
 
-- Shared: bounded VFS `read`, sandboxed `bash` (`pwd`, `ls`, and `cat`), session-file
-  upload, and strict single-file `SKILL.md` installation. Installed skill metadata is added to the
-  Agent context dynamically; package folders and auxiliary files are not yet exposed in the UI.
+- Shared: bounded VFS `read`, sandboxed `bash` (`pwd`, `ls`, `cat`, `pdf-to-text`,
+  `pdf-to-images`, `docx-to-text`, and `xlsx-to-csv`), session-file
+  upload, and bounded ZIP skill-package installation/removal. A package contains exactly one root
+  `SKILL.md` plus allowlisted UTF-8 text, PNG, JPEG, or WebP resources. Installed skill metadata is
+  added to Agent context dynamically and package resources are mounted read-only in the session VFS.
 - Word: `get_document_text`, `get_document_structure`, `get_ooxml`, `screenshot_document`,
   `execute_office_js`.
 - Excel: `get_cell_ranges`, `get_range_as_csv`, `search_data`, `screenshot_range`,
   `get_all_objects`, `set_cell_range`, `clear_cell_range`, `copy_to`,
   `modify_sheet_structure`, `modify_workbook_structure`, `resize_range`, `modify_object`,
-  `eval_officejs`.
+  `eval_officejs`; when ExcelApi 1.9 is present, also `csv-to-sheet`, `sheet-to-csv`, and
+  `image-to-sheet`.
 - PowerPoint: `screenshot_slide`, `list_slide_shapes`, `read_slide_text`, `verify_slides`,
   `edit_slide_text`, `duplicate_slide`, `edit_slide_xml`, `edit_slide_chart`,
-  `edit_slide_master`, `execute_office_js`.
+  `edit_slide_master`, `execute_office_js`; when PowerPointApi 1.8 is present, also
+  `insert-image`.
+
+CSV import/export is capped at 500 rows, 100 columns, 10,000 cells, and 2 MiB. Export prefixes
+formula-like cells before quoting so opening the CSV cannot execute formula payloads. Image tools
+accept only magic-validated PNG/JPEG bytes from the session VFS, capped at 2 MiB, 8,192 pixels per
+dimension and 16,777,216 decoded pixels. Imports are immutable proposals: Confirm rechecks the
+range/slide fingerprint, dispatches once, and verifies the exact cells or created image ID and
+geometry. CSV writes retain a bounded formulas/value snapshot; image writes retain the pre-write
+shape IDs. A partial write, cancellation, or semantic mismatch restores the range or deletes the
+inserted shape and proves recovery before returning; an unprovable recovery is terminal
+`office_recovery_failed`. Word advertises no import/media command because the approved inventory has no
+corresponding Word tool contract. Older Office API sets keep these tools unadvertised rather than
+simulating support.
 
 Word screenshot exports a bounded PDF through Office.js and renders a bounded page to a
 model-visible PNG. Word `execute_office_js` accepts only a JSON declarative program (version 1,
 maximum 32 allowlisted operations); it never evaluates JavaScript. PowerPoint package operations
-are tracked separately. File conversions remain blocked until they run in a terminateable worker
-with ZIP metadata, decompression, cell, pixel, and output quotas. Web retrieval remains blocked
-because there is no fixed authenticated PC bridge route, so neither capability is advertised.
-Browser `bash` is not a
+are tracked separately. File conversions run only in the bounded terminateable worker described
+below. Web retrieval remains independently capability-negotiated through the authenticated PC
+Relay route. Browser `bash` is not a
 native shell and has no PC filesystem, process, socket, credential, or package-install access.
 Supported mutations show a structured title, impact, before/after data, preview, and code when
-present, and execute only after explicit confirmation. Logout or bridge loss disposes proposals,
+present, and execute only after explicit confirmation. Conversion commands accept one matching
+file from the session VFS and mount outputs atomically only after a dedicated Web Worker completes.
+DOCX/XLSX archives are rejected before inflate for invalid central/local metadata, duplicate or
+case-colliding normalized paths, traversal, encryption, special file types, unsupported methods,
+or claimed quotas. Selected entries are then inflated incrementally; the stream is paused and the
+worker fails before retaining bytes beyond the per-entry or aggregate actual-output limits. PDF
+page/text/image limits are enforced in the same terminateable worker. `pdf-to-images` fails with
+`conversion_unsupported` when the Office WebView has no `OffscreenCanvas`; it never falls back to
+main-thread rendering. Logout or bridge loss disposes proposals,
 uploaded VFS files, and installed-skill session state.
+
+Skill packages are parsed in a terminateable worker. Compressed input, entry count, normalized path,
+per-file and aggregate inflated bytes are hard bounded; inflate is streamed and stops at the first
+limit breach. Raw central/local headers, names, flags, methods, offsets, ranges, data descriptors,
+sizes and CRCs must agree, and every ZIP64 form is refused. Traversal, Unicode/case collisions,
+links, executable/special entries, invalid UTF-8,
+unsupported formats, and duplicate packages fail atomically. Packages can contribute instructions
+and declarative resources only. PNG/JPEG/WebP structure and dimensions are validated under a pixel
+cap. The exact bounded `SKILL.md` body enters Agent context; packages cannot register tools, code,
+commands, network destinations,
+Office APIs, or any additional authority. New task, logout, and disposal remove all package mounts.
 
 ## Connect WisWork PC
 
@@ -75,7 +109,33 @@ The new host/shared registries are enabled by default. Build with
 `VITE_WISWORK_OFFICE_HOST_SKILLS=0` to roll back to the legacy selection-only skill without
 changing the PC bridge, identity, manifest, or stored user data.
 
+Capability families have independent exact build-time rollback flags. Set any flag to `0` to
+remove that family without rolling back the workspace or Relay identity:
+
+- `VITE_WISWORK_OFFICE_CONVERSIONS=0`
+- `VITE_WISWORK_OFFICE_SKILL_PACKAGES=0`
+- `VITE_WISWORK_OFFICE_IMPORT_MEDIA=0`
+
+Only `0` and `1` are accepted; invalid values make the deployment fail closed.
+
+Web tools remain unadvertised because there is no compiled, reviewed retrieval-service
+attestation. Their activation change must add its capability flag and Office v2 composition in the
+same deployment; this build intentionally exposes no no-op Web flag.
+
+The Agent conversation workspace has an independent fail-closed rollback. Build with the exact
+flag `VITE_WISWORK_OFFICE_WORKSPACE=0` to retain the legacy task-pane presentation while leaving
+Relay identity, the Agent harness, host tools, and confirmation semantics unchanged. Omit the flag
+or set it to `1` for the new workspace; other values invalidate the deployment configuration.
+
 ## Operational behavior
+
+The connected add-in uses the same task-oriented interaction hierarchy as WisWork PC: a compact
+host/connection header, a bounded multi-turn timeline, observable tool activity, inline proposal
+review, and a sticky multiline composer. Enter sends, Shift+Enter inserts a line break, and Stop
+cancels the active run. Attachments and installed skills live in temporary management panels and
+are cleared with the conversation by **New task**, logout, Relay loss, or disposal. The workspace
+is designed for 280–500 px task panes and follows the shared light/dark tokens, forced-colors, and
+reduced-motion preferences. Every document mutation still requires an explicit inline confirmation.
 
 - **PC offline:** Office keeps the short-lived code visible so it can be entered after PC starts.
 - **PC signed out:** approval is refused; sign in through the existing WisWork PC flow first.
@@ -108,8 +168,9 @@ Office (with host-specific API-set acceptance still required):
 3. Create a supported Excel mutation and PowerPoint text/duplicate mutation. Verify title, impact,
    targets, before/after or preview, Reject, stale-state rejection, and exactly-once Confirm.
 4. Exercise every release-blocked tool and verify its documented error and zero mutation.
-5. Upload and read a session file, install a valid file named `SKILL.md`, verify its metadata enters
-   the next Agent request, then verify traversal and native-shell/network syntax are denied.
+5. Upload and read a session file; install and remove a valid bounded skill ZIP; verify its metadata
+   enters the next Agent request and its assets are read-only. Verify traversal, collisions,
+   executable entries, unsupported assets, and native-shell/network syntax are denied.
 6. Log out during an active stream and pending confirmation; verify conversation, proposal, VFS,
    and installed-skill state are cleared before reconnecting.
 
@@ -117,11 +178,16 @@ Office (with host-specific API-set acceptance still required):
 
 The Word screenshot runtime uses the exactly pinned PDF.js 5.7.284 package (Apache-2.0). PDF input
 comes only from Office's bounded document export; loading disables worker fetch and WebAssembly,
-sets image/page/output bounds, and uses a fixed bundled worker URL. JSZip 3.10.1
-(`MIT OR GPL-3.0-or-later`) and
-fast-xml-parser 5.10.1 (MIT) are pinned for the separately reviewed PowerPoint package runtime, not
-as generally available converters. The configured production build emits no source map. Any
-version change requires repeating license, CSP, bundle-size, and vulnerability review.
+sets image/page/output bounds, and uses a fixed bundled worker URL. The conversion worker also uses
+that exact PDF.js version with worker fetch, font loading, and eval support disabled. JSZip 3.10.1
+(`MIT OR GPL-3.0-or-later`) is pinned for raw ZIP parsing plus incremental DEFLATE/STORE streams;
+WisWork validates raw central and local records before handing the bytes to JSZip and never calls
+the eager `entry.async()` conversion path. fast-xml-parser 5.10.1 (MIT) is pinned for validated,
+bounded OOXML parts. These packages are also used by the separately reviewed PowerPoint package
+runtime. All are already production dependencies covered by `npm run licenses`; this change adds
+no native module or remote runtime dependency. The configured production build emits separate
+conversion/PDF worker chunks and no source map. Any version change requires repeating license,
+CSP, bundle-size, forged-archive, and vulnerability review.
 
 ## Checks
 

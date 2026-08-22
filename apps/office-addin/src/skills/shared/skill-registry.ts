@@ -1,4 +1,5 @@
 import { InMemoryVfs } from './vfs.js'
+import type { ParsedSkillArchive } from './skill-package.js'
 
 export interface SkillMetadata {
   name: string
@@ -49,6 +50,7 @@ export function parseSkillPackage(source: string): ParsedSkill {
 
 export class SkillRegistry {
   readonly #skills = new Map<string, SkillMetadata>()
+  readonly #instructions = new Map<string, string>()
   constructor(private readonly vfs: InMemoryVfs) {}
 
   install(source: string, files: Record<string, string> = {}): SkillMetadata {
@@ -63,13 +65,34 @@ export class SkillRegistry {
     }
     this.vfs.mountReadOnlyBatch(entries)
     this.#skills.set(parsed.metadata.name, Object.freeze({ ...parsed.metadata }))
+    this.#instructions.set(parsed.metadata.name, parsed.body)
     return { ...parsed.metadata }
+  }
+
+  installPackage(pkg: ParsedSkillArchive): SkillMetadata {
+    const metadata = pkg.skill.metadata
+    if (this.#skills.has(metadata.name)) throw new Error('skill_already_installed')
+    const root = `/home/skills/${metadata.name}`
+    this.vfs.mountReadOnlyBatch(pkg.files.map((file) => [`${root}/${file.path}`, file.bytes]))
+    this.#skills.set(metadata.name, Object.freeze({ ...metadata }))
+    this.#instructions.set(metadata.name, pkg.skill.body)
+    return { ...metadata }
+  }
+
+  uninstall(name: string): void {
+    if (!this.#skills.has(name)) throw new Error('skill_not_installed')
+    this.vfs.unmountReadOnlyTree(`/home/skills/${name}`)
+    this.#skills.delete(name)
+    this.#instructions.delete(name)
   }
 
   prompt(): string {
     return [...this.#skills.values()]
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map((skill) => `${skill.name}: ${skill.description} (/home/skills/${skill.name}/SKILL.md)`)
+      .map(
+        (skill) =>
+          `${skill.name}: ${skill.description} (/home/skills/${skill.name}/SKILL.md)\n## ${skill.name}\n${this.#instructions.get(skill.name) ?? ''}`,
+      )
       .join('\n')
   }
 
@@ -80,6 +103,8 @@ export class SkillRegistry {
   }
 
   clear(): void {
+    for (const name of this.#skills.keys()) this.vfs.unmountReadOnlyTree(`/home/skills/${name}`)
     this.#skills.clear()
+    this.#instructions.clear()
   }
 }

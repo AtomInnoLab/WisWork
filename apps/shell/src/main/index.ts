@@ -177,6 +177,10 @@ import {
   officeRelayEndpointFromEnv,
   type OfficeRelayClient,
 } from './office-relay-client'
+import {
+  createOfficeRetrievalProxy,
+  officeRetrievalEndpointFromEnv,
+} from './office-retrieval-proxy'
 
 /**
  * WisWork unified shell: ONE Electron app, ONE BrowserWindow, hosting the
@@ -2529,11 +2533,20 @@ app.whenReady().then(async () => {
     },
   })
   try {
+    const retrievalEndpoint = officeRetrievalEndpointFromEnv(process.env)
+    const retrievalProxy = retrievalEndpoint
+      ? createOfficeRetrievalProxy({
+          endpoint: retrievalEndpoint,
+          fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+        })
+      : undefined
     officeRelay = createOfficeRelayClient({
       endpoint: officeRelayEndpointFromEnv(process.env),
       getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
       getAccessToken: () => requireAuthRuntime().client.getAccessToken(),
       proxy: officeMessagesProxy,
+      retrievalProxy,
+      negotiateCapabilities: true,
       onPending: notifyOfficePairing,
       onPendingExpired: (pairingId) => {
         if (!shellWindow || shellWindow.isDestroyed()) return

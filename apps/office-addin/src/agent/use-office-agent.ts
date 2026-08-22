@@ -6,6 +6,14 @@ import type {
   StructuredProposal,
   StructuredProposalController,
 } from './proposal-controller.js'
+import {
+  appendPresentationEvent,
+  boundedText,
+  emptyPresentationTimeline,
+  replacePresentationEvent,
+  type OfficePresentationTimeline,
+  type ProposalPresentationEvent,
+} from './presentation-state.js'
 
 export type AgentSessionStatus = 'idle' | 'working' | 'done' | 'cancelled' | 'error'
 
@@ -16,7 +24,10 @@ export interface OfficeAgentSnapshot {
   applying: boolean
   status: AgentSessionStatus
   error?: string
+  errorMessage?: string
+  retryable: boolean
   proposal?: OfficeProposal | StructuredProposal
+  timeline: OfficePresentationTimeline
 }
 
 export interface OfficeAgentSession {
@@ -26,14 +37,86 @@ export interface OfficeAgentSession {
   stop(): void
   confirm(id: string): Promise<void>
   reject(): void
+  newTask(): void
+  retry(): void
   logout(): void
   authenticationLost(): void
 }
 
-const safeConfirmationError = (error: unknown): string =>
-  error instanceof Error && ['proposal_missing', 'proposal_stale'].includes(error.message)
-    ? error.message
-    : 'office_write_failed'
+interface SafeSessionError {
+  code: string
+  message: string
+  retryable: boolean
+}
+
+const confirmationErrors: Readonly<Record<string, SafeSessionError>> = Object.freeze({
+  proposal_missing: {
+    code: 'proposal_missing',
+    message: 'This proposed change is no longer available.',
+    retryable: false,
+  },
+  proposal_stale: {
+    code: 'proposal_stale',
+    message: 'The document changed. Ask the Agent to prepare a fresh proposal.',
+    retryable: false,
+  },
+  office_write_failed: {
+    code: 'office_write_failed',
+    message: 'The approved change could not be applied.',
+    retryable: false,
+  },
+  office_verify_failed: {
+    code: 'office_verify_failed',
+    message: 'The approved change could not be verified.',
+    retryable: false,
+  },
+  office_recovery_failed: {
+    code: 'office_recovery_failed',
+    message: 'The document could not be restored after the failed change.',
+    retryable: false,
+  },
+})
+
+const runErrors: Readonly<Record<string, SafeSessionError>> = Object.freeze({
+  auth_required: {
+    code: 'auth_required',
+    message: 'Sign in to WisWork PC, reconnect, and try again.',
+    retryable: false,
+  },
+  network_error: {
+    code: 'network_error',
+    message: 'The connection was interrupted. Check WisWork PC and try again.',
+    retryable: true,
+  },
+  provider_unavailable: {
+    code: 'provider_unavailable',
+    message: 'The Agent service is temporarily unavailable. Try again.',
+    retryable: true,
+  },
+  request_timeout: {
+    code: 'request_timeout',
+    message: 'The Agent took too long to respond. Try again.',
+    retryable: true,
+  },
+})
+
+const safeConfirmationError = (error: unknown): SafeSessionError => {
+  const code = error instanceof Error ? error.message : ''
+  return (
+    confirmationErrors[code] ?? {
+      code: 'office_write_failed',
+      message: 'The approved change could not be applied.',
+      retryable: false,
+    }
+  )
+}
+
+const safeRunError = (error: string): SafeSessionError =>
+  runErrors[error] ?? {
+    code: 'agent_run_failed',
+    message: 'The Agent could not complete this request. Try again.',
+    retryable: true,
+  }
 
 export function createOfficeAgentSession(dependencies: {
   transport: AgentTransport
@@ -48,6 +131,8 @@ export function createOfficeAgentSession(dependencies: {
     busy: false,
     applying: false,
     status: 'idle',
+    retryable: false,
+    timeline: emptyPresentationTimeline(),
   }
   let cached: OfficeAgentSnapshot = { ...state, proposal: proposals.pending() }
 
@@ -57,23 +142,159 @@ export function createOfficeAgentSession(dependencies: {
     listeners.forEach((listener) => listener())
   }
 
+  let nextEventId = 0
+  let sessionEpoch = 0
+  let activeAssistantId: string | undefined
+  let lastInstruction = ''
+  const eventId = () => `event-${++nextEventId}`
+  const append = (event: Parameters<typeof appendPresentationEvent>[1]) => {
+    state = { ...state, timeline: appendPresentationEvent(state.timeline, event) }
+  }
+  const replace = (id: string, update: Parameters<typeof replacePresentationEvent>[2]) => {
+    state = { ...state, timeline: replacePresentationEvent(state.timeline, id, update) }
+  }
+  const pendingProposalEvent = () =>
+    [...state.timeline]
+      .reverse()
+      .find(
+        (event): event is ProposalPresentationEvent =>
+          event.kind === 'proposal' && event.state === 'pending',
+      )
+  const appendPendingProposal = () => {
+    const proposal = proposals.pending()
+    if (
+      proposal &&
+      !state.timeline.some(
+        (event) => event.kind === 'proposal' && event.proposal.id === proposal.id,
+      )
+    ) {
+      append({ id: eventId(), kind: 'proposal', proposal, state: 'pending' })
+    }
+  }
+  const clearConversation = () => {
+    activeAssistantId = undefined
+    state = {
+      ...state,
+      assistantText: '',
+      activity: '',
+      busy: false,
+      applying: false,
+      status: 'idle',
+      error: undefined,
+      errorMessage: undefined,
+      retryable: false,
+      timeline: emptyPresentationTimeline(),
+    }
+  }
+
   const loop = new AgentLoop({
     transport: dependencies.transport,
     skill: dependencies.skill,
     events: {
-      onText: (assistantText) => publish({ assistantText }),
-      onToolStart: (call) => publish({ activity: `Running ${call.name}` }),
-      onToolExecuted: (event) => publish({ activity: event.execution.summary }),
-      onTurnEnd: () => publish({ activity: 'Thinking…' }),
-      onDone: (result) =>
+      onText: (assistantText) => {
+        if (!activeAssistantId) {
+          activeAssistantId = eventId()
+          append({
+            id: activeAssistantId,
+            kind: 'assistant',
+            text: boundedText(assistantText),
+            streaming: true,
+          })
+        } else {
+          replace(activeAssistantId, (event) => ({
+            ...event,
+            text: boundedText(assistantText),
+            streaming: true,
+          }))
+        }
+        publish({ assistantText: boundedText(assistantText) })
+      },
+      onToolStart: (call) => {
+        if (activeAssistantId) {
+          replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
+          activeAssistantId = undefined
+        }
+        append({
+          id: eventId(),
+          kind: 'tool',
+          callId: call.id,
+          name: boundedText(call.name),
+          summary: `Running ${boundedText(call.name)}`,
+          state: 'running',
+        })
+        publish({ activity: `Running ${call.name}` })
+      },
+      onToolExecuted: (event) => {
+        const tool = [...state.timeline]
+          .reverse()
+          .find((item) => item.kind === 'tool' && item.callId === event.call.id)
+        if (tool) {
+          replace(tool.id, (item) => {
+            if (item.kind !== 'tool') return item
+            return {
+              ...item,
+              summary: boundedText(event.execution.summary),
+              state: event.execution.isError ? 'error' : 'complete',
+            }
+          })
+        }
+        appendPendingProposal()
+        publish({ activity: event.execution.summary })
+      },
+      onTurnEnd: () => {
+        activeAssistantId = undefined
+        publish({ activity: 'Thinking…' })
+      },
+      onDone: (result) => {
+        if (activeAssistantId) {
+          replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
+          activeAssistantId = undefined
+        }
         publish({
           busy: false,
           activity: '',
           status: result.cancelled ? 'cancelled' : 'done',
-        }),
-      onError: (error) => publish({ busy: false, activity: '', status: 'error', error }),
+        })
+      },
+      onError: (error) => {
+        const safeError = safeRunError(error)
+        activeAssistantId = undefined
+        append({
+          id: eventId(),
+          kind: 'error',
+          text: safeError.message,
+          code: safeError.code,
+        })
+        publish({
+          busy: false,
+          activity: '',
+          status: 'error',
+          error: safeError.code,
+          errorMessage: safeError.message,
+          retryable: safeError.retryable,
+        })
+      },
     },
   })
+
+  const startRun = (instruction: string) => {
+    const value = instruction.trim()
+    if (!value || loop.busy || state.applying) return
+    proposals.newTurn()
+    lastInstruction = value
+    activeAssistantId = undefined
+    append({ id: eventId(), kind: 'user', text: boundedText(value) })
+    publish({
+      assistantText: '',
+      activity: 'Thinking…',
+      busy: true,
+      status: 'working',
+      error: undefined,
+      errorMessage: undefined,
+      retryable: false,
+    })
+    loop.run(value)
+  }
 
   return {
     snapshot: () => cached,
@@ -82,17 +303,7 @@ export function createOfficeAgentSession(dependencies: {
       return () => listeners.delete(listener)
     },
     send(instruction) {
-      const value = instruction.trim()
-      if (!value || loop.busy || state.applying) return
-      proposals.newTurn()
-      publish({
-        assistantText: '',
-        activity: 'Thinking…',
-        busy: true,
-        status: 'working',
-        error: undefined,
-      })
-      loop.run(value)
+      startRun(instruction)
     },
     stop() {
       if (state.applying) return
@@ -100,45 +311,92 @@ export function createOfficeAgentSession(dependencies: {
     },
     async confirm(id) {
       if (state.applying || loop.busy) return
-      publish({ applying: true, error: undefined })
+      const epoch = sessionEpoch
+      const event = pendingProposalEvent()
+      if (event?.proposal.id === id) {
+        replace(event.id, (item) =>
+          item.kind === 'proposal' ? { ...item, state: 'applying', error: undefined } : item,
+        )
+      }
+      publish({
+        applying: true,
+        error: undefined,
+        errorMessage: undefined,
+        retryable: false,
+      })
       try {
         await proposals.confirm(id)
-        publish({ activity: 'Document updated', error: undefined })
+        if (epoch !== sessionEpoch) return
+        if (event)
+          replace(event.id, (item) =>
+            item.kind === 'proposal' ? { ...item, state: 'applied' } : item,
+          )
+        publish({
+          activity: 'Document updated',
+          error: undefined,
+          errorMessage: undefined,
+          retryable: false,
+        })
       } catch (error) {
-        publish({ error: safeConfirmationError(error), status: 'error' })
+        if (epoch !== sessionEpoch) return
+        const safeError = safeConfirmationError(error)
+        if (event)
+          replace(event.id, (item) =>
+            item.kind === 'proposal' ? { ...item, state: 'error', error: safeError.message } : item,
+          )
+        publish({
+          error: safeError.code,
+          errorMessage: safeError.message,
+          retryable: safeError.retryable,
+          status: 'error',
+        })
       } finally {
-        publish({ applying: false })
+        if (epoch === sessionEpoch) publish({ applying: false })
       }
     },
     reject() {
       if (state.applying) return
+      const event = pendingProposalEvent()
       proposals.reject()
-      publish({ activity: 'Proposal rejected', error: undefined })
+      if (event)
+        replace(event.id, (item) =>
+          item.kind === 'proposal' ? { ...item, state: 'rejected' } : item,
+        )
+      publish({
+        activity: 'Proposal rejected',
+        error: undefined,
+        errorMessage: undefined,
+        retryable: false,
+      })
+    },
+    newTask() {
+      sessionEpoch += 1
+      loop.reset()
+      proposals.logout()
+      lastInstruction = ''
+      clearConversation()
+      publish()
+    },
+    retry() {
+      if (!lastInstruction || !state.retryable || loop.busy || state.applying) return
+      const instruction = lastInstruction
+      startRun(instruction)
     },
     logout() {
-      if (state.applying) return
+      sessionEpoch += 1
       loop.reset()
       proposals.logout()
-      publish({
-        assistantText: '',
-        activity: '',
-        busy: false,
-        applying: false,
-        status: 'idle',
-        error: undefined,
-      })
+      lastInstruction = ''
+      clearConversation()
+      publish()
     },
     authenticationLost() {
+      sessionEpoch += 1
       loop.reset()
       proposals.logout()
-      publish({
-        assistantText: '',
-        activity: '',
-        busy: false,
-        applying: false,
-        status: 'idle',
-        error: undefined,
-      })
+      lastInstruction = ''
+      clearConversation()
+      publish()
     },
   }
 }

@@ -74,6 +74,28 @@ export class InMemoryVfs {
     this.#set(normalized, content)
   }
 
+  writeBatch(entries: ReadonlyArray<readonly [string, string | Uint8Array]>): void {
+    const prepared = entries.map(([path, content]) => {
+      const normalized = this.normalize(path)
+      if (normalized === '/home/user' || normalized.startsWith('/home/skills/')) denied()
+      const bytes = typeof content === 'string' ? encoder.encode(content) : content.slice()
+      if (bytes.byteLength > this.#limits.maxFileBytes) limited()
+      return [normalized, bytes] as const
+    })
+    if (new Set(prepared.map(([path]) => path)).size !== prepared.length) limited()
+    if (prepared.some(([path]) => this.#readOnly.has(path))) denied()
+    const newFiles = prepared.filter(([path]) => !this.#files.has(path)).length
+    if (this.#files.size + newFiles > this.#limits.maxFiles) limited()
+    const replaced = prepared.reduce(
+      (sum, [path]) => sum + (this.#files.get(path)?.byteLength ?? 0),
+      0,
+    )
+    const added = prepared.reduce((sum, [, bytes]) => sum + bytes.byteLength, 0)
+    const total = [...this.#files.values()].reduce((sum, value) => sum + value.byteLength, 0)
+    if (total - replaced + added > this.#limits.maxTotalBytes) limited()
+    for (const [path, bytes] of prepared) this.#files.set(path, bytes)
+  }
+
   mountReadOnly(path: string, content: string | Uint8Array): void {
     this.mountReadOnlyBatch([[path, content]])
   }
@@ -151,6 +173,19 @@ export class InMemoryVfs {
   list(path: string): string[] {
     const prefix = `${this.normalize(path).replace(/\/$/, '')}/`
     return [...this.#files.keys()].filter((name) => name.startsWith(prefix)).sort()
+  }
+
+  unmountReadOnlyTree(path: string): void {
+    const root = this.normalize(path)
+    if (!root.startsWith('/home/skills/')) denied()
+    const prefix = `${root.replace(/\/$/, '')}/`
+    for (const name of [...this.#files.keys()]) {
+      if (name === root || name.startsWith(prefix)) {
+        if (!this.#readOnly.has(name)) denied()
+        this.#files.delete(name)
+        this.#readOnly.delete(name)
+      }
+    }
   }
 
   clear(): void {

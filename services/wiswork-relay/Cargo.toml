@@ -8,6 +8,7 @@ license = "Apache-2.0"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 futures-util = "0.3"
+jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs"] }
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 sha2 = "0.10"

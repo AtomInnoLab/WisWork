@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
+import { officeCapabilityFlags, officeWorkspaceMode } from '../build-config.js'
 import type { OfficeProposal, StructuredProposal } from './agent/proposal-controller.js'
 import { MAX_SKILL_BYTES } from './skills/shared/skill-registry.js'
 import { MAX_VFS_FILE_BYTES } from './skills/shared/vfs.js'
@@ -9,6 +10,10 @@ import {
   useOfficeAgent,
   type OfficeAgentSession,
 } from './agent/use-office-agent.js'
+import type {
+  OfficePresentationEvent,
+  ProposalPresentationEvent,
+} from './agent/presentation-state.js'
 import { createPcBridgeSession } from './pc-bridge/session.js'
 import { createOfficeRelaySession, officeTransportMode } from './relay/session.js'
 import {
@@ -68,6 +73,10 @@ export function safeUploadError(error: unknown): string {
     'vfs_path_denied',
     'invalid_skill_package',
     'skill_already_installed',
+    'skill_not_installed',
+    'skill_package_limit',
+    'skill_package_timeout',
+    'office_capability_disabled',
   ].includes(code)
     ? code
     : 'upload_failed'
@@ -80,7 +89,30 @@ interface SessionFile {
   text(): Promise<string>
 }
 
+export interface OfficeWorkspaceUi {
+  readonly attachments: () => readonly string[]
+  readonly skills: () => readonly string[]
+  readonly skillPackagesEnabled: boolean
+  readonly upload: (file: SessionFile) => Promise<void>
+  readonly uninstallSkill?: (name: string) => void
+  readonly clear: () => void
+}
+
+export function createOfficeWorkspaceUi(runtime: OfficeHostRuntime): OfficeWorkspaceUi {
+  return Object.freeze({
+    attachments: () => Object.freeze([...runtime.vfs.list('/home/user')]),
+    skills: () => Object.freeze(runtime.skills.list().map((skill) => skill.name)),
+    skillPackagesEnabled: runtime.skillPackagesEnabled,
+    upload: (file: SessionFile) => uploadSessionFile(runtime, file),
+    uninstallSkill: (name: string) => runtime.uninstallSkill(name),
+    clear: () => runtime.clearSession(),
+  })
+}
+
 export function uploadSessionFile(runtime: OfficeHostRuntime, file: SessionFile): Promise<void> {
+  if (file.name.toLowerCase().endsWith('.zip')) {
+    return runtime.installSkillPackage(file.arrayBuffer())
+  }
   if (file.name === 'SKILL.md') {
     if (file.size > MAX_SKILL_BYTES) return Promise.reject(new Error('invalid_skill_package'))
     return runtime.installSkill(file.text())
@@ -89,24 +121,177 @@ export function uploadSessionFile(runtime: OfficeHostRuntime, file: SessionFile)
   return runtime.uploadFile(file.name, file.arrayBuffer())
 }
 
+export type WorkspacePanelName = 'attachments' | 'skills'
+
+export function composerKeyAction(event: {
+  key: string
+  shiftKey: boolean
+  isComposing: boolean
+}): 'send' | 'newline' | 'none' {
+  if (event.key !== 'Enter') return 'none'
+  return event.shiftKey || event.isComposing ? 'newline' : 'send'
+}
+
+interface FocusTarget {
+  focus(): void
+}
+
+export function focusWorkspacePanel(heading: FocusTarget, opener: FocusTarget): () => void {
+  heading.focus()
+  return () => opener.focus()
+}
+
+const starterPrompts: Record<OfficeHost, string[]> = {
+  word: ['Summarize this document', 'Make the selected text clearer'],
+  excel: ['Explain the selected data', 'Find patterns in this workbook'],
+  powerpoint: ['Review this presentation', 'Improve the selected slide'],
+  unknown: ['Help with this document'],
+}
+
+function ProposalReview(props: {
+  event: ProposalPresentationEvent
+  activeProposalId?: string
+  busy: boolean
+  applying: boolean
+  confirm: (id: string) => void
+  reject: () => void
+}) {
+  const { event } = props
+  const presentation = proposalPresentation(event.proposal)
+  const canReview = event.state === 'pending' && props.activeProposalId === event.proposal.id
+  return (
+    <article
+      className={`proposal-card proposal-${event.state}`}
+      aria-label="Proposed document change"
+    >
+      <div className="proposal-heading">
+        <span className="eyebrow">
+          {event.state === 'pending'
+            ? 'Approval required'
+            : event.state === 'applying'
+              ? 'Applying approved change'
+              : event.state === 'applied'
+                ? 'Change applied'
+                : event.state === 'rejected'
+                  ? 'Change rejected'
+                  : 'Change failed'}
+        </span>
+        <h2>{presentation.title}</h2>
+      </div>
+      {!isLegacyProposal(event.proposal) && (
+        <div className="proposal-impact">
+          <span>{presentation.host}</span>
+          <span>{presentation.count} item(s)</span>
+          <span>{presentation.targets.join(', ') || 'No named targets'}</span>
+        </div>
+      )}
+      <details className="proposal-preview" open>
+        <summary>Review exact impact</summary>
+        <div className="proposal-diff">
+          <div className="preview-block">
+            <strong>Before</strong>
+            <pre>{presentation.before || '(not available)'}</pre>
+          </div>
+          <div className="preview-block after">
+            <strong>After</strong>
+            <pre>{presentation.after || '(described by preview)'}</pre>
+          </div>
+        </div>
+        {presentation.preview && <pre>{presentation.preview}</pre>}
+        {presentation.code && <pre className="code-preview">{presentation.code}</pre>}
+      </details>
+      {event.error && <p className="error-text">{event.error}</p>}
+      {canReview && (
+        <div className="actions">
+          <button
+            type="button"
+            className="secondary"
+            disabled={props.applying}
+            onClick={props.reject}
+          >
+            Reject
+          </button>
+          <button
+            type="button"
+            disabled={props.busy || props.applying}
+            onClick={() => props.confirm(event.proposal.id)}
+          >
+            {props.applying ? 'Applying…' : 'Confirm change'}
+          </button>
+        </div>
+      )}
+      {event.state === 'applying' && <p className="proposal-state">Applying…</p>}
+    </article>
+  )
+}
+
+function TimelineEvent(props: {
+  event: OfficePresentationEvent
+  activeProposalId?: string
+  busy: boolean
+  applying: boolean
+  confirm: (id: string) => void
+  reject: () => void
+}) {
+  const { event } = props
+  if (event.kind === 'proposal') return <ProposalReview {...props} event={event} />
+  if (event.kind === 'tool') {
+    return (
+      <article
+        className={`tool-event tool-${event.state}`}
+        aria-label={`${event.name} tool activity`}
+      >
+        <span className="tool-indicator" aria-hidden="true" />
+        <div>
+          <strong>{event.name}</strong>
+          <p>{event.summary}</p>
+        </div>
+      </article>
+    )
+  }
+  return (
+    <article
+      className={`timeline-message message-${event.kind}`}
+      {...(event.kind === 'error' ? { role: 'alert' } : {})}
+    >
+      <span className="message-role">{event.kind === 'user' ? 'You' : 'WisWork'}</span>
+      <p>{event.text}</p>
+      {event.kind === 'assistant' && event.streaming && (
+        <span className="streaming-cursor" aria-label="Response streaming" />
+      )}
+    </article>
+  )
+}
+
 export function AgentWorkspace(props: {
   session: OfficeAgentSession
-  runtime: OfficeHostRuntime
+  ui: OfficeWorkspaceUi
   disconnect: () => void
   host: OfficeHost
+  initialPanel?: WorkspacePanelName
 }) {
-  const { session, runtime, disconnect, host } = props
+  const { session, ui, disconnect, host } = props
   const state = useOfficeAgent(session)
   const [instruction, setInstruction] = useState('')
-  const [files, setFiles] = useState<string[]>(runtime.vfs.list('/home/user'))
+  const [files, setFiles] = useState<readonly string[]>(ui.attachments())
+  const [skills, setSkills] = useState<readonly string[]>(ui.skills())
   const [uploadError, setUploadError] = useState('')
+  const [panel, setPanel] = useState<WorkspacePanelName | undefined>(props.initialPanel)
   const mounted = useRef(true)
+  const panelHeading = useRef<HTMLHeadingElement>(null)
+  const panelOpener = useRef<HTMLButtonElement | undefined>(undefined)
   useEffect(
     () => () => {
       mounted.current = false
     },
     [],
   )
+  useEffect(() => {
+    const heading = panelHeading.current
+    const opener = panelOpener.current
+    if (!panel || !heading || !opener) return
+    return focusWorkspacePanel(heading, opener)
+  }, [panel])
 
   function send() {
     if (!instruction.trim()) return
@@ -115,168 +300,431 @@ export function AgentWorkspace(props: {
   }
 
   const proposal = state.proposal
-  const presentation = proposal ? proposalPresentation(proposal) : undefined
+  const hasTimeline = state.timeline.length > 0
 
   return (
-    <main className="taskpane">
+    <main className="agent-workspace" aria-busy={state.busy || state.applying}>
       <header className="app-header">
         <div>
           <span className="eyebrow">WisWork Agent</span>
-          <h1>Work with your selection</h1>
-          <p>{hostLabels[host]} is connected. Edits always require your approval.</p>
-        </div>
-        <button
-          type="button"
-          className="quiet"
-          disabled={state.applying}
-          onClick={() => {
-            disconnect()
-          }}
-        >
-          Log out
-        </button>
-      </header>
-
-      <section className="status-card" aria-live="polite">
-        <span className={`status-dot ${state.busy || state.applying ? 'busy' : ''}`} />
-        <div>
-          <strong>
-            {state.applying
-              ? 'Applying approved change'
-              : state.busy
-                ? 'Agent is working'
-                : 'Agent is ready'}
-          </strong>
-          <p>
-            {state.activity ||
-              (state.status === 'cancelled' ? 'Run stopped' : 'Ask about the current selection.')}
+          <h1>{hostLabels[host]}</h1>
+          <p className="connection-line">
+            <span className="connection-dot" />
+            PC connected
           </p>
         </div>
+        <div className="header-actions">
+          <button
+            type="button"
+            className="quiet"
+            disabled={state.applying}
+            onClick={() => {
+              session.newTask()
+              ui.clear()
+              setFiles([])
+              setSkills([])
+              setPanel(undefined)
+              setUploadError('')
+            }}
+          >
+            New task
+          </button>
+          <details className="session-menu">
+            <summary aria-label="Session menu">•••</summary>
+            <button type="button" disabled={state.applying} onClick={disconnect}>
+              Log out
+            </button>
+          </details>
+        </div>
+      </header>
+
+      <section className="agent-status" aria-live="polite">
+        <span className={`status-dot ${state.busy || state.applying ? 'busy' : ''}`} />
+        <strong>
+          {state.applying
+            ? 'Applying approved change'
+            : state.busy
+              ? 'Agent is working'
+              : 'Agent is ready'}
+        </strong>
+        <span>{state.activity || (state.status === 'cancelled' ? 'Run stopped' : '')}</span>
       </section>
 
-      {(state.assistantText || state.error) && (
-        <section className="message-card" aria-live="polite">
-          {state.assistantText && <p className="assistant-text">{state.assistantText}</p>}
-          {state.error && <p className="error-text">{state.error}</p>}
-        </section>
-      )}
+      <section className="agent-timeline" aria-label="Agent conversation" aria-live="polite">
+        {!hasTimeline && (
+          <div className="empty-state">
+            <span className="agent-mark" aria-hidden="true">
+              W
+            </span>
+            <h2>What are we working on?</h2>
+            <p>
+              Ask WisWork to read, explain, or prepare a change. Document edits always need
+              approval.
+            </p>
+            <div className="starter-prompts">
+              {starterPrompts[host].map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  className="prompt-chip"
+                  onClick={() => session.send(prompt)}
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {state.timeline.map((event) => (
+          <TimelineEvent
+            key={event.id}
+            event={event}
+            activeProposalId={proposal?.id}
+            busy={state.busy}
+            applying={state.applying}
+            confirm={(id) => void session.confirm(id)}
+            reject={() => session.reject()}
+          />
+        ))}
+        {proposal &&
+          !state.timeline.some(
+            (event) => event.kind === 'proposal' && event.proposal.id === proposal.id,
+          ) && (
+            <ProposalReview
+              event={{
+                id: `proposal-${proposal.id}`,
+                kind: 'proposal',
+                proposal,
+                state: 'pending',
+              }}
+              activeProposalId={proposal.id}
+              busy={state.busy}
+              applying={state.applying}
+              confirm={(id) => void session.confirm(id)}
+              reject={() => session.reject()}
+            />
+          )}
+        {state.error && state.errorMessage && (
+          <div className="error-banner" role="alert">
+            <div>
+              <p>{state.errorMessage}</p>
+              <span className="error-code">{state.error}</span>
+            </div>
+            {state.retryable && (
+              <button
+                type="button"
+                className="secondary"
+                disabled={state.applying}
+                onClick={() => session.retry()}
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        )}
+      </section>
 
-      {proposal && (
-        <section className="proposal-card" aria-label="Proposed document change">
-          <div className="proposal-heading">
-            <span className="eyebrow">Approval required</span>
-            <h2>{presentation?.title}</h2>
-          </div>
-          {!isLegacyProposal(proposal) && (
-            <div className="preview-block">
-              <strong>Impact</strong>
-              <p>
-                {presentation?.host}: {presentation?.count} item(s)
-              </p>
-              <pre>{presentation?.targets.join('\n') || '(no named targets)'}</pre>
-            </div>
-          )}
-          <div className="preview-block">
-            <strong>Before</strong>
-            <pre>{presentation?.before || '(not available)'}</pre>
-          </div>
-          <div className="preview-block after">
-            <strong>After</strong>
-            <pre>{presentation?.after || '(described by preview)'}</pre>
-          </div>
-          {!isLegacyProposal(proposal) && (
-            <div className="preview-block">
-              <strong>Preview</strong>
-              <pre>{presentation?.preview}</pre>
-            </div>
-          )}
-          {!isLegacyProposal(proposal) && proposal.code && (
-            <div className="preview-block code-preview">
-              <strong>Code</strong>
-              <pre>{presentation?.code}</pre>
-            </div>
-          )}
-          <div className="actions">
-            <button
-              type="button"
-              className="secondary"
-              disabled={state.applying}
-              onClick={() => session.reject()}
-            >
-              Reject
-            </button>
-            <button
-              type="button"
-              disabled={state.busy || state.applying}
-              onClick={() => void session.confirm(proposal.id)}
-            >
-              {state.applying ? 'Applying…' : 'Confirm change'}
-            </button>
-          </div>
-        </section>
-      )}
-
-      <section className="composer-card" aria-label="Session files">
-        <label htmlFor="session-upload">Session files</label>
-        <input
-          id="session-upload"
-          type="file"
-          onChange={(event) => {
-            const file = event.currentTarget.files?.[0]
-            if (!file) return
-            setUploadError('')
-            const operation = uploadSessionFile(runtime, file)
-            void operation
-              .then(() => {
-                if (mounted.current) setFiles(runtime.vfs.list('/home/user'))
-              })
-              .catch((error: unknown) => {
-                if (!mounted.current) return
-                setUploadError(safeUploadError(error))
-              })
+      {panel && (
+        <section
+          className="management-panel"
+          role="dialog"
+          aria-modal="false"
+          aria-labelledby="panel-title"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setPanel(undefined)
           }}
-        />
-        <p>Upload a file, or upload a file named SKILL.md to install its bounded skill package.</p>
-        {uploadError && <p className="error-text">{uploadError}</p>}
-        <p>{files.length ? files.join(', ') : 'No uploaded files in this session.'}</p>
-        <p>
-          Installed skills:{' '}
-          {runtime.skills
-            .list()
-            .map((skill) => skill.name)
-            .join(', ') || 'none'}
-        </p>
-      </section>
+        >
+          <div className="panel-heading">
+            <h2 id="panel-title" ref={panelHeading} tabIndex={-1}>
+              {panel === 'attachments' ? 'Session attachments' : 'Installed skills'}
+            </h2>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Close panel"
+              onClick={() => setPanel(undefined)}
+            >
+              ×
+            </button>
+          </div>
+          {panel === 'attachments' ? (
+            <>
+              <label
+                className="upload-button"
+                htmlFor="session-upload"
+                aria-disabled={state.applying}
+              >
+                Add attachment
+              </label>
+              <input
+                id="session-upload"
+                className="visually-hidden"
+                type="file"
+                disabled={state.applying}
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0]
+                  if (!file) return
+                  setUploadError('')
+                  void ui
+                    .upload(file)
+                    .then(() => mounted.current && setFiles(ui.attachments()))
+                    .catch(
+                      (error: unknown) => mounted.current && setUploadError(safeUploadError(error)),
+                    )
+                }}
+              />
+              <p>Files stay in this bounded session and are cleared on logout.</p>
+              {uploadError && (
+                <p className="error-text" role="alert">
+                  {uploadError}
+                </p>
+              )}
+              <ul>
+                {files.map((file) => (
+                  <li key={file}>{file.split('/').at(-1)}</li>
+                ))}
+              </ul>
+              {!files.length && <p>No session attachments.</p>}
+            </>
+          ) : (
+            <>
+              {ui.skillPackagesEnabled && (
+                <>
+                  <label
+                    className="upload-button"
+                    htmlFor="skill-package-upload"
+                    aria-disabled={state.applying}
+                  >
+                    Install skill package
+                  </label>
+                  <input
+                    id="skill-package-upload"
+                    className="visually-hidden"
+                    type="file"
+                    accept=".zip,application/zip"
+                    disabled={state.applying}
+                    onChange={(event) => {
+                      const file = event.currentTarget.files?.[0]
+                      if (!file) return
+                      setUploadError('')
+                      void ui
+                        .upload(file)
+                        .then(() => mounted.current && setSkills(ui.skills()))
+                        .catch(
+                          (error: unknown) =>
+                            mounted.current && setUploadError(safeUploadError(error)),
+                        )
+                    }}
+                  />
+                </>
+              )}
+              <p>Installed instructions can guide the Agent but cannot add Office authority.</p>
+              {uploadError && (
+                <p className="error-text" role="alert">
+                  {uploadError}
+                </p>
+              )}
+              <ul>
+                {skills.map((skill) => (
+                  <li key={skill}>
+                    <span>{skill}</span>
+                    <button
+                      type="button"
+                      className="quiet"
+                      disabled={state.applying}
+                      onClick={() => {
+                        try {
+                          ui.uninstallSkill?.(skill)
+                          setSkills(ui.skills())
+                        } catch (error) {
+                          setUploadError(safeUploadError(error))
+                        }
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {!skills.length && <p>No installed skills.</p>}
+            </>
+          )}
+        </section>
+      )}
 
-      <section className="composer-card">
-        <label htmlFor="instruction">What should the Agent do?</label>
+      <section className="composer-shell" aria-label="Message WisWork Agent">
+        <label className="visually-hidden" htmlFor="instruction">
+          Message WisWork Agent
+        </label>
         <textarea
           id="instruction"
           value={instruction}
           onChange={(event) => setInstruction(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
+            if (
+              composerKeyAction({
+                key: event.key,
+                shiftKey: event.shiftKey,
+                isComposing: event.nativeEvent.isComposing,
+              }) === 'send'
+            ) {
               event.preventDefault()
               send()
             }
           }}
-          placeholder="For example: make the selected paragraph clearer"
-          rows={4}
+          placeholder={`Ask about ${hostLabels[host]}…`}
+          rows={3}
           maxLength={12_000}
           disabled={state.busy || state.applying}
         />
-        <div className="actions">
+        <div className="composer-toolbar">
+          <div className="composer-tools">
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Attachments"
+              aria-expanded={panel === 'attachments'}
+              disabled={state.applying}
+              onClick={(event) => {
+                panelOpener.current = event.currentTarget
+                setPanel(panel === 'attachments' ? undefined : 'attachments')
+              }}
+            >
+              ＋
+            </button>
+            <button
+              type="button"
+              className="tool-button"
+              aria-expanded={panel === 'skills'}
+              disabled={state.applying}
+              onClick={(event) => {
+                panelOpener.current = event.currentTarget
+                setPanel(panel === 'skills' ? undefined : 'skills')
+              }}
+            >
+              Skills
+            </button>
+          </div>
           {state.busy ? (
             <button
               type="button"
-              className="secondary"
+              className="stop-button"
               disabled={state.applying}
               onClick={() => session.stop()}
             >
               Stop
             </button>
           ) : (
-            <button type="button" disabled={!instruction.trim() || state.applying} onClick={send}>
+            <button
+              className="send-button"
+              type="button"
+              aria-label="Send message"
+              disabled={!instruction.trim() || state.applying}
+              onClick={send}
+            >
+              ↑
+            </button>
+          )}
+        </div>
+      </section>
+    </main>
+  )
+}
+
+export function LegacyAgentWorkspace(props: {
+  session: OfficeAgentSession
+  ui: OfficeWorkspaceUi
+  disconnect: () => void
+  host: OfficeHost
+}) {
+  const state = useOfficeAgent(props.session)
+  const [instruction, setInstruction] = useState('')
+  const [files, setFiles] = useState<readonly string[]>(props.ui.attachments())
+  const [uploadError, setUploadError] = useState('')
+  const proposal = state.proposal
+  return (
+    <main className="taskpane legacy-workspace">
+      <header className="app-header">
+        <div>
+          <span className="eyebrow">WisWork Agent</span>
+          <h1>Work with your selection</h1>
+          <p>{hostLabels[props.host]} is connected. Edits always require your approval.</p>
+        </div>
+        <button
+          type="button"
+          className="quiet"
+          disabled={state.applying}
+          onClick={props.disconnect}
+        >
+          Log out
+        </button>
+      </header>
+      <section className="agent-status" aria-live="polite">
+        <strong>{state.busy ? 'Agent is working' : 'Agent is ready'}</strong>
+        <span>{state.activity}</span>
+      </section>
+      {state.assistantText && <p className="assistant-text">{state.assistantText}</p>}
+      {state.errorMessage && (
+        <p className="error-text" role="alert">
+          {state.errorMessage}
+        </p>
+      )}
+      {proposal && (
+        <ProposalReview
+          event={{ id: `legacy-${proposal.id}`, kind: 'proposal', proposal, state: 'pending' }}
+          activeProposalId={proposal.id}
+          busy={state.busy}
+          applying={state.applying}
+          confirm={(id) => void props.session.confirm(id)}
+          reject={() => props.session.reject()}
+        />
+      )}
+      <section className="management-panel" aria-label="Session files">
+        <label className="upload-button" htmlFor="legacy-session-upload">
+          Add session file
+        </label>
+        <input
+          id="legacy-session-upload"
+          type="file"
+          disabled={state.applying}
+          onChange={(event) => {
+            const file = event.currentTarget.files?.[0]
+            if (!file) return
+            setUploadError('')
+            void props.ui
+              .upload(file)
+              .then(() => setFiles(props.ui.attachments()))
+              .catch((error: unknown) => setUploadError(safeUploadError(error)))
+          }}
+        />
+        {uploadError && <p className="error-text">{uploadError}</p>}
+        <p>{files.length ? files.join(', ') : 'No uploaded files in this session.'}</p>
+        <p>Installed skills: {props.ui.skills().join(', ') || 'none'}</p>
+      </section>
+      <section className="composer-shell" aria-label="Message WisWork Agent">
+        <label htmlFor="legacy-instruction">What should the Agent do?</label>
+        <textarea
+          id="legacy-instruction"
+          value={instruction}
+          onChange={(event) => setInstruction(event.target.value)}
+          rows={4}
+          maxLength={12_000}
+          disabled={state.busy || state.applying}
+        />
+        <div className="actions">
+          {state.busy ? (
+            <button type="button" className="secondary" onClick={() => props.session.stop()}>
+              Stop
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={!instruction.trim() || state.applying}
+              onClick={() => {
+                props.session.send(instruction)
+                setInstruction('')
+              }}
+            >
               Send
             </button>
           )}
@@ -284,6 +732,10 @@ export function AgentWorkspace(props: {
       </section>
     </main>
   )
+}
+
+export function workspaceComponentForMode(mode: 'workspace' | 'legacy') {
+  return mode === 'legacy' ? LegacyAgentWorkspace : AgentWorkspace
 }
 
 function ConfiguredApp() {
@@ -301,8 +753,10 @@ function ConfiguredApp() {
     () => bridge.snapshot(),
   )
   const [workspace, setWorkspace] = useState<
-    { runtime: OfficeHostRuntime; session: OfficeAgentSession } | undefined
+    { runtime: OfficeHostRuntime; session: OfficeAgentSession; ui: OfficeWorkspaceUi } | undefined
   >()
+  const workspaceMode = useMemo(() => officeWorkspaceMode(import.meta.env), [])
+  const capabilityFlags = useMemo(() => officeCapabilityFlags(import.meta.env), [])
   const [host, setHost] = useState<OfficeHost>('unknown')
   const [hostSupported, setHostSupported] = useState(false)
   const [status, setStatus] = useState('Connecting to Office…')
@@ -310,7 +764,8 @@ function ConfiguredApp() {
 
   useEffect(() => {
     let active = true
-    let created: { runtime: OfficeHostRuntime; session: OfficeAgentSession } | undefined
+    let created:
+      { runtime: OfficeHostRuntime; session: OfficeAgentSession; ui: OfficeWorkspaceUi } | undefined
     void (async () => {
       try {
         const activeHost = await document.initialize()
@@ -320,6 +775,9 @@ function ConfiguredApp() {
           if (activeHost !== 'unknown') {
             const runtime = createOfficeHostRuntime(activeHost, {
               enableHostSkills: import.meta.env.VITE_WISWORK_OFFICE_HOST_SKILLS !== '0',
+              enableConversions: capabilityFlags.conversions,
+              enableSkillPackages: capabilityFlags.skillPackages,
+              enableImportMedia: capabilityFlags.importMedia,
               document,
             })
             const session = createOfficeAgentSession({
@@ -327,7 +785,7 @@ function ConfiguredApp() {
               skill: runtime.skill,
               proposals: runtime.proposals,
             })
-            created = { runtime, session }
+            created = { runtime, session, ui: createOfficeWorkspaceUi(runtime) }
             setWorkspace(created)
           }
           setStatus(
@@ -348,7 +806,7 @@ function ConfiguredApp() {
       created?.runtime.dispose()
       bridge.disconnect()
     }
-  }, [bridge, document])
+  }, [bridge, capabilityFlags, document])
 
   useEffect(() => {
     if (bridgeState.status !== 'connected' && workspace) {
@@ -401,15 +859,17 @@ function ConfiguredApp() {
   }
   if (!workspace)
     return <StatusScreen title="Starting WisWork Agent" detail="Loading tools…" busy />
+  const disconnect = () => {
+    workspace.session.logout()
+    workspace.runtime.dispose()
+    bridge.disconnect()
+  }
+  const WorkspaceComponent = workspaceComponentForMode(workspaceMode)
   return (
-    <AgentWorkspace
+    <WorkspaceComponent
       session={workspace.session}
-      runtime={workspace.runtime}
-      disconnect={() => {
-        workspace.session.logout()
-        workspace.runtime.dispose()
-        bridge.disconnect()
-      }}
+      ui={workspace.ui}
+      disconnect={disconnect}
       host={host}
     />
   )

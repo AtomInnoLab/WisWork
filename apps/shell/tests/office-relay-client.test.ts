@@ -555,4 +555,181 @@ describe('Office relay PC client', () => {
     expect(socket.readyState).toBe(3)
     expect(client.status()).toBe('disconnected:auth_required')
   })
+
+  it('does not apply the renewable 30 minute Relay idle TTL as a local hard expiry', async () => {
+    vi.useFakeTimers()
+    const { client, socket } = setup()
+    const claiming = client.claim('123456')
+    await vi.advanceTimersByTimeAsync(0)
+    socket.open()
+    await claiming
+    socket.message({
+      version: 1,
+      type: 'pc.claimed',
+      pairing_id: 'pairing_12345678',
+      host: 'Word',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      verification_code: '123456',
+      expires_in: 120,
+    })
+    await client.approve('pairing_12345678')
+    socket.message({
+      version: 1,
+      type: 'pc.approved',
+      session_id: 'session_12345678',
+      capability: 'secret-capability',
+      expires_in: 1800,
+    })
+    await vi.advanceTimersByTimeAsync(31 * 60 * 1_000)
+    expect(client.status()).toBe('paired')
+    client.revoke('test_complete')
+    vi.useRealTimers()
+  })
+
+  it('uses v2 only with a fixed retrieval proxy and dispatches negotiated web requests', async () => {
+    const socket = new FakeSocket()
+    const retrievalProxy = vi.fn(async () => new TextEncoder().encode('{"results":[]}'))
+    const agentProxy = vi.fn()
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => socket,
+      getValidAccountStatus: async () => ({ loggedIn: true }),
+      getAccessToken: async () => 'access-token',
+      proxy: agentProxy,
+      retrievalProxy,
+      onPending() {},
+    })
+    const claiming = client.claim('123456')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await claiming
+    expect(JSON.parse(socket.sent[0]!)).toEqual({
+      version: 2,
+      type: 'pc.negotiate',
+      verification_code: '123456',
+      capabilities: ['agent.v1', 'web-search.v1', 'web-fetch.v1', 'image-search.v1'],
+    })
+    socket.message({
+      version: 2,
+      type: 'pc.negotiated',
+      pairing_version: 2,
+      capabilities: ['agent.v1', 'web-search.v1'],
+    })
+    expect(JSON.parse(socket.sent[1]!)).toEqual({
+      version: 2,
+      type: 'pc.claim',
+      verification_code: '123456',
+      capabilities: ['agent.v1', 'web-search.v1', 'web-fetch.v1', 'image-search.v1'],
+    })
+    socket.message({
+      version: 2,
+      type: 'pc.claimed',
+      pairing_id: 'pairing_12345678',
+      host: 'Word',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      verification_code: '123456',
+      expires_in: 120,
+      capabilities: ['agent.v1', 'web-search.v1'],
+    })
+    await client.approve('pairing_12345678')
+    socket.message({
+      version: 2,
+      type: 'pc.approved',
+      session_id: 'session_12345678',
+      capability: 'secret-capability',
+      expires_in: 1800,
+      capabilities: ['agent.v1', 'web-search.v1'],
+    })
+    socket.message({
+      version: 2,
+      type: 'relay.request',
+      session_id: 'session_12345678',
+      request_id: 'request_12345678',
+      capability_name: 'web-search.v1',
+      body: { query: 'office', max_results: 3 },
+    })
+    await vi.waitFor(() => expect(retrievalProxy).toHaveBeenCalled())
+    expect(retrievalProxy).toHaveBeenCalledWith(
+      'web-search.v1',
+      { query: 'office', max_results: 3 },
+      expect.any(AbortSignal),
+    )
+    expect(agentProxy).not.toHaveBeenCalled()
+    await vi.waitFor(() =>
+      expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual(
+        expect.objectContaining({ version: 2, type: 'pc.done' }),
+      ),
+    )
+  })
+
+  it('explicitly negotiates the Office protocol and follows a Relay-asserted v1 pairing', async () => {
+    const socket = new FakeSocket()
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => socket,
+      getValidAccountStatus: async () => ({ loggedIn: true }),
+      getAccessToken: async () => 'access-token',
+      proxy: async () => ({ status: 200, body: new Uint8Array() }),
+      negotiateCapabilities: true,
+      onPending() {},
+    })
+    const claiming = client.claim('123456')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await claiming
+    expect(JSON.parse(socket.sent[0]!)).toEqual({
+      version: 2,
+      type: 'pc.negotiate',
+      verification_code: '123456',
+      capabilities: ['agent.v1'],
+    })
+    socket.message({
+      version: 2,
+      type: 'pc.negotiated',
+      pairing_version: 1,
+      capabilities: ['agent.v1'],
+    })
+    expect(JSON.parse(socket.sent[1]!)).toEqual({
+      version: 1,
+      type: 'pc.claim',
+      verification_code: '123456',
+    })
+    socket.message({
+      version: 1,
+      type: 'pc.claimed',
+      pairing_id: 'pairing_12345678',
+      host: 'Word',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      verification_code: '123456',
+      expires_in: 120,
+    })
+    expect(client.status()).toBe('awaiting_approval')
+  })
+
+  it('does not silently downgrade when Relay skips explicit negotiation', async () => {
+    const socket = new FakeSocket()
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => socket,
+      getValidAccountStatus: async () => ({ loggedIn: true }),
+      getAccessToken: async () => 'access-token',
+      proxy: async () => ({ status: 200, body: new Uint8Array() }),
+      negotiateCapabilities: true,
+      onPending() {},
+    })
+    const claiming = client.claim('123456')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await claiming
+    socket.message({
+      version: 1,
+      type: 'pc.claimed',
+      pairing_id: 'pairing_12345678',
+      host: 'Word',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      verification_code: '123456',
+      expires_in: 120,
+    })
+    expect(client.status()).toBe('disconnected:protocol_violation')
+  })
 })
