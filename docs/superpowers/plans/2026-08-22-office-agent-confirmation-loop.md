@@ -32,4 +32,3 @@ Replace raw preview/code JSON with bounded host-aware summaries and human-readab
 ## Task 4 — Integration and release validation
 
 Run all host write-path tests, Office and agent-core full suites/typechecks, production Office build, lint, format, theme, license and diff checks. Verify build artifacts contain no source maps or unsafe-eval changes. Independently review each deliverable and the combined diff; fix Critical/Important findings within two rounds. Document real Word/Excel/PowerPoint desktop manual acceptance as the remaining release gate. No manifest update unless build-contract evidence proves otherwise.
-

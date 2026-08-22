@@ -52,4 +52,3 @@ The Office presentation layer subscribes to proposal lifecycle changes so the co
 - Full agent-core and Office test suites, typechecks, configured production build, lint, format, theme, and diff checks.
 - Independent review of core suspension semantics and Office integration, followed by broad final review.
 - Manual acceptance in desktop Word, Excel, and PowerPoint: generate a write, approve before assistant completion, observe the document mutation and resumed response; repeat reject, Stop, logout, narrow pane, and long preview cases.
-
