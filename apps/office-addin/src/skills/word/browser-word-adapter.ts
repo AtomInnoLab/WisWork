@@ -1227,36 +1227,11 @@ function canonicalWordNode(node: Node): CanonicalWordNode {
 }
 
 function ooxmlText(xml: string): string {
-  const paragraphs = [...xml.matchAll(/<w:p(?:\s[^>]*)?>([\s\S]*?)<\/w:p>/g)]
-  if (paragraphs.length === 0 && /<w:t(?:\s[^>]*)?>/.test(xml))
+  const body = wordBodyElement(xml)
+  const paragraphs = Array.from(body.getElementsByTagNameNS(W_NS, 'p'))
+  if (paragraphs.length === 0 && body.getElementsByTagNameNS(W_NS, 't').length > 0)
     throw new Error('office_read_failed')
-  return paragraphs
-    .map((paragraph) =>
-      [...paragraph[1].matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:(tab|br|cr)\s*\/>/g)]
-        .map((token) => (token[2] === 'tab' ? '\t' : token[2] ? '\n' : decodeXml(token[1])))
-        .join(''),
-    )
-    .join('\n')
-}
-
-function decodeXml(value: string): string {
-  return value.replace(/&(lt|gt|amp|quot|apos|#\d+|#x[\da-f]+);/gi, (entity, code: string) => {
-    const named: Record<string, string> = {
-      lt: '<',
-      gt: '>',
-      amp: '&',
-      quot: '"',
-      apos: "'",
-    }
-    const normalized = code.toLowerCase()
-    if (normalized in named) return named[normalized]
-    const numeric = normalized.startsWith('#x')
-      ? Number.parseInt(normalized.slice(2), 16)
-      : Number.parseInt(normalized.slice(1), 10)
-    return Number.isFinite(numeric) && numeric >= 0 && numeric <= 0x10ffff
-      ? String.fromCodePoint(numeric)
-      : entity
-  })
+  return paragraphs.map(wordText).join('\n')
 }
 
 function applyTextOperation(
