@@ -110,6 +110,12 @@ const runErrors: Readonly<Record<string, SafeSessionError>> = Object.freeze({
 
 const safeConfirmationError = (error: unknown): SafeSessionError => {
   const code = error instanceof Error ? error.message : ''
+  if (/^office_recovery_failed:word_[a-z_]+$/.test(code))
+    return {
+      code,
+      message: `The document could not be restored after the failed change (${code.split(':')[1]}).`,
+      retryable: false,
+    }
   return (
     confirmationErrors[code] ?? {
       code: 'office_write_failed',
@@ -149,10 +155,12 @@ const DIAGNOSTIC_TOOL_ERRORS = new Set([
 ])
 
 function diagnosticToolError(output: string): string {
-  if (DIAGNOSTIC_TOOL_ERRORS.has(output)) return output
+  const safe = (value: string) =>
+    DIAGNOSTIC_TOOL_ERRORS.has(value) || /^office_recovery_failed:word_[a-z_]+$/.test(value)
+  if (safe(output)) return output
   try {
     const parsed = JSON.parse(output) as { error?: unknown }
-    return typeof parsed.error === 'string' && DIAGNOSTIC_TOOL_ERRORS.has(parsed.error)
+    return typeof parsed.error === 'string' && safe(parsed.error)
       ? parsed.error
       : 'agent_run_failed'
   } catch {

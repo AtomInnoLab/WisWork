@@ -665,6 +665,10 @@ describe('Office agent session', () => {
   it.each([
     ['office_verify_failed', 'The approved change could not be verified.'],
     ['office_recovery_failed', 'The document could not be restored after the failed change.'],
+    [
+      'office_recovery_failed:word_body_shape',
+      'The document could not be restored after the failed change (word_body_shape).',
+    ],
   ])('preserves the terminal confirmation code %s with safe copy', async (code, message) => {
     const proposals = proposalsHarness()
     proposals.controller.confirm.mockRejectedValue(new Error(code))

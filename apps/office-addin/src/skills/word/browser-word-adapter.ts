@@ -822,10 +822,10 @@ async function restoreWordBody(
       typeof restored.value !== 'string' ||
       stableFingerprintOoxml(restored.value) !== fingerprint
     )
-      throw new Error('office_recovery_failed')
+      throw new Error('office_recovery_failed:word_restore_fingerprint')
   } catch (error) {
-    if (error instanceof Error && error.message === 'office_recovery_failed') throw error
-    throw new Error('office_recovery_failed', { cause: error })
+    if (error instanceof Error && error.message.startsWith('office_recovery_failed:')) throw error
+    throw new Error('office_recovery_failed:word_restore_io', { cause: error })
   }
 }
 
@@ -838,16 +838,16 @@ async function reconcileAtomicDocumentWrite(
   try {
     const current = (body.getOoxml as () => RuntimeRecord)()
     await (context.sync as () => Promise<void>)()
-    if (typeof current.value !== 'string') throw new Error('office_recovery_failed')
+    if (typeof current.value !== 'string') throw new Error('office_recovery_failed:word_readback')
     const fingerprint = stableFingerprintOoxml(current.value)
     const originalFingerprint = stableFingerprintOoxml(original)
     if (fingerprint === originalFingerprint) return
-    if (!verifyNativeDocumentWrite(original, current.value, write))
-      throw new Error('office_recovery_failed')
+    const verification = verifyNativeDocumentWriteDetailed(original, current.value, write)
+    if (!verification.valid) throw new Error(`office_recovery_failed:word_${verification.stage}`)
     await restoreWordBody(context, body, original, originalFingerprint)
   } catch (error) {
-    if (error instanceof Error && error.message === 'office_recovery_failed') throw error
-    throw new Error('office_recovery_failed', { cause: error })
+    if (error instanceof Error && error.message.startsWith('office_recovery_failed:')) throw error
+    throw new Error('office_recovery_failed:word_reconcile_io', { cause: error })
   }
 }
 
@@ -1021,11 +1021,14 @@ function normalizedDocumentText(value: string): string {
     .replace(/^\n+|\n+$/g, '')
 }
 
-function verifyNativeDocumentWrite(
+type NativeVerificationStage = 'text' | 'body_shape' | 'content' | 'boundary'
+type NativeVerificationResult = { valid: true } | { valid: false; stage: NativeVerificationStage }
+
+function verifyNativeDocumentWriteDetailed(
   before: string,
   after: string,
   write: WordDocumentWrite,
-): boolean {
+): NativeVerificationResult {
   const beforeParts = bodyParts(before)
   const afterParts = bodyParts(after)
   const expected: NativeUnit[] = []
@@ -1062,7 +1065,7 @@ function verifyNativeDocumentWrite(
     (write.mode === 'prepend' &&
       (!afterText.startsWith(insertedText) || !afterText.endsWith(beforeText)))
   )
-    return false
+    return { valid: false, stage: 'text' }
   const insertedMatches = (elements: Element[]) =>
     elements.length === expected.length &&
     expected.every((unit, offset) => {
@@ -1109,7 +1112,28 @@ function verifyNativeDocumentWrite(
       insertedMatches(afterParts.content.slice(0, expected.length)) &&
       canonicalEqual(beforeParts.content, afterParts.content.slice(expected.length))
   }
-  return valid
+  if (valid) return { valid: true }
+  const expectedLength =
+    expected.length + (write.mode === 'replace' ? 0 : beforeParts.content.length)
+  if (
+    afterParts.content.length !== expectedLength &&
+    !(
+      write.mode === 'replace' &&
+      expected.at(-1)?.type === 'table' &&
+      afterParts.content.length === expectedLength + 1
+    )
+  )
+    return { valid: false, stage: 'body_shape' }
+  if (write.mode !== 'replace') return { valid: false, stage: 'boundary' }
+  return { valid: false, stage: 'content' }
+}
+
+function verifyNativeDocumentWrite(
+  before: string,
+  after: string,
+  write: WordDocumentWrite,
+): boolean {
+  return verifyNativeDocumentWriteDetailed(before, after, write).valid
 }
 
 function bodyParts(xml: string): {

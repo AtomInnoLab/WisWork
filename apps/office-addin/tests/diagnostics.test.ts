@@ -145,4 +145,21 @@ describe('Office safe diagnostics', () => {
     })
     expect(diagnostics.exportJson()).not.toContain('secret document content')
   })
+
+  it('retains only allowlisted content-free Word recovery stages', () => {
+    const diagnostics = createOfficeDiagnostics({ host: 'word', build: 'dev' })
+    diagnostics.record({
+      phase: 'recovery',
+      errorCode: 'office_recovery_failed:word_content',
+    })
+    diagnostics.record({
+      phase: 'recovery',
+      errorCode: 'office_recovery_failed:word_secret-document-text',
+    })
+
+    expect(diagnostics.snapshot().events.map((event) => event.error_code)).toEqual([
+      'office_recovery_failed:word_content',
+      'office_write_failed',
+    ])
+  })
 })

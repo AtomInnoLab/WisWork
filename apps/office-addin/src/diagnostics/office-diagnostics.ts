@@ -122,7 +122,10 @@ const identifier = (value: unknown, fallback: string, maximum = 128): string => 
   return normalized && /^[A-Za-z0-9_.:/()-]+$/.test(normalized) ? normalized : fallback
 }
 const stableError = (value: unknown): string =>
-  typeof value === 'string' && ERROR_CODES.has(value) ? value : 'office_write_failed'
+  typeof value === 'string' &&
+  (ERROR_CODES.has(value) || /^office_recovery_failed:word_[a-z_]+$/.test(value))
+    ? value
+    : 'office_write_failed'
 const outcome = (code: string): DiagnosticOutcome =>
   code === 'office_api_unsupported' ? 'unsupported' : code === 'cancelled' ? 'cancelled' : 'failed'
 

@@ -927,6 +927,51 @@ describe('browser Word adapter', () => {
     await expect(subject.verifyDocumentWrite(write)).resolves.toBe(true)
   })
 
+  it('reports a content-free verification stage when Word changes inserted text', async () => {
+    let current =
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:body></w:document>'
+    let pending: string | undefined
+    let queuedSnapshots: Array<{ value: string }> = []
+    const body = {
+      insertOoxml: vi.fn((xml: string) => {
+        pending = xml
+      }),
+      getOoxml: vi.fn(() => {
+        const result = { value: current }
+        queuedSnapshots.push(result)
+        return result
+      }),
+    }
+    const sync = vi.fn(async () => {
+      if (pending) current = pending.replace('>New<', '>Changed<')
+      pending = undefined
+      for (const snapshot of queuedSnapshots) snapshot.value = current
+      queuedSnapshots = []
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'Word',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+    const subject = new BrowserWordAdapter()
+    const write = {
+      mode: 'replace' as const,
+      blocks: [{ type: 'paragraph' as const, spans: [{ text: 'New' }] }],
+      semanticText: 'New',
+      structure: { headings: 0, lists: 0, tables: 0 },
+    }
+
+    await expect(subject.executeDocumentWrite(write)).rejects.toThrow(
+      'office_recovery_failed:word_text',
+    )
+  })
+
   it('restores the original Word body when cancellation arrives during the write sync', async () => {
     const original =
       '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Original</w:t></w:r></w:p></w:body></w:document>'
