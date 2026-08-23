@@ -671,6 +671,11 @@ function buildDocumentWriteOoxml(original: string, write: WordDocumentWrite): st
       separated.push(createWordParagraph(document, []))
     separated.push(node)
   }
+  if (write.mode === 'append') {
+    const boundary = withoutTrailingTableParagraphs(existing)
+    for (const element of existing.slice(boundary.length)) element.remove()
+    existing.splice(boundary.length)
+  }
   if (
     write.mode === 'append' &&
     existing.at(-1)?.localName === 'tbl' &&
@@ -1038,7 +1043,8 @@ function verifyNativeDocumentWriteDetailed(
     expected.push(unit)
   }
   const firstBefore = beforeParts.content[0]
-  const lastBefore = beforeParts.content.at(-1)
+  const appendBoundary = withoutTrailingTableParagraphs(beforeParts.content)
+  const lastBefore = appendBoundary.at(-1)
   if (write.mode === 'append' && lastBefore?.localName === 'tbl' && expected[0]?.type === 'table')
     expected.unshift({ type: 'paragraph', spans: [] })
   if (
@@ -1100,11 +1106,11 @@ function verifyNativeDocumentWriteDetailed(
           ),
         )
   } else if (write.mode === 'append') {
-    const boundary = beforeParts.content.length
-    valid =
-      afterParts.content.length === boundary + expected.length &&
-      canonicalEqual(beforeParts.content, afterParts.content.slice(0, boundary)) &&
-      insertedMatches(afterParts.content.slice(boundary))
+    const inserted = afterParts.content.slice(-expected.length)
+    const currentBoundary = withoutTrailingTableParagraphs(
+      afterParts.content.slice(0, -expected.length),
+    )
+    valid = canonicalEqual(appendBoundary, currentBoundary) && insertedMatches(inserted)
   } else {
     valid =
       afterParts.content.length === expected.length + beforeParts.content.length &&
@@ -1152,6 +1158,20 @@ function bodyParts(xml: string): {
 
 function isEmptyParagraph(signature: DocumentSignature | undefined): boolean {
   return signature?.type === 'paragraph' && signature.text === ''
+}
+
+function withoutTrailingTableParagraphs(elements: Element[]): Element[] {
+  let boundary = elements.length
+  while (
+    boundary > 0 &&
+    elements[boundary - 1]?.namespaceURI === W_NS &&
+    elements[boundary - 1]?.localName === 'p' &&
+    wordText(elements[boundary - 1]!) === ''
+  )
+    boundary -= 1
+  return boundary < elements.length && elements[boundary - 1]?.localName === 'tbl'
+    ? elements.slice(0, boundary)
+    : elements
 }
 
 function stableFingerprintOoxml(xml: string): string {
