@@ -851,10 +851,6 @@ interface TableSignature {
 
 type DocumentSignature = ParagraphSignature | TableSignature
 
-function normalizedStyle(value: string): string {
-  return value.replace(/[\s_-]/g, '').toLowerCase()
-}
-
 function wordText(element: Element): string {
   return Array.from(element.getElementsByTagNameNS(W_NS, '*'))
     .filter((child) => ['t', 'tab', 'br', 'cr'].includes(child.localName))
@@ -971,10 +967,7 @@ function signatureMatches(unit: NativeUnit, actual: DocumentSignature): boolean 
   if (actual.type !== 'paragraph' || !spansMatch(unit.spans, actual)) return false
   if (unit.styleBuiltIn) {
     const level = Number(unit.styleBuiltIn.replace('Heading', '')) - 1
-    return (
-      normalizedStyle(actual.style) === normalizedStyle(unit.styleBuiltIn) &&
-      actual.outlineLevel === level
-    )
+    return actual.outlineLevel === level
   }
   if (unit.list) return actual.listKind === (unit.ordered ? 'ordered' : 'unordered')
   return true
