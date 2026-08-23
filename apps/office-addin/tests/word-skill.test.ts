@@ -855,10 +855,9 @@ describe('browser Word adapter', () => {
     }
     const sync = vi.fn(async () => {
       if (pending)
-        current = pending.replace(
-          '</w:tbl>',
-          '</w:tbl><w:p/><w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p>',
-        )
+        current = pending
+          .replace('</w:tbl>', '</w:tbl><w:p/><w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p>')
+          .replace('</w:body>', '<w:p/></w:body>')
       pending = undefined
       for (const snapshot of queuedSnapshots) snapshot.value = current
       queuedSnapshots = []
@@ -906,10 +905,9 @@ describe('browser Word adapter', () => {
     }
     const sync = vi.fn(async () => {
       if (pending)
-        current = pending.replace(
-          '</w:tbl>',
-          '</w:tbl><w:p/><w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p>',
-        )
+        current = pending
+          .replace('</w:tbl>', '</w:tbl><w:p/><w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p>')
+          .replace('</w:body>', '<w:p/></w:body>')
       pending = undefined
       for (const snapshot of queuedSnapshots) snapshot.value = current
       queuedSnapshots = []

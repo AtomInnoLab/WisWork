@@ -198,10 +198,24 @@ describe('Office cloud relay session', () => {
     )
     await expect(accepted).resolves.toBeUndefined()
     expect(session.snapshot().status).toBe('connected')
+    const staged = session.sendDiagnostic({
+      ...diagnostic,
+      event_id: '00000000-0000-4000-8000-000000000003',
+      error_code: 'office_recovery_failed:word_body_shape',
+    })
+    expect(frame(socket, 2).error_code).toBe('office_recovery_failed')
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.diagnostic.accepted',
+        event_id: '00000000-0000-4000-8000-000000000003',
+      }),
+    )
+    await expect(staged).resolves.toBeUndefined()
     await expect(
       session.sendDiagnostic({ ...diagnostic, tool: 'x'.repeat(5_000) }),
     ).rejects.toThrow('diagnostic_too_large')
-    expect(socket.sent).toHaveLength(2)
+    expect(socket.sent).toHaveLength(3)
   })
 
   it('keeps Agent streaming usable after a nonfatal diagnostic limit response', async () => {
