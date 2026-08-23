@@ -18,6 +18,8 @@ const MAX_SLIDE_INDEX = 100_000
 const MAX_CODE = 32 * 1024
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
 const POWERPOINT_GEOMETRY_EPSILON = 0.01
+const POWERPOINT_CREATED_SHAPE_VERIFY_ATTEMPTS = 3
+const POWERPOINT_CREATED_SHAPE_VERIFY_DELAY_MS = 50
 const slideInput = exactObject({
   slide_index: integerField({ min: 0, max: MAX_SLIDE_INDEX }),
   explanation: optionalField(stringField({ maxLength: 50 })),
@@ -233,6 +235,10 @@ function exactRecord(value: unknown, keys: string[]): Record<string, unknown> {
 
 function sameGeometry(actual: number, expected: number): boolean {
   return Math.abs(actual - expected) <= POWERPOINT_GEOMETRY_EPSILON
+}
+
+function waitForCreatedShapeReadback(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, POWERPOINT_CREATED_SHAPE_VERIFY_DELAY_MS))
 }
 
 function parseXmlProgram(code: string): XmlReplacement[] {
@@ -667,17 +673,43 @@ export function createPowerPointSkill(options: {
                   )
                   if (current.text !== operation.text) throw new Error('office_verify_failed')
                 } else if (operation.op !== 'duplicate_slide') {
+                  if (operation.op === 'add_text_box') {
+                    const createdShapeId = declarativeResult?.createdShapeIds[createdShapeIndex++]
+                    for (
+                      let attempt = 0;
+                      attempt < POWERPOINT_CREATED_SHAPE_VERIFY_ATTEMPTS;
+                      attempt += 1
+                    ) {
+                      const current = await options.adapter.listSlideShapes(
+                        operation.slide_index,
+                        confirmSignal,
+                      )
+                      const shape = current.shapes.find((item) => item.id === createdShapeId)
+                      if (
+                        shape &&
+                        sameGeometry(shape.left, operation.left) &&
+                        sameGeometry(shape.top, operation.top) &&
+                        sameGeometry(shape.width, operation.width) &&
+                        sameGeometry(shape.height, operation.height)
+                      ) {
+                        const text = await options.adapter.readSlideText(
+                          operation.slide_index,
+                          shape.id,
+                          confirmSignal,
+                        )
+                        if (text.text === operation.text) break
+                      }
+                      if (attempt === POWERPOINT_CREATED_SHAPE_VERIFY_ATTEMPTS - 1)
+                        throw new Error('office_verify_failed')
+                      await waitForCreatedShapeReadback()
+                    }
+                    continue
+                  }
                   const current = await options.adapter.listSlideShapes(
                     operation.slide_index,
                     confirmSignal,
                   )
-                  const shape =
-                    operation.op === 'add_text_box'
-                      ? current.shapes.find(
-                          (item) =>
-                            item.id === declarativeResult?.createdShapeIds[createdShapeIndex++],
-                        )
-                      : current.shapes.find((item) => item.id === operation.shape_id)
+                  const shape = current.shapes.find((item) => item.id === operation.shape_id)
                   if (operation.op === 'delete_shape') {
                     if (shape) throw new Error('office_verify_failed')
                   } else if (
@@ -688,13 +720,6 @@ export function createPowerPointSkill(options: {
                     !sameGeometry(shape.height, operation.height)
                   ) {
                     throw new Error('office_verify_failed')
-                  } else if (operation.op === 'add_text_box') {
-                    const text = await options.adapter.readSlideText(
-                      operation.slide_index,
-                      shape.id,
-                      confirmSignal,
-                    )
-                    if (text.text !== operation.text) throw new Error('office_verify_failed')
                   }
                 }
               }
