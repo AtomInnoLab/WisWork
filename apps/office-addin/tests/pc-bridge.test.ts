@@ -275,6 +275,38 @@ describe('PC bridge session', () => {
     expect(JSON.stringify(session.snapshot())).not.toContain('cap')
   })
 
+  it('retains an approved capability after a transient message request failure', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            pairing_id: 'pair',
+            polling_secret: 'poll',
+            verification_code: '123456',
+            expires_in: 120,
+          }),
+          { status: 202 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ status: 'approved', capability: 'cap', expires_in: 900 })),
+      )
+      .mockRejectedValueOnce(new TypeError('temporary loopback failure'))
+      .mockResolvedValueOnce(new Response('', { status: 200 }))
+    const session = createPcBridgeSession({ endpoint, fetch, delay: async () => undefined })
+    await session.connect('word')
+
+    await expect(session.authenticatedFetch('/v1/office/messages', {})).rejects.toThrow(
+      'bridge_offline',
+    )
+    expect(session.snapshot()).toEqual({ status: 'connected' })
+    await expect(session.authenticatedFetch('/v1/office/messages', {})).resolves.toMatchObject({
+      status: 200,
+    })
+    expect(new Headers(fetch.mock.calls[3]![1].headers).get('authorization')).toBe('Bridge cap')
+  })
+
   it('maps network failure to offline and 401 to signed_out', async () => {
     const offline = createPcBridgeSession({
       endpoint,

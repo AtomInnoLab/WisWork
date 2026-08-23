@@ -384,8 +384,6 @@ export function createPcBridgeSession(dependencies: Dependencies = {}): PcBridge
           invalidate('signed_out')
         return response
       } catch (error) {
-        if (generation === requestGeneration && capability === requestCapability)
-          invalidate('offline')
         throw new Error('bridge_offline', { cause: error })
       }
     },
