@@ -85,7 +85,9 @@ const PROPOSAL_ERROR_CODES = new Set([
 
 function stableProposalError(error: unknown): string {
   const code = error instanceof Error ? error.message : ''
-  return PROPOSAL_ERROR_CODES.has(code) ? code : 'office_write_failed'
+  return PROPOSAL_ERROR_CODES.has(code) || /^office_recovery_failed:word_[a-z_]+$/.test(code)
+    ? code
+    : 'office_write_failed'
 }
 
 function boundedCopy<T>(value: T): T {
@@ -227,7 +229,7 @@ export function createStructuredProposalController(
         const code = stableProposalError(error)
         diagnose(() =>
           diagnostics?.record({
-            phase: code === 'office_recovery_failed' ? 'recovery' : phase,
+            phase: code.startsWith('office_recovery_failed') ? 'recovery' : phase,
             errorCode: code,
             error,
             durationMs: Math.max(0, Date.now() - phaseStartedAt),
