@@ -838,6 +838,57 @@ describe('browser Word adapter', () => {
     await expect(subject.verifyDocumentWrite(write)).resolves.toBe(true)
   })
 
+  it('accepts multiple transient empty paragraphs Word appends after a final table', async () => {
+    let current =
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:body></w:document>'
+    let pending: string | undefined
+    let queuedSnapshots: Array<{ value: string }> = []
+    const body = {
+      insertOoxml: vi.fn((xml: string) => {
+        pending = xml
+      }),
+      getOoxml: vi.fn(() => {
+        const result = { value: current }
+        queuedSnapshots.push(result)
+        return result
+      }),
+    }
+    const sync = vi.fn(async () => {
+      if (pending)
+        current = pending.replace(
+          '</w:tbl>',
+          '</w:tbl><w:p/><w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p>',
+        )
+      pending = undefined
+      for (const snapshot of queuedSnapshots) snapshot.value = current
+      queuedSnapshots = []
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'Word',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+    const subject = new BrowserWordAdapter()
+    const write = {
+      mode: 'replace' as const,
+      blocks: [
+        { type: 'paragraph' as const, spans: [{ text: 'Text' }] },
+        { type: 'table' as const, rows: [['A']], headerRows: 1 as const },
+      ],
+      semanticText: 'Text\nA',
+      structure: { headings: 0, lists: 0, tables: 1 },
+    }
+
+    await subject.executeDocumentWrite(write)
+    await expect(subject.verifyDocumentWrite(write)).resolves.toBe(true)
+  })
+
   it('accepts localized built-in heading style IDs normalized during the write sync', async () => {
     let current =
       '<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage"><pkg:part pkg:name="/word/document.xml"><pkg:xmlData><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/styles.xml"><pkg:xmlData><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="1"><w:pPr><w:outlineLvl w:val="0"/></w:pPr></w:style></w:styles></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/header1.xml"><pkg:xmlData><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>Header</w:t></w:r></w:p></w:hdr></pkg:xmlData></pkg:part></pkg:package>'
