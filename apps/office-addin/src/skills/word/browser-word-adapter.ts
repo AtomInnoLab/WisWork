@@ -582,7 +582,6 @@ export class BrowserWordAdapter implements WordAdapter {
         cancelled(signal)
         const target = buildDocumentWriteOoxml(snapshot.value, write)
         ;(body.insertOoxml as (xml: string, location: string) => void)(target, 'Replace')
-        const result = (body.getOoxml as () => RuntimeRecord)()
         let writeError: unknown
         try {
           await (context.sync as () => Promise<void>)()
@@ -592,6 +591,17 @@ export class BrowserWordAdapter implements WordAdapter {
         if (writeError || signal?.aborted) {
           await reconcileAtomicDocumentWrite(context, body, snapshot.value, write)
           throw writeError ?? new Error('cancelled')
+        }
+        const result = (body.getOoxml as () => RuntimeRecord)()
+        let readError: unknown
+        try {
+          await (context.sync as () => Promise<void>)()
+        } catch (error) {
+          readError = error
+        }
+        if (readError || signal?.aborted) {
+          await reconcileAtomicDocumentWrite(context, body, snapshot.value, write)
+          throw readError ?? new Error('cancelled')
         }
         const postValue = typeof result.value === 'string' ? result.value : undefined
         const verified =
