@@ -17,6 +17,7 @@ import {
 const MAX_SLIDE_INDEX = 100_000
 const MAX_CODE = 32 * 1024
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
+const POWERPOINT_GEOMETRY_EPSILON = 0.01
 const slideInput = exactObject({
   slide_index: integerField({ min: 0, max: MAX_SLIDE_INDEX }),
   explanation: optionalField(stringField({ maxLength: 50 })),
@@ -228,6 +229,10 @@ function exactRecord(value: unknown, keys: string[]): Record<string, unknown> {
   const record = value as Record<string, unknown>
   if (Object.keys(record).some((key) => !keys.includes(key))) throw new Error('invalid_tool_input')
   return record
+}
+
+function sameGeometry(actual: number, expected: number): boolean {
+  return Math.abs(actual - expected) <= POWERPOINT_GEOMETRY_EPSILON
 }
 
 function parseXmlProgram(code: string): XmlReplacement[] {
@@ -677,10 +682,10 @@ export function createPowerPointSkill(options: {
                     if (shape) throw new Error('office_verify_failed')
                   } else if (
                     !shape ||
-                    shape.left !== operation.left ||
-                    shape.top !== operation.top ||
-                    shape.width !== operation.width ||
-                    shape.height !== operation.height
+                    !sameGeometry(shape.left, operation.left) ||
+                    !sameGeometry(shape.top, operation.top) ||
+                    !sameGeometry(shape.width, operation.width) ||
+                    !sameGeometry(shape.height, operation.height)
                   ) {
                     throw new Error('office_verify_failed')
                   } else if (operation.op === 'add_text_box') {

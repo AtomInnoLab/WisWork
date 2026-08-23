@@ -369,6 +369,53 @@ describe('PowerPoint compatibility skill', () => {
     ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
   })
 
+  it('accepts host-normalized PowerPoint geometry when verifying a created text box', async () => {
+    const fake = adapter({
+      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['4'] }),
+      listSlideShapes: vi.fn().mockResolvedValue({
+        slideId: 's1',
+        slideIndex: 0,
+        shapes: [
+          {
+            id: '4',
+            name: 'Status',
+            type: 'TextBox',
+            left: 300.00003,
+            top: 449.99997,
+            width: 360.00003,
+            height: 50.00003,
+          },
+        ],
+      }),
+      readSlideText: vi.fn().mockResolvedValue({
+        slideId: 's1',
+        shapeId: '4',
+        text: 'PASS',
+        paragraphs: ['PASS'],
+      }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    const code = JSON.stringify({
+      version: 1,
+      operations: [
+        {
+          op: 'add_text_box',
+          slide_index: 0,
+          name: 'Status',
+          text: 'PASS',
+          left: 300,
+          top: 450,
+          width: 360,
+          height: 50,
+        },
+      ],
+    })
+
+    await skill.executeTool(call('execute_office_js', { code }))
+    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+  })
+
   it('maps adapter internals to stable errors and validates screenshots', async () => {
     const skill = createPowerPointSkill({
       adapter: adapter({
