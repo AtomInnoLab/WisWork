@@ -1088,18 +1088,17 @@ function verifyNativeDocumentWriteDetailed(
     valid = insertedMatches(afterParts.content)
     if (
       !valid &&
-      afterParts.content.length === expected.length + 1 &&
-      insertedMatches(afterParts.content.slice(0, -1)) &&
-      isEmptyParagraph(
-        elementSignature(
-          afterParts.content[afterParts.content.length - 1],
-          afterParts.numbering,
-          afterParts.headingStyles,
-        ),
-      ) &&
+      afterParts.content.length > expected.length &&
+      insertedMatches(afterParts.content.slice(0, expected.length)) &&
       expected[expected.length - 1]?.type === 'table'
     )
-      valid = true
+      valid = afterParts.content
+        .slice(expected.length)
+        .every((element) =>
+          isEmptyParagraph(
+            elementSignature(element, afterParts.numbering, afterParts.headingStyles),
+          ),
+        )
   } else if (write.mode === 'append') {
     const boundary = beforeParts.content.length
     valid =
