@@ -1106,10 +1106,9 @@ function verifyNativeDocumentWriteDetailed(
           ),
         )
   } else if (write.mode === 'append') {
-    const inserted = afterParts.content.slice(-expected.length)
-    const currentBoundary = withoutTrailingTableParagraphs(
-      afterParts.content.slice(0, -expected.length),
-    )
+    const afterContent = withoutTrailingEmptyParagraphs(afterParts.content)
+    const inserted = afterContent.slice(-expected.length)
+    const currentBoundary = withoutTrailingTableParagraphs(afterContent.slice(0, -expected.length))
     valid = canonicalEqual(appendBoundary, currentBoundary) && insertedMatches(inserted)
   } else {
     valid =
@@ -1161,6 +1160,13 @@ function isEmptyParagraph(signature: DocumentSignature | undefined): boolean {
 }
 
 function withoutTrailingTableParagraphs(elements: Element[]): Element[] {
+  const boundary = withoutTrailingEmptyParagraphs(elements)
+  return boundary.length < elements.length && boundary.at(-1)?.localName === 'tbl'
+    ? boundary
+    : elements
+}
+
+function withoutTrailingEmptyParagraphs(elements: Element[]): Element[] {
   let boundary = elements.length
   while (
     boundary > 0 &&
@@ -1169,9 +1175,7 @@ function withoutTrailingTableParagraphs(elements: Element[]): Element[] {
     wordText(elements[boundary - 1]!) === ''
   )
     boundary -= 1
-  return boundary < elements.length && elements[boundary - 1]?.localName === 'tbl'
-    ? elements.slice(0, boundary)
-    : elements
+  return elements.slice(0, boundary)
 }
 
 function stableFingerprintOoxml(xml: string): string {

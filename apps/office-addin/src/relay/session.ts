@@ -558,7 +558,9 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
         tool: event.tool,
         phase: event.phase,
         outcome: event.outcome,
-        error_code: event.error_code,
+        error_code: event.error_code.startsWith('office_recovery_failed:word_')
+          ? 'office_recovery_failed'
+          : event.error_code,
         ...(event.office_error_code ? { office_error_code: event.office_error_code } : {}),
         ...(event.office_error_name ? { office_error_name: event.office_error_name } : {}),
         ...(event.office_error_location
