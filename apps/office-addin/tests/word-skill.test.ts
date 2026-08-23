@@ -840,7 +840,7 @@ describe('browser Word adapter', () => {
 
   it('accepts localized built-in heading style IDs normalized during the write sync', async () => {
     let current =
-      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:body></w:document>'
+      '<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage"><pkg:part pkg:name="/word/document.xml"><pkg:xmlData><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:body></w:document></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/styles.xml"><pkg:xmlData><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="1"><w:pPr><w:outlineLvl w:val="0"/></w:pPr></w:style></w:styles></pkg:xmlData></pkg:part></pkg:package>'
     let pending: string | undefined
     let queuedSnapshots: Array<{ value: string }> = []
     const body = {
@@ -854,7 +854,10 @@ describe('browser Word adapter', () => {
       }),
     }
     const sync = vi.fn(async () => {
-      if (pending) current = pending.replace('w:val="Heading1"', 'w:val="1"')
+      if (pending)
+        current = pending
+          .replace('w:val="Heading1"', 'w:val="1"')
+          .replace('<w:outlineLvl w:val="0"/>', '')
       pending = undefined
       for (const snapshot of queuedSnapshots) snapshot.value = current
       queuedSnapshots = []
