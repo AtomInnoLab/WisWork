@@ -869,10 +869,12 @@ function directWordChild(parent: Element, localName: string): Element | undefine
 function paragraphSignature(
   paragraph: Element,
   numbering: Map<string, 'ordered' | 'unordered'>,
+  headingStyles: Map<string, number>,
 ): ParagraphSignature {
   const propertiesElement = directWordChild(paragraph, 'pPr') ?? paragraph
   const style = directWordChild(propertiesElement, 'pStyle')
   const outlineValue = directWordChild(propertiesElement, 'outlineLvl')?.getAttributeNS(W_NS, 'val')
+  const styleId = style?.getAttributeNS(W_NS, 'val') ?? ''
   const numberId = directWordChild(
     directWordChild(propertiesElement, 'numPr') ?? propertiesElement,
     'numId',
@@ -893,8 +895,12 @@ function paragraphSignature(
   return {
     type: 'paragraph',
     text: wordText(paragraph),
-    style: style?.getAttributeNS(W_NS, 'val') ?? '',
-    ...(outlineValue && /^\d+$/.test(outlineValue) ? { outlineLevel: Number(outlineValue) } : {}),
+    style: styleId,
+    ...(outlineValue && /^\d+$/.test(outlineValue)
+      ? { outlineLevel: Number(outlineValue) }
+      : headingStyles.has(styleId)
+        ? { outlineLevel: headingStyles.get(styleId) }
+        : {}),
     ...(numberId && numbering.has(numberId) ? { listKind: numbering.get(numberId) } : {}),
     characters,
   }
@@ -903,9 +909,10 @@ function paragraphSignature(
 function elementSignature(
   element: Element,
   numbering: Map<string, 'ordered' | 'unordered'>,
+  headingStyles: Map<string, number>,
 ): DocumentSignature | undefined {
   if (element.namespaceURI !== W_NS) return undefined
-  if (element.localName === 'p') return paragraphSignature(element, numbering)
+  if (element.localName === 'p') return paragraphSignature(element, numbering, headingStyles)
   if (element.localName !== 'tbl') return undefined
   const rows = Array.from(element.getElementsByTagNameNS(W_NS, 'tr')).map((row) =>
     Array.from(row.getElementsByTagNameNS(W_NS, 'tc')).map(wordText),
@@ -933,6 +940,23 @@ function numberingKinds(xml: string): Map<string, 'ordered' | 'unordered'> {
       ?.getAttributeNS(W_NS, 'val')
     const kind = abstractId ? abstractKinds.get(abstractId) : undefined
     if (id && kind) result.set(id, kind)
+  }
+  return result
+}
+
+function headingStyleLevels(xml: string): Map<string, number> {
+  if (typeof DOMParser === 'undefined') throw new Error('office_api_unsupported')
+  const document = new DOMParser().parseFromString(xml, 'text/xml')
+  const result = new Map<string, number>()
+  for (const style of Array.from(document.getElementsByTagNameNS(W_NS, 'style'))) {
+    if (style.getAttributeNS(W_NS, 'type') !== 'paragraph') continue
+    const id = style.getAttributeNS(W_NS, 'styleId')
+    const properties = directWordChild(style, 'pPr')
+    const value = properties
+      ? directWordChild(properties, 'outlineLvl')?.getAttributeNS(W_NS, 'val')
+      : undefined
+    if (id && value && /^\d+$/.test(value) && Number(value) >= 0 && Number(value) <= 8)
+      result.set(id, Number(value))
   }
   return result
 }
@@ -1026,7 +1050,11 @@ function verifyNativeDocumentWrite(
   const insertedMatches = (elements: Element[]) =>
     elements.length === expected.length &&
     expected.every((unit, offset) => {
-      const signature = elementSignature(elements[offset], afterParts.numbering)
+      const signature = elementSignature(
+        elements[offset],
+        afterParts.numbering,
+        afterParts.headingStyles,
+      )
       return signature ? signatureMatches(unit, signature) : false
     })
   const canonicalEqual = (left: Element[], right: Element[]) =>
@@ -1044,7 +1072,11 @@ function verifyNativeDocumentWrite(
       afterParts.content.length === expected.length + 1 &&
       insertedMatches(afterParts.content.slice(0, -1)) &&
       isEmptyParagraph(
-        elementSignature(afterParts.content[afterParts.content.length - 1], afterParts.numbering),
+        elementSignature(
+          afterParts.content[afterParts.content.length - 1],
+          afterParts.numbering,
+          afterParts.headingStyles,
+        ),
       ) &&
       expected[expected.length - 1]?.type === 'table'
     )
@@ -1068,6 +1100,7 @@ function bodyParts(xml: string): {
   content: Element[]
   section?: CanonicalWordNode
   numbering: Map<string, 'ordered' | 'unordered'>
+  headingStyles: Map<string, number>
 } {
   const elements = directElements(wordBodyElement(xml))
   const sectionElement =
@@ -1078,6 +1111,7 @@ function bodyParts(xml: string): {
     content: elements,
     ...(sectionElement ? { section: canonicalWordNode(sectionElement) } : {}),
     numbering: numberingKinds(xml),
+    headingStyles: headingStyleLevels(xml),
   }
 }
 
