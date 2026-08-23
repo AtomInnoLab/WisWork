@@ -598,10 +598,8 @@ export function createPowerPointSkill(options: {
           ]
           if (slideIndexes.length > 8) throw new Error('invalid_tool_input')
           const snapshots = await Promise.all(
-            slideIndexes.map((index) => options.adapter.exportSlidePackage(index, signal)),
+            slideIndexes.map((index) => options.adapter.snapshotSlide(index, signal)),
           )
-          if (snapshots.reduce((total, item) => total + item.base64.length, 0) > 16 * 1024 * 1024)
-            throw new Error('invalid_tool_input')
           const beforeTexts = await Promise.all(
             program.operations.flatMap((operation) =>
               operation.op === 'set_shape_text'
@@ -641,9 +639,7 @@ export function createPowerPointSkill(options: {
             after: { operations: program.operations },
             validate: async (confirmSignal) => {
               const current = await Promise.all(
-                slideIndexes.map((index) =>
-                  options.adapter.exportSlidePackage(index, confirmSignal),
-                ),
+                slideIndexes.map((index) => options.adapter.snapshotSlide(index, confirmSignal)),
               )
               return current.every(
                 (item, index) => item.fingerprint === snapshots[index].fingerprint,

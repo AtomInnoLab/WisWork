@@ -302,6 +302,8 @@ describe('PowerPoint compatibility skill', () => {
       [{ op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'New' }],
       expect.any(AbortSignal),
     )
+    expect(fake.snapshotSlide).toHaveBeenCalledTimes(2)
+    expect(fake.exportSlidePackage).not.toHaveBeenCalled()
   })
 
   it('accepts strict declarative geometry, text-box creation, and shape deletion families', async () => {
