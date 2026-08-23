@@ -298,7 +298,13 @@ async function readBodyOoxml(signal?: AbortSignal): Promise<string> {
 export class BrowserWordAdapter implements WordAdapter {
   private expectedText: string | undefined
   private expectedDocument:
-    { fingerprint: string; original: string; originalFingerprint: string } | undefined
+    | {
+        fingerprint: string
+        original: string
+        originalFingerprint: string
+        write: WordDocumentWrite
+      }
+    | undefined
   constructor(
     private readonly screenshotDependencies: {
       exportPdf?: (signal?: AbortSignal) => Promise<Uint8Array>
@@ -600,6 +606,7 @@ export class BrowserWordAdapter implements WordAdapter {
           fingerprint: stableFingerprintOoxml(postValue!),
           original: snapshot.value,
           originalFingerprint: beforeFingerprint,
+          write,
         }
       },
     )
@@ -618,7 +625,8 @@ export class BrowserWordAdapter implements WordAdapter {
     const currentFingerprint = stableFingerprintOoxml(current)
     if (currentFingerprint === expected.fingerprint && !signal?.aborted) return true
     if (currentFingerprint === expected.originalFingerprint) return false
-    if (currentFingerprint !== expected.fingerprint) throw new Error('office_recovery_failed')
+    if (!signal?.aborted && verifyNativeDocumentWrite(expected.original, current, expected.write))
+      return true
     const { word } = runtime()
     await (word.run as (callback: (context: RuntimeRecord) => unknown) => Promise<unknown>)(
       async (context) => {
