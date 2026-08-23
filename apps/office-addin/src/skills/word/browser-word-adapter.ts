@@ -1,3 +1,5 @@
+import type { WordDocumentBlock, WordDocumentWrite, WordInlineSpan } from './word-markdown.js'
+
 export const MAX_WORD_PARAGRAPHS = 500
 export const MAX_WORD_TEXT_LENGTH = 12_000
 export const MAX_WORD_OOXML_BYTES = 1024 * 1024
@@ -87,6 +89,8 @@ export interface WordAdapter {
   fingerprint(signal?: AbortSignal): Promise<string>
   executeOperations(operations: WordDeclarativeOperation[], signal?: AbortSignal): Promise<void>
   verifyOperations(operations: WordDeclarativeOperation[], signal?: AbortSignal): Promise<boolean>
+  executeDocumentWrite(write: WordDocumentWrite, signal?: AbortSignal): Promise<void>
+  verifyDocumentWrite(write: WordDocumentWrite, signal?: AbortSignal): Promise<boolean>
 }
 
 type RuntimeRecord = Record<string, unknown>
@@ -293,6 +297,8 @@ async function readBodyOoxml(signal?: AbortSignal): Promise<string> {
 
 export class BrowserWordAdapter implements WordAdapter {
   private expectedText: string | undefined
+  private expectedDocument:
+    { fingerprint: string; original: string; originalFingerprint: string } | undefined
   constructor(
     private readonly screenshotDependencies: {
       exportPdf?: (signal?: AbortSignal) => Promise<Uint8Array>
@@ -549,12 +555,547 @@ export class BrowserWordAdapter implements WordAdapter {
     if (expected === undefined) return false
     return ooxmlText(await readBodyOoxml(signal)) === expected
   }
+
+  async executeDocumentWrite(write: WordDocumentWrite, signal?: AbortSignal): Promise<void> {
+    cancelled(signal)
+    this.expectedDocument = undefined
+    const { word } = runtime()
+    await (word.run as (callback: (context: RuntimeRecord) => unknown) => Promise<unknown>)(
+      async (context) => {
+        const body = (context.document as RuntimeRecord).body as RuntimeRecord
+        if (typeof body.insertOoxml !== 'function' || typeof body.getOoxml !== 'function')
+          throw new Error('office_api_unsupported')
+        const snapshot = (body.getOoxml as () => RuntimeRecord)()
+        await sync(context, signal)
+        if (
+          typeof snapshot.value !== 'string' ||
+          new TextEncoder().encode(snapshot.value).byteLength > MAX_WORD_OOXML_BYTES
+        )
+          throw new Error('office_write_failed')
+        const beforeFingerprint = stableFingerprintOoxml(snapshot.value)
+        cancelled(signal)
+        const target = buildDocumentWriteOoxml(snapshot.value, write)
+        ;(body.insertOoxml as (xml: string, location: string) => void)(target, 'Replace')
+        const result = (body.getOoxml as () => RuntimeRecord)()
+        let writeError: unknown
+        try {
+          await (context.sync as () => Promise<void>)()
+        } catch (error) {
+          writeError = error
+        }
+        if (writeError || signal?.aborted) {
+          await reconcileAtomicDocumentWrite(context, body, snapshot.value, write)
+          throw writeError ?? new Error('cancelled')
+        }
+        const postValue = typeof result.value === 'string' ? result.value : undefined
+        const verified =
+          postValue !== undefined &&
+          new TextEncoder().encode(postValue).byteLength <= MAX_WORD_OOXML_BYTES &&
+          verifyNativeDocumentWrite(snapshot.value, postValue, write)
+        if (!verified || signal?.aborted) {
+          await reconcileAtomicDocumentWrite(context, body, snapshot.value, write)
+          throw signal?.aborted ? new Error('cancelled') : new Error('office_verify_failed')
+        }
+        this.expectedDocument = {
+          fingerprint: stableFingerprintOoxml(postValue!),
+          original: snapshot.value,
+          originalFingerprint: beforeFingerprint,
+        }
+      },
+    )
+  }
+
+  async verifyDocumentWrite(_write: WordDocumentWrite, signal?: AbortSignal): Promise<boolean> {
+    const expected = this.expectedDocument
+    this.expectedDocument = undefined
+    if (!expected) return false
+    let current: string
+    try {
+      current = await readBodyOoxml()
+    } catch (error) {
+      throw new Error('office_recovery_failed', { cause: error })
+    }
+    const currentFingerprint = stableFingerprintOoxml(current)
+    if (currentFingerprint === expected.fingerprint && !signal?.aborted) return true
+    if (currentFingerprint === expected.originalFingerprint) return false
+    if (currentFingerprint !== expected.fingerprint) throw new Error('office_recovery_failed')
+    const { word } = runtime()
+    await (word.run as (callback: (context: RuntimeRecord) => unknown) => Promise<unknown>)(
+      async (context) => {
+        const body = (context.document as RuntimeRecord).body as RuntimeRecord
+        if (typeof body.insertOoxml !== 'function' || typeof body.getOoxml !== 'function')
+          throw new Error('office_recovery_failed')
+        await restoreWordBody(context, body, expected.original, expected.originalFingerprint)
+      },
+    )
+    return false
+  }
+}
+
+function buildDocumentWriteOoxml(original: string, write: WordDocumentWrite): string {
+  if (write.blocks.some((block) => block.type === 'list')) throw new Error('office_api_unsupported')
+  if (typeof DOMParser === 'undefined' || typeof XMLSerializer === 'undefined')
+    throw new Error('office_api_unsupported')
+  const document = new DOMParser().parseFromString(original, 'text/xml')
+  if (document.getElementsByTagName('parsererror').length) throw new Error('office_read_failed')
+  const body = wordBodyElementFromDocument(document)
+  const section = directElements(body).find(
+    (element) => element.namespaceURI === W_NS && element.localName === 'sectPr',
+  )
+  const existing = directElements(body).filter((element) => element !== section)
+  const nodes = write.blocks.map((block) => createWordBlock(document, block))
+  const separated: Element[] = []
+  for (const node of nodes) {
+    if (separated.at(-1)?.localName === 'tbl' && node.localName === 'tbl')
+      separated.push(createWordParagraph(document, []))
+    separated.push(node)
+  }
+  if (
+    write.mode === 'append' &&
+    existing.at(-1)?.localName === 'tbl' &&
+    separated[0]?.localName === 'tbl'
+  )
+    separated.unshift(createWordParagraph(document, []))
+  if (
+    write.mode === 'prepend' &&
+    separated.at(-1)?.localName === 'tbl' &&
+    existing[0]?.localName === 'tbl'
+  )
+    separated.push(createWordParagraph(document, []))
+  if (write.mode === 'replace') {
+    for (const child of directElements(body)) if (child !== section) child.remove()
+  }
+  const reference = write.mode === 'prepend' ? body.firstChild : (section ?? null)
+  for (const node of separated) body.insertBefore(node, reference)
+  return new XMLSerializer().serializeToString(document)
+}
+
+function createWordBlock(document: Document, block: WordDocumentBlock): Element {
+  if (block.type === 'list') throw new Error('office_api_unsupported')
+  if (block.type === 'table') {
+    const table = document.createElementNS(W_NS, 'w:tbl')
+    const properties = document.createElementNS(W_NS, 'w:tblPr')
+    const style = document.createElementNS(W_NS, 'w:tblStyle')
+    style.setAttributeNS(W_NS, 'w:val', 'TableGrid')
+    properties.append(style)
+    table.append(properties)
+    for (const [rowIndex, row] of block.rows.entries()) {
+      const rowElement = document.createElementNS(W_NS, 'w:tr')
+      if (rowIndex < block.headerRows) {
+        const rowProperties = document.createElementNS(W_NS, 'w:trPr')
+        rowProperties.append(document.createElementNS(W_NS, 'w:tblHeader'))
+        rowElement.append(rowProperties)
+      }
+      for (const value of row) {
+        const cell = document.createElementNS(W_NS, 'w:tc')
+        cell.append(createWordParagraph(document, [{ text: value }]))
+        rowElement.append(cell)
+      }
+      table.append(rowElement)
+    }
+    return table
+  }
+  return createWordParagraph(
+    document,
+    block.spans,
+    block.type === 'heading' ? `Heading${block.level}` : undefined,
+  )
+}
+
+function createWordParagraph(
+  document: Document,
+  spans: WordInlineSpan[],
+  styleId?: string,
+): Element {
+  const paragraph = document.createElementNS(W_NS, 'w:p')
+  if (styleId) {
+    const properties = document.createElementNS(W_NS, 'w:pPr')
+    const style = document.createElementNS(W_NS, 'w:pStyle')
+    style.setAttributeNS(W_NS, 'w:val', styleId)
+    properties.append(style)
+    const outline = document.createElementNS(W_NS, 'w:outlineLvl')
+    outline.setAttributeNS(W_NS, 'w:val', String(Number(styleId.replace('Heading', '')) - 1))
+    properties.append(outline)
+    const runProperties = document.createElementNS(W_NS, 'w:rPr')
+    runProperties.append(document.createElementNS(W_NS, 'w:b'))
+    const size = document.createElementNS(W_NS, 'w:sz')
+    size.setAttributeNS(
+      W_NS,
+      'w:val',
+      String(Math.max(22, 34 - (Number(styleId.replace('Heading', '')) - 1) * 2)),
+    )
+    runProperties.append(size)
+    properties.append(runProperties)
+    paragraph.append(properties)
+  }
+  for (const span of spans) {
+    const run = document.createElementNS(W_NS, 'w:r')
+    if (span.bold || span.italic || span.code) {
+      const properties = document.createElementNS(W_NS, 'w:rPr')
+      if (span.bold) properties.append(document.createElementNS(W_NS, 'w:b'))
+      if (span.italic) properties.append(document.createElementNS(W_NS, 'w:i'))
+      if (span.code) {
+        const fonts = document.createElementNS(W_NS, 'w:rFonts')
+        fonts.setAttributeNS(W_NS, 'w:ascii', 'Courier New')
+        fonts.setAttributeNS(W_NS, 'w:hAnsi', 'Courier New')
+        properties.append(fonts)
+      }
+      run.append(properties)
+    }
+    const text = document.createElementNS(W_NS, 'w:t')
+    text.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve')
+    text.textContent = span.text
+    run.append(text)
+    paragraph.append(run)
+  }
+  return paragraph
+}
+
+type NativeUnit =
+  | {
+      type: 'paragraph'
+      spans: WordInlineSpan[]
+      styleBuiltIn?: string
+      list?: boolean
+      ordered?: boolean
+    }
+  | { type: 'table'; rows: string[][]; headerRows: number }
+
+function nativeUnits(blocks: WordDocumentBlock[]): NativeUnit[] {
+  return blocks.flatMap((block): NativeUnit[] => {
+    if (block.type === 'table')
+      return [{ type: 'table', rows: block.rows, headerRows: block.headerRows }]
+    if (block.type === 'list')
+      return block.items.map((spans) => ({
+        type: 'paragraph',
+        spans,
+        list: true,
+        ordered: block.ordered,
+      }))
+    return [
+      {
+        type: 'paragraph',
+        spans: block.spans,
+        ...(block.type === 'heading' ? { styleBuiltIn: `Heading${block.level}` } : {}),
+      },
+    ]
+  })
+}
+
+async function restoreWordBody(
+  context: RuntimeRecord,
+  body: RuntimeRecord,
+  original: string,
+  fingerprint: string,
+): Promise<void> {
+  try {
+    ;(body.insertOoxml as (xml: string, location: string) => void)(original, 'Replace')
+    await (context.sync as () => Promise<void>)()
+    const restored = (body.getOoxml as () => RuntimeRecord)()
+    await (context.sync as () => Promise<void>)()
+    if (
+      typeof restored.value !== 'string' ||
+      stableFingerprintOoxml(restored.value) !== fingerprint
+    )
+      throw new Error('office_recovery_failed')
+  } catch (error) {
+    if (error instanceof Error && error.message === 'office_recovery_failed') throw error
+    throw new Error('office_recovery_failed', { cause: error })
+  }
+}
+
+async function reconcileAtomicDocumentWrite(
+  context: RuntimeRecord,
+  body: RuntimeRecord,
+  original: string,
+  write: WordDocumentWrite,
+): Promise<void> {
+  try {
+    const current = (body.getOoxml as () => RuntimeRecord)()
+    await (context.sync as () => Promise<void>)()
+    if (typeof current.value !== 'string') throw new Error('office_recovery_failed')
+    const fingerprint = stableFingerprintOoxml(current.value)
+    const originalFingerprint = stableFingerprintOoxml(original)
+    if (fingerprint === originalFingerprint) return
+    if (!verifyNativeDocumentWrite(original, current.value, write))
+      throw new Error('office_recovery_failed')
+    await restoreWordBody(context, body, original, originalFingerprint)
+  } catch (error) {
+    if (error instanceof Error && error.message === 'office_recovery_failed') throw error
+    throw new Error('office_recovery_failed', { cause: error })
+  }
+}
+
+interface ParagraphSignature {
+  type: 'paragraph'
+  text: string
+  style: string
+  outlineLevel?: number
+  listKind?: 'ordered' | 'unordered'
+  characters: Array<{ bold: boolean; italic: boolean; code: boolean }>
+}
+
+interface TableSignature {
+  type: 'table'
+  rows: string[][]
+  headerRows: number
+}
+
+type DocumentSignature = ParagraphSignature | TableSignature
+
+function normalizedStyle(value: string): string {
+  return value.replace(/[\s_-]/g, '').toLowerCase()
+}
+
+function wordText(element: Element): string {
+  return Array.from(element.getElementsByTagNameNS(W_NS, '*'))
+    .filter((child) => ['t', 'tab', 'br', 'cr'].includes(child.localName))
+    .map((child) =>
+      child.localName === 't' ? (child.textContent ?? '') : child.localName === 'tab' ? '\t' : '\n',
+    )
+    .join('')
+}
+
+function directWordChild(parent: Element, localName: string): Element | undefined {
+  return directElements(parent).find(
+    (element) => element.namespaceURI === W_NS && element.localName === localName,
+  )
+}
+
+function paragraphSignature(
+  paragraph: Element,
+  numbering: Map<string, 'ordered' | 'unordered'>,
+): ParagraphSignature {
+  const propertiesElement = directWordChild(paragraph, 'pPr') ?? paragraph
+  const style = directWordChild(propertiesElement, 'pStyle')
+  const outlineValue = directWordChild(propertiesElement, 'outlineLvl')?.getAttributeNS(W_NS, 'val')
+  const numberId = directWordChild(
+    directWordChild(propertiesElement, 'numPr') ?? propertiesElement,
+    'numId',
+  )?.getAttributeNS(W_NS, 'val')
+  const characters: ParagraphSignature['characters'] = []
+  for (const run of Array.from(paragraph.getElementsByTagNameNS(W_NS, 'r'))) {
+    const properties = directWordChild(run, 'rPr')
+    const bold = Boolean(properties?.getElementsByTagNameNS(W_NS, 'b').length)
+    const italic = Boolean(properties?.getElementsByTagNameNS(W_NS, 'i').length)
+    const fonts = properties?.getElementsByTagNameNS(W_NS, 'rFonts')[0]
+    const code = [fonts?.getAttributeNS(W_NS, 'ascii'), fonts?.getAttributeNS(W_NS, 'hAnsi')]
+      .filter(Boolean)
+      .some((name) => name!.toLowerCase().includes('courier'))
+    for (const _character of Array.from(wordText(run))) {
+      characters.push({ bold, italic, code })
+    }
+  }
+  return {
+    type: 'paragraph',
+    text: wordText(paragraph),
+    style: style?.getAttributeNS(W_NS, 'val') ?? '',
+    ...(outlineValue && /^\d+$/.test(outlineValue) ? { outlineLevel: Number(outlineValue) } : {}),
+    ...(numberId && numbering.has(numberId) ? { listKind: numbering.get(numberId) } : {}),
+    characters,
+  }
+}
+
+function elementSignature(
+  element: Element,
+  numbering: Map<string, 'ordered' | 'unordered'>,
+): DocumentSignature | undefined {
+  if (element.namespaceURI !== W_NS) return undefined
+  if (element.localName === 'p') return paragraphSignature(element, numbering)
+  if (element.localName !== 'tbl') return undefined
+  const rows = Array.from(element.getElementsByTagNameNS(W_NS, 'tr')).map((row) =>
+    Array.from(row.getElementsByTagNameNS(W_NS, 'tc')).map(wordText),
+  )
+  const headerRows = Array.from(element.getElementsByTagNameNS(W_NS, 'tr')).filter((row) =>
+    Boolean(row.getElementsByTagNameNS(W_NS, 'tblHeader').length),
+  ).length
+  return { type: 'table', rows, headerRows }
+}
+
+function numberingKinds(xml: string): Map<string, 'ordered' | 'unordered'> {
+  if (typeof DOMParser === 'undefined') throw new Error('office_api_unsupported')
+  const document = new DOMParser().parseFromString(xml, 'text/xml')
+  const abstractKinds = new Map<string, 'ordered' | 'unordered'>()
+  for (const abstract of Array.from(document.getElementsByTagNameNS(W_NS, 'abstractNum'))) {
+    const id = abstract.getAttributeNS(W_NS, 'abstractNumId')
+    const format = abstract.getElementsByTagNameNS(W_NS, 'numFmt')[0]?.getAttributeNS(W_NS, 'val')
+    if (id && format) abstractKinds.set(id, format === 'bullet' ? 'unordered' : 'ordered')
+  }
+  const result = new Map<string, 'ordered' | 'unordered'>()
+  for (const num of Array.from(document.getElementsByTagNameNS(W_NS, 'num'))) {
+    const id = num.getAttributeNS(W_NS, 'numId')
+    const abstractId = num
+      .getElementsByTagNameNS(W_NS, 'abstractNumId')[0]
+      ?.getAttributeNS(W_NS, 'val')
+    const kind = abstractId ? abstractKinds.get(abstractId) : undefined
+    if (id && kind) result.set(id, kind)
+  }
+  return result
+}
+
+function spansMatch(expected: WordInlineSpan[], actual: ParagraphSignature): boolean {
+  const text = expected.map((span) => span.text).join('')
+  if (actual.text !== text || actual.characters.length !== Array.from(text).length) return false
+  let offset = 0
+  for (const span of expected) {
+    for (const _character of Array.from(span.text)) {
+      const properties = actual.characters[offset]
+      if (
+        !properties ||
+        (span.bold && !properties.bold) ||
+        (span.italic && !properties.italic) ||
+        (span.code && !properties.code)
+      )
+        return false
+      offset += 1
+    }
+  }
+  return true
+}
+
+function signatureMatches(unit: NativeUnit, actual: DocumentSignature): boolean {
+  if (unit.type === 'table')
+    return (
+      actual.type === 'table' &&
+      JSON.stringify(actual.rows) === JSON.stringify(unit.rows) &&
+      actual.headerRows === unit.headerRows
+    )
+  if (actual.type !== 'paragraph' || !spansMatch(unit.spans, actual)) return false
+  if (unit.styleBuiltIn) {
+    const level = Number(unit.styleBuiltIn.replace('Heading', '')) - 1
+    return (
+      normalizedStyle(actual.style) === normalizedStyle(unit.styleBuiltIn) &&
+      actual.outlineLevel === level
+    )
+  }
+  if (unit.list) return actual.listKind === (unit.ordered ? 'ordered' : 'unordered')
+  return true
+}
+
+function normalizedDocumentText(value: string): string {
+  return value
+    .replace(/\r\n?|\u2028|\u2029/g, '\n')
+    .replace(/[\t ]+$/gm, '')
+    .replace(/^\n+|\n+$/g, '')
+}
+
+function verifyNativeDocumentWrite(
+  before: string,
+  after: string,
+  write: WordDocumentWrite,
+): boolean {
+  const beforeParts = bodyParts(before)
+  const afterParts = bodyParts(after)
+  const expected: NativeUnit[] = []
+  for (const unit of nativeUnits(write.blocks)) {
+    if (expected.at(-1)?.type === 'table' && unit.type === 'table')
+      expected.push({ type: 'paragraph', spans: [] })
+    expected.push(unit)
+  }
+  const firstBefore = beforeParts.content[0]
+  const lastBefore = beforeParts.content.at(-1)
+  if (write.mode === 'append' && lastBefore?.localName === 'tbl' && expected[0]?.type === 'table')
+    expected.unshift({ type: 'paragraph', spans: [] })
+  if (
+    write.mode === 'prepend' &&
+    firstBefore?.localName === 'tbl' &&
+    expected.at(-1)?.type === 'table'
+  )
+    expected.push({ type: 'paragraph', spans: [] })
+  const insertedText = normalizedDocumentText(
+    expected
+      .map((unit) =>
+        unit.type === 'table'
+          ? unit.rows.flat().join('\n')
+          : unit.spans.map((span) => span.text).join(''),
+      )
+      .join('\n'),
+  )
+  const beforeText = normalizedDocumentText(ooxmlText(before))
+  const afterText = normalizedDocumentText(ooxmlText(after))
+  if (
+    (write.mode === 'replace' && afterText !== insertedText) ||
+    (write.mode === 'append' &&
+      (!afterText.startsWith(beforeText) || !afterText.endsWith(insertedText))) ||
+    (write.mode === 'prepend' &&
+      (!afterText.startsWith(insertedText) || !afterText.endsWith(beforeText)))
+  )
+    return false
+  if (JSON.stringify(beforeParts.section) !== JSON.stringify(afterParts.section)) return false
+  const insertedMatches = (elements: Element[]) =>
+    elements.length === expected.length &&
+    expected.every((unit, offset) => {
+      const signature = elementSignature(elements[offset], afterParts.numbering)
+      return signature ? signatureMatches(unit, signature) : false
+    })
+  const canonicalEqual = (left: Element[], right: Element[]) =>
+    left.length === right.length &&
+    left.every(
+      (element, index) =>
+        JSON.stringify(canonicalWordNode(element)) ===
+        JSON.stringify(canonicalWordNode(right[index])),
+    )
+  let valid: boolean
+  if (write.mode === 'replace') {
+    valid = insertedMatches(afterParts.content)
+    if (
+      !valid &&
+      afterParts.content.length === expected.length + 1 &&
+      insertedMatches(afterParts.content.slice(0, -1)) &&
+      isEmptyParagraph(
+        elementSignature(afterParts.content[afterParts.content.length - 1], afterParts.numbering),
+      ) &&
+      expected[expected.length - 1]?.type === 'table'
+    )
+      valid = true
+  } else if (write.mode === 'append') {
+    const boundary = beforeParts.content.length
+    valid =
+      afterParts.content.length === boundary + expected.length &&
+      canonicalEqual(beforeParts.content, afterParts.content.slice(0, boundary)) &&
+      insertedMatches(afterParts.content.slice(boundary))
+  } else {
+    valid =
+      afterParts.content.length === expected.length + beforeParts.content.length &&
+      insertedMatches(afterParts.content.slice(0, expected.length)) &&
+      canonicalEqual(beforeParts.content, afterParts.content.slice(expected.length))
+  }
+  return valid
+}
+
+function bodyParts(xml: string): {
+  content: Element[]
+  section?: CanonicalWordNode
+  numbering: Map<string, 'ordered' | 'unordered'>
+} {
+  const elements = directElements(wordBodyElement(xml))
+  const sectionElement =
+    elements.at(-1)?.namespaceURI === W_NS && elements.at(-1)?.localName === 'sectPr'
+      ? elements.pop()
+      : undefined
+  return {
+    content: elements,
+    ...(sectionElement ? { section: canonicalWordNode(sectionElement) } : {}),
+    numbering: numberingKinds(xml),
+  }
+}
+
+function isEmptyParagraph(signature: DocumentSignature | undefined): boolean {
+  return signature?.type === 'paragraph' && signature.text === ''
 }
 
 function stableFingerprintOoxml(xml: string): string {
+  return JSON.stringify(canonicalWordNode(wordBodyElement(xml)))
+}
+
+function wordBodyElement(xml: string): Element {
   if (typeof DOMParser === 'undefined') throw new Error('office_api_unsupported')
   const document = new DOMParser().parseFromString(xml, 'text/xml')
   if (document.getElementsByTagName('parsererror').length) throw new Error('office_read_failed')
+  return wordBodyElementFromDocument(document)
+}
+
+function wordBodyElementFromDocument(document: Document): Element {
   const root = document.documentElement
   let wordDocument: Element | undefined
   if (root.namespaceURI === PKG_NS && root.localName === 'package') {
@@ -582,7 +1123,7 @@ function stableFingerprintOoxml(xml: string): string {
       ? [root]
       : []
   if (bodies.length !== 1) throw new Error('office_read_failed')
-  return JSON.stringify(canonicalWordNode(bodies[0]))
+  return bodies[0]
 }
 
 function directElements(parent: Element): Element[] {

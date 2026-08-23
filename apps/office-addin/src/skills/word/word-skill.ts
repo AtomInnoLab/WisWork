@@ -5,6 +5,7 @@ import type { InMemoryVfs } from '../shared/vfs.js'
 import { parseDeclarativeProgram } from '../shared/declarative-program.js'
 import type { WordAdapter, WordDeclarativeOperation } from './browser-word-adapter.js'
 import { MAX_WORD_RESULT_BYTES } from './browser-word-adapter.js'
+import { parseWordMarkdown, parseWordPlainText } from './word-markdown.js'
 
 const MAX_INDEX = 1_000_000
 const MAX_CODE = 32 * 1024
@@ -38,6 +39,10 @@ const writeInput = exactObject({
     return value as 'replace' | 'append' | 'prepend'
   },
   explanation: optionalField(stringField({ maxLength: 100 })),
+  format: optionalField((value) => {
+    if (!['markdown', 'plain_text'].includes(String(value))) throw new Error('invalid_tool_input')
+    return value as 'markdown' | 'plain_text'
+  }),
 })
 
 const tools = [
@@ -90,13 +95,14 @@ const tools = [
   {
     name: 'write_document',
     description:
-      'Write drafted text to the Word document after explicit user confirmation. Use this for normal writing instead of execute_office_js. A returned awaiting_user_confirmation status is success; do not call another write tool in the same turn.',
+      'Write bounded Markdown as native Word headings, paragraphs, tables, and inline formatting after explicit confirmation. Lists fail closed. Set format=plain_text to disable Markdown. Use this for normal writing instead of execute_office_js. A returned awaiting_user_confirmation status is success; do not call another write tool in the same turn.',
     inputSchema: {
       type: 'object',
       properties: {
         text: { type: 'string', minLength: 1, maxLength: 12_000 },
         mode: { type: 'string', enum: ['replace', 'append', 'prepend'] },
         explanation: { type: 'string', maxLength: 100 },
+        format: { type: 'string', enum: ['markdown', 'plain_text'] },
       },
       required: ['text', 'mode'],
       additionalProperties: false,
@@ -234,6 +240,17 @@ function previewInsert(before: string, operation: WordDeclarativeOperation): str
   return operation.text
 }
 
+function previewDocumentWrite(
+  before: string,
+  inserted: string,
+  mode: 'replace' | 'append' | 'prepend',
+): string {
+  if (mode === 'replace') return inserted
+  if (!before) return inserted
+  if (!inserted) return before
+  return mode === 'append' ? `${before}\n${inserted}` : `${inserted}\n${before}`
+}
+
 export function createWordSkill(options: {
   adapter: WordAdapter
   vfs: InMemoryVfs
@@ -322,7 +339,7 @@ export function createWordSkill(options: {
   return {
     id: 'office-word',
     systemPrompt:
-      'Word reads and screenshots are bounded. For ordinary drafting and document writing, always call write_document with structured text and mode. execute_office_js accepts only a version-1 JSON declarative program with allowlisted insert_text or replace_all operations; JavaScript and ambient authority are rejected. Every write requires confirmation, stale-state validation, and semantic verification. A tool result with status awaiting_user_confirmation means the write proposal succeeded: stop calling write tools and ask the user to confirm the visible proposal.',
+      'Word reads and screenshots are bounded. For ordinary drafting and document writing, call write_document with Markdown text and mode; it atomically creates native Word headings, tables, and inline formatting. Lists fail closed. Use format=plain_text only when literal Markdown is requested. execute_office_js accepts only a version-1 JSON declarative program with allowlisted insert_text or replace_all operations; JavaScript and ambient authority are rejected. Every write requires confirmation, stale-state validation, and semantic verification. A tool result with status awaiting_user_confirmation means the write proposal succeeded: stop calling write tools and ask the user to confirm the visible proposal.',
     tools: [...tools],
     async executeTool(call, signal) {
       if (call.inputError || call.truncated) return failure(call.name, 'invalid_tool_input')
@@ -384,14 +401,55 @@ export function createWordSkill(options: {
         }
         if (call.name === 'write_document') {
           const input = writeInput(call.input)
-          const location = { replace: 'replace', append: 'end', prepend: 'start' }[input.mode] as
-            'replace' | 'end' | 'start'
-          return await proposeOperations(
-            call.name,
-            input.explanation || 'Write drafted text to the document',
-            [{ op: 'insert_text', location, text: input.text }],
-            signal,
-          )
+          const existing = awaitingConfirmation()
+          if (existing) return existing
+          const parsed =
+            input.format === 'plain_text'
+              ? parseWordPlainText(input.text)
+              : parseWordMarkdown(input.text)
+          if (parsed.structure.lists) return failure(call.name, 'office_api_unsupported')
+          const write = { ...parsed, mode: input.mode }
+          const snapshot = await options.adapter.getDocumentSnapshot(signal)
+          assertNotCancelled(signal)
+          const previewOperation: WordDeclarativeOperation = {
+            op: 'insert_text',
+            location:
+              input.mode === 'append' ? 'end' : input.mode === 'prepend' ? 'start' : 'replace',
+            text: input.text,
+          }
+          const before = documentPreviewText(snapshot.text, previewOperation)
+          const proposal = options.proposals.propose({
+            operation: call.name,
+            toolName: call.name,
+            title: input.explanation || 'Write drafted content to the document',
+            preview: {
+              mode: input.mode,
+              format: input.format ?? 'markdown',
+              headings: parsed.structure.headings,
+              lists: parsed.structure.lists,
+              tables: parsed.structure.tables,
+            },
+            impact: { host: 'word', targets: ['document'], count: 1 },
+            fingerprint: snapshot.fingerprint,
+            before,
+            after: previewDocumentWrite(before, parsed.semanticText, input.mode),
+            validate: async (confirmSignal) =>
+              (await options.adapter.fingerprint(confirmSignal)) === snapshot.fingerprint,
+            execute: (confirmSignal) => options.adapter.executeDocumentWrite(write, confirmSignal),
+            verify: async (confirmSignal) => {
+              if (!(await options.adapter.verifyDocumentWrite(write, confirmSignal)))
+                throw new Error('office_verify_failed')
+            },
+          })
+          return {
+            output: JSON.stringify({
+              proposalId: proposal.id,
+              status: 'awaiting_user_confirmation',
+              mutated: false,
+            }),
+            mutated: false,
+            summary: 'Awaiting confirmation',
+          }
         }
         if (call.name === 'execute_office_js') {
           const input = codeInput(call.input)

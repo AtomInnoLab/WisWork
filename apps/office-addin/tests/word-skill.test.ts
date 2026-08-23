@@ -41,6 +41,8 @@ function adapter(overrides: Partial<WordAdapter> = {}): WordAdapter {
     fingerprint: vi.fn().mockResolvedValue('before'),
     executeOperations: vi.fn().mockResolvedValue(undefined),
     verifyOperations: vi.fn().mockResolvedValue(true),
+    executeDocumentWrite: vi.fn().mockResolvedValue(undefined),
+    verifyDocumentWrite: vi.fn().mockResolvedValue(true),
     ...overrides,
   }
 }
@@ -114,6 +116,7 @@ describe('Word compatibility skill', () => {
             text: { type: 'string', minLength: 1, maxLength: 12_000 },
             mode: { type: 'string', enum: ['replace', 'append', 'prepend'] },
             explanation: { type: 'string', maxLength: 100 },
+            format: { type: 'string', enum: ['markdown', 'plain_text'] },
           },
           required: ['text', 'mode'],
           additionalProperties: false,
@@ -365,14 +368,17 @@ describe('Word compatibility skill', () => {
 
     await proposals.confirm(pending.id)
     expect(fake.fingerprint).toHaveBeenCalledOnce()
-    expect(fake.executeOperations).toHaveBeenCalledWith(
-      [
-        {
-          op: 'insert_text',
-          location: 'replace',
-          text: 'Large language models generate text from learned patterns.',
-        },
-      ],
+    expect(fake.executeDocumentWrite).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'replace',
+        semanticText: 'Large language models generate text from learned patterns.',
+        blocks: [
+          {
+            type: 'paragraph',
+            spans: [{ text: 'Large language models generate text from learned patterns.' }],
+          },
+        ],
+      }),
       expect.any(AbortSignal),
     )
   })
@@ -395,7 +401,7 @@ describe('Word compatibility skill', () => {
     expect(result).not.toHaveProperty('isError')
     expect(proposals.pending()).toMatchObject({
       before: expect.stringMatching(/^…\n.*END$/s),
-      after: expect.stringMatching(/^…\n.*ENDAPPENDED$/s),
+      after: expect.stringMatching(/^…\n.*END\nAPPENDED$/s),
     })
     expect(String(proposals.pending()?.before).length).toBeLessThanOrEqual(8_002)
   })
@@ -719,5 +725,129 @@ describe('browser Word adapter', () => {
     await subject.executeOperations([operation])
     current = current.replace('<w:t>p0</w:t>', '<w:t>changed</w:t>')
     await expect(subject.verifyOperations([operation])).resolves.toBe(false)
+  })
+
+  it('writes native Word paragraphs and tables and verifies their exact post-write snapshot', async () => {
+    let current =
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:body></w:document>'
+    let pending: string | undefined
+    let queuedSnapshots: Array<{ value: string }> = []
+    const paragraph = {
+      styleBuiltIn: '',
+      insertText: vi.fn(() => ({ font: {} })),
+    }
+    const insertParagraph = vi.fn(() => paragraph)
+    const insertTable = vi.fn(() => ({ styleBuiltIn: '', headerRowCount: 0 }))
+    const body = {
+      clear: vi.fn(),
+      paragraphs: { getFirst: vi.fn(() => paragraph) },
+      insertParagraph,
+      insertTable,
+      insertOoxml: vi.fn((xml: string) => {
+        pending = xml
+      }),
+      getOoxml: vi.fn(() => {
+        const result = { value: current }
+        queuedSnapshots.push(result)
+        return result
+      }),
+    }
+    const sync = vi.fn(async () => {
+      if (pending) current = pending
+      pending = undefined
+      for (const snapshot of queuedSnapshots) snapshot.value = current
+      queuedSnapshots = []
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'Word',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+    const subject = new BrowserWordAdapter()
+    const write = {
+      mode: 'replace' as const,
+      blocks: [
+        { type: 'heading' as const, level: 1, spans: [{ text: 'Title' }] },
+        { type: 'table' as const, rows: [['A']], headerRows: 1 as const },
+      ],
+      semanticText: 'Title\nA',
+      structure: { headings: 1, lists: 0, tables: 1 },
+    }
+
+    await subject.executeDocumentWrite(write)
+
+    expect(body.insertOoxml).toHaveBeenCalledOnce()
+    expect(body.clear).not.toHaveBeenCalled()
+    expect(insertParagraph).not.toHaveBeenCalled()
+    expect(insertTable).not.toHaveBeenCalled()
+    await expect(subject.verifyDocumentWrite(write)).resolves.toBe(true)
+  })
+
+  it('restores the original Word body when cancellation arrives during the write sync', async () => {
+    const original =
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Original</w:t></w:r></w:p></w:body></w:document>'
+    let current = original
+    let syncCount = 0
+    let queuedSnapshots: Array<{ value: string }> = []
+    const controller = new AbortController()
+    const insertOoxml = vi.fn((xml: string) => {
+      current = xml
+    })
+    const body = {
+      clear: vi.fn(),
+      paragraphs: {
+        getFirst: vi.fn(() => ({
+          insertText: vi.fn(() => ({ font: {} })),
+        })),
+      },
+      insertParagraph: vi.fn(() => ({ insertText: vi.fn(() => ({ font: {} })) })),
+      insertTable: vi.fn(),
+      insertOoxml,
+      getOoxml: vi.fn(() => {
+        const result = { value: current }
+        queuedSnapshots.push(result)
+        return result
+      }),
+    }
+    const sync = vi.fn(async () => {
+      syncCount += 1
+      if (syncCount === 2) {
+        current = current.replace('Original', 'Changed')
+        controller.abort()
+      }
+      for (const snapshot of queuedSnapshots) snapshot.value = current
+      queuedSnapshots = []
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'Word',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserWordAdapter().executeDocumentWrite(
+        {
+          mode: 'replace',
+          blocks: [{ type: 'paragraph', spans: [{ text: 'Changed' }] }],
+          semanticText: 'Changed',
+          structure: { headings: 0, lists: 0, tables: 0 },
+        },
+        controller.signal,
+      ),
+    ).rejects.toThrow('cancelled')
+    expect(insertOoxml).toHaveBeenCalledWith(original, 'Replace')
+    expect(current).toBe(original)
   })
 })
