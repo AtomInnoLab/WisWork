@@ -45,8 +45,15 @@ are tracked separately. File conversions run only in the bounded terminateable w
 below. Web retrieval remains independently capability-negotiated through the authenticated PC
 Relay route. Browser `bash` is not a
 native shell and has no PC filesystem, process, socket, credential, or package-install access.
-For ordinary drafting, Word uses the structured `write_document` tool with bounded text and an
-exact `replace`, `append`, or `prepend` mode. It creates one confirmation card and reports
+For ordinary drafting, Word uses the structured `write_document` tool with bounded Markdown (or
+explicit `plain_text`) and an exact `replace`, `append`, or `prepend` mode. Its safe Markdown subset
+is converted through one atomic Office.js OOXML replacement into real Word headings, paragraphs,
+tables, and paragraph-level bold, italic, and inline-code formatting. Lists currently fail closed
+rather than relying on non-transactional multi-batch numbering APIs. Table cells are bounded plain text;
+formatted table cells fail closed. Raw HTML, links, images, scripts, and unsupported constructs
+remain literal text. Post-write verification compares normalized full-document text and the
+expected heading/list/table structure, avoiding false failures caused only by Word paragraph
+terminators. It creates one confirmation card and reports
 `awaiting_user_confirmation` as success; repeated writes while that card is pending reuse it rather
 than replacing the proposal or retrying the document mutation.
 Supported mutations show a structured title, impact, and bounded before/after comparison or
@@ -122,6 +129,10 @@ remove that family without rolling back the workspace or Relay identity:
 - `VITE_WISWORK_OFFICE_IMPORT_MEDIA=0`
 
 Only `0` and `1` are accepted; invalid values make the deployment fail closed.
+
+The audited name-by-name and semantic comparison with `hewliyang/office-agents` is maintained in
+[`OFFICE_AGENTS_PARITY.md`](./OFFICE_AGENTS_PARITY.md). Host tool names are covered, but raw
+JavaScript execution remains intentionally unavailable and production web retrieval remains gated.
 
 Safe remote failure diagnostics are enabled by default for Relay builds. They contain only bounded
 host/build/tool/phase identifiers, stable error codes, requirement-set support, and allowlisted
