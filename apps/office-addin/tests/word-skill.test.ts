@@ -840,7 +840,7 @@ describe('browser Word adapter', () => {
 
   it('accepts localized built-in heading style IDs normalized during the write sync', async () => {
     let current =
-      '<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage"><pkg:part pkg:name="/word/document.xml"><pkg:xmlData><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:body></w:document></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/styles.xml"><pkg:xmlData><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="1"><w:pPr><w:outlineLvl w:val="0"/></w:pPr></w:style></w:styles></pkg:xmlData></pkg:part></pkg:package>'
+      '<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage"><pkg:part pkg:name="/word/document.xml"><pkg:xmlData><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/styles.xml"><pkg:xmlData><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="1"><w:pPr><w:outlineLvl w:val="0"/></w:pPr></w:style></w:styles></pkg:xmlData></pkg:part></pkg:package>'
     let pending: string | undefined
     let queuedSnapshots: Array<{ value: string }> = []
     const body = {
@@ -858,6 +858,7 @@ describe('browser Word adapter', () => {
         current = pending
           .replace('w:val="Heading1"', 'w:val="1"')
           .replace('<w:outlineLvl w:val="0"/>', '')
+          .replace('</w:sectPr>', '<w:cols w:space="708"/></w:sectPr>')
       pending = undefined
       for (const snapshot of queuedSnapshots) snapshot.value = current
       queuedSnapshots = []

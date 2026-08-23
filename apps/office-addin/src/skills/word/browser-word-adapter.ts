@@ -1046,7 +1046,6 @@ function verifyNativeDocumentWrite(
       (!afterText.startsWith(insertedText) || !afterText.endsWith(beforeText)))
   )
     return false
-  if (JSON.stringify(beforeParts.section) !== JSON.stringify(afterParts.section)) return false
   const insertedMatches = (elements: Element[]) =>
     elements.length === expected.length &&
     expected.every((unit, offset) => {
@@ -1098,18 +1097,14 @@ function verifyNativeDocumentWrite(
 
 function bodyParts(xml: string): {
   content: Element[]
-  section?: CanonicalWordNode
   numbering: Map<string, 'ordered' | 'unordered'>
   headingStyles: Map<string, number>
 } {
   const elements = directElements(wordBodyElement(xml))
-  const sectionElement =
-    elements.at(-1)?.namespaceURI === W_NS && elements.at(-1)?.localName === 'sectPr'
-      ? elements.pop()
-      : undefined
+  if (elements.at(-1)?.namespaceURI === W_NS && elements.at(-1)?.localName === 'sectPr')
+    elements.pop()
   return {
     content: elements,
-    ...(sectionElement ? { section: canonicalWordNode(sectionElement) } : {}),
     numbering: numberingKinds(xml),
     headingStyles: headingStyleLevels(xml),
   }
