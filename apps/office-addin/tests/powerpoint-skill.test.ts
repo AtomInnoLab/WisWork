@@ -70,6 +70,9 @@ describe('PowerPoint compatibility skill', () => {
         text: { type: 'string', maxLength: 12000 },
       },
     })
+    expect(skill.tools.find((tool) => tool.name === 'execute_office_js')?.description).toContain(
+      '{"version":1,"operations":[{"op":"add_text_box","slide_index":0,"name":"Status","text":"PASS","left":300,"top":450,"width":360,"height":50}]}',
+    )
   })
 
   it('normalizes reads, image display, and rejects unknown fields', async () => {

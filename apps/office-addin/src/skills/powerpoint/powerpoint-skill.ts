@@ -99,7 +99,7 @@ const tools = [
   {
     name: 'execute_office_js',
     description:
-      'Execute a confirmation-gated bounded declarative PowerPoint JSON program; JavaScript syntax and ambient authority are rejected.',
+      'Execute a confirmation-gated bounded declarative PowerPoint program. The code argument must be a JSON string with the exact envelope {"version":1,"operations":[...]}; use snake_case fields. Supported operations are set_shape_text (slide_index, shape_id, text), set_shape_geometry (slide_index, shape_id, left, top, width, height), add_text_box (slide_index, name, text, left, top, width, height), delete_shape (slide_index, shape_id), and duplicate_slide (slide_index; it must be the only operation). Example: {"version":1,"operations":[{"op":"add_text_box","slide_index":0,"name":"Status","text":"PASS","left":300,"top":450,"width":360,"height":50}]}. JavaScript syntax and ambient authority are rejected.',
     inputSchema: {
       type: 'object',
       properties: {
