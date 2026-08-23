@@ -1101,10 +1101,8 @@ function bodyParts(xml: string): {
   headingStyles: Map<string, number>
 } {
   const elements = directElements(wordBodyElement(xml))
-  const sectionElement =
-    elements.at(-1)?.namespaceURI === W_NS && elements.at(-1)?.localName === 'sectPr'
-      ? elements.pop()
-      : undefined
+  if (elements.at(-1)?.namespaceURI === W_NS && elements.at(-1)?.localName === 'sectPr')
+    elements.pop()
   return {
     content: elements,
     numbering: numberingKinds(xml),
