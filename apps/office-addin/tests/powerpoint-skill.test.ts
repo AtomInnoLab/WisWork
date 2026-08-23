@@ -372,21 +372,24 @@ describe('PowerPoint compatibility skill', () => {
   it('accepts host-normalized PowerPoint geometry when verifying a created text box', async () => {
     const fake = adapter({
       executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['4'] }),
-      listSlideShapes: vi.fn().mockResolvedValue({
-        slideId: 's1',
-        slideIndex: 0,
-        shapes: [
-          {
-            id: '4',
-            name: 'Status',
-            type: 'TextBox',
-            left: 300.00003,
-            top: 449.99997,
-            width: 360.00003,
-            height: 50.00003,
-          },
-        ],
-      }),
+      listSlideShapes: vi
+        .fn()
+        .mockResolvedValueOnce({ slideId: 's1', slideIndex: 0, shapes: [] })
+        .mockResolvedValue({
+          slideId: 's1',
+          slideIndex: 0,
+          shapes: [
+            {
+              id: '4',
+              name: 'Status',
+              type: 'TextBox',
+              left: 300.00003,
+              top: 449.99997,
+              width: 360.00003,
+              height: 50.00003,
+            },
+          ],
+        }),
       readSlideText: vi.fn().mockResolvedValue({
         slideId: 's1',
         shapeId: '4',
