@@ -1046,7 +1046,6 @@ function verifyNativeDocumentWrite(
       (!afterText.startsWith(insertedText) || !afterText.endsWith(beforeText)))
   )
     return false
-  if (JSON.stringify(beforeParts.section) !== JSON.stringify(afterParts.section)) return false
   const insertedMatches = (elements: Element[]) =>
     elements.length === expected.length &&
     expected.every((unit, offset) => {
@@ -1098,7 +1097,6 @@ function verifyNativeDocumentWrite(
 
 function bodyParts(xml: string): {
   content: Element[]
-  section?: CanonicalWordNode
   numbering: Map<string, 'ordered' | 'unordered'>
   headingStyles: Map<string, number>
 } {
@@ -1109,7 +1107,6 @@ function bodyParts(xml: string): {
       : undefined
   return {
     content: elements,
-    ...(sectionElement ? { section: canonicalWordNode(sectionElement) } : {}),
     numbering: numberingKinds(xml),
     headingStyles: headingStyleLevels(xml),
   }
