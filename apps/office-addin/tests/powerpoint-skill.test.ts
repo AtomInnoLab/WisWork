@@ -475,11 +475,20 @@ describe('browser PowerPoint adapter', () => {
   it('checks cancellation before every write/sync and implements text edit and duplicate', async () => {
     const sync = vi.fn().mockResolvedValue(undefined)
     const textRange = { text: 'Old', load: vi.fn() }
-    const shape = { id: '2', textFrame: { textRange } }
+    const shape = {
+      id: '2',
+      name: 'Title',
+      type: 'Placeholder',
+      left: 10,
+      top: 20,
+      width: 200,
+      height: 40,
+      textFrame: { hasText: true, load: vi.fn(), textRange },
+    }
     const slide = {
       id: 's1',
       load: vi.fn(),
-      shapes: { getItem: vi.fn(() => shape) },
+      shapes: { load: vi.fn(), items: [shape], getItem: vi.fn(() => shape) },
       exportAsBase64: vi.fn(() => ({ value: 'ppt' })),
     }
     const slides = {
@@ -519,6 +528,53 @@ describe('browser PowerPoint adapter', () => {
       'cancelled',
     )
     expect(textRange.text).toBe('New')
+  })
+
+  it('keeps duplicate validation stable when PowerPoint exports volatile slide packages', async () => {
+    const sync = vi.fn().mockResolvedValue(undefined)
+    const textRange = { text: 'Stable title', load: vi.fn() }
+    const textFrame = { hasText: true, load: vi.fn(), textRange }
+    const shape = {
+      id: '2',
+      name: 'Title 1',
+      type: 'Placeholder',
+      left: 120,
+      top: 88.4,
+      width: 720,
+      height: 188,
+      textFrame,
+    }
+    let exportSequence = 0
+    const slide = {
+      id: 's1',
+      load: vi.fn(),
+      shapes: { load: vi.fn(), items: [shape] },
+      exportAsBase64: vi.fn(() => ({ value: `volatile-package-${exportSequence++}` })),
+    }
+    const slides = {
+      getCount: vi.fn(() => ({ value: 1 })),
+      getItemAt: vi.fn(() => slide),
+    }
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides }, sync }),
+      },
+    })
+
+    const subject = new BrowserPowerPointAdapter()
+    const first = await subject.snapshotSlide(0)
+    const second = await subject.snapshotSlide(0)
+
+    expect(second).toEqual(first)
+    textRange.text = 'Changed title'
+    await expect(subject.snapshotSlide(0)).resolves.not.toEqual(first)
   })
 
   it('rejects empty or oversized duplicate exports before insertion', async () => {

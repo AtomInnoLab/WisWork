@@ -388,20 +388,41 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     signal?: AbortSignal,
   ): Promise<{ slideId: string; fingerprint: string }> {
     cancelled(signal)
-    return this.run('1.8', async (context) => {
+    return this.run('1.4', async (context) => {
       const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
       const slide = await getSlide(context, slides, slideIndex, signal)
-      if (typeof slide.exportAsBase64 !== 'function') throw new Error('office_api_unsupported')
-      const exported = (slide.exportAsBase64 as () => RuntimeRecord)()
+      const shapes = slide.shapes as RuntimeRecord
+      if (!shapes || typeof shapes.load !== 'function') throw new Error('office_api_unsupported')
+      loadShapes(shapes, MAX_POWERPOINT_SHAPES)
       await sync(context, signal)
-      if (
-        typeof exported.value !== 'string' ||
-        exported.value.length === 0 ||
-        exported.value.length > MAX_POWERPOINT_SNAPSHOT_BASE64
-      )
+      const items = shapes.items as RuntimeRecord[]
+      if (!Array.isArray(items) || items.length > MAX_POWERPOINT_SHAPES)
         throw new Error('office_read_failed')
+      for (const shape of items) {
+        const textFrame = shape.textFrame as RuntimeRecord | undefined
+        if (textFrame && typeof textFrame.load === 'function')
+          (textFrame.load as (properties: string) => void)('hasText')
+      }
+      await sync(context, signal)
+      for (const shape of items) {
+        const textFrame = shape.textFrame as RuntimeRecord | undefined
+        const textRange = textFrame?.textRange as RuntimeRecord | undefined
+        if (textFrame?.hasText === true && textRange && typeof textRange.load === 'function')
+          (textRange.load as (properties: string) => void)('text')
+      }
+      await sync(context, signal)
       const slideId = string(slide.id)
-      return { slideId, fingerprint: `${slideId}:${hash(exported.value)}` }
+      const semanticShapes = items
+        .map((shape) => {
+          const textFrame = shape.textFrame as RuntimeRecord | undefined
+          const textRange = textFrame?.textRange as RuntimeRecord | undefined
+          return {
+            ...shapeInfo(shape),
+            text: textFrame?.hasText === true ? string(textRange?.text, MAX_POWERPOINT_TEXT) : '',
+          }
+        })
+        .sort((first, second) => first.id.localeCompare(second.id))
+      return { slideId, fingerprint: `${slideId}:${hash(JSON.stringify(semanticShapes))}` }
     })
   }
 
