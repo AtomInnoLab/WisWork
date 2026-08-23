@@ -884,6 +884,7 @@ describe('browser Word adapter', () => {
 
     await subject.executeDocumentWrite(write)
 
+    expect(body.insertOoxml).toHaveBeenCalledWith(expect.stringContaining('w:val="1"'), 'Replace')
     await expect(subject.verifyDocumentWrite(write)).resolves.toBe(true)
   })
 

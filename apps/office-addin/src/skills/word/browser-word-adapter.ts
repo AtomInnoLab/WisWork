@@ -651,7 +651,10 @@ function buildDocumentWriteOoxml(original: string, write: WordDocumentWrite): st
     (element) => element.namespaceURI === W_NS && element.localName === 'sectPr',
   )
   const existing = directElements(body).filter((element) => element !== section)
-  const nodes = write.blocks.map((block) => createWordBlock(document, block))
+  const headingStyleIds = new Map<number, string>()
+  for (const [styleId, level] of headingStyleLevels(original))
+    if (!headingStyleIds.has(level)) headingStyleIds.set(level, styleId)
+  const nodes = write.blocks.map((block) => createWordBlock(document, block, headingStyleIds))
   const separated: Element[] = []
   for (const node of nodes) {
     if (separated.at(-1)?.localName === 'tbl' && node.localName === 'tbl')
@@ -678,7 +681,11 @@ function buildDocumentWriteOoxml(original: string, write: WordDocumentWrite): st
   return new XMLSerializer().serializeToString(document)
 }
 
-function createWordBlock(document: Document, block: WordDocumentBlock): Element {
+function createWordBlock(
+  document: Document,
+  block: WordDocumentBlock,
+  headingStyleIds: Map<number, string>,
+): Element {
   if (block.type === 'list') throw new Error('office_api_unsupported')
   if (block.type === 'table') {
     const table = document.createElementNS(W_NS, 'w:tbl')
@@ -706,7 +713,10 @@ function createWordBlock(document: Document, block: WordDocumentBlock): Element 
   return createWordParagraph(
     document,
     block.spans,
-    block.type === 'heading' ? `Heading${block.level}` : undefined,
+    block.type === 'heading'
+      ? (headingStyleIds.get(block.level - 1) ?? `Heading${block.level}`)
+      : undefined,
+    block.type === 'heading' ? block.level - 1 : undefined,
   )
 }
 
@@ -714,6 +724,7 @@ function createWordParagraph(
   document: Document,
   spans: WordInlineSpan[],
   styleId?: string,
+  outlineLevel?: number,
 ): Element {
   const paragraph = document.createElementNS(W_NS, 'w:p')
   if (styleId) {
@@ -722,16 +733,12 @@ function createWordParagraph(
     style.setAttributeNS(W_NS, 'w:val', styleId)
     properties.append(style)
     const outline = document.createElementNS(W_NS, 'w:outlineLvl')
-    outline.setAttributeNS(W_NS, 'w:val', String(Number(styleId.replace('Heading', '')) - 1))
+    outline.setAttributeNS(W_NS, 'w:val', String(outlineLevel))
     properties.append(outline)
     const runProperties = document.createElementNS(W_NS, 'w:rPr')
     runProperties.append(document.createElementNS(W_NS, 'w:b'))
     const size = document.createElementNS(W_NS, 'w:sz')
-    size.setAttributeNS(
-      W_NS,
-      'w:val',
-      String(Math.max(22, 34 - (Number(styleId.replace('Heading', '')) - 1) * 2)),
-    )
+    size.setAttributeNS(W_NS, 'w:val', String(Math.max(22, 34 - (outlineLevel ?? 0) * 2)))
     runProperties.append(size)
     properties.append(runProperties)
     paragraph.append(properties)
