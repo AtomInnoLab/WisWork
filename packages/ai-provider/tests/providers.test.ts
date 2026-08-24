@@ -6,7 +6,7 @@ describe('defaultAiSettings', () => {
     expect(AI_PROVIDERS.map((provider) => provider.id)).toContain('wiswork')
     expect(defaultAiSettings().providers.wiswork).toEqual({
       apiKey: '',
-      model: 'qwen/qwen3.8-max',
+      model: 'openai/gpt-5.6-sol',
     })
   })
 
