@@ -132,7 +132,6 @@ async function fetchPinned(url, fetchImplementation, signal, redirects = 0) {
 }
 
 export async function fetchVerifiedAsset(asset, targetPath, options = {}) {
-  const fetchImplementation = options.fetchImplementation ?? globalThis.fetch
   try {
     const existing = await lstat(targetPath)
     if (
@@ -146,6 +145,31 @@ export async function fetchVerifiedAsset(asset, targetPath, options = {}) {
   } catch (error) {
     if ((error.code ?? '') !== 'ENOENT') throw error
   }
+  const maxAttempts = options.maxAttempts ?? 3
+  const retryDelayMs = options.retryDelayMs ?? 1_000
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 5) {
+    throw new Error('download attempt limit is invalid')
+  }
+  if (!Number.isSafeInteger(retryDelayMs) || retryDelayMs < 0 || retryDelayMs > 30_000) {
+    throw new Error('download retry delay is invalid')
+  }
+  let lastError
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await fetchVerifiedAssetOnce(asset, targetPath, options)
+    } catch (error) {
+      lastError = error
+      if (attempt === maxAttempts) break
+      const nextAttempt = attempt + 1
+      options.onRetry?.(nextAttempt)
+      await new Promise((resolveWait) => setTimeout(resolveWait, retryDelayMs * attempt))
+    }
+  }
+  throw lastError
+}
+
+async function fetchVerifiedAssetOnce(asset, targetPath, options) {
+  const fetchImplementation = options.fetchImplementation ?? globalThis.fetch
   const temporaryPath = `${targetPath}.${randomBytes(6).toString('hex')}.part`
   const controller = new AbortController()
   const timeout = setTimeout(
@@ -408,7 +432,10 @@ export async function main(argv = process.argv.slice(2)) {
   const asset = selectPlatformAsset(manifest, options.platform)
   const targetPath = resolve(options.cachePath, `${asset.id}.tar.gz`)
   assertWithin(options.cachePath, targetPath)
-  const result = await fetchVerifiedAsset(asset, targetPath)
+  const result = await fetchVerifiedAsset(asset, targetPath, {
+    onRetry: (attempt) =>
+      process.stderr.write(`${JSON.stringify({ code: 'TECTONIC_FETCH_RETRY', attempt })}\n`),
+  })
   const executablePath = await extractVerifiedTectonic(
     asset,
     result.path,

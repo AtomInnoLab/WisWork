@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -126,10 +127,43 @@ test('fetchVerifiedAsset stops oversized responses', async (context) => {
     fetchVerifiedAsset(
       { url: 'https://github.com/example/fixed', bytes: 3, sha256: 'a'.repeat(64) },
       target,
-      { fetchImplementation: async () => new Response('too-large') },
+      { fetchImplementation: async () => new Response('too-large'), maxAttempts: 1 },
     ),
     /expected size/i,
   )
+})
+
+test('fetchVerifiedAsset retries a transient download and still verifies integrity', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'fetch-tectonic-retry-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const target = join(root, 'asset.tar.gz')
+  const body = 'verified-archive'
+  const retries = []
+  let attempts = 0
+
+  const result = await fetchVerifiedAsset(
+    {
+      url: 'https://github.com/example/fixed',
+      bytes: Buffer.byteLength(body),
+      sha256: createHash('sha256').update(body).digest('hex'),
+    },
+    target,
+    {
+      maxAttempts: 2,
+      retryDelayMs: 0,
+      onRetry: (attempt) => retries.push(attempt),
+      fetchImplementation: async () => {
+        attempts += 1
+        if (attempts === 1) throw new Error('transient upstream failure')
+        return new Response(body)
+      },
+    },
+  )
+
+  assert.equal(attempts, 2)
+  assert.deepEqual(retries, [2])
+  assert.equal(await readFile(target, 'utf8'), body)
+  assert.equal(result.bytes, Buffer.byteLength(body))
 })
 
 test('extractVerifiedTectonic restores the prior sidecar when publish fails', async (context) => {
