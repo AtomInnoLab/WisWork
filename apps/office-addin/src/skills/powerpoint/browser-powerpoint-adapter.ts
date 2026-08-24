@@ -4,6 +4,7 @@ import {
   verifyPowerPointPackage,
   type PackageEditResult,
 } from './powerpoint-package.js'
+import { readUntilConverged } from '../shared/office-write-transaction.js'
 
 export const MAX_POWERPOINT_SHAPES = 1_000
 export const MAX_POWERPOINT_TEXT = 12_000
@@ -233,6 +234,11 @@ function hash(value: string): string {
     result = Math.imul(result, 0x01000193)
   }
   return `${value.length}:${(result >>> 0).toString(16).padStart(8, '0')}`
+}
+
+function slideSemanticFingerprint(value: string): string {
+  const separator = value.indexOf(':')
+  return separator < 0 ? value : value.slice(separator + 1)
 }
 
 export class BrowserPowerPointAdapter implements PowerPointAdapter {
@@ -723,6 +729,21 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       const slides = presentation.slides as RuntimeRecord
       const queued: Array<() => void> = []
       const createdShapes: RuntimeRecord[] = []
+      type TrackedMutation =
+        | {
+            kind: 'text'
+            target: RuntimeRecord
+            before?: string
+            after: string
+          }
+        | {
+            kind: 'geometry'
+            target: RuntimeRecord
+            before?: [number, number, number, number]
+            after: [number, number, number, number]
+          }
+      const trackedByTarget = new Map<string, TrackedMutation>()
+      let hasUnrecoverableMutation = false
       for (const operation of operations) {
         const slide = await getSlide(context, slides, operation.slide_index, signal)
         if (
@@ -736,11 +757,30 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           if (operation.op === 'set_shape_text') {
             const textRange = (shape.textFrame as RuntimeRecord | undefined)?.textRange as
               RuntimeRecord | undefined
-            if (!textRange) throw new Error('office_api_unsupported')
+            if (!textRange || typeof textRange.load !== 'function')
+              throw new Error('office_api_unsupported')
+            ;(textRange.load as (properties: string) => void)('text')
+            const key = `${operation.slide_index}/${operation.shape_id}/text`
+            const existing = trackedByTarget.get(key)
+            if (existing?.kind === 'text') existing.after = operation.text
+            else
+              trackedByTarget.set(key, { kind: 'text', target: textRange, after: operation.text })
             queued.push(() => {
               textRange.text = operation.text
             })
           } else if (operation.op === 'set_shape_geometry') {
+            if (typeof shape.load !== 'function') throw new Error('office_api_unsupported')
+            ;(shape.load as (properties: string) => void)('left,top,width,height')
+            const key = `${operation.slide_index}/${operation.shape_id}/geometry`
+            const after: [number, number, number, number] = [
+              operation.left,
+              operation.top,
+              operation.width,
+              operation.height,
+            ]
+            const existing = trackedByTarget.get(key)
+            if (existing?.kind === 'geometry') existing.after = after
+            else trackedByTarget.set(key, { kind: 'geometry', target: shape, after })
             queued.push(() => {
               shape.left = operation.left
               shape.top = operation.top
@@ -749,6 +789,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             })
           } else {
             if (typeof shape.delete !== 'function') throw new Error('office_api_unsupported')
+            hasUnrecoverableMutation = true
             queued.push(() => (shape.delete as () => void)())
           }
         } else if (operation.op === 'add_text_box') {
@@ -768,6 +809,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             ;(created.load as (properties: string) => void)('id')
             createdShapes.push(created)
           })
+          hasUnrecoverableMutation = true
         } else {
           if (
             typeof slide.exportAsBase64 !== 'function' ||
@@ -790,11 +832,119 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
               ) => void
             )(exported.value as string, { targetSlideId: string(slide.id) }),
           )
+          hasUnrecoverableMutation = true
         }
+      }
+      await sync(context, signal)
+      for (const mutation of trackedByTarget.values()) {
+        if (mutation.kind === 'text')
+          mutation.before = string(mutation.target.text, MAX_POWERPOINT_TEXT)
+        else
+          mutation.before = [
+            finite(mutation.target.left),
+            finite(mutation.target.top),
+            finite(mutation.target.width),
+            finite(mutation.target.height),
+          ]
       }
       cancelled(signal)
       for (const write of queued) write()
-      await sync(context, signal)
+      try {
+        await sync(context, signal)
+        if (trackedByTarget.size > 0) {
+          const applied = await readUntilConverged({
+            signal,
+            read: async () => {
+              for (const mutation of trackedByTarget.values()) {
+                if (mutation.kind === 'text')
+                  (mutation.target.load as (properties: string) => void)('text')
+                else (mutation.target.load as (properties: string) => void)('left,top,width,height')
+              }
+              await sync(context, signal)
+              return [...trackedByTarget.values()].every((mutation) => {
+                if (mutation.kind === 'text')
+                  return string(mutation.target.text, MAX_POWERPOINT_TEXT) === mutation.after
+                return [
+                  finite(mutation.target.left),
+                  finite(mutation.target.top),
+                  finite(mutation.target.width),
+                  finite(mutation.target.height),
+                ].every((value, index) => Math.abs(value - mutation.after[index]) <= 0.01)
+              })
+            },
+            accept: Boolean,
+          })
+          if (!applied) throw new Error('office_verify_failed')
+        }
+      } catch {
+        for (const mutation of trackedByTarget.values()) {
+          if (mutation.kind === 'text')
+            (mutation.target.load as (properties: string) => void)('text')
+          else (mutation.target.load as (properties: string) => void)('left,top,width,height')
+        }
+        await sync(context)
+        let changed = false
+        for (const mutation of trackedByTarget.values()) {
+          if (mutation.kind === 'text') {
+            const current = string(mutation.target.text, MAX_POWERPOINT_TEXT)
+            if (current === mutation.before) continue
+            if (current !== mutation.after) throw new Error('office_concurrent_change')
+          } else {
+            const current = [
+              finite(mutation.target.left),
+              finite(mutation.target.top),
+              finite(mutation.target.width),
+              finite(mutation.target.height),
+            ]
+            if (current.every((value, index) => value === mutation.before?.[index])) continue
+            if (!current.every((value, index) => Math.abs(value - mutation.after[index]) <= 0.01))
+              throw new Error('office_concurrent_change')
+          }
+          changed = true
+        }
+        if (!changed && !hasUnrecoverableMutation)
+          throw new Error(signal?.aborted ? 'cancelled' : 'office_write_failed')
+        // We cannot safely synthesize an arbitrary deleted shape or prove ownership of an
+        // inserted object after a rejected batch. Surface uncertainty instead of overwriting.
+        if (hasUnrecoverableMutation) throw new Error('office_state_uncertain')
+        for (const mutation of trackedByTarget.values()) {
+          if (mutation.kind === 'text') mutation.target.text = mutation.before
+          else if (mutation.before) {
+            ;[
+              mutation.target.left,
+              mutation.target.top,
+              mutation.target.width,
+              mutation.target.height,
+            ] = mutation.before
+          }
+        }
+        try {
+          await sync(context)
+        } catch {
+          // A rejected recovery sync can still commit; prove the restored state below.
+        }
+        for (const mutation of trackedByTarget.values()) {
+          if (mutation.kind === 'text')
+            (mutation.target.load as (properties: string) => void)('text')
+          else (mutation.target.load as (properties: string) => void)('left,top,width,height')
+        }
+        await sync(context)
+        for (const mutation of trackedByTarget.values()) {
+          if (mutation.kind === 'text') {
+            if (string(mutation.target.text, MAX_POWERPOINT_TEXT) !== mutation.before)
+              throw new Error('office_state_uncertain')
+          } else if (
+            ![
+              finite(mutation.target.left),
+              finite(mutation.target.top),
+              finite(mutation.target.width),
+              finite(mutation.target.height),
+            ].every((value, index) => value === mutation.before?.[index])
+          )
+            throw new Error('office_state_uncertain')
+        }
+        throw new Error(signal?.aborted ? 'cancelled' : 'office_write_failed')
+      }
       return { createdShapeIds: createdShapes.map((shape) => string(shape.id)) }
     })
   }
@@ -814,42 +964,145 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       const shape = (shapes.getItem as (id: string) => RuntimeRecord)(shapeId)
       const textRange = (shape.textFrame as RuntimeRecord | undefined)?.textRange as
         RuntimeRecord | undefined
-      if (!textRange) throw new Error('office_api_unsupported')
+      if (!textRange || typeof textRange.load !== 'function')
+        throw new Error('office_api_unsupported')
+      ;(textRange.load as (properties: string) => void)('text')
+      await sync(context, signal)
+      const before = string(textRange.text, MAX_POWERPOINT_TEXT)
       cancelled(signal)
       textRange.text = value
-      await sync(context, signal)
+      try {
+        await sync(context, signal)
+        const applied = await readUntilConverged({
+          signal,
+          read: async () => {
+            ;(textRange.load as (properties: string) => void)('text')
+            await sync(context, signal)
+            return string(textRange.text, MAX_POWERPOINT_TEXT)
+          },
+          accept: (current) => current === value,
+        })
+        if (applied !== value) throw new Error('office_verify_failed')
+      } catch {
+        // A rejected Office.js sync may still have committed the assignment. Reconcile the
+        // semantic target before deciding whether the write failed or cancellation won.
+        ;(textRange.load as (properties: string) => void)('text')
+        await sync(context)
+        const current = string(textRange.text, MAX_POWERPOINT_TEXT)
+        if (current === before)
+          throw new Error(signal?.aborted ? 'cancelled' : 'office_write_failed')
+        if (current !== value) throw new Error('office_concurrent_change')
+        if (!signal?.aborted) return
+
+        // Cancellation is allowed to restore only the state attributable to this write.
+        textRange.text = before
+        try {
+          await sync(context)
+        } catch {
+          // As above, a rejected recovery sync may have committed. Prove the result below.
+        }
+        ;(textRange.load as (properties: string) => void)('text')
+        await sync(context)
+        if (string(textRange.text, MAX_POWERPOINT_TEXT) !== before)
+          throw new Error('office_state_uncertain')
+        throw new Error('cancelled')
+      }
     })
   }
 
   async duplicateSlide(slideIndex: number, signal?: AbortSignal): Promise<{ slideId: string }> {
     cancelled(signal)
-    return this.run('1.8', async (context) => {
-      const presentation = context.presentation as RuntimeRecord
-      const slides = presentation.slides as RuntimeRecord
-      const slide = await getSlide(context, slides, slideIndex, signal)
+    const before = await this.snapshotSlide(slideIndex, signal)
+    let followingBefore: { slideId: string; fingerprint: string } | undefined
+    try {
+      followingBefore = await this.snapshotSlide(slideIndex + 1, signal)
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'invalid_tool_input') throw error
+    }
+    try {
+      return await this.run('1.8', async (context) => {
+        const presentation = context.presentation as RuntimeRecord
+        const slides = presentation.slides as RuntimeRecord
+        const slide = await getSlide(context, slides, slideIndex, signal)
+        if (
+          typeof slide.exportAsBase64 !== 'function' ||
+          typeof presentation.insertSlidesFromBase64 !== 'function'
+        )
+          throw new Error('office_api_unsupported')
+        const exported = (slide.exportAsBase64 as () => RuntimeRecord)()
+        await sync(context, signal)
+        if (
+          typeof exported.value !== 'string' ||
+          exported.value.length === 0 ||
+          exported.value.length > MAX_POWERPOINT_SNAPSHOT_BASE64
+        )
+          throw new Error('office_write_failed')
+        cancelled(signal)
+        ;(
+          presentation.insertSlidesFromBase64 as (
+            value: string,
+            options: { targetSlideId: string },
+          ) => void
+        )(exported.value, { targetSlideId: string(slide.id) })
+        await sync(context, signal)
+        const inserted = await getSlide(context, slides, slideIndex + 1, signal)
+        return { slideId: string(inserted.id) }
+      })
+    } catch (error) {
+      const source = await this.snapshotSlide(slideIndex)
+      if (source.fingerprint !== before.fingerprint)
+        throw new Error('office_concurrent_change', { cause: error })
+      let following: { slideId: string; fingerprint: string } | undefined
+      try {
+        following = await this.snapshotSlide(slideIndex + 1)
+      } catch (readError) {
+        if (!(readError instanceof Error) || readError.message !== 'invalid_tool_input')
+          throw new Error('office_state_uncertain', { cause: readError })
+      }
       if (
-        typeof slide.exportAsBase64 !== 'function' ||
-        typeof presentation.insertSlidesFromBase64 !== 'function'
+        (!followingBefore && !following) ||
+        (followingBefore && following?.fingerprint === followingBefore.fingerprint)
       )
-        throw new Error('office_api_unsupported')
-      const exported = (slide.exportAsBase64 as () => RuntimeRecord)()
-      await sync(context, signal)
+        throw new Error(signal?.aborted ? 'cancelled' : 'office_write_failed', { cause: error })
       if (
-        typeof exported.value !== 'string' ||
-        exported.value.length === 0 ||
-        exported.value.length > MAX_POWERPOINT_SNAPSHOT_BASE64
+        !following ||
+        slideSemanticFingerprint(following.fingerprint) !==
+          slideSemanticFingerprint(before.fingerprint)
       )
-        throw new Error('office_write_failed')
-      cancelled(signal)
-      ;(
-        presentation.insertSlidesFromBase64 as (
-          value: string,
-          options: { targetSlideId: string },
-        ) => void
-      )(exported.value, { targetSlideId: string(slide.id) })
-      await sync(context, signal)
-      const inserted = await getSlide(context, slides, slideIndex + 1, signal)
-      return { slideId: string(inserted.id) }
-    })
+        throw new Error('office_concurrent_change', { cause: error })
+      if (!signal?.aborted) return { slideId: following.slideId }
+
+      try {
+        await this.run('1.8', async (context) => {
+          const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+          const inserted = await getSlide(context, slides, slideIndex + 1)
+          if (string(inserted.id) !== following?.slideId || typeof inserted.delete !== 'function')
+            throw new Error('office_concurrent_change')
+          ;(inserted.delete as () => void)()
+          await sync(context)
+        })
+        const restored = await this.snapshotSlide(slideIndex)
+        if (restored.fingerprint !== before.fingerprint)
+          throw new Error('office_state_uncertain', { cause: error })
+        if (followingBefore) {
+          const restoredFollowing = await this.snapshotSlide(slideIndex + 1)
+          if (restoredFollowing.fingerprint !== followingBefore.fingerprint)
+            throw new Error('office_state_uncertain', { cause: error })
+        } else {
+          try {
+            await this.snapshotSlide(slideIndex + 1)
+            throw new Error('office_state_uncertain', { cause: error })
+          } catch (readError) {
+            if (readError instanceof Error && readError.message === 'office_state_uncertain')
+              throw readError
+          }
+        }
+      } catch (recoveryError) {
+        if (recoveryError instanceof Error && recoveryError.message === 'office_concurrent_change')
+          throw recoveryError
+        throw new Error('office_state_uncertain', { cause: recoveryError })
+      }
+      throw new Error('cancelled', { cause: error })
+    }
   }
 }
