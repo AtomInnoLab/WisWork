@@ -599,11 +599,21 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       } catch (writeError) {
         // A failed Office.js batch may commit a prefix. Recovery is allowed only after proving
         // exact ownership of both the imported candidate and the captured original package.
-        const currentCount = await getSlideCount(context, slides)
+        const converged = await readUntilConverged({
+          read: async () => {
+            const currentCount = await getSlideCount(context, slides)
+            if (currentCount < 1 || slideIndex >= currentCount)
+              return { currentCount, current: undefined, currentKind: 'missing' as const }
+            const current = await getSlide(context, slides, slideIndex)
+            return { currentCount, current, currentKind: await classifyPackage(current) }
+          },
+          accept: ({ currentCount, currentKind }) =>
+            currentCount !== beforeCount || currentKind !== 'original',
+        })
+        const { currentCount, current, currentKind } = converged
         if (currentCount < 1 || slideIndex >= currentCount)
           throw new Error('office_state_uncertain', { cause: writeError })
-        const current = await getSlide(context, slides, slideIndex)
-        const currentKind = await classifyPackage(current)
+        if (!current) throw new Error('office_state_uncertain', { cause: writeError })
         if (currentKind === 'original') {
           if (currentCount !== beforeCount)
             throw new Error('office_concurrent_change', { cause: writeError })
@@ -654,19 +664,9 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         typeof imported.value !== 'string' ||
         !(await verifyImportedPowerPointPackage(imported.value, expected, signal))
       ) {
-        // Restore the captured original package even when insert+delete both committed but
-        // the imported package is semantically different from the approved replacement.
-        cancelled(signal)
-        ;(
-          presentation.insertSlidesFromBase64 as (
-            value: string,
-            options?: { targetSlideId: string },
-          ) => void
-        )(original.value, previous ? { targetSlideId: string(previous.id) } : undefined)
-        ;(inserted.delete as () => void)()
-        await sync(context)
-        await proveRecovery(false)
-        throw new Error('office_verify_failed')
+        // Verification failure is not proof that the current slide is still owned by this
+        // transaction. Never overwrite a possible concurrent edit with the captured package.
+        throw new Error('office_state_uncertain')
       }
       if (applyMaster) {
         try {
@@ -726,23 +726,10 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             )
               throw new Error('office_verify_failed')
           }
-        } catch {
-          const recoverySlides = slides.items as RuntimeRecord[]
-          for (const item of recoverySlides) {
-            const originalLayout = originalLayouts.get(string(item.id))
-            if (originalLayout && typeof item.applyLayout === 'function')
-              (item.applyLayout as (layout: RuntimeRecord) => void)(originalLayout)
-          }
-          ;(
-            presentation.insertSlidesFromBase64 as (
-              value: string,
-              options?: { targetSlideId: string },
-            ) => void
-          )(original.value, previous ? { targetSlideId: string(previous.id) } : undefined)
-          if (typeof inserted.delete === 'function') (inserted.delete as () => void)()
-          await sync(context)
-          await proveRecovery(true)
-          throw new Error('office_write_failed')
+        } catch (error) {
+          // Layout and package writes span multiple Office batches. Without an atomic compare-
+          // and-set primitive, restoring here could overwrite a concurrent user edit.
+          throw new Error('office_state_uncertain', { cause: error })
         }
       }
       return { slideId: string(inserted.id) }
@@ -772,6 +759,13 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       )
     )
       throw new Error('invalid_tool_input')
+    const repeatedTargets = new Set<string>()
+    for (const operation of operations) {
+      if (operation.op !== 'set_shape_text' && operation.op !== 'set_shape_geometry') continue
+      const key = `${operation.slide_index}/${operation.shape_id}/${operation.op}`
+      if (repeatedTargets.has(key)) throw new Error('invalid_tool_input')
+      repeatedTargets.add(key)
+    }
     return this.run('1.8', async (context) => {
       const presentation = context.presentation as RuntimeRecord
       const slides = presentation.slides as RuntimeRecord

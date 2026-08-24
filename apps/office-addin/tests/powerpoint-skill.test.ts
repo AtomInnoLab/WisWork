@@ -1352,6 +1352,27 @@ describe('browser PowerPoint adapter', () => {
     expect(textRange.text).toBe('User edit')
   })
 
+  it('rejects repeated writes to the same shape property before Office dispatch', async () => {
+    const run = vi.fn()
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: { run },
+    })
+
+    await expect(
+      new BrowserPowerPointAdapter().executeDeclarative([
+        { op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'First' },
+        { op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'Second' },
+      ]),
+    ).rejects.toThrow('invalid_tool_input')
+    expect(run).not.toHaveBeenCalled()
+  })
+
   it.each([
     { mode: 'committed', expected: 'copy' },
     { mode: 'cancelled', expected: 'cancelled' },
@@ -1757,98 +1778,97 @@ describe('browser PowerPoint adapter', () => {
     expect(insertSlidesFromBase64).toHaveBeenCalledOnce()
   })
 
-  it.each([
-    { mode: 'sync-failure', expectedError: 'office_write_failed' },
-    { mode: 'ignored-layout-recovery', expectedError: 'office_recovery_failed' },
-    { mode: 'wrong-restored-slide', expectedError: 'office_recovery_failed' },
-  ])('proves package and layout recovery after $mode', async ({ mode, expectedError }) => {
-    const packageZip = new JSZip()
-    packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
-    const originalPackage = await packageZip.generateAsync({ type: 'base64' })
-    const expected = await editPowerPointPackage(originalPackage, 'slide', [
-      { path: 'ppt/slides/slide1.xml', xml: '<p:sld xmlns:p="urn:p"><p:cSld/></p:sld>' },
-    ])
-    const oldLayout = { id: 'old-layout', name: '', load: vi.fn() }
-    const newLayout = { id: 'new-layout', name: '', load: vi.fn() }
-    const wrongLayout = { id: 'wrong-layout', name: '', load: vi.fn() }
-    const slides: {
-      items: any[]
-      getCount: ReturnType<typeof vi.fn>
-      getItemAt: ReturnType<typeof vi.fn>
-      load: ReturnType<typeof vi.fn>
-    } = {
-      items: [],
-      getCount: vi.fn(() => ({ value: slides.items.length })),
-      getItemAt: vi.fn((index: number) => slides.items[index]),
-      load: vi.fn(),
-    }
-    const makeSlide = (id: string, layout: any, exported = 'original') => {
-      const item: any = {
-        id,
-        layout,
+  it.each(['sync-failure', 'ignored-layout-recovery', 'wrong-restored-slide'])(
+    'never performs an unowned package or layout restore after %s',
+    async (mode) => {
+      const packageZip = new JSZip()
+      packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
+      const originalPackage = await packageZip.generateAsync({ type: 'base64' })
+      const expected = await editPowerPointPackage(originalPackage, 'slide', [
+        { path: 'ppt/slides/slide1.xml', xml: '<p:sld xmlns:p="urn:p"><p:cSld/></p:sld>' },
+      ])
+      const oldLayout = { id: 'old-layout', name: '', load: vi.fn() }
+      const newLayout = { id: 'new-layout', name: '', load: vi.fn() }
+      const wrongLayout = { id: 'wrong-layout', name: '', load: vi.fn() }
+      const slides: {
+        items: any[]
+        getCount: ReturnType<typeof vi.fn>
+        getItemAt: ReturnType<typeof vi.fn>
+        load: ReturnType<typeof vi.fn>
+      } = {
+        items: [],
+        getCount: vi.fn(() => ({ value: slides.items.length })),
+        getItemAt: vi.fn((index: number) => slides.items[index]),
         load: vi.fn(),
-        exportAsBase64: vi.fn(() => ({ value: exported })),
-        applyLayout: vi.fn((next) => {
-          item.layout = next
-        }),
       }
-      item.delete = vi.fn(() => {
-        slides.items = slides.items.filter((slide) => slide !== item)
-      })
-      return item
-    }
-    const original = makeSlide('s1', oldLayout, originalPackage)
-    const sibling = makeSlide('s-other', oldLayout)
-    slides.items = [original, sibling]
-    const oldMaster = { layouts: { items: [oldLayout], load: vi.fn() } }
-    const newMaster = { layouts: { items: [newLayout], load: vi.fn() } }
-    const masters = { items: [oldMaster, newMaster], load: vi.fn() }
-    let propagationStarted = false
-    sibling.applyLayout.mockImplementation((next: unknown) => {
-      if (mode === 'ignored-layout-recovery') {
-        if (next === newLayout) sibling.layout = wrongLayout
-      } else {
-        sibling.layout = next
-      }
-      propagationStarted = true
-    })
-    let failed = false
-    const sync = vi.fn().mockImplementation(async () => {
-      if (mode !== 'ignored-layout-recovery' && propagationStarted && !failed) {
-        failed = true
-        throw new Error('host failure')
-      }
-    })
-    const insertSlidesFromBase64 = vi.fn((base64: string) => {
-      const inserted = makeSlide(
-        base64 === expected.base64 ? 's2' : 's1-restored',
-        base64 === expected.base64 ? newLayout : oldLayout,
-        mode === 'wrong-restored-slide' && base64 === originalPackage ? expected.base64 : base64,
-      )
-      slides.items.splice(0, 0, inserted)
-    })
-    Object.assign(globalThis, {
-      Office: {
-        context: {
-          host: 'PowerPoint',
-          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
-        },
-      },
-      PowerPoint: {
-        run: (callback: (context: unknown) => unknown) =>
-          callback({
-            presentation: { slides, slideMasters: masters, insertSlidesFromBase64 },
-            sync,
+      const makeSlide = (id: string, layout: any, exported = 'original') => {
+        const item: any = {
+          id,
+          layout,
+          load: vi.fn(),
+          exportAsBase64: vi.fn(() => ({ value: exported })),
+          applyLayout: vi.fn((next) => {
+            item.layout = next
           }),
-      },
-    })
-    await expect(
-      new BrowserPowerPointAdapter().replaceSlidePackage(0, expected.base64, true, expected),
-    ).rejects.toThrow(expectedError)
-    if (mode === 'sync-failure') expect(sibling.layout).toBe(oldLayout)
-    expect(slides.items).toHaveLength(2)
-    expect(slides.items[0].id).toBe('s1-restored')
-  })
+        }
+        item.delete = vi.fn(() => {
+          slides.items = slides.items.filter((slide) => slide !== item)
+        })
+        return item
+      }
+      const original = makeSlide('s1', oldLayout, originalPackage)
+      const sibling = makeSlide('s-other', oldLayout)
+      slides.items = [original, sibling]
+      const oldMaster = { layouts: { items: [oldLayout], load: vi.fn() } }
+      const newMaster = { layouts: { items: [newLayout], load: vi.fn() } }
+      const masters = { items: [oldMaster, newMaster], load: vi.fn() }
+      let propagationStarted = false
+      sibling.applyLayout.mockImplementation((next: unknown) => {
+        if (mode === 'ignored-layout-recovery') {
+          if (next === newLayout) sibling.layout = wrongLayout
+        } else {
+          sibling.layout = next
+        }
+        propagationStarted = true
+      })
+      let failed = false
+      const sync = vi.fn().mockImplementation(async () => {
+        if (mode !== 'ignored-layout-recovery' && propagationStarted && !failed) {
+          failed = true
+          throw new Error('host failure')
+        }
+      })
+      const insertSlidesFromBase64 = vi.fn((base64: string) => {
+        const inserted = makeSlide(
+          base64 === expected.base64 ? 's2' : 's1-restored',
+          base64 === expected.base64 ? newLayout : oldLayout,
+          mode === 'wrong-restored-slide' && base64 === originalPackage ? expected.base64 : base64,
+        )
+        slides.items.splice(0, 0, inserted)
+      })
+      Object.assign(globalThis, {
+        Office: {
+          context: {
+            host: 'PowerPoint',
+            requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+          },
+        },
+        PowerPoint: {
+          run: (callback: (context: unknown) => unknown) =>
+            callback({
+              presentation: { slides, slideMasters: masters, insertSlidesFromBase64 },
+              sync,
+            }),
+        },
+      })
+      await expect(
+        new BrowserPowerPointAdapter().replaceSlidePackage(0, expected.base64, true, expected),
+      ).rejects.toThrow('office_state_uncertain')
+      expect(insertSlidesFromBase64).toHaveBeenCalledOnce()
+      expect(slides.items).toHaveLength(2)
+      expect(slides.items[0].id).toBe('s2')
+    },
+  )
 
   it('treats a text-only change as stale even when slide geometry is unchanged', async () => {
     const fake = adapter()
