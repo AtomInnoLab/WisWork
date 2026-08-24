@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/core'
 import type { Block } from '@wiswork/docx-engine'
 import { composeSkills, type AgentImage } from '@wiswork/agent-core'
-import { createAgentHarness, type AgentHarness } from '@wiswork/agent-harness'
+import type { AgentHarness } from '@wiswork/agent-harness'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
 import type { PmNode } from '../editor/convert'
@@ -31,6 +31,7 @@ import fileVoiceIcon from '../assets/file-voice.png'
 import fileDocumentIcon from '../assets/file-document.png'
 import fileGeneralIcon from '../assets/file-general.png'
 import { IconNewChat, IconSidebarCollapse } from '../components/icons'
+import { createAgentController, useAgentControllerCleanup } from './agent-controller'
 
 interface ToolActivity {
   name: string
@@ -542,7 +543,7 @@ export function AiPanel({
       bullet: findNumId(blocksRef.current, 'bullet') ?? numIdFallbackRef.current?.bullet ?? null,
       ordered: findNumId(blocksRef.current, 'ordered') ?? numIdFallbackRef.current?.ordered ?? null,
     })
-    harnessRef.current = createAgentHarness<PmNode>({
+    harnessRef.current = createAgentController<PmNode>({
       transport: createElectronTransport(() => settingsRef.current),
       systemSuffix: aiLangDirective,
       skill: composeSkills('docs+files', '', [
@@ -675,6 +676,7 @@ export function AiPanel({
       },
     })
   }
+  useAgentControllerCleanup(harnessRef)
 
   useEffect(() => {
     if (!preset) return

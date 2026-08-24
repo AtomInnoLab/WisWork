@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement, ReactNode } from 'react'
 import { composeSkills } from '@wiswork/agent-core'
-import { createAgentHarness, type AgentHarness } from '@wiswork/agent-harness'
+import type { AgentHarness } from '@wiswork/agent-harness'
 import type { AiSettings } from '@wiswork/ai-provider'
 import { AiComposer, AiTypingIndicator, Markdown } from '@wiswork/ui'
 import type { Editor } from '@tiptap/core'
@@ -13,6 +13,7 @@ import { clearAiHighlights } from '../editor/aiHighlight'
 import { createMarkdownSkill } from './markdown-skill'
 import { createSearchSkill } from './search-skill'
 import { createElectronTransport } from './transport'
+import { createAgentController, useAgentControllerCleanup } from './agent-controller'
 
 const PANEL_WIDTH_KEY = 'markdown-ai-panel-width'
 const PANEL_WIDTH_DEFAULT = 360
@@ -160,7 +161,7 @@ export function AiPanel({
   // The harness is built once; every mutable value goes through a ref getter
   const harnessRef = useRef<AgentHarness<string> | null>(null)
   if (!harnessRef.current) {
-    harnessRef.current = createAgentHarness<string>({
+    harnessRef.current = createAgentController<string>({
       transport: createElectronTransport(() => settingsRef.current!),
       skill: composeSkills('markdown+search', '', [
         createMarkdownSkill(() => depsRef.current.getEditor()),
@@ -252,6 +253,7 @@ export function AiPanel({
       },
     })
   }
+  useAgentControllerCleanup(harnessRef)
 
   // ── chat-history persistence: bind to the file, restore prior transcript ──
   useEffect(() => {
