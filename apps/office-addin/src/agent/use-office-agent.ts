@@ -146,6 +146,7 @@ function toolActivity(name: string, state: 'running' | 'complete' | 'error'): st
 
 const DIAGNOSTIC_TOOL_ERRORS = new Set([
   'cancelled',
+  'invalid_tool_input',
   'office_api_unsupported',
   'office_read_failed',
   'office_recovery_failed',

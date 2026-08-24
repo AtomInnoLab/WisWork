@@ -112,6 +112,16 @@ describe('Office safe diagnostics', () => {
     expect(diagnostics.snapshot().trace_id).toBeUndefined()
   })
 
+  it('preserves invalid tool input locally for actionable model-contract diagnosis', () => {
+    const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'dev' })
+    diagnostics.setTool('edit_slide_xml')
+    diagnostics.record({ phase: 'tool', errorCode: 'invalid_tool_input' })
+    expect(diagnostics.snapshot().events[0]).toMatchObject({
+      tool: 'edit_slide_xml',
+      error_code: 'invalid_tool_input',
+    })
+  })
+
   it('ignores hostile Office error accessors without affecting the failure record', () => {
     const diagnostics = createOfficeDiagnostics({ host: 'word', build: 'dev' })
     const hostile = Object.defineProperty({}, 'debugInfo', {
