@@ -282,7 +282,7 @@ describe('Excel compatibility skill', () => {
     expect(writes).toBe(0)
   })
 
-  it('restores only a cell state composed of the approved write and captured prestate', async () => {
+  it('never auto-restores a partially applied cell mutation without Office compare-and-swap', async () => {
     const excel = new BrowserExcelAdapter()
     const beforeCell = {
       address: 'A1',
@@ -292,14 +292,16 @@ describe('Excel compatibility skill', () => {
       numberFormat: 'General',
       style: {},
     }
+    const beforeCell2 = { ...beforeCell, address: 'B1' }
     const state = {
-      ranges: [{ address: 'A1', rows: 1, columns: 1, cells: [beforeCell] }],
+      ranges: [{ address: 'A1:B1', rows: 1, columns: 2, cells: [beforeCell, beforeCell2] }],
     }
-    let values = [['agent edit']]
-    let formulas = [['agent edit']]
+    const values = [['agent edit', 'before']]
+    const formulas = [['agent edit', 'before']]
+    let writes = 0
     const range: any = {
       rowCount: 1,
-      columnCount: 1,
+      columnCount: 2,
       load: vi.fn(),
       get values() {
         return values
@@ -308,8 +310,8 @@ describe('Excel compatibility skill', () => {
         return formulas
       },
       set formulas(value) {
-        formulas = value
-        values = value
+        writes += 1
+        void value
       },
     }
     const sync = vi.fn().mockResolvedValue(undefined)
@@ -328,14 +330,35 @@ describe('Excel compatibility skill', () => {
         {
           sheetId: 1,
           worksheetOfficeId: 'stable-sheet',
-          range: 'A1',
-          cells: [[{ value: 'agent edit' }]],
+          range: 'A1:B1',
+          cells: [[{ value: 'agent edit' }, { value: 'agent edit' }]],
         },
         { kind: 'cells', state },
       ),
-    ).resolves.toBe('restored')
+    ).resolves.toBe('uncertain')
     expect(run).toHaveBeenCalledOnce()
-    expect(sync).toHaveBeenCalledTimes(3)
+    expect(sync).toHaveBeenCalledOnce()
+    expect(writes).toBe(0)
+  })
+
+  it('reconciles an applied write without restoring or reporting failure', async () => {
+    const recoverMutation = vi.fn().mockResolvedValue('applied')
+    const fake = adapter({
+      verifyMutation: vi.fn().mockResolvedValue(false),
+      recoverMutation,
+    } as any)
+    const proposals = createStructuredProposalController()
+    const skill = createExcelSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('set_cell_range', {
+        sheetId: 1,
+        range: 'A1',
+        cells: [[{ value: 'applied' }]],
+        allow_overwrite: true,
+      }),
+    )
+    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+    expect(recoverMutation).toHaveBeenCalledOnce()
   })
 
   it('fails structural recovery closed when Office cannot provide a bounded inverse', async () => {
@@ -448,58 +471,61 @@ describe('Excel compatibility skill', () => {
     )
   })
 
-  it('fails unverifiable structure, autofit, pivot, and chart-anchor semantics closed', async () => {
-    const excel = new BrowserExcelAdapter()
-    vi.spyOn(excel as any, 'run').mockResolvedValue(true)
-    vi.spyOn(excel, 'captureMutation').mockResolvedValue({
-      kind: 'structure',
-      state: { used: 'A1:B3' },
-    })
-    vi.spyOn(excel, 'getAllObjects').mockResolvedValue({
-      objects: [
-        { type: 'pivotTable', name: 'Pivot' },
-        { type: 'chart', name: 'Chart' },
+  it.each([
+    [
+      'modify_sheet_structure',
+      { operation: 'insert', sheetId: 1, dimension: 'rows', reference: '2', count: 1 },
+    ],
+    [
+      'modify_sheet_structure',
+      { operation: 'delete', sheetId: 1, dimension: 'columns', reference: 'B', count: 1 },
+    ],
+    ['resize_range', { sheetId: 1, range: 'A:A', width: { type: 'standard', value: 0 } }],
+    [
+      'modify_object',
+      {
+        operation: 'create',
+        objectType: 'chart',
+        sheetId: 1,
+        properties: { name: 'Chart', chartType: 'line', source: 'A1:B2' },
+      },
+    ],
+    [
+      'modify_object',
+      {
+        operation: 'update',
+        objectType: 'chart',
+        sheetId: 1,
+        id: 'Chart',
+        properties: { anchor: 'D4' },
+      },
+    ],
+    [
+      'modify_object',
+      {
+        operation: 'create',
+        objectType: 'pivotTable',
+        sheetId: 1,
+        properties: { name: 'Pivot', source: 'A1:B2', range: 'D1' },
+      },
+    ],
+  ])('rejects unverifiable %s sub-operations before proposal or mutation', async (tool, input) => {
+    const fake = adapter()
+    const proposals = createStructuredProposalController()
+    await expect(
+      createExcelSkill({ adapter: fake, proposals }).executeTool(call(tool, input)),
+    ).resolves.toMatchObject({ output: 'office_api_unsupported', isError: true })
+    expect(proposals.pending()).toBeUndefined()
+    expect(fake.captureMutation).not.toHaveBeenCalled()
+    expect(
+      (fake as any)[
+        tool === 'modify_object'
+          ? 'modifyObject'
+          : tool === 'resize_range'
+            ? 'resizeRange'
+            : 'modifySheetStructure'
       ],
-    })
-    await expect(
-      excel.verifyMutation(
-        'modify_sheet_structure',
-        { operation: 'insert', sheetId: 1, dimension: 'rows', reference: '2', count: 1 },
-        { kind: 'structure', state: { used: 'A1:B2' } },
-      ),
-    ).resolves.toBe(false)
-    await expect(
-      excel.verifyMutation(
-        'resize_range',
-        { sheetId: 1, range: 'A:A', width: { type: 'standard', value: 0 } },
-        {},
-      ),
-    ).resolves.toBe(false)
-    await expect(
-      excel.verifyMutation(
-        'modify_object',
-        {
-          operation: 'create',
-          objectType: 'pivotTable',
-          sheetId: 1,
-          properties: { name: 'Pivot', source: 'A1:B2', range: 'D1' },
-        },
-        {},
-      ),
-    ).resolves.toBe(false)
-    await expect(
-      excel.verifyMutation(
-        'modify_object',
-        {
-          operation: 'update',
-          objectType: 'chart',
-          sheetId: 1,
-          id: 'Chart',
-          properties: { anchor: 'D4' },
-        },
-        {},
-      ),
-    ).resolves.toBe(false)
+    ).not.toHaveBeenCalled()
   })
 
   it('fails confirmation when request-semantic post-write verification detects a no-op', async () => {
@@ -778,9 +804,23 @@ describe('Excel compatibility skill', () => {
     ],
   ])('accepts documented %s payloads', async (_label, name, input) => {
     const proposals = createStructuredProposalController()
-    await expect(
-      createExcelSkill({ adapter: adapter(), proposals }).executeTool(call(name, input)),
-    ).resolves.toMatchObject({ output: expect.stringContaining('proposalId'), mutated: false })
+    const result = await createExcelSkill({ adapter: adapter(), proposals }).executeTool(
+      call(name, input),
+    )
+    const unsupported = new Set([
+      'styled range with note, border, copy, and autofit',
+      'insert rows',
+      'delete columns',
+      'standard autofit',
+      'create chart',
+      'create pivot',
+      'update pivot',
+    ])
+    expect(result).toMatchObject(
+      unsupported.has(_label)
+        ? { output: 'office_api_unsupported', isError: true, mutated: false }
+        : { output: expect.stringContaining('proposalId'), mutated: false },
+    )
   })
 
   it('accepts every documented structured mutation shape and rejects incomplete/unknown nested input', async () => {

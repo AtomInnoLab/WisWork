@@ -82,7 +82,7 @@ export interface ExcelAdapter {
     input: Record<string, any>,
     beforeState: unknown,
     signal?: AbortSignal,
-  ): Promise<'restored' | 'concurrent' | 'uncertain'>
+  ): Promise<'applied' | 'restored' | 'concurrent' | 'uncertain'>
 }
 
 function cancelled(signal?: AbortSignal) {
@@ -1116,7 +1116,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
     tool: string,
     input: Record<string, any>,
     beforeState: unknown,
-  ): Promise<'restored' | 'concurrent' | 'uncertain'> {
+  ): Promise<'applied' | 'restored' | 'concurrent' | 'uncertain'> {
     const captured = beforeState as RuntimeRecord
     if (captured?.kind !== 'cells' || !captured.state?.ranges) {
       // Structural, workbook, resize, and object mutations do not have a
@@ -1158,56 +1158,42 @@ export class BrowserExcelAdapter implements ExcelAdapter {
           return range
         })
         await sync(context)
-        const beforeMatches = (range: RuntimeRecord, saved: RuntimeRecord) =>
-          range.rowCount === saved.rows &&
-          range.columnCount === saved.columns &&
-          saved.cells.every((cell: RuntimeRecord, index: number) => {
-            const row = Math.floor(index / saved.columns)
-            const column = index % saved.columns
-            return (
-              range.values?.[row]?.[column] === cell.value &&
-              range.formulas?.[row]?.[column] === cell.formula
-            )
-          })
-        if (ranges.every((range, index) => beforeMatches(range, beforeRanges[index])))
-          return 'restored'
+        let sawBefore = false
+        let sawApplied = false
         const attributable = ranges.every((range, rangeIndex) => {
           const saved = beforeRanges[rangeIndex]
+          if (range.rowCount !== saved.rows || range.columnCount !== saved.columns) return false
           return saved.cells.every((cell: RuntimeRecord, index: number) => {
             const row = Math.floor(index / saved.columns)
             const column = index % saved.columns
             const value = range.values?.[row]?.[column]
             const formula = range.formulas?.[row]?.[column]
-            if (value === cell.value && formula === cell.formula) return true
-            if (tool === 'clear_cell_range')
-              return (value === null || value === '') && (formula === null || formula === '')
+            if (value === cell.value && formula === cell.formula) {
+              sawBefore = true
+              return true
+            }
+            if (tool === 'clear_cell_range') {
+              const applied =
+                (value === null || value === '') && (formula === null || formula === '')
+              if (applied) sawApplied = true
+              return applied
+            }
             const expected = input.cells[row]?.[column]
             if (!expected) return false
             const valueMatches =
               !Object.hasOwn(expected, 'value') ||
               (value === expected.value &&
                 (formula === expected.value || formula === null || formula === ''))
-            return (
+            const applied =
               valueMatches && (!Object.hasOwn(expected, 'formula') || formula === expected.formula)
-            )
+            if (applied) sawApplied = true
+            return applied
           })
         })
         if (!attributable) return 'concurrent'
-        for (const [index, range] of ranges.entries()) {
-          const saved = beforeRanges[index]
-          range.formulas = Array.from({ length: saved.rows }, (_, row) =>
-            Array.from({ length: saved.columns }, (_, column) => {
-              const cell = saved.cells[row * saved.columns + column]
-              return cell.formula ?? cell.value ?? null
-            }),
-          )
-        }
-        await sync(context)
-        for (const range of ranges) range.load('values,formulas,rowCount,columnCount')
-        await sync(context)
-        return ranges.every((range, index) => beforeMatches(range, beforeRanges[index]))
-          ? 'restored'
-          : 'uncertain'
+        if (sawApplied && !sawBefore) return 'applied'
+        if (sawBefore && !sawApplied) return 'restored'
+        return 'uncertain'
       }, '1.4')
     } catch {
       return 'uncertain'

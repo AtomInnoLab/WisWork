@@ -49,11 +49,12 @@ async function recoverFailedMutation(
   input: Json,
   beforeState: unknown,
   restoredError = 'office_verify_failed',
-): Promise<never> {
+): Promise<void> {
   if (!adapter.recoverMutation) throw new Error('office_verify_failed')
   // Recovery intentionally gets a fresh signal: cancellation must not prevent
   // us from proving the document state after Office may have committed work.
   const outcome = await adapter.recoverMutation(tool, input, beforeState)
+  if (outcome === 'applied') return
   if (outcome === 'concurrent') throw new Error('office_concurrent_change')
   if (outcome === 'uncertain') throw new Error('office_state_uncertain')
   throw new Error(restoredError)
@@ -690,6 +691,7 @@ function semantics(name: string, input: Json) {
         rows: input.cells.length,
         columns,
       })
+    if (input.resizeWidth || input.resizeHeight) throw new Error('office_api_unsupported')
   }
   if (name === 'clear_cell_range') boxCells(input.sheetId, cellBox(input.range))
   if (name === 'copy_to') {
@@ -701,6 +703,19 @@ function semantics(name: string, input: Json) {
       columns: source.columns,
     })
   }
+  if (
+    (name === 'modify_sheet_structure' && ['insert', 'delete'].includes(input.operation)) ||
+    (name === 'resize_range' &&
+      (input.width?.type === 'standard' || input.height?.type === 'standard')) ||
+    (name === 'modify_object' &&
+      (input.objectType === 'pivotTable' ||
+        input.operation === 'create' ||
+        input.properties?.name ||
+        input.properties?.anchor ||
+        input.properties?.source ||
+        input.properties?.range))
+  )
+    throw new Error('office_api_unsupported')
   if (name === 'modify_workbook_structure') {
     if (input.operation === 'create' && !input.sheetName) invalid()
     if (input.operation !== 'create' && input.sheetId === undefined) invalid()
@@ -771,7 +786,7 @@ export function createExcelSkill(options: {
   return {
     id: 'office-excel',
     systemPrompt:
-      'Excel reads and screenshots are bounded. Every mutation is only a proposal until confirmed and semantically verified. eval_officejs uses the shared declarative execution runtime when available.',
+      'Excel reads and screenshots are bounded. Every mutation is only a proposal until confirmed and semantically verified. Operations without an exact Office.js readback contract are rejected before proposal instead of being executed into an uncertain state. eval_officejs uses the shared declarative execution runtime when available.',
     tools,
     async executeTool(call, signal) {
       if (call.inputError || call.truncated) return fail(call.name, 'invalid_tool_input')
@@ -863,7 +878,7 @@ export function createExcelSkill(options: {
                 await methods[resolvedOperations[0].op](resolvedOperations[0].input, confirmSignal)
                 check(confirmSignal)
               } catch (error) {
-                if (options.adapter.recoverMutation)
+                if (options.adapter.recoverMutation) {
                   await recoverFailedMutation(
                     options.adapter,
                     resolvedOperations[0].op,
@@ -871,6 +886,8 @@ export function createExcelSkill(options: {
                     operationPrestates[0],
                     'office_write_failed',
                   )
+                  return
+                }
                 throw error
               }
             },
@@ -996,7 +1013,7 @@ export function createExcelSkill(options: {
               await methods[call.name](mutationInput, s)
               check(s)
             } catch (error) {
-              if (options.adapter.recoverMutation)
+              if (options.adapter.recoverMutation) {
                 await recoverFailedMutation(
                   options.adapter,
                   call.name,
@@ -1004,6 +1021,8 @@ export function createExcelSkill(options: {
                   operationBefore,
                   'office_write_failed',
                 )
+                return
+              }
               // The cause stays in memory for allowlisted diagnostic identifiers;
               // its message is never serialized into the tool result.
               throw new Error(safeError(error, true), { cause: error })
