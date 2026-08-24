@@ -20,6 +20,7 @@ import {
   shouldResetAgentSession,
   useAgentControllerCleanup,
 } from './agent-controller'
+import { createChatBindingCoordinator } from './chat-binding'
 
 const PANEL_WIDTH_KEY = 'markdown-ai-panel-width'
 const PANEL_WIDTH_DEFAULT = 360
@@ -284,22 +285,20 @@ export function AiPanel({
     [],
   )
 
-  // ── chat-history persistence: bind to the file, restore prior transcript ──
-  useEffect(() => {
-    const api = window.projectApi
-    if (!api) return
-    const tempChatId = `unsaved-${Date.now()}`
-    void api
-      .resolveChat({ filePath: filePathRef.current ?? null, tempChatId })
-      .then((ids) => {
+  // ── chat-history persistence: follows every real document path change ──
+  const chatBindingRef = useRef<ReturnType<typeof createChatBindingCoordinator> | null>(null)
+  if (!chatBindingRef.current && window.projectApi) {
+    chatBindingRef.current = createChatBindingCoordinator({
+      api: window.projectApi,
+      createTempChatId: () => `unsaved-${Date.now()}`,
+      onBinding: (ids) => {
         chatIdsRef.current = ids
+        if (!ids) return
         for (const msg of pendingPersistRef.current.splice(0)) {
           persistMessage(msg.role, msg.text, msg.tools)
         }
-        return api.loadChat({ projectId: ids.projectId, chatId: ids.chatId, limit: 200 })
-      })
-      .then((msgs) => {
-        if (msgs.length === 0) return
+      },
+      onHistory: (msgs) => {
         // the user may have sent a message while history was loading — never
         // replace a live transcript (and don't clobber the loop context)
         let applied = false
@@ -320,26 +319,19 @@ export function AiPanel({
         if (applied && !harnessRef.current?.snapshot.busy) {
           harnessRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
         }
-      })
-      .catch(() => {
-        /* history load failures are silent */
-      })
-  }, [])
-
-  /** after an untitled document's first save, bind the unsaved-* history to the real path */
+      },
+      onReset: () => {
+        pendingPersistRef.current = []
+        harnessRef.current?.reset()
+        setChat([])
+      },
+    })
+  }
   useEffect(() => {
     filePathRef.current = filePath
-    const ids = chatIdsRef.current
-    if (!window.projectApi || !ids || !filePath || !ids.chatId.startsWith('unsaved-')) return
-    void window.projectApi
-      .rebindChat({ projectId: ids.projectId, tempChatId: ids.chatId, newFilePath: filePath })
-      .then((r) => {
-        if (r?.chatId) chatIdsRef.current = r
-      })
-      .catch(() => {
-        /* silent */
-      })
+    void chatBindingRef.current?.bind(filePath)
   }, [filePath])
+  useEffect(() => () => chatBindingRef.current?.dispose(), [])
 
   useEffect(() => {
     if (stickToBottomRef.current) {

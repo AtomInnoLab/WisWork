@@ -38,6 +38,7 @@ import {
   shouldResetAgentSession,
   useAgentControllerCleanup,
 } from './agent-controller'
+import { createChatBindingCoordinator } from './chat-binding'
 
 interface ToolActivity {
   name: string
@@ -380,6 +381,14 @@ export function AiPanel({
   const stickToBottomRef = useRef(true)
   /** projectId/chatId of the current chat */
   const chatRefIds = useRef<{ projectId: string; chatId: string } | null>(null)
+  const pendingPersistRef = useRef<
+    Array<{
+      role: 'user' | 'assistant'
+      text: string
+      tools?: ToolActivity[]
+      attachments?: AttachmentMeta[]
+    }>
+  >([])
 
   // latest props for the loop's closures (the loop instance outlives renders)
   const editorRef = useRef(editor)
@@ -436,18 +445,19 @@ export function AiPanel({
   >([])
 
   // ── Chat-history persistence ────────────────────────────────────────────
-  useEffect(() => {
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!api) return
-    const tempChatId = `unsaved-${Date.now()}`
-    void api
-      .resolveChat({ filePath: filePath ?? null, tempChatId })
-      .then((ids) => {
+  const chatBindingRef = useRef<ReturnType<typeof createChatBindingCoordinator> | null>(null)
+  if (!chatBindingRef.current && window.projectApi) {
+    chatBindingRef.current = createChatBindingCoordinator({
+      api: window.projectApi,
+      createTempChatId: () => `unsaved-${Date.now()}`,
+      onBinding: (ids) => {
         chatRefIds.current = ids
-        return api.loadChat({ projectId: ids.projectId, chatId: ids.chatId, limit: 200 })
-      })
-      .then((msgs) => {
-        if (msgs.length === 0) return
+        if (!ids) return
+        for (const msg of pendingPersistRef.current.splice(0)) {
+          persistMessage(msg.role, msg.text, msg.tools, msg.attachments)
+        }
+      },
+      onHistory: (msgs) => {
         setHistoricChat(
           msgs.map((m) => ({
             role: m.role,
@@ -471,27 +481,21 @@ export function AiPanel({
         )
         // restore model context: follow-ups after reopening a file continue the previous conversation (only when the loop is idle with no history)
         harnessRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
-      })
-      .catch(() => {
-        /* history load failures are silent */
-      })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  /** After an unsaved document's first save yields a real path, bind the unsaved-* history to that file (recoverable by path on reopen) */
+      },
+      onReset: () => {
+        pendingPersistRef.current = []
+        harnessRef.current?.reset()
+        setHistoricChat([])
+        setChat([])
+        setAttachments([])
+        sentAttachmentsRef.current = []
+      },
+    })
+  }
   useEffect(() => {
-    const ids = chatRefIds.current
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!api || !ids || !filePath || !ids.chatId.startsWith('unsaved-')) return
-    void api
-      .rebindChat({ projectId: ids.projectId, tempChatId: ids.chatId, newFilePath: filePath })
-      .then((r) => {
-        if (r?.chatId) chatRefIds.current = r
-      })
-      .catch(() => {
-        /* silent */
-      })
+    void chatBindingRef.current?.bind(filePath ?? null)
   }, [filePath])
+  useEffect(() => () => chatBindingRef.current?.dispose(), [])
 
   const persistMessage = (
     role: 'user' | 'assistant',
@@ -507,7 +511,11 @@ export function AiPanel({
   ) => {
     const ids = chatRefIds.current
     const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!ids || !api) return
+    if (!api) return
+    if (!ids) {
+      pendingPersistRef.current.push({ role, text, tools, attachments })
+      return
+    }
     void api
       .appendChat({
         projectId: ids.projectId,
