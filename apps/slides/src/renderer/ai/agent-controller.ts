@@ -11,6 +11,15 @@ export interface AgentControllerRef<TSnapshot> {
   current: AgentHarness<TSnapshot> | null
 }
 
+export function classifySlidesQcFailure(
+  error: unknown,
+  signal?: AbortSignal,
+): 'cancelled' | 'failed' {
+  return signal?.aborted || (error instanceof Error && error.name === 'AbortError')
+    ? 'cancelled'
+    : 'failed'
+}
+
 export const createAgentController = <TSnapshot>(
   options: AgentLoopOptions<TSnapshot>,
 ): LifecycleAgentController<TSnapshot> => {

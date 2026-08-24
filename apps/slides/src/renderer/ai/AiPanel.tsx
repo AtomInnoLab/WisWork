@@ -15,6 +15,7 @@ import { createFilesSkill } from './files-skill'
 import { createElectronTransport } from './transport'
 import {
   beginSlidesHostRun,
+  classifySlidesQcFailure,
   completeSlidesHostRun,
   createAgentController,
   recordSlidesRunAttachments,
@@ -1255,8 +1256,10 @@ export function AiPanel({
     // First kept QC batch — the run's own batch takes precedence (it is earlier,
     // so restoring it rewinds past the QC edits too)
     let qcSnapshotId: number | null = null
+    let activePage = capped[0] ?? 0
     try {
       for (const page of capped) {
+        activePage = page
         if (controller.signal.aborted || qcAbortRef.current !== controller) break
         const captured = await captureCurrentQcShot({
           capture: () => captureSlideShot(page),
@@ -1313,6 +1316,14 @@ export function AiPanel({
         lines.push(tGlobal('aiQcCapped', { count: pages.length - capped.length }))
       }
       if (controller.signal.aborted) lines.push(tGlobal('aiQcStopped'))
+    } catch (error) {
+      if (classifySlidesQcFailure(error, controller.signal) === 'cancelled') {
+        if (lines.at(-1) !== tGlobal('aiQcStopped')) lines.push(tGlobal('aiQcStopped'))
+      } else {
+        // Keep host/deck details out of the UI and persisted chat. The exact
+        // failure remains observable through existing local diagnostics.
+        lines.push(tGlobal('aiQcPageFailed', { n: activePage + 1, error: 'qc_failed' }))
+      }
     } finally {
       qcRunningRef.current = false
       qcAbortRef.current = null

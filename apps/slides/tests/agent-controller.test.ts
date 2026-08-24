@@ -5,6 +5,7 @@ import type { AgentStreamCallbacks, AgentTransport } from '@wiswork/agent-core'
 import {
   createAgentController,
   beginSlidesHostRun,
+  classifySlidesQcFailure,
   completeSlidesHostRun,
   stopSlidesHostRun,
   recordSlidesRunAttachments,
@@ -35,6 +36,18 @@ const skill = {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('Slides interactive agent controller', () => {
+  it('classifies cancellation without exposing raw QC orchestration errors', () => {
+    const controller = new AbortController()
+    controller.abort()
+    expect(classifySlidesQcFailure(new Error('private deck data'), controller.signal)).toBe(
+      'cancelled',
+    )
+    expect(
+      classifySlidesQcFailure(Object.assign(new Error('cancelled'), { name: 'AbortError' })),
+    ).toBe('cancelled')
+    expect(classifySlidesQcFailure(new Error('private deck data'))).toBe('failed')
+  })
+
   it('runs, stops, resets, and restores deck history', async () => {
     const transport = manualTransport()
     const controller = createAgentController({ transport, skill })
