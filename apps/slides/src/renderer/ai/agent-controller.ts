@@ -129,6 +129,7 @@ export async function completeSlidesHostRun({
   clearQcPages,
   runQc,
   setBusy,
+  publishHistorySnapshot,
 }: {
   cancelled: boolean
   finishHistoryBatch: () => Promise<unknown>
@@ -137,13 +138,18 @@ export async function completeSlidesHostRun({
   clearQcPages: () => void
   runQc: () => void
   setBusy: (busy: boolean) => void
+  publishHistorySnapshot?: (snapshot: unknown) => void
 }): Promise<void> {
   try {
-    await finishHistoryBatch()
+    const snapshot = await finishHistoryBatch()
+    if (isCurrent && !isCurrent()) return
+    publishHistorySnapshot?.(snapshot)
   } finally {
-    setBusy(false)
-    if (cancelled || (isCurrent && !isCurrent())) clearQcPages()
-    else if (hasQcPages()) runQc()
+    if (!isCurrent || isCurrent()) {
+      setBusy(false)
+      if (cancelled) clearQcPages()
+      else if (hasQcPages()) runQc()
+    }
   }
 }
 

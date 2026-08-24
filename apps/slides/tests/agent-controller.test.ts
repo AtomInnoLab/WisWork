@@ -233,6 +233,7 @@ describe('Slides interactive agent controller', () => {
     const qc = vi.fn()
     const clear = vi.fn()
     const settled = vi.fn()
+    const publishSnapshot = vi.fn()
     const completion = completeSlidesHostRun({
       cancelled: false,
       finishHistoryBatch: () =>
@@ -244,6 +245,7 @@ describe('Slides interactive agent controller', () => {
       clearQcPages: clear,
       runQc: qc,
       setBusy: settled,
+      publishHistorySnapshot: publishSnapshot,
     })
 
     current = false
@@ -251,8 +253,9 @@ describe('Slides interactive agent controller', () => {
     await completion
 
     expect(qc).not.toHaveBeenCalled()
-    expect(clear).toHaveBeenCalledOnce()
-    expect(settled).toHaveBeenCalledWith(false)
+    expect(clear).not.toHaveBeenCalled()
+    expect(settled).not.toHaveBeenCalled()
+    expect(publishSnapshot).not.toHaveBeenCalled()
   })
 
   it('closes a pending history batch without running when the launch becomes stale', async () => {

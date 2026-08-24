@@ -47,6 +47,7 @@ import fileVoiceIcon from '../assets/file-voice.png'
 import fileDocumentIcon from '../assets/file-document.png'
 import fileGeneralIcon from '../assets/file-general.png'
 import { IconNewChat, IconSidebarCollapseLeft } from '../components/icons'
+import { createSlidesChatBindingCoordinator } from './chat-binding'
 
 interface ToolActivity {
   name: string
@@ -478,18 +479,15 @@ export function AiPanel({
   >([])
 
   // ── Chat history persistence ──────────────────────────────────────────────
-  /** Resolve chatId and load history on first mount (AiPanel resets by key; no need to watch currentFilePath changes) */
-  useEffect(() => {
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!api) return
-    const tempChatId = `unsaved-${Date.now()}`
-    void api
-      .resolveChat({ filePath: currentFilePath ?? null, tempChatId })
-      .then((ids) => {
+  const chatBindingRef = useRef<ReturnType<typeof createSlidesChatBindingCoordinator> | null>(null)
+  if (!chatBindingRef.current && window.projectApi) {
+    chatBindingRef.current = createSlidesChatBindingCoordinator({
+      api: window.projectApi,
+      createTempChatId: () => `unsaved-${Date.now()}`,
+      onBinding: (ids) => {
         chatRefIds.current = ids
-        return api.loadChat({ projectId: ids.projectId, chatId: ids.chatId, limit: 200 })
-      })
-      .then((msgs) => {
+      },
+      onHistory: (msgs) => {
         if (msgs.length === 0) return
         setHistoricChat(
           msgs.map((m) => ({
@@ -514,31 +512,22 @@ export function AiPanel({
         )
         // Restore model context: follow-ups after reopening a file continue the earlier conversation (only when the loop is idle with no history)
         loopRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
-      })
-      .catch(() => {
-        /* History load failures are silent */
-      })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+      },
+      onReset: () => {
+        setChat([])
+        setHistoricChat([])
+      },
+    })
+  }
 
-  /** After an unsaved draft lands and gets a real path, bind the unsaved-* history to that file (recoverable by path on reopen) */
+  /** Bind on every path transition; publishing is suspended until rebind/resolve is authoritative. */
   useEffect(() => {
-    const ids = chatRefIds.current
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!api || !ids || !currentFilePath || !ids.chatId.startsWith('unsaved-')) return
-    void api
-      .rebindChat({
-        projectId: ids.projectId,
-        tempChatId: ids.chatId,
-        newFilePath: currentFilePath,
-      })
-      .then((r) => {
-        if (r?.chatId) chatRefIds.current = r
-      })
-      .catch(() => {
-        /* Silent */
-      })
+    void chatBindingRef.current?.bind(currentFilePath ?? null)
   }, [currentFilePath])
+
+  // StrictMode replays effects: deactivation invalidates the first resolve, and
+  // the replayed binding effect starts a fresh authoritative resolution.
+  useEffect(() => () => chatBindingRef.current?.deactivate(), [])
 
   /** Persist one message (fails silently). tools include args/output (truncated by the store layer); attachments store metadata only. */
   const persistMessage = (
@@ -553,30 +542,21 @@ export function AiPanel({
     }>,
     attachments?: AttachmentMeta[],
   ) => {
-    const ids = chatRefIds.current
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!ids || !api) return
-    void api
-      .appendChat({
-        projectId: ids.projectId,
-        chatId: ids.chatId,
-        role,
-        text,
-        ...(tools && tools.length > 0 ? { tools } : {}),
-        ...(attachments && attachments.length > 0
-          ? {
-              attachments: attachments.map((a) => ({
-                name: a.name,
-                path: a.path,
-                ext: a.ext,
-                sizeBytes: a.sizeBytes,
-              })),
-            }
-          : {}),
-      })
-      .catch(() => {
-        /* Silent */
-      })
+    chatBindingRef.current?.persist({
+      role,
+      text,
+      ...(tools && tools.length > 0 ? { tools } : {}),
+      ...(attachments && attachments.length > 0
+        ? {
+            attachments: attachments.map((a) => ({
+              name: a.name,
+              path: a.path,
+              ext: a.ext,
+              sizeBytes: a.sizeBytes,
+            })),
+          }
+        : {}),
+    })
   }
 
   // Resolved when the user submits/cancels; the AI takes the answer and continues.
@@ -617,13 +597,16 @@ export function AiPanel({
     })
   }
 
-  const finishHistoryBatch = async () => {
+  const finishHistoryBatch = async (publishSnapshot = true) => {
     if (!historyBatchActiveRef.current) return
     historyBatchActiveRef.current = false
     const id = await window.slidesApi.endHistoryBatch()
     if (typeof id !== 'number') return
-    runSnapshotIdRef.current = id
-    patchLastAssistant({ snapshotId: id })
+    if (publishSnapshot) {
+      runSnapshotIdRef.current = id
+      patchLastAssistant({ snapshotId: id })
+    }
+    return id
   }
 
   const rollback = async (snapshotId: number) => {
@@ -979,7 +962,7 @@ export function AiPanel({
           })
           void completeSlidesHostRun({
             cancelled,
-            finishHistoryBatch,
+            finishHistoryBatch: () => finishHistoryBatch(false),
             isCurrent: () => launchTokenRef.current === activeRunTokenRef.current,
             hasQcPages: () => qcPagesRef.current.length > 0,
             clearQcPages: () => {
@@ -987,6 +970,11 @@ export function AiPanel({
             },
             runQc: () => void runQcPassRef.current(),
             setBusy,
+            publishHistorySnapshot: (snapshot) => {
+              if (typeof snapshot !== 'number') return
+              runSnapshotIdRef.current = snapshot
+              patchLastAssistant({ snapshotId: snapshot })
+            },
           })
           // Persist the assistant message; tools store the whole run's full activity —
           // side effects outside the updater (StrictMode double-invokes updaters, duplicating history writes)
