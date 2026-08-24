@@ -33,6 +33,10 @@ function callbacks() {
 }
 
 describe('Office Agent transport', () => {
+  it('keeps the stream deadline below Relay while allowing long model turns', () => {
+    expect(STREAM_RESPONSE_TIMEOUT_MS).toBe(115_000)
+  })
+
   it('streams through the local PC bridge without provider credentials', async () => {
     const authenticatedFetch = vi.fn().mockResolvedValue(sse([]))
     const cb = callbacks()

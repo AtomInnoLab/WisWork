@@ -13,6 +13,7 @@ const REQUEST_TIMEOUT_MS = 120_000
 const MAX_OPAQUE_LENGTH = 512
 const MAX_DIAGNOSTIC_EVENT_BYTES = 4 * 1024
 const MAX_PENDING_DIAGNOSTICS = 16
+const TERMINAL_REQUEST_CACHE_SIZE = 64
 const DIAGNOSTIC_ERROR_CODES = new Set([
   'diagnostic_limit',
   'diagnostic_rate_limited',
@@ -117,6 +118,16 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   let settleConnect: (() => void) | undefined
   let pairingTimer: ReturnType<typeof setTimeout> | undefined
   const pendingDiagnostics = new Map<string, { resolve(): void; reject(error: Error): void }>()
+  const terminalRequestIds = new Set<string>()
+  const terminalRequestOrder: string[] = []
+
+  const rememberTerminalRequest = (requestId: string) => {
+    if (terminalRequestIds.has(requestId)) return
+    terminalRequestIds.add(requestId)
+    terminalRequestOrder.push(requestId)
+    while (terminalRequestOrder.length > TERMINAL_REQUEST_CACHE_SIZE)
+      terminalRequestIds.delete(terminalRequestOrder.shift()!)
+  }
 
   const publish = (next: OfficeRelaySnapshot) => {
     state = next
@@ -125,6 +136,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   const finishRequest = (error?: string) => {
     const active = request
     if (!active) return
+    rememberTerminalRequest(active.id)
     request = undefined
     clearTimeout(active.timer)
     if (active.abort && active.signal) active.signal.removeEventListener('abort', active.abort)
@@ -147,6 +159,8 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     for (const pending of pendingDiagnostics.values())
       pending.reject(new Error('diagnostic_unavailable'))
     pendingDiagnostics.clear()
+    terminalRequestIds.clear()
+    terminalRequestOrder.length = 0
     if (pairingTimer !== undefined) clearTimeout(pairingTimer)
     pairingTimer = undefined
     const activeSocket = socket
@@ -288,6 +302,13 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       else revoke(status)
       return
     }
+    if (
+      typeof frame.request_id === 'string' &&
+      frame.session_id === sessionId &&
+      terminalRequestIds.has(frame.request_id) &&
+      ['relay.start', 'relay.chunk', 'relay.done', 'relay.error'].includes(String(frame.type))
+    )
+      return
     const active = request
     if (!active || frame.request_id !== active.id || frame.session_id !== sessionId)
       return protocolFailure()
