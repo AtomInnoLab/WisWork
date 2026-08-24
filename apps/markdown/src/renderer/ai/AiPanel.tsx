@@ -13,7 +13,11 @@ import { clearAiHighlights } from '../editor/aiHighlight'
 import { createMarkdownSkill } from './markdown-skill'
 import { createSearchSkill } from './search-skill'
 import { createElectronTransport } from './transport'
-import { createAgentController, useAgentControllerCleanup } from './agent-controller'
+import {
+  createAgentController,
+  createAgentLaunchOwner,
+  useAgentControllerCleanup,
+} from './agent-controller'
 
 const PANEL_WIDTH_KEY = 'markdown-ai-panel-width'
 const PANEL_WIDTH_DEFAULT = 360
@@ -160,6 +164,8 @@ export function AiPanel({
 
   // The harness is built once; every mutable value goes through a ref getter
   const harnessRef = useRef<AgentHarness<string> | null>(null)
+  const launchOwnerRef = useRef(createAgentLaunchOwner())
+  const launchSessionRef = useRef(filePath)
   if (!harnessRef.current) {
     harnessRef.current = createAgentController<string>({
       transport: createElectronTransport(() => settingsRef.current!),
@@ -254,6 +260,17 @@ export function AiPanel({
     })
   }
   useAgentControllerCleanup(harnessRef)
+  useEffect(() => {
+    const launchOwner = launchOwnerRef.current
+    launchOwner.invalidate()
+    if (launchSessionRef.current !== filePath) {
+      launchSessionRef.current = filePath
+      harnessRef.current?.reset()
+      setBusy(false)
+      setChat([])
+    }
+    return () => launchOwner.invalidate()
+  }, [filePath])
 
   // ── chat-history persistence: bind to the file, restore prior transcript ──
   useEffect(() => {
@@ -339,23 +356,33 @@ export function AiPanel({
     ])
     setPrompt('')
     setBusy(true)
-    persistMessage('user', instruction)
-    void (async () => {
-      try {
-        settingsRef.current = await window.markdownApi.getAiSettings()
-        harness.run(instruction)
-      } catch (err) {
-        patchLast({
-          streaming: false,
-          text: err instanceof Error ? err.message : String(err),
-          isError: true,
-        })
-        setBusy(false)
-      }
-    })()
+    void launchOwnerRef.current
+      .launch(
+        async () => {
+          settingsRef.current = await window.markdownApi.getAiSettings()
+        },
+        () => {
+          persistMessage('user', instruction)
+          return harness.run(instruction)
+        },
+      )
+      .catch((err) => {
+        try {
+          patchLast({
+            streaming: false,
+            text: err instanceof Error ? err.message : String(err),
+            isError: true,
+          })
+          setBusy(false)
+        } catch {
+          // The panel may have unmounted while the settings request was pending.
+        }
+      })
   }
 
   const stop = (): void => {
+    launchOwnerRef.current.invalidate()
+    setBusy(false)
     const harness = harnessRef.current
     if (harness) harness.stop()
   }
@@ -453,6 +480,7 @@ export function AiPanel({
               className="ai-header-btn"
               onClick={() => {
                 stop()
+                launchOwnerRef.current.invalidate()
                 harnessRef.current?.reset()
                 setBusy(false)
                 setChat([])

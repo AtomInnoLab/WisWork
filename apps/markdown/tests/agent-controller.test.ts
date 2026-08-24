@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
-import { act, createElement } from 'react'
+import { act, createElement, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { AgentStreamCallbacks, AgentTransport } from '@wiswork/agent-core'
 import {
   createAgentController,
   disposeAgentController,
   useAgentControllerCleanup,
+  createAgentLaunchOwner,
 } from '../src/renderer/ai/agent-controller'
 
 function manualTransport(): AgentTransport & {
@@ -32,12 +33,48 @@ const skill = {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('Markdown agent controller', () => {
-  it('disposes and clears the controller when its owning component unmounts', () => {
+  it('survives StrictMode replay, then terminally suppresses callbacks after real unmount', async () => {
+    const transport = manualTransport()
+    const late = vi.fn()
+    const ref = { current: createAgentController({ transport, skill, events: { onDone: late } }) }
+    const Probe = () => {
+      useAgentControllerCleanup(ref)
+      return null
+    }
+    const root = createRoot(document.createElement('div'))
+    act(() => root.render(createElement(StrictMode, null, createElement(Probe))))
+    await flush()
+    expect(ref.current?.run('after replay')).toBe(true)
+    await flush()
+    const callbacks = transport.callbacks[0]!
+    act(() => root.unmount())
+    callbacks.onDone()
+    await flush()
+    expect(ref.current).toBeNull()
+    expect(transport.cancels).toBe(1)
+    expect(late).not.toHaveBeenCalled()
+  })
+
+  it('invalidates pending settings collection before an old instruction can launch', async () => {
+    const owner = createAgentLaunchOwner()
+    let resolve!: (settings: string) => void
+    const pending = new Promise<string>((done) => (resolve = done))
+    const run = vi.fn()
+    const launch = owner.launch(
+      () => pending,
+      () => run('old'),
+    )
+    owner.invalidate()
+    resolve('late-settings')
+    expect(await launch).toBe(false)
+    expect(run).not.toHaveBeenCalled()
+  })
+  it('disposes and clears the controller when its owning component unmounts', async () => {
     ;(
       globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
     ).IS_REACT_ACT_ENVIRONMENT = true
-    const dispose = vi.fn()
-    const ref = { current: { dispose } as never }
+    const transport = manualTransport()
+    const ref = { current: createAgentController({ transport, skill }) }
     const Probe = () => {
       useAgentControllerCleanup(ref)
       return null
@@ -45,8 +82,10 @@ describe('Markdown agent controller', () => {
     const container = document.createElement('div')
     const root = createRoot(container)
     act(() => root.render(createElement(Probe)))
+    ref.current!.run('pending')
+    await flush()
     act(() => root.unmount())
-    expect(dispose).toHaveBeenCalledOnce()
+    expect(transport.cancels).toBe(1)
     expect(ref.current).toBeNull()
   })
 

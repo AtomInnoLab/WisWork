@@ -31,7 +31,11 @@ import fileVoiceIcon from '../assets/file-voice.png'
 import fileDocumentIcon from '../assets/file-document.png'
 import fileGeneralIcon from '../assets/file-general.png'
 import { IconNewChat, IconSidebarCollapse } from '../components/icons'
-import { createAgentController, useAgentControllerCleanup } from './agent-controller'
+import {
+  createAgentController,
+  createAgentLaunchOwner,
+  useAgentControllerCleanup,
+} from './agent-controller'
 
 interface ToolActivity {
   name: string
@@ -538,6 +542,8 @@ export function AiPanel({
   }
 
   const harnessRef = useRef<AgentHarness<PmNode> | null>(null)
+  const launchOwnerRef = useRef(createAgentLaunchOwner())
+  const launchSessionRef = useRef(filePath)
   if (!harnessRef.current) {
     const numIds = (): NumIds => ({
       bullet: findNumId(blocksRef.current, 'bullet') ?? numIdFallbackRef.current?.bullet ?? null,
@@ -677,6 +683,18 @@ export function AiPanel({
     })
   }
   useAgentControllerCleanup(harnessRef)
+  useEffect(() => {
+    const launchOwner = launchOwnerRef.current
+    launchOwner.invalidate()
+    if (launchSessionRef.current !== filePath) {
+      launchSessionRef.current = filePath
+      harnessRef.current?.reset()
+      setBusy(false)
+      setChat([])
+      sentAttachmentsRef.current = []
+    }
+    return () => launchOwner.invalidate()
+  }, [filePath])
 
   useEffect(() => {
     if (!preset) return
@@ -717,12 +735,16 @@ export function AiPanel({
 
   /** Image attachments are read as base64 and go multimodal with this user message (≤5MB per image, max 20) */
   const MAX_IMAGES_PER_MESSAGE = 20
-  const collectImageAttachments = async (atts: AttachmentMeta[]): Promise<AgentImage[]> => {
+  const collectImageAttachments = async (
+    atts: AttachmentMeta[],
+    isCurrent: () => boolean,
+  ): Promise<AgentImage[]> => {
     const imageAtts = atts.filter((a) => ATTACHMENT_IMAGE_EXTS.has(a.ext))
     const images: AgentImage[] = []
     const failures: string[] = []
     for (const att of imageAtts.slice(0, MAX_IMAGES_PER_MESSAGE)) {
       const result = await window.desktop.readAttachmentImage(att.path)
+      if (!isCurrent()) return []
       if (result.ok && result.base64 && result.mime) {
         images.push({ base64: result.base64, mime: result.mime })
       } else {
@@ -732,7 +754,7 @@ export function AiPanel({
     if (imageAtts.length > MAX_IMAGES_PER_MESSAGE) {
       failures.push(t('aiTooManyImages', { max: MAX_IMAGES_PER_MESSAGE }))
     }
-    if (failures.length > 0) {
+    if (failures.length > 0 && isCurrent()) {
       setAttachNotice(failures.join(';'))
       window.setTimeout(() => setAttachNotice(null), 5000)
     }
@@ -775,18 +797,25 @@ export function AiPanel({
     ])
     runStartedAtRef.current = Date.now()
     setBusy(true)
-    persistMessage('user', instruction, undefined, sentAtts)
     // a rejected image read must not strand the run (busy would stay true forever): degrade to a no-image send
-    void collectImageAttachments(sentAtts)
-      .catch((): AgentImage[] => {
-        setAttachNotice(t('aiImagesSendFailed'))
-        window.setTimeout(() => setAttachNotice(null), 5000)
-        return []
-      })
-      .then((images) => harness.run(instruction, images))
+    void launchOwnerRef.current.launch(
+      (isCurrent) =>
+        collectImageAttachments(sentAtts, isCurrent).catch((): AgentImage[] => {
+          if (!isCurrent()) return []
+          setAttachNotice(t('aiImagesSendFailed'))
+          window.setTimeout(() => setAttachNotice(null), 5000)
+          return []
+        }),
+      (images) => {
+        persistMessage('user', instruction, undefined, sentAtts)
+        return harness.run(instruction, images)
+      },
+    )
   }
 
   const cancel = () => {
+    launchOwnerRef.current.invalidate()
+    setBusy(false)
     const harness = harnessRef.current
     if (harness) harness.stop()
   }
@@ -797,6 +826,7 @@ export function AiPanel({
   const continueRun = () => runWith(DOCS_CONTINUE_INSTRUCTION, t('aiContinue'))
 
   const newChat = () => {
+    launchOwnerRef.current.invalidate()
     harnessRef.current?.reset()
     setBusy(false)
     setChat([])
