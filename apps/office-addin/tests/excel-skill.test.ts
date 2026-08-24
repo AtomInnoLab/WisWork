@@ -122,6 +122,21 @@ describe('Excel compatibility skill', () => {
     expect(fake.verifyRanges).not.toHaveBeenCalled()
   })
 
+  it.each([[{}], [{ cellStyles: {} }], [{ borderStyles: { bottom: {} } }]])(
+    'rejects cells with no effective mutation before proposing',
+    async (cell) => {
+      const fake = adapter()
+      const proposals = createStructuredProposalController()
+      const skill = createExcelSkill({ adapter: fake, proposals })
+
+      await expect(
+        skill.executeTool(call('set_cell_range', { sheetId: 1, range: 'A1', cells: [[cell]] })),
+      ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+      expect(proposals.pending()).toBeUndefined()
+      expect(fake.setCellRange).not.toHaveBeenCalled()
+    },
+  )
+
   it('rejects stale and cancelled writes without applying them', async () => {
     const fake = adapter({
       fingerprint: vi.fn().mockResolvedValueOnce('before').mockResolvedValueOnce('changed'),
@@ -1150,7 +1165,7 @@ describe('browser Excel adapter', () => {
                   italic: false,
                   underline: 'None',
                   strikethrough: false,
-                  backgroundColor: '#ffeeaa',
+                  backgroundColor: '#FFEEAA',
                   borders: [
                     { side: 'EdgeBottom', style: 'Double', weight: 'Medium', color: '#112233' },
                   ],
@@ -1167,9 +1182,9 @@ describe('browser Excel adapter', () => {
               {
                 value: '',
                 formula: '',
-                numberFormat: 'General',
+                numberFormat: 'GENERAL',
                 style: {
-                  styleName: 'Normal',
+                  styleName: '正文',
                   bold: false,
                   italic: false,
                   underline: 'None',

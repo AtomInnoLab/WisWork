@@ -683,6 +683,17 @@ export class BrowserWordAdapter implements WordAdapter {
 }
 
 function assertIndependentWordOperations(operations: WordDeclarativeOperation[]): void {
+  const searchesOverlap = (left: string, right: string): boolean => {
+    const maximum = Math.min(left.length, right.length)
+    for (let length = 1; length <= maximum; length += 1) {
+      if (
+        left.slice(-length) === right.slice(0, length) ||
+        right.slice(-length) === left.slice(0, length)
+      )
+        return true
+    }
+    return false
+  }
   for (let laterIndex = 0; laterIndex < operations.length; laterIndex += 1) {
     const later = operations[laterIndex]
     if (later.op !== 'replace_all') continue
@@ -692,8 +703,9 @@ function assertIndependentWordOperations(operations: WordDeclarativeOperation[])
       const produced = normalize(earlier.op === 'insert_text' ? earlier.text : earlier.replacement)
       if (produced.includes(laterSearch)) throw new Error('invalid_tool_input')
       if (earlier.op === 'replace_all') {
-        const earlierSearch = normalize(earlier.search)
-        if (earlierSearch.includes(laterSearch) || laterSearch.includes(earlierSearch))
+        const pairNormalize = (value: string) =>
+          earlier.matchCase && later.matchCase ? value : value.toLocaleLowerCase()
+        if (searchesOverlap(pairNormalize(earlier.search), pairNormalize(later.search)))
           throw new Error('invalid_tool_input')
       }
     }

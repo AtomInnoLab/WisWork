@@ -527,8 +527,21 @@ function parseCells(value: unknown): Json[][] {
           if (config.weight !== undefined && !['thin', 'medium', 'thick'].includes(config.weight))
             invalid()
           if (config.color !== undefined) string(config.color, 64, 1)
+          if (Object.keys(config).length === 0) invalid()
         }
       }
+      const hasStyles =
+        item.cellStyles !== undefined && Object.keys(item.cellStyles as Json).length > 0
+      const hasBorders =
+        item.borderStyles !== undefined && Object.keys(item.borderStyles as Json).length > 0
+      if (
+        !Object.hasOwn(item, 'value') &&
+        item.formula === undefined &&
+        !item.note &&
+        !hasStyles &&
+        !hasBorders
+      )
+        invalid()
       return JSON.parse(JSON.stringify(item))
     })
   })

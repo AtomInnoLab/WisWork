@@ -1247,7 +1247,19 @@ export class BrowserExcelAdapter implements ExcelAdapter {
             horizontalAlignment: String(actual.style?.horizontalAlignment ?? '').toLowerCase(),
             numberFormat: actual.numberFormat,
           }
-          if (Object.entries(style).some(([key, value]) => normalized[key] !== value)) return false
+          const comparable = (key: string, value: unknown) => {
+            if (typeof value !== 'string') return value
+            const normalizedValue = value.trim().toLocaleLowerCase()
+            if (['fontColor', 'backgroundColor', 'fontFamily', 'numberFormat'].includes(key))
+              return normalizedValue
+            return value
+          }
+          if (
+            Object.entries(style).some(
+              ([key, value]) => comparable(key, normalized[key]) !== comparable(key, value),
+            )
+          )
+            return false
         }
         const borderMap: RuntimeRecord = {
           EdgeTop: 'top',
@@ -1271,7 +1283,11 @@ export class BrowserExcelAdapter implements ExcelAdapter {
           if (!actualBorder) return false
           if (config.style && styles[actualBorder.style] !== config.style) return false
           if (config.weight && weights[actualBorder.weight] !== config.weight) return false
-          if (config.color && actualBorder.color !== config.color) return false
+          if (
+            config.color &&
+            String(actualBorder.color).toLocaleLowerCase() !== config.color.toLocaleLowerCase()
+          )
+            return false
         }
         return true
       }
@@ -1335,8 +1351,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
           (cell.value === null || cell.value === '') &&
           (cell.formula === null || cell.formula === '')
         const formatsClear =
-          cell.style?.styleName === 'Normal' &&
-          cell.numberFormat === 'General' &&
+          String(cell.numberFormat).trim().toLocaleLowerCase() === 'general' &&
           !cell.style?.bold &&
           !cell.style?.italic &&
           (cell.style?.underline === 'None' || cell.style?.underline === '') &&

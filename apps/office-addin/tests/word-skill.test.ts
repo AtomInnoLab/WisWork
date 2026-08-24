@@ -712,6 +712,38 @@ describe('browser Word adapter', () => {
     expect(insertText).not.toHaveBeenCalled()
   })
 
+  it.each([
+    [
+      { op: 'replace_all' as const, search: 'ab', replacement: 'x', matchCase: true },
+      { op: 'replace_all' as const, search: 'bc', replacement: 'y', matchCase: true },
+    ],
+    [
+      { op: 'replace_all' as const, search: 'A', replacement: 'x', matchCase: false },
+      { op: 'replace_all' as const, search: 'a', replacement: 'y', matchCase: true },
+    ],
+  ])('rejects overlapping declarative searches before Office dispatch', async (first, second) => {
+    const search = vi.fn()
+    const sync = vi.fn()
+    const body = {
+      getOoxml: vi.fn(),
+      insertText: vi.fn(),
+      insertOoxml: vi.fn(),
+      search,
+    }
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+
+    await expect(new BrowserWordAdapter().executeOperations([first, second])).rejects.toThrow(
+      'invalid_tool_input',
+    )
+    expect(search).not.toHaveBeenCalled()
+    expect(sync).not.toHaveBeenCalled()
+  })
+
   it('verifies the exact full bounded Word text after a declarative write', async () => {
     const paragraph = (text: string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`
     let current = `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${Array.from(
