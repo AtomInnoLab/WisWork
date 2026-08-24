@@ -412,6 +412,7 @@ describe('Office cloud relay session', () => {
       body: '{}',
       signal: controller.signal,
     })
+    const requestFrame = frame(made[0]!, 1)
     controller.abort()
     await expect(cancelled).rejects.toThrow('relay_cancelled')
     expect(
@@ -419,6 +420,16 @@ describe('Office cloud relay session', () => {
         .map((value) => JSON.parse(value))
         .filter((value) => value.type === 'office.cancel'),
     ).toHaveLength(1)
+    made[0]!.receive(
+      JSON.stringify({
+        version: 1,
+        type: 'relay.error',
+        session_id: 'session1',
+        request_id: requestFrame.request_id,
+        code: 'request_timeout',
+      }),
+    )
+    expect(session.snapshot()).toEqual({ status: 'connected' })
     made[0]!.close()
     expect(session.snapshot()).toEqual({ status: 'offline' })
 
