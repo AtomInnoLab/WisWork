@@ -119,6 +119,7 @@ import {
   createAsyncGenerationGate,
   createAgentController,
   createSheetsChatLoadCoordinator,
+  classifySheetsDocumentTransition,
   bindSheetsSession,
   getSheetsDocumentIdentity,
   restoreSheetsSession,
@@ -622,6 +623,7 @@ export function App(): React.JSX.Element {
   const chatRefIdsRef = useRef<{ projectId: string; chatId: string } | null>(null)
   const chatLoadCoordinatorRef = useRef(createSheetsChatLoadCoordinator())
   const harnessSessionIdRef = useRef<string | number | undefined>(undefined)
+  const chatDocumentIdentityRef = useRef<string | number | undefined>(undefined)
 
   // File renamed externally (in the shell Home list) → sync the title-bar file
   // name (the save path is synced by the main process)
@@ -721,10 +723,33 @@ export function App(): React.JSX.Element {
   // ── project-store: resolve chatId and load history when a workbook opens ──
   useEffect(() => {
     const chatLoadCoordinator = chatLoadCoordinatorRef.current
+    const previousIdentity = chatDocumentIdentityRef.current
+    const transition = classifySheetsDocumentTransition(previousIdentity, workbookDocumentIdentity)
+    chatDocumentIdentityRef.current = workbookDocumentIdentity
     runLaunchGateRef.current.invalidate()
     runStartingRef.current = false
     if (agentLoopRef.current)
       bindSheetsSession(agentLoopRef.current, harnessSessionIdRef, workbookDocumentIdentity)
+    const loadToken = chatLoadCoordinator.begin()
+    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
+    if (transition === 'rebind') {
+      const ids = chatRefIdsRef.current
+      if (api && ids && workbookSessionId !== undefined) {
+        void api
+          .rebindChat({
+            projectId: ids.projectId,
+            tempChatId: ids.chatId,
+            sessionId: workbookSessionId,
+          })
+          .then((rebound) => {
+            chatLoadCoordinator.commit(loadToken, () => {
+              chatRefIdsRef.current = rebound
+            })
+          })
+          .catch(() => undefined)
+      }
+      return () => chatLoadCoordinator.invalidate()
+    }
     // Reset (new workbook or new session)
     chatRefIdsRef.current = null
     setChat([])
@@ -732,8 +757,6 @@ export function App(): React.JSX.Element {
     setAttachments([])
     sentAttachmentsRef.current = []
     setAiBusy(false)
-    const loadToken = chatLoadCoordinator.begin()
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
     if (!api) return () => chatLoadCoordinator.invalidate()
     const tempChatId = `unsaved-${Date.now()}`
     const resolveArgs: Parameters<typeof api.resolveChat>[0] = {
@@ -792,10 +815,9 @@ export function App(): React.JSX.Element {
         /* silent */
       })
     return () => chatLoadCoordinator.invalidate()
-    // sessionId is an ephemeral sidecar token. A save may rotate it without
-    // changing the workbook identity, so it intentionally does not retrigger this effect.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workbookDocumentIdentity])
+    // A sidecar token/path change rebinds persistence; only a document-instance
+    // change takes the reset-and-load branch above.
+  }, [workbookDocumentIdentity, workbookPath, workbookSessionId])
 
   const persistChatMessage = (
     role: 'user' | 'assistant',

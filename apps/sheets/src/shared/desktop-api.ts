@@ -315,6 +315,9 @@ const visualObjectSchema = z
 export const workbookFileSchema = z
   .object({
     sessionId: z.string().uuid(),
+    /// Stable for one renderer-visible open document. Sidecar sessions may
+    /// rotate on save, but a later open gets a fresh identity even at the same path.
+    documentInstanceId: z.string().uuid(),
     name: z.string().min(1),
     /// Absolute on-disk path; feeds CELL("filename"). Absent for sessions
     /// that never touched disk.

@@ -445,6 +445,7 @@ function parseWorkbookFile(input: unknown): WorkbookFile {
   if (!isRecord(input)) throw new Error('Invalid workbook response.')
   const {
     sessionId,
+    documentInstanceId,
     name,
     sha256,
     entryCount,
@@ -457,6 +458,7 @@ function parseWorkbookFile(input: unknown): WorkbookFile {
   } = input
   if (
     !isUuid(sessionId) ||
+    !isUuid(documentInstanceId) ||
     typeof name !== 'string' ||
     typeof sha256 !== 'string' ||
     !/^[a-f0-9]{64}$/.test(sha256) ||
@@ -599,6 +601,7 @@ function parseWorkbookFile(input: unknown): WorkbookFile {
   if (parsedSheets.length === 0) throw new Error('Workbook contains no worksheets.')
   return {
     sessionId,
+    documentInstanceId,
     name,
     sha256,
     entryCount,

@@ -985,6 +985,7 @@ const tm = (key: Parameters<typeof tMain>[1], params?: Parameters<typeof tMain>[
   tMain(getUiLang(), key, params)
 
 interface SessionInfo {
+  readonly documentInstanceId: string
   readonly path: string
   readonly sha256: string
   readonly sheetNames: ReadonlyMap<string, string>
@@ -1287,6 +1288,7 @@ function startCaptureServer(): void {
 }
 
 const sidecarOpenResultSchema = workbookFileSchema.omit({
+  documentInstanceId: true,
   sha256: true,
   readOnly: true,
 })
@@ -1930,7 +1932,14 @@ export function registerSheetsIpc(): void {
     // fresh session over the saved file so future reads match the disk state.
     entry.sessions.delete(request.sessionId)
     await client.close(request.sessionId).catch(() => undefined)
-    const file = await openWorkbookSession(client, targetPath, entry.sessions)
+    const file = await openWorkbookSession(
+      client,
+      targetPath,
+      entry.sessions,
+      undefined,
+      undefined,
+      session.documentInstanceId,
+    )
     // Notify shell (if running) so it can update the tab title and record the
     // saved path in recent files (mirrors the open hook; covers Save As + first
     // save after converting an .xls/.csv import).
@@ -2524,12 +2533,14 @@ async function openWorkbookSession(
   sessions: Map<string, SessionInfo>,
   suggestSaveAs?: string,
   csvImport?: boolean,
+  documentInstanceId: string = randomUUID(),
 ): Promise<WorkbookFile> {
   const [opened, digest] = await Promise.all([
     client.open(path, getUiLang()).then((result) => sidecarOpenResultSchema.parse(result)),
     sha256File(path),
   ])
   sessions.set(opened.sessionId, {
+    documentInstanceId,
     path,
     sha256: digest,
     sheetNames: new Map(opened.sheets.map((sheet) => [sheet.id, sheet.name])),
@@ -2538,6 +2549,7 @@ async function openWorkbookSession(
   })
   return workbookFileSchema.parse({
     ...opened,
+    documentInstanceId,
     path,
     sha256: digest,
     readOnly: false,

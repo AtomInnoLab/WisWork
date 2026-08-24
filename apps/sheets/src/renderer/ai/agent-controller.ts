@@ -98,11 +98,19 @@ export function createAsyncGenerationGate(): AsyncGenerationGate {
 
 export const createSheetsChatLoadCoordinator = createAsyncGenerationGate
 
+export function classifySheetsDocumentTransition(
+  previous: string | number | undefined,
+  current: string | number | undefined,
+): 'open' | 'rebind' {
+  return current !== undefined && previous === current ? 'rebind' : 'open'
+}
+
 export function getSheetsDocumentIdentity(file: {
   path?: string | undefined
   sessionId: string | number
+  documentInstanceId: string | number
 }): string | number {
-  return file.path ?? file.sessionId
+  return file.documentInstanceId
 }
 
 export function bindSheetsSession<TSnapshot>(

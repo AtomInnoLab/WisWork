@@ -7,6 +7,7 @@ import {
   createAsyncGenerationGate,
   createAgentController,
   createSheetsChatLoadCoordinator,
+  classifySheetsDocumentTransition,
   bindSheetsSession,
   getSheetsDocumentIdentity,
   disposeAgentController,
@@ -273,8 +274,16 @@ describe('Sheets agent controller', () => {
     const controller = createAgentController({ transport: manualTransport(), skill })
     const binding = { current: undefined as string | undefined }
     const path = '/workbooks/forecast.xlsx'
-    const identityA = getSheetsDocumentIdentity({ sessionId: 'session-a', path })
-    const identityB = getSheetsDocumentIdentity({ sessionId: 'session-b', path })
+    const identityA = getSheetsDocumentIdentity({
+      sessionId: 'session-a',
+      documentInstanceId: 'document-a',
+      path,
+    })
+    const identityB = getSheetsDocumentIdentity({
+      sessionId: 'session-b',
+      documentInstanceId: 'document-a',
+      path,
+    })
 
     bindSheetsSession(controller, binding, identityA)
     controller.restore([
@@ -295,10 +304,12 @@ describe('Sheets agent controller', () => {
     const binding = { current: undefined as string | undefined }
     const identityA = getSheetsDocumentIdentity({
       sessionId: 'session-a',
+      documentInstanceId: 'document-a',
       path: '/workbooks/a.xlsx',
     })
     const identityB = getSheetsDocumentIdentity({
       sessionId: 'session-b',
+      documentInstanceId: 'document-b',
       path: '/workbooks/b.xlsx',
     })
     bindSheetsSession(controller, binding, identityA)
@@ -312,6 +323,28 @@ describe('Sheets agent controller', () => {
         { role: 'user', text: 'late A load' },
       ]),
     ).toBe(false)
+  })
+
+  it('treats reopening the same path as a new workbook instance', () => {
+    const path = '/workbooks/forecast.xlsx'
+    expect(
+      getSheetsDocumentIdentity({
+        sessionId: 'session-a',
+        documentInstanceId: 'document-a',
+        path,
+      }),
+    ).not.toBe(
+      getSheetsDocumentIdentity({
+        sessionId: 'session-b',
+        documentInstanceId: 'document-b',
+        path,
+      }),
+    )
+  })
+
+  it('rebinds persistence only when a sidecar rotation keeps the document instance', () => {
+    expect(classifySheetsDocumentTransition('document-a', 'document-a')).toBe('rebind')
+    expect(classifySheetsDocumentTransition('document-a', 'document-b')).toBe('open')
   })
 
   it('dispose helper is terminal and clears the owning ref', () => {
