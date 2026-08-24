@@ -1,4 +1,4 @@
-import { XMLValidator } from 'fast-xml-parser'
+import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import JSZip from 'jszip'
 
 export const MAX_PPTX_PACKAGE_BYTES = 8 * 1024 * 1024
@@ -16,6 +16,8 @@ export interface PackageEditResult {
   changedPaths: string[]
   beforeHashes: Record<string, string>
   afterHashes: Record<string, string>
+  beforeXml: Record<string, string>
+  afterXml: Record<string, string>
   preservedHashes: Record<string, string>
 }
 
@@ -27,6 +29,77 @@ function hash(value: string | Uint8Array): string {
     result = Math.imul(result, 0x01000193)
   }
   return `${bytes.byteLength}:${(result >>> 0).toString(16).padStart(8, '0')}`
+}
+
+const xmlParser = new XMLParser({
+  preserveOrder: true,
+  ignoreAttributes: false,
+  attributeNamePrefix: '@_',
+  trimValues: false,
+  parseTagValue: false,
+  parseAttributeValue: false,
+  processEntities: false,
+})
+
+function stableValue(value: unknown, preserveWhitespace = false): unknown {
+  if (Array.isArray(value))
+    return value
+      .filter(
+        (child) =>
+          preserveWhitespace ||
+          !(
+            child &&
+            typeof child === 'object' &&
+            Object.keys(child).length === 1 &&
+            typeof (child as Record<string, unknown>)['#text'] === 'string' &&
+            /^\s*$/.test((child as Record<string, string>)['#text'])
+          ),
+      )
+      .map((child) => stableValue(child, preserveWhitespace))
+  if (!value || typeof value !== 'object') return value
+  const record = value as Record<string, unknown>
+  const attributes =
+    record[':@'] && typeof record[':@'] === 'object'
+      ? (record[':@'] as Record<string, unknown>)
+      : undefined
+  return Object.fromEntries(
+    Object.entries(record)
+      .sort(([first], [second]) => first.localeCompare(second))
+      .map(([key, child]) => {
+        const localName = key.includes(':') ? key.slice(key.lastIndexOf(':') + 1) : key
+        const keepWhitespace =
+          preserveWhitespace ||
+          attributes?.['@_xml:space'] === 'preserve' ||
+          ['t', 'instrText', 'delText'].includes(localName)
+        return [key, stableValue(child, keepWhitespace)]
+      }),
+  )
+}
+
+function canonicalXml(value: string): string | undefined {
+  try {
+    if (XMLValidator.validate(value) !== true) return undefined
+    return JSON.stringify(stableValue(xmlParser.parse(value)))
+  } catch {
+    return undefined
+  }
+}
+
+function backgroundXml(value: string): string | undefined {
+  return /<p:bg\b[^>]*\/>|<p:bg\b[^>]*>[\s\S]*?<\/p:bg\s*>/.exec(value)?.[0]
+}
+
+function withoutBackground(value: string): string | undefined {
+  return canonicalXml(value.replace(/<p:bg\b[^>]*\/>|<p:bg\b[^>]*>[\s\S]*?<\/p:bg\s*>/, ''))
+}
+
+function backgroundOnly(before: string, after: string): boolean {
+  const expected = backgroundXml(after)
+  return (
+    expected !== undefined &&
+    canonicalXml(backgroundXml(before) ?? '') !== canonicalXml(expected) &&
+    withoutBackground(before) === withoutBackground(after)
+  )
 }
 
 function validPath(path: string): boolean {
@@ -109,6 +182,8 @@ export async function editPowerPointPackage(
   const changedPaths = new Set<string>()
   const beforeHashes: Record<string, string> = {}
   const afterHashes: Record<string, string> = {}
+  const beforeXml: Record<string, string> = {}
+  const afterXml: Record<string, string> = {}
   const preservedHashes: Record<string, string> = {}
   for (const replacement of replacements) {
     if (signal?.aborted) throw new Error('cancelled')
@@ -134,6 +209,8 @@ export async function editPowerPointPackage(
       throw new Error('office_api_unsupported')
     beforeHashes[replacement.path] = hash(before)
     afterHashes[replacement.path] = hash(replacement.xml)
+    beforeXml[replacement.path] = before
+    afterXml[replacement.path] = replacement.xml
     zip.file(replacement.path, replacement.xml)
     changedPaths.add(replacement.path)
   }
@@ -155,7 +232,65 @@ export async function editPowerPointPackage(
     changedPaths: [...changedPaths],
     beforeHashes,
     afterHashes,
+    beforeXml,
+    afterXml,
     preservedHashes,
+  }
+}
+
+export async function verifyImportedPowerPointPackage(
+  base64: string,
+  expected: Pick<
+    PackageEditResult,
+    'changedPaths' | 'beforeXml' | 'afterXml' | 'afterHashes' | 'preservedHashes'
+  >,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (signal?.aborted) throw new Error('cancelled')
+  try {
+    const zip = await loadBoundedZip(base64, signal)
+    const expectedPaths = new Set([
+      ...expected.changedPaths,
+      ...Object.keys(expected.preservedHashes),
+    ])
+    const actualPaths = Object.values(zip.files)
+      .filter((file) => !file.dir)
+      .map((file) => file.name)
+    if (
+      actualPaths.length !== expectedPaths.size ||
+      actualPaths.some((path) => !expectedPaths.has(path))
+    )
+      return false
+    for (const path of expected.changedPaths) {
+      if (signal?.aborted) throw new Error('cancelled')
+      const file = zip.file(path)
+      const before = expected.beforeXml[path]
+      const after = expected.afterXml[path]
+      if (!file || before === undefined || after === undefined) return false
+      const actual = await file.async('string')
+      if (backgroundOnly(before, after)) {
+        const actualBackground = backgroundXml(actual)
+        const expectedBackground = backgroundXml(after)
+        if (
+          !actualBackground ||
+          !expectedBackground ||
+          canonicalXml(actualBackground) !== canonicalXml(expectedBackground)
+        )
+          return false
+        if (withoutBackground(actual) !== withoutBackground(after)) return false
+      } else if (hash(actual) !== expected.afterHashes[path]) {
+        return false
+      }
+    }
+    for (const [path, expectedHash] of Object.entries(expected.preservedHashes)) {
+      if (signal?.aborted) throw new Error('cancelled')
+      const file = zip.file(path)
+      if (!file || hash(await file.async('uint8array')) !== expectedHash) return false
+    }
+    return true
+  } catch (error) {
+    if (error instanceof Error && error.message === 'cancelled') throw error
+    return false
   }
 }
 

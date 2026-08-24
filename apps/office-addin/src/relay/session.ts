@@ -583,9 +583,13 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
         error_code:
           event.error_code === 'invalid_tool_input'
             ? 'agent_run_failed'
-            : event.error_code.startsWith('office_recovery_failed:word_')
-              ? 'office_recovery_failed'
-              : event.error_code,
+            : event.error_code === 'office_concurrent_change' ||
+                event.error_code === 'office_state_uncertain'
+              ? // Relay v2 does not yet advertise the local transaction-detail vocabulary.
+                'office_verify_failed'
+              : event.error_code.startsWith('office_recovery_failed:word_')
+                ? 'office_recovery_failed'
+                : event.error_code,
         ...(event.office_error_code ? { office_error_code: event.office_error_code } : {}),
         ...(event.office_error_name ? { office_error_name: event.office_error_name } : {}),
         ...(event.office_error_location

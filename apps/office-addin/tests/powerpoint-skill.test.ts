@@ -164,7 +164,7 @@ describe('PowerPoint compatibility skill', () => {
     await proposals.confirm(pending.id)
     expect(fake.editSlideText).toHaveBeenCalledWith(0, '2', 'New', expect.any(AbortSignal))
     expect(fake.snapshotSlide).not.toHaveBeenCalled()
-    expect(fake.verifySlides).toHaveBeenCalledTimes(2)
+    expect(fake.verifySlides).toHaveBeenCalledOnce()
   })
 
   it('refuses stale or cancelled writes before mutation', async () => {
@@ -635,6 +635,169 @@ describe('PowerPoint compatibility skill', () => {
     await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
   })
 
+  it('waits for delayed PowerPoint text readback before rejecting an applied edit', async () => {
+    const fake = adapter({
+      readSlideText: vi
+        .fn()
+        .mockResolvedValueOnce({
+          slideId: 's1',
+          shapeId: '2',
+          text: 'Old',
+          paragraphs: ['Old'],
+        })
+        .mockResolvedValueOnce({
+          slideId: 's1',
+          shapeId: '2',
+          text: 'Old',
+          paragraphs: ['Old'],
+        })
+        .mockResolvedValueOnce({
+          slideId: 's1',
+          shapeId: '2',
+          text: 'Old',
+          paragraphs: ['Old'],
+        })
+        .mockResolvedValue({
+          slideId: 's1',
+          shapeId: '2',
+          text: 'New',
+          paragraphs: ['New'],
+        }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+
+    await skill.executeTool(call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'New' }))
+
+    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+    expect(fake.readSlideText).toHaveBeenCalledTimes(4)
+  })
+
+  it('waits for delayed geometry, delete, and duplicate readback', async () => {
+    const beforeShape = {
+      id: '2',
+      name: 'Title',
+      type: 'TextBox',
+      left: 10,
+      top: 20,
+      width: 200,
+      height: 40,
+    }
+    const afterShape = { ...beforeShape, left: 30 }
+    const deletedShape = { ...beforeShape, id: '9', name: 'Remove me' }
+    const fake = adapter({
+      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: [] }),
+      listSlideShapes: vi
+        .fn()
+        .mockResolvedValueOnce({
+          slideId: 's1',
+          slideIndex: 0,
+          shapes: [beforeShape, deletedShape],
+        })
+        .mockResolvedValueOnce({
+          slideId: 's1',
+          slideIndex: 0,
+          shapes: [afterShape, deletedShape],
+        })
+        .mockResolvedValueOnce({
+          slideId: 's1',
+          slideIndex: 0,
+          shapes: [afterShape, deletedShape],
+        })
+        .mockResolvedValueOnce({ slideId: 's1', slideIndex: 0, shapes: [afterShape] }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+
+    await skill.executeTool(
+      call('execute_office_js', {
+        code: JSON.stringify({
+          version: 1,
+          operations: [
+            {
+              op: 'set_shape_geometry',
+              slide_index: 0,
+              shape_id: '2',
+              left: 30,
+              top: 20,
+              width: 200,
+              height: 40,
+            },
+            { op: 'delete_shape', slide_index: 0, shape_id: '9' },
+          ],
+        }),
+      }),
+    )
+
+    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+  })
+
+  it('waits for a delayed duplicate-slide collection readback', async () => {
+    const fake = adapter({
+      duplicateSlide: vi.fn().mockResolvedValue({ slideId: 'copy' }),
+      listSlideShapes: vi
+        .fn()
+        .mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 1, shapes: [] })
+        .mockResolvedValueOnce({ slideId: 'slide-1', slideIndex: 1, shapes: [] })
+        .mockResolvedValue({ slideId: 'copy', slideIndex: 1, shapes: [] }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+
+    await skill.executeTool(call('duplicate_slide', { slide_index: 0 }))
+    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+    expect(fake.listSlideShapes).toHaveBeenCalledTimes(3)
+  })
+
+  it('requires the exact declarative duplicate receipt instead of accepting any following slide', async () => {
+    const fake = adapter({
+      executeDeclarative: vi.fn().mockResolvedValue({
+        createdShapeIds: [],
+        insertedSlideId: 'copy',
+      } as never),
+      listSlideShapes: vi.fn().mockResolvedValue({
+        slideId: 'unrelated-existing-slide',
+        slideIndex: 1,
+        shapes: [],
+      }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+
+    await skill.executeTool(
+      call('execute_office_js', {
+        code: JSON.stringify({
+          version: 1,
+          operations: [{ op: 'duplicate_slide', slide_index: 0 }],
+        }),
+      }),
+    )
+
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('office_verify_failed')
+  })
+
+  it('rejects a declarative mutation that edits and then deletes the same shape', async () => {
+    const fake = adapter({ executeDeclarative: vi.fn() })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+
+    await expect(
+      skill.executeTool(
+        call('execute_office_js', {
+          code: JSON.stringify({
+            version: 1,
+            operations: [
+              { op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'temporary' },
+              { op: 'delete_shape', slide_index: 0, shape_id: '2' },
+            ],
+          }),
+        }),
+      ),
+    ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+    expect(proposals.pending()).toBeUndefined()
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
+  })
+
   it('maps adapter internals to stable errors and validates screenshots', async () => {
     const skill = createPowerPointSkill({
       adapter: adapter({
@@ -686,6 +849,37 @@ describe('browser PowerPoint adapter', () => {
     expect(run).not.toHaveBeenCalled()
     expect(supports).toHaveBeenCalledWith('PowerPointApi', '1.8')
     expect(supports).toHaveBeenCalledWith('PowerPointApi', '1.10')
+  })
+
+  it('routes declarative duplication through the transaction-safe duplicate primitive', async () => {
+    const subject = new BrowserPowerPointAdapter()
+    const duplicate = vi.spyOn(subject, 'duplicateSlide').mockResolvedValue({ slideId: 'copy' })
+
+    await expect(
+      subject.executeDeclarative([{ op: 'duplicate_slide', slide_index: 0 }]),
+    ).resolves.toEqual({ createdShapeIds: [], insertedSlideId: 'copy' })
+    expect(duplicate).toHaveBeenCalledWith(0, undefined)
+  })
+
+  it('defensively rejects edit-then-delete before entering PowerPoint.run', async () => {
+    const run = vi.fn()
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: { run },
+    })
+
+    await expect(
+      new BrowserPowerPointAdapter().executeDeclarative([
+        { op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'temporary' },
+        { op: 'delete_shape', slide_index: 0, shape_id: '2' },
+      ]),
+    ).rejects.toThrow('invalid_tool_input')
+    expect(run).not.toHaveBeenCalled()
   })
 
   it('returns stable IDs/geometry and verifies negative, overflow, and overlap geometry', async () => {
@@ -744,6 +938,9 @@ describe('browser PowerPoint adapter', () => {
   })
 
   it('checks cancellation before every write/sync and implements text edit and duplicate', async () => {
+    const packageZip = new JSZip()
+    packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
+    const slidePackage = await packageZip.generateAsync({ type: 'base64' })
     const sync = vi.fn().mockResolvedValue(undefined)
     const textRange = { text: 'Old', load: vi.fn() }
     const shape = {
@@ -760,7 +957,7 @@ describe('browser PowerPoint adapter', () => {
       id: 's1',
       load: vi.fn(),
       shapes: { load: vi.fn(), items: [shape], getItem: vi.fn(() => shape) },
-      exportAsBase64: vi.fn(() => ({ value: 'ppt' })),
+      exportAsBase64: vi.fn(() => ({ value: slidePackage })),
     }
     const slides = {
       load: vi.fn(),
@@ -791,7 +988,7 @@ describe('browser PowerPoint adapter', () => {
     await subject.editSlideText(0, '2', 'New')
     expect(textRange.text).toBe('New')
     await expect(subject.duplicateSlide(0)).resolves.toEqual({ slideId: 's2' })
-    expect(insertSlidesFromBase64).toHaveBeenCalledWith('ppt', { targetSlideId: 's1' })
+    expect(insertSlidesFromBase64).toHaveBeenCalledWith(slidePackage, { targetSlideId: 's1' })
 
     const controller = new AbortController()
     controller.abort()
@@ -799,6 +996,599 @@ describe('browser PowerPoint adapter', () => {
       'cancelled',
     )
     expect(textRange.text).toBe('New')
+  })
+
+  it('reconciles a text sync rejection that committed and never overwrites a third state', async () => {
+    const textRange = { text: 'Old', load: vi.fn() }
+    const shape = { textFrame: { textRange } }
+    const slide = {
+      id: 's1',
+      load: vi.fn(),
+      shapes: { getItem: vi.fn(() => shape) },
+    }
+    const slides = {
+      getCount: vi.fn(() => ({ value: 1 })),
+      getItemAt: vi.fn(() => slide),
+    }
+    let rejected = false
+    const sync = vi.fn().mockImplementation(async () => {
+      if (textRange.text === 'New' && !rejected) {
+        rejected = true
+        throw new Error('host rejected after commit')
+      }
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserPowerPointAdapter().editSlideText(0, '2', 'New'),
+    ).resolves.toBeUndefined()
+    expect(textRange.text).toBe('New')
+
+    textRange.text = 'Old'
+    sync.mockClear()
+    rejected = false
+    sync.mockImplementation(async () => {
+      if (textRange.text === 'New' && !rejected) {
+        rejected = true
+        textRange.text = 'User edit'
+        throw new Error('host rejected after third-party edit')
+      }
+    })
+    await expect(new BrowserPowerPointAdapter().editSlideText(0, '2', 'New')).rejects.toThrow(
+      'office_concurrent_change',
+    )
+    expect(textRange.text).toBe('User edit')
+  })
+
+  it('uses bounded convergence when a rejected text sync is initially read back stale', async () => {
+    let visible = 'Old'
+    let assigned = 'Old'
+    let reconciliationReads = 0
+    const textRange = {
+      load: vi.fn(),
+      get text() {
+        return visible
+      },
+      set text(value: string) {
+        assigned = value
+      },
+    }
+    const slide = {
+      id: 's1',
+      load: vi.fn(),
+      shapes: { getItem: vi.fn(() => ({ textFrame: { textRange } })) },
+    }
+    const slides = {
+      getCount: vi.fn(() => ({ value: 1 })),
+      getItemAt: vi.fn(() => slide),
+    }
+    let rejected = false
+    const sync = vi.fn().mockImplementation(async () => {
+      if (assigned === 'New' && !rejected) {
+        rejected = true
+        throw new Error('host rejected after commit')
+      }
+      if (rejected && visible !== assigned && ++reconciliationReads >= 3) visible = assigned
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserPowerPointAdapter().editSlideText(0, '2', 'New'),
+    ).resolves.toBeUndefined()
+    expect(visible).toBe('New')
+    expect(reconciliationReads).toBe(3)
+  })
+
+  it('uses bounded convergence after a rejected declarative sync', async () => {
+    let visible = 'Old'
+    let assigned = 'Old'
+    let reconciliationReads = 0
+    const textRange = {
+      load: vi.fn(),
+      get text() {
+        return visible
+      },
+      set text(value: string) {
+        assigned = value
+      },
+    }
+    const shape = { id: '2', load: vi.fn(), textFrame: { textRange } }
+    const slide = {
+      id: 's1',
+      load: vi.fn(),
+      shapes: { getItem: vi.fn(() => shape) },
+    }
+    const slides = {
+      getCount: vi.fn(() => ({ value: 1 })),
+      getItemAt: vi.fn(() => slide),
+    }
+    let rejected = false
+    const sync = vi.fn().mockImplementation(async () => {
+      if (assigned === 'New' && !rejected) {
+        rejected = true
+        throw new Error('host rejected after declarative commit')
+      }
+      if (rejected && visible !== assigned && ++reconciliationReads >= 3) visible = assigned
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserPowerPointAdapter().executeDeclarative([
+        { op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'New' },
+      ]),
+    ).resolves.toEqual({ createdShapeIds: [] })
+    expect(visible).toBe('New')
+  })
+
+  it('reports an attributable text commit as applied when cancellation races after sync', async () => {
+    const controller = new AbortController()
+    const textRange = { text: 'Old', load: vi.fn() }
+    const shape = { textFrame: { textRange } }
+    const slide = {
+      id: 's1',
+      load: vi.fn(),
+      shapes: { getItem: vi.fn(() => shape) },
+    }
+    const slides = {
+      getCount: vi.fn(() => ({ value: 1 })),
+      getItemAt: vi.fn(() => slide),
+    }
+    let aborted = false
+    const sync = vi.fn().mockImplementation(async () => {
+      if (textRange.text === 'New' && !aborted) {
+        aborted = true
+        controller.abort()
+      }
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserPowerPointAdapter().editSlideText(0, '2', 'New', controller.signal),
+    ).resolves.toBeUndefined()
+    expect(textRange.text).toBe('New')
+  })
+
+  it('converges delayed text visibility even when cancellation races readback', async () => {
+    const runScenario = async (abortDuringReadback: boolean) => {
+      const controller = new AbortController()
+      let visible = 'Old'
+      let pending: string | undefined
+      let readbacks = 0
+      const textRange = {
+        load: vi.fn(),
+        get text() {
+          return visible
+        },
+        set text(value: string) {
+          pending = value
+        },
+      }
+      const shape = { textFrame: { textRange } }
+      const slide = {
+        id: 's1',
+        load: vi.fn(),
+        shapes: { getItem: vi.fn(() => shape) },
+      }
+      const slides = {
+        getCount: vi.fn(() => ({ value: 1 })),
+        getItemAt: vi.fn(() => slide),
+      }
+      const sync = vi.fn().mockImplementation(async () => {
+        if (pending === 'New') {
+          readbacks += 1
+          if (abortDuringReadback && readbacks === 2) controller.abort()
+          if (readbacks >= 3) visible = pending
+        } else if (pending === 'Old') visible = pending
+      })
+      Object.assign(globalThis, {
+        Office: {
+          context: {
+            host: 'PowerPoint',
+            requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+          },
+        },
+        PowerPoint: {
+          run: (callback: (context: unknown) => unknown) =>
+            callback({ presentation: { slides }, sync }),
+        },
+      })
+      const result = new BrowserPowerPointAdapter().editSlideText(0, '2', 'New', controller.signal)
+      if (abortDuringReadback) {
+        await expect(result).resolves.toBeUndefined()
+        expect(visible).toBe('New')
+      } else {
+        await expect(result).resolves.toBeUndefined()
+        expect(visible).toBe('New')
+      }
+    }
+
+    await runScenario(false)
+    await runScenario(true)
+  })
+
+  it('reports an attributable declarative prefix as uncertain without restoring it', async () => {
+    const textRange = { text: 'Old', load: vi.fn() }
+    const textShape = { id: '2', load: vi.fn(), textFrame: { textRange } }
+    const geometryShape = {
+      id: '3',
+      load: vi.fn(),
+      left: 10,
+      top: 20,
+      width: 200,
+      height: 40,
+    }
+    const slide = {
+      id: 's1',
+      load: vi.fn(),
+      shapes: {
+        getItem: vi.fn((id: string) => (id === '2' ? textShape : geometryShape)),
+      },
+    }
+    const slides = {
+      getCount: vi.fn(() => ({ value: 1 })),
+      getItemAt: vi.fn(() => slide),
+    }
+    let rejected = false
+    const sync = vi.fn().mockImplementation(async () => {
+      if (textRange.text === 'New' && geometryShape.left === 30 && !rejected) {
+        rejected = true
+        geometryShape.left = 10
+        throw new Error('host rejected after committed prefix')
+      }
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserPowerPointAdapter().executeDeclarative([
+        { op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'New' },
+        {
+          op: 'set_shape_geometry',
+          slide_index: 0,
+          shape_id: '3',
+          left: 30,
+          top: 20,
+          width: 200,
+          height: 40,
+        },
+      ]),
+    ).rejects.toThrow('office_state_uncertain')
+    expect(textRange.text).toBe('New')
+    expect(geometryShape.left).toBe(10)
+  })
+
+  it('does not restore a declarative batch over a concurrent third state', async () => {
+    const textRange = { text: 'Old', load: vi.fn() }
+    const shape = { id: '2', load: vi.fn(), textFrame: { textRange } }
+    const slide = {
+      id: 's1',
+      load: vi.fn(),
+      shapes: { getItem: vi.fn(() => shape) },
+    }
+    const slides = {
+      getCount: vi.fn(() => ({ value: 1 })),
+      getItemAt: vi.fn(() => slide),
+    }
+    let rejected = false
+    const sync = vi.fn().mockImplementation(async () => {
+      if (textRange.text === 'New' && !rejected) {
+        rejected = true
+        textRange.text = 'User edit'
+        throw new Error('host rejected after concurrent edit')
+      }
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserPowerPointAdapter().executeDeclarative([
+        { op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'New' },
+      ]),
+    ).rejects.toThrow('office_concurrent_change')
+    expect(textRange.text).toBe('User edit')
+  })
+
+  it('rejects repeated writes to the same shape property before Office dispatch', async () => {
+    const run = vi.fn()
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: { run },
+    })
+
+    await expect(
+      new BrowserPowerPointAdapter().executeDeclarative([
+        { op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'First' },
+        { op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'Second' },
+      ]),
+    ).rejects.toThrow('invalid_tool_input')
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { mode: 'committed', expected: 'copy' },
+    { mode: 'cancelled', expected: 'cancelled' },
+    { mode: 'third-state', expected: 'office_concurrent_change' },
+  ])('reconciles duplicate-slide sync rejection in $mode state', async ({ mode, expected }) => {
+    const packageZip = new JSZip()
+    packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
+    const slidePackage = await packageZip.generateAsync({ type: 'base64' })
+    const controller = new AbortController()
+    const shape = (text: string) => ({
+      id: '2',
+      name: 'Title',
+      type: 'TextBox',
+      left: 10,
+      top: 20,
+      width: 200,
+      height: 40,
+      textFrame: { hasText: true, load: vi.fn(), textRange: { text, load: vi.fn() } },
+    })
+    const slides = {
+      items: [] as Array<Record<string, unknown>>,
+      getCount: vi.fn(() => ({ value: slides.items.length })),
+      getItemAt: vi.fn((index: number) => slides.items[index]),
+    }
+    const source = {
+      id: 'source',
+      load: vi.fn(),
+      shapes: { load: vi.fn(), items: [shape('Stable')] },
+      exportAsBase64: vi.fn(() => ({ value: slidePackage })),
+    }
+    slides.items.push(source)
+    const insertSlidesFromBase64 = vi.fn(() => {
+      const inserted = {
+        id: 'copy',
+        load: vi.fn(),
+        shapes: {
+          load: vi.fn(),
+          items: [shape(mode === 'third-state' ? 'User slide' : 'Stable')],
+        },
+        exportAsBase64: vi.fn(() => ({ value: slidePackage })),
+        delete: vi.fn(() => {
+          const index = slides.items.indexOf(inserted)
+          if (index >= 0) slides.items.splice(index, 1)
+        }),
+      }
+      slides.items.splice(1, 0, inserted)
+    })
+    let rejected = false
+    const sync = vi.fn().mockImplementation(async () => {
+      if (slides.items.length === 2 && !rejected) {
+        rejected = true
+        if (mode === 'cancelled') controller.abort()
+        throw new Error('host rejected after insert')
+      }
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides, insertSlidesFromBase64 }, sync }),
+      },
+    })
+
+    const result = new BrowserPowerPointAdapter().duplicateSlide(0, controller.signal)
+    if (mode === 'committed' || mode === 'cancelled')
+      await expect(result).resolves.toEqual({ slideId: 'copy' })
+    else await expect(result).rejects.toThrow(expected)
+    expect(slides.items).toHaveLength(2)
+  })
+
+  it('waits for duplicate collection convergence and proves package ownership after sync rejection', async () => {
+    const packageZip = new JSZip()
+    packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"><p:cSld/></p:sld>')
+    const base64 = await packageZip.generateAsync({ type: 'base64' })
+    const source = { id: 'source', load: vi.fn(), exportAsBase64: vi.fn(() => ({ value: base64 })) }
+    const slides = {
+      getCount: vi.fn(() => ({ value: 2 })),
+      getItemAt: vi.fn(() => source),
+    }
+    const insertSlidesFromBase64 = vi.fn()
+    let rejected = false
+    const sync = vi.fn().mockImplementation(async () => {
+      if (insertSlidesFromBase64.mock.calls.length > 0 && !rejected) {
+        rejected = true
+        throw new Error('host rejected after committed insert')
+      }
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides, insertSlidesFromBase64 }, sync }),
+      },
+    })
+    const subject = new BrowserPowerPointAdapter()
+    vi.spyOn(subject, 'snapshotSlide')
+      .mockResolvedValueOnce({ slideId: 'source', fingerprint: 'source:semantic' })
+      .mockResolvedValueOnce({ slideId: 'existing', fingerprint: 'existing:other' })
+      .mockResolvedValueOnce({ slideId: 'source', fingerprint: 'source:semantic' })
+      .mockResolvedValueOnce({ slideId: 'source', fingerprint: 'source:semantic' })
+      .mockResolvedValueOnce({ slideId: 'existing', fingerprint: 'existing:other' })
+      .mockResolvedValueOnce({ slideId: 'existing', fingerprint: 'existing:other' })
+      .mockResolvedValueOnce({ slideId: 'copy', fingerprint: 'copy:semantic' })
+      .mockResolvedValue({ slideId: 'source', fingerprint: 'source:semantic' })
+    vi.spyOn(subject, 'exportSlidePackage')
+      .mockResolvedValueOnce({ slideId: 'source', base64, fingerprint: 'volatile-source' })
+      .mockResolvedValue({ slideId: 'copy', base64, fingerprint: 'volatile-copy' })
+
+    await expect(subject.duplicateSlide(0)).resolves.toEqual({ slideId: 'copy' })
+    expect(subject.snapshotSlide).toHaveBeenCalledTimes(8)
+    expect(subject.exportSlidePackage).toHaveBeenCalledWith(1)
+  })
+
+  it('revalidates the duplicate source immediately before insertion', async () => {
+    const packageZip = new JSZip()
+    packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
+    const base64 = await packageZip.generateAsync({ type: 'base64' })
+    const source = { id: 'source', load: vi.fn() }
+    const slides = {
+      getCount: vi.fn(() => ({ value: 1 })),
+      getItemAt: vi.fn(() => source),
+    }
+    const insertSlidesFromBase64 = vi.fn()
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides, insertSlidesFromBase64 }, sync: vi.fn() }),
+      },
+    })
+    const subject = new BrowserPowerPointAdapter()
+    vi.spyOn(subject, 'snapshotSlide')
+      .mockResolvedValueOnce({ slideId: 'source', fingerprint: 'source:before' })
+      .mockRejectedValueOnce(new Error('invalid_tool_input'))
+      .mockResolvedValue({ slideId: 'source', fingerprint: 'source:user-edit' })
+    vi.spyOn(subject, 'exportSlidePackage').mockResolvedValue({
+      slideId: 'source',
+      base64,
+      fingerprint: 'volatile',
+    })
+
+    await expect(subject.duplicateSlide(0)).rejects.toThrow('office_concurrent_change')
+    expect(insertSlidesFromBase64).not.toHaveBeenCalled()
+  })
+
+  it('removes an owned duplicate when the source changes after insertion', async () => {
+    const packageZip = new JSZip()
+    packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
+    const slidePackage = await packageZip.generateAsync({ type: 'base64' })
+    const shape = (text: string) => ({
+      id: '2',
+      name: 'Title',
+      type: 'TextBox',
+      left: 10,
+      top: 20,
+      width: 200,
+      height: 40,
+      textFrame: { hasText: true, load: vi.fn(), textRange: { text, load: vi.fn() } },
+    })
+    const sourceShape = shape('Stable')
+    const slides = {
+      items: [] as Array<Record<string, unknown>>,
+      getCount: vi.fn(() => ({ value: slides.items.length })),
+      getItemAt: vi.fn((index: number) => slides.items[index]),
+    }
+    const source = {
+      id: 'source',
+      load: vi.fn(),
+      shapes: { load: vi.fn(), items: [sourceShape] },
+      exportAsBase64: vi.fn(() => ({ value: slidePackage })),
+    }
+    slides.items.push(source)
+    const insertSlidesFromBase64 = vi.fn(() => {
+      const copy = {
+        id: 'copy',
+        load: vi.fn(),
+        shapes: { load: vi.fn(), items: [shape('Stable')] },
+        exportAsBase64: vi.fn(() => ({ value: slidePackage })),
+        delete: vi.fn(() => slides.items.splice(slides.items.indexOf(copy), 1)),
+      }
+      slides.items.splice(1, 0, copy)
+      ;(sourceShape.textFrame as { textRange: { text: string } }).textRange.text = 'User edit'
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides, insertSlidesFromBase64 }, sync: vi.fn() }),
+      },
+    })
+
+    await expect(new BrowserPowerPointAdapter().duplicateSlide(0)).rejects.toThrow(
+      'office_concurrent_change',
+    )
+    expect(slides.items).toHaveLength(2)
+    expect(slides.items[0]).toBe(source)
   })
 
   it('keeps duplicate validation stable when PowerPoint exports volatile slide packages', async () => {
@@ -853,6 +1643,7 @@ describe('browser PowerPoint adapter', () => {
     const slide = {
       id: 's1',
       load: vi.fn(),
+      shapes: { load: vi.fn(), items: [] },
       exportAsBase64: vi.fn(() => ({ value: '' })),
     }
     const slides = {
@@ -924,75 +1715,50 @@ describe('browser PowerPoint adapter', () => {
     expect(remove).not.toHaveBeenCalled()
   })
 
-  it.each([
-    { mode: 'sync-failure', expectedError: 'office_write_failed' },
-    { mode: 'ignored-layout-recovery', expectedError: 'office_recovery_failed' },
-    { mode: 'wrong-restored-slide', expectedError: 'office_recovery_failed' },
-  ])('proves package and layout recovery after $mode', async ({ mode, expectedError }) => {
-    const packageZip = new JSZip()
-    packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
-    const originalPackage = await packageZip.generateAsync({ type: 'base64' })
+  it('never restores a package replacement over an unowned third state', async () => {
+    const originalZip = new JSZip()
+    originalZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"><p:cSld/></p:sld>')
+    const originalPackage = await originalZip.generateAsync({ type: 'base64' })
     const expected = await editPowerPointPackage(originalPackage, 'slide', [
-      { path: 'ppt/slides/slide1.xml', xml: '<p:sld xmlns:p="urn:p"><p:cSld/></p:sld>' },
+      {
+        path: 'ppt/slides/slide1.xml',
+        xml: '<p:sld xmlns:p="urn:p"><p:cSld><p:sp/></p:cSld></p:sld>',
+      },
     ])
-    const oldLayout = { id: 'old-layout', name: '', load: vi.fn() }
-    const newLayout = { id: 'new-layout', name: '', load: vi.fn() }
-    const wrongLayout = { id: 'wrong-layout', name: '', load: vi.fn() }
-    const slides: {
-      items: any[]
-      getCount: ReturnType<typeof vi.fn>
-      getItemAt: ReturnType<typeof vi.fn>
-      load: ReturnType<typeof vi.fn>
-    } = {
-      items: [],
+    const thirdZip = new JSZip()
+    thirdZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"><p:user/></p:sld>')
+    const thirdPackage = await thirdZip.generateAsync({ type: 'base64' })
+    const slides = {
+      items: [] as Array<Record<string, unknown>>,
       getCount: vi.fn(() => ({ value: slides.items.length })),
       getItemAt: vi.fn((index: number) => slides.items[index]),
-      load: vi.fn(),
     }
-    const makeSlide = (id: string, layout: any, exported = 'original') => {
-      const item: any = {
+    const makeSlide = (id: string, exported: string) => {
+      const item = {
         id,
-        layout,
         load: vi.fn(),
         exportAsBase64: vi.fn(() => ({ value: exported })),
-        applyLayout: vi.fn((next) => {
-          item.layout = next
+        delete: vi.fn(() => {
+          slides.items = slides.items.filter((slide) => slide !== item)
         }),
       }
-      item.delete = vi.fn(() => {
-        slides.items = slides.items.filter((slide) => slide !== item)
-      })
       return item
     }
-    const original = makeSlide('s1', oldLayout, originalPackage)
-    const sibling = makeSlide('s-other', oldLayout)
-    slides.items = [original, sibling]
-    const oldMaster = { layouts: { items: [oldLayout], load: vi.fn() } }
-    const newMaster = { layouts: { items: [newLayout], load: vi.fn() } }
-    const masters = { items: [oldMaster, newMaster], load: vi.fn() }
-    let propagationStarted = false
-    sibling.applyLayout.mockImplementation((next: unknown) => {
-      if (mode === 'ignored-layout-recovery') {
-        if (next === newLayout) sibling.layout = wrongLayout
-      } else {
-        sibling.layout = next
-      }
-      propagationStarted = true
-    })
+    const original = makeSlide('source', originalPackage)
+    const third = makeSlide('user-slide', thirdPackage)
+    slides.items = [original]
+    let batchQueued = false
     let failed = false
-    const sync = vi.fn().mockImplementation(async () => {
-      if (mode !== 'ignored-layout-recovery' && propagationStarted && !failed) {
-        failed = true
-        throw new Error('host failure')
-      }
+    const insertSlidesFromBase64 = vi.fn((value: string) => {
+      batchQueued = true
+      slides.items.splice(0, 0, makeSlide('imported', value))
     })
-    const insertSlidesFromBase64 = vi.fn((base64: string) => {
-      const inserted = makeSlide(
-        base64 === expected.base64 ? 's2' : 's1-restored',
-        base64 === expected.base64 ? newLayout : oldLayout,
-        mode === 'wrong-restored-slide' && base64 === originalPackage ? expected.base64 : base64,
-      )
-      slides.items.splice(0, 0, inserted)
+    const sync = vi.fn().mockImplementation(async () => {
+      if (batchQueued && !failed) {
+        failed = true
+        slides.items = [third]
+        throw new Error('host rejected after third-party replacement')
+      }
     })
     Object.assign(globalThis, {
       Office: {
@@ -1003,19 +1769,108 @@ describe('browser PowerPoint adapter', () => {
       },
       PowerPoint: {
         run: (callback: (context: unknown) => unknown) =>
-          callback({
-            presentation: { slides, slideMasters: masters, insertSlidesFromBase64 },
-            sync,
-          }),
+          callback({ presentation: { slides, insertSlidesFromBase64 }, sync }),
       },
     })
+
     await expect(
-      new BrowserPowerPointAdapter().replaceSlidePackage(0, expected.base64, true, expected),
-    ).rejects.toThrow(expectedError)
-    if (mode === 'sync-failure') expect(sibling.layout).toBe(oldLayout)
-    expect(slides.items).toHaveLength(2)
-    expect(slides.items[0].id).toBe('s1-restored')
+      new BrowserPowerPointAdapter().replaceSlidePackage(0, expected.base64, false, expected),
+    ).rejects.toThrow(/office_(concurrent_change|state_uncertain)/)
+    expect(slides.items).toEqual([third])
+    expect(insertSlidesFromBase64).toHaveBeenCalledOnce()
   })
+
+  it.each(['sync-failure', 'ignored-layout-recovery', 'wrong-restored-slide'])(
+    'never performs an unowned package or layout restore after %s',
+    async (mode) => {
+      const packageZip = new JSZip()
+      packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
+      const originalPackage = await packageZip.generateAsync({ type: 'base64' })
+      const expected = await editPowerPointPackage(originalPackage, 'slide', [
+        { path: 'ppt/slides/slide1.xml', xml: '<p:sld xmlns:p="urn:p"><p:cSld/></p:sld>' },
+      ])
+      const oldLayout = { id: 'old-layout', name: '', load: vi.fn() }
+      const newLayout = { id: 'new-layout', name: '', load: vi.fn() }
+      const wrongLayout = { id: 'wrong-layout', name: '', load: vi.fn() }
+      const slides: {
+        items: any[]
+        getCount: ReturnType<typeof vi.fn>
+        getItemAt: ReturnType<typeof vi.fn>
+        load: ReturnType<typeof vi.fn>
+      } = {
+        items: [],
+        getCount: vi.fn(() => ({ value: slides.items.length })),
+        getItemAt: vi.fn((index: number) => slides.items[index]),
+        load: vi.fn(),
+      }
+      const makeSlide = (id: string, layout: any, exported = 'original') => {
+        const item: any = {
+          id,
+          layout,
+          load: vi.fn(),
+          exportAsBase64: vi.fn(() => ({ value: exported })),
+          applyLayout: vi.fn((next) => {
+            item.layout = next
+          }),
+        }
+        item.delete = vi.fn(() => {
+          slides.items = slides.items.filter((slide) => slide !== item)
+        })
+        return item
+      }
+      const original = makeSlide('s1', oldLayout, originalPackage)
+      const sibling = makeSlide('s-other', oldLayout)
+      slides.items = [original, sibling]
+      const oldMaster = { layouts: { items: [oldLayout], load: vi.fn() } }
+      const newMaster = { layouts: { items: [newLayout], load: vi.fn() } }
+      const masters = { items: [oldMaster, newMaster], load: vi.fn() }
+      let propagationStarted = false
+      sibling.applyLayout.mockImplementation((next: unknown) => {
+        if (mode === 'ignored-layout-recovery') {
+          if (next === newLayout) sibling.layout = wrongLayout
+        } else {
+          sibling.layout = next
+        }
+        propagationStarted = true
+      })
+      let failed = false
+      const sync = vi.fn().mockImplementation(async () => {
+        if (mode !== 'ignored-layout-recovery' && propagationStarted && !failed) {
+          failed = true
+          throw new Error('host failure')
+        }
+      })
+      const insertSlidesFromBase64 = vi.fn((base64: string) => {
+        const inserted = makeSlide(
+          base64 === expected.base64 ? 's2' : 's1-restored',
+          base64 === expected.base64 ? newLayout : oldLayout,
+          mode === 'wrong-restored-slide' && base64 === originalPackage ? expected.base64 : base64,
+        )
+        slides.items.splice(0, 0, inserted)
+      })
+      Object.assign(globalThis, {
+        Office: {
+          context: {
+            host: 'PowerPoint',
+            requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+          },
+        },
+        PowerPoint: {
+          run: (callback: (context: unknown) => unknown) =>
+            callback({
+              presentation: { slides, slideMasters: masters, insertSlidesFromBase64 },
+              sync,
+            }),
+        },
+      })
+      await expect(
+        new BrowserPowerPointAdapter().replaceSlidePackage(0, expected.base64, true, expected),
+      ).rejects.toThrow('office_state_uncertain')
+      expect(insertSlidesFromBase64).toHaveBeenCalledOnce()
+      expect(slides.items).toHaveLength(2)
+      expect(slides.items[0].id).toBe('s2')
+    },
+  )
 
   it('treats a text-only change as stale even when slide geometry is unchanged', async () => {
     const fake = adapter()
