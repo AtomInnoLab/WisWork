@@ -99,12 +99,8 @@ import '@univerjs/preset-sheets-table/lib/index.css'
 import { greenTheme } from '@univerjs/themes'
 import { createUniver } from './create-univer'
 
-import {
-  AgentLoop,
-  COMPLETED_VIA_TOOLS_TEXT,
-  composeSkills,
-  type AgentImage,
-} from '@wiswork/agent-core'
+import { COMPLETED_VIA_TOOLS_TEXT, composeSkills, type AgentImage } from '@wiswork/agent-core'
+import type { AgentHarness } from '@wiswork/agent-harness'
 import type { AiSettings } from '@wiswork/ai-provider'
 import { type WorkbookOperation } from '../domain/workbook-dsl'
 import { columnIndex, columnLabel, parseAddress, parseRange } from '../domain/cell-address'
@@ -119,6 +115,7 @@ import { InMemoryWorkbookAdapter } from '../domain/in-memory-workbook'
 import { cfRuleUnsaveableReason, iconSetSaveable } from '../gateway/xlsx-cf'
 import type { ApplyOutcome, ChangePlan } from '../domain/workbook.types'
 import { createElectronTransport } from './ai/transport'
+import { createAgentController, useAgentControllerCleanup } from './ai/agent-controller'
 import type { ActiveSheetInfo, SheetsSkillDeps } from './ai/tools'
 import type { AiChatMessage } from './ai/AiChatPanel'
 import { createWorkbookSkill } from './ai/workbook-skill'
@@ -827,9 +824,9 @@ export function App(): React.JSX.Element {
   /** true once any tool of the run mutated the workbook */
   const runMutatedRef = useRef(false)
 
-  const agentLoopRef = useRef<AgentLoop | null>(null)
+  const agentLoopRef = useRef<AgentHarness<unknown> | null>(null)
   if (!agentLoopRef.current) {
-    agentLoopRef.current = new AgentLoop({
+    agentLoopRef.current = createAgentController({
       transport: createElectronTransport(() => aiSettingsRef.current!),
       systemSuffix: aiLangDirective,
       skill: composeSkills('sheets+files', '', [
@@ -988,6 +985,7 @@ export function App(): React.JSX.Element {
       },
     })
   }
+  useAgentControllerCleanup(agentLoopRef)
 
   function isAgentConfigured(): boolean {
     const settings = aiSettingsRef.current
@@ -1025,7 +1023,7 @@ export function App(): React.JSX.Element {
 
   function runAgent(instruction: string, sentAttachments: readonly AttachmentMeta[]): void {
     const loop = agentLoopRef.current
-    if (!instruction.trim() || !loop || loop.busy || runStartingRef.current) return
+    if (!instruction.trim() || !loop || loop.snapshot.busy || runStartingRef.current) return
     runStartingRef.current = true
     aiApplyPromisesRef.current = []
     runLastTextRef.current = ''
@@ -1076,7 +1074,7 @@ export function App(): React.JSX.Element {
   }
 
   function handleStopAgent(): void {
-    agentLoopRef.current?.cancel()
+    agentLoopRef.current?.stop()
   }
 
   function handleNewChat(): void {

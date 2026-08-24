@@ -24,6 +24,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.4",
     "@wiswork/agent-core": "*",
+    "@wiswork/agent-harness": "*",
     "@wiswork/ai-provider": "*",
     "@wiswork/ai-search": "*",
     "@wiswork/auth": "*",

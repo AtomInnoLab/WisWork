@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import {
-  AgentLoop,
   composeSkills,
   IPC_STREAM_SILENCE_TIMEOUT_MS,
   type AgentImage,
   type ToolDisplay,
 } from '@wiswork/agent-core'
+import type { AgentHarness } from '@wiswork/agent-harness'
 import type { RenderSlide } from '@wiswork/pptx-render'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
@@ -13,6 +13,7 @@ import { createSlidesSkill, type DeckAccess, type ClarifyQuestion } from './slid
 import { extractJsonObject, parseOutlineJson } from './outline-json'
 import { createFilesSkill } from './files-skill'
 import { createElectronTransport } from './transport'
+import { createAgentController, useAgentControllerCleanup } from './agent-controller'
 import { renderSlidesToPngBase64 } from '../export-render'
 import { isQcEnabled, qcSlidePage, QC_MAX_PAGES } from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
@@ -628,7 +629,7 @@ export function AiPanel({
     )
   }
 
-  const loopRef = useRef<AgentLoop | null>(null)
+  const loopRef = useRef<AgentHarness<unknown> | null>(null)
   if (!loopRef.current) {
     // Send one LLM request, aggregating streaming deltas into complete text. Shared by in-tool per-page/planning.
     // - On timeout/user stop (signal abort) call aiStreamCancel to cancel the main-process stream, leaving no orphan requests.
@@ -884,7 +885,7 @@ export function AiPanel({
           .map((a) => a.name),
     }
     accessRef.current = access
-    loopRef.current = new AgentLoop({
+    loopRef.current = createAgentController({
       transport: createElectronTransport(() => settingsRef.current),
       systemSuffix: aiLangDirective,
       skill: composeSkills('slides+files', '', [
@@ -1016,6 +1017,7 @@ export function AiPanel({
       },
     })
   }
+  useAgentControllerCleanup(loopRef)
 
   useEffect(() => {
     if (!preset) return
@@ -1115,7 +1117,14 @@ export function AiPanel({
     // so duplicate triggers must be blocked synchronously (e.g. StrictMode double-running the preset autoRun effect),
     // otherwise two sets of bubbles get pushed and the earlier assistant placeholder stays at "thinking" forever.
     // qcRunningRef: the post-generation QC pass edits the deck outside the main loop — no concurrent runs
-    if (!instruction || !loop || loop.busy || runStartingRef.current || qcRunningRef.current) return
+    if (
+      !instruction ||
+      !loop ||
+      loop.snapshot.busy ||
+      runStartingRef.current ||
+      qcRunningRef.current
+    )
+      return
     runStartingRef.current = true
     setInput('')
     // The message consumes the composer attachments: they ride along (echoed on the
@@ -1277,7 +1286,7 @@ export function AiPanel({
   const cancel = () => {
     dismissClarify()
     qcAbortRef.current?.abort()
-    loopRef.current?.cancel()
+    loopRef.current?.stop()
   }
 
   // Abort a QC pass still running when the panel unmounts (new file / panel remount by key)

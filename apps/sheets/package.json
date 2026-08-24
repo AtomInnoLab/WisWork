@@ -39,6 +39,7 @@
     "@univerjs/sheets-filter": "^0.25.1",
     "@univerjs/themes": "^0.25.1",
     "@wiswork/agent-core": "*",
+    "@wiswork/agent-harness": "*",
     "@wiswork/ai-provider": "*",
     "@wiswork/ai-search": "*",
     "@wiswork/auth": "*",
