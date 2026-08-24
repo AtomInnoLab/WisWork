@@ -58,7 +58,7 @@ export interface AgentLoopOptions<TSnapshot = unknown> {
   transport: AgentTransport
   skill: AgentSkill
   events?: AgentLoopEvents<TSnapshot>
-  /** hard cap on model round-trips per run (default 8) */
+  /** optional hard cap on model round-trips per run; interactive Cowork runs are unbounded by default */
   maxTurns?: number
   /** history cap in messages, trimmed at user-turn boundaries (default 40) */
   maxHistory?: number
@@ -83,6 +83,8 @@ const STALE_TOOL_OUTPUT_MAX = 1_000
 
 /** Cap on consecutive tool-input parse failures (a successful parse resets it); abort beyond it (keeps the model from burning turns on bad JSON) */
 const MAX_INPUT_PARSE_RETRIES = 3
+/** Stop only a proven unchanged loop; varied long-running Cowork work remains unbounded. */
+const MAX_IDENTICAL_TOOL_BATCHES = 4
 const MAX_TOOL_CONTENT_IMAGES = 4
 const MAX_TOOL_IMAGE_BYTES = 4 * 1024 * 1024
 const TOOL_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp'])
@@ -171,6 +173,16 @@ function utf8Size(s: string): number {
   return n
 }
 
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
+  if (value && typeof value === 'object')
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(',')}}`
+  return JSON.stringify(value) ?? 'null'
+}
+
 function imagePayloadSize(image: AgentImage): number {
   const padding = image.base64.endsWith('==') ? 2 : image.base64.endsWith('=') ? 1 : 0
   const decoded = Math.max(0, (image.base64.length / 4) * 3 - padding)
@@ -243,6 +255,8 @@ export class AgentLoop<TSnapshot = unknown> {
   private finalizing = false
   private mutationSeen = false
   private inputParseFails = 0
+  private lastToolBatchSignature = ''
+  private identicalToolBatches = 0
   private turnStopReason: string | null = null
   private turnText = ''
   private toolCalls: AgentToolCall[] = []
@@ -312,6 +326,8 @@ export class AgentLoop<TSnapshot = unknown> {
     this.finalizing = false
     this.mutationSeen = false
     this.inputParseFails = 0
+    this.lastToolBatchSignature = ''
+    this.identicalToolBatches = 0
     this.abortController = new AbortController()
     const context = this.options.skill.buildContext?.() ?? ''
     const format =
@@ -592,6 +608,26 @@ export class AgentLoop<TSnapshot = unknown> {
     const { events, skill, captureSnapshot } = this.options
     const toolCalls = this.toolCalls
 
+    if (toolCalls.length > 0 && !this.cancelled && !this.finalizing) {
+      const signature = stableJson(
+        toolCalls.map((call) => ({
+          name: call.name,
+          input: call.input,
+          inputError: call.inputError,
+          truncated: call.truncated,
+        })),
+      )
+      this.identicalToolBatches =
+        signature === this.lastToolBatchSignature ? this.identicalToolBatches + 1 : 1
+      this.lastToolBatchSignature = signature
+      if (this.identicalToolBatches > MAX_IDENTICAL_TOOL_BATCHES) {
+        this.running = false
+        this.rollbackFailedRun()
+        events?.onError?.('tool_loop_detected')
+        return
+      }
+    }
+
     // final turn: no tools requested, the user stopped the run, or the
     // no-tools finalizing turn after hitting the limit
     // (a cancelled turn drops its tool calls — no results would follow)
@@ -749,7 +785,7 @@ export class AgentLoop<TSnapshot = unknown> {
     }
 
     this.turns++
-    if (this.turns >= (this.options.maxTurns ?? 8)) {
+    if (this.options.maxTurns !== undefined && this.turns >= this.options.maxTurns) {
       // Don't throw away the context already gathered: append one no-tools turn for a partial answer
       this.finalizing = true
       this.history.push({ role: 'user', text: TURN_LIMIT_NOTE })

@@ -597,6 +597,28 @@ describe('AgentLoop', () => {
     })
   })
 
+  it('stops an unchanged tool-call loop without imposing a total turn limit', async () => {
+    const repeat = (cb: AgentStreamCallbacks) => {
+      cb.onToolCall({ id: crypto.randomUUID(), name: 'do_thing', input: { page: 1 } })
+      cb.onDone()
+    }
+    const transport = scriptedTransport(Array.from({ length: 6 }, () => repeat))
+    const execute = vi.fn(() => ({ output: 'ok', summary: 'done', mutated: true }))
+    const onError = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(execute),
+      events: { onError },
+    })
+
+    loop.run('x')
+    for (let i = 0; i < 12; i++) await flush()
+
+    expect(execute).toHaveBeenCalledTimes(4)
+    expect(onError).toHaveBeenCalledWith('tool_loop_detected')
+    expect(loop.busy).toBe(false)
+  })
+
   it('cancel drops pending tool calls and finalizes the run', async () => {
     const transport = scriptedTransport([
       (cb) => {
@@ -698,12 +720,12 @@ describe('AgentLoop', () => {
     expect(loop.messages[0].role).toBe('user')
   })
 
-  it('a long run over maxHistory is never trimmed mid-run (history keeps its user message)', async () => {
+  it('lets an unbounded Cowork run continue past the former default turn cap', async () => {
     // 21 tool turns → 1 user + 21×(assistant+tool) = 43 messages > maxHistory 40
     const script: Array<(cb: AgentStreamCallbacks) => void> = Array.from(
       { length: 21 },
       (_, i) => (cb: AgentStreamCallbacks) => {
-        cb.onToolCall({ id: `t${i}`, name: 'do_thing', input: {} })
+        cb.onToolCall({ id: `t${i}`, name: 'do_thing', input: { page: i + 1 } })
         cb.onDone()
       },
     )
@@ -717,7 +739,6 @@ describe('AgentLoop', () => {
     const loop = new AgentLoop({
       transport,
       skill: makeSkill(),
-      maxTurns: 30,
       compaction: false,
       events: { onDone, onError },
     })

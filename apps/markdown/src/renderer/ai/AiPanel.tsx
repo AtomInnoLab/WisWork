@@ -16,7 +16,6 @@ import { createElectronTransport } from './transport'
 const PANEL_WIDTH_KEY = 'markdown-ai-panel-width'
 const PANEL_WIDTH_DEFAULT = 360
 const PANEL_WIDTH_MIN = 280
-const MAX_TURNS = 50
 const MAX_SNAPSHOTS = 20
 const TOOL_OUTPUT_MAX_CHARS = 2000
 
@@ -162,7 +161,6 @@ export function AiPanel({
   if (!loopRef.current) {
     loopRef.current = new AgentLoop<string>({
       transport: createElectronTransport(() => settingsRef.current!),
-      maxTurns: MAX_TURNS,
       skill: composeSkills('markdown+search', '', [
         createMarkdownSkill(() => depsRef.current.getEditor()),
         createSearchSkill(),
