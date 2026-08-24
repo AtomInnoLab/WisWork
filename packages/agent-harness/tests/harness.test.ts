@@ -87,6 +87,29 @@ describe('createAgentHarness', () => {
     },
   )
 
+  it('cancels a pending launch when a running listener calls stop', () => {
+    const order: string[] = []
+    const transport = manualTransport()
+    const executeTool = vi.fn(() => ({ output: 'ok', summary: 'done' }))
+    const harness = createAgentHarness({
+      ...options(transport, {
+        onDone: (result) => order.push(`host:${result.cancelled}:${harness.snapshot.status}`),
+      }),
+      skill: { ...skill, executeTool },
+    })
+    harness.subscribe(() => {
+      order.push(`listener:${harness.snapshot.status}`)
+      if (harness.snapshot.status === 'running') harness.stop()
+    })
+
+    expect(harness.run('do not launch')).toBe(false)
+
+    expect(harness.snapshot).toEqual({ status: 'cancelled', busy: false, generation: 1 })
+    expect(transport.callbacks).toHaveLength(0)
+    expect(executeTool).not.toHaveBeenCalled()
+    expect(order).toEqual(['listener:running', 'host:true:running', 'listener:cancelled'])
+  })
+
   it.each(['buildContext', 'formatUserMessage'] as const)(
     'recovers when %s throws synchronously and allows a later run',
     async (failurePoint) => {

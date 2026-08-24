@@ -39,6 +39,7 @@ export function createAgentHarness<TSnapshot>(
     generation: 0,
   }
   let disposed = false
+  let launchPending = false
 
   const publish = (snapshot: AgentHarnessSnapshot): void => {
     currentSnapshot = snapshot
@@ -113,8 +114,10 @@ export function createAgentHarness<TSnapshot>(
       if (disposed || loop.busy || !instruction) return false
       const generation = currentSnapshot.generation + 1
       loopOptions.events = eventsFor(generation)
+      launchPending = true
       publish({ status: 'running', busy: true, generation })
-      if (!isCurrent(generation)) return false
+      if (!isCurrent(generation) || !launchPending) return false
+      launchPending = false
       try {
         loop.run(instruction, images)
       } catch (error) {
@@ -127,11 +130,18 @@ export function createAgentHarness<TSnapshot>(
       return true
     },
     stop() {
-      if (disposed || !loop.busy) return
+      if (disposed) return
+      if (launchPending) {
+        launchPending = false
+        loopOptions.events?.onDone?.({ text: '', cancelled: true, turnLimit: false })
+        return
+      }
+      if (!loop.busy) return
       loop.cancel()
     },
     reset() {
       if (disposed) return
+      launchPending = false
       const generation = currentSnapshot.generation + 1
       loop.reset()
       publish({ status: 'idle', busy: false, generation })
@@ -145,6 +155,7 @@ export function createAgentHarness<TSnapshot>(
     dispose() {
       if (disposed) return
       disposed = true
+      launchPending = false
       loop.reset()
       currentSnapshot = {
         status: 'idle',
