@@ -1423,8 +1423,8 @@ async function executeTool(
       // Balanced with the end in the finally below; an unbalanced pair would leave
       // the session mid-batch, where undo/redo refuse to run
       const batchOpened = (await window.slidesApi.beginHistoryBatch?.()) === true
-      signal?.throwIfAborted()
       try {
+        signal?.throwIfAborted()
         let current = slide
         const failures: string[] = []
         let boxApplied = 0

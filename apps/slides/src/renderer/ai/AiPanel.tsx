@@ -22,7 +22,13 @@ import {
   useAgentControllerCleanup,
 } from './agent-controller'
 import { renderSlidesToPngBase64 } from '../export-render'
-import { isQcEnabled, qcSlidePage, QC_MAX_PAGES } from './slide-qc'
+import {
+  captureCurrentQcShot,
+  isQcEnabled,
+  qcSlidePage,
+  QC_MAX_PAGES,
+  runQcInHistoryBatch,
+} from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
 import { Markdown } from '@wiswork/ui'
 import { WisWorkMark } from '../components/icons'
@@ -1251,22 +1257,35 @@ export function AiPanel({
     let qcSnapshotId: number | null = null
     try {
       for (const page of capped) {
-        if (controller.signal.aborted) break
-        const shot = await captureSlideShot(page)
+        if (controller.signal.aborted || qcAbortRef.current !== controller) break
+        const captured = await captureCurrentQcShot({
+          capture: () => captureSlideShot(page),
+          signal: controller.signal,
+          isCurrent: () => qcAbortRef.current === controller,
+        })
+        if (!captured) break
+        const shot = captured.value
         if (!shot) {
           if (slidesRef.current[page]) lines.push(tGlobal('aiQcPageSkipped', { n: page + 1 }))
           continue
         }
-        const batchOpened = await window.slidesApi.beginHistoryBatch()
-        const result = await qcSlidePage({
-          access,
-          transport,
-          pageIndex: page,
-          screenshot: shot,
-          systemSuffix: aiLangDirective,
+        const qcRun = await runQcInHistoryBatch({
+          begin: () => window.slidesApi.beginHistoryBatch(),
+          end: () => window.slidesApi.endHistoryBatch(),
+          run: () =>
+            qcSlidePage({
+              access,
+              transport,
+              pageIndex: page,
+              screenshot: shot,
+              systemSuffix: aiLangDirective,
+              signal: controller.signal,
+            }),
           signal: controller.signal,
+          isCurrent: () => qcAbortRef.current === controller,
         })
-        const batchId = batchOpened ? await window.slidesApi.endHistoryBatch() : null
+        if (!qcRun) break
+        const { result, batchId } = qcRun
         if (controller.signal.aborted) break
         if (result.error) {
           lines.push(tGlobal('aiQcPageFailed', { n: page + 1, error: result.error }))

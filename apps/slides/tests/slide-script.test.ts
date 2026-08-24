@@ -645,6 +645,32 @@ describe('execute_slide_script tool', () => {
     expect(applied).toBeNull()
   })
 
+  it('execute_slide_script closes the batch when aborted while beginHistoryBatch resolves', async () => {
+    let resolveBegin!: (value: boolean) => void
+    const api = (globalThis as any).window.slidesApi
+    api.beginHistoryBatch = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveBegin = resolve
+        }),
+    )
+    const controller = new AbortController()
+    const pending = createSlidesSkill(access()).executeTool(
+      {
+        id: 'abort-begin-script',
+        name: 'execute_slide_script',
+        input: { slideIndex: 0, code: "setText('t1', 'late');" },
+      } as any,
+      controller.signal,
+    )
+
+    controller.abort()
+    resolveBegin(true)
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(api.endHistoryBatch).toHaveBeenCalledOnce()
+    expect(api.editText).not.toHaveBeenCalled()
+  })
+
   it('ungroup_element promotes children, applies the fresh slide, and echoes the new element list', async () => {
     slide = slideOf([
       groupNode('g1', box(200, 100, 400, 300), [textNode('c1', box(10, 20, 50, 30), 'Member')]),
