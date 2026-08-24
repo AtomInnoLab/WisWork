@@ -487,6 +487,7 @@ export class BrowserWordAdapter implements WordAdapter {
     signal?: AbortSignal,
   ): Promise<void> {
     cancelled(signal)
+    assertIndependentWordOperations(operations)
     this.expectedText = undefined
     const { word } = runtime()
     await (word.run as (callback: (context: RuntimeRecord) => unknown) => Promise<unknown>)(
@@ -559,7 +560,7 @@ export class BrowserWordAdapter implements WordAdapter {
         const originalFingerprint = stableFingerprintOoxml(snapshot.value)
         if (ooxmlText(current) !== expected) {
           if (stableFingerprintOoxml(current) === originalFingerprint)
-            throw new Error('office_state_uncertain', { cause: writeError })
+            throw new Error('office_write_failed', { cause: writeError })
           throw new Error('office_concurrent_change', { cause: writeError })
         }
         if (
@@ -643,7 +644,7 @@ export class BrowserWordAdapter implements WordAdapter {
           verifyNativeDocumentWrite(original, postValue, write)
         if (!verified) {
           if (postValue && stableFingerprintOoxml(postValue) === beforeFingerprint)
-            throw new Error('office_state_uncertain', { cause: writeError })
+            throw new Error('office_write_failed', { cause: writeError })
           throw new Error('office_concurrent_change', { cause: writeError })
         }
         this.expectedDocument = {
@@ -674,11 +675,28 @@ export class BrowserWordAdapter implements WordAdapter {
     }
     const currentFingerprint = stableFingerprintOoxml(current)
     if (currentFingerprint === expected.fingerprint && !signal?.aborted) return true
-    if (currentFingerprint === expected.originalFingerprint)
-      throw new Error('office_state_uncertain')
+    if (currentFingerprint === expected.originalFingerprint) return false
     if (!signal?.aborted && verifyNativeDocumentWrite(expected.original, current, expected.write))
       return true
     throw new Error('office_concurrent_change')
+  }
+}
+
+function assertIndependentWordOperations(operations: WordDeclarativeOperation[]): void {
+  for (let laterIndex = 0; laterIndex < operations.length; laterIndex += 1) {
+    const later = operations[laterIndex]
+    if (later.op !== 'replace_all') continue
+    const normalize = (value: string) => (later.matchCase ? value : value.toLocaleLowerCase())
+    const laterSearch = normalize(later.search)
+    for (const earlier of operations.slice(0, laterIndex)) {
+      const produced = normalize(earlier.op === 'insert_text' ? earlier.text : earlier.replacement)
+      if (produced.includes(laterSearch)) throw new Error('invalid_tool_input')
+      if (earlier.op === 'replace_all') {
+        const earlierSearch = normalize(earlier.search)
+        if (earlierSearch.includes(laterSearch) || laterSearch.includes(earlierSearch))
+          throw new Error('invalid_tool_input')
+      }
+    }
   }
 }
 
@@ -876,6 +894,7 @@ type WordStyleSemantics = {
   headingLevels: Map<string, number>
   paragraphRuns: Map<string, RunFormatting>
   characterRuns: Map<string, RunFormatting>
+  defaults: RunFormatting
 }
 
 function wordText(element: Element): string {
@@ -908,6 +927,7 @@ function paragraphSignature(
   )?.getAttributeNS(W_NS, 'val')
   const characters: ParagraphSignature['characters'] = []
   const paragraphFormatting = mergeFormatting(
+    styles.defaults,
     styles.paragraphRuns.get(styleId),
     runFormatting(directWordChild(propertiesElement, 'rPr')),
   )
@@ -986,8 +1006,22 @@ function styleSemantics(xml: string): WordStyleSemantics {
   const document = new DOMParser().parseFromString(xml, 'text/xml')
   const definitions = new Map<
     string,
-    { type: string; basedOn?: string; outline?: number; run: RunFormatting }
+    {
+      type: string
+      basedOn?: string
+      link?: string
+      default: boolean
+      outline?: number
+      run: RunFormatting
+    }
   >()
+  const docDefaults = document.getElementsByTagNameNS(W_NS, 'docDefaults')[0]
+  const defaultRunProperties = docDefaults
+    ? docDefaults
+        .getElementsByTagNameNS(W_NS, 'rPrDefault')[0]
+        ?.getElementsByTagNameNS(W_NS, 'rPr')[0]
+    : undefined
+  const documentDefaults = runFormatting(defaultRunProperties)
   for (const style of Array.from(document.getElementsByTagNameNS(W_NS, 'style'))) {
     const id = style.getAttributeNS(W_NS, 'styleId')
     const type = style.getAttributeNS(W_NS, 'type') ?? ''
@@ -997,9 +1031,14 @@ function styleSemantics(xml: string): WordStyleSemantics {
       ? directWordChild(properties, 'outlineLvl')?.getAttributeNS(W_NS, 'val')
       : undefined
     const basedOn = directWordChild(style, 'basedOn')?.getAttributeNS(W_NS, 'val') ?? undefined
+    const link = directWordChild(style, 'link')?.getAttributeNS(W_NS, 'val') ?? undefined
     definitions.set(id, {
       type,
       ...(basedOn ? { basedOn } : {}),
+      ...(link ? { link } : {}),
+      default: ['1', 'true', 'on'].includes(
+        (style.getAttributeNS(W_NS, 'default') ?? '').toLowerCase(),
+      ),
       ...(value && /^\d+$/.test(value) && Number(value) >= 0 && Number(value) <= 8
         ? { outline: Number(value) }
         : {}),
@@ -1027,14 +1066,42 @@ function styleSemantics(xml: string): WordStyleSemantics {
       run: mergeFormatting(base.run, definition.run),
     }
   }
+  const defaultParagraph = [...definitions].find(
+    ([, definition]) => definition.type === 'paragraph' && definition.default,
+  )?.[0]
+  const defaultCharacter = [...definitions].find(
+    ([, definition]) => definition.type === 'character' && definition.default,
+  )?.[0]
+  const defaults = mergeFormatting(
+    documentDefaults,
+    defaultParagraph ? resolve(defaultParagraph).run : undefined,
+    defaultCharacter ? resolve(defaultCharacter).run : undefined,
+  )
   for (const [id, definition] of definitions) {
     const resolved = resolve(id)
     if (definition.type === 'paragraph') {
       if (resolved.outline !== undefined) headingLevels.set(id, resolved.outline)
-      paragraphRuns.set(id, resolved.run)
-    } else characterRuns.set(id, resolved.run)
+      paragraphRuns.set(
+        id,
+        mergeFormatting(
+          defaults,
+          defaultParagraph && defaultParagraph !== id ? resolve(defaultParagraph).run : undefined,
+          resolved.run,
+          definition.link ? resolve(definition.link).run : undefined,
+        ),
+      )
+    } else
+      characterRuns.set(
+        id,
+        mergeFormatting(
+          defaults,
+          defaultCharacter && defaultCharacter !== id ? resolve(defaultCharacter).run : undefined,
+          resolved.run,
+          definition.link ? resolve(definition.link).run : undefined,
+        ),
+      )
   }
-  return { headingLevels, paragraphRuns, characterRuns }
+  return { headingLevels, paragraphRuns, characterRuns, defaults }
 }
 
 function headingStyleLevels(xml: string): Map<string, number> {
