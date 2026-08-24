@@ -118,8 +118,6 @@ import { createElectronTransport } from './ai/transport'
 import {
   createAsyncGenerationGate,
   createAgentController,
-  createSheetsChatLoadCoordinator,
-  classifySheetsDocumentTransition,
   bindSheetsSession,
   getSheetsDocumentIdentity,
   restoreSheetsSession,
@@ -127,6 +125,7 @@ import {
   settleSheetsApplyPromises,
   useAgentControllerCleanup,
 } from './ai/agent-controller'
+import { createSheetsChatBindingCoordinator } from './ai/chat-binding'
 import type { ActiveSheetInfo, SheetsSkillDeps } from './ai/tools'
 import type { AiChatMessage } from './ai/AiChatPanel'
 import { createWorkbookSkill } from './ai/workbook-skill'
@@ -621,7 +620,9 @@ export function App(): React.JSX.Element {
   const workbookOpeningRef = useRef(false)
   /** Current session's projectId/chatId (resolved when the workbook opens) */
   const chatRefIdsRef = useRef<{ projectId: string; chatId: string } | null>(null)
-  const chatLoadCoordinatorRef = useRef(createSheetsChatLoadCoordinator())
+  const chatBindingCoordinatorRef = useRef<ReturnType<
+    typeof createSheetsChatBindingCoordinator
+  > | null>(null)
   const harnessSessionIdRef = useRef<string | number | undefined>(undefined)
   const chatDocumentIdentityRef = useRef<string | number | undefined>(undefined)
 
@@ -720,104 +721,79 @@ export function App(): React.JSX.Element {
     ? getSheetsDocumentIdentity(workbookFile)
     : undefined
 
-  // ── project-store: resolve chatId and load history when a workbook opens ──
+  if (!chatBindingCoordinatorRef.current && window.projectApi) {
+    chatBindingCoordinatorRef.current = createSheetsChatBindingCoordinator({
+      api: window.projectApi,
+      createTempChatId: () => `unsaved-${Date.now()}`,
+      onBinding: (ids) => {
+        chatRefIdsRef.current = ids
+      },
+      onHistory: (msgs) => {
+        setHistoricChat(
+          msgs.map((m) => ({
+            role: m.role,
+            text: m.text,
+            tools:
+              m.tools?.map((t) => ({
+                summary: t.summary,
+                isError: !!t.isError,
+                ...(t.name ? { name: t.name } : {}),
+                ...(t.output ? { output: t.output.slice(0, 2000) } : {}),
+              })) ?? [],
+            ...(m.attachments && m.attachments.length > 0
+              ? {
+                  attachments: m.attachments
+                    .filter((a) => a.path)
+                    .map((a) => ({
+                      name: a.name,
+                      path: a.path ?? '',
+                      ext: a.ext ?? '',
+                      sizeBytes: a.sizeBytes ?? 0,
+                    })),
+                }
+              : {}),
+          })),
+        )
+        if (msgs.length > 0) {
+          restoreSheetsSession(
+            agentLoopRef.current,
+            chatDocumentIdentityRef.current,
+            () => harnessSessionIdRef.current,
+            msgs.map((m) => ({ role: m.role, text: m.text })),
+          )
+        }
+      },
+      onReset: () => {
+        setChat([])
+        setHistoricChat([])
+        setAttachments([])
+        sentAttachmentsRef.current = []
+        setAiBusy(false)
+      },
+    })
+  }
+
+  // ── project-store: bind persistence and load history for the workbook identity ──
   useEffect(() => {
-    const chatLoadCoordinator = chatLoadCoordinatorRef.current
-    const previousIdentity = chatDocumentIdentityRef.current
-    const transition = classifySheetsDocumentTransition(previousIdentity, workbookDocumentIdentity)
     chatDocumentIdentityRef.current = workbookDocumentIdentity
     runLaunchGateRef.current.invalidate()
     runStartingRef.current = false
     if (agentLoopRef.current)
       bindSheetsSession(agentLoopRef.current, harnessSessionIdRef, workbookDocumentIdentity)
-    const loadToken = chatLoadCoordinator.begin()
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (transition === 'rebind') {
-      const ids = chatRefIdsRef.current
-      if (api && ids && workbookSessionId !== undefined) {
-        void api
-          .rebindChat({
-            projectId: ids.projectId,
-            tempChatId: ids.chatId,
-            sessionId: workbookSessionId,
-          })
-          .then((rebound) => {
-            chatLoadCoordinator.commit(loadToken, () => {
-              chatRefIdsRef.current = rebound
-            })
-          })
-          .catch(() => undefined)
-      }
-      return () => chatLoadCoordinator.invalidate()
+    if (workbookDocumentIdentity === undefined || workbookSessionId === undefined) {
+      chatBindingCoordinatorRef.current?.clear()
+      return
     }
-    // Reset (new workbook or new session)
-    chatRefIdsRef.current = null
-    setChat([])
-    setHistoricChat([])
-    setAttachments([])
-    sentAttachmentsRef.current = []
-    setAiBusy(false)
-    if (!api) return () => chatLoadCoordinator.invalidate()
-    const tempChatId = `unsaved-${Date.now()}`
-    const resolveArgs: Parameters<typeof api.resolveChat>[0] = {
-      filePath: workbookPath ?? null,
-      tempChatId,
-    }
-    if (workbookSessionId !== undefined) resolveArgs.sessionId = workbookSessionId
-    void api
-      .resolveChat(resolveArgs)
-      .then(async (ids) => {
-        const msgs = await api.loadChat({
-          projectId: ids.projectId,
-          chatId: ids.chatId,
-          limit: 200,
-        })
-        const historicMessages = msgs.map((m) => ({
-          role: m.role,
-          text: m.text,
-          tools:
-            m.tools?.map((t) => ({
-              summary: t.summary,
-              isError: !!t.isError,
-              ...(t.name ? { name: t.name } : {}),
-              ...(t.output ? { output: t.output.slice(0, 2000) } : {}),
-            })) ?? [],
-          // stored metadata only: no thumbnail read for history, the chips render name/size
-          ...(m.attachments && m.attachments.length > 0
-            ? {
-                attachments: m.attachments
-                  .filter((a) => a.path)
-                  .map((a) => ({
-                    name: a.name,
-                    path: a.path ?? '',
-                    ext: a.ext ?? '',
-                    sizeBytes: a.sizeBytes ?? 0,
-                  })),
-              }
-            : {}),
-        }))
-        chatLoadCoordinator.commit(loadToken, () => {
-          chatRefIdsRef.current = ids
-          setHistoricChat(historicMessages)
-          // Restore model context: follow-ups after reopening the file continue the
-          // previous conversation (only when the loop is idle and has no history)
-          if (msgs.length > 0) {
-            restoreSheetsSession(
-              agentLoopRef.current,
-              workbookDocumentIdentity,
-              () => harnessSessionIdRef.current,
-              msgs.map((m) => ({ role: m.role, text: m.text })),
-            )
-          }
-        })
-      })
-      .catch(() => {
-        /* silent */
-      })
-    return () => chatLoadCoordinator.invalidate()
+    void chatBindingCoordinatorRef.current?.bind({
+      documentId: workbookDocumentIdentity,
+      path: workbookPath ?? null,
+      sessionId: workbookSessionId,
+    })
     // A sidecar token/path change rebinds persistence; only a document-instance
     // change takes the reset-and-load branch above.
   }, [workbookDocumentIdentity, workbookPath, workbookSessionId])
+
+  useEffect(() => () => chatBindingCoordinatorRef.current?.dispose(), [])
 
   const persistChatMessage = (
     role: 'user' | 'assistant',
@@ -831,32 +807,23 @@ export function App(): React.JSX.Element {
     }>,
     attachments?: readonly AttachmentMeta[],
   ) => {
-    const ids = chatRefIdsRef.current
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!ids || !api) return
-    void api
-      .appendChat({
-        projectId: ids.projectId,
-        chatId: ids.chatId,
-        role,
-        text,
-        ...(tools && tools.length > 0
-          ? { tools: tools.map((t) => ({ ...t, name: t.name ?? '' })) }
-          : {}),
-        ...(attachments && attachments.length > 0
-          ? {
-              attachments: attachments.map((a) => ({
-                name: a.name,
-                path: a.path,
-                ext: a.ext,
-                sizeBytes: a.sizeBytes,
-              })),
-            }
-          : {}),
-      })
-      .catch(() => {
-        /* silent */
-      })
+    chatBindingCoordinatorRef.current?.persist({
+      role,
+      text,
+      ...(tools && tools.length > 0
+        ? { tools: tools.map((t) => ({ ...t, name: t.name ?? '' })) }
+        : {}),
+      ...(attachments && attachments.length > 0
+        ? {
+            attachments: attachments.map((a) => ({
+              name: a.name,
+              path: a.path,
+              ext: a.ext,
+              sizeBytes: a.sizeBytes,
+            })),
+          }
+        : {}),
+    })
   }
 
   function appendChat(entry: AiChatMessage): void {
