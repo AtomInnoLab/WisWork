@@ -772,6 +772,21 @@ export function createPowerPointSkill(options: {
             program.operations.length !== 1
           )
             throw new Error('invalid_tool_input')
+          const shapeTargets = new Map<string, PowerPointDeclarativeOperation[]>()
+          for (const operation of program.operations) {
+            if (!('shape_id' in operation)) continue
+            const key = `${operation.slide_index}/${operation.shape_id}`
+            const related = shapeTargets.get(key) ?? []
+            related.push(operation)
+            shapeTargets.set(key, related)
+          }
+          if (
+            [...shapeTargets.values()].some(
+              (related) =>
+                related.some((operation) => operation.op === 'delete_shape') && related.length > 1,
+            )
+          )
+            throw new Error('invalid_tool_input')
           await options.adapter.verifySlides(signal)
           const slideIndexes = [
             ...new Set(program.operations.map((operation) => operation.slide_index)),
@@ -788,7 +803,7 @@ export function createPowerPointSkill(options: {
             ),
           )
           const combined = snapshots.map((item) => item.fingerprint).join('|')
-          let declarativeResult: { createdShapeIds: string[] } | undefined
+          let declarativeResult: { createdShapeIds: string[]; insertedSlideId?: string } | undefined
           const proposal = options.proposals.propose({
             operation: call.name,
             toolName: call.name,
@@ -904,12 +919,14 @@ export function createPowerPointSkill(options: {
               }
               if (program.operations[0]?.op === 'duplicate_slide') {
                 const operation = program.operations[0]
+                const insertedSlideId = declarativeResult?.insertedSlideId
+                if (!insertedSlideId) throw new Error('office_verify_failed')
                 await verifyPowerPointReadback(async () => {
                   const inserted = await options.adapter.listSlideShapes(
                     operation.slide_index + 1,
                     confirmSignal,
                   )
-                  return inserted.slideId !== snapshots[0].slideId
+                  return inserted.slideId === insertedSlideId
                 }, confirmSignal)
               }
               await options.adapter.verifySlides(confirmSignal)

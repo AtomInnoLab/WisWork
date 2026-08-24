@@ -749,6 +749,55 @@ describe('PowerPoint compatibility skill', () => {
     expect(fake.listSlideShapes).toHaveBeenCalledTimes(3)
   })
 
+  it('requires the exact declarative duplicate receipt instead of accepting any following slide', async () => {
+    const fake = adapter({
+      executeDeclarative: vi.fn().mockResolvedValue({
+        createdShapeIds: [],
+        insertedSlideId: 'copy',
+      } as never),
+      listSlideShapes: vi.fn().mockResolvedValue({
+        slideId: 'unrelated-existing-slide',
+        slideIndex: 1,
+        shapes: [],
+      }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+
+    await skill.executeTool(
+      call('execute_office_js', {
+        code: JSON.stringify({
+          version: 1,
+          operations: [{ op: 'duplicate_slide', slide_index: 0 }],
+        }),
+      }),
+    )
+
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('office_verify_failed')
+  })
+
+  it('rejects a declarative mutation that edits and then deletes the same shape', async () => {
+    const fake = adapter({ executeDeclarative: vi.fn() })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+
+    await expect(
+      skill.executeTool(
+        call('execute_office_js', {
+          code: JSON.stringify({
+            version: 1,
+            operations: [
+              { op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'temporary' },
+              { op: 'delete_shape', slide_index: 0, shape_id: '2' },
+            ],
+          }),
+        }),
+      ),
+    ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+    expect(proposals.pending()).toBeUndefined()
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
+  })
+
   it('maps adapter internals to stable errors and validates screenshots', async () => {
     const skill = createPowerPointSkill({
       adapter: adapter({
@@ -800,6 +849,37 @@ describe('browser PowerPoint adapter', () => {
     expect(run).not.toHaveBeenCalled()
     expect(supports).toHaveBeenCalledWith('PowerPointApi', '1.8')
     expect(supports).toHaveBeenCalledWith('PowerPointApi', '1.10')
+  })
+
+  it('routes declarative duplication through the transaction-safe duplicate primitive', async () => {
+    const subject = new BrowserPowerPointAdapter()
+    const duplicate = vi.spyOn(subject, 'duplicateSlide').mockResolvedValue({ slideId: 'copy' })
+
+    await expect(
+      subject.executeDeclarative([{ op: 'duplicate_slide', slide_index: 0 }]),
+    ).resolves.toEqual({ createdShapeIds: [], insertedSlideId: 'copy' })
+    expect(duplicate).toHaveBeenCalledWith(0, undefined)
+  })
+
+  it('defensively rejects edit-then-delete before entering PowerPoint.run', async () => {
+    const run = vi.fn()
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: { run },
+    })
+
+    await expect(
+      new BrowserPowerPointAdapter().executeDeclarative([
+        { op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'temporary' },
+        { op: 'delete_shape', slide_index: 0, shape_id: '2' },
+      ]),
+    ).rejects.toThrow('invalid_tool_input')
+    expect(run).not.toHaveBeenCalled()
   })
 
   it('returns stable IDs/geometry and verifies negative, overflow, and overlap geometry', async () => {
@@ -858,6 +938,9 @@ describe('browser PowerPoint adapter', () => {
   })
 
   it('checks cancellation before every write/sync and implements text edit and duplicate', async () => {
+    const packageZip = new JSZip()
+    packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
+    const slidePackage = await packageZip.generateAsync({ type: 'base64' })
     const sync = vi.fn().mockResolvedValue(undefined)
     const textRange = { text: 'Old', load: vi.fn() }
     const shape = {
@@ -874,7 +957,7 @@ describe('browser PowerPoint adapter', () => {
       id: 's1',
       load: vi.fn(),
       shapes: { load: vi.fn(), items: [shape], getItem: vi.fn(() => shape) },
-      exportAsBase64: vi.fn(() => ({ value: 'ppt' })),
+      exportAsBase64: vi.fn(() => ({ value: slidePackage })),
     }
     const slides = {
       load: vi.fn(),
@@ -905,7 +988,7 @@ describe('browser PowerPoint adapter', () => {
     await subject.editSlideText(0, '2', 'New')
     expect(textRange.text).toBe('New')
     await expect(subject.duplicateSlide(0)).resolves.toEqual({ slideId: 's2' })
-    expect(insertSlidesFromBase64).toHaveBeenCalledWith('ppt', { targetSlideId: 's1' })
+    expect(insertSlidesFromBase64).toHaveBeenCalledWith(slidePackage, { targetSlideId: 's1' })
 
     const controller = new AbortController()
     controller.abort()
@@ -1172,6 +1255,9 @@ describe('browser PowerPoint adapter', () => {
     { mode: 'cancelled', expected: 'cancelled' },
     { mode: 'third-state', expected: 'office_concurrent_change' },
   ])('reconciles duplicate-slide sync rejection in $mode state', async ({ mode, expected }) => {
+    const packageZip = new JSZip()
+    packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
+    const slidePackage = await packageZip.generateAsync({ type: 'base64' })
     const controller = new AbortController()
     const shape = (text: string) => ({
       id: '2',
@@ -1192,7 +1278,7 @@ describe('browser PowerPoint adapter', () => {
       id: 'source',
       load: vi.fn(),
       shapes: { load: vi.fn(), items: [shape('Stable')] },
-      exportAsBase64: vi.fn(() => ({ value: 'ppt' })),
+      exportAsBase64: vi.fn(() => ({ value: slidePackage })),
     }
     slides.items.push(source)
     const insertSlidesFromBase64 = vi.fn(() => {
@@ -1203,6 +1289,7 @@ describe('browser PowerPoint adapter', () => {
           load: vi.fn(),
           items: [shape(mode === 'third-state' ? 'User slide' : 'Stable')],
         },
+        exportAsBase64: vi.fn(() => ({ value: slidePackage })),
         delete: vi.fn(() => {
           const index = slides.items.indexOf(inserted)
           if (index >= 0) slides.items.splice(index, 1)
@@ -1235,6 +1322,53 @@ describe('browser PowerPoint adapter', () => {
     if (mode === 'committed') await expect(result).resolves.toEqual({ slideId: expected })
     else await expect(result).rejects.toThrow(expected)
     expect(slides.items).toHaveLength(mode === 'cancelled' ? 1 : 2)
+  })
+
+  it('waits for duplicate collection convergence and proves package ownership after sync rejection', async () => {
+    const packageZip = new JSZip()
+    packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"><p:cSld/></p:sld>')
+    const base64 = await packageZip.generateAsync({ type: 'base64' })
+    const source = { id: 'source', load: vi.fn(), exportAsBase64: vi.fn(() => ({ value: base64 })) }
+    const slides = {
+      getCount: vi.fn(() => ({ value: 2 })),
+      getItemAt: vi.fn(() => source),
+    }
+    const insertSlidesFromBase64 = vi.fn()
+    let rejected = false
+    const sync = vi.fn().mockImplementation(async () => {
+      if (insertSlidesFromBase64.mock.calls.length > 0 && !rejected) {
+        rejected = true
+        throw new Error('host rejected after committed insert')
+      }
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides, insertSlidesFromBase64 }, sync }),
+      },
+    })
+    const subject = new BrowserPowerPointAdapter()
+    vi.spyOn(subject, 'snapshotSlide')
+      .mockResolvedValueOnce({ slideId: 'source', fingerprint: 'source:semantic' })
+      .mockResolvedValueOnce({ slideId: 'existing', fingerprint: 'existing:other' })
+      .mockResolvedValueOnce({ slideId: 'source', fingerprint: 'source:semantic' })
+      .mockResolvedValueOnce({ slideId: 'existing', fingerprint: 'existing:other' })
+      .mockResolvedValueOnce({ slideId: 'existing', fingerprint: 'existing:other' })
+      .mockResolvedValueOnce({ slideId: 'copy', fingerprint: 'copy:semantic' })
+      .mockResolvedValue({ slideId: 'source', fingerprint: 'source:semantic' })
+    vi.spyOn(subject, 'exportSlidePackage')
+      .mockResolvedValueOnce({ slideId: 'source', base64, fingerprint: 'volatile-source' })
+      .mockResolvedValue({ slideId: 'copy', base64, fingerprint: 'volatile-copy' })
+
+    await expect(subject.duplicateSlide(0)).resolves.toEqual({ slideId: 'copy' })
+    expect(subject.snapshotSlide).toHaveBeenCalledTimes(7)
+    expect(subject.exportSlidePackage).toHaveBeenCalledWith(1)
   })
 
   it('keeps duplicate validation stable when PowerPoint exports volatile slide packages', async () => {

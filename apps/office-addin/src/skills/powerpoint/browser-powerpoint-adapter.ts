@@ -92,7 +92,7 @@ export interface PowerPointAdapter {
   executeDeclarative(
     operations: PowerPointDeclarativeOperation[],
     signal?: AbortSignal,
-  ): Promise<{ createdShapeIds: string[] }>
+  ): Promise<{ createdShapeIds: string[]; insertedSlideId?: string }>
 }
 
 export type PowerPointDeclarativeOperation =
@@ -722,8 +722,26 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
   async executeDeclarative(
     operations: PowerPointDeclarativeOperation[],
     signal?: AbortSignal,
-  ): Promise<{ createdShapeIds: string[] }> {
+  ): Promise<{ createdShapeIds: string[]; insertedSlideId?: string }> {
     cancelled(signal)
+    if (operations.length === 1 && operations[0].op === 'duplicate_slide') {
+      const inserted = await this.duplicateSlide(operations[0].slide_index, signal)
+      return { createdShapeIds: [], insertedSlideId: inserted.slideId }
+    }
+    const deleteTargets = new Set(
+      operations
+        .filter((operation) => operation.op === 'delete_shape')
+        .map((operation) => `${operation.slide_index}/${operation.shape_id}`),
+    )
+    if (
+      operations.some(
+        (operation) =>
+          'shape_id' in operation &&
+          operation.op !== 'delete_shape' &&
+          deleteTargets.has(`${operation.slide_index}/${operation.shape_id}`),
+      )
+    )
+      throw new Error('invalid_tool_input')
     return this.run('1.8', async (context) => {
       const presentation = context.presentation as RuntimeRecord
       const slides = presentation.slides as RuntimeRecord
@@ -1019,90 +1037,132 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     } catch (error) {
       if (!(error instanceof Error) || error.message !== 'invalid_tool_input') throw error
     }
+    let sourcePackage: { slideId: string; base64: string; fingerprint: string }
     try {
-      return await this.run('1.8', async (context) => {
+      sourcePackage = await this.exportSlidePackage(slideIndex, signal)
+    } catch (error) {
+      if (error instanceof Error && error.message === 'office_read_failed')
+        throw new Error('office_write_failed', { cause: error })
+      throw error
+    }
+    if (sourcePackage.slideId !== before.slideId) throw new Error('office_concurrent_change')
+    let writeError: unknown
+    try {
+      await this.run('1.8', async (context) => {
         const presentation = context.presentation as RuntimeRecord
         const slides = presentation.slides as RuntimeRecord
         const slide = await getSlide(context, slides, slideIndex, signal)
-        if (
-          typeof slide.exportAsBase64 !== 'function' ||
-          typeof presentation.insertSlidesFromBase64 !== 'function'
-        )
+        if (typeof presentation.insertSlidesFromBase64 !== 'function')
           throw new Error('office_api_unsupported')
-        const exported = (slide.exportAsBase64 as () => RuntimeRecord)()
-        await sync(context, signal)
-        if (
-          typeof exported.value !== 'string' ||
-          exported.value.length === 0 ||
-          exported.value.length > MAX_POWERPOINT_SNAPSHOT_BASE64
-        )
-          throw new Error('office_write_failed')
         cancelled(signal)
         ;(
           presentation.insertSlidesFromBase64 as (
             value: string,
             options: { targetSlideId: string },
           ) => void
-        )(exported.value, { targetSlideId: string(slide.id) })
+        )(sourcePackage.base64, { targetSlideId: string(slide.id) })
         await sync(context, signal)
-        const inserted = await getSlide(context, slides, slideIndex + 1, signal)
-        return { slideId: string(inserted.id) }
       })
     } catch (error) {
-      const source = await this.snapshotSlide(slideIndex)
-      if (source.fingerprint !== before.fingerprint)
-        throw new Error('office_concurrent_change', { cause: error })
-      let following: { slideId: string; fingerprint: string } | undefined
-      try {
-        following = await this.snapshotSlide(slideIndex + 1)
-      } catch (readError) {
-        if (!(readError instanceof Error) || readError.message !== 'invalid_tool_input')
-          throw new Error('office_state_uncertain', { cause: readError })
-      }
-      if (
-        (!followingBefore && !following) ||
-        (followingBefore && following?.fingerprint === followingBefore.fingerprint)
-      )
-        throw new Error(signal?.aborted ? 'cancelled' : 'office_write_failed', { cause: error })
-      if (
-        !following ||
-        slideSemanticFingerprint(following.fingerprint) !==
-          slideSemanticFingerprint(before.fingerprint)
-      )
-        throw new Error('office_concurrent_change', { cause: error })
-      if (!signal?.aborted) return { slideId: following.slideId }
-
-      try {
-        await this.run('1.8', async (context) => {
-          const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
-          const inserted = await getSlide(context, slides, slideIndex + 1)
-          if (string(inserted.id) !== following?.slideId || typeof inserted.delete !== 'function')
-            throw new Error('office_concurrent_change')
-          ;(inserted.delete as () => void)()
-          await sync(context)
-        })
-        const restored = await this.snapshotSlide(slideIndex)
-        if (restored.fingerprint !== before.fingerprint)
-          throw new Error('office_state_uncertain', { cause: error })
-        if (followingBefore) {
-          const restoredFollowing = await this.snapshotSlide(slideIndex + 1)
-          if (restoredFollowing.fingerprint !== followingBefore.fingerprint)
-            throw new Error('office_state_uncertain', { cause: error })
-        } else {
-          try {
-            await this.snapshotSlide(slideIndex + 1)
-            throw new Error('office_state_uncertain', { cause: error })
-          } catch (readError) {
-            if (readError instanceof Error && readError.message === 'office_state_uncertain')
-              throw readError
-          }
-        }
-      } catch (recoveryError) {
-        if (recoveryError instanceof Error && recoveryError.message === 'office_concurrent_change')
-          throw recoveryError
-        throw new Error('office_state_uncertain', { cause: recoveryError })
-      }
-      throw new Error('cancelled', { cause: error })
+      writeError = error
     }
+    const source = await this.snapshotSlide(slideIndex)
+    if (source.fingerprint !== before.fingerprint)
+      throw new Error('office_concurrent_change', { cause: writeError })
+    const following = await readUntilConverged({
+      read: async () => {
+        try {
+          return await this.snapshotSlide(slideIndex + 1)
+        } catch (readError) {
+          if (readError instanceof Error && readError.message === 'invalid_tool_input')
+            return undefined
+          throw new Error('office_state_uncertain', { cause: readError })
+        }
+      },
+      accept: (candidate) =>
+        followingBefore
+          ? candidate !== undefined && candidate.fingerprint !== followingBefore.fingerprint
+          : candidate !== undefined,
+    })
+    if (
+      (!followingBefore && !following) ||
+      (followingBefore && following?.fingerprint === followingBefore.fingerprint)
+    )
+      throw new Error(
+        signal?.aborted
+          ? 'cancelled'
+          : writeError
+            ? 'office_write_failed'
+            : 'office_state_uncertain',
+        {
+          cause: writeError,
+        },
+      )
+    if (
+      !following ||
+      following.slideId === followingBefore?.slideId ||
+      slideSemanticFingerprint(following.fingerprint) !==
+        slideSemanticFingerprint(before.fingerprint)
+    )
+      throw new Error('office_concurrent_change', { cause: writeError })
+    if (!writeError && !signal?.aborted) return { slideId: following.slideId }
+    const sourcePackageProof = await capturePowerPointPackage(sourcePackage.base64)
+    const ownsInsertedPackage = await readUntilConverged({
+      read: async () => {
+        try {
+          const exported = await this.exportSlidePackage(slideIndex + 1)
+          return (
+            exported.slideId === following.slideId &&
+            (await verifyPowerPointPackage(exported.base64, sourcePackageProof))
+          )
+        } catch {
+          return false
+        }
+      },
+      accept: Boolean,
+    })
+    if (!ownsInsertedPackage) throw new Error('office_concurrent_change', { cause: writeError })
+    const stableSource = await this.snapshotSlide(slideIndex)
+    if (stableSource.fingerprint !== before.fingerprint)
+      throw new Error('office_concurrent_change', { cause: writeError })
+    if (!signal?.aborted) return { slideId: following.slideId }
+
+    try {
+      const recoveryOwnership = await this.exportSlidePackage(slideIndex + 1)
+      if (
+        recoveryOwnership.slideId !== following.slideId ||
+        !(await verifyPowerPointPackage(recoveryOwnership.base64, sourcePackageProof))
+      )
+        throw new Error('office_concurrent_change')
+      await this.run('1.8', async (context) => {
+        const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+        const inserted = await getSlide(context, slides, slideIndex + 1)
+        if (string(inserted.id) !== following?.slideId || typeof inserted.delete !== 'function')
+          throw new Error('office_concurrent_change')
+        ;(inserted.delete as () => void)()
+        await sync(context)
+      })
+      const restored = await this.snapshotSlide(slideIndex)
+      if (restored.fingerprint !== before.fingerprint)
+        throw new Error('office_state_uncertain', { cause: writeError })
+      if (followingBefore) {
+        const restoredFollowing = await this.snapshotSlide(slideIndex + 1)
+        if (restoredFollowing.fingerprint !== followingBefore.fingerprint)
+          throw new Error('office_state_uncertain', { cause: writeError })
+      } else {
+        try {
+          await this.snapshotSlide(slideIndex + 1)
+          throw new Error('office_state_uncertain', { cause: writeError })
+        } catch (readError) {
+          if (readError instanceof Error && readError.message === 'office_state_uncertain')
+            throw readError
+        }
+      }
+    } catch (recoveryError) {
+      if (recoveryError instanceof Error && recoveryError.message === 'office_concurrent_change')
+        throw recoveryError
+      throw new Error('office_state_uncertain', { cause: recoveryError })
+    }
+    throw new Error('cancelled', { cause: writeError })
   }
 }
