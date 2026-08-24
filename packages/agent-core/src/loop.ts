@@ -617,9 +617,8 @@ export class AgentLoop<TSnapshot = unknown> {
           truncated: call.truncated,
         })),
       )
-      this.identicalToolBatches = signature === this.lastToolBatchSignature
-        ? this.identicalToolBatches + 1
-        : 1
+      this.identicalToolBatches =
+        signature === this.lastToolBatchSignature ? this.identicalToolBatches + 1 : 1
       this.lastToolBatchSignature = signature
       if (this.identicalToolBatches > MAX_IDENTICAL_TOOL_BATCHES) {
         this.running = false
