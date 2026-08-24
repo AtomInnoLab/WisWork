@@ -671,6 +671,36 @@ function cellCount(name: string, input: Json) {
   return 1
 }
 function semantics(name: string, input: Json) {
+  if (name === 'set_cell_range') {
+    const columns = input.cells[0]?.length ?? 0
+    if (
+      columns === 0 ||
+      input.cells.some((row: unknown[]) => row.length !== columns) ||
+      input.cells.some((row: Json[]) =>
+        row.some((cell) => Object.hasOwn(cell, 'value') && Object.hasOwn(cell, 'formula')),
+      ) ||
+      input.cells.length * columns * (input.copyToRange ? 2 : 1) > 2_000
+    )
+      invalid()
+    const start = cellBox(input.range)
+    boxCells(input.sheetId, { ...start, rows: input.cells.length, columns })
+    if (input.copyToRange)
+      boxCells(input.sheetId, {
+        ...cellBox(input.copyToRange),
+        rows: input.cells.length,
+        columns,
+      })
+  }
+  if (name === 'clear_cell_range') boxCells(input.sheetId, cellBox(input.range))
+  if (name === 'copy_to') {
+    const source = cellBox(input.sourceRange)
+    boxCells(input.sheetId, source)
+    boxCells(input.sheetId, {
+      ...cellBox(input.destinationRange),
+      rows: source.rows,
+      columns: source.columns,
+    })
+  }
   if (name === 'modify_workbook_structure') {
     if (input.operation === 'create' && !input.sheetName) invalid()
     if (input.operation !== 'create' && input.sheetId === undefined) invalid()

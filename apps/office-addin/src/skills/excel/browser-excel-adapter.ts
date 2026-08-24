@@ -179,120 +179,6 @@ function indexedAddress(row: number, column: number, rows: number, columns: numb
   return start === end ? start : `${start}:${end}`
 }
 
-function comparableCell(cell: RuntimeRecord): RuntimeRecord {
-  return {
-    value: cell.value ?? null,
-    formula: cell.formula ?? null,
-    formulaR1C1: cell.formulaR1C1 ?? null,
-    numberFormat: cell.numberFormat ?? '',
-    style: cell.style ?? {},
-  }
-}
-
-function sameCell(left: RuntimeRecord, right: RuntimeRecord): boolean {
-  return JSON.stringify(comparableCell(left)) === JSON.stringify(comparableCell(right))
-}
-
-function emptyCellContents(cell: RuntimeRecord): boolean {
-  return (
-    (cell.value === null || cell.value === '') && (cell.formula === null || cell.formula === '')
-  )
-}
-
-function requestedCellMatches(
-  expected: RuntimeRecord,
-  actual: RuntimeRecord,
-  before: RuntimeRecord,
-): boolean {
-  if (Object.hasOwn(expected, 'value') && actual.value !== expected.value) return false
-  if (Object.hasOwn(expected, 'formula') && actual.formula !== expected.formula) return false
-  if (!Object.hasOwn(expected, 'value') && !Object.hasOwn(expected, 'formula')) {
-    if (actual.value !== before.value || actual.formula !== before.formula) return false
-  }
-  const style = expected.cellStyles
-  const requestedStyleFields: RuntimeRecord = {
-    fontWeight: 'bold',
-    fontStyle: 'italic',
-    fontLine: ['underline', 'strikethrough'],
-    fontSize: 'fontSize',
-    fontFamily: 'fontFamily',
-    fontColor: 'fontColor',
-    backgroundColor: 'backgroundColor',
-    horizontalAlignment: 'horizontalAlignment',
-    numberFormat: 'numberFormat',
-  }
-  const normalized: RuntimeRecord = {
-    fontWeight: actual.style?.bold ? 'bold' : 'normal',
-    fontStyle: actual.style?.italic ? 'italic' : 'normal',
-    fontLine: actual.style?.strikethrough
-      ? 'line-through'
-      : actual.style?.underline && actual.style.underline !== 'None'
-        ? 'underline'
-        : 'none',
-    fontSize: actual.style?.fontSize,
-    fontFamily: actual.style?.fontFamily,
-    fontColor: actual.style?.fontColor,
-    backgroundColor: actual.style?.backgroundColor,
-    horizontalAlignment: String(actual.style?.horizontalAlignment ?? '').toLowerCase(),
-    numberFormat: actual.numberFormat,
-  }
-  if (style && Object.entries(style).some(([key, value]) => normalized[key] !== value)) return false
-  const changedActualStyleKeys = new Set(
-    Object.keys(style ?? {}).flatMap((key) => {
-      const mapped = requestedStyleFields[key]
-      return Array.isArray(mapped) ? mapped : mapped ? [mapped] : []
-    }),
-  )
-  for (const key of new Set([
-    ...Object.keys(actual.style ?? {}),
-    ...Object.keys(before.style ?? {}),
-  ]))
-    if (
-      key !== 'borders' &&
-      !changedActualStyleKeys.has(key) &&
-      JSON.stringify(actual.style?.[key]) !== JSON.stringify(before.style?.[key])
-    )
-      return false
-  if (!style?.numberFormat && actual.numberFormat !== before.numberFormat) return false
-  const borderMap: RuntimeRecord = {
-    top: 'EdgeTop',
-    bottom: 'EdgeBottom',
-    left: 'EdgeLeft',
-    right: 'EdgeRight',
-  }
-  const changedSides = new Set(
-    Object.keys(expected.borderStyles ?? {}).map((side) => borderMap[side]),
-  )
-  const borderStyles: RuntimeRecord = {
-    solid: 'Continuous',
-    dashed: 'Dash',
-    dotted: 'Dot',
-    double: 'Double',
-  }
-  const borderWeights: RuntimeRecord = { thin: 'Thin', medium: 'Medium', thick: 'Thick' }
-  for (const [side, config] of Object.entries(expected.borderStyles ?? {}) as Array<
-    [string, RuntimeRecord]
-  >) {
-    const actualBorder = (actual.style?.borders ?? []).find(
-      (border: RuntimeRecord) => border.side === borderMap[side],
-    )
-    if (!actualBorder) return false
-    if (config.style && actualBorder.style !== borderStyles[config.style]) return false
-    if (config.weight && actualBorder.weight !== borderWeights[config.weight]) return false
-    if (config.color && actualBorder.color !== config.color) return false
-  }
-  const beforeBorders = new Map(
-    (before.style?.borders ?? []).map((border: RuntimeRecord) => [border.side, border]),
-  )
-  for (const border of actual.style?.borders ?? [])
-    if (
-      !changedSides.has(border.side) &&
-      JSON.stringify(border) !== JSON.stringify(beforeBorders.get(border.side))
-    )
-      return false
-  return true
-}
-
 export class BrowserExcelAdapter implements ExcelAdapter {
   private run<T>(callback: (context: RuntimeRecord) => Promise<T>, version = '1.3'): Promise<T> {
     return runtime(version).run(callback)
@@ -763,7 +649,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
           const frozen = ['freeze', 'unfreeze'].includes(input.operation)
             ? ws.freezePanes.getLocationOrNullObject()
             : undefined
-          frozen?.load('address,isNullObject')
+          frozen?.load('address,isNullObject,rowCount,columnCount')
           await sync(context, signal)
           return {
             kind: 'structure',
@@ -773,6 +659,8 @@ export class BrowserExcelAdapter implements ExcelAdapter {
               columnHidden: range.columnHidden ?? null,
               ...(frozen && {
                 frozen: frozen.isNullObject ? null : cleanAddress(frozen.address),
+                frozenRows: frozen.isNullObject ? 0 : (frozen.rowCount ?? null),
+                frozenColumns: frozen.isNullObject ? 0 : (frozen.columnCount ?? null),
               }),
             },
           }
@@ -1235,107 +1123,92 @@ export class BrowserExcelAdapter implements ExcelAdapter {
       // bounded inverse in Office.js. Never guess at an inverse operation.
       return 'uncertain'
     }
-    if (
+    const unsafeSet =
       tool === 'set_cell_range' &&
-      input.cells.some((row: RuntimeRecord[]) => row.some((cell) => cell.note !== undefined))
+      (input.copyToRange ||
+        input.resizeWidth ||
+        input.resizeHeight ||
+        input.cells.some((row: RuntimeRecord[]) =>
+          row.some((cell) => cell.note !== undefined || cell.cellStyles || cell.borderStyles),
+        ))
+    if (
+      unsafeSet ||
+      tool === 'copy_to' ||
+      (tool === 'clear_cell_range' && (input.clearType ?? 'contents') !== 'contents')
     )
       return 'uncertain'
     const beforeRanges = captured.state.ranges as RuntimeRecord[]
-    const addresses = beforeRanges.map((range) => range.address)
-    let current: RuntimeRecord
-    try {
-      current = (await this.getCellRanges({
-        sheetId: input.sheetId,
-        worksheetOfficeId: input.worksheetOfficeId,
-        ranges: addresses,
-        includeStyles: true,
-        cellLimit: MAX_EXCEL_CELLS,
-      })) as RuntimeRecord
-    } catch {
+    if (
+      !beforeRanges.length ||
+      beforeRanges.some(
+        (range) =>
+          !Number.isSafeInteger(range.rows) ||
+          !Number.isSafeInteger(range.columns) ||
+          range.rows * range.columns !== range.cells?.length,
+      ) ||
+      beforeRanges.reduce((sum, range) => sum + range.rows * range.columns, 0) > MAX_EXCEL_CELLS
+    )
       return 'uncertain'
-    }
-    const currentRanges = current.ranges as RuntimeRecord[]
-    const unchanged = currentRanges.every((range, rangeIndex) =>
-      range.cells.every((cell: RuntimeRecord, cellIndex: number) =>
-        sameCell(cell, beforeRanges[rangeIndex].cells[cellIndex]),
-      ),
-    )
-    if (unchanged) return 'restored'
-
-    const sourceCells = captured.sourceState?.ranges?.[0]?.cells as RuntimeRecord[] | undefined
-    const attributable = currentRanges.every((range, rangeIndex) =>
-      range.cells.every((cell: RuntimeRecord, cellIndex: number) => {
-        const before = beforeRanges[rangeIndex].cells[cellIndex]
-        if (sameCell(cell, before)) return true
-        if (tool === 'copy_to')
-          return !!sourceCells?.[cellIndex] && sameCell(cell, sourceCells[cellIndex])
-        if (tool === 'clear_cell_range') {
-          const kind = input.clearType ?? 'contents'
-          const contentMatches = emptyCellContents(cell)
-          const formatMatches =
-            cell.style?.styleName === 'Normal' && cell.numberFormat === 'General'
-          return kind === 'contents'
-            ? contentMatches &&
-                JSON.stringify(cell.style ?? {}) === JSON.stringify(before.style ?? {})
-            : kind === 'formats'
-              ? formatMatches && cell.value === before.value && cell.formula === before.formula
-              : contentMatches && formatMatches
-        }
-        const expected = input.cells.flat()[cellIndex]
-        return !!expected && requestedCellMatches(expected, cell, before)
-      }),
-    )
-    if (!attributable) return 'concurrent'
-
     try {
-      await this.run(async (context) => {
+      return await this.run(async (context) => {
         const ws = await sheet(context, input.sheetId, undefined, input.worksheetOfficeId)
-        for (const savedRange of beforeRanges) {
-          const range = ws.getRange(savedRange.address)
-          const rows = savedRange.rows
-          const columns = savedRange.columns
-          for (let row = 0; row < rows; row++)
-            for (let column = 0; column < columns; column++) {
-              const saved = savedRange.cells[row * columns + column]
-              const target = range.getCell(row, column)
-              target.formulas = [[saved.formula ?? saved.value ?? null]]
-              target.numberFormat = [[saved.numberFormat || 'General']]
-              const style = saved.style ?? {}
-              target.style = style.styleName || 'Normal'
-              target.format.font.bold = !!style.bold
-              target.format.font.italic = !!style.italic
-              target.format.font.underline = style.underline || 'None'
-              target.format.font.strikethrough = !!style.strikethrough
-              if (style.fontFamily) target.format.font.name = style.fontFamily
-              if (Number.isFinite(style.fontSize)) target.format.font.size = style.fontSize
-              if (style.fontColor) target.format.font.color = style.fontColor
-              if (style.backgroundColor) target.format.fill.color = style.backgroundColor
-              if (style.horizontalAlignment)
-                target.format.horizontalAlignment = style.horizontalAlignment
-              for (const borderState of style.borders ?? []) {
-                const border = target.format.borders.getItem(borderState.side)
-                border.style = borderState.style
-                border.weight = borderState.weight
-                border.color = borderState.color
-              }
-            }
+        const ranges = beforeRanges.map((saved) => {
+          const range = ws.getRange(saved.address)
+          range.load('values,formulas,rowCount,columnCount')
+          return range
+        })
+        await sync(context)
+        const beforeMatches = (range: RuntimeRecord, saved: RuntimeRecord) =>
+          range.rowCount === saved.rows &&
+          range.columnCount === saved.columns &&
+          saved.cells.every((cell: RuntimeRecord, index: number) => {
+            const row = Math.floor(index / saved.columns)
+            const column = index % saved.columns
+            return (
+              range.values?.[row]?.[column] === cell.value &&
+              range.formulas?.[row]?.[column] === cell.formula
+            )
+          })
+        if (ranges.every((range, index) => beforeMatches(range, beforeRanges[index])))
+          return 'restored'
+        const attributable = ranges.every((range, rangeIndex) => {
+          const saved = beforeRanges[rangeIndex]
+          return saved.cells.every((cell: RuntimeRecord, index: number) => {
+            const row = Math.floor(index / saved.columns)
+            const column = index % saved.columns
+            const value = range.values?.[row]?.[column]
+            const formula = range.formulas?.[row]?.[column]
+            if (value === cell.value && formula === cell.formula) return true
+            if (tool === 'clear_cell_range')
+              return (value === null || value === '') && (formula === null || formula === '')
+            const expected = input.cells[row]?.[column]
+            if (!expected) return false
+            const valueMatches =
+              !Object.hasOwn(expected, 'value') ||
+              (value === expected.value &&
+                (formula === expected.value || formula === null || formula === ''))
+            return (
+              valueMatches && (!Object.hasOwn(expected, 'formula') || formula === expected.formula)
+            )
+          })
+        })
+        if (!attributable) return 'concurrent'
+        for (const [index, range] of ranges.entries()) {
+          const saved = beforeRanges[index]
+          range.formulas = Array.from({ length: saved.rows }, (_, row) =>
+            Array.from({ length: saved.columns }, (_, column) => {
+              const cell = saved.cells[row * saved.columns + column]
+              return cell.formula ?? cell.value ?? null
+            }),
+          )
         }
         await sync(context)
+        for (const range of ranges) range.load('values,formulas,rowCount,columnCount')
+        await sync(context)
+        return ranges.every((range, index) => beforeMatches(range, beforeRanges[index]))
+          ? 'restored'
+          : 'uncertain'
       }, '1.4')
-      const restored = (await this.getCellRanges({
-        sheetId: input.sheetId,
-        worksheetOfficeId: input.worksheetOfficeId,
-        ranges: addresses,
-        includeStyles: true,
-        cellLimit: MAX_EXCEL_CELLS,
-      })) as RuntimeRecord
-      return (restored.ranges as RuntimeRecord[]).every((range, rangeIndex) =>
-        range.cells.every((cell: RuntimeRecord, cellIndex: number) =>
-          sameCell(cell, beforeRanges[rangeIndex].cells[cellIndex]),
-        ),
-      )
-        ? 'restored'
-        : 'uncertain'
     } catch {
       return 'uncertain'
     }
@@ -1360,6 +1233,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
           this.getCellRanges(
             {
               sheetId: input.sheetId,
+              worksheetOfficeId: input.worksheetOfficeId,
               ranges: [address],
               includeStyles: true,
               cellLimit: input.cells.length * input.cells[0].length,
@@ -1540,7 +1414,8 @@ export class BrowserExcelAdapter implements ExcelAdapter {
           JSON.stringify(comparable(source[index])) === JSON.stringify(comparable(cell)),
       )
     }
-    if (tool === 'resize_range')
+    if (tool === 'resize_range') {
+      if (input.width?.type === 'standard' || input.height?.type === 'standard') return false
       return this.run(async (context) => {
         const format = (
           await sheet(context, input.sheetId, signal, input.worksheetOfficeId)
@@ -1558,13 +1433,9 @@ export class BrowserExcelAdapter implements ExcelAdapter {
               : Math.abs(format.rowHeight - input.height.value) < 0.01))
         )
       })
+    }
     if (tool === 'modify_sheet_structure')
-      if (['insert', 'delete'].includes(input.operation))
-        return (
-          JSON.stringify(
-            ((await this.captureMutation(tool, input, signal)) as RuntimeRecord).state,
-          ) !== JSON.stringify((beforeState as RuntimeRecord)?.state)
-        )
+      if (['insert', 'delete'].includes(input.operation)) return false
       else
         return this.run(async (context) => {
           const ws = await sheet(context, input.sheetId, signal, input.worksheetOfficeId)
@@ -1578,9 +1449,13 @@ export class BrowserExcelAdapter implements ExcelAdapter {
             )
           }
           const frozen = ws.freezePanes.getLocationOrNullObject()
-          frozen.load('isNullObject')
+          frozen.load('isNullObject,rowCount,columnCount')
           await sync(context, signal)
-          return input.operation === 'unfreeze' ? frozen.isNullObject : !frozen.isNullObject
+          if (input.operation === 'unfreeze') return frozen.isNullObject
+          if (frozen.isNullObject) return false
+          return input.dimension === 'rows'
+            ? frozen.rowCount === (input.count ?? 1)
+            : frozen.columnCount === (input.count ?? 1)
         }, '1.7')
     if (tool === 'modify_workbook_structure') {
       const state = (await this.verifyWorkbook(signal)) as RuntimeRecord
@@ -1600,6 +1475,14 @@ export class BrowserExcelAdapter implements ExcelAdapter {
         )
     }
     if (tool === 'modify_object') {
+      if (
+        input.objectType === 'pivotTable' ||
+        input.operation === 'create' ||
+        input.properties?.anchor ||
+        input.properties?.source ||
+        input.properties?.range
+      )
+        return false
       const result = (await this.getAllObjects(
         {
           sheetId: input.sheetId,

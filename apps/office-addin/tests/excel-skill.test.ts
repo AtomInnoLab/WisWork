@@ -237,17 +237,29 @@ describe('Excel compatibility skill', () => {
       numberFormat: 'General',
       style: {},
     }
-    vi.spyOn(excel, 'getCellRanges').mockResolvedValue({
-      ranges: [
-        {
-          address: 'A1',
-          rows: 1,
-          columns: 1,
-          cells: [{ ...beforeCell, value: 'user edit', formula: 'user edit' }],
+    let writes = 0
+    let formulas = [['user edit']]
+    const range: any = {
+      values: [['user edit']],
+      rowCount: 1,
+      columnCount: 1,
+      load: vi.fn(),
+      get formulas() {
+        return formulas
+      },
+      set formulas(value) {
+        writes += 1
+        formulas = value
+      },
+    }
+    const run = vi.spyOn(excel as any, 'run').mockImplementation((callback: any) =>
+      callback({
+        workbook: {
+          worksheets: { getItem: vi.fn().mockReturnValue({ getRange: vi.fn(() => range) }) },
         },
-      ],
-    })
-    const run = vi.spyOn(excel as any, 'run')
+        sync: vi.fn(),
+      }),
+    )
 
     await expect(
       excel.recoverMutation(
@@ -266,7 +278,8 @@ describe('Excel compatibility skill', () => {
         },
       ),
     ).resolves.toBe('concurrent')
-    expect(run).not.toHaveBeenCalled()
+    expect(run).toHaveBeenCalledOnce()
+    expect(writes).toBe(0)
   })
 
   it('restores only a cell state composed of the approved write and captured prestate', async () => {
@@ -282,19 +295,32 @@ describe('Excel compatibility skill', () => {
     const state = {
       ranges: [{ address: 'A1', rows: 1, columns: 1, cells: [beforeCell] }],
     }
-    vi.spyOn(excel, 'getCellRanges')
-      .mockResolvedValueOnce({
-        ranges: [
-          {
-            address: 'A1',
-            rows: 1,
-            columns: 1,
-            cells: [{ ...beforeCell, value: 'agent edit', formula: 'agent edit' }],
-          },
-        ],
-      })
-      .mockResolvedValueOnce(state)
-    const run = vi.spyOn(excel as any, 'run').mockResolvedValue(undefined)
+    let values = [['agent edit']]
+    let formulas = [['agent edit']]
+    const range: any = {
+      rowCount: 1,
+      columnCount: 1,
+      load: vi.fn(),
+      get values() {
+        return values
+      },
+      get formulas() {
+        return formulas
+      },
+      set formulas(value) {
+        formulas = value
+        values = value
+      },
+    }
+    const sync = vi.fn().mockResolvedValue(undefined)
+    const run = vi.spyOn(excel as any, 'run').mockImplementation((callback: any) =>
+      callback({
+        workbook: {
+          worksheets: { getItem: vi.fn().mockReturnValue({ getRange: vi.fn(() => range) }) },
+        },
+        sync,
+      }),
+    )
 
     await expect(
       excel.recoverMutation(
@@ -309,6 +335,7 @@ describe('Excel compatibility skill', () => {
       ),
     ).resolves.toBe('restored')
     expect(run).toHaveBeenCalledOnce()
+    expect(sync).toHaveBeenCalledTimes(3)
   })
 
   it('fails structural recovery closed when Office cannot provide a bounded inverse', async () => {
@@ -316,6 +343,163 @@ describe('Excel compatibility skill', () => {
     await expect(
       excel.recoverMutation('modify_sheet_structure', { sheetId: 1 }, 'before'),
     ).resolves.toBe('uncertain')
+  })
+
+  it('rejects direct clear/copy ranges and rectangular cell writes above the snapshot bound', async () => {
+    const fake = adapter()
+    const proposals = createStructuredProposalController()
+    const skill = createExcelSkill({ adapter: fake, proposals })
+    await expect(
+      skill.executeTool(
+        call('clear_cell_range', { sheetId: 1, range: 'A1:A2001', clearType: 'contents' }),
+      ),
+    ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+    await expect(
+      skill.executeTool(
+        call('copy_to', { sheetId: 1, sourceRange: 'A1:A2001', destinationRange: 'B1' }),
+      ),
+    ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+    await expect(
+      skill.executeTool(
+        call('set_cell_range', {
+          sheetId: 1,
+          range: 'A1',
+          cells: Array.from({ length: 50 }, () =>
+            Array.from({ length: 41 }, () => ({ value: 'x' })),
+          ),
+          allow_overwrite: true,
+        }),
+      ),
+    ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+    await expect(
+      skill.executeTool(
+        call('set_cell_range', {
+          sheetId: 1,
+          range: 'A1',
+          copyToRange: 'AZ1',
+          cells: Array.from({ length: 40 }, () =>
+            Array.from({ length: 30 }, () => ({ value: 'x' })),
+          ),
+          allow_overwrite: true,
+        }),
+      ),
+    ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+    expect(fake.captureMutation).not.toHaveBeenCalled()
+  })
+
+  it('rejects ragged set_cell_range matrices before snapshot or mutation', async () => {
+    const fake = adapter()
+    const skill = createExcelSkill({
+      adapter: fake,
+      proposals: createStructuredProposalController(),
+    })
+    await expect(
+      skill.executeTool(
+        call('set_cell_range', {
+          sheetId: 1,
+          range: 'A1',
+          cells: [[{ value: 1 }, { value: 2 }], [{ value: 3 }]],
+          allow_overwrite: true,
+        }),
+      ),
+    ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+    expect(fake.captureMutation).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [
+      'clear_cell_range',
+      { sheetId: 1, range: 'A1', clearType: 'formats' },
+      { kind: 'cells', state: { ranges: [] } },
+    ],
+    [
+      'copy_to',
+      { sheetId: 1, sourceRange: 'A1', destinationRange: 'B1' },
+      { kind: 'cells', state: { ranges: [] }, sourceState: { ranges: [] } },
+    ],
+    [
+      'set_cell_range',
+      { sheetId: 1, range: 'A1', cells: [[{ value: 1, cellStyles: { fontWeight: 'bold' } }]] },
+      { kind: 'cells', state: { ranges: [] } },
+    ],
+  ])('never claims incomplete %s snapshots are recoverable', async (tool, input, before) => {
+    const excel = new BrowserExcelAdapter()
+    await expect(excel.recoverMutation(tool, input, before)).resolves.toBe('uncertain')
+  })
+
+  it('passes the stable worksheet Office ID through set_cell_range verification reads', async () => {
+    const excel = new BrowserExcelAdapter()
+    const read = vi.spyOn(excel, 'getCellRanges').mockResolvedValue({
+      ranges: [{ cells: [{ address: 'A1', value: 'x', formula: null, style: {} }] }],
+    })
+    await excel.verifyMutation(
+      'set_cell_range',
+      {
+        sheetId: 1,
+        worksheetOfficeId: 'stable-sheet',
+        range: 'A1',
+        cells: [[{ value: 'x' }]],
+      },
+      { kind: 'cells' },
+    )
+    expect(read).toHaveBeenCalledWith(
+      expect.objectContaining({ worksheetOfficeId: 'stable-sheet' }),
+      undefined,
+    )
+  })
+
+  it('fails unverifiable structure, autofit, pivot, and chart-anchor semantics closed', async () => {
+    const excel = new BrowserExcelAdapter()
+    vi.spyOn(excel as any, 'run').mockResolvedValue(true)
+    vi.spyOn(excel, 'captureMutation').mockResolvedValue({
+      kind: 'structure',
+      state: { used: 'A1:B3' },
+    })
+    vi.spyOn(excel, 'getAllObjects').mockResolvedValue({
+      objects: [
+        { type: 'pivotTable', name: 'Pivot' },
+        { type: 'chart', name: 'Chart' },
+      ],
+    })
+    await expect(
+      excel.verifyMutation(
+        'modify_sheet_structure',
+        { operation: 'insert', sheetId: 1, dimension: 'rows', reference: '2', count: 1 },
+        { kind: 'structure', state: { used: 'A1:B2' } },
+      ),
+    ).resolves.toBe(false)
+    await expect(
+      excel.verifyMutation(
+        'resize_range',
+        { sheetId: 1, range: 'A:A', width: { type: 'standard', value: 0 } },
+        {},
+      ),
+    ).resolves.toBe(false)
+    await expect(
+      excel.verifyMutation(
+        'modify_object',
+        {
+          operation: 'create',
+          objectType: 'pivotTable',
+          sheetId: 1,
+          properties: { name: 'Pivot', source: 'A1:B2', range: 'D1' },
+        },
+        {},
+      ),
+    ).resolves.toBe(false)
+    await expect(
+      excel.verifyMutation(
+        'modify_object',
+        {
+          operation: 'update',
+          objectType: 'chart',
+          sheetId: 1,
+          id: 'Chart',
+          properties: { anchor: 'D4' },
+        },
+        {},
+      ),
+    ).resolves.toBe(false)
   })
 
   it('fails confirmation when request-semantic post-write verification detects a no-op', async () => {
