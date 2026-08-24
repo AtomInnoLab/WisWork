@@ -398,6 +398,22 @@ export class AgentLoop<TSnapshot = unknown> {
     if (i >= 0) this.history.splice(i)
   }
 
+  /** Settle a detached async run failure without letting it strand the loop busy. */
+  private failRun(error: unknown, generation: number): void {
+    if (generation !== this.generation || !this.running) return
+    this.handle = null
+    this.running = false
+    this.abortController?.abort()
+    this.abortController = null
+    this.rollbackFailedRun()
+    const message = error instanceof Error ? error.message : String(error)
+    try {
+      this.options.events?.onError?.(message)
+    } catch {
+      // Presentation callbacks are outside the run's trust boundary.
+    }
+  }
+
   // ── Context compaction: fold old conversation into a summary, keep recent messages verbatim ──
 
   private compactionEnabled(): boolean {
@@ -610,7 +626,7 @@ export class AgentLoop<TSnapshot = unknown> {
         onDone: () => {
           if (generation !== this.generation || settled) return
           settled = true
-          void this.finishTurn()
+          void this.finishTurn().catch((error) => this.failRun(error, generation))
         },
         onError: (error) => {
           if (generation !== this.generation || settled) return
