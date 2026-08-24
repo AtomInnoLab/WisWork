@@ -12,6 +12,11 @@ use tokio_tungstenite::{
 };
 use wiswork_relay::{Config, app};
 
+#[test]
+fn default_request_budget_supports_complex_agent_turns() {
+    assert_eq!(Config::default().request_ttl, Duration::from_secs(300));
+}
+
 const ORIGIN: &str = "https://office.8-216-134-194.sslip.io";
 const TEST_ISSUER: &str = "https://issuer.example.test";
 const TEST_AUDIENCE: &str = "relay-test-client";

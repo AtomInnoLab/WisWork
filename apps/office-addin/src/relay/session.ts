@@ -9,7 +9,8 @@ const MAX_REQUEST_BYTES = 256 * 1024
 const MAX_CHUNK_BYTES = 64 * 1024
 const MAX_RELAY_FRAME_BYTES = Math.ceil((MAX_CHUNK_BYTES * 4) / 3) + 4096
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024
-const REQUEST_TIMEOUT_MS = 120_000
+// Finish before Relay's 300s deadline so the client owns cancellation and preserves pairing.
+const REQUEST_TIMEOUT_MS = 290_000
 const MAX_OPAQUE_LENGTH = 512
 const MAX_DIAGNOSTIC_EVENT_BYTES = 4 * 1024
 const MAX_PENDING_DIAGNOSTICS = 16

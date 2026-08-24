@@ -12,9 +12,9 @@ export const MAX_STREAM_TOOL_INPUT_LENGTH = 16 * 1024
 export const MAX_REQUEST_BODY_LENGTH = 256 * 1024
 export const MAX_STREAM_TEXT_LENGTH = 128 * 1024
 export const MAX_COMPLETED_TOOL_CALLS = 32
-// Stay below Relay's 120s request deadline while allowing long model turns such as
+// Stay below the Office relay client's 290s request deadline while allowing long model turns such as
 // multi-slide planning. This is an absolute per-model-turn budget, not an idle timer.
-export const STREAM_RESPONSE_TIMEOUT_MS = 115_000
+export const STREAM_RESPONSE_TIMEOUT_MS = 280_000
 const MAX_STREAM_RESPONSE_BYTES = 1024 * 1024
 const MAX_STREAM_EVENTS = 4096
 const MAX_SSE_LINE_LENGTH = 64 * 1024

@@ -13,6 +13,8 @@ export interface MessagesProxyResponse {
 
 export type MessagesProxy = (request: MessagesProxyRequest) => Promise<MessagesProxyResponse>
 
+export const DEFAULT_MESSAGE_TIMEOUT_MS = 300_000
+
 export interface OfficeBridgeOptions {
   allowedOrigin: string
   proxy: MessagesProxy
@@ -209,7 +211,7 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
   const maxBodyBytes = options.maxBodyBytes ?? 256 * 1024
   const maxResponseBytes = options.maxResponseBytes ?? 4 * 1024 * 1024
   const maxConcurrentMessages = options.maxConcurrentMessages ?? 2
-  const messageTimeoutMs = options.messageTimeoutMs ?? 120_000
+  const messageTimeoutMs = options.messageTimeoutMs ?? DEFAULT_MESSAGE_TIMEOUT_MS
   const pairings = new Map<string, Pairing>()
   let capabilities: Capability[] = []
   let createTimes: number[] = []

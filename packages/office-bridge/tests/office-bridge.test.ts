@@ -3,12 +3,17 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   assertLoopbackHost,
   createOfficeBridge,
+  DEFAULT_MESSAGE_TIMEOUT_MS,
   type MessagesProxy,
   type OfficeBridge,
 } from '../src/index'
 
 const origin = 'https://office.example.test'
 const json = (value: unknown) => JSON.stringify(value)
+
+it('allows complex Office Agent turns for up to five minutes by default', () => {
+  expect(DEFAULT_MESSAGE_TIMEOUT_MS).toBe(300_000)
+})
 
 function request(path: string, init: RequestInit = {}) {
   return new Request(`http://127.0.0.1:43127${path}`, {
