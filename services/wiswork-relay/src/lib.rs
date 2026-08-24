@@ -1422,11 +1422,13 @@ async fn done(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stati
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
-    if !session
-        .active
-        .as_ref()
-        .is_some_and(|a| a.id == rid && a.started)
-    {
+    if session.active.as_ref().map(|active| active.id.as_str()) != Some(rid) {
+        if session.used_requests.iter().any(|used| used == rid) {
+            return Ok(());
+        }
+        return Err("invalid_request");
+    }
+    if !session.active.as_ref().is_some_and(|active| active.started) {
         return Err("invalid_request");
     }
     renew_session(session, app.inner.config.session_ttl);
@@ -1466,7 +1468,10 @@ async fn pc_error(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'s
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
-    if session.active.as_ref().map(|a| a.id.as_str()) != Some(rid) {
+    if session.active.as_ref().map(|active| active.id.as_str()) != Some(rid) {
+        if session.used_requests.iter().any(|used| used == rid) {
+            return Ok(());
+        }
         return Err("invalid_request");
     }
     renew_session(session, app.inner.config.session_ttl);
