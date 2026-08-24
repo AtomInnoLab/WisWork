@@ -580,6 +580,7 @@ export function AiPanel({
 
   /** Synchronous re-entry guard between runWith trigger and loop.run (see the comment inside runWith) */
   const runStartingRef = useRef(false)
+  const launchTokenRef = useRef(0)
   /** Pages landed by this run's generation calls, pending the post-generation layout QC pass */
   const qcPagesRef = useRef<number[]>([])
   const qcAbortRef = useRef<AbortController | null>(null)
@@ -1137,6 +1138,7 @@ export function AiPanel({
     )
       return
     runStartingRef.current = true
+    const launchToken = ++launchTokenRef.current
     setInput('')
     // The message consumes the composer attachments: they ride along (echoed on the
     // bubble, images multimodal, files via the files skill) and the composer clears.
@@ -1187,15 +1189,18 @@ export function AiPanel({
         }
         // Clear the flag before run: loop.run sets running synchronously, leaving no re-entry window
         runStartingRef.current = false
-        await beginSlidesHostRun({
+        const launched = await beginSlidesHostRun({
           beginHistoryBatch: () => window.slidesApi.beginHistoryBatch(),
+          isCurrent: () => launchTokenRef.current === launchToken && loopRef.current === loop,
           markHistoryActive: () => {
             historyBatchActiveRef.current = true
           },
+          finishHistoryBatch: () => window.slidesApi.endHistoryBatch(),
           run: () => {
-            loop.run(modelInstruction, images)
+            return loop.run(modelInstruction, images)
           },
         })
+        if (!launched) setBusy(false)
       })
       .catch(() => {
         runStartingRef.current = false
@@ -1304,6 +1309,7 @@ export function AiPanel({
   }
 
   const cancel = () => {
+    launchTokenRef.current++
     stopSlidesHostRun({
       dismissClarification: dismissClarify,
       abortQc: () => qcAbortRef.current?.abort(),
@@ -1312,7 +1318,13 @@ export function AiPanel({
   }
 
   // Abort a QC pass still running when the panel unmounts (new file / panel remount by key)
-  useEffect(() => () => qcAbortRef.current?.abort(), [])
+  useEffect(
+    () => () => {
+      launchTokenRef.current++
+      qcAbortRef.current?.abort()
+    },
+    [],
+  )
 
   const retry = () =>
     runWith(lastInstructionRef.current, lastDisplayTextRef.current, {
@@ -1320,6 +1332,7 @@ export function AiPanel({
     })
 
   const newChat = () => {
+    launchTokenRef.current++
     dismissClarify()
     qcAbortRef.current?.abort()
     loopRef.current?.reset()

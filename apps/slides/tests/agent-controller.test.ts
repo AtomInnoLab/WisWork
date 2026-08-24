@@ -123,7 +123,6 @@ describe('Slides interactive agent controller', () => {
     await flush()
     const callbacks = transport.callbacks[0]!
     act(() => root.unmount())
-    await flush()
     callbacks.onToolCall({ id: 'late', name: 'execute_slide_script', input: {} })
     callbacks.onDone()
     await flush()
@@ -148,7 +147,6 @@ describe('Slides interactive agent controller', () => {
     await flush()
     const callbacks = transport.callbacks[0]!
     act(() => root.unmount())
-    await flush()
     callbacks.onDone()
     await flush()
     expect(ref.current).toBeNull()
@@ -167,8 +165,10 @@ describe('Slides interactive agent controller', () => {
         order.push('begin-history')
         return true
       },
+      isCurrent: () => true,
       markHistoryActive: () => order.push('history-active'),
-      run: () => order.push('run'),
+      finishHistoryBatch: async () => undefined,
+      run: () => (order.push('run'), true),
     })
     await completeSlidesHostRun({
       cancelled: false,
@@ -186,8 +186,8 @@ describe('Slides interactive agent controller', () => {
     expect(order).toEqual([
       'attachments',
       'begin-history',
-      'history-active',
       'run',
+      'history-active',
       'snapshot',
       'busy:false',
       'qc',
@@ -212,5 +212,36 @@ describe('Slides interactive agent controller', () => {
     ).rejects.toThrow('snapshot failed')
     expect(settled).toHaveBeenCalledWith(false)
     expect(qc).toHaveBeenCalledOnce()
+  })
+
+  it('closes a pending history batch without running when the launch becomes stale', async () => {
+    const controller = createAgentController({ transport: manualTransport(), skill })
+    const ref = { current: controller }
+    const Probe = () => {
+      useAgentControllerCleanup(ref)
+      return null
+    }
+    const root = createRoot(document.createElement('div'))
+    act(() => root.render(createElement(Probe)))
+    let resolveBegin!: (opened: boolean) => void
+    const active = vi.fn()
+    const run = vi.fn(() => true)
+    const finish = vi.fn(async () => undefined)
+    const pending = beginSlidesHostRun({
+      beginHistoryBatch: () =>
+        new Promise<boolean>((resolve) => {
+          resolveBegin = resolve
+        }),
+      isCurrent: () => ref.current === controller,
+      markHistoryActive: active,
+      finishHistoryBatch: finish,
+      run,
+    })
+    act(() => root.unmount())
+    resolveBegin(true)
+    expect(await pending).toBe(false)
+    expect(finish).toHaveBeenCalledOnce()
+    expect(active).not.toHaveBeenCalled()
+    expect(run).not.toHaveBeenCalled()
   })
 })

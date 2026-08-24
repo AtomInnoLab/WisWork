@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AgentStreamCallbacks, AgentTransport } from '@wiswork/agent-core'
 import {
   createAgentController,
+  bindSheetsSession,
   disposeAgentController,
   restoreSheetsSession,
   selectSheetsExecution,
@@ -15,11 +16,14 @@ import {
 function manualTransport(): AgentTransport & {
   callbacks: AgentStreamCallbacks[]
   cancels: number
+  requests: unknown[]
 } {
   const transport = {
     callbacks: [] as AgentStreamCallbacks[],
     cancels: 0,
-    stream(_request: unknown, callbacks: AgentStreamCallbacks) {
+    requests: [] as unknown[],
+    stream(request: unknown, callbacks: AgentStreamCallbacks) {
+      transport.requests.push(request)
       transport.callbacks.push(callbacks)
       return { cancel: () => transport.cancels++ }
     },
@@ -131,7 +135,6 @@ describe('Sheets agent controller', () => {
     await flush()
     const callbacks = transport.callbacks[0]!
     act(() => root.unmount())
-    await flush()
     callbacks.onToolCall({ id: 'late', name: 'apply_plan', input: {} })
     callbacks.onDone()
     await flush()
@@ -163,7 +166,6 @@ describe('Sheets agent controller', () => {
     await flush()
     const callbacks = transport.callbacks[0]!
     act(() => root.unmount())
-    await flush()
     callbacks.onDone()
     await flush()
     expect(ref.current).toBeNull()
@@ -199,6 +201,32 @@ describe('Sheets agent controller', () => {
     finishApply(true)
     expect(await settled).toBe(true)
     expect(order).toEqual(['apply', 'autosave'])
+  })
+
+  it('resets A history before binding B and rejects a stale A load', async () => {
+    const transport = manualTransport()
+    const controller = createAgentController({ transport, skill })
+    const binding = { current: undefined as string | undefined }
+    bindSheetsSession(controller, binding, 'session-a')
+    restoreSheetsSession(controller, 'session-a', () => binding.current, [
+      { role: 'user', text: 'secret from A' },
+      { role: 'assistant', text: 'A answer' },
+    ])
+    bindSheetsSession(controller, binding, 'session-b')
+    expect(controller.messages).toEqual([])
+    expect(
+      restoreSheetsSession(controller, 'session-a', () => binding.current, [
+        { role: 'user', text: 'late A' },
+      ]),
+    ).toBe(false)
+    restoreSheetsSession(controller, 'session-b', () => binding.current, [
+      { role: 'user', text: 'B context' },
+      { role: 'assistant', text: 'B answer' },
+    ])
+    controller.run('next B request')
+    await flush()
+    expect(JSON.stringify(transport.requests[0])).not.toContain('secret from A')
+    expect(JSON.stringify(transport.requests[0])).toContain('B context')
   })
 
   it('dispose helper is terminal and clears the owning ref', () => {

@@ -117,6 +117,7 @@ import type { ApplyOutcome, ChangePlan } from '../domain/workbook.types'
 import { createElectronTransport } from './ai/transport'
 import {
   createAgentController,
+  bindSheetsSession,
   restoreSheetsSession,
   selectSheetsExecution,
   settleSheetsApplyPromises,
@@ -615,8 +616,7 @@ export function App(): React.JSX.Element {
   const workbookOpeningRef = useRef(false)
   /** Current session's projectId/chatId (resolved when the workbook opens) */
   const chatRefIdsRef = useRef<{ projectId: string; chatId: string } | null>(null)
-  const workbookSessionIdRef = useRef(workbookFile?.sessionId)
-  workbookSessionIdRef.current = workbookFile?.sessionId
+  const harnessSessionIdRef = useRef<string | number | undefined>(undefined)
 
   // File renamed externally (in the shell Home list) → sync the title-bar file
   // name (the save path is synced by the main process)
@@ -709,13 +709,15 @@ export function App(): React.JSX.Element {
 
   // ── project-store: resolve chatId and load history when a workbook opens ──
   useEffect(() => {
+    const sessionId = workbookFile?.sessionId
+    if (agentLoopRef.current)
+      bindSheetsSession(agentLoopRef.current, harnessSessionIdRef, sessionId)
     const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
     if (!api) return
     // Reset (new workbook or new session)
     chatRefIdsRef.current = null
     setHistoricChat([])
     const tempChatId = `unsaved-${Date.now()}`
-    const sessionId = workbookFile?.sessionId
     const resolveArgs: Parameters<typeof api.resolveChat>[0] = { filePath: null, tempChatId }
     if (sessionId !== undefined) resolveArgs.sessionId = sessionId
     void api
@@ -759,7 +761,7 @@ export function App(): React.JSX.Element {
         restoreSheetsSession(
           agentLoopRef.current,
           sessionId,
-          () => workbookSessionIdRef.current,
+          () => harnessSessionIdRef.current,
           msgs.map((m) => ({ role: m.role, text: m.text })),
         )
       })

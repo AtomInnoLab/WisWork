@@ -2,13 +2,56 @@ import { createAgentHarness, type AgentHarness } from '@wiswork/agent-harness'
 import type { AgentLoopOptions, AgentMessage } from '@wiswork/agent-core'
 import { useEffect, useRef } from 'react'
 
+interface LifecycleAgentController<TSnapshot> extends AgentHarness<TSnapshot> {
+  activate(): void
+  deactivate(): void
+}
+
 export interface AgentControllerRef<TSnapshot> {
   current: AgentHarness<TSnapshot> | null
 }
 
 export const createAgentController = <TSnapshot>(
   options: AgentLoopOptions<TSnapshot>,
-): AgentHarness<TSnapshot> => createAgentHarness(options)
+): LifecycleAgentController<TSnapshot> => {
+  let inner: AgentHarness<TSnapshot> | null = createAgentHarness(options)
+  let terminal = false
+  const controller: LifecycleAgentController<TSnapshot> = {
+    get snapshot() {
+      return inner?.snapshot ?? { status: 'idle', busy: false, generation: 0 }
+    },
+    get messages() {
+      return inner?.messages ?? []
+    },
+    subscribe(listener) {
+      return inner?.subscribe(listener) ?? (() => undefined)
+    },
+    run(instruction, images) {
+      return inner?.run(instruction, images) ?? false
+    },
+    stop() {
+      inner?.stop()
+    },
+    reset() {
+      inner?.reset()
+    },
+    restore(messages) {
+      inner?.restore(messages)
+    },
+    activate() {
+      if (!terminal && !inner) inner = createAgentHarness(options)
+    },
+    deactivate() {
+      inner?.dispose()
+      inner = null
+    },
+    dispose() {
+      terminal = true
+      controller.deactivate()
+    },
+  }
+  return controller
+}
 
 export function disposeAgentController<TSnapshot>(ref: AgentControllerRef<TSnapshot>): void {
   ref.current?.dispose()
@@ -16,20 +59,30 @@ export function disposeAgentController<TSnapshot>(ref: AgentControllerRef<TSnaps
 }
 
 export function useAgentControllerCleanup<TSnapshot>(ref: AgentControllerRef<TSnapshot>): void {
-  const setupToken = useRef(0)
+  const ownerRef = useRef<LifecycleAgentController<TSnapshot> | null>(null)
   useEffect(() => {
-    const token = ++setupToken.current
+    const owner = ownerRef.current ?? (ref.current as LifecycleAgentController<TSnapshot> | null)
+    ownerRef.current = owner
+    owner?.activate()
+    ref.current = owner
     return () => {
-      const owned = ref.current
-      queueMicrotask(() => {
-        if (setupToken.current === token && ref.current === owned) disposeAgentController(ref)
-      })
+      owner?.deactivate()
+      if (ref.current === owner) ref.current = null
     }
   }, [ref])
 }
 
 export const selectSheetsExecution = (agentConfigured: boolean): 'agent' | 'planner' =>
   agentConfigured ? 'agent' : 'planner'
+
+export function bindSheetsSession<TSnapshot>(
+  controller: AgentHarness<TSnapshot>,
+  binding: { current: string | number | undefined },
+  sessionId: string | number | undefined,
+): void {
+  if (binding.current !== sessionId) controller.reset()
+  binding.current = sessionId
+}
 
 export function restoreSheetsSession<TSnapshot>(
   controller: AgentHarness<TSnapshot> | null,
