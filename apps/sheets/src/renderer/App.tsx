@@ -120,6 +120,7 @@ import {
   createAgentController,
   createSheetsChatLoadCoordinator,
   bindSheetsSession,
+  getSheetsDocumentIdentity,
   restoreSheetsSession,
   selectSheetsExecution,
   settleSheetsApplyPromises,
@@ -711,13 +712,19 @@ export function App(): React.JSX.Element {
     }
   }, [])
 
+  const workbookSessionId = workbookFile?.sessionId
+  const workbookPath = workbookFile?.path
+  const workbookDocumentIdentity = workbookFile
+    ? getSheetsDocumentIdentity(workbookFile)
+    : undefined
+
   // ── project-store: resolve chatId and load history when a workbook opens ──
   useEffect(() => {
-    const sessionId = workbookFile?.sessionId
+    const chatLoadCoordinator = chatLoadCoordinatorRef.current
     runLaunchGateRef.current.invalidate()
     runStartingRef.current = false
     if (agentLoopRef.current)
-      bindSheetsSession(agentLoopRef.current, harnessSessionIdRef, sessionId)
+      bindSheetsSession(agentLoopRef.current, harnessSessionIdRef, workbookDocumentIdentity)
     // Reset (new workbook or new session)
     chatRefIdsRef.current = null
     setChat([])
@@ -725,12 +732,15 @@ export function App(): React.JSX.Element {
     setAttachments([])
     sentAttachmentsRef.current = []
     setAiBusy(false)
-    const loadToken = chatLoadCoordinatorRef.current.begin()
+    const loadToken = chatLoadCoordinator.begin()
     const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!api) return () => chatLoadCoordinatorRef.current.invalidate()
+    if (!api) return () => chatLoadCoordinator.invalidate()
     const tempChatId = `unsaved-${Date.now()}`
-    const resolveArgs: Parameters<typeof api.resolveChat>[0] = { filePath: null, tempChatId }
-    if (sessionId !== undefined) resolveArgs.sessionId = sessionId
+    const resolveArgs: Parameters<typeof api.resolveChat>[0] = {
+      filePath: workbookPath ?? null,
+      tempChatId,
+    }
+    if (workbookSessionId !== undefined) resolveArgs.sessionId = workbookSessionId
     void api
       .resolveChat(resolveArgs)
       .then(async (ids) => {
@@ -763,7 +773,7 @@ export function App(): React.JSX.Element {
               }
             : {}),
         }))
-        chatLoadCoordinatorRef.current.commit(loadToken, () => {
+        chatLoadCoordinator.commit(loadToken, () => {
           chatRefIdsRef.current = ids
           setHistoricChat(historicMessages)
           // Restore model context: follow-ups after reopening the file continue the
@@ -771,7 +781,7 @@ export function App(): React.JSX.Element {
           if (msgs.length > 0) {
             restoreSheetsSession(
               agentLoopRef.current,
-              sessionId,
+              workbookDocumentIdentity,
               () => harnessSessionIdRef.current,
               msgs.map((m) => ({ role: m.role, text: m.text })),
             )
@@ -781,8 +791,11 @@ export function App(): React.JSX.Element {
       .catch(() => {
         /* silent */
       })
-    return () => chatLoadCoordinatorRef.current.invalidate()
-  }, [workbookFile?.sessionId])
+    return () => chatLoadCoordinator.invalidate()
+    // sessionId is an ephemeral sidecar token. A save may rotate it without
+    // changing the workbook identity, so it intentionally does not retrigger this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workbookDocumentIdentity])
 
   const persistChatMessage = (
     role: 'user' | 'assistant',

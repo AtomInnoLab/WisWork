@@ -8,6 +8,7 @@ import {
   createAgentController,
   createSheetsChatLoadCoordinator,
   bindSheetsSession,
+  getSheetsDocumentIdentity,
   disposeAgentController,
   restoreSheetsSession,
   selectSheetsExecution,
@@ -266,6 +267,51 @@ describe('Sheets agent controller', () => {
     await flush()
     expect(JSON.stringify(transport.requests[0])).not.toContain('secret from A')
     expect(JSON.stringify(transport.requests[0])).toContain('B context')
+  })
+
+  it('preserves context across a sidecar session rotation for the same workbook path', () => {
+    const controller = createAgentController({ transport: manualTransport(), skill })
+    const binding = { current: undefined as string | undefined }
+    const path = '/workbooks/forecast.xlsx'
+    const identityA = getSheetsDocumentIdentity({ sessionId: 'session-a', path })
+    const identityB = getSheetsDocumentIdentity({ sessionId: 'session-b', path })
+
+    bindSheetsSession(controller, binding, identityA)
+    controller.restore([
+      { role: 'user', text: 'keep this workbook context' },
+      { role: 'assistant', text: 'kept answer' },
+    ])
+    bindSheetsSession(controller, binding, identityB)
+
+    expect(identityB).toBe(identityA)
+    expect(controller.messages).toEqual([
+      { role: 'user', text: 'keep this workbook context' },
+      { role: 'assistant', text: 'kept answer' },
+    ])
+  })
+
+  it('resets context and rejects stale loads when a different workbook is opened', () => {
+    const controller = createAgentController({ transport: manualTransport(), skill })
+    const binding = { current: undefined as string | undefined }
+    const identityA = getSheetsDocumentIdentity({
+      sessionId: 'session-a',
+      path: '/workbooks/a.xlsx',
+    })
+    const identityB = getSheetsDocumentIdentity({
+      sessionId: 'session-b',
+      path: '/workbooks/b.xlsx',
+    })
+    bindSheetsSession(controller, binding, identityA)
+    controller.restore([{ role: 'user', text: 'A context' }])
+
+    bindSheetsSession(controller, binding, identityB)
+
+    expect(controller.messages).toEqual([])
+    expect(
+      restoreSheetsSession(controller, identityA, () => binding.current, [
+        { role: 'user', text: 'late A load' },
+      ]),
+    ).toBe(false)
   })
 
   it('dispose helper is terminal and clears the owning ref', () => {

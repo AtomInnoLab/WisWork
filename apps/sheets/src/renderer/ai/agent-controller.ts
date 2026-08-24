@@ -98,6 +98,13 @@ export function createAsyncGenerationGate(): AsyncGenerationGate {
 
 export const createSheetsChatLoadCoordinator = createAsyncGenerationGate
 
+export function getSheetsDocumentIdentity(file: {
+  path?: string | undefined
+  sessionId: string | number
+}): string | number {
+  return file.path ?? file.sessionId
+}
+
 export function bindSheetsSession<TSnapshot>(
   controller: AgentHarness<TSnapshot>,
   binding: { current: string | number | undefined },
