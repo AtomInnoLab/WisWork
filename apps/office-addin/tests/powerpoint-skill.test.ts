@@ -70,9 +70,38 @@ describe('PowerPoint compatibility skill', () => {
         text: { type: 'string', maxLength: 12000 },
       },
     })
-    expect(skill.tools.find((tool) => tool.name === 'execute_office_js')?.description).toContain(
-      '{"version":1,"operations":[{"op":"add_text_box","slide_index":0,"name":"Status","text":"PASS","left":300,"top":450,"width":360,"height":50}]}',
-    )
+    for (const name of [
+      'execute_office_js',
+      'edit_slide_xml',
+      'edit_slide_chart',
+      'edit_slide_master',
+    ]) {
+      const schema = skill.tools.find((tool) => tool.name === name)?.inputSchema
+      expect(schema?.properties).toHaveProperty('program')
+      expect(schema?.properties).not.toHaveProperty('code')
+      expect(schema?.required).toContain('program')
+    }
+    const executeSchema = skill.tools.find((tool) => tool.name === 'execute_office_js')
+      ?.inputSchema as unknown as {
+      properties: { program: { properties: { operations: { items: unknown } } } }
+    }
+    const programSchema = executeSchema.properties.program
+    expect(programSchema.properties.operations.items).toMatchObject({
+      required: ['op', 'slide_index'],
+      properties: {
+        op: {
+          enum: [
+            'set_shape_text',
+            'set_shape_geometry',
+            'add_text_box',
+            'delete_shape',
+            'duplicate_slide',
+          ],
+        },
+        shape_id: { type: 'string' },
+        text: { type: 'string' },
+      },
+    })
   })
 
   it('normalizes reads, image display, and rejects unknown fields', async () => {
@@ -199,6 +228,77 @@ describe('PowerPoint compatibility skill', () => {
         mutated: false,
       })
       expect(proposals.pending()).toBeUndefined()
+    }
+  })
+
+  it('accepts direct structured programs without JSON string double encoding', async () => {
+    const fake = adapter()
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    const program = {
+      version: 1,
+      operations: [{ op: 'set_shape_text', slide_index: 0, shape_id: '2', text: 'Structured' }],
+    }
+
+    await expect(skill.executeTool(call('execute_office_js', { program }))).resolves.toMatchObject({
+      mutated: false,
+      output: expect.stringContaining('set_shape_text'),
+    })
+    expect(proposals.pending()?.preview).toEqual(program)
+  })
+
+  it('accepts direct structured XML programs for slide and master edits', async () => {
+    const zip = new JSZip()
+    zip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
+    zip.file('ppt/slideMasters/slideMaster1.xml', '<p:sldMaster xmlns:p="urn:p"/>')
+    const base64 = await zip.generateAsync({ type: 'base64' })
+    const fake = adapter({
+      exportSlidePackage: vi.fn().mockResolvedValue({
+        slideId: 's1',
+        base64,
+        fingerprint: 'stable',
+      }),
+    })
+    for (const [name, input] of [
+      [
+        'edit_slide_xml',
+        {
+          slide_index: 0,
+          program: {
+            version: 1,
+            operations: [
+              {
+                op: 'replace_xml',
+                path: 'ppt/slides/slide1.xml',
+                xml: '<p:sld xmlns:p="urn:p"><p:cSld/></p:sld>',
+              },
+            ],
+          },
+        },
+      ],
+      [
+        'edit_slide_master',
+        {
+          program: {
+            version: 1,
+            operations: [
+              {
+                op: 'replace_xml',
+                path: 'ppt/slideMasters/slideMaster1.xml',
+                xml: '<p:sldMaster xmlns:p="urn:p"><p:cSld/></p:sldMaster>',
+              },
+            ],
+          },
+        },
+      ],
+    ] as const) {
+      const controller = createStructuredProposalController()
+      const scoped = createPowerPointSkill({ adapter: fake, proposals: controller })
+      await expect(scoped.executeTool(call(name, input))).resolves.toMatchObject({
+        mutated: false,
+        summary: expect.stringContaining('Proposed'),
+      })
+      controller.reject()
     }
   })
 

@@ -13,6 +13,7 @@ const ERROR_CODES = new Set([
   'auth_required',
   'cancelled',
   'diagnostic_upload_failed',
+  'invalid_tool_input',
   'network_error',
   'office_api_unsupported',
   'office_read_failed',

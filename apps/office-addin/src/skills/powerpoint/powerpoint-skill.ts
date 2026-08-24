@@ -36,23 +36,75 @@ const textEditInput = exactObject({
   text: stringField({ maxLength: 12_000 }),
   explanation: optionalField(stringField({ maxLength: 50 })),
 })
-const codeInput = exactObject({
-  code: stringField({ minLength: 1, maxLength: MAX_CODE }),
-  explanation: optionalField(stringField({ maxLength: 100 })),
-})
-const masterCodeInput = exactObject({
-  code: stringField({ minLength: 1, maxLength: MAX_CODE }),
-  explanation: optionalField(stringField({ maxLength: 50 })),
-})
-const slideCodeInput = exactObject({
-  slide_index: integerField({ min: 0, max: MAX_SLIDE_INDEX }),
-  code: stringField({ minLength: 1, maxLength: MAX_CODE }),
-  explanation: optionalField(stringField({ maxLength: 50 })),
-})
-
 const slideProperties = {
   slide_index: { type: 'integer', minimum: 0, maximum: MAX_SLIDE_INDEX },
   explanation: { type: 'string', maxLength: 50 },
+} as const
+const operationSlideIndex = { type: 'integer', minimum: 0, maximum: MAX_SLIDE_INDEX } as const
+const operationShapeId = { type: 'string', minLength: 1, maxLength: 256 } as const
+const geometryProperties = {
+  left: { type: 'number' },
+  top: { type: 'number' },
+  width: { type: 'number', exclusiveMinimum: 0 },
+  height: { type: 'number', exclusiveMinimum: 0 },
+} as const
+const declarativeProgramSchema = {
+  type: 'object',
+  properties: {
+    version: { type: 'integer', enum: [1] },
+    operations: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 32,
+      items: {
+        type: 'object',
+        properties: {
+          op: {
+            type: 'string',
+            enum: [
+              'set_shape_text',
+              'set_shape_geometry',
+              'add_text_box',
+              'delete_shape',
+              'duplicate_slide',
+            ],
+          },
+          slide_index: operationSlideIndex,
+          shape_id: operationShapeId,
+          name: { type: 'string', minLength: 1, maxLength: 256 },
+          text: { type: 'string', maxLength: 12_000 },
+          ...geometryProperties,
+        },
+        required: ['op', 'slide_index'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['version', 'operations'],
+  additionalProperties: false,
+} as const
+const xmlProgramSchema = {
+  type: 'object',
+  properties: {
+    version: { type: 'integer', enum: [1] },
+    operations: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 32,
+      items: {
+        type: 'object',
+        properties: {
+          op: { type: 'string', enum: ['replace_xml'] },
+          path: { type: 'string', minLength: 1, maxLength: 256 },
+          xml: { type: 'string', minLength: 1, maxLength: MAX_CODE },
+        },
+        required: ['op', 'path', 'xml'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['version', 'operations'],
+  additionalProperties: false,
 } as const
 const tools = [
   {
@@ -102,14 +154,14 @@ const tools = [
   {
     name: 'execute_office_js',
     description:
-      'Execute a confirmation-gated bounded declarative PowerPoint program. The code argument must be a JSON string with the exact envelope {"version":1,"operations":[...]}; use snake_case fields. Supported operations are set_shape_text (slide_index, shape_id, text), set_shape_geometry (slide_index, shape_id, left, top, width, height), add_text_box (slide_index, name, text, left, top, width, height), delete_shape (slide_index, shape_id), and duplicate_slide (slide_index; it must be the only operation). Example: {"version":1,"operations":[{"op":"add_text_box","slide_index":0,"name":"Status","text":"PASS","left":300,"top":450,"width":360,"height":50}]}. JavaScript syntax and ambient authority are rejected.',
+      'Execute a confirmation-gated bounded declarative PowerPoint program. Pass program directly as an object with version 1 and an operations array; do not stringify it and do not send JavaScript. Use snake_case fields. Supported operations are set_shape_text (slide_index, shape_id, text), set_shape_geometry (slide_index, shape_id, left, top, width, height), add_text_box (slide_index, name, text, left, top, width, height), delete_shape (slide_index, shape_id), and duplicate_slide (slide_index; it must be the only operation).',
     inputSchema: {
       type: 'object',
       properties: {
-        code: { type: 'string', minLength: 1, maxLength: MAX_CODE },
+        program: declarativeProgramSchema,
         explanation: { type: 'string', maxLength: 100 },
       },
-      required: ['code'],
+      required: ['program'],
       additionalProperties: false,
     },
   },
@@ -134,9 +186,9 @@ const tools = [
       type: 'object',
       properties: {
         ...slideProperties,
-        code: { type: 'string', minLength: 1, maxLength: MAX_CODE },
+        program: xmlProgramSchema,
       },
-      required: ['slide_index', 'code'],
+      required: ['slide_index', 'program'],
       additionalProperties: false,
     },
   },
@@ -148,9 +200,9 @@ const tools = [
       type: 'object',
       properties: {
         ...slideProperties,
-        code: { type: 'string', minLength: 1, maxLength: MAX_CODE },
+        program: xmlProgramSchema,
       },
-      required: ['slide_index', 'code'],
+      required: ['slide_index', 'program'],
       additionalProperties: false,
     },
   },
@@ -160,10 +212,10 @@ const tools = [
     inputSchema: {
       type: 'object',
       properties: {
-        code: { type: 'string', minLength: 1, maxLength: MAX_CODE },
+        program: xmlProgramSchema,
         explanation: { type: 'string', maxLength: 50 },
       },
-      required: ['code'],
+      required: ['program'],
       additionalProperties: false,
     },
   },
@@ -231,6 +283,49 @@ function exactRecord(value: unknown, keys: string[]): Record<string, unknown> {
   const record = value as Record<string, unknown>
   if (Object.keys(record).some((key) => !keys.includes(key))) throw new Error('invalid_tool_input')
   return record
+}
+
+function declarativeInput(
+  value: unknown,
+  options: { slide: boolean; explanationMax: number },
+): { code: string; explanation?: string; slide_index?: number } {
+  const keys = options.slide
+    ? ['slide_index', 'program', 'code', 'explanation']
+    : ['program', 'code', 'explanation']
+  const input = exactRecord(value, keys)
+  if ((input.program === undefined) === (input.code === undefined))
+    throw new Error('invalid_tool_input')
+  if (
+    input.explanation !== undefined &&
+    (typeof input.explanation !== 'string' || input.explanation.length > options.explanationMax)
+  )
+    throw new Error('invalid_tool_input')
+  if (
+    options.slide &&
+    (!Number.isInteger(input.slide_index) ||
+      (input.slide_index as number) < 0 ||
+      (input.slide_index as number) > MAX_SLIDE_INDEX)
+  )
+    throw new Error('invalid_tool_input')
+  let code: string
+  if (input.code !== undefined) {
+    if (typeof input.code !== 'string' || !input.code || input.code.length > MAX_CODE)
+      throw new Error('invalid_tool_input')
+    code = input.code
+  } else {
+    try {
+      code = JSON.stringify(input.program)
+    } catch {
+      throw new Error('invalid_tool_input')
+    }
+    if (!code || new TextEncoder().encode(code).byteLength > MAX_CODE)
+      throw new Error('invalid_tool_input')
+  }
+  return {
+    code,
+    ...(typeof input.explanation === 'string' ? { explanation: input.explanation } : {}),
+    ...(options.slide ? { slide_index: input.slide_index as number } : {}),
+  }
 }
 
 function sameGeometry(actual: number, expected: number): boolean {
@@ -596,7 +691,7 @@ export function createPowerPointSkill(options: {
           }
         }
         if (call.name === 'execute_office_js') {
-          const input = codeInput(call.input)
+          const input = declarativeInput(call.input, { slide: false, explanationMax: 100 })
           const program = parseDeclarativeProgram(input.code, parsePowerPointOperation)
           if (
             program.operations.some((operation) => operation.op === 'duplicate_slide') &&
@@ -742,7 +837,7 @@ export function createPowerPointSkill(options: {
           }
         }
         if (call.name === 'edit_slide_master') {
-          const input = masterCodeInput(call.input)
+          const input = declarativeInput(call.input, { slide: false, explanationMax: 50 })
           return await proposePackageEdit(
             call.name,
             'master',
@@ -753,11 +848,11 @@ export function createPowerPointSkill(options: {
           )
         }
         if (call.name === 'edit_slide_xml' || call.name === 'edit_slide_chart') {
-          const input = slideCodeInput(call.input)
+          const input = declarativeInput(call.input, { slide: true, explanationMax: 50 })
           return await proposePackageEdit(
             call.name,
             call.name === 'edit_slide_chart' ? 'chart' : 'slide',
-            input.slide_index,
+            input.slide_index!,
             parseXmlProgram(input.code),
             input.explanation,
             signal,

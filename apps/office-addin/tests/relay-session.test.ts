@@ -212,10 +212,24 @@ describe('Office cloud relay session', () => {
       }),
     )
     await expect(staged).resolves.toBeUndefined()
+    const invalidInput = session.sendDiagnostic({
+      ...diagnostic,
+      event_id: '00000000-0000-4000-8000-000000000004',
+      error_code: 'invalid_tool_input',
+    })
+    expect(frame(socket, 3).error_code).toBe('agent_run_failed')
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.diagnostic.accepted',
+        event_id: '00000000-0000-4000-8000-000000000004',
+      }),
+    )
+    await expect(invalidInput).resolves.toBeUndefined()
     await expect(
       session.sendDiagnostic({ ...diagnostic, tool: 'x'.repeat(5_000) }),
     ).rejects.toThrow('diagnostic_too_large')
-    expect(socket.sent).toHaveLength(3)
+    expect(socket.sent).toHaveLength(4)
   })
 
   it('keeps Agent streaming usable after a nonfatal diagnostic limit response', async () => {
