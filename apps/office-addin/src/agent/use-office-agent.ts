@@ -126,7 +126,7 @@ const safeConfirmationError = (error: unknown): SafeSessionError => {
 }
 
 const safeRunError = (error: string): SafeSessionError =>
-  runErrors[error] ?? {
+  runErrors[error === 'transport_timeout' ? 'request_timeout' : error] ?? {
     code: 'agent_run_failed',
     message: 'The Agent could not complete this request. Try again.',
     retryable: true,

@@ -472,7 +472,7 @@ describe('Office relay PC client', () => {
     expect(client.status()).toBe('paired')
   })
 
-  it('lets Relay own the 120s deadline and tolerates its late cancel after the 125s watchdog', async () => {
+  it('lets Relay own the 300s deadline and tolerates its late cancel after the 305s watchdog', async () => {
     vi.useFakeTimers()
     const socket = new FakeSocket()
     let aborted = false
@@ -518,7 +518,7 @@ describe('Office relay PC client', () => {
       request_id: 'request_12345678',
       body: {},
     })
-    await vi.advanceTimersByTimeAsync(120_000)
+    await vi.advanceTimersByTimeAsync(300_000)
     expect(aborted).toBe(false)
     await vi.advanceTimersByTimeAsync(5_000)
     expect(aborted).toBe(true)

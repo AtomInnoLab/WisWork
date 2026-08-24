@@ -8,8 +8,8 @@ const MAX_CONTROL_BYTES = 16 * 1024
 const MAX_REQUEST_BYTES = 256 * 1024
 const MAX_CHUNK_BYTES = 64 * 1024
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024
-// Relay owns the 120s deadline; this only handles a lost relay.cancel.
-const REQUEST_TIMEOUT_MS = 125_000
+// Relay owns the 300s deadline; this only handles a lost relay.cancel.
+const REQUEST_TIMEOUT_MS = 305_000
 const CONNECT_TIMEOUT_MS = 10_000
 // Relay owns the renewable idle TTL. PC keeps only a bounded absolute-lifetime watchdog.
 const SESSION_ABSOLUTE_MAX_MS = 8 * 60 * 60 * 1_000

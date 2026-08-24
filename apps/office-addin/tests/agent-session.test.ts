@@ -517,6 +517,25 @@ describe('Office agent session', () => {
     expect(JSON.stringify(session.snapshot())).not.toContain('secret')
   })
 
+  it('reports the bounded transport deadline as a retryable request timeout', async () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+    })
+
+    session.send('Build a complex presentation')
+    await Promise.resolve()
+    harness.callbacks().onError('transport_timeout')
+
+    expect(session.snapshot()).toMatchObject({
+      error: 'request_timeout',
+      errorMessage: 'The Agent took too long to respond. Try again.',
+      retryable: true,
+    })
+  })
+
   it('does not retry a known non-retryable authentication failure', async () => {
     const harness = transportHarness()
     const session = createOfficeAgentSession({

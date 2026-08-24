@@ -63,7 +63,7 @@ impl Default for Config {
             pairing_ttl: Duration::from_secs(120),
             session_ttl: Duration::from_secs(1800),
             session_max_ttl: Duration::from_secs(8 * 60 * 60),
-            request_ttl: Duration::from_secs(120),
+            request_ttl: Duration::from_secs(300),
             max_claim_attempts: 5,
             max_global_claims: 1_000,
             diagnostic_window: Duration::from_secs(1),
