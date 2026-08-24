@@ -116,7 +116,9 @@ import { cfRuleUnsaveableReason, iconSetSaveable } from '../gateway/xlsx-cf'
 import type { ApplyOutcome, ChangePlan } from '../domain/workbook.types'
 import { createElectronTransport } from './ai/transport'
 import {
+  createAsyncGenerationGate,
   createAgentController,
+  createSheetsChatLoadCoordinator,
   bindSheetsSession,
   restoreSheetsSession,
   selectSheetsExecution,
@@ -611,11 +613,13 @@ export function App(): React.JSX.Element {
   /** Synchronous re-entrancy guard between runAgent trigger and loop.run
    * (loop.busy is still false while attachment images load asynchronously) */
   const runStartingRef = useRef(false)
+  const runLaunchGateRef = useRef(createAsyncGenerationGate())
   /** The shell can repeat its queued-open nudge while the renderer starts.
    * Only one picker/open request may own the workbook session at a time. */
   const workbookOpeningRef = useRef(false)
   /** Current session's projectId/chatId (resolved when the workbook opens) */
   const chatRefIdsRef = useRef<{ projectId: string; chatId: string } | null>(null)
+  const chatLoadCoordinatorRef = useRef(createSheetsChatLoadCoordinator())
   const harnessSessionIdRef = useRef<string | number | undefined>(undefined)
 
   // File renamed externally (in the shell Home list) → sync the title-bar file
@@ -710,64 +714,74 @@ export function App(): React.JSX.Element {
   // ── project-store: resolve chatId and load history when a workbook opens ──
   useEffect(() => {
     const sessionId = workbookFile?.sessionId
+    runLaunchGateRef.current.invalidate()
+    runStartingRef.current = false
     if (agentLoopRef.current)
       bindSheetsSession(agentLoopRef.current, harnessSessionIdRef, sessionId)
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!api) return
     // Reset (new workbook or new session)
     chatRefIdsRef.current = null
+    setChat([])
     setHistoricChat([])
+    setAttachments([])
+    sentAttachmentsRef.current = []
+    setAiBusy(false)
+    const loadToken = chatLoadCoordinatorRef.current.begin()
+    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
+    if (!api) return () => chatLoadCoordinatorRef.current.invalidate()
     const tempChatId = `unsaved-${Date.now()}`
     const resolveArgs: Parameters<typeof api.resolveChat>[0] = { filePath: null, tempChatId }
     if (sessionId !== undefined) resolveArgs.sessionId = sessionId
     void api
       .resolveChat(resolveArgs)
       .then(async (ids) => {
-        chatRefIdsRef.current = ids
         const msgs = await api.loadChat({
           projectId: ids.projectId,
           chatId: ids.chatId,
           limit: 200,
         })
-        if (msgs.length === 0) return
-        setHistoricChat(
-          msgs.map((m) => ({
-            role: m.role,
-            text: m.text,
-            tools:
-              m.tools?.map((t) => ({
-                summary: t.summary,
-                isError: !!t.isError,
-                ...(t.name ? { name: t.name } : {}),
-                ...(t.output ? { output: t.output.slice(0, 2000) } : {}),
-              })) ?? [],
-            // stored metadata only: no thumbnail read for history, the chips render name/size
-            ...(m.attachments && m.attachments.length > 0
-              ? {
-                  attachments: m.attachments
-                    .filter((a) => a.path)
-                    .map((a) => ({
-                      name: a.name,
-                      path: a.path ?? '',
-                      ext: a.ext ?? '',
-                      sizeBytes: a.sizeBytes ?? 0,
-                    })),
-                }
-              : {}),
-          })),
-        )
-        // Restore model context: follow-ups after reopening the file continue the
-        // previous conversation (only when the loop is idle and has no history)
-        restoreSheetsSession(
-          agentLoopRef.current,
-          sessionId,
-          () => harnessSessionIdRef.current,
-          msgs.map((m) => ({ role: m.role, text: m.text })),
-        )
+        const historicMessages = msgs.map((m) => ({
+          role: m.role,
+          text: m.text,
+          tools:
+            m.tools?.map((t) => ({
+              summary: t.summary,
+              isError: !!t.isError,
+              ...(t.name ? { name: t.name } : {}),
+              ...(t.output ? { output: t.output.slice(0, 2000) } : {}),
+            })) ?? [],
+          // stored metadata only: no thumbnail read for history, the chips render name/size
+          ...(m.attachments && m.attachments.length > 0
+            ? {
+                attachments: m.attachments
+                  .filter((a) => a.path)
+                  .map((a) => ({
+                    name: a.name,
+                    path: a.path ?? '',
+                    ext: a.ext ?? '',
+                    sizeBytes: a.sizeBytes ?? 0,
+                  })),
+              }
+            : {}),
+        }))
+        chatLoadCoordinatorRef.current.commit(loadToken, () => {
+          chatRefIdsRef.current = ids
+          setHistoricChat(historicMessages)
+          // Restore model context: follow-ups after reopening the file continue the
+          // previous conversation (only when the loop is idle and has no history)
+          if (msgs.length > 0) {
+            restoreSheetsSession(
+              agentLoopRef.current,
+              sessionId,
+              () => harnessSessionIdRef.current,
+              msgs.map((m) => ({ role: m.role, text: m.text })),
+            )
+          }
+        })
       })
       .catch(() => {
         /* silent */
       })
+    return () => chatLoadCoordinatorRef.current.invalidate()
   }, [workbookFile?.sessionId])
 
   const persistChatMessage = (
@@ -1001,6 +1015,13 @@ export function App(): React.JSX.Element {
     })
   }
   useAgentControllerCleanup(agentLoopRef)
+  useEffect(
+    () => () => {
+      runLaunchGateRef.current.invalidate()
+      runStartingRef.current = false
+    },
+    [],
+  )
 
   function isAgentConfigured(): boolean {
     const settings = aiSettingsRef.current
@@ -1040,6 +1061,7 @@ export function App(): React.JSX.Element {
     const loop = agentLoopRef.current
     if (!instruction.trim() || !loop || loop.snapshot.busy || runStartingRef.current) return
     runStartingRef.current = true
+    const launchToken = runLaunchGateRef.current.begin()
     aiApplyPromisesRef.current = []
     runLastTextRef.current = ''
     runMutatedRef.current = false
@@ -1048,12 +1070,16 @@ export function App(): React.JSX.Element {
     appendChat({ role: 'assistant', text: '', tools: [], streaming: true })
     void collectImageAttachments(sentAttachments)
       .then((images) => {
-        runStartingRef.current = false
-        loop.run(instruction, images)
+        runLaunchGateRef.current.commit(launchToken, () => {
+          runStartingRef.current = false
+          loop.run(instruction, images)
+        })
       })
       .catch(() => {
-        runStartingRef.current = false
-        loop.run(instruction)
+        runLaunchGateRef.current.commit(launchToken, () => {
+          runStartingRef.current = false
+          loop.run(instruction)
+        })
       })
   }
 
@@ -1089,10 +1115,25 @@ export function App(): React.JSX.Element {
   }
 
   function handleStopAgent(): void {
+    const stoppedBeforeLaunch = runStartingRef.current
+    runLaunchGateRef.current.invalidate()
+    runStartingRef.current = false
     agentLoopRef.current?.stop()
+    if (stoppedBeforeLaunch) {
+      setAiBusy(false)
+      setMessage(t('appAiStopped'))
+      patchLastAssistant((entry) => ({
+        ...entry,
+        text: t('appAiStopped'),
+        streaming: false,
+        tools: entry.tools.filter((tool) => !tool.running),
+      }))
+    }
   }
 
   function handleNewChat(): void {
+    runLaunchGateRef.current.invalidate()
+    runStartingRef.current = false
     agentLoopRef.current?.reset()
     setAiBusy(false)
     setChat([])

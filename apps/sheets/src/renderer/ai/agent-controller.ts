@@ -75,6 +75,29 @@ export function useAgentControllerCleanup<TSnapshot>(ref: AgentControllerRef<TSn
 export const selectSheetsExecution = (agentConfigured: boolean): 'agent' | 'planner' =>
   agentConfigured ? 'agent' : 'planner'
 
+export interface AsyncGenerationGate {
+  begin(): number
+  invalidate(): void
+  commit(token: number, effect: () => void): boolean
+}
+
+export function createAsyncGenerationGate(): AsyncGenerationGate {
+  let generation = 0
+  return {
+    begin: () => ++generation,
+    invalidate: () => {
+      generation += 1
+    },
+    commit: (token, effect) => {
+      if (token !== generation) return false
+      effect()
+      return true
+    },
+  }
+}
+
+export const createSheetsChatLoadCoordinator = createAsyncGenerationGate
+
 export function bindSheetsSession<TSnapshot>(
   controller: AgentHarness<TSnapshot>,
   binding: { current: string | number | undefined },

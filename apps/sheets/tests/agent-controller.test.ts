@@ -4,7 +4,9 @@ import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentStreamCallbacks, AgentTransport } from '@wiswork/agent-core'
 import {
+  createAsyncGenerationGate,
   createAgentController,
+  createSheetsChatLoadCoordinator,
   bindSheetsSession,
   disposeAgentController,
   restoreSheetsSession,
@@ -40,6 +42,43 @@ const skill = {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('Sheets agent controller', () => {
+  it('atomically rejects every side effect from a stale session chat load', () => {
+    const coordinator = createSheetsChatLoadCoordinator()
+    const effects: string[] = []
+    const sessionA = coordinator.begin()
+    const sessionB = coordinator.begin()
+
+    expect(
+      coordinator.commit(sessionA, () => {
+        effects.push('setHistoricChat(A)', 'chatRefIdsRef=A', 'restore(A)')
+      }),
+    ).toBe(false)
+    expect(effects).toEqual([])
+    expect(
+      coordinator.commit(sessionB, () => {
+        effects.push('setHistoricChat(B)', 'chatRefIdsRef=B', 'restore(B)')
+      }),
+    ).toBe(true)
+    expect(effects).toEqual(['setHistoricChat(B)', 'chatRefIdsRef=B', 'restore(B)'])
+  })
+
+  it('invalidates an async prelaunch so late attachment work cannot start the old run', async () => {
+    const gate = createAsyncGenerationGate()
+    const run = vi.fn()
+    let finishImages!: () => void
+    const images = new Promise<void>((resolve) => {
+      finishImages = resolve
+    })
+    const token = gate.begin()
+    const launch = images.then(() => gate.commit(token, run))
+
+    gate.invalidate()
+    finishImages()
+    await launch
+
+    expect(run).not.toHaveBeenCalled()
+  })
+
   it('runs, stops without clearing history, resets, and restores session-bound history', async () => {
     const transport = manualTransport()
     const controller = createAgentController({ transport, skill })
