@@ -72,6 +72,9 @@ describe('Excel compatibility skill', () => {
       'eval_officejs',
     ])
     expect(skill.tools.every((tool) => tool.inputSchema.additionalProperties === false)).toBe(true)
+    expect(skill.tools.find((tool) => tool.name === 'set_cell_range')?.description).toContain(
+      'allow_overwrite',
+    )
   })
 
   it('validates exact bounded read inputs and returns normalized data', async () => {
@@ -1125,6 +1128,39 @@ describe('browser Excel adapter', () => {
     expect(destination.copyFrom).toHaveBeenCalledWith(source, 'All')
     expect(format.autofitColumns).toHaveBeenCalledOnce()
     expect(format.autofitRows).toHaveBeenCalledOnce()
+  })
+
+  it('reports an occupied target as requiring explicit overwrite permission', async () => {
+    const range = {
+      values: [['existing']],
+      load: vi.fn(),
+      getCell: vi.fn(),
+      getResizedRange: vi.fn(),
+    }
+    range.getCell.mockReturnValue(range)
+    range.getResizedRange.mockReturnValue(range)
+    Object.assign(globalThis, {
+      Office: {
+        context: { host: 'Excel', requirements: { isSetSupported: vi.fn().mockReturnValue(true) } },
+      },
+      Excel: {
+        run: (cb: (ctx: unknown) => unknown) =>
+          cb({
+            workbook: {
+              worksheets: { getItemAt: () => ({ getRange: () => range }) },
+            },
+            sync: vi.fn(),
+          }),
+      },
+    })
+
+    await expect(
+      new BrowserExcelAdapter().setCellRange({
+        sheetId: 1,
+        range: 'G1',
+        cells: [[{ value: 1 }]],
+      }),
+    ).rejects.toThrow('office_overwrite_required')
   })
 
   it('cancels before entering Excel.run for every write family', async () => {

@@ -732,7 +732,7 @@ export class BrowserExcelAdapter implements ExcelAdapter {
           if (
             r.values.some((row: unknown[]) => row.some((value) => value !== null && value !== ''))
           )
-            throw new Error('office_write_failed')
+            throw new Error('office_overwrite_required')
         }
         for (let row = 0; row < rows; row++)
           for (let column = 0; column < columns; column++) {
