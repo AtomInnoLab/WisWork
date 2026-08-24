@@ -1,9 +1,13 @@
-import { act, createElement } from 'react'
+import { act, createElement, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentStreamCallbacks, AgentTransport } from '@wiswork/agent-core'
 import {
   createAgentController,
+  beginSlidesHostRun,
+  completeSlidesHostRun,
+  stopSlidesHostRun,
+  recordSlidesRunAttachments,
   useAgentControllerCleanup,
 } from '../src/renderer/ai/agent-controller'
 
@@ -119,11 +123,94 @@ describe('Slides interactive agent controller', () => {
     await flush()
     const callbacks = transport.callbacks[0]!
     act(() => root.unmount())
+    await flush()
     callbacks.onToolCall({ id: 'late', name: 'execute_slide_script', input: {} })
     callbacks.onDone()
     await flush()
     expect(ref.current).toBeNull()
     expect(transport.cancels).toBe(1)
     expect(hostHook).not.toHaveBeenCalled()
+  })
+
+  it('survives StrictMode replay, restores and runs, then suppresses late callbacks after real unmount', async () => {
+    const transport = manualTransport()
+    const done = vi.fn()
+    const ref = { current: createAgentController({ transport, skill, events: { onDone: done } }) }
+    const Probe = () => {
+      useAgentControllerCleanup(ref)
+      return null
+    }
+    const root = createRoot(document.createElement('div'))
+    act(() => root.render(createElement(StrictMode, null, createElement(Probe))))
+    await flush()
+    ref.current?.restore([{ role: 'user', text: 'restored deck' }])
+    expect(ref.current?.run('after replay')).toBe(true)
+    await flush()
+    const callbacks = transport.callbacks[0]!
+    act(() => root.unmount())
+    await flush()
+    callbacks.onDone()
+    await flush()
+    expect(ref.current).toBeNull()
+    expect(done).not.toHaveBeenCalled()
+  })
+
+  it('uses the production Slides coordinator for attachments, history snapshots, QC, and clarification stop', async () => {
+    const order: string[] = []
+    const attachments = [{ name: 'brief.pdf', path: '/brief.pdf' }]
+    recordSlidesRunAttachments(attachments, (_attachments) => {
+      expect(_attachments).toBe(attachments)
+      order.push('attachments')
+    })
+    await beginSlidesHostRun({
+      beginHistoryBatch: async () => {
+        order.push('begin-history')
+        return true
+      },
+      markHistoryActive: () => order.push('history-active'),
+      run: () => order.push('run'),
+    })
+    await completeSlidesHostRun({
+      cancelled: false,
+      finishHistoryBatch: async () => order.push('snapshot'),
+      hasQcPages: () => true,
+      clearQcPages: () => order.push('clear-qc'),
+      runQc: () => order.push('qc'),
+      setBusy: (busy) => order.push(`busy:${busy}`),
+    })
+    stopSlidesHostRun({
+      dismissClarification: () => order.push('clarification'),
+      abortQc: () => order.push('abort-qc'),
+      stop: () => order.push('stop'),
+    })
+    expect(order).toEqual([
+      'attachments',
+      'begin-history',
+      'history-active',
+      'run',
+      'snapshot',
+      'busy:false',
+      'qc',
+      'clarification',
+      'abort-qc',
+      'stop',
+    ])
+  })
+
+  it('settles busy state and schedules QC even when snapshot finalization rejects', async () => {
+    const settled = vi.fn()
+    const qc = vi.fn()
+    await expect(
+      completeSlidesHostRun({
+        cancelled: false,
+        finishHistoryBatch: () => Promise.reject(new Error('snapshot failed')),
+        hasQcPages: () => true,
+        clearQcPages: vi.fn(),
+        runQc: qc,
+        setBusy: settled,
+      }),
+    ).rejects.toThrow('snapshot failed')
+    expect(settled).toHaveBeenCalledWith(false)
+    expect(qc).toHaveBeenCalledOnce()
   })
 })

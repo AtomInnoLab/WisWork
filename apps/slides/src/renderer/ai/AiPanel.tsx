@@ -13,7 +13,14 @@ import { createSlidesSkill, type DeckAccess, type ClarifyQuestion } from './slid
 import { extractJsonObject, parseOutlineJson } from './outline-json'
 import { createFilesSkill } from './files-skill'
 import { createElectronTransport } from './transport'
-import { createAgentController, useAgentControllerCleanup } from './agent-controller'
+import {
+  beginSlidesHostRun,
+  completeSlidesHostRun,
+  createAgentController,
+  recordSlidesRunAttachments,
+  stopSlidesHostRun,
+  useAgentControllerCleanup,
+} from './agent-controller'
 import { renderSlidesToPngBase64 } from '../export-render'
 import { isQcEnabled, qcSlidePage, QC_MAX_PAGES } from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
@@ -961,11 +968,15 @@ export function AiPanel({
             }
             return next
           })
-          void finishHistoryBatch().finally(() => {
-            setBusy(false)
-            // Post-generation layout QC: only after a completed run that landed generated pages
-            if (cancelled) qcPagesRef.current = []
-            else if (qcPagesRef.current.length > 0) void runQcPassRef.current()
+          void completeSlidesHostRun({
+            cancelled,
+            finishHistoryBatch,
+            hasQcPages: () => qcPagesRef.current.length > 0,
+            clearQcPages: () => {
+              qcPagesRef.current = []
+            },
+            runQc: () => void runQcPassRef.current(),
+            setBusy,
           })
           // Persist the assistant message; tools store the whole run's full activity —
           // side effects outside the updater (StrictMode double-invokes updaters, duplicating history writes)
@@ -1158,8 +1169,10 @@ export function AiPanel({
     ])
     runStartedAtRef.current = Date.now()
     setBusy(true)
-    // Persist the user message (store display text + attachment metadata; loop.restore rebuilds model context on file reopen)
-    persistMessage('user', shown, undefined, sentAtts)
+    // Store the user turn before async attachment reads so a local read failure cannot lose it.
+    recordSlidesRunAttachments(sentAtts, (runAttachments) =>
+      persistMessage('user', shown, undefined, [...runAttachments]),
+    )
     void collectImageAttachments(sentAtts)
       .then(async (images) => {
         // AI Beautify sends the current slide's rendering along, so the model sees what it edits;
@@ -1174,8 +1187,15 @@ export function AiPanel({
         }
         // Clear the flag before run: loop.run sets running synchronously, leaving no re-entry window
         runStartingRef.current = false
-        if (await window.slidesApi.beginHistoryBatch()) historyBatchActiveRef.current = true
-        loop.run(modelInstruction, images)
+        await beginSlidesHostRun({
+          beginHistoryBatch: () => window.slidesApi.beginHistoryBatch(),
+          markHistoryActive: () => {
+            historyBatchActiveRef.current = true
+          },
+          run: () => {
+            loop.run(modelInstruction, images)
+          },
+        })
       })
       .catch(() => {
         runStartingRef.current = false
@@ -1284,9 +1304,11 @@ export function AiPanel({
   }
 
   const cancel = () => {
-    dismissClarify()
-    qcAbortRef.current?.abort()
-    loopRef.current?.stop()
+    stopSlidesHostRun({
+      dismissClarification: dismissClarify,
+      abortQc: () => qcAbortRef.current?.abort(),
+      stop: () => loopRef.current?.stop(),
+    })
   }
 
   // Abort a QC pass still running when the panel unmounts (new file / panel remount by key)

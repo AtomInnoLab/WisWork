@@ -115,7 +115,13 @@ import { InMemoryWorkbookAdapter } from '../domain/in-memory-workbook'
 import { cfRuleUnsaveableReason, iconSetSaveable } from '../gateway/xlsx-cf'
 import type { ApplyOutcome, ChangePlan } from '../domain/workbook.types'
 import { createElectronTransport } from './ai/transport'
-import { createAgentController, useAgentControllerCleanup } from './ai/agent-controller'
+import {
+  createAgentController,
+  restoreSheetsSession,
+  selectSheetsExecution,
+  settleSheetsApplyPromises,
+  useAgentControllerCleanup,
+} from './ai/agent-controller'
 import type { ActiveSheetInfo, SheetsSkillDeps } from './ai/tools'
 import type { AiChatMessage } from './ai/AiChatPanel'
 import { createWorkbookSkill } from './ai/workbook-skill'
@@ -609,6 +615,8 @@ export function App(): React.JSX.Element {
   const workbookOpeningRef = useRef(false)
   /** Current session's projectId/chatId (resolved when the workbook opens) */
   const chatRefIdsRef = useRef<{ projectId: string; chatId: string } | null>(null)
+  const workbookSessionIdRef = useRef(workbookFile?.sessionId)
+  workbookSessionIdRef.current = workbookFile?.sessionId
 
   // File renamed externally (in the shell Home list) → sync the title-bar file
   // name (the save path is synced by the main process)
@@ -748,7 +756,12 @@ export function App(): React.JSX.Element {
         )
         // Restore model context: follow-ups after reopening the file continue the
         // previous conversation (only when the loop is idle and has no history)
-        agentLoopRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
+        restoreSheetsSession(
+          agentLoopRef.current,
+          sessionId,
+          () => workbookSessionIdRef.current,
+          msgs.map((m) => ({ role: m.role, text: m.text })),
+        )
       })
       .catch(() => {
         /* silent */
@@ -2154,7 +2167,7 @@ export function App(): React.JSX.Element {
     // bubble, images multimodal, files via the files skill) and the composer clears.
     // Retry passes the failed message's original set instead.
     const sentAtts = overrideAttachments ?? attachmentsRef.current
-    const agentConfigured = isAgentConfigured()
+    const execution = selectSheetsExecution(isAgentConfigured())
     appendChat({
       role: 'user',
       text: instruction,
@@ -2175,7 +2188,7 @@ export function App(): React.JSX.Element {
     // real LLM configured → let the agent read context and propose operations;
     // otherwise fall back to the local, deterministic regex planner
     // (kept for offline use and for the fixed micro-DSL it still supports).
-    if (agentConfigured) {
+    if (execution === 'agent') {
       runAgent(instruction, sentAtts)
       return
     }
@@ -2272,40 +2285,37 @@ export function App(): React.JSX.Element {
    * successful writes in one save. A canceled/failed Save As leaves both the
    * journal and inline undo available. */
   async function autoSaveCompletedAiRun(): Promise<void> {
-    const applies = aiApplyPromisesRef.current
-    aiApplyPromisesRef.current = []
-    if (applies.length === 0) return
-    const results = await Promise.all(applies)
-    if (!results.some(Boolean)) return
-    const state = lazyWorkbookRef.current
-    if (!state || journalSize(state.editJournal) === 0) return
-    // AutoSave off = the user decides when the file is written: the
-    // run's edits stay pending in the journal, so the offered Undo / ⌘Z keeps
-    // working (saving would reopen the session and reset the undo stack).
-    if (!autoSaveRef.current) {
-      setMessage(t('appAiChangesNotSaved'))
-      return
-    }
-    // AutoSave-driven write after an AI run: silent like the interval autosave.
-    await handleSave('save', true)
-    const after = lazyWorkbookRef.current
-    if (after && journalSize(after.editJournal) === 0) {
-      // Saving reopens the sidecar session and resets Univer's undo stack.
-      patchLastAssistant(({ autoApplied: _autoApplied, ...entry }) => entry)
-      // Sheets' analog of slides' deckName: propose the first AI-named sheet as
-      // the file name. The main process no-ops unless the file still carries the
-      // shell's auto-created untitled name, so user-chosen names are never touched.
-      const candidate = after.file.sheets
-        .map((sheet) => sheet.name.trim())
-        .find((name) => name.length > 0 && !DEFAULT_SHEET_NAME_RE.test(name))
-      if (candidate) {
-        try {
-          await window.desktopApi.autoRenameWorkbook(after.file.sessionId, candidate)
-        } catch {
-          // naming is best-effort; the save itself already succeeded
+    await settleSheetsApplyPromises(aiApplyPromisesRef.current, async () => {
+      const state = lazyWorkbookRef.current
+      if (!state || journalSize(state.editJournal) === 0) return
+      // AutoSave off = the user decides when the file is written: the
+      // run's edits stay pending in the journal, so the offered Undo / ⌘Z keeps
+      // working (saving would reopen the session and reset the undo stack).
+      if (!autoSaveRef.current) {
+        setMessage(t('appAiChangesNotSaved'))
+        return
+      }
+      // AutoSave-driven write after an AI run: silent like the interval autosave.
+      await handleSave('save', true)
+      const after = lazyWorkbookRef.current
+      if (after && journalSize(after.editJournal) === 0) {
+        // Saving reopens the sidecar session and resets Univer's undo stack.
+        patchLastAssistant(({ autoApplied: _autoApplied, ...entry }) => entry)
+        // Sheets' analog of slides' deckName: propose the first AI-named sheet as
+        // the file name. The main process no-ops unless the file still carries the
+        // shell's auto-created untitled name, so user-chosen names are never touched.
+        const candidate = after.file.sheets
+          .map((sheet) => sheet.name.trim())
+          .find((name) => name.length > 0 && !DEFAULT_SHEET_NAME_RE.test(name))
+        if (candidate) {
+          try {
+            await window.desktopApi.autoRenameWorkbook(after.file.sessionId, candidate)
+          } catch {
+            // naming is best-effort; the save itself already succeeded
+          }
         }
       }
-    }
+    })
   }
 
   /**

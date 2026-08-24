@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
-import { act, createElement } from 'react'
+import { act, createElement, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentStreamCallbacks, AgentTransport } from '@wiswork/agent-core'
 import {
   createAgentController,
   disposeAgentController,
+  restoreSheetsSession,
+  selectSheetsExecution,
+  settleSheetsApplyPromises,
   useAgentControllerCleanup,
 } from '../src/renderer/ai/agent-controller'
 
@@ -128,6 +131,7 @@ describe('Sheets agent controller', () => {
     await flush()
     const callbacks = transport.callbacks[0]!
     act(() => root.unmount())
+    await flush()
     callbacks.onToolCall({ id: 'late', name: 'apply_plan', input: {} })
     callbacks.onDone()
     await flush()
@@ -135,6 +139,66 @@ describe('Sheets agent controller', () => {
     expect(transport.cancels).toBe(1)
     expect(applyFinished).not.toHaveBeenCalled()
     expect(autosave).not.toHaveBeenCalled()
+  })
+
+  it('survives StrictMode replay, can restore and run, then terminally disposes on real unmount', async () => {
+    const transport = manualTransport()
+    const late = vi.fn()
+    const ref = {
+      current: createAgentController({ transport, skill, events: { onDone: late } }),
+    }
+    const Probe = () => {
+      useAgentControllerCleanup(ref)
+      return null
+    }
+    const root = createRoot(document.createElement('div'))
+    act(() => root.render(createElement(StrictMode, null, createElement(Probe))))
+    await flush()
+    expect(
+      restoreSheetsSession(ref.current, 'session-a', () => 'session-a', [
+        { role: 'user', text: 'restored' },
+      ]),
+    ).toBe(true)
+    expect(ref.current?.run('after replay')).toBe(true)
+    await flush()
+    const callbacks = transport.callbacks[0]!
+    act(() => root.unmount())
+    await flush()
+    callbacks.onDone()
+    await flush()
+    expect(ref.current).toBeNull()
+    expect(late).not.toHaveBeenCalled()
+  })
+
+  it('uses the production Sheets coordinator for planner choice, session binding, and apply-before-autosave', async () => {
+    expect(selectSheetsExecution(false)).toBe('planner')
+    expect(selectSheetsExecution(true)).toBe('agent')
+    const controller = createAgentController({ transport: manualTransport(), skill })
+    expect(
+      restoreSheetsSession(controller, 'stale-session', () => 'current-session', [
+        { role: 'user', text: 'wrong workbook' },
+      ]),
+    ).toBe(false)
+    expect(controller.messages).toEqual([])
+
+    let finishApply!: (ok: boolean) => void
+    const order: string[] = []
+    const applies = [
+      new Promise<boolean>((resolve) => {
+        finishApply = (ok) => {
+          order.push('apply')
+          resolve(ok)
+        }
+      }),
+    ]
+    const settled = settleSheetsApplyPromises(applies, async () => {
+      order.push('autosave')
+    })
+    expect(applies).toEqual([])
+    expect(order).toEqual([])
+    finishApply(true)
+    expect(await settled).toBe(true)
+    expect(order).toEqual(['apply', 'autosave'])
   })
 
   it('dispose helper is terminal and clears the owning ref', () => {
