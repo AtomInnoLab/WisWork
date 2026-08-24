@@ -97,12 +97,15 @@ export async function beginSlidesHostRun({
     if (opened) await finishHistoryBatch()
     return false
   }
+  // AgentHarness may synchronously project a launch failure through onError
+  // before run() returns. Mark the opened batch first so that callback can
+  // close it; a rejected launch closes it through the same host wrapper.
+  if (opened) markHistoryActive()
   const started = run()
   if (!started) {
     if (opened) await finishHistoryBatch()
     return false
   }
-  if (opened) markHistoryActive()
   return true
 }
 

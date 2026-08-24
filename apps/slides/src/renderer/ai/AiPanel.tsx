@@ -1195,7 +1195,7 @@ export function AiPanel({
           markHistoryActive: () => {
             historyBatchActiveRef.current = true
           },
-          finishHistoryBatch: () => window.slidesApi.endHistoryBatch(),
+          finishHistoryBatch,
           run: () => {
             return loop.run(modelInstruction, images)
           },

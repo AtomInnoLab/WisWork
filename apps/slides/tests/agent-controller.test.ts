@@ -186,8 +186,8 @@ describe('Slides interactive agent controller', () => {
     expect(order).toEqual([
       'attachments',
       'begin-history',
-      'run',
       'history-active',
+      'run',
       'snapshot',
       'busy:false',
       'qc',
@@ -243,5 +243,31 @@ describe('Slides interactive agent controller', () => {
     expect(finish).toHaveBeenCalledOnce()
     expect(active).not.toHaveBeenCalled()
     expect(run).not.toHaveBeenCalled()
+  })
+
+  it('activates the history batch before run callbacks can synchronously fail', async () => {
+    let active = false
+    const finish = vi.fn(async () => {
+      if (!active) return
+      active = false
+    })
+    const launched = await beginSlidesHostRun({
+      beginHistoryBatch: async () => true,
+      isCurrent: () => true,
+      markHistoryActive: () => {
+        active = true
+      },
+      finishHistoryBatch: finish,
+      run: () => {
+        // AgentHarness reports launch errors through the host callback before
+        // returning from run(). This models AiPanel's synchronous onError path.
+        void finish()
+        return true
+      },
+    })
+    await flush()
+    expect(launched).toBe(true)
+    expect(finish).toHaveBeenCalledOnce()
+    expect(active).toBe(false)
   })
 })
