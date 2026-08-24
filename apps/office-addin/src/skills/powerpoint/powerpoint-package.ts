@@ -196,6 +196,26 @@ export async function verifyPowerPointPackage(
   }
 }
 
+export async function verifyPowerPointPackageInputs(
+  base64: string,
+  expectedHashes: Readonly<Record<string, string>>,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (signal?.aborted) throw new Error('cancelled')
+  try {
+    const zip = await loadBoundedZip(base64, signal)
+    for (const [path, expectedHash] of Object.entries(expectedHashes)) {
+      if (signal?.aborted) throw new Error('cancelled')
+      const file = zip.file(path)
+      if (!file || hash(await file.async('string')) !== expectedHash) return false
+    }
+    return true
+  } catch (error) {
+    if (error instanceof Error && error.message === 'cancelled') throw error
+    return false
+  }
+}
+
 export async function capturePowerPointPackage(
   base64: string,
   signal?: AbortSignal,

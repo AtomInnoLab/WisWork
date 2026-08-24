@@ -86,22 +86,7 @@ describe('PowerPoint compatibility skill', () => {
       properties: { program: { properties: { operations: { items: unknown } } } }
     }
     const programSchema = executeSchema.properties.program
-    expect(programSchema.properties.operations.items).toMatchObject({
-      required: ['op', 'slide_index'],
-      properties: {
-        op: {
-          enum: [
-            'set_shape_text',
-            'set_shape_geometry',
-            'add_text_box',
-            'delete_shape',
-            'duplicate_slide',
-          ],
-        },
-        shape_id: { type: 'string' },
-        text: { type: 'string' },
-      },
-    })
+    expect(programSchema.properties.operations.items).toHaveProperty('anyOf')
   })
 
   it('normalizes reads, image display, and rejects unknown fields', async () => {
@@ -247,6 +232,49 @@ describe('PowerPoint compatibility skill', () => {
     expect(proposals.pending()?.preview).toEqual(program)
   })
 
+  it('reports a content-free program location for invalid operation fields', async () => {
+    const skill = createPowerPointSkill({
+      adapter: adapter(),
+      proposals: createStructuredProposalController(),
+    })
+    await expect(
+      skill.executeTool(
+        call('execute_office_js', {
+          program: { version: 1, operations: [{ op: 'add_text_box', slide_index: 0 }] },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      output: 'invalid_tool_input',
+      isError: true,
+      diagnosticError: {
+        code: 'InvalidToolInput',
+        debugInfo: { errorLocation: 'program.operations' },
+      },
+    })
+  })
+
+  it('reports a content-free program location for malformed streamed tool JSON', async () => {
+    const skill = createPowerPointSkill({
+      adapter: adapter(),
+      proposals: createStructuredProposalController(),
+    })
+    await expect(
+      skill.executeTool({
+        id: 'call-1',
+        name: 'execute_office_js',
+        input: {},
+        inputError: 'raw malformed JSON must not be retained',
+      }),
+    ).resolves.toMatchObject({
+      output: 'invalid_tool_input',
+      isError: true,
+      diagnosticError: {
+        code: 'InvalidToolInput',
+        debugInfo: { errorLocation: 'program' },
+      },
+    })
+  })
+
   it('accepts direct structured XML programs for slide and master edits', async () => {
     const zip = new JSZip()
     zip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
@@ -379,6 +407,94 @@ describe('PowerPoint compatibility skill', () => {
       await proposals.confirm(proposals.pending()!.id)
     }
     expect(fake.replaceSlidePackage).toHaveBeenCalledTimes(3)
+  })
+
+  it('validates master edits from the targeted XML instead of volatile package bytes', async () => {
+    const first = new JSZip()
+    first.file('ppt/slideMasters/slideMaster1.xml', '<p:sldMaster xmlns:p="urn:p"/>')
+    first.file('docProps/core.xml', '<core modified="one"/>')
+    const second = new JSZip()
+    second.file('ppt/slideMasters/slideMaster1.xml', '<p:sldMaster xmlns:p="urn:p"/>')
+    second.file('docProps/core.xml', '<core modified="two"/>')
+    let current = await first.generateAsync({ type: 'base64' })
+    const confirmSnapshot = await second.generateAsync({ type: 'base64' })
+    let exports = 0
+    const fake = adapter({
+      exportSlidePackage: vi.fn().mockImplementation(() => {
+        exports += 1
+        const base64 = exports === 2 || exports === 3 ? confirmSnapshot : current
+        return Promise.resolve({ slideId: 's1', base64, fingerprint: `volatile-${exports}` })
+      }),
+      replaceSlidePackage: vi.fn().mockImplementation((_index, base64) => {
+        current = base64
+        return Promise.resolve({ slideId: 's1' })
+      }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+
+    await skill.executeTool(
+      call('edit_slide_master', {
+        program: {
+          version: 1,
+          operations: [
+            {
+              op: 'replace_xml',
+              path: 'ppt/slideMasters/slideMaster1.xml',
+              xml: '<p:sldMaster xmlns:p="urn:p"><p:cSld/></p:sldMaster>',
+            },
+          ],
+        },
+      }),
+    )
+    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+    expect(fake.replaceSlidePackage).toHaveBeenCalledOnce()
+    const appliedBase64 = vi.mocked(fake.replaceSlidePackage).mock.calls[0]?.[1]
+    const applied = await JSZip.loadAsync(appliedBase64!, { base64: true })
+    await expect(applied.file('docProps/core.xml')?.async('string')).resolves.toContain('two')
+  })
+
+  it('does not overwrite a target XML change between validation and execution', async () => {
+    const original = new JSZip()
+    original.file('ppt/slideMasters/slideMaster1.xml', '<p:sldMaster xmlns:p="urn:p"/>')
+    const changed = new JSZip()
+    changed.file(
+      'ppt/slideMasters/slideMaster1.xml',
+      '<p:sldMaster xmlns:p="urn:p"><p:changed-by-user/></p:sldMaster>',
+    )
+    const originalBase64 = await original.generateAsync({ type: 'base64' })
+    const changedBase64 = await changed.generateAsync({ type: 'base64' })
+    let exports = 0
+    const fake = adapter({
+      exportSlidePackage: vi.fn().mockImplementation(() => {
+        exports += 1
+        return Promise.resolve({
+          slideId: 's1',
+          base64: exports < 3 ? originalBase64 : changedBase64,
+          fingerprint: `volatile-${exports}`,
+        })
+      }),
+      replaceSlidePackage: vi.fn(),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('edit_slide_master', {
+        program: {
+          version: 1,
+          operations: [
+            {
+              op: 'replace_xml',
+              path: 'ppt/slideMasters/slideMaster1.xml',
+              xml: '<p:sldMaster xmlns:p="urn:p"><p:cSld/></p:sldMaster>',
+            },
+          ],
+        },
+      }),
+    )
+
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+    expect(fake.replaceSlidePackage).not.toHaveBeenCalled()
   })
 
   it('executes only confirmed declarative PowerPoint operations and verifies text', async () => {

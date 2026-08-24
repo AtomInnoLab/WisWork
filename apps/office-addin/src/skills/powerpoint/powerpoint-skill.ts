@@ -10,6 +10,7 @@ import {
 import {
   editPowerPointPackage,
   verifyPowerPointPackage,
+  verifyPowerPointPackageInputs,
   type PackageEditKind,
   type XmlReplacement,
 } from './powerpoint-package.js'
@@ -20,6 +21,12 @@ const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
 const POWERPOINT_GEOMETRY_EPSILON = 0.01
 const POWERPOINT_CREATED_SHAPE_VERIFY_ATTEMPTS = 3
 const POWERPOINT_CREATED_SHAPE_VERIFY_DELAY_MS = 50
+const PROGRAM_TOOLS = new Set([
+  'execute_office_js',
+  'edit_slide_xml',
+  'edit_slide_chart',
+  'edit_slide_master',
+])
 const slideInput = exactObject({
   slide_index: integerField({ min: 0, max: MAX_SLIDE_INDEX }),
   explanation: optionalField(stringField({ maxLength: 50 })),
@@ -48,6 +55,10 @@ const geometryProperties = {
   width: { type: 'number', exclusiveMinimum: 0 },
   height: { type: 'number', exclusiveMinimum: 0 },
 } as const
+const exactOperation = (
+  properties: Readonly<Record<string, unknown>>,
+  required: readonly string[],
+) => ({ type: 'object', properties, required, additionalProperties: false }) as const
 const declarativeProgramSchema = {
   type: 'object',
   properties: {
@@ -57,26 +68,51 @@ const declarativeProgramSchema = {
       minItems: 1,
       maxItems: 32,
       items: {
-        type: 'object',
-        properties: {
-          op: {
-            type: 'string',
-            enum: [
-              'set_shape_text',
-              'set_shape_geometry',
-              'add_text_box',
-              'delete_shape',
-              'duplicate_slide',
-            ],
-          },
-          slide_index: operationSlideIndex,
-          shape_id: operationShapeId,
-          name: { type: 'string', minLength: 1, maxLength: 256 },
-          text: { type: 'string', maxLength: 12_000 },
-          ...geometryProperties,
-        },
-        required: ['op', 'slide_index'],
-        additionalProperties: false,
+        anyOf: [
+          exactOperation(
+            {
+              op: { type: 'string', enum: ['set_shape_text'] },
+              slide_index: operationSlideIndex,
+              shape_id: operationShapeId,
+              text: { type: 'string', maxLength: 12_000 },
+            },
+            ['op', 'slide_index', 'shape_id', 'text'],
+          ),
+          exactOperation(
+            {
+              op: { type: 'string', enum: ['set_shape_geometry'] },
+              slide_index: operationSlideIndex,
+              shape_id: operationShapeId,
+              ...geometryProperties,
+            },
+            ['op', 'slide_index', 'shape_id', 'left', 'top', 'width', 'height'],
+          ),
+          exactOperation(
+            {
+              op: { type: 'string', enum: ['add_text_box'] },
+              slide_index: operationSlideIndex,
+              name: { type: 'string', minLength: 1, maxLength: 256 },
+              text: { type: 'string', maxLength: 12_000 },
+              ...geometryProperties,
+            },
+            ['op', 'slide_index', 'name', 'text', 'left', 'top', 'width', 'height'],
+          ),
+          exactOperation(
+            {
+              op: { type: 'string', enum: ['delete_shape'] },
+              slide_index: operationSlideIndex,
+              shape_id: operationShapeId,
+            },
+            ['op', 'slide_index', 'shape_id'],
+          ),
+          exactOperation(
+            {
+              op: { type: 'string', enum: ['duplicate_slide'] },
+              slide_index: operationSlideIndex,
+            },
+            ['op', 'slide_index'],
+          ),
+        ],
       },
     },
   },
@@ -231,8 +267,20 @@ const tools = [
   },
 ] as const
 
-function failure(name: string, code: string): ToolExecution {
-  return { output: code, isError: true, mutated: false, summary: name }
+function failure(name: string, code: string, diagnosticError?: unknown): ToolExecution {
+  return {
+    output: code,
+    isError: true,
+    mutated: false,
+    summary: name,
+    ...(diagnosticError === undefined ? {} : { diagnosticError }),
+  }
+}
+function invalidToolInput(location: 'program' | 'program.operations'): Error {
+  return Object.assign(new Error('invalid_tool_input'), {
+    code: 'InvalidToolInput',
+    debugInfo: { errorLocation: location },
+  })
 }
 function assertNotCancelled(signal?: AbortSignal): void {
   if (signal?.aborted) throw new Error('cancelled')
@@ -278,8 +326,7 @@ function fingerprint(value: string): string {
 }
 
 function exactRecord(value: unknown, keys: string[]): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value))
-    throw new Error('invalid_tool_input')
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalidToolInput('program')
   const record = value as Record<string, unknown>
   if (Object.keys(record).some((key) => !keys.includes(key))) throw new Error('invalid_tool_input')
   return record
@@ -294,12 +341,12 @@ function declarativeInput(
     : ['program', 'code', 'explanation']
   const input = exactRecord(value, keys)
   if ((input.program === undefined) === (input.code === undefined))
-    throw new Error('invalid_tool_input')
+    throw invalidToolInput('program')
   if (
     input.explanation !== undefined &&
     (typeof input.explanation !== 'string' || input.explanation.length > options.explanationMax)
   )
-    throw new Error('invalid_tool_input')
+    throw invalidToolInput('program')
   if (
     options.slide &&
     (!Number.isInteger(input.slide_index) ||
@@ -310,16 +357,16 @@ function declarativeInput(
   let code: string
   if (input.code !== undefined) {
     if (typeof input.code !== 'string' || !input.code || input.code.length > MAX_CODE)
-      throw new Error('invalid_tool_input')
+      throw invalidToolInput('program')
     code = input.code
   } else {
     try {
       code = JSON.stringify(input.program)
     } catch {
-      throw new Error('invalid_tool_input')
+      throw invalidToolInput('program')
     }
     if (!code || new TextEncoder().encode(code).byteLength > MAX_CODE)
-      throw new Error('invalid_tool_input')
+      throw invalidToolInput('program')
   }
   return {
     code,
@@ -478,6 +525,7 @@ export function createPowerPointSkill(options: {
     const deck = await options.adapter.verifySlides(signal)
     const before = await options.adapter.exportSlidePackage(slideIndex, signal)
     const edited = await editPowerPointPackage(before.base64, kind, replacements, signal)
+    let applied: Awaited<ReturnType<typeof editPowerPointPackage>> | undefined
     const proposal = options.proposals.propose({
       operation: toolName,
       toolName,
@@ -504,21 +552,29 @@ export function createPowerPointSkill(options: {
         version: 1,
         operations: replacements.map((item) => ({ op: 'replace_xml', ...item })),
       }),
-      validate: async (confirmSignal) =>
-        (await options.adapter.exportSlidePackage(slideIndex, confirmSignal)).fingerprint ===
-        before.fingerprint,
+      validate: async (confirmSignal) => {
+        const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
+        return verifyPowerPointPackageInputs(current.base64, edited.beforeHashes, confirmSignal)
+      },
       execute: async (confirmSignal) => {
+        const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
+        if (
+          !(await verifyPowerPointPackageInputs(current.base64, edited.beforeHashes, confirmSignal))
+        )
+          throw new Error('proposal_stale')
+        applied = await editPowerPointPackage(current.base64, kind, replacements, confirmSignal)
         await options.adapter.replaceSlidePackage(
           slideIndex,
-          edited.base64,
+          applied.base64,
           kind === 'master',
-          edited,
+          applied,
           confirmSignal,
         )
       },
       verify: async (confirmSignal) => {
+        if (!applied) throw new Error('office_verify_failed')
         const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
-        if (!(await verifyPowerPointPackage(current.base64, edited, confirmSignal)))
+        if (!(await verifyPowerPointPackage(current.base64, applied, confirmSignal)))
           throw new Error('office_verify_failed')
         await options.adapter.verifySlides(confirmSignal)
       },
@@ -536,7 +592,12 @@ export function createPowerPointSkill(options: {
       'PowerPoint reads are bounded. Every write creates an explicit proposal and is semantically verified after confirmation. execute_office_js accepts only a versioned declarative JSON program; JavaScript and ambient browser authority are rejected. XML tools accept only allowlisted bounded package parts.',
     tools: [...tools],
     async executeTool(call, signal) {
-      if (call.inputError || call.truncated) return failure(call.name, 'invalid_tool_input')
+      if (call.inputError || call.truncated)
+        return failure(
+          call.name,
+          'invalid_tool_input',
+          PROGRAM_TOOLS.has(call.name) ? invalidToolInput('program') : undefined,
+        )
       try {
         assertNotCancelled(signal)
         if (call.name === 'screenshot_slide') {
@@ -692,7 +753,14 @@ export function createPowerPointSkill(options: {
         }
         if (call.name === 'execute_office_js') {
           const input = declarativeInput(call.input, { slide: false, explanationMax: 100 })
-          const program = parseDeclarativeProgram(input.code, parsePowerPointOperation)
+          let program
+          try {
+            program = parseDeclarativeProgram(input.code, parsePowerPointOperation)
+          } catch (error) {
+            if (error instanceof Error && error.message === 'invalid_tool_input')
+              throw invalidToolInput('program.operations')
+            throw error
+          }
           if (
             program.operations.some((operation) => operation.op === 'duplicate_slide') &&
             program.operations.length !== 1
@@ -842,7 +910,15 @@ export function createPowerPointSkill(options: {
             call.name,
             'master',
             0,
-            parseXmlProgram(input.code),
+            (() => {
+              try {
+                return parseXmlProgram(input.code)
+              } catch (error) {
+                if (error instanceof Error && error.message === 'invalid_tool_input')
+                  throw invalidToolInput('program.operations')
+                throw error
+              }
+            })(),
             input.explanation,
             signal,
           )
@@ -853,17 +929,23 @@ export function createPowerPointSkill(options: {
             call.name,
             call.name === 'edit_slide_chart' ? 'chart' : 'slide',
             input.slide_index!,
-            parseXmlProgram(input.code),
+            (() => {
+              try {
+                return parseXmlProgram(input.code)
+              } catch (error) {
+                if (error instanceof Error && error.message === 'invalid_tool_input')
+                  throw invalidToolInput('program.operations')
+                throw error
+              }
+            })(),
             input.explanation,
             signal,
           )
         }
         return failure(call.name, 'invalid_tool_input')
       } catch (error) {
-        return failure(
-          call.name,
-          errorCode(error, ['edit_slide_text', 'duplicate_slide'].includes(call.name)),
-        )
+        const code = errorCode(error, ['edit_slide_text', 'duplicate_slide'].includes(call.name))
+        return failure(call.name, code, code === 'invalid_tool_input' ? error : undefined)
       }
     },
   }
