@@ -579,7 +579,6 @@ export function createPowerPointSkill(options: {
         const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
         if (!(await verifyImportedPowerPointPackage(current.base64, applied, confirmSignal)))
           throw new Error('office_verify_failed')
-        await options.adapter.verifySlides(confirmSignal)
       },
     })
     return {
