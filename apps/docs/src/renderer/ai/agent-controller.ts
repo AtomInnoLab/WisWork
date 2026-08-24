@@ -85,3 +85,27 @@ export function createAgentLaunchOwner() {
     },
   }
 }
+
+export const shouldResetAgentSession = (
+  previousPath: string | null | undefined,
+  nextPath: string | null | undefined,
+): boolean => previousPath != null && previousPath !== nextPath
+
+export function createAgentRunStartingGuard() {
+  let active = 0
+  let sequence = 0
+  return {
+    begin(): number | null {
+      if (active !== 0) return null
+      active = ++sequence
+      return active
+    },
+    end(token: number): void {
+      if (active === token) active = 0
+    },
+    clear(): void {
+      active = 0
+    },
+    isActive: () => active !== 0,
+  }
+}

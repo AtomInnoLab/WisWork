@@ -7,6 +7,8 @@ import {
   disposeAgentController,
   useAgentControllerCleanup,
   createAgentLaunchOwner,
+  createAgentRunStartingGuard,
+  shouldResetAgentSession,
 } from '../src/renderer/ai/agent-controller'
 
 function manualTransport(): AgentTransport & {
@@ -33,6 +35,20 @@ const skill = {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('Markdown agent controller', () => {
+  it('keeps an untitled session on first save but isolates different documents', () => {
+    expect(shouldResetAgentSession(null, '/saved.md')).toBe(false)
+    expect(shouldResetAgentSession('/a.md', '/b.md')).toBe(true)
+    expect(shouldResetAgentSession('/a.md', null)).toBe(true)
+  })
+
+  it('synchronously rejects concurrent prelaunch sends and allows Stop to clear the guard', () => {
+    const guard = createAgentRunStartingGuard()
+    const first = guard.begin()
+    expect(first).not.toBeNull()
+    expect(guard.begin()).toBeNull()
+    guard.clear()
+    expect(guard.begin()).not.toBeNull()
+  })
   it('survives StrictMode replay, then terminally suppresses callbacks after real unmount', async () => {
     const transport = manualTransport()
     const late = vi.fn()

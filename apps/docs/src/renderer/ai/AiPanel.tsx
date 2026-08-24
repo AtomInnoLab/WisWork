@@ -34,6 +34,8 @@ import { IconNewChat, IconSidebarCollapse } from '../components/icons'
 import {
   createAgentController,
   createAgentLaunchOwner,
+  createAgentRunStartingGuard,
+  shouldResetAgentSession,
   useAgentControllerCleanup,
 } from './agent-controller'
 
@@ -543,6 +545,7 @@ export function AiPanel({
 
   const harnessRef = useRef<AgentHarness<PmNode> | null>(null)
   const launchOwnerRef = useRef(createAgentLaunchOwner())
+  const runStartingRef = useRef(createAgentRunStartingGuard())
   const launchSessionRef = useRef(filePath)
   if (!harnessRef.current) {
     const numIds = (): NumIds => ({
@@ -685,16 +688,25 @@ export function AiPanel({
   useAgentControllerCleanup(harnessRef)
   useEffect(() => {
     const launchOwner = launchOwnerRef.current
-    launchOwner.invalidate()
-    if (launchSessionRef.current !== filePath) {
+    if (shouldResetAgentSession(launchSessionRef.current, filePath)) {
+      launchOwner.invalidate()
+      runStartingRef.current.clear()
       launchSessionRef.current = filePath
       harnessRef.current?.reset()
       setBusy(false)
       setChat([])
       sentAttachmentsRef.current = []
+    } else {
+      launchSessionRef.current = filePath
     }
-    return () => launchOwner.invalidate()
   }, [filePath])
+  useEffect(
+    () => () => {
+      launchOwnerRef.current.invalidate()
+      runStartingRef.current.clear()
+    },
+    [],
+  )
 
   useEffect(() => {
     if (!preset) return
@@ -768,6 +780,8 @@ export function AiPanel({
   ) => {
     const harness = harnessRef.current
     if (!instruction || !harness || harness.snapshot.busy) return
+    const startingToken = runStartingRef.current.begin()
+    if (startingToken == null) return
     setInput('')
     // The message consumes the composer attachments: they ride along (echoed on the
     // bubble, images multimodal, files via the files skill) and the composer clears.
@@ -798,24 +812,29 @@ export function AiPanel({
     runStartedAtRef.current = Date.now()
     setBusy(true)
     // a rejected image read must not strand the run (busy would stay true forever): degrade to a no-image send
-    void launchOwnerRef.current.launch(
-      (isCurrent) =>
-        collectImageAttachments(sentAtts, isCurrent).catch((): AgentImage[] => {
-          if (!isCurrent()) return []
-          setAttachNotice(t('aiImagesSendFailed'))
-          window.setTimeout(() => setAttachNotice(null), 5000)
-          return []
-        }),
-      (images) => {
-        persistMessage('user', instruction, undefined, sentAtts)
-        return harness.run(instruction, images)
-      },
-    )
+    void launchOwnerRef.current
+      .launch(
+        (isCurrent) =>
+          collectImageAttachments(sentAtts, isCurrent).catch((): AgentImage[] => {
+            if (!isCurrent()) return []
+            setAttachNotice(t('aiImagesSendFailed'))
+            window.setTimeout(() => setAttachNotice(null), 5000)
+            return []
+          }),
+        (images) => {
+          persistMessage('user', instruction, undefined, sentAtts)
+          return harness.run(instruction, images)
+        },
+      )
+      .finally(() => runStartingRef.current.end(startingToken))
   }
 
   const cancel = () => {
+    const wasStarting = runStartingRef.current.isActive()
     launchOwnerRef.current.invalidate()
+    runStartingRef.current.clear()
     setBusy(false)
+    if (wasStarting) setChat((prev) => prev.slice(0, -2))
     const harness = harnessRef.current
     if (harness) harness.stop()
   }
@@ -827,6 +846,7 @@ export function AiPanel({
 
   const newChat = () => {
     launchOwnerRef.current.invalidate()
+    runStartingRef.current.clear()
     harnessRef.current?.reset()
     setBusy(false)
     setChat([])
