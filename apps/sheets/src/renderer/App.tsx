@@ -837,8 +837,6 @@ export function App(): React.JSX.Element {
         createFilesSkill(availableAttachments),
         createSearchSkill(),
       ]),
-      // guide loading adds a tool round; the default 8 cuts off multi-step work
-      maxTurns: 24,
       events: {
         onText: (text) => {
           if (text) runLastTextRef.current = text
