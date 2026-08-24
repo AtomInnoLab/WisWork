@@ -683,6 +683,67 @@ describe('browser Word adapter', () => {
     expect(replacement).not.toHaveBeenCalled()
   })
 
+  it('rejects declarative replacement batches whose results feed a later search', async () => {
+    const insertText = vi.fn()
+    const body = {
+      insertText,
+      insertOoxml: vi.fn(),
+      getOoxml: vi.fn(() => ({
+        value:
+          '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>A B</w:t></w:r></w:p></w:body></w:document>',
+      })),
+      search: vi.fn(() => ({ items: [{ insertText }], load: vi.fn() })),
+    }
+    const sync = vi.fn().mockResolvedValue(undefined)
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserWordAdapter().executeOperations([
+        { op: 'replace_all', search: 'A', replacement: 'B', matchCase: true },
+        { op: 'replace_all', search: 'B', replacement: 'C', matchCase: true },
+      ]),
+    ).rejects.toThrow('invalid_tool_input')
+    expect(sync).not.toHaveBeenCalled()
+    expect(insertText).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [
+      { op: 'replace_all' as const, search: 'ab', replacement: 'x', matchCase: true },
+      { op: 'replace_all' as const, search: 'bc', replacement: 'y', matchCase: true },
+    ],
+    [
+      { op: 'replace_all' as const, search: 'A', replacement: 'x', matchCase: false },
+      { op: 'replace_all' as const, search: 'a', replacement: 'y', matchCase: true },
+    ],
+  ])('rejects overlapping declarative searches before Office dispatch', async (first, second) => {
+    const search = vi.fn()
+    const sync = vi.fn()
+    const body = {
+      getOoxml: vi.fn(),
+      insertText: vi.fn(),
+      insertOoxml: vi.fn(),
+      search,
+    }
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+
+    await expect(new BrowserWordAdapter().executeOperations([first, second])).rejects.toThrow(
+      'invalid_tool_input',
+    )
+    expect(search).not.toHaveBeenCalled()
+    expect(sync).not.toHaveBeenCalled()
+  })
+
   it('verifies the exact full bounded Word text after a declarative write', async () => {
     const paragraph = (text: string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`
     let current = `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${Array.from(
@@ -724,7 +785,7 @@ describe('browser Word adapter', () => {
 
     await subject.executeOperations([operation])
     current = current.replace('<w:t>p0</w:t>', '<w:t>changed</w:t>')
-    await expect(subject.verifyOperations([operation])).resolves.toBe(false)
+    await expect(subject.verifyOperations([operation])).rejects.toThrow('office_concurrent_change')
   })
 
   it('writes native Word paragraphs and tables and verifies their exact post-write snapshot', async () => {
@@ -1067,12 +1128,10 @@ describe('browser Word adapter', () => {
       structure: { headings: 0, lists: 0, tables: 0 },
     }
 
-    await expect(subject.executeDocumentWrite(write)).rejects.toThrow(
-      'office_recovery_failed:word_text',
-    )
+    await expect(subject.executeDocumentWrite(write)).rejects.toThrow('office_concurrent_change')
   })
 
-  it('restores the original Word body when cancellation arrives during the write sync', async () => {
+  it('does not risk a whole-body restore when cancellation arrives during the write sync', async () => {
     const original =
       '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Original</w:t></w:r></w:p></w:body></w:document>'
     let current = original
@@ -1129,8 +1188,430 @@ describe('browser Word adapter', () => {
         },
         controller.signal,
       ),
-    ).rejects.toThrow('cancelled')
-    expect(insertOoxml).toHaveBeenCalledWith(original, 'Replace')
-    expect(current).toBe(original)
+    ).rejects.toThrow('office_state_uncertain')
+    expect(insertOoxml).toHaveBeenCalledOnce()
+    expect(current).toContain('Changed')
+  })
+
+  it('waits for delayed Word readback instead of restoring an applied document write', async () => {
+    const original =
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:body></w:document>'
+    let current = original
+    let applied = original
+    let readbacks = 0
+    const insertOoxml = vi.fn((xml: string) => {
+      applied = xml
+    })
+    const body = {
+      insertOoxml,
+      getOoxml: vi.fn(() => ({ value: readbacks++ < 3 ? current : applied })),
+    }
+    const sync = vi.fn(async () => undefined)
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+    const write = {
+      mode: 'replace' as const,
+      blocks: [{ type: 'paragraph' as const, spans: [{ text: 'New' }] }],
+      semanticText: 'New',
+      structure: { headings: 0, lists: 0, tables: 0 },
+    }
+
+    const subject = new BrowserWordAdapter()
+    await subject.executeDocumentWrite(write)
+    current = applied
+    await expect(subject.verifyDocumentWrite(write)).resolves.toBe(true)
+    expect(insertOoxml).toHaveBeenCalledOnce()
+  })
+
+  it('reports an exact declarative batch as applied when context.sync rejects after commit', async () => {
+    const original =
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Before</w:t></w:r></w:p></w:body></w:document>'
+    let current = original
+    let pendingInsert = ''
+    let syncCount = 0
+    const insertOoxml = vi.fn((xml: string) => {
+      current = xml
+    })
+    const body = {
+      insertText: vi.fn((value: string) => {
+        pendingInsert = value
+      }),
+      insertOoxml,
+      search: vi.fn(() => ({ items: [], load: vi.fn() })),
+      getOoxml: vi.fn(() => ({ value: current })),
+    }
+    const sync = vi.fn(async () => {
+      syncCount += 1
+      if (syncCount === 2) {
+        current = current.replace('Before', `Before${pendingInsert}`)
+        throw new Error('host_sync_failed')
+      }
+    })
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+
+    const subject = new BrowserWordAdapter()
+    const operation = { op: 'insert_text', location: 'end', text: ' committed' } as const
+    await subject.executeOperations([operation])
+    await expect(subject.verifyOperations([operation])).resolves.toBe(true)
+    expect(insertOoxml).not.toHaveBeenCalled()
+    expect(current).toContain('Before committed')
+  })
+
+  it('never restores over a third Word state introduced before recovery', async () => {
+    const original =
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Original</w:t></w:r></w:p></w:body></w:document>'
+    let current = original
+    let syncCount = 0
+    const insertOoxml = vi.fn((xml: string) => {
+      current = xml
+    })
+    const body = { insertOoxml, getOoxml: vi.fn(() => ({ value: current })) }
+    const sync = vi.fn(async () => {
+      syncCount += 1
+      if (syncCount === 2) {
+        current = original.replace('Original', 'User concurrent edit')
+        throw new Error('host_sync_failed')
+      }
+    })
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserWordAdapter().executeDocumentWrite({
+        mode: 'replace',
+        blocks: [{ type: 'paragraph', spans: [{ text: 'Agent edit' }] }],
+        semanticText: 'Agent edit',
+        structure: { headings: 0, lists: 0, tables: 0 },
+      }),
+    ).rejects.toThrow('office_concurrent_change')
+    expect(insertOoxml).toHaveBeenCalledOnce()
+    expect(current).toContain('User concurrent edit')
+  })
+
+  it('includes heading style definitions in the Word proposal fingerprint', async () => {
+    const packageXml = (level: number) =>
+      `<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage"><pkg:part pkg:name="/word/document.xml"><pkg:xmlData><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="LocalHeading"/></w:pPr><w:r><w:t>Title</w:t></w:r></w:p></w:body></w:document></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/styles.xml"><pkg:xmlData><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="LocalHeading"><w:pPr><w:outlineLvl w:val="${level}"/></w:pPr></w:style></w:styles></pkg:xmlData></pkg:part></pkg:package>`
+    let current = packageXml(0)
+    const body = { getOoxml: vi.fn(() => ({ value: current })) }
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ document: { body }, sync: vi.fn() }),
+      },
+    })
+    const subject = new BrowserWordAdapter()
+    const before = await subject.fingerprint()
+    current = packageXml(1)
+    await expect(subject.fingerprint()).resolves.not.toBe(before)
+  })
+
+  it('rejects unexpected formatting on an explicitly plain Word span', async () => {
+    let current =
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:body></w:document>'
+    let pending = ''
+    const body = {
+      insertOoxml: vi.fn((xml: string) => {
+        pending = xml
+      }),
+      getOoxml: vi.fn(() => ({ value: current })),
+    }
+    const sync = vi.fn(async () => {
+      if (pending) current = pending.replace('<w:r>', '<w:r><w:rPr><w:b/></w:rPr>')
+      pending = ''
+    })
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserWordAdapter().executeDocumentWrite({
+        mode: 'replace',
+        blocks: [{ type: 'paragraph', spans: [{ text: 'Plain' }] }],
+        semanticText: 'Plain',
+        structure: { headings: 0, lists: 0, tables: 0 },
+      }),
+    ).rejects.toThrow()
+  })
+
+  it('does not overwrite an edit made after recovery classification', async () => {
+    const original =
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Before</w:t></w:r></w:p></w:body></w:document>'
+    let current = original
+    let syncCount = 0
+    const insertOoxml = vi.fn((xml: string) => {
+      current = xml
+    })
+    const body = {
+      insertText: vi.fn(() => undefined),
+      insertOoxml,
+      search: vi.fn(() => ({ items: [], load: vi.fn() })),
+      getOoxml: vi.fn(() => ({ value: current })),
+    }
+    const sync = vi.fn(async () => {
+      syncCount += 1
+      if (syncCount === 2) {
+        current = current.replace('Before', 'Before agent')
+        throw new Error('host_sync_failed')
+      }
+      if (syncCount === 4) current = current.replace('Before agent', 'User concurrent edit')
+    })
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserWordAdapter().executeOperations([
+        { op: 'insert_text', location: 'end', text: ' agent' },
+      ]),
+    ).resolves.toBeUndefined()
+    expect(insertOoxml).not.toHaveBeenCalled()
+  })
+
+  it('does not treat matching text plus a formatting mutation as a known declarative state', async () => {
+    const original =
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Before</w:t></w:r></w:p></w:body></w:document>'
+    let current = original
+    let syncCount = 0
+    const insertOoxml = vi.fn()
+    const body = {
+      insertText: vi.fn(() => undefined),
+      insertOoxml,
+      search: vi.fn(() => ({ items: [], load: vi.fn() })),
+      getOoxml: vi.fn(() => ({ value: current })),
+    }
+    const sync = vi.fn(async () => {
+      syncCount += 1
+      if (syncCount === 2) {
+        current = original.replace(
+          '<w:r><w:t>Before</w:t>',
+          '<w:r><w:rPr><w:b/></w:rPr><w:t>Before agent</w:t>',
+        )
+        throw new Error('host_sync_failed')
+      }
+    })
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserWordAdapter().executeOperations([
+        { op: 'insert_text', location: 'end', text: ' agent' },
+      ]),
+    ).rejects.toThrow('office_state_uncertain')
+    expect(insertOoxml).not.toHaveBeenCalled()
+  })
+
+  it('waits for a declarative write that becomes visible after a rejected sync', async () => {
+    const original =
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Before</w:t></w:r></w:p></w:body></w:document>'
+    const applied = original.replace('Before', 'Before late')
+    let current = original
+    let syncCount = 0
+    const body = {
+      insertText: vi.fn(() => undefined),
+      insertOoxml: vi.fn(),
+      search: vi.fn(() => ({ items: [], load: vi.fn() })),
+      getOoxml: vi.fn(() => ({ value: current })),
+    }
+    const sync = vi.fn(async () => {
+      syncCount += 1
+      if (syncCount === 2) throw new Error('host_sync_failed')
+      if (syncCount === 4) current = applied
+    })
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+    const subject = new BrowserWordAdapter()
+    const operation = { op: 'insert_text', location: 'end', text: ' late' } as const
+    await subject.executeOperations([operation])
+    current = applied
+    await expect(subject.verifyOperations([operation])).resolves.toBe(true)
+  })
+
+  it('classifies an exact original declarative state as proved unchanged', async () => {
+    const original =
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Before</w:t></w:r></w:p></w:body></w:document>'
+    let syncCount = 0
+    const body = {
+      insertText: vi.fn(() => undefined),
+      insertOoxml: vi.fn(),
+      search: vi.fn(() => ({ items: [], load: vi.fn() })),
+      getOoxml: vi.fn(() => ({ value: original })),
+    }
+    const sync = vi.fn(async () => {
+      syncCount += 1
+      if (syncCount === 2) throw new Error('host_sync_failed')
+    })
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserWordAdapter().executeOperations([
+        { op: 'insert_text', location: 'end', text: ' never committed' },
+      ]),
+    ).rejects.toThrow('office_write_failed')
+  })
+
+  it('returns false when document verification proves the exact original state', async () => {
+    const original =
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:body></w:document>'
+    let current = original
+    let pending = ''
+    const body = {
+      insertOoxml: vi.fn((xml: string) => {
+        pending = xml
+      }),
+      getOoxml: vi.fn(() => ({ value: current })),
+    }
+    const sync = vi.fn(async () => {
+      if (pending) current = pending
+      pending = ''
+    })
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+    const subject = new BrowserWordAdapter()
+    const write = {
+      mode: 'replace' as const,
+      blocks: [{ type: 'paragraph' as const, spans: [{ text: 'New' }] }],
+      semanticText: 'New',
+      structure: { headings: 0, lists: 0, tables: 0 },
+    }
+    await subject.executeDocumentWrite(write)
+    current = original
+    await expect(subject.verifyDocumentWrite(write)).resolves.toBe(false)
+  })
+
+  it('resolves an inherited heading outline level', async () => {
+    let current =
+      '<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage"><pkg:part pkg:name="/word/document.xml"><pkg:xmlData><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:body></w:document></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/styles.xml"><pkg:xmlData><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="BaseHeading"><w:pPr><w:outlineLvl w:val="0"/></w:pPr></w:style><w:style w:type="paragraph" w:styleId="DerivedHeading"><w:basedOn w:val="BaseHeading"/></w:style><w:style w:type="character" w:styleId="BaseBold"><w:rPr><w:b/></w:rPr></w:style><w:style w:type="character" w:styleId="DerivedBold"><w:basedOn w:val="BaseBold"/></w:style></w:styles></pkg:xmlData></pkg:part></pkg:package>'
+    let pending = ''
+    const body = {
+      insertOoxml: vi.fn((xml: string) => {
+        pending = xml
+      }),
+      getOoxml: vi.fn(() => ({ value: current })),
+    }
+    const sync = vi.fn(async () => {
+      if (pending)
+        current = pending
+          .replace('w:val="BaseHeading"', 'w:val="DerivedHeading"')
+          .replace('<w:r>', '<w:r><w:rPr><w:rStyle w:val="DerivedBold"/></w:rPr>')
+      pending = ''
+    })
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+
+    const subject = new BrowserWordAdapter()
+    const write = {
+      mode: 'replace' as const,
+      blocks: [{ type: 'heading' as const, level: 1 as const, spans: [{ text: 'Title' }] }],
+      semanticText: 'Title',
+      structure: { headings: 1, lists: 0, tables: 0 },
+    }
+    await subject.executeDocumentWrite(write)
+    await expect(subject.verifyDocumentWrite(write)).resolves.toBe(true)
+  })
+
+  it('rejects formatting inherited by a plain span from based-on paragraph and character styles', async () => {
+    let current =
+      '<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage"><pkg:part pkg:name="/word/document.xml"><pkg:xmlData><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:body></w:document></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/styles.xml"><pkg:xmlData><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="BaseItalic"><w:rPr><w:i/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="DerivedItalic"><w:basedOn w:val="BaseItalic"/></w:style><w:style w:type="character" w:styleId="BaseBold"><w:rPr><w:b/></w:rPr></w:style><w:style w:type="character" w:styleId="DerivedBold"><w:basedOn w:val="BaseBold"/></w:style></w:styles></pkg:xmlData></pkg:part></pkg:package>'
+    let pending = ''
+    const body = {
+      insertOoxml: vi.fn((xml: string) => {
+        pending = xml
+      }),
+      getOoxml: vi.fn(() => ({ value: current })),
+    }
+    const sync = vi.fn(async () => {
+      if (pending)
+        current = pending
+          .replace('<w:p>', '<w:p><w:pPr><w:pStyle w:val="DerivedItalic"/></w:pPr>')
+          .replace('<w:r>', '<w:r><w:rPr><w:rStyle w:val="DerivedBold"/></w:rPr>')
+      pending = ''
+    })
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserWordAdapter().executeDocumentWrite({
+        mode: 'replace',
+        blocks: [{ type: 'paragraph', spans: [{ text: 'Plain' }] }],
+        semanticText: 'Plain',
+        structure: { headings: 0, lists: 0, tables: 0 },
+      }),
+    ).rejects.toThrow('office_concurrent_change')
+  })
+
+  it('rejects bold inherited by a plain span from Word document defaults', async () => {
+    let current =
+      '<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage"><pkg:part pkg:name="/word/document.xml"><pkg:xmlData><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:body></w:document></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/styles.xml"><pkg:xmlData><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:b/></w:rPr></w:rPrDefault></w:docDefaults></w:styles></pkg:xmlData></pkg:part></pkg:package>'
+    let pending = ''
+    const body = {
+      insertOoxml: vi.fn((xml: string) => {
+        pending = xml
+      }),
+      getOoxml: vi.fn(() => ({ value: current })),
+    }
+    const sync = vi.fn(async () => {
+      if (pending) current = pending
+      pending = ''
+    })
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserWordAdapter().executeDocumentWrite({
+        mode: 'replace',
+        blocks: [{ type: 'paragraph', spans: [{ text: 'Plain' }] }],
+        semanticText: 'Plain',
+        structure: { headings: 0, lists: 0, tables: 0 },
+      }),
+    ).rejects.toThrow('office_concurrent_change')
   })
 })

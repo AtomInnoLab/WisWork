@@ -81,6 +81,8 @@ const PROPOSAL_ERROR_CODES = new Set([
   'office_write_failed',
   'office_verify_failed',
   'office_recovery_failed',
+  'office_concurrent_change',
+  'office_state_uncertain',
 ])
 
 function stableProposalError(error: unknown): string {
@@ -220,10 +222,11 @@ export function createStructuredProposalController(
         phase = 'write'
         phaseStartedAt = Date.now()
         await proposal.request.execute(controller.signal)
-        if (controller.signal.aborted) throw new Error('proposal_stale')
         phase = 'verify'
         phaseStartedAt = Date.now()
-        await proposal.request.verify?.(controller.signal)
+        // Once execute resolves, cancellation cannot truthfully imply that the write was not
+        // applied. Always reconcile/verify; use an un-aborted signal when Stop raced the commit.
+        await proposal.request.verify?.(controller.signal.aborted ? undefined : controller.signal)
         settle(proposal.decision, { status: 'confirmed' })
       } catch (error) {
         const code = stableProposalError(error)

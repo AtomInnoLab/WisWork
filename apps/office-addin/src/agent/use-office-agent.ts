@@ -84,6 +84,16 @@ const confirmationErrors: Readonly<Record<string, SafeSessionError>> = Object.fr
     message: 'The document could not be restored after the failed change.',
     retryable: false,
   },
+  office_concurrent_change: {
+    code: 'office_concurrent_change',
+    message: 'The document changed during the operation. Inspect it before trying again.',
+    retryable: false,
+  },
+  office_state_uncertain: {
+    code: 'office_state_uncertain',
+    message: 'The change may be partially applied. Inspect the document before trying again.',
+    retryable: false,
+  },
 })
 
 const runErrors: Readonly<Record<string, SafeSessionError>> = Object.freeze({
@@ -150,6 +160,8 @@ const DIAGNOSTIC_TOOL_ERRORS = new Set([
   'office_api_unsupported',
   'office_read_failed',
   'office_recovery_failed',
+  'office_concurrent_change',
+  'office_state_uncertain',
   'office_verify_failed',
   'office_write_failed',
   'proposal_missing',

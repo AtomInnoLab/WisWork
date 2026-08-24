@@ -9,8 +9,56 @@ const MAX_RANGE = 128,
   MAX_CODE = 32 * 1024,
   MAX_RESULT = 256 * 1024
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
+const EXCEL_VERIFY_DELAYS_MS = [0, 50, 100] as const
 type Json = Record<string, any>
 type ExcelProgramOperation = { op: string; input: Json }
+
+async function waitForExcelReadback(delayMs: number, signal?: AbortSignal) {
+  check(signal)
+  if (delayMs === 0) return
+  await new Promise<void>((resolve, reject) => {
+    const finish = () => {
+      signal?.removeEventListener('abort', abort)
+      resolve()
+    }
+    const timer = setTimeout(finish, delayMs)
+    const abort = () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+      reject(new Error('cancelled'))
+    }
+    signal?.addEventListener('abort', abort, { once: true })
+  })
+  check(signal)
+}
+
+async function boundedMutationVerification(
+  verify: () => Promise<boolean>,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  for (const delay of EXCEL_VERIFY_DELAYS_MS) {
+    await waitForExcelReadback(delay, signal)
+    if (await verify()) return true
+  }
+  return false
+}
+
+async function recoverFailedMutation(
+  adapter: ExcelAdapter,
+  tool: string,
+  input: Json,
+  beforeState: unknown,
+  restoredError = 'office_verify_failed',
+): Promise<void> {
+  if (!adapter.recoverMutation) throw new Error('office_verify_failed')
+  // Recovery intentionally gets a fresh signal: cancellation must not prevent
+  // us from proving the document state after Office may have committed work.
+  const outcome = await adapter.recoverMutation(tool, input, beforeState)
+  if (outcome === 'applied') return
+  if (outcome === 'concurrent') throw new Error('office_concurrent_change')
+  if (outcome === 'uncertain') throw new Error('office_state_uncertain')
+  throw new Error(restoredError)
+}
 const descriptors = [
   [
     'get_cell_ranges',
@@ -479,8 +527,21 @@ function parseCells(value: unknown): Json[][] {
           if (config.weight !== undefined && !['thin', 'medium', 'thick'].includes(config.weight))
             invalid()
           if (config.color !== undefined) string(config.color, 64, 1)
+          if (Object.keys(config).length === 0) invalid()
         }
       }
+      const hasStyles =
+        item.cellStyles !== undefined && Object.keys(item.cellStyles as Json).length > 0
+      const hasBorders =
+        item.borderStyles !== undefined && Object.keys(item.borderStyles as Json).length > 0
+      if (
+        !Object.hasOwn(item, 'value') &&
+        item.formula === undefined &&
+        !item.note &&
+        !hasStyles &&
+        !hasBorders
+      )
+        invalid()
       return JSON.parse(JSON.stringify(item))
     })
   })
@@ -624,6 +685,50 @@ function cellCount(name: string, input: Json) {
   return 1
 }
 function semantics(name: string, input: Json) {
+  if (name === 'set_cell_range') {
+    const columns = input.cells[0]?.length ?? 0
+    if (
+      columns === 0 ||
+      input.cells.some((row: unknown[]) => row.length !== columns) ||
+      input.cells.some((row: Json[]) =>
+        row.some((cell) => Object.hasOwn(cell, 'value') && Object.hasOwn(cell, 'formula')),
+      ) ||
+      input.cells.length * columns * (input.copyToRange ? 2 : 1) > 2_000
+    )
+      invalid()
+    const start = cellBox(input.range)
+    boxCells(input.sheetId, { ...start, rows: input.cells.length, columns })
+    if (input.copyToRange)
+      boxCells(input.sheetId, {
+        ...cellBox(input.copyToRange),
+        rows: input.cells.length,
+        columns,
+      })
+    if (input.resizeWidth || input.resizeHeight) throw new Error('office_api_unsupported')
+  }
+  if (name === 'clear_cell_range') boxCells(input.sheetId, cellBox(input.range))
+  if (name === 'copy_to') {
+    const source = cellBox(input.sourceRange)
+    boxCells(input.sheetId, source)
+    boxCells(input.sheetId, {
+      ...cellBox(input.destinationRange),
+      rows: source.rows,
+      columns: source.columns,
+    })
+  }
+  if (
+    (name === 'modify_sheet_structure' && ['insert', 'delete'].includes(input.operation)) ||
+    (name === 'resize_range' &&
+      (input.width?.type === 'standard' || input.height?.type === 'standard')) ||
+    (name === 'modify_object' &&
+      (input.objectType === 'pivotTable' ||
+        input.operation === 'create' ||
+        input.properties?.name ||
+        input.properties?.anchor ||
+        input.properties?.source ||
+        input.properties?.range))
+  )
+    throw new Error('office_api_unsupported')
   if (name === 'modify_workbook_structure') {
     if (input.operation === 'create' && !input.sheetName) invalid()
     if (input.operation !== 'create' && input.sheetId === undefined) invalid()
@@ -694,7 +799,7 @@ export function createExcelSkill(options: {
   return {
     id: 'office-excel',
     systemPrompt:
-      'Excel reads and screenshots are bounded. Every mutation is only a proposal until confirmed and semantically verified. eval_officejs uses the shared declarative execution runtime when available.',
+      'Excel reads and screenshots are bounded. Every mutation is only a proposal until confirmed and semantically verified. Operations without an exact Office.js readback contract are rejected before proposal instead of being executed into an uncertain state. eval_officejs uses the shared declarative execution runtime when available.',
     tools,
     async executeTool(call, signal) {
       if (call.inputError || call.truncated) return fail(call.name, 'invalid_tool_input')
@@ -724,9 +829,20 @@ export function createExcelSkill(options: {
           const affected = [
             ...new Set(program.operations.flatMap((item) => targets(item.op, item.input))),
           ]
+          const worksheetOfficeId =
+            typeof program.operations[0].input.sheetId === 'number' &&
+            options.adapter.resolveWorksheetIdentity
+              ? await options.adapter.resolveWorksheetIdentity(
+                  program.operations[0].input.sheetId,
+                  signal,
+                )
+              : undefined
+          const resolvedOperations = program.operations.map((operation) => ({
+            ...operation,
+            input: worksheetOfficeId ? { ...operation.input, worksheetOfficeId } : operation.input,
+          }))
           const before = await options.adapter.fingerprint(affected, signal)
           check(signal)
-          let expectedFingerprint: string | undefined
           const operationPrestates: unknown[] = []
           const finalWriter = new Map<string, number>()
           program.operations.forEach((operation, index) => {
@@ -746,10 +862,21 @@ export function createExcelSkill(options: {
             fingerprint: selectionFingerprint(before),
             before,
             code: input.code,
-            validate: async (confirmSignal) =>
-              (await options.adapter.fingerprint(affected, confirmSignal)) === before,
+            validate: async (confirmSignal) => {
+              if (
+                worksheetOfficeId &&
+                options.adapter.validateWorksheetIdentity &&
+                !(await options.adapter.validateWorksheetIdentity(
+                  program.operations[0].input.sheetId,
+                  worksheetOfficeId,
+                  confirmSignal,
+                ))
+              )
+                return false
+              return (await options.adapter.fingerprint(affected, confirmSignal)) === before
+            },
             execute: async (confirmSignal) => {
-              for (const operation of program.operations) {
+              for (const operation of resolvedOperations) {
                 check(confirmSignal)
                 operationPrestates.push(
                   await options.adapter.captureMutation(
@@ -760,32 +887,49 @@ export function createExcelSkill(options: {
                 )
                 check(confirmSignal)
               }
-              await methods[program.operations[0].op](program.operations[0].input, confirmSignal)
-              check(confirmSignal)
-              expectedFingerprint = await options.adapter.fingerprint(affected, confirmSignal)
+              try {
+                await methods[resolvedOperations[0].op](resolvedOperations[0].input, confirmSignal)
+                check(confirmSignal)
+              } catch (error) {
+                if (options.adapter.recoverMutation) {
+                  await recoverFailedMutation(
+                    options.adapter,
+                    resolvedOperations[0].op,
+                    resolvedOperations[0].input,
+                    operationPrestates[0],
+                    'office_write_failed',
+                  )
+                  return
+                }
+                throw error
+              }
             },
             verify: async (confirmSignal) => {
               for (const index of finalOperationIndexes) {
-                const operation = program.operations[index]
+                const operation = resolvedOperations[index]
                 const ownedCells = operationCellWrites[index]?.filter(
                   (cell) => finalWriter.get(cell) === index,
                 )
                 if (
-                  !(await options.adapter.verifyMutation(
+                  !(await boundedMutationVerification(
+                    () =>
+                      options.adapter.verifyMutation(
+                        operation.op,
+                        operation.input,
+                        operationPrestates[index],
+                        confirmSignal,
+                        ownedCells?.map((cell) => cell.split('!')[1]),
+                      ),
+                    confirmSignal,
+                  ))
+                )
+                  await recoverFailedMutation(
+                    options.adapter,
                     operation.op,
                     operation.input,
                     operationPrestates[index],
-                    confirmSignal,
-                    ownedCells?.map((cell) => cell.split('!')[1]),
-                  ))
-                )
-                  throw new Error('office_verify_failed')
+                  )
               }
-              if (
-                !expectedFingerprint ||
-                (await options.adapter.fingerprint(affected, confirmSignal)) !== expectedFingerprint
-              )
-                throw new Error('office_verify_failed')
             },
           })
           return {
@@ -838,12 +982,20 @@ export function createExcelSkill(options: {
           }
           return { output: bounded(result), mutated: false, summary: call.name }
         }
+        const worksheetOfficeId =
+          typeof input.sheetId === 'number' && options.adapter.resolveWorksheetIdentity
+            ? await options.adapter.resolveWorksheetIdentity(input.sheetId, signal)
+            : undefined
+        const mutationInput = worksheetOfficeId ? { ...input, worksheetOfficeId } : input
         const affected = targets(call.name, input)
         const before = await options.adapter.fingerprint(affected, signal)
         check(signal)
-        const operationBefore = await options.adapter.captureMutation(call.name, input, signal)
+        const operationBefore = await options.adapter.captureMutation(
+          call.name,
+          mutationInput,
+          signal,
+        )
         check(signal)
-        let expectedFingerprint: string | undefined
         const proposal = options.proposals.propose({
           operation: call.name,
           toolName: call.name,
@@ -854,6 +1006,16 @@ export function createExcelSkill(options: {
           before,
           validate: async (s) => {
             check(s)
+            if (
+              worksheetOfficeId &&
+              options.adapter.validateWorksheetIdentity &&
+              !(await options.adapter.validateWorksheetIdentity(
+                input.sheetId,
+                worksheetOfficeId,
+                s,
+              ))
+            )
+              return false
             const current = await options.adapter.fingerprint(affected, s)
             check(s)
             return current === before
@@ -861,11 +1023,19 @@ export function createExcelSkill(options: {
           execute: async (s) => {
             check(s)
             try {
-              await methods[call.name](input, s)
-              check(s)
-              expectedFingerprint = await options.adapter.fingerprint(affected, s)
+              await methods[call.name](mutationInput, s)
               check(s)
             } catch (error) {
+              if (options.adapter.recoverMutation) {
+                await recoverFailedMutation(
+                  options.adapter,
+                  call.name,
+                  mutationInput,
+                  operationBefore,
+                  'office_write_failed',
+                )
+                return
+              }
               // The cause stays in memory for allowlisted diagnostic identifiers;
               // its message is never serialized into the tool result.
               throw new Error(safeError(error, true), { cause: error })
@@ -874,22 +1044,26 @@ export function createExcelSkill(options: {
           verify: async (s) => {
             check(s)
             try {
-              if (!(await options.adapter.verifyMutation(call.name, input, operationBefore, s)))
-                throw new Error('office_verify_failed')
-              if (call.name === 'modify_object')
-                await options.adapter.verifyObjects({ sheetId: input.sheetId, id: input.id }, s)
-              else if (call.name === 'modify_workbook_structure')
-                await options.adapter.verifyWorkbook(s)
-              else if (call.name === 'modify_sheet_structure' || call.name === 'resize_range')
-                await options.adapter.fingerprint(affected, s)
-              else await options.adapter.verifyRanges(affected, s)
-              check(s)
               if (
-                !expectedFingerprint ||
-                (await options.adapter.fingerprint(affected, s)) !== expectedFingerprint
+                !(await boundedMutationVerification(
+                  () =>
+                    options.adapter.verifyMutation(call.name, mutationInput, operationBefore, s),
+                  s,
+                ))
               )
-                throw new Error('office_verify_failed')
+                await recoverFailedMutation(
+                  options.adapter,
+                  call.name,
+                  mutationInput,
+                  operationBefore,
+                )
+              check(s)
             } catch (error) {
+              if (
+                error instanceof Error &&
+                ['office_concurrent_change', 'office_state_uncertain'].includes(error.message)
+              )
+                throw error
               throw new Error('office_verify_failed', { cause: error })
             }
           },

@@ -117,10 +117,25 @@ describe('Excel compatibility skill', () => {
     const pending = proposals.pending()!
     expect(pending.impact).toEqual({ host: 'Excel', targets: ['sheet:1!A1:B1'], count: 2 })
     await proposals.confirm(pending.id)
-    expect(fake.fingerprint).toHaveBeenCalledTimes(4)
+    expect(fake.fingerprint).toHaveBeenCalledTimes(2)
     expect(fake.setCellRange).toHaveBeenCalledOnce()
-    expect(fake.verifyRanges).toHaveBeenCalledOnce()
+    expect(fake.verifyRanges).not.toHaveBeenCalled()
   })
+
+  it.each([[{}], [{ cellStyles: {} }], [{ borderStyles: { bottom: {} } }]])(
+    'rejects cells with no effective mutation before proposing',
+    async (cell) => {
+      const fake = adapter()
+      const proposals = createStructuredProposalController()
+      const skill = createExcelSkill({ adapter: fake, proposals })
+
+      await expect(
+        skill.executeTool(call('set_cell_range', { sheetId: 1, range: 'A1', cells: [[cell]] })),
+      ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+      expect(proposals.pending()).toBeUndefined()
+      expect(fake.setCellRange).not.toHaveBeenCalled()
+    },
+  )
 
   it('rejects stale and cancelled writes without applying them', async () => {
     const fake = adapter({
@@ -141,6 +156,391 @@ describe('Excel compatibility skill', () => {
         controller.signal,
       ),
     ).resolves.toMatchObject({ output: 'cancelled', isError: true })
+  })
+
+  it('revalidates the stable Office worksheet identity after an ordinal reorder', async () => {
+    const resolveWorksheetIdentity = vi.fn().mockResolvedValue('office-sheet-data')
+    const validateWorksheetIdentity = vi.fn().mockResolvedValue(false)
+    const fake = adapter({
+      resolveWorksheetIdentity,
+      validateWorksheetIdentity,
+    } as any)
+    const proposals = createStructuredProposalController()
+    const skill = createExcelSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('set_cell_range', {
+        sheetId: 1,
+        range: 'A1',
+        cells: [[{ value: 'safe' }]],
+        allow_overwrite: true,
+      }),
+    )
+
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+    expect(resolveWorksheetIdentity).toHaveBeenCalledWith(1, undefined)
+    expect(validateWorksheetIdentity).toHaveBeenCalledWith(
+      1,
+      'office-sheet-data',
+      expect.any(AbortSignal),
+    )
+    expect(fake.setCellRange).not.toHaveBeenCalled()
+  })
+
+  it('accepts a mutation after bounded delayed readback convergence', async () => {
+    const verifyMutation = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+    const fake = adapter({ verifyMutation })
+    const proposals = createStructuredProposalController()
+    const skill = createExcelSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('clear_cell_range', { sheetId: 1, range: 'A1', clearType: 'contents' }),
+    )
+
+    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+    expect(verifyMutation).toHaveBeenCalledTimes(3)
+  })
+
+  it('never restores over a concurrent third state after verification failure', async () => {
+    const recoverMutation = vi.fn().mockResolvedValue('concurrent')
+    const fake = adapter({
+      verifyMutation: vi.fn().mockResolvedValue(false),
+      recoverMutation,
+    } as any)
+    const proposals = createStructuredProposalController()
+    const skill = createExcelSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('copy_to', { sheetId: 1, sourceRange: 'A1', destinationRange: 'B1' }),
+    )
+
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow(
+      'office_concurrent_change',
+    )
+    expect(recoverMutation).toHaveBeenCalledOnce()
+  })
+
+  it('reconciles a sync rejection and reports a proved restoration as a failed write', async () => {
+    const recoverMutation = vi.fn().mockResolvedValue('restored')
+    const fake = adapter({
+      setCellRange: vi.fn().mockRejectedValue(new Error('InvalidArgument')),
+      recoverMutation,
+    } as any)
+    const proposals = createStructuredProposalController()
+    const skill = createExcelSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('set_cell_range', {
+        sheetId: 1,
+        range: 'A1',
+        cells: [[{ value: 'new' }]],
+        allow_overwrite: true,
+      }),
+    )
+
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('office_write_failed')
+    expect(recoverMutation).toHaveBeenCalledOnce()
+  })
+
+  it('classifies third-state cell edits without dispatching a restore', async () => {
+    const excel = new BrowserExcelAdapter()
+    const beforeCell = {
+      address: 'A1',
+      value: 'before',
+      formula: 'before',
+      formulaR1C1: 'before',
+      numberFormat: 'General',
+      style: {},
+    }
+    let writes = 0
+    let formulas = [['user edit']]
+    const range: any = {
+      values: [['user edit']],
+      rowCount: 1,
+      columnCount: 1,
+      load: vi.fn(),
+      get formulas() {
+        return formulas
+      },
+      set formulas(value) {
+        writes += 1
+        formulas = value
+      },
+    }
+    const run = vi.spyOn(excel as any, 'run').mockImplementation((callback: any) =>
+      callback({
+        workbook: {
+          worksheets: { getItem: vi.fn().mockReturnValue({ getRange: vi.fn(() => range) }) },
+        },
+        sync: vi.fn(),
+      }),
+    )
+
+    await expect(
+      excel.recoverMutation(
+        'set_cell_range',
+        {
+          sheetId: 1,
+          worksheetOfficeId: 'stable-sheet',
+          range: 'A1',
+          cells: [[{ value: 'agent edit' }]],
+        },
+        {
+          kind: 'cells',
+          state: {
+            ranges: [{ address: 'A1', rows: 1, columns: 1, cells: [beforeCell] }],
+          },
+        },
+      ),
+    ).resolves.toBe('concurrent')
+    expect(run).toHaveBeenCalledOnce()
+    expect(writes).toBe(0)
+  })
+
+  it('never auto-restores a partially applied cell mutation without Office compare-and-swap', async () => {
+    const excel = new BrowserExcelAdapter()
+    const beforeCell = {
+      address: 'A1',
+      value: 'before',
+      formula: 'before',
+      formulaR1C1: 'before',
+      numberFormat: 'General',
+      style: {},
+    }
+    const beforeCell2 = { ...beforeCell, address: 'B1' }
+    const state = {
+      ranges: [{ address: 'A1:B1', rows: 1, columns: 2, cells: [beforeCell, beforeCell2] }],
+    }
+    const values = [['agent edit', 'before']]
+    const formulas = [['agent edit', 'before']]
+    let writes = 0
+    const range: any = {
+      rowCount: 1,
+      columnCount: 2,
+      load: vi.fn(),
+      get values() {
+        return values
+      },
+      get formulas() {
+        return formulas
+      },
+      set formulas(value) {
+        writes += 1
+        void value
+      },
+    }
+    const sync = vi.fn().mockResolvedValue(undefined)
+    const run = vi.spyOn(excel as any, 'run').mockImplementation((callback: any) =>
+      callback({
+        workbook: {
+          worksheets: { getItem: vi.fn().mockReturnValue({ getRange: vi.fn(() => range) }) },
+        },
+        sync,
+      }),
+    )
+
+    await expect(
+      excel.recoverMutation(
+        'set_cell_range',
+        {
+          sheetId: 1,
+          worksheetOfficeId: 'stable-sheet',
+          range: 'A1:B1',
+          cells: [[{ value: 'agent edit' }, { value: 'agent edit' }]],
+        },
+        { kind: 'cells', state },
+      ),
+    ).resolves.toBe('uncertain')
+    expect(run).toHaveBeenCalledOnce()
+    expect(sync).toHaveBeenCalledOnce()
+    expect(writes).toBe(0)
+  })
+
+  it('reconciles an applied write without restoring or reporting failure', async () => {
+    const recoverMutation = vi.fn().mockResolvedValue('applied')
+    const fake = adapter({
+      verifyMutation: vi.fn().mockResolvedValue(false),
+      recoverMutation,
+    } as any)
+    const proposals = createStructuredProposalController()
+    const skill = createExcelSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('set_cell_range', {
+        sheetId: 1,
+        range: 'A1',
+        cells: [[{ value: 'applied' }]],
+        allow_overwrite: true,
+      }),
+    )
+    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+    expect(recoverMutation).toHaveBeenCalledOnce()
+  })
+
+  it('fails structural recovery closed when Office cannot provide a bounded inverse', async () => {
+    const excel = new BrowserExcelAdapter()
+    await expect(
+      excel.recoverMutation('modify_sheet_structure', { sheetId: 1 }, 'before'),
+    ).resolves.toBe('uncertain')
+  })
+
+  it('rejects direct clear/copy ranges and rectangular cell writes above the snapshot bound', async () => {
+    const fake = adapter()
+    const proposals = createStructuredProposalController()
+    const skill = createExcelSkill({ adapter: fake, proposals })
+    await expect(
+      skill.executeTool(
+        call('clear_cell_range', { sheetId: 1, range: 'A1:A2001', clearType: 'contents' }),
+      ),
+    ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+    await expect(
+      skill.executeTool(
+        call('copy_to', { sheetId: 1, sourceRange: 'A1:A2001', destinationRange: 'B1' }),
+      ),
+    ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+    await expect(
+      skill.executeTool(
+        call('set_cell_range', {
+          sheetId: 1,
+          range: 'A1',
+          cells: Array.from({ length: 50 }, () =>
+            Array.from({ length: 41 }, () => ({ value: 'x' })),
+          ),
+          allow_overwrite: true,
+        }),
+      ),
+    ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+    await expect(
+      skill.executeTool(
+        call('set_cell_range', {
+          sheetId: 1,
+          range: 'A1',
+          copyToRange: 'AZ1',
+          cells: Array.from({ length: 40 }, () =>
+            Array.from({ length: 30 }, () => ({ value: 'x' })),
+          ),
+          allow_overwrite: true,
+        }),
+      ),
+    ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+    expect(fake.captureMutation).not.toHaveBeenCalled()
+  })
+
+  it('rejects ragged set_cell_range matrices before snapshot or mutation', async () => {
+    const fake = adapter()
+    const skill = createExcelSkill({
+      adapter: fake,
+      proposals: createStructuredProposalController(),
+    })
+    await expect(
+      skill.executeTool(
+        call('set_cell_range', {
+          sheetId: 1,
+          range: 'A1',
+          cells: [[{ value: 1 }, { value: 2 }], [{ value: 3 }]],
+          allow_overwrite: true,
+        }),
+      ),
+    ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true })
+    expect(fake.captureMutation).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [
+      'clear_cell_range',
+      { sheetId: 1, range: 'A1', clearType: 'formats' },
+      { kind: 'cells', state: { ranges: [] } },
+    ],
+    [
+      'copy_to',
+      { sheetId: 1, sourceRange: 'A1', destinationRange: 'B1' },
+      { kind: 'cells', state: { ranges: [] }, sourceState: { ranges: [] } },
+    ],
+    [
+      'set_cell_range',
+      { sheetId: 1, range: 'A1', cells: [[{ value: 1, cellStyles: { fontWeight: 'bold' } }]] },
+      { kind: 'cells', state: { ranges: [] } },
+    ],
+  ])('never claims incomplete %s snapshots are recoverable', async (tool, input, before) => {
+    const excel = new BrowserExcelAdapter()
+    await expect(excel.recoverMutation(tool, input, before)).resolves.toBe('uncertain')
+  })
+
+  it('passes the stable worksheet Office ID through set_cell_range verification reads', async () => {
+    const excel = new BrowserExcelAdapter()
+    const read = vi.spyOn(excel, 'getCellRanges').mockResolvedValue({
+      ranges: [{ cells: [{ address: 'A1', value: 'x', formula: null, style: {} }] }],
+    })
+    await excel.verifyMutation(
+      'set_cell_range',
+      {
+        sheetId: 1,
+        worksheetOfficeId: 'stable-sheet',
+        range: 'A1',
+        cells: [[{ value: 'x' }]],
+      },
+      { kind: 'cells' },
+    )
+    expect(read).toHaveBeenCalledWith(
+      expect.objectContaining({ worksheetOfficeId: 'stable-sheet' }),
+      undefined,
+    )
+  })
+
+  it.each([
+    [
+      'modify_sheet_structure',
+      { operation: 'insert', sheetId: 1, dimension: 'rows', reference: '2', count: 1 },
+    ],
+    [
+      'modify_sheet_structure',
+      { operation: 'delete', sheetId: 1, dimension: 'columns', reference: 'B', count: 1 },
+    ],
+    ['resize_range', { sheetId: 1, range: 'A:A', width: { type: 'standard', value: 0 } }],
+    [
+      'modify_object',
+      {
+        operation: 'create',
+        objectType: 'chart',
+        sheetId: 1,
+        properties: { name: 'Chart', chartType: 'line', source: 'A1:B2' },
+      },
+    ],
+    [
+      'modify_object',
+      {
+        operation: 'update',
+        objectType: 'chart',
+        sheetId: 1,
+        id: 'Chart',
+        properties: { anchor: 'D4' },
+      },
+    ],
+    [
+      'modify_object',
+      {
+        operation: 'create',
+        objectType: 'pivotTable',
+        sheetId: 1,
+        properties: { name: 'Pivot', source: 'A1:B2', range: 'D1' },
+      },
+    ],
+  ])('rejects unverifiable %s sub-operations before proposal or mutation', async (tool, input) => {
+    const fake = adapter()
+    const proposals = createStructuredProposalController()
+    await expect(
+      createExcelSkill({ adapter: fake, proposals }).executeTool(call(tool, input)),
+    ).resolves.toMatchObject({ output: 'office_api_unsupported', isError: true })
+    expect(proposals.pending()).toBeUndefined()
+    expect(fake.captureMutation).not.toHaveBeenCalled()
+    expect(
+      (fake as any)[
+        tool === 'modify_object'
+          ? 'modifyObject'
+          : tool === 'resize_range'
+            ? 'resizeRange'
+            : 'modifySheetStructure'
+      ],
+    ).not.toHaveBeenCalled()
   })
 
   it('fails confirmation when request-semantic post-write verification detects a no-op', async () => {
@@ -419,9 +819,23 @@ describe('Excel compatibility skill', () => {
     ],
   ])('accepts documented %s payloads', async (_label, name, input) => {
     const proposals = createStructuredProposalController()
-    await expect(
-      createExcelSkill({ adapter: adapter(), proposals }).executeTool(call(name, input)),
-    ).resolves.toMatchObject({ output: expect.stringContaining('proposalId'), mutated: false })
+    const result = await createExcelSkill({ adapter: adapter(), proposals }).executeTool(
+      call(name, input),
+    )
+    const unsupported = new Set([
+      'styled range with note, border, copy, and autofit',
+      'insert rows',
+      'delete columns',
+      'standard autofit',
+      'create chart',
+      'create pivot',
+      'update pivot',
+    ])
+    expect(result).toMatchObject(
+      unsupported.has(_label)
+        ? { output: 'office_api_unsupported', isError: true, mutated: false }
+        : { output: expect.stringContaining('proposalId'), mutated: false },
+    )
   })
 
   it('accepts every documented structured mutation shape and rejects incomplete/unknown nested input', async () => {
@@ -751,7 +1165,7 @@ describe('browser Excel adapter', () => {
                   italic: false,
                   underline: 'None',
                   strikethrough: false,
-                  backgroundColor: '#ffeeaa',
+                  backgroundColor: '#FFEEAA',
                   borders: [
                     { side: 'EdgeBottom', style: 'Double', weight: 'Medium', color: '#112233' },
                   ],
@@ -768,9 +1182,9 @@ describe('browser Excel adapter', () => {
               {
                 value: '',
                 formula: '',
-                numberFormat: 'General',
+                numberFormat: 'GENERAL',
                 style: {
-                  styleName: 'Normal',
+                  styleName: '正文',
                   bold: false,
                   italic: false,
                   underline: 'None',

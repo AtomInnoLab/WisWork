@@ -2,6 +2,7 @@ import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
 import { exactObject, integerField, optionalField, stringField } from '../../agent/tool-schema.js'
 import { parseDeclarativeProgram } from '../shared/declarative-program.js'
+import { readUntilConverged } from '../shared/office-write-transaction.js'
 import type { PowerPointAdapter } from './browser-powerpoint-adapter.js'
 import {
   MAX_POWERPOINT_RESULT_BYTES,
@@ -19,8 +20,6 @@ const MAX_SLIDE_INDEX = 100_000
 const MAX_CODE = 32 * 1024
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
 const POWERPOINT_GEOMETRY_EPSILON = 0.01
-const POWERPOINT_CREATED_SHAPE_VERIFY_ATTEMPTS = 3
-const POWERPOINT_CREATED_SHAPE_VERIFY_DELAY_MS = 50
 const PROGRAM_TOOLS = new Set([
   'execute_office_js',
   'edit_slide_xml',
@@ -285,6 +284,14 @@ function invalidToolInput(location: 'program' | 'program.operations'): Error {
 function assertNotCancelled(signal?: AbortSignal): void {
   if (signal?.aborted) throw new Error('cancelled')
 }
+
+async function verifyPowerPointReadback(
+  verify: () => Promise<boolean>,
+  signal?: AbortSignal,
+): Promise<void> {
+  const verified = await readUntilConverged({ read: verify, accept: Boolean, signal })
+  if (!verified) throw new Error('office_verify_failed')
+}
 function boundedJson(value: unknown): string {
   const result = JSON.stringify(value)
   if (new TextEncoder().encode(result).byteLength > MAX_POWERPOINT_RESULT_BYTES)
@@ -377,10 +384,6 @@ function declarativeInput(
 
 function sameGeometry(actual: number, expected: number): boolean {
   return Math.abs(actual - expected) <= POWERPOINT_GEOMETRY_EPSILON
-}
-
-function waitForCreatedShapeReadback(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, POWERPOINT_CREATED_SHAPE_VERIFY_DELAY_MS))
 }
 
 function parseXmlProgram(code: string): XmlReplacement[] {
@@ -576,7 +579,6 @@ export function createPowerPointSkill(options: {
         const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
         if (!(await verifyImportedPowerPointPackage(current.base64, applied, confirmSignal)))
           throw new Error('office_verify_failed')
-        await options.adapter.verifySlides(confirmSignal)
       },
     })
     return {
@@ -698,14 +700,14 @@ export function createPowerPointSkill(options: {
                 confirmSignal,
               ),
             verify: async (confirmSignal) => {
-              const result = await options.adapter.readSlideText(
-                input.slide_index,
-                input.shape_id,
-                confirmSignal,
-              )
-              if (result.slideId !== before.slideId || result.text !== input.text)
-                throw new Error('office_verify_failed')
-              await options.adapter.verifySlides(confirmSignal)
+              await verifyPowerPointReadback(async () => {
+                const result = await options.adapter.readSlideText(
+                  input.slide_index,
+                  input.shape_id,
+                  confirmSignal,
+                )
+                return result.slideId === before.slideId && result.text === input.text
+              }, confirmSignal)
             },
           })
           return {
@@ -737,12 +739,13 @@ export function createPowerPointSkill(options: {
             },
             verify: async (confirmSignal) => {
               if (!insertedSlideId) throw new Error('office_verify_failed')
-              const inserted = await options.adapter.listSlideShapes(
-                input.slide_index + 1,
-                confirmSignal,
-              )
-              if (inserted.slideId !== insertedSlideId) throw new Error('office_verify_failed')
-              await options.adapter.verifySlides(confirmSignal)
+              await verifyPowerPointReadback(async () => {
+                const inserted = await options.adapter.listSlideShapes(
+                  input.slide_index + 1,
+                  confirmSignal,
+                )
+                return inserted.slideId === insertedSlideId
+              }, confirmSignal)
             },
           })
           return {
@@ -766,6 +769,21 @@ export function createPowerPointSkill(options: {
             program.operations.length !== 1
           )
             throw new Error('invalid_tool_input')
+          const shapeTargets = new Map<string, PowerPointDeclarativeOperation[]>()
+          for (const operation of program.operations) {
+            if (!('shape_id' in operation)) continue
+            const key = `${operation.slide_index}/${operation.shape_id}`
+            const related = shapeTargets.get(key) ?? []
+            related.push(operation)
+            shapeTargets.set(key, related)
+          }
+          if (
+            [...shapeTargets.values()].some(
+              (related) =>
+                related.some((operation) => operation.op === 'delete_shape') && related.length > 1,
+            )
+          )
+            throw new Error('invalid_tool_input')
           await options.adapter.verifySlides(signal)
           const slideIndexes = [
             ...new Set(program.operations.map((operation) => operation.slide_index)),
@@ -782,7 +800,7 @@ export function createPowerPointSkill(options: {
             ),
           )
           const combined = snapshots.map((item) => item.fingerprint).join('|')
-          let declarativeResult: { createdShapeIds: string[] } | undefined
+          let declarativeResult: { createdShapeIds: string[]; insertedSlideId?: string } | undefined
           const proposal = options.proposals.propose({
             operation: call.name,
             toolName: call.name,
@@ -827,22 +845,35 @@ export function createPowerPointSkill(options: {
             },
             verify: async (confirmSignal) => {
               let createdShapeIndex = 0
-              for (const operation of program.operations) {
-                if (operation.op === 'set_shape_text') {
-                  const current = await options.adapter.readSlideText(
-                    operation.slide_index,
-                    operation.shape_id,
-                    confirmSignal,
+              for (const [operationIndex, operation] of program.operations.entries()) {
+                const superseded = program.operations.slice(operationIndex + 1).some((later) => {
+                  if (
+                    !('shape_id' in operation) ||
+                    !('shape_id' in later) ||
+                    later.slide_index !== operation.slide_index ||
+                    later.shape_id !== operation.shape_id
                   )
-                  if (current.text !== operation.text) throw new Error('office_verify_failed')
+                    return false
+                  return (
+                    later.op === 'delete_shape' ||
+                    (operation.op === 'set_shape_text' && later.op === 'set_shape_text') ||
+                    (operation.op === 'set_shape_geometry' && later.op === 'set_shape_geometry')
+                  )
+                })
+                if (superseded) continue
+                if (operation.op === 'set_shape_text') {
+                  await verifyPowerPointReadback(async () => {
+                    const current = await options.adapter.readSlideText(
+                      operation.slide_index,
+                      operation.shape_id,
+                      confirmSignal,
+                    )
+                    return current.text === operation.text
+                  }, confirmSignal)
                 } else if (operation.op !== 'duplicate_slide') {
                   if (operation.op === 'add_text_box') {
                     const createdShapeId = declarativeResult?.createdShapeIds[createdShapeIndex++]
-                    for (
-                      let attempt = 0;
-                      attempt < POWERPOINT_CREATED_SHAPE_VERIFY_ATTEMPTS;
-                      attempt += 1
-                    ) {
+                    await verifyPowerPointReadback(async () => {
                       const current = await options.adapter.listSlideShapes(
                         operation.slide_index,
                         confirmSignal,
@@ -860,42 +891,41 @@ export function createPowerPointSkill(options: {
                           shape.id,
                           confirmSignal,
                         )
-                        if (text.text === operation.text) break
+                        if (text.text === operation.text) return true
                       }
-                      if (attempt === POWERPOINT_CREATED_SHAPE_VERIFY_ATTEMPTS - 1)
-                        throw new Error('office_verify_failed')
-                      await waitForCreatedShapeReadback()
-                    }
+                      return false
+                    }, confirmSignal)
                     continue
                   }
-                  const current = await options.adapter.listSlideShapes(
-                    operation.slide_index,
-                    confirmSignal,
-                  )
-                  const shape = current.shapes.find((item) => item.id === operation.shape_id)
-                  if (operation.op === 'delete_shape') {
-                    if (shape) throw new Error('office_verify_failed')
-                  } else if (
-                    !shape ||
-                    !sameGeometry(shape.left, operation.left) ||
-                    !sameGeometry(shape.top, operation.top) ||
-                    !sameGeometry(shape.width, operation.width) ||
-                    !sameGeometry(shape.height, operation.height)
-                  ) {
-                    throw new Error('office_verify_failed')
-                  }
+                  await verifyPowerPointReadback(async () => {
+                    const current = await options.adapter.listSlideShapes(
+                      operation.slide_index,
+                      confirmSignal,
+                    )
+                    const shape = current.shapes.find((item) => item.id === operation.shape_id)
+                    if (operation.op === 'delete_shape') return !shape
+                    return Boolean(
+                      shape &&
+                      sameGeometry(shape.left, operation.left) &&
+                      sameGeometry(shape.top, operation.top) &&
+                      sameGeometry(shape.width, operation.width) &&
+                      sameGeometry(shape.height, operation.height),
+                    )
+                  }, confirmSignal)
                 }
               }
               if (program.operations[0]?.op === 'duplicate_slide') {
                 const operation = program.operations[0]
-                const inserted = await options.adapter.listSlideShapes(
-                  operation.slide_index + 1,
-                  confirmSignal,
-                )
-                if (inserted.slideId === snapshots[0].slideId)
-                  throw new Error('office_verify_failed')
+                const insertedSlideId = declarativeResult?.insertedSlideId
+                if (!insertedSlideId) throw new Error('office_verify_failed')
+                await verifyPowerPointReadback(async () => {
+                  const inserted = await options.adapter.listSlideShapes(
+                    operation.slide_index + 1,
+                    confirmSignal,
+                  )
+                  return inserted.slideId === insertedSlideId
+                }, confirmSignal)
               }
-              await options.adapter.verifySlides(confirmSignal)
             },
           })
           return {
