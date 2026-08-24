@@ -117,9 +117,9 @@ describe('Excel compatibility skill', () => {
     const pending = proposals.pending()!
     expect(pending.impact).toEqual({ host: 'Excel', targets: ['sheet:1!A1:B1'], count: 2 })
     await proposals.confirm(pending.id)
-    expect(fake.fingerprint).toHaveBeenCalledTimes(4)
+    expect(fake.fingerprint).toHaveBeenCalledTimes(2)
     expect(fake.setCellRange).toHaveBeenCalledOnce()
-    expect(fake.verifyRanges).toHaveBeenCalledOnce()
+    expect(fake.verifyRanges).not.toHaveBeenCalled()
   })
 
   it('rejects stale and cancelled writes without applying them', async () => {
@@ -141,6 +141,181 @@ describe('Excel compatibility skill', () => {
         controller.signal,
       ),
     ).resolves.toMatchObject({ output: 'cancelled', isError: true })
+  })
+
+  it('revalidates the stable Office worksheet identity after an ordinal reorder', async () => {
+    const resolveWorksheetIdentity = vi.fn().mockResolvedValue('office-sheet-data')
+    const validateWorksheetIdentity = vi.fn().mockResolvedValue(false)
+    const fake = adapter({
+      resolveWorksheetIdentity,
+      validateWorksheetIdentity,
+    } as any)
+    const proposals = createStructuredProposalController()
+    const skill = createExcelSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('set_cell_range', {
+        sheetId: 1,
+        range: 'A1',
+        cells: [[{ value: 'safe' }]],
+        allow_overwrite: true,
+      }),
+    )
+
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('proposal_stale')
+    expect(resolveWorksheetIdentity).toHaveBeenCalledWith(1, undefined)
+    expect(validateWorksheetIdentity).toHaveBeenCalledWith(
+      1,
+      'office-sheet-data',
+      expect.any(AbortSignal),
+    )
+    expect(fake.setCellRange).not.toHaveBeenCalled()
+  })
+
+  it('accepts a mutation after bounded delayed readback convergence', async () => {
+    const verifyMutation = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+    const fake = adapter({ verifyMutation })
+    const proposals = createStructuredProposalController()
+    const skill = createExcelSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('clear_cell_range', { sheetId: 1, range: 'A1', clearType: 'contents' }),
+    )
+
+    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+    expect(verifyMutation).toHaveBeenCalledTimes(3)
+  })
+
+  it('never restores over a concurrent third state after verification failure', async () => {
+    const recoverMutation = vi.fn().mockResolvedValue('concurrent')
+    const fake = adapter({
+      verifyMutation: vi.fn().mockResolvedValue(false),
+      recoverMutation,
+    } as any)
+    const proposals = createStructuredProposalController()
+    const skill = createExcelSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('copy_to', { sheetId: 1, sourceRange: 'A1', destinationRange: 'B1' }),
+    )
+
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow(
+      'office_concurrent_change',
+    )
+    expect(recoverMutation).toHaveBeenCalledOnce()
+  })
+
+  it('reconciles a sync rejection and reports a proved restoration as a failed write', async () => {
+    const recoverMutation = vi.fn().mockResolvedValue('restored')
+    const fake = adapter({
+      setCellRange: vi.fn().mockRejectedValue(new Error('InvalidArgument')),
+      recoverMutation,
+    } as any)
+    const proposals = createStructuredProposalController()
+    const skill = createExcelSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('set_cell_range', {
+        sheetId: 1,
+        range: 'A1',
+        cells: [[{ value: 'new' }]],
+        allow_overwrite: true,
+      }),
+    )
+
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('office_write_failed')
+    expect(recoverMutation).toHaveBeenCalledOnce()
+  })
+
+  it('classifies third-state cell edits without dispatching a restore', async () => {
+    const excel = new BrowserExcelAdapter()
+    const beforeCell = {
+      address: 'A1',
+      value: 'before',
+      formula: 'before',
+      formulaR1C1: 'before',
+      numberFormat: 'General',
+      style: {},
+    }
+    vi.spyOn(excel, 'getCellRanges').mockResolvedValue({
+      ranges: [
+        {
+          address: 'A1',
+          rows: 1,
+          columns: 1,
+          cells: [{ ...beforeCell, value: 'user edit', formula: 'user edit' }],
+        },
+      ],
+    })
+    const run = vi.spyOn(excel as any, 'run')
+
+    await expect(
+      excel.recoverMutation(
+        'set_cell_range',
+        {
+          sheetId: 1,
+          worksheetOfficeId: 'stable-sheet',
+          range: 'A1',
+          cells: [[{ value: 'agent edit' }]],
+        },
+        {
+          kind: 'cells',
+          state: {
+            ranges: [{ address: 'A1', rows: 1, columns: 1, cells: [beforeCell] }],
+          },
+        },
+      ),
+    ).resolves.toBe('concurrent')
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it('restores only a cell state composed of the approved write and captured prestate', async () => {
+    const excel = new BrowserExcelAdapter()
+    const beforeCell = {
+      address: 'A1',
+      value: 'before',
+      formula: 'before',
+      formulaR1C1: 'before',
+      numberFormat: 'General',
+      style: {},
+    }
+    const state = {
+      ranges: [{ address: 'A1', rows: 1, columns: 1, cells: [beforeCell] }],
+    }
+    vi.spyOn(excel, 'getCellRanges')
+      .mockResolvedValueOnce({
+        ranges: [
+          {
+            address: 'A1',
+            rows: 1,
+            columns: 1,
+            cells: [{ ...beforeCell, value: 'agent edit', formula: 'agent edit' }],
+          },
+        ],
+      })
+      .mockResolvedValueOnce(state)
+    const run = vi.spyOn(excel as any, 'run').mockResolvedValue(undefined)
+
+    await expect(
+      excel.recoverMutation(
+        'set_cell_range',
+        {
+          sheetId: 1,
+          worksheetOfficeId: 'stable-sheet',
+          range: 'A1',
+          cells: [[{ value: 'agent edit' }]],
+        },
+        { kind: 'cells', state },
+      ),
+    ).resolves.toBe('restored')
+    expect(run).toHaveBeenCalledOnce()
+  })
+
+  it('fails structural recovery closed when Office cannot provide a bounded inverse', async () => {
+    const excel = new BrowserExcelAdapter()
+    await expect(
+      excel.recoverMutation('modify_sheet_structure', { sheetId: 1 }, 'before'),
+    ).resolves.toBe('uncertain')
   })
 
   it('fails confirmation when request-semantic post-write verification detects a no-op', async () => {
