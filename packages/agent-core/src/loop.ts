@@ -329,16 +329,22 @@ export class AgentLoop<TSnapshot = unknown> {
     this.lastToolBatchSignature = ''
     this.identicalToolBatches = 0
     this.abortController = new AbortController()
-    const context = this.options.skill.buildContext?.() ?? ''
-    const format =
-      this.options.formatUserMessage ??
-      ((instr: string, ctx: string) => (ctx ? `${instr}\n\n${ctx}` : instr))
-    const userMsg: AgentMessage = {
-      role: 'user',
-      text: format(instruction, context),
-      ...(images?.length ? { images } : {}),
+    try {
+      const context = this.options.skill.buildContext?.() ?? ''
+      const format =
+        this.options.formatUserMessage ??
+        ((instr: string, ctx: string) => (ctx ? `${instr}\n\n${ctx}` : instr))
+      const userMsg: AgentMessage = {
+        role: 'user',
+        text: format(instruction, context),
+        ...(images?.length ? { images } : {}),
+      }
+      void this.beginRun(userMsg)
+    } catch (error) {
+      this.running = false
+      this.abortController = null
+      throw error
     }
-    void this.beginRun(userMsg)
   }
 
   /** Compact (if needed), push the user message, then start the turn. Compaction failure doesn't block the run. */
@@ -364,7 +370,20 @@ export class AgentLoop<TSnapshot = unknown> {
     }
     this.runUserMsg = userMsg
     this.history.push(userMsg)
-    this.startTurn()
+    try {
+      this.startTurn()
+    } catch (error) {
+      this.handle = null
+      this.running = false
+      this.abortController = null
+      this.rollbackFailedRun()
+      const message = error instanceof Error ? error.message : String(error)
+      try {
+        this.options.events?.onError?.(message)
+      } catch {
+        // A presentation callback must not turn a handled launch failure into an unhandled rejection.
+      }
+    }
   }
 
   /**
@@ -377,6 +396,22 @@ export class AgentLoop<TSnapshot = unknown> {
     if (!msg) return
     const i = this.history.lastIndexOf(msg)
     if (i >= 0) this.history.splice(i)
+  }
+
+  /** Settle a detached async run failure without letting it strand the loop busy. */
+  private failRun(error: unknown, generation: number): void {
+    if (generation !== this.generation || !this.running) return
+    this.handle = null
+    this.running = false
+    this.abortController?.abort()
+    this.abortController = null
+    this.rollbackFailedRun()
+    const message = error instanceof Error ? error.message : String(error)
+    try {
+      this.options.events?.onError?.(message)
+    } catch {
+      // Presentation callbacks are outside the run's trust boundary.
+    }
   }
 
   // ── Context compaction: fold old conversation into a summary, keep recent messages verbatim ──
@@ -591,7 +626,7 @@ export class AgentLoop<TSnapshot = unknown> {
         onDone: () => {
           if (generation !== this.generation || settled) return
           settled = true
-          void this.finishTurn()
+          void this.finishTurn().catch((error) => this.failRun(error, generation))
         },
         onError: (error) => {
           if (generation !== this.generation || settled) return

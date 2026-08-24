@@ -295,7 +295,7 @@ describe('registerWisworkModelIpc', () => {
     const returned = (await invoke('get', 1)) as ReturnType<typeof defaultAiSettings>
     await invoke('set', 1, settings)
     for (const value of [returned, saved[0] as typeof returned]) {
-      expect(value.providers.wiswork.model).toBe('qwen/qwen3.8-max')
+      expect(value.providers.wiswork.model).toBe('openai/gpt-5.6-sol')
       for (const config of Object.values(value.providers)) {
         expect(config.apiKey).toBe('')
         expect(config.baseUrl).toBeUndefined()
@@ -303,7 +303,7 @@ describe('registerWisworkModelIpc', () => {
     }
     await invoke('stream', 1, { ...validRequest(), settings })
     const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string)
-    expect(body.model).toBe('qwen/qwen3.8-max')
+    expect(body.model).toBe('openai/gpt-5.6-sol')
   })
 
   it('delegates WisUsage requests to the auth client so a 401 refreshes and retries once', async () => {

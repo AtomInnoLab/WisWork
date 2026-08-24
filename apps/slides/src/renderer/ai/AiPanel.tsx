@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import {
-  AgentLoop,
   composeSkills,
   IPC_STREAM_SILENCE_TIMEOUT_MS,
   type AgentImage,
   type ToolDisplay,
 } from '@wiswork/agent-core'
+import type { AgentHarness } from '@wiswork/agent-harness'
 import type { RenderSlide } from '@wiswork/pptx-render'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
@@ -13,8 +13,23 @@ import { createSlidesSkill, type DeckAccess, type ClarifyQuestion } from './slid
 import { extractJsonObject, parseOutlineJson } from './outline-json'
 import { createFilesSkill } from './files-skill'
 import { createElectronTransport } from './transport'
+import {
+  beginSlidesHostRun,
+  classifySlidesQcFailure,
+  completeSlidesHostRun,
+  createAgentController,
+  recordSlidesRunAttachments,
+  stopSlidesHostRun,
+  useAgentControllerCleanup,
+} from './agent-controller'
 import { renderSlidesToPngBase64 } from '../export-render'
-import { isQcEnabled, qcSlidePage, QC_MAX_PAGES } from './slide-qc'
+import {
+  captureCurrentQcShot,
+  isQcEnabled,
+  qcSlidePage,
+  QC_MAX_PAGES,
+  runQcInHistoryBatch,
+} from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
 import { Markdown } from '@wiswork/ui'
 import { WisWorkMark } from '../components/icons'
@@ -32,6 +47,7 @@ import fileVoiceIcon from '../assets/file-voice.png'
 import fileDocumentIcon from '../assets/file-document.png'
 import fileGeneralIcon from '../assets/file-general.png'
 import { IconNewChat, IconSidebarCollapseLeft } from '../components/icons'
+import { createSlidesChatBindingCoordinator } from './chat-binding'
 
 interface ToolActivity {
   name: string
@@ -463,18 +479,15 @@ export function AiPanel({
   >([])
 
   // ── Chat history persistence ──────────────────────────────────────────────
-  /** Resolve chatId and load history on first mount (AiPanel resets by key; no need to watch currentFilePath changes) */
-  useEffect(() => {
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!api) return
-    const tempChatId = `unsaved-${Date.now()}`
-    void api
-      .resolveChat({ filePath: currentFilePath ?? null, tempChatId })
-      .then((ids) => {
+  const chatBindingRef = useRef<ReturnType<typeof createSlidesChatBindingCoordinator> | null>(null)
+  if (!chatBindingRef.current && window.projectApi) {
+    chatBindingRef.current = createSlidesChatBindingCoordinator({
+      api: window.projectApi,
+      createTempChatId: () => `unsaved-${Date.now()}`,
+      onBinding: (ids) => {
         chatRefIds.current = ids
-        return api.loadChat({ projectId: ids.projectId, chatId: ids.chatId, limit: 200 })
-      })
-      .then((msgs) => {
+      },
+      onHistory: (msgs) => {
         if (msgs.length === 0) return
         setHistoricChat(
           msgs.map((m) => ({
@@ -499,31 +512,22 @@ export function AiPanel({
         )
         // Restore model context: follow-ups after reopening a file continue the earlier conversation (only when the loop is idle with no history)
         loopRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
-      })
-      .catch(() => {
-        /* History load failures are silent */
-      })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+      },
+      onReset: () => {
+        setChat([])
+        setHistoricChat([])
+      },
+    })
+  }
 
-  /** After an unsaved draft lands and gets a real path, bind the unsaved-* history to that file (recoverable by path on reopen) */
+  /** Bind on every path transition; publishing is suspended until rebind/resolve is authoritative. */
   useEffect(() => {
-    const ids = chatRefIds.current
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!api || !ids || !currentFilePath || !ids.chatId.startsWith('unsaved-')) return
-    void api
-      .rebindChat({
-        projectId: ids.projectId,
-        tempChatId: ids.chatId,
-        newFilePath: currentFilePath,
-      })
-      .then((r) => {
-        if (r?.chatId) chatRefIds.current = r
-      })
-      .catch(() => {
-        /* Silent */
-      })
+    void chatBindingRef.current?.bind(currentFilePath ?? null)
   }, [currentFilePath])
+
+  // StrictMode replays effects: deactivation invalidates the first resolve, and
+  // the replayed binding effect starts a fresh authoritative resolution.
+  useEffect(() => () => chatBindingRef.current?.deactivate(), [])
 
   /** Persist one message (fails silently). tools include args/output (truncated by the store layer); attachments store metadata only. */
   const persistMessage = (
@@ -538,30 +542,21 @@ export function AiPanel({
     }>,
     attachments?: AttachmentMeta[],
   ) => {
-    const ids = chatRefIds.current
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!ids || !api) return
-    void api
-      .appendChat({
-        projectId: ids.projectId,
-        chatId: ids.chatId,
-        role,
-        text,
-        ...(tools && tools.length > 0 ? { tools } : {}),
-        ...(attachments && attachments.length > 0
-          ? {
-              attachments: attachments.map((a) => ({
-                name: a.name,
-                path: a.path,
-                ext: a.ext,
-                sizeBytes: a.sizeBytes,
-              })),
-            }
-          : {}),
-      })
-      .catch(() => {
-        /* Silent */
-      })
+    chatBindingRef.current?.persist({
+      role,
+      text,
+      ...(tools && tools.length > 0 ? { tools } : {}),
+      ...(attachments && attachments.length > 0
+        ? {
+            attachments: attachments.map((a) => ({
+              name: a.name,
+              path: a.path,
+              ext: a.ext,
+              sizeBytes: a.sizeBytes,
+            })),
+          }
+        : {}),
+    })
   }
 
   // Resolved when the user submits/cancels; the AI takes the answer and continues.
@@ -572,6 +567,8 @@ export function AiPanel({
 
   /** Synchronous re-entry guard between runWith trigger and loop.run (see the comment inside runWith) */
   const runStartingRef = useRef(false)
+  const launchTokenRef = useRef(0)
+  const activeRunTokenRef = useRef(0)
   /** Pages landed by this run's generation calls, pending the post-generation layout QC pass */
   const qcPagesRef = useRef<number[]>([])
   const qcAbortRef = useRef<AbortController | null>(null)
@@ -600,13 +597,16 @@ export function AiPanel({
     })
   }
 
-  const finishHistoryBatch = async () => {
+  const finishHistoryBatch = async (publishSnapshot = true) => {
     if (!historyBatchActiveRef.current) return
     historyBatchActiveRef.current = false
     const id = await window.slidesApi.endHistoryBatch()
     if (typeof id !== 'number') return
-    runSnapshotIdRef.current = id
-    patchLastAssistant({ snapshotId: id })
+    if (publishSnapshot) {
+      runSnapshotIdRef.current = id
+      patchLastAssistant({ snapshotId: id })
+    }
+    return id
   }
 
   const rollback = async (snapshotId: number) => {
@@ -628,7 +628,7 @@ export function AiPanel({
     )
   }
 
-  const loopRef = useRef<AgentLoop | null>(null)
+  const loopRef = useRef<AgentHarness<unknown> | null>(null)
   if (!loopRef.current) {
     // Send one LLM request, aggregating streaming deltas into complete text. Shared by in-tool per-page/planning.
     // - On timeout/user stop (signal abort) call aiStreamCancel to cancel the main-process stream, leaving no orphan requests.
@@ -884,7 +884,7 @@ export function AiPanel({
           .map((a) => a.name),
     }
     accessRef.current = access
-    loopRef.current = new AgentLoop({
+    loopRef.current = createAgentController({
       transport: createElectronTransport(() => settingsRef.current),
       systemSuffix: aiLangDirective,
       skill: composeSkills('slides+files', '', [
@@ -960,11 +960,21 @@ export function AiPanel({
             }
             return next
           })
-          void finishHistoryBatch().finally(() => {
-            setBusy(false)
-            // Post-generation layout QC: only after a completed run that landed generated pages
-            if (cancelled) qcPagesRef.current = []
-            else if (qcPagesRef.current.length > 0) void runQcPassRef.current()
+          void completeSlidesHostRun({
+            cancelled,
+            finishHistoryBatch: () => finishHistoryBatch(false),
+            isCurrent: () => launchTokenRef.current === activeRunTokenRef.current,
+            hasQcPages: () => qcPagesRef.current.length > 0,
+            clearQcPages: () => {
+              qcPagesRef.current = []
+            },
+            runQc: () => void runQcPassRef.current(),
+            setBusy,
+            publishHistorySnapshot: (snapshot) => {
+              if (typeof snapshot !== 'number') return
+              runSnapshotIdRef.current = snapshot
+              patchLastAssistant({ snapshotId: snapshot })
+            },
           })
           // Persist the assistant message; tools store the whole run's full activity —
           // side effects outside the updater (StrictMode double-invokes updaters, duplicating history writes)
@@ -1016,6 +1026,7 @@ export function AiPanel({
       },
     })
   }
+  useAgentControllerCleanup(loopRef)
 
   useEffect(() => {
     if (!preset) return
@@ -1115,8 +1126,17 @@ export function AiPanel({
     // so duplicate triggers must be blocked synchronously (e.g. StrictMode double-running the preset autoRun effect),
     // otherwise two sets of bubbles get pushed and the earlier assistant placeholder stays at "thinking" forever.
     // qcRunningRef: the post-generation QC pass edits the deck outside the main loop — no concurrent runs
-    if (!instruction || !loop || loop.busy || runStartingRef.current || qcRunningRef.current) return
+    if (
+      !instruction ||
+      !loop ||
+      loop.snapshot.busy ||
+      runStartingRef.current ||
+      qcRunningRef.current
+    )
+      return
     runStartingRef.current = true
+    const launchToken = ++launchTokenRef.current
+    activeRunTokenRef.current = launchToken
     setInput('')
     // The message consumes the composer attachments: they ride along (echoed on the
     // bubble, images multimodal, files via the files skill) and the composer clears.
@@ -1149,26 +1169,43 @@ export function AiPanel({
     ])
     runStartedAtRef.current = Date.now()
     setBusy(true)
-    // Persist the user message (store display text + attachment metadata; loop.restore rebuilds model context on file reopen)
-    persistMessage('user', shown, undefined, sentAtts)
     void collectImageAttachments(sentAtts)
       .then(async (images) => {
+        if (launchTokenRef.current !== launchToken || loopRef.current !== loop) return
         // AI Beautify sends the current slide's rendering along, so the model sees what it edits;
         // the note rides on the model instruction only — the chat bubble stays the localized preset text
         let modelInstruction = instruction
         if (opts?.slideShot) {
           const shot = await captureSlideShot(currentRef.current)
+          if (launchTokenRef.current !== launchToken || loopRef.current !== loop) return
           if (shot) {
             images.push(shot)
             modelInstruction += `\n\n(Attached image: the current rendering of this slide, slideIndex ${currentRef.current}. Use it to spot visual issues the element inventory can't show.)`
           }
         }
-        // Clear the flag before run: loop.run sets running synchronously, leaving no re-entry window
-        runStartingRef.current = false
-        if (await window.slidesApi.beginHistoryBatch()) historyBatchActiveRef.current = true
-        loop.run(modelInstruction, images)
+        const launched = await beginSlidesHostRun({
+          beginHistoryBatch: () => window.slidesApi.beginHistoryBatch(),
+          isCurrent: () => launchTokenRef.current === launchToken && loopRef.current === loop,
+          markHistoryActive: () => {
+            historyBatchActiveRef.current = true
+          },
+          finishHistoryBatch,
+          run: () => {
+            if (launchTokenRef.current !== launchToken || loopRef.current !== loop) return false
+            // loop.run marks itself busy synchronously, so clearing this guard here
+            // leaves no duplicate-launch window and keeps Stop authoritative while
+            // beginHistoryBatch is still in flight.
+            runStartingRef.current = false
+            recordSlidesRunAttachments(sentAtts, (runAttachments) =>
+              persistMessage('user', shown, undefined, [...runAttachments]),
+            )
+            return loop.run(modelInstruction, images)
+          },
+        })
+        if (!launched) setBusy(false)
       })
       .catch(() => {
+        if (launchTokenRef.current !== launchToken || loopRef.current !== loop) return
         runStartingRef.current = false
         void finishHistoryBatch().finally(() => setBusy(false))
       })
@@ -1207,24 +1244,39 @@ export function AiPanel({
     // First kept QC batch — the run's own batch takes precedence (it is earlier,
     // so restoring it rewinds past the QC edits too)
     let qcSnapshotId: number | null = null
+    let activePage = capped[0] ?? 0
     try {
       for (const page of capped) {
-        if (controller.signal.aborted) break
-        const shot = await captureSlideShot(page)
+        activePage = page
+        if (controller.signal.aborted || qcAbortRef.current !== controller) break
+        const captured = await captureCurrentQcShot({
+          capture: () => captureSlideShot(page),
+          signal: controller.signal,
+          isCurrent: () => qcAbortRef.current === controller,
+        })
+        if (!captured) break
+        const shot = captured.value
         if (!shot) {
           if (slidesRef.current[page]) lines.push(tGlobal('aiQcPageSkipped', { n: page + 1 }))
           continue
         }
-        const batchOpened = await window.slidesApi.beginHistoryBatch()
-        const result = await qcSlidePage({
-          access,
-          transport,
-          pageIndex: page,
-          screenshot: shot,
-          systemSuffix: aiLangDirective,
+        const qcRun = await runQcInHistoryBatch({
+          begin: () => window.slidesApi.beginHistoryBatch(),
+          end: () => window.slidesApi.endHistoryBatch(),
+          run: () =>
+            qcSlidePage({
+              access,
+              transport,
+              pageIndex: page,
+              screenshot: shot,
+              systemSuffix: aiLangDirective,
+              signal: controller.signal,
+            }),
           signal: controller.signal,
+          isCurrent: () => qcAbortRef.current === controller,
         })
-        const batchId = batchOpened ? await window.slidesApi.endHistoryBatch() : null
+        if (!qcRun) break
+        const { result, batchId } = qcRun
         if (controller.signal.aborted) break
         if (result.error) {
           lines.push(tGlobal('aiQcPageFailed', { n: page + 1, error: result.error }))
@@ -1252,6 +1304,14 @@ export function AiPanel({
         lines.push(tGlobal('aiQcCapped', { count: pages.length - capped.length }))
       }
       if (controller.signal.aborted) lines.push(tGlobal('aiQcStopped'))
+    } catch (error) {
+      if (classifySlidesQcFailure(error, controller.signal) === 'cancelled') {
+        if (lines.at(-1) !== tGlobal('aiQcStopped')) lines.push(tGlobal('aiQcStopped'))
+      } else {
+        // Keep host/deck details out of the UI and persisted chat. The exact
+        // failure remains observable through existing local diagnostics.
+        lines.push(tGlobal('aiQcPageFailed', { n: activePage + 1, error: 'qc_failed' }))
+      }
     } finally {
       qcRunningRef.current = false
       qcAbortRef.current = null
@@ -1275,13 +1335,37 @@ export function AiPanel({
   }
 
   const cancel = () => {
-    dismissClarify()
-    qcAbortRef.current?.abort()
-    loopRef.current?.cancel()
+    const wasPrelaunch = runStartingRef.current
+    launchTokenRef.current++
+    if (wasPrelaunch) {
+      runStartingRef.current = false
+      setBusy(false)
+      setChat((prev) => {
+        const assistant = prev.at(-1)
+        const user = prev.at(-2)
+        return assistant?.role === 'assistant' && assistant.streaming && user?.role === 'user'
+          ? prev.slice(0, -2)
+          : prev
+      })
+    }
+    stopSlidesHostRun({
+      dismissClarification: dismissClarify,
+      abortQc: () => qcAbortRef.current?.abort(),
+      stop: () => loopRef.current?.stop(),
+    })
   }
 
   // Abort a QC pass still running when the panel unmounts (new file / panel remount by key)
-  useEffect(() => () => qcAbortRef.current?.abort(), [])
+  useEffect(
+    () => () => {
+      launchTokenRef.current++
+      runStartingRef.current = false
+      qcAbortRef.current?.abort()
+      dismissClarify()
+      loopRef.current?.stop()
+    },
+    [],
+  )
 
   const retry = () =>
     runWith(lastInstructionRef.current, lastDisplayTextRef.current, {
@@ -1289,6 +1373,8 @@ export function AiPanel({
     })
 
   const newChat = () => {
+    launchTokenRef.current++
+    runStartingRef.current = false
     dismissClarify()
     qcAbortRef.current?.abort()
     loopRef.current?.reset()

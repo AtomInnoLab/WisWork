@@ -574,6 +574,89 @@ describe('Office agent session', () => {
     expect(harness.cancel).toHaveBeenCalledTimes(2)
     expect(session.snapshot().timeline).toEqual([])
   })
+
+  it('preserves Agent history after stop but clears it for a new task', async () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+      proposals: proposalsHarness().controller,
+    })
+
+    session.send('Keep this context')
+    await Promise.resolve()
+    session.stop()
+    harness.callbacks().onDone()
+    await Promise.resolve()
+    session.send('Continue')
+    await Promise.resolve()
+
+    expect(harness.stream.mock.calls[1]?.[0]).toMatchObject({
+      messages: expect.arrayContaining([
+        expect.objectContaining({ role: 'user', text: 'Keep this context' }),
+        expect.objectContaining({ role: 'user', text: 'Continue' }),
+      ]),
+    })
+
+    harness.callbacks().onDone()
+    await Promise.resolve()
+    session.newTask()
+    session.send('Fresh context')
+    await Promise.resolve()
+
+    const freshRequest = harness.stream.mock.calls[2]?.[0] as {
+      messages: Array<{ role: string; text?: string }>
+    }
+    expect(freshRequest.messages).toEqual([
+      expect.objectContaining({ role: 'user', text: 'Fresh context' }),
+    ])
+  })
+
+  it.each(['logout', 'dispose'] as const)(
+    'suppresses late transport and proposal callbacks after %s',
+    async (endSession) => {
+      const harness = transportHarness()
+      const proposals = proposalsHarness()
+      const listener = vi.fn()
+      const session = createOfficeAgentSession({
+        transport: harness.transport,
+        skill: { id: 'test', systemPrompt: 'test', tools: [], executeTool: vi.fn() },
+        proposals: proposals.controller,
+      })
+      session.subscribe(listener)
+      session.send('Old request')
+      await Promise.resolve()
+      const callbacks = harness.callbacks()
+
+      session[endSession]()
+      listener.mockClear()
+      callbacks.onDelta('Late answer')
+      callbacks.onDone()
+      if (endSession === 'dispose') proposals.setPending()
+      await Promise.resolve()
+
+      expect(session.snapshot()).toMatchObject({
+        assistantText: '',
+        busy: false,
+        timeline: [],
+        proposal: undefined,
+      })
+      expect(listener).not.toHaveBeenCalled()
+      if (endSession === 'dispose') {
+        session.send('Must not run')
+        session.stop()
+        session.reject()
+        session.newTask()
+        session.retry()
+        session.logout()
+        session.authenticationLost()
+        await Promise.resolve()
+        expect(harness.stream).toHaveBeenCalledOnce()
+        expect(proposals.controller.logout).toHaveBeenCalledOnce()
+        expect(proposals.controller.reject).not.toHaveBeenCalled()
+      }
+    },
+  )
   it('exposes generic structured proposal fields without legacy coercion', () => {
     const harness = transportHarness()
     const proposal: StructuredProposal = Object.freeze({

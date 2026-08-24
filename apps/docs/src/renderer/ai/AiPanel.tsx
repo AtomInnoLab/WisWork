@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/core'
 import type { Block } from '@wiswork/docx-engine'
-import { AgentLoop, composeSkills, type AgentImage } from '@wiswork/agent-core'
+import { composeSkills, type AgentImage } from '@wiswork/agent-core'
+import type { AgentHarness } from '@wiswork/agent-harness'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
 import type { PmNode } from '../editor/convert'
@@ -30,6 +31,14 @@ import fileVoiceIcon from '../assets/file-voice.png'
 import fileDocumentIcon from '../assets/file-document.png'
 import fileGeneralIcon from '../assets/file-general.png'
 import { IconNewChat, IconSidebarCollapse } from '../components/icons'
+import {
+  createAgentController,
+  createAgentLaunchOwner,
+  createAgentRunStartingGuard,
+  shouldResetAgentSession,
+  useAgentControllerCleanup,
+} from './agent-controller'
+import { createChatBindingCoordinator } from './chat-binding'
 
 interface ToolActivity {
   name: string
@@ -372,6 +381,14 @@ export function AiPanel({
   const stickToBottomRef = useRef(true)
   /** projectId/chatId of the current chat */
   const chatRefIds = useRef<{ projectId: string; chatId: string } | null>(null)
+  const pendingPersistRef = useRef<
+    Array<{
+      role: 'user' | 'assistant'
+      text: string
+      tools?: ToolActivity[]
+      attachments?: AttachmentMeta[]
+    }>
+  >([])
 
   // latest props for the loop's closures (the loop instance outlives renders)
   const editorRef = useRef(editor)
@@ -428,18 +445,19 @@ export function AiPanel({
   >([])
 
   // ── Chat-history persistence ────────────────────────────────────────────
-  useEffect(() => {
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!api) return
-    const tempChatId = `unsaved-${Date.now()}`
-    void api
-      .resolveChat({ filePath: filePath ?? null, tempChatId })
-      .then((ids) => {
+  const chatBindingRef = useRef<ReturnType<typeof createChatBindingCoordinator> | null>(null)
+  if (!chatBindingRef.current && window.projectApi) {
+    chatBindingRef.current = createChatBindingCoordinator({
+      api: window.projectApi,
+      createTempChatId: () => `unsaved-${Date.now()}`,
+      onBinding: (ids) => {
         chatRefIds.current = ids
-        return api.loadChat({ projectId: ids.projectId, chatId: ids.chatId, limit: 200 })
-      })
-      .then((msgs) => {
-        if (msgs.length === 0) return
+        if (!ids) return
+        for (const msg of pendingPersistRef.current.splice(0)) {
+          persistMessage(msg.role, msg.text, msg.tools, msg.attachments)
+        }
+      },
+      onHistory: (msgs) => {
         setHistoricChat(
           msgs.map((m) => ({
             role: m.role,
@@ -462,28 +480,22 @@ export function AiPanel({
           })),
         )
         // restore model context: follow-ups after reopening a file continue the previous conversation (only when the loop is idle with no history)
-        loopRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
-      })
-      .catch(() => {
-        /* history load failures are silent */
-      })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  /** After an unsaved document's first save yields a real path, bind the unsaved-* history to that file (recoverable by path on reopen) */
+        harnessRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
+      },
+      onReset: () => {
+        pendingPersistRef.current = []
+        harnessRef.current?.reset()
+        setHistoricChat([])
+        setChat([])
+        setAttachments([])
+        sentAttachmentsRef.current = []
+      },
+    })
+  }
   useEffect(() => {
-    const ids = chatRefIds.current
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!api || !ids || !filePath || !ids.chatId.startsWith('unsaved-')) return
-    void api
-      .rebindChat({ projectId: ids.projectId, tempChatId: ids.chatId, newFilePath: filePath })
-      .then((r) => {
-        if (r?.chatId) chatRefIds.current = r
-      })
-      .catch(() => {
-        /* silent */
-      })
+    void chatBindingRef.current?.bind(filePath ?? null)
   }, [filePath])
+  useEffect(() => () => chatBindingRef.current?.dispose(), [])
 
   const persistMessage = (
     role: 'user' | 'assistant',
@@ -499,7 +511,11 @@ export function AiPanel({
   ) => {
     const ids = chatRefIds.current
     const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!ids || !api) return
+    if (!api) return
+    if (!ids) {
+      pendingPersistRef.current.push({ role, text, tools, attachments })
+      return
+    }
     void api
       .appendChat({
         projectId: ids.projectId,
@@ -535,13 +551,16 @@ export function AiPanel({
     })
   }
 
-  const loopRef = useRef<AgentLoop<PmNode> | null>(null)
-  if (!loopRef.current) {
+  const harnessRef = useRef<AgentHarness<PmNode> | null>(null)
+  const launchOwnerRef = useRef(createAgentLaunchOwner())
+  const runStartingRef = useRef(createAgentRunStartingGuard())
+  const launchSessionRef = useRef(filePath)
+  if (!harnessRef.current) {
     const numIds = (): NumIds => ({
       bullet: findNumId(blocksRef.current, 'bullet') ?? numIdFallbackRef.current?.bullet ?? null,
       ordered: findNumId(blocksRef.current, 'ordered') ?? numIdFallbackRef.current?.ordered ?? null,
     })
-    loopRef.current = new AgentLoop<PmNode>({
+    harnessRef.current = createAgentController<PmNode>({
       transport: createElectronTransport(() => settingsRef.current),
       systemSuffix: aiLangDirective,
       skill: composeSkills('docs+files', '', [
@@ -674,6 +693,28 @@ export function AiPanel({
       },
     })
   }
+  useAgentControllerCleanup(harnessRef)
+  useEffect(() => {
+    const launchOwner = launchOwnerRef.current
+    if (shouldResetAgentSession(launchSessionRef.current, filePath)) {
+      launchOwner.invalidate()
+      runStartingRef.current.clear()
+      launchSessionRef.current = filePath
+      harnessRef.current?.reset()
+      setBusy(false)
+      setChat([])
+      sentAttachmentsRef.current = []
+    } else {
+      launchSessionRef.current = filePath
+    }
+  }, [filePath])
+  useEffect(
+    () => () => {
+      launchOwnerRef.current.invalidate()
+      runStartingRef.current.clear()
+    },
+    [],
+  )
 
   useEffect(() => {
     if (!preset) return
@@ -714,12 +755,16 @@ export function AiPanel({
 
   /** Image attachments are read as base64 and go multimodal with this user message (≤5MB per image, max 20) */
   const MAX_IMAGES_PER_MESSAGE = 20
-  const collectImageAttachments = async (atts: AttachmentMeta[]): Promise<AgentImage[]> => {
+  const collectImageAttachments = async (
+    atts: AttachmentMeta[],
+    isCurrent: () => boolean,
+  ): Promise<AgentImage[]> => {
     const imageAtts = atts.filter((a) => ATTACHMENT_IMAGE_EXTS.has(a.ext))
     const images: AgentImage[] = []
     const failures: string[] = []
     for (const att of imageAtts.slice(0, MAX_IMAGES_PER_MESSAGE)) {
       const result = await window.desktop.readAttachmentImage(att.path)
+      if (!isCurrent()) return []
       if (result.ok && result.base64 && result.mime) {
         images.push({ base64: result.base64, mime: result.mime })
       } else {
@@ -729,7 +774,7 @@ export function AiPanel({
     if (imageAtts.length > MAX_IMAGES_PER_MESSAGE) {
       failures.push(t('aiTooManyImages', { max: MAX_IMAGES_PER_MESSAGE }))
     }
-    if (failures.length > 0) {
+    if (failures.length > 0 && isCurrent()) {
       setAttachNotice(failures.join(';'))
       window.setTimeout(() => setAttachNotice(null), 5000)
     }
@@ -741,8 +786,10 @@ export function AiPanel({
     displayInstruction = instruction,
     attachmentsOverride?: AttachmentMeta[],
   ) => {
-    const loop = loopRef.current
-    if (!instruction || !loop || loop.busy) return
+    const harness = harnessRef.current
+    if (!instruction || !harness || harness.snapshot.busy) return
+    const startingToken = runStartingRef.current.begin()
+    if (startingToken == null) return
     setInput('')
     // The message consumes the composer attachments: they ride along (echoed on the
     // bubble, images multimodal, files via the files skill) and the composer clears.
@@ -772,18 +819,33 @@ export function AiPanel({
     ])
     runStartedAtRef.current = Date.now()
     setBusy(true)
-    persistMessage('user', instruction, undefined, sentAtts)
     // a rejected image read must not strand the run (busy would stay true forever): degrade to a no-image send
-    void collectImageAttachments(sentAtts)
-      .catch((): AgentImage[] => {
-        setAttachNotice(t('aiImagesSendFailed'))
-        window.setTimeout(() => setAttachNotice(null), 5000)
-        return []
-      })
-      .then((images) => loop.run(instruction, images))
+    void launchOwnerRef.current
+      .launch(
+        (isCurrent) =>
+          collectImageAttachments(sentAtts, isCurrent).catch((): AgentImage[] => {
+            if (!isCurrent()) return []
+            setAttachNotice(t('aiImagesSendFailed'))
+            window.setTimeout(() => setAttachNotice(null), 5000)
+            return []
+          }),
+        (images) => {
+          persistMessage('user', instruction, undefined, sentAtts)
+          return harness.run(instruction, images)
+        },
+      )
+      .finally(() => runStartingRef.current.end(startingToken))
   }
 
-  const cancel = () => loopRef.current?.cancel()
+  const cancel = () => {
+    const wasStarting = runStartingRef.current.isActive()
+    launchOwnerRef.current.invalidate()
+    runStartingRef.current.clear()
+    setBusy(false)
+    if (wasStarting) setChat((prev) => prev.slice(0, -2))
+    const harness = harnessRef.current
+    if (harness) harness.stop()
+  }
 
   const retry = () =>
     runWith(lastInstructionRef.current, lastInstructionRef.current, lastAttachmentsRef.current)
@@ -791,7 +853,9 @@ export function AiPanel({
   const continueRun = () => runWith(DOCS_CONTINUE_INSTRUCTION, t('aiContinue'))
 
   const newChat = () => {
-    loopRef.current?.reset()
+    launchOwnerRef.current.invalidate()
+    runStartingRef.current.clear()
+    harnessRef.current?.reset()
     setBusy(false)
     setChat([])
     sentAttachmentsRef.current = []

@@ -99,12 +99,8 @@ import '@univerjs/preset-sheets-table/lib/index.css'
 import { greenTheme } from '@univerjs/themes'
 import { createUniver } from './create-univer'
 
-import {
-  AgentLoop,
-  COMPLETED_VIA_TOOLS_TEXT,
-  composeSkills,
-  type AgentImage,
-} from '@wiswork/agent-core'
+import { COMPLETED_VIA_TOOLS_TEXT, composeSkills, type AgentImage } from '@wiswork/agent-core'
+import type { AgentHarness } from '@wiswork/agent-harness'
 import type { AiSettings } from '@wiswork/ai-provider'
 import { type WorkbookOperation } from '../domain/workbook-dsl'
 import { columnIndex, columnLabel, parseAddress, parseRange } from '../domain/cell-address'
@@ -119,6 +115,17 @@ import { InMemoryWorkbookAdapter } from '../domain/in-memory-workbook'
 import { cfRuleUnsaveableReason, iconSetSaveable } from '../gateway/xlsx-cf'
 import type { ApplyOutcome, ChangePlan } from '../domain/workbook.types'
 import { createElectronTransport } from './ai/transport'
+import {
+  createAsyncGenerationGate,
+  createAgentController,
+  bindSheetsSession,
+  getSheetsDocumentIdentity,
+  restoreSheetsSession,
+  selectSheetsExecution,
+  settleSheetsApplyPromises,
+  useAgentControllerCleanup,
+} from './ai/agent-controller'
+import { createSheetsChatBindingCoordinator } from './ai/chat-binding'
 import type { ActiveSheetInfo, SheetsSkillDeps } from './ai/tools'
 import type { AiChatMessage } from './ai/AiChatPanel'
 import { createWorkbookSkill } from './ai/workbook-skill'
@@ -607,11 +614,17 @@ export function App(): React.JSX.Element {
   /** Synchronous re-entrancy guard between runAgent trigger and loop.run
    * (loop.busy is still false while attachment images load asynchronously) */
   const runStartingRef = useRef(false)
+  const runLaunchGateRef = useRef(createAsyncGenerationGate())
   /** The shell can repeat its queued-open nudge while the renderer starts.
    * Only one picker/open request may own the workbook session at a time. */
   const workbookOpeningRef = useRef(false)
   /** Current session's projectId/chatId (resolved when the workbook opens) */
   const chatRefIdsRef = useRef<{ projectId: string; chatId: string } | null>(null)
+  const chatBindingCoordinatorRef = useRef<ReturnType<
+    typeof createSheetsChatBindingCoordinator
+  > | null>(null)
+  const harnessSessionIdRef = useRef<string | number | undefined>(undefined)
+  const chatDocumentIdentityRef = useRef<string | number | undefined>(undefined)
 
   // File renamed externally (in the shell Home list) → sync the title-bar file
   // name (the save path is synced by the main process)
@@ -702,27 +715,20 @@ export function App(): React.JSX.Element {
     }
   }, [])
 
-  // ── project-store: resolve chatId and load history when a workbook opens ──
-  useEffect(() => {
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!api) return
-    // Reset (new workbook or new session)
-    chatRefIdsRef.current = null
-    setHistoricChat([])
-    const tempChatId = `unsaved-${Date.now()}`
-    const sessionId = workbookFile?.sessionId
-    const resolveArgs: Parameters<typeof api.resolveChat>[0] = { filePath: null, tempChatId }
-    if (sessionId !== undefined) resolveArgs.sessionId = sessionId
-    void api
-      .resolveChat(resolveArgs)
-      .then(async (ids) => {
+  const workbookSessionId = workbookFile?.sessionId
+  const workbookPath = workbookFile?.path
+  const workbookDocumentIdentity = workbookFile
+    ? getSheetsDocumentIdentity(workbookFile)
+    : undefined
+
+  if (!chatBindingCoordinatorRef.current && window.projectApi) {
+    chatBindingCoordinatorRef.current = createSheetsChatBindingCoordinator({
+      api: window.projectApi,
+      createTempChatId: () => `unsaved-${Date.now()}`,
+      onBinding: (ids) => {
         chatRefIdsRef.current = ids
-        const msgs = await api.loadChat({
-          projectId: ids.projectId,
-          chatId: ids.chatId,
-          limit: 200,
-        })
-        if (msgs.length === 0) return
+      },
+      onHistory: (msgs) => {
         setHistoricChat(
           msgs.map((m) => ({
             role: m.role,
@@ -734,7 +740,6 @@ export function App(): React.JSX.Element {
                 ...(t.name ? { name: t.name } : {}),
                 ...(t.output ? { output: t.output.slice(0, 2000) } : {}),
               })) ?? [],
-            // stored metadata only: no thumbnail read for history, the chips render name/size
             ...(m.attachments && m.attachments.length > 0
               ? {
                   attachments: m.attachments
@@ -749,14 +754,46 @@ export function App(): React.JSX.Element {
               : {}),
           })),
         )
-        // Restore model context: follow-ups after reopening the file continue the
-        // previous conversation (only when the loop is idle and has no history)
-        agentLoopRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
-      })
-      .catch(() => {
-        /* silent */
-      })
-  }, [workbookFile?.sessionId])
+        if (msgs.length > 0) {
+          restoreSheetsSession(
+            agentLoopRef.current,
+            chatDocumentIdentityRef.current,
+            () => harnessSessionIdRef.current,
+            msgs.map((m) => ({ role: m.role, text: m.text })),
+          )
+        }
+      },
+      onReset: () => {
+        setChat([])
+        setHistoricChat([])
+        setAttachments([])
+        sentAttachmentsRef.current = []
+        setAiBusy(false)
+      },
+    })
+  }
+
+  // ── project-store: bind persistence and load history for the workbook identity ──
+  useEffect(() => {
+    chatDocumentIdentityRef.current = workbookDocumentIdentity
+    runLaunchGateRef.current.invalidate()
+    runStartingRef.current = false
+    if (agentLoopRef.current)
+      bindSheetsSession(agentLoopRef.current, harnessSessionIdRef, workbookDocumentIdentity)
+    if (workbookDocumentIdentity === undefined || workbookSessionId === undefined) {
+      chatBindingCoordinatorRef.current?.clear()
+      return
+    }
+    void chatBindingCoordinatorRef.current?.bind({
+      documentId: workbookDocumentIdentity,
+      path: workbookPath ?? null,
+      sessionId: workbookSessionId,
+    })
+    // A sidecar token/path change rebinds persistence; only a document-instance
+    // change takes the reset-and-load branch above.
+  }, [workbookDocumentIdentity, workbookPath, workbookSessionId])
+
+  useEffect(() => () => chatBindingCoordinatorRef.current?.dispose(), [])
 
   const persistChatMessage = (
     role: 'user' | 'assistant',
@@ -770,32 +807,23 @@ export function App(): React.JSX.Element {
     }>,
     attachments?: readonly AttachmentMeta[],
   ) => {
-    const ids = chatRefIdsRef.current
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!ids || !api) return
-    void api
-      .appendChat({
-        projectId: ids.projectId,
-        chatId: ids.chatId,
-        role,
-        text,
-        ...(tools && tools.length > 0
-          ? { tools: tools.map((t) => ({ ...t, name: t.name ?? '' })) }
-          : {}),
-        ...(attachments && attachments.length > 0
-          ? {
-              attachments: attachments.map((a) => ({
-                name: a.name,
-                path: a.path,
-                ext: a.ext,
-                sizeBytes: a.sizeBytes,
-              })),
-            }
-          : {}),
-      })
-      .catch(() => {
-        /* silent */
-      })
+    chatBindingCoordinatorRef.current?.persist({
+      role,
+      text,
+      ...(tools && tools.length > 0
+        ? { tools: tools.map((t) => ({ ...t, name: t.name ?? '' })) }
+        : {}),
+      ...(attachments && attachments.length > 0
+        ? {
+            attachments: attachments.map((a) => ({
+              name: a.name,
+              path: a.path,
+              ext: a.ext,
+              sizeBytes: a.sizeBytes,
+            })),
+          }
+        : {}),
+    })
   }
 
   function appendChat(entry: AiChatMessage): void {
@@ -827,9 +855,9 @@ export function App(): React.JSX.Element {
   /** true once any tool of the run mutated the workbook */
   const runMutatedRef = useRef(false)
 
-  const agentLoopRef = useRef<AgentLoop | null>(null)
+  const agentLoopRef = useRef<AgentHarness<unknown> | null>(null)
   if (!agentLoopRef.current) {
-    agentLoopRef.current = new AgentLoop({
+    agentLoopRef.current = createAgentController({
       transport: createElectronTransport(() => aiSettingsRef.current!),
       systemSuffix: aiLangDirective,
       skill: composeSkills('sheets+files', '', [
@@ -988,6 +1016,14 @@ export function App(): React.JSX.Element {
       },
     })
   }
+  useAgentControllerCleanup(agentLoopRef)
+  useEffect(
+    () => () => {
+      runLaunchGateRef.current.invalidate()
+      runStartingRef.current = false
+    },
+    [],
+  )
 
   function isAgentConfigured(): boolean {
     const settings = aiSettingsRef.current
@@ -1025,8 +1061,9 @@ export function App(): React.JSX.Element {
 
   function runAgent(instruction: string, sentAttachments: readonly AttachmentMeta[]): void {
     const loop = agentLoopRef.current
-    if (!instruction.trim() || !loop || loop.busy || runStartingRef.current) return
+    if (!instruction.trim() || !loop || loop.snapshot.busy || runStartingRef.current) return
     runStartingRef.current = true
+    const launchToken = runLaunchGateRef.current.begin()
     aiApplyPromisesRef.current = []
     runLastTextRef.current = ''
     runMutatedRef.current = false
@@ -1035,12 +1072,16 @@ export function App(): React.JSX.Element {
     appendChat({ role: 'assistant', text: '', tools: [], streaming: true })
     void collectImageAttachments(sentAttachments)
       .then((images) => {
-        runStartingRef.current = false
-        loop.run(instruction, images)
+        runLaunchGateRef.current.commit(launchToken, () => {
+          runStartingRef.current = false
+          loop.run(instruction, images)
+        })
       })
       .catch(() => {
-        runStartingRef.current = false
-        loop.run(instruction)
+        runLaunchGateRef.current.commit(launchToken, () => {
+          runStartingRef.current = false
+          loop.run(instruction)
+        })
       })
   }
 
@@ -1076,10 +1117,25 @@ export function App(): React.JSX.Element {
   }
 
   function handleStopAgent(): void {
-    agentLoopRef.current?.cancel()
+    const stoppedBeforeLaunch = runStartingRef.current
+    runLaunchGateRef.current.invalidate()
+    runStartingRef.current = false
+    agentLoopRef.current?.stop()
+    if (stoppedBeforeLaunch) {
+      setAiBusy(false)
+      setMessage(t('appAiStopped'))
+      patchLastAssistant((entry) => ({
+        ...entry,
+        text: t('appAiStopped'),
+        streaming: false,
+        tools: entry.tools.filter((tool) => !tool.running),
+      }))
+    }
   }
 
   function handleNewChat(): void {
+    runLaunchGateRef.current.invalidate()
+    runStartingRef.current = false
     agentLoopRef.current?.reset()
     setAiBusy(false)
     setChat([])
@@ -2156,7 +2212,7 @@ export function App(): React.JSX.Element {
     // bubble, images multimodal, files via the files skill) and the composer clears.
     // Retry passes the failed message's original set instead.
     const sentAtts = overrideAttachments ?? attachmentsRef.current
-    const agentConfigured = isAgentConfigured()
+    const execution = selectSheetsExecution(isAgentConfigured())
     appendChat({
       role: 'user',
       text: instruction,
@@ -2177,7 +2233,7 @@ export function App(): React.JSX.Element {
     // real LLM configured → let the agent read context and propose operations;
     // otherwise fall back to the local, deterministic regex planner
     // (kept for offline use and for the fixed micro-DSL it still supports).
-    if (agentConfigured) {
+    if (execution === 'agent') {
       runAgent(instruction, sentAtts)
       return
     }
@@ -2274,40 +2330,37 @@ export function App(): React.JSX.Element {
    * successful writes in one save. A canceled/failed Save As leaves both the
    * journal and inline undo available. */
   async function autoSaveCompletedAiRun(): Promise<void> {
-    const applies = aiApplyPromisesRef.current
-    aiApplyPromisesRef.current = []
-    if (applies.length === 0) return
-    const results = await Promise.all(applies)
-    if (!results.some(Boolean)) return
-    const state = lazyWorkbookRef.current
-    if (!state || journalSize(state.editJournal) === 0) return
-    // AutoSave off = the user decides when the file is written: the
-    // run's edits stay pending in the journal, so the offered Undo / ⌘Z keeps
-    // working (saving would reopen the session and reset the undo stack).
-    if (!autoSaveRef.current) {
-      setMessage(t('appAiChangesNotSaved'))
-      return
-    }
-    // AutoSave-driven write after an AI run: silent like the interval autosave.
-    await handleSave('save', true)
-    const after = lazyWorkbookRef.current
-    if (after && journalSize(after.editJournal) === 0) {
-      // Saving reopens the sidecar session and resets Univer's undo stack.
-      patchLastAssistant(({ autoApplied: _autoApplied, ...entry }) => entry)
-      // Sheets' analog of slides' deckName: propose the first AI-named sheet as
-      // the file name. The main process no-ops unless the file still carries the
-      // shell's auto-created untitled name, so user-chosen names are never touched.
-      const candidate = after.file.sheets
-        .map((sheet) => sheet.name.trim())
-        .find((name) => name.length > 0 && !DEFAULT_SHEET_NAME_RE.test(name))
-      if (candidate) {
-        try {
-          await window.desktopApi.autoRenameWorkbook(after.file.sessionId, candidate)
-        } catch {
-          // naming is best-effort; the save itself already succeeded
+    await settleSheetsApplyPromises(aiApplyPromisesRef.current, async () => {
+      const state = lazyWorkbookRef.current
+      if (!state || journalSize(state.editJournal) === 0) return
+      // AutoSave off = the user decides when the file is written: the
+      // run's edits stay pending in the journal, so the offered Undo / ⌘Z keeps
+      // working (saving would reopen the session and reset the undo stack).
+      if (!autoSaveRef.current) {
+        setMessage(t('appAiChangesNotSaved'))
+        return
+      }
+      // AutoSave-driven write after an AI run: silent like the interval autosave.
+      await handleSave('save', true)
+      const after = lazyWorkbookRef.current
+      if (after && journalSize(after.editJournal) === 0) {
+        // Saving reopens the sidecar session and resets Univer's undo stack.
+        patchLastAssistant(({ autoApplied: _autoApplied, ...entry }) => entry)
+        // Sheets' analog of slides' deckName: propose the first AI-named sheet as
+        // the file name. The main process no-ops unless the file still carries the
+        // shell's auto-created untitled name, so user-chosen names are never touched.
+        const candidate = after.file.sheets
+          .map((sheet) => sheet.name.trim())
+          .find((name) => name.length > 0 && !DEFAULT_SHEET_NAME_RE.test(name))
+        if (candidate) {
+          try {
+            await window.desktopApi.autoRenameWorkbook(after.file.sessionId, candidate)
+          } catch {
+            // naming is best-effort; the save itself already succeeded
+          }
         }
       }
-    }
+    })
   }
 
   /**

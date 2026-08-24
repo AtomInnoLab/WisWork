@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement, ReactNode } from 'react'
-import { AgentLoop, composeSkills } from '@wiswork/agent-core'
+import { composeSkills } from '@wiswork/agent-core'
+import type { AgentHarness } from '@wiswork/agent-harness'
 import type { AiSettings } from '@wiswork/ai-provider'
 import { AiComposer, AiTypingIndicator, Markdown } from '@wiswork/ui'
 import type { Editor } from '@tiptap/core'
@@ -12,6 +13,14 @@ import { clearAiHighlights } from '../editor/aiHighlight'
 import { createMarkdownSkill } from './markdown-skill'
 import { createSearchSkill } from './search-skill'
 import { createElectronTransport } from './transport'
+import {
+  createAgentController,
+  createAgentLaunchOwner,
+  createAgentRunStartingGuard,
+  shouldResetAgentSession,
+  useAgentControllerCleanup,
+} from './agent-controller'
+import { createChatBindingCoordinator } from './chat-binding'
 
 const PANEL_WIDTH_KEY = 'markdown-ai-panel-width'
 const PANEL_WIDTH_DEFAULT = 360
@@ -156,10 +165,13 @@ export function AiPanel({
       })
   }
 
-  // The loop is built once; every mutable value goes through a ref getter
-  const loopRef = useRef<AgentLoop<string> | null>(null)
-  if (!loopRef.current) {
-    loopRef.current = new AgentLoop<string>({
+  // The harness is built once; every mutable value goes through a ref getter
+  const harnessRef = useRef<AgentHarness<string> | null>(null)
+  const launchOwnerRef = useRef(createAgentLaunchOwner())
+  const runStartingRef = useRef(createAgentRunStartingGuard())
+  const launchSessionRef = useRef(filePath)
+  if (!harnessRef.current) {
+    harnessRef.current = createAgentController<string>({
       transport: createElectronTransport(() => settingsRef.current!),
       skill: composeSkills('markdown+search', '', [
         createMarkdownSkill(() => depsRef.current.getEditor()),
@@ -251,23 +263,42 @@ export function AiPanel({
       },
     })
   }
-
-  // ── chat-history persistence: bind to the file, restore prior transcript ──
+  useAgentControllerCleanup(harnessRef)
   useEffect(() => {
-    const api = window.projectApi
-    if (!api) return
-    const tempChatId = `unsaved-${Date.now()}`
-    void api
-      .resolveChat({ filePath: filePathRef.current ?? null, tempChatId })
-      .then((ids) => {
+    const launchOwner = launchOwnerRef.current
+    if (shouldResetAgentSession(launchSessionRef.current, filePath)) {
+      launchOwner.invalidate()
+      runStartingRef.current.clear()
+      launchSessionRef.current = filePath
+      harnessRef.current?.reset()
+      setBusy(false)
+      setChat([])
+    } else {
+      launchSessionRef.current = filePath
+    }
+  }, [filePath])
+  useEffect(
+    () => () => {
+      launchOwnerRef.current.invalidate()
+      runStartingRef.current.clear()
+    },
+    [],
+  )
+
+  // ── chat-history persistence: follows every real document path change ──
+  const chatBindingRef = useRef<ReturnType<typeof createChatBindingCoordinator> | null>(null)
+  if (!chatBindingRef.current && window.projectApi) {
+    chatBindingRef.current = createChatBindingCoordinator({
+      api: window.projectApi,
+      createTempChatId: () => `unsaved-${Date.now()}`,
+      onBinding: (ids) => {
         chatIdsRef.current = ids
+        if (!ids) return
         for (const msg of pendingPersistRef.current.splice(0)) {
           persistMessage(msg.role, msg.text, msg.tools)
         }
-        return api.loadChat({ projectId: ids.projectId, chatId: ids.chatId, limit: 200 })
-      })
-      .then((msgs) => {
-        if (msgs.length === 0) return
+      },
+      onHistory: (msgs) => {
         // the user may have sent a message while history was loading — never
         // replace a live transcript (and don't clobber the loop context)
         let applied = false
@@ -285,29 +316,22 @@ export function AiPanel({
             })),
           }))
         })
-        if (applied && !loopRef.current?.busy) {
-          loopRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
+        if (applied && !harnessRef.current?.snapshot.busy) {
+          harnessRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
         }
-      })
-      .catch(() => {
-        /* history load failures are silent */
-      })
-  }, [])
-
-  /** after an untitled document's first save, bind the unsaved-* history to the real path */
+      },
+      onReset: () => {
+        pendingPersistRef.current = []
+        harnessRef.current?.reset()
+        setChat([])
+      },
+    })
+  }
   useEffect(() => {
     filePathRef.current = filePath
-    const ids = chatIdsRef.current
-    if (!window.projectApi || !ids || !filePath || !ids.chatId.startsWith('unsaved-')) return
-    void window.projectApi
-      .rebindChat({ projectId: ids.projectId, tempChatId: ids.chatId, newFilePath: filePath })
-      .then((r) => {
-        if (r?.chatId) chatIdsRef.current = r
-      })
-      .catch(() => {
-        /* silent */
-      })
+    void chatBindingRef.current?.bind(filePath)
   }, [filePath])
+  useEffect(() => () => chatBindingRef.current?.dispose(), [])
 
   useEffect(() => {
     if (stickToBottomRef.current) {
@@ -323,8 +347,10 @@ export function AiPanel({
 
   const send = (text: string): void => {
     const instruction = text.trim()
-    const loop = loopRef.current
-    if (!instruction || !loop || loop.busy) return
+    const harness = harnessRef.current
+    if (!instruction || !harness || harness.snapshot.busy) return
+    const startingToken = runStartingRef.current.begin()
+    if (startingToken == null) return
     stickToBottomRef.current = true
     runInstructionRef.current = instruction
     runMutatedRef.current = false
@@ -336,23 +362,40 @@ export function AiPanel({
     ])
     setPrompt('')
     setBusy(true)
-    persistMessage('user', instruction)
-    void (async () => {
-      try {
-        settingsRef.current = await window.markdownApi.getAiSettings()
-        await loop.run(instruction)
-      } catch (err) {
-        patchLast({
-          streaming: false,
-          text: err instanceof Error ? err.message : String(err),
-          isError: true,
-        })
-        setBusy(false)
-      }
-    })()
+    void launchOwnerRef.current
+      .launch(
+        async () => {
+          settingsRef.current = await window.markdownApi.getAiSettings()
+        },
+        () => {
+          persistMessage('user', instruction)
+          return harness.run(instruction)
+        },
+      )
+      .catch((err) => {
+        try {
+          patchLast({
+            streaming: false,
+            text: err instanceof Error ? err.message : String(err),
+            isError: true,
+          })
+          setBusy(false)
+        } catch {
+          // The panel may have unmounted while the settings request was pending.
+        }
+      })
+      .finally(() => runStartingRef.current.end(startingToken))
   }
 
-  const stop = (): void => loopRef.current?.cancel()
+  const stop = (): void => {
+    const wasStarting = runStartingRef.current.isActive()
+    launchOwnerRef.current.invalidate()
+    runStartingRef.current.clear()
+    setBusy(false)
+    if (wasStarting) setChat((prev) => prev.slice(0, -2))
+    const harness = harnessRef.current
+    if (harness) harness.stop()
+  }
 
   const retry = (): void => send(runInstructionRef.current)
 
@@ -361,7 +404,7 @@ export function AiPanel({
   useEffect(() => {
     if (!preset || preset.nonce === presetNonceRef.current) return
     presetNonceRef.current = preset.nonce
-    if (loopRef.current?.busy) setPrompt(preset.text)
+    if (harnessRef.current?.snapshot.busy) setPrompt(preset.text)
     else send(preset.text)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preset])
@@ -447,7 +490,8 @@ export function AiPanel({
               className="ai-header-btn"
               onClick={() => {
                 stop()
-                loopRef.current?.reset()
+                launchOwnerRef.current.invalidate()
+                harnessRef.current?.reset()
                 setBusy(false)
                 setChat([])
               }}

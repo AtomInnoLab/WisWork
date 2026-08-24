@@ -1,11 +1,11 @@
 import {
-  AgentLoop,
   suspendToolExecution,
   type AgentSkill,
   type AgentTransport,
   type ToolExecution,
   type ToolExecutionOutcome,
 } from '@wiswork/agent-core'
+import { createAgentHarness } from '@wiswork/agent-harness'
 import { useSyncExternalStore } from 'react'
 import type {
   OfficeProposal,
@@ -49,6 +49,7 @@ export interface OfficeAgentSession {
   retry(): void
   logout(): void
   authenticationLost(): void
+  dispose(): void
 }
 
 interface SafeSessionError {
@@ -186,6 +187,7 @@ export function createOfficeAgentSession(dependencies: {
     }
   }
   const listeners = new Set<() => void>()
+  let disposed = false
   let state: Omit<OfficeAgentSnapshot, 'proposal'> = {
     assistantText: '',
     activity: '',
@@ -198,6 +200,7 @@ export function createOfficeAgentSession(dependencies: {
   let cached: OfficeAgentSnapshot = { ...state, proposal: proposals.pending() }
 
   const publish = (next: Partial<typeof state> = {}) => {
+    if (disposed) return
     state = { ...state, ...next }
     cached = { ...state, proposal: proposals.pending() }
     listeners.forEach((listener) => listener())
@@ -319,7 +322,7 @@ export function createOfficeAgentSession(dependencies: {
     }
   }
 
-  const loop = new AgentLoop({
+  const harness = createAgentHarness({
     transport: dependencies.transport,
     skill: sessionSkill,
     events: {
@@ -443,7 +446,7 @@ export function createOfficeAgentSession(dependencies: {
     },
   })
 
-  proposals.subscribe(() => {
+  const unsubscribeProposals = proposals.subscribe(() => {
     const pending = proposals.pending()
     if (pending) {
       appendPendingProposal()
@@ -455,7 +458,7 @@ export function createOfficeAgentSession(dependencies: {
 
   const startRun = (instruction: string) => {
     const value = instruction.trim()
-    if (!value || loop.busy || state.applying) return
+    if (!value || harness.snapshot.busy || state.applying || disposed) return
     diagnose((diagnostics) => diagnostics.startTrace())
     staleTools.clear()
     runStartedAt = Date.now()
@@ -472,12 +475,13 @@ export function createOfficeAgentSession(dependencies: {
       errorMessage: undefined,
       retryable: false,
     })
-    loop.run(value)
+    harness.run(value)
   }
 
   return {
     snapshot: () => cached,
     subscribe(listener) {
+      if (disposed) return () => undefined
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
@@ -485,11 +489,12 @@ export function createOfficeAgentSession(dependencies: {
       startRun(instruction)
     },
     stop() {
+      if (disposed) return
       const event = pendingProposalEvent()
       if (state.applying) {
         sessionEpoch += 1
         proposals.newTurn()
-        loop.cancel()
+        harness.stop()
         if (event) {
           replace(event.id, (item) =>
             item.kind === 'proposal' ? { ...item, state: 'rejected' } : item,
@@ -504,10 +509,11 @@ export function createOfficeAgentSession(dependencies: {
           item.kind === 'proposal' ? { ...item, state: 'rejected' } : item,
         )
       }
-      loop.cancel()
+      harness.stop()
     },
     async confirm(id) {
-      if (state.applying || (loop.busy && proposals.pending()?.id !== id)) return
+      if (disposed || state.applying || (harness.snapshot.busy && proposals.pending()?.id !== id))
+        return
       const epoch = sessionEpoch
       const event = pendingProposalEvent()
       if (event?.proposal.id === id) {
@@ -552,7 +558,7 @@ export function createOfficeAgentSession(dependencies: {
       }
     },
     reject() {
-      if (state.applying) return
+      if (disposed || state.applying) return
       const event = pendingProposalEvent()
       proposals.reject()
       if (event)
@@ -567,34 +573,56 @@ export function createOfficeAgentSession(dependencies: {
       })
     },
     newTask() {
+      if (disposed) return
       sessionEpoch += 1
-      loop.reset()
+      harness.reset()
       proposals.logout()
       lastInstruction = ''
       clearConversation()
       publish()
     },
     retry() {
-      if (!lastInstruction || !state.retryable || loop.busy || state.applying) return
+      if (
+        !lastInstruction ||
+        !state.retryable ||
+        harness.snapshot.busy ||
+        state.applying ||
+        disposed
+      )
+        return
       const instruction = lastInstruction
       startRun(instruction)
     },
     logout() {
+      if (disposed) return
       sessionEpoch += 1
       diagnose((diagnostics) => diagnostics.clear())
-      loop.reset()
+      harness.reset()
       proposals.logout()
       lastInstruction = ''
       clearConversation()
       publish()
     },
     authenticationLost() {
+      if (disposed) return
       sessionEpoch += 1
-      loop.reset()
+      harness.reset()
       proposals.logout()
       lastInstruction = ''
       clearConversation()
       publish()
+    },
+    dispose() {
+      if (disposed) return
+      disposed = true
+      sessionEpoch += 1
+      unsubscribeProposals()
+      harness.dispose()
+      proposals.logout()
+      lastInstruction = ''
+      clearConversation()
+      cached = { ...state, proposal: undefined }
+      listeners.clear()
     },
   }
 }

@@ -71,6 +71,7 @@ function workspaceMarkup(
     retry: vi.fn(),
     logout: vi.fn(),
     authenticationLost: vi.fn(),
+    dispose: vi.fn(),
   }
   const ui: OfficeWorkspaceUi = Object.freeze({
     attachments: () => Object.freeze(['/home/user/source.docx']),
@@ -175,6 +176,7 @@ describe('Office Agent workspace UI', () => {
       retry: vi.fn(),
       logout: vi.fn(),
       authenticationLost: vi.fn(),
+      dispose: vi.fn(),
     }
     const html = renderToStaticMarkup(
       React.createElement(LegacyAgentWorkspace, {
@@ -394,6 +396,7 @@ describe('Office Agent workspace UI', () => {
       retry: vi.fn(),
       logout: vi.fn(),
       authenticationLost: vi.fn(),
+      dispose: vi.fn(),
     }
     const ui: OfficeWorkspaceUi = Object.freeze({
       attachments: () => Object.freeze([]),
@@ -452,6 +455,7 @@ describe('Office Agent workspace UI', () => {
       retry: vi.fn(),
       logout: vi.fn(),
       authenticationLost: vi.fn(),
+      dispose: vi.fn(),
     } satisfies OfficeAgentSession
     const copyDiagnostics = vi.fn(async () => undefined)
     const ui: OfficeWorkspaceUi = Object.freeze({

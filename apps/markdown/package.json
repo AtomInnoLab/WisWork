@@ -15,6 +15,7 @@
   },
   "devDependencies": {
     "@wiswork/agent-core": "*",
+    "@wiswork/agent-harness": "*",
     "@wiswork/ai-provider": "*",
     "@wiswork/docx-engine": "*",
     "@wiswork/electron-utils": "*",

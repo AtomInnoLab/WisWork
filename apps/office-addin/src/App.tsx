@@ -895,7 +895,7 @@ function ConfiguredApp() {
     })()
     return () => {
       active = false
-      created?.session.authenticationLost()
+      created?.session.dispose()
       created?.runtime.dispose()
       bridge.disconnect()
     }

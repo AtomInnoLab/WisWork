@@ -141,6 +141,56 @@ describe('AgentLoop', () => {
     expect(transport.requests[1].messageCount).toBe(3)
   })
 
+  it('settles the run when snapshot capture throws before a tool', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 't1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+    ])
+    const onError = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(),
+      captureSnapshot: () => {
+        throw new Error('snapshot_failed')
+      },
+      events: { onError },
+    })
+
+    loop.run('make a change')
+    await flush()
+
+    expect(onError).toHaveBeenCalledWith('snapshot_failed')
+    expect(loop.busy).toBe(false)
+    expect(loop.messages).toEqual([])
+  })
+
+  it('settles the run when starting the next provider turn throws', async () => {
+    let turn = 0
+    const transport: AgentTransport = {
+      stream(_request, callbacks) {
+        turn++
+        if (turn === 2) throw new Error('second_turn_stream_failed')
+        queueMicrotask(() => {
+          callbacks.onToolCall({ id: 't1', name: 'do_thing', input: {} })
+          callbacks.onDone()
+        })
+        return { cancel() {} }
+      },
+    }
+    const onError = vi.fn()
+    const loop = new AgentLoop({ transport, skill: makeSkill(), events: { onError } })
+
+    loop.run('make a change')
+    await flush()
+    await flush()
+
+    expect(onError).toHaveBeenCalledWith('second_turn_stream_failed')
+    expect(loop.busy).toBe(false)
+    expect(loop.messages).toEqual([])
+  })
+
   it('pauses a tool round without starting the next provider turn and resumes it once', async () => {
     let resolveExecution!: (execution: ToolExecution) => void
     const result = new Promise<ToolExecution>((resolve) => {

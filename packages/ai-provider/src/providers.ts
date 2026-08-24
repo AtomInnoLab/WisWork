@@ -2,7 +2,7 @@ import type { AiProviderId, AiProviderMeta, AiSettings, LegacyAiSettings } from 
 
 export const WISWORK_MESSAGES_URL = 'https://wisusage.dev.atominnolab.com/v1/messages'
 
-export const WISWORK_DEFAULT_MODEL = 'qwen/qwen3.8-max'
+export const WISWORK_DEFAULT_MODEL = 'openai/gpt-5.6-sol'
 
 /** WisUsage requires an explicit serving region on every managed request. */
 export const WISWORK_REQUEST_LOCATION = 'sg'
