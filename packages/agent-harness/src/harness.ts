@@ -111,7 +111,7 @@ export function createAgentHarness<TSnapshot>(
       return () => listeners.delete(listener)
     },
     run(instruction, images) {
-      if (disposed || loop.busy || !instruction) return false
+      if (disposed || launchPending || loop.busy || !instruction) return false
       const generation = currentSnapshot.generation + 1
       loopOptions.events = eventsFor(generation)
       launchPending = true

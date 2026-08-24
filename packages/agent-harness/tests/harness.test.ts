@@ -110,6 +110,21 @@ describe('createAgentHarness', () => {
     expect(order).toEqual(['listener:running', 'host:true:running', 'listener:cancelled'])
   })
 
+  it('rejects a reentrant run from the synchronous running notification', async () => {
+    const transport = manualTransport()
+    const harness = createAgentHarness(options(transport))
+    const nested = vi.fn<(result: boolean) => void>()
+    harness.subscribe(() => {
+      if (harness.snapshot.status === 'running') nested(harness.run('nested'))
+    })
+
+    expect(harness.run('outer')).toBe(true)
+    expect(nested).toHaveBeenCalledWith(false)
+    await flush()
+    expect(transport.callbacks).toHaveLength(1)
+    expect(harness.messages.filter((message) => message.role === 'user')).toHaveLength(1)
+  })
+
   it.each(['buildContext', 'formatUserMessage'] as const)(
     'recovers when %s throws synchronously and allows a later run',
     async (failurePoint) => {
