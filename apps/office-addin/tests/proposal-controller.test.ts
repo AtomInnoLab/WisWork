@@ -396,4 +396,24 @@ describe('proposal controller', () => {
       expect(execute).not.toHaveBeenCalled()
     },
   )
+
+  it('reconciles a write when cancellation races after execute resolves', async () => {
+    const controller = createStructuredProposalController()
+    const verify = vi.fn(async (signal?: AbortSignal) => {
+      expect(signal).toBeUndefined()
+    })
+    const proposal = controller.propose({
+      operation: 'edit',
+      title: 'Edit',
+      preview: {},
+      impact: { host: 'word', targets: [], count: 0 },
+      fingerprint: 'v1',
+      validate: async () => true,
+      execute: async () => controller.newTurn(),
+      verify,
+    })
+
+    await expect(controller.confirm(proposal.id)).resolves.toBeUndefined()
+    expect(verify).toHaveBeenCalledOnce()
+  })
 })

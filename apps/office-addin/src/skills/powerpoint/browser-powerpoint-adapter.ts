@@ -958,50 +958,16 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           accept: (state) => state === 'applied',
         })
         if (observed === 'third') throw new Error('office_concurrent_change')
-        if (observed === 'applied' && !signal?.aborted && !hasUnrecoverableMutation)
+        if (observed === 'applied' && !hasUnrecoverableMutation)
           return { createdShapeIds: createdShapes.map((shape) => string(shape.id)) }
         if (observed === 'before' && !hasUnrecoverableMutation)
           throw new Error(signal?.aborted ? 'cancelled' : 'office_write_failed')
         // We cannot safely synthesize an arbitrary deleted shape or prove ownership of an
         // inserted object after a rejected batch. Surface uncertainty instead of overwriting.
         if (hasUnrecoverableMutation) throw new Error('office_state_uncertain')
-        for (const mutation of trackedByTarget.values()) {
-          if (mutation.kind === 'text') mutation.target.text = mutation.before
-          else if (mutation.before) {
-            ;[
-              mutation.target.left,
-              mutation.target.top,
-              mutation.target.width,
-              mutation.target.height,
-            ] = mutation.before
-          }
-        }
-        try {
-          await sync(context)
-        } catch {
-          // A rejected recovery sync can still commit; prove the restored state below.
-        }
-        for (const mutation of trackedByTarget.values()) {
-          if (mutation.kind === 'text')
-            (mutation.target.load as (properties: string) => void)('text')
-          else (mutation.target.load as (properties: string) => void)('left,top,width,height')
-        }
-        await sync(context)
-        for (const mutation of trackedByTarget.values()) {
-          if (mutation.kind === 'text') {
-            if (string(mutation.target.text, MAX_POWERPOINT_TEXT) !== mutation.before)
-              throw new Error('office_state_uncertain')
-          } else if (
-            ![
-              finite(mutation.target.left),
-              finite(mutation.target.top),
-              finite(mutation.target.width),
-              finite(mutation.target.height),
-            ].every((value, index) => value === mutation.before?.[index])
-          )
-            throw new Error('office_state_uncertain')
-        }
-        throw new Error(signal?.aborted ? 'cancelled' : 'office_write_failed')
+        // Office.js has no atomic compare-and-set for shapes. An attributable partial state is
+        // uncertain; restoring it could overwrite a user edit between classification and sync.
+        throw new Error('office_state_uncertain')
       }
       return { createdShapeIds: createdShapes.map((shape) => string(shape.id)) }
     })
@@ -1055,20 +1021,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         if (current === before)
           throw new Error(signal?.aborted ? 'cancelled' : 'office_write_failed')
         if (current !== value) throw new Error('office_concurrent_change')
-        if (!signal?.aborted) return
-
-        // Cancellation is allowed to restore only the state attributable to this write.
-        textRange.text = before
-        try {
-          await sync(context)
-        } catch {
-          // As above, a rejected recovery sync may have committed. Prove the result below.
-        }
-        ;(textRange.load as (properties: string) => void)('text')
-        await sync(context)
-        if (string(textRange.text, MAX_POWERPOINT_TEXT) !== before)
-          throw new Error('office_state_uncertain')
-        throw new Error('cancelled')
+        return
       }
     })
   }
@@ -1169,73 +1122,12 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       accept: Boolean,
     })
     if (!ownsInsertedPackage) throw new Error('office_concurrent_change', { cause: writeError })
-    const deleteOwnedFollowing = async (): Promise<void> => {
-      const recoveryOwnership = await this.exportSlidePackage(slideIndex + 1)
-      if (
-        recoveryOwnership.slideId !== following.slideId ||
-        !(await verifyPowerPointPackage(recoveryOwnership.base64, sourcePackageProof))
-      )
-        throw new Error('office_concurrent_change')
-      await this.run('1.8', async (context) => {
-        const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
-        const inserted = await getSlide(context, slides, slideIndex + 1)
-        if (string(inserted.id) !== following?.slideId || typeof inserted.delete !== 'function')
-          throw new Error('office_concurrent_change')
-        ;(inserted.delete as () => void)()
-        await sync(context)
-      })
-    }
-    if (sourceChanged) {
-      try {
-        await deleteOwnedFollowing()
-        if (followingBefore) {
-          const restoredFollowing = await this.snapshotSlide(slideIndex + 1)
-          if (restoredFollowing.fingerprint !== followingBefore.fingerprint)
-            throw new Error('office_state_uncertain')
-        } else {
-          try {
-            await this.snapshotSlide(slideIndex + 1)
-            throw new Error('office_state_uncertain')
-          } catch (readError) {
-            if (readError instanceof Error && readError.message === 'office_state_uncertain')
-              throw readError
-          }
-        }
-      } catch (cleanupError) {
-        if (cleanupError instanceof Error && cleanupError.message === 'office_concurrent_change')
-          throw cleanupError
-        throw new Error('office_state_uncertain', { cause: cleanupError })
-      }
-      throw new Error('office_concurrent_change', { cause: writeError })
-    }
+    if (sourceChanged) throw new Error('office_concurrent_change', { cause: writeError })
     const stableSource = await this.snapshotSlide(slideIndex)
     if (stableSource.fingerprint !== before.fingerprint)
       throw new Error('office_concurrent_change', { cause: writeError })
-    if (!signal?.aborted) return { slideId: following.slideId }
-
-    try {
-      await deleteOwnedFollowing()
-      const restored = await this.snapshotSlide(slideIndex)
-      if (restored.fingerprint !== before.fingerprint)
-        throw new Error('office_state_uncertain', { cause: writeError })
-      if (followingBefore) {
-        const restoredFollowing = await this.snapshotSlide(slideIndex + 1)
-        if (restoredFollowing.fingerprint !== followingBefore.fingerprint)
-          throw new Error('office_state_uncertain', { cause: writeError })
-      } else {
-        try {
-          await this.snapshotSlide(slideIndex + 1)
-          throw new Error('office_state_uncertain', { cause: writeError })
-        } catch (readError) {
-          if (readError instanceof Error && readError.message === 'office_state_uncertain')
-            throw readError
-        }
-      }
-    } catch (recoveryError) {
-      if (recoveryError instanceof Error && recoveryError.message === 'office_concurrent_change')
-        throw recoveryError
-      throw new Error('office_state_uncertain', { cause: recoveryError })
-    }
-    throw new Error('cancelled', { cause: writeError })
+    // The exact inserted package is durably present. Report the applied result even when Stop or
+    // a rejected sync raced the commit; deleting it would reopen a destructive TOCTOU window.
+    return { slideId: following.slideId }
   }
 }

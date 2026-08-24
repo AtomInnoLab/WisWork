@@ -164,7 +164,7 @@ describe('PowerPoint compatibility skill', () => {
     await proposals.confirm(pending.id)
     expect(fake.editSlideText).toHaveBeenCalledWith(0, '2', 'New', expect.any(AbortSignal))
     expect(fake.snapshotSlide).not.toHaveBeenCalled()
-    expect(fake.verifySlides).toHaveBeenCalledTimes(2)
+    expect(fake.verifySlides).toHaveBeenCalledOnce()
   })
 
   it('refuses stale or cancelled writes before mutation', async () => {
@@ -1153,7 +1153,7 @@ describe('browser PowerPoint adapter', () => {
     expect(visible).toBe('New')
   })
 
-  it('restores an attributable text commit when cancellation wins after sync', async () => {
+  it('reports an attributable text commit as applied when cancellation races after sync', async () => {
     const controller = new AbortController()
     const textRange = { text: 'Old', load: vi.fn() }
     const shape = { textFrame: { textRange } }
@@ -1188,11 +1188,11 @@ describe('browser PowerPoint adapter', () => {
 
     await expect(
       new BrowserPowerPointAdapter().editSlideText(0, '2', 'New', controller.signal),
-    ).rejects.toThrow('cancelled')
-    expect(textRange.text).toBe('Old')
+    ).resolves.toBeUndefined()
+    expect(textRange.text).toBe('New')
   })
 
-  it('converges delayed text visibility and restores when aborted during readback', async () => {
+  it('converges delayed text visibility even when cancellation races readback', async () => {
     const runScenario = async (abortDuringReadback: boolean) => {
       const controller = new AbortController()
       let visible = 'Old'
@@ -1238,8 +1238,8 @@ describe('browser PowerPoint adapter', () => {
       })
       const result = new BrowserPowerPointAdapter().editSlideText(0, '2', 'New', controller.signal)
       if (abortDuringReadback) {
-        await expect(result).rejects.toThrow('cancelled')
-        expect(visible).toBe('Old')
+        await expect(result).resolves.toBeUndefined()
+        expect(visible).toBe('New')
       } else {
         await expect(result).resolves.toBeUndefined()
         expect(visible).toBe('New')
@@ -1250,7 +1250,7 @@ describe('browser PowerPoint adapter', () => {
     await runScenario(true)
   })
 
-  it('restores an attributable prefix after a declarative batch sync rejection', async () => {
+  it('reports an attributable declarative prefix as uncertain without restoring it', async () => {
     const textRange = { text: 'Old', load: vi.fn() }
     const textShape = { id: '2', load: vi.fn(), textFrame: { textRange } }
     const geometryShape = {
@@ -1306,8 +1306,8 @@ describe('browser PowerPoint adapter', () => {
           height: 40,
         },
       ]),
-    ).rejects.toThrow('office_write_failed')
-    expect(textRange.text).toBe('Old')
+    ).rejects.toThrow('office_state_uncertain')
+    expect(textRange.text).toBe('New')
     expect(geometryShape.left).toBe(10)
   })
 
@@ -1442,9 +1442,10 @@ describe('browser PowerPoint adapter', () => {
     })
 
     const result = new BrowserPowerPointAdapter().duplicateSlide(0, controller.signal)
-    if (mode === 'committed') await expect(result).resolves.toEqual({ slideId: expected })
+    if (mode === 'committed' || mode === 'cancelled')
+      await expect(result).resolves.toEqual({ slideId: 'copy' })
     else await expect(result).rejects.toThrow(expected)
-    expect(slides.items).toHaveLength(mode === 'cancelled' ? 1 : 2)
+    expect(slides.items).toHaveLength(2)
   })
 
   it('waits for duplicate collection convergence and proves package ownership after sync rejection', async () => {
@@ -1586,7 +1587,8 @@ describe('browser PowerPoint adapter', () => {
     await expect(new BrowserPowerPointAdapter().duplicateSlide(0)).rejects.toThrow(
       'office_concurrent_change',
     )
-    expect(slides.items).toEqual([source])
+    expect(slides.items).toHaveLength(2)
+    expect(slides.items[0]).toBe(source)
   })
 
   it('keeps duplicate validation stable when PowerPoint exports volatile slide packages', async () => {

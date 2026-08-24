@@ -709,7 +709,6 @@ export function createPowerPointSkill(options: {
                 )
                 return result.slideId === before.slideId && result.text === input.text
               }, confirmSignal)
-              await options.adapter.verifySlides(confirmSignal)
             },
           })
           return {
@@ -748,7 +747,6 @@ export function createPowerPointSkill(options: {
                 )
                 return inserted.slideId === insertedSlideId
               }, confirmSignal)
-              await options.adapter.verifySlides(confirmSignal)
             },
           })
           return {
@@ -929,7 +927,6 @@ export function createPowerPointSkill(options: {
                   return inserted.slideId === insertedSlideId
                 }, confirmSignal)
               }
-              await options.adapter.verifySlides(confirmSignal)
             },
           })
           return {
