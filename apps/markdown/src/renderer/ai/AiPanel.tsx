@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement, ReactNode } from 'react'
-import { AgentLoop, composeSkills } from '@wiswork/agent-core'
+import { composeSkills } from '@wiswork/agent-core'
+import { createAgentHarness, type AgentHarness } from '@wiswork/agent-harness'
 import type { AiSettings } from '@wiswork/ai-provider'
 import { AiComposer, AiTypingIndicator, Markdown } from '@wiswork/ui'
 import type { Editor } from '@tiptap/core'
@@ -156,10 +157,10 @@ export function AiPanel({
       })
   }
 
-  // The loop is built once; every mutable value goes through a ref getter
-  const loopRef = useRef<AgentLoop<string> | null>(null)
-  if (!loopRef.current) {
-    loopRef.current = new AgentLoop<string>({
+  // The harness is built once; every mutable value goes through a ref getter
+  const harnessRef = useRef<AgentHarness<string> | null>(null)
+  if (!harnessRef.current) {
+    harnessRef.current = createAgentHarness<string>({
       transport: createElectronTransport(() => settingsRef.current!),
       skill: composeSkills('markdown+search', '', [
         createMarkdownSkill(() => depsRef.current.getEditor()),
@@ -285,8 +286,8 @@ export function AiPanel({
             })),
           }))
         })
-        if (applied && !loopRef.current?.busy) {
-          loopRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
+        if (applied && !harnessRef.current?.snapshot.busy) {
+          harnessRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
         }
       })
       .catch(() => {
@@ -323,8 +324,8 @@ export function AiPanel({
 
   const send = (text: string): void => {
     const instruction = text.trim()
-    const loop = loopRef.current
-    if (!instruction || !loop || loop.busy) return
+    const harness = harnessRef.current
+    if (!instruction || !harness || harness.snapshot.busy) return
     stickToBottomRef.current = true
     runInstructionRef.current = instruction
     runMutatedRef.current = false
@@ -340,7 +341,7 @@ export function AiPanel({
     void (async () => {
       try {
         settingsRef.current = await window.markdownApi.getAiSettings()
-        await loop.run(instruction)
+        harness.run(instruction)
       } catch (err) {
         patchLast({
           streaming: false,
@@ -352,7 +353,10 @@ export function AiPanel({
     })()
   }
 
-  const stop = (): void => loopRef.current?.cancel()
+  const stop = (): void => {
+    const harness = harnessRef.current
+    if (harness) harness.stop()
+  }
 
   const retry = (): void => send(runInstructionRef.current)
 
@@ -361,7 +365,7 @@ export function AiPanel({
   useEffect(() => {
     if (!preset || preset.nonce === presetNonceRef.current) return
     presetNonceRef.current = preset.nonce
-    if (loopRef.current?.busy) setPrompt(preset.text)
+    if (harnessRef.current?.snapshot.busy) setPrompt(preset.text)
     else send(preset.text)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preset])
@@ -447,7 +451,7 @@ export function AiPanel({
               className="ai-header-btn"
               onClick={() => {
                 stop()
-                loopRef.current?.reset()
+                harnessRef.current?.reset()
                 setBusy(false)
                 setChat([])
               }}

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/core'
 import type { Block } from '@wiswork/docx-engine'
-import { AgentLoop, composeSkills, type AgentImage } from '@wiswork/agent-core'
+import { composeSkills, type AgentImage } from '@wiswork/agent-core'
+import { createAgentHarness, type AgentHarness } from '@wiswork/agent-harness'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
 import type { PmNode } from '../editor/convert'
@@ -462,7 +463,7 @@ export function AiPanel({
           })),
         )
         // restore model context: follow-ups after reopening a file continue the previous conversation (only when the loop is idle with no history)
-        loopRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
+        harnessRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
       })
       .catch(() => {
         /* history load failures are silent */
@@ -535,13 +536,13 @@ export function AiPanel({
     })
   }
 
-  const loopRef = useRef<AgentLoop<PmNode> | null>(null)
-  if (!loopRef.current) {
+  const harnessRef = useRef<AgentHarness<PmNode> | null>(null)
+  if (!harnessRef.current) {
     const numIds = (): NumIds => ({
       bullet: findNumId(blocksRef.current, 'bullet') ?? numIdFallbackRef.current?.bullet ?? null,
       ordered: findNumId(blocksRef.current, 'ordered') ?? numIdFallbackRef.current?.ordered ?? null,
     })
-    loopRef.current = new AgentLoop<PmNode>({
+    harnessRef.current = createAgentHarness<PmNode>({
       transport: createElectronTransport(() => settingsRef.current),
       systemSuffix: aiLangDirective,
       skill: composeSkills('docs+files', '', [
@@ -741,8 +742,8 @@ export function AiPanel({
     displayInstruction = instruction,
     attachmentsOverride?: AttachmentMeta[],
   ) => {
-    const loop = loopRef.current
-    if (!instruction || !loop || loop.busy) return
+    const harness = harnessRef.current
+    if (!instruction || !harness || harness.snapshot.busy) return
     setInput('')
     // The message consumes the composer attachments: they ride along (echoed on the
     // bubble, images multimodal, files via the files skill) and the composer clears.
@@ -780,10 +781,13 @@ export function AiPanel({
         window.setTimeout(() => setAttachNotice(null), 5000)
         return []
       })
-      .then((images) => loop.run(instruction, images))
+      .then((images) => harness.run(instruction, images))
   }
 
-  const cancel = () => loopRef.current?.cancel()
+  const cancel = () => {
+    const harness = harnessRef.current
+    if (harness) harness.stop()
+  }
 
   const retry = () =>
     runWith(lastInstructionRef.current, lastInstructionRef.current, lastAttachmentsRef.current)
@@ -791,7 +795,7 @@ export function AiPanel({
   const continueRun = () => runWith(DOCS_CONTINUE_INSTRUCTION, t('aiContinue'))
 
   const newChat = () => {
-    loopRef.current?.reset()
+    harnessRef.current?.reset()
     setBusy(false)
     setChat([])
     sentAttachmentsRef.current = []
