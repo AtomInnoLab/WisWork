@@ -275,6 +275,8 @@ const tools = descriptors.map(([name, fields]) => ({
   description:
     name === 'eval_officejs'
       ? 'Execute a confirmation-gated bounded declarative Excel JSON program; JavaScript syntax and ambient authority are rejected.'
+      : name === 'set_cell_range'
+        ? 'Write values, formulas, and formatting to an Excel range. Existing non-empty cells are protected unless allow_overwrite is explicitly true; after office_overwrite_required, choose an empty range or retry with allow_overwrite true when replacing data is intended.'
       : `Bounded Excel operation: ${name}.`,
   inputSchema: schemaFor(fields),
 }))
@@ -521,6 +523,7 @@ function safeError(error: unknown, write = false) {
     'office_api_unsupported',
     'cancelled',
     'office_read_failed',
+    'office_overwrite_required',
   ].includes(code)
     ? code
     : write

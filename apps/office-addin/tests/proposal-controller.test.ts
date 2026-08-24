@@ -174,6 +174,25 @@ describe('proposal controller', () => {
     await expect(controller.confirm(proposal.id)).rejects.toThrow('office_write_failed')
   })
 
+  it('preserves the actionable Excel overwrite-required failure', async () => {
+    const controller = createStructuredProposalController()
+    const proposal = controller.propose({
+      operation: 'set_cell_range',
+      toolName: 'set_cell_range',
+      title: 'Write cells',
+      preview: {},
+      impact: { host: 'Excel', targets: ['sheet:1!G1'], count: 1 },
+      fingerprint: 'v1',
+      validate: async () => true,
+      execute: async () => {
+        throw new Error('office_overwrite_required')
+      },
+    })
+
+    await expect(controller.confirm(proposal.id)).rejects.toThrow('office_overwrite_required')
+    await expect(controller.waitForDecision(proposal.id)).rejects.toThrow('proposal_missing')
+  })
+
   it('keeps one pending proposal and captures selection state', async () => {
     const controller = createProposalController(document())
     const first = await controller.propose('replace', 'after')

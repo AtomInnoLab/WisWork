@@ -664,6 +664,10 @@ describe('Office agent session', () => {
 
   it.each([
     ['office_verify_failed', 'The approved change could not be verified.'],
+    [
+      'office_overwrite_required',
+      'The target cells contain data. Choose an empty range or explicitly allow overwrite.',
+    ],
     ['office_recovery_failed', 'The document could not be restored after the failed change.'],
     [
       'office_recovery_failed:word_body_shape',

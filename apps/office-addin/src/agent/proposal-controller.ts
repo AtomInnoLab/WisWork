@@ -78,6 +78,7 @@ function invalidProposal(): never {
 const PROPOSAL_ERROR_CODES = new Set([
   'proposal_missing',
   'proposal_stale',
+  'office_overwrite_required',
   'office_write_failed',
   'office_verify_failed',
   'office_recovery_failed',

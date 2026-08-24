@@ -73,6 +73,11 @@ const confirmationErrors: Readonly<Record<string, SafeSessionError>> = Object.fr
     message: 'The approved change could not be applied.',
     retryable: false,
   },
+  office_overwrite_required: {
+    code: 'office_overwrite_required',
+    message: 'The target cells contain data. Choose an empty range or explicitly allow overwrite.',
+    retryable: false,
+  },
   office_verify_failed: {
     code: 'office_verify_failed',
     message: 'The approved change could not be verified.',
@@ -147,6 +152,7 @@ const DIAGNOSTIC_TOOL_ERRORS = new Set([
   'cancelled',
   'office_api_unsupported',
   'office_read_failed',
+  'office_overwrite_required',
   'office_recovery_failed',
   'office_verify_failed',
   'office_write_failed',

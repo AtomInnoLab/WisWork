@@ -16,6 +16,7 @@ const ERROR_CODES = new Set([
   'network_error',
   'office_api_unsupported',
   'office_read_failed',
+  'office_overwrite_required',
   'office_recovery_failed',
   'office_verify_failed',
   'office_write_failed',
