@@ -1226,8 +1226,21 @@ async function executeTool(
   access: DeckAccess,
   call: AgentToolCall,
   state?: SkillState,
-  _signal?: AbortSignal,
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted()
+  const unguardedAccess = access
+  access = {
+    ...unguardedAccess,
+    applySlide: (slideIndex, updated) => {
+      signal?.throwIfAborted()
+      unguardedAccess.applySlide(slideIndex, updated)
+    },
+    applyDeck: (updatedSlides, goTo) => {
+      signal?.throwIfAborted()
+      unguardedAccess.applyDeck(updatedSlides, goTo)
+    },
+  }
   const slides = access.getSlides()
   if (UNSUPPORTED_CLOUD_TOOLS.has(call.name)) {
     return fail(

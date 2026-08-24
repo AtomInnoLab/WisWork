@@ -581,6 +581,7 @@ export function AiPanel({
   /** Synchronous re-entry guard between runWith trigger and loop.run (see the comment inside runWith) */
   const runStartingRef = useRef(false)
   const launchTokenRef = useRef(0)
+  const activeRunTokenRef = useRef(0)
   /** Pages landed by this run's generation calls, pending the post-generation layout QC pass */
   const qcPagesRef = useRef<number[]>([])
   const qcAbortRef = useRef<AbortController | null>(null)
@@ -972,6 +973,7 @@ export function AiPanel({
           void completeSlidesHostRun({
             cancelled,
             finishHistoryBatch,
+            isCurrent: () => launchTokenRef.current === activeRunTokenRef.current,
             hasQcPages: () => qcPagesRef.current.length > 0,
             clearQcPages: () => {
               qcPagesRef.current = []
@@ -1139,6 +1141,7 @@ export function AiPanel({
       return
     runStartingRef.current = true
     const launchToken = ++launchTokenRef.current
+    activeRunTokenRef.current = launchToken
     setInput('')
     // The message consumes the composer attachments: they ride along (echoed on the
     // bubble, images multimodal, files via the files skill) and the composer clears.

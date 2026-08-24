@@ -112,6 +112,7 @@ export async function beginSlidesHostRun({
 export async function completeSlidesHostRun({
   cancelled,
   finishHistoryBatch,
+  isCurrent,
   hasQcPages,
   clearQcPages,
   runQc,
@@ -119,6 +120,7 @@ export async function completeSlidesHostRun({
 }: {
   cancelled: boolean
   finishHistoryBatch: () => Promise<unknown>
+  isCurrent?: () => boolean
   hasQcPages: () => boolean
   clearQcPages: () => void
   runQc: () => void
@@ -128,7 +130,7 @@ export async function completeSlidesHostRun({
     await finishHistoryBatch()
   } finally {
     setBusy(false)
-    if (cancelled) clearQcPages()
+    if (cancelled || (isCurrent && !isCurrent())) clearQcPages()
     else if (hasQcPages()) runQc()
   }
 }

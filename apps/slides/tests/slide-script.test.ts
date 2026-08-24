@@ -588,6 +588,32 @@ describe('execute_slide_script tool', () => {
     expect(r2.output).toContain('ungroup_element')
   })
 
+  it('set_element_text does not apply a late IPC result after the run is stopped', async () => {
+    let resolveEdit!: (value: typeof slide) => void
+    const api = (globalThis as any).window.slidesApi
+    api.editText = vi.fn(
+      () =>
+        new Promise<typeof slide>((resolve) => {
+          resolveEdit = resolve
+        }),
+    )
+    const controller = new AbortController()
+    const skill = createSlidesSkill(access())
+    const pending = skill.executeTool(
+      {
+        id: 'abort-edit',
+        name: 'set_element_text',
+        input: { slideIndex: 0, sourceId: 't1', paragraphs: [{ text: 'late' }] },
+      } as any,
+      controller.signal,
+    )
+
+    controller.abort()
+    resolveEdit({ ...slide })
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(applied).toBeNull()
+  })
+
   it('ungroup_element promotes children, applies the fresh slide, and echoes the new element list', async () => {
     slide = slideOf([
       groupNode('g1', box(200, 100, 400, 300), [textNode('c1', box(10, 20, 50, 30), 'Member')]),

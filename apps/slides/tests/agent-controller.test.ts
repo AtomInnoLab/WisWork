@@ -214,6 +214,34 @@ describe('Slides interactive agent controller', () => {
     expect(qc).toHaveBeenCalledOnce()
   })
 
+  it('does not start QC when the deck generation becomes stale during snapshot finalization', async () => {
+    let finish!: () => void
+    let current = true
+    const qc = vi.fn()
+    const clear = vi.fn()
+    const settled = vi.fn()
+    const completion = completeSlidesHostRun({
+      cancelled: false,
+      finishHistoryBatch: () =>
+        new Promise<void>((resolve) => {
+          finish = resolve
+        }),
+      isCurrent: () => current,
+      hasQcPages: () => true,
+      clearQcPages: clear,
+      runQc: qc,
+      setBusy: settled,
+    })
+
+    current = false
+    finish()
+    await completion
+
+    expect(qc).not.toHaveBeenCalled()
+    expect(clear).toHaveBeenCalledOnce()
+    expect(settled).toHaveBeenCalledWith(false)
+  })
+
   it('closes a pending history batch without running when the launch becomes stale', async () => {
     const controller = createAgentController({ transport: manualTransport(), skill })
     const ref = { current: controller }
