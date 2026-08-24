@@ -298,7 +298,7 @@ async function readBodyOoxml(signal?: AbortSignal): Promise<string> {
 
 export class BrowserWordAdapter implements WordAdapter {
   private expectedText:
-    { expected: string; original: string; originalFingerprint: string } | undefined
+    { expected: string; fingerprint: string; originalFingerprint: string } | undefined
   private expectedDocument:
     | {
         fingerprint: string
@@ -552,15 +552,26 @@ export class BrowserWordAdapter implements WordAdapter {
         } catch (error) {
           writeError = error
         }
-        if (writeError || signal?.aborted) {
-          await reconcileDeclarativeWrite(context, body, snapshot.value, expected)
-          throw writeError ?? new Error('cancelled')
+        const current = await readUntilConverged({
+          read: () => readWordBodyInContext(context, body),
+          accept: (value) => ooxmlText(value) === expected,
+        })
+        const originalFingerprint = stableFingerprintOoxml(snapshot.value)
+        if (ooxmlText(current) !== expected) {
+          if (stableFingerprintOoxml(current) === originalFingerprint)
+            throw new Error('office_state_uncertain', { cause: writeError })
+          throw new Error('office_concurrent_change', { cause: writeError })
         }
+        if (
+          stableNonTextFingerprintOoxml(current) !== stableNonTextFingerprintOoxml(snapshot.value)
+        )
+          throw new Error('office_state_uncertain', { cause: writeError })
         this.expectedText = {
           expected,
-          original: snapshot.value,
-          originalFingerprint: stableFingerprintOoxml(snapshot.value),
+          fingerprint: stableFingerprintOoxml(current),
+          originalFingerprint,
         }
+        if (signal?.aborted) throw new Error('office_state_uncertain')
       },
     )
   }
@@ -579,7 +590,11 @@ export class BrowserWordAdapter implements WordAdapter {
       accept: (value) => ooxmlText(value) === expected.expected,
       signal,
     })
-    if (ooxmlText(current) === expected.expected) return true
+    if (
+      ooxmlText(current) === expected.expected &&
+      stableFingerprintOoxml(current) === expected.fingerprint
+    )
+      return true
     if (stableFingerprintOoxml(current) === expected.originalFingerprint) return false
     throw new Error('office_concurrent_change')
   }
@@ -611,32 +626,25 @@ export class BrowserWordAdapter implements WordAdapter {
         } catch (error) {
           writeError = error
         }
-        if (writeError || signal?.aborted) {
-          await reconcileAtomicDocumentWrite(context, body, original, write)
-          throw writeError ?? new Error('cancelled')
-        }
         let postValue: string | undefined
         let readError: unknown
         try {
           postValue = await readUntilConverged({
             read: () => readWordBodyInContext(context, body),
             accept: (value) => verifyNativeDocumentWrite(original, value, write),
-            signal,
           })
         } catch (error) {
           readError = error
         }
-        if (readError || signal?.aborted) {
-          await reconcileAtomicDocumentWrite(context, body, original, write)
-          throw readError ?? new Error('cancelled')
-        }
+        if (readError) throw new Error('office_state_uncertain', { cause: readError })
         const verified =
           postValue !== undefined &&
           new TextEncoder().encode(postValue).byteLength <= MAX_WORD_OOXML_BYTES &&
           verifyNativeDocumentWrite(original, postValue, write)
-        if (!verified || signal?.aborted) {
-          await reconcileAtomicDocumentWrite(context, body, original, write)
-          throw signal?.aborted ? new Error('cancelled') : new Error('office_verify_failed')
+        if (!verified) {
+          if (postValue && stableFingerprintOoxml(postValue) === beforeFingerprint)
+            throw new Error('office_state_uncertain', { cause: writeError })
+          throw new Error('office_concurrent_change', { cause: writeError })
         }
         this.expectedDocument = {
           fingerprint: stableFingerprintOoxml(postValue!),
@@ -644,6 +652,7 @@ export class BrowserWordAdapter implements WordAdapter {
           originalFingerprint: beforeFingerprint,
           write,
         }
+        if (signal?.aborted) throw new Error('office_state_uncertain')
       },
     )
   }
@@ -659,14 +668,14 @@ export class BrowserWordAdapter implements WordAdapter {
         accept: (value) =>
           stableFingerprintOoxml(value) === expected.fingerprint ||
           verifyNativeDocumentWrite(expected.original, value, expected.write),
-        signal,
       })
     } catch (error) {
-      throw new Error('office_recovery_failed', { cause: error })
+      throw new Error('office_state_uncertain', { cause: error })
     }
     const currentFingerprint = stableFingerprintOoxml(current)
     if (currentFingerprint === expected.fingerprint && !signal?.aborted) return true
-    if (currentFingerprint === expected.originalFingerprint) return false
+    if (currentFingerprint === expected.originalFingerprint)
+      throw new Error('office_state_uncertain')
     if (!signal?.aborted && verifyNativeDocumentWrite(expected.original, current, expected.write))
       return true
     throw new Error('office_concurrent_change')
@@ -846,78 +855,6 @@ function nativeUnits(blocks: WordDocumentBlock[]): NativeUnit[] {
   })
 }
 
-async function restoreWordBody(
-  context: RuntimeRecord,
-  body: RuntimeRecord,
-  original: string,
-  fingerprint: string,
-): Promise<void> {
-  try {
-    ;(body.insertOoxml as (xml: string, location: string) => void)(original, 'Replace')
-    await (context.sync as () => Promise<void>)()
-    const restored = (body.getOoxml as () => RuntimeRecord)()
-    await (context.sync as () => Promise<void>)()
-    if (
-      typeof restored.value !== 'string' ||
-      stableFingerprintOoxml(restored.value) !== fingerprint
-    )
-      throw new Error('office_recovery_failed:word_restore_fingerprint')
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('office_recovery_failed:')) throw error
-    throw new Error('office_recovery_failed:word_restore_io', { cause: error })
-  }
-}
-
-async function reconcileAtomicDocumentWrite(
-  context: RuntimeRecord,
-  body: RuntimeRecord,
-  original: string,
-  write: WordDocumentWrite,
-): Promise<void> {
-  try {
-    const current = (body.getOoxml as () => RuntimeRecord)()
-    await (context.sync as () => Promise<void>)()
-    if (typeof current.value !== 'string') throw new Error('office_recovery_failed:word_readback')
-    const fingerprint = stableFingerprintOoxml(current.value)
-    const originalFingerprint = stableFingerprintOoxml(original)
-    if (fingerprint === originalFingerprint) return
-    const verification = verifyNativeDocumentWriteDetailed(original, current.value, write)
-    if (!verification.valid) throw new Error('office_concurrent_change')
-    await restoreWordBody(context, body, original, originalFingerprint)
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      (error.message.startsWith('office_recovery_failed:') ||
-        error.message === 'office_concurrent_change')
-    )
-      throw error
-    throw new Error('office_recovery_failed:word_reconcile_io', { cause: error })
-  }
-}
-
-async function reconcileDeclarativeWrite(
-  context: RuntimeRecord,
-  body: RuntimeRecord,
-  original: string,
-  expectedText: string,
-): Promise<void> {
-  try {
-    const current = await readWordBodyInContext(context, body)
-    const originalFingerprint = stableFingerprintOoxml(original)
-    if (stableFingerprintOoxml(current) === originalFingerprint) return
-    if (ooxmlText(current) !== expectedText) throw new Error('office_concurrent_change')
-    await restoreWordBody(context, body, original, originalFingerprint)
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      (error.message.startsWith('office_recovery_failed:') ||
-        error.message === 'office_concurrent_change')
-    )
-      throw error
-    throw new Error('office_recovery_failed:word_reconcile_io', { cause: error })
-  }
-}
-
 interface ParagraphSignature {
   type: 'paragraph'
   text: string
@@ -934,6 +871,12 @@ interface TableSignature {
 }
 
 type DocumentSignature = ParagraphSignature | TableSignature
+type RunFormatting = { bold?: boolean; italic?: boolean; code?: boolean }
+type WordStyleSemantics = {
+  headingLevels: Map<string, number>
+  paragraphRuns: Map<string, RunFormatting>
+  characterRuns: Map<string, RunFormatting>
+}
 
 function wordText(element: Element): string {
   return Array.from(element.getElementsByTagNameNS(W_NS, '*'))
@@ -953,7 +896,7 @@ function directWordChild(parent: Element, localName: string): Element | undefine
 function paragraphSignature(
   paragraph: Element,
   numbering: Map<string, 'ordered' | 'unordered'>,
-  headingStyles: Map<string, number>,
+  styles: WordStyleSemantics,
 ): ParagraphSignature {
   const propertiesElement = directWordChild(paragraph, 'pPr') ?? paragraph
   const style = directWordChild(propertiesElement, 'pStyle')
@@ -964,16 +907,26 @@ function paragraphSignature(
     'numId',
   )?.getAttributeNS(W_NS, 'val')
   const characters: ParagraphSignature['characters'] = []
+  const paragraphFormatting = mergeFormatting(
+    styles.paragraphRuns.get(styleId),
+    runFormatting(directWordChild(propertiesElement, 'rPr')),
+  )
   for (const run of Array.from(paragraph.getElementsByTagNameNS(W_NS, 'r'))) {
     const properties = directWordChild(run, 'rPr')
-    const bold = Boolean(properties?.getElementsByTagNameNS(W_NS, 'b').length)
-    const italic = Boolean(properties?.getElementsByTagNameNS(W_NS, 'i').length)
-    const fonts = properties?.getElementsByTagNameNS(W_NS, 'rFonts')[0]
-    const code = [fonts?.getAttributeNS(W_NS, 'ascii'), fonts?.getAttributeNS(W_NS, 'hAnsi')]
-      .filter(Boolean)
-      .some((name) => name!.toLowerCase().includes('courier'))
+    const characterStyleId = properties
+      ? directWordChild(properties, 'rStyle')?.getAttributeNS(W_NS, 'val')
+      : undefined
+    const formatting = mergeFormatting(
+      paragraphFormatting,
+      characterStyleId ? styles.characterRuns.get(characterStyleId) : undefined,
+      runFormatting(properties),
+    )
     for (const _character of Array.from(wordText(run))) {
-      characters.push({ bold, italic, code })
+      characters.push({
+        bold: formatting.bold ?? false,
+        italic: formatting.italic ?? false,
+        code: formatting.code ?? false,
+      })
     }
   }
   return {
@@ -982,8 +935,8 @@ function paragraphSignature(
     style: styleId,
     ...(outlineValue && /^\d+$/.test(outlineValue)
       ? { outlineLevel: Number(outlineValue) }
-      : headingStyles.has(styleId)
-        ? { outlineLevel: headingStyles.get(styleId) }
+      : styles.headingLevels.has(styleId)
+        ? { outlineLevel: styles.headingLevels.get(styleId) }
         : {}),
     ...(numberId && numbering.has(numberId) ? { listKind: numbering.get(numberId) } : {}),
     characters,
@@ -993,10 +946,10 @@ function paragraphSignature(
 function elementSignature(
   element: Element,
   numbering: Map<string, 'ordered' | 'unordered'>,
-  headingStyles: Map<string, number>,
+  styles: WordStyleSemantics,
 ): DocumentSignature | undefined {
   if (element.namespaceURI !== W_NS) return undefined
-  if (element.localName === 'p') return paragraphSignature(element, numbering, headingStyles)
+  if (element.localName === 'p') return paragraphSignature(element, numbering, styles)
   if (element.localName !== 'tbl') return undefined
   const rows = Array.from(element.getElementsByTagNameNS(W_NS, 'tr')).map((row) =>
     Array.from(row.getElementsByTagNameNS(W_NS, 'tc')).map(wordText),
@@ -1028,24 +981,97 @@ function numberingKinds(xml: string): Map<string, 'ordered' | 'unordered'> {
   return result
 }
 
-function headingStyleLevels(xml: string): Map<string, number> {
+function styleSemantics(xml: string): WordStyleSemantics {
   if (typeof DOMParser === 'undefined') throw new Error('office_api_unsupported')
   const document = new DOMParser().parseFromString(xml, 'text/xml')
-  const result = new Map<string, number>()
+  const definitions = new Map<
+    string,
+    { type: string; basedOn?: string; outline?: number; run: RunFormatting }
+  >()
   for (const style of Array.from(document.getElementsByTagNameNS(W_NS, 'style'))) {
-    if (style.getAttributeNS(W_NS, 'type') !== 'paragraph') continue
     const id = style.getAttributeNS(W_NS, 'styleId')
+    const type = style.getAttributeNS(W_NS, 'type') ?? ''
+    if (!id || (type !== 'paragraph' && type !== 'character')) continue
     const properties = directWordChild(style, 'pPr')
     const value = properties
       ? directWordChild(properties, 'outlineLvl')?.getAttributeNS(W_NS, 'val')
       : undefined
-    if (id && value && /^\d+$/.test(value) && Number(value) >= 0 && Number(value) <= 8)
-      result.set(id, Number(value))
+    const basedOn = directWordChild(style, 'basedOn')?.getAttributeNS(W_NS, 'val') ?? undefined
+    definitions.set(id, {
+      type,
+      ...(basedOn ? { basedOn } : {}),
+      ...(value && /^\d+$/.test(value) && Number(value) >= 0 && Number(value) <= 8
+        ? { outline: Number(value) }
+        : {}),
+      run: runFormatting(directWordChild(style, 'rPr')),
+    })
   }
-  return result
+  const headingLevels = new Map<string, number>()
+  const paragraphRuns = new Map<string, RunFormatting>()
+  const characterRuns = new Map<string, RunFormatting>()
+  const resolve = (
+    id: string,
+    seen = new Set<string>(),
+  ): { outline?: number; run: RunFormatting } => {
+    if (seen.has(id)) return { run: {} }
+    seen.add(id)
+    const definition = definitions.get(id)
+    if (!definition) return { run: {} }
+    const base = definition.basedOn ? resolve(definition.basedOn, seen) : { run: {} }
+    return {
+      ...(definition.outline !== undefined
+        ? { outline: definition.outline }
+        : base.outline !== undefined
+          ? { outline: base.outline }
+          : {}),
+      run: mergeFormatting(base.run, definition.run),
+    }
+  }
+  for (const [id, definition] of definitions) {
+    const resolved = resolve(id)
+    if (definition.type === 'paragraph') {
+      if (resolved.outline !== undefined) headingLevels.set(id, resolved.outline)
+      paragraphRuns.set(id, resolved.run)
+    } else characterRuns.set(id, resolved.run)
+  }
+  return { headingLevels, paragraphRuns, characterRuns }
 }
 
-function spansMatch(expected: WordInlineSpan[], actual: ParagraphSignature): boolean {
+function headingStyleLevels(xml: string): Map<string, number> {
+  return styleSemantics(xml).headingLevels
+}
+
+function mergeFormatting(...values: Array<RunFormatting | undefined>): RunFormatting {
+  return Object.assign({}, ...values.filter(Boolean))
+}
+
+function onOff(properties: Element | undefined, localName: string): boolean | undefined {
+  const element = properties ? directWordChild(properties, localName) : undefined
+  if (!element) return undefined
+  const value = element.getAttributeNS(W_NS, 'val')
+  return value === null || !['0', 'false', 'off'].includes(value.toLowerCase())
+}
+
+function runFormatting(properties: Element | undefined): RunFormatting {
+  const bold = onOff(properties, 'b')
+  const italic = onOff(properties, 'i')
+  const fonts = properties ? directWordChild(properties, 'rFonts') : undefined
+  const fontNames = [
+    fonts?.getAttributeNS(W_NS, 'ascii'),
+    fonts?.getAttributeNS(W_NS, 'hAnsi'),
+  ].filter((name): name is string => Boolean(name))
+  return {
+    ...(bold !== undefined ? { bold } : {}),
+    ...(italic !== undefined ? { italic } : {}),
+    ...(fonts ? { code: fontNames.some((name) => name.toLowerCase().includes('courier')) } : {}),
+  }
+}
+
+function spansMatch(
+  expected: WordInlineSpan[],
+  actual: ParagraphSignature,
+  strict = true,
+): boolean {
   const text = expected.map((span) => span.text).join('')
   if (actual.text !== text || actual.characters.length !== Array.from(text).length) return false
   let offset = 0
@@ -1054,9 +1080,13 @@ function spansMatch(expected: WordInlineSpan[], actual: ParagraphSignature): boo
       const properties = actual.characters[offset]
       if (
         !properties ||
-        properties.bold !== Boolean(span.bold) ||
-        properties.italic !== Boolean(span.italic) ||
-        properties.code !== Boolean(span.code)
+        (strict
+          ? properties.bold !== Boolean(span.bold) ||
+            properties.italic !== Boolean(span.italic) ||
+            properties.code !== Boolean(span.code)
+          : (span.bold && !properties.bold) ||
+            (span.italic && !properties.italic) ||
+            (span.code && !properties.code))
       )
         return false
       offset += 1
@@ -1072,7 +1102,11 @@ function signatureMatches(unit: NativeUnit, actual: DocumentSignature): boolean 
       JSON.stringify(actual.rows) === JSON.stringify(unit.rows) &&
       actual.headerRows === unit.headerRows
     )
-  if (actual.type !== 'paragraph' || !spansMatch(unit.spans, actual)) return false
+  if (
+    actual.type !== 'paragraph' ||
+    !spansMatch(unit.spans, actual, unit.styleBuiltIn === undefined)
+  )
+    return false
   if (unit.styleBuiltIn) {
     const level = Number(unit.styleBuiltIn.replace('Heading', '')) - 1
     return actual.outlineLevel === level
@@ -1137,11 +1171,7 @@ function verifyNativeDocumentWriteDetailed(
   const insertedMatches = (elements: Element[]) =>
     elements.length === expected.length &&
     expected.every((unit, offset) => {
-      const signature = elementSignature(
-        elements[offset],
-        afterParts.numbering,
-        afterParts.headingStyles,
-      )
+      const signature = elementSignature(elements[offset], afterParts.numbering, afterParts.styles)
       return signature ? signatureMatches(unit, signature) : false
     })
   const canonicalEqual = (left: Element[], right: Element[]) =>
@@ -1163,9 +1193,7 @@ function verifyNativeDocumentWriteDetailed(
       valid = afterParts.content
         .slice(expected.length)
         .every((element) =>
-          isEmptyParagraph(
-            elementSignature(element, afterParts.numbering, afterParts.headingStyles),
-          ),
+          isEmptyParagraph(elementSignature(element, afterParts.numbering, afterParts.styles)),
         )
   } else if (write.mode === 'append') {
     const afterContent = withoutTrailingEmptyParagraphs(afterParts.content)
@@ -1205,7 +1233,7 @@ function verifyNativeDocumentWrite(
 function bodyParts(xml: string): {
   content: Element[]
   numbering: Map<string, 'ordered' | 'unordered'>
-  headingStyles: Map<string, number>
+  styles: WordStyleSemantics
 } {
   const elements = directElements(wordBodyElement(xml))
   if (elements.at(-1)?.namespaceURI === W_NS && elements.at(-1)?.localName === 'sectPr')
@@ -1213,7 +1241,7 @@ function bodyParts(xml: string): {
   return {
     content: elements,
     numbering: numberingKinds(xml),
-    headingStyles: headingStyleLevels(xml),
+    styles: styleSemantics(xml),
   }
 }
 
@@ -1243,10 +1271,37 @@ function withoutTrailingEmptyParagraphs(elements: Element[]): Element[] {
 function stableFingerprintOoxml(xml: string): string {
   return JSON.stringify({
     body: canonicalWordNode(wordBodyElement(xml)),
-    headingStyles: [...headingStyleLevels(xml)].sort(([left], [right]) =>
-      left.localeCompare(right),
-    ),
+    styles: wordStylesElement(xml) ? canonicalWordNode(wordStylesElement(xml)!) : undefined,
   })
+}
+
+function stableNonTextFingerprintOoxml(xml: string): string {
+  return JSON.stringify({
+    body: canonicalWordNode(wordBodyElement(xml), true),
+    styles: wordStylesElement(xml) ? canonicalWordNode(wordStylesElement(xml)!) : undefined,
+  })
+}
+
+function wordStylesElement(xml: string): Element | undefined {
+  if (typeof DOMParser === 'undefined') throw new Error('office_api_unsupported')
+  const document = new DOMParser().parseFromString(xml, 'text/xml')
+  if (document.getElementsByTagName('parsererror').length) throw new Error('office_read_failed')
+  const root = document.documentElement
+  if (root.namespaceURI !== PKG_NS || root.localName !== 'package') return undefined
+  const parts = Array.from(document.getElementsByTagNameNS(PKG_NS, 'part')).filter(
+    (part) => part.getAttributeNS(PKG_NS, 'name') === '/word/styles.xml',
+  )
+  if (parts.length === 0) return undefined
+  if (parts.length !== 1) throw new Error('office_read_failed')
+  const xmlData = directElements(parts[0]).filter(
+    (element) => element.namespaceURI === PKG_NS && element.localName === 'xmlData',
+  )
+  if (xmlData.length !== 1) throw new Error('office_read_failed')
+  const styles = directElements(xmlData[0]).filter(
+    (element) => element.namespaceURI === W_NS && element.localName === 'styles',
+  )
+  if (styles.length !== 1) throw new Error('office_read_failed')
+  return styles[0]
 }
 
 function wordBodyElement(xml: string): Element {
@@ -1295,8 +1350,8 @@ type CanonicalWordNode =
   | { element: string; attributes: Array<[string, string]>; children: CanonicalWordNode[] }
   | { text: string }
 
-function canonicalWordNode(node: Node): CanonicalWordNode {
-  if (node.nodeType === 3) return { text: node.nodeValue ?? '' }
+function canonicalWordNode(node: Node, redactText = false): CanonicalWordNode {
+  if (node.nodeType === 3) return { text: redactText ? '' : (node.nodeValue ?? '') }
   const element = node as Element
   const preserveWhitespace =
     element.namespaceURI === W_NS &&
@@ -1312,12 +1367,12 @@ function canonicalWordNode(node: Node): CanonicalWordNode {
           childElement.localName === 'lastRenderedPageBreak')
       )
         return []
-      return [canonicalWordNode(child)]
+      return [canonicalWordNode(child, redactText)]
     }
     if (child.nodeType !== 3) return []
     const value = child.nodeValue ?? ''
     if (!preserveWhitespace && /^\s*$/.test(value)) return []
-    return [{ text: value }]
+    return [{ text: redactText && preserveWhitespace ? '' : value }]
   })
   const attributes = Array.from(element.attributes)
     .filter((attribute) => {
