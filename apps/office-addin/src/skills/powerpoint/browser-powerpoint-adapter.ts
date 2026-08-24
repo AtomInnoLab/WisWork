@@ -536,7 +536,25 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       )
         throw new Error('office_read_failed')
       const originalExpected = await capturePowerPointPackage(original.value, signal)
+      const replacementExactProof = await capturePowerPointPackage(base64, signal)
       const originalSlideId = string(slide.id)
+
+      const classifyPackage = async (
+        item: RuntimeRecord,
+      ): Promise<'original' | 'imported' | 'third'> => {
+        if (typeof item.exportAsBase64 !== 'function') return 'third'
+        const exported = (item.exportAsBase64 as () => RuntimeRecord)()
+        await sync(context)
+        if (typeof exported.value !== 'string') return 'third'
+        if (await verifyPowerPointPackage(exported.value, originalExpected)) return 'original'
+        if (
+          expected
+            ? await verifyImportedPowerPointPackage(exported.value, expected)
+            : await verifyPowerPointPackage(exported.value, replacementExactProof)
+        )
+          return 'imported'
+        return 'third'
+      }
 
       const proveRecovery = async (verifyLayouts: boolean): Promise<void> => {
         if ((await getSlideCount(context, slides)) !== beforeCount)
@@ -578,40 +596,52 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       ;(slide.delete as () => void)()
       try {
         await sync(context, signal)
-      } catch {
-        // Office.js may commit a prefix of a failed batch. Restore the original slide count
-        // before surfacing failure; recovery intentionally ignores the cancelled signal.
+      } catch (writeError) {
+        // A failed Office.js batch may commit a prefix. Recovery is allowed only after proving
+        // exact ownership of both the imported candidate and the captured original package.
         const currentCount = await getSlideCount(context, slides)
-        if (currentCount > beforeCount) {
-          const extra = await getSlide(context, slides, slideIndex)
-          if (extra.id !== slide.id && typeof extra.delete === 'function') {
-            ;(extra.delete as () => void)()
-            await sync(context)
-          }
-        } else if (currentCount < beforeCount) {
+        if (currentCount < 1 || slideIndex >= currentCount)
+          throw new Error('office_state_uncertain', { cause: writeError })
+        const current = await getSlide(context, slides, slideIndex)
+        const currentKind = await classifyPackage(current)
+        if (currentKind === 'original') {
+          if (currentCount !== beforeCount)
+            throw new Error('office_concurrent_change', { cause: writeError })
+          await proveRecovery(false)
+          throw new Error('office_write_failed', { cause: writeError })
+        }
+        if (currentKind !== 'imported')
+          throw new Error('office_concurrent_change', { cause: writeError })
+        if (currentCount === beforeCount + 1) {
+          const survivingOriginal = await getSlide(context, slides, slideIndex + 1)
+          if ((await classifyPackage(survivingOriginal)) !== 'original')
+            throw new Error('office_concurrent_change', { cause: writeError })
+          if (
+            (await classifyPackage(current)) !== 'imported' ||
+            typeof current.delete !== 'function'
+          )
+            throw new Error('office_concurrent_change', { cause: writeError })
+          ;(current.delete as () => void)()
+          await sync(context)
+        } else if (currentCount === beforeCount) {
+          if (
+            (await classifyPackage(current)) !== 'imported' ||
+            typeof current.delete !== 'function'
+          )
+            throw new Error('office_concurrent_change', { cause: writeError })
           ;(
             presentation.insertSlidesFromBase64 as (
               value: string,
               options?: { targetSlideId: string },
             ) => void
           )(original.value, previous ? { targetSlideId: string(previous.id) } : undefined)
+          ;(current.delete as () => void)()
           await sync(context)
         } else {
-          // The host may have committed both operations before reporting a batch failure.
-          // Canonically replace whatever occupies the approved index with the captured source.
-          const uncertain = await getSlide(context, slides, slideIndex)
-          if (typeof uncertain.delete !== 'function') throw new Error('office_recovery_failed')
-          ;(
-            presentation.insertSlidesFromBase64 as (
-              value: string,
-              options?: { targetSlideId: string },
-            ) => void
-          )(original.value, previous ? { targetSlideId: string(previous.id) } : undefined)
-          ;(uncertain.delete as () => void)()
-          await sync(context)
+          throw new Error('office_state_uncertain', { cause: writeError })
         }
         await proveRecovery(false)
-        throw new Error('office_write_failed')
+        throw new Error('office_write_failed', { cause: writeError })
       }
       if ((await getSlideCount(context, slides, signal)) !== beforeCount)
         throw new Error('office_verify_failed')
@@ -895,32 +925,48 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           if (!applied) throw new Error('office_verify_failed')
         }
       } catch {
-        for (const mutation of trackedByTarget.values()) {
-          if (mutation.kind === 'text')
-            (mutation.target.load as (properties: string) => void)('text')
-          else (mutation.target.load as (properties: string) => void)('left,top,width,height')
-        }
-        await sync(context)
-        let changed = false
-        for (const mutation of trackedByTarget.values()) {
-          if (mutation.kind === 'text') {
-            const current = string(mutation.target.text, MAX_POWERPOINT_TEXT)
-            if (current === mutation.before) continue
-            if (current !== mutation.after) throw new Error('office_concurrent_change')
-          } else {
-            const current = [
-              finite(mutation.target.left),
-              finite(mutation.target.top),
-              finite(mutation.target.width),
-              finite(mutation.target.height),
-            ]
-            if (current.every((value, index) => value === mutation.before?.[index])) continue
-            if (!current.every((value, index) => Math.abs(value - mutation.after[index]) <= 0.01))
-              throw new Error('office_concurrent_change')
-          }
-          changed = true
-        }
-        if (!changed && !hasUnrecoverableMutation)
+        const observed = await readUntilConverged({
+          read: async (): Promise<'before' | 'attributable' | 'applied' | 'third'> => {
+            for (const mutation of trackedByTarget.values()) {
+              if (mutation.kind === 'text')
+                (mutation.target.load as (properties: string) => void)('text')
+              else (mutation.target.load as (properties: string) => void)('left,top,width,height')
+            }
+            await sync(context)
+            let beforeCount = 0
+            let afterCount = 0
+            for (const mutation of trackedByTarget.values()) {
+              if (mutation.kind === 'text') {
+                const current = string(mutation.target.text, MAX_POWERPOINT_TEXT)
+                if (current === mutation.before) beforeCount += 1
+                else if (current === mutation.after) afterCount += 1
+                else return 'third'
+              } else {
+                const current = [
+                  finite(mutation.target.left),
+                  finite(mutation.target.top),
+                  finite(mutation.target.width),
+                  finite(mutation.target.height),
+                ]
+                if (current.every((value, index) => value === mutation.before?.[index]))
+                  beforeCount += 1
+                else if (
+                  current.every((value, index) => Math.abs(value - mutation.after[index]) <= 0.01)
+                )
+                  afterCount += 1
+                else return 'third'
+              }
+            }
+            if (afterCount === trackedByTarget.size) return 'applied'
+            if (beforeCount === trackedByTarget.size) return 'before'
+            return 'attributable'
+          },
+          accept: (state) => state === 'applied',
+        })
+        if (observed === 'third') throw new Error('office_concurrent_change')
+        if (observed === 'applied' && !signal?.aborted && !hasUnrecoverableMutation)
+          return { createdShapeIds: createdShapes.map((shape) => string(shape.id)) }
+        if (observed === 'before' && !hasUnrecoverableMutation)
           throw new Error(signal?.aborted ? 'cancelled' : 'office_write_failed')
         // We cannot safely synthesize an arbitrary deleted shape or prove ownership of an
         // inserted object after a rejected batch. Surface uncertainty instead of overwriting.
@@ -1004,9 +1050,14 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       } catch {
         // A rejected Office.js sync may still have committed the assignment. Reconcile the
         // semantic target before deciding whether the write failed or cancellation won.
-        ;(textRange.load as (properties: string) => void)('text')
-        await sync(context)
-        const current = string(textRange.text, MAX_POWERPOINT_TEXT)
+        const current = await readUntilConverged({
+          read: async () => {
+            ;(textRange.load as (properties: string) => void)('text')
+            await sync(context)
+            return string(textRange.text, MAX_POWERPOINT_TEXT)
+          },
+          accept: (observed) => observed === value,
+        })
         if (current === before)
           throw new Error(signal?.aborted ? 'cancelled' : 'office_write_failed')
         if (current !== value) throw new Error('office_concurrent_change')
@@ -1046,6 +1097,9 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       throw error
     }
     if (sourcePackage.slideId !== before.slideId) throw new Error('office_concurrent_change')
+    const preWriteSource = await this.snapshotSlide(slideIndex, signal)
+    if (preWriteSource.fingerprint !== before.fingerprint)
+      throw new Error('office_concurrent_change')
     let writeError: unknown
     try {
       await this.run('1.8', async (context) => {
@@ -1067,8 +1121,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       writeError = error
     }
     const source = await this.snapshotSlide(slideIndex)
-    if (source.fingerprint !== before.fingerprint)
-      throw new Error('office_concurrent_change', { cause: writeError })
+    const sourceChanged = source.fingerprint !== before.fingerprint
     const following = await readUntilConverged({
       read: async () => {
         try {
@@ -1105,7 +1158,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         slideSemanticFingerprint(before.fingerprint)
     )
       throw new Error('office_concurrent_change', { cause: writeError })
-    if (!writeError && !signal?.aborted) return { slideId: following.slideId }
+    if (!writeError && !signal?.aborted && !sourceChanged) return { slideId: following.slideId }
     const sourcePackageProof = await capturePowerPointPackage(sourcePackage.base64)
     const ownsInsertedPackage = await readUntilConverged({
       read: async () => {
@@ -1122,12 +1175,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       accept: Boolean,
     })
     if (!ownsInsertedPackage) throw new Error('office_concurrent_change', { cause: writeError })
-    const stableSource = await this.snapshotSlide(slideIndex)
-    if (stableSource.fingerprint !== before.fingerprint)
-      throw new Error('office_concurrent_change', { cause: writeError })
-    if (!signal?.aborted) return { slideId: following.slideId }
-
-    try {
+    const deleteOwnedFollowing = async (): Promise<void> => {
       const recoveryOwnership = await this.exportSlidePackage(slideIndex + 1)
       if (
         recoveryOwnership.slideId !== following.slideId ||
@@ -1142,6 +1190,37 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         ;(inserted.delete as () => void)()
         await sync(context)
       })
+    }
+    if (sourceChanged) {
+      try {
+        await deleteOwnedFollowing()
+        if (followingBefore) {
+          const restoredFollowing = await this.snapshotSlide(slideIndex + 1)
+          if (restoredFollowing.fingerprint !== followingBefore.fingerprint)
+            throw new Error('office_state_uncertain')
+        } else {
+          try {
+            await this.snapshotSlide(slideIndex + 1)
+            throw new Error('office_state_uncertain')
+          } catch (readError) {
+            if (readError instanceof Error && readError.message === 'office_state_uncertain')
+              throw readError
+          }
+        }
+      } catch (cleanupError) {
+        if (cleanupError instanceof Error && cleanupError.message === 'office_concurrent_change')
+          throw cleanupError
+        throw new Error('office_state_uncertain', { cause: cleanupError })
+      }
+      throw new Error('office_concurrent_change', { cause: writeError })
+    }
+    const stableSource = await this.snapshotSlide(slideIndex)
+    if (stableSource.fingerprint !== before.fingerprint)
+      throw new Error('office_concurrent_change', { cause: writeError })
+    if (!signal?.aborted) return { slideId: following.slideId }
+
+    try {
+      await deleteOwnedFollowing()
       const restored = await this.snapshotSlide(slideIndex)
       if (restored.fingerprint !== before.fingerprint)
         throw new Error('office_state_uncertain', { cause: writeError })
