@@ -53,24 +53,29 @@ export function createChatBindingCoordinator<TMessage = unknown>({
       previousBinding?.chatId.startsWith('unsaved-')
     ) {
       publish(null)
+      let rebound: ChatIds | null | undefined
       try {
-        const rebound = await api.rebindChat({
+        rebound = await api.rebindChat({
           projectId: previousBinding.projectId,
           tempChatId: previousBinding.chatId,
           newFilePath: nextPath,
         })
-        if (isCurrent(token)) publish(rebound ?? previousBinding)
       } catch {
-        if (!isCurrent(token)) return
-        try {
-          const ids = await api.resolveChat({
-            filePath: nextPath,
-            tempChatId: createTempChatId(),
-          })
-          if (isCurrent(token)) publish(ids)
-        } catch {
-          // Never restore the old untitled target after the document has a path.
-        }
+        // Resolve the authoritative saved-path binding below.
+      }
+      if (!isCurrent(token)) return
+      if (rebound) {
+        publish(rebound)
+        return
+      }
+      try {
+        const ids = await api.resolveChat({
+          filePath: nextPath,
+          tempChatId: createTempChatId(),
+        })
+        if (isCurrent(token)) publish(ids)
+      } catch {
+        // Keep persistence suspended; never restore an obsolete untitled target.
       }
       return
     }

@@ -67,6 +67,63 @@ describe('chat binding coordinator', () => {
     expect(coordinator.current()).toEqual({ projectId: 'p', chatId: 'saved' })
   })
 
+  it.each([null, undefined])(
+    'resolves the saved path when rebind fulfills with %s and never republishes the unsaved target',
+    async (rebound) => {
+      const onBinding = vi.fn()
+      const api = {
+        resolveChat: vi
+          .fn()
+          .mockResolvedValueOnce({ projectId: 'p', chatId: 'unsaved-1' })
+          .mockResolvedValueOnce({ projectId: 'p', chatId: 'saved' }),
+        rebindChat: vi.fn().mockResolvedValue(rebound),
+        loadChat: vi.fn().mockResolvedValue([]),
+      }
+      const coordinator = createChatBindingCoordinator({
+        api,
+        createTempChatId: () => 'unsaved-1',
+        onBinding,
+        onHistory: vi.fn(),
+        onReset: vi.fn(),
+      })
+
+      await coordinator.bind(null)
+      await coordinator.bind('/first.docx')
+
+      expect(api.resolveChat).toHaveBeenLastCalledWith({
+        filePath: '/first.docx',
+        tempChatId: 'unsaved-1',
+      })
+      expect(coordinator.current()).toEqual({ projectId: 'p', chatId: 'saved' })
+      expect(onBinding.mock.calls.slice(1)).toEqual([[null], [{ projectId: 'p', chatId: 'saved' }]])
+    },
+  )
+
+  it('keeps persistence queued when rebind and saved-path resolution both fail', async () => {
+    const onBinding = vi.fn()
+    const api = {
+      resolveChat: vi
+        .fn()
+        .mockResolvedValueOnce({ projectId: 'p', chatId: 'unsaved-1' })
+        .mockRejectedValueOnce(new Error('saved path unavailable')),
+      rebindChat: vi.fn().mockRejectedValue(new Error('rebind failed')),
+      loadChat: vi.fn().mockResolvedValue([]),
+    }
+    const coordinator = createChatBindingCoordinator({
+      api,
+      createTempChatId: () => 'unsaved-1',
+      onBinding,
+      onHistory: vi.fn(),
+      onReset: vi.fn(),
+    })
+
+    await coordinator.bind(null)
+    await coordinator.bind('/first.docx')
+
+    expect(coordinator.current()).toBeNull()
+    expect(onBinding.mock.calls.slice(1)).toEqual([[null]])
+  })
+
   it('invalidates binding immediately on A to B and ignores work after dispose', async () => {
     const b = deferred<{ projectId: string; chatId: string }>()
     const onBinding = vi.fn()

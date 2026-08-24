@@ -62,6 +62,63 @@ describe('markdown chat binding coordinator', () => {
     expect(binding.current()?.chatId).toBe('/B.md')
   })
 
+  it.each([null, undefined])(
+    'resolves the saved path when rebind fulfills with %s and only publishes the valid target',
+    async (rebound) => {
+      const onBinding = vi.fn()
+      const api = {
+        resolveChat: vi
+          .fn()
+          .mockResolvedValueOnce({ projectId: 'p', chatId: 'unsaved-1' })
+          .mockResolvedValueOnce({ projectId: 'p', chatId: 'saved' }),
+        rebindChat: vi.fn().mockResolvedValue(rebound),
+        loadChat: vi.fn().mockResolvedValue([]),
+      }
+      const binding = createChatBindingCoordinator({
+        api,
+        createTempChatId: () => 'unsaved-1',
+        onBinding,
+        onHistory: vi.fn(),
+        onReset: vi.fn(),
+      })
+
+      await binding.bind(null)
+      await binding.bind('/first.md')
+
+      expect(api.resolveChat).toHaveBeenLastCalledWith({
+        filePath: '/first.md',
+        tempChatId: 'unsaved-1',
+      })
+      expect(binding.current()).toEqual({ projectId: 'p', chatId: 'saved' })
+      expect(onBinding.mock.calls.slice(1)).toEqual([[null], [{ projectId: 'p', chatId: 'saved' }]])
+    },
+  )
+
+  it('keeps persistence queued when rebind and saved-path resolution both fail', async () => {
+    const onBinding = vi.fn()
+    const api = {
+      resolveChat: vi
+        .fn()
+        .mockResolvedValueOnce({ projectId: 'p', chatId: 'unsaved-1' })
+        .mockRejectedValueOnce(new Error('saved path unavailable')),
+      rebindChat: vi.fn().mockRejectedValue(new Error('rebind failed')),
+      loadChat: vi.fn().mockResolvedValue([]),
+    }
+    const binding = createChatBindingCoordinator({
+      api,
+      createTempChatId: () => 'unsaved-1',
+      onBinding,
+      onHistory: vi.fn(),
+      onReset: vi.fn(),
+    })
+
+    await binding.bind(null)
+    await binding.bind('/first.md')
+
+    expect(binding.current()).toBeNull()
+    expect(onBinding.mock.calls.slice(1)).toEqual([[null]])
+  })
+
   it('ignores a load that finishes after unmount', async () => {
     const load = deferred<string[]>()
     const history = vi.fn()
