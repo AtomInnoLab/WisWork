@@ -768,6 +768,14 @@ describe('Office agent session', () => {
     ['office_verify_failed', 'The approved change could not be verified.'],
     ['office_recovery_failed', 'The document could not be restored after the failed change.'],
     [
+      'office_concurrent_change',
+      'The document changed during the operation. Inspect it before trying again.',
+    ],
+    [
+      'office_state_uncertain',
+      'The change may be partially applied. Inspect the document before trying again.',
+    ],
+    [
       'office_recovery_failed:word_body_shape',
       'The document could not be restored after the failed change (word_body_shape).',
     ],

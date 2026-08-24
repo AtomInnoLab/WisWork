@@ -1,4 +1,5 @@
 import type { WordDocumentBlock, WordDocumentWrite, WordInlineSpan } from './word-markdown.js'
+import { readUntilConverged } from '../shared/office-write-transaction.js'
 
 export const MAX_WORD_PARAGRAPHS = 500
 export const MAX_WORD_TEXT_LENGTH = 12_000
@@ -296,7 +297,8 @@ async function readBodyOoxml(signal?: AbortSignal): Promise<string> {
 }
 
 export class BrowserWordAdapter implements WordAdapter {
-  private expectedText: string | undefined
+  private expectedText:
+    { expected: string; original: string; originalFingerprint: string } | undefined
   private expectedDocument:
     | {
         fingerprint: string
@@ -544,8 +546,21 @@ export class BrowserWordAdapter implements WordAdapter {
           }
         }
         cancelled(signal)
-        await sync(context, signal)
-        this.expectedText = expected
+        let writeError: unknown
+        try {
+          await (context.sync as () => Promise<void>)()
+        } catch (error) {
+          writeError = error
+        }
+        if (writeError || signal?.aborted) {
+          await reconcileDeclarativeWrite(context, body, snapshot.value, expected)
+          throw writeError ?? new Error('cancelled')
+        }
+        this.expectedText = {
+          expected,
+          original: snapshot.value,
+          originalFingerprint: stableFingerprintOoxml(snapshot.value),
+        }
       },
     )
   }
@@ -559,7 +574,14 @@ export class BrowserWordAdapter implements WordAdapter {
     const expected = this.expectedText
     this.expectedText = undefined
     if (expected === undefined) return false
-    return ooxmlText(await readBodyOoxml(signal)) === expected
+    const current = await readUntilConverged({
+      read: () => readBodyOoxml(signal),
+      accept: (value) => ooxmlText(value) === expected.expected,
+      signal,
+    })
+    if (ooxmlText(current) === expected.expected) return true
+    if (stableFingerprintOoxml(current) === expected.originalFingerprint) return false
+    throw new Error('office_concurrent_change')
   }
 
   async executeDocumentWrite(write: WordDocumentWrite, signal?: AbortSignal): Promise<void> {
@@ -578,9 +600,10 @@ export class BrowserWordAdapter implements WordAdapter {
           new TextEncoder().encode(snapshot.value).byteLength > MAX_WORD_OOXML_BYTES
         )
           throw new Error('office_write_failed')
-        const beforeFingerprint = stableFingerprintOoxml(snapshot.value)
+        const original = snapshot.value
+        const beforeFingerprint = stableFingerprintOoxml(original)
         cancelled(signal)
-        const target = buildDocumentWriteOoxml(snapshot.value, write)
+        const target = buildDocumentWriteOoxml(original, write)
         ;(body.insertOoxml as (xml: string, location: string) => void)(target, 'Replace')
         let writeError: unknown
         try {
@@ -589,32 +612,35 @@ export class BrowserWordAdapter implements WordAdapter {
           writeError = error
         }
         if (writeError || signal?.aborted) {
-          await reconcileAtomicDocumentWrite(context, body, snapshot.value, write)
+          await reconcileAtomicDocumentWrite(context, body, original, write)
           throw writeError ?? new Error('cancelled')
         }
-        const result = (body.getOoxml as () => RuntimeRecord)()
+        let postValue: string | undefined
         let readError: unknown
         try {
-          await (context.sync as () => Promise<void>)()
+          postValue = await readUntilConverged({
+            read: () => readWordBodyInContext(context, body),
+            accept: (value) => verifyNativeDocumentWrite(original, value, write),
+            signal,
+          })
         } catch (error) {
           readError = error
         }
         if (readError || signal?.aborted) {
-          await reconcileAtomicDocumentWrite(context, body, snapshot.value, write)
+          await reconcileAtomicDocumentWrite(context, body, original, write)
           throw readError ?? new Error('cancelled')
         }
-        const postValue = typeof result.value === 'string' ? result.value : undefined
         const verified =
           postValue !== undefined &&
           new TextEncoder().encode(postValue).byteLength <= MAX_WORD_OOXML_BYTES &&
-          verifyNativeDocumentWrite(snapshot.value, postValue, write)
+          verifyNativeDocumentWrite(original, postValue, write)
         if (!verified || signal?.aborted) {
-          await reconcileAtomicDocumentWrite(context, body, snapshot.value, write)
+          await reconcileAtomicDocumentWrite(context, body, original, write)
           throw signal?.aborted ? new Error('cancelled') : new Error('office_verify_failed')
         }
         this.expectedDocument = {
           fingerprint: stableFingerprintOoxml(postValue!),
-          original: snapshot.value,
+          original,
           originalFingerprint: beforeFingerprint,
           write,
         }
@@ -628,7 +654,13 @@ export class BrowserWordAdapter implements WordAdapter {
     if (!expected) return false
     let current: string
     try {
-      current = await readBodyOoxml()
+      current = await readUntilConverged({
+        read: () => readBodyOoxml(signal),
+        accept: (value) =>
+          stableFingerprintOoxml(value) === expected.fingerprint ||
+          verifyNativeDocumentWrite(expected.original, value, expected.write),
+        signal,
+      })
     } catch (error) {
       throw new Error('office_recovery_failed', { cause: error })
     }
@@ -637,17 +669,19 @@ export class BrowserWordAdapter implements WordAdapter {
     if (currentFingerprint === expected.originalFingerprint) return false
     if (!signal?.aborted && verifyNativeDocumentWrite(expected.original, current, expected.write))
       return true
-    const { word } = runtime()
-    await (word.run as (callback: (context: RuntimeRecord) => unknown) => Promise<unknown>)(
-      async (context) => {
-        const body = (context.document as RuntimeRecord).body as RuntimeRecord
-        if (typeof body.insertOoxml !== 'function' || typeof body.getOoxml !== 'function')
-          throw new Error('office_recovery_failed')
-        await restoreWordBody(context, body, expected.original, expected.originalFingerprint)
-      },
-    )
-    return false
+    throw new Error('office_concurrent_change')
   }
+}
+
+async function readWordBodyInContext(context: RuntimeRecord, body: RuntimeRecord): Promise<string> {
+  const result = (body.getOoxml as () => RuntimeRecord)()
+  await (context.sync as () => Promise<void>)()
+  if (
+    typeof result.value !== 'string' ||
+    new TextEncoder().encode(result.value).byteLength > MAX_WORD_OOXML_BYTES
+  )
+    throw new Error('office_read_failed')
+  return result.value
 }
 
 function buildDocumentWriteOoxml(original: string, write: WordDocumentWrite): string {
@@ -848,10 +882,38 @@ async function reconcileAtomicDocumentWrite(
     const originalFingerprint = stableFingerprintOoxml(original)
     if (fingerprint === originalFingerprint) return
     const verification = verifyNativeDocumentWriteDetailed(original, current.value, write)
-    if (!verification.valid) throw new Error(`office_recovery_failed:word_${verification.stage}`)
+    if (!verification.valid) throw new Error('office_concurrent_change')
     await restoreWordBody(context, body, original, originalFingerprint)
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith('office_recovery_failed:')) throw error
+    if (
+      error instanceof Error &&
+      (error.message.startsWith('office_recovery_failed:') ||
+        error.message === 'office_concurrent_change')
+    )
+      throw error
+    throw new Error('office_recovery_failed:word_reconcile_io', { cause: error })
+  }
+}
+
+async function reconcileDeclarativeWrite(
+  context: RuntimeRecord,
+  body: RuntimeRecord,
+  original: string,
+  expectedText: string,
+): Promise<void> {
+  try {
+    const current = await readWordBodyInContext(context, body)
+    const originalFingerprint = stableFingerprintOoxml(original)
+    if (stableFingerprintOoxml(current) === originalFingerprint) return
+    if (ooxmlText(current) !== expectedText) throw new Error('office_concurrent_change')
+    await restoreWordBody(context, body, original, originalFingerprint)
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message.startsWith('office_recovery_failed:') ||
+        error.message === 'office_concurrent_change')
+    )
+      throw error
     throw new Error('office_recovery_failed:word_reconcile_io', { cause: error })
   }
 }
@@ -992,9 +1054,9 @@ function spansMatch(expected: WordInlineSpan[], actual: ParagraphSignature): boo
       const properties = actual.characters[offset]
       if (
         !properties ||
-        (span.bold && !properties.bold) ||
-        (span.italic && !properties.italic) ||
-        (span.code && !properties.code)
+        properties.bold !== Boolean(span.bold) ||
+        properties.italic !== Boolean(span.italic) ||
+        properties.code !== Boolean(span.code)
       )
         return false
       offset += 1
@@ -1179,7 +1241,12 @@ function withoutTrailingEmptyParagraphs(elements: Element[]): Element[] {
 }
 
 function stableFingerprintOoxml(xml: string): string {
-  return JSON.stringify(canonicalWordNode(wordBodyElement(xml)))
+  return JSON.stringify({
+    body: canonicalWordNode(wordBodyElement(xml)),
+    headingStyles: [...headingStyleLevels(xml)].sort(([left], [right]) =>
+      left.localeCompare(right),
+    ),
+  })
 }
 
 function wordBodyElement(xml: string): Element {

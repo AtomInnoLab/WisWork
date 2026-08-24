@@ -81,6 +81,8 @@ const PROPOSAL_ERROR_CODES = new Set([
   'office_write_failed',
   'office_verify_failed',
   'office_recovery_failed',
+  'office_concurrent_change',
+  'office_state_uncertain',
 ])
 
 function stableProposalError(error: unknown): string {

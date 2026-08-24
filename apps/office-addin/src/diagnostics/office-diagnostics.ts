@@ -18,6 +18,8 @@ const ERROR_CODES = new Set([
   'office_api_unsupported',
   'office_read_failed',
   'office_recovery_failed',
+  'office_concurrent_change',
+  'office_state_uncertain',
   'office_verify_failed',
   'office_write_failed',
   'proposal_missing',
