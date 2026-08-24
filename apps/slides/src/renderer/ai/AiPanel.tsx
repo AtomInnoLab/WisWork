@@ -1174,24 +1174,20 @@ export function AiPanel({
     ])
     runStartedAtRef.current = Date.now()
     setBusy(true)
-    // Store the user turn before async attachment reads so a local read failure cannot lose it.
-    recordSlidesRunAttachments(sentAtts, (runAttachments) =>
-      persistMessage('user', shown, undefined, [...runAttachments]),
-    )
     void collectImageAttachments(sentAtts)
       .then(async (images) => {
+        if (launchTokenRef.current !== launchToken || loopRef.current !== loop) return
         // AI Beautify sends the current slide's rendering along, so the model sees what it edits;
         // the note rides on the model instruction only — the chat bubble stays the localized preset text
         let modelInstruction = instruction
         if (opts?.slideShot) {
           const shot = await captureSlideShot(currentRef.current)
+          if (launchTokenRef.current !== launchToken || loopRef.current !== loop) return
           if (shot) {
             images.push(shot)
             modelInstruction += `\n\n(Attached image: the current rendering of this slide, slideIndex ${currentRef.current}. Use it to spot visual issues the element inventory can't show.)`
           }
         }
-        // Clear the flag before run: loop.run sets running synchronously, leaving no re-entry window
-        runStartingRef.current = false
         const launched = await beginSlidesHostRun({
           beginHistoryBatch: () => window.slidesApi.beginHistoryBatch(),
           isCurrent: () => launchTokenRef.current === launchToken && loopRef.current === loop,
@@ -1200,12 +1196,21 @@ export function AiPanel({
           },
           finishHistoryBatch,
           run: () => {
+            if (launchTokenRef.current !== launchToken || loopRef.current !== loop) return false
+            // loop.run marks itself busy synchronously, so clearing this guard here
+            // leaves no duplicate-launch window and keeps Stop authoritative while
+            // beginHistoryBatch is still in flight.
+            runStartingRef.current = false
+            recordSlidesRunAttachments(sentAtts, (runAttachments) =>
+              persistMessage('user', shown, undefined, [...runAttachments]),
+            )
             return loop.run(modelInstruction, images)
           },
         })
         if (!launched) setBusy(false)
       })
       .catch(() => {
+        if (launchTokenRef.current !== launchToken || loopRef.current !== loop) return
         runStartingRef.current = false
         void finishHistoryBatch().finally(() => setBusy(false))
       })
@@ -1312,7 +1317,19 @@ export function AiPanel({
   }
 
   const cancel = () => {
+    const wasPrelaunch = runStartingRef.current
     launchTokenRef.current++
+    if (wasPrelaunch) {
+      runStartingRef.current = false
+      setBusy(false)
+      setChat((prev) => {
+        const assistant = prev.at(-1)
+        const user = prev.at(-2)
+        return assistant?.role === 'assistant' && assistant.streaming && user?.role === 'user'
+          ? prev.slice(0, -2)
+          : prev
+      })
+    }
     stopSlidesHostRun({
       dismissClarification: dismissClarify,
       abortQc: () => qcAbortRef.current?.abort(),
@@ -1324,7 +1341,10 @@ export function AiPanel({
   useEffect(
     () => () => {
       launchTokenRef.current++
+      runStartingRef.current = false
       qcAbortRef.current?.abort()
+      dismissClarify()
+      loopRef.current?.stop()
     },
     [],
   )
@@ -1336,6 +1356,7 @@ export function AiPanel({
 
   const newChat = () => {
     launchTokenRef.current++
+    runStartingRef.current = false
     dismissClarify()
     qcAbortRef.current?.abort()
     loopRef.current?.reset()

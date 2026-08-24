@@ -614,6 +614,37 @@ describe('execute_slide_script tool', () => {
     expect(applied).toBeNull()
   })
 
+  it('execute_slide_script stops after an in-flight operation and sends no later IPC', async () => {
+    let resolveText!: (value: null) => void
+    const api = (globalThis as any).window.slidesApi
+    api.editText = vi.fn(
+      () =>
+        new Promise<null>((resolve) => {
+          resolveText = resolve
+        }),
+    )
+    api.editFill = vi.fn(async () => ({ ...slide }))
+    const controller = new AbortController()
+    const pending = createSlidesSkill(access()).executeTool(
+      {
+        id: 'abort-script',
+        name: 'execute_slide_script',
+        input: {
+          slideIndex: 0,
+          code: "setText('t1', 'late'); setFill('t1', '#FF0000');",
+        },
+      } as any,
+      controller.signal,
+    )
+
+    await vi.waitFor(() => expect(api.editText).toHaveBeenCalledOnce())
+    controller.abort()
+    resolveText(null)
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(api.editFill).not.toHaveBeenCalled()
+    expect(applied).toBeNull()
+  })
+
   it('ungroup_element promotes children, applies the fresh slide, and echoes the new element list', async () => {
     slide = slideOf([
       groupNode('g1', box(200, 100, 400, 300), [textNode('c1', box(10, 20, 50, 30), 'Member')]),

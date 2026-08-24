@@ -269,7 +269,7 @@ describe('Slides interactive agent controller', () => {
     resolveBegin(true)
     expect(await pending).toBe(false)
     expect(finish).toHaveBeenCalledOnce()
-    expect(active).not.toHaveBeenCalled()
+    expect(active).toHaveBeenCalledOnce()
     expect(run).not.toHaveBeenCalled()
   })
 

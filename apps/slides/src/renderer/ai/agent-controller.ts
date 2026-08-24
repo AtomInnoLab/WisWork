@@ -93,6 +93,10 @@ export async function beginSlidesHostRun({
   run: () => boolean
 }): Promise<boolean> {
   const opened = await beginHistoryBatch()
+  // Once the host has opened a batch it must be tracked before any stale/cancel
+  // branch tries to close it; otherwise finishHistoryBatch sees "inactive" and
+  // leaks the host session in a batched state.
+  if (opened) markHistoryActive()
   if (!isCurrent()) {
     if (opened) await finishHistoryBatch()
     return false
@@ -100,7 +104,6 @@ export async function beginSlidesHostRun({
   // AgentHarness may synchronously project a launch failure through onError
   // before run() returns. Mark the opened batch first so that callback can
   // close it; a rejected launch closes it through the same host wrapper.
-  if (opened) markHistoryActive()
   const started = run()
   if (!started) {
     if (opened) await finishHistoryBatch()
