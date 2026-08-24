@@ -114,6 +114,7 @@ export function createAgentHarness<TSnapshot>(
       const generation = currentSnapshot.generation + 1
       loopOptions.events = eventsFor(generation)
       publish({ status: 'running', busy: true, generation })
+      if (!isCurrent(generation)) return false
       try {
         loop.run(instruction, images)
       } catch (error) {

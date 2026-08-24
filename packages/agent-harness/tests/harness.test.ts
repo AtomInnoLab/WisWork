@@ -67,6 +67,86 @@ describe('createAgentHarness', () => {
     expect(snapshots).toEqual(['running:true', 'done:false'])
   })
 
+  it.each(['reset', 'dispose'] as const)(
+    'does not launch work when a running listener calls %s',
+    (action) => {
+      const transport = manualTransport()
+      const executeTool = vi.fn(() => ({ output: 'ok', summary: 'done' }))
+      const harness = createAgentHarness({
+        ...options(transport),
+        skill: { ...skill, executeTool },
+      })
+      harness.subscribe(() => {
+        if (harness.snapshot.status === 'running') harness[action]()
+      })
+
+      expect(harness.run('do not launch')).toBe(false)
+
+      expect(transport.callbacks).toHaveLength(0)
+      expect(executeTool).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(['buildContext', 'formatUserMessage'] as const)(
+    'recovers when %s throws synchronously and allows a later run',
+    async (failurePoint) => {
+      const transport = manualTransport()
+      let shouldThrow = true
+      const harness = createAgentHarness({
+        ...options(transport),
+        skill: {
+          ...skill,
+          buildContext: () => {
+            if (failurePoint === 'buildContext' && shouldThrow) throw new Error('launch_failed')
+            return 'context'
+          },
+        },
+        formatUserMessage: (instruction, context) => {
+          if (failurePoint === 'formatUserMessage' && shouldThrow) throw new Error('launch_failed')
+          return `${instruction}:${context}`
+        },
+      })
+
+      expect(harness.run('first')).toBe(true)
+      expect(harness.snapshot).toEqual({
+        status: 'error',
+        busy: false,
+        generation: 1,
+        error: 'launch_failed',
+      })
+
+      shouldThrow = false
+      expect(harness.run('second')).toBe(true)
+      await flush()
+      expect(transport.callbacks).toHaveLength(1)
+    },
+  )
+
+  it('recovers from an asynchronous launch failure and allows a later run', async () => {
+    const transport = manualTransport()
+    const stream = transport.stream.bind(transport)
+    let shouldThrow = true
+    transport.stream = (request, callbacks) => {
+      if (shouldThrow) throw new Error('stream_failed')
+      return stream(request, callbacks)
+    }
+    const harness = createAgentHarness(options(transport))
+
+    expect(harness.run('first')).toBe(true)
+    await flush()
+    expect(harness.snapshot).toEqual({
+      status: 'error',
+      busy: false,
+      generation: 1,
+      error: 'stream_failed',
+    })
+
+    shouldThrow = false
+    expect(harness.run('second')).toBe(true)
+    await flush()
+    expect(transport.callbacks).toHaveLength(1)
+  })
+
   it('stops a run as cancelled while preserving history', async () => {
     const transport = manualTransport()
     const harness = createAgentHarness(options(transport))
