@@ -1,5 +1,6 @@
 import {
   capturePowerPointPackage,
+  verifyImportedPowerPointPackage,
   verifyPowerPointPackage,
   type PackageEditResult,
 } from './powerpoint-package.js'
@@ -615,7 +616,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       await sync(context, signal)
       if (
         typeof imported.value !== 'string' ||
-        !(await verifyPowerPointPackage(imported.value, expected, signal))
+        !(await verifyImportedPowerPointPackage(imported.value, expected, signal))
       ) {
         // Restore the captured original package even when insert+delete both committed but
         // the imported package is semantically different from the approved replacement.

@@ -9,7 +9,7 @@ import {
 } from './browser-powerpoint-adapter.js'
 import {
   editPowerPointPackage,
-  verifyPowerPointPackage,
+  verifyImportedPowerPointPackage,
   verifyPowerPointPackageInputs,
   type PackageEditKind,
   type XmlReplacement,
@@ -574,7 +574,7 @@ export function createPowerPointSkill(options: {
       verify: async (confirmSignal) => {
         if (!applied) throw new Error('office_verify_failed')
         const current = await options.adapter.exportSlidePackage(slideIndex, confirmSignal)
-        if (!(await verifyPowerPointPackage(current.base64, applied, confirmSignal)))
+        if (!(await verifyImportedPowerPointPackage(current.base64, applied, confirmSignal)))
           throw new Error('office_verify_failed')
         await options.adapter.verifySlides(confirmSignal)
       },

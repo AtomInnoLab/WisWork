@@ -2,6 +2,7 @@ import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
 import {
   editPowerPointPackage,
+  verifyImportedPowerPointPackage,
   verifyPowerPointPackage,
 } from '../src/skills/powerpoint/powerpoint-package.js'
 
@@ -83,6 +84,132 @@ describe('bounded PowerPoint package editing', () => {
         },
       ]),
     ).rejects.toThrow('office_api_unsupported')
+  })
+
+  it('semantically verifies a host-normalized background-only master import', async () => {
+    const input = await fixture({
+      'ppt/slideMasters/slideMaster1.xml':
+        '<p:sldMaster xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree/></p:cSld></p:sldMaster>',
+      'docProps/core.xml': '<core modified="before"/>',
+    })
+    const black =
+      '<p:sldMaster xmlns:a="urn:a" xmlns:p="urn:p"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="000000"/></a:solidFill></p:bgPr></p:bg><p:spTree/></p:cSld></p:sldMaster>'
+    const edit = await editPowerPointPackage(input, 'master', [
+      { path: 'ppt/slideMasters/slideMaster1.xml', xml: black },
+    ])
+    const normalized = await JSZip.loadAsync(edit.base64, { base64: true })
+    normalized.file(
+      'ppt/slideMasters/slideMaster1.xml',
+      '<p:sldMaster xmlns:p="urn:p" xmlns:a="urn:a">\n<p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="000000"/></a:solidFill></p:bgPr></p:bg><p:spTree/></p:cSld></p:sldMaster>',
+    )
+    expect(
+      await verifyImportedPowerPointPackage(
+        await normalized.generateAsync({ type: 'base64' }),
+        edit,
+      ),
+    ).toBe(true)
+    normalized.file('docProps/core.xml', '<core modified="after-host-import"/>')
+    expect(
+      await verifyImportedPowerPointPackage(
+        await normalized.generateAsync({ type: 'base64' }),
+        edit,
+      ),
+    ).toBe(false)
+    normalized.file('docProps/core.xml', '<core modified="before"/>')
+    normalized.file('ppt/slideMasters/slideMaster1.xml', black.replace('000000', 'FFFFFF'))
+    expect(
+      await verifyImportedPowerPointPackage(
+        await normalized.generateAsync({ type: 'base64' }),
+        edit,
+      ),
+    ).toBe(false)
+  })
+
+  it('does not ignore non-background changes bundled with a background edit', async () => {
+    const input = await fixture({
+      'ppt/slideMasters/slideMaster1.xml':
+        '<p:sldMaster xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld name="before"><p:spTree/></p:cSld></p:sldMaster>',
+    })
+    const edit = await editPowerPointPackage(input, 'master', [
+      {
+        path: 'ppt/slideMasters/slideMaster1.xml',
+        xml: '<p:sldMaster xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld name="after"><p:bg><p:bgPr><a:solidFill><a:srgbClr val="000000"/></a:solidFill></p:bgPr></p:bg><p:spTree/></p:cSld></p:sldMaster>',
+      },
+    ])
+    const incomplete = await JSZip.loadAsync(edit.base64, { base64: true })
+    incomplete.file(
+      'ppt/slideMasters/slideMaster1.xml',
+      '<p:sldMaster xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld name="before"><p:bg><p:bgPr><a:solidFill><a:srgbClr val="000000"/></a:solidFill></p:bgPr></p:bg><p:spTree/></p:cSld></p:sldMaster>',
+    )
+    expect(
+      await verifyImportedPowerPointPackage(
+        await incomplete.generateAsync({ type: 'base64' }),
+        edit,
+      ),
+    ).toBe(false)
+  })
+
+  it('rejects non-background mutations in an otherwise valid background import', async () => {
+    const input = await fixture({
+      'ppt/slideMasters/slideMaster1.xml':
+        '<p:sldMaster xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><p:sp/></p:spTree></p:cSld></p:sldMaster>',
+    })
+    const edit = await editPowerPointPackage(input, 'master', [
+      {
+        path: 'ppt/slideMasters/slideMaster1.xml',
+        xml: '<p:sldMaster xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="000000"/></a:solidFill></p:bgPr></p:bg><p:spTree><p:sp/></p:spTree></p:cSld></p:sldMaster>',
+      },
+    ])
+    const mutated = await JSZip.loadAsync(edit.base64, { base64: true })
+    mutated.file(
+      'ppt/slideMasters/slideMaster1.xml',
+      '<p:sldMaster xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="000000"/></a:solidFill></p:bgPr></p:bg><p:spTree/></p:cSld></p:sldMaster>',
+    )
+    expect(
+      await verifyImportedPowerPointPackage(await mutated.generateAsync({ type: 'base64' }), edit),
+    ).toBe(false)
+  })
+
+  it('preserves whitespace-only text when OOXML marks it as meaningful', async () => {
+    const input = await fixture({
+      'ppt/slideMasters/slideMaster1.xml':
+        '<p:sldMaster xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:spTree><a:t xml:space="preserve"> </a:t></p:spTree></p:cSld></p:sldMaster>',
+    })
+    const edit = await editPowerPointPackage(input, 'master', [
+      {
+        path: 'ppt/slideMasters/slideMaster1.xml',
+        xml: '<p:sldMaster xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="000000"/></a:solidFill></p:bgPr></p:bg><p:spTree><a:t xml:space="preserve"> </a:t></p:spTree></p:cSld></p:sldMaster>',
+      },
+    ])
+    const mutated = await JSZip.loadAsync(edit.base64, { base64: true })
+    mutated.file(
+      'ppt/slideMasters/slideMaster1.xml',
+      '<p:sldMaster xmlns:p="urn:p" xmlns:a="urn:a"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="000000"/></a:solidFill></p:bgPr></p:bg><p:spTree><a:t xml:space="preserve"></a:t></p:spTree></p:cSld></p:sldMaster>',
+    )
+    expect(
+      await verifyImportedPowerPointPackage(await mutated.generateAsync({ type: 'base64' }), edit),
+    ).toBe(false)
+  })
+
+  it('keeps generic imported XML edits byte-exact', async () => {
+    const input = await fixture()
+    const edit = await editPowerPointPackage(input, 'slide', [
+      {
+        path: 'ppt/slides/slide1.xml',
+        xml: '<p:sld xmlns:p="urn:p"><p:cSld name="new"/></p:sld>',
+      },
+    ])
+    const reformatted = await JSZip.loadAsync(edit.base64, { base64: true })
+    reformatted.file(
+      'ppt/slides/slide1.xml',
+      '<p:sld xmlns:p="urn:p">\n<p:cSld name="new"/></p:sld>',
+    )
+    expect(
+      await verifyImportedPowerPointPackage(
+        await reformatted.generateAsync({ type: 'base64' }),
+        edit,
+      ),
+    ).toBe(false)
   })
 
   it('rejects malformed XML, traversal paths, excessive entries, and declared zip bombs', async () => {
