@@ -58,6 +58,14 @@ function currentOfficePlatform(): string | undefined {
   }
 }
 
+function supportsNativePowerPointMasterEditing(): boolean {
+  try {
+    return Office.context.requirements.isSetSupported('PowerPointApi', '1.10')
+  } catch {
+    return false
+  }
+}
+
 export function createOfficeHostRuntime(
   host: OfficeHost,
   options: {
@@ -99,6 +107,8 @@ export function createOfficeHostRuntime(
       createPowerPointSkill({
         adapter: powerPointAdapter!,
         proposals,
+        vfs,
+        nativeMasterEditingSupported: supportsNativePowerPointMasterEditing(),
         platform: options.platform ?? currentOfficePlatform(),
       }),
   }[host]()

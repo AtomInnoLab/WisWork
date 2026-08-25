@@ -33,7 +33,7 @@ const inventories = {
     'bash',
     'duplicate_slide',
     'edit_slide_chart',
-    'edit_slide_master',
+    'edit_slide_master_xml',
     'edit_slide_text',
     'edit_slide_xml',
     'execute_office_js',
@@ -63,6 +63,8 @@ describe('host runtime composition', () => {
   it('omits unsupported master package editing from the PowerPoint Mac inventory', () => {
     const runtime = createOfficeHostRuntime('powerpoint', { platform: 'Mac' })
     expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain('edit_slide_master')
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain('inspect_slide_masters')
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain('edit_slide_master_xml')
     expect(runtime.skill.tools.map((tool) => tool.name)).toContain('edit_slide_xml')
   })
 

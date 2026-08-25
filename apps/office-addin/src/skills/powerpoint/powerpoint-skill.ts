@@ -3,10 +3,14 @@ import type { StructuredProposalController } from '../../agent/proposal-controll
 import { exactObject, integerField, optionalField, stringField } from '../../agent/tool-schema.js'
 import { parseDeclarativeProgram } from '../shared/declarative-program.js'
 import { readUntilConverged } from '../shared/office-write-transaction.js'
+import { readBoundedImage } from '../shared/import-media.js'
+import type { InMemoryVfs } from '../shared/vfs.js'
 import type { PowerPointAdapter } from './browser-powerpoint-adapter.js'
 import {
   MAX_POWERPOINT_RESULT_BYTES,
   type PowerPointDeclarativeOperation,
+  type PowerPointMasterOperation,
+  type PowerPointMasterState,
 } from './browser-powerpoint-adapter.js'
 import {
   editPowerPointPackage,
@@ -20,11 +24,68 @@ const MAX_SLIDE_INDEX = 100_000
 const MAX_CODE = 32 * 1024
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
 const POWERPOINT_GEOMETRY_EPSILON = 0.01
+const MASTER_PATTERN_TYPES = [
+  'Percent5',
+  'Percent10',
+  'Percent20',
+  'Percent25',
+  'Percent30',
+  'Percent40',
+  'Percent50',
+  'Percent60',
+  'Percent70',
+  'Percent75',
+  'Percent80',
+  'Percent90',
+  'Horizontal',
+  'Vertical',
+  'LightHorizontal',
+  'LightVertical',
+  'DarkHorizontal',
+  'DarkVertical',
+  'NarrowHorizontal',
+  'NarrowVertical',
+  'DashedHorizontal',
+  'DashedVertical',
+  'Cross',
+  'DownwardDiagonal',
+  'UpwardDiagonal',
+  'LightDownwardDiagonal',
+  'LightUpwardDiagonal',
+  'DarkDownwardDiagonal',
+  'DarkUpwardDiagonal',
+  'WideDownwardDiagonal',
+  'WideUpwardDiagonal',
+  'DashedDownwardDiagonal',
+  'DashedUpwardDiagonal',
+  'DiagonalCross',
+  'SmallCheckerBoard',
+  'LargeCheckerBoard',
+  'SmallGrid',
+  'LargeGrid',
+  'DottedGrid',
+  'SmallConfetti',
+  'LargeConfetti',
+  'HorizontalBrick',
+  'DiagonalBrick',
+  'SolidDiamond',
+  'OutlinedDiamond',
+  'DottedDiamond',
+  'Plaid',
+  'Sphere',
+  'Weave',
+  'Divot',
+  'Shingle',
+  'Wave',
+  'Trellis',
+  'ZigZag',
+] as const
 const PROGRAM_TOOLS = new Set([
   'execute_office_js',
   'edit_slide_xml',
   'edit_slide_chart',
   'edit_slide_master',
+  'edit_slide_master_xml',
 ])
 const slideInput = exactObject({
   slide_index: integerField({ min: 0, max: MAX_SLIDE_INDEX }),
@@ -141,7 +202,115 @@ const xmlProgramSchema = {
   required: ['version', 'operations'],
   additionalProperties: false,
 } as const
+const masterProgramSchema = {
+  type: 'object',
+  properties: {
+    version: { type: 'integer', enum: [2] },
+    operations: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 32,
+      items: {
+        anyOf: [
+          exactOperation(
+            {
+              op: { type: 'string', enum: ['set_master_background'] },
+              master_id: { type: 'string', minLength: 1, maxLength: 256 },
+              fill: {
+                anyOf: [
+                  exactOperation(
+                    {
+                      type: { type: 'string', enum: ['solid'] },
+                      color: { type: 'string', pattern: '^#[0-9A-Fa-f]{6}$' },
+                      transparency: { type: 'number', minimum: 0, maximum: 1 },
+                    },
+                    ['type', 'color', 'transparency'],
+                  ),
+                  exactOperation(
+                    {
+                      type: { type: 'string', enum: ['gradient'] },
+                      gradient_type: {
+                        type: 'string',
+                        enum: ['Linear', 'Radial', 'Rectangular', 'Path', 'ShadeFromTitle'],
+                      },
+                    },
+                    ['type', 'gradient_type'],
+                  ),
+                  exactOperation(
+                    {
+                      type: { type: 'string', enum: ['pattern'] },
+                      pattern: { type: 'string', enum: MASTER_PATTERN_TYPES },
+                      foreground_color: { type: 'string', pattern: '^#[0-9A-Fa-f]{6}$' },
+                      background_color: { type: 'string', pattern: '^#[0-9A-Fa-f]{6}$' },
+                    },
+                    ['type', 'pattern', 'foreground_color', 'background_color'],
+                  ),
+                  exactOperation(
+                    {
+                      type: { type: 'string', enum: ['picture_or_texture'] },
+                      path: { type: 'string', minLength: 1, maxLength: 1024 },
+                      transparency: { type: 'number', minimum: 0, maximum: 1 },
+                    },
+                    ['type', 'path', 'transparency'],
+                  ),
+                ],
+              },
+            },
+            ['op', 'master_id', 'fill'],
+          ),
+          exactOperation(
+            {
+              op: { type: 'string', enum: ['set_master_theme_color'] },
+              master_id: { type: 'string', minLength: 1, maxLength: 256 },
+              theme_color: {
+                type: 'string',
+                enum: [
+                  'Accent1',
+                  'Accent2',
+                  'Accent3',
+                  'Accent4',
+                  'Accent5',
+                  'Accent6',
+                  'Dark1',
+                  'Dark2',
+                  'Light1',
+                  'Light2',
+                  'Hyperlink',
+                  'FollowedHyperlink',
+                ],
+              },
+              color: { type: 'string', pattern: '^#[0-9A-Fa-f]{6}$' },
+            },
+            ['op', 'master_id', 'theme_color', 'color'],
+          ),
+          exactOperation(
+            {
+              op: { type: 'string', enum: ['set_layout_background_following'] },
+              master_id: { type: 'string', minLength: 1, maxLength: 256 },
+              layout_id: { type: 'string', minLength: 1, maxLength: 256 },
+              follow_master: { type: 'boolean' },
+              show_master_graphics: { type: 'boolean' },
+            },
+            ['op', 'master_id', 'layout_id', 'follow_master', 'show_master_graphics'],
+          ),
+        ],
+      },
+    },
+  },
+  required: ['version', 'operations'],
+  additionalProperties: false,
+} as const
 const tools = [
+  {
+    name: 'inspect_slide_masters',
+    description: 'Inspect bounded native slide masters, layouts, backgrounds, and theme colors.',
+    inputSchema: {
+      type: 'object',
+      properties: { explanation: { type: 'string', maxLength: 50 } },
+      required: [],
+      additionalProperties: false,
+    },
+  },
   {
     name: 'screenshot_slide',
     description:
@@ -243,7 +412,22 @@ const tools = [
   },
   {
     name: 'edit_slide_master',
-    description: 'Propose bounded allowlisted master, layout, or theme XML replacements.',
+    description:
+      'Propose native PowerPointApi 1.10 master background, theme color, and layout inheritance edits using a version 2 declarative program.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        program: masterProgramSchema,
+        explanation: { type: 'string', maxLength: 100 },
+      },
+      required: ['program'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'edit_slide_master_xml',
+    description:
+      'Propose bounded allowlisted master, layout, or theme XML replacements on hosts with reliable package import.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -330,6 +514,355 @@ function fingerprint(value: string): string {
     result = Math.imul(result, 0x01000193)
   }
   return `${value.length}:${(result >>> 0).toString(16).padStart(8, '0')}`
+}
+
+function parseMasterProgram(value: unknown): PowerPointMasterOperation[] {
+  const program = exactRecord(value, ['version', 'operations'])
+  if (
+    program.version !== 2 ||
+    !Array.isArray(program.operations) ||
+    program.operations.length < 1 ||
+    program.operations.length > 32
+  )
+    throw invalidToolInput('program.operations')
+  return program.operations.map((raw) => {
+    const operation = exactRecord(raw, [
+      'op',
+      'master_id',
+      'layout_id',
+      'fill',
+      'theme_color',
+      'color',
+      'follow_master',
+      'show_master_graphics',
+    ])
+    if (
+      typeof operation.master_id !== 'string' ||
+      !operation.master_id ||
+      operation.master_id.length > 256
+    )
+      throw invalidToolInput('program.operations')
+    if (operation.op === 'set_master_background') {
+      const fill = exactRecord(operation.fill, [
+        'type',
+        'color',
+        'transparency',
+        'gradient_type',
+        'pattern',
+        'foreground_color',
+        'background_color',
+        'image_base64',
+      ])
+      if (
+        fill.type === 'solid' &&
+        typeof fill.color === 'string' &&
+        /^#[0-9A-Fa-f]{6}$/.test(fill.color) &&
+        typeof fill.transparency === 'number' &&
+        fill.transparency >= 0 &&
+        fill.transparency <= 1
+      )
+        return {
+          op: operation.op,
+          master_id: operation.master_id,
+          fill: { type: 'solid', color: fill.color.toUpperCase(), transparency: fill.transparency },
+        }
+      if (
+        fill.type === 'picture_or_texture' &&
+        typeof fill.image_base64 === 'string' &&
+        fill.image_base64.length > 0 &&
+        typeof fill.transparency === 'number' &&
+        fill.transparency >= 0 &&
+        fill.transparency <= 1
+      )
+        return {
+          op: operation.op,
+          master_id: operation.master_id,
+          fill: {
+            type: 'picture_or_texture',
+            image_base64: fill.image_base64,
+            transparency: fill.transparency,
+          },
+        }
+      if (
+        fill.type === 'gradient' &&
+        typeof fill.gradient_type === 'string' &&
+        ['Linear', 'Radial', 'Rectangular', 'Path', 'ShadeFromTitle'].includes(fill.gradient_type)
+      )
+        return {
+          op: operation.op,
+          master_id: operation.master_id,
+          fill: { type: 'gradient', gradient_type: fill.gradient_type },
+        }
+      if (
+        fill.type === 'pattern' &&
+        typeof fill.pattern === 'string' &&
+        (MASTER_PATTERN_TYPES as readonly string[]).includes(fill.pattern) &&
+        typeof fill.foreground_color === 'string' &&
+        /^#[0-9A-Fa-f]{6}$/.test(fill.foreground_color) &&
+        typeof fill.background_color === 'string' &&
+        /^#[0-9A-Fa-f]{6}$/.test(fill.background_color)
+      )
+        return {
+          op: operation.op,
+          master_id: operation.master_id,
+          fill: {
+            type: 'pattern',
+            pattern: fill.pattern,
+            foreground_color: fill.foreground_color.toUpperCase(),
+            background_color: fill.background_color.toUpperCase(),
+          },
+        }
+      throw invalidToolInput('program.operations')
+    }
+    if (operation.op === 'set_master_theme_color') {
+      const slots = new Set([
+        'Accent1',
+        'Accent2',
+        'Accent3',
+        'Accent4',
+        'Accent5',
+        'Accent6',
+        'Dark1',
+        'Dark2',
+        'Light1',
+        'Light2',
+        'Hyperlink',
+        'FollowedHyperlink',
+      ])
+      if (
+        typeof operation.theme_color !== 'string' ||
+        !slots.has(operation.theme_color) ||
+        typeof operation.color !== 'string' ||
+        !/^#[0-9A-Fa-f]{6}$/.test(operation.color)
+      )
+        throw invalidToolInput('program.operations')
+      return {
+        op: operation.op,
+        master_id: operation.master_id,
+        theme_color: operation.theme_color,
+        color: operation.color.toUpperCase(),
+      }
+    }
+    if (
+      operation.op === 'set_layout_background_following' &&
+      typeof operation.layout_id === 'string' &&
+      operation.layout_id &&
+      typeof operation.follow_master === 'boolean' &&
+      typeof operation.show_master_graphics === 'boolean'
+    )
+      return {
+        op: operation.op,
+        master_id: operation.master_id,
+        layout_id: operation.layout_id,
+        follow_master: operation.follow_master,
+        show_master_graphics: operation.show_master_graphics,
+      }
+    throw invalidToolInput('program.operations')
+  })
+}
+
+async function prepareMasterProgram(value: unknown, vfs?: InMemoryVfs): Promise<unknown> {
+  const copy = structuredClone(value) as {
+    operations?: Array<{ fill?: { type?: unknown; path?: unknown; transparency?: unknown } }>
+  }
+  if (!Array.isArray(copy?.operations)) return copy
+  for (const operation of copy.operations) {
+    const fill = operation?.fill
+    if (fill?.type !== 'picture_or_texture') continue
+    if (!vfs || typeof fill.path !== 'string') throw invalidToolInput('program.operations')
+    const image = await readBoundedImage(vfs, fill.path)
+    operation.fill = {
+      type: 'picture_or_texture',
+      transparency: fill.transparency,
+      image_base64: image.base64,
+    } as typeof fill
+  }
+  return copy
+}
+
+function projectedMasterState(
+  before: PowerPointMasterState,
+  operations: PowerPointMasterOperation[],
+): PowerPointMasterState {
+  const value = structuredClone(before)
+  for (const operation of operations) {
+    const master = value.masters.find((item) => item.id === operation.master_id)
+    if (!master) throw new Error('invalid_tool_input')
+    if (operation.op === 'set_master_background') {
+      if (operation.fill.type === 'solid')
+        master.background = {
+          type: 'Solid',
+          color: operation.fill.color,
+          transparency: operation.fill.transparency,
+        }
+      else if (operation.fill.type === 'gradient')
+        master.background = {
+          type: 'Gradient',
+          gradientType: operation.fill.gradient_type,
+        } as PowerPointMasterState['masters'][number]['background']
+      else if (operation.fill.type === 'pattern')
+        master.background = {
+          type: 'Pattern',
+          pattern: operation.fill.pattern,
+          foregroundColor: operation.fill.foreground_color,
+          backgroundColor: operation.fill.background_color,
+        } as PowerPointMasterState['masters'][number]['background']
+      else
+        master.background = {
+          type: 'PictureOrTexture',
+          pictureTransparency: operation.fill.transparency,
+        }
+    } else if (operation.op === 'set_master_theme_color')
+      master.themeColors[operation.theme_color] = operation.color
+    else {
+      const layout = master.layouts.find((item) => item.id === operation.layout_id)
+      if (!layout) throw new Error('invalid_tool_input')
+      layout.isMasterBackgroundFollowed = operation.follow_master
+      layout.areBackgroundGraphicsHidden = !operation.show_master_graphics
+    }
+  }
+  return value
+}
+
+function masterOperationKey(operation: PowerPointMasterOperation): string {
+  if (operation.op === 'set_master_background') return `${operation.master_id}:background`
+  if (operation.op === 'set_master_theme_color')
+    return `${operation.master_id}:theme:${operation.theme_color}`
+  return `${operation.master_id}:layout:${operation.layout_id}:background-following`
+}
+
+function normalizedColor(value: unknown): unknown {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value.toUpperCase() : value
+}
+
+function masterOperationValue(
+  state: PowerPointMasterState,
+  operation: PowerPointMasterOperation,
+): unknown {
+  const master = state.masters.find((item) => item.id === operation.master_id)
+  if (!master) return undefined
+  if (operation.op === 'set_master_background') {
+    const background = master.background
+    return {
+      type: background.type.toLowerCase(),
+      ...(background.color === undefined ? {} : { color: normalizedColor(background.color) }),
+      ...(background.transparency === undefined ? {} : { transparency: background.transparency }),
+      ...(background.gradientType === undefined
+        ? {}
+        : { gradientType: background.gradientType.toLowerCase() }),
+      ...(background.pattern === undefined ? {} : { pattern: background.pattern.toLowerCase() }),
+      ...(background.foregroundColor === undefined
+        ? {}
+        : { foregroundColor: normalizedColor(background.foregroundColor) }),
+      ...(background.backgroundColor === undefined
+        ? {}
+        : { backgroundColor: normalizedColor(background.backgroundColor) }),
+      ...(background.pictureTransparency === undefined
+        ? {}
+        : { pictureTransparency: background.pictureTransparency }),
+    }
+  }
+  if (operation.op === 'set_master_theme_color')
+    return normalizedColor(master.themeColors[operation.theme_color])
+  const layout = master.layouts.find((item) => item.id === operation.layout_id)
+  return layout
+    ? {
+        follow_master: layout.isMasterBackgroundFollowed,
+        show_master_graphics: !layout.areBackgroundGraphicsHidden,
+      }
+    : undefined
+}
+
+function affectedMasterFingerprint(
+  state: PowerPointMasterState,
+  operations: PowerPointMasterOperation[],
+): string {
+  return fingerprint(
+    JSON.stringify(
+      operations.map((operation) => [
+        masterOperationKey(operation),
+        masterOperationValue(state, operation),
+      ]),
+    ),
+  )
+}
+
+function sameMasterOperationValue(
+  actual: PowerPointMasterState,
+  expected: PowerPointMasterState,
+  operation: PowerPointMasterOperation,
+): boolean {
+  return (
+    JSON.stringify(masterOperationValue(actual, operation)) ===
+    JSON.stringify(masterOperationValue(expected, operation))
+  )
+}
+
+function inverseMasterOperation(
+  before: PowerPointMasterState,
+  operation: PowerPointMasterOperation,
+): PowerPointMasterOperation {
+  const master = before.masters.find((item) => item.id === operation.master_id)
+  if (!master) throw new Error('invalid_tool_input')
+  if (operation.op === 'set_master_background') {
+    const type = master.background.type.toLowerCase()
+    if (
+      type === 'solid' &&
+      typeof master.background.color === 'string' &&
+      typeof master.background.transparency === 'number'
+    )
+      return {
+        op: 'set_master_background',
+        master_id: operation.master_id,
+        fill: {
+          type: 'solid',
+          color: master.background.color,
+          transparency: master.background.transparency,
+        },
+      }
+    if (type === 'gradient' && typeof master.background.gradientType === 'string')
+      return {
+        op: 'set_master_background',
+        master_id: operation.master_id,
+        fill: { type: 'gradient', gradient_type: master.background.gradientType },
+      }
+    if (
+      type === 'pattern' &&
+      typeof master.background.pattern === 'string' &&
+      typeof master.background.foregroundColor === 'string' &&
+      typeof master.background.backgroundColor === 'string'
+    )
+      return {
+        op: 'set_master_background',
+        master_id: operation.master_id,
+        fill: {
+          type: 'pattern',
+          pattern: master.background.pattern,
+          foreground_color: master.background.foregroundColor,
+          background_color: master.background.backgroundColor,
+        },
+      }
+    throw new Error('office_api_unsupported')
+  }
+  if (operation.op === 'set_master_theme_color') {
+    const color = master.themeColors[operation.theme_color]
+    if (!color) throw new Error('office_api_unsupported')
+    return {
+      op: operation.op,
+      master_id: operation.master_id,
+      theme_color: operation.theme_color,
+      color,
+    }
+  }
+  const layout = master.layouts.find((item) => item.id === operation.layout_id)
+  if (!layout) throw new Error('invalid_tool_input')
+  return {
+    op: operation.op,
+    master_id: operation.master_id,
+    layout_id: operation.layout_id,
+    follow_master: layout.isMasterBackgroundFollowed,
+    show_master_graphics: !layout.areBackgroundGraphicsHidden,
+  }
 }
 
 function exactRecord(value: unknown, keys: string[]): Record<string, unknown> {
@@ -517,8 +1050,11 @@ export function createPowerPointSkill(options: {
   adapter: PowerPointAdapter
   proposals: StructuredProposalController
   platform?: string
+  vfs?: InMemoryVfs
+  nativeMasterEditingSupported?: boolean
 }): AgentSkill {
-  const masterEditingSupported = options.platform?.toLowerCase() !== 'mac'
+  const masterXmlEditingSupported = options.platform?.toLowerCase() !== 'mac'
+  const nativeMasterEditingSupported = options.nativeMasterEditingSupported !== false
   async function proposePackageEdit(
     toolName: string,
     kind: PackageEditKind,
@@ -594,10 +1130,13 @@ export function createPowerPointSkill(options: {
     id: 'office-powerpoint',
     systemPrompt:
       'PowerPoint reads are bounded. Every write creates an explicit proposal and is semantically verified after confirmation. execute_office_js accepts only a versioned declarative JSON program; JavaScript and ambient browser authority are rejected. XML tools accept only allowlisted bounded package parts.' +
-      (masterEditingSupported
-        ? ''
-        : ' PowerPoint for Mac does not reliably preserve imported master packages. Use edit_slide_xml separately for each affected slide instead of edit_slide_master.'),
-    tools: tools.filter((tool) => masterEditingSupported || tool.name !== 'edit_slide_master'),
+      ' Prefer inspect_slide_masters and native edit_slide_master for backgrounds, theme colors, and layout inheritance. PowerPoint for Mac must never use edit_slide_master_xml.',
+    tools: tools.filter(
+      (tool) =>
+        (masterXmlEditingSupported || tool.name !== 'edit_slide_master_xml') &&
+        (nativeMasterEditingSupported ||
+          !['inspect_slide_masters', 'edit_slide_master'].includes(tool.name)),
+    ),
     async executeTool(call, signal) {
       if (call.inputError || call.truncated)
         return failure(
@@ -607,7 +1146,12 @@ export function createPowerPointSkill(options: {
         )
       try {
         assertNotCancelled(signal)
-        if (call.name === 'edit_slide_master' && !masterEditingSupported)
+        if (call.name === 'edit_slide_master_xml' && !masterXmlEditingSupported)
+          return failure(call.name, 'office_api_unsupported')
+        if (
+          ['inspect_slide_masters', 'edit_slide_master'].includes(call.name) &&
+          !nativeMasterEditingSupported
+        )
           return failure(call.name, 'office_api_unsupported')
         if (call.name === 'screenshot_slide') {
           const input = slideInput(call.input)
@@ -655,6 +1199,14 @@ export function createPowerPointSkill(options: {
             output: boundedJson(await options.adapter.verifySlides(signal)),
             mutated: false,
             summary: 'Verified PowerPoint slides',
+          }
+        }
+        if (call.name === 'inspect_slide_masters') {
+          verifyInput(call.input)
+          return {
+            output: boundedJson(await options.adapter.inspectSlideMasters(signal)),
+            mutated: false,
+            summary: 'Inspected PowerPoint slide masters',
           }
         }
         if (call.name === 'edit_slide_text') {
@@ -942,6 +1494,121 @@ export function createPowerPointSkill(options: {
           }
         }
         if (call.name === 'edit_slide_master') {
+          const input = exactRecord(call.input, ['program', 'explanation'])
+          if (
+            input.explanation !== undefined &&
+            (typeof input.explanation !== 'string' || input.explanation.length > 100)
+          )
+            throw invalidToolInput('program')
+          const operations = parseMasterProgram(
+            await prepareMasterProgram(input.program, options.vfs),
+          )
+          const operationKeys = operations.map(masterOperationKey)
+          if (new Set(operationKeys).size !== operationKeys.length)
+            throw invalidToolInput('program.operations')
+          const before = await options.adapter.inspectSlideMasters(signal)
+          const after = projectedMasterState(before, operations)
+          for (const operation of operations) inverseMasterOperation(before, operation)
+          const targets = [
+            ...new Set(operations.map((operation) => `master:${operation.master_id}`)),
+          ]
+          const proposal = options.proposals.propose({
+            operation: call.name,
+            toolName: call.name,
+            title: (input.explanation as string | undefined) || 'Edit PowerPoint slide master',
+            preview: {
+              operations: operations.map((operation) => ({
+                ...operation,
+                ...(operation.op === 'set_master_background' &&
+                operation.fill.type === 'picture_or_texture'
+                  ? { fill: { ...operation.fill, image_base64: '[image]' } }
+                  : {}),
+              })),
+            },
+            impact: { host: 'powerpoint', targets, count: targets.length },
+            fingerprint: affectedMasterFingerprint(before, operations),
+            before,
+            after,
+            validate: async (s) =>
+              affectedMasterFingerprint(
+                await options.adapter.inspectSlideMasters(s),
+                operations,
+              ) === affectedMasterFingerprint(before, operations),
+            execute: async (s) => {
+              let currentExpected = before
+              const applied: Array<{
+                before: PowerPointMasterState
+                after: PowerPointMasterState
+                inverse: PowerPointMasterOperation
+                operation: PowerPointMasterOperation
+              }> = []
+              try {
+                for (const operation of operations) {
+                  const stepBefore = currentExpected
+                  const nextExpected = projectedMasterState(currentExpected, [operation])
+                  const inverse = inverseMasterOperation(stepBefore, operation)
+                  try {
+                    await options.adapter.executeMasterOperations([operation], s)
+                  } catch (error) {
+                    const actual = await options.adapter.inspectSlideMasters()
+                    if (sameMasterOperationValue(actual, nextExpected, operation)) {
+                      applied.push({ before: stepBefore, after: nextExpected, inverse, operation })
+                      currentExpected = nextExpected
+                    } else if (!sameMasterOperationValue(actual, currentExpected, operation)) {
+                      throw new Error('office_state_uncertain', { cause: error })
+                    }
+                    throw error
+                  }
+                  const actual = await options.adapter.inspectSlideMasters(s)
+                  if (!sameMasterOperationValue(actual, nextExpected, operation)) {
+                    if (!sameMasterOperationValue(actual, stepBefore, operation))
+                      applied.push({ before: stepBefore, after: nextExpected, inverse, operation })
+                    throw new Error('office_verify_failed')
+                  }
+                  applied.push({ before: stepBefore, after: nextExpected, inverse, operation })
+                  currentExpected = nextExpected
+                }
+              } catch (error) {
+                for (const step of [...applied].reverse()) {
+                  const actual = await options.adapter.inspectSlideMasters()
+                  if (sameMasterOperationValue(actual, step.before, step.operation)) continue
+                  if (!sameMasterOperationValue(actual, step.after, step.operation))
+                    throw new Error('office_concurrent_change', { cause: error })
+                  try {
+                    await options.adapter.executeMasterOperations([step.inverse])
+                  } catch (recoveryError) {
+                    throw new Error('office_recovery_failed', { cause: recoveryError })
+                  }
+                  const restoredStep = await options.adapter.inspectSlideMasters()
+                  if (!sameMasterOperationValue(restoredStep, step.before, step.operation))
+                    throw new Error('office_recovery_failed', { cause: error })
+                }
+                const restored = await options.adapter.inspectSlideMasters()
+                if (
+                  affectedMasterFingerprint(restored, operations) !==
+                  affectedMasterFingerprint(before, operations)
+                )
+                  throw new Error('office_recovery_failed', { cause: error })
+                throw error
+              }
+            },
+            verify: async (s) => {
+              if (
+                affectedMasterFingerprint(
+                  await options.adapter.inspectSlideMasters(s),
+                  operations,
+                ) !== affectedMasterFingerprint(after, operations)
+              )
+                throw new Error('office_verify_failed')
+            },
+          })
+          return {
+            output: boundedJson(proposal),
+            mutated: false,
+            summary: 'Proposed native PowerPoint master edit',
+          }
+        }
+        if (call.name === 'edit_slide_master_xml') {
           const input = declarativeInput(call.input, { slide: false, explanationMax: 50 })
           return await proposePackageEdit(
             call.name,
