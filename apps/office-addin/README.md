@@ -26,6 +26,10 @@ Excel, or PowerPoint skill. Unsupported hosts fail closed.
   `edit_slide_master`, `execute_office_js`; when PowerPointApi 1.8 is present, also
   `insert-image`.
 
+PowerPoint for Mac does not advertise `edit_slide_master` because the host can discard or merge
+imported master packages even when source formatting is requested. Agents must use confirmation-
+gated `edit_slide_xml` separately for each affected slide. Windows retains the bounded master tool.
+
 CSV import/export is capped at 500 rows, 100 columns, 10,000 cells, and 2 MiB. Export prefixes
 formula-like cells before quoting so opening the CSV cannot execute formula payloads. Image tools
 accept only magic-validated PNG/JPEG bytes from the session VFS, capped at 2 MiB, 8,192 pixels per
