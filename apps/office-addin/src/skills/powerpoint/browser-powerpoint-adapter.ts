@@ -15,6 +15,15 @@ export const MAX_POWERPOINT_VERIFY_SLIDES = 20
 export const MAX_POWERPOINT_VERIFY_SHAPES = 100
 export const MAX_POWERPOINT_VERIFY_OVERFLOWS = 2_000
 
+function uncertainPowerPointState(errorLocation: string, cause?: unknown): Error {
+  return Object.assign(
+    cause === undefined
+      ? new Error('office_state_uncertain')
+      : new Error('office_state_uncertain', { cause }),
+    { debugInfo: { errorLocation } },
+  )
+}
+
 export interface PowerPointShape {
   id: string
   name: string
@@ -587,12 +596,16 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         }
       }
       cancelled(signal)
+      const insertOptions = {
+        formatting: 'KeepSourceFormatting',
+        ...(previous ? { targetSlideId: string(previous.id) } : {}),
+      }
       ;(
         presentation.insertSlidesFromBase64 as (
           value: string,
-          options?: { targetSlideId: string },
+          options: { formatting: string; targetSlideId?: string },
         ) => void
-      )(base64, previous ? { targetSlideId: string(previous.id) } : undefined)
+      )(base64, insertOptions)
       ;(slide.delete as () => void)()
       try {
         await sync(context, signal)
@@ -642,9 +655,9 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           ;(
             presentation.insertSlidesFromBase64 as (
               value: string,
-              options?: { targetSlideId: string },
+              options: { formatting: string; targetSlideId?: string },
             ) => void
-          )(original.value, previous ? { targetSlideId: string(previous.id) } : undefined)
+          )(original.value, insertOptions)
           ;(current.delete as () => void)()
           await sync(context)
         } else {
@@ -666,7 +679,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       ) {
         // Verification failure is not proof that the current slide is still owned by this
         // transaction. Never overwrite a possible concurrent edit with the captured package.
-        throw new Error('office_state_uncertain')
+        throw uncertainPowerPointState('PowerPoint.replaceSlidePackage.packageImportVerify')
       }
       if (applyMaster) {
         try {
@@ -729,7 +742,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         } catch (error) {
           // Layout and package writes span multiple Office batches. Without an atomic compare-
           // and-set primitive, restoring here could overwrite a concurrent user edit.
-          throw new Error('office_state_uncertain', { cause: error })
+          throw uncertainPowerPointState('PowerPoint.replaceSlidePackage.layoutApplyVerify', error)
         }
       }
       return { slideId: string(inserted.id) }
