@@ -141,6 +141,7 @@ struct Store {
     global_claims: (Option<Instant>, u32),
     global_creates: (Option<Instant>, u32),
     connection_pairings: HashMap<u64, u8>,
+    connection_sessions: HashMap<u64, HashSet<String>>,
     preauth_attempts: HashMap<IpAddr, (Instant, u8)>,
     global_preauth: (Option<Instant>, u32),
 }
@@ -378,6 +379,15 @@ async fn connection(
         }
     });
     let mut heartbeat = tokio::time::interval(Duration::from_secs(20));
+    let renewal_interval = app
+        .inner
+        .config
+        .session_ttl
+        .checked_div(3)
+        .unwrap_or(Duration::from_millis(1))
+        .max(Duration::from_millis(1))
+        .min(Duration::from_secs(60));
+    let mut last_lease_renewal = Instant::now();
     heartbeat.tick().await;
     loop {
         let message = tokio::select! {
@@ -407,6 +417,16 @@ async fn connection(
                 tx.sender
                     .try_send(Message::Pong(data))
                     .unwrap_or_else(|_| tx.failed.notify_one());
+                if last_lease_renewal.elapsed() >= renewal_interval {
+                    renew_connection_sessions(&app, id).await;
+                    last_lease_renewal = Instant::now();
+                }
+            }
+            Message::Pong(_) => {
+                if last_lease_renewal.elapsed() >= renewal_interval {
+                    renew_connection_sessions(&app, id).await;
+                    last_lease_renewal = Instant::now();
+                }
             }
             Message::Close(_) => break,
             Message::Binary(_) => {
@@ -417,7 +437,6 @@ async fn connection(
                 error(&tx, "frame_too_large");
                 break;
             }
-            _ => {}
         }
     }
     cleanup(&app, id).await;
@@ -481,6 +500,23 @@ fn diagnostic_response(tx: &Tx, value: Value) {
 }
 fn renew_session(session: &mut Session, idle_ttl: Duration) {
     session.expires = (Instant::now() + idle_ttl).min(session.absolute_expires);
+}
+async fn renew_connection_sessions(app: &App, conn: u64) {
+    let mut store = app.inner.state.lock().await;
+    let idle_ttl = app.inner.config.session_ttl;
+    let now = Instant::now();
+    let session_ids = store
+        .connection_sessions
+        .get(&conn)
+        .cloned()
+        .unwrap_or_default();
+    for session_id in session_ids {
+        if let Some(session) = store.sessions.get_mut(&session_id)
+            && session.expires > now
+        {
+            renew_session(session, idle_ttl);
+        }
+    }
 }
 fn known_inactive_request(session: &Session, request_id: &str) -> bool {
     session.active.as_ref().map(|active| active.id.as_str()) != Some(request_id)
@@ -908,6 +944,14 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
         return Err("peer_unavailable");
     }
     s.codes.remove(&p.code);
+    s.connection_sessions
+        .entry(p.office)
+        .or_default()
+        .insert(sid.clone());
+    s.connection_sessions
+        .entry(conn)
+        .or_default()
+        .insert(sid.clone());
     s.sessions.insert(
         sid,
         Session {
@@ -1518,7 +1562,14 @@ fn expire(s: &mut Store, ttl: Duration) {
         .collect();
     for id in expired_sessions {
         if let Some(x) = s.sessions.remove(&id) {
+            if let Some(ids) = s.connection_sessions.get_mut(&x.office) {
+                ids.remove(&id);
+            }
+            if let Some(ids) = s.connection_sessions.get_mut(&x.pc) {
+                ids.remove(&id);
+            }
             versioned_error(&x.office_tx, x.version, "session_expired");
+            versioned_error(&x.pc_tx, x.version, "session_expired");
             if let Some(active) = x.active {
                 send(
                     &x.pc_tx,
@@ -1537,6 +1588,7 @@ fn expire(s: &mut Store, ttl: Duration) {
 async fn cleanup(app: &App, conn: u64) {
     let mut s = app.inner.state.lock().await;
     s.connection_pairings.remove(&conn);
+    s.connection_sessions.remove(&conn);
     let pids: Vec<_> = s
         .pairings
         .iter()
@@ -1565,6 +1617,10 @@ async fn cleanup(app: &App, conn: u64) {
         .collect();
     for id in ids {
         if let Some(x) = s.sessions.remove(&id) {
+            let peer = if x.office == conn { x.pc } else { x.office };
+            if let Some(session_ids) = s.connection_sessions.get_mut(&peer) {
+                session_ids.remove(&id);
+            }
             if x.office != conn {
                 versioned_error(&x.office_tx, x.version, "session_revoked")
             }

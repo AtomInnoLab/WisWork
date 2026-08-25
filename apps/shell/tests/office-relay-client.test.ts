@@ -363,6 +363,34 @@ describe('Office relay PC client', () => {
     })
   })
 
+  it('reports Relay session expiry explicitly', async () => {
+    const { client, socket } = setup()
+    const claiming = client.claim('123456')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await claiming
+    socket.message({
+      version: 1,
+      type: 'pc.claimed',
+      pairing_id: 'pairing_12345678',
+      host: 'PowerPoint',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      verification_code: '123456',
+      expires_in: 120,
+    })
+    await client.approve('pairing_12345678')
+    socket.message({
+      version: 1,
+      type: 'pc.approved',
+      session_id: 'session_12345678',
+      capability: 'secret-capability',
+      expires_in: 1800,
+    })
+    expect(client.status()).toBe('paired')
+    socket.message({ version: 1, type: 'relay.error', code: 'session_expired' })
+    expect(client.status()).toBe('disconnected:session_expired')
+  })
+
   it.each([100, 199, 204, 205, 304])(
     'returns request_failed without ending the session for non-streaming status %i',
     async (status) => {

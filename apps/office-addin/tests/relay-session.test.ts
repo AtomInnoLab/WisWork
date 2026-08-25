@@ -94,6 +94,8 @@ describe('Office cloud relay session', () => {
     )
     await connecting
     expect(session.snapshot()).toEqual({ status: 'connected' })
+    socket.receive(JSON.stringify({ version: 1, type: 'relay.error', code: 'session_expired' }))
+    expect(session.snapshot()).toEqual({ status: 'expired' })
   })
 
   it('advertises only Relay-v2 capabilities and blocks unnegotiated requests', async () => {

@@ -15,6 +15,7 @@ use wiswork_relay::{Config, app};
 #[test]
 fn default_request_budget_supports_complex_agent_turns() {
     assert_eq!(Config::default().request_ttl, Duration::from_secs(300));
+    assert_eq!(Config::default().session_ttl, Duration::from_secs(1800));
 }
 
 const ORIGIN: &str = "https://office.8-216-134-194.sslip.io";
@@ -673,6 +674,45 @@ async fn valid_activity_renews_idle_ttl_but_never_the_absolute_session_lifetime(
     send(&mut office, json!({"version":1,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"past_absolute","body":{}})).await;
     let expired = recv(&mut office).await;
     assert_eq!(expired["code"], "session_expired");
+    let pc_expired = recv(&mut pc).await;
+    assert_eq!(pc_expired["code"], "session_expired");
+    assert_eq!(pc_ready["session_id"], office_ready["session_id"]);
+}
+
+#[tokio::test]
+async fn websocket_liveness_renews_an_idle_cowork_session() {
+    let url = server_with_session_ttls(Some((
+        Duration::from_millis(120),
+        Duration::from_millis(500),
+    )))
+    .await;
+    let mut office = socket(&url, ORIGIN).await;
+    send(
+        &mut office,
+        json!({"version":1,"type":"office.create","host":"PowerPoint"}),
+    )
+    .await;
+    let created = recv(&mut office).await;
+    let mut pc = pc_socket(&url).await;
+    send(
+        &mut pc,
+        json!({"version":1,"type":"pc.claim","verification_code":created["verification_code"]}),
+    )
+    .await;
+    let claimed = recv(&mut pc).await;
+    send(
+        &mut pc,
+        json!({"version":1,"type":"pc.approve","pairing_id":claimed["pairing_id"]}),
+    )
+    .await;
+    let pc_ready = recv(&mut pc).await;
+    let office_ready = recv(&mut office).await;
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    pc.send(Message::Pong(Vec::new().into())).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    send(&mut office, json!({"version":1,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"after_idle_heartbeat","body":{}})).await;
+    assert_eq!(recv(&mut pc).await["request_id"], "after_idle_heartbeat");
     assert_eq!(pc_ready["session_id"], office_ready["session_id"]);
 }
 
