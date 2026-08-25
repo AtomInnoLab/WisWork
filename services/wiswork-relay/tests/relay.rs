@@ -16,6 +16,10 @@ use wiswork_relay::{Config, app};
 fn default_request_budget_supports_complex_agent_turns() {
     assert_eq!(Config::default().request_ttl, Duration::from_secs(300));
     assert_eq!(Config::default().session_ttl, Duration::from_secs(1800));
+    assert_eq!(Config::default().auth_url, "https://auth.wispaper.ai/oidc/me");
+    assert_eq!(Config::default().jwks_url, "https://auth.wispaper.ai/oidc/jwks");
+    assert_eq!(Config::default().issuer, "https://auth.wispaper.ai/oidc");
+    assert_eq!(Config::default().audience, "i9au2rbqzktme4runr9gy");
 }
 
 const ORIGIN: &str = "https://office.8-216-134-194.sslip.io";

@@ -97,8 +97,8 @@ describe('OAuth authorization and callback', () => {
     const { client } = fixture()
     const request = client.createAuthorizationRequest()
     const url = new URL(request.url)
-    expect(url.origin + url.pathname).toBe('https://auth.dev.wispaper.ai/oidc/auth')
-    expect(url.searchParams.get('client_id')).toBe('y3xpwx3ytskxf66p0wztm')
+    expect(url.origin + url.pathname).toBe('https://auth.wispaper.ai/oidc/auth')
+    expect(url.searchParams.get('client_id')).toBe('i9au2rbqzktme4runr9gy')
     expect(url.searchParams.get('redirect_uri')).toBe('wiswork://oauth/callback')
     expect(url.searchParams.get('scope')).toBe('openid profile email offline_access')
     expect(url.searchParams.has('code_challenge_method')).toBe(false)
@@ -131,7 +131,7 @@ describe('OAuth authorization and callback', () => {
 
     await expect(
       client.consumeCallback(
-        `wiswork://oauth/callback?code=ok&state=${state}&iss=${encodeURIComponent('https://auth.dev.wispaper.ai/oidc')}`,
+        `wiswork://oauth/callback?code=ok&state=${state}&iss=${encodeURIComponent('https://auth.wispaper.ai/oidc')}`,
       ),
     ).resolves.toMatchObject({ userId: 'user-1' })
     expect(fetch).toHaveBeenCalledOnce()
@@ -180,7 +180,7 @@ describe('OAuth authorization and callback', () => {
     const [input, init] = fetch.mock.calls[0]!
     const requestUrl = new URL(String(input))
     expect(requestUrl.origin + requestUrl.pathname).toBe(
-      'https://gateway.dev.wispaper.ai/api/v1/auth/user/callback',
+      'https://gateway.wispaper.ai/api/v1/auth/user/callback',
     )
     expect(requestUrl.searchParams.get('code')).toBe('one-time-code')
     expect(requestUrl.searchParams.get('redirect_uri')).toBe('wiswork://oauth/callback')

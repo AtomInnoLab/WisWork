@@ -68,10 +68,10 @@ impl Default for Config {
             max_global_claims: 1_000,
             diagnostic_window: Duration::from_secs(1),
             max_diagnostics_per_window: 10,
-            auth_url: "https://auth.dev.wispaper.ai/oidc/me".into(),
-            jwks_url: "https://auth.dev.wispaper.ai/oidc/jwks".into(),
-            issuer: "https://auth.dev.wispaper.ai/oidc".into(),
-            audience: "y3xpwx3ytskxf66p0wztm".into(),
+            auth_url: "https://auth.wispaper.ai/oidc/me".into(),
+            jwks_url: "https://auth.wispaper.ai/oidc/jwks".into(),
+            issuer: "https://auth.wispaper.ai/oidc".into(),
+            audience: "i9au2rbqzktme4runr9gy".into(),
         }
     }
 }
@@ -262,7 +262,7 @@ async fn authenticate_pc(app: &App, token: &str) -> Option<[u8; 32]> {
     let Ok(url) = reqwest::Url::parse(&app.inner.config.auth_url) else {
         return None;
     };
-    let allowed = url.as_str() == "https://auth.dev.wispaper.ai/oidc/me"
+    let allowed = url.as_str() == "https://auth.wispaper.ai/oidc/me"
         || (url.scheme() == "http"
             && url.host_str().is_some_and(|h| h == "127.0.0.1")
             && url.path() == "/oidc/me");
@@ -312,7 +312,7 @@ async fn authenticate_id_token(app: &App, token: &str) -> Option<[u8; 32]> {
         .as_deref()
         .filter(|value| !value.is_empty() && value.len() <= 128)?;
     let url = reqwest::Url::parse(&app.inner.config.jwks_url).ok()?;
-    let allowed = url.as_str() == "https://auth.dev.wispaper.ai/oidc/jwks"
+    let allowed = url.as_str() == "https://auth.wispaper.ai/oidc/jwks"
         || (url.scheme() == "http"
             && url.host_str().is_some_and(|host| host == "127.0.0.1")
             && url.path() == "/oidc/jwks");

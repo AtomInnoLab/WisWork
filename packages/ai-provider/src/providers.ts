@@ -1,6 +1,6 @@
 import type { AiProviderId, AiProviderMeta, AiSettings, LegacyAiSettings } from './types'
 
-export const WISWORK_MESSAGES_URL = 'https://wisusage.dev.atominnolab.com/v1/messages'
+export const WISWORK_MESSAGES_URL = 'https://wisusage.atominnolab.com/v1/messages'
 
 export const WISWORK_DEFAULT_MODEL = 'openai/gpt-5.6-sol'
 
