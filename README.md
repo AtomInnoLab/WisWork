@@ -160,8 +160,8 @@ validates and consumes the PKCE verifier for this client. A fixed refresh code, 
 other service-side credentials must never be configured in the desktop app.
 
 Managed model requests require a valid WisWork login. The main process sends the current OAuth
-access token to the fixed WisUsage endpoint `https://wisusage.dev.atominnolab.com/v1/messages`
-using the Anthropic Messages protocol and model `qwen/qwen3.8-max`. A 401 refreshes the session
+access token to the fixed WisUsage endpoint `https://wisusage.atominnolab.com/v1/messages`
+using the Anthropic Messages protocol and model `openai/gpt-5.6-sol`. A 401 refreshes the session
 once and retries. Tokens never enter renderer settings or IPC responses, and renderers cannot
 override the endpoint, model, authorization header, or required `sg` serving region. Safe failures
 expose only the request stage and HTTP status for support diagnostics—never the token or upstream

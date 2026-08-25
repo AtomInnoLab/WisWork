@@ -328,7 +328,7 @@ describe('registerWisworkModelIpc', () => {
     await invoke('stream', 1, validRequest())
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(fetchMock.mock.calls[0]![0]).toBe('https://wisusage.dev.atominnolab.com/v1/messages')
+    expect(fetchMock.mock.calls[0]![0]).toBe('https://wisusage.atominnolab.com/v1/messages')
     expect(fetchMock.mock.calls[0]![1].headers).toMatchObject({
       Authorization: 'Bearer expired-login-token',
     })

@@ -35,7 +35,7 @@ describe('Office Add-in manifest and routes', () => {
     expect(manifest).toContain('<IconUrl DefaultValue="https://office.example/assets/icon.png" />')
     expect(manifest).toContain('<AppDomain>https://office.example</AppDomain>')
     expect(manifest).not.toContain('auth.example')
-    expect(manifest).not.toContain('wisusage.dev.atominnolab.com')
+    expect(manifest).not.toContain('wisusage.atominnolab.com')
     expect(manifest).not.toContain('localhost')
     expect(manifest).not.toContain('*')
   })

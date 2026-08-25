@@ -236,7 +236,7 @@ describe('session lifecycle', () => {
     })
     const [input, init] = fetch.mock.calls[0]!
     const requestUrl = new URL(String(input))
-    expect(requestUrl.searchParams.get('code')).toBe('1234567890')
+    expect(requestUrl.searchParams.has('code')).toBe(false)
     expect(requestUrl.searchParams.get('redirect_uri')).toBe('wiswork://oauth/callback')
     expect(init).toMatchObject({
       method: 'POST',
