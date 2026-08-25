@@ -1370,6 +1370,9 @@ async fn cancel(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'sta
         return Err("invalid_capability");
     }
     if session.active.as_ref().map(|a| a.id.as_str()) != Some(rid) {
+        if known_inactive_request(session, rid) {
+            return Ok(());
+        }
         return Err("invalid_request");
     }
     renew_session(session, app.inner.config.session_ttl);
