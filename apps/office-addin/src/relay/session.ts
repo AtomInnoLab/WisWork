@@ -224,6 +224,14 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       }
       return
     }
+    if (
+      frame.type === 'relay.error' &&
+      exactKeys(frame, ['version', 'type', 'code']) &&
+      frame.code === 'session_expired'
+    ) {
+      revoke('expired')
+      return
+    }
 
     if (frame.type === 'office.created') {
       if (

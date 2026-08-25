@@ -486,7 +486,7 @@ export function createOfficeRelayClient(options: {
       typeof typed.code === 'string' &&
       RELAY_ERROR_CODES.has(typed.code)
     )
-      return clear('relay_error', true)
+      return clear(typed.code === 'session_expired' ? 'session_expired' : 'relay_error', true)
     clear('protocol_violation', true)
   }
 
