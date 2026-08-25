@@ -409,6 +409,10 @@ async fn connection(
                 )
                 .await
                 {
+                    eprintln!(
+                        "{}",
+                        protocol_error_log(id, origin.is_some(), text.as_str(), code)
+                    );
                     error_for_text(&tx, text.as_str(), code);
                     break;
                 }
@@ -486,6 +490,28 @@ fn error_for_text(tx: &Tx, text: &str, code: &str) {
         .filter(|value| *value == PROTOCOL_V2)
         .unwrap_or(1);
     versioned_error(tx, frame_version, code);
+}
+fn protocol_error_log(conn: u64, office: bool, text: &str, code: &str) -> Value {
+    let frame_type = serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|value| value.get("type").and_then(Value::as_str).map(str::to_owned))
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 64
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || matches!(byte, b'.' | b'-' | b'_')
+                })
+        })
+        .unwrap_or_else(|| "unknown".to_owned());
+    json!({
+        "event": "relay_protocol_error",
+        "connection_id": conn,
+        "role": if office { "office" } else { "pc" },
+        "frame_type": frame_type,
+        "error_code": code,
+    })
 }
 fn versioned_error(tx: &Tx, version: u64, code: &str) {
     send(
@@ -1668,5 +1694,29 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn protocol_error_audit_excludes_payloads_and_identifiers() {
+        let audit = protocol_error_log(
+            42,
+            false,
+            r#"{"version":2,"type":"pc.chunk","session_id":"secret-session","request_id":"secret-request","data":"secret-document-data"}"#,
+            "invalid_sequence",
+        );
+        assert_eq!(
+            audit,
+            json!({
+                "event": "relay_protocol_error",
+                "connection_id": 42,
+                "role": "pc",
+                "frame_type": "pc.chunk",
+                "error_code": "invalid_sequence",
+            })
+        );
+        let serialized = audit.to_string();
+        assert!(!serialized.contains("secret-session"));
+        assert!(!serialized.contains("secret-request"));
+        assert!(!serialized.contains("secret-document-data"));
     }
 }
