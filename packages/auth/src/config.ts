@@ -22,6 +22,7 @@ export const DEFAULT_AUTH_CONFIG: AuthConfig = {
 }
 
 export function authConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AuthConfig {
+  const refreshFixedCode = env.WISWORK_OAUTH_REFRESH_FIXED_CODE
   return {
     ...DEFAULT_AUTH_CONFIG,
     authorizationEndpoint:
@@ -29,6 +30,6 @@ export function authConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AuthCon
     callbackEndpoint: env.WISWORK_OAUTH_CALLBACK_URL ?? DEFAULT_AUTH_CONFIG.callbackEndpoint,
     refreshEndpoint: env.WISWORK_OAUTH_REFRESH_URL ?? DEFAULT_AUTH_CONFIG.refreshEndpoint,
     clientId: env.WISWORK_OAUTH_CLIENT_ID ?? DEFAULT_AUTH_CONFIG.clientId,
-    refreshFixedCode: env.WISWORK_OAUTH_REFRESH_FIXED_CODE || undefined,
+    ...(refreshFixedCode ? { refreshFixedCode } : {}),
   }
 }
