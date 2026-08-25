@@ -437,7 +437,6 @@ async fn connection(
                 error(&tx, "frame_too_large");
                 break;
             }
-            _ => {}
         }
     }
     cleanup(&app, id).await;
