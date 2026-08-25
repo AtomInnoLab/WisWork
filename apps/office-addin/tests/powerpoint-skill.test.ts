@@ -1780,97 +1780,117 @@ describe('browser PowerPoint adapter', () => {
     expect(insertSlidesFromBase64).toHaveBeenCalledOnce()
   })
 
-  it.each(['sync-failure', 'ignored-layout-recovery', 'wrong-restored-slide'])(
-    'never performs an unowned package or layout restore after %s',
-    async (mode) => {
-      const packageZip = new JSZip()
-      packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
-      const originalPackage = await packageZip.generateAsync({ type: 'base64' })
-      const expected = await editPowerPointPackage(originalPackage, 'slide', [
-        { path: 'ppt/slides/slide1.xml', xml: '<p:sld xmlns:p="urn:p"><p:cSld/></p:sld>' },
-      ])
-      const oldLayout = { id: 'old-layout', name: '', load: vi.fn() }
-      const newLayout = { id: 'new-layout', name: '', load: vi.fn() }
-      const wrongLayout = { id: 'wrong-layout', name: '', load: vi.fn() }
-      const slides: {
-        items: any[]
-        getCount: ReturnType<typeof vi.fn>
-        getItemAt: ReturnType<typeof vi.fn>
-        load: ReturnType<typeof vi.fn>
-      } = {
-        items: [],
-        getCount: vi.fn(() => ({ value: slides.items.length })),
-        getItemAt: vi.fn((index: number) => slides.items[index]),
+  it.each([
+    'sync-failure',
+    'ignored-package-import',
+    'ignored-layout-recovery',
+    'wrong-restored-slide',
+  ])('never performs an unowned package or layout restore after %s', async (mode) => {
+    const packageZip = new JSZip()
+    packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
+    const originalPackage = await packageZip.generateAsync({ type: 'base64' })
+    const expected = await editPowerPointPackage(originalPackage, 'slide', [
+      { path: 'ppt/slides/slide1.xml', xml: '<p:sld xmlns:p="urn:p"><p:cSld/></p:sld>' },
+    ])
+    const oldLayout = { id: 'old-layout', name: '', load: vi.fn() }
+    const newLayout = { id: 'new-layout', name: '', load: vi.fn() }
+    const wrongLayout = { id: 'wrong-layout', name: '', load: vi.fn() }
+    const slides: {
+      items: any[]
+      getCount: ReturnType<typeof vi.fn>
+      getItemAt: ReturnType<typeof vi.fn>
+      load: ReturnType<typeof vi.fn>
+    } = {
+      items: [],
+      getCount: vi.fn(() => ({ value: slides.items.length })),
+      getItemAt: vi.fn((index: number) => slides.items[index]),
+      load: vi.fn(),
+    }
+    const makeSlide = (id: string, layout: any, exported = 'original') => {
+      const item: any = {
+        id,
+        layout,
         load: vi.fn(),
+        exportAsBase64: vi.fn(() => ({ value: exported })),
+        applyLayout: vi.fn((next) => {
+          item.layout = next
+        }),
       }
-      const makeSlide = (id: string, layout: any, exported = 'original') => {
-        const item: any = {
-          id,
-          layout,
-          load: vi.fn(),
-          exportAsBase64: vi.fn(() => ({ value: exported })),
-          applyLayout: vi.fn((next) => {
-            item.layout = next
-          }),
-        }
-        item.delete = vi.fn(() => {
-          slides.items = slides.items.filter((slide) => slide !== item)
-        })
-        return item
+      item.delete = vi.fn(() => {
+        slides.items = slides.items.filter((slide) => slide !== item)
+      })
+      return item
+    }
+    const original = makeSlide('s1', oldLayout, originalPackage)
+    const sibling = makeSlide('s-other', oldLayout)
+    slides.items = [original, sibling]
+    const oldMaster = { layouts: { items: [oldLayout], load: vi.fn() } }
+    const newMaster = { layouts: { items: [newLayout], load: vi.fn() } }
+    const masters = { items: [oldMaster, newMaster], load: vi.fn() }
+    let propagationStarted = false
+    sibling.applyLayout.mockImplementation((next: unknown) => {
+      if (mode === 'ignored-layout-recovery') {
+        if (next === newLayout) sibling.layout = wrongLayout
+      } else {
+        sibling.layout = next
       }
-      const original = makeSlide('s1', oldLayout, originalPackage)
-      const sibling = makeSlide('s-other', oldLayout)
-      slides.items = [original, sibling]
-      const oldMaster = { layouts: { items: [oldLayout], load: vi.fn() } }
-      const newMaster = { layouts: { items: [newLayout], load: vi.fn() } }
-      const masters = { items: [oldMaster, newMaster], load: vi.fn() }
-      let propagationStarted = false
-      sibling.applyLayout.mockImplementation((next: unknown) => {
-        if (mode === 'ignored-layout-recovery') {
-          if (next === newLayout) sibling.layout = wrongLayout
-        } else {
-          sibling.layout = next
-        }
-        propagationStarted = true
-      })
-      let failed = false
-      const sync = vi.fn().mockImplementation(async () => {
-        if (mode !== 'ignored-layout-recovery' && propagationStarted && !failed) {
-          failed = true
-          throw new Error('host failure')
-        }
-      })
-      const insertSlidesFromBase64 = vi.fn((base64: string) => {
+      propagationStarted = true
+    })
+    let failed = false
+    const sync = vi.fn().mockImplementation(async () => {
+      if (mode !== 'ignored-layout-recovery' && propagationStarted && !failed) {
+        failed = true
+        throw new Error('host failure')
+      }
+    })
+    const insertSlidesFromBase64 = vi.fn(
+      (base64: string, _options: { formatting: string; targetSlideId?: string }) => {
         const inserted = makeSlide(
           base64 === expected.base64 ? 's2' : 's1-restored',
           base64 === expected.base64 ? newLayout : oldLayout,
-          mode === 'wrong-restored-slide' && base64 === originalPackage ? expected.base64 : base64,
+          mode === 'ignored-package-import' && base64 === expected.base64
+            ? originalPackage
+            : mode === 'wrong-restored-slide' && base64 === originalPackage
+              ? expected.base64
+              : base64,
         )
         slides.items.splice(0, 0, inserted)
-      })
-      Object.assign(globalThis, {
-        Office: {
-          context: {
-            host: 'PowerPoint',
-            requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
-          },
+      },
+    )
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
         },
-        PowerPoint: {
-          run: (callback: (context: unknown) => unknown) =>
-            callback({
-              presentation: { slides, slideMasters: masters, insertSlidesFromBase64 },
-              sync,
-            }),
-        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({
+            presentation: { slides, slideMasters: masters, insertSlidesFromBase64 },
+            sync,
+          }),
+      },
+    })
+    const failure = await new BrowserPowerPointAdapter()
+      .replaceSlidePackage(0, expected.base64, true, expected)
+      .catch((error: unknown) => error)
+    expect(failure).toMatchObject({ message: 'office_state_uncertain' })
+    if (mode === 'ignored-package-import')
+      expect(failure).toMatchObject({
+        debugInfo: { errorLocation: 'PowerPoint.replaceSlidePackage.packageImportVerify' },
       })
-      await expect(
-        new BrowserPowerPointAdapter().replaceSlidePackage(0, expected.base64, true, expected),
-      ).rejects.toThrow('office_state_uncertain')
-      expect(insertSlidesFromBase64).toHaveBeenCalledOnce()
-      expect(slides.items).toHaveLength(2)
-      expect(slides.items[0].id).toBe('s2')
-    },
-  )
+    if (mode === 'ignored-layout-recovery')
+      expect(failure).toMatchObject({
+        debugInfo: { errorLocation: 'PowerPoint.replaceSlidePackage.layoutApplyVerify' },
+      })
+    expect(insertSlidesFromBase64).toHaveBeenCalledOnce()
+    expect(insertSlidesFromBase64.mock.calls[0]?.[1]).toMatchObject({
+      formatting: 'KeepSourceFormatting',
+    })
+    expect(slides.items).toHaveLength(2)
+    expect(slides.items[0].id).toBe('s2')
+  })
 
   it('treats a text-only change as stale even when slide geometry is unchanged', async () => {
     const fake = adapter()
