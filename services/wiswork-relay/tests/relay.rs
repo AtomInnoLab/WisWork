@@ -423,6 +423,8 @@ async fn pairs_only_after_claim_and_approval_then_forwards_and_cancels() {
     assert_eq!(recv(&mut pc).await["type"], "relay.cancel");
 
     let pc_cap = pc_ready["capability"].clone();
+    send(&mut pc, json!({"version":1,"type":"pc.start","session_id":sid,"capability":pc_cap,"request_id":"r1","status":200,"content_type":"text/event-stream"})).await;
+    send(&mut pc, json!({"version":1,"type":"pc.chunk","session_id":sid,"capability":pc_cap,"request_id":"r1","sequence":0,"data":"bGF0ZQ=="})).await;
     send(&mut pc, json!({"version":1,"type":"pc.done","session_id":sid,"capability":pc_cap,"request_id":"r1"})).await;
     send(&mut pc, json!({"version":1,"type":"pc.error","session_id":sid,"capability":pc_cap,"request_id":"r1","code":"cancelled"})).await;
 

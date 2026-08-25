@@ -482,6 +482,10 @@ fn diagnostic_response(tx: &Tx, value: Value) {
 fn renew_session(session: &mut Session, idle_ttl: Duration) {
     session.expires = (Instant::now() + idle_ttl).min(session.absolute_expires);
 }
+fn known_inactive_request(session: &Session, request_id: &str) -> bool {
+    session.active.as_ref().map(|active| active.id.as_str()) != Some(request_id)
+        && session.used_requests.iter().any(|used| used == request_id)
+}
 fn valid_base(m: &Map<String, Value>) -> bool {
     matches!(
         m.get("version").and_then(Value::as_u64),
@@ -1336,6 +1340,9 @@ async fn chunk(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
+    if known_inactive_request(session, rid) {
+        return Ok(());
+    }
     let active = session.active.as_ref().ok_or("invalid_request")?;
     if active.id != rid || !active.started || active.sequence != seq {
         return Err("invalid_sequence");
@@ -1394,6 +1401,9 @@ async fn start(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
     }
+    if known_inactive_request(session, rid) {
+        return Ok(());
+    }
     let active = session.active.as_ref().ok_or("invalid_request")?;
     if active.id != rid || active.started {
         return Err("invalid_request");
@@ -1423,7 +1433,7 @@ async fn done(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stati
         return Err("invalid_capability");
     }
     if session.active.as_ref().map(|active| active.id.as_str()) != Some(rid) {
-        if session.used_requests.iter().any(|used| used == rid) {
+        if known_inactive_request(session, rid) {
             return Ok(());
         }
         return Err("invalid_request");
@@ -1469,7 +1479,7 @@ async fn pc_error(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'s
         return Err("invalid_capability");
     }
     if session.active.as_ref().map(|active| active.id.as_str()) != Some(rid) {
-        if session.used_requests.iter().any(|used| used == rid) {
+        if known_inactive_request(session, rid) {
             return Ok(());
         }
         return Err("invalid_request");
