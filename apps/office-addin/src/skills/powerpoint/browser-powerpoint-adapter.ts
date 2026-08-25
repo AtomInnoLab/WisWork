@@ -24,6 +24,14 @@ function uncertainPowerPointState(errorLocation: string, cause?: unknown): Error
   )
 }
 
+function isPowerPointMac(): boolean {
+  try {
+    return String(Office.context.platform).toLowerCase() === 'mac'
+  } catch {
+    return false
+  }
+}
+
 export interface PowerPointShape {
   id: string
   name: string
@@ -472,6 +480,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     signal?: AbortSignal,
   ): Promise<{ slideId: string }> {
     cancelled(signal)
+    if (applyMaster && isPowerPointMac()) throw new Error('office_api_unsupported')
     if (!base64 || base64.length > MAX_POWERPOINT_SNAPSHOT_BASE64)
       throw new Error('office_write_failed')
     return this.run('1.8', async (context) => {

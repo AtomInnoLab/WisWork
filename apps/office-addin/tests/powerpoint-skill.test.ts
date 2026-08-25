@@ -89,6 +89,36 @@ describe('PowerPoint compatibility skill', () => {
     expect(programSchema.properties.operations.items).toHaveProperty('anyOf')
   })
 
+  it('does not advertise or execute master package edits on PowerPoint for Mac', async () => {
+    const fake = adapter()
+    const skill = createPowerPointSkill({
+      adapter: fake,
+      proposals: createStructuredProposalController(),
+      platform: 'Mac',
+    })
+
+    expect(skill.tools.map((tool) => tool.name)).not.toContain('edit_slide_master')
+    expect(skill.systemPrompt).toContain('edit_slide_xml')
+    await expect(
+      skill.executeTool(
+        call('edit_slide_master', {
+          program: {
+            version: 1,
+            operations: [
+              {
+                op: 'replace_xml',
+                path: 'ppt/slideMasters/slideMaster1.xml',
+                xml: '<p:sldMaster xmlns:p="urn:p"/>',
+              },
+            ],
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({ isError: true, output: 'office_api_unsupported' })
+    expect(fake.exportSlidePackage).not.toHaveBeenCalled()
+    expect(fake.replaceSlidePackage).not.toHaveBeenCalled()
+  })
+
   it('normalizes reads, image display, and rejects unknown fields', async () => {
     const fake = adapter()
     const skill = createPowerPointSkill({
@@ -816,6 +846,25 @@ describe('PowerPoint compatibility skill', () => {
 })
 
 describe('browser PowerPoint adapter', () => {
+  it('rejects master package replacement on Mac before entering PowerPoint.run', async () => {
+    const run = vi.fn()
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          platform: 'Mac',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: { run },
+    })
+
+    await expect(
+      new BrowserPowerPointAdapter().replaceSlidePackage(0, 'ppt', true),
+    ).rejects.toThrow('office_api_unsupported')
+    expect(run).not.toHaveBeenCalled()
+  })
+
   const originals = { Office: globalThis.Office, PowerPoint: globalThis.PowerPoint }
   afterEach(() => Object.assign(globalThis, originals))
 

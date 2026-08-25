@@ -516,7 +516,9 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
 export function createPowerPointSkill(options: {
   adapter: PowerPointAdapter
   proposals: StructuredProposalController
+  platform?: string
 }): AgentSkill {
+  const masterEditingSupported = options.platform?.toLowerCase() !== 'mac'
   async function proposePackageEdit(
     toolName: string,
     kind: PackageEditKind,
@@ -591,8 +593,11 @@ export function createPowerPointSkill(options: {
   return {
     id: 'office-powerpoint',
     systemPrompt:
-      'PowerPoint reads are bounded. Every write creates an explicit proposal and is semantically verified after confirmation. execute_office_js accepts only a versioned declarative JSON program; JavaScript and ambient browser authority are rejected. XML tools accept only allowlisted bounded package parts.',
-    tools: [...tools],
+      'PowerPoint reads are bounded. Every write creates an explicit proposal and is semantically verified after confirmation. execute_office_js accepts only a versioned declarative JSON program; JavaScript and ambient browser authority are rejected. XML tools accept only allowlisted bounded package parts.' +
+      (masterEditingSupported
+        ? ''
+        : ' PowerPoint for Mac does not reliably preserve imported master packages. Use edit_slide_xml separately for each affected slide instead of edit_slide_master.'),
+    tools: tools.filter((tool) => masterEditingSupported || tool.name !== 'edit_slide_master'),
     async executeTool(call, signal) {
       if (call.inputError || call.truncated)
         return failure(
@@ -602,6 +607,8 @@ export function createPowerPointSkill(options: {
         )
       try {
         assertNotCancelled(signal)
+        if (call.name === 'edit_slide_master' && !masterEditingSupported)
+          return failure(call.name, 'office_api_unsupported')
         if (call.name === 'screenshot_slide') {
           const input = slideInput(call.input)
           const result = await options.adapter.screenshotSlide(input.slide_index, signal)

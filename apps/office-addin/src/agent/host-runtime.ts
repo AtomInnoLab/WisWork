@@ -50,6 +50,14 @@ export interface OfficeHostRuntime {
   dispose(): void
 }
 
+function currentOfficePlatform(): string | undefined {
+  try {
+    return typeof Office.context.platform === 'string' ? Office.context.platform : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export function createOfficeHostRuntime(
   host: OfficeHost,
   options: {
@@ -59,6 +67,7 @@ export function createOfficeHostRuntime(
     enableConversions?: boolean
     enableSkillPackages?: boolean
     enableImportMedia?: boolean
+    platform?: string
     diagnostics?: Pick<OfficeDiagnostics, 'setTool' | 'record'>
   } = {},
 ): OfficeHostRuntime {
@@ -86,7 +95,12 @@ export function createOfficeHostRuntime(
   const hostSkill = {
     word: () => createWordSkill({ adapter: new BrowserWordAdapter(), vfs, proposals }),
     excel: () => createExcelSkill({ adapter: new BrowserExcelAdapter(), proposals }),
-    powerpoint: () => createPowerPointSkill({ adapter: powerPointAdapter!, proposals }),
+    powerpoint: () =>
+      createPowerPointSkill({
+        adapter: powerPointAdapter!,
+        proposals,
+        platform: options.platform ?? currentOfficePlatform(),
+      }),
   }[host]()
   const extensions =
     options.enableImportMedia === false

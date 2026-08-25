@@ -60,6 +60,12 @@ describe('host runtime composition', () => {
     expect(() => createOfficeHostRuntime('unknown')).toThrow('office_host_unsupported')
   })
 
+  it('omits unsupported master package editing from the PowerPoint Mac inventory', () => {
+    const runtime = createOfficeHostRuntime('powerpoint', { platform: 'Mac' })
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain('edit_slide_master')
+    expect(runtime.skill.tools.map((tool) => tool.name)).toContain('edit_slide_xml')
+  })
+
   it('clears disposable VFS, installed skills, and proposals on dispose', () => {
     const runtime = createOfficeHostRuntime('word')
     runtime.vfs.writeFile('/home/user/private.txt', 'secret')
