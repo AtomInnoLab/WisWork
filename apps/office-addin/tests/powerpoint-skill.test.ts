@@ -1843,18 +1843,20 @@ describe('browser PowerPoint adapter', () => {
         throw new Error('host failure')
       }
     })
-    const insertSlidesFromBase64 = vi.fn((base64: string) => {
-      const inserted = makeSlide(
-        base64 === expected.base64 ? 's2' : 's1-restored',
-        base64 === expected.base64 ? newLayout : oldLayout,
-        mode === 'ignored-package-import' && base64 === expected.base64
-          ? originalPackage
-          : mode === 'wrong-restored-slide' && base64 === originalPackage
-            ? expected.base64
-            : base64,
-      )
-      slides.items.splice(0, 0, inserted)
-    })
+    const insertSlidesFromBase64 = vi.fn(
+      (base64: string, _options: { formatting: string; targetSlideId?: string }) => {
+        const inserted = makeSlide(
+          base64 === expected.base64 ? 's2' : 's1-restored',
+          base64 === expected.base64 ? newLayout : oldLayout,
+          mode === 'ignored-package-import' && base64 === expected.base64
+            ? originalPackage
+            : mode === 'wrong-restored-slide' && base64 === originalPackage
+              ? expected.base64
+              : base64,
+        )
+        slides.items.splice(0, 0, inserted)
+      },
+    )
     Object.assign(globalThis, {
       Office: {
         context: {
