@@ -12,6 +12,26 @@ const png = 'iVBORw0KGgoAAAA='
 
 function adapter(overrides: Partial<PowerPointAdapter> = {}): PowerPointAdapter {
   return {
+    inspectSlideMasters: vi.fn().mockResolvedValue({
+      masters: [
+        {
+          id: 'master-1',
+          name: 'Main',
+          background: { type: 'Solid', color: '#FFFFFF', transparency: 0 },
+          themeColors: { Light1: '#FFFFFF', Dark1: '#000000' },
+          layouts: [
+            {
+              id: 'layout-1',
+              name: 'Title',
+              isMasterBackgroundFollowed: true,
+              areBackgroundGraphicsHidden: false,
+              background: { type: 'Solid' },
+            },
+          ],
+        },
+      ],
+    }),
+    executeMasterOperations: vi.fn().mockResolvedValue(undefined),
     screenshotSlide: vi.fn().mockResolvedValue({ mime: 'image/png', base64: png }),
     listSlideShapes: vi.fn().mockResolvedValue({
       slideId: 'slide-1',
@@ -44,12 +64,13 @@ function adapter(overrides: Partial<PowerPointAdapter> = {}): PowerPointAdapter 
 const call = (name: string, input: Record<string, unknown> = {}) => ({ id: 'call-1', name, input })
 
 describe('PowerPoint compatibility skill', () => {
-  it('exposes exactly the ten documented host tools with exact schemas', () => {
+  it('exposes native master inspection and editing with exact schemas', () => {
     const skill = createPowerPointSkill({
       adapter: adapter(),
       proposals: createStructuredProposalController(),
     })
     expect(skill.tools.map((tool) => tool.name)).toEqual([
+      'inspect_slide_masters',
       'screenshot_slide',
       'list_slide_shapes',
       'read_slide_text',
@@ -59,6 +80,7 @@ describe('PowerPoint compatibility skill', () => {
       'edit_slide_xml',
       'edit_slide_chart',
       'edit_slide_master',
+      'edit_slide_master_xml',
       'duplicate_slide',
     ])
     for (const tool of skill.tools) expect(tool.inputSchema.additionalProperties).toBe(false)
@@ -75,6 +97,7 @@ describe('PowerPoint compatibility skill', () => {
       'edit_slide_xml',
       'edit_slide_chart',
       'edit_slide_master',
+      'edit_slide_master_xml',
     ]) {
       const schema = skill.tools.find((tool) => tool.name === name)?.inputSchema
       expect(schema?.properties).toHaveProperty('program')
@@ -89,6 +112,93 @@ describe('PowerPoint compatibility skill', () => {
     expect(programSchema.properties.operations.items).toHaveProperty('anyOf')
   })
 
+  it('proposes one native master edit and verifies semantic readback', async () => {
+    let state = await adapter().inspectSlideMasters()
+    const fake = adapter({
+      inspectSlideMasters: vi.fn().mockImplementation(() => Promise.resolve(state)),
+      executeMasterOperations: vi.fn().mockImplementation(async () => {
+        state = {
+          masters: [
+            {
+              ...state.masters[0],
+              background: { type: 'Solid', color: '#000000', transparency: 0 },
+            },
+          ],
+        }
+      }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await expect(
+      skill.executeTool(
+        call('edit_slide_master', {
+          program: {
+            version: 2,
+            operations: [
+              {
+                op: 'set_master_background',
+                master_id: 'master-1',
+                fill: { type: 'solid', color: '#000000', transparency: 0 },
+              },
+            ],
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({ mutated: false, summary: 'Proposed native PowerPoint master edit' })
+    expect(proposals.pending()?.impact).toMatchObject({ count: 1, targets: ['master:master-1'] })
+    await proposals.confirm(proposals.pending()!.id)
+    expect(fake.executeMasterOperations).toHaveBeenCalledOnce()
+  })
+
+  it('recovers an already verified native master operation when a later operation fails', async () => {
+    const original = await adapter().inspectSlideMasters()
+    const state = structuredClone(original)
+    let writes = 0
+    const fake = adapter({
+      inspectSlideMasters: vi
+        .fn()
+        .mockImplementation(() => Promise.resolve(structuredClone(state))),
+      executeMasterOperations: vi.fn().mockImplementation(async (operations) => {
+        writes += 1
+        const operation = operations[0]
+        if (writes === 2) throw new Error('office_write_failed')
+        if (operation.op === 'set_master_background' && operation.fill.type === 'solid')
+          state.masters[0]!.background = {
+            type: 'Solid',
+            color: operation.fill.color,
+            transparency: operation.fill.transparency,
+          }
+        if (operation.op === 'set_master_theme_color')
+          state.masters[0]!.themeColors[operation.theme_color] = operation.color
+      }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('edit_slide_master', {
+        program: {
+          version: 2,
+          operations: [
+            {
+              op: 'set_master_background',
+              master_id: 'master-1',
+              fill: { type: 'solid', color: '#000000', transparency: 0 },
+            },
+            {
+              op: 'set_master_theme_color',
+              master_id: 'master-1',
+              theme_color: 'Light1',
+              color: '#EEEEEE',
+            },
+          ],
+        },
+      }),
+    )
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('office_write_failed')
+    expect(state).toEqual(original)
+    expect(fake.executeMasterOperations).toHaveBeenCalledTimes(3)
+  })
+
   it('does not advertise or execute master package edits on PowerPoint for Mac', async () => {
     const fake = adapter()
     const skill = createPowerPointSkill({
@@ -97,11 +207,12 @@ describe('PowerPoint compatibility skill', () => {
       platform: 'Mac',
     })
 
-    expect(skill.tools.map((tool) => tool.name)).not.toContain('edit_slide_master')
-    expect(skill.systemPrompt).toContain('edit_slide_xml')
+    expect(skill.tools.map((tool) => tool.name)).toContain('edit_slide_master')
+    expect(skill.tools.map((tool) => tool.name)).not.toContain('edit_slide_master_xml')
+    expect(skill.systemPrompt).toContain('inspect_slide_masters')
     await expect(
       skill.executeTool(
-        call('edit_slide_master', {
+        call('edit_slide_master_xml', {
           program: {
             version: 1,
             operations: [
@@ -335,7 +446,7 @@ describe('PowerPoint compatibility skill', () => {
         },
       ],
       [
-        'edit_slide_master',
+        'edit_slide_master_xml',
         {
           program: {
             version: 1,
@@ -413,7 +524,7 @@ describe('PowerPoint compatibility skill', () => {
         },
       ],
       [
-        'edit_slide_master',
+        'edit_slide_master_xml',
         {
           code: JSON.stringify({
             version: 1,
@@ -464,7 +575,7 @@ describe('PowerPoint compatibility skill', () => {
     const skill = createPowerPointSkill({ adapter: fake, proposals })
 
     await skill.executeTool(
-      call('edit_slide_master', {
+      call('edit_slide_master_xml', {
         program: {
           version: 1,
           operations: [
@@ -509,7 +620,7 @@ describe('PowerPoint compatibility skill', () => {
     const proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: fake, proposals })
     await skill.executeTool(
-      call('edit_slide_master', {
+      call('edit_slide_master_xml', {
         program: {
           version: 1,
           operations: [
@@ -898,6 +1009,59 @@ describe('browser PowerPoint adapter', () => {
     expect(run).not.toHaveBeenCalled()
     expect(supports).toHaveBeenCalledWith('PowerPointApi', '1.8')
     expect(supports).toHaveBeenCalledWith('PowerPointApi', '1.10')
+  })
+
+  it('maps native master operations to PowerPointApi 1.10 objects', async () => {
+    const setSolidFill = vi.fn()
+    const setThemeColor = vi.fn()
+    const layoutBackground: Record<string, unknown> = {}
+    const layout = { background: layoutBackground }
+    const master = {
+      background: { fill: { setSolidFill } },
+      themeColorScheme: { setThemeColor },
+      layouts: { getItem: vi.fn().mockReturnValue(layout) },
+    }
+    const context = {
+      presentation: { slideMasters: { getItem: vi.fn().mockReturnValue(master) } },
+      sync: vi.fn().mockResolvedValue(undefined),
+    }
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: { run: (callback: (value: typeof context) => unknown) => callback(context) },
+    })
+
+    await new BrowserPowerPointAdapter().executeMasterOperations([
+      {
+        op: 'set_master_background',
+        master_id: 'm1',
+        fill: { type: 'solid', color: '#000000', transparency: 0.2 },
+      },
+      {
+        op: 'set_master_theme_color',
+        master_id: 'm1',
+        theme_color: 'Light1',
+        color: '#FFFFFF',
+      },
+      {
+        op: 'set_layout_background_following',
+        master_id: 'm1',
+        layout_id: 'l1',
+        follow_master: true,
+        show_master_graphics: false,
+      },
+    ])
+
+    expect(setSolidFill).toHaveBeenCalledWith({ color: '#000000', transparency: 0.2 })
+    expect(setThemeColor).toHaveBeenCalledWith('Light1', '#FFFFFF')
+    expect(layoutBackground).toMatchObject({
+      isMasterBackgroundFollowed: true,
+      areBackgroundGraphicsHidden: true,
+    })
   })
 
   it('routes declarative duplication through the transaction-safe duplicate primitive', async () => {

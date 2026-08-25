@@ -76,7 +76,56 @@ export interface VerifySlidesResult {
   truncated?: boolean
 }
 
+export interface PowerPointMasterState {
+  masters: Array<{
+    id: string
+    name: string
+    background: {
+      type: string
+      color?: string
+      transparency?: number
+      gradientType?: string
+      pattern?: string
+      foregroundColor?: string
+      backgroundColor?: string
+      pictureTransparency?: number
+    }
+    themeColors: Record<string, string>
+    layouts: Array<{
+      id: string
+      name: string
+      isMasterBackgroundFollowed: boolean
+      areBackgroundGraphicsHidden: boolean
+      background: { type: string }
+    }>
+  }>
+}
+
+export type PowerPointMasterOperation =
+  | {
+      op: 'set_master_background'
+      master_id: string
+      fill:
+        | { type: 'solid'; color: string; transparency: number }
+        | { type: 'gradient'; gradient_type: string }
+        | { type: 'pattern'; pattern: string; foreground_color: string; background_color: string }
+        | { type: 'picture_or_texture'; image_base64: string; transparency: number }
+    }
+  | { op: 'set_master_theme_color'; master_id: string; theme_color: string; color: string }
+  | {
+      op: 'set_layout_background_following'
+      master_id: string
+      layout_id: string
+      follow_master: boolean
+      show_master_graphics: boolean
+    }
+
 export interface PowerPointAdapter {
+  inspectSlideMasters(signal?: AbortSignal): Promise<PowerPointMasterState>
+  executeMasterOperations(
+    operations: PowerPointMasterOperation[],
+    signal?: AbortSignal,
+  ): Promise<void>
   screenshotSlide(
     slideIndex: number,
     signal?: AbortSignal,
@@ -267,6 +316,186 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     return (powerPoint.run as (callback: (context: RuntimeRecord) => Promise<T>) => Promise<T>)(
       callback,
     )
+  }
+
+  async inspectSlideMasters(signal?: AbortSignal): Promise<PowerPointMasterState> {
+    cancelled(signal)
+    return this.run('1.10', async (context) => {
+      const presentation = context.presentation as RuntimeRecord
+      const masters = presentation.slideMasters as RuntimeRecord
+      if (!masters || typeof masters.load !== 'function') throw new Error('office_api_unsupported')
+      ;(masters.load as (properties: string) => void)(
+        'items/id,items/name,items/layouts/items/id,items/layouts/items/name',
+      )
+      await sync(context, signal)
+      const masterItems = (masters.items as RuntimeRecord[]) ?? []
+      if (masterItems.length > 32) throw new Error('office_read_failed')
+      const themeSlots = [
+        'Accent1',
+        'Accent2',
+        'Accent3',
+        'Accent4',
+        'Accent5',
+        'Accent6',
+        'Dark1',
+        'Dark2',
+        'Light1',
+        'Light2',
+        'Hyperlink',
+        'FollowedHyperlink',
+      ]
+      const pending = masterItems.map((master) => {
+        const fill = (master.background as RuntimeRecord)?.fill as RuntimeRecord | undefined
+        if (!fill || typeof fill.load !== 'function') throw new Error('office_api_unsupported')
+        ;(fill.load as (properties: string) => void)('type')
+        const solid =
+          typeof fill.getSolidFillOrNullObject === 'function'
+            ? (fill.getSolidFillOrNullObject as () => RuntimeRecord)()
+            : undefined
+        if (solid) (solid.load as (properties: string[]) => void)(['color', 'transparency'])
+        const gradient =
+          typeof fill.getGradientFillOrNullObject === 'function'
+            ? (fill.getGradientFillOrNullObject as () => RuntimeRecord)()
+            : undefined
+        if (gradient) (gradient.load as (properties: string[]) => void)(['type'])
+        const pattern =
+          typeof fill.getPatternFillOrNullObject === 'function'
+            ? (fill.getPatternFillOrNullObject as () => RuntimeRecord)()
+            : undefined
+        if (pattern)
+          (pattern.load as (properties: string[]) => void)([
+            'pattern',
+            'foregroundColor',
+            'backgroundColor',
+          ])
+        const picture =
+          typeof fill.getPictureOrTextureFillOrNullObject === 'function'
+            ? (fill.getPictureOrTextureFillOrNullObject as () => RuntimeRecord)()
+            : undefined
+        if (picture) (picture.load as (properties: string[]) => void)(['transparency'])
+        const scheme = master.themeColorScheme as RuntimeRecord
+        const colors = Object.fromEntries(
+          themeSlots.map((slot) => [
+            slot,
+            (scheme.getThemeColor as (slot: string) => RuntimeRecord)(slot),
+          ]),
+        )
+        const layouts = ((master.layouts as RuntimeRecord)?.items as RuntimeRecord[]) ?? []
+        if (layouts.length > 128) throw new Error('office_read_failed')
+        for (const layout of layouts) {
+          const background = layout.background as RuntimeRecord
+          ;(background.load as (properties: string[]) => void)([
+            'isMasterBackgroundFollowed',
+            'areBackgroundGraphicsHidden',
+          ])
+          const layoutFill = background.fill as RuntimeRecord
+          if (!layoutFill || typeof layoutFill.load !== 'function')
+            throw new Error('office_api_unsupported')
+          ;(layoutFill.load as (properties: string) => void)('type')
+        }
+        return { master, fill, solid, gradient, pattern, picture, colors, layouts }
+      })
+      await sync(context, signal)
+      return {
+        masters: pending.map(
+          ({ master, fill, solid, gradient, pattern, picture, colors, layouts }) => ({
+            id: string(master.id),
+            name: string(master.name),
+            background: {
+              type: string(fill.type, 64),
+              ...(solid && !solid.isNullObject && typeof solid.color === 'string'
+                ? { color: solid.color }
+                : {}),
+              ...(solid && !solid.isNullObject && typeof solid.transparency === 'number'
+                ? { transparency: solid.transparency }
+                : {}),
+              ...(gradient && !gradient.isNullObject && typeof gradient.type === 'string'
+                ? { gradientType: gradient.type }
+                : {}),
+              ...(pattern && !pattern.isNullObject && typeof pattern.pattern === 'string'
+                ? { pattern: pattern.pattern }
+                : {}),
+              ...(pattern && !pattern.isNullObject && typeof pattern.foregroundColor === 'string'
+                ? { foregroundColor: pattern.foregroundColor }
+                : {}),
+              ...(pattern && !pattern.isNullObject && typeof pattern.backgroundColor === 'string'
+                ? { backgroundColor: pattern.backgroundColor }
+                : {}),
+              ...(picture && !picture.isNullObject && typeof picture.transparency === 'number'
+                ? { pictureTransparency: picture.transparency }
+                : {}),
+            },
+            themeColors: Object.fromEntries(
+              Object.entries(colors).map(([slot, result]) => [
+                slot,
+                string((result as RuntimeRecord).value, 64),
+              ]),
+            ),
+            layouts: layouts.map((layout) => {
+              const background = layout.background as RuntimeRecord
+              return {
+                id: string(layout.id),
+                name: string(layout.name),
+                isMasterBackgroundFollowed: Boolean(background.isMasterBackgroundFollowed),
+                areBackgroundGraphicsHidden: Boolean(background.areBackgroundGraphicsHidden),
+                background: { type: string((background.fill as RuntimeRecord).type, 64) },
+              }
+            }),
+          }),
+        ),
+      }
+    })
+  }
+
+  async executeMasterOperations(
+    operations: PowerPointMasterOperation[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    cancelled(signal)
+    await this.run('1.10', async (context) => {
+      const masters = (context.presentation as RuntimeRecord).slideMasters as RuntimeRecord
+      if (typeof masters.getItem !== 'function') throw new Error('office_api_unsupported')
+      for (const operation of operations) {
+        cancelled(signal)
+        const master = (masters.getItem as (id: string) => RuntimeRecord)(operation.master_id)
+        if (operation.op === 'set_master_theme_color') {
+          const scheme = master.themeColorScheme as RuntimeRecord
+          ;(scheme.setThemeColor as (slot: string, color: string) => void)(
+            operation.theme_color,
+            operation.color,
+          )
+        } else if (operation.op === 'set_layout_background_following') {
+          const layouts = master.layouts as RuntimeRecord
+          const layout = (layouts.getItem as (id: string) => RuntimeRecord)(operation.layout_id)
+          const background = layout.background as RuntimeRecord
+          background.isMasterBackgroundFollowed = operation.follow_master
+          background.areBackgroundGraphicsHidden = !operation.show_master_graphics
+        } else {
+          const fill = (master.background as RuntimeRecord).fill as RuntimeRecord
+          if (operation.fill.type === 'solid')
+            (fill.setSolidFill as (options: unknown) => void)({
+              color: operation.fill.color,
+              transparency: operation.fill.transparency,
+            })
+          else if (operation.fill.type === 'gradient')
+            (fill.setGradientFill as (options: unknown) => void)({
+              type: operation.fill.gradient_type,
+            })
+          else if (operation.fill.type === 'pattern')
+            (fill.setPatternFill as (options: unknown) => void)({
+              pattern: operation.fill.pattern,
+              foregroundColor: operation.fill.foreground_color,
+              backgroundColor: operation.fill.background_color,
+            })
+          else
+            (fill.setPictureOrTextureFill as (options: unknown) => void)({
+              imageBase64: operation.fill.image_base64,
+              transparency: operation.fill.transparency,
+            })
+        }
+      }
+      await sync(context, signal)
+    })
   }
 
   async listSlideShapes(slideIndex: number, signal?: AbortSignal): Promise<SlideShapesResult> {
