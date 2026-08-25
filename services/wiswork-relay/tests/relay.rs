@@ -437,6 +437,9 @@ async fn pairs_only_after_claim_and_approval_then_forwards_and_cancels() {
     assert_eq!(recv(&mut office).await["data"], "b2s=");
     send(&mut pc, json!({"version":1,"type":"pc.done","session_id":sid,"capability":pc_cap,"request_id":"r2"})).await;
     assert_eq!(recv(&mut office).await["type"], "relay.done");
+    // Response stream cleanup can race behind pc.done/pc.error. A late cancel for
+    // a request that Relay already made terminal must be idempotent.
+    send(&mut office, json!({"version":1,"type":"office.cancel","session_id":sid,"capability":cap,"request_id":"r2"})).await;
 
     let boundary_body = "x".repeat(256 * 1024 - 2);
     send(&mut office, json!({"version":1,"type":"office.request","session_id":sid,"capability":cap,"request_id":"boundary","body":boundary_body})).await;
