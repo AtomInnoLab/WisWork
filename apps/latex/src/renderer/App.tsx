@@ -32,6 +32,7 @@ import { PdfPreview } from './pdf/PdfPreview.js'
 import { OpenTabs } from './project/OpenTabs.js'
 import { FileActionDialog, type FileAction } from './project/FileActionDialog.js'
 import { ProjectTree } from './project/ProjectTree.js'
+import { WorkbenchToolbar } from './workbench/WorkbenchToolbar.js'
 import {
   canRenameFile,
   completeReverseSync,
@@ -95,6 +96,7 @@ export function App() {
   const [bundleStatus, setBundleStatus] = useState<LatexBundleStatusDto>({ state: 'missing' })
   const [aiOpen, setAiOpen] = useState(true)
   const [dockTab, setDockTab] = useState<'ai' | 'compile'>('ai')
+  const [filesOpen, setFilesOpen] = useState(true)
   const [previewOpen, setPreviewOpen] = useState(true)
   const [fileAction, setFileAction] = useState<FileAction | null>(null)
   const [fileActionBusy, setFileActionBusy] = useState(false)
@@ -666,127 +668,149 @@ export function App() {
 
   return (
     <main className="latex-workbench">
-      <div className={`latex-main-area${previewOpen ? '' : ' preview-closed'}`}>
-        <ProjectTree
-          files={files}
-          activePath={activePath}
-          onOpen={(path) => void openFile(path)}
-          onCreate={() => setFileAction({ kind: 'create' })}
-          onRename={(path) => setFileAction({ kind: 'rename', path })}
-          onDelete={(path) => setFileAction({ kind: 'delete', path })}
-          mainFile={mainFile}
-        />
-        <section className="editor-workspace">
-          <OpenTabs
-            paths={openPaths}
-            activePath={activePath}
-            dirty={dirtyPaths}
-            onActivate={setActivePath}
-            onClose={(path) => {
-              setOpenPaths((current) => current.filter((item) => item !== path))
-              if (activePath === path)
-                setActivePath(openPaths.find((item) => item !== path) ?? null)
-            }}
-          />
-          {activeBuffer ? (
-            <LatexEditor
-              path={activeBuffer.path}
-              value={activeBuffer.text}
-              diagnostics={activeDiagnostics}
-              readOnly={frozen}
-              onChange={handleEdit}
-              onSave={() => void savePath(activeBuffer.path)}
-              onCompile={compileProject}
-              onCursorLine={forwardSync}
-              onContextChange={(context) => {
-                setEditorContext({ path: activeBuffer.path, ...context })
-                setHiddenAiContext((current) => {
-                  const next = new Set(current)
-                  next.delete('activeFile')
-                  next.delete('selection')
-                  return next
-                })
+      <WorkbenchToolbar
+        activePath={activePath}
+        dirty={Boolean(activeBuffer?.dirty)}
+        disabled={frozen || !projectId || !mainFile}
+        compiling={compiling}
+        filesOpen={filesOpen}
+        previewOpen={previewOpen}
+        aiOpen={aiOpen}
+        onSave={() => {
+          if (activePath) void savePath(activePath)
+        }}
+        onCompile={compileProject}
+        onToggleFiles={() => setFilesOpen((open) => !open)}
+        onTogglePreview={() => setPreviewOpen((open) => !open)}
+        onToggleAi={() => setAiOpen((open) => !open)}
+      />
+      <div className="latex-workbench-body">
+        <div
+          className={`latex-main-area${filesOpen ? '' : ' files-closed'}${previewOpen ? '' : ' preview-closed'}`}
+        >
+          {filesOpen && (
+            <ProjectTree
+              files={files}
+              activePath={activePath}
+              onOpen={(path) => void openFile(path)}
+              onCreate={() => setFileAction({ kind: 'create' })}
+              onRename={(path) => setFileAction({ kind: 'rename', path })}
+              onDelete={(path) => setFileAction({ kind: 'delete', path })}
+              mainFile={mainFile}
+            />
+          )}
+          <section className="editor-workspace">
+            <OpenTabs
+              paths={openPaths}
+              activePath={activePath}
+              dirty={dirtyPaths}
+              onActivate={setActivePath}
+              onClose={(path) => {
+                setOpenPaths((current) => current.filter((item) => item !== path))
+                if (activePath === path)
+                  setActivePath(openPaths.find((item) => item !== path) ?? null)
               }}
-              revealLine={revealTarget?.path === activeBuffer.path ? revealTarget.line : null}
+            />
+            {activeBuffer ? (
+              <LatexEditor
+                path={activeBuffer.path}
+                value={activeBuffer.text}
+                diagnostics={activeDiagnostics}
+                readOnly={frozen}
+                onChange={handleEdit}
+                onSave={() => void savePath(activeBuffer.path)}
+                onCompile={compileProject}
+                onCursorLine={forwardSync}
+                onContextChange={(context) => {
+                  setEditorContext({ path: activeBuffer.path, ...context })
+                  setHiddenAiContext((current) => {
+                    const next = new Set(current)
+                    next.delete('activeFile')
+                    next.delete('selection')
+                    return next
+                  })
+                }}
+                revealLine={revealTarget?.path === activeBuffer.path ? revealTarget.line : null}
+              />
+            ) : (
+              <div className="empty-editor">{t('projectUnavailable')}</div>
+            )}
+            {activeBuffer?.conflict && (
+              <div role="alert" className="conflict-banner">
+                {t('externalConflict')}
+              </div>
+            )}
+            {error && (
+              <div role="alert" className="error-banner">
+                {error}
+              </div>
+            )}
+          </section>
+          {previewOpen ? (
+            <PdfPreview
+              pdfUrl={editorState.preview?.pdfUrl ?? null}
+              revision={editorState.preview?.revision ?? null}
+              location={previewLocation}
+              stale={editorState.previewStale}
+              onReverseSync={(point) => void reverseSync(point)}
+              onClose={() => setPreviewOpen(false)}
             />
           ) : (
-            <div className="empty-editor">{t('projectUnavailable')}</div>
+            <button
+              type="button"
+              className="pdf-preview-rail"
+              aria-label="Open PDF preview"
+              onClick={() => setPreviewOpen(true)}
+            >
+              PDF
+            </button>
           )}
-          {activeBuffer?.conflict && (
-            <div role="alert" className="conflict-banner">
-              {t('externalConflict')}
-            </div>
-          )}
-          {error && (
-            <div role="alert" className="error-banner">
-              {error}
-            </div>
-          )}
-        </section>
-        {previewOpen ? (
-          <PdfPreview
-            pdfUrl={editorState.preview?.pdfUrl ?? null}
-            revision={editorState.preview?.revision ?? null}
-            location={previewLocation}
-            stale={editorState.previewStale}
-            onReverseSync={(point) => void reverseSync(point)}
-            onClose={() => setPreviewOpen(false)}
+        </div>
+        {projectId && (
+          <AiPanel
+            projectId={projectId}
+            disabled={frozen}
+            onProjectFilesChanged={refreshProjectFiles}
+            open={aiOpen}
+            context={agentContext}
+            sensitiveContextBlocked={sensitiveAiContext}
+            onRemoveContext={(key) => setHiddenAiContext((current) => new Set([...current, key]))}
+            onExpand={() => setAiOpen(true)}
+            onCollapse={() => setAiOpen(false)}
+            activeTab={dockTab}
+            onTabChange={setDockTab}
+            compilePanel={
+              <CompilePanel
+                compiling={compiling}
+                disabled={frozen}
+                bundleStatus={bundleStatus}
+                diagnostics={diagnostics}
+                log={log}
+                onCompile={compileProject}
+                onCancel={() => {
+                  if (closeFreeze.current.isFrozen()) return
+                  compileQueue.current.cancelPending()
+                  if (projectId) void window.latexApi.cancelCompile({ projectId })
+                }}
+                onDiagnostic={(diagnostic) => {
+                  void openFile(diagnostic.path).then(() =>
+                    setRevealTarget({ path: diagnostic.path, line: diagnostic.lineIndex + 1 }),
+                  )
+                }}
+                onAskAi={(diagnostic) => {
+                  setAiDiagnostic(diagnosticToAgentContext(diagnostic))
+                  setHiddenAiContext((current) => {
+                    const next = new Set(current)
+                    next.delete('diagnostic')
+                    return next
+                  })
+                  setDockTab('ai')
+                }}
+              />
+            }
           />
-        ) : (
-          <button
-            type="button"
-            className="pdf-preview-rail"
-            aria-label="Open PDF preview"
-            onClick={() => setPreviewOpen(true)}
-          >
-            PDF
-          </button>
         )}
       </div>
-      {projectId && (
-        <AiPanel
-          projectId={projectId}
-          disabled={frozen}
-          onProjectFilesChanged={refreshProjectFiles}
-          open={aiOpen}
-          context={agentContext}
-          sensitiveContextBlocked={sensitiveAiContext}
-          onRemoveContext={(key) => setHiddenAiContext((current) => new Set([...current, key]))}
-          onExpand={() => setAiOpen(true)}
-          onCollapse={() => setAiOpen(false)}
-          activeTab={dockTab}
-          onTabChange={setDockTab}
-          compilePanel={
-            <CompilePanel
-              compiling={compiling}
-              disabled={frozen}
-              bundleStatus={bundleStatus}
-              diagnostics={diagnostics}
-              log={log}
-              onCompile={compileProject}
-              onCancel={() => {
-                if (closeFreeze.current.isFrozen()) return
-                compileQueue.current.cancelPending()
-                if (projectId) void window.latexApi.cancelCompile({ projectId })
-              }}
-              onDiagnostic={(diagnostic) => {
-                void openFile(diagnostic.path).then(() =>
-                  setRevealTarget({ path: diagnostic.path, line: diagnostic.lineIndex + 1 }),
-                )
-              }}
-              onAskAi={(diagnostic) => {
-                setAiDiagnostic(diagnosticToAgentContext(diagnostic))
-                setHiddenAiContext((current) => {
-                  const next = new Set(current)
-                  next.delete('diagnostic')
-                  return next
-                })
-                setDockTab('ai')
-              }}
-            />
-          }
-        />
-      )}
       <FileActionDialog
         action={fileAction}
         busy={fileActionBusy}
