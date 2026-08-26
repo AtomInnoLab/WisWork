@@ -148,10 +148,184 @@ button:disabled {
 
 .latex-workbench {
   display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
   background: var(--latex-workbench-bg);
   color: var(--text);
+}
+
+.latex-workbench-toolbar {
+  display: flex;
+  height: 119px;
+  flex: 0 0 119px;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  user-select: none;
+}
+
+.latex-toolbar-tabs {
+  display: flex;
+  min-height: 39px;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px 0;
+}
+
+.latex-toolbar-quick-button {
+  display: grid;
+  width: 30px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  border-radius: 4px;
+  color: var(--text);
+}
+
+.latex-toolbar-quick-button:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.latex-toolbar-quick-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.latex-toolbar-product {
+  padding: 0 5px;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.latex-toolbar-body {
+  display: flex;
+  height: 80px;
+  align-items: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 6px 12px;
+  scrollbar-width: none;
+}
+
+.latex-toolbar-body::-webkit-scrollbar {
+  display: none;
+}
+
+.latex-toolbar-group {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+}
+
+.latex-toolbar-separator {
+  width: 1px;
+  flex: 0 0 1px;
+  align-self: stretch;
+  margin: 2px 6px;
+  background: var(--border);
+}
+
+.latex-toolbar-button {
+  display: flex;
+  min-width: 54px;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 6px;
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.latex-toolbar-button:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.latex-toolbar-button[aria-pressed='true'] {
+  background: var(--active-bg, var(--latex-selected-file-bg));
+  color: var(--text);
+}
+
+.latex-toolbar-icon-row {
+  display: flex;
+  min-height: 28px;
+  align-self: stretch;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  margin: 0 -4px;
+  padding: 3px 4px;
+  border-radius: 4px;
+}
+
+.latex-toolbar-icon-row svg {
+  width: 26px;
+  height: 26px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.latex-toolbar-button.busy .latex-toolbar-icon-row {
+  animation: latex-toolbar-pulse 1s ease-in-out infinite alternate;
+}
+
+.latex-toolbar-spacer {
+  min-width: 12px;
+  flex: 1;
+}
+
+.latex-toolbar-document {
+  display: flex;
+  min-width: 0;
+  max-width: 30vw;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  padding: 0 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.latex-toolbar-dirty {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.latex-workbench-body {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+
+@keyframes latex-toolbar-pulse {
+  from {
+    opacity: 0.45;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .latex-main-area {
@@ -164,6 +338,14 @@ button:disabled {
 
 .latex-main-area.preview-closed {
   grid-template-columns: minmax(170px, 14vw) minmax(380px, 1fr) 38px;
+}
+
+.latex-main-area.files-closed {
+  grid-template-columns: minmax(380px, 1fr) minmax(320px, 38vw);
+}
+
+.latex-main-area.files-closed.preview-closed {
+  grid-template-columns: minmax(380px, 1fr) 38px;
 }
 
 .project-tree,
@@ -1160,6 +1342,10 @@ button:disabled {
   .latex-main-area.preview-closed {
     grid-template-columns: 150px minmax(350px, 1fr);
   }
+  .latex-main-area.files-closed,
+  .latex-main-area.files-closed.preview-closed {
+    grid-template-columns: minmax(350px, 1fr);
+  }
   .pdf-preview-rail {
     display: none;
   }
@@ -1170,8 +1356,21 @@ button:disabled {
 }
 
 @media (max-width: 720px) {
-  .latex-main-area {
+  .latex-main-area,
+  .latex-main-area.preview-closed,
+  .latex-main-area.files-closed,
+  .latex-main-area.files-closed.preview-closed {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .latex-toolbar-product,
+  .latex-toolbar-document {
+    display: none;
+  }
+
+  .latex-toolbar-tabs {
+    padding-right: 6px;
+    padding-left: 6px;
   }
 
   .project-tree {
