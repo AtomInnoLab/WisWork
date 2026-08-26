@@ -51,6 +51,7 @@ export interface CodexProcessDiagnostic {
 export interface CodexProcessManagerOptions {
   readonly executablePath: string
   readonly bridge: { readonly baseUrl: string; readonly secret: string }
+  readonly mcp?: { readonly url: string; readonly secret: string }
   readonly developerInstructions: string
   readonly spawn?: CodexSpawn
   readonly createDirectories?: () => Promise<OwnedCodexDirectories>
@@ -98,6 +99,34 @@ function validateBridge(baseUrl: string, secret: string): string {
   }
 }
 
+function validateMcp(
+  mcp: CodexProcessManagerOptions['mcp'],
+): { readonly url: string; readonly secret: string } | undefined {
+  if (mcp === undefined) return undefined
+  try {
+    const url = new URL(mcp.url)
+    if (
+      url.protocol !== 'http:' ||
+      url.hostname !== '127.0.0.1' ||
+      url.port === '' ||
+      !/^\/mcp\/[A-Za-z0-9_-]{43}$/.test(url.pathname) ||
+      url.username !== '' ||
+      url.password !== '' ||
+      url.search !== '' ||
+      url.hash !== '' ||
+      typeof mcp.secret !== 'string' ||
+      !/^[A-Za-z0-9_-]{43}$/.test(mcp.secret) ||
+      Buffer.from(mcp.secret, 'base64url').length !== 32 ||
+      Buffer.from(mcp.secret, 'base64url').toString('base64url') !== mcp.secret
+    ) {
+      throw new Error()
+    }
+    return { url: url.href, secret: mcp.secret }
+  } catch {
+    throw new TypeError('invalid_codex_mcp')
+  }
+}
+
 async function defaultCreateDirectories(): Promise<OwnedCodexDirectories> {
   const root = await mkdtemp(join(tmpdir(), 'wiswork-codex-'))
   const codexHome = join(root, 'home')
@@ -122,17 +151,22 @@ function platformEssentials(): NodeJS.ProcessEnv {
   )
 }
 
-function minimalEnvironment(directories: OwnedCodexDirectories, token?: string): NodeJS.ProcessEnv {
+function minimalEnvironment(
+  directories: OwnedCodexDirectories,
+  token?: string,
+  mcpToken?: string,
+): NodeJS.ProcessEnv {
   return {
     ...platformEssentials(),
     CODEX_HOME: directories.codexHome,
     ...(token === undefined ? {} : { WISWORK_CODEX_TOKEN: token }),
+    ...(mcpToken === undefined ? {} : { WISWORK_MCP_TOKEN: mcpToken }),
     NO_PROXY: '127.0.0.1,localhost',
     no_proxy: '127.0.0.1,localhost',
   }
 }
 
-function serverArguments(baseUrl: string): readonly string[] {
+function serverArguments(baseUrl: string, mcpUrl?: string): readonly string[] {
   const configs = [
     'model_provider="wiswork"',
     'model_providers.wiswork.name="WisWork"',
@@ -143,6 +177,12 @@ function serverArguments(baseUrl: string): readonly string[] {
     'features.unified_exec=false',
     'tools.update_plan.enabled=false',
     'features.multi_agent=false',
+    ...(mcpUrl === undefined
+      ? []
+      : [
+          `mcp_servers.wiswork.url=${JSON.stringify(mcpUrl)}`,
+          'mcp_servers.wiswork.bearer_token_env_var="WISWORK_MCP_TOKEN"',
+        ]),
   ]
   return ['app-server', '--strict-config', '--stdio', ...configs.flatMap((value) => ['-c', value])]
 }
@@ -156,6 +196,7 @@ export class CodexProcessManager {
   readonly #executablePath: string
   readonly #baseUrl: string
   readonly #secret: string
+  readonly #mcp: { readonly url: string; readonly secret: string } | undefined
   readonly #developerInstructions: string
   readonly #spawn: CodexSpawn
   readonly #createDirectories: () => Promise<OwnedCodexDirectories>
@@ -192,6 +233,7 @@ export class CodexProcessManager {
     this.#executablePath = options.executablePath
     this.#baseUrl = validateBridge(options.bridge?.baseUrl, options.bridge?.secret)
     this.#secret = options.bridge.secret
+    this.#mcp = validateMcp(options.mcp)
     this.#developerInstructions = options.developerInstructions
     this.#spawn = options.spawn ?? defaultSpawn
     this.#createDirectories = options.createDirectories ?? defaultCreateDirectories
@@ -247,12 +289,16 @@ export class CodexProcessManager {
       this.#directories = directories
       await this.#verifyVersion(this.#directories)
       if (this.#state !== 'starting') throw new CodexProcessError('codex_process_start_failed')
-      const child = this.#spawn(this.#executablePath, serverArguments(this.#baseUrl), {
-        cwd: this.#directories.cwd,
-        env: minimalEnvironment(this.#directories, this.#secret),
-        stdio: 'pipe',
-        windowsHide: true,
-      })
+      const child = this.#spawn(
+        this.#executablePath,
+        serverArguments(this.#baseUrl, this.#mcp?.url),
+        {
+          cwd: this.#directories.cwd,
+          env: minimalEnvironment(this.#directories, this.#secret, this.#mcp?.secret),
+          stdio: 'pipe',
+          windowsHide: true,
+        },
+      )
       this.#child = child
       this.#installStderrDrain(child.stderr)
       this.#exitPromise = new Promise((resolve) => {

@@ -49,6 +49,7 @@ function createFixture(
     autoServerSpawn?: boolean
     serverStdin?: Writable
     removeDirectories?: (directories: OwnedCodexDirectories) => Promise<void>
+    mcp?: { url: string; secret: string }
   } = {},
 ) {
   const version = new FakeChild()
@@ -86,6 +87,7 @@ function createFixture(
   const manager = new CodexProcessManager({
     executablePath: '/opt/wiswork/codex',
     bridge: { baseUrl: 'http://127.0.0.1:43123', secret: 'bridge-secret-private' },
+    mcp: fixtureOptions.mcp,
     developerInstructions: 'Fixed host policy.',
     spawn,
     createDirectories,
@@ -202,6 +204,63 @@ describe('pinned Codex app-server process manager', () => {
     fixture.server.exited(0)
     await fixture.manager.stop()
     expect(client).toBeDefined()
+  })
+
+  it('configures the exact Codex 0.147 HTTP MCP keys with its secret only in child env', async () => {
+    const fixture = createFixture({
+      mcp: {
+        url: `http://127.0.0.1:44321/mcp/${Buffer.alloc(32, 7).toString('base64url')}`,
+        secret: Buffer.alloc(32, 8).toString('base64url'),
+      },
+    })
+    const started = fixture.manager.start()
+    await tick()
+    await started
+
+    expect(fixture.calls[1]?.args).toContain(
+      `mcp_servers.wiswork.url="http://127.0.0.1:44321/mcp/${Buffer.alloc(32, 7).toString('base64url')}"`,
+    )
+    expect(fixture.calls[1]?.args).toContain(
+      'mcp_servers.wiswork.bearer_token_env_var="WISWORK_MCP_TOKEN"',
+    )
+    expect(fixture.calls[1]?.args.join(' ')).not.toContain(
+      Buffer.alloc(32, 8).toString('base64url'),
+    )
+    expect(fixture.calls[1]?.env.WISWORK_MCP_TOKEN).toBe(Buffer.alloc(32, 8).toString('base64url'))
+    fixture.server.exited(0)
+    await fixture.manager.stop()
+  })
+
+  it('rejects non-loopback or unscoped MCP endpoints before creating temp state', () => {
+    const base = {
+      executablePath: '/opt/wiswork/codex',
+      bridge: { baseUrl: 'http://127.0.0.1:1234', secret: 'secret' },
+      developerInstructions: 'policy',
+    }
+    for (const url of [
+      'https://example.com/mcp/session',
+      'http://localhost:1234/mcp/session',
+      'http://127.0.0.1:1234/mcp',
+      'http://127.0.0.1:1234/mcp/session?document=private',
+    ]) {
+      expect(
+        () =>
+          new CodexProcessManager({
+            ...base,
+            mcp: { url, secret: Buffer.alloc(32, 9).toString('base64url') },
+          }),
+      ).toThrow('invalid_codex_mcp')
+    }
+    expect(
+      () =>
+        new CodexProcessManager({
+          ...base,
+          mcp: {
+            url: `http://127.0.0.1:1234/mcp/${Buffer.alloc(32, 9).toString('base64url')}`,
+            secret: 'short-secret',
+          },
+        }),
+    ).toThrow('invalid_codex_mcp')
   })
 
   it('shares a concurrent start but rejects a duplicate after startup', async () => {
