@@ -1,6 +1,8 @@
 const encoder = new TextEncoder()
 const decoder = new TextDecoder('utf-8', { fatal: true })
-export const MAX_VFS_FILE_BYTES = 2 * 1024 * 1024
+export const MAX_VFS_FILE_BYTES = 20 * 1024 * 1024
+export const MAX_VFS_TOTAL_BYTES = 64 * 1024 * 1024
+export const MAX_VFS_READ_BYTES = 2 * 1024 * 1024
 
 export interface VfsLimits {
   maxFileBytes: number
@@ -11,7 +13,7 @@ export interface VfsLimits {
 
 const DEFAULT_LIMITS: VfsLimits = {
   maxFileBytes: MAX_VFS_FILE_BYTES,
-  maxTotalBytes: 16 * 1024 * 1024,
+  maxTotalBytes: MAX_VFS_TOTAL_BYTES,
   maxFiles: 256,
   maxNameBytes: 128,
 }

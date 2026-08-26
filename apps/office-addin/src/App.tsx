@@ -13,7 +13,7 @@ import {
 } from './diagnostics/office-diagnostics.js'
 import type { OfficeProposal, StructuredProposal } from './agent/proposal-controller.js'
 import { MAX_SKILL_BYTES } from './skills/shared/skill-registry.js'
-import { MAX_VFS_FILE_BYTES } from './skills/shared/vfs.js'
+import { MAX_VFS_FILE_BYTES, MAX_VFS_TOTAL_BYTES } from './skills/shared/vfs.js'
 import { createPcBridgeAgentTransport } from './agent/transport.js'
 import {
   createOfficeAgentSession,
@@ -141,11 +141,23 @@ export function proposalPresentation(proposal: DisplayProposal) {
   }
 }
 
-export function safeUploadError(error: unknown): string {
+const MEBIBYTE = 1024 * 1024
+
+function displayMegabytes(bytes: number): string {
+  const value = bytes / MEBIBYTE
+  return Number.isInteger(value) ? String(value) : value.toFixed(1)
+}
+
+export function safeUploadError(error: unknown, file?: Pick<SessionFile, 'size'>): string {
   const code = error instanceof Error ? error.message : ''
+  if (code === 'vfs_limit') {
+    if (file && file.size > MAX_VFS_FILE_BYTES) {
+      return `File is ${displayMegabytes(file.size)} MB. Attachments must be ${displayMegabytes(MAX_VFS_FILE_BYTES)} MB or smaller.`
+    }
+    return `Attachment limit reached. Files are limited to ${displayMegabytes(MAX_VFS_FILE_BYTES)} MB each and ${displayMegabytes(MAX_VFS_TOTAL_BYTES)} MB per session.`
+  }
   return [
     'upload_cancelled',
-    'vfs_limit',
     'vfs_path_denied',
     'invalid_skill_package',
     'skill_already_installed',
@@ -648,11 +660,15 @@ export function AgentWorkspace(props: {
                     .upload(file)
                     .then(() => mounted.current && setFiles(ui.attachments()))
                     .catch(
-                      (error: unknown) => mounted.current && setUploadError(safeUploadError(error)),
+                      (error: unknown) =>
+                        mounted.current && setUploadError(safeUploadError(error, file)),
                     )
                 }}
               />
-              <p>Files stay in this bounded session and are cleared on logout.</p>
+              <p>
+                Files are limited to {displayMegabytes(MAX_VFS_FILE_BYTES)} MB each and{' '}
+                {displayMegabytes(MAX_VFS_TOTAL_BYTES)} MB per session, then cleared on logout.
+              </p>
               {uploadError && (
                 <p className="error-text" role="alert">
                   {uploadError}

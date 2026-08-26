@@ -2,7 +2,7 @@ import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
 import { exactObject, stringField } from '../../agent/tool-schema.js'
 import { createConversionCommands, createSandboxCommands } from './commands.js'
 import { ConversionWorkerRuntime } from './conversion-runtime.js'
-import { InMemoryVfs, MAX_VFS_FILE_BYTES } from './vfs.js'
+import { InMemoryVfs, MAX_VFS_READ_BYTES } from './vfs.js'
 import type { SkillRegistry } from './skill-registry.js'
 
 const MAX_PATH = 512
@@ -71,8 +71,8 @@ export function createSharedBrowserSkill(options: {
           if (path.toLowerCase().endsWith('.gif')) throw new Error('image_mime_unsupported')
           const mime = imageMime(path)
           if (mime) {
-            const bytes = options.vfs.readBytes(path, { maxBytes: MAX_VFS_FILE_BYTES + 1 })
-            if (bytes.byteLength > MAX_VFS_FILE_BYTES) throw new Error('vfs_limit')
+            const bytes = options.vfs.readBytes(path, { maxBytes: MAX_VFS_READ_BYTES + 1 })
+            if (bytes.byteLength > MAX_VFS_READ_BYTES) throw new Error('vfs_limit')
             return {
               output: JSON.stringify({ path, mime, bytes: bytes.byteLength }),
               modelContent: [{ type: 'image', image: { mime, base64: base64(bytes) } }],

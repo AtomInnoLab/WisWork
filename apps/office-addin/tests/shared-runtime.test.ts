@@ -4,7 +4,12 @@ import { exactObject, stringField } from '../src/agent/tool-schema.js'
 import { createSandboxCommands } from '../src/skills/shared/commands.js'
 import { createSharedBrowserSkill } from '../src/skills/shared/shared-skill.js'
 import { parseSkillPackage, SkillRegistry } from '../src/skills/shared/skill-registry.js'
-import { InMemoryVfs } from '../src/skills/shared/vfs.js'
+import {
+  InMemoryVfs,
+  MAX_VFS_FILE_BYTES,
+  MAX_VFS_READ_BYTES,
+  MAX_VFS_TOTAL_BYTES,
+} from '../src/skills/shared/vfs.js'
 
 describe('exact schema helpers', () => {
   it('rejects unknown, missing, and oversized fields', () => {
@@ -17,6 +22,29 @@ describe('exact schema helpers', () => {
 })
 
 describe('in-memory VFS', () => {
+  it('provides practical bounded storage for Office session attachments', () => {
+    expect(MAX_VFS_FILE_BYTES).toBe(20 * 1024 * 1024)
+    expect(MAX_VFS_TOTAL_BYTES).toBe(64 * 1024 * 1024)
+    const vfs = new InMemoryVfs()
+    expect(() =>
+      vfs.writeFile('/home/user/deck.pptx', new Uint8Array(2 * 1024 * 1024 + 1)),
+    ).not.toThrow()
+  })
+
+  it('keeps model-visible reads bounded when stored attachments are larger', async () => {
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/large.png', new Uint8Array(MAX_VFS_READ_BYTES + 1))
+    const skill = createSharedBrowserSkill({ vfs })
+
+    await expect(
+      skill.executeTool({
+        id: 'large-read',
+        name: 'read',
+        input: { path: '/home/user/large.png' },
+      }),
+    ).resolves.toMatchObject({ output: 'vfs_limit', isError: true })
+  })
+
   it('normalizes allowed roots and rejects traversal, device, NUL, and absolute escape paths', () => {
     const vfs = new InMemoryVfs()
     vfs.writeFile('/home/user/a/../note.txt', 'safe')

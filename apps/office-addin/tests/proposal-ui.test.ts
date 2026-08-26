@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { proposalPresentation, safeUploadError, uploadSessionFile } from '../src/App.js'
 import type { OfficeHostRuntime } from '../src/agent/host-runtime.js'
+import { MAX_VFS_FILE_BYTES } from '../src/skills/shared/vfs.js'
 
 describe('generic proposal presentation', () => {
   it('presents structured impact as a readable comparison without protocol JSON or code', () => {
@@ -150,8 +151,34 @@ describe('generic proposal presentation', () => {
     expect(safeUploadError(new Error('/Users/alice/private'))).toBe('upload_failed')
   })
 
+  it('turns VFS limits into actionable attachment messages', () => {
+    expect(safeUploadError(new Error('vfs_limit'), { size: 26.4 * 1024 * 1024 })).toBe(
+      'File is 26.4 MB. Attachments must be 20 MB or smaller.',
+    )
+    expect(safeUploadError(new Error('vfs_limit'))).toBe(
+      'Attachment limit reached. Files are limited to 20 MB each and 64 MB per session.',
+    )
+  })
+
+  it('accepts a session attachment larger than the old 2 MB limit', async () => {
+    const arrayBuffer = vi.fn(async () => new ArrayBuffer(0))
+    const runtime = {
+      uploadFile: vi.fn(async () => undefined),
+    } as unknown as OfficeHostRuntime
+
+    await expect(
+      uploadSessionFile(runtime, {
+        name: 'deck.pptx',
+        size: 2 * 1024 * 1024 + 1,
+        arrayBuffer,
+        text: vi.fn(),
+      }),
+    ).resolves.toBeUndefined()
+    expect(runtime.uploadFile).toHaveBeenCalledOnce()
+  })
+
   it.each([
-    ['large.bin', 2 * 1024 * 1024 + 1, 'vfs_limit'],
+    ['large.bin', MAX_VFS_FILE_BYTES + 1, 'vfs_limit'],
     ['SKILL.md', 64 * 1024 + 1, 'invalid_skill_package'],
   ] as const)('rejects %s by File.size before loading its content', async (name, size, code) => {
     const arrayBuffer = vi.fn()
