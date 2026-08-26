@@ -787,6 +787,7 @@ async function* convertMessagesStream(
     toolCalls: 0,
     frames: 0,
     totalOutput: 0,
+    terminalFrames: [] as string[],
   }
   let buffer = ''
 
@@ -1125,18 +1126,22 @@ async function* convertMessagesStream(
         },
       }
       strict.phase = 'terminal'
-      return [
+      strict.terminalFrames = [
         sse(completed ? 'response.completed' : 'response.incomplete', { response }),
         'data: [DONE]\n\n',
       ]
+      return []
     }
     fail('unsupported_messages_event')
   }
 
   const yieldBounded = async function* (frames: string[]): AsyncGenerator<string> {
+    const addedBytes = frames.reduce((total, frame) => total + byteLength(frame), 0)
+    if (strict.totalOutput + addedBytes > limits.maxTotalOutput) {
+      fail('total_output_limit_exceeded')
+    }
     for (const frame of frames) {
       strict.totalOutput += byteLength(frame)
-      if (strict.totalOutput > limits.maxTotalOutput) fail('total_output_limit_exceeded')
       yield frame
     }
   }
@@ -1168,6 +1173,7 @@ async function* convertMessagesStream(
   } catch {
     fail('invalid_messages_utf8')
   }
-  if (buffer.trim() !== '' && !buffer.trim().startsWith(':')) fail('invalid_messages_sse')
+  if (buffer !== '') fail('invalid_messages_sse')
   if (strict.phase !== 'terminal') fail('premature_messages_eof')
+  for await (const terminal of yieldBounded(strict.terminalFrames)) yield terminal
 }

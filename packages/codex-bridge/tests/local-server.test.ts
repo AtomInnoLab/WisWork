@@ -519,15 +519,9 @@ describe('authenticated loopback Responses server', () => {
   })
 
   it('returns a redacted 504 when the absolute turn deadline expires before streaming', async () => {
-    const bridge = await start(
-      async (_request, signal) =>
-        new Promise<Response>((_resolve, reject) => {
-          signal.addEventListener('abort', () => reject(new Error('secret timeout detail')), {
-            once: true,
-          })
-        }),
-      { maxTurnDurationMs: 25 },
-    )
+    const bridge = await start(async () => new Promise<Response>(() => undefined), {
+      maxTurnDurationMs: 25,
+    })
     try {
       const result = await Promise.race([
         rawRequest(bridge.responsesUrl, {
@@ -544,6 +538,73 @@ describe('authenticated loopback Responses server', () => {
       expect((result as RawResponse).body).toContain('turn_timeout')
       expect((result as RawResponse).body).not.toContain('secret')
     } finally {
+      await bridge.close()
+    }
+  })
+
+  it('releases the active slot and safely disposes late callback settlement after timeout', async () => {
+    let resolveLate: ((response: Response) => void) | undefined
+    let rejectLate: ((error: Error) => void) | undefined
+    let lateBodyCancelled = false
+    let call = 0
+    const fetchWithAuth = vi.fn(async () => {
+      call += 1
+      if (call === 1) {
+        return new Promise<Response>((resolve) => {
+          resolveLate = resolve
+        })
+      }
+      if (call === 2) {
+        return new Promise<Response>((_resolve, reject) => {
+          rejectLate = reject
+        })
+      }
+      return chunkedResponse()
+    })
+    const bridge = await start(fetchWithAuth, { maxActiveTurns: 1, maxTurnDurationMs: 25 })
+    const unhandled: unknown[] = []
+    const onUnhandled = (error: unknown): void => {
+      unhandled.push(error)
+    }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const timedOutResolve = await rawRequest(bridge.responsesUrl, {
+        token: bridge.secret,
+        contentType: 'application/json',
+        body: validBody(),
+      })
+      expect(timedOutResolve.status).toBe(504)
+      resolveLate?.(
+        new Response(
+          new ReadableStream({
+            cancel() {
+              lateBodyCancelled = true
+            },
+          }),
+          { headers: { 'content-type': 'text/event-stream' } },
+        ),
+      )
+      await vi.waitFor(() => expect(lateBodyCancelled).toBe(true))
+
+      const timedOutReject = await rawRequest(bridge.responsesUrl, {
+        token: bridge.secret,
+        contentType: 'application/json',
+        body: validBody(),
+      })
+      expect(timedOutReject.status).toBe(504)
+      rejectLate?.(new Error('secret late rejection'))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(unhandled).toEqual([])
+
+      const available = await rawRequest(bridge.responsesUrl, {
+        token: bridge.secret,
+        contentType: 'application/json',
+        body: validBody(),
+      })
+      expect(available.status).toBe(200)
+      expect(fetchWithAuth).toHaveBeenCalledTimes(3)
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
       await bridge.close()
     }
   })
@@ -577,6 +638,38 @@ describe('authenticated loopback Responses server', () => {
       expect((result as RawResponse).body).toContain('event: response.failed')
       expect((result as RawResponse).body).toContain('"code":"turn_timeout"')
       expect((result as RawResponse).body.endsWith('data: [DONE]\n\n')).toBe(true)
+    } finally {
+      await bridge.close()
+    }
+  })
+
+  it('does not expose completion when timeout occurs after message_stop but before EOF', async () => {
+    const bridge = await start(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(
+                new TextEncoder().encode(messageStart + messageDelta + messageStop),
+              )
+            },
+          }),
+          { headers: { 'content-type': 'text/event-stream' } },
+        ),
+      { maxTurnDurationMs: 25 },
+    )
+    try {
+      const response = await rawRequest(bridge.responsesUrl, {
+        token: bridge.secret,
+        contentType: 'application/json',
+        body: validBody(),
+      })
+      expect(response.status).toBe(200)
+      expect(response.body).toContain('event: response.created')
+      expect(response.body).toContain('event: response.failed')
+      expect(response.body).toContain('"code":"turn_timeout"')
+      expect(response.body).not.toContain('event: response.completed')
+      expect(response.body.endsWith('data: [DONE]\n\n')).toBe(true)
     } finally {
       await bridge.close()
     }

@@ -153,6 +153,41 @@ function cancelBody(response: Response): void {
   }
 }
 
+function awaitAbortableUpstream(
+  pending: Promise<Response>,
+  signal: AbortSignal,
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    let waiting = true
+    const cleanup = (): void => signal.removeEventListener('abort', onAbort)
+    const onAbort = (): void => {
+      if (!waiting) return
+      waiting = false
+      cleanup()
+      reject(new RequestReadError())
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    pending.then(
+      (response) => {
+        if (!waiting) {
+          cancelBody(response)
+          return
+        }
+        waiting = false
+        cleanup()
+        resolve(response)
+      },
+      (error: unknown) => {
+        if (!waiting) return
+        waiting = false
+        cleanup()
+        reject(error)
+      },
+    )
+    if (signal.aborted) onAbort()
+  })
+}
+
 async function* responseChunks(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
@@ -164,8 +199,10 @@ async function* responseChunks(
   }
   signal.addEventListener('abort', cancel, { once: true })
   try {
-    while (!signal.aborted) {
+    while (true) {
+      if (signal.aborted) throw new RequestReadError()
       const chunk = await reader.read()
+      if (signal.aborted) throw new RequestReadError()
       if (chunk.done) {
         ended = true
         return
@@ -424,7 +461,8 @@ export async function startResponsesBridge(
 
         let upstream: Response
         try {
-          upstream = await options.fetchWithAuth(turn.messagesRequest, controller.signal)
+          const pendingUpstream = options.fetchWithAuth(turn.messagesRequest, controller.signal)
+          upstream = await awaitAbortableUpstream(pendingUpstream, controller.signal)
         } catch (error) {
           if (timedOut) {
             jsonError(response, 504, 'turn_timeout', 'Turn timed out')

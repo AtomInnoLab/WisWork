@@ -26,6 +26,19 @@ async function collect(
   return events
 }
 
+async function collectUntilFailure(
+  source: AsyncIterable<string>,
+): Promise<{ frames: string[]; error: unknown }> {
+  const frames: string[] = []
+  let error: unknown
+  try {
+    for await (const frame of source) frames.push(frame)
+  } catch (caught) {
+    error = caught
+  }
+  return { frames, error }
+}
+
 async function expectStreamCode(
   values: Array<string | Uint8Array>,
   code: string,
@@ -82,6 +95,17 @@ describe('bounded Anthropic SSE state machine', () => {
       ],
       'invalid_messages_block_index',
     )
+  })
+
+  it.each([
+    ['ping', `${start}${delta}${stop}event: ping\ndata: {"type":"ping"}\n\n`],
+    ['garbage', `${start}${delta}${stop}secret trailing garbage`],
+  ])('withholds completion when %s follows message_stop', async (_label, source) => {
+    const result = await collectUntilFailure(noToolTurn().messagesStreamToResponses(chunks(source)))
+    expect(result.error).toBeInstanceOf(ProtocolCompatibilityError)
+    expect(result.frames.join('')).not.toContain('event: response.completed')
+    expect(result.frames.join('')).not.toContain('data: [DONE]')
+    expect(String(result.error)).not.toContain('secret')
   })
 
   it('ignores comment keepalives and accepts CR-only SSE line endings', async () => {
