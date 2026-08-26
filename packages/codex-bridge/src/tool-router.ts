@@ -35,6 +35,8 @@ export interface ToolSessionRegistration {
     expectedRevision: string,
     signal?: AbortSignal,
   ) => string | Promise<string>
+  /** Release a captured snapshot when guarded execution never begins. Must be idempotent. */
+  readonly discardSnapshot?: (call: AgentToolCall, snapshotId: string) => void | Promise<void>
   readonly executeMutation?: (
     call: AgentToolCall,
     guard: MutationExecutionGuard,
@@ -128,7 +130,9 @@ function validateRegistration(
     typeof registration.isOpen !== 'function' ||
     typeof registration.getRevision !== 'function' ||
     typeof registration.requestApproval !== 'function' ||
-    typeof registration.captureSnapshot !== 'function'
+    typeof registration.captureSnapshot !== 'function' ||
+    (registration.discardSnapshot !== undefined &&
+      typeof registration.discardSnapshot !== 'function')
   ) {
     throw new ToolRouterError('invalid_tool_session')
   }
@@ -358,6 +362,8 @@ export class DocumentToolRouter {
     call: AgentToolCall,
     signal: AbortSignal,
   ): Promise<ToolExecution> {
+    let capturedSnapshotId: string | undefined
+    let guardedExecutionAcknowledged = false
     try {
       const revision = boundedString(
         await abortable(session.registration.getRevision(signal), signal),
@@ -385,11 +391,14 @@ export class DocumentToolRouter {
         return stableExecution('document_changed', 'Document changed', true)
       }
 
+      // Snapshot capture is safety-critical cleanup state. Await its definitive result even when
+      // cancellation races it so a materialized snapshot can be explicitly discarded below.
       const snapshotId = boundedString(
-        await abortable(session.registration.captureSnapshot(call, revision, signal), signal),
+        await session.registration.captureSnapshot(call, revision, signal),
         MAX_SNAPSHOT_ID_BYTES,
         'invalid_snapshot',
       )
+      capturedSnapshotId = snapshotId
       interrupted = stopped(session, signal)
       if (interrupted) return interrupted
       const snapshotRevision = boundedString(
@@ -411,6 +420,10 @@ export class DocumentToolRouter {
         await session.registration.executeMutation!(call, guard, signal),
         true,
       )
+      // A successful renderer acknowledgement is the only point at which the router knows the
+      // prepared snapshot was promoted into committed undo state. A rejection still belongs to
+      // the pre-commit cleanup path; an acknowledgement followed by validation failure does not.
+      guardedExecutionAcknowledged = true
       // A committed mutation still requires validation even if the turn was cancelled meanwhile.
       try {
         await session.registration.validateMutation!(call, execution, guard)
@@ -432,6 +445,19 @@ export class DocumentToolRouter {
           true,
         )
       )
+    } finally {
+      if (
+        capturedSnapshotId !== undefined &&
+        !guardedExecutionAcknowledged &&
+        session.registration.discardSnapshot
+      ) {
+        try {
+          await session.registration.discardSnapshot(call, capturedSnapshotId)
+        } catch {
+          // Cleanup ownership is now uncertain. Fail closed for every later call in this session.
+          session.closed = true
+        }
+      }
     }
   }
 

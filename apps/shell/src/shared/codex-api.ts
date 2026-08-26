@@ -51,6 +51,11 @@ export type CodexToolRequest =
        */
       readonly guard: { readonly expectedRevision: string; readonly snapshotId: string }
     })
+  | (CodexToolRequestBase & {
+      readonly type: 'discardSnapshot'
+      readonly call: AgentToolCall
+      readonly snapshotId: string
+    })
 
 export type CodexToolResponse =
   | { readonly requestId: string; readonly ok: false; readonly code: string }
@@ -78,6 +83,7 @@ export type CodexToolResponse =
       readonly type: 'execution'
       readonly execution: ToolExecution
     }
+  | { readonly requestId: string; readonly ok: true; readonly type: 'discard' }
 
 export interface CodexToolCancel {
   readonly requestId: string
@@ -113,4 +119,11 @@ export interface CodexRuntimeStartRequest {
 export interface CodexRuntimeEvent {
   readonly documentId: string
   readonly event: AgentEvent<unknown>
+}
+
+export interface CodexRuntimeApi {
+  status(): Promise<CodexRuntimeStatus>
+  startTurn(request: CodexRuntimeStartRequest): Promise<void>
+  cancelTurn(documentId: string): Promise<void>
+  onEvent(handler: (event: CodexRuntimeEvent) => void): () => void
 }

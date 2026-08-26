@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { SnapshotStore } from '@wiswork/latex-project'
 import { ProjectSessionRegistry } from '../src/main/project-session.js'
 
 const sha = (text: string) => createHash('sha256').update(text).digest('hex')
@@ -30,7 +31,17 @@ describe('confirmed LaTeX AI edit flow', () => {
       expiresAt: Date.now() + 60_000,
       files: [{ path: 'main.tex', beforeSha256: sha('before'), afterText: 'after' }],
     })
-    return { projectRoot, session }
+    return { root, projectRoot, session }
+  }
+
+  async function prepare(session: Awaited<ReturnType<typeof setup>>['session']) {
+    const expectedRevision = session.getCodexMutationRevision()
+    return session.prepareCodexProposalMutation({
+      documentId: 't7',
+      callId: 'call-1',
+      proposalId: 'proposal-1',
+      expectedRevision,
+    })
   }
 
   it('rejects renderer-dirty state before consuming authorization', async () => {
@@ -282,5 +293,200 @@ describe('confirmed LaTeX AI edit flow', () => {
       files.map((file) => writeFile(join(projectRoot, file.path), 'x'.repeat(250 * 1024))),
     )
     await expect(session.createEditProposal(files)).rejects.toThrow(/total|size/i)
+  })
+
+  it('captures one tentative snapshot before any write and executes that exact snapshot', async () => {
+    const { projectRoot, session } = await setup()
+    const create = vi.spyOn(SnapshotStore.prototype, 'create')
+    vi.spyOn(session, 'compile').mockResolvedValue({
+      revision: 1,
+      pdfUrl: null,
+      diagnostics: [],
+      log: '',
+    })
+
+    const expectedRevision = session.getCodexMutationRevision()
+    const prepared = await prepare(session)
+    expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('before')
+    expect(create).toHaveBeenCalledTimes(1)
+
+    await expect(
+      session.executeCodexProposalMutation({
+        documentId: 't7',
+        callId: 'call-1',
+        preparationId: prepared.preparationId,
+        snapshotId: prepared.snapshotId,
+        expectedRevision,
+      }),
+    ).resolves.toMatchObject({
+      proposalId: 'proposal-1',
+      snapshotId: prepared.snapshotId,
+      compile: { ok: true },
+    })
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('after')
+    const appliedRevision = session.getCodexMutationRevision()
+    expect(appliedRevision).not.toBe(expectedRevision)
+
+    await session.undoConfirmedProposal(prepared.snapshotId)
+    expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('before')
+    expect(session.getCodexMutationRevision()).not.toBe(appliedRevision)
+  })
+
+  it('discards tentative snapshots on denial and refuses their later execution', async () => {
+    const { root, projectRoot, session } = await setup()
+    const prepared = await prepare(session)
+    await session.discardCodexProposalMutation({
+      documentId: 't7',
+      callId: 'call-1',
+      preparationId: prepared.preparationId,
+      snapshotId: prepared.snapshotId,
+    })
+
+    await expect(
+      session.executeCodexProposalMutation({
+        documentId: 't7',
+        callId: 'call-1',
+        preparationId: prepared.preparationId,
+        snapshotId: prepared.snapshotId,
+        expectedRevision: session.getCodexMutationRevision(),
+      }),
+    ).rejects.toThrow(/preparation/i)
+    expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('before')
+    await expect(
+      new SnapshotStore(join(root, 'latex', 'project-state')).list(session.projectId),
+    ).resolves.toEqual([])
+  })
+
+  it('invalidates and discards preparation after a concurrent renderer edit', async () => {
+    const { root, projectRoot, session } = await setup()
+    const expectedRevision = session.getCodexMutationRevision()
+    const prepared = await prepare(session)
+    session.updateBuffer('main.tex', 'concurrent edit')
+    expect(session.getCodexMutationRevision()).not.toBe(expectedRevision)
+
+    await expect(
+      session.executeCodexProposalMutation({
+        documentId: 't7',
+        callId: 'call-1',
+        preparationId: prepared.preparationId,
+        snapshotId: prepared.snapshotId,
+        expectedRevision,
+      }),
+    ).rejects.toThrow(/revision|changed/i)
+    expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('before')
+    await expect(
+      session.discardCodexProposalMutation({
+        documentId: 't7',
+        callId: 'call-1',
+        preparationId: prepared.preparationId,
+        snapshotId: prepared.snapshotId,
+      }),
+    ).resolves.toBeUndefined()
+    await expect(
+      new SnapshotStore(join(root, 'latex', 'project-state')).list(session.projectId),
+    ).resolves.toEqual([])
+  })
+
+  it('marks cancellation during guarded execution and rechecks it immediately before commit', async () => {
+    const { root, projectRoot, session } = await setup()
+    const expectedRevision = session.getCodexMutationRevision()
+    const prepared = await prepare(session)
+    const originalRead = session.project.readText.bind(session.project)
+    let releaseRead!: () => void
+    let markReadStarted!: () => void
+    const readGate = new Promise<void>((resolve) => (releaseRead = resolve))
+    const readStarted = new Promise<void>((resolve) => (markReadStarted = resolve))
+    vi.spyOn(session.project, 'readText').mockImplementationOnce(async (path) => {
+      markReadStarted()
+      await readGate
+      return originalRead(path)
+    })
+
+    const executing = session.executeCodexProposalMutation({
+      documentId: 't7',
+      callId: 'call-1',
+      preparationId: prepared.preparationId,
+      snapshotId: prepared.snapshotId,
+      expectedRevision,
+    })
+    await readStarted
+    const cancelling = session.discardCodexProposalMutation({
+      documentId: 't7',
+      callId: 'call-1',
+      preparationId: prepared.preparationId,
+      snapshotId: prepared.snapshotId,
+    })
+    releaseRead()
+
+    await expect(executing).rejects.toThrow(/cancel/i)
+    await expect(cancelling).resolves.toBeUndefined()
+    expect(await readFile(join(projectRoot, 'main.tex'), 'utf8')).toBe('before')
+    await expect(
+      new SnapshotStore(join(root, 'latex', 'project-state')).list(session.projectId),
+    ).resolves.toEqual([])
+  })
+
+  it('binds preparation to document, call, proposal, snapshot, revision, and owning session', async () => {
+    const { session } = await setup()
+    const expectedRevision = session.getCodexMutationRevision()
+    const prepared = await prepare(session)
+    const base = {
+      documentId: 't7',
+      callId: 'call-1',
+      preparationId: prepared.preparationId,
+      snapshotId: prepared.snapshotId,
+      expectedRevision,
+    }
+
+    for (const mismatch of [
+      { ...base, documentId: 't8' },
+      { ...base, callId: 'call-2' },
+      { ...base, snapshotId: 'f'.repeat(32) },
+      { ...base, expectedRevision: 'wrong' },
+    ]) {
+      await expect(session.executeCodexProposalMutation(mismatch)).rejects.toThrow(
+        /binding|revision/i,
+      )
+    }
+
+    const otherRoot = await mkdtemp(join(tmpdir(), 'latex-ai-other-session-'))
+    roots.push(otherRoot)
+    const otherProject = join(otherRoot, 'project')
+    await mkdir(otherProject)
+    await writeFile(join(otherProject, 'main.tex'), 'other')
+    const other = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: otherRoot },
+    }).attach(99, otherProject)
+    await expect(other.executeCodexProposalMutation(base)).rejects.toThrow(/preparation/i)
+  })
+
+  it('advances the authoritative revision for editor and external mutations', async () => {
+    const { projectRoot, session } = await setup()
+    const revisions = [session.getCodexMutationRevision()]
+    session.updateBuffer('main.tex', 'edited')
+    revisions.push(session.getCodexMutationRevision())
+    await session.saveText('main.tex')
+    revisions.push(session.getCodexMutationRevision())
+    await session.createText('notes.tex', 'notes')
+    revisions.push(session.getCodexMutationRevision())
+    await session.renameText('notes.tex', 'renamed.tex')
+    revisions.push(session.getCodexMutationRevision())
+    await writeFile(join(projectRoot, 'untracked.tex'), 'external')
+    await session.handleExternalChange('untracked.tex')
+    revisions.push(session.getCodexMutationRevision())
+
+    expect(new Set(revisions).size).toBe(revisions.length)
+    expect(revisions.map(Number)).toEqual([...revisions.map(Number)].sort((a, b) => a - b))
+  })
+
+  it('discards every tentative snapshot when the session closes', async () => {
+    const { root, session } = await setup()
+    await prepare(session)
+    session.dispose()
+
+    const snapshots = new SnapshotStore(join(root, 'latex', 'project-state'))
+    await vi.waitFor(async () => expect(await snapshots.list(session.projectId)).toEqual([]))
   })
 })

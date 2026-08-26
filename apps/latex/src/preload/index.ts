@@ -1,4 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import {
+  CODEX_RUNTIME_CHANNELS,
+  CODEX_TOOL_CHANNELS,
+  type CodexRuntimeApi,
+  type CodexToolApi,
+} from '../../../shell/src/shared/codex-api.js'
 import { LATEX_CHANNELS, type LatexApi } from '../shared/ipc.js'
 
 const api: LatexApi = {
@@ -16,8 +22,17 @@ const api: LatexApi = {
   syncTexReverse: (request) => ipcRenderer.invoke(LATEX_CHANNELS.syncTexReverse, request),
   getProposal: (request) => ipcRenderer.invoke(LATEX_CHANNELS.proposalGet, request),
   proposeProjectEdits: (request) => ipcRenderer.invoke(LATEX_CHANNELS.proposalCreate, request),
+  discardProposal: (request) => ipcRenderer.invoke(LATEX_CHANNELS.proposalDiscard, request),
   applyProposal: (request) => ipcRenderer.invoke(LATEX_CHANNELS.proposalApply, request),
   undoProposal: (request) => ipcRenderer.invoke(LATEX_CHANNELS.proposalUndo, request),
+  getCodexMutationRevision: (request) =>
+    ipcRenderer.invoke(LATEX_CHANNELS.codexMutationRevision, request),
+  prepareCodexProposalMutation: (request) =>
+    ipcRenderer.invoke(LATEX_CHANNELS.codexProposalPrepare, request),
+  executeCodexProposalMutation: (request) =>
+    ipcRenderer.invoke(LATEX_CHANNELS.codexProposalExecute, request),
+  discardCodexProposalMutation: (request) =>
+    ipcRenderer.invoke(LATEX_CHANNELS.codexProposalDiscard, request),
   listProjectFiles: (request) => ipcRenderer.invoke(LATEX_CHANNELS.aiProjectList, request),
   searchProjectText: (request) => ipcRenderer.invoke(LATEX_CHANNELS.aiProjectSearch, request),
   readProjectText: (request) => ipcRenderer.invoke(LATEX_CHANNELS.aiProjectRead, request),
@@ -73,3 +88,36 @@ const api: LatexApi = {
 }
 
 contextBridge.exposeInMainWorld('latexApi', api)
+
+const codexToolApi: CodexToolApi = {
+  register: (request) => ipcRenderer.invoke(CODEX_TOOL_CHANNELS.register, request),
+  unregister: (documentId) => ipcRenderer.invoke(CODEX_TOOL_CHANNELS.unregister, documentId),
+  respond: (response) => ipcRenderer.invoke(CODEX_TOOL_CHANNELS.response, response),
+  onRequest: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, request: Parameters<typeof handler>[0]) =>
+      handler(request)
+    ipcRenderer.on(CODEX_TOOL_CHANNELS.request, listener)
+    return () => ipcRenderer.removeListener(CODEX_TOOL_CHANNELS.request, listener)
+  },
+  onCancel: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, cancel: Parameters<typeof handler>[0]) =>
+      handler(cancel)
+    ipcRenderer.on(CODEX_TOOL_CHANNELS.cancel, listener)
+    return () => ipcRenderer.removeListener(CODEX_TOOL_CHANNELS.cancel, listener)
+  },
+}
+
+const codexRuntimeApi: CodexRuntimeApi = {
+  status: () => ipcRenderer.invoke(CODEX_RUNTIME_CHANNELS.status),
+  startTurn: (request) => ipcRenderer.invoke(CODEX_RUNTIME_CHANNELS.startTurn, request),
+  cancelTurn: (documentId) => ipcRenderer.invoke(CODEX_RUNTIME_CHANNELS.cancelTurn, documentId),
+  onEvent: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, event: Parameters<typeof handler>[0]) =>
+      handler(event)
+    ipcRenderer.on(CODEX_RUNTIME_CHANNELS.event, listener)
+    return () => ipcRenderer.removeListener(CODEX_RUNTIME_CHANNELS.event, listener)
+  },
+}
+
+contextBridge.exposeInMainWorld('wisworkCodexTools', codexToolApi)
+contextBridge.exposeInMainWorld('wisworkCodexRuntime', codexRuntimeApi)

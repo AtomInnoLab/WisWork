@@ -20,8 +20,13 @@ export const LATEX_CHANNELS = {
   syncTexReverse: 'latex:synctex:reverse',
   proposalGet: 'latex:proposal:get',
   proposalCreate: 'latex:proposal:create',
+  proposalDiscard: 'latex:proposal:discard',
   proposalApply: 'latex:proposal:apply',
   proposalUndo: 'latex:proposal:undo',
+  codexMutationRevision: 'latex:codex:mutation:revision',
+  codexProposalPrepare: 'latex:codex:proposal:prepare',
+  codexProposalExecute: 'latex:codex:proposal:execute',
+  codexProposalDiscard: 'latex:codex:proposal:discard',
   aiProjectList: 'latex:ai:project:list',
   aiProjectSearch: 'latex:ai:project:search',
   aiProjectRead: 'latex:ai:project:read',
@@ -101,6 +106,39 @@ export interface UndoProposalRequest extends SessionRequest {
 
 export interface CreateProposalRequest extends SessionRequest {
   files: Array<{ path: string; afterText: string }>
+}
+
+export interface PrepareCodexProposalMutationRequest extends SessionRequest {
+  documentId: string
+  callId: string
+  proposalId: string
+  expectedRevision: string
+}
+
+export interface ExecuteCodexProposalMutationRequest extends SessionRequest {
+  documentId: string
+  callId: string
+  preparationId: string
+  snapshotId: string
+  expectedRevision: string
+}
+
+export interface DiscardCodexProposalMutationRequest extends SessionRequest {
+  documentId: string
+  callId: string
+  preparationId: string
+  snapshotId: string
+}
+
+export interface PreparedCodexProposalMutationDto {
+  preparationId: string
+  snapshotId: string
+}
+
+export interface CodexProposalMutationResultDto {
+  proposalId: string
+  snapshotId: string
+  compile: { ok: true; result: CompileResultDto } | { ok: false; error: string }
 }
 
 export interface AiProjectReadRequest extends FileRequest {
@@ -192,8 +230,19 @@ export interface LatexApi {
   ): Promise<LatexIpcResult<{ path: string; line: number } | null>>
   getProposal(request: ProposalRequest): Promise<LatexIpcResult<unknown>>
   proposeProjectEdits(request: CreateProposalRequest): Promise<LatexIpcResult<LatexProposalDto>>
+  discardProposal(request: ProposalRequest): Promise<LatexIpcResult<void>>
   applyProposal(request: ProposalRequest): Promise<LatexIpcResult<unknown>>
   undoProposal(request: UndoProposalRequest): Promise<LatexIpcResult<unknown>>
+  getCodexMutationRevision(request: SessionRequest): Promise<LatexIpcResult<{ revision: string }>>
+  prepareCodexProposalMutation(
+    request: PrepareCodexProposalMutationRequest,
+  ): Promise<LatexIpcResult<PreparedCodexProposalMutationDto>>
+  executeCodexProposalMutation(
+    request: ExecuteCodexProposalMutationRequest,
+  ): Promise<LatexIpcResult<CodexProposalMutationResultDto>>
+  discardCodexProposalMutation(
+    request: DiscardCodexProposalMutationRequest,
+  ): Promise<LatexIpcResult<void>>
   listProjectFiles(request: SessionRequest): Promise<LatexIpcResult<unknown>>
   searchProjectText(request: AiProjectSearchRequest): Promise<LatexIpcResult<unknown>>
   readProjectText(request: AiProjectReadRequest): Promise<LatexIpcResult<unknown>>

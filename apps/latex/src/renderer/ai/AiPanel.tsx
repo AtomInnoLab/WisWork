@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { AgentLoop } from '@wiswork/agent-core'
+import { AgentLoop, type ToolExecutedEvent } from '@wiswork/agent-core'
+import type { AgentEvent } from '@wiswork/agent-runtime'
 import { AiComposer, AiTypingIndicator, Markdown, WisWorkAppMark } from '@wiswork/ui'
 import { createLatexSkill } from './latex-skill.js'
 import {
@@ -8,6 +9,7 @@ import {
   type ReviewProposal,
 } from './proposal-review.js'
 import { ProposalReview } from './ProposalReview.js'
+import { LatexCodexToolSession, type LatexCodexMutationResult } from './codex-tool-session.js'
 import { createLatexTransport } from './transport.js'
 
 const E2E_PROPOSAL_TEXT = String.raw`\documentclass{article}
@@ -18,6 +20,11 @@ AI-confirmed WisWork
 interface ChatEntry {
   role: 'user' | 'assistant'
   text: string
+}
+
+interface PanelRuntime {
+  run(text: string): void | Promise<void>
+  cancel(): void | Promise<void>
 }
 
 const PANEL_WIDTH_KEY = 'latex-ai-panel-width'
@@ -59,56 +66,186 @@ export function AiPanel({
   const [proposal, setProposal] = useState<ReviewProposal | null>(null)
   const [snapshotId, setSnapshotId] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  const [activity, setActivity] = useState<string | null>(null)
+  const [ready, setReady] = useState(false)
+  const [reviewAwaiting, setReviewAwaiting] = useState(false)
   const [panelWidth, setPanelWidth] = useState(loadPanelWidth)
   const [resizing, setResizing] = useState(false)
   const projectRef = useRef(projectId)
   projectRef.current = projectId
   const loopRef = useRef<AgentLoop | null>(null)
+  const runtimeRef = useRef<PanelRuntime | null>(null)
+  const restoredChatRef = useRef<ChatEntry[] | null>(null)
+  const approvalRef = useRef<
+    | {
+        proposalId: string
+        resolve(selected: ReadonlySet<string> | null): void
+      }
+    | undefined
+  >(undefined)
   const chatIdsRef = useRef<{ projectId: string; chatId: string } | null>(null)
   const e2eProposalLoaded = useRef<string | null>(null)
 
   useEffect(() => {
-    const loop = new AgentLoop({
-      transport: createLatexTransport(),
-      skill: createLatexSkill(window.latexApi, () => projectRef.current),
-      events: {
-        onText: setText,
-        onToolExecuted: ({ call, execution }) => {
-          if (call.name !== 'propose_project_edits' || execution.isError) return
-          const projectId = projectRef.current
-          void loadProposalForReview(execution.output, projectId, (request) =>
-            window.latexApi.getProposal(request),
-          )
-            .then(setProposal)
-            .catch((error: unknown) =>
-              setStatus(error instanceof Error ? error.message : String(error)),
-            )
-        },
-        onDone: (result) => {
-          setBusy(false)
-          setText('')
-          if (result.text)
-            setChat((current) => [...current, { role: 'assistant', text: result.text }])
-          const ids = chatIdsRef.current
-          if (ids)
-            void window.latexApi.appendDirectoryChat({
-              projectId: projectRef.current,
-              storeProjectId: ids.projectId,
-              chatId: ids.chatId,
-              role: 'assistant',
-              text: result.text,
-            })
-        },
-        onError: (error) => {
-          setStatus(error)
-          setBusy(false)
-        },
-      },
-    })
-    loopRef.current = loop
+    let disposed = false
+    let removeRuntimeEvents: (() => void) | undefined
+    let codexTools: LatexCodexToolSession | undefined
+
+    const onDone = (result: { text: string }) => {
+      setBusy(false)
+      setActivity(null)
+      setText('')
+      if (result.text) setChat((current) => [...current, { role: 'assistant', text: result.text }])
+      const ids = chatIdsRef.current
+      if (ids)
+        void window.latexApi.appendDirectoryChat({
+          projectId: projectRef.current,
+          storeProjectId: ids.projectId,
+          chatId: ids.chatId,
+          role: 'assistant',
+          text: result.text,
+        })
+    }
+    const onError = (error: string) => {
+      setStatus(error)
+      setActivity(null)
+      setBusy(false)
+    }
+    const onLegacyToolExecuted = ({ call, execution }: ToolExecutedEvent<unknown>) => {
+      if (call.name !== 'propose_project_edits' || execution.isError) return
+      const projectId = projectRef.current
+      void loadProposalForReview(execution.output, projectId, (request) =>
+        window.latexApi.getProposal(request),
+      )
+        .then(setProposal)
+        .catch((error: unknown) =>
+          setStatus(error instanceof Error ? error.message : 'Unable to load proposal.'),
+        )
+    }
+    const requestReview = (
+      nextProposal: ReviewProposal,
+      signal: AbortSignal,
+    ): Promise<ReadonlySet<string> | null> => {
+      approvalRef.current?.resolve(null)
+      return new Promise((resolve) => {
+        let settled = false
+        const finish = (selected: ReadonlySet<string> | null) => {
+          if (settled) return
+          settled = true
+          signal.removeEventListener('abort', onAbort)
+          if (approvalRef.current?.proposalId === nextProposal.id) approvalRef.current = undefined
+          setReviewAwaiting(false)
+          if (selected === null) setProposal(null)
+          resolve(selected)
+        }
+        const onAbort = () => finish(null)
+        approvalRef.current = { proposalId: nextProposal.id, resolve: finish }
+        setReviewAwaiting(true)
+        setProposal(nextProposal)
+        signal.addEventListener('abort', onAbort, { once: true })
+        if (signal.aborted) onAbort()
+      })
+    }
+    const onCodexApplied = async (result: LatexCodexMutationResult) => {
+      await onProjectFilesChanged?.()
+      setSnapshotId(result.snapshotId)
+      setProposal(null)
+      setStatus(
+        result.compile.ok
+          ? `Changes applied and compiled (${result.compile.result?.diagnostics.length ?? 0} diagnostics).`
+          : `Changes applied; compile failed: ${result.compile.error ?? 'unknown error'}`,
+      )
+    }
+    const onCodexEvent = (event: AgentEvent<unknown>) => {
+      switch (event.type) {
+        case 'text':
+          setText(event.text)
+          break
+        case 'tool-start':
+          setActivity(`Using ${event.call.name.slice(0, 80)}…`)
+          break
+        case 'tool-executed':
+        case 'turn-end':
+          setActivity(null)
+          break
+        case 'done':
+          onDone(event.result)
+          break
+        case 'error':
+          onError(event.message)
+          if (event.code === 'codex_process_exited' || event.code === 'codex_process_crashed') {
+            setReady(false)
+            runtimeRef.current = null
+            void codexTools?.close()
+          }
+          break
+      }
+    }
+
+    const initialize = async () => {
+      try {
+        const runtimeStatus = await window.wisworkCodexRuntime.status()
+        if (disposed) return
+        if (runtimeStatus.runtime === 'legacy') {
+          const loop = new AgentLoop({
+            transport: createLatexTransport(),
+            skill: createLatexSkill(window.latexApi, () => projectRef.current),
+            events: {
+              onText: setText,
+              onToolExecuted: onLegacyToolExecuted,
+              onDone,
+              onError,
+            },
+          })
+          if (restoredChatRef.current) loop.restore(restoredChatRef.current)
+          loopRef.current = loop
+          runtimeRef.current = {
+            run: (instruction) => loop.run(instruction),
+            cancel: () => loop.cancel(),
+          }
+          setReady(true)
+          return
+        }
+        if (!runtimeStatus.documentId) throw new Error('codex_document_unavailable')
+        const documentId = runtimeStatus.documentId
+        removeRuntimeEvents = window.wisworkCodexRuntime.onEvent((message) => {
+          if (message.documentId === documentId && !disposed) onCodexEvent(message.event)
+        })
+        codexTools = new LatexCodexToolSession({
+          documentId,
+          projectId: projectRef.current,
+          skill: createLatexSkill(window.latexApi, () => projectRef.current),
+          tools: window.wisworkCodexTools,
+          domain: window.latexApi,
+          requestReview,
+          onApplied: onCodexApplied,
+        })
+        await codexTools.start()
+        if (disposed) {
+          await codexTools.close()
+          return
+        }
+        runtimeRef.current = {
+          run: (instruction) =>
+            window.wisworkCodexRuntime.startTurn({ documentId, text: instruction }),
+          cancel: () => window.wisworkCodexRuntime.cancelTurn(documentId),
+        }
+        setReady(true)
+      } catch {
+        if (!disposed) onError('The selected AI runtime is unavailable.')
+      }
+    }
+    void initialize()
     return () => {
-      loop.cancel()
+      disposed = true
+      approvalRef.current?.resolve(null)
+      approvalRef.current = undefined
+      void runtimeRef.current?.cancel()
+      runtimeRef.current = null
+      loopRef.current?.cancel()
       loopRef.current = null
+      removeRuntimeEvents?.()
+      void codexTools?.close()
     }
   }, [])
 
@@ -128,6 +265,7 @@ export function AiPanel({
           text: message.text,
         }))
         setChat(restored)
+        restoredChatRef.current = restored
         loopRef.current?.restore(restored)
       }
     })
@@ -170,7 +308,8 @@ export function AiPanel({
 
   const send = () => {
     const instruction = input.trim()
-    if (!instruction || busy || disabled) return
+    const runtime = runtimeRef.current
+    if (!instruction || busy || disabled || !ready || !runtime) return
     setBusy(true)
     setStatus(null)
     setText('')
@@ -185,11 +324,20 @@ export function AiPanel({
         role: 'user',
         text: instruction,
       })
-    loopRef.current?.run(instruction)
+    try {
+      void Promise.resolve(runtime.run(instruction)).catch(() => {
+        setStatus('The selected AI runtime is unavailable.')
+        setBusy(false)
+      })
+    } catch {
+      setStatus('The selected AI runtime is unavailable.')
+      setBusy(false)
+    }
   }
 
   const cancel = () => {
-    loopRef.current?.cancel()
+    approvalRef.current?.resolve(null)
+    void runtimeRef.current?.cancel()
     setBusy(false)
     setText('')
     setStatus('Stopped.')
@@ -197,6 +345,11 @@ export function AiPanel({
 
   const confirm = async (selected: ReadonlySet<string>) => {
     if (!proposal || disabled) return
+    if (approvalRef.current?.proposalId === proposal.id) {
+      approvalRef.current.resolve(selected)
+      setProposal(null)
+      return
+    }
     setBusy(true)
     try {
       const owned = await proposalForSelection(proposal, selected, async (files) => {
@@ -307,12 +460,17 @@ export function AiPanel({
             </div>
           )}
           {busy && !text && <AiTypingIndicator label="WisWork is working" />}
+          {activity && <div className="ai-status">{activity}</div>}
           {proposal && (
             <ProposalReview
               proposal={proposal}
-              busy={busy || disabled}
+              busy={(busy && !reviewAwaiting) || disabled}
               onConfirm={(selected) => void confirm(selected)}
-              onCancel={() => setProposal(null)}
+              onCancel={() => {
+                if (approvalRef.current?.proposalId === proposal.id)
+                  approvalRef.current.resolve(null)
+                setProposal(null)
+              }}
             />
           )}
           {status && (
@@ -333,7 +491,7 @@ export function AiPanel({
         <div className="ai-composer-wrap">
           <AiComposer
             value={input}
-            busy={busy}
+            busy={busy || !ready}
             placeholder="Ask WisWork AI about this LaTeX project"
             hintIdle="Enter to send · Shift+Enter for new line"
             hintBusy="Working…"

@@ -89,6 +89,27 @@ interface ActiveCompile {
   promise: Promise<CompileResultDto>
 }
 
+interface PreparedProposalMutation {
+  preparationId: string
+  documentId: string
+  callId: string
+  proposalId: string
+  expectedRevision: string
+  snapshotId: string
+  cancelled: boolean
+}
+
+interface PreparedProposalBinding {
+  documentId: string
+  callId: string
+  preparationId: string
+  snapshotId: string
+}
+
+interface ExecutePreparedProposalBinding extends PreparedProposalBinding {
+  expectedRevision: string
+}
+
 export class ProjectSession {
   readonly projectId: string
   readonly webContentsId: number
@@ -103,6 +124,7 @@ export class ProjectSession {
   private readonly onExternalChange?: ProjectSessionRegistryOptions['onExternalChange']
   private readonly maxCompileResults: number
   private readonly cleanupStaging: (path: string) => Promise<void>
+  private readonly snapshotStore?: SnapshotStore
   private readonly proposalStore?: ProposalStore
   private readonly projectStore?: ProjectStore
   private readonly remoteBundleUrl?: string
@@ -123,7 +145,11 @@ export class ProjectSession {
   >()
   private disposed = false
   private confirmedEditRevision = 0
+  private mutationRevision = 0
+  private readonly preparedProposalMutations = new Map<string, PreparedProposalMutation>()
   private confirmedMutationInProgress = false
+  private confirmedMutationSettled: Promise<void> = Promise.resolve()
+  private resolveConfirmedMutationSettled: (() => void) | undefined
   private activeRendererMutations = 0
   private rendererMutationsSettled: Promise<void> = Promise.resolve()
   private resolveRendererMutationsSettled: (() => void) | undefined
@@ -153,7 +179,8 @@ export class ProjectSession {
     }
     if (this.compilerRuntime) {
       const cacheRoot = join(this.compilerRuntime.userDataPath, 'latex', 'project-state')
-      this.proposalStore = new ProposalStore(cacheRoot, new SnapshotStore(cacheRoot))
+      this.snapshotStore = new SnapshotStore(cacheRoot)
+      this.proposalStore = new ProposalStore(cacheRoot, this.snapshotStore)
       this.projectStore = new ProjectStore(this.compilerRuntime.userDataPath)
       if (
         this.compilerRuntime.bundleAsset &&
@@ -219,9 +246,11 @@ export class ProjectSession {
   private updateBufferState(path: string, text: string): LatexBufferDto {
     const state = this.buffers.get(path)
     if (!state) throw new Error(`File must be read before editing: ${path}`)
+    const changed = state.text !== text
     state.text = text
     state.version += 1
     state.dirty = text !== state.baselineText
+    if (changed) this.advanceMutationRevision()
     return dto(state)
   }
 
@@ -242,7 +271,9 @@ export class ProjectSession {
         state.lastSaveRevision = editRevision
       }
       if (requestedText !== undefined) this.updateBufferState(path, requestedText)
-      return await this.enqueueSave(path, () => this.saveCurrentText(path))
+      const saved = await this.enqueueSave(path, () => this.saveCurrentText(path))
+      this.advanceMutationRevision()
+      return saved
     } finally {
       release()
     }
@@ -312,6 +343,7 @@ export class ProjectSession {
         lastSaveRevision: -1,
       }
       this.buffers.set(saved.path, state)
+      this.advanceMutationRevision()
       return dto(state)
     } finally {
       release()
@@ -344,6 +376,7 @@ export class ProjectSession {
       const state = this.buffers.get(from)
       this.buffers.delete(from)
       if (state) this.buffers.set(to, { ...state, path: to })
+      this.advanceMutationRevision()
     } finally {
       release()
     }
@@ -351,6 +384,7 @@ export class ProjectSession {
 
   async handleExternalChange(path: string): Promise<void> {
     if (this.disposed || !path || path.startsWith('.wiswork-delete-')) return
+    this.advanceMutationRevision()
     const state = this.buffers.get(path)
     if (!state) return
     let diskText: string | null
@@ -750,6 +784,129 @@ export class ProjectSession {
     return proposal ? structuredClone(proposal) : undefined
   }
 
+  async discardEditProposal(id: string): Promise<void> {
+    this.assertActive()
+    if (!this.proposalStore) throw new Error('Proposal store is not configured')
+    await this.proposalStore.discard(id, this.projectId)
+    this.proposals.delete(id)
+    this.proposalReviews.delete(id)
+  }
+
+  getCodexMutationRevision(): string {
+    this.assertActive()
+    return String(this.mutationRevision)
+  }
+
+  async prepareCodexProposalMutation(request: {
+    documentId: string
+    callId: string
+    proposalId: string
+    expectedRevision: string
+  }): Promise<{ preparationId: string; snapshotId: string }> {
+    this.assertActive()
+    return this.withConfirmedMutation(async () => {
+      this.assertExpectedMutationRevision(request.expectedRevision)
+      this.assertAllBuffersPersisted()
+      if (!this.snapshotStore || !this.proposalStore)
+        throw new Error('Proposal store is not configured')
+      if (this.preparedProposalMutations.size >= 32)
+        throw new Error('Too many prepared proposal mutations')
+      if (
+        [...this.preparedProposalMutations.values()].some(
+          (item) => item.documentId === request.documentId && item.callId === request.callId,
+        )
+      ) {
+        throw new Error('Proposal mutation call is already prepared')
+      }
+      const proposal = this.proposals.get(request.proposalId)
+      if (!proposal) throw new Error('Proposal not found')
+      if (proposal.expiresAt <= Date.now()) throw new Error('Proposal has expired')
+
+      const snapshot = await this.snapshotStore.create(
+        this.projectId,
+        this.project,
+        proposal.files.map((file) => file.path),
+      )
+      try {
+        const hashes = await this.snapshotStore.getFileHashes(this.projectId, snapshot.id)
+        if (
+          hashes.size !== proposal.files.length ||
+          proposal.files.some(
+            (file) => !hashes.has(file.path) || hashes.get(file.path) !== file.beforeSha256,
+          )
+        ) {
+          throw new Error('Prepared snapshot does not match proposal baseline')
+        }
+        this.assertExpectedMutationRevision(request.expectedRevision)
+        const preparationId = `prep-${randomBytes(16).toString('hex')}`
+        this.preparedProposalMutations.set(preparationId, {
+          preparationId,
+          documentId: request.documentId,
+          callId: request.callId,
+          proposalId: request.proposalId,
+          expectedRevision: request.expectedRevision,
+          snapshotId: snapshot.id,
+          cancelled: false,
+        })
+        return { preparationId, snapshotId: snapshot.id }
+      } catch (error) {
+        await this.snapshotStore.discard(this.projectId, snapshot.id).catch(() => undefined)
+        throw error
+      }
+    })
+  }
+
+  async executeCodexProposalMutation(request: ExecutePreparedProposalBinding) {
+    this.assertActive()
+    return this.withConfirmedMutation(async () => {
+      const prepared = this.requirePreparedProposalMutation(request)
+      if (prepared.cancelled) throw new Error('Proposal mutation was cancelled')
+      if (request.expectedRevision !== prepared.expectedRevision) {
+        throw new Error('Prepared proposal mutation revision binding mismatch')
+      }
+      if (this.getCodexMutationRevision() !== prepared.expectedRevision) {
+        throw new Error('Document revision changed after proposal approval')
+      }
+      this.assertAllBuffersPersisted()
+      if (!this.proposalStore) throw new Error('Proposal store is not configured')
+
+      // This call owns the domain transaction lock. ProposalStore revalidates the proposal
+      // revision, target baselines, and this exact snapshot immediately before its first write.
+      // A pre-commit failure deliberately leaves the preparation owned here until the tool
+      // router sends its single explicit discard request.
+      const applied = await this.proposalStore.applyPrepared(
+        prepared.proposalId,
+        this.projectId,
+        prepared.snapshotId,
+        this.project,
+        () => {
+          if (prepared.cancelled) throw new Error('Proposal mutation was cancelled')
+          this.assertExpectedMutationRevision(prepared.expectedRevision)
+        },
+      )
+      this.preparedProposalMutations.delete(prepared.preparationId)
+      this.advanceMutationRevision()
+      const proposal = this.proposals.get(prepared.proposalId)
+      this.proposals.delete(prepared.proposalId)
+      this.proposalReviews.delete(prepared.proposalId)
+      await this.refreshBuffers(proposal?.files.map((file) => file.path) ?? [])
+      return { ...applied, compile: await this.compileAfterConfirmedEdit() }
+    })
+  }
+
+  async discardCodexProposalMutation(request: PreparedProposalBinding): Promise<void> {
+    this.assertActive()
+    const prepared = this.requirePreparedProposalMutation(request)
+    // Cancellation becomes visible synchronously even when execution currently owns the domain
+    // lock. Its pre-commit callback observes this bit before the transaction's first write.
+    prepared.cancelled = true
+    while (this.confirmedMutationInProgress) await this.confirmedMutationSettled
+    return this.withConfirmedMutation(async () => {
+      if (this.preparedProposalMutations.get(prepared.preparationId) !== prepared) return
+      await this.discardPreparedProposalMutation(prepared)
+    })
+  }
+
   async applyProposal(id: string) {
     if (!this.proposalStore || !this.proposals.has(id)) throw new Error('Proposal not found')
     return this.proposalStore.apply(id, this.projectId, this.project)
@@ -767,6 +924,7 @@ export class ProjectSession {
       const proposal = this.proposals.get(id)
       if (!this.proposalStore || !proposal) throw new Error('Proposal not found')
       const applied = await this.proposalStore.apply(id, this.projectId, this.project)
+      this.advanceMutationRevision()
       this.proposals.delete(id)
       this.proposalReviews.delete(id)
       await this.refreshBuffers(proposal.files.map((file) => file.path))
@@ -781,6 +939,7 @@ export class ProjectSession {
       if (!this.proposalStore) throw new Error('Proposal store is not configured')
       const undone = await this.proposalStore.undo(this.projectId, snapshotId, this.project)
       if (!undone.restored) return { ...undone, compile: null }
+      this.advanceMutationRevision()
       await this.refreshBuffers([...this.buffers.keys()])
       return { ...undone, compile: await this.compileAfterConfirmedEdit() }
     })
@@ -817,8 +976,56 @@ export class ProjectSession {
     }
   }
 
+  private requirePreparedProposalMutation(
+    binding: PreparedProposalBinding,
+  ): PreparedProposalMutation {
+    const prepared = this.preparedProposalMutations.get(binding.preparationId)
+    if (!prepared) throw new Error('Proposal mutation preparation not found')
+    if (
+      prepared.documentId !== binding.documentId ||
+      prepared.callId !== binding.callId ||
+      prepared.snapshotId !== binding.snapshotId
+    ) {
+      throw new Error('Proposal mutation preparation binding mismatch')
+    }
+    return prepared
+  }
+
+  private async discardPreparedProposalMutation(prepared: PreparedProposalMutation): Promise<void> {
+    if (!this.proposalStore) throw new Error('Proposal store is not configured')
+    await this.proposalStore.discardPreparedSnapshot(
+      prepared.proposalId,
+      this.projectId,
+      prepared.snapshotId,
+    )
+    this.preparedProposalMutations.delete(prepared.preparationId)
+  }
+
+  private advanceMutationRevision(): void {
+    if (this.mutationRevision >= Number.MAX_SAFE_INTEGER) {
+      throw new Error('LaTeX mutation revision exhausted')
+    }
+    this.mutationRevision += 1
+  }
+
+  private assertExpectedMutationRevision(expectedRevision: string): void {
+    if (expectedRevision !== String(this.mutationRevision)) {
+      throw new Error('Document revision changed')
+    }
+  }
+
+  private discardAllPreparedProposalMutations(): void {
+    const prepared = [...this.preparedProposalMutations.values()]
+    this.preparedProposalMutations.clear()
+    if (!this.snapshotStore) return
+    for (const item of prepared) {
+      void this.snapshotStore.discard(this.projectId, item.snapshotId).catch(() => undefined)
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return
+    this.discardAllPreparedProposalMutations()
     this.disposed = true
     this.watcher.close()
     this.cancelCompile()
@@ -861,11 +1068,16 @@ export class ProjectSession {
     if (this.confirmedMutationInProgress)
       throw new Error('Confirmed edit transaction is already in progress')
     this.confirmedMutationInProgress = true
+    this.confirmedMutationSettled = new Promise<void>((resolve) => {
+      this.resolveConfirmedMutationSettled = resolve
+    })
     try {
       await this.rendererMutationsSettled
       return await operation()
     } finally {
       this.confirmedMutationInProgress = false
+      this.resolveConfirmedMutationSettled?.()
+      this.resolveConfirmedMutationSettled = undefined
     }
   }
 }

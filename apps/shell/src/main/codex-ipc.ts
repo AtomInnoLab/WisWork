@@ -339,7 +339,10 @@ export function registerCodexToolIpc(options: CodexToolIpcOptions): CodexToolIpc
       return Promise.reject(new Error('tool_ipc_id_failed'))
     }
     return new Promise<T>((resolve, reject) => {
-      const mutation = request.type === 'executeMutation'
+      const mutation =
+        request.type === 'snapshot' ||
+        request.type === 'executeMutation' ||
+        request.type === 'discardSnapshot'
       const timer = setTimeout(() => {
         diagnostic('tool_ipc_timeout')
         sendCancel(session, requestId)
@@ -353,8 +356,8 @@ export function registerCodexToolIpc(options: CodexToolIpcOptions): CodexToolIpc
       timer.unref()
       const onAbort = (): void => {
         sendCancel(session, requestId)
-        // A mutation has entered its guarded commit phase. Keep it serialized until the renderer
-        // acknowledges cancellation or reports the actual commit result.
+        // Snapshot capture and guarded mutation work own cleanup-critical state. Keep them
+        // serialized until the renderer acknowledges cancellation or reports the actual result.
         if (!mutation) finishPending(requestId, new Error('tool_cancelled'))
       }
       pending.set(requestId, {
@@ -370,7 +373,8 @@ export function registerCodexToolIpc(options: CodexToolIpcOptions): CodexToolIpc
       })
       signal?.addEventListener('abort', onAbort, { once: true })
       if (signal?.aborted) {
-        onAbort()
+        // No request was sent, so there is no renderer-owned cleanup state to await.
+        finishPending(requestId, new Error('tool_cancelled'))
         return
       }
       try {
@@ -455,6 +459,21 @@ export function registerCodexToolIpc(options: CodexToolIpcOptions): CodexToolIpc
           'snapshot',
           signal,
         ).then((response) => response.snapshotId),
+      discardSnapshot: (call, snapshotId) =>
+        requestRemote<Extract<CodexToolResponse, { ok: true; type: 'discard' }>>(
+          requireSession(),
+          { type: 'discardSnapshot', call, snapshotId },
+          'discard',
+        )
+          .then(() => undefined)
+          .catch((error: unknown) => {
+            const session = sessionRef.current
+            if (session) {
+              poisonDocument(session)
+              closeSession(session)
+            }
+            throw error
+          }),
       executeMutation: (call, guard, signal) =>
         requestRemote<Extract<CodexToolResponse, { ok: true; type: 'execution' }>>(
           requireSession(),

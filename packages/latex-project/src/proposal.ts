@@ -153,10 +153,66 @@ export class ProposalStore {
     })
   }
 
+  async discard(proposalId: string, projectId: string): Promise<boolean> {
+    validateProposalId(proposalId)
+    validateProjectId(projectId)
+    return this.transactionState.withProjectLock(projectId, async () => {
+      await this.ensureDirectories()
+      const pending = this.pendingPath(proposalId)
+      if (!(await exists(pending))) return false
+      const proposal = await readStoredProposal(pending, this.maxFileBytes, this.maxFiles)
+      if (proposal.projectId !== projectId) throw new Error('Proposal belongs to another project')
+      try {
+        await unlink(pending)
+        return true
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+        throw error
+      }
+    })
+  }
+
+  async discardPreparedSnapshot(
+    proposalId: string,
+    projectId: string,
+    snapshotId: string,
+  ): Promise<boolean> {
+    validateProposalId(proposalId)
+    validateProjectId(projectId)
+    validateSnapshotId(snapshotId)
+    return this.transactionState.withProjectLock(projectId, async () => {
+      const referenced = (await this.transactionState.listJournals(projectId)).some(
+        (journal) => journal.id === proposalId && journal.snapshotId === snapshotId,
+      )
+      if (referenced) {
+        throw new Error('Prepared snapshot is retained for transaction recovery')
+      }
+      return this.snapshots.discard(projectId, snapshotId)
+    })
+  }
+
+  async applyPrepared(
+    proposalId: string,
+    projectId: string,
+    snapshotId: string,
+    project: LatexProject,
+    validateBeforeCommit?: () => void | Promise<void>,
+  ): Promise<AppliedProposal> {
+    validateProposalId(proposalId)
+    validateProjectId(projectId)
+    validateSnapshotId(snapshotId)
+    return this.transactionState.withProjectLock(projectId, async () => {
+      await this.recoverLocked(projectId, project)
+      return this.applyLocked(proposalId, projectId, project, snapshotId, validateBeforeCommit)
+    })
+  }
+
   private async applyLocked(
     proposalId: string,
     projectId: string,
     project: LatexProject,
+    preparedSnapshotId?: string,
+    validateBeforeCommit?: () => void | Promise<void>,
   ): Promise<AppliedProposal> {
     const proposal = await this.claim(proposalId)
     if (proposal.projectId !== projectId) throw new Error('Proposal belongs to another project')
@@ -178,12 +234,26 @@ export class ProposalStore {
       }),
     )
     const previousRollback = await this.snapshots.getCurrentRollback(projectId)
-    const snapshot = await this.snapshots.create(
-      projectId,
-      project,
-      prepared.map((file) => file.path),
-    )
+    const snapshot = preparedSnapshotId
+      ? { id: preparedSnapshotId }
+      : await this.snapshots.create(
+          projectId,
+          project,
+          prepared.map((file) => file.path),
+        )
+    if (preparedSnapshotId) {
+      const hashes = await this.snapshots.getFileHashes(projectId, preparedSnapshotId)
+      if (
+        hashes.size !== prepared.length ||
+        prepared.some(
+          (file) => !hashes.has(file.path) || hashes.get(file.path) !== file.beforeSha256,
+        )
+      ) {
+        throw new Error('Prepared snapshot does not match proposal baseline')
+      }
+    }
     await assertPreparedBaselines(project, policy, prepared)
+    await validateBeforeCommit?.()
     const journal: ProjectTransactionJournal = {
       schemaVersion: 1,
       id: proposal.id,
@@ -203,6 +273,9 @@ export class ProposalStore {
     await this.transactionState.writeJournal(journal)
 
     try {
+      // Cancellation/revision validation must be adjacent to the first domain write. The journal
+      // is recoverable if this second check rejects; no unguarded await follows before the loop.
+      await validateBeforeCommit?.()
       for (const file of prepared) {
         await this.writeText(project, file.path, file.afterText, file.beforeSha256)
       }
@@ -369,17 +442,32 @@ export class ProposalStore {
     project: LatexProject,
   ): Promise<void> {
     await this.validateJournalSnapshot(journal)
+    const policy = await ProjectPathPolicy.open(project.rootPath)
+    const paths = new Set<string>()
+    const conflicts: string[] = []
+    for (const file of journal.files) {
+      const current = await readOptionalText(project, policy, file.path)
+      const currentSha256 = current === undefined ? null : digest(current)
+      if (currentSha256 === file.afterSha256) paths.add(file.path)
+      else if (currentSha256 !== file.beforeSha256) conflicts.push(file.path)
+    }
     const expectedCurrentHashes = new Map(
-      journal.files.map((file) => [file.path, file.afterSha256]),
+      journal.files
+        .filter((file) => paths.has(file.path))
+        .map((file) => [file.path, file.afterSha256]),
     )
     await this.snapshots.restore(journal.projectId, journal.snapshotId, project, {
       expectedAbsentHashes: new Map(
         journal.files
-          .filter((file) => file.beforeSha256 === null)
+          .filter((file) => paths.has(file.path) && file.beforeSha256 === null)
           .map((file) => [file.path, file.afterSha256]),
       ),
       expectedCurrentHashes,
+      paths,
     })
+    if (conflicts.length > 0) {
+      throw new Error('Project changed while proposal rollback was in progress')
+    }
     await this.snapshots.setCurrentRollback(journal.projectId, journal.previousRollback)
     await unlink(this.rollbackPath(journal.snapshotId)).catch((error) => {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error

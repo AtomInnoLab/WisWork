@@ -52,6 +52,9 @@ function fixture(overrides: Partial<ToolSessionRegistration> = {}) {
       events.push('snapshot')
       return 'snapshot-1'
     }),
+    discardSnapshot: vi.fn(async (_call: AgentToolCall, snapshotId: string) => {
+      events.push(`discard:${snapshotId}`)
+    }),
     executeMutation: vi.fn(
       async (_call: AgentToolCall, guard: MutationExecutionGuard): Promise<ToolExecution> => {
         events.push(`mutate:${guard.expectedRevision}:${guard.snapshotId}`)
@@ -177,6 +180,10 @@ describe('document-scoped tool router', () => {
       ),
     ).resolves.toMatchObject({ output: 'tool_cancelled', isError: true, mutated: false })
     expect(cancelled.registration.executeMutation).not.toHaveBeenCalled()
+    expect(cancelled.registration.discardSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'cancelled' }),
+      'snapshot-1',
+    )
 
     const closed = fixture()
     vi.mocked(closed.registration.captureSnapshot).mockImplementation(async () => {
@@ -188,6 +195,86 @@ describe('document-scoped tool router', () => {
       closed.router.callTool(closedSession, { id: 'closed', name: 'replace_text', input: {} }),
     ).resolves.toMatchObject({ output: 'tool_session_closed', isError: true, mutated: false })
     expect(closed.registration.executeMutation).not.toHaveBeenCalled()
+    expect(closed.registration.discardSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'closed' }),
+      'snapshot-1',
+    )
+  })
+
+  it('discards a captured snapshot exactly once on a second revision mismatch', async () => {
+    const f = fixture()
+    vi.mocked(f.registration.getRevision)
+      .mockResolvedValueOnce('rev-1')
+      .mockResolvedValueOnce('rev-1')
+      .mockResolvedValueOnce('rev-2')
+    const session = f.router.register(f.registration)
+
+    await expect(
+      f.router.callTool(session, { id: 'stale-after-snapshot', name: 'replace_text', input: {} }),
+    ).resolves.toMatchObject({ output: 'document_changed', isError: true, mutated: false })
+    expect(f.registration.executeMutation).not.toHaveBeenCalled()
+    expect(f.registration.discardSnapshot).toHaveBeenCalledTimes(1)
+    expect(f.registration.discardSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'stale-after-snapshot' }),
+      'snapshot-1',
+    )
+  })
+
+  it('discards a captured snapshot when guarded execution rejects before commit', async () => {
+    const f = fixture()
+    vi.mocked(f.registration.executeMutation!).mockRejectedValueOnce(
+      new Error('renderer rejected before commit'),
+    )
+    const session = f.router.register(f.registration)
+
+    await expect(
+      f.router.callTool(session, {
+        id: 'execute-rejected',
+        name: 'replace_text',
+        input: {},
+      }),
+    ).resolves.toMatchObject({ output: 'tool_execution_failed', isError: true, mutated: false })
+    expect(f.registration.discardSnapshot).toHaveBeenCalledTimes(1)
+    expect(f.registration.discardSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'execute-rejected' }),
+      'snapshot-1',
+    )
+  })
+
+  it('never discards after guarded execution commits and closes the session if discard fails', async () => {
+    const committed = fixture()
+    const committedSession = committed.router.register(committed.registration)
+    await committed.router.callTool(committedSession, {
+      id: 'committed',
+      name: 'replace_text',
+      input: {},
+    })
+    expect(committed.registration.discardSnapshot).not.toHaveBeenCalled()
+
+    const failedDiscard = fixture({
+      discardSnapshot: vi.fn(async () => {
+        throw new Error('sensitive renderer detail')
+      }),
+    })
+    vi.mocked(failedDiscard.registration.getRevision)
+      .mockResolvedValueOnce('rev-1')
+      .mockResolvedValueOnce('rev-1')
+      .mockResolvedValueOnce('rev-2')
+    const failedSession = failedDiscard.router.register(failedDiscard.registration)
+    await expect(
+      failedDiscard.router.callTool(failedSession, {
+        id: 'discard-failed',
+        name: 'replace_text',
+        input: {},
+      }),
+    ).resolves.toMatchObject({ output: 'document_changed', isError: true })
+    await expect(
+      failedDiscard.router.callTool(failedSession, {
+        id: 'after-discard-failed',
+        name: 'read_document',
+        input: {},
+      }),
+    ).resolves.toMatchObject({ output: 'tool_session_closed', isError: true })
   })
 
   it('aborts pending work on cancellation and teardown, and refuses duplicate calls', async () => {

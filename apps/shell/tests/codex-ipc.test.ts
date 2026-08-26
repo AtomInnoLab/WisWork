@@ -315,6 +315,22 @@ describe('Codex renderer tool IPC', () => {
     )
     await expect(snapshot).resolves.toBe('snapshot-1')
 
+    const discard = remote.discardSnapshot!(call, 'snapshot-1')
+    expect(lastRequest(f.sender)).toMatchObject({
+      type: 'discardSnapshot',
+      call,
+      snapshotId: 'snapshot-1',
+    })
+    await f.handlers.get(CODEX_TOOL_CHANNELS.response)!(
+      { sender: f.sender },
+      {
+        requestId: lastRequest(f.sender).requestId,
+        ok: true,
+        type: 'discard',
+      },
+    )
+    await expect(discard).resolves.toBeUndefined()
+
     const mutation = remote.executeMutation!(call, {
       expectedRevision: 'rev-1',
       snapshotId: 'snapshot-1',
@@ -343,6 +359,42 @@ describe('Codex renderer tool IPC', () => {
       },
     )
     expect(f.sender.sent).toHaveLength(requestsBeforeValidation)
+  })
+
+  it('poisons and closes a tool session when tentative snapshot discard times out', async () => {
+    vi.useFakeTimers()
+    try {
+      const diagnostics = vi.fn()
+      const f = fixture()
+      f.bridge.close()
+      const handlers = new Map<
+        string,
+        (event: { sender: FakeSender }, ...args: unknown[]) => unknown
+      >()
+      registerCodexToolIpc({
+        ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as never) },
+        ownsDocument: () => true,
+        onRegister: ({ registration }) => f.onRegister(registration),
+        requestTimeoutMs: 10,
+        randomId: () => 'discard-timeout',
+        diagnostics,
+      })
+      await handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration)
+      const discard = f.sessions[0]!.discardSnapshot!(
+        { id: 'call', name: 'replace_text', input: {} },
+        'snapshot-1',
+      )
+      const rejection = expect(discard).rejects.toThrow('tool_session_closed')
+      await vi.advanceTimersByTimeAsync(10)
+      await rejection
+      expect(f.close).toHaveBeenCalledOnce()
+      expect(diagnostics).toHaveBeenCalledWith({ code: 'tool_ipc_timeout' })
+      await expect(
+        handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: new FakeSender() }, f.registration),
+      ).rejects.toThrow('codex_tool_session_poisoned')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('cancels renderer work and ignores late responses after abort, unregister, or destruction', async () => {
@@ -416,6 +468,56 @@ describe('Codex renderer tool IPC', () => {
       { requestId: 'request-1', ok: false, code: 'tool_cancelled' },
     )
     await expect(pending).rejects.toThrow('tool_cancelled')
+  })
+
+  it('waits for snapshot capture acknowledgement after cancellation so it can be discarded', async () => {
+    const f = fixture()
+    await f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration)
+    const controller = new AbortController()
+    const pending = f.sessions[0]!.captureSnapshot(
+      { id: 'mutation', name: 'replace_text', input: {} },
+      'rev-1',
+      controller.signal,
+    )
+    controller.abort()
+    expect(f.sender.sent.at(-1)).toMatchObject({
+      channel: CODEX_TOOL_CHANNELS.cancel,
+      payload: { requestId: 'request-1' },
+    })
+    let settled = false
+    void pending.finally(() => {
+      settled = true
+    })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    await f.handlers.get(CODEX_TOOL_CHANNELS.response)!(
+      { sender: f.sender },
+      { requestId: 'request-1', ok: true, type: 'snapshot', snapshotId: 'snapshot-1' },
+    )
+    await expect(pending).resolves.toBe('snapshot-1')
+  })
+
+  it('rejects a safety-critical request aborted before send without poisoning the document', async () => {
+    const f = fixture()
+    await f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration)
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(
+      f.sessions[0]!.captureSnapshot(
+        { id: 'mutation', name: 'replace_text', input: {} },
+        'rev-1',
+        controller.signal,
+      ),
+    ).rejects.toThrow('tool_cancelled')
+    expect(f.sender.sent).toEqual([])
+    const revision = f.sessions[0]!.getRevision()
+    await f.handlers.get(CODEX_TOOL_CHANNELS.response)!(
+      { sender: f.sender },
+      { requestId: 'request-2', ok: true, type: 'revision', revision: 'rev-2' },
+    )
+    await expect(revision).resolves.toBe('rev-2')
   })
 
   it('quiesces guarded renderer work before close checks and resumes after cancellation', async () => {

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { isAbsolute } from 'node:path'
 import type { AgentToolCall, ToolExecution } from '@wiswork/agent-core'
 import type { AgentEvent, AgentRuntimeKind } from '@wiswork/agent-runtime'
@@ -86,6 +87,7 @@ interface ActiveTurn {
   cancelRequested: boolean
   terminal: boolean
   interruptPromise?: Promise<void>
+  toolCall?: { fingerprint: string; approvalStarted: boolean; executed: boolean }
 }
 
 interface DocumentRecord extends RegisterCodexDocumentInput {
@@ -523,6 +525,32 @@ export class ShellCodexRuntime {
 
   #instrumentRegistration(record: DocumentRecord): ToolSessionRegistration {
     const registration = record.registration
+    const reserveToolCall = (call: AgentToolCall, phase: 'approval' | 'execute'): void => {
+      const activeTurn = record.activeTurn
+      if (!activeTurn) throw new ShellCodexRuntimeError('codex_turn_unavailable')
+      let encoded: string
+      try {
+        encoded = JSON.stringify([call.id, call.name, call.input])
+      } catch {
+        throw new ShellCodexRuntimeError('codex_tool_call_limit')
+      }
+      const fingerprint = createHash('sha256').update(encoded).digest('hex')
+      const budget = activeTurn.toolCall
+      if (budget && budget.fingerprint !== fingerprint) {
+        throw new ShellCodexRuntimeError('codex_tool_call_limit')
+      }
+      const owned = budget ?? { fingerprint, approvalStarted: false, executed: false }
+      activeTurn.toolCall = owned
+      if (phase === 'approval') {
+        if (owned.approvalStarted || owned.executed) {
+          throw new ShellCodexRuntimeError('codex_tool_call_limit')
+        }
+        owned.approvalStarted = true
+      } else {
+        if (owned.executed) throw new ShellCodexRuntimeError('codex_tool_call_limit')
+        owned.executed = true
+      }
+    }
     const executeWithEvents = async (
       call: AgentToolCall,
       operation: () => ToolExecution | Promise<ToolExecution>,
@@ -563,17 +591,25 @@ export class ShellCodexRuntime {
       ...registration,
       skill: {
         ...registration.skill,
-        executeTool: (call, signal) =>
-          executeWithEvents(call, () => registration.skill.executeTool(call, signal)),
+        executeTool: (call, signal) => {
+          reserveToolCall(call, 'execute')
+          return executeWithEvents(call, () => registration.skill.executeTool(call, signal))
+        },
+      },
+      requestApproval: (call, expectedRevision, signal) => {
+        reserveToolCall(call, 'approval')
+        return registration.requestApproval(call, expectedRevision, signal)
       },
       ...(registration.executeMutation
         ? {
-            executeMutation: (call, guard, signal) =>
-              executeWithEvents(
+            executeMutation: (call, guard, signal) => {
+              reserveToolCall(call, 'execute')
+              return executeWithEvents(
                 call,
                 () => registration.executeMutation!(call, guard, signal),
                 guard.snapshotId,
-              ),
+              )
+            },
           }
         : {}),
     }

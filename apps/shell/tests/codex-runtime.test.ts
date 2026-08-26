@@ -455,6 +455,23 @@ describe('ShellCodexRuntime', () => {
     ])
   })
 
+  it('allows exactly one direct document tool call across an app-server turn', async () => {
+    const f = harness()
+    await startDocument(f)
+    await f.runtime.startTurn(f.owner, 'doc-1', 'Read it once.')
+    const routed = f.mcp.register.mock.calls[0]![0] as ToolSessionRegistration
+
+    await expect(
+      Promise.resolve(routed.skill.executeTool({ id: 'call-1', name: 'read_document', input: {} })),
+    ).resolves.toMatchObject({ output: 'document' })
+    await expect(async () =>
+      routed.skill.executeTool({ id: 'call-2', name: 'read_document', input: {} }),
+    ).rejects.toThrow('codex_tool_call_limit')
+    await expect(async () =>
+      routed.skill.executeTool({ id: 'call-1', name: 'read_document', input: {} }),
+    ).rejects.toThrow('codex_tool_call_limit')
+  })
+
   it('surfaces child crashes with a stable error and tears the chain down', async () => {
     const f = harness()
     await startDocument(f)
