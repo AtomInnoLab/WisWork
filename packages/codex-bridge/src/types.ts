@@ -58,3 +58,35 @@ export interface MessagesRequest {
   max_tokens: number
   stream: true
 }
+
+export type AdvertisedToolKind = 'function' | 'custom'
+
+export interface StreamConversionContext {
+  advertisedTools: Readonly<Record<string, AdvertisedToolKind>>
+  usedCallIds: readonly string[]
+  allowedExecMethods: readonly string[]
+}
+
+export interface RequestConversionResult {
+  request: MessagesRequest
+  context: StreamConversionContext
+}
+
+export interface ProtocolLimits {
+  maxRequestItems: number
+  maxContentParts: number
+  maxTools: number
+  maxStringLength: number
+  maxDescriptionLength: number
+  maxSchemaBytes: number
+  maxOutputTokens: number
+  maxPromptCacheKeyLength: number
+  maxClientMetadataBytes: number
+  maxSseFrameBytes: number
+  maxSseBufferBytes: number
+  maxSseFrames: number
+  maxBlocks: number
+  maxAccumulatedText: number
+  maxToolArguments: number
+  maxTotalOutput: number
+}

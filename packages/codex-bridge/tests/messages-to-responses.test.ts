@@ -1,6 +1,25 @@
 import { describe, expect, it } from 'vitest'
 import { messagesSseToResponses } from '../src/index.js'
 
+const noTools = { advertisedTools: {}, usedCallIds: [], allowedExecMethods: [] } as const
+const functionTools = {
+  advertisedTools: { edit: 'function' as const },
+  usedCallIds: [],
+  allowedExecMethods: [],
+}
+const customTools = {
+  advertisedTools: { exec: 'custom' as const },
+  usedCallIds: [],
+  allowedExecMethods: ['mcp__wiswork__read_document'],
+}
+
+function convert(
+  source: AsyncIterable<string | Uint8Array>,
+  context: Parameters<typeof messagesSseToResponses>[1] = noTools,
+): ReturnType<typeof messagesSseToResponses> {
+  return messagesSseToResponses(source, context)
+}
+
 async function* chunks(...values: string[]): AsyncGenerator<string> {
   yield* values
 }
@@ -23,7 +42,7 @@ const messageStart =
 describe('messagesSseToResponses', () => {
   it('converts text, usage, and end-to-end completion state', async () => {
     const events = await collect(
-      messagesSseToResponses(
+      convert(
         chunks(
           messageStart,
           'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
@@ -63,16 +82,17 @@ describe('messagesSseToResponses', () => {
 
   it('preserves tool call IDs and argument delta order', async () => {
     const events = await collect(
-      messagesSseToResponses(
+      convert(
         chunks(
           messageStart,
-          'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call_9","name":"edit","input":{}}}\n\n',
-          'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"a\\":"}}\n\n',
-          'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"1}"}}\n\n',
-          'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+          'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_9","name":"edit","input":{}}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"a\\":"}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"1}"}}\n\n',
+          'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
           'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":7}}\n\n',
           'event: message_stop\ndata: {"type":"message_stop"}\n\n',
         ),
+        functionTools,
       ),
     )
 
@@ -86,7 +106,7 @@ describe('messagesSseToResponses', () => {
     ).toEqual(['{"a":', '1}'])
     expect(
       events.find(({ event }) => event === 'response.function_call_arguments.done')?.data,
-    ).toMatchObject({ item_id: 'item_1', arguments: '{"a":1}' })
+    ).toMatchObject({ item_id: 'item_0', arguments: '{"a":1}' })
     expect(events.find(({ event }) => event === 'response.output_item.done')?.data).toMatchObject({
       item: { call_id: 'call_9', arguments: '{"a":1}' },
     })
@@ -95,15 +115,16 @@ describe('messagesSseToResponses', () => {
 
   it('converts exec tool use to custom tool call events and raw input', async () => {
     const events = await collect(
-      messagesSseToResponses(
+      convert(
         chunks(
           messageStart,
           'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"custom_7","name":"exec","input":{}}}\n\n',
-          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"code\\":\\"text(42)\\"}"}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"code\\":\\"text(await tools.mcp__wiswork__read_document({}))\\"}"}}\n\n',
           'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
           'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":4}}\n\n',
           'event: message_stop\ndata: {"type":"message_stop"}\n\n',
         ),
+        customTools,
       ),
     )
 
@@ -113,15 +134,20 @@ describe('messagesSseToResponses', () => {
     expect(
       events.find(({ event }) => event === 'response.custom_tool_call_input.delta')?.data,
     ).toMatchObject({
-      delta: 'text(42)',
+      delta: 'text(await tools.mcp__wiswork__read_document({}))',
     })
     expect(
       events.find(({ event }) => event === 'response.custom_tool_call_input.done')?.data,
     ).toMatchObject({
-      input: 'text(42)',
+      input: 'text(await tools.mcp__wiswork__read_document({}))',
     })
     expect(events.find(({ event }) => event === 'response.output_item.done')?.data).toMatchObject({
-      item: { type: 'custom_tool_call', call_id: 'custom_7', name: 'exec', input: 'text(42)' },
+      item: {
+        type: 'custom_tool_call',
+        call_id: 'custom_7',
+        name: 'exec',
+        input: 'text(await tools.mcp__wiswork__read_document({}))',
+      },
     })
   })
 
@@ -129,13 +155,14 @@ describe('messagesSseToResponses', () => {
     let caught: unknown
     try {
       await collect(
-        messagesSseToResponses(
+        convert(
           chunks(
             messageStart,
             'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"custom_7","name":"exec","input":{}}}\n\n',
             'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"code\\":\\"secret prompt\\",\\"extra\\":true}"}}\n\n',
             'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
           ),
+          customTools,
         ),
       )
     } catch (error) {
@@ -155,7 +182,7 @@ describe('messagesSseToResponses', () => {
       for (const byte of encoded) yield new Uint8Array([byte])
     }
 
-    const events = await collect(messagesSseToResponses(byteChunks()))
+    const events = await collect(convert(byteChunks()))
     expect(events.at(-1)?.data).toMatchObject({
       response: { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } },
     })
@@ -163,7 +190,7 @@ describe('messagesSseToResponses', () => {
 
   it('terminates a completed Responses stream with [DONE]', async () => {
     const output: string[] = []
-    for await (const frame of messagesSseToResponses(
+    for await (const frame of convert(
       chunks(
         messageStart,
         'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}\n\n',
@@ -189,7 +216,7 @@ describe('messagesSseToResponses', () => {
   ])('fails closed for %s without echoing upstream data', async (_label, frame, code) => {
     let caught: unknown
     try {
-      await collect(messagesSseToResponses(chunks(frame)))
+      await collect(convert(chunks(frame)))
     } catch (error) {
       caught = error
     }

@@ -1,0 +1,117 @@
+{
+  "model": "gpt-5.6-sol",
+  "input": [
+    {
+      "type": "additional_tools",
+      "role": "developer",
+      "tools": [
+        {
+          "type": "namespace",
+          "name": "functions",
+          "tools": [
+            {
+              "type": "custom",
+              "name": "exec",
+              "description": "Run JavaScript code to orchestrate one document-scoped MCP call.",
+              "format": {
+                "type": "grammar",
+                "syntax": "lark",
+                "definition": "\nstart: pragma_source | plain_source\npragma_source: PRAGMA_LINE NEWLINE SOURCE\nplain_source: SOURCE\n\nPRAGMA_LINE: /[ \\t]*\\/\\/ @exec:[^\\r\\n]*/\nNEWLINE: /\\r?\\n/\nSOURCE: /[\\s\\S]+/\n"
+              }
+            },
+            {
+              "type": "function",
+              "name": "wait",
+              "description": "Wait",
+              "strict": false,
+              "parameters": {}
+            },
+            {
+              "type": "function",
+              "name": "request_user_input",
+              "description": "Ask",
+              "strict": false,
+              "parameters": {}
+            }
+          ]
+        },
+        {
+          "type": "namespace",
+          "name": "collaboration",
+          "tools": [
+            {
+              "type": "function",
+              "name": "followup_task",
+              "description": "followup_task",
+              "strict": false,
+              "parameters": {}
+            },
+            {
+              "type": "function",
+              "name": "interrupt_agent",
+              "description": "interrupt_agent",
+              "strict": false,
+              "parameters": {}
+            },
+            {
+              "type": "function",
+              "name": "list_agents",
+              "description": "list_agents",
+              "strict": false,
+              "parameters": {}
+            },
+            {
+              "type": "function",
+              "name": "send_message",
+              "description": "send_message",
+              "strict": false,
+              "parameters": {}
+            },
+            {
+              "type": "function",
+              "name": "spawn_agent",
+              "description": "spawn_agent",
+              "strict": false,
+              "parameters": {}
+            },
+            {
+              "type": "function",
+              "name": "wait_agent",
+              "description": "wait_agent",
+              "strict": false,
+              "parameters": {}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "id": "dev_1",
+      "role": "developer",
+      "content": [{ "type": "input_text", "text": "System" }]
+    },
+    {
+      "type": "message",
+      "id": "user_1",
+      "role": "user",
+      "content": [{ "type": "input_text", "text": "Hello" }]
+    }
+  ],
+  "tool_choice": "auto",
+  "parallel_tool_calls": false,
+  "reasoning": { "effort": "medium", "context": "all_turns" },
+  "store": false,
+  "stream": true,
+  "include": ["reasoning.encrypted_content"],
+  "prompt_cache_key": "thread_1",
+  "text": { "verbosity": "low" },
+  "client_metadata": {
+    "session_id": "session_1",
+    "x-codex-installation-id": "install_1",
+    "turn_id": "turn_1",
+    "x-codex-window-id": "window_1",
+    "thread_id": "thread_1",
+    "x-codex-turn-metadata": "{\"installation_id\":\"install_1\",\"session_id\":\"session_1\",\"thread_id\":\"thread_1\",\"turn_id\":\"turn_1\",\"window_id\":\"window_1\",\"request_kind\":\"turn\",\"sandbox\":\"seccomp\",\"code_mode_tool_names\":{\"apply_patch\":{\"name\":\"apply_patch\",\"namespace\":null},\"mcp__wiswork__read_document\":{\"name\":\"read_document\",\"namespace\":\"mcp__wiswork\"}},\"turn_started_at_unix_ms\":1787712195595}"
+  }
+}

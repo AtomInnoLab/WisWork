@@ -1,5 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import { ProtocolCompatibilityError, responsesToMessages } from '../src/index.js'
+import {
+  CODEX_0147_EXEC_GRAMMAR,
+  ProtocolCompatibilityError,
+  responsesToMessages,
+} from '../src/index.js'
+
+const metadata = {
+  'x-codex-turn-metadata': JSON.stringify({
+    thread_id: 'thread_1',
+    code_mode_tool_names: {
+      mcp__wiswork__read_document: {
+        name: 'read_document',
+        namespace: 'mcp__wiswork',
+      },
+    },
+  }),
+}
 
 const additionalTools = {
   type: 'additional_tools',
@@ -13,7 +29,7 @@ const additionalTools = {
           type: 'custom',
           name: 'exec',
           description: 'Run JavaScript code with tools.mcp__wiswork__read_document and ALL_TOOLS.',
-          format: { type: 'grammar', syntax: 'lark', definition: 'start: /[\\s\\S]+/' },
+          format: { type: 'grammar', syntax: 'lark', definition: CODEX_0147_EXEC_GRAMMAR },
         },
         { type: 'function', name: 'wait', description: 'Wait', strict: false, parameters: {} },
         {
@@ -86,6 +102,7 @@ describe('responsesToMessages', () => {
       model: 'gpt-5.6-sol',
       input: [
         {
+          type: 'message',
           role: 'user',
           content: [
             { type: 'input_text', text: 'Inspect this' },
@@ -96,8 +113,13 @@ describe('responsesToMessages', () => {
         { type: 'function_call', call_id: 'call_18', name: 'inspect', arguments: '{"page":3}' },
         { type: 'function_call_output', call_id: 'call_17', output: 'done' },
         { type: 'function_call_output', call_id: 'call_18', output: 'also done' },
-        { role: 'assistant', content: [{ type: 'output_text', text: 'Finished' }] },
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'Finished' }],
+        },
       ],
+      tools: [{ type: 'function', name: 'inspect', parameters: {} }],
     })
 
     expect(converted.messages).toEqual([
@@ -153,7 +175,7 @@ describe('responsesToMessages', () => {
         include: ['reasoning.encrypted_content'],
         prompt_cache_key: 'cache-secret',
         text: { verbosity: 'low' },
-        client_metadata: { 'x-codex-turn-metadata': '{"thread_id":"secret"}' },
+        client_metadata: metadata,
       }),
     ).toEqual({
       model: 'openai/gpt-5.6-sol',
@@ -164,7 +186,8 @@ describe('responsesToMessages', () => {
       tools: [
         {
           name: 'exec',
-          description: 'Run JavaScript code with tools.mcp__wiswork__read_document and ALL_TOOLS.',
+          description:
+            'Execute exactly one document MCP call. Allowed syntax: text(await tools.mcp__wiswork__read_document({...})). Arguments must be a JSON object literal. No other JavaScript is allowed.',
           input_schema: {
             type: 'object',
             properties: { code: { type: 'string' } },
@@ -182,14 +205,30 @@ describe('responsesToMessages', () => {
       responsesToMessages({
         model: 'gpt-5.6-sol',
         input: [
-          { type: 'custom_tool_call', call_id: 'custom_1', name: 'exec', input: 'text(42)' },
+          additionalTools,
+          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Run it' }] },
+          {
+            type: 'custom_tool_call',
+            call_id: 'custom_1',
+            name: 'exec',
+            input: 'text(await tools.mcp__wiswork__read_document({}))',
+          },
           { type: 'custom_tool_call_output', call_id: 'custom_1', output: '42' },
         ],
+        client_metadata: metadata,
       }).messages,
     ).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'Run it' }] },
       {
         role: 'assistant',
-        content: [{ type: 'tool_use', id: 'custom_1', name: 'exec', input: { code: 'text(42)' } }],
+        content: [
+          {
+            type: 'tool_use',
+            id: 'custom_1',
+            name: 'exec',
+            input: { code: 'text(await tools.mcp__wiswork__read_document({}))' },
+          },
+        ],
       },
       {
         role: 'user',
@@ -215,8 +254,10 @@ describe('responsesToMessages', () => {
       {
         model: 'gpt-5.6-sol',
         input: [
+          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x' }] },
           { type: 'function_call', call_id: 'call_1', name: 'x', arguments: 'secret prompt {' },
         ],
+        tools: [{ type: 'function', name: 'x', parameters: {} }],
       },
       'invalid_tool_arguments',
     ],
