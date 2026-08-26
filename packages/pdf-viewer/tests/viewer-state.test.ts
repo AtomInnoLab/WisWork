@@ -10,6 +10,8 @@ import {
   computeCanvasBudget,
   createPageResourceScope,
   getPageWindow,
+  getDocumentPages,
+  nearestPageToViewport,
   pdfPointToViewportCss,
   viewportClientToPdfPoint,
   resetViewerPageForSource,
@@ -55,6 +57,17 @@ describe('shared read-only PDF viewer state', () => {
     expect(() => computeCanvasBudget(Number.POSITIVE_INFINITY, 100, 2)).toThrow(/viewport/i)
     expect(() => computeCanvasBudget(1e12, 1e12, 2)).toThrow(/viewport/i)
     expect(getPageWindow(500, 1_000)).toEqual([499, 500, 501])
+  })
+
+  it('keeps every page scroll-addressable while choosing the nearest visible page', () => {
+    expect(getDocumentPages(6)).toEqual([1, 2, 3, 4, 5, 6])
+    expect(
+      nearestPageToViewport([
+        { page: 1, top: -700, bottom: 80 },
+        { page: 2, top: 100, bottom: 880 },
+        { page: 3, top: 900, bottom: 1_680 },
+      ]),
+    ).toBe(2)
   })
 
   it('resets page on source change and clamps it when a smaller document is accepted', () => {

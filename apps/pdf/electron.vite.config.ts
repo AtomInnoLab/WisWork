@@ -16,7 +16,7 @@ export default defineConfig({
   main: {
     plugins: [
       externalizeDepsPlugin({
-        exclude: ['@wiswork/i18n', 'pdf-lib', '@wiswork/electron-utils'],
+        exclude: ['@wiswork/i18n', 'pdf-lib', '@wiswork/electron-utils', '@wiswork/font-metrics'],
       }),
     ],
   },

@@ -7,9 +7,13 @@ import {
   CompileQueue,
   compileIsolated,
   isRemoteIndexedBundleUrl,
+  LatexCompilerError,
+  loadCurrentCompileGeneration,
   parseSyncTeX,
   parseTectonicDiagnostics,
+  TectonicRunError,
   type CompileIsolatedResult,
+  type PublishedCompileGeneration,
   type StagedCompileResult,
   type SyncTeXIndex,
   type TectonicBundleAsset,
@@ -28,20 +32,13 @@ import type {
   LatexBufferDto,
   LatexProposalDto,
   LatexSaveDto,
+  ProposalVerificationDto,
 } from '../shared/ipc.js'
-
-function isAiSensitivePath(path: string): boolean {
-  return path.split('/').some((part) => {
-    const lower = part.toLowerCase()
-    return (
-      lower === '.env' ||
-      lower.includes('secret') ||
-      lower.includes('credential') ||
-      lower.includes('private-key') ||
-      lower.includes('private_key')
-    )
-  })
-}
+import { isAiSensitivePath } from '../shared/ai-path-policy.js'
+import {
+  MAX_FORMAL_COMPILE_DIAGNOSTICS,
+  normalizeProposalDiagnostics,
+} from '../shared/proposal-verification.js'
 
 export class MainFileRenameError extends Error {}
 
@@ -52,6 +49,22 @@ export class UnsavedBuffersError extends Error {
   }
 }
 
+type ProposalVerificationRejectionReason =
+  'not-found' | 'expired' | 'baseline' | 'configuration' | 'safety'
+
+export class ProposalVerificationRejectedError extends Error {
+  constructor(
+    readonly reason: ProposalVerificationRejectionReason,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'ProposalVerificationRejectedError'
+  }
+}
+
+const MAX_PROPOSAL_VERIFICATION_LOG_BYTES = 16_000
+const CONFIRMED_INTERNAL_COMPILE = Symbol('confirmed-internal-compile')
+
 export interface WatcherLike {
   close(): void
 }
@@ -60,6 +73,7 @@ export interface ProjectSessionRegistryOptions {
   watch?: (root: string, onChange: (relativePath: string) => void) => WatcherLike
   compiler?: typeof compileIsolated
   commitGeneration?: typeof commitCompileGeneration
+  loadCurrentGeneration?: typeof loadCurrentCompileGeneration
   maxCompileResults?: number
   cleanupStaging?: (path: string) => Promise<void>
   compilerRuntime?: {
@@ -68,6 +82,7 @@ export interface ProjectSessionRegistryOptions {
     bundleAsset?: TectonicBundleAsset
   }
   onExternalChange?: (webContentsId: number, buffer: LatexBufferDto) => void
+  acquireRendererFreeze?: (webContentsId: number) => Promise<() => void>
 }
 
 interface BufferState {
@@ -83,10 +98,11 @@ interface BufferState {
 }
 
 interface ActiveCompile {
-  revision: number
+  kind: 'compile' | 'verification'
+  revision: number | null
   token: string
   phase: 'pending' | 'running' | 'publishing'
-  promise: Promise<CompileResultDto>
+  promise: Promise<unknown>
 }
 
 interface PreparedProposalMutation {
@@ -125,6 +141,8 @@ export class ProjectSession {
   private readonly maxCompileResults: number
   private readonly cleanupStaging: (path: string) => Promise<void>
   private readonly snapshotStore?: SnapshotStore
+  private readonly loadCurrentGeneration: typeof loadCurrentCompileGeneration
+  private readonly acquireRendererFreeze: () => Promise<() => void>
   private readonly proposalStore?: ProposalStore
   private readonly projectStore?: ProjectStore
   private readonly remoteBundleUrl?: string
@@ -170,6 +188,12 @@ export class ProjectSession {
     this.maxCompileResults = options.maxCompileResults ?? 3
     this.cleanupStaging =
       options.cleanupStaging ?? ((path) => rm(path, { recursive: true, force: true }))
+    this.loadCurrentGeneration = options.loadCurrentGeneration ?? loadCurrentCompileGeneration
+    this.acquireRendererFreeze = options.acquireRendererFreeze
+      ? () => options.acquireRendererFreeze!(this.webContentsId)
+      : async () => {
+          throw new Error('LaTeX renderer freeze is not configured')
+        }
     if (
       !Number.isSafeInteger(this.maxCompileResults) ||
       this.maxCompileResults < 1 ||
@@ -356,9 +380,11 @@ export class ProjectSession {
     try {
       if (from === this.mainFile)
         throw new MainFileRenameError('Cannot rename the configured main file')
+      const state = this.buffers.get(from)
+      if (state?.dirty || state?.conflict) throw new UnsavedBuffersError()
       const text = await this.project.readText(from)
       const hash = digest(text)
-      await this.project.saveText(to, text, { expectedSha256: null })
+      const saved = await this.project.saveText(to, text, { expectedSha256: null })
       try {
         await this.project.deleteText(from, {
           expectedSha256: hash,
@@ -373,9 +399,38 @@ export class ProjectSession {
           .catch(() => undefined)
         throw error
       }
-      const state = this.buffers.get(from)
       this.buffers.delete(from)
-      if (state) this.buffers.set(to, { ...state, path: to })
+      if (state) {
+        this.buffers.set(to, {
+          ...state,
+          path: to,
+          text,
+          baselineText: text,
+          baselineSha256: saved.sha256,
+          dirty: false,
+          conflict: null,
+        })
+      }
+      this.advanceMutationRevision()
+    } finally {
+      release()
+    }
+  }
+
+  async deleteText(path: string): Promise<void> {
+    this.assertActive()
+    const release = this.acquireRendererMutation()
+    try {
+      if (path === this.mainFile)
+        throw new MainFileRenameError('Cannot delete the configured main file')
+      const state = this.buffers.get(path)
+      if (state?.dirty || state?.conflict) throw new UnsavedBuffersError()
+      const text = await this.project.readText(path)
+      await this.project.deleteText(path, {
+        expectedSha256: digest(text),
+        transactionId: randomBytes(12).toString('hex'),
+      })
+      this.buffers.delete(path)
       this.advanceMutationRevision()
     } finally {
       release()
@@ -393,6 +448,7 @@ export class ProjectSession {
     } catch {
       diskText = null
     }
+    if (this.disposed || this.buffers.get(path) !== state) return
     const diskHash = diskText === null ? null : digest(diskText)
     if (diskHash === state.baselineSha256) return
     if (diskText !== null && diskHash !== null && diskHash === state.pendingSaveSha256) {
@@ -472,18 +528,64 @@ export class ProjectSession {
     }
   }
 
-  async compile(revision: number, mainFile: string): Promise<CompileResultDto> {
+  private compileCacheDirectory(): string {
+    if (!this.compilerRuntime) throw new Error('LaTeX compiler runtime is not configured')
+    const projectKey = createHash('sha256').update(this.project.rootPath, 'utf8').digest('hex')
+    return join(this.compilerRuntime.userDataPath, 'latex', 'compile-cache', projectKey)
+  }
+
+  async restoreLatestCompile(): Promise<void> {
+    if (!this.compilerRuntime) return
+    let restored: PublishedCompileGeneration | null
+    try {
+      restored = await this.loadCurrentGeneration(this.compileCacheDirectory())
+    } catch {
+      return
+    }
+    if (!restored?.pdfPath) return
+    const value: CompileResultDto = {
+      revision: 0,
+      pdfUrl: `wiswork-latex-pdf://${this.projectId}/0`,
+      diagnostics: normalizeProposalDiagnostics(
+        parseTectonicDiagnostics(restored.log),
+        MAX_FORMAL_COMPILE_DIAGNOSTICS,
+      ),
+      log: restored.log,
+    }
+    this.compileResults.set(0, {
+      ...value,
+      pdfPath: restored.pdfPath,
+      synctexPath: restored.synctexPath,
+    })
+  }
+
+  latestCompile(): CompileResultDto | null {
+    const latest = [...this.compileResults.values()].at(-1)
+    if (!latest) return null
+    return {
+      revision: latest.revision,
+      pdfUrl: latest.pdfUrl,
+      diagnostics: structuredClone(latest.diagnostics),
+      log: latest.log,
+    }
+  }
+
+  async compile(
+    revision: number,
+    mainFile: string,
+    authorization?: typeof CONFIRMED_INTERNAL_COMPILE,
+  ): Promise<CompileResultDto> {
     this.assertActive()
+    if (this.confirmedMutationInProgress && authorization !== CONFIRMED_INTERNAL_COMPILE) {
+      throw new Error('Confirmed edit transaction is in progress')
+    }
     this.assertAllBuffersPersisted()
     if (!this.compilerRuntime) throw new Error('LaTeX compiler runtime is not configured')
-    if (this.activeCompile?.revision === revision) return this.activeCompile.promise
+    if (this.activeCompile?.kind === 'compile' && this.activeCompile.revision === revision) {
+      return this.activeCompile.promise as Promise<CompileResultDto>
+    }
     const token = randomBytes(16).toString('hex')
-    const cacheDirectory = join(
-      this.compilerRuntime.userDataPath,
-      'latex',
-      'compile-cache',
-      this.projectId,
-    )
+    const cacheDirectory = this.compileCacheDirectory()
     const temporaryRoot = join(this.compilerRuntime.userDataPath, 'latex', 'compile-temp')
     const tectonicCacheDirectory = join(
       this.compilerRuntime.userDataPath,
@@ -548,7 +650,10 @@ export class ProjectSession {
         const value: CompileResultDto = {
           revision,
           pdfUrl: result.pdfPath ? `wiswork-latex-pdf://${this.projectId}/${revision}` : null,
-          diagnostics: parseTectonicDiagnostics(result.log),
+          diagnostics: normalizeProposalDiagnostics(
+            parseTectonicDiagnostics(result.log),
+            MAX_FORMAL_COMPILE_DIAGNOSTICS,
+          ),
           log: result.log,
         }
         this.compileResults.delete(revision)
@@ -573,11 +678,16 @@ export class ProjectSession {
           if (this.activeCompile?.token === token) this.activeCompile = undefined
         }
       })
-    this.activeCompile = { revision, token, phase: 'pending', promise }
+    this.activeCompile = { kind: 'compile', revision, token, phase: 'pending', promise }
     return promise
   }
 
   cancelCompile(): boolean {
+    if (this.confirmedMutationInProgress) return false
+    return this.cancelCompileInternal()
+  }
+
+  private cancelCompileInternal(): boolean {
     if (!this.activeCompile) return false
     if (this.activeCompile.phase === 'publishing') return false
     const token = this.activeCompile.token
@@ -907,6 +1017,180 @@ export class ProjectSession {
     })
   }
 
+  async verifyProposal(id: string): Promise<ProposalVerificationDto> {
+    this.assertActive()
+    return this.withConfirmedMutation(async () => {
+      this.assertAllBuffersPersisted()
+      const proposal = this.proposals.get(id)
+      if (!proposal) {
+        throw new ProposalVerificationRejectedError('not-found', 'Proposal not found')
+      }
+      if (proposal.expiresAt <= Date.now()) {
+        throw new ProposalVerificationRejectedError('expired', 'Proposal has expired')
+      }
+      for (const file of proposal.files) {
+        if (file.beforeSha256 === null) continue
+        let text: string
+        try {
+          text = await this.project.readText(file.path)
+        } catch {
+          throw new ProposalVerificationRejectedError(
+            'baseline',
+            'Proposal baseline changed on disk',
+          )
+        }
+        if (digest(text) !== file.beforeSha256) {
+          throw new ProposalVerificationRejectedError(
+            'baseline',
+            'Proposal baseline changed on disk',
+          )
+        }
+      }
+      if (proposal.files.some((file) => file.beforeSha256 === null)) {
+        return {
+          proposalId: proposal.id,
+          state: 'unverifiable',
+          reason: 'Proposals that create new files cannot be verified in isolation',
+          diagnostics: [],
+          logSummary: '',
+          verifiedAt: Date.now(),
+        }
+      }
+      if (!this.compilerRuntime || !this.mainFile) {
+        throw new ProposalVerificationRejectedError(
+          'configuration',
+          'Proposal verification is not configured',
+        )
+      }
+      let bundlePath: string
+      try {
+        bundlePath = await this.ensureBundle()
+      } catch {
+        throw new ProposalVerificationRejectedError(
+          'configuration',
+          'Proposal verification is not configured',
+        )
+      }
+      const cacheDirectory = join(
+        this.compilerRuntime.userDataPath,
+        'latex',
+        'proposal-verification-cache',
+        this.projectId,
+      )
+      const temporaryRoot = join(this.compilerRuntime.userDataPath, 'latex', 'compile-temp')
+      const tectonicCacheDirectory = join(
+        this.compilerRuntime.userDataPath,
+        'latex',
+        'tectonic-cache',
+      )
+      await Promise.all([
+        mkdir(cacheDirectory, { recursive: true }),
+        mkdir(temporaryRoot, { recursive: true }),
+        mkdir(tectonicCacheDirectory, { recursive: true }),
+      ])
+      return this.runIsolatedVerification(proposal, {
+        cacheDirectory,
+        temporaryRoot,
+        tectonicCacheDirectory,
+        bundlePath,
+      })
+    })
+  }
+
+  private runIsolatedVerification(
+    proposal: EditProposal,
+    runtime: {
+      cacheDirectory: string
+      temporaryRoot: string
+      tectonicCacheDirectory: string
+      bundlePath: string
+    },
+  ): Promise<ProposalVerificationDto> {
+    const token = randomBytes(16).toString('hex')
+    let staged: StagedCompileResult | undefined
+    const promise = this.compileQueue
+      .request({
+        projectId: this.projectId,
+        revision: `proposal-verification:${proposal.id}:${token}`,
+        run: async ({ signal }) => {
+          if (this.cancelledCompileTokens.has(token) || this.disposed) {
+            throw new Error('Proposal verification cancelled')
+          }
+          if (this.activeCompile?.token === token) this.activeCompile.phase = 'running'
+          staged = await this.compiler({
+            projectDirectory: this.project.rootPath,
+            temporaryRoot: runtime.temporaryRoot,
+            cacheDirectory: runtime.cacheDirectory,
+            executable: this.compilerRuntime!.tectonicPath,
+            bundlePath: runtime.bundlePath,
+            tectonicCacheDirectory: runtime.tectonicCacheDirectory,
+            mainFile: this.mainFile!,
+            overlay: proposal.files.map((file) => ({ path: file.path, text: file.afterText })),
+            expectedSourceHashes: Object.fromEntries(
+              proposal.files.map((file) => [file.path, file.beforeSha256!]),
+            ),
+            signal,
+          })
+          return staged
+        },
+        publish: () => {
+          if (this.cancelledCompileTokens.has(token) || this.activeCompile?.token !== token) {
+            throw new Error('Proposal verification cancelled')
+          }
+          this.activeCompile.phase = 'publishing'
+        },
+      })
+      .then((result): ProposalVerificationDto => ({
+        proposalId: proposal.id,
+        state: 'verified',
+        diagnostics: normalizeProposalDiagnostics(
+          parseTectonicDiagnostics(result.log, result.synctexInputRoot),
+        ),
+        logSummary: boundedUtf8(result.log, MAX_PROPOSAL_VERIFICATION_LOG_BYTES),
+        verifiedAt: Date.now(),
+      }))
+      .catch((error: unknown): ProposalVerificationDto => {
+        if (
+          error instanceof TectonicRunError &&
+          error.code === 'TECTONIC_EXIT_NONZERO' &&
+          error.terminationConfirmed &&
+          error.exitCode !== null
+        ) {
+          return {
+            proposalId: proposal.id,
+            state: 'failed',
+            reason: 'Tectonic could not compile the isolated proposal',
+            diagnostics: normalizeProposalDiagnostics(parseTectonicDiagnostics(error.log)),
+            logSummary: boundedUtf8(error.log, MAX_PROPOSAL_VERIFICATION_LOG_BYTES),
+            verifiedAt: Date.now(),
+          }
+        }
+        if (error instanceof LatexCompilerError) {
+          throw new ProposalVerificationRejectedError(
+            'safety',
+            'Proposal verification was rejected by the compiler safety policy',
+          )
+        }
+        throw error
+      })
+      .finally(async () => {
+        try {
+          if (staged) await this.cleanupStaging(staged.stagingDirectory)
+        } finally {
+          this.cancelledCompileTokens.delete(token)
+          if (this.activeCompile?.token === token) this.activeCompile = undefined
+        }
+      })
+    this.activeCompile = {
+      kind: 'verification',
+      revision: null,
+      token,
+      phase: 'pending',
+      promise,
+    }
+    return promise
+  }
+
   async applyProposal(id: string) {
     if (!this.proposalStore || !this.proposals.has(id)) throw new Error('Proposal not found')
     return this.proposalStore.apply(id, this.projectId, this.project)
@@ -969,7 +1253,11 @@ export class ProjectSession {
     if (!this.mainFile) return { ok: false as const, error: 'Main file is not configured' }
     this.confirmedEditRevision = Math.max(this.confirmedEditRevision + 1, Date.now())
     try {
-      const result = await this.compile(this.confirmedEditRevision, this.mainFile)
+      const result = await this.compile(
+        this.confirmedEditRevision,
+        this.mainFile,
+        CONFIRMED_INTERNAL_COMPILE,
+      )
       return { ok: true as const, result }
     } catch (error) {
       return { ok: false as const, error: error instanceof Error ? error.message : String(error) }
@@ -1028,7 +1316,7 @@ export class ProjectSession {
     this.discardAllPreparedProposalMutations()
     this.disposed = true
     this.watcher.close()
-    this.cancelCompile()
+    this.cancelCompileInternal()
     for (const cancel of [...this.compileCleanups, ...this.downloadCleanups]) cancel()
     this.compileCleanups.clear()
     this.downloadCleanups.clear()
@@ -1065,19 +1353,30 @@ export class ProjectSession {
   }
 
   private async withConfirmedMutation<T>(operation: () => Promise<T>): Promise<T> {
+    this.assertActive()
     if (this.confirmedMutationInProgress)
       throw new Error('Confirmed edit transaction is already in progress')
-    this.confirmedMutationInProgress = true
-    this.confirmedMutationSettled = new Promise<void>((resolve) => {
-      this.resolveConfirmedMutationSettled = resolve
-    })
+    const releaseFreeze = await this.acquireRendererFreeze()
+    let ownsMutation = false
     try {
+      this.assertActive()
+      if (this.confirmedMutationInProgress)
+        throw new Error('Confirmed edit transaction is already in progress')
+      this.confirmedMutationInProgress = true
+      ownsMutation = true
+      this.confirmedMutationSettled = new Promise<void>((resolve) => {
+        this.resolveConfirmedMutationSettled = resolve
+      })
       await this.rendererMutationsSettled
+      this.assertActive()
       return await operation()
     } finally {
-      this.confirmedMutationInProgress = false
-      this.resolveConfirmedMutationSettled?.()
-      this.resolveConfirmedMutationSettled = undefined
+      if (ownsMutation) {
+        this.confirmedMutationInProgress = false
+        this.resolveConfirmedMutationSettled?.()
+        this.resolveConfirmedMutationSettled = undefined
+      }
+      releaseFreeze()
     }
   }
 }
@@ -1102,6 +1401,7 @@ export class ProjectSessionRegistry {
     }
     const project = await openLatexProject(projectRoot)
     const session = new ProjectSession(webContentsId, project, this.watcherFactory, this.options)
+    await session.restoreLatestCompile()
     this.byWebContents.set(webContentsId, session)
     this.byProjectId.set(session.projectId, session)
     return session
@@ -1143,6 +1443,19 @@ function defaultWatch(root: string, onChange: (relativePath: string) => void): W
 
 function digest(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex')
+}
+
+function boundedUtf8(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text
+  let bytes = 0
+  let result = ''
+  for (const character of text) {
+    const characterBytes = Buffer.byteLength(character, 'utf8')
+    if (bytes + characterBytes > maxBytes) break
+    result += character
+    bytes += characterBytes
+  }
+  return result
 }
 
 async function readBoundedArtifact(path: string, maxBytes: number): Promise<Uint8Array> {

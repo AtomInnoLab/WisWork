@@ -368,6 +368,52 @@ const ALL_TOOLS: AgentToolDef[] = [
     },
   },
   {
+    name: 'crop_image',
+    description:
+      'Crop a picture non-destructively (srcRect): l/t/r/b are fractions (0..1) cut from each edge of the source image. The element frame stays where it is; the remaining region stretches to fill it. Pass all zeros to remove an existing crop.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slideIndex: { type: 'integer' },
+        sourceId: { type: 'string', description: 'Picture element id' },
+        l: { type: 'number', description: 'Fraction cut from the left edge (0..1)' },
+        t: { type: 'number', description: 'Fraction cut from the top edge (0..1)' },
+        r: { type: 'number', description: 'Fraction cut from the right edge (0..1)' },
+        b: { type: 'number', description: 'Fraction cut from the bottom edge (0..1)' },
+      },
+      required: ['slideIndex', 'sourceId', 'l', 't', 'r', 'b'],
+    },
+  },
+  {
+    name: 'set_picture_opacity',
+    description:
+      "Set a picture's whole-image opacity. opacity 0..1; 1 = fully opaque (removes the effect).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slideIndex: { type: 'integer' },
+        sourceId: { type: 'string', description: 'Picture element id' },
+        opacity: { type: 'number', description: '0 (invisible) .. 1 (opaque)' },
+      },
+      required: ['slideIndex', 'sourceId', 'opacity'],
+    },
+  },
+  {
+    name: 'replace_image',
+    description:
+      "Swap a picture's source image for a direct URL (for example, from image_search) in place so position, size, z-order, border, and effects survive. keepCrop preserves the existing crop window and is only correct when the new image has the same pixel geometry as the old one.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slideIndex: { type: 'integer' },
+        sourceId: { type: 'string', description: 'Picture element id' },
+        url: { type: 'string', description: 'Direct image link' },
+        keepCrop: { type: 'boolean', description: 'Keep the existing crop window (default false)' },
+      },
+      required: ['slideIndex', 'sourceId', 'url'],
+    },
+  },
+  {
     name: 'ask_clarification',
     description:
       "[Call before creating a whole new deck] Shows a questionnaire card with options, letting the user make key choices for this deck (audience/scenario/tone/focus etc.); the user's choices directly determine the deck's Core Hook and style. Questions must target the specific topic, each being a real trade-off (options represent different directions). Ask 2–4 questions, ≤5 options each. After calling, wait for the user to finish choosing in the card and generate once you have the answers. Don't repeat the questions in your reply text.",
@@ -1180,8 +1226,21 @@ async function executeTool(
   access: DeckAccess,
   call: AgentToolCall,
   state?: SkillState,
-  _signal?: AbortSignal,
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted()
+  const unguardedAccess = access
+  access = {
+    ...unguardedAccess,
+    applySlide: (slideIndex, updated) => {
+      signal?.throwIfAborted()
+      unguardedAccess.applySlide(slideIndex, updated)
+    },
+    applyDeck: (updatedSlides, goTo) => {
+      signal?.throwIfAborted()
+      unguardedAccess.applyDeck(updatedSlides, goTo)
+    },
+  }
   const slides = access.getSlides()
   if (UNSUPPORTED_CLOUD_TOOLS.has(call.name)) {
     return fail(
@@ -1226,6 +1285,7 @@ async function executeTool(
         paragraphs,
         ...(target.groupId ? { groupId: target.groupId } : {}),
       })
+      signal?.throwIfAborted()
       if (!updated)
         return fail(
           t('aiFailEditText'),
@@ -1266,6 +1326,7 @@ async function executeTool(
         paragraphs,
         ...(target.groupId ? { groupId: target.groupId } : {}),
       })
+      signal?.throwIfAborted()
       if (!updated)
         return fail(t('aiFailStyle'), `Element ${sourceId} does not support format editing`)
       access.applySlide(idx, updated)
@@ -1306,6 +1367,7 @@ async function executeTool(
         rotationDeg: typeof inp.rotationDeg === 'number' ? inp.rotationDeg : b.rotationDeg,
         fitWidthPx: access.fitWidthPx,
       })
+      signal?.throwIfAborted()
       if (!updated) return fail(t('aiFailTransform'), 'Transform failed')
       access.applySlide(idx, updated)
       const afterTarget = resolveEditTarget(updated, sourceId)
@@ -1362,6 +1424,7 @@ async function executeTool(
       // the session mid-batch, where undo/redo refuse to run
       const batchOpened = (await window.slidesApi.beginHistoryBatch?.()) === true
       try {
+        signal?.throwIfAborted()
         let current = slide
         const failures: string[] = []
         let boxApplied = 0
@@ -1380,6 +1443,7 @@ async function executeTool(
               rotationDeg: op.rotation,
             })),
           })
+          signal?.throwIfAborted()
           if (updated) {
             current = updated
             access.applySlide(idx, updated)
@@ -1406,6 +1470,7 @@ async function executeTool(
                 fitWidthPx: access.fitWidthPx,
               })
             : null
+          signal?.throwIfAborted()
           if (!updated) {
             failures.push(`setBox("${op.id}"): geometry apply inside group ${op.groupId} failed`)
             continue
@@ -1425,6 +1490,7 @@ async function executeTool(
               paragraphs: e.paragraphs,
               ...grp,
             })
+            signal?.throwIfAborted()
             if (!updated) {
               failures.push(
                 `setText("${e.id}"): element not found or does not support text editing`,
@@ -1449,6 +1515,7 @@ async function executeTool(
               paragraphs: mergeStyleIntoParagraphs(cur, e.style),
               ...grp,
             })
+            signal?.throwIfAborted()
             if (!updated) {
               failures.push(`setStyle("${e.id}"): element does not support format editing`)
               continue
@@ -1460,6 +1527,7 @@ async function executeTool(
               fill: e.fill,
               ...grp,
             })
+            signal?.throwIfAborted()
             if (!updated) {
               failures.push(`setFill("${e.id}"): element does not support fill`)
               continue
@@ -1471,6 +1539,7 @@ async function executeTool(
               stroke: e.stroke,
               ...grp,
             })
+            signal?.throwIfAborted()
             if (!updated) {
               failures.push(`setStroke("${e.id}"): element does not support stroke`)
               continue
@@ -1521,6 +1590,7 @@ async function executeTool(
         fill: String(call.input.fill),
         ...(target.groupId ? { groupId: target.groupId } : {}),
       })
+      signal?.throwIfAborted()
       if (!updated) return fail(t('aiFailFill'), `Element ${sourceId} does not support fill`)
       access.applySlide(idx, updated)
       return {
@@ -1548,6 +1618,7 @@ async function executeTool(
         stroke,
         ...(target.groupId ? { groupId: target.groupId } : {}),
       })
+      signal?.throwIfAborted()
       if (!updated) return fail(t('aiFailStroke'), `Element ${sourceId} does not support stroke`)
       access.applySlide(idx, updated)
       return {
@@ -1561,6 +1632,7 @@ async function executeTool(
       const query = String(call.input.query ?? '').trim()
       if (!query) return fail(t('aiFailWebSearch'), 'query must not be empty')
       const r = await window.slidesApi.webSearch(query, Number(call.input.maxResults) || 6)
+      signal?.throwIfAborted()
       if (state) state.webSearched = true
       // output for the LLM: title+URL+summary (each summary truncated to 120 chars to stay lean)
       const SNIPPET_MAX = 120
@@ -1588,6 +1660,7 @@ async function executeTool(
       const query = String(call.input.query ?? '').trim()
       if (!query) return fail(t('aiFailImageSearch'), 'query must not be empty')
       const r = await window.slidesApi.imageSearch(query, Number(call.input.maxResults) || 8)
+      signal?.throwIfAborted()
       // output for the LLM: keep the existing format (the LLM needs to read URLs into image_queries; format unchanged)
       const lines = r.images.map(
         (im, i) =>
@@ -1621,6 +1694,7 @@ async function executeTool(
         hPx: Number(call.input.h),
         fitWidthPx: access.fitWidthPx,
       })
+      signal?.throwIfAborted()
       if (!r)
         return fail(
           t('aiFailInsertImage'),
@@ -1631,6 +1705,97 @@ async function executeTool(
         output: `Inserted the image on page ${idx + 1}, element id=${r.sourceId}.`,
         mutated: true,
         summary: t('aiSumInsertImage', { n: idx + 1 }),
+      }
+    }
+
+    case 'crop_image':
+    case 'set_picture_opacity':
+    case 'replace_image': {
+      const idx = Number(call.input.slideIndex)
+      const sourceId = String(call.input.sourceId ?? '')
+      const failKey =
+        call.name === 'crop_image'
+          ? ('aiFailCropImage' as const)
+          : call.name === 'set_picture_opacity'
+            ? ('aiFailPictureOpacity' as const)
+            : ('aiFailReplaceImage' as const)
+      const slide = slides[idx]
+      if (!slide) return fail(t(failKey), `slideIndex out of range (0-${slides.length - 1})`)
+      const target = resolveEditTarget(slide, sourceId)
+      const terr = targetError(target, sourceId, idx + 1)
+      if (terr || !target || 'nested' in target) return fail(t(failKey), terr!)
+      if (target.node.type !== 'picture')
+        return fail(t(failKey), `Element ${sourceId} is not a picture (type: ${target.node.type})`)
+      if (target.groupId)
+        return fail(
+          t(failKey),
+          `Element ${sourceId} is inside a group; this tool only supports top-level pictures — ungroup_element first`,
+        )
+
+      if (call.name === 'crop_image') {
+        const frac = (v: unknown) => Math.min(1, Math.max(0, Number(v) || 0))
+        const cl = frac(call.input.l)
+        const ct = frac(call.input.t)
+        const cr = frac(call.input.r)
+        const cb = frac(call.input.b)
+        if (cl + cr >= 0.99 || ct + cb >= 0.99)
+          return fail(t(failKey), 'Crop removes the whole image (l+r and t+b must be < 1)')
+        const srcRect = cl || ct || cr || cb ? { l: cl, t: ct, r: cr, b: cb } : null
+        const updated = await window.slidesApi.editPictureSrcRect({
+          slideIndex: idx,
+          sourceId,
+          srcRect,
+        })
+        signal?.throwIfAborted()
+        if (!updated) return fail(t(failKey), 'Crop failed')
+        access.applySlide(idx, updated)
+        return {
+          output: srcRect
+            ? `Cropped picture ${sourceId} on page ${idx + 1} (l=${cl} t=${ct} r=${cr} b=${cb}).`
+            : `Removed the crop of picture ${sourceId} on page ${idx + 1}.`,
+          mutated: true,
+          summary: t('aiSumCropImage', { n: idx + 1 }),
+        }
+      }
+
+      if (call.name === 'set_picture_opacity') {
+        const opacity = Number(call.input.opacity)
+        if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1)
+          return fail(t(failKey), 'opacity must be between 0 and 1')
+        const updated = await window.slidesApi.editPictureOpacity({
+          slideIndex: idx,
+          sourceId,
+          opacity,
+        })
+        signal?.throwIfAborted()
+        if (!updated) return fail(t(failKey), 'Opacity change failed')
+        access.applySlide(idx, updated)
+        return {
+          output: `Set the opacity of picture ${sourceId} on page ${idx + 1} to ${opacity}.`,
+          mutated: true,
+          summary: t('aiSumPictureOpacity', { n: idx + 1 }),
+        }
+      }
+
+      const url = String(call.input.url ?? '')
+      if (!/^https?:\/\//.test(url)) return fail(t(failKey), 'Invalid url')
+      const updated = await window.slidesApi.replacePictureUrl({
+        slideIndex: idx,
+        sourceId,
+        url,
+        ...(call.input.keepCrop ? { keepSrcRect: true } : {}),
+      })
+      signal?.throwIfAborted()
+      if (!updated)
+        return fail(
+          t(failKey),
+          'Replacement failed (the image may be inaccessible, or the element is not a replaceable picture)',
+        )
+      access.applySlide(idx, updated)
+      return {
+        output: `Replaced the image of picture ${sourceId} on page ${idx + 1} in place (frame/z-order/effects kept).`,
+        mutated: true,
+        summary: t('aiSumReplaceImage', { n: idx + 1 }),
       }
     }
 
@@ -1658,6 +1823,7 @@ async function executeTool(
           'questions must be non-empty and every question needs options',
         )
       const r = await access.askClarification(questions)
+      signal?.throwIfAborted()
       if (r.cancelled) {
         return {
           output:
@@ -1703,6 +1869,7 @@ async function executeTool(
       if (slides.length <= 1)
         return fail(t('aiFailDeleteSlide'), 'Only one page remains; cannot delete')
       const r = await window.slidesApi.deleteSlide(idx)
+      signal?.throwIfAborted()
       if (!r) return fail(t('aiFailDeleteSlide'), 'Deletion failed')
       access.applyDeck(r, Math.max(0, Math.min(idx, r.length - 1)))
       return {
@@ -1721,6 +1888,7 @@ async function executeTool(
         clearText: call.input.clearText !== false,
         fitWidthPx: access.fitWidthPx,
       })
+      signal?.throwIfAborted()
       if (!r) return fail(t('aiFailNewSlide'), 'Creation failed')
       access.applyDeck(r.slides, r.index)
       return {
@@ -1754,6 +1922,7 @@ async function executeTool(
         ...(paragraphs ? { paragraphs } : {}),
         ...(isShape && call.input.fillColor ? { fillColor: String(call.input.fillColor) } : {}),
       })
+      signal?.throwIfAborted()
       if (!r) return fail(t('aiFailNewElement'), 'Insertion failed')
       access.applySlide(idx, r.slide)
       return {
@@ -1809,6 +1978,7 @@ async function executeTool(
         hPx: h,
         fitWidthPx: access.fitWidthPx,
       })
+      signal?.throwIfAborted()
       if (!r) return fail(t('aiFailChart'), 'Insertion failed (check kind and data)')
       access.applySlide(idx, r.slide)
       const sampleNote = call.input.dataSource === 'sample' ? SAMPLE_DATA_NOTE : ''
@@ -1848,6 +2018,7 @@ async function executeTool(
         hPx: h,
         fitWidthPx: access.fitWidthPx,
       })
+      signal?.throwIfAborted()
       if (!r) return fail(t('aiFailSmartart'), 'Insertion failed (check layout)')
       access.applySlide(idx, r.slide)
       return {
@@ -1893,6 +2064,7 @@ async function executeTool(
         hPx: h,
         fitWidthPx: access.fitWidthPx,
       })
+      signal?.throwIfAborted()
       if (!r) return fail(t('aiFailTable'), 'Insertion failed')
       let updated = r.slide
       // Fill cells one by one (cells optional; out-of-range parts ignored)
@@ -1910,6 +2082,7 @@ async function executeTool(
             col: ci,
             paragraphs: [{ runs: [{ text }] }],
           })
+          signal?.throwIfAborted()
           if (u) {
             updated = u
             filled++
@@ -1940,6 +2113,7 @@ async function executeTool(
         col,
         paragraphs,
       })
+      signal?.throwIfAborted()
       if (!updated)
         return fail(
           t('aiFailEditTable'),
@@ -1970,6 +2144,7 @@ async function executeTool(
         index: Number(call.input.index),
         ...(call.input.before ? { before: true } : {}),
       })
+      signal?.throwIfAborted()
       if (!r)
         return fail(
           t('aiFailTableStructure'),
@@ -2009,6 +2184,7 @@ async function executeTool(
       if (call.input.borderPreset != null)
         op.borderPreset = String(call.input.borderPreset) as 'all' | 'none'
       const updated = await window.slidesApi.editTableStyle(op)
+      signal?.throwIfAborted()
       if (!updated)
         return fail(
           t('aiFailTableStyle'),
@@ -2050,6 +2226,7 @@ async function executeTool(
       if (typeof call.input.gridlines === 'boolean') op.gridlines = call.input.gridlines
       if (call.input.switchRowCol === true) op.switchRowCol = true
       const updated = await window.slidesApi.editChart(op)
+      signal?.throwIfAborted()
       if (!updated)
         return fail(
           t('aiFailChartEdit'),
@@ -2076,6 +2253,7 @@ async function executeTool(
         color: color.startsWith('#') ? color : `#${color}`,
         fitWidthPx: access.fitWidthPx,
       })
+      signal?.throwIfAborted()
       if (!r) return fail(t('aiFailBackground'), 'Setting failed')
       access.applyDeck(r)
       return {
@@ -2103,6 +2281,7 @@ async function executeTool(
         )
       }
       const updated = await window.slidesApi.deleteElement({ slideIndex: idx, sourceId })
+      signal?.throwIfAborted()
       if (!updated)
         return fail(
           t('aiFailDeleteElement'),
@@ -2136,6 +2315,7 @@ async function executeTool(
       if (node.decoration)
         return fail(t('aiFailUngroup'), `${sourceId} is a layout decoration, read-only`)
       const updated = await window.slidesApi.ungroupElement({ slideIndex: idx, sourceId })
+      signal?.throwIfAborted()
       if (!updated) return fail(t('aiFailUngroup'), 'Ungroup failed')
       access.applySlide(idx, updated)
       // Ungrouping rewrites the page and re-ids every element; echo the fresh list so no extra read_slide is needed
@@ -2166,6 +2346,7 @@ async function executeTool(
         styleSkill: styleSkillToSave,
         createdAt: new Date().toISOString(),
       })
+      signal?.throwIfAborted()
       if (!r.ok) return fail(t('aiFailSaveTemplate'), r.error ?? 'Save failed')
       return {
         output: `Saved the style "${name}" as a template; next time pass style_template:"${name}" to reuse it directly.`,
@@ -2181,6 +2362,7 @@ async function executeTool(
           'The current environment does not support template listing',
         )
       const templates = await access.listStyleTemplates()
+      signal?.throwIfAborted()
       if (templates.length === 0) {
         return {
           output:

@@ -1,28 +1,32 @@
-import { useEffect, useRef, useState } from 'react'
-import { AgentLoop, type ToolExecutedEvent } from '@wiswork/agent-core'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { AgentLoop } from '@wiswork/agent-core'
 import type { AgentEvent } from '@wiswork/agent-runtime'
 import { AiComposer, AiTypingIndicator, Markdown, WisWorkAppMark } from '@wiswork/ui'
 import { createLatexSkill } from './latex-skill.js'
-import {
-  loadProposalForReview,
-  proposalForSelection,
-  type ReviewProposal,
-} from './proposal-review.js'
+import { loadProposalForReview } from './proposal-review.js'
+import { ProposalWorkflow, validateUndoProposal } from './proposal-workflow.js'
 import { ProposalReview } from './ProposalReview.js'
 import { LatexCodexToolSession, type LatexCodexMutationResult } from './codex-tool-session.js'
 import { createLatexTransport } from './transport.js'
-
-function enhancedModeInstallRequired(error: unknown): boolean {
-  if (error instanceof Error && error.message.includes('enhanced_mode_install_required')) {
-    return true
-  }
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    error.code === 'enhanced_mode_install_required'
-  )
-}
+import {
+  normalizeAgentContext,
+  serializeAgentPrompt,
+  type AgentContext,
+  type AgentContextKey,
+} from './agent-context.js'
+import {
+  cancelRunningTimelineEntries,
+  completeTimelineEntry,
+  failRunningTimelineEntries,
+  startTimelineEntry,
+  type TaskTimelineEntry,
+} from './task-timeline.js'
+import {
+  AgentPanelSession,
+  type AgentRunScope,
+  type AgentProjectScope,
+  type ChatLoadState,
+} from './agent-panel-session.js'
 
 const E2E_PROPOSAL_TEXT = String.raw`\documentclass{article}
 \begin{document}
@@ -34,9 +38,21 @@ interface ChatEntry {
   text: string
 }
 
-interface PanelRuntime {
-  run(text: string): void | Promise<void>
-  cancel(): void | Promise<void>
+interface EnhancedRuntimeBinding {
+  documentId: string
+  start(text: string): Promise<void>
+  cancel(): Promise<void>
+}
+
+function enhancedModeInstallRequired(error: unknown): boolean {
+  if (error instanceof Error && error.message.includes('enhanced_mode_install_required'))
+    return true
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'enhanced_mode_install_required'
+  )
 }
 
 const PANEL_WIDTH_KEY = 'latex-ai-panel-width'
@@ -56,6 +72,61 @@ function loadPanelWidth(): number {
   return Number.isFinite(saved) && saved > 0 ? clampPanelWidth(saved) : PANEL_WIDTH_DEFAULT
 }
 
+function contextChips(context: AgentContext): Array<{ key: AgentContextKey; label: string }> {
+  const normalized = normalizeAgentContext(context)
+  return [
+    ...(normalized.activeFile
+      ? [
+          {
+            key: 'activeFile' as const,
+            label: `${normalized.activeFile}${normalized.cursorLine ? `:${normalized.cursorLine}` : ''}`,
+          },
+        ]
+      : []),
+    ...(normalized.selection
+      ? [
+          {
+            key: 'selection' as const,
+            label: `Selection lines ${normalized.selection.startLine}–${normalized.selection.endLine}`,
+          },
+        ]
+      : []),
+    ...(normalized.diagnostic
+      ? [
+          {
+            key: 'diagnostic' as const,
+            label: `${normalized.diagnostic.severity === 'error' ? 'Error' : 'Warning'} at ${normalized.diagnostic.path}:${normalized.diagnostic.line}`,
+          },
+        ]
+      : []),
+  ]
+}
+
+function TaskTimeline({ entries }: { entries: readonly TaskTimelineEntry[] }) {
+  if (!entries.length) return null
+  return (
+    <section className="agent-task-timeline" aria-label="Agent task timeline">
+      <div className="agent-task-timeline-title">Task activity</div>
+      <ol>
+        {entries.map((entry) => (
+          <li key={entry.id} className={`timeline-${entry.state}`}>
+            <span className="timeline-state" aria-label={entry.state} />
+            <div>
+              <div className="timeline-label">{entry.label}</div>
+              {entry.detail && (
+                <details>
+                  <summary>Details</summary>
+                  <pre>{entry.detail}</pre>
+                </details>
+              )}
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
+  )
+}
+
 export function AiPanel({
   projectId,
   disabled = false,
@@ -63,6 +134,12 @@ export function AiPanel({
   open = true,
   onExpand,
   onCollapse,
+  context = {},
+  sensitiveContextBlocked = false,
+  onRemoveContext,
+  activeTab = 'ai',
+  onTabChange = () => undefined,
+  compilePanel = null,
 }: {
   projectId: string
   disabled?: boolean
@@ -70,224 +147,317 @@ export function AiPanel({
   open?: boolean
   onExpand?: () => void
   onCollapse?: () => void
+  context?: AgentContext
+  sensitiveContextBlocked?: boolean
+  onRemoveContext?: (key: AgentContextKey) => void
+  activeTab?: 'ai' | 'compile'
+  onTabChange?: (tab: 'ai' | 'compile') => void
+  compilePanel?: ReactNode
 }) {
   const [input, setInput] = useState('')
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [chat, setChat] = useState<ChatEntry[]>([])
-  const [proposal, setProposal] = useState<ReviewProposal | null>(null)
-  const [snapshotId, setSnapshotId] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  const [timeline, setTimeline] = useState<TaskTimelineEntry[]>([])
+  const [chatLoadState, setChatLoadState] = useState<ChatLoadState>('loading')
+  const [runtimeReady, setRuntimeReady] = useState(false)
   const [activity, setActivity] = useState<string | null>(null)
-  const [ready, setReady] = useState(false)
-  const [reviewAwaiting, setReviewAwaiting] = useState(false)
+  const [enhancedSnapshotId, setEnhancedSnapshotId] = useState<string | null>(null)
   const [panelWidth, setPanelWidth] = useState(loadPanelWidth)
   const [resizing, setResizing] = useState(false)
-  const projectRef = useRef(projectId)
-  projectRef.current = projectId
+  const sessionRef = useRef<AgentPanelSession | null>(null)
+  if (!sessionRef.current) sessionRef.current = new AgentPanelSession(projectId)
   const loopRef = useRef<AgentLoop | null>(null)
-  const runtimeRef = useRef<PanelRuntime | null>(null)
-  const restoredChatRef = useRef<ChatEntry[] | null>(null)
-  const approvalRef = useRef<
-    | {
-        proposalId: string
-        resolve(selected: ReadonlySet<string> | null): void
-      }
-    | undefined
-  >(undefined)
-  const chatIdsRef = useRef<{ projectId: string; chatId: string } | null>(null)
+  const loopBindingRef = useRef<{
+    loop: AgentLoop
+    getRun: () => AgentRunScope | null
+    setRun: (scope: AgentRunScope | null) => void
+  } | null>(null)
+  const enhancedRuntimeRef = useRef<EnhancedRuntimeBinding | null>(null)
+  const chatLoadStateRef = useRef<ChatLoadState>('loading')
+  const chatIdsRef = useRef<
+    (AgentProjectScope & { storeProjectId: string; chatId: string }) | null
+  >(null)
   const e2eProposalLoaded = useRef<string | null>(null)
+  const projectFilesChangedRef = useRef(onProjectFilesChanged)
+  projectFilesChangedRef.current = onProjectFilesChanged
+  const workflowRef = useRef<ProposalWorkflow | null>(null)
+  if (!workflowRef.current) {
+    workflowRef.current = new ProposalWorkflow(projectId, {
+      verify: (request) => window.latexApi.verifyProposal(request),
+      create: (request) => window.latexApi.proposeProjectEdits(request),
+      apply: (request) => window.latexApi.applyProposal(request),
+      refresh: () => projectFilesChangedRef.current?.(),
+    })
+  }
+  const workflow = workflowRef.current
+  const [proposalWorkflow, setProposalWorkflow] = useState(workflow.state)
+
+  useEffect(() => workflow.subscribe(setProposalWorkflow), [workflow])
 
   useEffect(() => {
+    const session = sessionRef.current!
+    let loopRun: AgentRunScope | null = null
     let disposed = false
     let removeRuntimeEvents: (() => void) | undefined
-    let codexTools: LatexCodexToolSession | undefined
-
-    const onDone = (result: { text: string }) => {
-      setBusy(false)
-      setActivity(null)
-      setText('')
-      if (result.text) setChat((current) => [...current, { role: 'assistant', text: result.text }])
-      const ids = chatIdsRef.current
-      if (ids)
-        void window.latexApi.appendDirectoryChat({
-          projectId: projectRef.current,
-          storeProjectId: ids.projectId,
-          chatId: ids.chatId,
-          role: 'assistant',
-          text: result.text,
-        })
-    }
-    const onError = (error: string) => {
-      setStatus(error)
-      setActivity(null)
-      setBusy(false)
-    }
-    const onLegacyToolExecuted = ({ call, execution }: ToolExecutedEvent<unknown>) => {
-      if (call.name !== 'propose_project_edits' || execution.isError) return
-      const projectId = projectRef.current
-      void loadProposalForReview(execution.output, projectId, (request) =>
-        window.latexApi.getProposal(request),
-      )
-        .then(setProposal)
-        .catch((error: unknown) =>
-          setStatus(error instanceof Error ? error.message : 'Unable to load proposal.'),
-        )
-    }
-    const requestReview = (
-      nextProposal: ReviewProposal,
-      signal: AbortSignal,
-    ): Promise<ReadonlySet<string> | null> => {
-      approvalRef.current?.resolve(null)
-      return new Promise((resolve) => {
-        let settled = false
-        const finish = (selected: ReadonlySet<string> | null) => {
-          if (settled) return
-          settled = true
-          signal.removeEventListener('abort', onAbort)
-          if (approvalRef.current?.proposalId === nextProposal.id) approvalRef.current = undefined
-          setReviewAwaiting(false)
-          if (selected === null) setProposal(null)
-          resolve(selected)
-        }
-        const onAbort = () => finish(null)
-        approvalRef.current = { proposalId: nextProposal.id, resolve: finish }
-        setReviewAwaiting(true)
-        setProposal(nextProposal)
-        signal.addEventListener('abort', onAbort, { once: true })
-        if (signal.aborted) onAbort()
-      })
-    }
-    const onCodexApplied = async (result: LatexCodexMutationResult) => {
-      await onProjectFilesChanged?.()
-      setSnapshotId(result.snapshotId)
-      setProposal(null)
-      setStatus(
-        result.compile.ok
-          ? `Changes applied and compiled (${result.compile.result?.diagnostics.length ?? 0} diagnostics).`
-          : `Changes applied; compile failed: ${result.compile.error ?? 'unknown error'}`,
-      )
-    }
-    const onCodexEvent = (event: AgentEvent<unknown>) => {
-      switch (event.type) {
-        case 'text':
-          setText(event.text)
-          break
-        case 'tool-start':
-          setActivity(`Using ${event.call.name.slice(0, 80)}…`)
-          break
-        case 'tool-executed':
-        case 'turn-end':
-          setActivity(null)
-          break
-        case 'done':
-          onDone(event.result)
-          break
-        case 'error':
-          onError(event.message)
-          if (event.code === 'enhanced_mode_stopped') {
-            setReady(false)
-            runtimeRef.current = null
-            void codexTools?.close()
+    let enhancedTools: LatexCodexToolSession | undefined
+    chatIdsRef.current = null
+    chatLoadStateRef.current = 'loading'
+    setChatLoadState('loading')
+    setInput('')
+    setText('')
+    setBusy(false)
+    setChat([])
+    workflow.setProject(projectId)
+    setStatus(null)
+    setTimeline([])
+    setActivity(null)
+    setRuntimeReady(false)
+    enhancedRuntimeRef.current = null
+    const loop = new AgentLoop({
+      transport: createLatexTransport(),
+      skill: createLatexSkill(window.latexApi, () => projectId),
+      events: {
+        onText: (value) => {
+          if (loopRef.current !== loop) return
+          const scope = loopRun
+          if (scope && session.acceptsRun(loop, scope)) setText(value)
+        },
+        onToolStart: (call) => {
+          if (loopRef.current !== loop) return
+          const scope = loopRun
+          if (!scope || !session.acceptsRun(loop, scope)) return
+          const runId = `${scope.generation}.${scope.run}`
+          setTimeline((current) => startTimelineEntry(current, call, runId))
+        },
+        onToolExecuted: ({ call, execution }) => {
+          if (loopRef.current !== loop) return
+          const scope = loopRun
+          if (!scope || !session.acceptsRun(loop, scope)) return
+          const timelineId = session.timelineId(scope, call.id)
+          const runId = `${scope.generation}.${scope.run}`
+          setTimeline((current) => {
+            const started = current.some((entry) => entry.id === timelineId)
+              ? current
+              : startTimelineEntry(current, call, runId)
+            return completeTimelineEntry(started, timelineId, execution)
+          })
+          if (call.name !== 'propose_project_edits' || execution.isError) return
+          void loadProposalForReview(execution.output, projectId, (request) =>
+            window.latexApi.getProposal(request),
+          )
+            .then((value) => {
+              if (loopRef.current === loop && session.acceptsRunResult(loop, scope))
+                void workflow.setProposal(value)
+            })
+            .catch((error: unknown) => {
+              if (loopRef.current === loop && session.acceptsRunResult(loop, scope))
+                setStatus(error instanceof Error ? error.message : String(error))
+            })
+        },
+        onDone: (result) => {
+          if (loopRef.current !== loop) return
+          const scope = loopRun
+          if (!scope || !session.acceptsCompletion(loop, scope)) return
+          const acceptResult = session.acceptsRun(loop, scope)
+          if (result.cancelled) setTimeline(cancelRunningTimelineEntries)
+          setBusy(false)
+          setText('')
+          if (acceptResult && result.text)
+            setChat((current) => [...current, { role: 'assistant', text: result.text }])
+          const ids = chatIdsRef.current
+          if (acceptResult && ids && session.acceptsProject(ids))
+            void window.latexApi.appendDirectoryChat({
+              projectId,
+              storeProjectId: ids.storeProjectId,
+              chatId: ids.chatId,
+              role: 'assistant',
+              text: result.text,
+            })
+          session.finishRun(loop, scope)
+          loopRun = null
+        },
+        onError: (error) => {
+          if (loopRef.current !== loop) return
+          const scope = loopRun
+          if (!scope || !session.acceptsCompletion(loop, scope)) return
+          if (session.acceptsRun(loop, scope)) {
+            setTimeline((current) => failRunningTimelineEntries(current, error))
+            setStatus(error)
           }
-          break
-      }
+          setBusy(false)
+          setText('')
+          session.finishRun(loop, scope)
+          loopRun = null
+        },
+      },
+    })
+    const projectScope = session.attachLoop(loop, projectId)
+    loopRef.current = loop
+    loopBindingRef.current = {
+      loop,
+      getRun: () => loopRun,
+      setRun: (scope) => {
+        loopRun = scope
+      },
     }
-
-    const initialize = async () => {
+    const finishChatLoad = (state: Exclude<ChatLoadState, 'loading'>, message?: string) => {
+      if (loopRef.current !== loop || !session.acceptsLoopProject(loop, projectScope)) return
+      chatLoadStateRef.current = state
+      setChatLoadState(state)
+      if (message) setStatus(message)
+    }
+    void (async () => {
+      try {
+        const result = await window.latexApi.resolveDirectoryChat({ projectId })
+        if (loopRef.current !== loop || !session.acceptsLoopProject(loop, projectScope)) return
+        if (!result.ok) {
+          finishChatLoad('error', `Chat history unavailable: ${result.error.message}`)
+          return
+        }
+        chatIdsRef.current = {
+          ...projectScope,
+          storeProjectId: result.value.projectId,
+          chatId: result.value.chatId,
+        }
+        const loaded = await window.latexApi.loadDirectoryChat({
+          projectId,
+          storeProjectId: result.value.projectId,
+          chatId: result.value.chatId,
+          limit: 200,
+        })
+        if (loopRef.current !== loop || !session.acceptsLoopProject(loop, projectScope)) return
+        if (!loaded.ok) {
+          chatIdsRef.current = null
+          finishChatLoad('error', `Chat history unavailable: ${loaded.error.message}`)
+          return
+        }
+        if (session.canRestoreChat(loop, projectScope)) {
+          const restored = loaded.value.map((message) => ({
+            role: message.role,
+            text: message.text,
+          }))
+          setChat(restored)
+          loop.restore(restored)
+        }
+        finishChatLoad('ready')
+      } catch (error) {
+        chatIdsRef.current = null
+        finishChatLoad(
+          'error',
+          `Chat history unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+    })()
+    void (async () => {
       try {
         const runtimeStatus = await window.wisworkCodexRuntime.status()
-        if (disposed) return
+        if (disposed || !session.acceptsLoopProject(loop, projectScope)) return
         if (runtimeStatus.runtime === 'legacy') {
-          const loop = new AgentLoop({
-            transport: createLatexTransport(),
-            skill: createLatexSkill(window.latexApi, () => projectRef.current),
-            events: {
-              onText: setText,
-              onToolExecuted: onLegacyToolExecuted,
-              onDone,
-              onError,
-            },
-          })
-          if (restoredChatRef.current) loop.restore(restoredChatRef.current)
-          loopRef.current = loop
-          runtimeRef.current = {
-            run: (instruction) => loop.run(instruction),
-            cancel: () => loop.cancel(),
-          }
-          setReady(true)
+          setRuntimeReady(true)
           return
         }
-        if (!runtimeStatus.documentId) throw new Error('codex_document_unavailable')
+        if (!runtimeStatus.documentId) throw new Error('enhanced_mode_document_unavailable')
         const documentId = runtimeStatus.documentId
+        const onEnhancedEvent = (event: AgentEvent<unknown>) => {
+          if (disposed || !session.acceptsLoopProject(loop, projectScope)) return
+          switch (event.type) {
+            case 'text':
+              setText(event.text)
+              break
+            case 'tool-start':
+              setActivity(`Using ${event.call.name.slice(0, 80)}…`)
+              break
+            case 'tool-executed':
+            case 'turn-end':
+              setActivity(null)
+              break
+            case 'done': {
+              setBusy(false)
+              setActivity(null)
+              setText('')
+              if (event.result.text)
+                setChat((current) => [...current, { role: 'assistant', text: event.result.text }])
+              const ids = chatIdsRef.current
+              if (ids && session.acceptsProject(ids))
+                void window.latexApi.appendDirectoryChat({
+                  projectId,
+                  storeProjectId: ids.storeProjectId,
+                  chatId: ids.chatId,
+                  role: 'assistant',
+                  text: event.result.text,
+                })
+              break
+            }
+            case 'error':
+              setStatus(event.message)
+              setActivity(null)
+              setBusy(false)
+              if (event.code === 'enhanced_mode_stopped') {
+                setRuntimeReady(false)
+                enhancedRuntimeRef.current = null
+                void enhancedTools?.close()
+              }
+              break
+          }
+        }
         removeRuntimeEvents = window.wisworkCodexRuntime.onEvent((message) => {
-          if (message.documentId === documentId && !disposed) onCodexEvent(message.event)
+          if (message.documentId === documentId) onEnhancedEvent(message.event)
         })
-        codexTools = new LatexCodexToolSession({
+        enhancedTools = new LatexCodexToolSession({
           documentId,
-          projectId: projectRef.current,
-          skill: createLatexSkill(window.latexApi, () => projectRef.current),
+          projectId,
+          skill: createLatexSkill(window.latexApi, () => projectId),
           tools: window.wisworkCodexTools,
           domain: window.latexApi,
-          requestReview,
-          onApplied: onCodexApplied,
+          requestReview: (proposal, signal) => workflow.requestApproval(proposal, signal),
+          onApplied: async (result: LatexCodexMutationResult) => {
+            await projectFilesChangedRef.current?.()
+            if (disposed || !session.acceptsLoopProject(loop, projectScope)) return
+            setEnhancedSnapshotId(result.snapshotId)
+            setStatus(
+              result.compile.ok
+                ? `Changes applied and compiled (${result.compile.result?.diagnostics.length ?? 0} diagnostics).`
+                : `Changes applied; compile failed: ${result.compile.error ?? 'unknown error'}`,
+            )
+          },
         })
-        await codexTools.start()
-        if (disposed) {
-          await codexTools.close()
+        await enhancedTools.start()
+        if (disposed || !session.acceptsLoopProject(loop, projectScope)) {
+          await enhancedTools.close()
           return
         }
-        runtimeRef.current = {
-          run: (instruction) =>
+        enhancedRuntimeRef.current = {
+          documentId,
+          start: (instruction) =>
             window.wisworkCodexRuntime.startTurn({ documentId, text: instruction }),
           cancel: () => window.wisworkCodexRuntime.cancelTurn(documentId),
         }
-        setReady(true)
+        setRuntimeReady(true)
       } catch (error) {
-        if (!disposed) {
-          onError(
-            enhancedModeInstallRequired(error)
-              ? 'Install Enhanced mode before use.'
-              : 'The selected AI runtime is unavailable.',
-          )
-        }
+        if (disposed) return
+        setStatus(
+          enhancedModeInstallRequired(error)
+            ? 'Install Enhanced mode before use.'
+            : 'The selected AI runtime is unavailable.',
+        )
+        setRuntimeReady(false)
       }
-    }
-    void initialize()
+    })()
     return () => {
       disposed = true
-      approvalRef.current?.resolve(null)
-      approvalRef.current = undefined
-      void runtimeRef.current?.cancel()
-      runtimeRef.current = null
-      loopRef.current?.cancel()
-      loopRef.current = null
+      workflow.cancel()
+      session.detachLoop(loop)
+      loop.cancel()
+      if (loopRef.current === loop) loopRef.current = null
+      if (loopBindingRef.current?.loop === loop) loopBindingRef.current = null
+      enhancedRuntimeRef.current = null
       removeRuntimeEvents?.()
-      void codexTools?.close()
+      void enhancedTools?.close()
+      loopRun = null
     }
-  }, [])
-
-  useEffect(() => {
-    void window.latexApi.resolveDirectoryChat({ projectId }).then(async (result) => {
-      if (!result.ok) return
-      chatIdsRef.current = result.value
-      const loaded = await window.latexApi.loadDirectoryChat({
-        projectId,
-        storeProjectId: result.value.projectId,
-        chatId: result.value.chatId,
-        limit: 200,
-      })
-      if (loaded.ok) {
-        const restored = loaded.value.map((message) => ({
-          role: message.role,
-          text: message.text,
-        }))
-        setChat(restored)
-        restoredChatRef.current = restored
-        loopRef.current?.restore(restored)
-      }
-    })
-  }, [projectId])
+  }, [projectId, workflow])
 
   useEffect(() => {
     if (!resizing) return
@@ -313,108 +483,157 @@ export function AiPanel({
       return
     }
     e2eProposalLoaded.current = projectId
+    const session = sessionRef.current!
+    const projectScope = session.captureProject()
     void window.latexApi
       .proposeProjectEdits({
         projectId,
         files: [{ path: 'main.tex', afterText: E2E_PROPOSAL_TEXT }],
       })
       .then((result) => {
-        if (result.ok) setProposal(result.value)
+        if (!session.acceptsProject(projectScope)) return
+        if (result.ok) void workflow.setProposal(result.value)
         else setStatus(result.error.message)
       })
-  }, [projectId])
+  }, [projectId, workflow])
 
   const send = () => {
     const instruction = input.trim()
-    const runtime = runtimeRef.current
-    if (!instruction || busy || disabled || !ready || !runtime) return
+    const enhanced = enhancedRuntimeRef.current
+    const binding = loopBindingRef.current
+    if (
+      !instruction ||
+      busy ||
+      disabled ||
+      !runtimeReady ||
+      !binding ||
+      binding.loop.busy ||
+      !sessionRef.current!.canSend(binding.loop, chatLoadStateRef.current)
+    )
+      return
+    const session = sessionRef.current!
+    if (!enhanced) {
+      const runScope = session.beginRun(binding.loop)
+      binding.setRun(runScope)
+    }
     setBusy(true)
     setStatus(null)
     setText('')
     setInput('')
     setChat((current) => [...current, { role: 'user', text: instruction }])
     const ids = chatIdsRef.current
-    if (ids)
+    if (ids && session.acceptsProject(ids))
       void window.latexApi.appendDirectoryChat({
         projectId,
-        storeProjectId: ids.projectId,
+        storeProjectId: ids.storeProjectId,
         chatId: ids.chatId,
         role: 'user',
         text: instruction,
       })
-    try {
-      void Promise.resolve(runtime.run(instruction)).catch(() => {
+    const prompt = serializeAgentPrompt(instruction, context)
+    if (enhanced) {
+      void enhanced.start(prompt).catch(() => {
         setStatus('The selected AI runtime is unavailable.')
         setBusy(false)
       })
-    } catch {
-      setStatus('The selected AI runtime is unavailable.')
-      setBusy(false)
+    } else {
+      binding.loop.run(prompt)
     }
   }
 
   const cancel = () => {
-    approvalRef.current?.resolve(null)
-    void runtimeRef.current?.cancel()
-    setBusy(false)
-    setText('')
-    setStatus('Stopped.')
-  }
-
-  const confirm = async (selected: ReadonlySet<string>) => {
-    if (!proposal || disabled) return
-    if (approvalRef.current?.proposalId === proposal.id) {
-      approvalRef.current.resolve(selected)
-      setProposal(null)
+    const enhanced = enhancedRuntimeRef.current
+    if (enhanced) {
+      workflow.cancel()
+      void enhanced.cancel()
+      setBusy(false)
+      setText('')
+      setStatus('Stopped.')
+      setActivity(null)
       return
     }
-    setBusy(true)
-    try {
-      const owned = await proposalForSelection(proposal, selected, async (files) => {
-        const result = await window.latexApi.proposeProjectEdits({ projectId, files })
-        if (!result.ok) throw new Error(result.error.message)
-        return result.value
-      })
-      const result = await window.latexApi.applyProposal({ projectId, proposalId: owned.id })
-      if (!result.ok) throw new Error(result.error.message)
-      const value = result.value as {
-        snapshotId: string
-        compile: { ok: boolean; error?: string; result?: { diagnostics: unknown[] } }
-      }
-      await onProjectFilesChanged?.()
-      setSnapshotId(value.snapshotId)
-      setProposal(null)
-      setStatus(
-        value.compile.ok
-          ? `Changes applied and compiled (${value.compile.result?.diagnostics.length ?? 0} diagnostics).`
-          : `Changes applied; compile failed: ${value.compile.error ?? 'unknown error'}`,
-      )
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error))
-    } finally {
-      setBusy(false)
-    }
+    const binding = loopBindingRef.current
+    const scope = binding?.getRun()
+    if (!binding || !scope) return
+    sessionRef.current!.cancelRun(binding.loop, scope)
+    binding.loop.cancel()
+    setText('')
+    setStatus('Stopped.')
+    setTimeline(cancelRunningTimelineEntries)
   }
 
   const undo = async () => {
+    const snapshotId = proposalWorkflow.snapshotId ?? enhancedSnapshotId
     if (!snapshotId || disabled) return
+    const session = sessionRef.current!
+    const projectScope = session.captureProject()
     setBusy(true)
-    const result = await window.latexApi.undoProposal({ projectId, snapshotId })
-    if (result.ok) {
-      await onProjectFilesChanged?.()
-      setSnapshotId(null)
-      setStatus('AI changes were undone and the project was compiled again.')
-    } else setStatus(result.error.message)
-    setBusy(false)
+    try {
+      const result = await window.latexApi.undoProposal({ projectId, snapshotId })
+      if (!session.acceptsProject(projectScope)) return
+      if (!result.ok) {
+        setStatus(result.error.message)
+        return
+      }
+      const undone = validateUndoProposal(result.value, snapshotId)
+      if (!undone.restored) {
+        workflow.clearSnapshot('AI changes were already undone; no compile was needed.')
+        return
+      }
+      workflow.clearSnapshot(
+        undone.compile.ok
+          ? 'AI changes were undone and the project was compiled again.'
+          : `AI changes were undone, but compile failed: ${undone.compile.error}`,
+      )
+      setEnhancedSnapshotId(null)
+      try {
+        await projectFilesChangedRef.current?.()
+      } catch (error) {
+        if (session.acceptsProject(projectScope)) {
+          workflow.clearSnapshot(
+            `AI changes were undone, but file refresh failed: ${error instanceof Error ? error.message : String(error)}.`,
+          )
+        }
+      }
+    } catch (error) {
+      if (session.acceptsProject(projectScope)) {
+        setStatus(error instanceof Error ? error.message : 'Undo response was invalid.')
+      }
+    } finally {
+      if (session.acceptsProject(projectScope)) setBusy(false)
+    }
   }
 
   // Keep the component mounted while collapsed so its transcript, draft and active run survive.
   if (!open) {
     return (
-      <button className="latex-ai-rail" onClick={onExpand} aria-label="Open AI panel">
-        <WisWorkAppMark className="ai-brand-icon" size={25} />
-        <span>AI</span>
-      </button>
+      <aside className="latex-ai-rail" role="tablist" aria-label="Workspace panel">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'ai'}
+          className={activeTab === 'ai' ? 'active' : undefined}
+          onClick={() => {
+            onTabChange('ai')
+            onExpand?.()
+          }}
+        >
+          <WisWorkAppMark className="ai-brand-icon" size={22} />
+          <span>WisWork AI</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'compile'}
+          className={activeTab === 'compile' ? 'active' : undefined}
+          onClick={() => {
+            onTabChange('compile')
+            onExpand?.()
+          }}
+        >
+          <span>编译</span>
+        </button>
+      </aside>
     )
   }
 
@@ -431,9 +650,26 @@ export function AiPanel({
           onPointerDown={() => setResizing(true)}
         />
         <header className="ai-panel-header">
-          <div className="ai-panel-title">
-            <WisWorkAppMark className="ai-brand-icon" size={25} />
-            <span>WisWork AI</span>
+          <div className="workspace-tabs" role="tablist" aria-label="Workspace panel">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'ai'}
+              className={activeTab === 'ai' ? 'active' : undefined}
+              onClick={() => onTabChange('ai')}
+            >
+              <WisWorkAppMark className="ai-brand-icon" size={25} />
+              <span>WisWork AI</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'compile'}
+              className={activeTab === 'compile' ? 'active' : undefined}
+              onClick={() => onTabChange('compile')}
+            >
+              编译
+            </button>
           </div>
           {onCollapse && (
             <button className="ai-header-btn" onClick={onCollapse} aria-label="Collapse AI panel">
@@ -441,87 +677,140 @@ export function AiPanel({
             </button>
           )}
         </header>
-        <div className="ai-chat" aria-live="polite">
-          {chat.length === 0 && !text && !proposal && (
-            <div className="ai-chat-empty">
-              <div className="ai-chat-empty-title">Edit LaTeX with WisWork AI</div>
-              <div className="ai-chat-empty-body">
-                Ask questions, fix compilation issues, or propose project-wide changes.
-              </div>
-              <div className="ai-starter-list">
-                {['Explain this document', 'Fix LaTeX errors', 'Improve the current section'].map(
-                  (starter) => (
-                    <button key={starter} className="ai-starter" onClick={() => setInput(starter)}>
-                      {starter}
-                    </button>
-                  ),
-                )}
-              </div>
-            </div>
-          )}
-          {chat.map((entry, index) => (
-            <div key={`${entry.role}-${index}`} className={`ai-msg ai-msg-${entry.role}`}>
-              {entry.role === 'assistant' ? (
-                <div className="ai-md">
-                  <Markdown text={entry.text} />
+        {activeTab === 'ai' ? (
+          <>
+            <div className="ai-chat" aria-live="polite" role="tabpanel">
+              {chat.length === 0 && !text && !proposalWorkflow.proposal && (
+                <div className="ai-chat-empty">
+                  <div className="ai-chat-empty-title">Edit LaTeX with WisWork AI</div>
+                  <div className="ai-chat-empty-body">
+                    Ask questions, fix compilation issues, or propose project-wide changes.
+                  </div>
+                  <div className="ai-starter-list">
+                    {[
+                      'Explain this document',
+                      'Fix LaTeX errors',
+                      'Improve the current section',
+                    ].map((starter) => (
+                      <button
+                        key={starter}
+                        className="ai-starter"
+                        onClick={() => setInput(starter)}
+                      >
+                        {starter}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              ) : (
-                entry.text
+              )}
+              {chat.map((entry, index) => (
+                <div key={`${entry.role}-${index}`} className={`ai-msg ai-msg-${entry.role}`}>
+                  {entry.role === 'assistant' ? (
+                    <div className="ai-md">
+                      <Markdown text={entry.text} />
+                    </div>
+                  ) : (
+                    entry.text
+                  )}
+                </div>
+              ))}
+              {text && (
+                <div className="ai-msg ai-msg-assistant">
+                  <div className="ai-md">
+                    <Markdown text={text} />
+                  </div>
+                </div>
+              )}
+              {busy && !text && <AiTypingIndicator label="WisWork is working" />}
+              <TaskTimeline entries={timeline} />
+              {activity && <div className="ai-status">{activity}</div>}
+              {proposalWorkflow.proposal && proposalWorkflow.verification && (
+                <ProposalReview
+                  proposal={proposalWorkflow.proposal}
+                  selection={proposalWorkflow.selection}
+                  busy={busy || proposalWorkflow.busy || disabled}
+                  verification={proposalWorkflow.verification}
+                  riskArmed={proposalWorkflow.riskArmed}
+                  onSelectionChange={(selection) => {
+                    if (!workflow.approvalPending) workflow.setSelection(selection)
+                  }}
+                  onPrimaryAction={() => void workflow.primaryAction()}
+                  onCancel={() => workflow.cancel()}
+                />
+              )}
+              {status && (
+                <div className="ai-status" role="status">
+                  {status}
+                </div>
+              )}
+              {proposalWorkflow.status && (
+                <div className="ai-status" role="status">
+                  {proposalWorkflow.status}
+                </div>
+              )}
+              {(proposalWorkflow.snapshotId || enhancedSnapshotId) && (
+                <button
+                  className="ai-undo-button"
+                  disabled={busy || disabled}
+                  onClick={() => void undo()}
+                >
+                  Undo AI changes
+                </button>
               )}
             </div>
-          ))}
-          {text && (
-            <div className="ai-msg ai-msg-assistant">
-              <div className="ai-md">
-                <Markdown text={text} />
-              </div>
+            <div className="ai-composer-wrap">
+              {sensitiveContextBlocked && (
+                <div className="ai-status" role="status">
+                  Sensitive files remain editable, but cannot be attached as AI context.
+                </div>
+              )}
+              {contextChips(context).length > 0 && (
+                <div className="ai-context-chips" aria-label="Attached context">
+                  {contextChips(context).map((chip) => (
+                    <span className="ai-context-chip" key={chip.key}>
+                      <span>{chip.label}</span>
+                      <button
+                        type="button"
+                        aria-label={`Remove ${chip.key} context`}
+                        onClick={() => onRemoveContext?.(chip.key)}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <AiComposer
+                value={input}
+                busy={busy || !runtimeReady}
+                placeholder={
+                  chatLoadState === 'loading'
+                    ? 'Loading project chat…'
+                    : 'Ask WisWork AI about this LaTeX project'
+                }
+                hintIdle={
+                  chatLoadState === 'error'
+                    ? 'Chat history unavailable · messages will not be saved'
+                    : 'Enter to send · Shift+Enter for new line'
+                }
+                hintBusy="Working…"
+                hintIdleTitle="Enter to send"
+                sendLabel="Send"
+                stopLabel="Stop"
+                ariaLabel="Ask WisWork AI"
+                onChange={(value) => {
+                  if (chatLoadState !== 'loading') setInput(value)
+                }}
+                onSend={send}
+                onStop={cancel}
+              />
             </div>
-          )}
-          {busy && !text && <AiTypingIndicator label="WisWork is working" />}
-          {activity && <div className="ai-status">{activity}</div>}
-          {proposal && (
-            <ProposalReview
-              proposal={proposal}
-              busy={(busy && !reviewAwaiting) || disabled}
-              onConfirm={(selected) => void confirm(selected)}
-              onCancel={() => {
-                if (approvalRef.current?.proposalId === proposal.id)
-                  approvalRef.current.resolve(null)
-                setProposal(null)
-              }}
-            />
-          )}
-          {status && (
-            <div className="ai-status" role="status">
-              {status}
-            </div>
-          )}
-          {snapshotId && (
-            <button
-              className="ai-undo-button"
-              disabled={busy || disabled}
-              onClick={() => void undo()}
-            >
-              Undo AI changes
-            </button>
-          )}
-        </div>
-        <div className="ai-composer-wrap">
-          <AiComposer
-            value={input}
-            busy={busy || !ready}
-            placeholder="Ask WisWork AI about this LaTeX project"
-            hintIdle="Enter to send · Shift+Enter for new line"
-            hintBusy="Working…"
-            hintIdleTitle="Enter to send"
-            sendLabel="Send"
-            stopLabel="Stop"
-            ariaLabel="Ask WisWork AI"
-            onChange={setInput}
-            onSend={send}
-            onStop={cancel}
-          />
-        </div>
+          </>
+        ) : (
+          <div className="dock-compile-content" role="tabpanel">
+            {compilePanel}
+          </div>
+        )}
       </aside>
     </div>
   )

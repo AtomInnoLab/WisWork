@@ -26,10 +26,14 @@ import { userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   appMenuLabels,
+  configuredDefaultSaveDir,
   contextMenuLabels,
   installContextMenu,
   installNavigationGuard,
   safeExternalUrl,
+  showOpenDialogWithMemory,
+  showSaveDialogWithMemory,
+  toggleDevToolsItem,
 } from '@wiswork/electron-utils'
 import { getUiLang, normalizeLang, setUiLang } from '@wiswork/i18n'
 import { ProjectStore } from '@wiswork/project-store'
@@ -101,6 +105,7 @@ import {
   pasteElements,
   reorderElement,
   reparseDeck,
+  replacePictureBytes,
   savePptxToFile,
   commitSaved,
   setElementFont,
@@ -108,6 +113,10 @@ import {
   mergeTableCells,
   setSlideLayout,
   resetSlideLayout,
+  builtinLayoutInfos,
+  ensureBuiltinLayout,
+  shouldOfferBuiltinLayouts,
+  BUILTIN_LAYOUT_PREFIX,
   setSlideSize,
   setPictureOpacity,
   setElementConnection,
@@ -149,6 +158,7 @@ import type {
   AddElementOp,
   AddImageBytesOp,
   AddInkOp,
+  ReplacePictureBytesOp,
   AddMediaBytesOp,
   AddBlankSlideOp,
   AddSlideOp,
@@ -234,6 +244,7 @@ import {
   restoreSnapshot,
   settleStaleHistoryBatch,
   runtime,
+  scheduleHistoryNotify,
   sessions,
   takeSnapshot,
   windowRefs,
@@ -663,6 +674,7 @@ async function openAndBuild(
     redoStack: [],
     ...(recovered ? { metaDirty: true } : {}),
   })
+  scheduleHistoryNotify(sessions.get(wc.id)!)
   await pushRecent(path)
   slidesOpenedHook?.(wc, path)
   let slides = buildAllRenderSlides(opened, fitWidthPx)
@@ -676,9 +688,9 @@ async function openAndBuild(
   }
 }
 
-/** Directory where AI-generated drafts are saved: <Documents>/WisWork/ */
+/** Directory where AI-generated drafts are saved: the configurable default save folder. */
 function getDraftsDir(): string {
-  return join(app.getPath('documents'), 'WisWork')
+  return configuredDefaultSaveDir(app)
 }
 
 /** Fallback draft filename: <untitled label>-YYYYMMDD-HHmmss.pptx */
@@ -907,9 +919,7 @@ export function registerSlidesIpc(): void {
       properties: ['openFile' as const],
       filters: [{ name: 'PowerPoint', extensions: ['pptx', 'ppt'] }],
     }
-    const r = parent
-      ? await dialog.showOpenDialog(parent, options)
-      : await dialog.showOpenDialog(options)
+    const r = await showOpenDialogWithMemory(dialog, parent, options)
     if (r.canceled || !r.filePaths[0]) return null
     if (await rejectLegacyPpt(r.filePaths[0])) return null
     return openAndBuild(e.sender, r.filePaths[0], fitWidthPx)
@@ -1243,6 +1253,7 @@ export function registerSlidesIpc(): void {
   ipcMain.handle('slides:new-blank', async (e, fitWidthPx: number): Promise<OpenResult> => {
     const opened = await openPptx(await createBlankPptx())
     sessions.set(e.sender.id, { path: '', opened, fitWidthPx, undoStack: [], redoStack: [] })
+    scheduleHistoryNotify(sessions.get(e.sender.id)!)
     return {
       path: '',
       slides: buildAllRenderSlides(opened, fitWidthPx),
@@ -1314,7 +1325,11 @@ export function registerSlidesIpc(): void {
       }
       return rebuildSlide(session, op.slideIndex)
     }
-    const el = findEl(slide, op.sourceId)
+    // Unlike findEl, pictures are strokable too (picture border)
+    const el = slide.elements.find(
+      (x) =>
+        x.id === op.sourceId && (x.type === 'text' || x.type === 'shape' || x.type === 'picture'),
+    ) as TextElement | undefined
     if (!el) return null
     pushHistory(session)
     el.stroke = op.stroke
@@ -1335,14 +1350,39 @@ export function registerSlidesIpc(): void {
     if (!session) return null
     const slide = session.opened.deck.slides[op.slideIndex]
     if (!slide) return null
+    // Any element with an a:xfrm can flip (picture/shape/text/group) — findEl's
+    // text/shape filter would silently drop pictures
     const targets = op.sourceIds
-      .map((id) => (op.groupId ? findGroupChild(slide, op.groupId, id)?.child : findEl(slide, id)))
-      .filter((el): el is NonNullable<typeof el> => !!el)
+      .map((id) =>
+        op.groupId
+          ? findGroupChild(slide, op.groupId, id)?.child
+          : slide.elements.find((x) => x.id === id),
+      )
+      .filter((el): el is NonNullable<typeof el> => !!el && !!el.transform)
     if (targets.length === 0) return null
     pushHistory(session)
     for (const el of targets) {
-      if (op.axis === 'h') el.transform.flipH = !el.transform.flipH
-      else el.transform.flipV = !el.transform.flipV
+      const t = el.transform
+      // Rotation pivots on the flip-adjusted box origin, so toggling a flip on a
+      // rotated element would move its visual center: origin + R(rot)·(flip-signed
+      // half-extent) must stay put — shift the offset by the orbit difference.
+      const orbit = () => {
+        const rad = (((t.rot ?? 0) / 60000) * Math.PI) / 180
+        const bx = t.flipH ? t.offset.cx : 0
+        const by = t.flipV ? t.offset.cy : 0
+        const vx = ((t.flipH ? -1 : 1) * t.offset.cx) / 2
+        const vy = ((t.flipV ? -1 : 1) * t.offset.cy) / 2
+        return {
+          x: bx + vx * Math.cos(rad) - vy * Math.sin(rad),
+          y: by + vx * Math.sin(rad) + vy * Math.cos(rad),
+        }
+      }
+      const before = orbit()
+      if (op.axis === 'h') t.flipH = !t.flipH
+      else t.flipV = !t.flipV
+      const after = orbit()
+      t.offset.x += Math.round(before.x - after.x)
+      t.offset.y += Math.round(before.y - after.y)
       el.dirtyTransform = true
     }
     updateConnectorsForMoved(
@@ -1361,6 +1401,27 @@ export function registerSlidesIpc(): void {
     if (!editPictureSrcRect(slide, op.sourceId, op.srcRect)) {
       session.undoStack.pop()
       return null
+    }
+    // Crop confirm also shrinks the element frame to the crop frame — same history
+    // push, so a single undo restores frame and crop together (no distorted middle state)
+    if (op.boxPx && op.fitWidthPx) {
+      const el = slide.elements.find((x) => x.id === op.sourceId)
+      if (el) {
+        const baseWidthPx = session.opened.deck.size.cx / EMU_PER_PX_96
+        const scale = op.fitWidthPx / baseWidthPx
+        const toEmu = (px: number) => Math.round((px / scale) * EMU_PER_PX_96)
+        el.transform = {
+          ...el.transform,
+          offset: {
+            x: toEmu(op.boxPx.x),
+            y: toEmu(op.boxPx.y),
+            cx: toEmu(op.boxPx.w),
+            cy: toEmu(op.boxPx.h),
+          },
+        }
+        el.dirtyTransform = true
+        updateConnectorsForMoved(slide, [op.sourceId])
+      }
     }
     return rebuildSlide(session, op.slideIndex)
   })
@@ -1448,9 +1509,7 @@ export function registerSlidesIpc(): void {
           },
         ],
       }
-      const r = parent
-        ? await dialog.showOpenDialog(parent, options)
-        : await dialog.showOpenDialog(options)
+      const r = await showOpenDialogWithMemory(dialog, parent, options)
       if (r.canceled || !r.filePaths[0]) return null
       const bytes = await readFile(r.filePaths[0])
       const ext = r.filePaths[0].split('.').pop()!.toLowerCase()
@@ -1479,9 +1538,7 @@ export function registerSlidesIpc(): void {
         },
       ],
     }
-    const r = parent
-      ? await dialog.showOpenDialog(parent, options)
-      : await dialog.showOpenDialog(options)
+    const r = await showOpenDialogWithMemory(dialog, parent, options)
     if (r.canceled || !r.filePaths[0]) return null
     const filePath = r.filePaths[0]
     const bytes = await readFile(filePath)
@@ -1687,11 +1744,26 @@ export function registerSlidesIpc(): void {
     }
   })
 
+  // 'builtin:<key>' virtual paths get injected into the package on first use
+  const resolveLayoutPath = (session: Session, layoutPath?: string): string | undefined => {
+    if (!layoutPath?.startsWith(BUILTIN_LAYOUT_PREFIX)) return layoutPath
+    return (
+      ensureBuiltinLayout(
+        session.opened.archive,
+        session.opened.deck.size,
+        layoutPath.slice(BUILTIN_LAYOUT_PREFIX.length),
+      ) ?? undefined
+    )
+  }
+
   ipcMain.handle('slides:add-slide-with-layout', (e, op: AddSlideWithLayoutOp) => {
     const session = sessions.get(e.sender.id)
     if (!session) return null
     pushHistory(session)
-    const slide = insertSlideWithLayout(session.opened, op.sourceIndex, op.layoutPath)
+    const layoutPath = resolveLayoutPath(session, op.layoutPath)
+    const slide = layoutPath
+      ? insertSlideWithLayout(session.opened, op.sourceIndex, layoutPath)
+      : null
     if (!slide) {
       session.undoStack.pop()
       return null
@@ -1707,7 +1779,14 @@ export function registerSlidesIpc(): void {
     const session = sessions.get(e.sender.id)
     if (!session) return null
     const layouts = listSlideLayouts(session.opened.archive)
-    return { layouts }
+    // Decks whose own layouts carry no placeholders (AI-generated single blank layout)
+    // get the built-in standard set, injected into the package on first use
+    if (shouldOfferBuiltinLayouts(layouts)) {
+      layouts.push(
+        ...builtinLayoutInfos(session.opened.deck.size, new Set(layouts.map((l) => l.name))),
+      )
+    }
+    return { layouts, size: { ...session.opened.deck.size } }
   })
 
   // ── Master edit view ───────────────────────────────────────────────
@@ -1905,9 +1984,12 @@ export function registerSlidesIpc(): void {
     const session = sessions.get(e.sender.id)
     if (!session) return null
     pushHistory(session)
-    const r = op.layoutPath
-      ? setSlideLayout(session.opened, op.slideIndex, op.layoutPath)
-      : resetSlideLayout(session.opened, op.slideIndex)
+    const layoutPath = resolveLayoutPath(session, op.layoutPath)
+    const r = layoutPath
+      ? setSlideLayout(session.opened, op.slideIndex, layoutPath)
+      : op.layoutPath
+        ? null
+        : resetSlideLayout(session.opened, op.slideIndex)
     if (!r) {
       session.undoStack.pop()
       return null
@@ -2406,6 +2488,27 @@ export function registerSlidesIpc(): void {
     return rebuilt ? { slide: rebuilt, sourceId: el.id } : null
   })
 
+  ipcMain.handle('slides:replace-picture-bytes', (e, op: ReplacePictureBytesOp) => {
+    const session = sessions.get(e.sender.id)
+    if (!session) return null
+    const slide = session.opened.deck.slides[op.slideIndex]
+    if (!slide) return null
+    pushHistory(session)
+    const ok = replacePictureBytes(
+      session.opened,
+      slide,
+      op.sourceId,
+      new Uint8Array(Buffer.from(op.base64, 'base64')),
+      op.ext,
+      op.keepSrcRect ? { keepSrcRect: true } : undefined,
+    )
+    if (!ok) {
+      session.undoStack.pop()
+      return { error: 'unsupported' as const, ext: op.ext }
+    }
+    return rebuildSlide(session, op.slideIndex)
+  })
+
   // Show a dialog to pick video/audio and embed it. Video poster frame prefers the system thumbnail (QuickLook), falling back to a solid color on failure.
   ipcMain.handle(
     'slides:insert-media',
@@ -2422,9 +2525,7 @@ export function registerSlidesIpc(): void {
         properties: ['openFile' as const],
         filters,
       }
-      const r = parent
-        ? await dialog.showOpenDialog(parent, options)
-        : await dialog.showOpenDialog(options)
+      const r = await showOpenDialogWithMemory(dialog, parent, options)
       if (r.canceled || !r.filePaths[0]) return null
       const filePath = r.filePaths[0]
       const bytes = await readFile(filePath)
@@ -2583,9 +2684,7 @@ export function registerSlidesIpc(): void {
       properties: ['openFile' as const],
       filters: [{ name: tm('filter3d'), extensions: ['glb', 'gltf'] }],
     }
-    const r = parent
-      ? await dialog.showOpenDialog(parent, options)
-      : await dialog.showOpenDialog(options)
+    const r = await showOpenDialogWithMemory(dialog, parent, options)
     if (r.canceled || !r.filePaths[0]) return null
     const filePath = r.filePaths[0]
     const bytes = await readFile(filePath)
@@ -3019,6 +3118,7 @@ export function registerSlidesIpc(): void {
     if (session.undoStack.length === 0) return null
     session.redoStack.push(takeSnapshot(session))
     restoreSnapshot(session, session.undoStack.pop()!)
+    scheduleHistoryNotify(session)
     return buildAllRenderSlides(session.opened, session.fitWidthPx)
   })
 
@@ -3029,6 +3129,7 @@ export function registerSlidesIpc(): void {
     if (session.redoStack.length === 0) return null
     session.undoStack.push(takeSnapshot(session))
     restoreSnapshot(session, session.redoStack.pop()!)
+    scheduleHistoryNotify(session)
     return buildAllRenderSlides(session.opened, session.fitWidthPx)
   })
 
@@ -3083,9 +3184,7 @@ export function registerSlidesIpc(): void {
       defaultPath: defaultName,
       filters: [{ name: 'PowerPoint', extensions: ['pptx'] }],
     }
-    const r = parent
-      ? await dialog.showSaveDialog(parent, options)
-      : await dialog.showSaveDialog(options)
+    const r = await showSaveDialogWithMemory(dialog, parent, options, getDraftsDir())
     if (r.canceled || !r.filePath) return { ok: false }
     try {
       await savePptxToFile(session.opened, r.filePath)
@@ -3115,9 +3214,7 @@ export function registerSlidesIpc(): void {
       buttonLabel: tm('btnExport'),
       properties: ['openDirectory' as const, 'createDirectory' as const],
     }
-    const r = parent
-      ? await dialog.showOpenDialog(parent, options)
-      : await dialog.showOpenDialog(options)
+    const r = await showOpenDialogWithMemory(dialog, parent, options)
     return r.canceled || !r.filePaths[0] ? null : r.filePaths[0]
   })
 
@@ -3147,9 +3244,7 @@ export function registerSlidesIpc(): void {
       defaultPath: defaultName,
       filters: [{ name: 'PDF', extensions: ['pdf'] }],
     }
-    const r = parent
-      ? await dialog.showSaveDialog(parent, options)
-      : await dialog.showSaveDialog(options)
+    const r = await showSaveDialogWithMemory(dialog, parent, options, getDraftsDir())
     return r.canceled || !r.filePath ? null : r.filePath
   })
 
@@ -3258,23 +3353,48 @@ html, body { margin: 0; padding: 0; font-family: -apple-system, 'Segoe UI', sans
 .page.notes img { width: 100%; height: auto; border: 1px solid #bbb; }
 .page.notes .note { margin-top: 0.3in; font-size: 11pt; line-height: 1.5; white-space: pre-wrap; }
 </style></head><body>${body}</body></html>`
-      const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true } })
+      const owner = BrowserWindow.fromWebContents(e.sender) ?? dialogParent()
+      const win = new BrowserWindow({
+        show: false,
+        ...(owner && !owner.isDestroyed() ? { parent: owner } : {}),
+        ...(process.platform === 'win32'
+          ? {
+              width: 900,
+              height: 700,
+              autoHideMenuBar: true,
+              closable: false,
+              skipTaskbar: true,
+            }
+          : {}),
+        webPreferences: { sandbox: true },
+      })
       try {
         await win.loadURL('data:text/html;base64,' + Buffer.from(html, 'utf8').toString('base64'))
         await win.webContents.executeJavaScript(
           'Promise.all([document.fonts.ready, ...Array.from(document.images).map((i) => i.decode().catch(() => {}))])',
           true,
         )
-        const ok = await new Promise<boolean>((resolve) => {
-          win.webContents.print({ silent: false, printBackground: true }, (success) =>
-            resolve(success),
+        // Chromium attaches the native Windows print dialog to the window being printed.
+        // If that owner is hidden, the dialog is hidden too and the layout buttons appear inert.
+        if (process.platform === 'win32') {
+          win.show()
+          win.focus()
+        }
+        const result = await new Promise<{ success: boolean; failureReason: string }>((resolve) => {
+          win.webContents.print(
+            { silent: false, printBackground: true },
+            (success, failureReason) => resolve({ success, failureReason }),
           )
         })
-        return { ok }
+        // Canceling is a normal completion, not a print failure to surface in the status bar.
+        if (!result.success && result.failureReason !== 'Print job canceled') {
+          return { ok: false, error: result.failureReason }
+        }
+        return { ok: true }
       } catch (err) {
         return { ok: false, error: String(err) }
       } finally {
-        win.destroy()
+        if (!win.isDestroyed()) win.destroy()
       }
     },
   )
@@ -3534,7 +3654,7 @@ export function buildSlidesMenu(): Menu {
           click: () => send('zoom-reset'),
         },
         { type: 'separator' },
-        { role: 'toggleDevTools', label: labels.toggleDevTools },
+        toggleDevToolsItem(labels),
       ],
     },
   ]

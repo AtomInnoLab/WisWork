@@ -7,13 +7,17 @@ export type {
   AgentToolCall,
   AgentToolDef,
   AgentToolResult,
+  AgentToolContent,
   AgentTransport,
   ToolDisplay,
   ToolExecution,
+  ToolExecutionOutcome,
+  ToolExecutionSuspension,
 } from './types'
+export { suspendToolExecution } from './types'
 export { composeSkills } from './skill'
 export type { AgentSkill } from './skill'
-export { AgentLoop } from './loop'
+export { AgentLoop, COMPLETED_VIA_TOOLS_TEXT, sanitizeAgentPayload } from './loop'
 export type {
   AgentLoopEvents,
   AgentLoopOptions,

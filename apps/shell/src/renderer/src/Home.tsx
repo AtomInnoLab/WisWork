@@ -5,10 +5,13 @@ import iconXlsx from './assets/file-xlsx.svg'
 import iconPptx from './assets/file-pptx.svg'
 import iconPdf from './assets/file-pdf.svg'
 import iconTex from './assets/file-tex.svg'
+import iconMd from './assets/file-md.svg'
 import type {
   AccountStatus,
+  AppTheme,
   HomeApi,
   LatexRecentProjectEntry,
+  OfficePairingRequest,
   ProjectHomeApi,
   ProjectSummaryEntry,
   RecentEntry,
@@ -16,6 +19,7 @@ import type {
 import { fileCountKey, latexProjectCountKey, visiblePageCount } from './counts'
 import { formatAccountLoginDiagnostic, loginErrorKind } from './login-diagnostic'
 import { LoginDiagnostic } from './LoginDiagnostic'
+import { mergeOfficePairings } from './office-pairings'
 import { useI18n } from './locale'
 import type { I18n, StringKey } from './locale'
 import type { EnhancedModeApi, EnhancedModeStatus } from '../../shared/enhanced-mode-api'
@@ -48,6 +52,50 @@ const FILE_ICONS: Record<string, string> = {
   pptx: iconPptx,
   pdf: iconPdf,
   tex: iconTex,
+  md: iconMd,
+  markdown: iconMd,
+}
+
+export function homeCreationItems(
+  translate: (key: 'newDoc' | 'newSheet' | 'newSlide' | 'newMarkdown') => string,
+) {
+  return [
+    { ext: 'docx', title: translate('newDoc'), sub: '.docx' },
+    { ext: 'xlsx', title: translate('newSheet'), sub: '.xlsx' },
+    { ext: 'pptx', title: translate('newSlide'), sub: '.pptx' },
+    { ext: 'md', title: translate('newMarkdown'), sub: '.md' },
+    { ext: 'tex', title: 'AI LaTeX', sub: '.tex' },
+  ] as const
+}
+
+export function accountPresentation(status: AccountStatus | null, loggedInLabel: string) {
+  const email = status?.email ?? ''
+  const name = email ? email.split('@')[0] : (status?.userId ?? loggedInLabel)
+  const initial = (email || name || 'W').trim().charAt(0).toUpperCase() || 'W'
+  return { initial, name, email }
+}
+
+export function AccountMenuIdentity({
+  status,
+  loggedInLabel,
+}: {
+  status: AccountStatus
+  loggedInLabel: string
+}) {
+  const identity = accountPresentation(status, loggedInLabel)
+  return (
+    <div className="account-menu-info">
+      <span className="account-avatar logged-in account-menu-avatar" aria-hidden="true">
+        {identity.initial}
+      </span>
+      <span className="account-menu-identity">
+        <span className="account-menu-name">{identity.name}</span>
+        <span className="account-menu-email" title={identity.email}>
+          {identity.email || status.userId || 'WisWork'}
+        </span>
+      </span>
+    </div>
+  )
 }
 
 function FileBadge({ ext, size }: { ext: string; size: number }) {
@@ -119,6 +167,48 @@ const FILTERS: { key: string; label: StringKey }[] = [
   { key: 'pptx', label: 'filterSlides' },
   { key: 'pdf', label: 'filterPdf' },
 ]
+
+function ThemeSwitch() {
+  const [theme, setTheme] = useState<AppTheme>(() =>
+    document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
+  )
+
+  useEffect(() => {
+    void window.aiOffice.getTheme().then(setTheme)
+    return window.aiOffice.onThemeChanged(setTheme)
+  }, [])
+
+  const choose = (next: AppTheme) => {
+    setTheme(next)
+    document.documentElement.dataset.theme = next
+    const request =
+      next === 'light' ? window.aiOffice.setTheme('light') : window.aiOffice.setTheme('dark')
+    void request.catch(() => window.aiOffice.getTheme().then(setTheme))
+  }
+
+  return (
+    <div className="theme-switch" role="group" aria-label="Theme">
+      <button
+        type="button"
+        className={theme === 'light' ? 'active' : ''}
+        aria-pressed={theme === 'light'}
+        onClick={() => choose('light')}
+      >
+        <span aria-hidden="true">☀</span>
+        Light
+      </button>
+      <button
+        type="button"
+        className={theme === 'dark' ? 'active' : ''}
+        aria-pressed={theme === 'dark'}
+        onClick={() => choose('dark')}
+      >
+        <span aria-hidden="true">☾</span>
+        Dark
+      </button>
+    </div>
+  )
+}
 
 // ── Project sidebar component ────────────────────────────
 
@@ -449,6 +539,11 @@ function AccountEntry() {
   const [enhancedStatus, setEnhancedStatus] = useState<EnhancedModeStatus | null>(null)
   const [enhancedBusy, setEnhancedBusy] = useState(false)
   const [enhancedError, setEnhancedError] = useState(false)
+  const [officeBridgeStatus, setOfficeBridgeStatus] = useState('disabled')
+  const [officeRelayStatus, setOfficeRelayStatus] = useState('disconnected')
+  const [officeRelayCode, setOfficeRelayCode] = useState('')
+  const [officeRelayBusy, setOfficeRelayBusy] = useState(false)
+  const [officeRelayError, setOfficeRelayError] = useState('')
 
   // query login state + app version once on mount
   useEffect(() => {
@@ -472,6 +567,12 @@ function AccountEntry() {
       .catch(() => {
         if (alive) setEnhancedError(true)
       })
+    void window.aiOffice.officeBridgeStatus().then((value) => {
+      if (alive) setOfficeBridgeStatus(value)
+    })
+    void window.aiOffice.officeRelayStatus().then((value) => {
+      if (alive) setOfficeRelayStatus(value)
+    })
     return () => {
       alive = false
     }
@@ -528,6 +629,14 @@ function AccountEntry() {
     return () => clearInterval(timer)
   }, [waiting, loginNonce])
 
+  useEffect(() => {
+    if (!menuOpen) return
+    const refresh = () => void window.aiOffice.officeRelayStatus().then(setOfficeRelayStatus)
+    refresh()
+    const timer = window.setInterval(refresh, 1_000)
+    return () => window.clearInterval(timer)
+  }, [menuOpen])
+
   // close the menu on outside click
   useEffect(() => {
     if (!menuOpen) return
@@ -543,8 +652,9 @@ function AccountEntry() {
   }, [menuOpen])
 
   const loggedIn = status?.loggedIn ?? false
-  const email = status?.email ?? ''
-  const initial = email ? email[0].toUpperCase() : loggedIn ? 'W' : '?'
+  const identity = accountPresentation(status, t('loggedIn'))
+  const email = identity.email
+  const initial = loggedIn ? identity.initial : '?'
   const errorText = loginError
     ? {
         timeout: t('loginTimeout'),
@@ -656,12 +766,8 @@ function AccountEntry() {
     <div className="account-entry">
       {menuOpen && (
         <div className="account-menu" role="menu">
-          {loggedIn ? (
-            <div className="account-menu-info">
-              <span className="account-menu-email" title={email}>
-                {email || t('loggedIn')}
-              </span>
-            </div>
+          {loggedIn && status ? (
+            <AccountMenuIdentity status={status} loggedInLabel={t('loggedIn')} />
           ) : (
             <>
               <button
@@ -689,6 +795,8 @@ function AccountEntry() {
               )}
             </>
           )}
+          <div className="account-menu-divider" />
+          <ThemeSwitch />
           <div className="account-menu-divider" />
           <div
             className="lang-row-wrap"
@@ -826,6 +934,50 @@ function AccountEntry() {
               <span className="version-row-value">{appVersion}</span>
             </div>
           )}
+          <div className="account-menu-version" role="status">
+            Office bridge: {officeBridgeStatus}
+          </div>
+          {loggedIn && (
+            <div className="office-relay-claim">
+              <label htmlFor="office-relay-code">Connect Office with its 6-digit code</label>
+              <div className="office-relay-claim-row">
+                <input
+                  id="office-relay-code"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  value={officeRelayCode}
+                  placeholder="000000"
+                  onChange={(event) => {
+                    setOfficeRelayCode(event.target.value.replace(/\D/g, '').slice(0, 6))
+                    setOfficeRelayError('')
+                  }}
+                />
+                <button
+                  className="btn btn-office-allow"
+                  disabled={officeRelayBusy || !/^\d{6}$/.test(officeRelayCode)}
+                  onClick={() => {
+                    setOfficeRelayBusy(true)
+                    setOfficeRelayError('')
+                    void window.aiOffice
+                      .claimOfficeRelay(officeRelayCode)
+                      .then(() => {
+                        setOfficeRelayStatus('claiming')
+                        setOfficeRelayCode('')
+                      })
+                      .catch((error) =>
+                        setOfficeRelayError(error instanceof Error ? error.message : 'relay_error'),
+                      )
+                      .finally(() => setOfficeRelayBusy(false))
+                  }}
+                >
+                  Connect
+                </button>
+              </div>
+              <div role="status">Office relay: {officeRelayStatus}</div>
+              {officeRelayError && <div role="alert">Could not claim code: {officeRelayError}</div>}
+            </div>
+          )}
           {loggedIn && (
             <button
               className="account-menu-item danger"
@@ -910,7 +1062,7 @@ function AccountEntry() {
         <span className="account-text">
           {loggedIn ? (
             <>
-              <span className="account-name">{email ? email.split('@')[0] : t('loggedIn')}</span>
+              <span className="account-name">{identity.name}</span>
               <span className="account-sub" title={email}>
                 {email || 'WisWork'}
               </span>
@@ -947,6 +1099,12 @@ export function Home() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string[] | null>(null)
+  const [officePairings, setOfficePairings] = useState<OfficePairingRequest[]>([])
+  const [officePairingBusy, setOfficePairingBusy] = useState(false)
+  const [officePairingError, setOfficePairingError] = useState(false)
+  const [officePairingAccountLoggedIn, setOfficePairingAccountLoggedIn] = useState<boolean | null>(
+    null,
+  )
   // name in the greeting; omitted when logged out
   const [accountName, setAccountName] = useState('')
   const [greetAskKey] = useState(
@@ -961,6 +1119,42 @@ export function Home() {
         setAccountName(name ? name[0].toUpperCase() + name.slice(1) : '')
       })
       .catch(() => setAccountName(''))
+  }, [])
+
+  useEffect(() => {
+    if (officePairings.length === 0) {
+      setOfficePairingAccountLoggedIn(null)
+      return
+    }
+    let active = true
+    void window.aiOffice
+      .accountStatus()
+      .then((account) => {
+        if (active) setOfficePairingAccountLoggedIn(account.loggedIn)
+      })
+      .catch(() => {
+        if (active) setOfficePairingAccountLoggedIn(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [officePairings.length])
+
+  useEffect(() => {
+    const add = (pairing: OfficePairingRequest) =>
+      setOfficePairings((current) => mergeOfficePairings(current, [pairing]))
+    const off = window.aiOffice.onOfficePairingRequested(add)
+    const offExpired = window.aiOffice.onOfficePairingExpired((pairingId) =>
+      setOfficePairings((current) => current.filter((entry) => entry.pairingId !== pairingId)),
+    )
+    void window.aiOffice
+      .listOfficePairings()
+      .then((pending) => setOfficePairings((current) => mergeOfficePairings(current, pending)))
+      .catch(() => undefined)
+    return () => {
+      off()
+      offExpired()
+    }
   }, [])
 
   // ── Project state ──
@@ -1307,16 +1501,27 @@ export function Home() {
     if (await window.aiOffice.newLatexProject()) reloadLatexRecents()
   }
 
+  const handleNewMarkdown = () => {
+    void window.aiOffice.newMarkdown(
+      selectedProjectId ? { projectId: selectedProjectId } : undefined,
+    )
+  }
+
   const handleImportLatex = async () => {
     if (await window.aiOffice.importLatexProject()) reloadLatexRecents()
   }
 
-  const NEW_ITEMS = [
-    { ext: 'docx', title: t('newDoc'), sub: '.docx', action: handleNewDoc },
-    { ext: 'xlsx', title: t('newSheet'), sub: '.xlsx', action: handleNewSheet },
-    { ext: 'pptx', title: t('newSlide'), sub: '.pptx', action: handleNewSlide },
-    { ext: 'tex', title: t('newLatex'), sub: '.tex', action: handleNewLatex },
-  ]
+  const newActions = {
+    docx: handleNewDoc,
+    xlsx: handleNewSheet,
+    pptx: handleNewSlide,
+    md: handleNewMarkdown,
+    tex: handleNewLatex,
+  }
+  const NEW_ITEMS = homeCreationItems(t).map((item) => ({
+    ...item,
+    action: newActions[item.ext],
+  }))
 
   function renderQuickCards() {
     return (
@@ -1332,7 +1537,7 @@ export function Home() {
             <span className="quick-text">
               <span className="quick-title-row">
                 <span className="quick-title">{item.title}</span>
-                <span className="ai-chip">AI</span>
+                {item.ext !== 'tex' && <span className="ai-chip">AI</span>}
               </span>
               <span className="quick-sub">{item.sub}</span>
             </span>
@@ -1936,7 +2141,9 @@ export function Home() {
           </>
         )}
 
-        <AccountEntry />
+        <div className="sidebar-bottom">
+          <AccountEntry />
+        </div>
       </aside>
 
       {selectedProjectId ? renderProjectContent() : renderGlobalContent()}
@@ -1976,6 +2183,71 @@ export function Home() {
               </button>
               <button className="btn btn-danger" onClick={confirmDeleteNow}>
                 {t('delete')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {officePairings[0] && (
+        <div className="modal-overlay">
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Office connection request"
+          >
+            <h3>Connect WisWork Office Agent?</h3>
+            <p>
+              {officePairings[0].hostLabel} from {new URL(officePairings[0].origin).host} is
+              requesting to use your signed-in WisWork account. Your Wispaper token stays on this
+              PC.
+            </p>
+            <p className="office-pairing-code" aria-label="Office verification code">
+              {officePairings[0].verificationCode}
+            </p>
+            <p>Only allow if Office displays this exact same code.</p>
+            {officePairingAccountLoggedIn === false && (
+              <p role="alert">Sign in to WisWork PC to enable Allow.</p>
+            )}
+            {officePairingAccountLoggedIn === null && <p role="status">Checking account…</p>}
+            {officePairingError && <p role="alert">Sign in to WisWork PC before allowing.</p>}
+            <div className="modal-buttons">
+              <button
+                className="btn btn-secondary"
+                disabled={officePairingBusy}
+                onClick={() => {
+                  setOfficePairingBusy(true)
+                  setOfficePairingError(false)
+                  const pairingId = officePairings[0].pairingId
+                  void window.aiOffice.rejectOfficePairing(pairingId).finally(() => {
+                    setOfficePairings((current) =>
+                      current.filter((entry) => entry.pairingId !== pairingId),
+                    )
+                    setOfficePairingBusy(false)
+                  })
+                }}
+              >
+                Reject
+              </button>
+              <button
+                className="btn btn-office-allow"
+                disabled={officePairingBusy || officePairingAccountLoggedIn !== true}
+                onClick={() => {
+                  setOfficePairingBusy(true)
+                  const pairingId = officePairings[0].pairingId
+                  void window.aiOffice
+                    .approveOfficePairing(pairingId)
+                    .then((approved) => {
+                      if (approved)
+                        setOfficePairings((current) =>
+                          current.filter((entry) => entry.pairingId !== pairingId),
+                        )
+                      else setOfficePairingError(true)
+                    })
+                    .finally(() => setOfficePairingBusy(false))
+                }}
+              >
+                Allow
               </button>
             </div>
           </div>

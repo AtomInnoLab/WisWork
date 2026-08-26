@@ -143,6 +143,30 @@ describe('registerWisworkModelIpc', () => {
       }),
     ).rejects.toMatchObject({ code: 'payload_too_large' })
   })
+
+  it('accepts bounded tool image content and rejects oversized tool images', async () => {
+    const { invoke } = harness({
+      fetchWithAuth: async () => okResponse(sseStream([])),
+    })
+    const messages: any[] = [
+      {
+        role: 'tool',
+        results: [
+          {
+            id: 't1',
+            name: 'shot',
+            output: 'ok',
+            content: [{ type: 'image', image: { mime: 'image/png', base64: 'AAAA' } }],
+          },
+        ],
+      },
+    ]
+    await expect(invoke('stream', 1, { ...validRequest(), messages })).resolves.toBeUndefined()
+    messages[0].results[0].content[0].image.base64 = 'x'.repeat(AI_IPC_LIMITS.maxImageChars + 1)
+    await expect(invoke('stream', 1, { ...validRequest(), messages })).rejects.toMatchObject({
+      code: 'payload_too_large',
+    })
+  })
   it('rejects duplicate request ids and cross-sender cancellation', async () => {
     let release!: () => void
     vi.stubGlobal(
@@ -271,7 +295,7 @@ describe('registerWisworkModelIpc', () => {
     const returned = (await invoke('get', 1)) as ReturnType<typeof defaultAiSettings>
     await invoke('set', 1, settings)
     for (const value of [returned, saved[0] as typeof returned]) {
-      expect(value.providers.wiswork.model).toBe('qwen/qwen3.8-max')
+      expect(value.providers.wiswork.model).toBe('openai/gpt-5.6-sol')
       for (const config of Object.values(value.providers)) {
         expect(config.apiKey).toBe('')
         expect(config.baseUrl).toBeUndefined()
@@ -279,7 +303,7 @@ describe('registerWisworkModelIpc', () => {
     }
     await invoke('stream', 1, { ...validRequest(), settings })
     const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string)
-    expect(body.model).toBe('qwen/qwen3.8-max')
+    expect(body.model).toBe('openai/gpt-5.6-sol')
   })
 
   it('delegates WisUsage requests to the auth client so a 401 refreshes and retries once', async () => {
@@ -304,7 +328,7 @@ describe('registerWisworkModelIpc', () => {
     await invoke('stream', 1, validRequest())
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(fetchMock.mock.calls[0]![0]).toBe('https://wisusage.dev.atominnolab.com/v1/messages')
+    expect(fetchMock.mock.calls[0]![0]).toBe('https://wisusage.atominnolab.com/v1/messages')
     expect(fetchMock.mock.calls[0]![1].headers).toMatchObject({
       Authorization: 'Bearer expired-login-token',
     })

@@ -32,7 +32,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: package-lock.json
 
@@ -43,10 +43,12 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Cache cargo (xlsx-sidecar)
+      - name: Cache cargo (Rust workspaces)
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          workspaces: apps/sheets/native/xlsx-engine
+          workspaces: |
+            apps/sheets/native/xlsx-engine
+            services/wiswork-relay
 
       - name: Install dependencies
         run: npm ci
@@ -63,6 +65,12 @@ jobs:
           command: check licenses
           manifest-path: apps/sheets/native/xlsx-engine/Cargo.toml
 
+      - name: Check Rust dependency licenses (Office relay)
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check licenses
+          manifest-path: services/wiswork-relay/Cargo.toml
+
       - name: Check formatting
         env:
           FORMAT_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -76,11 +84,25 @@ jobs:
           fi
           npm run format:check
 
+      - name: Check theme colors
+        env:
+          FORMAT_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            FORMAT_BASE_REF=$(git rev-parse HEAD^1)
+          fi
+          npm run check:theme-colors
+
       - name: Lint
         run: npm run lint
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Check Office relay
+        run: |
+          cargo test --locked --manifest-path services/wiswork-relay/Cargo.toml
+          cargo clippy --locked --manifest-path services/wiswork-relay/Cargo.toml --all-targets -- -D warnings
 
       - name: Regenerate test fixtures
         run: npm run fixtures
@@ -113,7 +135,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: package-lock.json
 
@@ -159,7 +181,7 @@ jobs:
 
       - name: Upload E2E artifacts on failure
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-artifacts
           path: |

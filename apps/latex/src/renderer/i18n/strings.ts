@@ -20,6 +20,14 @@ const en = {
   nextPage: 'Next page',
   zoomOut: 'Zoom out',
   zoomIn: 'Zoom in',
+  toolbar: 'LaTeX toolbar',
+  showFiles: 'Show files',
+  hideFiles: 'Hide files',
+  showPreview: 'Show PDF preview',
+  hidePreview: 'Hide PDF preview',
+  showAi: 'Show WisWork AI',
+  hideAi: 'Hide WisWork AI',
+  unsavedChanges: 'Unsaved changes',
 } as const
 
 export type LatexStringKey = keyof typeof en
@@ -47,6 +55,14 @@ const zhCN: LatexStrings = {
   nextPage: '下一页',
   zoomOut: '缩小',
   zoomIn: '放大',
+  toolbar: 'LaTeX 工具栏',
+  showFiles: '显示文件',
+  hideFiles: '隐藏文件',
+  showPreview: '显示 PDF 预览',
+  hidePreview: '隐藏 PDF 预览',
+  showAi: '显示 WisWork AI',
+  hideAi: '隐藏 WisWork AI',
+  unsavedChanges: '未保存的更改',
 }
 
 export const SUPPORTED_LATEX_LOCALES = [

@@ -31,12 +31,14 @@ export {
   commitCompileGeneration,
   compileIsolated,
   killProcessTree,
+  loadCurrentCompileGeneration,
   runTectonic,
   TectonicRunError,
 } from './runner.js'
 export type {
   CompileIsolatedRequest,
   CompileIsolatedResult,
+  PublishedCompileGeneration,
   CommitGenerationOptions,
   RunTectonicRequest,
   ProcessTreeKillOptions,
@@ -57,4 +59,5 @@ export type {
   CompileWorkspace,
   CompileWorkspaceHooks,
   CompileWorkspaceLimits,
+  CompileTextOverlay,
 } from './workspace.js'

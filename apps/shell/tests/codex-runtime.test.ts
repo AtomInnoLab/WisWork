@@ -1145,7 +1145,7 @@ describe('WisUsage bridge fetch', () => {
     expect(fetchWithAuth).toHaveBeenCalledOnce()
     expect(upstream).toHaveBeenCalledOnce()
     const [url, init] = upstream.mock.calls[0]!
-    expect(url).toBe('https://wisusage.dev.atominnolab.com/v1/messages')
+    expect(url).toBe('https://wisusage.atominnolab.com/v1/messages')
     expect(init?.headers).toEqual({
       Authorization: 'Bearer private-access-token',
       'Content-Type': 'application/json',

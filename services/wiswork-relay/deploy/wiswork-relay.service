@@ -1,0 +1,30 @@
+[Unit]
+Description=WisWork Office WebSocket Relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/opt/wiswork-relay/wiswork-relay
+Environment=WISWORK_RELAY_PORT=43190
+EnvironmentFile=-/etc/wiswork-relay.env
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+MemoryMax=256M
+TasksMax=64
+LogNamespace=wiswork-relay
+
+[Install]
+WantedBy=multi-user.target

@@ -65,12 +65,12 @@ Selection text and proposed text have explicit length limits. Tool arguments are
 
 ## Trust and autonomy
 
-| Action | Autonomy | Rationale |
-| --- | --- | --- |
-| Read host and selection | Automatic | Local, read-only, and visible in the active document |
-| Explain or draft text | Automatic | Does not mutate the document |
-| Replace or append selection | Explicit confirmation | User-visible document mutation; preview is cheap and reversible |
-| Bulk, structural, formatting, file, or external actions | Refused | Outside the MVP's bounded and tested action surface |
+| Action                                                  | Autonomy              | Rationale                                                       |
+| ------------------------------------------------------- | --------------------- | --------------------------------------------------------------- |
+| Read host and selection                                 | Automatic             | Local, read-only, and visible in the active document            |
+| Explain or draft text                                   | Automatic             | Does not mutate the document                                    |
+| Replace or append selection                             | Explicit confirmation | User-visible document mutation; preview is cheap and reversible |
+| Bulk, structural, formatting, file, or external actions | Refused               | Outside the MVP's bounded and tested action surface             |
 
 The UI keeps a session-only audit trail of tool calls and confirmed writes. Office-native Undo remains available after a write; the add-in does not claim cross-host transactional rollback.
 

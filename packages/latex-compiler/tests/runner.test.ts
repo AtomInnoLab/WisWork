@@ -1,10 +1,12 @@
 import { EventEmitter } from 'node:events'
+import { createHash } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   commitCompileGeneration,
+  loadCurrentCompileGeneration,
   killProcessTree,
   compileIsolated,
   runTectonic,
@@ -207,6 +209,97 @@ describe('controlled Tectonic runner', () => {
     expect(result.workspaceCleaned).toBe(true)
     expect(result.published).toHaveLength(3)
   })
+
+  it('passes a bounded overlay into the isolated workspace before running', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'latex-overlay-runner-'))
+    roots.push(root)
+    const project = join(root, 'project')
+    await mkdir(project)
+    await writeFile(join(project, 'main.tex'), 'before')
+    const run = vi.fn(async ({ workspace }) => {
+      expect(await readFile(join(workspace.inputDirectory, 'main.tex'), 'utf8')).toBe('after')
+      await writeFile(join(workspace.outputDirectory, 'main.pdf'), 'pdf')
+      return { exitCode: 0 as const, signal: null, log: '' }
+    })
+
+    await compileIsolated({
+      projectDirectory: project,
+      temporaryRoot: join(root, 'tmp'),
+      cacheDirectory: join(root, 'cache'),
+      mainFile: 'main.tex',
+      executable: '/app/tectonic',
+      bundlePath: '/cache/bundle.ttb',
+      overlay: [{ path: 'main.tex', text: 'after' }],
+      expectedSourceHashes: {
+        'main.tex': createHash('sha256').update('before').digest('hex'),
+      },
+      run,
+    })
+
+    expect(run).toHaveBeenCalledOnce()
+    expect(await readFile(join(project, 'main.tex'), 'utf8')).toBe('before')
+  })
+
+  it('rejects a new overlay file before invoking the compiler runner', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'latex-overlay-runner-'))
+    roots.push(root)
+    const project = join(root, 'project')
+    await mkdir(project)
+    await writeFile(join(project, 'main.tex'), 'before')
+    const run = vi.fn()
+
+    await expect(
+      compileIsolated({
+        projectDirectory: project,
+        temporaryRoot: join(root, 'tmp'),
+        cacheDirectory: join(root, 'cache'),
+        mainFile: 'main.tex',
+        executable: '/app/tectonic',
+        bundlePath: '/cache/bundle.ttb',
+        overlay: [{ path: 'new.tex', text: 'new' }],
+        run,
+      }),
+    ).rejects.toMatchObject({ code: 'TECTONIC_WORKSPACE_INVALID' })
+    expect(run).not.toHaveBeenCalled()
+    expect(await readFile(join(project, 'main.tex'), 'utf8')).toBe('before')
+    await expect(readFile(join(project, 'new.tex'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+  })
+
+  it('rejects an overlay baseline changed between host precheck and workspace copy before run', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'latex-overlay-hash-runner-'))
+    roots.push(root)
+    const project = join(root, 'project')
+    await mkdir(project)
+    await writeFile(join(project, 'main.tex'), 'before')
+    const run = vi.fn()
+    let changed = false
+
+    await expect(
+      compileIsolated({
+        projectDirectory: project,
+        temporaryRoot: join(root, 'tmp'),
+        cacheDirectory: join(root, 'cache'),
+        mainFile: 'main.tex',
+        executable: '/app/tectonic',
+        bundlePath: '/cache/bundle.ttb',
+        overlay: [{ path: 'main.tex', text: 'after' }],
+        expectedSourceHashes: {
+          'main.tex': createHash('sha256').update('before').digest('hex'),
+        },
+        hooks: {
+          afterDirectoryRead: async (path) => {
+            if (path !== project || changed) return
+            changed = true
+            await writeFile(join(project, 'main.tex'), 'changed')
+          },
+        },
+        run,
+      }),
+    ).rejects.toMatchObject({ code: 'TECTONIC_WORKSPACE_INVALID' })
+    expect(run).not.toHaveBeenCalled()
+  })
   it('uses taskkill /T /F without a shell for a Windows process tree', async () => {
     const child = new FakeChild()
     const killer = new EventEmitter()
@@ -223,5 +316,52 @@ describe('controlled Tectonic runner', () => {
     )
     killer.emit('close', 0)
     await expect(pending).resolves.toBeUndefined()
+  })
+})
+
+describe('published compile recovery', () => {
+  const roots: string[] = []
+  afterEach(async () =>
+    Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))),
+  )
+
+  it('loads the validated current PDF and log after a process restart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'latex-recovery-'))
+    roots.push(root)
+    const generationId = '12345678-1234-1234-1234-123456789abc'
+    const generation = join(root, 'generations', generationId)
+    await mkdir(generation, { recursive: true })
+    const files = [
+      { name: 'main.pdf', text: 'pdf' },
+      { name: 'main.log', text: 'compile log' },
+    ].map(({ name, text }) => ({
+      name,
+      text,
+      bytes: Buffer.byteLength(text),
+      sha256: createHash('sha256').update(text).digest('hex'),
+    }))
+    for (const file of files) await writeFile(join(generation, file.name), file.text)
+    await writeFile(
+      join(generation, 'manifest.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        generationId,
+        files: files.map(({ name, bytes, sha256 }) => ({ name, bytes, sha256 })),
+      }),
+    )
+    await writeFile(join(root, 'current.json'), JSON.stringify({ schemaVersion: 1, generationId }))
+
+    await expect(loadCurrentCompileGeneration(root)).resolves.toMatchObject({
+      generationId,
+      pdfPath: join(generation, 'main.pdf'),
+      logPath: join(generation, 'main.log'),
+      log: 'compile log',
+    })
+  })
+
+  it('returns null when no published generation exists', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'latex-recovery-'))
+    roots.push(root)
+    await expect(loadCurrentCompileGeneration(root)).resolves.toBeNull()
   })
 })

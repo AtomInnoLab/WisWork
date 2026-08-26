@@ -68,6 +68,22 @@ export function createEditorState(
   }
 }
 
+export function restoreEditorPreview(
+  state: EditorState,
+  result: { revision: number; pdfUrl: string | null },
+): EditorState {
+  if (!result.pdfUrl) return state
+  return {
+    ...state,
+    preview: {
+      revision: result.revision,
+      pdfUrl: result.pdfUrl,
+      compiledWorkspaceRevision: state.workspaceRevision,
+    },
+    previewStale: false,
+  }
+}
+
 export function editBuffer(state: EditorState, path: string, text: string): EditorState {
   const buffer = state.buffers[path]
   if (!buffer || buffer.text === text) return state
@@ -259,17 +275,38 @@ export function reconcileExternalBuffer(
   return recordExternalChange(state, incoming.path, incomingDiskText, incoming.diskSha256)
 }
 
-export function renameEditorBuffer(state: EditorState, from: string, to: string): EditorState {
+export function renameEditorBuffer(
+  state: EditorState,
+  from: string,
+  to: string,
+  confirmedClean = false,
+): EditorState {
   const buffer = state.buffers[from]
   if (!buffer || state.buffers[to]) return state
   const buffers = { ...state.buffers }
   delete buffers[from]
-  buffers[to] = { ...buffer, path: to }
+  buffers[to] = {
+    ...buffer,
+    path: to,
+    ...(confirmedClean ? { diskText: buffer.text, dirty: false, conflict: null } : {}),
+  }
   return {
     ...state,
     workspaceRevision: state.workspaceRevision + 1,
     previewStale: state.preview !== null,
     buffers,
+  }
+}
+
+export function removeEditorBuffer(state: EditorState, path: string): EditorState {
+  if (!state.buffers[path]) return state
+  const buffers = { ...state.buffers }
+  delete buffers[path]
+  return {
+    ...state,
+    buffers,
+    workspaceRevision: state.workspaceRevision + 1,
+    previewStale: state.preview !== null,
   }
 }
 

@@ -588,6 +588,89 @@ describe('execute_slide_script tool', () => {
     expect(r2.output).toContain('ungroup_element')
   })
 
+  it('set_element_text does not apply a late IPC result after the run is stopped', async () => {
+    let resolveEdit!: (value: typeof slide) => void
+    const api = (globalThis as any).window.slidesApi
+    api.editText = vi.fn(
+      () =>
+        new Promise<typeof slide>((resolve) => {
+          resolveEdit = resolve
+        }),
+    )
+    const controller = new AbortController()
+    const skill = createSlidesSkill(access())
+    const pending = skill.executeTool(
+      {
+        id: 'abort-edit',
+        name: 'set_element_text',
+        input: { slideIndex: 0, sourceId: 't1', paragraphs: [{ text: 'late' }] },
+      } as any,
+      controller.signal,
+    )
+
+    controller.abort()
+    resolveEdit({ ...slide })
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(applied).toBeNull()
+  })
+
+  it('execute_slide_script stops after an in-flight operation and sends no later IPC', async () => {
+    let resolveText!: (value: null) => void
+    const api = (globalThis as any).window.slidesApi
+    api.editText = vi.fn(
+      () =>
+        new Promise<null>((resolve) => {
+          resolveText = resolve
+        }),
+    )
+    api.editFill = vi.fn(async () => ({ ...slide }))
+    const controller = new AbortController()
+    const pending = createSlidesSkill(access()).executeTool(
+      {
+        id: 'abort-script',
+        name: 'execute_slide_script',
+        input: {
+          slideIndex: 0,
+          code: "setText('t1', 'late'); setFill('t1', '#FF0000');",
+        },
+      } as any,
+      controller.signal,
+    )
+
+    await vi.waitFor(() => expect(api.editText).toHaveBeenCalledOnce())
+    controller.abort()
+    resolveText(null)
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(api.editFill).not.toHaveBeenCalled()
+    expect(applied).toBeNull()
+  })
+
+  it('execute_slide_script closes the batch when aborted while beginHistoryBatch resolves', async () => {
+    let resolveBegin!: (value: boolean) => void
+    const api = (globalThis as any).window.slidesApi
+    api.beginHistoryBatch = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveBegin = resolve
+        }),
+    )
+    const controller = new AbortController()
+    const pending = createSlidesSkill(access()).executeTool(
+      {
+        id: 'abort-begin-script',
+        name: 'execute_slide_script',
+        input: { slideIndex: 0, code: "setText('t1', 'late');" },
+      } as any,
+      controller.signal,
+    )
+
+    controller.abort()
+    resolveBegin(true)
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(api.endHistoryBatch).toHaveBeenCalledOnce()
+    expect(api.editText).not.toHaveBeenCalled()
+  })
+
   it('ungroup_element promotes children, applies the fresh slide, and echoes the new element list', async () => {
     slide = slideOf([
       groupNode('g1', box(200, 100, 400, 300), [textNode('c1', box(10, 20, 50, 30), 'Member')]),

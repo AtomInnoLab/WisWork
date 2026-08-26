@@ -33,7 +33,7 @@ function installApis(runtime: 'legacy' | 'codex') {
       {
         path: 'main.tex',
         beforeText: 'before',
-        beforeSha256: 'before-hash',
+        beforeSha256: 'a'.repeat(64),
         afterText: 'after',
       },
     ],
@@ -55,6 +55,16 @@ function installApis(runtime: 'legacy' | 'codex') {
     compileProjectForAi: vi.fn(),
     proposeProjectEdits: vi.fn(async () => ({ ok: true as const, value: review })),
     getProposal: vi.fn(async () => ({ ok: true as const, value: review })),
+    verifyProposal: vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        proposalId: review.id,
+        state: 'verified' as const,
+        diagnostics: [],
+        logSummary: '',
+        verifiedAt: Date.now(),
+      },
+    })),
     discardProposal: vi.fn(async () => ({ ok: true as const, value: undefined })),
     getCodexMutationRevision: vi.fn(async () => ({
       ok: true as const,
@@ -127,7 +137,7 @@ describe('LaTeX AI panel runtime selection', () => {
     await vi.waitFor(() =>
       expect(f.codexRuntime.startTurn).toHaveBeenCalledWith({
         documentId: 't7',
-        text: 'Improve the introduction',
+        text: expect.stringContaining('"instruction":"Improve the introduction"'),
       }),
     )
     expect(f.latexApi.aiStream).not.toHaveBeenCalled()
@@ -153,6 +163,11 @@ describe('LaTeX AI panel runtime selection', () => {
     const f = installApis('legacy')
     const { container, root } = mount()
     await vi.waitFor(() => expect(f.codexRuntime.status).toHaveBeenCalledOnce())
+    await vi.waitFor(() =>
+      expect(container.querySelector('textarea')?.getAttribute('placeholder')).not.toContain(
+        'Loading',
+      ),
+    )
 
     typeAndSend(container, 'Explain this project')
     await vi.waitFor(() => expect(f.latexApi.aiStream).toHaveBeenCalledOnce())
@@ -198,7 +213,7 @@ describe('LaTeX AI panel runtime selection', () => {
     expect(f.latexApi.executeCodexProposalMutation).not.toHaveBeenCalled()
     act(() =>
       Array.from(container.querySelectorAll('button'))
-        .find((button) => button.textContent === 'Confirm selected changes')!
+        .find((button) => button.textContent === 'Apply verified changes')!
         .click(),
     )
     await vi.waitFor(() =>

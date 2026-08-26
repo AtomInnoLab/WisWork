@@ -1,5 +1,11 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
-import { AgentLoop, composeSkills, type AgentImage, type ToolDisplay } from '@wiswork/agent-core'
+import {
+  composeSkills,
+  IPC_STREAM_SILENCE_TIMEOUT_MS,
+  type AgentImage,
+  type ToolDisplay,
+} from '@wiswork/agent-core'
+import type { AgentHarness } from '@wiswork/agent-harness'
 import type { RenderSlide } from '@wiswork/pptx-render'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
@@ -7,8 +13,23 @@ import { createSlidesSkill, type DeckAccess, type ClarifyQuestion } from './slid
 import { extractJsonObject, parseOutlineJson } from './outline-json'
 import { createFilesSkill } from './files-skill'
 import { createElectronTransport } from './transport'
+import {
+  beginSlidesHostRun,
+  classifySlidesQcFailure,
+  completeSlidesHostRun,
+  createAgentController,
+  recordSlidesRunAttachments,
+  stopSlidesHostRun,
+  useAgentControllerCleanup,
+} from './agent-controller'
 import { renderSlidesToPngBase64 } from '../export-render'
-import { isQcEnabled, qcSlidePage, QC_MAX_PAGES } from './slide-qc'
+import {
+  captureCurrentQcShot,
+  isQcEnabled,
+  qcSlidePage,
+  QC_MAX_PAGES,
+  runQcInHistoryBatch,
+} from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
 import { Markdown } from '@wiswork/ui'
 import { WisWorkMark } from '../components/icons'
@@ -16,13 +37,17 @@ import sendEnterOn from '../assets/send-enter-on.png'
 import sendEnterOff from '../assets/send-enter-off.png'
 import sendStop from '../assets/send-stop.png'
 import attachIcon from '../assets/attach-icon.png'
-import {
-  IconClock,
-  IconNewChat,
-  IconPaperclip,
-  IconRefresh,
-  IconSidebarCollapse,
-} from '../components/icons'
+import filePdfIcon from '../assets/file-pdf.png'
+import fileWordIcon from '../assets/file-word.png'
+import fileExcelIcon from '../assets/file-excel.png'
+import filePptIcon from '../assets/file-ppt.png'
+import fileImageIcon from '../assets/file-image.png'
+import fileVideoIcon from '../assets/file-video.png'
+import fileVoiceIcon from '../assets/file-voice.png'
+import fileDocumentIcon from '../assets/file-document.png'
+import fileGeneralIcon from '../assets/file-general.png'
+import { IconNewChat, IconSidebarCollapseLeft } from '../components/icons'
+import { createSlidesChatBindingCoordinator } from './chat-binding'
 
 interface ToolActivity {
   name: string
@@ -42,19 +67,130 @@ interface ToolActivity {
 /** Max stored chars of tool output (UI-side truncation, doesn't affect what the LLM receives) */
 const TOOL_OUTPUT_MAX_CHARS = 2000
 
-/** Rollback point registered by the main process at the end of an AI run that edited the deck */
-interface DeckSnapshot {
-  id: number
-  label: string
-  time: string
-}
-
 /** Clipboard bitmap MIME → attachment extension (matches ATTACHMENT_IMAGE_EXTS) */
 const PASTE_MIME_EXT: Record<string, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
   'image/gif': 'gif',
   'image/webp': 'webp',
+}
+
+/** File-type icons for attachment cards (shared attachment icon set); exts the
+ *  attachment allowlist doesn't accept yet are mapped ahead so they light up when added */
+const ATTACHMENT_CARD_ICON_GROUPS: [icon: string, exts: string[]][] = [
+  [fileWordIcon, ['doc', 'docx']],
+  [fileExcelIcon, ['xls', 'xlsx', 'csv', 'tsv']],
+  [filePptIcon, ['ppt', 'pptx']],
+  [filePdfIcon, ['pdf']],
+  [fileImageIcon, ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'tiff', 'heic']],
+  [fileVideoIcon, ['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v']],
+  [fileVoiceIcon, ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus']],
+  [
+    fileDocumentIcon,
+    [
+      'txt',
+      'md',
+      'markdown',
+      'rtf',
+      'log',
+      'json',
+      'yaml',
+      'yml',
+      'xml',
+      'html',
+      'htm',
+      'js',
+      'ts',
+      'tsx',
+      'jsx',
+      'py',
+      'java',
+      'c',
+      'h',
+      'cpp',
+      'go',
+      'rs',
+      'rb',
+      'sh',
+      'sql',
+      'css',
+    ],
+  ],
+]
+
+const ATTACHMENT_CARD_ICONS: Record<string, string> = Object.fromEntries(
+  ATTACHMENT_CARD_ICON_GROUPS.flatMap(([icon, exts]) => exts.map((ext) => [ext, icon])),
+)
+
+function AttachmentCardIcon({ ext }: { ext: string }) {
+  return <img src={ATTACHMENT_CARD_ICONS[ext] ?? fileGeneralIcon} alt="" aria-hidden />
+}
+
+/** Card name slot width: 190 card - 2 border - 8/14 padding - 40 icon - 10 gap */
+const CARD_NAME_MAX_WIDTH = 116
+let cardNameCtx: CanvasRenderingContext2D | null = null
+
+/** Ellipsize like the design: cut at the limit, strip trailing -_./spaces so
+ *  punctuation never sits against the …; CSS text-overflow stays as fallback */
+function truncateCardName(name: string): string {
+  cardNameCtx ??= document.createElement('canvas').getContext('2d')
+  if (!cardNameCtx) return name
+  // must match the stack the card name actually renders with (body font in styles.css)
+  cardNameCtx.font =
+    "500 13px 'Segoe UI', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif"
+  if (cardNameCtx.measureText(name).width <= CARD_NAME_MAX_WIDTH) return name
+  let lo = 1
+  let hi = name.length
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (cardNameCtx.measureText(`${name.slice(0, mid)}…`).width <= CARD_NAME_MAX_WIDTH) lo = mid
+    else hi = mid - 1
+  }
+  return `${name.slice(0, lo).replace(/[-_.\s]+$/, '')}…`
+}
+
+/** Read-only echo of the attachments a user message consumed from the composer
+ *  (image previews when the file is still readable; otherwise the placeholder icon) */
+function SentAttachments({
+  atts,
+  previews,
+}: {
+  atts: AttachmentMeta[]
+  previews: Record<string, string>
+}) {
+  return (
+    <div className="ai-msg-attachments">
+      {atts.map((a) =>
+        ATTACHMENT_IMAGE_EXTS.has(a.ext) ? (
+          <span key={a.path} className="ai-attachment-thumb" title={a.name}>
+            {previews[a.path] ? (
+              <img src={previews[a.path]} alt={a.name} />
+            ) : (
+              <span className="ai-attachment-thumb-pending" aria-hidden>
+                <img src={fileImageIcon} alt="" />
+              </span>
+            )}
+          </span>
+        ) : (
+          <span key={a.path} className="ai-attachment-card" title={a.name}>
+            <span className="ai-attachment-card-icon">
+              <AttachmentCardIcon ext={a.ext} />
+            </span>
+            <span className="ai-attachment-card-meta">
+              <span className="ai-attachment-card-name">{truncateCardName(a.name)}</span>
+              <span className="ai-attachment-card-size">{formatAttachmentSize(a.sizeBytes)}</span>
+            </span>
+          </span>
+        ),
+      )}
+    </div>
+  )
+}
+
+function formatAttachmentSize(bytes: number): string {
+  return bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+    : `${(bytes / 1024).toFixed(2)} KB`
 }
 
 /** Cap on tool args/output persisted to the transcript (the store layer has another 16k truncation fallback) */
@@ -80,6 +216,10 @@ interface ChatEntry {
   /** the run failed because WisWork is signed out — render an inline sign-in button */
   loginRequired?: boolean
   tools?: ToolActivity[]
+  /** Main-process rollback point for this turn's deck edits — rendered as an inline roll-back action */
+  snapshotId?: number
+  /** attachments consumed from the composer by this user message (read-only echo chips) */
+  attachments?: AttachmentMeta[]
 }
 
 /** Empty deck → generation starters; deck with content → polish starters */
@@ -167,18 +307,20 @@ function AiTypingIndicator({ label }: { readonly label: string }) {
   )
 }
 
-/** Resizable panel width: persisted; min/max match the Excel panel */
-const PANEL_WIDTH_KEY = 'slides-ai-panel-width'
+/** Resizable panel width: always opens at the default (drag-resize lasts for
+ * the session only); min/max match the Excel panel */
 const PANEL_WIDTH_DEFAULT = 360
 const PANEL_WIDTH_MIN = 280
 
-function clampPanelWidth(w: number): number {
-  return Math.min(Math.max(w, PANEL_WIDTH_MIN), Math.min(720, Math.round(window.innerWidth * 0.6)))
-}
+// A persisted width used to be restored here; drop the stale key so old
+// (possibly bug-shrunken) values never come back
+localStorage.removeItem('slides-ai-panel-width')
 
-function loadPanelWidth(): number {
-  const saved = Number(localStorage.getItem(PANEL_WIDTH_KEY))
-  return Number.isFinite(saved) && saved > 0 ? clampPanelWidth(saved) : PANEL_WIDTH_DEFAULT
+function clampPanelWidth(w: number): number {
+  // The viewport can be transiently tiny (a WebContentsView is 0×0 until the
+  // shell lays it out), so never let the ceiling drop below the minimum
+  const max = Math.max(PANEL_WIDTH_MIN, Math.min(720, Math.round(window.innerWidth * 0.6)))
+  return Math.min(Math.max(w, PANEL_WIDTH_MIN), max)
 }
 
 export function AiPanel({
@@ -202,12 +344,67 @@ export function AiPanel({
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [chat, setChat] = useState<ChatEntry[]>([])
-  const [snapshots, setSnapshots] = useState<DeckSnapshot[]>([])
+  /** Past conversation restored from JSONL (read-only transcript, not fed to the model) */
+  const [historicChat, setHistoricChat] = useState<ChatEntry[]>([])
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null)
   const [attachments, setAttachments] = useState<AttachmentMeta[]>([])
   const [attachNotice, setAttachNotice] = useState<string | null>(null)
+  /** data-URL previews for image attachments, keyed by path (shared composer thumbnails) */
+  const [attachmentPreviews, setAttachmentPreviews] = useState<Record<string, string>>({})
+  /** image paths with a read already issued — one readAttachmentImage per attach, even while pending */
+  const previewRequestedRef = useRef(new Set<string>())
+  /** Attachments consumed by earlier sends this session: sending clears the composer, but the
+      files skill must keep reading them mid-run and in follow-up turns. Deduped by path
+      against the live composer list. */
+  const sentAttachmentsRef = useRef<AttachmentMeta[]>([])
+  useEffect(() => {
+    // previews cover the composer plus every image echoed on a sent/history message
+    // (history chips re-read the file by its stored path; a deleted file keeps the placeholder)
+    const wanted = [
+      ...attachments,
+      ...chat.flatMap((e) => e.attachments ?? []),
+      ...historicChat.flatMap((e) => e.attachments ?? []),
+    ]
+    const alive = new Set(wanted.map((a) => a.path))
+    // drop previews (and request markers) of removed attachments, so memory is reclaimed and a re-attach re-reads
+    setAttachmentPreviews((prev) => {
+      const stale = Object.keys(prev).filter((p) => !alive.has(p))
+      if (stale.length === 0) return prev
+      const next = { ...prev }
+      for (const p of stale) delete next[p]
+      return next
+    })
+    for (const p of previewRequestedRef.current) {
+      if (!alive.has(p)) previewRequestedRef.current.delete(p)
+    }
+    for (const a of wanted) {
+      if (!ATTACHMENT_IMAGE_EXTS.has(a.ext) || previewRequestedRef.current.has(a.path)) continue
+      previewRequestedRef.current.add(a.path)
+      void window.desktop.readAttachmentImage(a.path).then((r) => {
+        if (!previewRequestedRef.current.has(a.path)) return // removed while the read was in flight
+        if (r.ok && r.base64 && r.mime) {
+          setAttachmentPreviews((prev) => ({
+            ...prev,
+            [a.path]: `data:${r.mime};base64,${r.base64}`,
+          }))
+        }
+      })
+    }
+  }, [attachments, chat, historicChat])
+  /** paints the strip's scrollbar thumb while the user scrolls it (cleared 800ms after the last event) */
+  const attachScrollFadeRef = useRef(0)
+  const onAttachmentsScroll = (e: React.UIEvent<HTMLDivElement>): void => {
+    const el = e.currentTarget
+    el.classList.add('is-scrolling')
+    window.clearTimeout(attachScrollFadeRef.current)
+    attachScrollFadeRef.current = window.setTimeout(() => el.classList.remove('is-scrolling'), 800)
+  }
   const [dragOver, setDragOver] = useState(false)
-  const [panelWidth, setPanelWidth] = useState(loadPanelWidth)
+  // preferred = the user's chosen width (session only); panelWidth = what fits
+  // the current window. Deriving the display width from the preference means a
+  // transiently small window never permanently shrinks the panel.
+  const preferredWidthRef = useRef(PANEL_WIDTH_DEFAULT)
+  const [panelWidth, setPanelWidth] = useState(() => clampPanelWidth(preferredWidthRef.current))
   const asideRef = useRef<HTMLElement>(null)
 
   // The .ai-dock wrapper owns the animated width (Excel-parity 180ms slide);
@@ -219,14 +416,13 @@ export function AiPanel({
   }, [panelWidth, open])
   const [resizing, setResizing] = useState(false)
 
-  // Re-clamp the persisted width when the window shrinks (max is 60% of the window)
+  // Re-derive the display width on window resize (max is 60% of the window);
+  // growing the window back restores the preferred width
   useEffect(() => {
-    const onResize = () => setPanelWidth((w) => clampPanelWidth(w))
+    const onResize = () => setPanelWidth(clampPanelWidth(preferredWidthRef.current))
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
-  /** Past conversation restored from JSONL (read-only transcript, not fed to the model) */
-  const [historicChat, setHistoricChat] = useState<ChatEntry[]>([])
   /* Answered clarify receipts (answered-state card): view-only record, not chat data */
   const [clarifyAnswers, setClarifyAnswers] = useState<
     Array<{ afterIdx: number; qa: Array<{ q: string; a: string }> }>
@@ -257,7 +453,16 @@ export function AiPanel({
   imagesRef.current = images
   const attachmentsRef = useRef(attachments)
   attachmentsRef.current = attachments
-  // Paths of text attachments already read via read_attachment — deck construction waits
+  /** attachments consumed by the most recent send — retry resends the same set */
+  const lastAttachmentsRef = useRef<AttachmentMeta[]>([])
+  /** composer attachments plus everything already sent this session (deduped by path) */
+  const availableAttachments = (): AttachmentMeta[] => {
+    const seen = new Set<string>()
+    return [...sentAttachmentsRef.current, ...attachmentsRef.current].filter((a) =>
+      seen.has(a.path) ? false : (seen.add(a.path), true),
+    )
+  }
+  // Paths of text attachments already read via read_attachment — generate_deck refuses to run
   // while any current text attachment is still unread
   const readAttachmentPathsRef = useRef<Set<string>>(new Set())
 
@@ -274,18 +479,15 @@ export function AiPanel({
   >([])
 
   // ── Chat history persistence ──────────────────────────────────────────────
-  /** Resolve chatId and load history on first mount (AiPanel resets by key; no need to watch currentFilePath changes) */
-  useEffect(() => {
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!api) return
-    const tempChatId = `unsaved-${Date.now()}`
-    void api
-      .resolveChat({ filePath: currentFilePath ?? null, tempChatId })
-      .then((ids) => {
+  const chatBindingRef = useRef<ReturnType<typeof createSlidesChatBindingCoordinator> | null>(null)
+  if (!chatBindingRef.current && window.projectApi) {
+    chatBindingRef.current = createSlidesChatBindingCoordinator({
+      api: window.projectApi,
+      createTempChatId: () => `unsaved-${Date.now()}`,
+      onBinding: (ids) => {
         chatRefIds.current = ids
-        return api.loadChat({ projectId: ids.projectId, chatId: ids.chatId, limit: 200 })
-      })
-      .then((msgs) => {
+      },
+      onHistory: (msgs) => {
         if (msgs.length === 0) return
         setHistoricChat(
           msgs.map((m) => ({
@@ -297,35 +499,35 @@ export function AiPanel({
               isError: t.isError,
               output: t.output ? t.output.slice(0, TOOL_OUTPUT_MAX_CHARS) : undefined,
             })),
+            // stored metadata only: no thumbnail read for history, the chips render name/size
+            attachments: m.attachments
+              ?.filter((a) => a.path)
+              .map((a) => ({
+                name: a.name,
+                path: a.path ?? '',
+                ext: a.ext ?? '',
+                sizeBytes: a.sizeBytes ?? 0,
+              })),
           })),
         )
         // Restore model context: follow-ups after reopening a file continue the earlier conversation (only when the loop is idle with no history)
         loopRef.current?.restore(msgs.map((m) => ({ role: m.role, text: m.text })))
-      })
-      .catch(() => {
-        /* History load failures are silent */
-      })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+      },
+      onReset: () => {
+        setChat([])
+        setHistoricChat([])
+      },
+    })
+  }
 
-  /** After an unsaved draft lands and gets a real path, bind the unsaved-* history to that file (recoverable by path on reopen) */
+  /** Bind on every path transition; publishing is suspended until rebind/resolve is authoritative. */
   useEffect(() => {
-    const ids = chatRefIds.current
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!api || !ids || !currentFilePath || !ids.chatId.startsWith('unsaved-')) return
-    void api
-      .rebindChat({
-        projectId: ids.projectId,
-        tempChatId: ids.chatId,
-        newFilePath: currentFilePath,
-      })
-      .then((r) => {
-        if (r?.chatId) chatRefIds.current = r
-      })
-      .catch(() => {
-        /* Silent */
-      })
+    void chatBindingRef.current?.bind(currentFilePath ?? null)
   }, [currentFilePath])
+
+  // StrictMode replays effects: deactivation invalidates the first resolve, and
+  // the replayed binding effect starts a fresh authoritative resolution.
+  useEffect(() => () => chatBindingRef.current?.deactivate(), [])
 
   /** Persist one message (fails silently). tools include args/output (truncated by the store layer); attachments store metadata only. */
   const persistMessage = (
@@ -340,30 +542,21 @@ export function AiPanel({
     }>,
     attachments?: AttachmentMeta[],
   ) => {
-    const ids = chatRefIds.current
-    const api = (window as Window & { projectApi?: typeof window.projectApi }).projectApi
-    if (!ids || !api) return
-    void api
-      .appendChat({
-        projectId: ids.projectId,
-        chatId: ids.chatId,
-        role,
-        text,
-        ...(tools && tools.length > 0 ? { tools } : {}),
-        ...(attachments && attachments.length > 0
-          ? {
-              attachments: attachments.map((a) => ({
-                name: a.name,
-                path: a.path,
-                ext: a.ext,
-                sizeBytes: a.sizeBytes,
-              })),
-            }
-          : {}),
-      })
-      .catch(() => {
-        /* Silent */
-      })
+    chatBindingRef.current?.persist({
+      role,
+      text,
+      ...(tools && tools.length > 0 ? { tools } : {}),
+      ...(attachments && attachments.length > 0
+        ? {
+            attachments: attachments.map((a) => ({
+              name: a.name,
+              path: a.path,
+              ext: a.ext,
+              sizeBytes: a.sizeBytes,
+            })),
+          }
+        : {}),
+    })
   }
 
   // Resolved when the user submits/cancels; the AI takes the answer and continues.
@@ -374,6 +567,8 @@ export function AiPanel({
 
   /** Synchronous re-entry guard between runWith trigger and loop.run (see the comment inside runWith) */
   const runStartingRef = useRef(false)
+  const launchTokenRef = useRef(0)
+  const activeRunTokenRef = useRef(0)
   /** Pages landed by this run's generation calls, pending the post-generation layout QC pass */
   const qcPagesRef = useRef<number[]>([])
   const qcAbortRef = useRef<AbortController | null>(null)
@@ -386,24 +581,9 @@ export function AiPanel({
   const runStartedAtRef = useRef(0)
   const historyBatchActiveRef = useRef(false)
   const inputEditedSinceRunRef = useRef(false)
-
-  const finishHistoryBatch = async () => {
-    if (!historyBatchActiveRef.current) return
-    historyBatchActiveRef.current = false
-    const id = await window.slidesApi.endHistoryBatch()
-    if (typeof id !== 'number') return
-    const label = (lastDisplayTextRef.current ?? instructionRef.current).slice(0, 40)
-    setSnapshots((prev) =>
-      [{ id, label, time: new Date().toLocaleTimeString() }, ...prev].slice(0, 20),
-    )
-  }
-
-  const rollback = async (snapshot: DeckSnapshot) => {
-    const restored = await window.slidesApi.aiSnapshotRestore(snapshot.id)
-    if (!restored) return
-    applyDeckRef.current(restored, Math.min(currentRef.current, restored.length - 1))
-    setSnapshots((prev) => prev.filter((s) => s.id !== snapshot.id))
-  }
+  /** This run's rollback batch — carried onto the QC entry when a QC pass
+      follows (mid-turn segments never show the action toolbar) */
+  const runSnapshotIdRef = useRef<number | null>(null)
 
   const patchLastAssistant = (
     patch: Partial<ChatEntry> | ((last: ChatEntry) => Partial<ChatEntry>),
@@ -417,7 +597,38 @@ export function AiPanel({
     })
   }
 
-  const loopRef = useRef<AgentLoop | null>(null)
+  const finishHistoryBatch = async (publishSnapshot = true) => {
+    if (!historyBatchActiveRef.current) return
+    historyBatchActiveRef.current = false
+    const id = await window.slidesApi.endHistoryBatch()
+    if (typeof id !== 'number') return
+    if (publishSnapshot) {
+      runSnapshotIdRef.current = id
+      patchLastAssistant({ snapshotId: id })
+    }
+    return id
+  }
+
+  const rollback = async (snapshotId: number) => {
+    const restored = await window.slidesApi.aiSnapshotRestore(snapshotId)
+    if (!restored) {
+      // Evicted from the main-process snapshot ring — retire the dead action
+      setChat((prev) =>
+        prev.map((e) => (e.snapshotId === snapshotId ? { ...e, snapshotId: undefined } : e)),
+      )
+      return
+    }
+    applyDeckRef.current(restored, Math.min(currentRef.current, restored.length - 1))
+    // The deck rewound to before this batch, so this and every later rollback
+    // point now describe discarded futures (ids are monotonic across batches)
+    setChat((prev) =>
+      prev.map((e) =>
+        e.snapshotId != null && e.snapshotId >= snapshotId ? { ...e, snapshotId: undefined } : e,
+      ),
+    )
+  }
+
+  const loopRef = useRef<AgentHarness<unknown> | null>(null)
   if (!loopRef.current) {
     // Send one LLM request, aggregating streaming deltas into complete text. Shared by in-tool per-page/planning.
     // - On timeout/user stop (signal abort) call aiStreamCancel to cancel the main-process stream, leaving no orphan requests.
@@ -457,16 +668,29 @@ export function AiPanel({
         }
         const onAbort = () =>
           finish({ ok: false, error: tGlobal('aiErrStopped'), errKind: 'stopped' }, true)
-        const to = setTimeout(
-          () =>
-            finish(
-              { ok: false, error: tGlobal('aiErrTimeout', { ms: timeoutMs }), errKind: 'timeout' },
-              true,
-            ),
-          timeoutMs,
-        )
+        // Silence watchdog, not a total-duration cap: long generations legitimately run
+        // for many minutes, and the main process re-arms us with keepalive pings on wire
+        // activity. Firing means the turn is dead (main stall / lost chunks).
+        let to: ReturnType<typeof setTimeout> | undefined
+        const armTimeout = () => {
+          clearTimeout(to)
+          to = setTimeout(
+            () =>
+              finish(
+                {
+                  ok: false,
+                  error: tGlobal('aiErrTimeout', { ms: timeoutMs }),
+                  errKind: 'timeout',
+                },
+                true,
+              ),
+            timeoutMs,
+          )
+        }
+        armTimeout()
         const unsub = window.slidesApi.onAiStream((chunk) => {
           if (chunk.requestId !== requestId) return
+          armTimeout() // any chunk (including pings) proves the turn is alive
           if (chunk.type === 'delta') buf += chunk.text ?? ''
           else if (chunk.type === 'done')
             finish(
@@ -475,7 +699,14 @@ export function AiPanel({
                 : { ok: false, text: buf, error: tGlobal('aiErrEmptyOutput'), errKind: 'empty' },
             )
           else if (chunk.type === 'error')
-            finish({ ok: false, error: chunk.error ?? tGlobal('aiErrUnknown') })
+            finish({
+              ok: false,
+              error: chunk.error ?? tGlobal('aiErrUnknown'),
+              // Empty gateway streams surface as errors now (ai-provider stream.ts
+              // tags them with this suffix); keep classifying them as empty output
+              // so retry ladders fail fast instead of burning billed attempts
+              ...(chunk.error?.includes('(empty stream)') ? { errKind: 'empty' as const } : {}),
+            })
         })
         signal?.addEventListener('abort', onAbort, { once: true })
         // If invoke itself rejects (IPC-layer failure), fail immediately instead of waiting out the timeout
@@ -499,7 +730,8 @@ export function AiPanel({
     const runLlmOnce = async (
       system: string,
       user: string,
-      timeoutMs = 150000,
+      timeoutMs = IPC_STREAM_SILENCE_TIMEOUT_MS,
+      _useGenModel = true,
       signal?: AbortSignal,
       maxTokens?: number,
     ): Promise<LlmResult> =>
@@ -544,7 +776,7 @@ export function AiPanel({
         const q = a.questionnaire ? `\nUser questionnaire answers: ${a.questionnaire}` : ''
         const hint = a.styleHint ? `\nStyle preference: ${a.styleHint}` : ''
         const userMsg = `Topic and style preferences: ${a.topic}${hint}${q}\nOutput the Style Skill.`
-        const r = await runLlmOnce(sys, userMsg, 90000, a.signal)
+        const r = await runLlmOnce(sys, userMsg, undefined, true, a.signal)
         return r.ok && r.text
           ? { ok: true, styleSkill: r.text.trim() }
           : { ok: false, error: r.error ?? tGlobal('aiErrEmptyOutput') }
@@ -594,7 +826,7 @@ export function AiPanel({
         let lastErr = tGlobal('aiErrEmptyOutput')
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
           if (a.signal?.aborted) return { ok: false, error: tGlobal('aiErrStopped') }
-          const r = await runLlmOnce(sys, userMsg, 90000, a.signal)
+          const r = await runLlmOnce(sys, userMsg, undefined, true, a.signal)
           if (!r.ok || !r.text) {
             lastErr = r.error ?? tGlobal('aiErrEmptyOutput')
             // Empty output/timeout doesn't burn another attempt; request-level errors may retry
@@ -645,25 +877,20 @@ export function AiPanel({
         }
       },
       unreadTextAttachments: () =>
-        attachmentsRef.current
+        availableAttachments()
           .filter(
             (a) => !ATTACHMENT_IMAGE_EXTS.has(a.ext) && !readAttachmentPathsRef.current.has(a.path),
           )
           .map((a) => a.name),
     }
     accessRef.current = access
-    loopRef.current = new AgentLoop({
+    loopRef.current = createAgentController({
       transport: createElectronTransport(() => settingsRef.current),
       systemSuffix: aiLangDirective,
       skill: composeSkills('slides+files', '', [
         createSlidesSkill(access),
-        createFilesSkill(
-          () => attachmentsRef.current,
-          (path) => readAttachmentPathsRef.current.add(path),
-        ),
+        createFilesSkill(availableAttachments, (path) => readAttachmentPathsRef.current.add(path)),
       ]),
-      // Page-by-page deck generation needs more tool rounds
-      maxTurns: 24,
       events: {
         onText: (text) => patchLastAssistant({ text }),
         onToolStart: (call) => {
@@ -712,17 +939,42 @@ export function AiPanel({
           const finalText = turnLimit
             ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
             : text || (cancelled ? tGlobal('aiStoppedNote') : '')
-          patchLastAssistant((last) => ({
-            streaming: false,
-            text: finalText || (last.tools?.length ? last.text : tGlobal('aiNoResponse')),
-            // A stop mid-tool can leave a running placeholder behind — drop it
-            tools: last.tools?.filter((tl) => !tl.running),
-          }))
-          void finishHistoryBatch().finally(() => {
-            setBusy(false)
-            // Post-generation layout QC: only after a completed run that landed generated pages
-            if (cancelled) qcPagesRef.current = []
-            else if (qcPagesRef.current.length > 0) void runQcPassRef.current()
+          const ranTools = runToolsRef.current.length > 0
+          setChat((prev) => {
+            const next = [...prev]
+            const last = next.at(-1)
+            if (!last || last.role !== 'assistant') return prev
+            // Tool-heavy runs often end with an empty closing turn. Earlier
+            // bubbles already show the executed work — drop the empty trailing
+            // bubble instead of mislabeling the whole run as "no content".
+            if (!finalText && !last.text && !last.tools?.length && ranTools) {
+              next.pop()
+              return next
+            }
+            next[next.length - 1] = {
+              ...last,
+              streaming: false,
+              text: finalText || (last.tools?.length ? last.text : tGlobal('aiNoResponse')),
+              // A stop mid-tool can leave a running placeholder behind — drop it
+              tools: last.tools?.filter((tl) => !tl.running),
+            }
+            return next
+          })
+          void completeSlidesHostRun({
+            cancelled,
+            finishHistoryBatch: () => finishHistoryBatch(false),
+            isCurrent: () => launchTokenRef.current === activeRunTokenRef.current,
+            hasQcPages: () => qcPagesRef.current.length > 0,
+            clearQcPages: () => {
+              qcPagesRef.current = []
+            },
+            runQc: () => void runQcPassRef.current(),
+            setBusy,
+            publishHistorySnapshot: (snapshot) => {
+              if (typeof snapshot !== 'number') return
+              runSnapshotIdRef.current = snapshot
+              patchLastAssistant({ snapshotId: snapshot })
+            },
           })
           // Persist the assistant message; tools store the whole run's full activity —
           // side effects outside the updater (StrictMode double-invokes updaters, duplicating history writes)
@@ -774,6 +1026,7 @@ export function AiPanel({
       },
     })
   }
+  useAgentControllerCleanup(loopRef)
 
   useEffect(() => {
     if (!preset) return
@@ -821,7 +1074,7 @@ export function AiPanel({
       return
     }
     ta.style.height = 'auto'
-    ta.style.height = `${Math.min(ta.scrollHeight, 147)}px`
+    ta.style.height = `${Math.min(ta.scrollHeight, 168)}px`
     // `open` dep: re-measure after expand restores a draft
   }, [input, open])
 
@@ -829,8 +1082,8 @@ export function AiPanel({
 
   /** Image attachments read as base64, sent multimodally with this user message (≤5MB per image, max 20; isomorphic to docs) */
   const MAX_IMAGES_PER_MESSAGE = 20
-  const collectImageAttachments = async (): Promise<AgentImage[]> => {
-    const imageAtts = attachmentsRef.current.filter((a) => ATTACHMENT_IMAGE_EXTS.has(a.ext))
+  const collectImageAttachments = async (atts: AttachmentMeta[]): Promise<AgentImage[]> => {
+    const imageAtts = atts.filter((a) => ATTACHMENT_IMAGE_EXTS.has(a.ext))
     const images: AgentImage[] = []
     const failures: string[] = []
     for (const att of imageAtts.slice(0, MAX_IMAGES_PER_MESSAGE)) {
@@ -863,52 +1116,96 @@ export function AiPanel({
     }
   }
 
-  const runWith = (instruction: string, displayText?: string, opts?: { slideShot?: boolean }) => {
+  const runWith = (
+    instruction: string,
+    displayText?: string,
+    opts?: { slideShot?: boolean; attachments?: AttachmentMeta[] },
+  ) => {
     const loop = loopRef.current
     // runStartingRef: loop.run is called only after attachments are read asynchronously, during which loop.busy is still false,
     // so duplicate triggers must be blocked synchronously (e.g. StrictMode double-running the preset autoRun effect),
     // otherwise two sets of bubbles get pushed and the earlier assistant placeholder stays at "thinking" forever.
     // qcRunningRef: the post-generation QC pass edits the deck outside the main loop — no concurrent runs
-    if (!instruction || !loop || loop.busy || runStartingRef.current || qcRunningRef.current) return
+    if (
+      !instruction ||
+      !loop ||
+      loop.snapshot.busy ||
+      runStartingRef.current ||
+      qcRunningRef.current
+    )
+      return
     runStartingRef.current = true
+    const launchToken = ++launchTokenRef.current
+    activeRunTokenRef.current = launchToken
     setInput('')
+    // The message consumes the composer attachments: they ride along (echoed on the
+    // bubble, images multimodal, files via the files skill) and the composer clears.
+    const sentAtts = opts?.attachments ?? attachmentsRef.current
+    if (!opts?.attachments && sentAtts.length > 0) {
+      const seen = new Set(sentAttachmentsRef.current.map((a) => a.path))
+      sentAttachmentsRef.current = [
+        ...sentAttachmentsRef.current,
+        ...sentAtts.filter((a) => !seen.has(a.path)),
+      ]
+      setAttachments([])
+      attachmentsRef.current = []
+    }
+    lastAttachmentsRef.current = sentAtts
     inputEditedSinceRunRef.current = false
     instructionRef.current = instruction
     lastInstructionRef.current = instruction
     lastDisplayTextRef.current = displayText
     lastTurnToolsRef.current = []
     runToolsRef.current = []
+    runSnapshotIdRef.current = null
     stickToBottomRef.current = true
     // Internal orchestration prompts (like deck-planning notes) skip the chat bubble and go only to the model
     const shown = displayText ?? instruction
     setChat((prev) => [
       // Fallback: clear leftover streaming flags on history entries, avoiding orphan "thinking" placeholders
       ...prev.map((e) => (e.role === 'assistant' && e.streaming ? { ...e, streaming: false } : e)),
-      { role: 'user', text: shown },
+      { role: 'user', text: shown, ...(sentAtts.length > 0 ? { attachments: sentAtts } : {}) },
       { role: 'assistant', text: '', streaming: true },
     ])
     runStartedAtRef.current = Date.now()
     setBusy(true)
-    // Persist the user message (store display text + attachment metadata; loop.restore rebuilds model context on file reopen)
-    persistMessage('user', shown, undefined, attachmentsRef.current)
-    void collectImageAttachments()
+    void collectImageAttachments(sentAtts)
       .then(async (images) => {
+        if (launchTokenRef.current !== launchToken || loopRef.current !== loop) return
         // AI Beautify sends the current slide's rendering along, so the model sees what it edits;
         // the note rides on the model instruction only — the chat bubble stays the localized preset text
         let modelInstruction = instruction
         if (opts?.slideShot) {
           const shot = await captureSlideShot(currentRef.current)
+          if (launchTokenRef.current !== launchToken || loopRef.current !== loop) return
           if (shot) {
             images.push(shot)
             modelInstruction += `\n\n(Attached image: the current rendering of this slide, slideIndex ${currentRef.current}. Use it to spot visual issues the element inventory can't show.)`
           }
         }
-        // Clear the flag before run: loop.run sets running synchronously, leaving no re-entry window
-        runStartingRef.current = false
-        if (await window.slidesApi.beginHistoryBatch()) historyBatchActiveRef.current = true
-        loop.run(modelInstruction, images)
+        const launched = await beginSlidesHostRun({
+          beginHistoryBatch: () => window.slidesApi.beginHistoryBatch(),
+          isCurrent: () => launchTokenRef.current === launchToken && loopRef.current === loop,
+          markHistoryActive: () => {
+            historyBatchActiveRef.current = true
+          },
+          finishHistoryBatch,
+          run: () => {
+            if (launchTokenRef.current !== launchToken || loopRef.current !== loop) return false
+            // loop.run marks itself busy synchronously, so clearing this guard here
+            // leaves no duplicate-launch window and keeps Stop authoritative while
+            // beginHistoryBatch is still in flight.
+            runStartingRef.current = false
+            recordSlidesRunAttachments(sentAtts, (runAttachments) =>
+              persistMessage('user', shown, undefined, [...runAttachments]),
+            )
+            return loop.run(modelInstruction, images)
+          },
+        })
+        if (!launched) setBusy(false)
       })
       .catch(() => {
+        if (launchTokenRef.current !== launchToken || loopRef.current !== loop) return
         runStartingRef.current = false
         void finishHistoryBatch().finally(() => setBusy(false))
       })
@@ -935,25 +1232,51 @@ export function AiPanel({
     const renderEntry = () => [header, ...lines].join('\n')
     setBusy(true)
     stickToBottomRef.current = true
-    setChat((prev) => [...prev, { role: 'assistant', text: header, streaming: true }])
+    // The QC entry demotes the run's reply to a mid-turn segment, whose action
+    // toolbar never shows — carry its rollback point onto this entry instead
+    // (settled in the finally below; runSnapshotIdRef keeps the id meanwhile)
+    setChat((prev) => [
+      ...prev.map((e, i) =>
+        i === prev.length - 1 && e.snapshotId != null ? { ...e, snapshotId: undefined } : e,
+      ),
+      { role: 'assistant', text: header, streaming: true },
+    ])
+    // First kept QC batch — the run's own batch takes precedence (it is earlier,
+    // so restoring it rewinds past the QC edits too)
+    let qcSnapshotId: number | null = null
+    let activePage = capped[0] ?? 0
     try {
       for (const page of capped) {
-        if (controller.signal.aborted) break
-        const shot = await captureSlideShot(page)
+        activePage = page
+        if (controller.signal.aborted || qcAbortRef.current !== controller) break
+        const captured = await captureCurrentQcShot({
+          capture: () => captureSlideShot(page),
+          signal: controller.signal,
+          isCurrent: () => qcAbortRef.current === controller,
+        })
+        if (!captured) break
+        const shot = captured.value
         if (!shot) {
           if (slidesRef.current[page]) lines.push(tGlobal('aiQcPageSkipped', { n: page + 1 }))
           continue
         }
-        const batchOpened = await window.slidesApi.beginHistoryBatch()
-        const result = await qcSlidePage({
-          access,
-          transport,
-          pageIndex: page,
-          screenshot: shot,
-          systemSuffix: aiLangDirective,
+        const qcRun = await runQcInHistoryBatch({
+          begin: () => window.slidesApi.beginHistoryBatch(),
+          end: () => window.slidesApi.endHistoryBatch(),
+          run: () =>
+            qcSlidePage({
+              access,
+              transport,
+              pageIndex: page,
+              screenshot: shot,
+              systemSuffix: aiLangDirective,
+              signal: controller.signal,
+            }),
           signal: controller.signal,
+          isCurrent: () => qcAbortRef.current === controller,
         })
-        const batchId = batchOpened ? await window.slidesApi.endHistoryBatch() : null
+        if (!qcRun) break
+        const { result, batchId } = qcRun
         if (controller.signal.aborted) break
         if (result.error) {
           lines.push(tGlobal('aiQcPageFailed', { n: page + 1, error: result.error }))
@@ -971,13 +1294,7 @@ export function AiPanel({
               ? result.reply
               : tGlobal('aiQcPageFixedDefault')
           lines.push(tGlobal('aiQcPageFixed', { n: page + 1, summary }))
-          // Kept edits become a visible rollback point, same as main-run snapshots
-          if (typeof batchId === 'number') {
-            const label = tGlobal('aiQcPageFixed', { n: page + 1, summary }).slice(0, 40)
-            setSnapshots((prev) =>
-              [{ id: batchId, label, time: new Date().toLocaleTimeString() }, ...prev].slice(0, 20),
-            )
-          }
+          if (typeof batchId === 'number' && qcSnapshotId == null) qcSnapshotId = batchId
         } else {
           lines.push(tGlobal('aiQcPageOk', { n: page + 1 }))
         }
@@ -987,11 +1304,23 @@ export function AiPanel({
         lines.push(tGlobal('aiQcCapped', { count: pages.length - capped.length }))
       }
       if (controller.signal.aborted) lines.push(tGlobal('aiQcStopped'))
+    } catch (error) {
+      if (classifySlidesQcFailure(error, controller.signal) === 'cancelled') {
+        if (lines.at(-1) !== tGlobal('aiQcStopped')) lines.push(tGlobal('aiQcStopped'))
+      } else {
+        // Keep host/deck details out of the UI and persisted chat. The exact
+        // failure remains observable through existing local diagnostics.
+        lines.push(tGlobal('aiQcPageFailed', { n: activePage + 1, error: 'qc_failed' }))
+      }
     } finally {
       qcRunningRef.current = false
       qcAbortRef.current = null
       const finalText = renderEntry()
-      patchLastAssistant({ streaming: false, text: finalText })
+      patchLastAssistant({
+        streaming: false,
+        text: finalText,
+        snapshotId: runSnapshotIdRef.current ?? qcSnapshotId ?? undefined,
+      })
       persistMessage('assistant', finalText)
       setBusy(false)
     }
@@ -1006,22 +1335,53 @@ export function AiPanel({
   }
 
   const cancel = () => {
-    dismissClarify()
-    qcAbortRef.current?.abort()
-    loopRef.current?.cancel()
+    const wasPrelaunch = runStartingRef.current
+    launchTokenRef.current++
+    if (wasPrelaunch) {
+      runStartingRef.current = false
+      setBusy(false)
+      setChat((prev) => {
+        const assistant = prev.at(-1)
+        const user = prev.at(-2)
+        return assistant?.role === 'assistant' && assistant.streaming && user?.role === 'user'
+          ? prev.slice(0, -2)
+          : prev
+      })
+    }
+    stopSlidesHostRun({
+      dismissClarification: dismissClarify,
+      abortQc: () => qcAbortRef.current?.abort(),
+      stop: () => loopRef.current?.stop(),
+    })
   }
 
   // Abort a QC pass still running when the panel unmounts (new file / panel remount by key)
-  useEffect(() => () => qcAbortRef.current?.abort(), [])
+  useEffect(
+    () => () => {
+      launchTokenRef.current++
+      runStartingRef.current = false
+      qcAbortRef.current?.abort()
+      dismissClarify()
+      loopRef.current?.stop()
+    },
+    [],
+  )
 
-  const retry = () => runWith(lastInstructionRef.current, lastDisplayTextRef.current)
+  const retry = () =>
+    runWith(lastInstructionRef.current, lastDisplayTextRef.current, {
+      attachments: lastAttachmentsRef.current,
+    })
 
   const newChat = () => {
+    launchTokenRef.current++
+    runStartingRef.current = false
     dismissClarify()
     qcAbortRef.current?.abort()
     loopRef.current?.reset()
     setBusy(false)
     setChat([])
+    sentAttachmentsRef.current = []
+    readAttachmentPathsRef.current.clear()
     inputRef.current?.focus()
   }
 
@@ -1086,7 +1446,9 @@ export function AiPanel({
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
     const onMove = (ev: PointerEvent) => {
-      setPanelWidth(clampPanelWidth(window.innerWidth - ev.clientX))
+      const w = clampPanelWidth(window.innerWidth - ev.clientX)
+      preferredWidthRef.current = w
+      setPanelWidth(w)
     }
     let done = false
     const cleanup = () => {
@@ -1100,10 +1462,6 @@ export function AiPanel({
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
       setResizing(false)
-      setPanelWidth((w) => {
-        localStorage.setItem(PANEL_WIDTH_KEY, String(Math.round(w)))
-        return w
-      })
     }
     resizeCleanupRef.current = cleanup
     window.addEventListener('pointermove', onMove)
@@ -1117,7 +1475,12 @@ export function AiPanel({
   // collapsed: rail only — after all hooks, so the instance and its state survive
   if (!open) {
     return (
-      <button className="ai-rail" title={t('appAiRailExpand')} onClick={onExpand}>
+      <button
+        className="ai-rail"
+        data-tip={t('appAiRailExpand')}
+        aria-label={t('appAiRailExpand')}
+        onClick={onExpand}
+      >
         <WisWorkMark size={22} />
       </button>
     )
@@ -1154,13 +1517,23 @@ export function AiPanel({
         </span>
         <div className="ai-panel-header-actions">
           {chat.length > 0 && (
-            <button className="ai-header-btn" onClick={newChat} title={t('aiNewChat')}>
+            <button
+              className="ai-header-btn"
+              onClick={newChat}
+              data-tip={t('aiNewChat')}
+              aria-label={t('aiNewChat')}
+            >
               <IconNewChat size={15} />
             </button>
           )}
           {onCollapse && (
-            <button className="ai-header-btn" onClick={onCollapse} title={t('aiCollapsePanel')}>
-              <IconSidebarCollapse size={15} />
+            <button
+              className="ai-header-btn"
+              onClick={onCollapse}
+              data-tip={t('aiCollapsePanel')}
+              aria-label={t('aiCollapsePanel')}
+            >
+              <IconSidebarCollapseLeft size={15} />
             </button>
           )}
         </div>
@@ -1172,6 +1545,9 @@ export function AiPanel({
           <>
             {historicChat.map((entry, i) => (
               <div key={`h${i}`} className={`ai-msg ai-msg-${entry.role} ai-msg-historic`}>
+                {entry.role === 'user' && entry.attachments && entry.attachments.length > 0 && (
+                  <SentAttachments atts={entry.attachments} previews={attachmentPreviews} />
+                )}
                 {entry.tools && entry.tools.length > 0 && <ToolChipList tools={entry.tools} />}
                 {entry.text && <Markdown text={entry.text} />}
               </div>
@@ -1224,12 +1600,16 @@ export function AiPanel({
             entry.role === 'assistant' &&
             !entry.streaming &&
             turnEnded &&
-            !!(entry.text || entry.error)
+            // edits-only turns have no text but still carry the rollback point
+            (!!(entry.text || entry.error) || entry.snapshotId != null)
           return (
             <div
               key={i}
               className={`ai-msg ai-msg-${entry.role}${entry.role === 'assistant' && entry.streaming ? ' ai-msg-streaming' : ''}`}
             >
+              {entry.role === 'user' && entry.attachments && entry.attachments.length > 0 && (
+                <SentAttachments atts={entry.attachments} previews={attachmentPreviews} />
+              )}
               {entry.role === 'assistant' && !entry.text && entry.streaming ? (
                 <span className="ai-typing-row">
                   <AiTypingIndicator
@@ -1295,8 +1675,35 @@ export function AiPanel({
                       aria-label={t('aiRegenerate')}
                       data-tip={t('aiRegenerate')}
                     >
-                      <IconRefresh size={12} />
+                      {/* 24-canvas glyph at 18px (near-full-bleed paths, sized for optical
+                          parity with the copy icon): stroke 1.5 paints 1.125px (1:16) */}
+                      <svg
+                        style={{ width: 18, height: 18 }}
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden
+                      >
+                        <path d="M3.68881 9.85339C4.1791 8.0054 5.28205 6.30704 6.9459 5.09101C10.8046 2.27085 16.2188 3.11279 19.0389 6.97147C19.7242 7.90904 20.1932 8.93842 20.4553 10.0001" />
+                        <path d="M2.00452 8.46411L2.87229 10.7059C2.96814 10.9535 3.24658 11.0765 3.4942 10.9807L5.73594 10.1129" />
+                        <path d="M20.3308 14.4908C19.8405 16.3388 18.7376 18.0372 17.0738 19.2532C13.215 22.0734 7.80083 21.2314 4.98071 17.3728C4.22167 16.3342 3.72792 15.183 3.48686 13.9999" />
+                        <path d="M22.0151 15.8801L21.1474 13.6384C21.0515 13.3908 20.7731 13.2677 20.5255 13.3636L18.2837 14.2314" />
+                      </svg>
                     </button>
+                  )}
+                  {entry.snapshotId != null && (
+                    <>
+                      {/* hairline between reply actions (icons) and the document action (icon+label);
+                          CSS shows it only when an icon button actually precedes it */}
+                      <span className="ai-rollback-sep" aria-hidden />
+                      <RollbackButton
+                        disabled={busy}
+                        onClick={() => void rollback(entry.snapshotId!)}
+                      />
+                    </>
                   )}
                 </div>
               )}
@@ -1325,30 +1732,6 @@ export function AiPanel({
         )}
       </div>
 
-      {snapshots.length > 0 && (
-        <div className="ai-versions">
-          <div className="ai-versions-title">
-            <IconClock size={12} />
-            {t('aiSnapshotsTitle')}
-          </div>
-          {snapshots.map((s) => (
-            <div key={s.id} className="ai-version-row">
-              <span className="ai-version-label" title={s.label}>
-                <span className="ai-version-time">{s.time}</span>
-                {s.label}
-              </span>
-              <button
-                className="ai-version-rollback"
-                disabled={busy}
-                onClick={() => void rollback(s)}
-              >
-                {t('aiRollback')}
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
       {activeClarify ? (
         /* Docked in the composer slot with the composer's own outer spacing */
         <div className="ai-composer">
@@ -1369,25 +1752,67 @@ export function AiPanel({
         </div>
       ) : (
         <div className="ai-composer">
-          {attachments.length > 0 && (
-            <div className="ai-attachments">
-              {attachments.map((a) => (
-                <span key={a.path} className="ai-attachment-chip" title={a.path}>
-                  <IconPaperclip size={11} />
-                  {a.name}
-                  <button
-                    className="ai-attachment-remove"
-                    onClick={() => removeAttachment(a.path)}
-                    title={t('aiRemoveAttachment')}
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
           {attachNotice && <div className="ai-attach-notice">{attachNotice}</div>}
           <div className="ai-input-box">
+            {attachments.length > 0 && (
+              <div className="ai-attachments" onScroll={onAttachmentsScroll}>
+                {attachments.map((a) =>
+                  ATTACHMENT_IMAGE_EXTS.has(a.ext) ? (
+                    <span key={a.path} className="ai-attachment-thumb" data-tip={a.path}>
+                      {attachmentPreviews[a.path] ? (
+                        <img src={attachmentPreviews[a.path]} alt={a.name} />
+                      ) : (
+                        <span className="ai-attachment-thumb-pending" aria-hidden>
+                          <img src={fileImageIcon} alt="" />
+                        </span>
+                      )}
+                      <button
+                        className="ai-attachment-thumb-remove"
+                        onClick={() => removeAttachment(a.path)}
+                        data-tip={t('aiRemoveAttachment')}
+                        aria-label={t('aiRemoveAttachment')}
+                      >
+                        <svg width="16" height="16" viewBox="0 0 32 32" aria-hidden>
+                          <path
+                            d="M24 9.4L22.6 8L16 14.6L9.4 8L8 9.4l6.6 6.6L8 22.6L9.4 24l6.6-6.6l6.6 6.6l1.4-1.4l-6.6-6.6L24 9.4z"
+                            fill="currentColor"
+                            stroke="currentColor"
+                            strokeWidth="0.25"
+                          />
+                        </svg>
+                      </button>
+                    </span>
+                  ) : (
+                    <span key={a.path} className="ai-attachment-card" data-tip={a.path}>
+                      <span className="ai-attachment-card-icon">
+                        <AttachmentCardIcon ext={a.ext} />
+                      </span>
+                      <span className="ai-attachment-card-meta">
+                        <span className="ai-attachment-card-name">{truncateCardName(a.name)}</span>
+                        <span className="ai-attachment-card-size">
+                          {formatAttachmentSize(a.sizeBytes)}
+                        </span>
+                      </span>
+                      <button
+                        className="ai-attachment-thumb-remove"
+                        onClick={() => removeAttachment(a.path)}
+                        data-tip={t('aiRemoveAttachment')}
+                        aria-label={t('aiRemoveAttachment')}
+                      >
+                        <svg width="16" height="16" viewBox="0 0 32 32" aria-hidden>
+                          <path
+                            d="M24 9.4L22.6 8L16 14.6L9.4 8L8 9.4l6.6 6.6L8 22.6L9.4 24l6.6-6.6l6.6 6.6l1.4-1.4l-6.6-6.6L24 9.4z"
+                            fill="currentColor"
+                            stroke="currentColor"
+                            strokeWidth="0.25"
+                          />
+                        </svg>
+                      </button>
+                    </span>
+                  ),
+                )}
+              </div>
+            )}
             <textarea
               ref={inputRef}
               value={input}
@@ -1419,7 +1844,8 @@ export function AiPanel({
               <button
                 className="ai-attach-btn"
                 onClick={pickAttachments}
-                title={t('aiAttachTitle')}
+                data-tip={t('aiAttachTitle')}
+                aria-label={t('aiAttachTitle')}
               >
                 <img src={attachIcon} alt="" aria-hidden />
               </button>
@@ -1427,7 +1853,7 @@ export function AiPanel({
                 <button
                   className="ai-send-btn ai-stop-btn"
                   onClick={cancel}
-                  title={t('aiStopGeneration')}
+                  data-tip={t('aiStopGeneration')}
                   aria-label={t('aiStop')}
                 >
                   <img src={sendStop} alt="" aria-hidden />
@@ -1437,7 +1863,7 @@ export function AiPanel({
                   className="ai-send-btn"
                   onClick={run}
                   disabled={!input.trim()}
-                  title={t('aiSend')}
+                  data-tip={t('aiSend')}
                   aria-label={t('aiSend')}
                 >
                   <img src={input.trim() ? sendEnterOn : sendEnterOff} alt="" aria-hidden />
@@ -1528,7 +1954,7 @@ function ToolOutputPanel({
                 e.preventDefault()
                 openExternal(item.url)
               }}
-              title={item.url}
+              data-tip={item.url}
             >
               {item.title || item.url}
             </a>
@@ -1584,7 +2010,7 @@ function ImageThumb({ url, title }: { url: string; title?: string }) {
     <button
       className="ai-tool-output-img-btn"
       onClick={() => openExternal(url)}
-      title={title ?? url}
+      data-tip={title ?? url}
     >
       <img src={url} alt={title ?? ''} loading="lazy" onError={() => setHidden(true)} />
     </button>
@@ -1646,6 +2072,31 @@ function StepIcon({ status }: { status: 'running' | 'done' | 'error' }) {
   )
 }
 
+/** Quiet roll-back action in the message toolbar: restores the deck to before the run's edits */
+function RollbackButton({ disabled, onClick }: { disabled: boolean; onClick: () => void }) {
+  const { t: tr } = useI18n()
+  return (
+    <button type="button" className="ai-rollback-btn" disabled={disabled} onClick={onClick}>
+      {/* 24-canvas glyph at 18px (optical parity with the toolbar icons): stroke 1.5 paints 1.125px (1:16) */}
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d="M5.91026 4L2.5 7.14791L5.91026 10.8205" />
+        <path d="M3.96154 7.41028H15.1636C18.5169 7.41028 21.3646 10.1484 21.4953 13.5C21.6334 17.0416 18.707 20.0769 15.1636 20.0769H6.88384" />
+      </svg>
+      {tr('aiRollback')}
+    </button>
+  )
+}
+
 /** Tool activity group: a single quiet summary row
  *  that auto-opens while tools run, auto-collapses into "Worked · N steps" when they finish,
  *  and a manual toggle that always wins. Rows inside are step rows with 1px connectors. */
@@ -1701,14 +2152,14 @@ function ToolChipList({ tools }: { tools: ToolActivity[] }) {
                     <button
                       type="button"
                       className="ai-step-title clickable"
-                      title={tool.name}
+                      data-tip={tool.name}
                       aria-expanded={isOpen}
                       onClick={() => toggle(j)}
                     >
                       {tool.summary}
                     </button>
                   ) : (
-                    <span className="ai-step-title" title={tool.name}>
+                    <span className="ai-step-title" data-tip={tool.name}>
                       {tool.summary}
                     </span>
                   )}
@@ -1731,7 +2182,6 @@ function ToolChipList({ tools }: { tools: ToolActivity[] }) {
   )
 }
 
-/** Survey card: options clickable per question (single/multi), with "decide for me" and "Other (fill in)". */
 function ClarifyCard({
   questions,
   onSubmit,

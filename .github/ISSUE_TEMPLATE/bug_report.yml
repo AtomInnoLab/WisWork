@@ -12,6 +12,8 @@ body:
         - WisWork Sheets (sheets)
         - WisWork Slides (slides)
         - WisWork PDF (pdf)
+        - WisWork Markdown (markdown)
+        - WisWork LaTeX (latex)
         - Shell / home screen
         - AI panel / providers
         - Build / packaging

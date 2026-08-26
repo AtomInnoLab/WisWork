@@ -9,10 +9,46 @@ import {
   editBuffer,
   recordExternalChange,
   reconcileExternalBuffer,
+  removeEditorBuffer,
   renameEditorBuffer,
+  restoreEditorPreview,
 } from '../src/renderer/editor/editor-state.js'
 
 describe('LaTeX editor three-layer revisions', () => {
+  it('removes a deleted file buffer and invalidates the preview', () => {
+    let state = createEditorState([{ path: 'chapter.tex', text: 'body', diskSha256: 'sha' }])
+    state = restoreEditorPreview(state, { revision: 0, pdfUrl: 'wiswork-latex-pdf://project/0' })
+    state = removeEditorBuffer(state, 'chapter.tex')
+    expect(state.buffers['chapter.tex']).toBeUndefined()
+    expect(state.workspaceRevision).toBe(1)
+    expect(state.previewStale).toBe(true)
+  })
+
+  it('uses a successful rename as the clean authoritative file baseline', () => {
+    let state = createEditorState([{ path: 'chapter.tex', text: 'body', diskSha256: 'sha' }])
+    state = editBuffer(state, 'chapter.tex', 'saved body')
+    state = recordExternalChange(state, 'chapter.tex', '', 'missing')
+    state = renameEditorBuffer(state, 'chapter.tex', 'renamed.tex', true)
+    expect(state.buffers['renamed.tex']).toMatchObject({
+      path: 'renamed.tex',
+      text: 'saved body',
+      diskText: 'saved body',
+      dirty: false,
+      conflict: null,
+    })
+  })
+
+  it('restores a cached preview without pretending the current session compiled it', () => {
+    const state = createEditorState([])
+    expect(
+      restoreEditorPreview(state, { revision: 0, pdfUrl: 'wiswork-latex-pdf://project/0' }),
+    ).toMatchObject({
+      preview: { revision: 0, pdfUrl: 'wiswork-latex-pdf://project/0' },
+      previewStale: false,
+      latestCompileRevision: null,
+    })
+  })
+
   it('keeps a newer edit dirty when an older autosave completes', () => {
     let state = createEditorState([{ path: 'main.tex', text: 'v1', diskSha256: 'sha-v1' }])
     state = editBuffer(state, 'main.tex', 'v2')

@@ -157,6 +157,7 @@ describe('LaTeX Codex one-call workflow driver', () => {
     await writeFile(join(projectRoot, 'chapter.tex'), 'before chapter')
     const session = await new ProjectSessionRegistry({
       watch: () => ({ close() {} }),
+      acquireRendererFreeze: async () => () => undefined,
       compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
     }).attach(51, projectRoot)
     await session.readText('main.tex')

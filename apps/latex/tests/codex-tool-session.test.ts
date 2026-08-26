@@ -29,7 +29,7 @@ function fixture() {
       {
         path: 'main.tex',
         beforeText: 'before',
-        beforeSha256: 'before-hash',
+        beforeSha256: 'a'.repeat(64),
         afterText: 'after',
       },
     ],

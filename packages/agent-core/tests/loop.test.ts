@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   AgentLoop,
+  COMPLETED_VIA_TOOLS_TEXT,
   composeSkills,
   type AgentMessage,
   type AgentSkill,
@@ -8,6 +9,8 @@ import {
   type AgentToolCall,
   type AgentTransport,
   type ToolExecution,
+  type ToolExecutionOutcome,
+  suspendToolExecution,
 } from '../src'
 
 /** transport scripted turn by turn; exposes the callbacks for manual driving */
@@ -39,7 +42,7 @@ function scriptedTransport(script: Array<(cb: AgentStreamCallbacks) => void>): A
   return transport
 }
 
-function makeSkill(execute?: (call: AgentToolCall) => ToolExecution): AgentSkill {
+function makeSkill(execute?: (call: AgentToolCall) => ToolExecutionOutcome): AgentSkill {
   return {
     id: 'test',
     systemPrompt: 'system',
@@ -138,6 +141,432 @@ describe('AgentLoop', () => {
     expect(transport.requests[1].messageCount).toBe(3)
   })
 
+  it('settles the run when snapshot capture throws before a tool', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 't1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+    ])
+    const onError = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(),
+      captureSnapshot: () => {
+        throw new Error('snapshot_failed')
+      },
+      events: { onError },
+    })
+
+    loop.run('make a change')
+    await flush()
+
+    expect(onError).toHaveBeenCalledWith('snapshot_failed')
+    expect(loop.busy).toBe(false)
+    expect(loop.messages).toEqual([])
+  })
+
+  it('settles the run when starting the next provider turn throws', async () => {
+    let turn = 0
+    const transport: AgentTransport = {
+      stream(_request, callbacks) {
+        turn++
+        if (turn === 2) throw new Error('second_turn_stream_failed')
+        queueMicrotask(() => {
+          callbacks.onToolCall({ id: 't1', name: 'do_thing', input: {} })
+          callbacks.onDone()
+        })
+        return { cancel() {} }
+      },
+    }
+    const onError = vi.fn()
+    const loop = new AgentLoop({ transport, skill: makeSkill(), events: { onError } })
+
+    loop.run('make a change')
+    await flush()
+    await flush()
+
+    expect(onError).toHaveBeenCalledWith('second_turn_stream_failed')
+    expect(loop.busy).toBe(false)
+    expect(loop.messages).toEqual([])
+  })
+
+  it('pauses a tool round without starting the next provider turn and resumes it once', async () => {
+    let resolveExecution!: (execution: ToolExecution) => void
+    const result = new Promise<ToolExecution>((resolve) => {
+      resolveExecution = resolve
+    })
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 'approval-1', name: 'do_thing', input: { text: 'approved text' } })
+        cb.onDone()
+      },
+      (cb) => {
+        cb.onDelta('Applied')
+        cb.onDone()
+      },
+    ])
+    const onToolExecuted = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(() => suspendToolExecution(result)),
+      events: { onToolExecuted },
+    })
+
+    loop.run('write it')
+    await flush()
+    expect(loop.busy).toBe(true)
+    expect(transport.requests).toHaveLength(1)
+    expect(onToolExecuted).not.toHaveBeenCalled()
+
+    resolveExecution({ output: 'written', summary: 'wrote text', mutated: true })
+    resolveExecution({ output: 'duplicate', summary: 'must be ignored', mutated: true })
+    await flush()
+    await flush()
+    expect(transport.requests).toHaveLength(2)
+    expect(onToolExecuted).toHaveBeenCalledTimes(1)
+    expect(loop.messages.map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'assistant',
+    ])
+    expect((loop.messages[2] as Extract<AgentMessage, { role: 'tool' }>).results).toEqual([
+      {
+        id: 'approval-1',
+        name: 'do_thing',
+        output: 'written',
+        isError: undefined,
+      },
+    ])
+  })
+
+  it('cancel releases a suspended tool immediately and ignores its late resolution', async () => {
+    let resolveExecution!: (execution: ToolExecution) => void
+    const result = new Promise<ToolExecution>((resolve) => {
+      resolveExecution = resolve
+    })
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 'approval-1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+    ])
+    const onDone = vi.fn()
+    const onToolExecuted = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(() => suspendToolExecution(result)),
+      events: { onDone, onToolExecuted },
+    })
+
+    loop.run('write it')
+    await flush()
+    loop.cancel()
+    await flush()
+    expect(loop.busy).toBe(false)
+    expect(onDone).toHaveBeenCalledWith({ text: '', cancelled: true, turnLimit: false })
+    expect(transport.requests).toHaveLength(1)
+
+    resolveExecution({ output: 'too late', summary: 'late', mutated: true })
+    await flush()
+    expect(onToolExecuted).not.toHaveBeenCalled()
+    expect(transport.requests).toHaveLength(1)
+  })
+
+  it('reset releases a suspended tool and prevents its late result from restoring history', async () => {
+    let resolveExecution!: (execution: ToolExecution) => void
+    const result = new Promise<ToolExecution>((resolve) => {
+      resolveExecution = resolve
+    })
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 'approval-1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+    ])
+    const onToolExecuted = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(() => suspendToolExecution(result)),
+      events: { onToolExecuted },
+    })
+
+    loop.run('write it')
+    await flush()
+    loop.reset()
+    await flush()
+    expect(loop.busy).toBe(false)
+    expect(loop.messages).toEqual([])
+
+    resolveExecution({ output: 'too late', summary: 'late', mutated: true })
+    await flush()
+    expect(loop.messages).toEqual([])
+    expect(onToolExecuted).not.toHaveBeenCalled()
+  })
+
+  it('fails closed for malformed and rejected suspensions without duplicating execution', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 'approval-1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+      (cb) => cb.onDone(),
+    ])
+    const onToolExecuted = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(() =>
+        suspendToolExecution(Promise.reject(new Error('proposal disappeared'))),
+      ),
+      events: { onToolExecuted },
+    })
+
+    loop.run('write it')
+    await flush()
+    await flush()
+    expect(onToolExecuted).toHaveBeenCalledTimes(1)
+    expect(onToolExecuted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        execution: expect.objectContaining({ output: 'invalid_tool_output', isError: true }),
+      }),
+    )
+    expect(transport.requests).toHaveLength(2)
+  })
+
+  it('turns a malformed suspended final result into one stable tool error', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 'approval-1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+      (cb) => cb.onDone(),
+    ])
+    const onToolExecuted = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(() =>
+        suspendToolExecution(Promise.resolve(undefined as unknown as ToolExecution)),
+      ),
+      events: { onToolExecuted },
+    })
+
+    loop.run('write it')
+    await flush()
+    await flush()
+    expect(onToolExecuted).toHaveBeenCalledTimes(1)
+    expect(onToolExecuted.mock.calls[0]?.[0].execution).toMatchObject({
+      output: 'invalid_tool_output',
+      isError: true,
+    })
+  })
+
+  it('fails closed when a suspended Promise has a throwing then getter', async () => {
+    const target = Promise.resolve({ output: 'must not escape', summary: 'bad' })
+    const hostileResult = new Proxy(target, {
+      get(value, property, receiver) {
+        if (property === 'then') throw new Error('hostile then getter')
+        return Reflect.get(value, property, receiver)
+      },
+    })
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 'approval-1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+      (cb) => {
+        cb.onDelta('Recovered')
+        cb.onDone()
+      },
+    ])
+    const onDone = vi.fn()
+    const onToolExecuted = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(() => suspendToolExecution(hostileResult)),
+      events: { onDone, onToolExecuted },
+    })
+
+    loop.run('write it')
+    await flush()
+    await flush()
+    expect(onToolExecuted).toHaveBeenCalledTimes(1)
+    expect(onToolExecuted.mock.calls[0]?.[0].execution).toMatchObject({
+      output: 'invalid_tool_output',
+      isError: true,
+    })
+    expect(onDone).toHaveBeenCalledWith({ text: 'Recovered', cancelled: false, turnLimit: false })
+    expect(loop.busy).toBe(false)
+  })
+
+  it('stops the current tool batch after a controlling execution and resumes the provider once', async () => {
+    let resolveExecution!: (execution: ToolExecution) => void
+    const result = new Promise<ToolExecution>((resolve) => {
+      resolveExecution = resolve
+    })
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 'write-1', name: 'do_thing', input: { text: 'first' } })
+        cb.onToolCall({ id: 'write-2', name: 'do_thing', input: { text: 'second' } })
+        cb.onDone()
+      },
+      (cb) => {
+        cb.onDelta('Stopped after rejection')
+        cb.onDone()
+      },
+    ])
+    const executeTool = vi.fn((call: AgentToolCall) =>
+      call.id === 'write-1'
+        ? suspendToolExecution(result)
+        : { output: 'must not execute', summary: 'bad', mutated: true },
+    )
+    const onToolStart = vi.fn()
+    const onToolExecuted = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(executeTool),
+      events: { onToolStart, onToolExecuted },
+    })
+
+    loop.run('make two writes')
+    await flush()
+    resolveExecution({
+      output: 'user_rejected_change',
+      summary: 'Change rejected',
+      isError: true,
+      stopToolBatch: true,
+    })
+    await flush()
+    await flush()
+
+    expect(executeTool).toHaveBeenCalledTimes(1)
+    expect(onToolStart).toHaveBeenCalledTimes(1)
+    expect(onToolExecuted).toHaveBeenCalledTimes(1)
+    expect(transport.requests).toHaveLength(2)
+    const toolMessage = loop.messages[2] as Extract<AgentMessage, { role: 'tool' }>
+    expect(toolMessage.results).toHaveLength(2)
+    expect(toolMessage.results[0]).toMatchObject({
+      id: 'write-1',
+      output: 'user_rejected_change',
+      isError: true,
+    })
+    expect(toolMessage.results[1]).toMatchObject({
+      id: 'write-2',
+      isError: true,
+    })
+    expect(toolMessage.results[1]?.output).toContain('tool batch')
+  })
+
+  it('fails closed when stopToolBatch is not a boolean', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 'write-1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+      (cb) => cb.onDone(),
+    ])
+    const onToolExecuted = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(
+        () =>
+          ({
+            output: 'bad control',
+            summary: 'bad',
+            stopToolBatch: 'yes',
+          }) as unknown as ToolExecution,
+      ),
+      events: { onToolExecuted },
+    })
+
+    loop.run('write')
+    await flush()
+    await flush()
+    expect(onToolExecuted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        execution: expect.objectContaining({ output: 'invalid_tool_output', isError: true }),
+      }),
+    )
+  })
+
+  it('preserves model-visible tool image content in history for the next request', async () => {
+    const image = { base64: 'iVBORw0KGgo=', mime: 'image/png' }
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 't1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+      (cb) => {
+        cb.onDelta('seen')
+        cb.onDone()
+      },
+    ])
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(() => ({
+        output: 'captured',
+        summary: 'image',
+        modelContent: [{ type: 'image', image }],
+      })),
+    })
+    loop.run('capture')
+    await flush()
+    await flush()
+    expect(loop.messages).toContainEqual({
+      role: 'tool',
+      results: [
+        {
+          id: 't1',
+          name: 'do_thing',
+          output: 'captured',
+          isError: undefined,
+          content: [{ type: 'image', image }],
+        },
+      ],
+    })
+  })
+
+  it('turns invalid model-visible content into a stable tool error and keeps running', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 't1', name: 'do_thing', input: {} })
+        cb.onDone()
+      },
+      (cb) => {
+        cb.onDelta('recovered')
+        cb.onDone()
+      },
+    ])
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(() => ({
+        output: 'captured',
+        summary: 'image',
+        modelContent: [
+          { type: 'image', image: { base64: 'R0lGODlhAQABAAAAACw=', mime: 'image/gif' } },
+        ],
+      })),
+    })
+
+    loop.run('capture')
+    await flush()
+    await flush()
+
+    expect(loop.busy).toBe(false)
+    expect(loop.messages).toContainEqual({
+      role: 'tool',
+      results: [
+        {
+          id: 't1',
+          name: 'do_thing',
+          output: 'invalid_tool_output',
+          isError: true,
+        },
+      ],
+    })
+    expect(loop.messages.at(-1)).toEqual({ role: 'assistant', text: 'recovered' })
+  })
+
   it('emits onToolStart before each execution, paired with onToolExecuted', async () => {
     const transport = scriptedTransport([
       (cb) => {
@@ -216,6 +645,28 @@ describe('AgentLoop', () => {
       cancelled: false,
       turnLimit: true,
     })
+  })
+
+  it('stops an unchanged tool-call loop without imposing a total turn limit', async () => {
+    const repeat = (cb: AgentStreamCallbacks) => {
+      cb.onToolCall({ id: crypto.randomUUID(), name: 'do_thing', input: { page: 1 } })
+      cb.onDone()
+    }
+    const transport = scriptedTransport(Array.from({ length: 6 }, () => repeat))
+    const execute = vi.fn(() => ({ output: 'ok', summary: 'done', mutated: true }))
+    const onError = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(execute),
+      events: { onError },
+    })
+
+    loop.run('x')
+    for (let i = 0; i < 12; i++) await flush()
+
+    expect(execute).toHaveBeenCalledTimes(4)
+    expect(onError).toHaveBeenCalledWith('tool_loop_detected')
+    expect(loop.busy).toBe(false)
   })
 
   it('cancel drops pending tool calls and finalizes the run', async () => {
@@ -319,12 +770,12 @@ describe('AgentLoop', () => {
     expect(loop.messages[0].role).toBe('user')
   })
 
-  it('a long run over maxHistory is never trimmed mid-run (history keeps its user message)', async () => {
+  it('lets an unbounded Cowork run continue past the former default turn cap', async () => {
     // 21 tool turns → 1 user + 21×(assistant+tool) = 43 messages > maxHistory 40
     const script: Array<(cb: AgentStreamCallbacks) => void> = Array.from(
       { length: 21 },
       (_, i) => (cb: AgentStreamCallbacks) => {
-        cb.onToolCall({ id: `t${i}`, name: 'do_thing', input: {} })
+        cb.onToolCall({ id: `t${i}`, name: 'do_thing', input: { page: i + 1 } })
         cb.onDone()
       },
     )
@@ -338,7 +789,6 @@ describe('AgentLoop', () => {
     const loop = new AgentLoop({
       transport,
       skill: makeSkill(),
-      maxTurns: 30,
       compaction: false,
       events: { onDone, onError },
     })
@@ -510,6 +960,55 @@ describe('AgentLoop', () => {
     expect(placeholder.text).not.toBe('') // providers reject empty assistant content blocks
   })
 
+  it('after tools mutate, an empty final model turn still stores non-empty history for follow-ups', async () => {
+    // Regression for upstream#12 / #22: first AI prompt mutates via tools with no
+    // prose, second prompt must not inherit an empty assistant content block.
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onToolCall({ id: 't1', name: 'do_thing', input: { a: 1 } })
+        cb.onDone()
+      },
+      (cb) => cb.onDone(), // model returns no text after tools
+      (cb) => {
+        cb.onDelta('second prompt ok')
+        cb.onDone()
+      },
+    ])
+    const onDone = vi.fn()
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill(),
+      events: { onDone },
+    })
+    loop.run('first change')
+    await flush()
+    await flush()
+
+    // onDone reports the raw (empty) turn text so app UIs keep their own
+    // localized fallbacks; only the history entry gets the placeholder.
+    expect(onDone).toHaveBeenCalledWith({
+      text: '',
+      cancelled: false,
+      turnLimit: false,
+    })
+    const afterFirst = loop.messages
+    expect(afterFirst.map((m) => m.role)).toEqual(['user', 'assistant', 'tool', 'assistant'])
+    const finalAssistant = afterFirst[3] as Extract<AgentMessage, { role: 'assistant' }>
+    expect(finalAssistant.text).toBe(COMPLETED_VIA_TOOLS_TEXT)
+    expect(finalAssistant.text.length).toBeGreaterThan(0)
+
+    onDone.mockClear()
+    loop.run('follow-up')
+    await flush()
+    expect(onDone).toHaveBeenCalledWith({
+      text: 'second prompt ok',
+      cancelled: false,
+      turnLimit: false,
+    })
+    // Follow-up request carries the prior (now non-empty) terminal assistant
+    expect(transport.requests[2]!.messageCount).toBeGreaterThanOrEqual(5)
+  })
+
   it('restore trims oversized history at a user boundary', () => {
     const transport = scriptedTransport([])
     const loop = new AgentLoop({ transport, skill: makeSkill(), maxHistory: 2 })
@@ -658,6 +1157,52 @@ describe('AgentLoop compaction', () => {
     expect(first.results[0]!.output).toContain('…(output truncated: too long)')
     expect(first.results[0]!.output.length).toBeLessThan(1_200)
     expect(last.results[0]!.output).toBe(big)
+  })
+
+  it('counts and drops stale tool media before the next provider request', async () => {
+    const requests: AgentMessage[][] = []
+    let turn = 0
+    const transport: AgentTransport = {
+      stream(request, callbacks) {
+        requests.push(request.messages)
+        const current = turn++
+        queueMicrotask(() => {
+          if (current < 2) callbacks.onToolCall({ id: `t${current}`, name: 'do_thing', input: {} })
+          else callbacks.onDelta('done')
+          callbacks.onDone()
+        })
+        return { cancel: vi.fn() }
+      },
+    }
+    const images = ['A'.repeat(400), 'B'.repeat(400)]
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill((call) => ({
+        output: 'captured',
+        summary: 'image',
+        modelContent: [
+          {
+            type: 'image',
+            image: { base64: images[Number(call.id.slice(1))]!, mime: 'image/png' },
+          },
+        ],
+      })),
+      compaction: { maxBytes: 650, keepRecentBytes: 300, disableLlmSummary: true },
+    })
+
+    loop.run('capture twice')
+    await flush()
+    await flush()
+    await flush()
+
+    const thirdRequest = JSON.stringify(requests[2])
+    expect(thirdRequest).not.toContain(images[0])
+    expect(thirdRequest).toContain(images[1])
+    const oldResult = loop.messages.filter((message) => message.role === 'tool').at(0) as Extract<
+      AgentMessage,
+      { role: 'tool' }
+    >
+    expect(oldResult.results[0]!.content).toBeUndefined()
   })
 
   it('compaction: false disables both folding and truncation', async () => {
@@ -867,9 +1412,10 @@ describe('composeSkills', () => {
     expect(merged.systemPrompt).toBe('INTRO\n\nPA\n\nPB')
     expect(merged.tools.map((t) => t.name)).toEqual(['tool_a', 'tool_b'])
     expect(merged.buildContext?.()).toBe('CA')
-    expect((await merged.executeTool({ id: '1', name: 'tool_b', input: {} })).output).toBe('from-b')
+    const routed = await merged.executeTool({ id: '1', name: 'tool_b', input: {} })
+    expect('output' in routed ? routed.output : undefined).toBe('from-b')
     const unknown = await merged.executeTool({ id: '2', name: 'nope', input: {} })
-    expect(unknown.isError).toBe(true)
+    expect('isError' in unknown ? unknown.isError : undefined).toBe(true)
   })
 
   it('rejects duplicate tool names', () => {

@@ -277,7 +277,7 @@ export function createAuthClient(options: AuthClientOptions): AuthClient {
         const current = await options.store.load()
         if (!current) throw new AuthError('auth_required')
         const refreshUrl = new URL(config.refreshEndpoint)
-        refreshUrl.searchParams.set('code', config.refreshFixedCode)
+        if (config.refreshFixedCode) refreshUrl.searchParams.set('code', config.refreshFixedCode)
         refreshUrl.searchParams.set('redirect_uri', config.redirectUri)
         let response: Response
         try {

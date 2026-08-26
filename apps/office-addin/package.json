@@ -4,7 +4,16 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "Office.js task-pane add-in development workspace for Word, Excel, and PowerPoint",
+  "description": "Confirmation-first WisWork Agent task pane for Word, Excel, and PowerPoint",
+  "dependencies": {
+    "@wiswork/agent-core": "*",
+    "@wiswork/agent-harness": "*",
+    "@wiswork/ai-provider": "*",
+    "@wiswork/ui": "*",
+    "fast-xml-parser": "5.10.1",
+    "jszip": "3.10.1",
+    "pdfjs-dist": "5.7.284"
+  },
   "scripts": {
     "dev": "vite --mode development",
     "build": "vite build",
@@ -18,6 +27,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.4",
+    "jsdom": "^28.1.0",
     "office-addin-dev-certs": "^2.0.3",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

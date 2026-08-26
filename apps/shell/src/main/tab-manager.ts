@@ -19,6 +19,11 @@ import {
   requestLatexClose,
   teardownLatexRenderer,
 } from '../../../latex/src/main/latex-main'
+import {
+  createMarkdownView,
+  markdownIsDirty,
+  requestMarkdownClose,
+} from '../../../markdown/src/main/markdown-main'
 import { createPdfView, pdfIsDirty, requestPdfClose } from '../../../pdf/src/main/pdf-main'
 import {
   createSheetsView,
@@ -86,7 +91,15 @@ export class TabManager {
       context: DocumentCloseContext,
     ) => Promise<DocumentClosePreparation>,
   ) {
-    shellWindow.on('resize', () => this.layout())
+    // Layout once synchronously for macOS/Windows (bounds are already correct),
+    // then once more on the next tick. On Linux/X11, `resize` fires before the
+    // window manager applies the new size, so getContentBounds() is still the
+    // pre-maximize size inside the handler and a follow-up layout is required.
+    // Electron can retain stale child-view bounds after a Linux maximize transition.
+    shellWindow.on('resize', () => {
+      this.layout()
+      setImmediate(() => this.layout())
+    })
   }
 
   private untitled(kind: TabKind, fallback: string): string {
@@ -119,6 +132,8 @@ export class TabManager {
 
   /** re-fit the active tab's view after a window resize */
   layout(): void {
+    // Deferred resize layouts can land after the shell window was closed.
+    if (this.shellWindow.isDestroyed()) return
     const active = this.tabs.find((t) => t.id === this.activeId)
     if (active?.view) active.view.setBounds(this.contentBounds())
   }
@@ -237,6 +252,23 @@ export class TabManager {
     return id
   }
 
+  openMarkdownTab(openPath?: string): string {
+    const view = createMarkdownView(openPath)
+    const id = `t${this.nextId++}`
+    this.shellWindow.contentView.addChildView(view)
+    view.setVisible(false)
+    this.trackHtmlFullScreen(id, view)
+    this.tabs.push({
+      id,
+      kind: 'markdown',
+      view,
+      title: openPath ? basename(openPath) : this.untitled('markdown', 'AI Markdown'),
+      filePath: openPath,
+    })
+    this.activateTab(id)
+    return id
+  }
+
   activateTab(id: string): void {
     const target = this.tabs.find((t) => t.id === id)
     if (!target) return
@@ -304,6 +336,13 @@ export class TabManager {
       .map((t) => ({ id: t.id, webContents: t.view!.webContents }))
   }
 
+  /** markdown tabs whose renderer reports unsaved edits (shell-close guard) */
+  dirtyMarkdownTabs(): Array<{ id: string; webContents: WebContents }> {
+    return this.tabs
+      .filter((t) => t.kind === 'markdown' && t.view && markdownIsDirty(t.view.webContents.id))
+      .map((t) => ({ id: t.id, webContents: t.view!.webContents }))
+  }
+
   /** slides tabs whose main-process session has unsaved edits (shell-close guard) */
   dirtySlidesTabs(): Array<{ id: string; webContents: WebContents }> {
     return this.tabs
@@ -361,10 +400,12 @@ export class TabManager {
           ? requestSheetsClose
           : tab.kind === 'pdf' && pdfIsDirty(tab.view.webContents.id)
             ? requestPdfClose
-            : tab.kind === 'slides' && slidesIsDirty(tab.view.webContents.id)
-              ? requestSlidesClose
-              : null)
-      // docs dirty state lives in the renderer and needs an async query; skip the guard when clean.
+            : tab.kind === 'markdown' && markdownIsDirty(tab.view.webContents.id)
+              ? requestMarkdownClose
+              : tab.kind === 'slides' && slidesIsDirty(tab.view.webContents.id)
+                ? requestSlidesClose
+                : null)
+      // Renderer-owned dirty state needs an async query; skip the guard when clean.
       if (!closeGuard && tab.kind === 'latex' && tab.view) {
         if (!(await requestLatexEditFlush(tab.view.webContents))) return
         latexPrepared = true
@@ -442,6 +483,18 @@ export class TabManager {
 
   findPdfTabByPath(path: string): string | undefined {
     return this.tabs.find((t) => t.kind === 'pdf' && t.filePath === path)?.id
+  }
+
+  findMarkdownTabByPath(path: string): string | undefined {
+    return this.tabs.find((t) => t.kind === 'markdown' && t.filePath === path)?.id
+  }
+
+  /** the active tab's markdown view, if the active tab is markdown (markdown menu target) */
+  activeMarkdownTab(): { id: string; webContents: WebContents; filePath?: string } | undefined {
+    const tab = this.tabs.find((t) => t.id === this.activeId)
+    return tab?.kind === 'markdown' && tab.view
+      ? { id: tab.id, webContents: tab.view.webContents, filePath: tab.filePath }
+      : undefined
   }
 
   /** the active tab's pdf view, if the active tab is a pdf (pdf menu target) */

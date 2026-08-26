@@ -17,7 +17,7 @@ afterEach(() => {
   delete process.env.WISWORK_UPDATE_URL
   delete process.env.WISWORK_UNSIGNED_MAC_BUILD
   delete process.env.WISWORK_TECTONIC_SOURCE
-  delete process.env.GENOFFICE_UPDATE_URL
+  delete process.env.WISWORK_MAC_X64
   delete require.cache[require.resolve('../apps/shell/electron-builder.cjs')]
 })
 
@@ -45,6 +45,7 @@ test('all distributable apps use WisWork names and AtomInnoLab bundle identifier
     ['apps/sheets/package.json', ['WisWork Sheets', 'com.atominnolab.wiswork.sheets']],
     ['apps/slides/package.json', ['WisWork Slides', 'com.atominnolab.wiswork.slides']],
     ['apps/pdf/package.json', ['WisWork PDF', 'com.atominnolab.wiswork.pdf']],
+    ['apps/markdown/package.json', ['WisWork Markdown', undefined]],
     ['apps/latex/package.json', ['WisWork LaTeX', 'com.atominnolab.wiswork.latex']],
   ])
   for (const [path, [productName, appId]] of expected) {
@@ -65,12 +66,6 @@ test('shell packaging uses WisWork update URL and exact product metadata', () =>
   assert.equal(config.mac.identity, undefined)
   assert.equal(config.mac.notarize, true)
   assert.equal(config.dmg.sign, true)
-})
-
-test('legacy update URL remains an explicit one-release compatibility fallback', () => {
-  process.env.GENOFFICE_UPDATE_URL = 'https://legacy.example/channel/'
-  const config = require('../apps/shell/electron-builder.cjs')
-  assert.equal(config.publish[0].url, 'https://legacy.example/channel')
 })
 
 test('unsigned macOS test packaging disables signing and notarization only when explicitly enabled', () => {
@@ -209,7 +204,21 @@ test('active repository text contains no unallowlisted legacy product branding',
       return /(?:'GenOffice'|'AI Office'|copies GenOffice|falls back to AI Office)/.test(line)
     if (path === 'apps/shell/tests/removed-genteam.test.ts')
       return /removed GenTeam|openGenTeam|home:open-genteam/.test(line)
-    if (path === 'apps/shell/electron-builder.cjs') return line.includes('GENOFFICE_UPDATE_URL')
+    if (path.startsWith('apps/docs/src/renderer/fonts/')) return true
+    if (
+      ['apps/docs/src/renderer/line-metrics.ts', 'apps/docs/src/renderer/editor/marks.ts'].includes(
+        path,
+      )
+    )
+      return true
+    if (
+      /^apps\/docs\/tests\/(?:font-check|font-paste-roundtrip|kr-font-metrics|line-metrics)\.test\.ts$/.test(
+        path,
+      )
+    )
+      return true
+    if (path === 'tools/normalize-kr-sans-hmtx.py') return true
+    if (path === 'apps/pdf/src/renderer/form-catalog.ts') return line.includes('genOfficeFormField')
     if (path === 'NOTICE')
       return ['GenOffice', 'This product includes software developed at Mainfunc, Inc.'].includes(
         line.trim(),

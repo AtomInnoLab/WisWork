@@ -1,3 +1,5 @@
+import type { UpdateChannel } from './update-api'
+
 /** UI language; kept self-contained here (mirrors Lang in @wiswork/i18n) */
 export type UiLanguage =
   | 'zh'
@@ -19,6 +21,8 @@ export type UiLanguage =
   | 'he'
   | 'hi'
   | 'zh-TW'
+
+export type AppTheme = 'light' | 'dark'
 
 /** a recent file entry shown on the home screen; type derives from the extension */
 export interface RecentEntry {
@@ -81,6 +85,8 @@ export interface HomeApi {
   newSheet(opts?: { projectId?: string }): Promise<void>
   /** open a slides tab at its start screen (open-a-pptx) */
   newSlide(opts?: { projectId?: string }): Promise<void>
+  /** open a blank markdown editor tab */
+  newMarkdown(opts?: { projectId?: string }): Promise<void>
   /** drop entries from the recent list (does not touch the files) */
   removeRecent(paths: string[]): Promise<void>
   /** reveal the file in Finder / Explorer */
@@ -97,6 +103,16 @@ export interface HomeApi {
   getLanguage(): Promise<UiLanguage>
   /** switch + persist the UI language; main rebuilds its menus to match */
   setLanguage(lang: UiLanguage): Promise<void>
+  /** current update channel (persisted in userData/app-settings.json; default 'stable') */
+  getUpdateChannel(): Promise<UpdateChannel>
+  /** switch + persist the update channel; triggers an immediate update check */
+  setUpdateChannel(channel: UpdateChannel): Promise<void>
+  /** Current application theme, persisted by the shell. */
+  getTheme(): Promise<AppTheme>
+  /** Apply and persist the application theme. */
+  setTheme(theme: AppTheme): Promise<void>
+  /** Observe theme changes initiated by this or another shell renderer. */
+  onThemeChanged(handler: (theme: AppTheme) => void): () => void
   /** Non-sensitive WisWork account status. */
   accountStatus(): Promise<AccountStatus>
   /** Start WisWork login in the system browser. */
@@ -107,6 +123,17 @@ export interface HomeApi {
   openLoginUrl(): Promise<void>
   /** Clear the encrypted WisWork session. */
   accountLogout(): Promise<void>
+  /** Observe explicit Office connection requests awaiting approval on this PC. */
+  onOfficePairingRequested(handler: (pairing: OfficePairingRequest) => void): () => void
+  onOfficePairingExpired(handler: (pairingId: string) => void): () => void
+  listOfficePairings(): Promise<OfficePairingRequest[]>
+  approveOfficePairing(pairingId: string): Promise<boolean>
+  rejectOfficePairing(pairingId: string): Promise<boolean>
+  officeBridgeStatus(): Promise<OfficeBridgeStatus>
+  /** Claim a cloud Office pairing using the six-digit code shown in Office. */
+  claimOfficeRelay(code: string): Promise<void>
+  /** Non-sensitive cloud relay lifecycle diagnostic. */
+  officeRelayStatus(): Promise<OfficeRelayStatus>
   getAppVersion(): Promise<string>
   onboardingSeen(): Promise<boolean>
   setOnboardingSeen(): Promise<void>
@@ -127,6 +154,39 @@ export interface AccountLoginEvent {
     httpStatus?: number
   }
 }
+
+export interface OfficePairingRequest {
+  pairingId: string
+  hostLabel: 'Word' | 'Excel' | 'PowerPoint'
+  origin: string
+  verificationCode: string
+}
+
+export type OfficeBridgeStatus =
+  | 'disabled'
+  | `ready:${number}`
+  | 'error:pool_exhausted'
+  | 'error:invalid_config'
+  | 'error:bind_failed'
+
+export type OfficeRelayStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'claiming'
+  | 'awaiting_approval'
+  | 'paired'
+  | 'disconnected:auth_required'
+  | 'disconnected:logout'
+  | 'disconnected:network_error'
+  | 'disconnected:new_claim'
+  | 'disconnected:pairing_expired'
+  | 'disconnected:protocol_violation'
+  | 'disconnected:rejected'
+  | 'disconnected:relay_error'
+  | 'disconnected:relay_closed'
+  | 'disconnected:session_expired'
+  | 'disconnected:shutdown'
+  | 'error:invalid_config'
 
 export interface RenameResult {
   ok: boolean
@@ -188,6 +248,7 @@ export const HOME_CHANNELS = {
   newLatexProject: 'home:new-latex-project',
   importLatexProject: 'home:import-latex-project',
   openLatexProject: 'home:open-latex-project',
+  newMarkdown: 'home:new-markdown',
   removeRecent: 'home:remove-recent',
   revealPath: 'home:reveal-path',
   renameFile: 'home:rename-file',
@@ -196,11 +257,17 @@ export const HOME_CHANNELS = {
   openTrash: 'home:open-trash',
   getLanguage: 'home:get-language',
   setLanguage: 'home:set-language',
+  getTheme: 'home:get-theme',
+  setTheme: 'home:set-theme',
+  themeChanged: 'home:theme-changed',
+  getUpdateChannel: 'home:get-update-channel',
+  setUpdateChannel: 'home:set-update-channel',
   accountStatus: 'home:account-status',
   accountLogin: 'home:account-login',
   accountLoginEvent: 'home:account-login-event',
   accountLoginOpenUrl: 'home:account-login-open-url',
   accountLogout: 'home:account-logout',
+  officeBridgeStatus: 'home:office-bridge-status',
   getAppVersion: 'home:get-app-version',
   onboardingSeen: 'home:onboarding-seen',
   setOnboardingSeen: 'home:set-onboarding-seen',
@@ -214,4 +281,14 @@ export const PROJECT_CHANNELS = {
   delete: 'project:delete',
   moveFile: 'project:moveFile',
   timeline: 'project:timeline',
+} as const
+
+export const OFFICE_PAIRING_CHANNELS = {
+  requested: 'home:office-pairing-requested',
+  expired: 'home:office-pairing-expired',
+  list: 'home:office-pairing-list',
+  approve: 'home:office-pairing-approve',
+  reject: 'home:office-pairing-reject',
+  relayClaim: 'home:office-relay-claim',
+  relayStatus: 'home:office-relay-status',
 } as const

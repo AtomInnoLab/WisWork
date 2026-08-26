@@ -110,6 +110,36 @@ export interface QcPageOptions {
   signal?: AbortSignal
 }
 
+export async function captureCurrentQcShot<T>(opts: {
+  capture: () => Promise<T>
+  signal: AbortSignal
+  isCurrent: () => boolean
+}): Promise<{ value: T } | null> {
+  const shot = await opts.capture()
+  opts.signal.throwIfAborted()
+  return opts.isCurrent() ? { value: shot } : null
+}
+
+export async function runQcInHistoryBatch<T>(opts: {
+  begin: () => Promise<boolean>
+  end: () => Promise<number | null>
+  run: () => Promise<T>
+  signal: AbortSignal
+  isCurrent: () => boolean
+}): Promise<{ result: T; batchId: number | null } | null> {
+  const opened = await opts.begin()
+  let batchId: number | null = null
+  let result!: T
+  try {
+    opts.signal.throwIfAborted()
+    if (!opts.isCurrent()) return null
+    result = await opts.run()
+  } finally {
+    if (opened) batchId = await opts.end()
+  }
+  return { result, batchId }
+}
+
 /** Wrap createSlidesSkill with the QC system prompt and the two-tool allowlist (executor shared) */
 export function createSlideFixSkill(access: DeckAccess): AgentSkill {
   const full = createSlidesSkill(access)
@@ -141,6 +171,7 @@ Inspect the screenshot and fix objective layout defects now.`
  */
 export function qcSlidePage(opts: QcPageOptions): Promise<QcPageResult> {
   const { access, transport, pageIndex, screenshot, systemSuffix, signal } = opts
+  signal?.throwIfAborted()
   const slide = access.getSlides()[pageIndex]
   if (!slide) {
     return Promise.resolve({
@@ -157,7 +188,11 @@ export function qcSlidePage(opts: QcPageOptions): Promise<QcPageResult> {
 
   return new Promise((resolve) => {
     let edited = false
+    let settled = false
     const finish = (r: { reply: string; error?: string }) => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener('abort', onAbort)
       const after = access.getSlides()[pageIndex]
       resolve({
         ok: true,
@@ -184,6 +219,7 @@ export function qcSlidePage(opts: QcPageOptions): Promise<QcPageResult> {
     })
     const onAbort = () => loop.cancel()
     signal?.addEventListener('abort', onAbort, { once: true })
+    signal?.throwIfAborted()
     loop.run(instruction, screenshot ? [screenshot] : [])
   })
 }

@@ -3,12 +3,15 @@
  *  - generatedPageRange / mergeQcPages: which pages a landing marks for QC (incl. insert_at shifting)
  *  - createSlideFixSkill: tool allowlist wraps the full slides skill without losing the executor
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import {
   generatedPageRange,
   mergeQcPages,
   createSlideFixSkill,
   isQcEnabled,
+  qcSlidePage,
+  captureCurrentQcShot,
+  runQcInHistoryBatch,
 } from '../src/renderer/ai/slide-qc'
 import type { DeckAccess } from '../src/renderer/ai/slides-skill'
 
@@ -89,5 +92,107 @@ describe('isQcEnabled', () => {
     localStorage.setItem('ai-slides-qc', '0')
     expect(isQcEnabled()).toBe(false)
     localStorage.removeItem('ai-slides-qc')
+  })
+})
+
+describe('qcSlidePage cancellation', () => {
+  it('rejects an already-aborted run before starting transport work', async () => {
+    const stream = vi.fn()
+    const controller = new AbortController()
+    controller.abort()
+    const one: DeckAccess = {
+      ...access,
+      getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] } as never],
+    }
+
+    expect(() =>
+      qcSlidePage({
+        access: one,
+        transport: { stream },
+        pageIndex: 0,
+        screenshot: null,
+        signal: controller.signal,
+      }),
+    ).toThrowError(expect.objectContaining({ name: 'AbortError' }))
+    expect(stream).not.toHaveBeenCalled()
+  })
+
+  it('handles abort racing with loop setup without starting transport work', async () => {
+    const stream = vi.fn()
+    const controller = new AbortController()
+    const one: DeckAccess = {
+      ...access,
+      getSlides: () => {
+        controller.abort()
+        return [{ widthPx: 1280, heightPx: 720, nodes: [] } as never]
+      },
+    }
+
+    await expect(
+      qcSlidePage({
+        access: one,
+        transport: { stream },
+        pageIndex: 0,
+        screenshot: null,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(stream).not.toHaveBeenCalled()
+  })
+
+  it('does not continue after capture resolves into an aborted run', async () => {
+    let resolveCapture!: (value: string) => void
+    const controller = new AbortController()
+    const pending = captureCurrentQcShot({
+      capture: () => new Promise<string>((resolve) => (resolveCapture = resolve)),
+      signal: controller.signal,
+      isCurrent: () => true,
+    })
+    controller.abort()
+    resolveCapture('late-shot')
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it.each(['success', 'reject', 'abort'] as const)(
+    'ends an opened QC history batch exactly once on %s',
+    async (mode) => {
+      const controller = new AbortController()
+      const end = vi.fn(async () => 42)
+      const run = vi.fn(async () => {
+        if (mode === 'reject') throw new Error('qc failed')
+        if (mode === 'abort') {
+          controller.abort()
+          controller.signal.throwIfAborted()
+        }
+        return 'ok'
+      })
+      const pending = runQcInHistoryBatch({
+        begin: async () => true,
+        end,
+        run,
+        signal: controller.signal,
+        isCurrent: () => true,
+      })
+
+      if (mode === 'success') await expect(pending).resolves.toEqual({ result: 'ok', batchId: 42 })
+      else await expect(pending).rejects.toBeTruthy()
+      expect(end).toHaveBeenCalledOnce()
+    },
+  )
+
+  it('closes a newly opened batch without starting stale QC', async () => {
+    const end = vi.fn(async () => 42)
+    const run = vi.fn(async () => 'late')
+    await expect(
+      runQcInHistoryBatch({
+        begin: async () => true,
+        end,
+        run,
+        signal: new AbortController().signal,
+        isCurrent: () => false,
+      }),
+    ).resolves.toBeNull()
+    expect(run).not.toHaveBeenCalled()
+    expect(end).toHaveBeenCalledOnce()
   })
 })

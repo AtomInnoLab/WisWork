@@ -42,7 +42,7 @@ function collector(signal = new AbortController().signal) {
 describe('WisWork provider defaults and main-process config', () => {
   it('uses wiswork and the fixed WisModel model by default', () => {
     const meta = AI_PROVIDERS.find((provider) => provider.id === 'wiswork')
-    expect(meta?.defaultModel).toBe('qwen/qwen3.8-max')
+    expect(meta?.defaultModel).toBe('openai/gpt-5.6-sol')
     expect(
       defaultAiSettings({ wiswork: 'renderer-key-must-be-ignored' }).providers.wiswork,
     ).toEqual({
@@ -69,7 +69,7 @@ describe('WisWork provider defaults and main-process config', () => {
     ).toEqual({
       ok: true,
       provider: 'wiswork',
-      config: { apiKey: '', model: 'qwen/qwen3.8-max' },
+      config: { apiKey: '', model: 'openai/gpt-5.6-sol' },
     })
   })
 
@@ -110,7 +110,7 @@ describe('WisUsage Anthropic Messages calls', () => {
     )
     const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string)
     expect(body).toEqual({
-      model: 'qwen/qwen3.8-max',
+      model: 'openai/gpt-5.6-sol',
       max_tokens: 8192,
       system: 'sys',
       messages: [{ role: 'user', content: 'hi' }],
@@ -152,7 +152,13 @@ describe('WisUsage Anthropic Messages calls', () => {
   })
 
   it('passes through the requested output limit and routes managed streaming through sg', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        okResponse(
+          sseStream(['data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}']),
+        ),
+      )
     vi.stubGlobal('fetch', fetchMock)
 
     await streamForProvider('wiswork', config, 'sys', [], [], 8192, collector().cb, withToken())
@@ -167,7 +173,13 @@ describe('WisUsage Anthropic Messages calls', () => {
   })
 
   it('uses Anthropic image blocks in the fixed request payload', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        okResponse(
+          sseStream(['data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}']),
+        ),
+      )
     vi.stubGlobal('fetch', fetchMock)
     const messages: AgentMessage[] = [
       {

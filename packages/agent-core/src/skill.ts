@@ -1,4 +1,4 @@
-import type { AgentToolCall, AgentToolDef, ToolExecution } from './types'
+import type { AgentToolCall, AgentToolDef, ToolExecutionOutcome } from './types'
 
 /**
  * A skill packages one capability domain for the agent loop: its system
@@ -20,7 +20,10 @@ export interface AgentSkill {
    * generate_deck with internal LLM calls) should check signal.aborted in
    * their loops and stop promptly.
    */
-  executeTool(call: AgentToolCall, signal?: AbortSignal): ToolExecution | Promise<ToolExecution>
+  executeTool(
+    call: AgentToolCall,
+    signal?: AbortSignal,
+  ): ToolExecutionOutcome | Promise<ToolExecutionOutcome>
 }
 
 /**

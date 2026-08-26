@@ -27,8 +27,12 @@ test.describe('LaTeX project workflow', () => {
         dialog.showSaveDialog = (async () => ({ canceled: false, filePath: selectedPath })) as never
       }, projectPath)
       await launched.page.getByTestId('quick-new-tex').click()
-      const latexPage = await waitForLatexPage(launched.app)
+      let latexPage = await waitForLatexPage(launched.app)
       await expect(latexPage.getByLabel('Editor: main.tex')).toBeVisible()
+      await expect(latexPage.getByRole('tab')).toHaveCount(2)
+      await expect(latexPage.getByRole('tab', { name: 'WisWork AI' })).toBeVisible()
+      await latexPage.getByRole('tab', { name: '编译' }).click()
+      const compilePanel = latexPage.getByRole('tabpanel')
 
       await editLatexSource(
         latexPage,
@@ -37,7 +41,7 @@ test.describe('LaTeX project workflow', () => {
 BROKEN
 \end{document}`,
       )
-      await latexPage.getByRole('button', { name: 'Compile' }).click()
+      await compilePanel.getByRole('button', { name: 'Compile' }).click()
       await expect(latexPage.getByRole('alert')).toHaveText('LaTeX operation failed')
 
       const valid = String.raw`\documentclass{article}
@@ -45,12 +49,68 @@ BROKEN
 Hello from WisWork
 \end{document}`
       await editLatexSource(latexPage, valid)
-      await latexPage.getByRole('button', { name: 'Compile' }).click()
+      await compilePanel.getByRole('button', { name: 'Compile' }).click()
       await expect(latexPage.getByText('Remote TeX bundle configured')).toBeVisible()
       await expect.poll(() => readFile(join(projectPath, 'main.tex'), 'utf8')).toBe(valid)
       await expect(latexPage.locator('.pdf-preview canvas')).toBeVisible()
+      await latexPage.getByRole('button', { name: 'Close PDF preview' }).click()
+      await expect(latexPage.locator('.pdf-preview')).toHaveCount(0)
+      await latexPage.getByRole('button', { name: 'Open PDF preview' }).click()
+      await expect(latexPage.locator('.pdf-preview canvas')).toBeVisible()
+
+      await launched.page.locator('.tab-item:not(.tab-home) .tab-close').click()
+      await expect(launched.page.locator('.tab-item:not(.tab-home)')).toHaveCount(0)
+      latexPage = await openLatexProjectFromHome(launched, projectPath)
+      await expect(latexPage.locator('.pdf-preview canvas')).toBeVisible()
     } finally {
       await closeAndSaveVideo(launched, 'latex-shell')
+    }
+  })
+
+  test('creates, renames, and confirms deletion from the project tree', async () => {
+    const harness = await createLatexE2eHarness('latex-file-actions')
+    const project = await harness.createProject('File Actions')
+    const launched = await launchShell({
+      onboardingSeen: true,
+      userDataDir: harness.userDataDir,
+      videoDir: 'latex-file-actions',
+      env: harness.env,
+    })
+    try {
+      const latexPage = await openLatexProjectFromHome(launched, project)
+      await latexPage.getByTitle('New file').click()
+      const pathInput = latexPage.getByLabel('Project-relative path')
+      await pathInput.fill('chapter.tex')
+      await latexPage.getByRole('button', { name: 'Create', exact: true }).click()
+      const projectTree = latexPage.locator('.project-tree')
+      const chapter = projectTree.getByRole('button', { name: 'chapter.tex', exact: true })
+      await expect(chapter).toBeVisible()
+      await expect(access(join(project, 'chapter.tex'))).resolves.toBeUndefined()
+
+      await chapter.hover()
+      await latexPage.getByRole('button', { name: 'File actions for chapter.tex' }).click()
+      await latexPage.getByRole('menuitem', { name: 'Rename' }).click()
+      await pathInput.fill('renamed.tex')
+      await latexPage.getByRole('button', { name: 'Rename', exact: true }).click()
+      const renamed = projectTree.getByRole('button', { name: 'renamed.tex', exact: true })
+      await expect(renamed).toBeVisible()
+
+      await renamed.hover()
+      await latexPage.getByRole('button', { name: 'File actions for renamed.tex' }).click()
+      await latexPage.getByRole('menuitem', { name: 'Delete' }).click()
+      await expect(latexPage.getByRole('dialog')).toContainText('cannot be undone')
+      await latexPage.getByRole('button', { name: 'Delete', exact: true }).click()
+      await expect(latexPage.getByRole('dialog')).toBeHidden()
+      await expect
+        .poll(async () =>
+          access(join(project, 'renamed.tex')).then(
+            () => true,
+            () => false,
+          ),
+        )
+        .toBe(false)
+    } finally {
+      await closeAndSaveVideo(launched, 'latex-file-actions')
     }
   })
 

@@ -3,6 +3,9 @@ import type { IpcRendererEvent } from 'electron'
 import type {
   AccountLoginEvent,
   AccountStatus,
+  OfficePairingRequest,
+  OfficeBridgeStatus,
+  OfficeRelayStatus,
   HomeApi,
   LatexRecentProjectEntry,
   RecentEntry,
@@ -12,8 +15,9 @@ import type {
   ProjectSummaryEntry,
   TimelineEntryItem,
   UiLanguage,
+  AppTheme,
 } from '../shared/home-api'
-import { HOME_CHANNELS, PROJECT_CHANNELS } from '../shared/home-api'
+import { HOME_CHANNELS, OFFICE_PAIRING_CHANNELS, PROJECT_CHANNELS } from '../shared/home-api'
 import type { TabsApi, TabSummary } from '../shared/tabs-api'
 import { TABS_CHANNELS } from '../shared/tabs-api'
 import {
@@ -46,6 +50,10 @@ const UI_LANGUAGES: readonly UiLanguage[] = [
 
 function isUiLanguage(value: unknown): value is UiLanguage {
   return UI_LANGUAGES.includes(value as UiLanguage)
+}
+
+function isAppTheme(value: unknown): value is AppTheme {
+  return value === 'light' || value === 'dark'
 }
 
 const EMPTY_PAGE: RecentPage = { entries: [], total: 0, totalAll: 0 }
@@ -104,6 +112,9 @@ const homeApi: HomeApi = {
   async newSlide(opts) {
     await ipcRenderer.invoke(HOME_CHANNELS.newSlide, opts)
   },
+  async newMarkdown(opts) {
+    await ipcRenderer.invoke(HOME_CHANNELS.newMarkdown, opts)
+  },
   async removeRecent(paths) {
     await ipcRenderer.invoke(HOME_CHANNELS.removeRecent, paths)
   },
@@ -134,6 +145,33 @@ const homeApi: HomeApi = {
     if (!isUiLanguage(lang)) throw new Error('Invalid language.')
     await ipcRenderer.invoke(HOME_CHANNELS.setLanguage, lang)
   },
+  async getTheme() {
+    const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getTheme)
+    return isAppTheme(result) ? result : 'light'
+  },
+  async setTheme(theme) {
+    if (!isAppTheme(theme)) throw new Error('Invalid theme.')
+    await ipcRenderer.invoke(HOME_CHANNELS.setTheme, theme)
+  },
+  onThemeChanged(handler) {
+    const listener = (_event: IpcRendererEvent, theme: unknown) => {
+      if (isAppTheme(theme)) handler(theme)
+    }
+    ipcRenderer.on(HOME_CHANNELS.themeChanged, listener)
+    return () => ipcRenderer.removeListener(HOME_CHANNELS.themeChanged, listener)
+  },
+  async getUpdateChannel() {
+    const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getUpdateChannel)
+    return result === 'beta' ? 'beta' : 'stable'
+  },
+  async setUpdateChannel(channel) {
+    // validated inline: a runtime import from ../shared/update-api would be
+    // shared with the update.ts preload entry and get split into a chunk,
+    // which sandboxed preload scripts cannot load (window.aiOffice would
+    // silently disappear). Preload entries must stay single-file bundles.
+    if (channel !== 'stable' && channel !== 'beta') throw new Error('Invalid update channel.')
+    await ipcRenderer.invoke(HOME_CHANNELS.setUpdateChannel, channel)
+  },
   async accountStatus() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.accountStatus)
     return (result ?? { loggedIn: false }) as AccountStatus
@@ -152,6 +190,94 @@ const homeApi: HomeApi = {
   },
   async accountLogout() {
     await ipcRenderer.invoke(HOME_CHANNELS.accountLogout)
+  },
+  onOfficePairingRequested(handler) {
+    const listener = (_event: IpcRendererEvent, value: unknown) => {
+      if (!value || typeof value !== 'object') return
+      const pairing = value as Partial<OfficePairingRequest>
+      if (
+        typeof pairing.pairingId === 'string' &&
+        ['Word', 'Excel', 'PowerPoint'].includes(pairing.hostLabel ?? '') &&
+        typeof pairing.origin === 'string' &&
+        typeof pairing.verificationCode === 'string' &&
+        /^\d{6}$/.test(pairing.verificationCode)
+      )
+        handler(pairing as OfficePairingRequest)
+    }
+    ipcRenderer.on(OFFICE_PAIRING_CHANNELS.requested, listener)
+    return () => ipcRenderer.removeListener(OFFICE_PAIRING_CHANNELS.requested, listener)
+  },
+  onOfficePairingExpired(handler) {
+    const listener = (_event: IpcRendererEvent, value: unknown) => {
+      if (typeof value === 'string' && /^[A-Za-z0-9_-]{8,128}$/.test(value)) handler(value)
+    }
+    ipcRenderer.on(OFFICE_PAIRING_CHANNELS.expired, listener)
+    return () => ipcRenderer.removeListener(OFFICE_PAIRING_CHANNELS.expired, listener)
+  },
+  async listOfficePairings() {
+    const result: unknown = await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.list)
+    if (!Array.isArray(result)) return []
+    return result.filter((value): value is OfficePairingRequest => {
+      if (!value || typeof value !== 'object') return false
+      const pairing = value as Partial<OfficePairingRequest>
+      return (
+        typeof pairing.pairingId === 'string' &&
+        ['Word', 'Excel', 'PowerPoint'].includes(pairing.hostLabel ?? '') &&
+        typeof pairing.origin === 'string' &&
+        typeof pairing.verificationCode === 'string' &&
+        /^\d{6}$/.test(pairing.verificationCode)
+      )
+    })
+  },
+  async approveOfficePairing(pairingId) {
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(pairingId)) throw new Error('Invalid pairing ID.')
+    return (await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.approve, { pairingId })) === true
+  },
+  async rejectOfficePairing(pairingId) {
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(pairingId)) throw new Error('Invalid pairing ID.')
+    return (await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.reject, { pairingId })) === true
+  },
+  async officeBridgeStatus() {
+    const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.officeBridgeStatus)
+    const value = String(result)
+    return (
+      value === 'disabled' ||
+      value === 'error:pool_exhausted' ||
+      value === 'error:invalid_config' ||
+      value === 'error:bind_failed' ||
+      /^ready:\d+$/.test(value)
+        ? value
+        : 'error:bind_failed'
+    ) as OfficeBridgeStatus
+  },
+  async claimOfficeRelay(code) {
+    if (!/^\d{6}$/.test(code)) throw new Error('Invalid verification code.')
+    await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.relayClaim, { code })
+  },
+  async officeRelayStatus() {
+    const result: unknown = await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.relayStatus)
+    const safe = new Set<OfficeRelayStatus>([
+      'disconnected',
+      'connecting',
+      'claiming',
+      'awaiting_approval',
+      'paired',
+      'disconnected:auth_required',
+      'disconnected:logout',
+      'disconnected:network_error',
+      'disconnected:new_claim',
+      'disconnected:pairing_expired',
+      'disconnected:protocol_violation',
+      'disconnected:rejected',
+      'disconnected:relay_error',
+      'disconnected:relay_closed',
+      'disconnected:session_expired',
+      'disconnected:shutdown',
+      'error:invalid_config',
+    ])
+    return typeof result === 'string' && safe.has(result as OfficeRelayStatus)
+      ? (result as OfficeRelayStatus)
+      : 'disconnected'
   },
   async getAppVersion() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getAppVersion)
@@ -227,6 +353,9 @@ const tabsApi: TabsApi = {
     const listener = (_event: IpcRendererEvent, tabs: TabSummary[]) => handler(tabs)
     ipcRenderer.on(TABS_CHANNELS.changed, listener)
     return () => ipcRenderer.removeListener(TABS_CHANNELS.changed, listener)
+  },
+  notifyChromePressed() {
+    ipcRenderer.send(TABS_CHANNELS.chromePressed)
   },
 }
 

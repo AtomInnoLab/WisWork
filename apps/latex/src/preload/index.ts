@@ -5,9 +5,15 @@ import {
   type CodexRuntimeApi,
   type CodexToolApi,
 } from '../../../shell/src/shared/codex-api.js'
-import { LATEX_CHANNELS, type LatexApi } from '../shared/ipc.js'
+import { LATEX_CHANNELS, type LatexApi, type UiTheme } from '../shared/ipc.js'
 
 const api: LatexApi = {
+  getTheme: () => ipcRenderer.invoke('app:get-theme'),
+  onThemeChanged: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, theme: UiTheme) => handler(theme)
+    ipcRenderer.on('app:theme-changed', listener)
+    return () => ipcRenderer.removeListener('app:theme-changed', listener)
+  },
   getSession: () => ipcRenderer.invoke(LATEX_CHANNELS.sessionGet),
   listFiles: (request) => ipcRenderer.invoke(LATEX_CHANNELS.projectList, request),
   readFile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.fileRead, request),
@@ -15,6 +21,7 @@ const api: LatexApi = {
   saveFile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.fileSave, request),
   createFile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.fileCreate, request),
   renameFile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.fileRename, request),
+  deleteFile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.fileDelete, request),
   compile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.compileStart, request),
   cancelCompile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.compileCancel, request),
   getBundleStatus: (request) => ipcRenderer.invoke(LATEX_CHANNELS.bundleStatus, request),
@@ -23,6 +30,7 @@ const api: LatexApi = {
   getProposal: (request) => ipcRenderer.invoke(LATEX_CHANNELS.proposalGet, request),
   proposeProjectEdits: (request) => ipcRenderer.invoke(LATEX_CHANNELS.proposalCreate, request),
   discardProposal: (request) => ipcRenderer.invoke(LATEX_CHANNELS.proposalDiscard, request),
+  verifyProposal: (request) => ipcRenderer.invoke(LATEX_CHANNELS.proposalVerify, request),
   applyProposal: (request) => ipcRenderer.invoke(LATEX_CHANNELS.proposalApply, request),
   undoProposal: (request) => ipcRenderer.invoke(LATEX_CHANNELS.proposalUndo, request),
   getCodexMutationRevision: (request) =>

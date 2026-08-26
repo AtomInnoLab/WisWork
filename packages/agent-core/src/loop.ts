@@ -4,9 +4,12 @@ import type {
   AgentMessage,
   AgentStreamHandle,
   AgentToolCall,
+  AgentToolContent,
   AgentToolResult,
   AgentTransport,
   ToolExecution,
+  ToolExecutionOutcome,
+  ToolExecutionSuspension,
 } from './types'
 
 export interface ToolExecutedEvent<TSnapshot> {
@@ -55,7 +58,7 @@ export interface AgentLoopOptions<TSnapshot = unknown> {
   transport: AgentTransport
   skill: AgentSkill
   events?: AgentLoopEvents<TSnapshot>
-  /** hard cap on model round-trips per run (default 8) */
+  /** optional hard cap on model round-trips per run; interactive Cowork runs are unbounded by default */
   maxTurns?: number
   /** history cap in messages, trimmed at user-turn boundaries (default 40) */
   maxHistory?: number
@@ -80,10 +83,74 @@ const STALE_TOOL_OUTPUT_MAX = 1_000
 
 /** Cap on consecutive tool-input parse failures (a successful parse resets it); abort beyond it (keeps the model from burning turns on bad JSON) */
 const MAX_INPUT_PARSE_RETRIES = 3
+/** Stop only a proven unchanged loop; varied long-running Cowork work remains unbounded. */
+const MAX_IDENTICAL_TOOL_BATCHES = 4
+const MAX_TOOL_CONTENT_IMAGES = 4
+const MAX_TOOL_IMAGE_BYTES = 4 * 1024 * 1024
+const TOOL_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+
+function isToolExecutionSuspension(
+  outcome: ToolExecutionOutcome,
+): outcome is ToolExecutionSuspension {
+  const candidate = outcome as Partial<ToolExecutionSuspension>
+  return (
+    typeof outcome === 'object' &&
+    outcome !== null &&
+    candidate.kind === 'tool-execution-suspension' &&
+    candidate.result instanceof Promise
+  )
+}
+
+function isFinalToolExecution(value: unknown): value is ToolExecution {
+  if (typeof value !== 'object' || value === null) return false
+  const execution = value as Partial<ToolExecution>
+  return (
+    typeof execution.output === 'string' &&
+    typeof execution.summary === 'string' &&
+    (execution.isError === undefined || typeof execution.isError === 'boolean') &&
+    (execution.mutated === undefined || typeof execution.mutated === 'boolean') &&
+    (execution.stopToolBatch === undefined || typeof execution.stopToolBatch === 'boolean')
+  )
+}
+
+const INVALID_TOOL_OUTPUT: ToolExecution = {
+  output: 'invalid_tool_output',
+  isError: true,
+  summary: 'invalid tool output',
+}
+
+function boundedToolContent(content?: AgentToolContent[]): AgentToolContent[] | undefined {
+  if (!content?.length) return undefined
+  if (content.length > MAX_TOOL_CONTENT_IMAGES) throw new Error('invalid_tool_output')
+  return content.map((block) => {
+    const { base64, mime } = block.image
+    const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
+    const bytes = (base64.length / 4) * 3 - padding
+    if (
+      block.type !== 'image' ||
+      !TOOL_IMAGE_MIMES.has(mime) ||
+      base64.length % 4 !== 0 ||
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(base64) ||
+      bytes <= 0 ||
+      bytes > MAX_TOOL_IMAGE_BYTES
+    )
+      throw new Error('invalid_tool_output')
+    return { type: 'image', image: { base64, mime } }
+  })
+}
 
 const TURN_LIMIT_NOTE =
   '[System] The tool-call turn limit for this request has been reached; no more tools may be called this turn. ' +
   'Answer directly from the information already gathered; if the task is unfinished, briefly state what is done and what remains.'
+
+/**
+ * Terminal assistant text when tools mutated the artifact (or an edits-only
+ * turn was restored) and the model returned no prose. Must be non-empty so
+ * provider message converters never emit empty assistant content, which breaks
+ * multi-turn follow-ups (see finishTurn / restore).
+ * Exported so apps can substitute a localized / tool-derived summary in the UI.
+ */
+export const COMPLETED_VIA_TOOLS_TEXT = '(completed tool actions; no text reply)'
 
 const SUMMARIZE_SYSTEM =
   'You are a conversation compressor. Compress this editing session between the user and the AI assistant into a concise summary so later turns can continue with context. ' +
@@ -106,14 +173,42 @@ function utf8Size(s: string): number {
   return n
 }
 
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
+  if (value && typeof value === 'object')
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(',')}}`
+  return JSON.stringify(value) ?? 'null'
+}
+
+function imagePayloadSize(image: AgentImage): number {
+  const padding = image.base64.endsWith('==') ? 2 : image.base64.endsWith('=') ? 1 : 0
+  const decoded = Math.max(0, (image.base64.length / 4) * 3 - padding)
+  // Count both the encoded request and decoded media footprints so images
+  // cannot bypass the text-oriented history budget.
+  return utf8Size(image.base64) + decoded + utf8Size(image.mime) + 32
+}
+
 /** Approximate byte cost of one message (text + tool inputs/outputs + image base64) */
 function messageSize(m: AgentMessage): number {
   if (m.role === 'tool') {
-    return m.results.reduce((n, r) => n + utf8Size(r.output) + 40, 0)
+    return m.results.reduce(
+      (size, result) =>
+        size +
+        utf8Size(result.output) +
+        40 +
+        (result.content?.reduce(
+          (mediaSize, block) => mediaSize + imagePayloadSize(block.image),
+          0,
+        ) ?? 0),
+      0,
+    )
   }
   let n = utf8Size(m.text)
   if (m.role === 'user' && m.images) {
-    n += m.images.reduce((s, img) => s + img.base64.length, 0)
+    n += m.images.reduce((size, image) => size + imagePayloadSize(image), 0)
   }
   if (m.role === 'assistant' && m.toolCalls) {
     for (const c of m.toolCalls) {
@@ -160,6 +255,8 @@ export class AgentLoop<TSnapshot = unknown> {
   private finalizing = false
   private mutationSeen = false
   private inputParseFails = 0
+  private lastToolBatchSignature = ''
+  private identicalToolBatches = 0
   private turnStopReason: string | null = null
   private turnText = ''
   private toolCalls: AgentToolCall[] = []
@@ -194,9 +291,7 @@ export class AgentLoop<TSnapshot = unknown> {
     // Edits-only runs persist an assistant message with no text; give it a placeholder
     // so the turn stays paired and providers never see an empty assistant content block
     const normalized = messages.map((m) =>
-      m.role === 'assistant' && !m.text
-        ? { ...m, text: '(completed tool actions; no text reply)' }
-        : m,
+      m.role === 'assistant' && !m.text ? { ...m, text: COMPLETED_VIA_TOOLS_TEXT } : m,
     )
     // Unanswered user messages (a failed or interrupted run persisted them without a
     // reply) must not re-enter the model context: trailing ones would pair with the
@@ -231,17 +326,25 @@ export class AgentLoop<TSnapshot = unknown> {
     this.finalizing = false
     this.mutationSeen = false
     this.inputParseFails = 0
+    this.lastToolBatchSignature = ''
+    this.identicalToolBatches = 0
     this.abortController = new AbortController()
-    const context = this.options.skill.buildContext?.() ?? ''
-    const format =
-      this.options.formatUserMessage ??
-      ((instr: string, ctx: string) => (ctx ? `${instr}\n\n${ctx}` : instr))
-    const userMsg: AgentMessage = {
-      role: 'user',
-      text: format(instruction, context),
-      ...(images?.length ? { images } : {}),
+    try {
+      const context = this.options.skill.buildContext?.() ?? ''
+      const format =
+        this.options.formatUserMessage ??
+        ((instr: string, ctx: string) => (ctx ? `${instr}\n\n${ctx}` : instr))
+      const userMsg: AgentMessage = {
+        role: 'user',
+        text: format(instruction, context),
+        ...(images?.length ? { images } : {}),
+      }
+      void this.beginRun(userMsg)
+    } catch (error) {
+      this.running = false
+      this.abortController = null
+      throw error
     }
-    void this.beginRun(userMsg)
   }
 
   /** Compact (if needed), push the user message, then start the turn. Compaction failure doesn't block the run. */
@@ -262,9 +365,25 @@ export class AgentLoop<TSnapshot = unknown> {
     // drop it so the model never sees two adjacent user turns as one combined instruction
     while (this.history.at(-1)?.role === 'user') this.history.pop()
     this.trimHistory()
+    if (userMsg.role === 'user') {
+      userMsg = { ...userMsg, text: sanitizeAgentPayload(userMsg.text) }
+    }
     this.runUserMsg = userMsg
     this.history.push(userMsg)
-    this.startTurn()
+    try {
+      this.startTurn()
+    } catch (error) {
+      this.handle = null
+      this.running = false
+      this.abortController = null
+      this.rollbackFailedRun()
+      const message = error instanceof Error ? error.message : String(error)
+      try {
+        this.options.events?.onError?.(message)
+      } catch {
+        // A presentation callback must not turn a handled launch failure into an unhandled rejection.
+      }
+    }
   }
 
   /**
@@ -277,6 +396,22 @@ export class AgentLoop<TSnapshot = unknown> {
     if (!msg) return
     const i = this.history.lastIndexOf(msg)
     if (i >= 0) this.history.splice(i)
+  }
+
+  /** Settle a detached async run failure without letting it strand the loop busy. */
+  private failRun(error: unknown, generation: number): void {
+    if (generation !== this.generation || !this.running) return
+    this.handle = null
+    this.running = false
+    this.abortController?.abort()
+    this.abortController = null
+    this.rollbackFailedRun()
+    const message = error instanceof Error ? error.message : String(error)
+    try {
+      this.options.events?.onError?.(message)
+    } catch {
+      // Presentation callbacks are outside the run's trust boundary.
+    }
   }
 
   // ── Context compaction: fold old conversation into a summary, keep recent messages verbatim ──
@@ -339,9 +474,9 @@ export class AgentLoop<TSnapshot = unknown> {
       if (m.role === 'tool') {
         return {
           role: 'tool' as const,
-          results: m.results.map((r) => ({
-            ...r,
-            output: r.output.slice(0, SUMMARIZE_TOOL_OUTPUT_MAX),
+          results: m.results.map(({ content: _content, ...result }) => ({
+            ...result,
+            output: result.output.slice(0, SUMMARIZE_TOOL_OUTPUT_MAX),
           })),
         }
       }
@@ -395,6 +530,21 @@ export class AgentLoop<TSnapshot = unknown> {
     if (!this.compactionEnabled()) return
     const { maxBytes } = this.compactBudget()
     if (historySize(this.history) <= maxBytes) return
+    // Media from prior tool rounds has already been shown to the model. Drop it
+    // oldest-first while preserving the newest round for its first provider turn.
+    let newestToolIndex = -1
+    for (let i = this.history.length - 1; i >= 0; i--) {
+      if (this.history[i]!.role !== 'tool') continue
+      newestToolIndex = i
+      break
+    }
+    for (let i = 0; i < newestToolIndex && historySize(this.history) > maxBytes; i++) {
+      const message = this.history[i]!
+      if (message.role !== 'tool') continue
+      message.results = message.results.map((result) =>
+        result.content?.length ? { ...result, content: undefined } : result,
+      )
+    }
     let recent = 0
     for (let i = this.history.length - 1; i >= 0; i--) {
       const m = this.history[i]!
@@ -476,7 +626,7 @@ export class AgentLoop<TSnapshot = unknown> {
         onDone: () => {
           if (generation !== this.generation || settled) return
           settled = true
-          void this.finishTurn()
+          void this.finishTurn().catch((error) => this.failRun(error, generation))
         },
         onError: (error) => {
           if (generation !== this.generation || settled) return
@@ -493,11 +643,41 @@ export class AgentLoop<TSnapshot = unknown> {
     const { events, skill, captureSnapshot } = this.options
     const toolCalls = this.toolCalls
 
+    if (toolCalls.length > 0 && !this.cancelled && !this.finalizing) {
+      const signature = stableJson(
+        toolCalls.map((call) => ({
+          name: call.name,
+          input: call.input,
+          inputError: call.inputError,
+          truncated: call.truncated,
+        })),
+      )
+      this.identicalToolBatches =
+        signature === this.lastToolBatchSignature ? this.identicalToolBatches + 1 : 1
+      this.lastToolBatchSignature = signature
+      if (this.identicalToolBatches > MAX_IDENTICAL_TOOL_BATCHES) {
+        this.running = false
+        this.rollbackFailedRun()
+        events?.onError?.('tool_loop_detected')
+        return
+      }
+    }
+
     // final turn: no tools requested, the user stopped the run, or the
     // no-tools finalizing turn after hitting the limit
     // (a cancelled turn drops its tool calls — no results would follow)
     if (toolCalls.length === 0 || this.cancelled || this.finalizing) {
-      this.history.push({ role: 'assistant', text: this.turnText })
+      // Models often end a tool-using run with an empty text turn ("I'm done").
+      // Leaving assistant text empty in history then poisons the next user
+      // prompt: Anthropic rejects empty content arrays, Gemini rejects empty
+      // parts, and OpenAI-compatible routes send content:null with no tool_calls —
+      // all of which make follow-up turns fail or return empty again (see
+      // upstream#12 / #22: first prompt works, second shows "no summary").
+      // Same normalization as restore(), applied unconditionally: cancelled and
+      // read-only empty turns poison follow-ups just the same. onDone still
+      // reports the raw turn text so app UIs keep their localized fallbacks
+      // instead of surfacing this English placeholder.
+      this.history.push({ role: 'assistant', text: this.turnText || COMPLETED_VIA_TOOLS_TEXT })
       this.running = false
       this.runUserMsg = null
       events?.onDone?.({
@@ -513,6 +693,7 @@ export class AgentLoop<TSnapshot = unknown> {
     this.history.push({ role: 'assistant', text: this.turnText, toolCalls })
     const generation = this.generation
     const results: AgentToolResult[] = []
+    let stopToolBatch = false
     for (const call of toolCalls) {
       // The user hit stop while an earlier tool was running: skip remaining tools,
       // but fill in paired error results to keep tool_use/tool_result pairs valid for the next request
@@ -521,6 +702,15 @@ export class AgentLoop<TSnapshot = unknown> {
           id: call.id,
           name: call.name,
           output: '(the user stopped the run; this tool was not executed)',
+          isError: true,
+        })
+        continue
+      }
+      if (stopToolBatch) {
+        results.push({
+          id: call.id,
+          name: call.name,
+          output: '(a previous tool result stopped this tool batch; this tool was not executed)',
           isError: true,
         })
         continue
@@ -542,17 +732,57 @@ export class AgentLoop<TSnapshot = unknown> {
       this.inputParseFails = 0
       events?.onToolStart?.(call)
       const snapshot = !this.mutationSeen ? captureSnapshot?.() : undefined
-      let execution: ToolExecution
+      let outcome: ToolExecutionOutcome
       try {
-        execution = await skill.executeTool(call, this.abortController?.signal)
+        outcome = await skill.executeTool(call, this.abortController?.signal)
       } catch (e) {
-        execution = {
+        outcome = {
           output: e instanceof Error ? e.message : String(e),
           isError: true,
           summary: call.name,
         }
       }
       if (generation !== this.generation) return // reset while a tool was running
+      let execution: ToolExecution
+      try {
+        if (isToolExecutionSuspension(outcome)) {
+          const suspended = await this.waitForSuspension(outcome, this.abortController?.signal)
+          if (generation !== this.generation) return // reset while awaiting approval
+          if (suspended === null) {
+            results.push({
+              id: call.id,
+              name: call.name,
+              output: '(the user stopped the run; this tool was not executed)',
+              isError: true,
+            })
+            continue
+          }
+          execution = suspended
+        } else if (
+          typeof outcome === 'object' &&
+          outcome !== null &&
+          'kind' in outcome &&
+          outcome.kind === 'tool-execution-suspension'
+        ) {
+          execution = INVALID_TOOL_OUTPUT
+        } else {
+          execution = outcome
+        }
+      } catch {
+        execution = INVALID_TOOL_OUTPUT
+      }
+      if (!isFinalToolExecution(execution)) execution = INVALID_TOOL_OUTPUT
+      let content: AgentToolContent[] | undefined
+      try {
+        content = boundedToolContent(execution.modelContent)
+      } catch {
+        execution = {
+          output: 'invalid_tool_output',
+          isError: true,
+          mutated: false,
+          summary: call.name,
+        }
+      }
       const firstMutation = !!execution.mutated && !this.mutationSeen
       if (execution.mutated) this.mutationSeen = true
       results.push({
@@ -560,12 +790,14 @@ export class AgentLoop<TSnapshot = unknown> {
         name: call.name,
         output: execution.output,
         isError: execution.isError,
+        content,
       })
       events?.onToolExecuted?.({
         call,
         execution,
         snapshotBefore: firstMutation ? snapshot : undefined,
       })
+      if (execution.stopToolBatch) stopToolBatch = true
     }
     this.history.push({ role: 'tool', results })
 
@@ -588,7 +820,7 @@ export class AgentLoop<TSnapshot = unknown> {
     }
 
     this.turns++
-    if (this.turns >= (this.options.maxTurns ?? 8)) {
+    if (this.options.maxTurns !== undefined && this.turns >= this.options.maxTurns) {
       // Don't throw away the context already gathered: append one no-tools turn for a partial answer
       this.finalizing = true
       this.history.push({ role: 'user', text: TURN_LIMIT_NOTE })
@@ -598,4 +830,55 @@ export class AgentLoop<TSnapshot = unknown> {
     events?.onTurnEnd?.()
     this.startTurn()
   }
+
+  private async waitForSuspension(
+    suspension: ToolExecutionSuspension,
+    signal?: AbortSignal,
+  ): Promise<ToolExecution | null> {
+    if (signal?.aborted) return null
+    let removeAbortListener: (() => void) | undefined
+    const aborted = new Promise<null>((resolve) => {
+      if (!signal) return
+      const onAbort = () => resolve(null)
+      signal.addEventListener('abort', onAbort, { once: true })
+      removeAbortListener = () => signal.removeEventListener('abort', onAbort)
+    })
+    try {
+      const settled = new Promise<ToolExecution>((resolve) => {
+        try {
+          Promise.prototype.then.call(
+            suspension.result,
+            (execution) =>
+              resolve(isFinalToolExecution(execution) ? execution : INVALID_TOOL_OUTPUT),
+            () => resolve(INVALID_TOOL_OUTPUT),
+          )
+        } catch {
+          resolve(INVALID_TOOL_OUTPUT)
+        }
+      })
+      const result = await Promise.race([settled, aborted])
+      return result
+    } finally {
+      removeAbortListener?.()
+    }
+  }
+}
+
+/**
+ * Redact secret-looking tokens from an outgoing user message so accidentally
+ * pasted API keys, URL credentials, and password assignments don't reach
+ * remote model APIs verbatim.
+ *
+ * Imported from public PR #32 (BuiltByHarshil), with the credential pattern
+ * narrowed to URL userinfo (scheme://user:pass@host) so ordinary "a:b@c"
+ * prose is never rewritten.
+ */
+export function sanitizeAgentPayload(payload: string): string {
+  return payload
+    .replace(/\b(?:sk-|AIza|ghp_|secret_)[A-Za-z0-9_-]{16,}/g, '[REDACTED_API_KEY]')
+    .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+):[^\s@/]+@/gi, '$1:[REDACTED_CREDENTIALS]@')
+    .replace(
+      /(password|passwd|secret_key|private_key)(\s*[:=]\s*)["'][^"']+["']/gi,
+      '$1$2"[REDACTED_SECURE_TOKEN]"',
+    )
 }
