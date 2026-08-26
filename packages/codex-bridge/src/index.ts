@@ -6,6 +6,7 @@ import type {
 } from './types.js'
 
 export * from './types.js'
+export * from './local-server.js'
 
 export class ProtocolCompatibilityError extends Error {
   constructor(readonly code: string) {
