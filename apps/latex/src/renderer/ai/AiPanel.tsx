@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { AgentLoop } from '@wiswork/agent-core'
+import type { AgentEvent } from '@wiswork/agent-runtime'
 import { AiComposer, AiTypingIndicator, Markdown, WisWorkAppMark } from '@wiswork/ui'
 import { createLatexSkill } from './latex-skill.js'
 import { loadProposalForReview } from './proposal-review.js'
 import { ProposalWorkflow, validateUndoProposal } from './proposal-workflow.js'
 import { ProposalReview } from './ProposalReview.js'
+import { LatexCodexToolSession, type LatexCodexMutationResult } from './codex-tool-session.js'
 import { createLatexTransport } from './transport.js'
 import {
   normalizeAgentContext,
@@ -34,6 +36,23 @@ AI-confirmed WisWork
 interface ChatEntry {
   role: 'user' | 'assistant'
   text: string
+}
+
+interface EnhancedRuntimeBinding {
+  documentId: string
+  start(text: string): Promise<void>
+  cancel(): Promise<void>
+}
+
+function enhancedModeInstallRequired(error: unknown): boolean {
+  if (error instanceof Error && error.message.includes('enhanced_mode_install_required'))
+    return true
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'enhanced_mode_install_required'
+  )
 }
 
 const PANEL_WIDTH_KEY = 'latex-ai-panel-width'
@@ -142,6 +161,9 @@ export function AiPanel({
   const [status, setStatus] = useState<string | null>(null)
   const [timeline, setTimeline] = useState<TaskTimelineEntry[]>([])
   const [chatLoadState, setChatLoadState] = useState<ChatLoadState>('loading')
+  const [runtimeReady, setRuntimeReady] = useState(false)
+  const [activity, setActivity] = useState<string | null>(null)
+  const [enhancedSnapshotId, setEnhancedSnapshotId] = useState<string | null>(null)
   const [panelWidth, setPanelWidth] = useState(loadPanelWidth)
   const [resizing, setResizing] = useState(false)
   const sessionRef = useRef<AgentPanelSession | null>(null)
@@ -152,6 +174,7 @@ export function AiPanel({
     getRun: () => AgentRunScope | null
     setRun: (scope: AgentRunScope | null) => void
   } | null>(null)
+  const enhancedRuntimeRef = useRef<EnhancedRuntimeBinding | null>(null)
   const chatLoadStateRef = useRef<ChatLoadState>('loading')
   const chatIdsRef = useRef<
     (AgentProjectScope & { storeProjectId: string; chatId: string }) | null
@@ -176,6 +199,9 @@ export function AiPanel({
   useEffect(() => {
     const session = sessionRef.current!
     let loopRun: AgentRunScope | null = null
+    let disposed = false
+    let removeRuntimeEvents: (() => void) | undefined
+    let enhancedTools: LatexCodexToolSession | undefined
     chatIdsRef.current = null
     chatLoadStateRef.current = 'loading'
     setChatLoadState('loading')
@@ -186,6 +212,9 @@ export function AiPanel({
     workflow.setProject(projectId)
     setStatus(null)
     setTimeline([])
+    setActivity(null)
+    setRuntimeReady(false)
+    enhancedRuntimeRef.current = null
     const loop = new AgentLoop({
       transport: createLatexTransport(),
       skill: createLatexSkill(window.latexApi, () => projectId),
@@ -321,12 +350,111 @@ export function AiPanel({
         )
       }
     })()
+    void (async () => {
+      try {
+        const runtimeStatus = await window.wisworkCodexRuntime.status()
+        if (disposed || !session.acceptsLoopProject(loop, projectScope)) return
+        if (runtimeStatus.runtime === 'legacy') {
+          setRuntimeReady(true)
+          return
+        }
+        if (!runtimeStatus.documentId) throw new Error('enhanced_mode_document_unavailable')
+        const documentId = runtimeStatus.documentId
+        const onEnhancedEvent = (event: AgentEvent<unknown>) => {
+          if (disposed || !session.acceptsLoopProject(loop, projectScope)) return
+          switch (event.type) {
+            case 'text':
+              setText(event.text)
+              break
+            case 'tool-start':
+              setActivity(`Using ${event.call.name.slice(0, 80)}…`)
+              break
+            case 'tool-executed':
+            case 'turn-end':
+              setActivity(null)
+              break
+            case 'done': {
+              setBusy(false)
+              setActivity(null)
+              setText('')
+              if (event.result.text)
+                setChat((current) => [...current, { role: 'assistant', text: event.result.text }])
+              const ids = chatIdsRef.current
+              if (ids && session.acceptsProject(ids))
+                void window.latexApi.appendDirectoryChat({
+                  projectId,
+                  storeProjectId: ids.storeProjectId,
+                  chatId: ids.chatId,
+                  role: 'assistant',
+                  text: event.result.text,
+                })
+              break
+            }
+            case 'error':
+              setStatus(event.message)
+              setActivity(null)
+              setBusy(false)
+              if (event.code === 'enhanced_mode_stopped') {
+                setRuntimeReady(false)
+                enhancedRuntimeRef.current = null
+                void enhancedTools?.close()
+              }
+              break
+          }
+        }
+        removeRuntimeEvents = window.wisworkCodexRuntime.onEvent((message) => {
+          if (message.documentId === documentId) onEnhancedEvent(message.event)
+        })
+        enhancedTools = new LatexCodexToolSession({
+          documentId,
+          projectId,
+          skill: createLatexSkill(window.latexApi, () => projectId),
+          tools: window.wisworkCodexTools,
+          domain: window.latexApi,
+          requestReview: (proposal, signal) => workflow.requestApproval(proposal, signal),
+          onApplied: async (result: LatexCodexMutationResult) => {
+            await projectFilesChangedRef.current?.()
+            if (disposed || !session.acceptsLoopProject(loop, projectScope)) return
+            setEnhancedSnapshotId(result.snapshotId)
+            setStatus(
+              result.compile.ok
+                ? `Changes applied and compiled (${result.compile.result?.diagnostics.length ?? 0} diagnostics).`
+                : `Changes applied; compile failed: ${result.compile.error ?? 'unknown error'}`,
+            )
+          },
+        })
+        await enhancedTools.start()
+        if (disposed || !session.acceptsLoopProject(loop, projectScope)) {
+          await enhancedTools.close()
+          return
+        }
+        enhancedRuntimeRef.current = {
+          documentId,
+          start: (instruction) =>
+            window.wisworkCodexRuntime.startTurn({ documentId, text: instruction }),
+          cancel: () => window.wisworkCodexRuntime.cancelTurn(documentId),
+        }
+        setRuntimeReady(true)
+      } catch (error) {
+        if (disposed) return
+        setStatus(
+          enhancedModeInstallRequired(error)
+            ? 'Install Enhanced mode before use.'
+            : 'The selected AI runtime is unavailable.',
+        )
+        setRuntimeReady(false)
+      }
+    })()
     return () => {
+      disposed = true
       workflow.cancel()
       session.detachLoop(loop)
       loop.cancel()
       if (loopRef.current === loop) loopRef.current = null
       if (loopBindingRef.current?.loop === loop) loopBindingRef.current = null
+      enhancedRuntimeRef.current = null
+      removeRuntimeEvents?.()
+      void enhancedTools?.close()
       loopRun = null
     }
   }, [projectId, workflow])
@@ -371,19 +499,23 @@ export function AiPanel({
 
   const send = () => {
     const instruction = input.trim()
+    const enhanced = enhancedRuntimeRef.current
     const binding = loopBindingRef.current
     if (
       !instruction ||
       busy ||
       disabled ||
+      !runtimeReady ||
       !binding ||
       binding.loop.busy ||
       !sessionRef.current!.canSend(binding.loop, chatLoadStateRef.current)
     )
       return
     const session = sessionRef.current!
-    const runScope = session.beginRun(binding.loop)
-    binding.setRun(runScope)
+    if (!enhanced) {
+      const runScope = session.beginRun(binding.loop)
+      binding.setRun(runScope)
+    }
     setBusy(true)
     setStatus(null)
     setText('')
@@ -398,10 +530,28 @@ export function AiPanel({
         role: 'user',
         text: instruction,
       })
-    binding.loop.run(serializeAgentPrompt(instruction, context))
+    const prompt = serializeAgentPrompt(instruction, context)
+    if (enhanced) {
+      void enhanced.start(prompt).catch(() => {
+        setStatus('The selected AI runtime is unavailable.')
+        setBusy(false)
+      })
+    } else {
+      binding.loop.run(prompt)
+    }
   }
 
   const cancel = () => {
+    const enhanced = enhancedRuntimeRef.current
+    if (enhanced) {
+      workflow.cancel()
+      void enhanced.cancel()
+      setBusy(false)
+      setText('')
+      setStatus('Stopped.')
+      setActivity(null)
+      return
+    }
     const binding = loopBindingRef.current
     const scope = binding?.getRun()
     if (!binding || !scope) return
@@ -413,7 +563,7 @@ export function AiPanel({
   }
 
   const undo = async () => {
-    const snapshotId = proposalWorkflow.snapshotId
+    const snapshotId = proposalWorkflow.snapshotId ?? enhancedSnapshotId
     if (!snapshotId || disabled) return
     const session = sessionRef.current!
     const projectScope = session.captureProject()
@@ -435,6 +585,7 @@ export function AiPanel({
           ? 'AI changes were undone and the project was compiled again.'
           : `AI changes were undone, but compile failed: ${undone.compile.error}`,
       )
+      setEnhancedSnapshotId(null)
       try {
         await projectFilesChangedRef.current?.()
       } catch (error) {
@@ -572,6 +723,7 @@ export function AiPanel({
               )}
               {busy && !text && <AiTypingIndicator label="WisWork is working" />}
               <TaskTimeline entries={timeline} />
+              {activity && <div className="ai-status">{activity}</div>}
               {proposalWorkflow.proposal && proposalWorkflow.verification && (
                 <ProposalReview
                   proposal={proposalWorkflow.proposal}
@@ -579,7 +731,9 @@ export function AiPanel({
                   busy={busy || proposalWorkflow.busy || disabled}
                   verification={proposalWorkflow.verification}
                   riskArmed={proposalWorkflow.riskArmed}
-                  onSelectionChange={(selection) => workflow.setSelection(selection)}
+                  onSelectionChange={(selection) => {
+                    if (!workflow.approvalPending) workflow.setSelection(selection)
+                  }}
                   onPrimaryAction={() => void workflow.primaryAction()}
                   onCancel={() => workflow.cancel()}
                 />
@@ -594,7 +748,7 @@ export function AiPanel({
                   {proposalWorkflow.status}
                 </div>
               )}
-              {proposalWorkflow.snapshotId && (
+              {(proposalWorkflow.snapshotId || enhancedSnapshotId) && (
                 <button
                   className="ai-undo-button"
                   disabled={busy || disabled}
@@ -628,7 +782,7 @@ export function AiPanel({
               )}
               <AiComposer
                 value={input}
-                busy={busy}
+                busy={busy || !runtimeReady}
                 placeholder={
                   chatLoadState === 'loading'
                     ? 'Loading project chat…'

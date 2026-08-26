@@ -20,6 +20,11 @@ import type {
 import { HOME_CHANNELS, OFFICE_PAIRING_CHANNELS, PROJECT_CHANNELS } from '../shared/home-api'
 import type { TabsApi, TabSummary } from '../shared/tabs-api'
 import { TABS_CHANNELS } from '../shared/tabs-api'
+import {
+  ENHANCED_MODE_CHANNELS,
+  type EnhancedModeApi,
+  type EnhancedModeStatus,
+} from '../shared/enhanced-mode-api'
 
 const UI_LANGUAGES: readonly UiLanguage[] = [
   'zh',
@@ -355,3 +360,21 @@ const tabsApi: TabsApi = {
 }
 
 contextBridge.exposeInMainWorld('aiOfficeTabs', tabsApi)
+
+const enhancedModeApi: EnhancedModeApi = {
+  async status() {
+    return (await ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.status)) as EnhancedModeStatus
+  },
+  async install() {
+    return (await ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.install)) as EnhancedModeStatus
+  },
+  async remove() {
+    return (await ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.remove)) as EnhancedModeStatus
+  },
+  async setMode(mode) {
+    if (mode !== 'standard' && mode !== 'enhanced') throw new Error('Invalid mode.')
+    return (await ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.setMode, mode)) as EnhancedModeStatus
+  },
+}
+
+contextBridge.exposeInMainWorld('aiOfficeEnhancedMode', enhancedModeApi)

@@ -23,9 +23,11 @@
   },
   "devDependencies": {
     "@wiswork/agent-core": "*",
+    "@wiswork/agent-runtime": "*",
     "@wiswork/ai-provider": "*",
     "@wiswork/ai-search": "*",
     "@wiswork/auth": "*",
+    "@wiswork/codex-bridge": "*",
     "@wiswork/docs": "*",
     "@wiswork/docx-engine": "*",
     "@wiswork/electron-utils": "*",

@@ -579,6 +579,43 @@ body.vib .home {
   cursor: default;
 }
 
+.account-menu-item.enhanced-mode-row {
+  align-items: center;
+}
+
+.enhanced-mode-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  text-align: start;
+}
+
+.enhanced-mode-copy > span:last-child {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.enhanced-mode-copy > span.error {
+  color: #c63f3f;
+}
+
+.enhanced-mode-action {
+  max-width: 112px;
+  color: var(--accent, #407cff);
+  font-size: 10px;
+  line-height: 1.2;
+  text-align: end;
+}
+
+.account-menu-item.enhanced-mode-remove {
+  justify-content: flex-end;
+  padding-block: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
 /* language row in the account menu (hover opens the flyout) */
 .account-menu-item.lang-row {
   display: flex;

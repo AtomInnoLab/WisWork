@@ -337,4 +337,73 @@ describe('LaTeX typed IPC boundary', () => {
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: 'LATEX_FORBIDDEN_SENDER' } })
   })
+
+  it('exposes strict owned Codex proposal preparation, execution, discard, and revision channels', async () => {
+    const { session, call } = await setup()
+    vi.spyOn(session, 'getCodexMutationRevision').mockReturnValue('7')
+    vi.spyOn(session, 'prepareCodexProposalMutation').mockResolvedValue({
+      preparationId: 'prep-1',
+      snapshotId: 'a'.repeat(32),
+    })
+    vi.spyOn(session, 'executeCodexProposalMutation').mockResolvedValue({
+      proposalId: 'proposal-1',
+      snapshotId: 'a'.repeat(32),
+      compile: { ok: false as const, error: 'not configured' },
+    })
+    vi.spyOn(session, 'discardCodexProposalMutation').mockResolvedValue()
+    vi.spyOn(session, 'discardEditProposal').mockResolvedValue()
+
+    const owned = { projectId: session.projectId }
+    await expect(
+      call(LATEX_CHANNELS.proposalDiscard, 11, { ...owned, proposalId: 'proposal-1' }),
+    ).resolves.toEqual({ ok: true, value: undefined })
+    await expect(call(LATEX_CHANNELS.codexMutationRevision, 11, owned)).resolves.toEqual({
+      ok: true,
+      value: { revision: '7' },
+    })
+    await expect(
+      call(LATEX_CHANNELS.codexProposalPrepare, 11, {
+        ...owned,
+        documentId: 't7',
+        callId: 'call-1',
+        proposalId: 'proposal-1',
+        expectedRevision: '7',
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { preparationId: 'prep-1' } })
+    await expect(
+      call(LATEX_CHANNELS.codexProposalExecute, 11, {
+        ...owned,
+        documentId: 't7',
+        callId: 'call-1',
+        preparationId: 'prep-1',
+        snapshotId: 'a'.repeat(32),
+        expectedRevision: '7',
+      }),
+    ).resolves.toMatchObject({ ok: true, value: { proposalId: 'proposal-1' } })
+    await expect(
+      call(LATEX_CHANNELS.codexProposalDiscard, 11, {
+        ...owned,
+        documentId: 't7',
+        callId: 'call-1',
+        preparationId: 'prep-1',
+        snapshotId: 'a'.repeat(32),
+      }),
+    ).resolves.toEqual({ ok: true, value: undefined })
+
+    await expect(
+      call(LATEX_CHANNELS.codexProposalExecute, 11, {
+        ...owned,
+        documentId: 't7',
+        callId: 'call-1',
+        preparationId: 'prep-1',
+        snapshotId: 'a'.repeat(32),
+        expectedRevision: '7',
+        proposalId: 'forged',
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'LATEX_INVALID_PAYLOAD' } })
+    await expect(call(LATEX_CHANNELS.codexMutationRevision, 99, owned)).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'LATEX_FORBIDDEN_SENDER' },
+    })
+  })
 })

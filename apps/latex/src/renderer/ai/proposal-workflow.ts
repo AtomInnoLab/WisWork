@@ -265,6 +265,14 @@ function rejection(error: unknown): Extract<ReviewVerification, { state: 'reject
 export class ProposalWorkflow {
   private generation = 0
   private listener: ((state: ProposalWorkflowState) => void) | null = null
+  private approval:
+    | {
+        proposalId: string
+        signal: AbortSignal
+        onAbort: () => void
+        resolve(selection: ReadonlySet<string> | null): void
+      }
+    | undefined
   state: ProposalWorkflowState
 
   constructor(
@@ -350,10 +358,15 @@ export class ProposalWorkflow {
       await this.createSubset(proposal, selection)
       return
     }
+    if (this.approval?.proposalId === proposal.id) {
+      this.finishApproval(new Set(selection))
+      return
+    }
     await this.apply(proposal, verification)
   }
 
   cancel(): void {
+    this.finishApproval(null)
     this.generation += 1
     this.update({
       proposal: null,
@@ -362,6 +375,30 @@ export class ProposalWorkflow {
       riskArmed: false,
       busy: false,
     })
+  }
+
+  /** Review-only path used by Enhanced mode; the guarded domain transaction applies later. */
+  requestApproval(value: unknown, signal: AbortSignal): Promise<ReadonlySet<string> | null> {
+    this.finishApproval(null)
+    void this.setProposal(value)
+    const proposalId = this.state.proposal?.id
+    if (!proposalId || signal.aborted) {
+      this.cancel()
+      return Promise.resolve(null)
+    }
+    // Enhanced-mode review keeps the complete verified proposal together. Subset creation remains
+    // available on the standard path, where ProposalWorkflow owns the apply transaction.
+    this.setSelection(new Set(this.state.proposal!.files.map((file) => file.path)))
+    return new Promise((resolve) => {
+      const onAbort = () => this.finishApproval(null)
+      this.approval = { proposalId, signal, onAbort, resolve }
+      signal.addEventListener('abort', onAbort, { once: true })
+      if (signal.aborted) onAbort()
+    })
+  }
+
+  get approvalPending(): boolean {
+    return this.approval !== undefined
   }
 
   clearSnapshot(status: string): void {
@@ -486,6 +523,22 @@ export class ProposalWorkflow {
 
   private accepts(generation: number, proposalId: string): boolean {
     return this.generation === generation && this.state.proposal?.id === proposalId
+  }
+
+  private finishApproval(selection: ReadonlySet<string> | null): void {
+    const approval = this.approval
+    if (!approval) return
+    this.approval = undefined
+    approval.signal.removeEventListener('abort', approval.onAbort)
+    approval.resolve(selection)
+    this.generation += 1
+    this.update({
+      proposal: null,
+      selection: new Set(),
+      verification: null,
+      riskArmed: false,
+      busy: false,
+    })
   }
 
   private update(patch: Partial<ProposalWorkflowState>): void {

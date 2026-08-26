@@ -73,4 +73,23 @@ describe('SnapshotStore', () => {
     await store.setCurrentRollback('project-1', first.id)
     await expect(store.create('project-1', project, ['main.tex'])).rejects.toThrow(/quota/i)
   })
+
+  it('discards an unprotected tentative snapshot but never the current rollback point', async () => {
+    const root = await sandbox()
+    const projectRoot = join(root, 'project')
+    await mkdir(projectRoot)
+    await writeFile(join(projectRoot, 'main.tex'), 'before')
+    const project = await openLatexProject(projectRoot)
+    const store = new SnapshotStore(join(root, 'cache'))
+
+    const tentative = await store.create('project-1', project, ['main.tex'])
+    await expect(store.discard('project-1', tentative.id)).resolves.toBe(true)
+    await expect(store.list('project-1')).resolves.toEqual([])
+    await expect(store.getFileHashes('project-1', tentative.id)).rejects.toThrow(/not found/i)
+
+    const protectedSnapshot = await store.create('project-1', project, ['main.tex'])
+    await store.setCurrentRollback('project-1', protectedSnapshot.id)
+    await expect(store.discard('project-1', protectedSnapshot.id)).rejects.toThrow(/rollback/i)
+    await expect(store.list('project-1')).resolves.toContainEqual(protectedSnapshot)
+  })
 })

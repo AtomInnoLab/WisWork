@@ -185,6 +185,11 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
       return proposal
     }),
   )
+  handle(LATEX_CHANNELS.proposalDiscard, (event, payload) =>
+    withSession(event, payload, registry, parseProposalRequest, (session, request) =>
+      session.discardEditProposal(request.proposalId),
+    ),
+  )
   handle(LATEX_CHANNELS.proposalVerify, (event, payload) =>
     withSession(event, payload, registry, parseProposalRequest, (session, request) =>
       session.verifyProposal(request.proposalId),
@@ -198,6 +203,26 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
   handle(LATEX_CHANNELS.proposalUndo, (event, payload) =>
     withSession(event, payload, registry, parseUndoRequest, (session, request) =>
       session.undoConfirmedProposal(request.snapshotId),
+    ),
+  )
+  handle(LATEX_CHANNELS.codexMutationRevision, (event, payload) =>
+    withSession(event, payload, registry, parseSessionRequest, (session) => ({
+      revision: session.getCodexMutationRevision(),
+    })),
+  )
+  handle(LATEX_CHANNELS.codexProposalPrepare, (event, payload) =>
+    withSession(event, payload, registry, parseCodexProposalPrepare, (session, request) =>
+      session.prepareCodexProposalMutation(request),
+    ),
+  )
+  handle(LATEX_CHANNELS.codexProposalExecute, (event, payload) =>
+    withSession(event, payload, registry, parseCodexProposalExecute, (session, request) =>
+      session.executeCodexProposalMutation(request),
+    ),
+  )
+  handle(LATEX_CHANNELS.codexProposalDiscard, (event, payload) =>
+    withSession(event, payload, registry, parseCodexProposalDiscard, (session, request) =>
+      session.discardCodexProposalMutation(request),
     ),
   )
 
@@ -382,6 +407,59 @@ function parseUndoRequest(value: unknown) {
   }
 }
 
+function parseCodexProposalPrepare(value: unknown) {
+  const item = exactObject(value, [
+    'projectId',
+    'documentId',
+    'callId',
+    'proposalId',
+    'expectedRevision',
+  ])
+  return {
+    projectId: boundedString(item.projectId, 'projectId', 128),
+    documentId: boundedString(item.documentId, 'documentId', 256),
+    callId: boundedString(item.callId, 'callId', 256),
+    proposalId: boundedString(item.proposalId, 'proposalId', 128),
+    expectedRevision: boundedString(item.expectedRevision, 'expectedRevision', 128),
+  }
+}
+
+function parseCodexProposalExecute(value: unknown) {
+  const item = exactObject(value, [
+    'projectId',
+    'documentId',
+    'callId',
+    'preparationId',
+    'snapshotId',
+    'expectedRevision',
+  ])
+  return {
+    projectId: boundedString(item.projectId, 'projectId', 128),
+    documentId: boundedString(item.documentId, 'documentId', 256),
+    callId: boundedString(item.callId, 'callId', 256),
+    preparationId: boundedString(item.preparationId, 'preparationId', 128),
+    snapshotId: snapshotId(item.snapshotId),
+    expectedRevision: boundedString(item.expectedRevision, 'expectedRevision', 128),
+  }
+}
+
+function parseCodexProposalDiscard(value: unknown) {
+  const item = exactObject(value, [
+    'projectId',
+    'documentId',
+    'callId',
+    'preparationId',
+    'snapshotId',
+  ])
+  return {
+    projectId: boundedString(item.projectId, 'projectId', 128),
+    documentId: boundedString(item.documentId, 'documentId', 256),
+    callId: boundedString(item.callId, 'callId', 256),
+    preparationId: boundedString(item.preparationId, 'preparationId', 128),
+    snapshotId: snapshotId(item.snapshotId),
+  }
+}
+
 function exactObject(value: unknown, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     invalid('payload must be an object')
@@ -421,6 +499,12 @@ function boundedString(value: unknown, name: string, maxLength: number): string 
 function revision(value: unknown): number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) invalid('revision is invalid')
   return value as number
+}
+
+function snapshotId(value: unknown): string {
+  const id = boundedString(value, 'snapshotId', 32)
+  if (!/^[a-f0-9]{32}$/.test(id)) invalid('snapshotId is invalid')
+  return id
 }
 
 function boundedPositiveInteger(value: unknown, name: string, max: number): number {
@@ -479,7 +563,7 @@ function fail(error: unknown): LatexIpcResult<never> {
   }
   if (
     error instanceof ProjectWriteConflictError ||
-    (error instanceof Error && /conflict|changed externally/i.test(error.message))
+    (error instanceof Error && /conflict|changed externally|revision changed/i.test(error.message))
   ) {
     return { ok: false, error: { code: 'LATEX_CONFLICT', message: 'Project changed on disk' } }
   }

@@ -62,6 +62,8 @@ export interface SnapshotRestoreOptions {
   expectedAbsentHashes?: ReadonlyMap<string, string>
   /** Require each text entry to still match this hash before restoration. */
   expectedCurrentHashes?: ReadonlyMap<string, string>
+  /** Restore only this validated subset of manifest paths. */
+  paths?: ReadonlySet<string>
 }
 
 export class SnapshotStore {
@@ -174,6 +176,26 @@ export class SnapshotStore {
     return index.snapshots.filter((snapshot) => snapshot.projectId === projectId)
   }
 
+  async discard(projectId: string, snapshotId: string): Promise<boolean> {
+    validateProjectId(projectId)
+    validateSnapshotId(snapshotId)
+    let discarded = false
+    await this.mutateIndex((index) => {
+      const snapshot = index.snapshots.find(
+        (item) => item.id === snapshotId && item.projectId === projectId,
+      )
+      if (!snapshot) return
+      if (index.currentRollback[projectId] === snapshotId) {
+        throw new Error('Current rollback snapshot cannot be discarded')
+      }
+      index.snapshots = index.snapshots.filter((item) => item !== snapshot)
+      index.pendingDeletes.push(snapshot)
+      discarded = true
+    })
+    if (discarded) await this.flushPendingDeletes()
+    return discarded
+  }
+
   async setCurrentRollback(projectId: string, snapshotId: string | null): Promise<void> {
     validateProjectId(projectId)
     await this.mutateIndex((index) => {
@@ -204,12 +226,19 @@ export class SnapshotStore {
     validateSnapshotId(snapshotId)
     const manifest = await this.readManifest(snapshotId)
     if (manifest.projectId !== projectId) throw new Error('Snapshot belongs to another project')
+    if (
+      options.paths &&
+      [...options.paths].some((path) => !manifest.entries.some((entry) => entry.path === path))
+    ) {
+      throw new Error('Snapshot restore subset contains an unknown path')
+    }
     const policy = await ProjectPathPolicy.open(project.rootPath)
     const actions: (
       | { kind: 'text'; path: string; text: string; expectedHash?: string }
       | { kind: 'absent'; path: string; expectedHash: string }
     )[] = []
     for (const entry of manifest.entries) {
+      if (options.paths && !options.paths.has(entry.path)) continue
       if (entry.kind === 'text') {
         const bytes = await readFile(join(this.snapshotPath(snapshotId), entry.file))
         if (bytes.length !== entry.byteLength || digest(bytes) !== entry.sha256) {
