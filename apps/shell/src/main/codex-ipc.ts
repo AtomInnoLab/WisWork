@@ -105,6 +105,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null
 }
 
+function boundedRegistrationError(error: unknown): Error {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'enhanced_mode_install_required'
+  ) {
+    return new Error('enhanced_mode_install_required')
+  }
+  return new Error('codex_tool_registration_failed')
+}
+
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
   const set = new Set(allowed)
   return Object.keys(value).every((key) => set.has(key))
@@ -501,8 +513,8 @@ export function registerCodexToolIpc(options: CodexToolIpcOptions): CodexToolIpc
           registration,
         })
         if (!closeRegistration || typeof closeRegistration.close !== 'function') throw new Error()
-      } catch {
-        throw new Error('codex_tool_registration_failed')
+      } catch (error) {
+        throw boundedRegistrationError(error)
       }
       let stillOwnsDocument = false
       try {

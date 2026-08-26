@@ -56,9 +56,20 @@ function makeSkill(executeTool?: (call: AgentToolCall) => ToolExecution): AgentS
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('selectAgentRuntime', () => {
-  it('selects codex only for the exact codex string and otherwise rolls back to legacy', () => {
+  it('maps the product-safe enhanced setting and migrates the one-release internal value', () => {
+    expect(selectAgentRuntime('enhanced')).toBe('codex')
     expect(selectAgentRuntime('codex')).toBe('codex')
-    for (const value of ['Codex', ' codex', 'codex ', 'legacy', '', true, 1, null, undefined]) {
+    for (const value of [
+      'Enhanced',
+      ' enhanced',
+      'enhanced ',
+      'standard',
+      '',
+      true,
+      1,
+      null,
+      undefined,
+    ]) {
       expect(selectAgentRuntime(value)).toBe('legacy')
     }
   })

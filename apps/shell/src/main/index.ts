@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { basename, dirname, extname, join } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join } from 'node:path'
 import {
   BrowserWindow,
   Menu,
@@ -30,6 +30,7 @@ import {
   extractCallbackUrl,
 } from '@wiswork/auth'
 import { selectAgentRuntime } from '@wiswork/agent-runtime'
+import { EnhancedModeComponentManager } from '@wiswork/codex-bridge'
 import { createI18n, isLang, normalizeLang, setUiLang, type Lang } from '@wiswork/i18n'
 import {
   appMenuLabels,
@@ -142,6 +143,11 @@ import { initAutoUpdater } from './updater'
 import { migrateLegacyUserData } from './user-data-migration'
 import { createAuthDeepLinkQueue } from './auth-deep-link-queue'
 import { registerCodexToolIpc, type CodexToolIpcController } from './codex-ipc'
+import codexComponentManifest from '../../../../tools/codex/manifest.json'
+import {
+  registerEnhancedModeComponentIpc,
+  type EnhancedModeComponentController,
+} from './enhanced-mode-component'
 import {
   createCodexBeforeQuitHandler,
   logoutWithCodexClose,
@@ -255,8 +261,12 @@ const requireAuthRuntime = (): ReturnType<typeof initializeElectronAuthRuntime> 
 }
 let codexRuntime: ShellCodexRuntime | null = null
 let codexToolIpc: CodexToolIpcController | null = null
+let enhancedModeComponentController: EnhancedModeComponentController | null = null
+const enhancedModeDiagnosticCode = (code: string): string =>
+  code.replace(/^codex_/, 'enhanced_mode_')
 
 async function shutdownCodexRuntime(): Promise<void> {
+  await enhancedModeComponentController?.close()
   codexToolIpc?.closeSessions()
   await codexRuntime?.shutdown()
   codexToolIpc?.close()
@@ -2302,12 +2312,28 @@ app.whenReady().then(async () => {
     openExternal: (url) => shell.openExternal(url),
   })
   void authDeepLinks.initialize((callback) => requireAuthRuntime().client.consumeCallback(callback))
+  const enhancedModeComponent = new EnhancedModeComponentManager({
+    cacheRoot: join(app.getPath('userData'), 'components', 'enhanced-mode'),
+    manifest: codexComponentManifest,
+  })
+  const savedAgentMode = readAppSettings(APP_SETTINGS_PATH()).agentRuntime
+  const runtimeKind = selectAgentRuntime(savedAgentMode)
+  const developmentExecutable =
+    !app.isPackaged &&
+    typeof process.env.WISWORK_CODEX_PATH === 'string' &&
+    isAbsolute(process.env.WISWORK_CODEX_PATH)
+      ? process.env.WISWORK_CODEX_PATH
+      : undefined
   codexRuntime = new ShellCodexRuntime({
-    runtimeKind: selectAgentRuntime(readAppSettings(APP_SETTINGS_PATH()).agentRuntime),
-    executablePath: process.env.WISWORK_CODEX_PATH,
+    runtimeKind,
+    executablePath: developmentExecutable,
+    resolveExecutable:
+      developmentExecutable === undefined
+        ? () => enhancedModeComponent.resolveExecutable()
+        : undefined,
     authClient: authRuntime.client,
     onProcessCrash: (documentId) => codexToolIpc?.closeDocument(documentId),
-    diagnostics: ({ code }) => console.warn('[codex]', code),
+    diagnostics: ({ code }) => console.warn('[enhanced-mode]', enhancedModeDiagnosticCode(code)),
   })
   codexToolIpc = registerCodexToolIpc({
     ipcMain,
@@ -2315,7 +2341,7 @@ app.whenReady().then(async () => {
       typeof owner.id === 'number' && (tabManager?.ownsDocument(owner.id, documentId) ?? false),
     onRegister: ({ documentId, owner, registration }) =>
       codexRuntime!.registerDocument({ documentId, owner, registration }),
-    diagnostics: ({ code }) => console.warn('[codex]', code),
+    diagnostics: ({ code }) => console.warn('[enhanced-mode]', enhancedModeDiagnosticCode(code)),
   })
   registerCodexRuntimeIpc({
     ipcMain,
@@ -2324,6 +2350,15 @@ app.whenReady().then(async () => {
       'id' in owner && typeof owner.id === 'number'
         ? (tabManager?.documentIdForWebContents(owner.id) ?? null)
         : null,
+  })
+  enhancedModeComponentController = registerEnhancedModeComponentIpc({
+    ipcMain,
+    component: enhancedModeComponent,
+    isTrustedSender: (owner) => owner === shellWindow?.webContents,
+    readSavedMode: () => readAppSettings(APP_SETTINGS_PATH()).agentRuntime,
+    writeSavedMode: (mode) => writeAppSetting(APP_SETTINGS_PATH(), 'agentRuntime', mode),
+    currentMode: () => (codexRuntime?.runtimeKind === 'codex' ? 'enhanced' : 'standard'),
+    runtimeInUse: () => codexRuntime?.runtimeKind === 'codex',
   })
 
   void installMainProcessProxy()
@@ -2373,7 +2408,7 @@ app.on('window-all-closed', () => {
 const handleCodexBeforeQuit = createCodexBeforeQuitHandler({
   shutdown: shutdownCodexRuntime,
   quit: () => app.quit(),
-  diagnostics: ({ code }) => console.warn('[codex]', code),
+  diagnostics: ({ code }) => console.warn('[enhanced-mode]', enhancedModeDiagnosticCode(code)),
 })
 app.on('before-quit', (event) => {
   // No close prompt may fall through to "Save" during shutdown

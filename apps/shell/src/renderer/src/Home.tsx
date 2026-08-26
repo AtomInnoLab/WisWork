@@ -18,11 +18,14 @@ import { formatAccountLoginDiagnostic, loginErrorKind } from './login-diagnostic
 import { LoginDiagnostic } from './LoginDiagnostic'
 import { useI18n } from './locale'
 import type { I18n, StringKey } from './locale'
+import type { EnhancedModeApi, EnhancedModeStatus } from '../../shared/enhanced-mode-api'
+import { enhancedModeView } from './enhanced-mode-view'
 
 declare global {
   interface Window {
     aiOffice: HomeApi
     aiOfficeProject?: ProjectHomeApi
+    aiOfficeEnhancedMode?: EnhancedModeApi
   }
 }
 
@@ -443,6 +446,9 @@ function AccountEntry() {
   const langCloseTimer = useRef<number | null>(null)
   const [loggingOut, setLoggingOut] = useState(false)
   const [appVersion, setAppVersion] = useState('')
+  const [enhancedStatus, setEnhancedStatus] = useState<EnhancedModeStatus | null>(null)
+  const [enhancedBusy, setEnhancedBusy] = useState(false)
+  const [enhancedError, setEnhancedError] = useState(false)
 
   // query login state + app version once on mount
   useEffect(() => {
@@ -458,6 +464,14 @@ function AccountEntry() {
     void window.aiOffice.getAppVersion?.().then((v) => {
       if (alive && v) setAppVersion(v)
     })
+    void window.aiOfficeEnhancedMode
+      ?.status()
+      .then((next) => {
+        if (alive) setEnhancedStatus(next)
+      })
+      .catch(() => {
+        if (alive) setEnhancedError(true)
+      })
     return () => {
       alive = false
     }
@@ -608,6 +622,36 @@ function AccountEntry() {
     setLangFly(null)
   }
 
+  const runEnhancedModeAction = (requestedAction?: 'remove') => {
+    if (!enhancedStatus || enhancedBusy || !window.aiOfficeEnhancedMode) return
+    const action = requestedAction ?? enhancedModeView(enhancedStatus, lang).action
+    if (action === 'none') return
+    if (
+      action === 'remove' &&
+      !window.confirm(
+        lang === 'zh' || lang === 'zh-TW'
+          ? '移除增强模式的可选组件？以后可以重新下载。'
+          : 'Remove the optional Enhanced mode component? You can download it again later.',
+      )
+    ) {
+      return
+    }
+    setEnhancedBusy(true)
+    setEnhancedError(false)
+    const request =
+      action === 'install'
+        ? window.aiOfficeEnhancedMode.install()
+        : action === 'remove'
+          ? window.aiOfficeEnhancedMode.remove()
+          : window.aiOfficeEnhancedMode.setMode(action === 'enable' ? 'enhanced' : 'standard')
+    void request
+      .then(setEnhancedStatus)
+      .catch(() => setEnhancedError(true))
+      .finally(() => setEnhancedBusy(false))
+  }
+
+  const enhancedView = enhancedStatus ? enhancedModeView(enhancedStatus, lang) : null
+
   return (
     <div className="account-entry">
       {menuOpen && (
@@ -719,6 +763,53 @@ function AccountEntry() {
               </div>
             )}
           </div>
+          {enhancedView && (
+            <>
+              <button
+                className="account-menu-item enhanced-mode-row"
+                role="menuitem"
+                disabled={enhancedBusy || enhancedView.action === 'none'}
+                onClick={() => runEnhancedModeAction()}
+                title={enhancedView.actionLabel || undefined}
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path
+                    d="M8 1.8 9.4 6.6 14.2 8l-4.8 1.4L8 14.2 6.6 9.4 1.8 8l4.8-1.4L8 1.8Z"
+                    stroke="currentColor"
+                    strokeWidth="1.1"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+                <span className="enhanced-mode-copy">
+                  <span>{enhancedView.label}</span>
+                  <span className={enhancedError ? 'error' : ''}>
+                    {enhancedError
+                      ? lang === 'zh' || lang === 'zh-TW'
+                        ? '操作失败，请重试'
+                        : 'Could not complete the request'
+                      : enhancedBusy
+                        ? lang === 'zh' || lang === 'zh-TW'
+                          ? '处理中…'
+                          : 'Working…'
+                        : enhancedView.detail}
+                  </span>
+                </span>
+                {enhancedView.action !== 'none' && (
+                  <span className="enhanced-mode-action">{enhancedView.actionLabel}</span>
+                )}
+              </button>
+              {enhancedView.secondaryAction === 'remove' && (
+                <button
+                  className="account-menu-item enhanced-mode-remove"
+                  role="menuitem"
+                  disabled={enhancedBusy}
+                  onClick={() => runEnhancedModeAction('remove')}
+                >
+                  {enhancedView.secondaryActionLabel}
+                </button>
+              )}
+            </>
+          )}
           {appVersion && (
             <div className="account-menu-version">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">

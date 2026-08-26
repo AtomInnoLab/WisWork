@@ -14,6 +14,9 @@
     "test:watch": "vitest",
     "schema:check": "node scripts/check-codex-schema.mjs"
   },
+  "dependencies": {
+    "tar": "7.5.22"
+  },
   "devDependencies": {
     "@types/node": "^24.10.1",
     "@wiswork/agent-core": "*",

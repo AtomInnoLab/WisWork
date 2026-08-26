@@ -12,6 +12,18 @@ import { ProposalReview } from './ProposalReview.js'
 import { LatexCodexToolSession, type LatexCodexMutationResult } from './codex-tool-session.js'
 import { createLatexTransport } from './transport.js'
 
+function enhancedModeInstallRequired(error: unknown): boolean {
+  if (error instanceof Error && error.message.includes('enhanced_mode_install_required')) {
+    return true
+  }
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'enhanced_mode_install_required'
+  )
+}
+
 const E2E_PROPOSAL_TEXT = String.raw`\documentclass{article}
 \begin{document}
 AI-confirmed WisWork
@@ -173,7 +185,7 @@ export function AiPanel({
           break
         case 'error':
           onError(event.message)
-          if (event.code === 'codex_process_exited' || event.code === 'codex_process_crashed') {
+          if (event.code === 'enhanced_mode_stopped') {
             setReady(false)
             runtimeRef.current = null
             void codexTools?.close()
@@ -231,8 +243,14 @@ export function AiPanel({
           cancel: () => window.wisworkCodexRuntime.cancelTurn(documentId),
         }
         setReady(true)
-      } catch {
-        if (!disposed) onError('The selected AI runtime is unavailable.')
+      } catch (error) {
+        if (!disposed) {
+          onError(
+            enhancedModeInstallRequired(error)
+              ? 'Install Enhanced mode before use.'
+              : 'The selected AI runtime is unavailable.',
+          )
+        }
       }
     }
     void initialize()

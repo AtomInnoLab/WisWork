@@ -4,7 +4,7 @@ export type AgentRuntimeKind = 'legacy' | 'codex'
 
 /** Fail closed to the established runtime so an invalid flag is also a rollback. */
 export function selectAgentRuntime(value: unknown): AgentRuntimeKind {
-  return value === 'codex' ? 'codex' : 'legacy'
+  return value === 'enhanced' || value === 'codex' ? 'codex' : 'legacy'
 }
 
 export interface AgentTurnInput {

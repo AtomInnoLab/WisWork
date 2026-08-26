@@ -120,6 +120,24 @@ describe('Codex renderer tool IPC', () => {
     await expect(registration).resolves.toEqual({ registered: true })
   })
 
+  it('preserves only the stable install-required product error across registration IPC', async () => {
+    const f = fixture()
+    f.onRegister.mockRejectedValueOnce(
+      Object.assign(new Error('enhanced_mode_install_required'), {
+        code: 'enhanced_mode_install_required',
+      }),
+    )
+
+    await expect(
+      f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration),
+    ).rejects.toThrow('enhanced_mode_install_required')
+
+    f.onRegister.mockRejectedValueOnce(new Error('private executable path and signature detail'))
+    await expect(
+      f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration),
+    ).rejects.toThrow('codex_tool_registration_failed')
+  })
+
   it('gates and drains a renderer registration still awaiting runtime startup', async () => {
     const f = fixture()
     let release!: () => void

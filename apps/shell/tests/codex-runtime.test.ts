@@ -225,6 +225,67 @@ async function flush(): Promise<void> {
 }
 
 describe('ShellCodexRuntime', () => {
+  it('resolves the verified optional component before starting any local server', async () => {
+    const f = harness()
+    const resolveExecutable = vi.fn(async () => {
+      f.calls.push('component.resolve')
+      return '/private/verified/bin/codex'
+    })
+    const runtime = new ShellCodexRuntime({
+      runtimeKind: 'codex',
+      resolveExecutable,
+      authClient: f.authClient,
+      startResponsesBridge: async () => {
+        f.calls.push('bridge.start')
+        return f.bridge
+      },
+      startDocumentMcpServer: async () => {
+        f.calls.push('mcp.start')
+        return f.mcp
+      },
+      createProcessManager: (options) => {
+        expect(options.executablePath).toBe('/private/verified/bin/codex')
+        return f.manager as unknown as CodexProcessManager
+      },
+    })
+
+    await runtime.registerDocument({
+      documentId: 'doc-verified',
+      owner: f.owner,
+      registration: registration(),
+    })
+    expect(f.calls.slice(0, 4)).toEqual([
+      'auth.status',
+      'component.resolve',
+      'bridge.start',
+      'mcp.start',
+    ])
+    await runtime.closeDocument('doc-verified')
+  })
+
+  it('fails visibly before local startup when Enhanced mode is selected but not installed', async () => {
+    const f = harness()
+    const runtime = new ShellCodexRuntime({
+      runtimeKind: 'codex',
+      resolveExecutable: vi.fn(async () => {
+        throw new Error('private component detail')
+      }),
+      authClient: f.authClient,
+      startResponsesBridge: async () => f.bridge,
+      startDocumentMcpServer: async () => f.mcp,
+      createProcessManager: () => f.manager as unknown as CodexProcessManager,
+    })
+
+    await expect(
+      runtime.registerDocument({
+        documentId: 'doc-missing',
+        owner: f.owner,
+        registration: registration(),
+      }),
+    ).rejects.toMatchObject({ code: 'enhanced_mode_install_required' })
+    expect(f.calls).toEqual(['auth.status'])
+  })
+
   it('starts an authenticated document chain in strict dependency order', async () => {
     const f = harness()
     await startDocument(f)
@@ -484,7 +545,11 @@ describe('ShellCodexRuntime', () => {
       channel: CODEX_RUNTIME_CHANNELS.event,
       payload: {
         documentId: 'doc-1',
-        event: { type: 'error', code: 'codex_process_exited', message: 'Codex stopped.' },
+        event: {
+          type: 'error',
+          code: 'enhanced_mode_stopped',
+          message: 'Enhanced mode stopped.',
+        },
       },
     })
     expect(f.onProcessCrash).toHaveBeenCalledWith('doc-1')

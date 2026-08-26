@@ -62,6 +62,7 @@ export interface ShellCodexRuntimeDiagnostic {
 export interface ShellCodexRuntimeOptions {
   readonly runtimeKind: AgentRuntimeKind
   readonly executablePath?: string
+  readonly resolveExecutable?: () => Promise<string>
   readonly authClient: AuthClientLike
   readonly startResponsesBridge?: typeof startResponsesBridge
   readonly startDocumentMcpServer?: typeof startDocumentMcpServer
@@ -171,6 +172,7 @@ export function createWisUsageBridgeFetch(
 export class ShellCodexRuntime {
   readonly #runtimeKind: AgentRuntimeKind
   readonly #executablePath: string | undefined
+  readonly #resolveExecutable: (() => Promise<string>) | undefined
   readonly #authClient: AuthClientLike
   readonly #startResponsesBridge: typeof startResponsesBridge
   readonly #startDocumentMcpServer: typeof startDocumentMcpServer
@@ -197,6 +199,7 @@ export class ShellCodexRuntime {
     }
     this.#runtimeKind = options.runtimeKind
     this.#executablePath = options.executablePath
+    this.#resolveExecutable = options.resolveExecutable
     this.#authClient = options.authClient
     this.#startResponsesBridge = options.startResponsesBridge ?? startResponsesBridge
     this.#startDocumentMcpServer = options.startDocumentMcpServer ?? startDocumentMcpServer
@@ -227,8 +230,8 @@ export class ShellCodexRuntime {
     ) {
       throw new ShellCodexRuntimeError('codex_document_unavailable')
     }
-    if (!this.#executablePath || !isAbsolute(this.#executablePath)) {
-      throw new ShellCodexRuntimeError('codex_executable_unavailable')
+    if ((!this.#executablePath || !isAbsolute(this.#executablePath)) && !this.#resolveExecutable) {
+      throw new ShellCodexRuntimeError('enhanced_mode_install_required')
     }
     if (this.#globalCloseGate || this.#documentCloseGates.has(input.documentId)) {
       throw new ShellCodexRuntimeError('codex_runtime_busy')
@@ -432,6 +435,19 @@ export class ShellCodexRuntime {
       if (!status.loggedIn) throw new ShellCodexRuntimeError('auth_required')
       this.#assertStarting(record)
 
+      let executablePath = this.#executablePath
+      if (this.#resolveExecutable) {
+        try {
+          executablePath = await this.#resolveExecutable()
+        } catch {
+          throw new ShellCodexRuntimeError('enhanced_mode_install_required')
+        }
+      }
+      if (!executablePath || !isAbsolute(executablePath)) {
+        throw new ShellCodexRuntimeError('enhanced_mode_install_required')
+      }
+      this.#assertStarting(record)
+
       try {
         record.bridge = await this.#startResponsesBridge({
           fetchWithAuth: createWisUsageBridgeFetch(this.#authClient),
@@ -455,7 +471,7 @@ export class ShellCodexRuntime {
       this.#assertStarting(record)
 
       record.manager = this.#createProcessManager({
-        executablePath: this.#executablePath!,
+        executablePath,
         bridge: record.bridge,
         mcp: { url: record.mcpSession.url, secret: record.mcpSession.secret },
         developerInstructions: WISWORK_CODEX_DEVELOPER_INSTRUCTIONS,
@@ -622,7 +638,7 @@ export class ShellCodexRuntime {
       .interruptTurn(record.threadId, turn.turnId)
       .then(() => undefined)
       .catch(() => {
-        this.#emitError(record, 'codex_turn_interrupt_failed', 'Could not stop the turn.')
+        this.#emitError(record, 'enhanced_mode_cancel_failed', 'Could not stop the turn.')
         throw new ShellCodexRuntimeError('codex_turn_interrupt_failed')
       })
     return turn.interruptPromise
@@ -654,7 +670,7 @@ export class ShellCodexRuntime {
         Buffer.byteLength(turn.text) + Buffer.byteLength(notification.params.delta) >
         MAX_TURN_TEXT_BYTES
       ) {
-        this.#emitError(record, 'codex_event_limit', 'Turn output was too large.')
+        this.#emitError(record, 'enhanced_mode_output_limit', 'Turn output was too large.')
         void this.#closeRecord(record)
         return
       }
@@ -672,7 +688,7 @@ export class ShellCodexRuntime {
       }
       const status = safeTurnStatus(notification.params.turn)
       if (!status) {
-        this.#emitError(record, 'codex_turn_protocol_error', 'Turn failed.')
+        this.#emitError(record, 'enhanced_mode_turn_failed', 'Turn failed.')
         void this.#closeRecord(record)
         return
       }
@@ -680,7 +696,7 @@ export class ShellCodexRuntime {
       turn.terminal = true
       this.#rememberFinishedTurn(record, notification.params.turn.id)
       if (status === 'failed') {
-        this.#emitError(record, 'codex_turn_failed', 'Turn failed.')
+        this.#emitError(record, 'enhanced_mode_turn_failed', 'Turn failed.')
         return
       }
       this.#emit(record, {
@@ -706,7 +722,7 @@ export class ShellCodexRuntime {
       if (typeof notification.params.turnId === 'string') {
         this.#rememberFinishedTurn(record, notification.params.turnId)
       }
-      this.#emitError(record, 'codex_turn_failed', 'Turn failed.')
+      this.#emitError(record, 'enhanced_mode_turn_failed', 'Turn failed.')
     }
   }
 
@@ -724,7 +740,7 @@ export class ShellCodexRuntime {
     } catch {
       this.#emitDiagnostic('codex_crash_cleanup_failed')
     }
-    this.#emitError(record, 'codex_process_exited', 'Codex stopped.')
+    this.#emitError(record, 'enhanced_mode_stopped', 'Enhanced mode stopped.')
     await this.#closeRecord(record)
   }
 

@@ -31,6 +31,8 @@
     "shell": "npm run build:all && electron apps/shell",
     "test:e2e": "playwright test --config e2e/playwright.config.ts",
     "test:branding": "node --test tools/branding.test.mjs",
+    "test:release": "node --test tools/codex-release.test.mjs",
+    "eval:enhanced-mode": "node tools/run-enhanced-mode-evals.mjs",
     "notices": "node tools/gen-third-party-notices.mjs",
     "licenses": "node tools/check-licenses.mjs",
     "dist:mac": "npm run notices && npm run build:all && npm run dist:mac -w @wiswork/shell",

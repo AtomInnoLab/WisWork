@@ -162,6 +162,20 @@ describe('LaTeX AI panel runtime selection', () => {
     act(() => root.unmount())
   })
 
+  it('shows an install-required Enhanced mode message before any turn can start', async () => {
+    const f = installApis('codex')
+    f.codexTools.register.mockRejectedValueOnce(new Error('enhanced_mode_install_required'))
+    const { container, root } = mount()
+
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain('Install Enhanced mode before use.'),
+    )
+    expect(f.codexRuntime.startTurn).not.toHaveBeenCalled()
+    expect(f.latexApi.aiStream).not.toHaveBeenCalled()
+
+    act(() => root.unmount())
+  })
+
   it('uses the existing proposal review click before guarded Codex apply and exposes undo', async () => {
     const f = installApis('codex')
     const { container, root } = mount()
@@ -238,10 +252,10 @@ describe('LaTeX AI panel runtime selection', () => {
     act(() =>
       f.emitRuntime({
         documentId: 't7',
-        event: { type: 'error', code: 'codex_process_crashed', message: 'AI runtime stopped.' },
+        event: { type: 'error', code: 'enhanced_mode_stopped', message: 'Enhanced mode stopped.' },
       }),
     )
-    expect(container.textContent).toContain('AI runtime stopped.')
+    expect(container.textContent).toContain('Enhanced mode stopped.')
     expect(f.latexApi.aiStream).not.toHaveBeenCalled()
     await vi.waitFor(() => expect(f.codexTools.unregister).toHaveBeenCalledTimes(1))
 
