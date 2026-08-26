@@ -1,8 +1,9 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { mkdtemp, readdir, writeFile } from 'node:fs/promises'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
@@ -16,41 +17,92 @@ import type { SheetPivotAddition } from '../src/gateway/xlsx-gateway'
 
 /// Round-trips a pivot-carrying save through LibreOffice: a headless convert
 /// re-parses the whole package, so a malformed pivot part fails the convert
-/// (or drops the parts). Runs only where soffice is installed.
+/// (or drops the parts). Runs only where LibreOffice can actually convert spreadsheets;
+/// some minimal installations provide soffice without the Calc filters.
 
-const SOFFICE = ['/opt/homebrew/bin/soffice', '/usr/local/bin/soffice', '/usr/bin/soffice']
-  .find((path) => existsSync(path))
+const SOFFICE = ['/opt/homebrew/bin/soffice', '/usr/local/bin/soffice', '/usr/bin/soffice'].find(
+  (path) => existsSync(path),
+)
+
+function supportsSpreadsheetConversion(soffice: string | undefined): boolean {
+  if (!soffice) return false
+  const workDir = mkdtempSync(join(tmpdir(), 'soffice-calc-probe-'))
+  try {
+    const input = join(workDir, 'probe.csv')
+    const output = join(workDir, 'out')
+    const profile = join(workDir, 'profile')
+    writeFileSync(input, 'value\n1\n')
+    mkdirSync(output)
+    execFileSync(
+      soffice,
+      [
+        `-env:UserInstallation=${pathToFileURL(profile).href}`,
+        '--headless',
+        '--convert-to',
+        'xlsx',
+        '--outdir',
+        output,
+        input,
+      ],
+      { stdio: 'ignore', timeout: 30_000 },
+    )
+    return existsSync(join(output, 'probe.xlsx'))
+  } catch {
+    return false
+  } finally {
+    rmSync(workDir, { recursive: true, force: true })
+  }
+}
+
+const HAS_SPREADSHEET_CONVERSION = supportsSpreadsheetConversion(SOFFICE)
 
 async function buildPivotSourceWorkbook(): Promise<Buffer> {
   const zip = new JSZip()
-  zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8"?>
+  zip.file(
+    '[Content_Types].xml',
+    `<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
   <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
   <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
-</Types>`)
-  zip.file('_rels/.rels', `<?xml version="1.0" encoding="UTF-8"?>
+</Types>`,
+  )
+  zip.file(
+    '_rels/.rels',
+    `<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
-</Relationships>`)
-  zip.file('xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8"?>
+</Relationships>`,
+  )
+  zip.file(
+    'xl/workbook.xml',
+    `<?xml version="1.0" encoding="UTF-8"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets>
-</workbook>`)
-  zip.file('xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8"?>
+</workbook>`,
+  )
+  zip.file(
+    'xl/_rels/workbook.xml.rels',
+    `<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-</Relationships>`)
-  zip.file('xl/styles.xml', `<?xml version="1.0" encoding="UTF-8"?>
+</Relationships>`,
+  )
+  zip.file(
+    'xl/styles.xml',
+    `<?xml version="1.0" encoding="UTF-8"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <fonts count="1"><font/></fonts><fills count="1"><fill/></fills><borders count="1"><border/></borders>
   <cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="1"><xf/></cellXfs>
-</styleSheet>`)
+</styleSheet>`,
+  )
   // Source data A1:C4 (inline strings) plus the baked pivot grid at F1:G5.
-  zip.file('xl/worksheets/sheet1.xml', `<?xml version="1.0" encoding="UTF-8"?>
+  zip.file(
+    'xl/worksheets/sheet1.xml',
+    `<?xml version="1.0" encoding="UTF-8"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <sheetData>
     <row r="1">
@@ -82,11 +134,12 @@ async function buildPivotSourceWorkbook(): Promise<Buffer> {
       <c r="G4"><v>180</v></c>
     </row>
   </sheetData>
-</worksheet>`)
+</worksheet>`,
+  )
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
 }
 
-describe.skipIf(!SOFFICE)('pivot LibreOffice round-trip', () => {
+describe.skipIf(!HAS_SPREADSHEET_CONVERSION)('pivot LibreOffice round-trip', () => {
   it('survives a headless convert with the pivot parts intact', async () => {
     const sourceBuffer = await buildPivotSourceWorkbook()
     const pivot: SheetPivotAddition = {
@@ -102,25 +155,55 @@ describe.skipIf(!SOFFICE)('pivot LibreOffice round-trip', () => {
     }
     const plan = await planCellEditsToXlsx(
       await createBufferEntrySource(sourceBuffer),
-      [], [], [], undefined, [], [], [], [], [], null, [], [], [], [], [pivot],
+      [],
+      [],
+      [],
+      undefined,
+      [],
+      [],
+      [],
+      [],
+      [],
+      null,
+      [],
+      [],
+      [],
+      [],
+      [pivot],
     )
     const mutation = await assembleWithJsZip(sourceBuffer, plan)
 
     const workDir = await mkdtemp(join(tmpdir(), 'pivot-rt-'))
     const savedPath = join(workDir, 'pivot.xlsx')
-    await writeFile(savedPath, mutation.buffer)
-    execFileSync(SOFFICE as string, [
-      '--headless', '--convert-to', 'xlsx', '--outdir', join(workDir, 'out'), savedPath,
-    ], { timeout: 120_000 })
-    const outputs = await readdir(join(workDir, 'out'))
-    expect(outputs).toContain('pivot.xlsx')
+    const outputDir = join(workDir, 'out')
+    try {
+      await writeFile(savedPath, mutation.buffer)
+      await mkdir(outputDir)
+      execFileSync(
+        SOFFICE as string,
+        [
+          `-env:UserInstallation=${pathToFileURL(join(workDir, 'profile')).href}`,
+          '--headless',
+          '--convert-to',
+          'xlsx',
+          '--outdir',
+          outputDir,
+          savedPath,
+        ],
+        { timeout: 120_000 },
+      )
+      const outputs = await readdir(outputDir)
+      expect(outputs).toContain('pivot.xlsx')
 
-    // LibreOffice keeps (rewrites) the pivot parts when it understood them.
-    const converted = await JSZip.loadAsync(
-      await import('node:fs/promises').then((fs) => fs.readFile(join(workDir, 'out', 'pivot.xlsx'))),
-    )
-    const paths = Object.keys(converted.files)
-    expect(paths.some((path) => /pivotTable/i.test(path))).toBe(true)
-    expect(paths.some((path) => /pivotCache/i.test(path))).toBe(true)
+      // LibreOffice keeps (rewrites) the pivot parts when it understood them.
+      const converted = await JSZip.loadAsync(
+        await import('node:fs/promises').then((fs) => fs.readFile(join(outputDir, 'pivot.xlsx'))),
+      )
+      const paths = Object.keys(converted.files)
+      expect(paths.some((path) => /pivotTable/i.test(path))).toBe(true)
+      expect(paths.some((path) => /pivotCache/i.test(path))).toBe(true)
+    } finally {
+      await rm(workDir, { recursive: true, force: true })
+    }
   }, 180_000)
 })
