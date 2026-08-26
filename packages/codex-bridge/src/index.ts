@@ -7,6 +7,10 @@ import type {
 
 export * from './types.js'
 export * from './local-server.js'
+export * from './json-rpc.js'
+export * from './app-server-client.js'
+export * from './process-manager.js'
+export * from './generated/index.js'
 
 export class ProtocolCompatibilityError extends Error {
   constructor(readonly code: string) {

@@ -11,7 +11,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "schema:check": "node scripts/check-codex-schema.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
