@@ -62,14 +62,20 @@ function rawRequest(
       },
       (response) => {
         const chunks: Buffer[] = []
-        response.on('data', (chunk: Buffer) => chunks.push(chunk))
-        response.on('end', () => {
+        let settled = false
+        const finish = (): void => {
+          if (settled) return
+          settled = true
           resolve({
             status: response.statusCode ?? 0,
             headers: response.headers,
             body: Buffer.concat(chunks).toString('utf8'),
           })
-        })
+        }
+        response.on('data', (chunk: Buffer) => chunks.push(chunk))
+        response.on('end', finish)
+        response.on('aborted', finish)
+        response.on('close', finish)
       },
     )
     request.on('error', reject)
@@ -83,10 +89,18 @@ const validBody = (input = 'Hello') =>
 async function start(
   fetchWithAuth: (request: MessagesRequest, signal: AbortSignal) => Promise<Response> = async () =>
     chunkedResponse(),
-  options: { maxBodyBytes?: number } = {},
+  options: { maxBodyBytes?: number; maxActiveTurns?: number; maxTurnDurationMs?: number } = {},
 ): Promise<ResponsesBridge> {
   return startResponsesBridge({ fetchWithAuth, ...options })
 }
+
+const protocolLimitOverrideDoesNotCompile = (): Promise<ResponsesBridge> =>
+  startResponsesBridge({
+    fetchWithAuth: async () => chunkedResponse(),
+    // @ts-expect-error Local callers cannot weaken production protocol ceilings.
+    protocolLimits: { maxRequestNodes: 200_000 },
+  })
+void protocolLimitOverrideDoesNotCompile
 
 describe('authenticated loopback Responses server', () => {
   it('binds a random OS-assigned loopback port and creates a fresh high-entropy secret', async () => {
@@ -107,6 +121,16 @@ describe('authenticated loopback Responses server', () => {
     } finally {
       await Promise.all([first.close(), second.close()])
     }
+  })
+
+  it.each([
+    ['body bytes', { maxBodyBytes: 8_000_001 }],
+    ['active turns', { maxActiveTurns: 9 }],
+    ['turn duration', { maxTurnDurationMs: 600_001 }],
+  ])('rejects an attempt to raise the hard %s ceiling', async (_label, override) => {
+    await expect(
+      startResponsesBridge({ fetchWithAuth: async () => chunkedResponse(), ...override }),
+    ).rejects.toThrow(/^invalid_/)
   })
 
   it.each([
@@ -135,6 +159,14 @@ describe('authenticated loopback Responses server', () => {
     ['wrong method', '/v1/responses', 'GET', 'application/json', 405, 'method_not_allowed'],
     ['missing media type', '/v1/responses', 'POST', undefined, 415, 'unsupported_media_type'],
     ['wrong media type', '/v1/responses', 'POST', 'text/plain', 415, 'unsupported_media_type'],
+    [
+      'malformed media type',
+      '/v1/responses',
+      'POST',
+      'application/json;',
+      415,
+      'unsupported_media_type',
+    ],
   ])(
     'rejects %s without invoking upstream',
     async (_label, path, method, contentType, status, code) => {
@@ -300,6 +332,78 @@ describe('authenticated loopback Responses server', () => {
     }
   })
 
+  it('rejects a successful non-SSE upstream response before downstream streaming', async () => {
+    const bridge = await start(
+      async () =>
+        new Response('{"prompt":"secret upstream body"}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    )
+    try {
+      const response = await rawRequest(bridge.responsesUrl, {
+        token: bridge.secret,
+        contentType: 'application/json',
+        body: validBody(),
+      })
+      expect(response.status).toBe(502)
+      expect(response.headers['content-type']).toContain('application/json')
+      expect(response.body).toContain('upstream_error')
+      expect(response.body).not.toContain('secret')
+    } finally {
+      await bridge.close()
+    }
+  })
+
+  it('returns a redacted JSON 502 when the first upstream SSE frame is malformed', async () => {
+    const bridge = await start(
+      async () =>
+        new Response('event: secret\ndata: {"secret":"prompt"}\n\n', {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+    )
+    try {
+      const response = await rawRequest(bridge.responsesUrl, {
+        token: bridge.secret,
+        contentType: 'application/json',
+        body: validBody(),
+      })
+      expect(response.status).toBe(502)
+      expect(response.headers['content-type']).toContain('application/json')
+      expect(response.body).toContain('upstream_error')
+      expect(response.body).not.toContain('secret')
+      expect(response.body).not.toContain('prompt')
+    } finally {
+      await bridge.close()
+    }
+  })
+
+  it('ends a malformed midstream response with a redacted terminal Responses event', async () => {
+    const bridge = await start(async () =>
+      chunkedResponse(
+        `${messageStart}event: secret\ndata: {"type":"secret","prompt":"private"}\n\n`,
+        1,
+      ),
+    )
+    try {
+      const response = await rawRequest(bridge.responsesUrl, {
+        token: bridge.secret,
+        contentType: 'application/json',
+        body: validBody(),
+      })
+      expect(response.status).toBe(200)
+      expect(response.body).toContain('event: response.created')
+      expect(response.body).toContain('event: response.failed')
+      expect(response.body).toContain('"code":"upstream_error"')
+      expect(response.body.endsWith('data: [DONE]\n\n')).toBe(true)
+      expect(response.body).not.toContain('private')
+      expect(response.body).not.toContain('event: secret')
+    } finally {
+      await bridge.close()
+    }
+  })
+
   it('maps a thrown auth error without exposing exception text', async () => {
     const bridge = await start(async () => {
       throw Object.assign(new Error('secret token in exception'), { code: 'auth_required' })
@@ -332,6 +436,7 @@ describe('authenticated loopback Responses server', () => {
             cancelObserved = true
           },
         }),
+        { headers: { 'content-type': 'text/event-stream' } },
       )
     })
     try {
@@ -378,6 +483,103 @@ describe('authenticated loopback Responses server', () => {
     ])
     expect(upstreamSignal?.aborted).toBe(true)
     await pending
+  })
+
+  it('rejects excess authenticated turns before reading the body or invoking upstream', async () => {
+    let releaseFirst: (() => void) | undefined
+    const fetchWithAuth = vi.fn(
+      async (_request: MessagesRequest, signal: AbortSignal): Promise<Response> =>
+        new Promise((resolve, reject) => {
+          releaseFirst = () => resolve(chunkedResponse())
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+        }),
+    )
+    const bridge = await start(fetchWithAuth, { maxActiveTurns: 1 })
+    try {
+      const first = rawRequest(bridge.responsesUrl, {
+        token: bridge.secret,
+        contentType: 'application/json',
+        body: validBody(),
+      })
+      await vi.waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1))
+      const excess = await rawRequest(bridge.responsesUrl, {
+        token: bridge.secret,
+        contentType: 'application/json',
+        body: validBody('must not be read'),
+      })
+      expect(excess.status).toBe(429)
+      expect(excess.body).toContain('bridge_busy')
+      expect(excess.body).not.toContain('must not be read')
+      expect(fetchWithAuth).toHaveBeenCalledTimes(1)
+      releaseFirst?.()
+      expect((await first).status).toBe(200)
+    } finally {
+      await bridge.close()
+    }
+  })
+
+  it('returns a redacted 504 when the absolute turn deadline expires before streaming', async () => {
+    const bridge = await start(
+      async (_request, signal) =>
+        new Promise<Response>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('secret timeout detail')), {
+            once: true,
+          })
+        }),
+      { maxTurnDurationMs: 25 },
+    )
+    try {
+      const result = await Promise.race([
+        rawRequest(bridge.responsesUrl, {
+          token: bridge.secret,
+          contentType: 'application/json',
+          body: validBody(),
+        }),
+        new Promise<'deadline-missed'>((resolve) =>
+          setTimeout(() => resolve('deadline-missed'), 250),
+        ),
+      ])
+      expect(result).not.toBe('deadline-missed')
+      expect((result as RawResponse).status).toBe(504)
+      expect((result as RawResponse).body).toContain('turn_timeout')
+      expect((result as RawResponse).body).not.toContain('secret')
+    } finally {
+      await bridge.close()
+    }
+  })
+
+  it('ends a streamed response with a redacted failure when the absolute deadline expires', async () => {
+    const bridge = await start(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(messageStart))
+            },
+          }),
+          { headers: { 'content-type': 'text/event-stream; charset=utf-8' } },
+        ),
+      { maxTurnDurationMs: 25 },
+    )
+    try {
+      const result = await Promise.race([
+        rawRequest(bridge.responsesUrl, {
+          token: bridge.secret,
+          contentType: 'application/json',
+          body: validBody(),
+        }),
+        new Promise<'deadline-missed'>((resolve) =>
+          setTimeout(() => resolve('deadline-missed'), 250),
+        ),
+      ])
+      expect(result).not.toBe('deadline-missed')
+      expect((result as RawResponse).status).toBe(200)
+      expect((result as RawResponse).body).toContain('event: response.failed')
+      expect((result as RawResponse).body).toContain('"code":"turn_timeout"')
+      expect((result as RawResponse).body.endsWith('data: [DONE]\n\n')).toBe(true)
+    } finally {
+      await bridge.close()
+    }
   })
 
   it('supports concurrent requests and cleans them up before close resolves', async () => {
