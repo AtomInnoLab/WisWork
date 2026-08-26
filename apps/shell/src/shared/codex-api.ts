@@ -1,4 +1,5 @@
 import type { AgentToolCall, AgentToolDef, ToolExecution } from '@wiswork/agent-core'
+import type { AgentEvent, AgentRuntimeKind } from '@wiswork/agent-runtime'
 
 export const CODEX_TOOL_CHANNELS = {
   register: 'codex:tools:register',
@@ -89,4 +90,27 @@ export interface CodexToolApi {
   respond(response: CodexToolResponse): Promise<boolean>
   onRequest(handler: (request: CodexToolRequest) => void): () => void
   onCancel(handler: (cancel: CodexToolCancel) => void): () => void
+}
+
+export const CODEX_RUNTIME_CHANNELS = {
+  status: 'codex:runtime:status',
+  startTurn: 'codex:runtime:start-turn',
+  cancelTurn: 'codex:runtime:cancel-turn',
+  event: 'codex:runtime:event',
+} as const
+
+export interface CodexRuntimeStatus {
+  readonly runtime: AgentRuntimeKind
+  /** Authoritative Shell tab identity; null for Home or an unowned renderer. */
+  readonly documentId: string | null
+}
+
+export interface CodexRuntimeStartRequest {
+  readonly documentId: string
+  readonly text: string
+}
+
+export interface CodexRuntimeEvent {
+  readonly documentId: string
+  readonly event: AgentEvent<unknown>
 }

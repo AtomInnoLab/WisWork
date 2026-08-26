@@ -50,13 +50,21 @@ export interface CodexToolIpcOptions {
     readonly documentId: string
     readonly owner: WebContentsLike
     readonly registration: ToolSessionRegistration
-  }) => RegisteredCodexToolSession
+  }) => RegisteredCodexToolSession | Promise<RegisteredCodexToolSession>
   readonly requestTimeoutMs?: number
   readonly randomId?: () => string
   readonly diagnostics?: (diagnostic: CodexToolIpcDiagnostic) => void
 }
 
 export interface CodexToolIpcController {
+  acquireDocumentCloseGate(documentId: string): () => void
+  acquireGlobalCloseGate(): () => void
+  quiesceDocument(documentId: string): Promise<void>
+  resumeDocument(documentId: string): void
+  quiesceSessions(): Promise<void>
+  resumeSessions(): void
+  closeDocument(documentId: string): void
+  closeSessions(): void
   close(): void
 }
 
@@ -67,6 +75,7 @@ interface RemoteSession {
   readonly closeRegistration: RegisteredCodexToolSession
   readonly onDestroyed: () => void
   closed: boolean
+  quiesced: boolean
 }
 
 type ResponseType = Extract<CodexToolResponse, { ok: true }>['type']
@@ -83,6 +92,11 @@ interface PendingRequest {
   readonly signal?: AbortSignal
   readonly onAbort?: () => void
   readonly mutation: boolean
+}
+
+interface PendingRegistration {
+  readonly done: Promise<void>
+  finish(): void
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -229,8 +243,12 @@ export function registerCodexToolIpc(options: CodexToolIpcOptions): CodexToolIpc
   const makeId = options.randomId ?? (() => randomBytes(16).toString('base64url'))
   const sessions = new Map<WebContentsLike, Map<string, RemoteSession>>()
   const activeDocuments = new Map<string, RemoteSession>()
+  const pendingRegistrations = new Map<string, PendingRegistration>()
+  const documentCloseGates = new Set<string>()
+  let globalCloseGate = false
   const poisonedDocuments = new Set<string>()
   const pending = new Map<string, PendingRequest>()
+  const drainWaiters = new Map<string, Set<() => void>>()
   let closed = false
 
   const diagnostic = (code: string): void => {
@@ -248,6 +266,11 @@ export function registerCodexToolIpc(options: CodexToolIpcOptions): CodexToolIpc
     clearTimeout(item.timer)
     if (item.signal && item.onAbort) item.signal.removeEventListener('abort', item.onAbort)
     item.reject(error)
+    if (![...pending.values()].some((candidate) => candidate.documentId === item.documentId)) {
+      const waiters = drainWaiters.get(item.documentId)
+      drainWaiters.delete(item.documentId)
+      for (const resolve of waiters ?? []) resolve()
+    }
   }
 
   const sendCancel = (session: RemoteSession, requestId: string): void => {
@@ -307,7 +330,7 @@ export function registerCodexToolIpc(options: CodexToolIpcOptions): CodexToolIpc
     responseType: T['type'],
     signal?: AbortSignal,
   ): Promise<T> => {
-    if (!currentSession(session.owner, session.documentId)) {
+    if (!currentSession(session.owner, session.documentId) || session.quiesced) {
       return Promise.reject(new Error('tool_session_closed'))
     }
     let requestId = makeId()
@@ -374,10 +397,11 @@ export function registerCodexToolIpc(options: CodexToolIpcOptions): CodexToolIpc
       // Ownership checks fail closed with a stable code below.
     }
     if (!ownsDocument) throw new Error('untrusted_codex_tool_registration')
-    let ownerSessions = sessions.get(event.sender)
-    if (!ownerSessions) {
-      ownerSessions = new Map()
-      sessions.set(event.sender, ownerSessions)
+    if (globalCloseGate || documentCloseGates.has(value.documentId)) {
+      throw new Error('codex_tool_registration_busy')
+    }
+    if (pendingRegistrations.has(value.documentId)) {
+      throw new Error('codex_tool_session_exists')
     }
     if (activeDocuments.has(value.documentId)) throw new Error('codex_tool_session_exists')
     if (poisonedDocuments.has(value.documentId)) {
@@ -441,33 +465,74 @@ export function registerCodexToolIpc(options: CodexToolIpcOptions): CodexToolIpc
       // executeMutation is a renderer transaction that includes validation before its ack.
       validateMutation: async () => undefined,
     }
-    let closeRegistration: RegisteredCodexToolSession
+    let finishPendingRegistration!: () => void
+    const pendingRegistration: PendingRegistration = {
+      done: new Promise<void>((resolve) => {
+        finishPendingRegistration = resolve
+      }),
+      finish: () => finishPendingRegistration(),
+    }
+    pendingRegistrations.set(value.documentId, pendingRegistration)
+    let closeRegistration: RegisteredCodexToolSession | undefined
     try {
-      closeRegistration = options.onRegister({
+      try {
+        closeRegistration = await options.onRegister({
+          documentId: value.documentId,
+          owner: event.sender,
+          registration,
+        })
+        if (!closeRegistration || typeof closeRegistration.close !== 'function') throw new Error()
+      } catch {
+        throw new Error('codex_tool_registration_failed')
+      }
+      let stillOwnsDocument = false
+      try {
+        stillOwnsDocument = options.ownsDocument(event.sender, value.documentId) === true
+      } catch {
+        // Ownership is rechecked after asynchronous startup and fails closed below.
+      }
+      if (
+        closed ||
+        globalCloseGate ||
+        documentCloseGates.has(value.documentId) ||
+        event.sender.isDestroyed() ||
+        !stillOwnsDocument
+      ) {
+        try {
+          await closeRegistration.close()
+        } catch {
+          diagnostic('tool_session_close_failed')
+        }
+        throw new Error('codex_tool_registration_failed')
+      }
+      const onDestroyed = (): void => {
+        if (sessionRef.current) closeSession(sessionRef.current)
+      }
+      const session: RemoteSession = {
         documentId: value.documentId,
         owner: event.sender,
         registration,
-      })
-      if (!closeRegistration || typeof closeRegistration.close !== 'function') throw new Error()
-    } catch {
-      throw new Error('codex_tool_registration_failed')
+        closeRegistration,
+        onDestroyed,
+        closed: false,
+        quiesced: false,
+      }
+      sessionRef.current = session
+      let ownerSessions = sessions.get(event.sender)
+      if (!ownerSessions) {
+        ownerSessions = new Map()
+        sessions.set(event.sender, ownerSessions)
+      }
+      ownerSessions.set(value.documentId, session)
+      activeDocuments.set(value.documentId, session)
+      event.sender.once('destroyed', onDestroyed)
+      return { registered: true as const }
+    } finally {
+      if (pendingRegistrations.get(value.documentId) === pendingRegistration) {
+        pendingRegistrations.delete(value.documentId)
+      }
+      pendingRegistration.finish()
     }
-    const onDestroyed = (): void => {
-      if (sessionRef.current) closeSession(sessionRef.current)
-    }
-    const session: RemoteSession = {
-      documentId: value.documentId,
-      owner: event.sender,
-      registration,
-      closeRegistration,
-      onDestroyed,
-      closed: false,
-    }
-    sessionRef.current = session
-    ownerSessions.set(value.documentId, session)
-    activeDocuments.set(value.documentId, session)
-    event.sender.once('destroyed', onDestroyed)
-    return { registered: true as const }
   })
 
   options.ipcMain.handle(CODEX_TOOL_CHANNELS.unregister, async (event, ...args) => {
@@ -495,6 +560,11 @@ export function registerCodexToolIpc(options: CodexToolIpcOptions): CodexToolIpc
     pending.delete(requestId)
     clearTimeout(item.timer)
     if (item.signal && item.onAbort) item.signal.removeEventListener('abort', item.onAbort)
+    if (![...pending.values()].some((candidate) => candidate.documentId === item.documentId)) {
+      const waiters = drainWaiters.get(item.documentId)
+      drainWaiters.delete(item.documentId)
+      for (const resolve of waiters ?? []) resolve()
+    }
     if (value.ok === false) {
       if (
         !hasOnlyKeys(value, ['requestId', 'ok', 'code']) ||
@@ -514,14 +584,86 @@ export function registerCodexToolIpc(options: CodexToolIpcOptions): CodexToolIpc
   })
 
   return {
+    acquireDocumentCloseGate(documentId) {
+      if (globalCloseGate || documentCloseGates.has(documentId)) {
+        throw new Error('codex_tool_registration_busy')
+      }
+      documentCloseGates.add(documentId)
+      let released = false
+      return () => {
+        if (released) return
+        released = true
+        documentCloseGates.delete(documentId)
+      }
+    },
+    acquireGlobalCloseGate() {
+      if (globalCloseGate || documentCloseGates.size > 0) {
+        throw new Error('codex_tool_registration_busy')
+      }
+      globalCloseGate = true
+      let released = false
+      return () => {
+        if (released) return
+        released = true
+        globalCloseGate = false
+      }
+    },
+    async quiesceDocument(documentId) {
+      await pendingRegistrations.get(documentId)?.done
+      const session = activeDocuments.get(documentId)
+      if (!session || session.closed) return
+      session.quiesced = true
+      const matching = [...pending.entries()].filter(([, item]) => item.documentId === documentId)
+      if (matching.length === 0) return
+      const drained = new Promise<void>((resolve) => {
+        let waiters = drainWaiters.get(documentId)
+        if (!waiters) {
+          waiters = new Set()
+          drainWaiters.set(documentId, waiters)
+        }
+        waiters.add(resolve)
+      })
+      for (const [requestId, item] of matching) {
+        sendCancel(session, requestId)
+        if (!item.mutation) finishPending(requestId, new Error('tool_cancelled'))
+      }
+      await drained
+      if (session.closed) throw new Error('tool_session_closed')
+    },
+    resumeDocument(documentId) {
+      const session = activeDocuments.get(documentId)
+      if (session && !session.closed) session.quiesced = false
+    },
+    async quiesceSessions() {
+      await Promise.allSettled([...pendingRegistrations.values()].map(({ done }) => done))
+      const settled = await Promise.allSettled(
+        [...activeDocuments.keys()].map((id) => this.quiesceDocument(id)),
+      )
+      const failure = settled.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      )
+      if (failure) throw failure.reason
+    },
+    resumeSessions() {
+      for (const session of activeDocuments.values()) {
+        if (!session.closed) session.quiesced = false
+      }
+    },
+    closeDocument(documentId) {
+      const session = activeDocuments.get(documentId)
+      if (session) closeSession(session)
+    },
+    closeSessions() {
+      for (const session of [...activeDocuments.values()]) closeSession(session)
+    },
     close() {
       if (closed) return
       closed = true
-      for (const ownerSessions of [...sessions.values()]) {
-        for (const session of [...ownerSessions.values()]) closeSession(session)
-      }
+      for (const session of [...activeDocuments.values()]) closeSession(session)
       sessions.clear()
       activeDocuments.clear()
+      documentCloseGates.clear()
+      globalCloseGate = false
       poisonedDocuments.clear()
     },
   }

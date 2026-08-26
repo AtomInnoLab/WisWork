@@ -29,6 +29,7 @@ import {
   initializeElectronAuthRuntime,
   extractCallbackUrl,
 } from '@wiswork/auth'
+import { selectAgentRuntime } from '@wiswork/agent-runtime'
 import { createI18n, isLang, normalizeLang, setUiLang, type Lang } from '@wiswork/i18n'
 import {
   appMenuLabels,
@@ -140,6 +141,17 @@ import { registerLatexProtocolScheme } from './latex-protocol-scheme'
 import { initAutoUpdater } from './updater'
 import { migrateLegacyUserData } from './user-data-migration'
 import { createAuthDeepLinkQueue } from './auth-deep-link-queue'
+import { registerCodexToolIpc, type CodexToolIpcController } from './codex-ipc'
+import {
+  createCodexBeforeQuitHandler,
+  logoutWithCodexClose,
+  prepareCodexDocumentClose,
+  prepareCodexDocumentsClose,
+  registerCodexRuntimeIpc,
+  runCodexPreparedClose,
+  ShellCodexRuntime,
+  type CodexClosePreparation,
+} from './codex-runtime'
 
 /**
  * WisWork unified shell: ONE Electron app, ONE BrowserWindow, hosting the
@@ -240,6 +252,14 @@ let authRuntime: ReturnType<typeof initializeElectronAuthRuntime> | null = null
 const requireAuthRuntime = (): ReturnType<typeof initializeElectronAuthRuntime> => {
   if (!authRuntime) throw new AuthError('auth_not_initialized')
   return authRuntime
+}
+let codexRuntime: ShellCodexRuntime | null = null
+let codexToolIpc: CodexToolIpcController | null = null
+
+async function shutdownCodexRuntime(): Promise<void> {
+  codexToolIpc?.closeSessions()
+  await codexRuntime?.shutdown()
+  codexToolIpc?.close()
 }
 let accountLoginSender: Electron.WebContents | null = null
 const authDeepLinks = createAuthDeepLinkQueue({
@@ -1319,6 +1339,7 @@ function createShellWindow(): void {
         : kind === 'slides'
           ? tm('untitledDeck')
           : tm('untitledSheet'),
+    ({ documentId }) => prepareCodexDocumentClose(codexRuntime, codexToolIpc, documentId),
   )
   tabManager = manager
 
@@ -1365,46 +1386,51 @@ function createShellWindow(): void {
   // and gets queried there (clean tabs pass through without activation).
   let closeConfirmed = false
   let closeInProgress = false
+  let committedCodexClose: CodexClosePreparation | null = null
   win.on('close', (event) => {
     if (closeConfirmed) return
     event.preventDefault()
     if (closeInProgress) return
     closeInProgress = true
     void (async () => {
+      const codexClose = await prepareCodexDocumentsClose(codexRuntime, codexToolIpc)
       const latexTabs = manager.latexTabs()
-      if (!(await prepareLatexCloseTabs(latexTabs))) {
-        releaseLatexCloseTabs(latexTabs)
-        return
-      }
       let closeCommitted = false
       try {
-        for (const tab of manager.dirtySheetsTabs()) {
-          manager.activateTab(tab.id)
-          if (!(await requestSheetsClose(tab.webContents, win))) return
-        }
-        for (const tab of manager.dirtyPdfTabs()) {
-          manager.activateTab(tab.id)
-          if (!(await requestPdfClose(tab.webContents, win))) return
-        }
-        for (const tab of manager.dirtySlidesTabs()) {
-          manager.activateTab(tab.id)
-          if (!(await requestSlidesClose(tab.webContents, win))) return
-        }
-        for (const tab of latexTabs) {
-          if (!(await latexQueryDirty(tab.webContents))) continue
-          manager.activateTab(tab.id)
-          if (!(await requestLatexClose(tab.webContents, win))) return
-        }
-        for (const tab of manager.docsTabs()) {
-          if (!(await docsQueryDirty(tab.webContents))) continue
-          manager.activateTab(tab.id)
-          if (!(await requestDocsClose(tab.webContents, win))) return
-        }
-        if (!(await tabSessionPersistence.flush(manager.latexSessionState()))) {
-          console.error('[shell] final tab session save failed; window remains open')
-          return
-        }
-        if (!(await finalLatexCloseCheck(latexTabs))) return
+        const approved = await runCodexPreparedClose(codexClose, [
+          () => prepareLatexCloseTabs(latexTabs),
+          async () => {
+            for (const tab of manager.dirtySheetsTabs()) {
+              manager.activateTab(tab.id)
+              if (!(await requestSheetsClose(tab.webContents, win))) return false
+            }
+            for (const tab of manager.dirtyPdfTabs()) {
+              manager.activateTab(tab.id)
+              if (!(await requestPdfClose(tab.webContents, win))) return false
+            }
+            for (const tab of manager.dirtySlidesTabs()) {
+              manager.activateTab(tab.id)
+              if (!(await requestSlidesClose(tab.webContents, win))) return false
+            }
+            for (const tab of latexTabs) {
+              if (!(await latexQueryDirty(tab.webContents))) continue
+              manager.activateTab(tab.id)
+              if (!(await requestLatexClose(tab.webContents, win))) return false
+            }
+            for (const tab of manager.docsTabs()) {
+              if (!(await docsQueryDirty(tab.webContents))) continue
+              manager.activateTab(tab.id)
+              if (!(await requestDocsClose(tab.webContents, win))) return false
+            }
+            if (!(await tabSessionPersistence.flush(manager.latexSessionState()))) {
+              console.error('[shell] final tab session save failed; window remains open')
+              return false
+            }
+            return finalLatexCloseCheck(latexTabs)
+          },
+        ])
+        if (!approved) return
+        committedCodexClose = codexClose
         closeConfirmed = true
         if (!win.isDestroyed()) win.close()
         closeCommitted = true
@@ -1419,6 +1445,8 @@ function createShellWindow(): void {
   })
 
   win.on('closed', () => {
+    committedCodexClose?.finalize()
+    committedCodexClose = null
     getLatexSessionRegistry().disposeAll()
     if (shellWindow === win) shellWindow = null
     if (tabManager === manager) tabManager = null
@@ -1694,9 +1722,11 @@ function registerHomeIpc(): void {
     assertHomeAuthIpc(event, args)
     if (pendingLoginUrl) await shell.openExternal(pendingLoginUrl)
   })
-  ipcMain.handle(HOME_CHANNELS.accountLogout, (event, ...args: unknown[]) => {
+  ipcMain.handle(HOME_CHANNELS.accountLogout, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
-    return requireAuthRuntime().client.logout()
+    await logoutWithCodexClose(codexRuntime, codexToolIpc, () =>
+      requireAuthRuntime().client.logout(),
+    )
   })
 
   ipcMain.handle(HOME_CHANNELS.getAppVersion, (): string => app.getVersion())
@@ -2272,6 +2302,29 @@ app.whenReady().then(async () => {
     openExternal: (url) => shell.openExternal(url),
   })
   void authDeepLinks.initialize((callback) => requireAuthRuntime().client.consumeCallback(callback))
+  codexRuntime = new ShellCodexRuntime({
+    runtimeKind: selectAgentRuntime(readAppSettings(APP_SETTINGS_PATH()).agentRuntime),
+    executablePath: process.env.WISWORK_CODEX_PATH,
+    authClient: authRuntime.client,
+    onProcessCrash: (documentId) => codexToolIpc?.closeDocument(documentId),
+    diagnostics: ({ code }) => console.warn('[codex]', code),
+  })
+  codexToolIpc = registerCodexToolIpc({
+    ipcMain,
+    ownsDocument: (owner, documentId) =>
+      typeof owner.id === 'number' && (tabManager?.ownsDocument(owner.id, documentId) ?? false),
+    onRegister: ({ documentId, owner, registration }) =>
+      codexRuntime!.registerDocument({ documentId, owner, registration }),
+    diagnostics: ({ code }) => console.warn('[codex]', code),
+  })
+  registerCodexRuntimeIpc({
+    ipcMain,
+    runtime: codexRuntime,
+    documentIdForOwner: (owner) =>
+      'id' in owner && typeof owner.id === 'number'
+        ? (tabManager?.documentIdForWebContents(owner.id) ?? null)
+        : null,
+  })
 
   void installMainProcessProxy()
   app.setAccessibilitySupportEnabled(true)
@@ -2317,8 +2370,14 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
+const handleCodexBeforeQuit = createCodexBeforeQuitHandler({
+  shutdown: shutdownCodexRuntime,
+  quit: () => app.quit(),
+  diagnostics: ({ code }) => console.warn('[codex]', code),
+})
+app.on('before-quit', (event) => {
   // No close prompt may fall through to "Save" during shutdown
   markSheetsShuttingDown()
   stopSheetsSidecar()
+  handleCodexBeforeQuit(event)
 })

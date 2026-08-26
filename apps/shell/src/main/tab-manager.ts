@@ -44,6 +44,18 @@ interface TabRecord {
   filePath?: string
 }
 
+export interface DocumentCloseContext {
+  readonly documentId: string
+  readonly kind: TabKind
+  readonly webContents: WebContents
+}
+
+export interface DocumentClosePreparation {
+  commit(): Promise<void>
+  rollback(): void
+  finalize(): void
+}
+
 /** must match the tab strip's rendered height (apps/shell/src/renderer/src/TabBar.tsx) */
 const TAB_STRIP_HEIGHT = 40
 const HOME_ID = 'home'
@@ -69,6 +81,10 @@ export class TabManager {
     private readonly applyMenuFor: (kind: TabKind) => void,
     /** localized placeholder title for a tab that has no file yet */
     private readonly untitledTitleFor?: (kind: TabKind) => string,
+    /** Two-phase automation close: quiesce before guards, then commit or resume on cancellation. */
+    private readonly prepareDocumentClose?: (
+      context: DocumentCloseContext,
+    ) => Promise<DocumentClosePreparation>,
   ) {
     shellWindow.on('resize', () => this.layout())
   }
@@ -109,6 +125,14 @@ export class TabManager {
 
   ownsWebContents(senderId: number): boolean {
     return this.tabs.some((tab) => tab.view?.webContents.id === senderId)
+  }
+
+  documentIdForWebContents(senderId: number): string | null {
+    return this.tabs.find((tab) => tab.view?.webContents.id === senderId)?.id ?? null
+  }
+
+  ownsDocument(senderId: number, documentId: string): boolean {
+    return this.documentIdForWebContents(senderId) === documentId
   }
 
   list(): TabSummary[] {
@@ -318,79 +342,75 @@ export class TabManager {
     if (id === HOME_ID) return
     const tab = this.tabs.find((t) => t.id === id)
     if (!tab || this.closingIds.has(id)) return
+    this.closingIds.add(id)
+    let preparation: DocumentClosePreparation | undefined
+    let preparationCommitted = false
+    let identityRemoved = false
     let latexPrepared = false
-    let closeGuard =
-      tab.view &&
-      (tab.kind === 'sheets' && sheetsPendingEditCount(tab.view.webContents.id) > 0
-        ? requestSheetsClose
-        : tab.kind === 'pdf' && pdfIsDirty(tab.view.webContents.id)
-          ? requestPdfClose
-          : tab.kind === 'slides' && slidesIsDirty(tab.view.webContents.id)
-            ? requestSlidesClose
-            : null)
-    // docs dirty state lives in the renderer and needs an async query; skip the guard when clean (avoids a flash activation)
-    if (!closeGuard && tab.kind === 'latex' && tab.view) {
-      this.closingIds.add(id)
-      try {
+    try {
+      if (tab.view && this.prepareDocumentClose) {
+        preparation = await this.prepareDocumentClose({
+          documentId: id,
+          kind: tab.kind,
+          webContents: tab.view.webContents,
+        })
+      }
+      let closeGuard =
+        tab.view &&
+        (tab.kind === 'sheets' && sheetsPendingEditCount(tab.view.webContents.id) > 0
+          ? requestSheetsClose
+          : tab.kind === 'pdf' && pdfIsDirty(tab.view.webContents.id)
+            ? requestPdfClose
+            : tab.kind === 'slides' && slidesIsDirty(tab.view.webContents.id)
+              ? requestSlidesClose
+              : null)
+      // docs dirty state lives in the renderer and needs an async query; skip the guard when clean.
+      if (!closeGuard && tab.kind === 'latex' && tab.view) {
         if (!(await requestLatexEditFlush(tab.view.webContents))) return
         latexPrepared = true
         if (await latexQueryDirty(tab.view.webContents)) closeGuard = requestLatexClose
-      } catch {
-        if (latexPrepared) releaseLatexEditFlush(tab.view.webContents)
-        return
-      } finally {
-        this.closingIds.delete(id)
       }
-    }
-    if (!closeGuard && tab.kind === 'docs' && tab.view) {
-      this.closingIds.add(id)
-      try {
+      if (!closeGuard && tab.kind === 'docs' && tab.view) {
         if (await docsQueryDirty(tab.view.webContents)) closeGuard = requestDocsClose
-      } finally {
-        this.closingIds.delete(id)
       }
-    }
-    if (closeGuard && tab.view) {
-      // Bring the tab into view so the save prompt has visible context.
-      if (this.activeId !== id) this.activateTab(id)
-      this.closingIds.add(id)
-      try {
+      if (closeGuard && tab.view) {
+        // Bring the tab into view so the save prompt has visible context.
+        if (this.activeId !== id) this.activateTab(id)
         if (!(await closeGuard(tab.view.webContents, this.shellWindow))) {
           if (latexPrepared) releaseLatexEditFlush(tab.view.webContents)
           return
         }
-      } catch {
-        if (latexPrepared) releaseLatexEditFlush(tab.view.webContents)
-        return
-      } finally {
-        this.closingIds.delete(id)
       }
-    }
-    const idx = this.tabs.findIndex((t) => t.id === id)
-    if (idx < 0) return
-    if (this.htmlFullScreenId === id) this.htmlFullScreenId = null
-    const [removed] = this.tabs.splice(idx, 1)
-    if (this.activeId === id) {
-      const fallback = this.tabs[idx - 1] ?? this.tabs[0]
-      this.activateTab(fallback.id)
-    } else {
-      this.onChanged()
-    }
-    if (removed.view) {
-      removed.view.setVisible(false)
-      this.shellWindow.contentView.removeChildView(removed.view)
-      if (removed.kind === 'docs' || removed.kind === 'latex') {
-        // webContents.close()/.destroy() on some closed WebContentsView renderers wedges Electron's whole
-        // UI thread in a native modal run loop (reproduced consistently; survives
-        // close() vs destroy(), teardown ordering, deferring, and disabling
-        // accessibility support — looks like an upstream WebContentsView/Chromium
-        // issue, not something fixable from here). Detaching without destroying
-        // avoids the freeze; the orphaned webContents is reclaimed when the app quits.
-        if (removed.kind === 'docs') teardownDocsRenderer(removed.view.webContents)
-        else teardownLatexRenderer(removed.view.webContents)
+      await preparation?.commit()
+      preparationCommitted = true
+      const idx = this.tabs.findIndex((t) => t.id === id)
+      if (idx < 0) return
+      if (this.htmlFullScreenId === id) this.htmlFullScreenId = null
+      const [removed] = this.tabs.splice(idx, 1)
+      identityRemoved = true
+      if (this.activeId === id) {
+        const fallback = this.tabs[idx - 1] ?? this.tabs[0]
+        this.activateTab(fallback.id)
       } else {
-        removed.view.webContents.close()
+        this.onChanged()
       }
+      if (removed.view) {
+        removed.view.setVisible(false)
+        this.shellWindow.contentView.removeChildView(removed.view)
+        if (removed.kind === 'docs' || removed.kind === 'latex') {
+          // WebContentsView teardown can wedge these renderers; detaching lets app quit reclaim them.
+          if (removed.kind === 'docs') teardownDocsRenderer(removed.view.webContents)
+          else teardownLatexRenderer(removed.view.webContents)
+        } else {
+          removed.view.webContents.close()
+        }
+      }
+    } catch {
+      if (latexPrepared && tab.view) releaseLatexEditFlush(tab.view.webContents)
+    } finally {
+      if (preparationCommitted && identityRemoved) preparation?.finalize()
+      else if (!preparationCommitted) preparation?.rollback()
+      this.closingIds.delete(id)
     }
   }
 

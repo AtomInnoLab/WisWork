@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import type { ToolSessionRegistration } from '@wiswork/codex-bridge'
 import { describe, expect, it, vi } from 'vitest'
 import { registerCodexToolIpc } from '../src/main/codex-ipc'
+import { prepareCodexDocumentClose, prepareCodexDocumentsClose } from '../src/main/codex-runtime'
 import { CODEX_TOOL_CHANNELS, type CodexToolRequest } from '../src/shared/codex-api'
 
 class FakeSender extends EventEmitter {
@@ -86,6 +87,134 @@ describe('Codex renderer tool IPC', () => {
     expect(JSON.stringify(ack)).not.toContain('url')
   })
 
+  it('waits for the authenticated runtime chain before acknowledging registration', async () => {
+    const f = fixture()
+    let release!: () => void
+    const ready = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const handlers = new Map<
+      string,
+      (event: { sender: FakeSender }, ...args: unknown[]) => unknown
+    >()
+    registerCodexToolIpc({
+      ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as never) },
+      ownsDocument: () => true,
+      onRegister: async () => {
+        await ready
+        return { close: f.close }
+      },
+    })
+
+    let acknowledged = false
+    const registration = Promise.resolve(
+      handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration),
+    ).then((value) => {
+      acknowledged = true
+      return value
+    })
+    await Promise.resolve()
+    expect(acknowledged).toBe(false)
+    release()
+
+    await expect(registration).resolves.toEqual({ registered: true })
+  })
+
+  it('gates and drains a renderer registration still awaiting runtime startup', async () => {
+    const f = fixture()
+    let release!: () => void
+    const ready = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const handlers = new Map<
+      string,
+      (event: { sender: FakeSender }, ...args: unknown[]) => unknown
+    >()
+    const close = vi.fn()
+    const bridge = registerCodexToolIpc({
+      ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as never) },
+      ownsDocument: () => true,
+      onRegister: async () => {
+        await ready
+        return { close }
+      },
+    })
+    const registering = expect(
+      handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration),
+    ).rejects.toThrow('codex_tool_registration_failed')
+    await Promise.resolve()
+
+    let prepared = false
+    const preparing = prepareCodexDocumentClose(null, bridge, 'document-1').then((value) => {
+      prepared = true
+      return value
+    })
+    await Promise.resolve()
+    expect(prepared).toBe(false)
+
+    release()
+    await registering
+    const preparation = await preparing
+    expect(close).toHaveBeenCalledOnce()
+    await expect(
+      handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration),
+    ).rejects.toThrow('codex_tool_registration_busy')
+
+    preparation.rollback()
+    await expect(
+      handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration),
+    ).resolves.toEqual({ registered: true })
+  })
+
+  it('retains an approved close tombstone and leaves no renderer tool session active', async () => {
+    const f = fixture()
+    await f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration)
+
+    const preparation = await prepareCodexDocumentClose(null, f.bridge, 'document-1')
+    await preparation.commit()
+
+    expect(f.close).toHaveBeenCalledOnce()
+    await expect(
+      f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration),
+    ).rejects.toThrow('codex_tool_registration_busy')
+    await expect(
+      f.sessions[0]!.skill.executeTool({ id: 'late', name: 'read_document', input: {} }),
+    ).rejects.toThrow('tool_session_closed')
+
+    preparation.finalize()
+    await expect(
+      f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration),
+    ).resolves.toEqual({ registered: true })
+  })
+
+  it('globally gates future renderer registrations until a cancelled window close resumes them', async () => {
+    const f = fixture()
+    const preparation = await prepareCodexDocumentsClose(null, f.bridge)
+
+    await expect(
+      f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration),
+    ).rejects.toThrow('codex_tool_registration_busy')
+    preparation.rollback()
+    await expect(
+      f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration),
+    ).resolves.toEqual({ registered: true })
+  })
+
+  it('allows a reused window document identity only after global close finalization', async () => {
+    const f = fixture()
+    await f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration)
+    const preparation = await prepareCodexDocumentsClose(null, f.bridge)
+    await preparation.commit()
+
+    await expect(
+      f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration),
+    ).rejects.toThrow('codex_tool_registration_busy')
+    preparation.finalize()
+    await expect(
+      f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration),
+    ).resolves.toEqual({ registered: true })
+  })
+
   it('routes execution only to the exact owning sender and validates its response shape', async () => {
     const f = fixture()
     await f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration)
@@ -123,6 +252,22 @@ describe('Codex renderer tool IPC', () => {
       ),
     ).toBe(true)
     await expect(execution).resolves.toEqual({ output: 'text', summary: 'Read' })
+  })
+
+  it('closes document/all-session registrations without permanently disabling IPC', async () => {
+    const f = fixture()
+    await f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration)
+    f.bridge.closeDocument('document-1')
+    expect(f.close).toHaveBeenCalledOnce()
+
+    await expect(
+      f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration),
+    ).resolves.toEqual({ registered: true })
+    f.bridge.closeSessions()
+    expect(f.close).toHaveBeenCalledTimes(2)
+    await expect(
+      f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration),
+    ).resolves.toEqual({ registered: true })
   })
 
   it('exposes revision, approval, snapshot, and atomic guarded mutation requests', async () => {
@@ -271,6 +416,73 @@ describe('Codex renderer tool IPC', () => {
       { requestId: 'request-1', ok: false, code: 'tool_cancelled' },
     )
     await expect(pending).rejects.toThrow('tool_cancelled')
+  })
+
+  it('quiesces guarded renderer work before close checks and resumes after cancellation', async () => {
+    const f = fixture()
+    await f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration)
+    const remote = f.sessions[0]!
+    const mutation = remote.executeMutation!(
+      { id: 'mutation', name: 'replace_text', input: {} },
+      { expectedRevision: 'rev-1', snapshotId: 'snapshot-1' },
+    )
+    const quiesced = f.bridge.quiesceDocument('document-1')
+    let settled = false
+    void quiesced.then(() => {
+      settled = true
+    })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    await expect(
+      remote.skill.executeTool({ id: 'read', name: 'read_document', input: {} }),
+    ).rejects.toThrow('tool_session_closed')
+
+    await f.handlers.get(CODEX_TOOL_CHANNELS.response)!(
+      { sender: f.sender },
+      {
+        requestId: 'request-1',
+        ok: true,
+        type: 'execution',
+        execution: { output: 'updated', summary: 'Replace', mutated: true },
+      },
+    )
+    await mutation
+    await quiesced
+
+    f.bridge.resumeDocument('document-1')
+    const read = remote.skill.executeTool({ id: 'read', name: 'read_document', input: {} })
+    expect(lastRequest(f.sender)).toMatchObject({ type: 'execute', requestId: 'request-2' })
+    await f.handlers.get(CODEX_TOOL_CHANNELS.response)!(
+      { sender: f.sender },
+      {
+        requestId: 'request-2',
+        ok: true,
+        type: 'execution',
+        execution: { output: 'text', summary: 'Read' },
+      },
+    )
+    await expect(read).resolves.toMatchObject({ output: 'text' })
+  })
+
+  it('quarantines a document restart when crash cleanup closes an in-flight mutation', async () => {
+    const f = fixture()
+    await f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: f.sender }, f.registration)
+    const mutation = f.sessions[0]!.executeMutation!(
+      { id: 'mutation', name: 'replace_text', input: {} },
+      { expectedRevision: 'rev-1', snapshotId: 'snapshot-1' },
+    )
+    const rejection = expect(mutation).rejects.toThrow('tool_session_closed')
+
+    f.bridge.closeDocument('document-1')
+
+    await rejection
+    expect(f.sender.sent.at(-1)).toMatchObject({
+      channel: CODEX_TOOL_CHANNELS.cancel,
+      payload: { requestId: 'request-1', documentId: 'document-1' },
+    })
+    await expect(
+      f.handlers.get(CODEX_TOOL_CHANNELS.register)!({ sender: new FakeSender() }, f.registration),
+    ).rejects.toThrow('codex_tool_session_poisoned')
   })
 
   it('rejects aggregate tool registrations beyond the IPC budget', async () => {
