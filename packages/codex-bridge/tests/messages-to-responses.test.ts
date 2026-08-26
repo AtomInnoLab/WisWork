@@ -168,9 +168,9 @@ describe('messagesSseToResponses', () => {
       'upstream_error',
     ],
     [
-      'unknown event variant',
+      'malformed ping event',
       'event: ping\ndata: {"type":"ping","message":"secret prompt"}\n\n',
-      'unsupported_messages_event',
+      'invalid_messages_event',
     ],
   ])('fails closed for %s without echoing upstream data', async (_label, frame, code) => {
     let caught: unknown

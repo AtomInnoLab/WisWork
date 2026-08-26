@@ -465,10 +465,11 @@ function safeExecDescription(methods: readonly string[]): string {
 function parseSafeExecCode(code: string, methods: readonly string[], limits: ProtocolLimits): void {
   if (utf8Length(code) > limits.maxToolArguments) fail('tool_arguments_limit_exceeded')
   let source = code
-  if (source.startsWith('// @exec:')) {
+  const pragmaPrefix = /^[\t ]*\/\/ @exec:/.exec(source)
+  if (pragmaPrefix) {
     const newline = source.indexOf('\n')
     if (newline < 0) fail('unsafe_custom_tool_input')
-    const pragmaText = source.slice('// @exec:'.length, newline).trim()
+    const pragmaText = source.slice(pragmaPrefix[0].length, newline).trim()
     if (utf8Length(pragmaText) > 1024) fail('unsafe_custom_tool_input')
     let pragma: unknown
     try {
@@ -678,6 +679,7 @@ function convertResponsesRequest(
     }
     if (isCall) {
       if (!sawMessage || (pending && resultIndex !== 0)) fail('invalid_conversation')
+      if (pending && pending.length >= 1) fail('tool_call_limit_exceeded')
       const id = requireString(rawItem.call_id, 'invalid_tool_call')
       if (id === '') fail('invalid_tool_call')
       if (used.has(id)) fail('duplicate_call_id')
@@ -781,6 +783,7 @@ async function* convertMessagesStream(
     stopReason: undefined as string | undefined,
     output: [] as Array<Record<string, unknown>>,
     usedCalls: new Set(context.usedCallIds),
+    toolCalls: 0,
     frames: 0,
     totalOutput: 0,
   }
@@ -831,6 +834,10 @@ async function* convertMessagesStream(
   const processStrictEvent = (event: string, data: UnknownRecord): string[] => {
     if (strict.phase === 'terminal') fail('post_terminal_messages_event')
     if (event === 'error') fail('upstream_error')
+    if (event === 'ping') {
+      if (!hasOnlyKeys(data, ['type'])) fail('invalid_messages_event')
+      return []
+    }
     if (
       ![
         'message_start',
@@ -879,6 +886,7 @@ async function* convertMessagesStream(
       if (
         !hasOnlyKeys(data.message.usage, [
           'input_tokens',
+          'output_tokens',
           'cache_read_input_tokens',
           'cache_creation_input_tokens',
         ])
@@ -886,6 +894,7 @@ async function* convertMessagesStream(
         fail('invalid_messages_event')
       }
       const ordinary = usageInteger(data.message.usage.input_tokens, false)
+      usageInteger(data.message.usage.output_tokens, true)
       strict.cachedTokens = usageInteger(data.message.usage.cache_read_input_tokens, true)
       strict.cacheWriteTokens = usageInteger(data.message.usage.cache_creation_input_tokens, true)
       strict.inputTokens = ordinary + strict.cachedTokens + strict.cacheWriteTokens
@@ -949,6 +958,8 @@ async function* convertMessagesStream(
       if (callId === '') fail('invalid_messages_event')
       if (strict.usedCalls.has(callId)) fail('duplicate_call_id')
       if (name !== 'exec' || context.allowedExecMethods.length === 0) fail('unadvertised_tool_call')
+      if (strict.toolCalls >= 1) fail('tool_call_limit_exceeded')
+      strict.toolCalls += 1
       strict.usedCalls.add(callId)
       strict.active = { kind: 'tool', itemId, callId, name, arguments: '' }
       strict.activeIndex = index

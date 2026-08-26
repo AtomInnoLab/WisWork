@@ -98,6 +98,55 @@ describe('final pinned bridge contract', () => {
     ).resolves.toBeUndefined()
   })
 
+  it('accepts a grammar-valid pragma with leading horizontal whitespace', async () => {
+    const code =
+      ' \t// @exec: {"yield_time_ms":1000}\nawait tools.mcp__wiswork__wiswork_read_document({})'
+    const turn = (bridge as any).prepareResponsesTurn(clone())
+    const toolStart =
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"exec","input":{}}}\n\n'
+    const toolDelta = `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n`
+    const toolStop = 'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n'
+    await expect(
+      consume(
+        turn.messagesStreamToResponses(chunks(start, toolStart, toolDelta, toolStop, delta, stop)),
+      ),
+    ).resolves.toBeUndefined()
+  })
+
+  it('accepts standard Anthropic output_tokens at message_start and ping events', async () => {
+    const standardStart =
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"openai/gpt-5.6-sol","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}\n\n'
+    const ping = 'event: ping\ndata: {"type":"ping"}\n\n'
+    const turn = (bridge as any).prepareResponsesTurn(clone())
+    await expect(
+      consume(turn.messagesStreamToResponses(chunks(ping, standardStart, ping, delta, ping, stop))),
+    ).resolves.toBeUndefined()
+  })
+
+  it('rejects more than one MCP call in a response', async () => {
+    const code = 'await tools.mcp__wiswork__wiswork_read_document({})'
+    const call = (index: number, id: string) =>
+      `event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index, content_block: { type: 'tool_use', id, name: 'exec', input: {} } })}\n\n` +
+      `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n` +
+      `event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index })}\n\n`
+    const turn = (bridge as any).prepareResponsesTurn(clone())
+    await expect(
+      consume(turn.messagesStreamToResponses(chunks(start, call(0, 'c1'), call(1, 'c2')))),
+    ).rejects.toThrow('tool_call_limit_exceeded')
+  })
+
+  it('rejects more than one MCP call in a historical assistant batch', () => {
+    const body = clone()
+    const code = 'await tools.mcp__wiswork__wiswork_read_document({})'
+    body.input.push(
+      { type: 'custom_tool_call', call_id: 'c1', name: 'exec', input: code },
+      { type: 'custom_tool_call', call_id: 'c2', name: 'exec', input: code },
+    )
+    expect(() => (bridge as any).prepareResponsesTurn(body)).toThrowError(
+      'tool_call_limit_exceeded',
+    )
+  })
+
   it.each([
     '// @exec: []\nawait tools.mcp__wiswork__wiswork_read_document({})',
     '// @exec: {"unknown":1}\nawait tools.mcp__wiswork__wiswork_read_document({})',
