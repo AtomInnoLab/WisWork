@@ -1,15 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import {
-  messagesSseToResponses,
-  ProtocolCompatibilityError,
-  type StreamConversionContext,
-} from '../src/index.js'
+import { prepareResponsesTurn, ProtocolCompatibilityError } from '../src/index.js'
+import captured from './fixtures/codex-0147-request.json'
 
-const noTools: StreamConversionContext = {
-  advertisedTools: {},
-  usedCallIds: [],
-  allowedExecMethods: [],
-}
+const noToolTurn = () => prepareResponsesTurn({ model: 'gpt-5.6-sol', input: 'Hello' })
 
 const start =
   'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","model":"openai/gpt-5.6-sol","usage":{"input_tokens":10,"cache_read_input_tokens":4,"cache_creation_input_tokens":2}}}\n\n'
@@ -36,12 +29,16 @@ async function collect(
 async function expectStreamCode(
   values: Array<string | Uint8Array>,
   code: string,
-  context: StreamConversionContext = noTools,
+  custom = false,
   limits: Record<string, number> = {},
 ): Promise<void> {
   let caught: unknown
   try {
-    await collect(messagesSseToResponses(chunks(...values), context, limits))
+    const turn = prepareResponsesTurn(
+      custom ? structuredClone(captured) : { model: 'gpt-5.6-sol', input: 'Hello' },
+      limits,
+    )
+    await collect(turn.messagesStreamToResponses(chunks(...values)))
   } catch (error) {
     caught = error
   }
@@ -89,7 +86,7 @@ describe('bounded Anthropic SSE state machine', () => {
 
   it('ignores comment keepalives and accepts CR-only SSE line endings', async () => {
     const crStream = `: keepalive\n\n${start}${delta}${stop}`.replaceAll('\n', '\r')
-    const events = await collect(messagesSseToResponses(chunks(crStream), noTools))
+    const events = await collect(noToolTurn().messagesStreamToResponses(chunks(crStream)))
     expect(events.at(-1)?.event).toBe('response.completed')
   })
 
@@ -120,7 +117,7 @@ describe('bounded Anthropic SSE state machine', () => {
   })
 
   it('preserves cache creation and read accounting', async () => {
-    const events = await collect(messagesSseToResponses(chunks(start, delta, stop), noTools))
+    const events = await collect(noToolTurn().messagesStreamToResponses(chunks(start, delta, stop)))
     expect(events.at(-1)?.data.response.usage).toMatchObject({
       input_tokens: 16,
       input_tokens_details: { cached_tokens: 4, cache_write_tokens: 2 },
@@ -146,7 +143,7 @@ describe('bounded Anthropic SSE state machine', () => {
       { maxToolArguments: 3 },
       [
         start,
-        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"read","input":{}}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"exec","input":{}}}\n\n',
         'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"x\\":1}"}}\n\n',
       ],
       'tool_arguments_limit_exceeded',
@@ -164,13 +161,10 @@ describe('bounded Anthropic SSE state machine', () => {
     ],
     ['total output', { maxTotalOutput: 1 }, [start], 'total_output_limit_exceeded'],
   ])('enforces %s limit', async (_label, limits, values, code) => {
-    const context = (limits as any).maxToolArguments
-      ? { advertisedTools: { read: 'function' as const }, usedCallIds: [], allowedExecMethods: [] }
-      : noTools
     await expectStreamCode(
       values as string[],
       code as string,
-      context,
+      Boolean((limits as any).maxToolArguments),
       limits as Record<string, number>,
     )
   })
@@ -185,52 +179,24 @@ describe('bounded Anthropic SSE state machine', () => {
     )
   })
 
-  it.each([
-    [
-      'unknown tool',
-      'other',
-      { advertisedTools: { read: 'function' as const }, usedCallIds: [], allowedExecMethods: [] },
-      'unadvertised_tool_call',
-    ],
-    [
-      'wrong exec kind',
-      'exec',
-      { advertisedTools: { exec: 'function' as const }, usedCallIds: [], allowedExecMethods: [] },
-      'tool_kind_mismatch',
-    ],
-    [
-      'used call ID',
-      'read',
-      {
-        advertisedTools: { read: 'function' as const },
-        usedCallIds: ['c'],
-        allowedExecMethods: [],
-      },
-      'duplicate_call_id',
-    ],
-  ])('rejects %s from stream context', async (_label, name, context, code) => {
+  it('rejects an unadvertised tool from the bound turn', async () => {
     await expectStreamCode(
       [
         start,
-        `event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"${name}","input":{}}}\n\n`,
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"other","input":{}}}\n\n',
       ],
-      code,
-      context,
+      'unadvertised_tool_call',
+      true,
     )
   })
 
   it.each([
     'text(await tools.apply_patch({}))',
-    'text(await tools["mcp__wiswork__read_document"]({}))',
-    'const x = "mcp__wiswork__read_document"; text(await tools[x]({}))',
-    'text(await tools.mcp__wiswork__read_document({})); text(1)',
-    'text(await tools.mcp__wiswork__read_document({x: 1}))',
+    'text(await tools["mcp__wiswork__wiswork_read_document"]({}))',
+    'const x = "mcp__wiswork__wiswork_read_document"; text(await tools[x]({}))',
+    'text(await tools.mcp__wiswork__wiswork_read_document({})); text(1)',
+    'text(await tools.mcp__wiswork__wiswork_read_document({x: 1}))',
   ])('rejects unsafe custom code without echoing it', async (code) => {
-    const context: StreamConversionContext = {
-      advertisedTools: { exec: 'custom' },
-      usedCallIds: [],
-      allowedExecMethods: ['mcp__wiswork__read_document'],
-    }
     await expectStreamCode(
       [
         start,
@@ -239,7 +205,7 @@ describe('bounded Anthropic SSE state machine', () => {
         'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
       ],
       'unsafe_custom_tool_input',
-      context,
+      true,
     )
   })
 })

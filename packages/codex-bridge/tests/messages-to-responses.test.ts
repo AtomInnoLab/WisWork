@@ -1,23 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { messagesSseToResponses } from '../src/index.js'
+import { prepareResponsesTurn } from '../src/index.js'
+import captured from './fixtures/codex-0147-request.json'
 
-const noTools = { advertisedTools: {}, usedCallIds: [], allowedExecMethods: [] } as const
-const functionTools = {
-  advertisedTools: { edit: 'function' as const },
-  usedCallIds: [],
-  allowedExecMethods: [],
-}
-const customTools = {
-  advertisedTools: { exec: 'custom' as const },
-  usedCallIds: [],
-  allowedExecMethods: ['mcp__wiswork__read_document'],
-}
+const noToolTurn = () => prepareResponsesTurn({ model: 'gpt-5.6-sol', input: 'Hello' })
+const customToolTurn = () => prepareResponsesTurn(structuredClone(captured))
 
 function convert(
   source: AsyncIterable<string | Uint8Array>,
-  context: Parameters<typeof messagesSseToResponses>[1] = noTools,
-): ReturnType<typeof messagesSseToResponses> {
-  return messagesSseToResponses(source, context)
+  custom = false,
+): AsyncGenerator<string> {
+  return (custom ? customToolTurn() : noToolTurn()).messagesStreamToResponses(source)
 }
 
 async function* chunks(...values: string[]): AsyncGenerator<string> {
@@ -80,51 +72,18 @@ describe('messagesSseToResponses', () => {
     })
   })
 
-  it('preserves tool call IDs and argument delta order', async () => {
-    const events = await collect(
-      convert(
-        chunks(
-          messageStart,
-          'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_9","name":"edit","input":{}}}\n\n',
-          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"a\\":"}}\n\n',
-          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"1}"}}\n\n',
-          'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
-          'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":7}}\n\n',
-          'event: message_stop\ndata: {"type":"message_stop"}\n\n',
-        ),
-        functionTools,
-      ),
-    )
-
-    expect(events.find(({ event }) => event === 'response.output_item.added')?.data).toMatchObject({
-      item: { type: 'function_call', call_id: 'call_9', name: 'edit' },
-    })
-    expect(
-      events
-        .filter(({ event }) => event === 'response.function_call_arguments.delta')
-        .map(({ data }) => (data as { delta: string }).delta),
-    ).toEqual(['{"a":', '1}'])
-    expect(
-      events.find(({ event }) => event === 'response.function_call_arguments.done')?.data,
-    ).toMatchObject({ item_id: 'item_0', arguments: '{"a":1}' })
-    expect(events.find(({ event }) => event === 'response.output_item.done')?.data).toMatchObject({
-      item: { call_id: 'call_9', arguments: '{"a":1}' },
-    })
-    expect(events.at(-1)?.data).toMatchObject({ response: { status: 'completed' } })
-  })
-
   it('converts exec tool use to custom tool call events and raw input', async () => {
     const events = await collect(
       convert(
         chunks(
           messageStart,
           'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"custom_7","name":"exec","input":{}}}\n\n',
-          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"code\\":\\"text(await tools.mcp__wiswork__read_document({}))\\"}"}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"code\\":\\"text(await tools.mcp__wiswork__wiswork_read_document({}))\\"}"}}\n\n',
           'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
           'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":4}}\n\n',
           'event: message_stop\ndata: {"type":"message_stop"}\n\n',
         ),
-        customTools,
+        true,
       ),
     )
 
@@ -134,19 +93,19 @@ describe('messagesSseToResponses', () => {
     expect(
       events.find(({ event }) => event === 'response.custom_tool_call_input.delta')?.data,
     ).toMatchObject({
-      delta: 'text(await tools.mcp__wiswork__read_document({}))',
+      delta: 'text(await tools.mcp__wiswork__wiswork_read_document({}))',
     })
     expect(
       events.find(({ event }) => event === 'response.custom_tool_call_input.done')?.data,
     ).toMatchObject({
-      input: 'text(await tools.mcp__wiswork__read_document({}))',
+      input: 'text(await tools.mcp__wiswork__wiswork_read_document({}))',
     })
     expect(events.find(({ event }) => event === 'response.output_item.done')?.data).toMatchObject({
       item: {
         type: 'custom_tool_call',
         call_id: 'custom_7',
         name: 'exec',
-        input: 'text(await tools.mcp__wiswork__read_document({}))',
+        input: 'text(await tools.mcp__wiswork__wiswork_read_document({}))',
       },
     })
   })
@@ -162,7 +121,7 @@ describe('messagesSseToResponses', () => {
             'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"code\\":\\"secret prompt\\",\\"extra\\":true}"}}\n\n',
             'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
           ),
-          customTools,
+          true,
         ),
       )
     } catch (error) {

@@ -10,8 +10,6 @@ export type ResponsesInputItem =
         | { type: 'input_image'; image_url: string }
       >
     }
-  | { type: 'function_call'; call_id: string; name: string; arguments: string }
-  | { type: 'function_call_output'; call_id: string; output: string }
   | { type: 'custom_tool_call'; call_id: string; name: 'exec'; input: string }
   | { type: 'custom_tool_call_output'; call_id: string; output: string }
   | {
@@ -24,12 +22,7 @@ export interface ResponsesRequest {
   model: 'gpt-5.6-sol'
   input: ResponsesInput
   instructions?: string
-  tools?: Array<{
-    type: 'function'
-    name: string
-    description?: string
-    parameters: Record<string, unknown>
-  }>
+  tools?: []
   tool_choice?: 'auto'
   max_output_tokens?: number
   parallel_tool_calls?: boolean
@@ -59,21 +52,18 @@ export interface MessagesRequest {
   stream: true
 }
 
-export type AdvertisedToolKind = 'function' | 'custom'
-
-export interface StreamConversionContext {
-  advertisedTools: Readonly<Record<string, AdvertisedToolKind>>
-  usedCallIds: readonly string[]
-  allowedExecMethods: readonly string[]
-}
-
-export interface RequestConversionResult {
-  request: MessagesRequest
-  context: StreamConversionContext
+export interface PreparedResponsesTurn {
+  readonly messagesRequest: MessagesRequest
+  readonly messagesStreamToResponses: (
+    chunks: AsyncIterable<string | Uint8Array>,
+  ) => AsyncGenerator<string>
 }
 
 export interface ProtocolLimits {
   maxRequestItems: number
+  maxRequestBytes: number
+  maxRequestNodes: number
+  maxNestingDepth: number
   maxContentParts: number
   maxTools: number
   maxStringLength: number
@@ -82,6 +72,7 @@ export interface ProtocolLimits {
   maxOutputTokens: number
   maxPromptCacheKeyLength: number
   maxClientMetadataBytes: number
+  maxWorkspaces: number
   maxSseFrameBytes: number
   maxSseBufferBytes: number
   maxSseFrames: number

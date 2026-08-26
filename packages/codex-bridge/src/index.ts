@@ -1,8 +1,7 @@
 import type {
-  AdvertisedToolKind,
   MessagesRequest,
+  PreparedResponsesTurn,
   ProtocolLimits,
-  RequestConversionResult,
   ResponsesRequest,
 } from './types.js'
 
@@ -26,6 +25,9 @@ export const CODEX_0147_EXEC_GRAMMAR =
 
 export const DEFAULT_PROTOCOL_LIMITS: Readonly<ProtocolLimits> = Object.freeze({
   maxRequestItems: 512,
+  maxRequestBytes: 8_000_000,
+  maxRequestNodes: 100_000,
+  maxNestingDepth: 64,
   maxContentParts: 1024,
   maxTools: 256,
   maxStringLength: 1_000_000,
@@ -34,6 +36,7 @@ export const DEFAULT_PROTOCOL_LIMITS: Readonly<ProtocolLimits> = Object.freeze({
   maxOutputTokens: 128_000,
   maxPromptCacheKeyLength: 512,
   maxClientMetadataBytes: 128_000,
+  maxWorkspaces: 32,
   maxSseFrameBytes: 1_000_000,
   maxSseBufferBytes: 2_000_000,
   maxSseFrames: 100_000,
@@ -44,6 +47,8 @@ export const DEFAULT_PROTOCOL_LIMITS: Readonly<ProtocolLimits> = Object.freeze({
 })
 
 function resolveLimits(overrides: Partial<ProtocolLimits> = {}): ProtocolLimits {
+  if (!Object.keys(overrides).every((key) => key in DEFAULT_PROTOCOL_LIMITS))
+    fail('invalid_protocol_limits')
   const limits = { ...DEFAULT_PROTOCOL_LIMITS, ...overrides }
   for (const value of Object.values(limits)) {
     if (!Number.isSafeInteger(value) || value <= 0) fail('invalid_protocol_limits')
@@ -64,15 +69,46 @@ function requireString(value: unknown, code: string): string {
   return typeof value === 'string' ? value : fail(code)
 }
 
-function isJsonValue(value: unknown, seen = new WeakSet<object>()): boolean {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true
-  if (typeof value === 'number') return Number.isFinite(value)
-  if (typeof value !== 'object' || seen.has(value)) return false
-  seen.add(value)
-  if (Array.isArray(value)) return value.every((item) => isJsonValue(item, seen))
-  const prototype = Object.getPrototypeOf(value)
-  if (prototype !== Object.prototype && prototype !== null) return false
-  return Object.values(value).every((item) => isJsonValue(item, seen))
+const utf8Length = (value: string): number => new TextEncoder().encode(value).byteLength
+
+function inspectJsonGraph(value: unknown, limits: ProtocolLimits): void {
+  const pending: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }]
+  const seen = new WeakSet<object>()
+  let nodes = 0
+  let bytes = 0
+  while (pending.length > 0) {
+    const current = pending.pop()!
+    nodes += 1
+    if (nodes > limits.maxRequestNodes) fail('request_nodes_limit_exceeded')
+    if (current.depth > limits.maxNestingDepth) fail('request_nesting_limit_exceeded')
+    const item = current.value
+    if (item === null) bytes += 4
+    else if (typeof item === 'string') bytes += utf8Length(JSON.stringify(item))
+    else if (typeof item === 'boolean') bytes += item ? 4 : 5
+    else if (typeof item === 'number') {
+      if (!Number.isFinite(item)) fail('invalid_request')
+      bytes += String(item).length
+    } else if (typeof item === 'object') {
+      if (seen.has(item)) fail('invalid_request')
+      seen.add(item)
+      if (!Array.isArray(item)) {
+        const prototype = Object.getPrototypeOf(item)
+        if (prototype !== Object.prototype && prototype !== null) fail('invalid_request')
+      }
+      const entries = Array.isArray(item)
+        ? item.map((child, index) => [String(index), child] as const)
+        : Object.entries(item)
+      bytes += 2 + Math.max(0, entries.length - 1)
+      for (const [key, child] of entries) {
+        if (!Array.isArray(item)) {
+          if (utf8Length(key) > limits.maxStringLength) fail('request_string_limit_exceeded')
+          bytes += utf8Length(JSON.stringify(key)) + 1
+        }
+        pending.push({ value: child, depth: current.depth + 1 })
+      }
+    } else fail('invalid_request')
+    if (bytes > limits.maxRequestBytes) fail('request_bytes_limit_exceeded')
+  }
 }
 
 function validateRequest(input: unknown): ResponsesRequest {
@@ -134,10 +170,7 @@ function validateRequest(input: unknown): ResponsesRequest {
   ) {
     fail('unsupported_request_field')
   }
-  if (
-    input.client_metadata !== undefined &&
-    (!isRecord(input.client_metadata) || !isJsonValue(input.client_metadata))
-  ) {
+  if (input.client_metadata !== undefined && !isRecord(input.client_metadata)) {
     fail('invalid_client_metadata')
   }
   if (input.instructions !== undefined && typeof input.instructions !== 'string')
@@ -150,6 +183,7 @@ function validateRequest(input: unknown): ResponsesRequest {
   }
   if (typeof input.input !== 'string' && !Array.isArray(input.input)) fail('invalid_request')
   if (input.tools !== undefined && !Array.isArray(input.tools)) fail('invalid_tools')
+  if (input.tools !== undefined && input.tools.length > 0) fail('unsupported_top_level_tools')
   return input as unknown as ResponsesRequest
 }
 
@@ -165,6 +199,9 @@ const PINNED_COLLABORATION_CHILDREN = new Set([
 const PINNED_BUILTIN_CODE_METHODS = new Set([
   'apply_patch',
   'exec_command',
+  'list_mcp_resource_templates',
+  'list_mcp_resources',
+  'read_mcp_resource',
   'update_plan',
   'view_image',
   'write_stdin',
@@ -185,22 +222,20 @@ const TURN_METADATA_KEYS = new Set([
   'window_id',
   'request_kind',
   'sandbox',
+  'workspaces',
   'code_mode_tool_names',
   'turn_started_at_unix_ms',
 ])
 
-function enforceStringLimits(value: unknown, limit: number, seen = new WeakSet<object>()): void {
-  if (typeof value === 'string') {
-    if (value.length > limit) fail('request_string_limit_exceeded')
-    return
-  }
-  if (typeof value !== 'object' || value === null) return
-  if (seen.has(value)) fail('invalid_request')
-  seen.add(value)
-  if (Array.isArray(value)) {
-    for (const item of value) enforceStringLimits(item, limit, seen)
-  } else {
-    for (const item of Object.values(value)) enforceStringLimits(item, limit, seen)
+function enforceStringLimits(value: unknown, limit: number): void {
+  const pending = [value]
+  while (pending.length > 0) {
+    const item = pending.pop()
+    if (typeof item === 'string') {
+      if (utf8Length(item) > limit) fail('request_string_limit_exceeded')
+    } else if (typeof item === 'object' && item !== null) {
+      pending.push(...(Array.isArray(item) ? item : Object.values(item)))
+    }
   }
 }
 
@@ -211,7 +246,7 @@ function boundedJsonSize(value: unknown, limit: number, code: string): void {
   } catch {
     fail(code)
   }
-  if (serialized.length > limit) fail(code)
+  if (utf8Length(serialized) > limit) fail(code)
 }
 
 function extractAllowedExecMethods(
@@ -224,7 +259,7 @@ function extractAllowedExecMethods(
   }
   boundedJsonSize(metadata, limits.maxClientMetadataBytes, 'client_metadata_limit_exceeded')
   for (const value of Object.values(metadata)) {
-    if (typeof value !== 'string' || value.length > limits.maxStringLength) {
+    if (typeof value !== 'string' || utf8Length(value) > limits.maxStringLength) {
       fail('unsupported_client_metadata')
     }
   }
@@ -238,6 +273,7 @@ function extractAllowedExecMethods(
   } catch {
     fail('unsupported_client_metadata')
   }
+  inspectJsonGraph(parsed, limits)
   if (!isRecord(parsed) || !Object.keys(parsed).every((key) => TURN_METADATA_KEYS.has(key))) {
     fail('unsupported_client_metadata')
   }
@@ -266,6 +302,46 @@ function extractAllowedExecMethods(
       (parsed.turn_started_at_unix_ms as number) < 0)
   ) {
     fail('unsupported_client_metadata')
+  }
+  if (parsed.workspaces !== undefined) {
+    if (!isRecord(parsed.workspaces)) fail('unsupported_client_metadata')
+    const workspaces = Object.entries(parsed.workspaces)
+    if (workspaces.length > limits.maxWorkspaces) fail('client_metadata_limit_exceeded')
+    for (const [path, workspace] of workspaces) {
+      if (
+        path === '' ||
+        utf8Length(path) > limits.maxStringLength ||
+        !isRecord(workspace) ||
+        !hasOnlyKeys(workspace, ['associated_remote_urls', 'latest_git_commit_hash', 'has_changes'])
+      ) {
+        fail('unsupported_client_metadata')
+      }
+      if (workspace.associated_remote_urls !== undefined) {
+        if (!isRecord(workspace.associated_remote_urls)) fail('unsupported_client_metadata')
+        const remotes = Object.entries(workspace.associated_remote_urls)
+        if (remotes.length > limits.maxWorkspaces) fail('client_metadata_limit_exceeded')
+        for (const [name, url] of remotes) {
+          if (
+            name === '' ||
+            utf8Length(name) > limits.maxStringLength ||
+            typeof url !== 'string' ||
+            utf8Length(url) > limits.maxStringLength
+          ) {
+            fail('unsupported_client_metadata')
+          }
+        }
+      }
+      if (
+        workspace.latest_git_commit_hash !== undefined &&
+        (typeof workspace.latest_git_commit_hash !== 'string' ||
+          utf8Length(workspace.latest_git_commit_hash) > limits.maxStringLength)
+      ) {
+        fail('unsupported_client_metadata')
+      }
+      if (workspace.has_changes !== undefined && typeof workspace.has_changes !== 'boolean') {
+        fail('unsupported_client_metadata')
+      }
+    }
   }
   if (parsed.code_mode_tool_names === undefined) return []
   if (!isRecord(parsed.code_mode_tool_names)) fail('unsupported_client_metadata')
@@ -306,7 +382,7 @@ function validatePinnedFunction(tool: unknown, allowed: Set<string>, limits: Pro
     typeof tool.name !== 'string' ||
     !allowed.has(tool.name) ||
     typeof tool.description !== 'string' ||
-    tool.description.length > limits.maxDescriptionLength ||
+    utf8Length(tool.description) > limits.maxDescriptionLength ||
     tool.strict !== false ||
     !isRecord(tool.parameters)
   ) {
@@ -361,7 +437,7 @@ function validatePinnedAdditionalTools(item: UnknownRecord, limits: ProtocolLimi
           !hasOnlyKeys(tool, ['type', 'name', 'description', 'format']) ||
           tool.type !== 'custom' ||
           typeof tool.description !== 'string' ||
-          tool.description.length > limits.maxDescriptionLength ||
+          utf8Length(tool.description) > limits.maxDescriptionLength ||
           !isRecord(tool.format) ||
           !hasOnlyKeys(tool.format, ['type', 'syntax', 'definition']) ||
           tool.format.type !== 'grammar' ||
@@ -381,16 +457,44 @@ function validatePinnedAdditionalTools(item: UnknownRecord, limits: ProtocolLimi
 }
 
 function safeExecDescription(methods: readonly string[]): string {
-  return `Execute exactly one document MCP call. Allowed syntax: text(await tools.${methods.join(
+  return `Execute exactly one document MCP call. An optional first line // @exec: {"yield_time_ms":1000,"max_output_tokens":100} is allowed. Allowed syntax: text(await tools.${methods.join(
     '({...})) or text(await tools.',
   )}({...})). Arguments must be a JSON object literal. No other JavaScript is allowed.`
 }
 
 function parseSafeExecCode(code: string, methods: readonly string[], limits: ProtocolLimits): void {
-  if (code.length > limits.maxToolArguments) fail('tool_arguments_limit_exceeded')
+  if (utf8Length(code) > limits.maxToolArguments) fail('tool_arguments_limit_exceeded')
+  let source = code
+  if (source.startsWith('// @exec:')) {
+    const newline = source.indexOf('\n')
+    if (newline < 0) fail('unsafe_custom_tool_input')
+    const pragmaText = source.slice('// @exec:'.length, newline).trim()
+    if (utf8Length(pragmaText) > 1024) fail('unsafe_custom_tool_input')
+    let pragma: unknown
+    try {
+      pragma = JSON.parse(pragmaText)
+    } catch {
+      fail('unsafe_custom_tool_input')
+    }
+    if (!isRecord(pragma) || !hasOnlyKeys(pragma, ['yield_time_ms', 'max_output_tokens'])) {
+      fail('unsafe_custom_tool_input')
+    }
+    for (const key of Object.keys(pragma)) {
+      const quoted = JSON.stringify(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      if ((pragmaText.match(new RegExp(`${quoted}\\s*:`, 'g'))?.length ?? 0) !== 1)
+        fail('unsafe_custom_tool_input')
+    }
+    for (const [key, value] of Object.entries(pragma)) {
+      const cap = key === 'yield_time_ms' ? 300_000 : limits.maxOutputTokens
+      if (!Number.isSafeInteger(value) || (value as number) <= 0 || (value as number) > cap) {
+        fail('unsafe_custom_tool_input')
+      }
+    }
+    source = source.slice(newline + 1)
+  }
   const direct = /^await\s+tools\.([A-Za-z_][A-Za-z0-9_]*)\((\{[\s\S]*\})\);?$/
   const wrapped = /^text\(\s*await\s+tools\.([A-Za-z_][A-Za-z0-9_]*)\((\{[\s\S]*\})\)\s*\);?$/
-  const match = wrapped.exec(code.trim()) ?? direct.exec(code.trim())
+  const match = wrapped.exec(source.trim()) ?? direct.exec(source.trim())
   if (!match || !methods.includes(match[1]!)) fail('unsafe_custom_tool_input')
   let argument: unknown
   try {
@@ -399,6 +503,7 @@ function parseSafeExecCode(code: string, methods: readonly string[], limits: Pro
     fail('unsafe_custom_tool_input')
   }
   if (!isRecord(argument)) fail('unsafe_custom_tool_input')
+  inspectJsonGraph(argument, limits)
 }
 
 function convertMessageContent(
@@ -445,11 +550,17 @@ function convertMessageContent(
   return { role: item.role, content }
 }
 
-export function responsesToMessagesWithContext(
+interface PrivateStreamContext {
+  usedCallIds: readonly string[]
+  allowedExecMethods: readonly string[]
+}
+
+function convertResponsesRequest(
   input: unknown,
   limitOverrides: Partial<ProtocolLimits> = {},
-): RequestConversionResult {
+): { request: MessagesRequest; context: PrivateStreamContext; limits: ProtocolLimits } {
   const limits = resolveLimits(limitOverrides)
+  inspectJsonGraph(input, limits)
   enforceStringLimits(input, limits.maxStringLength)
   const request = validateRequest(input)
   if (
@@ -460,7 +571,7 @@ export function responsesToMessagesWithContext(
   }
   if (
     request.prompt_cache_key !== undefined &&
-    request.prompt_cache_key.length > limits.maxPromptCacheKeyLength
+    utf8Length(request.prompt_cache_key) > limits.maxPromptCacheKeyLength
   ) {
     fail('prompt_cache_key_limit_exceeded')
   }
@@ -472,35 +583,7 @@ export function responsesToMessagesWithContext(
   if (sourceItems.length > limits.maxRequestItems) fail('request_item_limit_exceeded')
 
   const allowedExecMethods = extractAllowedExecMethods(request.client_metadata, limits)
-  const advertisedTools: Record<string, AdvertisedToolKind> = {}
   const upstreamTools: NonNullable<MessagesRequest['tools']> = []
-  if (request.tools !== undefined) {
-    if (request.tools.length > limits.maxTools) fail('request_tool_limit_exceeded')
-    for (const tool of request.tools) {
-      if (
-        !isRecord(tool) ||
-        !hasOnlyKeys(tool, ['type', 'name', 'description', 'parameters']) ||
-        tool.type !== 'function' ||
-        typeof tool.name !== 'string' ||
-        tool.name === '' ||
-        tool.name === 'exec' ||
-        advertisedTools[tool.name] !== undefined ||
-        !isRecord(tool.parameters) ||
-        (tool.description !== undefined &&
-          (typeof tool.description !== 'string' ||
-            tool.description.length > limits.maxDescriptionLength))
-      ) {
-        fail('invalid_tool_registry')
-      }
-      boundedJsonSize(tool.parameters, limits.maxSchemaBytes, 'tool_schema_limit_exceeded')
-      advertisedTools[tool.name] = 'function'
-      upstreamTools.push({
-        name: tool.name,
-        ...(tool.description === undefined ? {} : { description: tool.description }),
-        input_schema: tool.parameters,
-      })
-    }
-  }
 
   const developerInstructions: string[] = []
   const conversationItems: unknown[] = []
@@ -548,7 +631,6 @@ export function responsesToMessagesWithContext(
     conversationItems.push(item)
   }
   if (exposesExec) {
-    advertisedTools.exec = 'custom'
     upstreamTools.push({
       name: 'exec',
       description: safeExecDescription(allowedExecMethods),
@@ -565,7 +647,7 @@ export function responsesToMessagesWithContext(
   const messages: MessagesRequest['messages'] = []
   const usedCallIds: string[] = []
   const used = new Set<string>()
-  let pending: Array<{ id: string; kind: AdvertisedToolKind }> | undefined
+  let pending: Array<{ id: string }> | undefined
   let resultIndex = 0
   let sawMessage = false
   const append = (role: 'user' | 'assistant', content: Array<Record<string, unknown>>): void => {
@@ -576,9 +658,8 @@ export function responsesToMessagesWithContext(
 
   for (const rawItem of conversationItems) {
     if (!isRecord(rawItem)) fail('unsupported_input_item')
-    const isResult =
-      rawItem.type === 'function_call_output' || rawItem.type === 'custom_tool_call_output'
-    const isCall = rawItem.type === 'function_call' || rawItem.type === 'custom_tool_call'
+    const isResult = rawItem.type === 'custom_tool_call_output'
+    const isCall = rawItem.type === 'custom_tool_call'
     if (pending && resultIndex === pending.length && !isResult) {
       pending = undefined
       resultIndex = 0
@@ -598,46 +679,27 @@ export function responsesToMessagesWithContext(
     if (isCall) {
       if (!sawMessage || (pending && resultIndex !== 0)) fail('invalid_conversation')
       const id = requireString(rawItem.call_id, 'invalid_tool_call')
+      if (id === '') fail('invalid_tool_call')
       if (used.has(id)) fail('duplicate_call_id')
       used.add(id)
       usedCallIds.push(id)
-      let kind: AdvertisedToolKind
-      let name: string
-      let toolInput: UnknownRecord
-      if (rawItem.type === 'custom_tool_call') {
-        if (rawItem.name !== 'exec' || advertisedTools.exec !== 'custom')
-          fail('unadvertised_tool_call')
-        const code = requireString(rawItem.input, 'invalid_custom_tool_input')
-        parseSafeExecCode(code, allowedExecMethods, limits)
-        kind = 'custom'
-        name = 'exec'
-        toolInput = { code }
-      } else {
-        name = requireString(rawItem.name, 'invalid_tool_call')
-        if (advertisedTools[name] !== 'function') fail('unadvertised_tool_call')
-        const packed = requireString(rawItem.arguments, 'invalid_tool_arguments')
-        if (packed.length > limits.maxToolArguments) fail('tool_arguments_limit_exceeded')
-        try {
-          const parsed = JSON.parse(packed)
-          if (!isRecord(parsed)) fail('invalid_tool_arguments')
-          toolInput = parsed
-        } catch (error) {
-          if (error instanceof ProtocolCompatibilityError) throw error
-          fail('invalid_tool_arguments')
-        }
-        kind = 'function'
-      }
+      if (!hasOnlyKeys(rawItem, ['type', 'call_id', 'name', 'input']))
+        fail('unsupported_input_item')
+      if (rawItem.name !== 'exec' || !exposesExec) fail('unadvertised_tool_call')
+      const code = requireString(rawItem.input, 'invalid_custom_tool_input')
+      parseSafeExecCode(code, allowedExecMethods, limits)
       pending ??= []
-      pending.push({ id, kind })
-      append('assistant', [{ type: 'tool_use', id, name, input: toolInput }])
+      pending.push({ id })
+      append('assistant', [{ type: 'tool_use', id, name: 'exec', input: { code } }])
       continue
     }
     if (isResult) {
+      if (!hasOnlyKeys(rawItem, ['type', 'call_id', 'output'])) fail('unsupported_input_item')
       if (!pending || resultIndex >= pending.length) fail('invalid_tool_result_batch')
       const id = requireString(rawItem.call_id, 'invalid_tool_result')
+      if (id === '') fail('invalid_tool_result')
       const expected = pending[resultIndex]!
-      const resultKind = rawItem.type === 'custom_tool_call_output' ? 'custom' : 'function'
-      if (id !== expected.id || resultKind !== expected.kind) fail('invalid_tool_result_batch')
+      if (id !== expected.id) fail('invalid_tool_result_batch')
       const output = requireString(rawItem.output, 'invalid_tool_result')
       append('user', [{ type: 'tool_result', tool_use_id: id, content: output }])
       resultIndex += 1
@@ -667,31 +729,34 @@ export function responsesToMessagesWithContext(
   return {
     request: converted,
     context: {
-      advertisedTools: Object.freeze({ ...advertisedTools }),
       usedCallIds: Object.freeze([...usedCallIds]),
       allowedExecMethods: Object.freeze([...allowedExecMethods]),
     },
+    limits,
   }
 }
 
-export function responsesToMessages(
+export function prepareResponsesTurn(
   input: unknown,
   limitOverrides: Partial<ProtocolLimits> = {},
-): MessagesRequest {
-  return responsesToMessagesWithContext(input, limitOverrides).request
+): PreparedResponsesTurn {
+  const prepared = convertResponsesRequest(input, limitOverrides)
+  return Object.freeze({
+    messagesRequest: prepared.request,
+    messagesStreamToResponses: (chunks: AsyncIterable<string | Uint8Array>) =>
+      convertMessagesStream(chunks, prepared.context, prepared.limits),
+  })
 }
 
 function sse(event: string, data: UnknownRecord): string {
   return `event: ${event}\ndata: ${JSON.stringify({ type: event, ...data })}\n\n`
 }
 
-export async function* messagesSseToResponses(
+async function* convertMessagesStream(
   chunks: AsyncIterable<string | Uint8Array>,
-  context: import('./types.js').StreamConversionContext,
-  limitOverrides: Partial<ProtocolLimits> = {},
+  context: PrivateStreamContext,
+  limits: ProtocolLimits,
 ): AsyncGenerator<string> {
-  const limits = resolveLimits(limitOverrides)
-  if (!isRecord(context) || !isRecord(context.advertisedTools)) fail('invalid_stream_context')
   const decoder = new TextDecoder('utf-8', { fatal: true })
   type StrictBlock =
     | { kind: 'text'; itemId: string; text: string }
@@ -700,7 +765,6 @@ export async function* messagesSseToResponses(
         itemId: string
         callId: string
         name: string
-        toolKind: AdvertisedToolKind
         arguments: string
       }
   type Phase = 'await_start' | 'content' | 'await_stop' | 'terminal'
@@ -783,9 +847,44 @@ export async function* messagesSseToResponses(
       if (strict.phase !== 'await_start' || !isRecord(data.message)) {
         fail('invalid_messages_event_order')
       }
+      if (!hasOnlyKeys(data, ['type', 'message'])) fail('invalid_messages_event')
+      if (
+        !hasOnlyKeys(data.message, [
+          'id',
+          'type',
+          'role',
+          'content',
+          'model',
+          'stop_reason',
+          'stop_sequence',
+          'usage',
+        ])
+      ) {
+        fail('invalid_messages_event')
+      }
+      if (
+        (data.message.type !== undefined && data.message.type !== 'message') ||
+        (data.message.role !== undefined && data.message.role !== 'assistant') ||
+        (data.message.content !== undefined &&
+          (!Array.isArray(data.message.content) || data.message.content.length !== 0)) ||
+        (data.message.stop_reason !== undefined && data.message.stop_reason !== null) ||
+        (data.message.stop_sequence !== undefined && data.message.stop_sequence !== null)
+      ) {
+        fail('invalid_messages_event')
+      }
       if (data.message.model !== 'openai/gpt-5.6-sol') fail('unsupported_upstream_model')
       strict.responseId = requireString(data.message.id, 'invalid_messages_event')
+      if (strict.responseId === '') fail('invalid_messages_event')
       if (!isRecord(data.message.usage)) fail('invalid_messages_usage')
+      if (
+        !hasOnlyKeys(data.message.usage, [
+          'input_tokens',
+          'cache_read_input_tokens',
+          'cache_creation_input_tokens',
+        ])
+      ) {
+        fail('invalid_messages_event')
+      }
       const ordinary = usageInteger(data.message.usage.input_tokens, false)
       strict.cachedTokens = usageInteger(data.message.usage.cache_read_input_tokens, true)
       strict.cacheWriteTokens = usageInteger(data.message.usage.cache_creation_input_tokens, true)
@@ -796,6 +895,7 @@ export async function* messagesSseToResponses(
     }
     if (strict.phase === 'await_start') fail('invalid_messages_event_order')
     if (event === 'content_block_start') {
+      if (!hasOnlyKeys(data, ['type', 'index', 'content_block'])) fail('invalid_messages_event')
       if (
         strict.phase !== 'content' ||
         strict.active !== undefined ||
@@ -813,7 +913,8 @@ export async function* messagesSseToResponses(
         fail('unsupported_reasoning_block')
       }
       if (data.content_block.type === 'text') {
-        if (data.content_block.text !== '') fail('unsupported_messages_event')
+        if (!hasOnlyKeys(data.content_block, ['type', 'text']) || data.content_block.text !== '')
+          fail('unsupported_messages_event')
         strict.active = { kind: 'text', itemId, text: '' }
         strict.activeIndex = index
         return [
@@ -837,6 +938,7 @@ export async function* messagesSseToResponses(
       }
       if (data.content_block.type !== 'tool_use') fail('unsupported_content_block')
       if (
+        !hasOnlyKeys(data.content_block, ['type', 'id', 'name', 'input']) ||
         !isRecord(data.content_block.input) ||
         Object.keys(data.content_block.input).length !== 0
       ) {
@@ -844,52 +946,38 @@ export async function* messagesSseToResponses(
       }
       const callId = requireString(data.content_block.id, 'invalid_messages_event')
       const name = requireString(data.content_block.name, 'invalid_messages_event')
+      if (callId === '') fail('invalid_messages_event')
       if (strict.usedCalls.has(callId)) fail('duplicate_call_id')
-      const toolKind = context.advertisedTools[name]
-      if (toolKind === undefined) fail('unadvertised_tool_call')
-      if (
-        (name === 'exec' && toolKind !== 'custom') ||
-        (name !== 'exec' && toolKind !== 'function')
-      ) {
-        fail('tool_kind_mismatch')
-      }
+      if (name !== 'exec' || context.allowedExecMethods.length === 0) fail('unadvertised_tool_call')
       strict.usedCalls.add(callId)
-      strict.active = { kind: 'tool', itemId, callId, name, toolKind, arguments: '' }
+      strict.active = { kind: 'tool', itemId, callId, name, arguments: '' }
       strict.activeIndex = index
       return [
         sse('response.output_item.added', {
           output_index: index,
-          item:
-            toolKind === 'custom'
-              ? {
-                  id: itemId,
-                  type: 'custom_tool_call',
-                  status: 'in_progress',
-                  call_id: callId,
-                  name,
-                  input: '',
-                }
-              : {
-                  id: itemId,
-                  type: 'function_call',
-                  status: 'in_progress',
-                  call_id: callId,
-                  name,
-                  arguments: '',
-                },
+          item: {
+            id: itemId,
+            type: 'custom_tool_call',
+            status: 'in_progress',
+            call_id: callId,
+            name,
+            input: '',
+          },
         }),
       ]
     }
     if (event === 'content_block_delta') {
+      if (!hasOnlyKeys(data, ['type', 'index', 'delta'])) fail('invalid_messages_event')
       if (strict.phase !== 'content' || strict.active === undefined) {
         fail('invalid_messages_event_order')
       }
       const index = validateIndex(data.index, false)
       if (!isRecord(data.delta)) fail('invalid_messages_event')
       if (strict.active.kind === 'text' && data.delta.type === 'text_delta') {
+        if (!hasOnlyKeys(data.delta, ['type', 'text'])) fail('invalid_messages_event')
         const deltaText = requireString(data.delta.text, 'invalid_messages_event')
         strict.active.text += deltaText
-        if (strict.active.text.length > limits.maxAccumulatedText)
+        if (utf8Length(strict.active.text) > limits.maxAccumulatedText)
           fail('output_text_limit_exceeded')
         return [
           sse('response.output_text.delta', {
@@ -901,24 +989,18 @@ export async function* messagesSseToResponses(
         ]
       }
       if (strict.active.kind === 'tool' && data.delta.type === 'input_json_delta') {
+        if (!hasOnlyKeys(data.delta, ['type', 'partial_json'])) fail('invalid_messages_event')
         const argumentDelta = requireString(data.delta.partial_json, 'invalid_messages_event')
         strict.active.arguments += argumentDelta
-        if (strict.active.arguments.length > limits.maxToolArguments) {
+        if (utf8Length(strict.active.arguments) > limits.maxToolArguments) {
           fail('tool_arguments_limit_exceeded')
         }
-        return strict.active.toolKind === 'function'
-          ? [
-              sse('response.function_call_arguments.delta', {
-                item_id: strict.active.itemId,
-                output_index: index,
-                delta: argumentDelta,
-              }),
-            ]
-          : []
+        return []
       }
       fail('unsupported_content_delta')
     }
     if (event === 'content_block_stop') {
+      if (!hasOnlyKeys(data, ['type', 'index'])) fail('invalid_messages_event')
       if (strict.phase !== 'content' || strict.active === undefined) {
         fail('invalid_messages_event_order')
       }
@@ -957,68 +1039,56 @@ export async function* messagesSseToResponses(
       try {
         parsed = JSON.parse(block.arguments)
       } catch {
-        fail(block.toolKind === 'custom' ? 'invalid_custom_tool_input' : 'invalid_tool_arguments')
+        fail('invalid_custom_tool_input')
       }
-      if (!isRecord(parsed)) {
-        fail(block.toolKind === 'custom' ? 'invalid_custom_tool_input' : 'invalid_tool_arguments')
-      }
-      if (block.toolKind === 'custom') {
-        if (!hasOnlyKeys(parsed, ['code']) || typeof parsed.code !== 'string') {
-          fail('invalid_custom_tool_input')
-        }
-        parseSafeExecCode(parsed.code, context.allowedExecMethods, limits)
-        const item = {
-          id: block.itemId,
-          type: 'custom_tool_call',
-          status: 'completed',
-          call_id: block.callId,
-          name: 'exec',
-          input: parsed.code,
-        }
-        strict.output.push(item)
-        return [
-          sse('response.custom_tool_call_input.delta', {
-            item_id: block.itemId,
-            output_index: index,
-            delta: parsed.code,
-          }),
-          sse('response.custom_tool_call_input.done', {
-            item_id: block.itemId,
-            output_index: index,
-            input: parsed.code,
-          }),
-          sse('response.output_item.done', { output_index: index, item }),
-        ]
-      }
+      if (!isRecord(parsed) || !hasOnlyKeys(parsed, ['code']) || typeof parsed.code !== 'string')
+        fail('invalid_custom_tool_input')
+      parseSafeExecCode(parsed.code, context.allowedExecMethods, limits)
       const item = {
         id: block.itemId,
-        type: 'function_call',
+        type: 'custom_tool_call',
         status: 'completed',
         call_id: block.callId,
-        name: block.name,
-        arguments: block.arguments,
+        name: 'exec',
+        input: parsed.code,
       }
       strict.output.push(item)
       return [
-        sse('response.function_call_arguments.done', {
+        sse('response.custom_tool_call_input.delta', {
           item_id: block.itemId,
           output_index: index,
-          arguments: block.arguments,
+          delta: parsed.code,
+        }),
+        sse('response.custom_tool_call_input.done', {
+          item_id: block.itemId,
+          output_index: index,
+          input: parsed.code,
         }),
         sse('response.output_item.done', { output_index: index, item }),
       ]
     }
     if (event === 'message_delta') {
+      if (!hasOnlyKeys(data, ['type', 'delta', 'usage'])) fail('invalid_messages_event')
       if (strict.phase !== 'content' || strict.active !== undefined || !isRecord(data.delta)) {
         fail('invalid_messages_event_order')
       }
       if (!isRecord(data.usage)) fail('invalid_messages_usage')
+      if (!hasOnlyKeys(data.delta, ['stop_reason', 'stop_sequence'])) fail('invalid_messages_event')
+      if (
+        data.delta.stop_sequence !== undefined &&
+        data.delta.stop_sequence !== null &&
+        typeof data.delta.stop_sequence !== 'string'
+      ) {
+        fail('invalid_messages_event')
+      }
+      if (!hasOnlyKeys(data.usage, ['output_tokens'])) fail('invalid_messages_event')
       strict.stopReason = requireString(data.delta.stop_reason, 'invalid_messages_event')
       strict.outputTokens = usageInteger(data.usage.output_tokens, false)
       strict.phase = 'await_stop'
       return []
     }
     if (event === 'message_stop') {
+      if (!hasOnlyKeys(data, ['type'])) fail('invalid_messages_event')
       if (strict.phase !== 'await_stop' || strict.stopReason === undefined) {
         fail('invalid_messages_event_order')
       }

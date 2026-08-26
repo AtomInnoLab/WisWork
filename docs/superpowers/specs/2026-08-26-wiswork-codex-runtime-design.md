@@ -67,16 +67,16 @@ First release supports:
 
 - instructions/system text;
 - user/assistant text and image inputs;
-- function tool definitions;
-- function calls, argument deltas, tool outputs, and parallel calls;
-- pinned Codex 0.147 Code Mode custom `exec` only as a constrained carrier for one direct document-scoped WisWork MCP call per turn;
+- pinned Codex 0.147 Code Mode custom `exec` calls and results only, as a constrained carrier for one direct document-scoped WisWork MCP call per turn; nonempty top-level Responses `tools` and generic function calls are rejected in the first release;
 - streaming text;
 - request cancellation and upstream disconnect;
 - input/output/cache usage when supplied upstream;
 - normalized max-token and error termination;
 - opaque reasoning/thinking blocks only after the upstream Messages service provides a specified, round-trippable representation. The pinned initial bridge validates Codex reasoning request metadata but rejects reasoning history and upstream `thinking`/`redacted_thinking` blocks; it does not invent a Messages thinking dialect or silently discard reasoning content.
 
-Unsupported fields, tools, and stream events return an explicit compatibility error. Hosted tools, general programmatic tool calling, background responses, server-side conversations, and `previous_response_id` are disabled until separately specified and tested. The sole programmatic exception is the pinned Code Mode `exec` wrapper above: the bridge derives an allowlist from validated `mcp__wiswork` metadata, publishes a generated one-call syntax, and accepts only a direct call to one allowlisted document MCP method with a JSON-object argument and an optional `text(...)` result wrapper.
+Unsupported fields, tools, and stream events return an explicit compatibility error. Hosted tools, generic function tools, general programmatic tool calling, background responses, server-side conversations, and `previous_response_id` are disabled until separately specified and tested. The sole programmatic exception is the pinned Code Mode `exec` wrapper above: the bridge derives an allowlist from validated `mcp__wiswork` metadata, publishes a generated one-call syntax, and accepts only a direct call to one allowlisted document MCP method with a JSON-object argument and an optional `text(...)` result wrapper. The exact first-line grammar pragma is also supported with a bounded JSON object containing only positive `yield_time_ms` and `max_output_tokens` values.
+
+Request conversion and response-stream conversion are inseparable in the production API: preparing a turn returns the Messages request and a bound stream-conversion closure whose private tool authorization and resolved limits cannot be replaced by callers. The converter iteratively enforces UTF-8 aggregate bytes, node count, nesting depth, item/content/tool counts, and output-stream limits before recursive serialization can occur. Task 2 must additionally cap raw HTTP request-body bytes before JSON parsing; the in-memory converter limits are defense in depth, not a substitute for that transport cap.
 
 Codex 0.147 cannot fully configuration-disable `apply_patch` and `view_image`. Task 3 must still disable shell/unified exec, `update_plan`, and multi-agent features, while the protocol translator exposes neither those built-ins nor arbitrary JavaScript. Runtime document-MCP policy remains the critical enforcement boundary: computed properties, multiple calls/statements, shell, filesystem, `apply_patch`, `view_image`, `update_plan`, non-WisWork namespaces, and every unadvertised method fail closed.
 

@@ -1,32 +1,29 @@
 import { describe, expect, it } from 'vitest'
 import captured from './fixtures/codex-0147-request.json'
-import { ProtocolCompatibilityError, responsesToMessagesWithContext } from '../src/index.js'
+import { prepareResponsesTurn, ProtocolCompatibilityError } from '../src/index.js'
 
 const cloneCaptured = (): Record<string, unknown> =>
   structuredClone(captured) as Record<string, unknown>
 
 function expectCode(request: unknown, code: string): void {
-  expect(() => responsesToMessagesWithContext(request)).toThrowError(
+  expect(() => prepareResponsesTurn(request)).toThrowError(
     expect.objectContaining<Partial<ProtocolCompatibilityError>>({ message: code }),
   )
 }
 
 describe('strict Responses request conversion', () => {
   it('accepts the captured Codex 0.147 envelope and returns stream context', () => {
-    const converted = responsesToMessagesWithContext(cloneCaptured())
-    expect(converted.request).toMatchObject({
+    const converted = prepareResponsesTurn(cloneCaptured())
+    expect(converted.messagesRequest).toMatchObject({
       model: 'openai/gpt-5.6-sol',
       system: 'System',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }] }],
       tool_choice: { type: 'auto', disable_parallel_tool_use: true },
     })
-    expect(converted.context).toEqual({
-      advertisedTools: { exec: 'custom' },
-      usedCallIds: [],
-      allowedExecMethods: ['mcp__wiswork__read_document'],
-    })
-    const exec = converted.request.tools?.find((tool) => tool.name === 'exec')
-    expect(exec?.description).toContain('text(await tools.mcp__wiswork__read_document({...}))')
+    const exec = converted.messagesRequest.tools?.find((tool) => tool.name === 'exec')
+    expect(exec?.description).toContain(
+      'text(await tools.mcp__wiswork__wiswork_read_document({...}))',
+    )
     expect(exec?.description).not.toContain('ALL_TOOLS')
     expect(exec?.description).not.toContain('apply_patch')
   })
@@ -69,64 +66,12 @@ describe('strict Responses request conversion', () => {
         model: 'gpt-5.6-sol',
         input: [
           { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x' }] },
-          { type: 'function_call_output', call_id: 'orphan', output: 'secret' },
+          { type: 'custom_tool_call_output', call_id: 'orphan', output: 'secret' },
         ],
       },
       'invalid_tool_result_batch',
-    ],
-    [
-      'mismatched result batch',
-      {
-        model: 'gpt-5.6-sol',
-        input: [
-          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x' }] },
-          { type: 'function_call', call_id: 'a', name: 'read', arguments: '{}' },
-          { type: 'function_call', call_id: 'b', name: 'read', arguments: '{}' },
-          { type: 'function_call_output', call_id: 'b', output: 'secret' },
-          { type: 'function_call_output', call_id: 'a', output: 'secret' },
-        ],
-        tools: [{ type: 'function', name: 'read', parameters: {} }],
-      },
-      'invalid_tool_result_batch',
-    ],
-    [
-      'duplicate call ID',
-      {
-        model: 'gpt-5.6-sol',
-        input: [
-          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x' }] },
-          { type: 'function_call', call_id: 'a', name: 'read', arguments: '{}' },
-          { type: 'function_call', call_id: 'a', name: 'read', arguments: '{}' },
-        ],
-        tools: [{ type: 'function', name: 'read', parameters: {} }],
-      },
-      'duplicate_call_id',
     ],
   ])('rejects %s', (_label, request, code) => expectCode(request, code))
-
-  it('preserves a valid alternating conversation and exact tool batches', () => {
-    const { request, context } = responsesToMessagesWithContext({
-      model: 'gpt-5.6-sol',
-      input: [
-        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'one' }] },
-        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'two' }] },
-        {
-          type: 'message',
-          role: 'assistant',
-          content: [{ type: 'output_text', text: 'checking' }],
-        },
-        { type: 'function_call', call_id: 'a', name: 'read', arguments: '{}' },
-        { type: 'function_call', call_id: 'b', name: 'read', arguments: '{}' },
-        { type: 'function_call_output', call_id: 'a', output: 'A' },
-        { type: 'function_call_output', call_id: 'b', output: 'B' },
-      ],
-      tools: [{ type: 'function', name: 'read', parameters: {} }],
-    })
-    expect(request.messages.map((message) => message.role)).toEqual(['user', 'assistant', 'user'])
-    expect(request.messages[0]?.content).toHaveLength(2)
-    expect(context.usedCallIds).toEqual(['a', 'b'])
-    expect(context.advertisedTools).toEqual({ read: 'function' })
-  })
 
   it.each([
     ['reserved exec', [{ type: 'function', name: 'exec', parameters: {} }]],
@@ -144,7 +89,7 @@ describe('strict Responses request conversion', () => {
         input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x' }] }],
         tools,
       },
-      'invalid_tool_registry',
+      'unsupported_top_level_tools',
     )
   })
 
@@ -160,7 +105,7 @@ describe('strict Responses request conversion', () => {
   ])('enforces configurable %s', (_label, limits, code) => {
     const request = cloneCaptured()
     request.max_output_tokens = 11
-    expect(() => responsesToMessagesWithContext(request, limits)).toThrowError(code)
+    expect(() => prepareResponsesTurn(request, limits)).toThrowError(code)
   })
 
   it('rejects reasoning history instead of inventing a thinking dialect', () => {
@@ -204,7 +149,7 @@ describe('strict Responses request conversion', () => {
     const request = cloneCaptured()
     mutate(request)
     try {
-      responsesToMessagesWithContext(request)
+      prepareResponsesTurn(request)
       throw new Error('expected compatibility failure')
     } catch (error) {
       expect(error).toBeInstanceOf(ProtocolCompatibilityError)

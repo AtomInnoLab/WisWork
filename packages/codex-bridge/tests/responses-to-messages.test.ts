@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   CODEX_0147_EXEC_GRAMMAR,
+  prepareResponsesTurn,
   ProtocolCompatibilityError,
-  responsesToMessages,
 } from '../src/index.js'
+
+const responsesToMessages = (input: unknown) => prepareResponsesTurn(input).messagesRequest
 
 const metadata = {
   'x-codex-turn-metadata': JSON.stringify({
@@ -63,23 +65,14 @@ const additionalTools = {
 }
 
 describe('responsesToMessages', () => {
-  it('maps instructions, text, model, max tokens, and tools', () => {
+  it('maps instructions, text, model, and max tokens', () => {
     expect(
       responsesToMessages({
         model: 'gpt-5.6-sol',
         instructions: 'Be concise.',
         input: 'Hello',
         max_output_tokens: 123,
-        parallel_tool_calls: true,
         stream: true,
-        tools: [
-          {
-            type: 'function',
-            name: 'read_document',
-            description: 'Read the current document',
-            parameters: { type: 'object', properties: {} },
-          },
-        ],
       }),
     ).toEqual({
       model: 'openai/gpt-5.6-sol',
@@ -87,65 +80,7 @@ describe('responsesToMessages', () => {
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }] }],
       max_tokens: 123,
       stream: true,
-      tools: [
-        {
-          name: 'read_document',
-          description: 'Read the current document',
-          input_schema: { type: 'object', properties: {} },
-        },
-      ],
     })
-  })
-
-  it('maps text, images, calls, and tool results in their original order', () => {
-    const converted = responsesToMessages({
-      model: 'gpt-5.6-sol',
-      input: [
-        {
-          type: 'message',
-          role: 'user',
-          content: [
-            { type: 'input_text', text: 'Inspect this' },
-            { type: 'input_image', image_url: 'https://example.test/image.png' },
-          ],
-        },
-        { type: 'function_call', call_id: 'call_17', name: 'inspect', arguments: '{"page":2}' },
-        { type: 'function_call', call_id: 'call_18', name: 'inspect', arguments: '{"page":3}' },
-        { type: 'function_call_output', call_id: 'call_17', output: 'done' },
-        { type: 'function_call_output', call_id: 'call_18', output: 'also done' },
-        {
-          type: 'message',
-          role: 'assistant',
-          content: [{ type: 'output_text', text: 'Finished' }],
-        },
-      ],
-      tools: [{ type: 'function', name: 'inspect', parameters: {} }],
-    })
-
-    expect(converted.messages).toEqual([
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'Inspect this' },
-          { type: 'image', source: { type: 'url', url: 'https://example.test/image.png' } },
-        ],
-      },
-      {
-        role: 'assistant',
-        content: [
-          { type: 'tool_use', id: 'call_17', name: 'inspect', input: { page: 2 } },
-          { type: 'tool_use', id: 'call_18', name: 'inspect', input: { page: 3 } },
-        ],
-      },
-      {
-        role: 'user',
-        content: [
-          { type: 'tool_result', tool_use_id: 'call_17', content: 'done' },
-          { type: 'tool_result', tool_use_id: 'call_18', content: 'also done' },
-        ],
-      },
-      { role: 'assistant', content: [{ type: 'text', text: 'Finished' }] },
-    ])
   })
 
   it('accepts and safely omits the fixed Codex 0.147 request metadata', () => {
@@ -177,7 +112,7 @@ describe('responsesToMessages', () => {
         text: { verbosity: 'low' },
         client_metadata: metadata,
       }),
-    ).toEqual({
+    ).toMatchObject({
       model: 'openai/gpt-5.6-sol',
       system: 'System from Codex',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }] }],
@@ -186,8 +121,6 @@ describe('responsesToMessages', () => {
       tools: [
         {
           name: 'exec',
-          description:
-            'Execute exactly one document MCP call. Allowed syntax: text(await tools.mcp__wiswork__read_document({...})). Arguments must be a JSON object literal. No other JavaScript is allowed.',
           input_schema: {
             type: 'object',
             properties: { code: { type: 'string' } },
@@ -250,7 +183,7 @@ describe('responsesToMessages', () => {
       'unsupported_input_item',
     ],
     [
-      'invalid tool arguments',
+      'unsupported top-level tools',
       {
         model: 'gpt-5.6-sol',
         input: [
@@ -259,7 +192,7 @@ describe('responsesToMessages', () => {
         ],
         tools: [{ type: 'function', name: 'x', parameters: {} }],
       },
-      'invalid_tool_arguments',
+      'unsupported_top_level_tools',
     ],
     [
       'unknown additional_tools child',
