@@ -56,7 +56,7 @@ function fakeHost(options?: {
       const planned: PlannedPresentationOperation[] = []
       for (const [index, op] of ops.entries()) {
         const createdId = op.kind === 'add_text_box' ? allocateId(op.clientId) : undefined
-        if (op.kind === 'set_text') simulated.set(op.target.elementId!, op.text)
+        if (op.kind === 'set_text') simulated.set(op.target.elementId!, op.text ?? '')
         if (op.kind === 'add_text_box') simulated.set(createdId!, op.text)
         planned.push({ index, operation: op, ...(createdId ? { createdId } : {}) })
       }
@@ -66,7 +66,7 @@ function fakeHost(options?: {
     apply: async (planned) => {
       applyCount += 1
       const op = planned.operation
-      if (op.kind === 'set_text') state.values.set(op.target.elementId!, op.text)
+      if (op.kind === 'set_text') state.values.set(op.target.elementId!, op.text ?? '')
       if (op.kind === 'add_text_box') state.values.set(planned.createdId!, op.text)
       state.revision = fp(String(applyCount))
       if (options?.thirdStateAt === applyCount) state.revision = fp('f')

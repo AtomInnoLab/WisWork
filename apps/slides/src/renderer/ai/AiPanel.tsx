@@ -10,6 +10,7 @@ import type { RenderSlide } from '@wiswork/pptx-render'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
 import { createSlidesSkill, type DeckAccess, type ClarifyQuestion } from './slides-skill'
+import { executePreparedTextFamilyTransaction } from './presentation-text-transactions'
 import { extractJsonObject, parseOutlineJson } from './outline-json'
 import { createFilesSkill } from './files-skill'
 import { createElectronTransport } from './transport'
@@ -260,11 +261,8 @@ interface AiPanelProps {
   onUndo?: () => void
   /** Callback to update the path after AI generation lands on disk (title bar sync) */
   onPathChange?: (path: string) => void
-  /** Persist and verify one slide's complete speaker-notes replacement. */
-  onSetSpeakerNotes?: (
-    slideIndex: number,
-    text: string,
-  ) => Promise<'applied' | 'unchanged' | 'uncertain'>
+  /** Mirror canonical notes commits into the notes editor; this callback never writes the deck. */
+  onSpeakerNotesApplied?: (slideIndex: number, text: string) => void
   /** Absolute path of the currently open file (for chat history persistence) */
   currentFilePath?: string | null
 }
@@ -343,7 +341,7 @@ export function AiPanel({
   onExpand,
   onCollapse,
   onPathChange,
-  onSetSpeakerNotes,
+  onSpeakerNotesApplied,
   currentFilePath,
 }: AiPanelProps) {
   const { t } = useI18n()
@@ -451,8 +449,8 @@ export function AiPanel({
   applySlideRef.current = applySlide
   const applyDeckRef = useRef(applyDeck)
   applyDeckRef.current = applyDeck
-  const onSetSpeakerNotesRef = useRef(onSetSpeakerNotes)
-  onSetSpeakerNotesRef.current = onSetSpeakerNotes
+  const onSpeakerNotesAppliedRef = useRef(onSpeakerNotesApplied)
+  onSpeakerNotesAppliedRef.current = onSpeakerNotesApplied
   const onPathChangeRef = useRef(onPathChange)
   onPathChangeRef.current = onPathChange
   const settingsRef = useRef(settings)
@@ -751,8 +749,19 @@ export function AiPanel({
       getSelectedIds: () => selectedRef.current,
       applySlide: (i, updated) => applySlideRef.current(i, updated),
       applyDeck: (all, goTo) => applyDeckRef.current(all, goTo),
-      setSpeakerNotes: (i, text) =>
-        onSetSpeakerNotesRef.current?.(i, text) ?? Promise.resolve('unchanged'),
+      executePresentationOperation: async (request, signal) => {
+        const receipt = await executePreparedTextFamilyTransaction(
+          window.slidesApi,
+          request,
+          signal,
+        )
+        if (receipt.status === 'applied') {
+          const refreshed = await window.slidesApi.getRenderSlides()
+          if (refreshed) applyDeckRef.current(refreshed, currentRef.current)
+        }
+        return receipt
+      },
+      applySpeakerNotes: (slideIndex, text) => onSpeakerNotesAppliedRef.current?.(slideIndex, text),
       askClarification: (questions: ClarifyQuestion[]) => {
         return new Promise<{ answers: string; cancelled?: boolean }>((resolve) => {
           clarifyResolverRef.current = resolve

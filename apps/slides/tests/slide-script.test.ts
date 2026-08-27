@@ -362,6 +362,12 @@ describe('execute_slide_script tool', () => {
       slide = updated
     },
     applyDeck: () => {},
+    executePresentationOperation: vi.fn(async (request) => ({
+      status: 'applied' as const,
+      transactionId: request.transactionId,
+      resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+      operationCount: 1,
+    })),
     fitWidthPx: 1280,
   })
 
@@ -568,16 +574,18 @@ describe('execute_slide_script tool', () => {
         groupNode('g2', box(100, 100, 200, 200), [textNode('cc', box(5, 5, 20, 10), 'Deep')]),
       ]),
     ])
-    const api = (globalThis as any).window.slidesApi
-    const skill = createSlidesSkill(access())
+    const deckAccess = access()
+    const executePresentationOperation = vi.mocked(deckAccess.executePresentationOperation!)
+    const skill = createSlidesSkill(deckAccess)
     const r = await skill.executeTool({
       id: '8',
       name: 'set_element_text',
       input: { slideIndex: 0, sourceId: 'c1', paragraphs: [{ text: 'x' }] },
     } as any)
     expect((r as any).isError).toBeFalsy()
-    expect(api.editText).toHaveBeenCalledWith(
-      expect.objectContaining({ sourceId: 'c1', groupId: 'g1' }),
+    expect(executePresentationOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceId: 'c1' }),
+      undefined,
     )
     const r2 = await skill.executeTool({
       id: '9',
@@ -589,16 +597,17 @@ describe('execute_slide_script tool', () => {
   })
 
   it('set_element_text does not apply a late IPC result after the run is stopped', async () => {
-    let resolveEdit!: (value: typeof slide) => void
-    const api = (globalThis as any).window.slidesApi
-    api.editText = vi.fn(
-      () =>
-        new Promise<typeof slide>((resolve) => {
-          resolveEdit = resolve
-        }),
-    )
     const controller = new AbortController()
-    const skill = createSlidesSkill(access())
+    const deckAccess = access()
+    deckAccess.executePresentationOperation = vi.fn((_request, signal) => {
+      if (signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'))
+      return new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), {
+          once: true,
+        })
+      })
+    })
+    const skill = createSlidesSkill(deckAccess)
     const pending = skill.executeTool(
       {
         id: 'abort-edit',
@@ -609,7 +618,6 @@ describe('execute_slide_script tool', () => {
     )
 
     controller.abort()
-    resolveEdit({ ...slide })
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
     expect(applied).toBeNull()
   })

@@ -12,8 +12,20 @@ import { AiIpcError, registerWisworkModelIpc, validateAiSearchArgs } from '@wisw
 import { AuthError, getElectronAuthRuntimeOrNull } from '@wiswork/auth'
 import { webSearch, imageSearch } from '@wiswork/ai-search'
 import { fetchWithSsrfGuard } from '@wiswork/electron-utils'
-import { addPicture, replacePictureBytes } from '@wiswork/pptx-engine'
-import { parsePresentationTransaction } from '@wiswork/presentation-ops'
+import {
+  addPicture,
+  collectDeckCreationIds,
+  fingerprintPresentation,
+  fingerprintSlide,
+  fingerprintSlideElement,
+  mintUniqueCreationIds,
+  replacePictureBytes,
+  type SlideElement,
+} from '@wiswork/pptx-engine'
+import {
+  parsePresentationTransaction,
+  type PresentationElementType,
+} from '@wiswork/presentation-ops'
 import { EMU_PER_PX_96 } from '@wiswork/pptx-render'
 import { tm } from './i18n-main'
 import {
@@ -24,9 +36,15 @@ import {
   scheduleHistoryNotify,
   sessions,
   SlidesSessionBusyError,
+  sessionHasActivePresentationMutation,
+  sessionHasActivePresentationPersistence,
+  sessionHasActivePresentationTransaction,
 } from './session-state'
 import { registerUnsupportedMediaIpc } from './unsupported-ipc'
-import { DesktopPresentationHost } from './operations/desktop-host'
+import {
+  DesktopPresentationHost,
+  type PresentationTargetEnrollment,
+} from './operations/desktop-host'
 import { PresentationTransactionExecutor } from './operations/executor'
 
 // ---- AI settings + streaming proxy (the main process does the networking to avoid renderer CORS; implementation shared via @wiswork/ai-provider) ----
@@ -160,6 +178,128 @@ export function registerSlidesOnlyAiIpc(): void {
   const transactionControllers = new Map<string, Set<AbortController>>()
   const controllerKey = (senderId: number, transactionId: string) => `${senderId}:${transactionId}`
 
+  type PreparedTarget = {
+    request: { slideIndex: number; sourceId?: string }
+    response: import('../shared/ipc').PresentationTargetPreparation
+    enrollment?: PresentationTargetEnrollment
+  }
+  const preparedTargets = new WeakMap<
+    NonNullable<ReturnType<typeof sessions.get>>,
+    Map<string, PreparedTarget>
+  >()
+  const MAX_PREPARED_TARGETS = 10_000
+
+  const elementType = (element: SlideElement): PresentationElementType | undefined => {
+    if (element.type === 'picture') return 'image'
+    if (
+      element.type === 'text' ||
+      element.type === 'shape' ||
+      element.type === 'table' ||
+      element.type === 'chart' ||
+      element.type === 'group'
+    )
+      return element.type
+    return undefined
+  }
+  const findLegacyElements = (
+    elements: readonly SlideElement[],
+    sourceId: string,
+  ): SlideElement[] => {
+    const matches: SlideElement[] = []
+    const visit = (items: readonly SlideElement[]) => {
+      for (const element of items) {
+        if (element.id === sourceId) matches.push(element)
+        if (element.type === 'group') visit(element.children)
+      }
+    }
+    visit(elements)
+    return matches
+  }
+
+  ipcMain.handle('slides:presentation-target-prepare', async (event, value: unknown) => {
+    assertAiIpcSender(event)
+    const request = validateSlidesAiObject(value, ['transactionId', 'slideIndex', 'sourceId'])
+    const transactionId = validateSlidesAiString(request.transactionId, 128)
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(transactionId))
+      throw new AiIpcError('invalid_payload')
+    if (
+      typeof request.slideIndex !== 'number' ||
+      !Number.isInteger(request.slideIndex) ||
+      request.slideIndex < 0 ||
+      request.slideIndex > 10_000
+    )
+      throw new AiIpcError('invalid_payload')
+    const sourceId =
+      request.sourceId === undefined ? undefined : validateSlidesAiString(request.sourceId, 128)
+    const session = sessions.get(event.sender.id)!
+    if (
+      sessionHasActivePresentationTransaction(session) ||
+      sessionHasActivePresentationMutation(session) ||
+      sessionHasActivePresentationPersistence(session)
+    )
+      return { status: 'busy' } as const
+    let ledger = preparedTargets.get(session)
+    if (!ledger) {
+      ledger = new Map()
+      preparedTargets.set(session, ledger)
+    }
+    const previous = ledger.get(transactionId)
+    if (previous) {
+      return previous.request.slideIndex === request.slideIndex &&
+        previous.request.sourceId === sourceId
+        ? previous.response
+        : ({ status: 'conflict', code: 'target_stale' } as const)
+    }
+    if (ledger.size >= MAX_PREPARED_TARGETS) return { status: 'busy' } as const
+    const generation = session.mutationGeneration ?? 0
+    const slide = session.opened.deck.slides[request.slideIndex]
+    if (!slide) return { status: 'conflict', code: 'target_missing' } as const
+    const expectedDeckRevision = await fingerprintPresentation(session.opened)
+    let response: import('../shared/ipc').PresentationTargetPreparation
+    let enrollment: PresentationTargetEnrollment | undefined
+    if (sourceId === undefined) {
+      response = {
+        status: 'prepared',
+        expectedDeckRevision,
+        target: {
+          slideId: slide.durableId,
+          expectedFingerprint: await fingerprintSlide(session.opened, slide),
+        },
+      }
+    } else {
+      const matches = findLegacyElements(slide.elements, sourceId)
+      if (matches.length === 0) return { status: 'conflict', code: 'target_missing' } as const
+      if (matches.length !== 1) return { status: 'conflict', code: 'target_ambiguous' } as const
+      const element = matches[0]!
+      const expectedType = elementType(element)
+      if (!expectedType) return { status: 'conflict', code: 'target_stale' } as const
+      const elementId =
+        element.creationId ??
+        mintUniqueCreationIds(1, collectDeckCreationIds(session.opened.deck))[0]!
+      if (!element.creationId) enrollment = { slideId: slide.durableId, sourceId, elementId }
+      response = {
+        status: 'prepared',
+        expectedDeckRevision,
+        target: {
+          slideId: slide.durableId,
+          elementId,
+          expectedType,
+          expectedFingerprint: await fingerprintSlideElement(session.opened, slide, element),
+        },
+      }
+    }
+    if ((session.mutationGeneration ?? 0) !== generation) return { status: 'busy' } as const
+    ledger.set(transactionId, {
+      request: {
+        slideIndex: request.slideIndex,
+        ...(sourceId === undefined ? {} : { sourceId }),
+      },
+      response,
+      ...(enrollment === undefined ? {} : { enrollment }),
+    })
+    return response
+  })
+
   ipcMain.handle('slides:presentation-transaction', async (event, value: unknown) => {
     assertAiIpcSender(event)
     const transaction = parsePresentationTransaction(value)
@@ -169,9 +309,19 @@ export function registerSlidesOnlyAiIpc(): void {
     }
     let executor = transactionExecutors.get(session)
     if (!executor) {
-      executor = new PresentationTransactionExecutor(new DesktopPresentationHost(session), {
-        acquireWriteLease: () => acquirePresentationTransactionLease(session),
-      })
+      executor = new PresentationTransactionExecutor(
+        new DesktopPresentationHost(session, (id) => {
+          const ledger = preparedTargets.get(session)
+          if (!ledger) return undefined
+          for (const prepared of ledger.values()) {
+            if (prepared.enrollment?.elementId === id) return prepared.enrollment
+          }
+          return undefined
+        }),
+        {
+          acquireWriteLease: () => acquirePresentationTransactionLease(session),
+        },
+      )
       transactionExecutors.set(session, executor)
     }
     const key = controllerKey(event.sender.id, transaction.transactionId)

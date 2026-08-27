@@ -79,6 +79,38 @@ describe('presentation transaction parser', () => {
     expect(parsePresentationTarget(target)).toEqual(target)
   })
 
+  it('preserves bounded rich paragraphs for text replacement', () => {
+    const rich = {
+      kind: 'set_text',
+      clientId: 'rich-text',
+      target,
+      paragraphs: [
+        {
+          runs: [
+            { text: 'Hello', bold: true, fontSize: 24, color: '#12abef' },
+            { text: ' world', italic: true },
+          ],
+          align: 'center',
+        },
+      ],
+    }
+    expect(parsePresentationOperation(rich)).toEqual({
+      ...rich,
+      paragraphs: [
+        {
+          runs: [
+            { text: 'Hello', bold: true, fontSize: 24, color: '#12ABEF' },
+            { text: ' world', italic: true },
+          ],
+          align: 'center',
+        },
+      ],
+    })
+    expect(() => parsePresentationOperation({ ...rich, text: 'ambiguous' })).toThrow(
+      /field|exactly/i,
+    )
+  })
+
   it.each([
     ['unknown transaction field', { ...transaction([]), extra: true }],
     [

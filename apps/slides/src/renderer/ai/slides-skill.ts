@@ -10,6 +10,12 @@ import type { AddSmartArtOp, AgentToolCall, AgentToolDef, EditParagraph } from '
 import { auditSlideLayout, formatAudit } from './layout-audit'
 import { runLayoutScript, type LayoutScriptElement, type SlideStylePatch } from './layout-script'
 import { t } from '../i18n/locale'
+import type { PresentationReceipt } from '@wiswork/presentation-ops'
+import {
+  textFamilyReceiptOutcome,
+  textToolTransactionId,
+  type TextFamilyTransactionRequest,
+} from './presentation-text-transactions'
 
 /**
  * Slides capability as an AgentSkill: deck outline context + three tools (read structure /
@@ -26,8 +32,13 @@ export interface DeckAccess {
   applySlide(slideIndex: number, updated: RenderSlide): void
   /** Replace the whole deck (after adding/removing slides) and jump to the goTo slide */
   applyDeck(slides: RenderSlide[], goTo?: number): void
-  /** Persist and verify a complete speaker-notes replacement for one slide. */
-  setSpeakerNotes?(slideIndex: number, text: string): Promise<'applied' | 'unchanged' | 'uncertain'>
+  /** Execute one canonical, durable text-family presentation transaction. */
+  executePresentationOperation?(
+    request: TextFamilyTransactionRequest,
+    signal?: AbortSignal,
+  ): Promise<PresentationReceipt>
+  /** Mirror an already-applied notes transaction into the visible notes editor. */
+  applySpeakerNotes?(slideIndex: number, text: string): void
   /** Survey: shows a card with options and waits for the user's choices, returning an answer summary. */
   askClarification?(questions: ClarifyQuestion[]): Promise<{ answers: string; cancelled?: boolean }>
   /**
@@ -1298,27 +1309,35 @@ async function executeTool(
       const target = resolveEditTarget(slide, sourceId)
       const terr = targetError(target, sourceId, idx + 1)
       if (terr || !target || 'nested' in target) return fail(t('aiFailEditText'), terr!)
-      const updated = await window.slidesApi.editText({
-        slideIndex: idx,
-        sourceId,
-        paragraphs,
-        ...(target.groupId ? { groupId: target.groupId } : {}),
-      })
-      signal?.throwIfAborted()
-      if (!updated)
-        return fail(
-          t('aiFailEditText'),
-          `Element ${sourceId} (${target.node.type}) does not support text editing` +
-            (target.node.type === 'table'
-              ? '; use edit_table_cell for tables'
-              : target.node.type === 'chart'
-                ? '; use edit_chart for charts'
-                : ''),
-        )
-      access.applySlide(idx, updated)
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailEditText'), 'Canonical presentation transactions are unavailable')
+      const transactionId = await textToolTransactionId(call)
+      const receipt = await access.executePresentationOperation(
+        {
+          transactionId,
+          slideIndex: idx,
+          sourceId,
+          operation: { kind: 'set_text', paragraphs },
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(receipt)
+      if (!outcome.ok) {
+        return {
+          output:
+            outcome.detail === 'write_state_uncertain'
+              ? 'The text change may be partially applied. Inspect the slide before retrying.'
+              : `The text change was not applied (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailEditText'),
+        }
+      }
       return {
-        output: `Replaced the text of element ${sourceId} on page ${idx + 1} (${paragraphs.length} paragraphs).`,
-        mutated: true,
+        output: outcome.mutated
+          ? `Replaced the text of element ${sourceId} on page ${idx + 1} (${paragraphs.length} paragraphs).`
+          : `Element ${sourceId} on page ${idx + 1} already had the requested text.`,
+        mutated: outcome.mutated,
         summary: t('aiSumEditText', { n: idx + 1 }),
       }
     }
@@ -1339,19 +1358,33 @@ async function executeTool(
       if (!cur.length) return fail(t('aiFailStyle'), 'This element has no text to format')
       const ov = call.input as SlideStylePatch
       const paragraphs = mergeStyleIntoParagraphs(cur, ov)
-      const updated = await window.slidesApi.editText({
-        slideIndex: idx,
-        sourceId,
-        paragraphs,
-        ...(target.groupId ? { groupId: target.groupId } : {}),
-      })
-      signal?.throwIfAborted()
-      if (!updated)
-        return fail(t('aiFailStyle'), `Element ${sourceId} does not support format editing`)
-      access.applySlide(idx, updated)
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailStyle'), 'Canonical presentation transactions are unavailable')
+      const receipt = await access.executePresentationOperation(
+        {
+          transactionId: await textToolTransactionId(call),
+          slideIndex: idx,
+          sourceId,
+          operation: { kind: 'set_text', paragraphs },
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(receipt)
+      if (!outcome.ok) {
+        return {
+          output: outcome.mutated
+            ? 'The formatting change may be partially applied. Inspect the slide before retrying.'
+            : `The formatting change was not applied (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailStyle'),
+        }
+      }
       return {
-        output: `Updated the formatting of element ${sourceId} on page ${idx + 1}.`,
-        mutated: true,
+        output: outcome.mutated
+          ? `Updated the formatting of element ${sourceId} on page ${idx + 1}.`
+          : `Element ${sourceId} on page ${idx + 1} already had the requested formatting.`,
+        mutated: outcome.mutated,
         summary: t('aiSumStyle', { n: idx + 1 }),
       }
     }
@@ -2294,25 +2327,35 @@ async function executeTool(
         return fail(t('aiFailEditText'), 'speaker notes text must be a string')
       if (text.length > 12_000)
         return fail(t('aiFailEditText'), 'speaker notes exceed the 12000 character limit')
-      if (!access.setSpeakerNotes)
+      if (!access.executePresentationOperation)
         return fail(t('aiFailEditText'), 'speaker notes are unavailable in this host')
-
-      const status = await access.setSpeakerNotes(idx, text)
-      if (status === 'unchanged') return fail(t('aiFailEditText'), 'Writing speaker notes failed')
-      if (status === 'uncertain') {
+      const receipt = await access.executePresentationOperation(
+        {
+          transactionId: await textToolTransactionId(call),
+          slideIndex: idx,
+          operation: { kind: 'set_speaker_notes', notes: text },
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(receipt)
+      if (!outcome.ok) {
         return {
-          output:
-            'The speaker notes write could not be verified. Inspect the slide notes before retrying.',
+          output: outcome.mutated
+            ? 'The speaker notes write could not be verified. Inspect the slide notes before retrying.'
+            : `The speaker notes were not changed (${outcome.detail ?? 'write_not_applied'}).`,
           isError: true,
-          mutated: true,
+          mutated: outcome.mutated,
           summary: t('aiFailEditText'),
         }
       }
+      if (outcome.mutated) access.applySpeakerNotes?.(idx, text)
       return {
-        output: text
-          ? `Wrote speaker notes for page ${idx + 1} (${text.length} characters).`
-          : `Cleared speaker notes for page ${idx + 1}.`,
-        mutated: true,
+        output: outcome.mutated
+          ? text
+            ? `Wrote speaker notes for page ${idx + 1} (${text.length} characters).`
+            : `Cleared speaker notes for page ${idx + 1}.`
+          : `Speaker notes on page ${idx + 1} already matched.`,
+        mutated: outcome.mutated,
         summary: t('aiSumEditText', { n: idx + 1 }),
       }
     }

@@ -29,8 +29,27 @@ interface OperationBase {
   clientId: string
 }
 
+export interface PresentationTextRun {
+  text: string
+  bold?: boolean
+  italic?: boolean
+  underline?: boolean
+  fontSize?: number
+  fontFamily?: string
+  color?: string
+}
+
+export interface PresentationTextParagraph {
+  runs: readonly PresentationTextRun[]
+  align?: 'left' | 'center' | 'right'
+}
+
+export type PresentationTextReplacement =
+  | { text: string; paragraphs?: never }
+  | { paragraphs: readonly PresentationTextParagraph[]; text?: never }
+
 export type PresentationOperation =
-  | (OperationBase & { kind: 'set_text'; target: PresentationTarget; text: string })
+  | (OperationBase & { kind: 'set_text'; target: PresentationTarget } & PresentationTextReplacement)
   | (OperationBase & {
       kind: 'set_geometry'
       target: PresentationTarget

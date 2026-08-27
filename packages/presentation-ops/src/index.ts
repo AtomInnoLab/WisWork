@@ -14,5 +14,8 @@ export type {
   PresentationReceipt,
   PresentationStroke,
   PresentationTarget,
+  PresentationTextParagraph,
+  PresentationTextReplacement,
+  PresentationTextRun,
   PresentationTransaction,
 } from './types'

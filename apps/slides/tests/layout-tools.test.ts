@@ -212,14 +212,19 @@ describe('set_speaker_notes tool', () => {
   const slide = slideOf([])
 
   it('advertises and writes bounded speaker notes through DeckAccess', async () => {
-    const setSpeakerNotes = vi.fn(async () => 'applied' as const)
+    const executePresentationOperation = vi.fn(async (request) => ({
+      status: 'applied' as const,
+      transactionId: request.transactionId,
+      resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+      operationCount: 1,
+    }))
     const skill = createSlidesSkill({
       getSlides: () => [slide],
       getCurrent: () => 0,
       getSelectedIds: () => [],
       applySlide: () => {},
       applyDeck: () => {},
-      setSpeakerNotes,
+      executePresentationOperation,
       fitWidthPx: 1280,
     })
 
@@ -230,20 +235,31 @@ describe('set_speaker_notes tool', () => {
       input: { slideIndex: 0, text: 'Opening\nKey message' },
     })
 
-    expect(setSpeakerNotes).toHaveBeenCalledWith(0, 'Opening\nKey message')
+    expect(executePresentationOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slideIndex: 0,
+        operation: { kind: 'set_speaker_notes', notes: 'Opening\nKey message' },
+      }),
+      undefined,
+    )
     expect(result.mutated).toBe(true)
     expect(result.isError).not.toBe(true)
   })
 
   it('rejects out-of-range slides and oversized notes before host access', async () => {
-    const setSpeakerNotes = vi.fn(async () => 'applied' as const)
+    const executePresentationOperation = vi.fn(async (request) => ({
+      status: 'applied' as const,
+      transactionId: request.transactionId,
+      resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+      operationCount: 1,
+    }))
     const skill = createSlidesSkill({
       getSlides: () => [slide],
       getCurrent: () => 0,
       getSelectedIds: () => [],
       applySlide: () => {},
       applyDeck: () => {},
-      setSpeakerNotes,
+      executePresentationOperation,
       fitWidthPx: 1280,
     })
 
@@ -266,7 +282,7 @@ describe('set_speaker_notes tool', () => {
     expect(missing).toMatchObject({ isError: true, mutated: false })
     expect(oversized).toMatchObject({ isError: true, mutated: false })
     expect(malformed).toMatchObject({ isError: true, mutated: false })
-    expect(setSpeakerNotes).not.toHaveBeenCalled()
+    expect(executePresentationOperation).not.toHaveBeenCalled()
   })
 
   it('reports a host verification failure without claiming a mutation', async () => {
@@ -276,7 +292,11 @@ describe('set_speaker_notes tool', () => {
       getSelectedIds: () => [],
       applySlide: () => {},
       applyDeck: () => {},
-      setSpeakerNotes: async () => 'uncertain',
+      executePresentationOperation: async (request) => ({
+        status: 'uncertain',
+        transactionId: request.transactionId,
+        code: 'write_state_uncertain',
+      }),
       fitWidthPx: 1280,
     })
 

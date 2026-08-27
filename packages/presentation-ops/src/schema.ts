@@ -6,6 +6,7 @@ import type {
   PresentationReceipt,
   PresentationStroke,
   PresentationTarget,
+  PresentationTextParagraph,
   PresentationTransaction,
 } from './types'
 import { readStrictArray } from './strict-array'
@@ -17,6 +18,8 @@ export const PRESENTATION_OPS_LIMITS = Object.freeze({
   maxReceiptIds: 50,
   maxCoordinateMagnitude: 1_000_000,
   maxStrokeWidth: 1_000,
+  maxTextParagraphs: 1_000,
+  maxTextRuns: 4_000,
 })
 
 const unsafeKeys = new Set(['__proto__', 'prototype', 'constructor'])
@@ -219,19 +222,90 @@ const parseStroke = (value: unknown): PresentationStroke => {
   return { color: record.color.toUpperCase(), width, ...(dash === undefined ? {} : { dash }) }
 }
 
+const parseTextParagraphs = (value: unknown): PresentationTextParagraph[] => {
+  const values = readStrictArray(value, 'paragraphs', {
+    minLength: 1,
+    maxLength: PRESENTATION_OPS_LIMITS.maxTextParagraphs,
+  })
+  let runCount = 0
+  let textLength = 0
+  return values.map((paragraphValue, paragraphIndex) => {
+    const paragraph = object(paragraphValue, `paragraphs[${paragraphIndex}]`)
+    exactKeys(paragraph, ['runs', 'align'], `paragraphs[${paragraphIndex}]`)
+    const runs = readStrictArray(paragraph.runs, `paragraphs[${paragraphIndex}].runs`, {
+      minLength: 1,
+      maxLength: PRESENTATION_OPS_LIMITS.maxTextRuns,
+    }).map((runValue, runIndex) => {
+      runCount += 1
+      if (runCount > PRESENTATION_OPS_LIMITS.maxTextRuns) fail('paragraphs contain too many runs')
+      const run = object(runValue, `paragraphs[${paragraphIndex}].runs[${runIndex}]`)
+      exactKeys(
+        run,
+        ['text', 'bold', 'italic', 'underline', 'fontSize', 'fontFamily', 'color'],
+        `paragraphs[${paragraphIndex}].runs[${runIndex}]`,
+      )
+      const text = requiredString(run.text, 'run.text')
+      textLength += text.length
+      if (textLength > PRESENTATION_OPS_LIMITS.maxTextLength) fail('paragraph text is too long')
+      const boolean = (key: 'bold' | 'italic' | 'underline') =>
+        optional(run, key, (item) => {
+          if (typeof item !== 'boolean') fail(`run.${key} must be boolean`)
+          return item
+        })
+      const fontSize = optional(run, 'fontSize', (item) => finiteNumber(item, 'run.fontSize'))
+      if (fontSize !== undefined && (fontSize <= 0 || fontSize > 1_000))
+        fail('run.fontSize is out of bounds')
+      const fontFamily = optional(run, 'fontFamily', (item) =>
+        requiredString(item, 'run.fontFamily', 256),
+      )
+      const color = optional(run, 'color', (item) => {
+        if (typeof item !== 'string' || !colorPattern.test(item)) fail('run.color is invalid')
+        return item.toUpperCase()
+      })
+      const bold = boolean('bold')
+      const italic = boolean('italic')
+      const underline = boolean('underline')
+      return {
+        text,
+        ...(bold === undefined ? {} : { bold }),
+        ...(italic === undefined ? {} : { italic }),
+        ...(underline === undefined ? {} : { underline }),
+        ...(fontSize === undefined ? {} : { fontSize }),
+        ...(fontFamily === undefined ? {} : { fontFamily }),
+        ...(color === undefined ? {} : { color }),
+      }
+    })
+    const align = optional(paragraph, 'align', (item) => {
+      if (item !== 'left' && item !== 'center' && item !== 'right')
+        fail('paragraph.align is unknown')
+      return item
+    })
+    return { runs, ...(align === undefined ? {} : { align }) }
+  })
+}
+
 export const parsePresentationOperation = (value: unknown): PresentationOperation => {
   const record = object(value, 'operation')
   const kind = record.kind
   const clientId = identifier(record.clientId, 'operation.clientId')
   switch (kind) {
     case 'set_text':
-      exactKeys(record, ['kind', 'clientId', 'target', 'text'], 'set_text')
-      return {
-        kind,
-        clientId,
-        target: parseTarget(record.target, true),
-        text: requiredString(record.text, 'text'),
-      }
+      exactKeys(record, ['kind', 'clientId', 'target', 'text', 'paragraphs'], 'set_text')
+      if (Object.hasOwn(record, 'text') === Object.hasOwn(record, 'paragraphs'))
+        fail('set_text requires exactly one of text or paragraphs')
+      return Object.hasOwn(record, 'text')
+        ? {
+            kind,
+            clientId,
+            target: parseTarget(record.target, true),
+            text: requiredString(record.text, 'text'),
+          }
+        : {
+            kind,
+            clientId,
+            target: parseTarget(record.target, true),
+            paragraphs: parseTextParagraphs(record.paragraphs),
+          }
     case 'set_geometry':
       exactKeys(record, ['kind', 'clientId', 'target', 'geometry'], 'set_geometry')
       return {

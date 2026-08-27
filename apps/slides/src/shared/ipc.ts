@@ -995,6 +995,10 @@ export type MenuCommand =
   | 'paste'
 
 export interface SlidesApi {
+  /** Resolve a legacy renderer locator to an authoritative, durable transaction target. */
+  preparePresentationTarget: (
+    request: PresentationTargetRequest,
+  ) => Promise<PresentationTargetPreparation>
   /** Execute one strictly bounded, atomic desktop presentation transaction. */
   executePresentationTransaction: (
     transaction: PresentationTransaction,
@@ -1386,6 +1390,24 @@ export interface SlidesApi {
   /** Presenter: subscribe to navigation actions sent back by the audience window */
   onAudienceNav: (handler: (action: AudienceNavAction) => void) => () => void
 }
+
+export interface PresentationTargetRequest {
+  transactionId: string
+  slideIndex: number
+  sourceId?: string
+}
+
+export type PresentationTargetPreparation =
+  | {
+      status: 'prepared'
+      expectedDeckRevision: string
+      target: import('@wiswork/presentation-ops').PresentationTarget
+    }
+  | {
+      status: 'conflict'
+      code: 'target_stale' | 'target_missing' | 'target_ambiguous'
+    }
+  | { status: 'busy' }
 
 declare global {
   interface Window {

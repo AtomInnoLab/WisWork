@@ -124,6 +124,85 @@ describe('DesktopPresentationHost', () => {
     expect(session.opened.deck.slides[0]!.elements.at(-1)?.creationId).toBe(receipt.createdIds?.[0])
   })
 
+  it('enrolls a generated durable id inside the same atomic text transaction and survives reopen', async () => {
+    const { session, slide, element } = await fixture()
+    delete element.creationId
+    const proposedId = '{11111111-2222-3333-4444-555555555555}'
+    const transaction: PresentationTransaction = {
+      transactionId: 'desktop-enroll-text',
+      expectedDeckRevision: await fingerprintPresentation(session.opened),
+      mode: 'atomic',
+      operations: [
+        {
+          kind: 'set_text',
+          clientId: 'text',
+          target: {
+            slideId: slide.durableId,
+            elementId: proposedId,
+            expectedType: 'text',
+            expectedFingerprint: await fingerprintSlideElement(session.opened, slide, element),
+          },
+          paragraphs: [{ runs: [{ text: 'durable', bold: true }] }],
+        },
+      ],
+    }
+    const executor = new PresentationTransactionExecutor(
+      new DesktopPresentationHost(session, (id) =>
+        id === proposedId
+          ? { slideId: slide.durableId, sourceId: element.id, elementId: proposedId }
+          : undefined,
+      ),
+      { verifyDelayMs: 0 },
+    )
+    const first = await executor.execute(transaction)
+    const retry = await executor.execute(transaction)
+    expect(first).toMatchObject({ status: 'applied', operationCount: 1 })
+    expect(retry).toEqual(first)
+    expect(session.undoStack).toHaveLength(1)
+    expect(session.opened.deck.slides[0]!.elements[0]!.creationId).toBe(proposedId)
+
+    const reopened = await openPptx(await savePptx(session.opened))
+    expect(reopened.deck.slides[0]!.elements[0]!.creationId).toBe(proposedId)
+    expect(
+      reopened.deck.slides[0]!.elements[0]!.type === 'text' &&
+        reopened.deck.slides[0]!.elements[0]!.text?.paragraphs[0]?.runs[0]?.text,
+    ).toBe('durable')
+  })
+
+  it('does not enroll a proposed id when the text target fingerprint is stale', async () => {
+    const { session, slide, element } = await fixture()
+    delete element.creationId
+    const proposedId = '{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}'
+    const receipt = await new PresentationTransactionExecutor(
+      new DesktopPresentationHost(session, () => ({
+        slideId: slide.durableId,
+        sourceId: element.id,
+        elementId: proposedId,
+      })),
+      { verifyDelayMs: 0 },
+    ).execute({
+      transactionId: 'desktop-stale-enroll',
+      expectedDeckRevision: await fingerprintPresentation(session.opened),
+      mode: 'atomic',
+      operations: [
+        {
+          kind: 'set_text',
+          clientId: 'text',
+          target: {
+            slideId: slide.durableId,
+            elementId: proposedId,
+            expectedType: 'text',
+            expectedFingerprint: `sha256:${'f'.repeat(64)}`,
+          },
+          text: 'must not land',
+        },
+      ],
+    })
+    expect(receipt).toMatchObject({ status: 'conflict', code: 'target_stale' })
+    expect(session.opened.deck.slides[0]!.elements[0]!.creationId).toBeUndefined()
+    expect(session.undoStack).toHaveLength(0)
+  })
+
   it('classifies a canceling operation sequence as a net no-op', async () => {
     const { session, slide, element } = await fixture()
     const elementFingerprint = await fingerprintSlideElement(session.opened, slide, element)
@@ -151,6 +230,33 @@ describe('DesktopPresentationHost', () => {
       session.opened.deck.slides[0]!.elements[0]!.type === 'text' &&
         session.opened.deck.slides[0]!.elements[0]!.text?.paragraphs[0]?.runs[0]?.text,
     ).toBe('before')
+  })
+
+  it('reports an exact rich-text replacement as a no-op without history', async () => {
+    const { session, slide, element } = await fixture()
+    const receipt = await new PresentationTransactionExecutor(
+      new DesktopPresentationHost(session),
+      { verifyDelayMs: 0 },
+    ).execute({
+      transactionId: 'desktop-rich-noop',
+      expectedDeckRevision: await fingerprintPresentation(session.opened),
+      mode: 'atomic',
+      operations: [
+        {
+          kind: 'set_text',
+          clientId: 'text',
+          target: {
+            slideId: slide.durableId,
+            elementId: element.creationId!,
+            expectedType: 'text',
+            expectedFingerprint: await fingerprintSlideElement(session.opened, slide, element),
+          },
+          paragraphs: [{ runs: [{ text: 'before', bold: true }] }],
+        },
+      ],
+    })
+    expect(receipt).toMatchObject({ status: 'unchanged', code: 'operation_noop' })
+    expect(session.undoStack).toHaveLength(0)
   })
 
   it('rejects picture fill because the pptx save path cannot persist it', async () => {

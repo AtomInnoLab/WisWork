@@ -4,6 +4,7 @@ import {
   collectDeckCreationIds,
   deleteElement,
   fingerprintPresentation,
+  ensureElementCreationId,
   getSlideNotes,
   mintUniqueCreationIds,
   resolvePresentationContainer,
@@ -18,6 +19,7 @@ import {
   type TextElement,
 } from '@wiswork/pptx-engine'
 import { commitHistorySnapshot, type HistorySnapshot, type Session } from '../session-state'
+import { applyEditParagraphs } from '../edit-text'
 import type { AtomicPresentationHost, PlannedPresentationOperation } from './executor'
 import type { PresentationPlan } from './planner'
 
@@ -58,30 +60,62 @@ function findSlide(opened: OpenedPptx, slideId: string): Slide | undefined {
 }
 
 function findTopLevelElement(slide: Slide, elementId: string): SlideElement | undefined {
-  const matches = slide.elements.filter((element) => element.creationId === elementId)
+  const matches: SlideElement[] = []
+  const visit = (elements: readonly SlideElement[]) => {
+    for (const element of elements) {
+      if (element.creationId === elementId) matches.push(element)
+      if (element.type === 'group') visit(element.children)
+    }
+  }
+  visit(slide.elements)
   return matches.length === 1 ? matches[0] : undefined
 }
 
-function textValue(element: SlideElement): string | undefined {
-  if (element.type !== 'text' && element.type !== 'shape') return undefined
-  return element.text?.paragraphs
-    .map((paragraph) => paragraph.runs.map((run) => run.text).join(''))
-    .join('\n')
+export interface PresentationTargetEnrollment {
+  slideId: string
+  sourceId: string
+  elementId: string
 }
 
-function replaceText(element: TextElement, value: string): boolean {
-  if (textValue(element) === value) return false
+function findLegacyElement(slide: Slide, sourceId: string): SlideElement | undefined {
+  const matches: SlideElement[] = []
+  const visit = (elements: readonly SlideElement[]) => {
+    for (const element of elements) {
+      if (element.id === sourceId) matches.push(element)
+      if (element.type === 'group') visit(element.children)
+    }
+  }
+  visit(slide.elements)
+  return matches.length === 1 ? matches[0] : undefined
+}
+
+function replaceText(
+  element: TextElement,
+  operation: Extract<PresentationOperation, { kind: 'set_text' }>,
+): boolean {
+  const value = 'text' in operation ? operation.text : undefined
   const firstRun = element.text?.paragraphs[0]?.runs[0]
   const firstParagraph = element.text?.paragraphs[0]
   element.text ??= { paragraphs: [] }
-  element.text.paragraphs = value.split('\n').map((text) => ({
-    ...(firstParagraph
-      ? {
-          ...firstParagraph,
-          runs: [{ ...(firstRun ?? {}), text }],
-        }
-      : { runs: [{ text }] }),
-  }))
+  const next =
+    value !== undefined
+      ? value.split('\n').map((text) => ({
+          ...(firstParagraph
+            ? {
+                ...firstParagraph,
+                runs: [{ ...(firstRun ?? {}), text }],
+              }
+            : { runs: [{ text }] }),
+        }))
+      : applyEditParagraphs(
+          element.text.paragraphs,
+          operation.paragraphs!.map((paragraph) => ({
+            ...paragraph,
+            runs: paragraph.runs.map((run) => ({ ...run })),
+          })),
+        )
+  if (same(element.text.paragraphs, next)) return false
+  element.text.paragraphs = next
   element.dirty = true
   return true
 }
@@ -159,7 +193,7 @@ function applyOperation(
     case 'set_text':
       if (element.type !== 'text' && element.type !== 'shape')
         throw new Error('Text operation target changed type')
-      return { changed: replaceText(element, operation.text), metaDirty: false }
+      return { changed: replaceText(element, operation), metaDirty: false }
     case 'set_geometry': {
       const next = {
         x: Math.round(operation.geometry.x * EMU_PER_POINT),
@@ -211,8 +245,26 @@ export class DesktopPresentationHost implements AtomicPresentationHost<DesktopSn
   private finalMetaDirty = false
   private transactionGeneration = 0
 
-  constructor(private readonly session: Session) {
+  constructor(
+    private readonly session: Session,
+    private readonly enrollmentForTarget?: (
+      elementId: string,
+    ) => PresentationTargetEnrollment | undefined,
+  ) {
     this.reservedIds = collectDeckCreationIds(session.opened.deck)
+  }
+
+  private enrollTarget(opened: OpenedPptx, target: PresentationTarget): boolean {
+    if (!target.elementId) return false
+    const slide = findSlide(opened, target.slideId)
+    if (!slide || findTopLevelElement(slide, target.elementId)) return false
+    const enrollment = this.enrollmentForTarget?.(target.elementId)
+    if (!enrollment || enrollment.slideId !== target.slideId) return false
+    const element = findLegacyElement(slide, enrollment.sourceId)
+    if (!element || (element.creationId && element.creationId !== enrollment.elementId))
+      return false
+    ensureElementCreationId(slide, element, () => enrollment.elementId)
+    return true
   }
 
   readRevision(): Promise<string> {
@@ -240,6 +292,7 @@ export class DesktopPresentationHost implements AtomicPresentationHost<DesktopSn
     // Every external precondition is resolved against the same authoritative snapshot.
     const authoritative = openedFromSnapshot(this.session, snapshot)
     for (const [index, operation] of operations.entries()) {
+      if (operation.kind !== 'add_text_box') this.enrollTarget(authoritative, operation.target)
       const resolution =
         operation.kind === 'add_text_box'
           ? await resolvePresentationContainer(authoritative.deck, conflictTarget(operation))
@@ -248,14 +301,6 @@ export class DesktopPresentationHost implements AtomicPresentationHost<DesktopSn
         return {
           status: 'conflict',
           code: resolution.code,
-          operationIndex: index,
-          ...(targetId(operation) ? { targetId: targetId(operation) } : {}),
-        }
-      }
-      if (resolution.element && !resolution.slide.elements.includes(resolution.element)) {
-        return {
-          status: 'conflict',
-          code: 'target_stale',
           operationIndex: index,
           ...(targetId(operation) ? { targetId: targetId(operation) } : {}),
         }
@@ -271,6 +316,9 @@ export class DesktopPresentationHost implements AtomicPresentationHost<DesktopSn
     }
 
     const simulated = openedFromSnapshot(this.session, snapshot)
+    for (const operation of operations) {
+      if (operation.kind !== 'add_text_box') this.enrollTarget(simulated, operation.target)
+    }
     const initialSimulatedRevision = await fingerprintPresentation(simulated)
     const planned = operations.map((operation, index) => ({
       index,
@@ -310,6 +358,8 @@ export class DesktopPresentationHost implements AtomicPresentationHost<DesktopSn
     const generation = this.session.mutationGeneration ?? 0
     if (generation !== this.transactionGeneration)
       throw new Error('Presentation transaction lease changed')
+    if (planned.operation.kind !== 'add_text_box')
+      this.enrollTarget(this.session.opened, planned.operation.target)
     applyOperation(this.session.opened, planned)
     const revision = await fingerprintPresentation(this.session.opened)
     if ((this.session.mutationGeneration ?? 0) !== generation)
