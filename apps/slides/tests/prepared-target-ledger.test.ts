@@ -52,7 +52,17 @@ describe('PreparedTargetLedger', () => {
     ledger.complete('token-a')
     expect(ledger.enrollment('element-a')).toBeUndefined()
     expect(ledger.enrollment('element-b')).toMatchObject({ sourceId: '3' })
-    expect(ledger.get('token-b', { slideIndex: 0, sourceId: '2' })).toEqual({
+    expect(ledger.get('token-b', { slideIndex: 0, sourceId: '2' })).toBeUndefined()
+  })
+
+  it('holds multiple authoritative targets under one active transaction token', () => {
+    const ledger = new PreparedTargetLedger(4, 1_000)
+    expect(ledger.set('tx', { slideIndex: 0, sourceId: '2' }, response)).toBe(true)
+    expect(ledger.set('tx', { slideIndex: 0, sourceId: '3' }, response)).toBe(true)
+    expect(ledger.get('tx', { slideIndex: 0, sourceId: '2' })).toEqual(response)
+    expect(ledger.get('tx', { slideIndex: 0, sourceId: '3' })).toEqual(response)
+    ledger.complete('tx')
+    expect(ledger.get('tx', { slideIndex: 0, sourceId: '4' })).toMatchObject({
       status: 'conflict',
       code: 'target_stale',
     })

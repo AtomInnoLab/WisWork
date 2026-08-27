@@ -5,12 +5,14 @@ import {
   deleteElement,
   fingerprintPresentation,
   ensureElementCreationId,
+  editGroupChildTransform,
   getSlideNotes,
   mintUniqueCreationIds,
   resolvePresentationContainer,
   resolvePresentationTarget,
   setSlideNotes,
   type Fill,
+  type GroupElement,
   type OpenedPptx,
   type PackageArchive,
   type Slide,
@@ -65,6 +67,22 @@ function findTopLevelElement(slide: Slide, elementId: string): SlideElement | un
     for (const element of elements) {
       if (element.creationId === elementId) matches.push(element)
       if (element.type === 'group') visit(element.children)
+    }
+  }
+  visit(slide.elements)
+  return matches.length === 1 ? matches[0] : undefined
+}
+
+function findElementLocation(
+  slide: Slide,
+  elementId: string,
+): { element: SlideElement; directParent?: GroupElement } | undefined {
+  const matches: Array<{ element: SlideElement; directParent?: GroupElement }> = []
+  const visit = (elements: readonly SlideElement[], parent?: GroupElement, depth = 0) => {
+    for (const element of elements) {
+      if (element.creationId === elementId)
+        matches.push({ element, ...(parent && depth === 1 ? { directParent: parent } : {}) })
+      if (element.type === 'group') visit(element.children, element, depth + 1)
     }
   }
   visit(slide.elements)
@@ -187,7 +205,8 @@ function applyOperation(
   }
   const elementId = operation.target.elementId
   if (!elementId) throw new Error('Planned element target disappeared')
-  const element = findTopLevelElement(slide, elementId)
+  const location = findElementLocation(slide, elementId)
+  const element = location?.element
   if (!element) throw new Error('Planned element target disappeared')
   switch (operation.kind) {
     case 'set_text':
@@ -206,6 +225,19 @@ function applyOperation(
       )
       if (same(element.transform.offset, next) && element.transform.rot === rotation)
         return { changed: false, metaDirty: false }
+      if (location.directParent) {
+        if (
+          !editGroupChildTransform(
+            slide,
+            location.directParent.id,
+            element.id,
+            next,
+            rotation / 60_000,
+          )
+        )
+          throw new Error('Group child transform failed')
+        return { changed: true, metaDirty: false }
+      }
       element.transform.offset = next
       element.transform.rot = rotation
       element.dirtyTransform = true

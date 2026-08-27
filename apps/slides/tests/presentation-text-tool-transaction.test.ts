@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RenderSlide, ShapeRenderNode } from '@wiswork/pptx-render'
+import type { PresentationReceipt } from '@wiswork/presentation-ops'
 import { createSlidesSkill, type DeckAccess } from '../src/renderer/ai/slides-skill'
 import { executePreparedTextFamilyTransaction } from '../src/renderer/ai/presentation-text-transactions'
 import { textToolTransactionId } from '../src/renderer/ai/presentation-text-transactions'
+import { executePreparedGeometryFamilyTransaction } from '../src/renderer/ai/presentation-geometry-transactions'
 
 const fp = (char: string) => `sha256:${char.repeat(64)}`
 const slide: RenderSlide = {
@@ -243,6 +245,94 @@ describe('Slides canonical text-family transactions', () => {
   })
 })
 
+describe('Slides canonical geometry-family transactions', () => {
+  it('routes set_element_transform through one canonical geometry transaction in points', async () => {
+    const editTransform = vi.fn()
+    ;(globalThis as any).window = { slidesApi: { editTransform } }
+    const executePresentationOperation = vi.fn(async (request) => ({
+      receipt: {
+        status: 'applied' as const,
+        transactionId: request.transactionId,
+        resultingDeckRevision: fp('b'),
+        operationCount: 1,
+      },
+      authoritativeState: 'fresh' as const,
+    }))
+    const result = await createSlidesSkill({
+      getSlides: () => [{ ...slide, scale: 1 }],
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: vi.fn(),
+      applyDeck: vi.fn(),
+      executePresentationOperation,
+      fitWidthPx: 1280,
+    }).executeTool({
+      id: 'geometry-1',
+      name: 'set_element_transform',
+      input: { slideIndex: 0, sourceId: '2', x: 96, y: 48, w: 192, h: 96, rotationDeg: 375 },
+    })
+
+    expect(executePresentationOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        transactionId: expect.stringMatching(/^slides-geometry-/),
+        slideIndex: 0,
+        operations: [
+          {
+            sourceId: '2',
+            geometry: { x: 72, y: 36, width: 144, height: 72, rotation: 15 },
+          },
+        ],
+      }),
+      undefined,
+    )
+    expect(result).toMatchObject({ mutated: true })
+    expect(editTransform).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [
+      {
+        status: 'unchanged' as const,
+        transactionId: 'tx',
+        code: 'operation_noop' as const,
+        operationCount: 1,
+      },
+      false,
+      false,
+    ],
+    [
+      { status: 'conflict' as const, transactionId: 'tx', code: 'target_stale' as const },
+      false,
+      true,
+    ],
+    [
+      { status: 'uncertain' as const, transactionId: 'tx', code: 'write_state_uncertain' as const },
+      true,
+      true,
+    ],
+  ])('maps geometry receipt state without legacy fallback', async (receipt, mutated, isError) => {
+    const executePresentationOperation = vi.fn(async () => ({
+      receipt,
+      authoritativeState: 'fresh' as const,
+    }))
+    const result = await createSlidesSkill({
+      getSlides: () => [slide],
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: vi.fn(),
+      applyDeck: vi.fn(),
+      executePresentationOperation,
+      fitWidthPx: 1280,
+    }).executeTool({
+      id: 'geometry-state',
+      name: 'set_element_transform',
+      input: { slideIndex: 0, sourceId: '2', x: 10 },
+    })
+    expect(result.mutated).toBe(mutated)
+    expect(result.isError === true).toBe(isError)
+  })
+})
+
 describe('text tool invocation identity', () => {
   it('reuses one nonce for transport retry but not for a later identical invocation', async () => {
     const base = { id: 'same', name: 'set_element_text', input: { text: 'same' } }
@@ -396,6 +486,145 @@ describe('renderer to preload canonical transaction contract', () => {
         },
       ),
     ).resolves.toMatchObject({
+      receipt: { status: 'applied' },
+      authoritativeState: 'reload_required',
+    })
+  })
+})
+
+describe('renderer geometry transaction contract', () => {
+  const target = (id: string) => ({
+    slideId: 'ppt/slides/slide1.xml',
+    elementId: id,
+    expectedType: 'shape' as const,
+    expectedFingerprint: fp(id === 'a' ? 'a' : 'b'),
+  })
+
+  it('prepares every durable target and emits one ordered atomic transaction', async () => {
+    const api = {
+      preparePresentationTarget: vi.fn(async ({ sourceId }: { sourceId?: string }) => ({
+        status: 'prepared' as const,
+        expectedDeckRevision: fp('0'),
+        target: target(sourceId!),
+      })),
+      executePresentationTransaction: vi.fn(async (transaction) => ({
+        status: 'applied' as const,
+        transactionId: transaction.transactionId,
+        resultingDeckRevision: fp('1'),
+        operationCount: transaction.operations.length,
+      })),
+      cancelPresentationTransaction: vi.fn(async () => true),
+    }
+    await executePreparedGeometryFamilyTransaction(api, {
+      transactionId: 'geometry-many',
+      slideIndex: 0,
+      operations: [
+        { sourceId: 'a', geometry: { x: 1, y: 2, width: 3, height: 4, rotation: 5 } },
+        { sourceId: 'b', geometry: { x: 6, y: 7, width: 8, height: 9 } },
+      ],
+    })
+    expect(api.preparePresentationTarget).toHaveBeenCalledTimes(2)
+    expect(api.executePresentationTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedDeckRevision: fp('0'),
+        mode: 'atomic',
+        operations: [
+          expect.objectContaining({
+            kind: 'set_geometry',
+            clientId: 'geometry-1',
+            target: target('a'),
+          }),
+          expect.objectContaining({
+            kind: 'set_geometry',
+            clientId: 'geometry-2',
+            target: target('b'),
+          }),
+        ],
+      }),
+    )
+  })
+
+  it('fails closed when target preparations observe different deck revisions', async () => {
+    let count = 0
+    const api = {
+      preparePresentationTarget: vi.fn(async ({ sourceId }: { sourceId?: string }) => ({
+        status: 'prepared' as const,
+        expectedDeckRevision: fp(count++ === 0 ? '0' : '1'),
+        target: target(sourceId!),
+      })),
+      executePresentationTransaction: vi.fn(),
+      cancelPresentationTransaction: vi.fn(async () => true),
+    }
+    await expect(
+      executePreparedGeometryFamilyTransaction(api, {
+        transactionId: 'geometry-stale',
+        slideIndex: 0,
+        operations: [
+          { sourceId: 'a', geometry: { x: 1, y: 2, width: 3, height: 4 } },
+          { sourceId: 'b', geometry: { x: 5, y: 6, width: 7, height: 8 } },
+        ],
+      }),
+    ).resolves.toMatchObject({ receipt: { status: 'conflict', code: 'target_stale' } })
+    expect(api.executePresentationTransaction).not.toHaveBeenCalled()
+  })
+
+  it('classifies an IPC rejection after dispatch as uncertain instead of clean failure', async () => {
+    const api = {
+      preparePresentationTarget: vi.fn(async () => ({
+        status: 'prepared' as const,
+        expectedDeckRevision: fp('0'),
+        target: target('a'),
+      })),
+      executePresentationTransaction: vi.fn(async () => {
+        throw new Error('reply channel closed')
+      }),
+      cancelPresentationTransaction: vi.fn(async () => true),
+    }
+    await expect(
+      executePreparedGeometryFamilyTransaction(api, {
+        transactionId: 'geometry-reply-lost',
+        slideIndex: 0,
+        operations: [{ sourceId: 'a', geometry: { x: 1, y: 2, width: 3, height: 4 } }],
+      }),
+    ).resolves.toMatchObject({
+      receipt: { status: 'uncertain', code: 'write_state_uncertain' },
+    })
+  })
+
+  it('forwards abort and marks applied-but-unrefreshable state reload_required', async () => {
+    let finish!: (value: any) => void
+    const api = {
+      preparePresentationTarget: vi.fn(async () => ({
+        status: 'prepared' as const,
+        expectedDeckRevision: fp('0'),
+        target: target('a'),
+      })),
+      executePresentationTransaction: vi.fn(
+        () => new Promise<PresentationReceipt>((resolve) => (finish = resolve)),
+      ),
+      cancelPresentationTransaction: vi.fn(async () => true),
+    }
+    const controller = new AbortController()
+    const pending = executePreparedGeometryFamilyTransaction(
+      api,
+      {
+        transactionId: 'geometry-abort',
+        slideIndex: 0,
+        operations: [{ sourceId: 'a', geometry: { x: 1, y: 2, width: 3, height: 4 } }],
+      },
+      controller.signal,
+      async () => false,
+    )
+    await vi.waitFor(() => expect(api.executePresentationTransaction).toHaveBeenCalled())
+    controller.abort()
+    expect(api.cancelPresentationTransaction).toHaveBeenCalledWith('geometry-abort')
+    finish({
+      status: 'applied',
+      transactionId: 'geometry-abort',
+      resultingDeckRevision: fp('1'),
+      operationCount: 1,
+    })
+    await expect(pending).resolves.toMatchObject({
       receipt: { status: 'applied' },
       authoritativeState: 'reload_required',
     })

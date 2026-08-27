@@ -331,8 +331,38 @@ describe('execute_layout_script tool', () => {
     getSelectedIds: () => [],
     applySlide: (_i, updated) => {
       applied = updated
+      slide = updated
     },
     applyDeck: () => {},
+    executePresentationOperation: async (request) => {
+      if (!('operations' in request)) throw new Error('expected geometry transaction')
+      const nodes = slide.nodes.map((node) => {
+        const operation = request.operations.find((item) => item.sourceId === node.sourceId)
+        if (!operation) return node
+        const geometry = operation.geometry
+        return {
+          ...node,
+          box: box(
+            geometry.x / 0.75,
+            geometry.y / 0.75,
+            geometry.width / 0.75,
+            geometry.height / 0.75,
+            geometry.rotation,
+          ),
+        }
+      })
+      slide = { ...slide, nodes }
+      applied = slide
+      return {
+        receipt: {
+          status: 'applied',
+          transactionId: request.transactionId,
+          resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+          operationCount: request.operations.length,
+        },
+        authoritativeState: 'fresh',
+      }
+    },
     fitWidthPx: 1280,
   })
 

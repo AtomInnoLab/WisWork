@@ -29,6 +29,7 @@ import {
   savePptx,
 } from '@wiswork/pptx-engine'
 import type { PresentationTransaction } from '@wiswork/presentation-ops'
+import type { GroupElement } from '@wiswork/pptx-engine'
 import { DesktopPresentationHost } from '../src/main/operations/desktop-host'
 import { PresentationTransactionExecutor } from '../src/main/operations/executor'
 import type { Session } from '../src/main/session-state'
@@ -52,6 +53,73 @@ async function fixture() {
 }
 
 describe('DesktopPresentationHost', () => {
+  it('patches direct group-child geometry through the group XML and survives save/reopen', async () => {
+    const { session, slide, element } = await fixture()
+    const childXml =
+      '<p:sp><p:nvSpPr><p:cNvPr id="2" name="child"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>' +
+      '<p:spPr><a:xfrm><a:off x="1" y="2"/><a:ext cx="10" cy="4"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>before</a:t></a:r></a:p></p:txBody></p:sp>'
+    element.nvId = '2'
+    element.anchor.originalXml = childXml
+    const groupXml =
+      '<p:grpSp><p:nvGrpSpPr><p:cNvPr id="10" name="group"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>' +
+      '<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1000000" cy="1000000"/><a:chOff x="0" y="0"/><a:chExt cx="1000000" cy="1000000"/></a:xfrm></p:grpSpPr>' +
+      childXml +
+      '</p:grpSp>'
+    const group: GroupElement = {
+      id: 'group',
+      type: 'group',
+      creationId: '{AAAAAAAA-1111-2222-3333-BBBBBBBBBBBB}',
+      anchor: { spIndex: 0, originalXml: groupXml, range: [0, groupXml.length] },
+      transform: {
+        offset: { x: 0, y: 0, cx: 1_000_000, cy: 1_000_000 },
+        rot: 0,
+        flipH: false,
+        flipV: false,
+      },
+      childOffset: { x: 0, y: 0, cx: 1_000_000, cy: 1_000_000 },
+      children: [element],
+    }
+    slide.elements = [group]
+    slide.structureDirty = true
+    const transaction: PresentationTransaction = {
+      transactionId: 'desktop-group-geometry',
+      expectedDeckRevision: await fingerprintPresentation(session.opened),
+      mode: 'atomic',
+      operations: [
+        {
+          kind: 'set_geometry',
+          clientId: 'geometry',
+          target: {
+            slideId: slide.durableId,
+            elementId: element.creationId!,
+            expectedType: 'text',
+            expectedFingerprint: await fingerprintSlideElement(session.opened, slide, element),
+          },
+          geometry: { x: 10, y: 20, width: 30, height: 40, rotation: 15 },
+        },
+      ],
+    }
+    const receipt = await new PresentationTransactionExecutor(
+      new DesktopPresentationHost(session),
+      { verifyDelayMs: 0 },
+    ).execute(transaction)
+    expect(receipt).toMatchObject({ status: 'applied' })
+    expect(group.anchor.originalXml).toContain(
+      '<a:off x="127000" y="254000"/><a:ext cx="381000" cy="508000"/>',
+    )
+    expect(group.anchor.originalXml).toContain('rot="900000"')
+
+    const reopened = await openPptx(await savePptx(session.opened))
+    const reopenedGroup = reopened.deck.slides[0]!.elements[0]
+    expect(reopenedGroup?.type).toBe('group')
+    expect(reopenedGroup?.type === 'group' && reopenedGroup.children[0]?.transform.offset).toEqual({
+      x: 127_000,
+      y: 254_000,
+      cx: 381_000,
+      cy: 508_000,
+    })
+  })
+
   it('preflights repeated targets against one snapshot and commits one undo entry', async () => {
     const { session, slide, element } = await fixture()
     const elementFingerprint = await fingerprintSlideElement(session.opened, slide, element)

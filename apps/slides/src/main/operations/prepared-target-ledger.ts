@@ -6,10 +6,14 @@ export interface PreparedTargetRequestKey {
   sourceId?: string
 }
 
-interface PreparedTargetEntry {
+interface PreparedTargetItem {
   request: PreparedTargetRequestKey
   response: PresentationTargetPreparation
   enrollment?: PresentationTargetEnrollment
+}
+
+interface PreparedTargetEntry {
+  items: PreparedTargetItem[]
   expiresAt: number
   completed: boolean
   touchedAt: number
@@ -36,13 +40,14 @@ export class PreparedTargetLedger {
     this.prune()
     const entry = this.entries.get(transactionId)
     if (!entry) return undefined
-    if (
-      entry.request.slideIndex !== request.slideIndex ||
-      entry.request.sourceId !== request.sourceId
+    const item = entry.items.find(
+      (candidate) =>
+        candidate.request.slideIndex === request.slideIndex &&
+        candidate.request.sourceId === request.sourceId,
     )
-      return { status: 'conflict', code: 'target_stale' }
+    if (!item) return entry.completed ? { status: 'conflict', code: 'target_stale' } : undefined
     entry.touchedAt = Date.now()
-    return entry.response
+    return item.response
   }
 
   set(
@@ -53,7 +58,22 @@ export class PreparedTargetLedger {
   ): boolean {
     const now = Date.now()
     this.prune(now)
-    if (this.entries.has(transactionId)) return false
+    const existing = this.entries.get(transactionId)
+    if (existing) {
+      if (existing.completed || existing.items.length >= 50) return false
+      if (
+        existing.items.some(
+          (item) =>
+            item.request.slideIndex === request.slideIndex &&
+            item.request.sourceId === request.sourceId,
+        )
+      )
+        return false
+      existing.items.push({ request, response, ...(enrollment ? { enrollment } : {}) })
+      existing.touchedAt = now
+      existing.expiresAt = now + this.ttlMs
+      return true
+    }
     if (this.entries.size >= this.capacity) {
       const completed = [...this.entries.entries()]
         .filter(([, entry]) => entry.completed)
@@ -62,9 +82,7 @@ export class PreparedTargetLedger {
     }
     if (this.entries.size >= this.capacity) return false
     this.entries.set(transactionId, {
-      request,
-      response,
-      ...(enrollment === undefined ? {} : { enrollment }),
+      items: [{ request, response, ...(enrollment === undefined ? {} : { enrollment }) }],
       expiresAt: now + this.ttlMs,
       completed: false,
       touchedAt: now,
@@ -76,7 +94,7 @@ export class PreparedTargetLedger {
     const entry = this.entries.get(transactionId)
     if (!entry) return
     entry.completed = true
-    delete entry.enrollment
+    for (const item of entry.items) delete item.enrollment
     entry.touchedAt = Date.now()
   }
 
@@ -87,7 +105,9 @@ export class PreparedTargetLedger {
   enrollment(elementId: string): PresentationTargetEnrollment | undefined {
     this.prune()
     for (const entry of this.entries.values()) {
-      if (entry.enrollment?.elementId === elementId) return entry.enrollment
+      for (const item of entry.items) {
+        if (item.enrollment?.elementId === elementId) return item.enrollment
+      }
     }
     return undefined
   }

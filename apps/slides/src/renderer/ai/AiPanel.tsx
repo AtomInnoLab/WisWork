@@ -11,6 +11,7 @@ import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shar
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
 import { createSlidesSkill, type DeckAccess, type ClarifyQuestion } from './slides-skill'
 import { executePreparedTextFamilyTransaction } from './presentation-text-transactions'
+import { executePreparedGeometryFamilyTransaction } from './presentation-geometry-transactions'
 import { extractJsonObject, parseOutlineJson } from './outline-json'
 import { createFilesSkill } from './files-skill'
 import { createElectronTransport } from './transport'
@@ -759,17 +760,24 @@ export function AiPanel({
       applySlide: (i, updated) => applySlideRef.current(i, updated),
       applyDeck: (all, goTo) => applyDeckRef.current(all, goTo),
       executePresentationOperation: async (request, signal) => {
-        const execution = await executePreparedTextFamilyTransaction(
-          window.slidesApi,
-          request,
-          signal,
-          async () => {
-            const refreshed = await window.slidesApi.getRenderSlides()
-            if (!refreshed) return false
-            applyDeckRef.current(refreshed, currentRef.current)
-            return true
-          },
-        )
+        const execution = await ('operations' in request
+          ? executePreparedGeometryFamilyTransaction(
+              window.slidesApi,
+              request,
+              signal,
+              async () => {
+                const refreshed = await window.slidesApi.getRenderSlides()
+                if (!refreshed) return false
+                applyDeckRef.current(refreshed, currentRef.current)
+                return true
+              },
+            )
+          : executePreparedTextFamilyTransaction(window.slidesApi, request, signal, async () => {
+              const refreshed = await window.slidesApi.getRenderSlides()
+              if (!refreshed) return false
+              applyDeckRef.current(refreshed, currentRef.current)
+              return true
+            }))
         if (execution.authoritativeState === 'reload_required')
           onAuthoritativeReloadRequiredRef.current?.()
         return execution

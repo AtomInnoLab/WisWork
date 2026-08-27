@@ -480,6 +480,37 @@ describe('execute_slide_script tool', () => {
     expect(applied).not.toBeNull()
   })
 
+  it('routes a pure multi-element geometry script through one canonical transaction', async () => {
+    const deckAccess = access()
+    const executePresentationOperation = vi.mocked(deckAccess.executePresentationOperation!)
+    const api = (globalThis as any).window.slidesApi
+    const result = await createSlidesSkill(deckAccess).executeTool({
+      id: 'geometry-script',
+      name: 'execute_slide_script',
+      input: {
+        slideIndex: 0,
+        code: "moveBy('t1', 20, 0); setBox('t2', { x: 200, rotation: 370 });",
+      },
+    } as any)
+
+    expect(executePresentationOperation).toHaveBeenCalledTimes(1)
+    expect(executePresentationOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operations: [
+          expect.objectContaining({ sourceId: 't1' }),
+          expect.objectContaining({
+            sourceId: 't2',
+            geometry: expect.objectContaining({ rotation: 10 }),
+          }),
+        ],
+      }),
+      undefined,
+    )
+    expect(api.batchEditTransform).not.toHaveBeenCalled()
+    expect(api.beginHistoryBatch).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ mutated: true })
+  })
+
   it('setStyle after setText in the same script: style merges onto the new text', async () => {
     const skill = createSlidesSkill(access())
     await skill.executeTool({

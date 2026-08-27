@@ -17,6 +17,12 @@ import {
   type TextFamilyTransactionRequest,
 } from './presentation-text-transactions'
 import type { SpeakerNotesDraftPreparation } from '../notes-draft'
+import {
+  geometryPxToPoints,
+  geometryToolTransactionId,
+  normalizePresentationRotation,
+  type GeometryFamilyTransactionRequest,
+} from './presentation-geometry-transactions'
 
 /**
  * Slides capability as an AgentSkill: deck outline context + three tools (read structure /
@@ -33,9 +39,9 @@ export interface DeckAccess {
   applySlide(slideIndex: number, updated: RenderSlide): void
   /** Replace the whole deck (after adding/removing slides) and jump to the goTo slide */
   applyDeck(slides: RenderSlide[], goTo?: number): void
-  /** Execute one canonical, durable text-family presentation transaction. */
+  /** Execute one canonical, durable presentation transaction for an enrolled tool family. */
   executePresentationOperation?(
-    request: TextFamilyTransactionRequest,
+    request: TextFamilyTransactionRequest | GeometryFamilyTransactionRequest,
     signal?: AbortSignal,
   ): Promise<TextFamilyExecutionResult>
   /** Mirror an already-applied notes transaction into the visible notes editor. */
@@ -1444,20 +1450,57 @@ async function executeTool(
         h?: number
         rotationDeg?: number
       }
-      const updated = await window.slidesApi.editTransform({
-        slideIndex: idx,
-        sourceId,
-        ...(target.groupId ? { groupId: target.groupId } : {}),
-        xPx: (typeof inp.x === 'number' ? inp.x : origin.x + b.x) - origin.x,
-        yPx: (typeof inp.y === 'number' ? inp.y : origin.y + b.y) - origin.y,
-        wPx: typeof inp.w === 'number' ? inp.w : b.w,
-        hPx: typeof inp.h === 'number' ? inp.h : b.h,
-        rotationDeg: typeof inp.rotationDeg === 'number' ? inp.rotationDeg : b.rotationDeg,
-        fitWidthPx: access.fitWidthPx,
-      })
-      signal?.throwIfAborted()
-      if (!updated) return fail(t('aiFailTransform'), 'Transform failed')
-      access.applySlide(idx, updated)
+      const x = (typeof inp.x === 'number' ? inp.x : origin.x + b.x) - origin.x
+      const y = (typeof inp.y === 'number' ? inp.y : origin.y + b.y) - origin.y
+      const w = typeof inp.w === 'number' ? inp.w : b.w
+      const h = typeof inp.h === 'number' ? inp.h : b.h
+      const rotation = normalizePresentationRotation(
+        typeof inp.rotationDeg === 'number' ? inp.rotationDeg : b.rotationDeg,
+      )
+      if (![x, y, w, h].every(Number.isFinite) || w < 1 || h < 1)
+        return fail(t('aiFailTransform'), 'Transform geometry is invalid')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailTransform'), 'Canonical presentation transactions are unavailable')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await geometryToolTransactionId(call),
+          slideIndex: idx,
+          operations: [
+            {
+              sourceId,
+              geometry: {
+                x: geometryPxToPoints(x, slide.scale),
+                y: geometryPxToPoints(y, slide.scale),
+                width: geometryPxToPoints(w, slide.scale),
+                height: geometryPxToPoints(h, slide.scale),
+                rotation,
+              },
+            },
+          ],
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required') {
+        return {
+          output:
+            'The transform was applied, but the editor could not refresh authoritative state. Reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumTransform', { n: idx + 1 }),
+        }
+      }
+      if (!outcome.ok) {
+        return {
+          output: outcome.mutated
+            ? 'The transform may be partially applied. Inspect the slide before retrying.'
+            : `The transform was not applied (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailTransform'),
+        }
+      }
+      const updated = access.getSlides()[idx] ?? slide
       const afterTarget = resolveEditTarget(updated, sourceId)
       const after = afterTarget && !('nested' in afterTarget) ? afterTarget : null
       const nb = after
@@ -1475,8 +1518,10 @@ async function executeTool(
         ? `\n⚠️ The layout audit found ${issues.length} issue(s) on this page:\n${issues.map((s) => `- ${s}`).join('\n')}\nFor multi-element layout adjustments switch to execute_slide_script (it reads every element's real geometry and applies atomically).`
         : ''
       return {
-        output: `Adjusted the position/size of element ${sourceId} on page ${idx + 1}. ${boxStr}${auditStr}`,
-        mutated: true,
+        output: outcome.mutated
+          ? `Adjusted the position/size of element ${sourceId} on page ${idx + 1}. ${boxStr}${auditStr}`
+          : `Element ${sourceId} on page ${idx + 1} already had the requested geometry.${auditStr}`,
+        mutated: outcome.mutated,
         summary: t('aiSumTransform', { n: idx + 1 }),
       }
     }
@@ -1504,6 +1549,65 @@ async function executeTool(
           output: `Script finished but called no edit primitives (setBox/moveBy/setText/setStyle/setFill/setStroke); the page was not modified.${returnedStr}${logsStr}`,
           mutated: false,
           summary: t('aiSumScriptNoop', { n: idx + 1 }),
+        }
+      }
+      // A pure geometry script is one canonical atomic transaction. A mixed script stays wholly
+      // on the legacy path until every family in it can be compiled into the same transaction.
+      if (r.ops.length > 0 && r.edits.length === 0) {
+        if (!access.executePresentationOperation)
+          return fail(t('aiFailScript'), 'Canonical presentation transactions are unavailable')
+        const operations = r.ops.map((op) => {
+          const target = resolveEditTarget(slide, op.id)
+          if (!target || 'nested' in target)
+            throw new TypeError(`Geometry target ${op.id} is no longer editable`)
+          const origin = target.groupOrigin ?? { x: 0, y: 0 }
+          return {
+            sourceId: op.id,
+            geometry: {
+              x: geometryPxToPoints(op.x - origin.x, slide.scale),
+              y: geometryPxToPoints(op.y - origin.y, slide.scale),
+              width: geometryPxToPoints(op.w, slide.scale),
+              height: geometryPxToPoints(op.h, slide.scale),
+              rotation: normalizePresentationRotation(op.rotation),
+            },
+          }
+        })
+        const execution = await access.executePresentationOperation(
+          {
+            transactionId: await geometryToolTransactionId(call),
+            slideIndex: idx,
+            operations,
+          },
+          signal,
+        )
+        const outcome = textFamilyReceiptOutcome(execution.receipt)
+        if (execution.authoritativeState === 'reload_required') {
+          return {
+            output:
+              'The layout changes were applied, but authoritative state could not be refreshed. Reloading is required before more edits.',
+            mutated: true,
+            stopToolBatch: true,
+            summary: t('aiSumScript', { n: idx + 1 }),
+          }
+        }
+        if (!outcome.ok) {
+          return {
+            output: outcome.mutated
+              ? 'The layout changes may be partially applied. Inspect the slide before retrying.'
+              : `The layout changes were not applied (${outcome.detail ?? 'write_not_applied'}).`,
+            isError: true,
+            mutated: outcome.mutated,
+            summary: t('aiFailScript'),
+          }
+        }
+        const refreshed = access.getSlides()[idx] ?? slide
+        const audit = formatAudit(auditSlideLayout(refreshed))
+        return {
+          output: outcome.mutated
+            ? `Script applied: layout ${r.ops.length} element(s).${returnedStr}${logsStr}${audit ? `\n${audit}` : ''}`
+            : `Script geometry already matched the requested layout.${returnedStr}${logsStr}${audit ? `\n${audit}` : ''}`,
+          mutated: outcome.mutated,
+          summary: t('aiSumScript', { n: idx + 1 }),
         }
       }
       // ── Dispatch: geometry applied atomically once via batchEditTransform, the rest serially in script order,
