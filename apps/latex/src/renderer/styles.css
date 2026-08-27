@@ -159,7 +159,7 @@ button:disabled {
   position: relative;
   z-index: 30;
   display: flex;
-  height: 119px;
+  height: 120px;
   flex: 0 0 119px;
   flex-direction: column;
   border-bottom: 1px solid var(--border);
@@ -195,6 +195,7 @@ button:disabled {
 }
 
 .latex-toolbar-tabs {
+  flex: 0 0 39px;
   display: flex;
   min-height: 39px;
   align-items: center;
@@ -283,6 +284,7 @@ button:disabled {
 }
 
 .latex-toolbar-body {
+  flex: 0 0 80px;
   display: flex;
   height: 80px;
   align-items: stretch;

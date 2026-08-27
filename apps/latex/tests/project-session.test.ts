@@ -735,4 +735,40 @@ describe('LaTeX project sessions', () => {
     expect(second.latestCompile()).toMatchObject({ revision: 0, log: 'cached log' })
     expect(second.pdfPath(0)).toBe(pdfPath)
   })
+
+  it('authoritatively marks a compiled PDF stale when an unopened dependency changes', async () => {
+    const { root, projectRoot } = await setup()
+    await writeFile(join(projectRoot, 'chapter.tex'), 'before')
+    const pdfPath = join(root, 'compiled.pdf')
+    await writeFile(pdfPath, '%PDF')
+    const compiler = vi.fn(async () => ({
+      generationId: 'fresh-source',
+      stagingDirectory: join(root, 'stage'),
+      files: [],
+      log: '',
+      synctexInputRoot: '/tmp/job/input',
+      workspaceCleaned: true as const,
+    })) as never
+    const commitGeneration = vi.fn(async () => ({
+      generationId: 'fresh-source',
+      pdfPath,
+      synctexPath: null,
+      synctexInputRoot: '/tmp/job/input',
+      logPath: join(root, 'compiled.log'),
+      log: '',
+      published: [pdfPath],
+      workspaceCleaned: true as const,
+    }))
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler,
+      commitGeneration: commitGeneration as never,
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
+    }).attach(11, projectRoot)
+
+    await session.compile(7, 'main.tex')
+    await expect(session.exportablePdf(7)).resolves.toEqual({ path: pdfPath, stale: false })
+    await writeFile(join(projectRoot, 'chapter.tex'), 'after')
+    await expect(session.exportablePdf(7)).resolves.toEqual({ path: pdfPath, stale: true })
+  })
 })

@@ -46,10 +46,17 @@ describe('LaTeX typed IPC boundary', () => {
   it('exports only the PDF owned by the requested compile revision', async () => {
     const exportPdf = vi.fn().mockResolvedValue({ state: 'written', path: '/exports/main.pdf' })
     const { session, call } = await setup(exportPdf)
-    vi.spyOn(session, 'pdfPath').mockReturnValue('/private/compiled/revision-7.pdf')
+    vi.spyOn(session, 'exportablePdf').mockResolvedValue({
+      path: '/private/compiled/revision-7.pdf',
+      stale: false,
+    })
 
     await expect(
-      call(LATEX_CHANNELS.pdfExport, 11, { projectId: session.projectId, revision: 7 }),
+      call(LATEX_CHANNELS.pdfExport, 11, {
+        projectId: session.projectId,
+        revision: 7,
+        allowStale: false,
+      }),
     ).resolves.toEqual({
       ok: true,
       value: { state: 'written', path: '/exports/main.pdf' },
@@ -57,26 +64,60 @@ describe('LaTeX typed IPC boundary', () => {
     expect(exportPdf).toHaveBeenCalledWith('/private/compiled/revision-7.pdf', 'main.pdf')
   })
 
+  it('requires an explicit override before exporting an authoritatively stale PDF', async () => {
+    const exportPdf = vi.fn().mockResolvedValue({ state: 'written', path: '/exports/main.pdf' })
+    const { session, call } = await setup(exportPdf)
+    vi.spyOn(session, 'exportablePdf').mockResolvedValue({
+      path: '/private/compiled/revision-7.pdf',
+      stale: true,
+    })
+    const request = { projectId: session.projectId, revision: 7, allowStale: false }
+
+    await expect(call(LATEX_CHANNELS.pdfExport, 11, request)).resolves.toEqual({
+      ok: true,
+      value: { state: 'stale' },
+    })
+    expect(exportPdf).not.toHaveBeenCalled()
+
+    await expect(
+      call(LATEX_CHANNELS.pdfExport, 11, { ...request, allowStale: true }),
+    ).resolves.toMatchObject({ ok: true, value: { state: 'written' } })
+    expect(exportPdf).toHaveBeenCalledOnce()
+  })
+
   it('rejects missing PDF revisions and malformed export requests', async () => {
     const exportPdf = vi.fn()
     const { session, call } = await setup(exportPdf)
-    vi.spyOn(session, 'pdfPath').mockReturnValue(undefined)
+    vi.spyOn(session, 'exportablePdf').mockResolvedValue(null)
 
     await expect(
-      call(LATEX_CHANNELS.pdfExport, 11, { projectId: session.projectId, revision: 99 }),
+      call(LATEX_CHANNELS.pdfExport, 11, {
+        projectId: session.projectId,
+        revision: 99,
+        allowStale: false,
+      }),
     ).resolves.toMatchObject({ ok: false, error: { code: 'LATEX_NOT_FOUND' } })
     await expect(
       call(LATEX_CHANNELS.pdfExport, 11, {
         projectId: session.projectId,
         revision: 7,
+        allowStale: false,
         sourcePath: '/forged.pdf',
       }),
     ).resolves.toMatchObject({ ok: false, error: { code: 'LATEX_INVALID_PAYLOAD' } })
     await expect(
-      call(LATEX_CHANNELS.pdfExport, 99, { projectId: session.projectId, revision: 7 }),
+      call(LATEX_CHANNELS.pdfExport, 99, {
+        projectId: session.projectId,
+        revision: 7,
+        allowStale: false,
+      }),
     ).resolves.toMatchObject({ ok: false, error: { code: 'LATEX_FORBIDDEN_SENDER' } })
     await expect(
-      call(LATEX_CHANNELS.pdfExport, 11, { projectId: 'forged-project', revision: 7 }),
+      call(LATEX_CHANNELS.pdfExport, 11, {
+        projectId: 'forged-project',
+        revision: 7,
+        allowStale: false,
+      }),
     ).resolves.toMatchObject({
       ok: false,
       error: { code: 'LATEX_PROJECT_SESSION_MISMATCH' },
