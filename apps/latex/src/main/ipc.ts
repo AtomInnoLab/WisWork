@@ -5,6 +5,7 @@ import {
   MAX_IPC_TEXT_BYTES,
   type CompileRequest,
   type ExportPdfResult,
+  type ExportPdfRequest,
   type FileRequest,
   type LatexIpcErrorCode,
   type LatexIpcResult,
@@ -123,11 +124,12 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
     })),
   )
   handle(LATEX_CHANNELS.pdfExport, (event, payload) =>
-    withSession(event, payload, registry, parseRevisionRequest, (session, request) => {
-      const sourcePath = session.pdfPath(request.revision)
-      if (!sourcePath) throw coded('LATEX_NOT_FOUND', 'Compiled PDF revision not found')
+    withSession(event, payload, registry, parseExportPdfRequest, async (session, request) => {
+      const available = await session.exportablePdf(request.revision)
+      if (!available) throw coded('LATEX_NOT_FOUND', 'Compiled PDF revision not found')
+      if (available.stale && !request.allowStale) return { state: 'stale' as const }
       if (!options.exportPdf) throw coded('LATEX_INTERNAL', 'PDF export is unavailable')
-      return options.exportPdf(sourcePath, suggestedPdfName(session.mainFile))
+      return options.exportPdf(available.path, suggestedPdfName(session.mainFile))
     }),
   )
   handle(LATEX_CHANNELS.syncTexForward, (event, payload) =>
@@ -295,6 +297,16 @@ function parseRevisionRequest(value: unknown): SessionRequest & { revision: numb
   return {
     projectId: boundedString(item.projectId, 'projectId', 128),
     revision: revision(item.revision),
+  }
+}
+
+function parseExportPdfRequest(value: unknown): ExportPdfRequest {
+  const item = exactObject(value, ['projectId', 'revision', 'allowStale'])
+  if (typeof item.allowStale !== 'boolean') invalid('allowStale is invalid')
+  return {
+    projectId: boundedString(item.projectId, 'projectId', 128),
+    revision: revision(item.revision),
+    allowStale: item.allowStale,
   }
 }
 

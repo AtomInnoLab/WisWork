@@ -363,23 +363,28 @@ export function App() {
   }, [compileOnce])
   compileLatestRef.current = compileProject
 
-  const exportPdf = useCallback(async () => {
-    const preview = editorStateRef.current.preview
-    if (!projectId || !preview || exportingPdf) return
-    setExportingPdf(true)
-    setError(null)
-    try {
-      const result = await window.latexApi.exportPdf({
-        projectId,
-        revision: preview.revision,
-      })
-      if (!result.ok) setError(result.error.message)
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
-    } finally {
-      setExportingPdf(false)
-    }
-  }, [exportingPdf, projectId])
+  const exportPdf = useCallback(
+    async (allowStale = false) => {
+      const preview = editorStateRef.current.preview
+      if (!projectId || !preview || exportingPdf) return
+      setExportingPdf(true)
+      setError(null)
+      try {
+        const result = await window.latexApi.exportPdf({
+          projectId,
+          revision: preview.revision,
+          allowStale,
+        })
+        if (!result.ok) setError(result.error.message)
+        else if (result.value.state === 'stale') setStaleExportOpen(true)
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason))
+      } finally {
+        setExportingPdf(false)
+      }
+    },
+    [exportingPdf, projectId],
+  )
 
   useEffect(() => {
     const unsubscribe = window.latexApi.onExternalChange((buffer) => {
@@ -740,7 +745,7 @@ export function App() {
         }}
         onExportPdf={() => {
           if (editorState.previewStale) setStaleExportOpen(true)
-          else void exportPdf()
+          else void exportPdf(false)
         }}
         onEditorCommand={(command) => {
           editorRef.current?.runCommand(command)
@@ -864,7 +869,7 @@ export function App() {
         }}
         onExportLast={() => {
           setStaleExportOpen(false)
-          void exportPdf()
+          void exportPdf(true)
         }}
       />
     </main>

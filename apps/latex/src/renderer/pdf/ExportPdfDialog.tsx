@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useLatexLocale } from '../i18n/locale.js'
 
 export function ExportPdfDialog({
@@ -15,13 +15,39 @@ export function ExportPdfDialog({
   onExportLast: () => void
 }) {
   const { t } = useLatexLocale()
+  const dialogRef = useRef<HTMLElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     if (!open) return
+    const previousFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null
+    cancelRef.current?.focus()
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !busy) onCancel()
+      if (event.key === 'Escape' && !busy) {
+        event.preventDefault()
+        onCancel()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const controls = Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled)') ?? [],
+      )
+      if (!controls.length) return
+      const first = controls[0]!
+      const last = controls.at(-1)!
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
     }
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      previousFocus?.focus()
+    }
   }, [busy, onCancel, open])
   if (!open) return null
 
@@ -34,6 +60,7 @@ export function ExportPdfDialog({
       }}
     >
       <section
+        ref={dialogRef}
         className="file-dialog"
         role="dialog"
         aria-modal="true"
@@ -43,7 +70,7 @@ export function ExportPdfDialog({
         <h3 id="export-pdf-dialog-title">{t('exportPdfStaleTitle')}</h3>
         <p>{t('exportPdfStaleMessage')}</p>
         <footer>
-          <button type="button" disabled={busy} onClick={onCancel}>
+          <button ref={cancelRef} type="button" disabled={busy} onClick={onCancel}>
             {t('cancel')}
           </button>
           <button type="button" disabled={busy} onClick={onCompile}>

@@ -87,7 +87,12 @@ export interface CompileRevisionRequest extends SessionRequest {
   revision: number
 }
 
-export type ExportPdfResult = { state: 'written'; path: string } | { state: 'cancelled' }
+export interface ExportPdfRequest extends CompileRevisionRequest {
+  allowStale: boolean
+}
+
+export type ExportPdfResult =
+  { state: 'written'; path: string } | { state: 'cancelled' } | { state: 'stale' }
 
 export interface SyncTexForwardRequest extends CompileRevisionRequest {
   path: string
@@ -210,7 +215,7 @@ export interface LatexApi {
   deleteFile(request: FileRequest): Promise<LatexIpcResult<void>>
   compile(request: CompileRequest): Promise<LatexIpcResult<CompileResultDto>>
   cancelCompile(request: SessionRequest): Promise<LatexIpcResult<{ cancelled: boolean }>>
-  exportPdf(request: CompileRevisionRequest): Promise<LatexIpcResult<ExportPdfResult>>
+  exportPdf(request: ExportPdfRequest): Promise<LatexIpcResult<ExportPdfResult>>
   getBundleStatus(request: SessionRequest): Promise<LatexIpcResult<LatexBundleStatusDto>>
   syncTexForward(
     request: SyncTexForwardRequest,
