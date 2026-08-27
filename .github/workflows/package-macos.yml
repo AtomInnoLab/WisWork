@@ -14,11 +14,7 @@ on:
       - 'packages/auth/**'
       - 'packages/latex-project/**'
       - 'packages/latex-compiler/**'
-      - 'packages/agent-runtime/**'
-      - 'packages/codex-bridge/**'
       - 'packages/pdf-viewer/**'
-      - 'tools/codex/**'
-      - 'tools/install-enhanced-component.ts'
       - 'tools/fetch-tectonic.mjs'
       - 'tools/tectonic/**'
       - 'package-lock.json'
@@ -111,14 +107,6 @@ jobs:
           cd release
           shasum -a 256 *.dmg *.zip > SHA256SUMS.txt
 
-      - name: Verify base package excludes optional Enhanced mode binaries
-        working-directory: apps/shell
-        run: |
-          set -euo pipefail
-          APP=$(find release -type d -path '*WisWork.app' -print -quit)
-          test -n "$APP"
-          test ! -e "$APP/Contents/Resources/native/enhanced-mode"
-
       - name: Upload unsigned macOS artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -129,56 +117,3 @@ jobs:
             apps/shell/release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 7
-
-  enhanced-mode-arm64:
-    name: Enhanced mode arm64 release gate
-    runs-on: macos-14
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Download and verify optional component
-        run: |
-          set -euo pipefail
-          npx vite-node tools/install-enhanced-component.ts --cache "$RUNNER_TEMP/enhanced-mode-component"
-          ENTRY="$RUNNER_TEMP/enhanced-mode-component/0.147.0/darwin-arm64/bin/codex"
-          HOST="$RUNNER_TEMP/enhanced-mode-component/0.147.0/darwin-arm64/bin/codex-code-mode-host"
-          test -x "$ENTRY"
-          test -x "$HOST"
-          file "$ENTRY" | grep -q arm64
-          file "$HOST" | grep -q arm64
-          test "$("$ENTRY" --version)" = "codex-cli 0.147.0"
-
-      - name: Verify vendor signing and Gatekeeper assessment
-        run: |
-          set -euo pipefail
-          ENTRY="$RUNNER_TEMP/enhanced-mode-component/0.147.0/darwin-arm64/bin/codex"
-          HOST="$RUNNER_TEMP/enhanced-mode-component/0.147.0/darwin-arm64/bin/codex-code-mode-host"
-          codesign --verify --strict --verbose=4 "$ENTRY"
-          codesign --verify --strict --verbose=4 "$HOST"
-          spctl --assess --type execute --verbose=4 "$ENTRY"
-          spctl --assess --type execute --verbose=4 "$HOST"
-
-      - name: Verify protocol schemas, release policy, and licenses
-        run: |
-          ENTRY="$RUNNER_TEMP/enhanced-mode-component/0.147.0/darwin-arm64/bin/codex"
-          npm run schema:check -w @wiswork/codex-bridge -- "$ENTRY"
-          npm run eval:enhanced-mode
-          npm run test:release
-          npm run licenses
-
-      - name: Start real pinned app-server from installed component layout
-        env:
-          WISWORK_CODEX_INTEGRATION_EXECUTABLE: ${{ runner.temp }}/enhanced-mode-component/0.147.0/darwin-arm64/bin/codex
-        run: npm run test -w @wiswork/codex-bridge -- --run tests/app-server.integration.test.ts

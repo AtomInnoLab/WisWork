@@ -261,43 +261,6 @@ function tectonicMetadata() {
   return { version, spdx, sourceUrl, licenseText }
 }
 
-function codexComponentMetadata() {
-  const manifest = JSON.parse(readFileSync(join(ROOT, 'tools/codex/manifest.json'), 'utf8'))
-  const component = manifest?.component
-  const asset = component?.assets?.[0]
-  if (
-    component?.version !== '0.147.0' ||
-    component?.license?.spdx !== 'Apache-2.0' ||
-    component?.license?.sourceUrl !==
-      'https://github.com/openai/codex/blob/rust-v0.147.0/LICENSE' ||
-    asset?.platform !== 'darwin' ||
-    asset?.arch !== 'arm64' ||
-    asset?.sha256 !== '17b2984eb22b607e3d0c25728252fc90f510e476bad39a6d9f45cdb1aa685432'
-  ) {
-    throw new Error('Enhanced mode component license metadata is invalid')
-  }
-  const noticeText = readFileSync(join(ROOT, 'tools/codex/NOTICE'), 'utf8').trim()
-  const apacheText = readFileSync(join(ROOT, 'LICENSE'), 'utf8').trim()
-  const v8Text = readFileSync(join(ROOT, 'tools/codex/LICENSE-V8'), 'utf8').trim()
-  const rustyV8Text = readFileSync(join(ROOT, 'tools/codex/LICENSE-RUSTY-V8'), 'utf8').trim()
-  if (
-    !noticeText.includes('Copyright 2025 OpenAI') ||
-    !apacheText.includes('Apache License') ||
-    !v8Text.includes('Copyright 2014, the V8 project authors') ||
-    !rustyV8Text.includes('Copyright (c) 2018-2019 the Deno authors')
-  ) {
-    throw new Error('Enhanced mode component license texts are incomplete')
-  }
-  return {
-    version: component.version,
-    sourceUrl: component.license.sourceUrl,
-    noticeText,
-    apacheText,
-    v8Text,
-    rustyV8Text,
-  }
-}
-
 const seed = importedNames()
 const { resolved, missing } = closure(seed)
 resolved.sort(([a], [b]) => a.localeCompare(b))
@@ -350,15 +313,6 @@ out += hr('3. Native executables')
 out += sub(`Tectonic ${tectonic.version} — ${tectonic.spdx}`)
 out += `Pinned upstream license source: ${tectonic.sourceUrl}\n\n${tectonic.licenseText}\n`
 
-const codexComponent = codexComponentMetadata()
-out += hr('4. Optional Enhanced mode component — legal attribution')
-out += sub(`OpenAI Codex CLI ${codexComponent.version} — Apache-2.0`)
-out += `This component is downloaded only after explicit user action and is not included in the base installer.\n`
-out += `Pinned upstream license source: ${codexComponent.sourceUrl}\n\n`
-out += `NOTICE:\n${codexComponent.noticeText}\n\n${codexComponent.apacheText}\n`
-out += sub('V8 15.0.4 — BSD-3-Clause') + codexComponent.v8Text + '\n'
-out += sub('rusty_v8 150.4.0 — MIT') + codexComponent.rustyV8Text + '\n'
-
 /** Bundled fonts (for docs rendering; all metric-compatible replacements for Microsoft fonts) */
 const FONTS = [
   [
@@ -383,7 +337,7 @@ const FONTS = [
   ],
 ]
 
-out += hr('5. Bundled fonts')
+out += hr('4. Bundled fonts')
 for (const [name, spdx, copyright] of FONTS) out += sub(`${name} — ${spdx}`) + copyright + '\n'
 out += sub('SIL Open Font License 1.1 — full text')
 out +=
