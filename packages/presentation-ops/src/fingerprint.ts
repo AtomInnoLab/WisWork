@@ -6,7 +6,7 @@ const MAX_NODES = 10_000
 const MAX_STRING_LENGTH = 12_000
 const MAX_COLLECTION_LENGTH = 1_000
 
-const canonicalize = (value: unknown): string => {
+export const canonicalizeSemanticValue = (value: unknown): string => {
   const active = new Set<object>()
   let nodes = 0
 
@@ -76,7 +76,7 @@ const canonicalize = (value: unknown): string => {
 }
 
 export const fingerprintSemanticValue = async (value: unknown): Promise<string> => {
-  const bytes = new TextEncoder().encode(canonicalize(value))
+  const bytes = new TextEncoder().encode(canonicalizeSemanticValue(value))
   const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes)
   const hex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join(
     '',

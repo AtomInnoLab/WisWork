@@ -362,6 +362,36 @@ describe('PresentationTransactionExecutor', () => {
     expect(fixture.counts()).toMatchObject({ applyCount: 1, historyCount: 1 })
   })
 
+  it('treats NFC-equivalent same-id payloads as the same in-flight and cached transaction', async () => {
+    const fixture = fakeHost()
+    const originalApply = fixture.host.apply
+    let resume!: () => void
+    let started!: () => void
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve
+    })
+    const applying = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    fixture.host.apply = async (planned, signal) => {
+      started()
+      await paused
+      return originalApply(planned, signal)
+    }
+    const executor = new PresentationTransactionExecutor(fixture.host)
+    const composed = transaction([operation('a', 'shape-1', 'caf\u00e9')])
+    const decomposed = transaction([operation('a', 'shape-1', 'cafe\u0301')])
+    const first = executor.execute(composed)
+    await applying
+    const duplicate = executor.execute(decomposed)
+    expect(duplicate).toBe(first)
+    resume()
+    const receipt = await first
+    expect(await duplicate).toBe(receipt)
+    expect(await executor.execute(decomposed)).toBe(receipt)
+    expect(fixture.counts()).toMatchObject({ applyCount: 1, historyCount: 1 })
+  })
+
   it('returns an exact cached receipt while a different transaction holds the write lease', async () => {
     const fixture = fakeHost()
     const executor = new PresentationTransactionExecutor(fixture.host)
@@ -395,6 +425,121 @@ describe('PresentationTransactionExecutor', () => {
     expect(retry).toBe(cachedReceipt)
     resume()
     await busy
+  })
+
+  it('reserves distinct FIFO slots before an asynchronous transaction digest can reorder them', async () => {
+    const fixture = fakeHost()
+    let releaseFirstDigest!: () => void
+    const firstDigest = new Promise<void>((resolve) => {
+      releaseFirstDigest = resolve
+    })
+    const digestStarts: string[] = []
+    const executor = new PresentationTransactionExecutor(fixture.host, {
+      fingerprintTransaction: async (tx) => {
+        digestStarts.push(tx.transactionId)
+        if (tx.transactionId === 'tx-1') await firstDigest
+        return fp(tx.transactionId === 'tx-1' ? 'a' : 'b')
+      },
+    })
+    const first = transaction([operation('a', 'shape-1', 'one')])
+    const second = {
+      ...transaction([operation('b', 'shape-1', 'two')]),
+      transactionId: 'tx-2',
+      expectedDeckRevision: fp('1'),
+    }
+
+    const firstRun = executor.execute(first)
+    const secondRun = executor.execute(second)
+    await Promise.resolve()
+    expect(digestStarts).toEqual(['tx-1'])
+    releaseFirstDigest()
+
+    await expect(firstRun).resolves.toMatchObject({ status: 'applied', transactionId: 'tx-1' })
+    await expect(secondRun).resolves.toMatchObject({ status: 'applied', transactionId: 'tx-2' })
+    expect(digestStarts).toEqual(['tx-1', 'tx-2'])
+    expect(fixture.state.values.get('shape-1')).toBe('two')
+  })
+
+  it('bounds an asynchronous digest failure before write and releases its queue slot', async () => {
+    const fixture = fakeHost()
+    let attempts = 0
+    const executor = new PresentationTransactionExecutor(fixture.host, {
+      maxQueuedTransactions: 1,
+      fingerprintTransaction: async () => {
+        attempts += 1
+        if (attempts === 1) throw new Error('secret digest failure')
+        return fp('d')
+      },
+    })
+    const failed = await executor.execute(transaction([operation('a', 'shape-1', 'one')]))
+    expect(failed).toMatchObject({ status: 'unchanged', code: 'write_not_applied' })
+    expect(JSON.stringify(failed)).not.toContain('secret')
+
+    const retry = await executor.execute(transaction([operation('a', 'shape-1', 'one')]))
+    expect(retry).toMatchObject({ status: 'applied' })
+    expect(fixture.counts().applyCount).toBe(1)
+  })
+
+  it('bounds distinct queued ids, shares same-id retries at capacity, and frees capacity on cancel', async () => {
+    const fixture = fakeHost()
+    const originalApply = fixture.host.apply
+    let resume!: () => void
+    let started!: () => void
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve
+    })
+    const applying = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    fixture.host.apply = async (planned, signal) => {
+      if (planned.operation.clientId === 'a') {
+        started()
+        await paused
+      }
+      return originalApply(planned, signal)
+    }
+    const executor = new PresentationTransactionExecutor(fixture.host, {
+      maxQueuedTransactions: 2,
+    })
+    const first = transaction([operation('a', 'shape-1', 'one')])
+    const secondController = new AbortController()
+    const second = {
+      ...transaction([operation('b', 'shape-1', 'two')]),
+      transactionId: 'tx-2',
+      expectedDeckRevision: fp('1'),
+    }
+    const overflow = {
+      ...transaction([operation('c', 'shape-1', 'three')]),
+      transactionId: 'tx-3',
+      expectedDeckRevision: fp('1'),
+    }
+    const firstRun = executor.execute(first)
+    await applying
+    const secondRun = executor.execute(second, secondController.signal)
+    const sameId = executor.execute(structuredClone(first))
+    const rejected = await executor.execute(overflow)
+
+    expect(sameId).toBe(firstRun)
+    expect(rejected).toMatchObject({
+      status: 'unchanged',
+      transactionId: 'tx-3',
+      code: 'write_not_applied',
+    })
+    secondController.abort()
+    resume()
+    await expect(firstRun).resolves.toMatchObject({ status: 'applied' })
+    await expect(secondRun).resolves.toMatchObject({ status: 'unchanged' })
+
+    const afterRelease = {
+      ...transaction([operation('d', 'shape-1', 'four')]),
+      transactionId: 'tx-4',
+      expectedDeckRevision: fixture.state.revision,
+    }
+    await expect(executor.execute(afterRelease)).resolves.toMatchObject({
+      status: 'applied',
+      transactionId: 'tx-4',
+    })
+    expect(fixture.counts().applyCount).toBe(2)
   })
 
   it('fails closed at ledger capacity without forgetting an applied transaction', async () => {

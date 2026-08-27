@@ -1,4 +1,5 @@
 import {
+  canonicalizeSemanticValue,
   fingerprintSemanticValue,
   parsePresentationTransaction,
   type PresentationOperation,
@@ -49,23 +50,33 @@ export interface PresentationTransactionExecutorOptions {
   verifyDelayMs?: number
   maxCachedReceipts?: number
   acquireWriteLease?: () => (() => void) | null
+  maxQueuedTransactions?: number
+  fingerprintTransaction?: (transaction: PresentationTransaction) => Promise<string>
 }
 
 interface CachedReceipt {
   digest: string
+  signature: string
   receipt: PresentationReceipt
 }
+
+export const MAX_QUEUED_PRESENTATION_TRANSACTIONS = 64
 
 const delay = (milliseconds: number): Promise<void> =>
   milliseconds <= 0
     ? Promise.resolve()
     : new Promise((resolve) => setTimeout(resolve, milliseconds))
 
+const synchronousTransactionSignature = (transaction: PresentationTransaction): string =>
+  canonicalizeSemanticValue(transaction)
+
 export class PresentationTransactionExecutor<Snapshot> {
   private readonly verifyAttempts: number
   private readonly verifyDelayMs: number
   private readonly maxCachedReceipts: number
   private readonly acquireWriteLease: (() => (() => void) | null) | undefined
+  private readonly maxQueuedTransactions: number
+  private readonly fingerprintTransaction: (transaction: PresentationTransaction) => Promise<string>
   private readonly receipts = new Map<string, CachedReceipt>()
   private readonly inFlight = new Map<
     string,
@@ -81,11 +92,19 @@ export class PresentationTransactionExecutor<Snapshot> {
     this.verifyDelayMs = Math.max(0, Math.min(1_000, options.verifyDelayMs ?? 50))
     this.maxCachedReceipts = Math.max(1, Math.min(10_000, options.maxCachedReceipts ?? 10_000))
     this.acquireWriteLease = options.acquireWriteLease
+    this.maxQueuedTransactions = Math.max(
+      1,
+      Math.min(
+        MAX_QUEUED_PRESENTATION_TRANSACTIONS,
+        options.maxQueuedTransactions ?? MAX_QUEUED_PRESENTATION_TRANSACTIONS,
+      ),
+    )
+    this.fingerprintTransaction = options.fingerprintTransaction ?? fingerprintSemanticValue
   }
 
   execute(input: PresentationTransaction, signal?: AbortSignal): Promise<PresentationReceipt> {
     const transaction = parsePresentationTransaction(input)
-    const signature = JSON.stringify(transaction)
+    const signature = synchronousTransactionSignature(transaction)
     const existing = this.inFlight.get(transaction.transactionId)
     if (existing) {
       if (existing.signature === signature) return existing.promise
@@ -95,7 +114,26 @@ export class PresentationTransactionExecutor<Snapshot> {
         code: 'target_stale',
       })
     }
-    const run = this.prepareExecute(transaction, signal)
+    const cached = this.receipts.get(transaction.transactionId)
+    if (cached) {
+      if (cached.signature === signature) return Promise.resolve(cached.receipt)
+      return Promise.resolve({
+        status: 'conflict',
+        transactionId: transaction.transactionId,
+        code: 'target_stale',
+      })
+    }
+    if (this.inFlight.size >= this.maxQueuedTransactions) {
+      return Promise.resolve(unchangedReceipt(transaction, 'write_not_applied'))
+    }
+    // Occupy the FIFO slot synchronously. Digesting must happen only after the
+    // preceding distinct transaction settles, otherwise a faster later digest
+    // could overtake an earlier request.
+    const run = this.active.then(() => this.executeQueued(transaction, signal))
+    this.active = run.then(
+      () => undefined,
+      () => undefined,
+    )
     this.inFlight.set(transaction.transactionId, { signature, promise: run })
     const cleanup = () => {
       if (this.inFlight.get(transaction.transactionId)?.promise === run) {
@@ -106,11 +144,16 @@ export class PresentationTransactionExecutor<Snapshot> {
     return run
   }
 
-  private async prepareExecute(
+  private async executeQueued(
     transaction: PresentationTransaction,
     signal?: AbortSignal,
   ): Promise<PresentationReceipt> {
-    const digest = await fingerprintSemanticValue(transaction)
+    let digest: string
+    try {
+      digest = await this.fingerprintTransaction(transaction)
+    } catch {
+      return unchangedReceipt(transaction, 'write_not_applied')
+    }
     const cached = this.receipts.get(transaction.transactionId)
     if (cached) {
       if (cached.digest === digest) return cached.receipt
@@ -120,12 +163,7 @@ export class PresentationTransactionExecutor<Snapshot> {
         code: 'target_stale',
       }
     }
-    const run = this.active.then(() => this.executeExclusive(transaction, digest, signal))
-    this.active = run.then(
-      () => undefined,
-      () => undefined,
-    )
-    return run
+    return this.executeExclusive(transaction, digest, signal)
   }
 
   private async executeExclusive(
@@ -291,7 +329,11 @@ export class PresentationTransactionExecutor<Snapshot> {
     digest: string,
     receipt: PresentationReceipt,
   ): PresentationReceipt {
-    this.receipts.set(transaction.transactionId, { digest, receipt })
+    this.receipts.set(transaction.transactionId, {
+      digest,
+      signature: synchronousTransactionSignature(transaction),
+      receipt,
+    })
     return receipt
   }
 }

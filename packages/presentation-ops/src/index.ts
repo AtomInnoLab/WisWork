@@ -1,4 +1,4 @@
-export { fingerprintSemanticValue } from './fingerprint'
+export { canonicalizeSemanticValue, fingerprintSemanticValue } from './fingerprint'
 export {
   PRESENTATION_OPS_LIMITS,
   parsePresentationOperation,
