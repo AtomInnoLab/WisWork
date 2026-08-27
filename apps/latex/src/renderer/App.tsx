@@ -673,7 +673,7 @@ export function App() {
         dirty={Boolean(activeBuffer?.dirty)}
         disabled={frozen || !activeBuffer}
         compileDisabled={frozen || !projectId || !mainFile}
-        compiling={compiling}
+        compiling={compiling || bundleStatus.state === 'downloading'}
         diagnosticCount={diagnostics.length}
         compilePanel={
           <CompilePanel

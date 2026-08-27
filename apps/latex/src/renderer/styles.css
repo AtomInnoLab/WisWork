@@ -539,6 +539,11 @@ button:disabled {
   gap: 8px;
   padding: 7px 10px;
 }
+.compile-operation-status {
+  padding: 7px 10px;
+  color: var(--accent);
+  font-weight: 600;
+}
 .compile-panel header button,
 .readonly-pdf-toolbar button {
   border: 1px solid var(--border);
