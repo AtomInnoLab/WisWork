@@ -29,10 +29,9 @@ test.describe('LaTeX project workflow', () => {
       await launched.page.getByTestId('quick-new-tex').click()
       let latexPage = await waitForLatexPage(launched.app)
       await expect(latexPage.getByLabel('Editor: main.tex')).toBeVisible()
-      await expect(latexPage.getByRole('tab')).toHaveCount(2)
       await expect(latexPage.getByRole('tab', { name: 'WisWork AI' })).toBeVisible()
-      await latexPage.getByRole('tab', { name: '编译' }).click()
-      const compilePanel = latexPage.getByRole('tabpanel')
+      await expect(latexPage.getByRole('tab', { name: '编译' })).toHaveCount(0)
+      const toolbar = latexPage.getByRole('toolbar', { name: 'LaTeX toolbar' })
 
       await editLatexSource(
         latexPage,
@@ -41,7 +40,7 @@ test.describe('LaTeX project workflow', () => {
 BROKEN
 \end{document}`,
       )
-      await compilePanel.getByRole('button', { name: 'Compile' }).click()
+      await toolbar.getByRole('button', { name: 'Compile', exact: true }).click()
       await expect(latexPage.getByRole('alert')).toHaveText('LaTeX operation failed')
 
       const valid = String.raw`\documentclass{article}
@@ -49,7 +48,8 @@ BROKEN
 Hello from WisWork
 \end{document}`
       await editLatexSource(latexPage, valid)
-      await compilePanel.getByRole('button', { name: 'Compile' }).click()
+      await toolbar.getByRole('button', { name: 'Compile', exact: true }).click()
+      await toolbar.getByRole('button', { name: /Problems/ }).click()
       await expect(latexPage.getByText('Remote TeX bundle configured')).toBeVisible()
       await expect.poll(() => readFile(join(projectPath, 'main.tex'), 'utf8')).toBe(valid)
       await expect(latexPage.locator('.pdf-preview canvas')).toBeVisible()

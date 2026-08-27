@@ -20,6 +20,7 @@ describe('LaTeX workbench toolbar', () => {
     expect(app).toContain('onToggleFiles={() => setFilesOpen((open) => !open)}')
     expect(app).toContain('onTogglePreview={() => setPreviewOpen((open) => !open)}')
     expect(app).toContain('onToggleAi={() => setAiOpen((open) => !open)}')
+    expect(app).toContain('onEditorCommand={(command) =>')
     expect(styles).toMatch(/\.latex-workbench-toolbar\s*{[^}]*display:\s*flex/s)
     expect(styles).toMatch(/\.latex-workbench-body\s*{[^}]*min-height:\s*0/s)
     expect(styles).toMatch(/\.latex-toolbar-tabs\s*{[^}]*min-height:\s*39px/s)
@@ -50,5 +51,24 @@ describe('LaTeX workbench toolbar', () => {
     expect(html).toContain('aria-label="Unsaved changes"')
     expect(html.match(/aria-pressed="true"/g)).toHaveLength(2)
     expect(html.match(/aria-pressed="false"/g)).toHaveLength(1)
+    for (const command of [
+      'Undo',
+      'Redo',
+      'Bold',
+      'Italic',
+      'Underline',
+      'Section',
+      'Subsection',
+      'Bulleted list',
+      'Numbered list',
+      'Inline math',
+      'Equation',
+      'Figure',
+      'Table',
+      'Citation',
+      'Reference',
+    ]) {
+      expect(html).toContain(`>${command}<`)
+    }
   })
 })

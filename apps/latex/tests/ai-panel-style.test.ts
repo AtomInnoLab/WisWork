@@ -16,13 +16,13 @@ describe('LaTeX AI dock', () => {
     expect(html).not.toContain('writer@example.com')
   })
 
-  it('keeps both workspace tabs visible while collapsed', () => {
+  it('keeps only the AI entry visible while collapsed', () => {
     const html = renderToStaticMarkup(
-      createElement(AiPanel, { projectId: 'project-1', open: false, activeTab: 'compile' }),
+      createElement(AiPanel, { projectId: 'project-1', open: false }),
     )
-    expect(html.match(/role="tab"/g)).toHaveLength(2)
+    expect(html.match(/role="tab"/g)).toHaveLength(1)
     expect(html).toContain('WisWork AI')
-    expect(html).toContain('编译')
+    expect(html).not.toContain('编译')
     expect(html).toContain('aria-selected="true"')
     const styles = readFileSync(new URL('../src/renderer/styles.css', import.meta.url), 'utf8')
     const railButtons = styles.match(/\.latex-ai-rail > button\s*\{([^}]*)\}/)?.[1] ?? ''
@@ -30,30 +30,17 @@ describe('LaTeX AI dock', () => {
     expect(railButtons).not.toContain('min-height: 112px')
   })
 
-  it('has only WisWork AI and 编译 tabs, with editing kept inside AI', () => {
-    const aiHtml = renderToStaticMarkup(
+  it('keeps compilation out of the AI dock', () => {
+    const html = renderToStaticMarkup(
       createElement(AiPanel, {
         projectId: 'project-1',
-        activeTab: 'ai',
-        compilePanel: createElement('div', null, 'compile evidence'),
       }),
     )
-    expect(aiHtml.match(/role="tab"/g)).toHaveLength(2)
-    expect(aiHtml).toContain('WisWork AI')
-    expect(aiHtml).toContain('编译')
-    expect(aiHtml).toContain('Edit LaTeX with WisWork AI')
-    expect(aiHtml).not.toContain('compile evidence')
-
-    const compileHtml = renderToStaticMarkup(
-      createElement(AiPanel, {
-        projectId: 'project-1',
-        activeTab: 'compile',
-        compilePanel: createElement('div', null, 'compile evidence'),
-      }),
-    )
-    expect(compileHtml).toContain('compile evidence')
-    expect(compileHtml).not.toContain('Edit LaTeX with WisWork AI')
-    expect(compileHtml).not.toContain('>编辑<')
+    expect(html.match(/role="tab"/g)).toHaveLength(1)
+    expect(html).toContain('WisWork AI')
+    expect(html).toContain('Edit LaTeX with WisWork AI')
+    expect(html).not.toContain('编译')
+    expect(html).not.toContain('dock-compile-content')
   })
 
   it('uses the shared WisWork chat design and product app icon', () => {
