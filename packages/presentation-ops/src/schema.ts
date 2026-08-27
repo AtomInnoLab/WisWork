@@ -1,0 +1,374 @@
+import type {
+  PresentationElementType,
+  PresentationFill,
+  PresentationGeometry,
+  PresentationOperation,
+  PresentationReceipt,
+  PresentationStroke,
+  PresentationTarget,
+  PresentationTransaction,
+} from './types'
+
+export const PRESENTATION_OPS_LIMITS = Object.freeze({
+  maxOperations: 50,
+  maxTextLength: 12_000,
+  maxIdentifierLength: 128,
+  maxReceiptIds: 50,
+  maxCoordinateMagnitude: 1_000_000,
+  maxStrokeWidth: 1_000,
+})
+
+const unsafeKeys = new Set(['__proto__', 'prototype', 'constructor'])
+const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/
+const fingerprintPattern = /^sha256:[0-9a-f]{64}$/
+const colorPattern = /^#[0-9A-Fa-f]{6}$/
+
+function fail(message: string): never {
+  throw new TypeError(`Invalid presentation contract: ${message}`)
+}
+
+const object = (value: unknown, name: string): Record<string, unknown> => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    fail(`${name} must be an object`)
+  const record = value as Record<string, unknown>
+  const prototype = Object.getPrototypeOf(record)
+  if (prototype !== Object.prototype && prototype !== null) fail(`${name} must be a plain object`)
+  for (const key of Reflect.ownKeys(record)) {
+    if (typeof key !== 'string') fail(`${name} contains an unknown symbol field`)
+    if (unsafeKeys.has(key)) fail(`${name} contains unsafe key ${key}`)
+    const descriptor = Object.getOwnPropertyDescriptor(record, key)
+    if (descriptor === undefined || descriptor.get !== undefined || descriptor.set !== undefined) {
+      fail(`${name} contains an accessor field`)
+    }
+    if (!descriptor.enumerable) fail(`${name} contains a hidden field`)
+  }
+  return record
+}
+
+const exactKeys = (
+  record: Record<string, unknown>,
+  allowed: readonly string[],
+  name: string,
+): void => {
+  const allowedSet = new Set(allowed)
+  for (const key of Object.keys(record)) {
+    if (!allowedSet.has(key)) fail(`${name} contains unknown field ${key}`)
+  }
+}
+
+const requiredString = (
+  value: unknown,
+  name: string,
+  maxLength: number = PRESENTATION_OPS_LIMITS.maxTextLength,
+): string => {
+  if (typeof value !== 'string') fail(`${name} must be a bounded string`)
+  if (value.length > maxLength) fail(`${name} must be a bounded string`)
+  return value
+}
+
+const identifier = (value: unknown, name: string): string => {
+  const result = requiredString(value, name, PRESENTATION_OPS_LIMITS.maxIdentifierLength)
+  if (!identifierPattern.test(result) || unsafeKeys.has(result)) fail(`${name} is unsafe`)
+  return result
+}
+
+const fingerprint = (value: unknown, name: string): string => {
+  if (typeof value !== 'string') fail(`${name} must be a SHA-256 fingerprint`)
+  if (!fingerprintPattern.test(value)) fail(`${name} must be a SHA-256 fingerprint`)
+  return value
+}
+
+const finiteNumber = (value: unknown, name: string): number => {
+  if (typeof value !== 'number') fail(`${name} must be finite`)
+  if (!Number.isFinite(value)) fail(`${name} must be finite`)
+  return value
+}
+
+const boundedInteger = (value: unknown, name: string, maximum: number): number => {
+  const result = finiteNumber(value, name)
+  if (!Number.isInteger(result) || result < 0 || result > maximum) fail(`${name} is out of bounds`)
+  return result
+}
+
+const optional = <T>(
+  record: Record<string, unknown>,
+  key: string,
+  parse: (value: unknown) => T,
+): T | undefined => (Object.hasOwn(record, key) ? parse(record[key]) : undefined)
+
+const parseTarget = (value: unknown, requireElement: boolean): PresentationTarget => {
+  const record = object(value, 'target')
+  exactKeys(record, ['slideId', 'elementId', 'expectedType', 'expectedFingerprint'], 'target')
+  const slideId = identifier(record.slideId, 'target.slideId')
+  const elementId = optional(record, 'elementId', (item) => identifier(item, 'target.elementId'))
+  const expectedType = optional(record, 'expectedType', (item) => {
+    const types: readonly PresentationElementType[] = [
+      'text',
+      'shape',
+      'image',
+      'table',
+      'chart',
+      'group',
+    ]
+    if (!types.includes(item as PresentationElementType)) fail('target.expectedType is unknown')
+    return item as PresentationElementType
+  })
+  const expectedFingerprint = optional(record, 'expectedFingerprint', (item) =>
+    fingerprint(item, 'target.expectedFingerprint'),
+  )
+  if (requireElement && elementId === undefined) fail('target.elementId is required')
+  if (!requireElement && (elementId !== undefined || expectedType !== undefined))
+    fail('slide target cannot identify an element')
+  return {
+    slideId,
+    ...(elementId === undefined ? {} : { elementId }),
+    ...(expectedType === undefined ? {} : { expectedType }),
+    ...(expectedFingerprint === undefined ? {} : { expectedFingerprint }),
+  }
+}
+
+export const parsePresentationTarget = (value: unknown): PresentationTarget => {
+  const record = object(value, 'target')
+  return parseTarget(value, Object.hasOwn(record, 'elementId'))
+}
+
+const parseGeometry = (value: unknown): PresentationGeometry => {
+  const record = object(value, 'geometry')
+  exactKeys(record, ['x', 'y', 'width', 'height', 'rotation'], 'geometry')
+  const x = finiteNumber(record.x, 'geometry.x')
+  const y = finiteNumber(record.y, 'geometry.y')
+  const width = finiteNumber(record.width, 'geometry.width')
+  const height = finiteNumber(record.height, 'geometry.height')
+  const rotation = optional(record, 'rotation', (item) => finiteNumber(item, 'geometry.rotation'))
+  const magnitude = PRESENTATION_OPS_LIMITS.maxCoordinateMagnitude
+  if (
+    Math.abs(x) > magnitude ||
+    Math.abs(y) > magnitude ||
+    width <= 0 ||
+    width > magnitude ||
+    height <= 0 ||
+    height > magnitude
+  ) {
+    fail('geometry is out of bounds')
+  }
+  if (rotation !== undefined && Math.abs(rotation) > 360_000)
+    fail('geometry.rotation is out of bounds')
+  return { x, y, width, height, ...(rotation === undefined ? {} : { rotation }) }
+}
+
+const parseFill = (value: unknown): PresentationFill => {
+  const record = object(value, 'fill')
+  if (record.kind === 'none') {
+    exactKeys(record, ['kind'], 'fill')
+    return { kind: 'none' }
+  }
+  if (record.kind !== 'solid') fail('fill.kind is unknown')
+  exactKeys(record, ['kind', 'color', 'transparency'], 'fill')
+  if (typeof record.color !== 'string') fail('fill.color is invalid')
+  if (!colorPattern.test(record.color)) fail('fill.color is invalid')
+  const transparency = optional(record, 'transparency', (item) =>
+    finiteNumber(item, 'fill.transparency'),
+  )
+  if (transparency !== undefined && (transparency < 0 || transparency > 1))
+    fail('fill.transparency is out of bounds')
+  return {
+    kind: 'solid',
+    color: record.color.toUpperCase(),
+    ...(transparency === undefined ? {} : { transparency }),
+  }
+}
+
+const parseStroke = (value: unknown): PresentationStroke => {
+  const record = object(value, 'stroke')
+  exactKeys(record, ['color', 'width', 'dash'], 'stroke')
+  if (typeof record.color !== 'string') fail('stroke.color is invalid')
+  if (!colorPattern.test(record.color)) fail('stroke.color is invalid')
+  const width = finiteNumber(record.width, 'stroke.width')
+  if (width < 0 || width > PRESENTATION_OPS_LIMITS.maxStrokeWidth)
+    fail('stroke.width is out of bounds')
+  const dash = optional(record, 'dash', (item) => {
+    const values = ['solid', 'dash', 'dot', 'dash_dot'] as const
+    if (!values.includes(item as (typeof values)[number])) fail('stroke.dash is unknown')
+    return item as (typeof values)[number]
+  })
+  return { color: record.color.toUpperCase(), width, ...(dash === undefined ? {} : { dash }) }
+}
+
+export const parsePresentationOperation = (value: unknown): PresentationOperation => {
+  const record = object(value, 'operation')
+  const kind = record.kind
+  const clientId = identifier(record.clientId, 'operation.clientId')
+  switch (kind) {
+    case 'set_text':
+      exactKeys(record, ['kind', 'clientId', 'target', 'text'], 'set_text')
+      return {
+        kind,
+        clientId,
+        target: parseTarget(record.target, true),
+        text: requiredString(record.text, 'text'),
+      }
+    case 'set_geometry':
+      exactKeys(record, ['kind', 'clientId', 'target', 'geometry'], 'set_geometry')
+      return {
+        kind,
+        clientId,
+        target: parseTarget(record.target, true),
+        geometry: parseGeometry(record.geometry),
+      }
+    case 'set_fill':
+      exactKeys(record, ['kind', 'clientId', 'target', 'fill'], 'set_fill')
+      return {
+        kind,
+        clientId,
+        target: parseTarget(record.target, true),
+        fill: parseFill(record.fill),
+      }
+    case 'set_stroke':
+      exactKeys(record, ['kind', 'clientId', 'target', 'stroke'], 'set_stroke')
+      return {
+        kind,
+        clientId,
+        target: parseTarget(record.target, true),
+        stroke: parseStroke(record.stroke),
+      }
+    case 'add_text_box':
+      exactKeys(record, ['kind', 'clientId', 'slideId', 'text', 'geometry'], 'add_text_box')
+      return {
+        kind,
+        clientId,
+        slideId: identifier(record.slideId, 'slideId'),
+        text: requiredString(record.text, 'text'),
+        geometry: parseGeometry(record.geometry),
+      }
+    case 'delete_element':
+      exactKeys(record, ['kind', 'clientId', 'target'], 'delete_element')
+      return { kind, clientId, target: parseTarget(record.target, true) }
+    case 'set_speaker_notes':
+      exactKeys(record, ['kind', 'clientId', 'target', 'notes'], 'set_speaker_notes')
+      return {
+        kind,
+        clientId,
+        target: parseTarget(record.target, false),
+        notes: requiredString(record.notes, 'notes'),
+      }
+    default:
+      return fail('operation.kind is unknown')
+  }
+}
+
+export const parsePresentationTransaction = (value: unknown): PresentationTransaction => {
+  const record = object(value, 'transaction')
+  exactKeys(record, ['transactionId', 'expectedDeckRevision', 'operations', 'mode'], 'transaction')
+  if (record.mode !== 'atomic') fail('transaction.mode must be atomic')
+  if (!Array.isArray(record.operations)) {
+    fail('transaction.operations is out of bounds')
+  }
+  if (
+    record.operations.length === 0 ||
+    record.operations.length > PRESENTATION_OPS_LIMITS.maxOperations
+  ) {
+    fail('transaction.operations is out of bounds')
+  }
+  const operations = record.operations.map(parsePresentationOperation)
+  const clientIds = new Set<string>()
+  for (const operation of operations) {
+    if (clientIds.has(operation.clientId)) fail('operation.clientId must be unique')
+    clientIds.add(operation.clientId)
+  }
+  return {
+    transactionId: identifier(record.transactionId, 'transactionId'),
+    expectedDeckRevision: fingerprint(record.expectedDeckRevision, 'expectedDeckRevision'),
+    operations,
+    mode: 'atomic',
+  }
+}
+
+export const parsePresentationReceipt = (value: unknown): PresentationReceipt => {
+  const record = object(value, 'receipt')
+  const transactionId = identifier(record.transactionId, 'receipt.transactionId')
+  switch (record.status) {
+    case 'applied': {
+      exactKeys(
+        record,
+        ['status', 'transactionId', 'resultingDeckRevision', 'operationCount', 'createdIds'],
+        'applied receipt',
+      )
+      const createdIds = optional(record, 'createdIds', (item) => {
+        if (!Array.isArray(item)) fail('receipt.createdIds is out of bounds')
+        if (item.length > PRESENTATION_OPS_LIMITS.maxReceiptIds)
+          fail('receipt.createdIds is out of bounds')
+        const ids = item.map((id) => identifier(id, 'receipt.createdId'))
+        if (new Set(ids).size !== ids.length) fail('receipt.createdIds must be unique')
+        return ids
+      })
+      return {
+        status: 'applied',
+        transactionId,
+        resultingDeckRevision: fingerprint(
+          record.resultingDeckRevision,
+          'receipt.resultingDeckRevision',
+        ),
+        operationCount: boundedInteger(
+          record.operationCount,
+          'receipt.operationCount',
+          PRESENTATION_OPS_LIMITS.maxOperations,
+        ),
+        ...(createdIds === undefined ? {} : { createdIds }),
+      }
+    }
+    case 'unchanged': {
+      exactKeys(record, ['status', 'transactionId', 'code', 'operationCount'], 'unchanged receipt')
+      if (record.code !== 'operation_noop' && record.code !== 'write_not_applied')
+        fail('unchanged receipt code is unknown')
+      return {
+        status: 'unchanged',
+        transactionId,
+        code: record.code as 'operation_noop' | 'write_not_applied',
+        operationCount: boundedInteger(
+          record.operationCount,
+          'receipt.operationCount',
+          PRESENTATION_OPS_LIMITS.maxOperations,
+        ),
+      }
+    }
+    case 'conflict': {
+      exactKeys(
+        record,
+        ['status', 'transactionId', 'code', 'operationIndex', 'targetId'],
+        'conflict receipt',
+      )
+      if (
+        record.code !== 'target_stale' &&
+        record.code !== 'target_missing' &&
+        record.code !== 'target_ambiguous'
+      )
+        fail('conflict receipt code is unknown')
+      const operationIndex = optional(record, 'operationIndex', (item) =>
+        boundedInteger(item, 'receipt.operationIndex', PRESENTATION_OPS_LIMITS.maxOperations - 1),
+      )
+      const targetId = optional(record, 'targetId', (item) => identifier(item, 'receipt.targetId'))
+      return {
+        status: 'conflict',
+        transactionId,
+        code: record.code as 'target_stale' | 'target_missing' | 'target_ambiguous',
+        ...(operationIndex === undefined ? {} : { operationIndex }),
+        ...(targetId === undefined ? {} : { targetId }),
+      }
+    }
+    case 'uncertain': {
+      exactKeys(record, ['status', 'transactionId', 'code', 'operationIndex'], 'uncertain receipt')
+      if (record.code !== 'write_state_uncertain') fail('uncertain receipt code is unknown')
+      const operationIndex = optional(record, 'operationIndex', (item) =>
+        boundedInteger(item, 'receipt.operationIndex', PRESENTATION_OPS_LIMITS.maxOperations - 1),
+      )
+      return {
+        status: 'uncertain',
+        transactionId,
+        code: 'write_state_uncertain',
+        ...(operationIndex === undefined ? {} : { operationIndex }),
+      }
+    }
+    default:
+      return fail('receipt.status is unknown')
+  }
+}
