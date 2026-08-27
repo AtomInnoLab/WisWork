@@ -412,7 +412,8 @@ export function App() {
   const [showNotes, setShowNotes] = useState(false)
   const [notesText, setNotesText] = useState('')
   /** Unsaved notes draft (flushed before page switch/save) */
-  const notesDraftRef = useRef<{ index: number; text: string } | null>(null)
+  const notesDraftRef = useRef<{ index: number; text: string; version: number } | null>(null)
+  const notesDraftVersionRef = useRef(0)
   /** Notes pane height (px): default 118, drag-resizable */
   const [notesHeight, setNotesHeight] = useState(118)
   const notesDragRef = useRef<{ startY: number; startH: number } | null>(null)
@@ -474,8 +475,8 @@ export function App() {
   const flushNotes = useCallback(async () => {
     const pending = notesDraftRef.current
     if (!pending) return
-    notesDraftRef.current = null
     const ok = await window.slidesApi.setNotes({ slideIndex: pending.index, text: pending.text })
+    if (notesDraftRef.current === pending && ok) notesDraftRef.current = null
     if (ok) setDirty(true)
   }, [])
 
@@ -1342,7 +1343,8 @@ export function App() {
   const onNotesChange = useCallback(
     (text: string) => {
       setNotesText(text)
-      notesDraftRef.current = { index: current, text }
+      notesDraftVersionRef.current += 1
+      notesDraftRef.current = { index: current, text, version: notesDraftVersionRef.current }
     },
     [current],
   )
@@ -3239,11 +3241,17 @@ export function App() {
                   setPath(p)
                   setDirty(false)
                 }}
-                onSpeakerNotesApplied={(slideIndex, text) => {
+                onPrepareSpeakerNotesWrite={async () => {
+                  await flushNotes()
+                  return notesDraftVersionRef.current
+                }}
+                onSpeakerNotesApplied={(slideIndex, text, expectedDraftVersion) => {
                   if (slideIndex !== current) return
+                  if (notesDraftVersionRef.current !== expectedDraftVersion) return
                   notesDraftRef.current = null
                   setNotesText(text)
                 }}
+                onAuthoritativeReloadRequired={() => window.location.reload()}
                 currentFilePath={path}
               />
             ) : (

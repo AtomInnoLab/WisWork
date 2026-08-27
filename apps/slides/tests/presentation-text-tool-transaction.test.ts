@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RenderSlide, ShapeRenderNode } from '@wiswork/pptx-render'
 import { createSlidesSkill, type DeckAccess } from '../src/renderer/ai/slides-skill'
 import { executePreparedTextFamilyTransaction } from '../src/renderer/ai/presentation-text-transactions'
+import { textToolTransactionId } from '../src/renderer/ai/presentation-text-transactions'
 
 const fp = (char: string) => `sha256:${char.repeat(64)}`
 const slide: RenderSlide = {
@@ -65,10 +66,13 @@ describe('Slides canonical text-family transactions', () => {
 
   beforeEach(() => {
     executePresentationOperation = vi.fn(async () => ({
-      status: 'applied' as const,
-      transactionId: 'tx',
-      resultingDeckRevision: fp('b'),
-      operationCount: 1,
+      receipt: {
+        status: 'applied' as const,
+        transactionId: 'tx',
+        resultingDeckRevision: fp('b'),
+        operationCount: 1,
+      },
+      authoritativeState: 'fresh' as const,
     }))
     access = {
       getSlides: () => [slide],
@@ -126,7 +130,10 @@ describe('Slides canonical text-family transactions', () => {
   ] as const)(
     'maps %s without falling back to legacy edit IPC',
     async (_label, receipt, mutated) => {
-      executePresentationOperation.mockResolvedValue(receipt)
+      executePresentationOperation.mockResolvedValue({
+        receipt,
+        authoritativeState: 'fresh',
+      })
       const result = await createSlidesSkill(access).executeTool({
         id: `tool-${_label}`,
         name: 'set_element_text',
@@ -166,6 +173,67 @@ describe('Slides canonical text-family transactions', () => {
       undefined,
     )
     expect(result).toMatchObject({ mutated: true })
+  })
+
+  it('preserves a newer notes draft that appears while the transaction is running', async () => {
+    let version = 1
+    let visible = 'draft before agent'
+    access.prepareSpeakerNotesWrite = vi.fn(async () => version)
+    access.applySpeakerNotes = vi.fn((_slideIndex, text, expectedVersion) => {
+      if (version === expectedVersion) visible = text
+    })
+    executePresentationOperation.mockImplementation(async () => {
+      version = 2
+      visible = 'user typed during agent write'
+      return {
+        receipt: {
+          status: 'applied',
+          transactionId: 'notes-race',
+          resultingDeckRevision: fp('c'),
+          operationCount: 1,
+        },
+        authoritativeState: 'fresh',
+      }
+    })
+    const result = await createSlidesSkill(access).executeTool({
+      id: 'notes-race',
+      name: 'set_speaker_notes',
+      input: { slideIndex: 0, text: 'agent notes' },
+    })
+    expect(result).toMatchObject({ mutated: true })
+    expect(visible).toBe('user typed during agent write')
+    expect(access.applySpeakerNotes).toHaveBeenCalledWith(0, 'agent notes', 1)
+  })
+
+  it('stops the tool batch after an applied change whose authoritative refresh failed', async () => {
+    executePresentationOperation.mockResolvedValue({
+      receipt: {
+        status: 'applied',
+        transactionId: 'refresh-failed',
+        resultingDeckRevision: fp('d'),
+        operationCount: 1,
+      },
+      authoritativeState: 'reload_required',
+    })
+    const result = await createSlidesSkill(access).executeTool({
+      id: 'refresh-failed',
+      name: 'set_element_text',
+      input: { slideIndex: 0, sourceId: '2', paragraphs: [{ text: 'landed' }] },
+    })
+    expect(result).toMatchObject({ mutated: true, stopToolBatch: true })
+    expect(result.isError).not.toBe(true)
+    expect(result.output).toContain('was applied')
+  })
+})
+
+describe('text tool invocation identity', () => {
+  it('reuses one nonce for transport retry but not for a later identical invocation', async () => {
+    const base = { id: 'same', name: 'set_element_text', input: { text: 'same' } }
+    const first = await textToolTransactionId({ ...base, invocationId: 'run-1-call-1' })
+    const retry = await textToolTransactionId({ ...base, invocationId: 'run-1-call-1' })
+    const later = await textToolTransactionId({ ...base, invocationId: 'run-2-call-1' })
+    expect(retry).toBe(first)
+    expect(later).not.toBe(first)
   })
 })
 
@@ -238,10 +306,11 @@ describe('renderer to preload canonical transaction contract', () => {
       controller.signal,
     )
     await vi.waitFor(() => expect(api.executePresentationTransaction).toHaveBeenCalled())
+    const stopped = expect(pending).rejects.toMatchObject({ name: 'AbortError' })
     controller.abort()
     expect(api.cancelPresentationTransaction).toHaveBeenCalledWith('slides-text-stop')
     finish(undefined as never)
-    await pending
+    await stopped
   })
 
   it('fails closed without invoking the transaction while the session is busy', async () => {
@@ -257,7 +326,61 @@ describe('renderer to preload canonical transaction contract', () => {
         sourceId: '2',
         operation: { kind: 'set_text', paragraphs: [{ runs: [{ text: 'after' }] }] },
       }),
-    ).resolves.toMatchObject({ status: 'unchanged', code: 'write_not_applied' })
+    ).resolves.toMatchObject({
+      receipt: { status: 'unchanged', code: 'write_not_applied' },
+    })
     expect(api.executePresentationTransaction).not.toHaveBeenCalled()
+  })
+
+  it('keeps an applied receipt authoritative when renderer refresh fails', async () => {
+    const api = {
+      preparePresentationTarget: vi.fn(async () => ({
+        status: 'prepared' as const,
+        expectedDeckRevision: fp('0'),
+        target,
+      })),
+      executePresentationTransaction: vi.fn(async () => ({
+        status: 'applied' as const,
+        transactionId: 'slides-text-refresh',
+        resultingDeckRevision: fp('1'),
+        operationCount: 1,
+      })),
+      cancelPresentationTransaction: vi.fn(async () => false),
+    }
+    await expect(
+      executePreparedTextFamilyTransaction(
+        api,
+        {
+          transactionId: 'slides-text-refresh',
+          slideIndex: 0,
+          sourceId: '2',
+          operation: { kind: 'set_text', paragraphs: [{ runs: [{ text: 'after' }] }] },
+        },
+        undefined,
+        async () => false,
+      ),
+    ).resolves.toMatchObject({
+      receipt: { status: 'applied' },
+      authoritativeState: 'reload_required',
+    })
+
+    await expect(
+      executePreparedTextFamilyTransaction(
+        api,
+        {
+          transactionId: 'slides-text-refresh-rejected',
+          slideIndex: 0,
+          sourceId: '2',
+          operation: { kind: 'set_text', paragraphs: [{ runs: [{ text: 'after' }] }] },
+        },
+        undefined,
+        async () => {
+          throw new Error('renderer reload failed')
+        },
+      ),
+    ).resolves.toMatchObject({
+      receipt: { status: 'applied' },
+      authoritativeState: 'reload_required',
+    })
   })
 })

@@ -55,6 +55,41 @@ function makeSkill(execute?: (call: AgentToolCall) => ToolExecutionOutcome): Age
 const flush = () => new Promise((r) => setTimeout(r, 0))
 
 describe('AgentLoop', () => {
+  it('assigns invocation nonces per run while deduplicating a retried transport callback', async () => {
+    const seen: AgentToolCall[] = []
+    const transport = scriptedTransport([
+      (cb) => {
+        const repeated = { id: 'same', name: 'do_thing', input: { value: 1 } }
+        cb.onToolCall(repeated)
+        cb.onToolCall({ ...repeated })
+        cb.onDone()
+      },
+      (cb) => cb.onDone(),
+      (cb) => {
+        cb.onToolCall({ id: 'same', name: 'do_thing', input: { value: 1 } })
+        cb.onDone()
+      },
+      (cb) => cb.onDone(),
+    ])
+    const loop = new AgentLoop({
+      transport,
+      skill: makeSkill((call) => {
+        seen.push(call)
+        return { output: 'ok', summary: 'ok', mutated: false }
+      }),
+    })
+    loop.run('first')
+    await flush()
+    await flush()
+    loop.run('second')
+    await flush()
+    await flush()
+    expect(seen).toHaveLength(3)
+    expect(seen[0]!.invocationId).toBeTruthy()
+    expect(seen[1]!.invocationId).toBe(seen[0]!.invocationId)
+    expect(seen[2]!.invocationId).not.toBe(seen[0]!.invocationId)
+  })
+
   it('runs a plain-text turn to completion', async () => {
     const transport = scriptedTransport([
       (cb) => {

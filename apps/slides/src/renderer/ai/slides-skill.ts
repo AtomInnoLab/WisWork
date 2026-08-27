@@ -10,10 +10,10 @@ import type { AddSmartArtOp, AgentToolCall, AgentToolDef, EditParagraph } from '
 import { auditSlideLayout, formatAudit } from './layout-audit'
 import { runLayoutScript, type LayoutScriptElement, type SlideStylePatch } from './layout-script'
 import { t } from '../i18n/locale'
-import type { PresentationReceipt } from '@wiswork/presentation-ops'
 import {
   textFamilyReceiptOutcome,
   textToolTransactionId,
+  type TextFamilyExecutionResult,
   type TextFamilyTransactionRequest,
 } from './presentation-text-transactions'
 
@@ -36,9 +36,10 @@ export interface DeckAccess {
   executePresentationOperation?(
     request: TextFamilyTransactionRequest,
     signal?: AbortSignal,
-  ): Promise<PresentationReceipt>
+  ): Promise<TextFamilyExecutionResult>
   /** Mirror an already-applied notes transaction into the visible notes editor. */
-  applySpeakerNotes?(slideIndex: number, text: string): void
+  prepareSpeakerNotesWrite?(slideIndex: number): Promise<number>
+  applySpeakerNotes?(slideIndex: number, text: string, expectedDraftVersion: number): void
   /** Survey: shows a card with options and waits for the user's choices, returning an answer summary. */
   askClarification?(questions: ClarifyQuestion[]): Promise<{ answers: string; cancelled?: boolean }>
   /**
@@ -1176,6 +1177,7 @@ export function createSlidesSkill(access: DeckAccess): AgentSkill {
 }
 
 interface SkillState {
+  fallbackInvocationIds?: WeakMap<AgentToolCall, string>
   /** A web_search ran in this conversation — unlocks dataSource:'search' in the figure gate */
   webSearched?: boolean
   /** Most recently available Style Skill (used by save_style_template) */
@@ -1259,6 +1261,21 @@ async function executeTool(
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted()
+  if (!call.invocationId) {
+    state ??= {}
+    state.fallbackInvocationIds ??= new WeakMap()
+    let invocationId = state.fallbackInvocationIds.get(call)
+    if (!invocationId) {
+      invocationId = globalThis.crypto.randomUUID()
+      state.fallbackInvocationIds.set(call, invocationId)
+    }
+    Object.defineProperty(call, 'invocationId', {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: invocationId,
+    })
+  }
   const unguardedAccess = access
   access = {
     ...unguardedAccess,
@@ -1312,7 +1329,7 @@ async function executeTool(
       if (!access.executePresentationOperation)
         return fail(t('aiFailEditText'), 'Canonical presentation transactions are unavailable')
       const transactionId = await textToolTransactionId(call)
-      const receipt = await access.executePresentationOperation(
+      const execution = await access.executePresentationOperation(
         {
           transactionId,
           slideIndex: idx,
@@ -1321,7 +1338,16 @@ async function executeTool(
         },
         signal,
       )
-      const outcome = textFamilyReceiptOutcome(receipt)
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required') {
+        return {
+          output:
+            'The text change was applied, but the editor could not refresh authoritative state. Reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumEditText', { n: idx + 1 }),
+        }
+      }
       if (!outcome.ok) {
         return {
           output:
@@ -1360,7 +1386,7 @@ async function executeTool(
       const paragraphs = mergeStyleIntoParagraphs(cur, ov)
       if (!access.executePresentationOperation)
         return fail(t('aiFailStyle'), 'Canonical presentation transactions are unavailable')
-      const receipt = await access.executePresentationOperation(
+      const execution = await access.executePresentationOperation(
         {
           transactionId: await textToolTransactionId(call),
           slideIndex: idx,
@@ -1369,7 +1395,16 @@ async function executeTool(
         },
         signal,
       )
-      const outcome = textFamilyReceiptOutcome(receipt)
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required') {
+        return {
+          output:
+            'The formatting change was applied, but the editor could not refresh authoritative state. Reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumStyle', { n: idx + 1 }),
+        }
+      }
       if (!outcome.ok) {
         return {
           output: outcome.mutated
@@ -2329,7 +2364,9 @@ async function executeTool(
         return fail(t('aiFailEditText'), 'speaker notes exceed the 12000 character limit')
       if (!access.executePresentationOperation)
         return fail(t('aiFailEditText'), 'speaker notes are unavailable in this host')
-      const receipt = await access.executePresentationOperation(
+      const draftVersion = (await access.prepareSpeakerNotesWrite?.(idx)) ?? 0
+      signal?.throwIfAborted()
+      const execution = await access.executePresentationOperation(
         {
           transactionId: await textToolTransactionId(call),
           slideIndex: idx,
@@ -2337,7 +2374,16 @@ async function executeTool(
         },
         signal,
       )
-      const outcome = textFamilyReceiptOutcome(receipt)
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required') {
+        return {
+          output:
+            'The speaker notes were applied, but the editor could not refresh authoritative state. Reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumEditText', { n: idx + 1 }),
+        }
+      }
       if (!outcome.ok) {
         return {
           output: outcome.mutated
@@ -2348,7 +2394,7 @@ async function executeTool(
           summary: t('aiFailEditText'),
         }
       }
-      if (outcome.mutated) access.applySpeakerNotes?.(idx, text)
+      if (outcome.mutated) access.applySpeakerNotes?.(idx, text, draftVersion)
       return {
         output: outcome.mutated
           ? text

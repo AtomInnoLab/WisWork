@@ -213,10 +213,13 @@ describe('set_speaker_notes tool', () => {
 
   it('advertises and writes bounded speaker notes through DeckAccess', async () => {
     const executePresentationOperation = vi.fn(async (request) => ({
-      status: 'applied' as const,
-      transactionId: request.transactionId,
-      resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
-      operationCount: 1,
+      receipt: {
+        status: 'applied' as const,
+        transactionId: request.transactionId,
+        resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+        operationCount: 1,
+      },
+      authoritativeState: 'fresh' as const,
     }))
     const skill = createSlidesSkill({
       getSlides: () => [slide],
@@ -248,10 +251,13 @@ describe('set_speaker_notes tool', () => {
 
   it('rejects out-of-range slides and oversized notes before host access', async () => {
     const executePresentationOperation = vi.fn(async (request) => ({
-      status: 'applied' as const,
-      transactionId: request.transactionId,
-      resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
-      operationCount: 1,
+      receipt: {
+        status: 'applied' as const,
+        transactionId: request.transactionId,
+        resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+        operationCount: 1,
+      },
+      authoritativeState: 'fresh' as const,
     }))
     const skill = createSlidesSkill({
       getSlides: () => [slide],
@@ -293,9 +299,12 @@ describe('set_speaker_notes tool', () => {
       applySlide: () => {},
       applyDeck: () => {},
       executePresentationOperation: async (request) => ({
-        status: 'uncertain',
-        transactionId: request.transactionId,
-        code: 'write_state_uncertain',
+        receipt: {
+          status: 'uncertain',
+          transactionId: request.transactionId,
+          code: 'write_state_uncertain',
+        },
+        authoritativeState: 'fresh',
       }),
       fitWidthPx: 1280,
     })

@@ -46,6 +46,7 @@ import {
   type PresentationTargetEnrollment,
 } from './operations/desktop-host'
 import { PresentationTransactionExecutor } from './operations/executor'
+import { PreparedTargetLedger } from './operations/prepared-target-ledger'
 
 // ---- AI settings + streaming proxy (the main process does the networking to avoid renderer CORS; implementation shared via @wiswork/ai-provider) ----
 
@@ -178,16 +179,10 @@ export function registerSlidesOnlyAiIpc(): void {
   const transactionControllers = new Map<string, Set<AbortController>>()
   const controllerKey = (senderId: number, transactionId: string) => `${senderId}:${transactionId}`
 
-  type PreparedTarget = {
-    request: { slideIndex: number; sourceId?: string }
-    response: import('../shared/ipc').PresentationTargetPreparation
-    enrollment?: PresentationTargetEnrollment
-  }
   const preparedTargets = new WeakMap<
     NonNullable<ReturnType<typeof sessions.get>>,
-    Map<string, PreparedTarget>
+    PreparedTargetLedger
   >()
-  const MAX_PREPARED_TARGETS = 10_000
 
   const elementType = (element: SlideElement): PresentationElementType | undefined => {
     if (element.type === 'picture') return 'image'
@@ -240,17 +235,15 @@ export function registerSlidesOnlyAiIpc(): void {
       return { status: 'busy' } as const
     let ledger = preparedTargets.get(session)
     if (!ledger) {
-      ledger = new Map()
+      ledger = new PreparedTargetLedger()
       preparedTargets.set(session, ledger)
     }
-    const previous = ledger.get(transactionId)
-    if (previous) {
-      return previous.request.slideIndex === request.slideIndex &&
-        previous.request.sourceId === sourceId
-        ? previous.response
-        : ({ status: 'conflict', code: 'target_stale' } as const)
+    const requestKey = {
+      slideIndex: request.slideIndex,
+      ...(sourceId === undefined ? {} : { sourceId }),
     }
-    if (ledger.size >= MAX_PREPARED_TARGETS) return { status: 'busy' } as const
+    const previous = ledger.get(transactionId, requestKey)
+    if (previous) return previous
     const generation = session.mutationGeneration ?? 0
     const slide = session.opened.deck.slides[request.slideIndex]
     if (!slide) return { status: 'conflict', code: 'target_missing' } as const
@@ -289,14 +282,8 @@ export function registerSlidesOnlyAiIpc(): void {
       }
     }
     if ((session.mutationGeneration ?? 0) !== generation) return { status: 'busy' } as const
-    ledger.set(transactionId, {
-      request: {
-        slideIndex: request.slideIndex,
-        ...(sourceId === undefined ? {} : { sourceId }),
-      },
-      response,
-      ...(enrollment === undefined ? {} : { enrollment }),
-    })
+    if (!ledger.set(transactionId, requestKey, response, enrollment))
+      return { status: 'busy' } as const
     return response
   })
 
@@ -311,12 +298,7 @@ export function registerSlidesOnlyAiIpc(): void {
     if (!executor) {
       executor = new PresentationTransactionExecutor(
         new DesktopPresentationHost(session, (id) => {
-          const ledger = preparedTargets.get(session)
-          if (!ledger) return undefined
-          for (const prepared of ledger.values()) {
-            if (prepared.enrollment?.elementId === id) return prepared.enrollment
-          }
-          return undefined
+          return preparedTargets.get(session)?.enrollment(id)
         }),
         {
           acquireWriteLease: () => acquirePresentationTransactionLease(session),
@@ -332,6 +314,7 @@ export function registerSlidesOnlyAiIpc(): void {
     try {
       return await executor.execute(transaction, controller.signal)
     } finally {
+      preparedTargets.get(session)?.complete(transaction.transactionId)
       controllers.delete(controller)
       if (controllers.size === 0) transactionControllers.delete(key)
     }
@@ -350,7 +333,11 @@ export function registerSlidesOnlyAiIpc(): void {
         throw new AiIpcError('invalid_payload')
       }
       const controllers = transactionControllers.get(controllerKey(event.sender.id, transactionId))
-      if (!controllers?.size) return false
+      if (!controllers?.size) {
+        const session = sessions.get(event.sender.id)
+        if (session) preparedTargets.get(session)?.cancel(transactionId)
+        return false
+      }
       for (const controller of controllers) controller.abort()
       return true
     },

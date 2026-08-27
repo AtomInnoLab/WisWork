@@ -16,12 +16,57 @@ export interface TextFamilyTransactionRequest {
   operation: TextFamilyOperation
 }
 
+export interface TextFamilyExecutionResult {
+  receipt: PresentationReceipt
+  authoritativeState: 'fresh' | 'reload_required'
+}
+
+const preparationCache = new Map<
+  string,
+  {
+    slideIndex: number
+    sourceId?: string
+    preparation: Extract<
+      Awaited<ReturnType<SlidesApi['preparePresentationTarget']>>,
+      { status: 'prepared' }
+    >
+  }
+>()
+const MAX_PREPARATION_CACHE = 64
+
+function cachePreparation(
+  transactionId: string,
+  request: TextFamilyTransactionRequest,
+  preparation: Extract<
+    Awaited<ReturnType<SlidesApi['preparePresentationTarget']>>,
+    { status: 'prepared' }
+  >,
+): void {
+  preparationCache.delete(transactionId)
+  preparationCache.set(transactionId, {
+    slideIndex: request.slideIndex,
+    ...(request.sourceId === undefined ? {} : { sourceId: request.sourceId }),
+    preparation,
+  })
+  while (preparationCache.size > MAX_PREPARATION_CACHE) {
+    const oldest = preparationCache.keys().next().value as string | undefined
+    if (oldest === undefined) break
+    preparationCache.delete(oldest)
+  }
+}
+
 export async function textToolTransactionId(call: {
   id: string
   name: string
   input: Record<string, unknown>
+  invocationId?: string
 }): Promise<string> {
-  const digest = await fingerprintSemanticValue({ id: call.id, name: call.name, input: call.input })
+  if (!call.invocationId) throw new TypeError('Tool invocation identity is required')
+  const digest = await fingerprintSemanticValue({
+    invocationId: call.invocationId,
+    name: call.name,
+    input: call.input,
+  })
   return `slides-text-${digest.slice('sha256:'.length)}`
 }
 
@@ -47,38 +92,69 @@ export async function executePreparedTextFamilyTransaction(
   >,
   request: TextFamilyTransactionRequest,
   signal?: AbortSignal,
-): Promise<PresentationReceipt> {
+  refresh?: () => Promise<boolean>,
+): Promise<TextFamilyExecutionResult> {
   signal?.throwIfAborted()
-  let preparation: Awaited<ReturnType<SlidesApi['preparePresentationTarget']>>
-  try {
-    preparation = await api.preparePresentationTarget({
-      transactionId: request.transactionId,
-      slideIndex: request.slideIndex,
-      ...(request.sourceId === undefined ? {} : { sourceId: request.sourceId }),
-    })
-  } catch {
+  const cached = preparationCache.get(request.transactionId)
+  if (
+    cached &&
+    (cached.slideIndex !== request.slideIndex || cached.sourceId !== request.sourceId)
+  ) {
     return {
-      status: 'unchanged',
-      transactionId: request.transactionId,
-      code: 'write_not_applied',
-      operationCount: 1,
+      receipt: {
+        status: 'conflict',
+        transactionId: request.transactionId,
+        code: 'target_stale',
+      },
+      authoritativeState: 'fresh',
+    }
+  }
+  let preparation: Awaited<ReturnType<SlidesApi['preparePresentationTarget']>>
+  if (cached) {
+    preparationCache.delete(request.transactionId)
+    preparationCache.set(request.transactionId, cached)
+    preparation = cached.preparation
+  } else {
+    try {
+      preparation = await api.preparePresentationTarget({
+        transactionId: request.transactionId,
+        slideIndex: request.slideIndex,
+        ...(request.sourceId === undefined ? {} : { sourceId: request.sourceId }),
+      })
+    } catch {
+      return {
+        receipt: {
+          status: 'unchanged',
+          transactionId: request.transactionId,
+          code: 'write_not_applied',
+          operationCount: 1,
+        },
+        authoritativeState: 'fresh',
+      }
     }
   }
   if (preparation.status === 'busy') {
     return {
-      status: 'unchanged',
-      transactionId: request.transactionId,
-      code: 'write_not_applied',
-      operationCount: 1,
+      receipt: {
+        status: 'unchanged',
+        transactionId: request.transactionId,
+        code: 'write_not_applied',
+        operationCount: 1,
+      },
+      authoritativeState: 'fresh',
     }
   }
   if (preparation.status === 'conflict') {
     return {
-      status: 'conflict',
-      transactionId: request.transactionId,
-      code: preparation.code,
+      receipt: {
+        status: 'conflict',
+        transactionId: request.transactionId,
+        code: preparation.code,
+      },
+      authoritativeState: 'fresh',
     }
   }
+  if (!cached) cachePreparation(request.transactionId, request, preparation)
   signal?.throwIfAborted()
   const operation: PresentationOperation =
     request.operation.kind === 'set_text'
@@ -119,14 +195,26 @@ export async function executePreparedTextFamilyTransaction(
   signal?.addEventListener('abort', cancel, { once: true })
   try {
     try {
-      return await api.executePresentationTransaction(transaction)
+      const receipt = await api.executePresentationTransaction(transaction)
+      if (receipt.status !== 'applied' || !refresh) return { receipt, authoritativeState: 'fresh' }
+      try {
+        return {
+          receipt,
+          authoritativeState: (await refresh()) ? 'fresh' : 'reload_required',
+        }
+      } catch {
+        return { receipt, authoritativeState: 'reload_required' }
+      }
     } catch {
       signal?.throwIfAborted()
       return {
-        status: 'unchanged',
-        transactionId: request.transactionId,
-        code: 'write_not_applied',
-        operationCount: 1,
+        receipt: {
+          status: 'unchanged',
+          transactionId: request.transactionId,
+          code: 'write_not_applied',
+          operationCount: 1,
+        },
+        authoritativeState: 'fresh',
       }
     }
   } finally {

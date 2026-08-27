@@ -363,10 +363,13 @@ describe('execute_slide_script tool', () => {
     },
     applyDeck: () => {},
     executePresentationOperation: vi.fn(async (request) => ({
-      status: 'applied' as const,
-      transactionId: request.transactionId,
-      resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
-      operationCount: 1,
+      receipt: {
+        status: 'applied' as const,
+        transactionId: request.transactionId,
+        resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+        operationCount: 1,
+      },
+      authoritativeState: 'fresh' as const,
     })),
     fitWidthPx: 1280,
   })

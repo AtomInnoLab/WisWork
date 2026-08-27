@@ -262,7 +262,9 @@ interface AiPanelProps {
   /** Callback to update the path after AI generation lands on disk (title bar sync) */
   onPathChange?: (path: string) => void
   /** Mirror canonical notes commits into the notes editor; this callback never writes the deck. */
-  onSpeakerNotesApplied?: (slideIndex: number, text: string) => void
+  onPrepareSpeakerNotesWrite?: (slideIndex: number) => Promise<number>
+  onSpeakerNotesApplied?: (slideIndex: number, text: string, expectedDraftVersion: number) => void
+  onAuthoritativeReloadRequired?: () => void
   /** Absolute path of the currently open file (for chat history persistence) */
   currentFilePath?: string | null
 }
@@ -342,6 +344,8 @@ export function AiPanel({
   onCollapse,
   onPathChange,
   onSpeakerNotesApplied,
+  onPrepareSpeakerNotesWrite,
+  onAuthoritativeReloadRequired,
   currentFilePath,
 }: AiPanelProps) {
   const { t } = useI18n()
@@ -451,6 +455,10 @@ export function AiPanel({
   applyDeckRef.current = applyDeck
   const onSpeakerNotesAppliedRef = useRef(onSpeakerNotesApplied)
   onSpeakerNotesAppliedRef.current = onSpeakerNotesApplied
+  const onPrepareSpeakerNotesWriteRef = useRef(onPrepareSpeakerNotesWrite)
+  onPrepareSpeakerNotesWriteRef.current = onPrepareSpeakerNotesWrite
+  const onAuthoritativeReloadRequiredRef = useRef(onAuthoritativeReloadRequired)
+  onAuthoritativeReloadRequiredRef.current = onAuthoritativeReloadRequired
   const onPathChangeRef = useRef(onPathChange)
   onPathChangeRef.current = onPathChange
   const settingsRef = useRef(settings)
@@ -750,18 +758,25 @@ export function AiPanel({
       applySlide: (i, updated) => applySlideRef.current(i, updated),
       applyDeck: (all, goTo) => applyDeckRef.current(all, goTo),
       executePresentationOperation: async (request, signal) => {
-        const receipt = await executePreparedTextFamilyTransaction(
+        const execution = await executePreparedTextFamilyTransaction(
           window.slidesApi,
           request,
           signal,
+          async () => {
+            const refreshed = await window.slidesApi.getRenderSlides()
+            if (!refreshed) return false
+            applyDeckRef.current(refreshed, currentRef.current)
+            return true
+          },
         )
-        if (receipt.status === 'applied') {
-          const refreshed = await window.slidesApi.getRenderSlides()
-          if (refreshed) applyDeckRef.current(refreshed, currentRef.current)
-        }
-        return receipt
+        if (execution.authoritativeState === 'reload_required')
+          onAuthoritativeReloadRequiredRef.current?.()
+        return execution
       },
-      applySpeakerNotes: (slideIndex, text) => onSpeakerNotesAppliedRef.current?.(slideIndex, text),
+      prepareSpeakerNotesWrite: (slideIndex) =>
+        onPrepareSpeakerNotesWriteRef.current?.(slideIndex) ?? Promise.resolve(0),
+      applySpeakerNotes: (slideIndex, text, expectedDraftVersion) =>
+        onSpeakerNotesAppliedRef.current?.(slideIndex, text, expectedDraftVersion),
       askClarification: (questions: ClarifyQuestion[]) => {
         return new Promise<{ answers: string; cancelled?: boolean }>((resolve) => {
           clarifyResolverRef.current = resolve

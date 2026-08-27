@@ -264,6 +264,10 @@ export class AgentLoop<TSnapshot = unknown> {
   private runUserMsg: AgentMessage | null = null
   /** invalidates stale transport callbacks after cancel/reset */
   private generation = 0
+  private readonly invocationSession = globalThis.crypto.randomUUID()
+  private invocationRun = 0
+  private invocationSequence = 0
+  private readonly turnInvocationIds = new Map<string, string>()
   /** per-run abort: aborted on cancel(); long tools (e.g. generate_deck) use it to break internal loops */
   private abortController: AbortController | null = null
 
@@ -329,6 +333,7 @@ export class AgentLoop<TSnapshot = unknown> {
     this.lastToolBatchSignature = ''
     this.identicalToolBatches = 0
     this.abortController = new AbortController()
+    this.invocationRun += 1
     try {
       const context = this.options.skill.buildContext?.() ?? ''
       const format =
@@ -600,6 +605,7 @@ export class AgentLoop<TSnapshot = unknown> {
     const generation = this.generation
     this.turnText = ''
     this.toolCalls = []
+    this.turnInvocationIds.clear()
     this.turnStopReason = null
     // Some transports emit an extra onDone after cancel — this turn may finalize only once
     let settled = false
@@ -617,7 +623,27 @@ export class AgentLoop<TSnapshot = unknown> {
         },
         onToolCall: (call) => {
           if (generation !== this.generation || settled) return
-          this.toolCalls.push(call)
+          const signature = stableJson({
+            id: call.id,
+            name: call.name,
+            input: call.input,
+            inputError: call.inputError,
+            truncated: call.truncated,
+          })
+          let invocationId = this.turnInvocationIds.get(signature)
+          if (!invocationId) {
+            this.invocationSequence += 1
+            invocationId = `${this.invocationSession}-${this.invocationRun}-${this.invocationSequence}`
+            this.turnInvocationIds.set(signature, invocationId)
+          }
+          const invokedCall = { ...call }
+          Object.defineProperty(invokedCall, 'invocationId', {
+            configurable: false,
+            enumerable: false,
+            writable: false,
+            value: invocationId,
+          })
+          this.toolCalls.push(invokedCall)
         },
         onStopReason: (reason) => {
           if (generation !== this.generation || settled) return
