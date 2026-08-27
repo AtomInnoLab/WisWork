@@ -41,8 +41,22 @@ describe('presentation XML semantic canonicalization', () => {
     '<r>&#xD800;</r>',
     '<r>\u0001</r>',
     '<!DOCTYPE r [<!ENTITY x "value">]><r>&x;</r>',
+    '<r xmlns:x="http://www.w3.org/XML/1998/namespace"/>',
+    '<r xmlns="http://www.w3.org/XML/1998/namespace"/>',
+    '<r xmlns:x="http://www.w3.org/2000/xmlns/"/>',
+    '<r xmlns="http://www.w3.org/2000/xmlns/"/>',
+    '<r xmlns:xml="urn:not-xml"/>',
+    '',
+    '  <!-- no root --> <?pi ok?>',
+    '<a/><b/>',
   ])('rejects invalid or unsafe XML: %s', (xml) => {
     expect(() => canonicalizePresentationXml(xml)).toThrow()
+  })
+
+  it('accepts one root surrounded only by whitespace, comments, and processing instructions', () => {
+    expect(() =>
+      canonicalizePresentationXml(' <!--before--><?pi ok?><r/><!--after--> '),
+    ).not.toThrow()
   })
 
   it('fails closed when XML exceeds structural bounds', () => {

@@ -407,6 +407,33 @@ describe('durable presentation targets', () => {
     )
   })
 
+  it('rejects oversized archive XML dependencies at the byte boundary', async () => {
+    const opened = await openPptx(await createBlankPptx())
+    const result = addChart(
+      opened,
+      0,
+      {
+        kind: 'bar',
+        categories: ['A'],
+        series: [{ name: 'S', values: [1] }],
+        offset: OFF_A,
+      },
+      { creationIdFactory: makeFactory() },
+    )!
+    const insertedSlide = result.slide
+    const element = insertedSlide.elements.find((item) => item.id === result.elementId)!
+    const chartPath = [...opened.archive.entries.keys()].find((path) =>
+      /^ppt\/charts\/chart\d+\.xml$/.test(path),
+    )!
+    opened.archive.entries.set(
+      chartPath,
+      new Uint8Array(2 * 1024 * 1024 + 1).fill('x'.charCodeAt(0)),
+    )
+    await expect(fingerprintSlideElement(opened, insertedSlide, element)).rejects.toThrow(
+      /before decoding/,
+    )
+  })
+
   it('binds chart style, color style, and user-shape relationships and rejects unknown chart rels', async () => {
     const opened = await openPptx(await createBlankPptx())
     const result = addChart(

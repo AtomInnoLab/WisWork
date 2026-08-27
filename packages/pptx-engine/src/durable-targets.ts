@@ -6,7 +6,7 @@ import {
 import type { Slide, SlideDeck, SlideElement, TextElement } from './types'
 import { resolveTarget, type PackageArchive } from './zip'
 import { getSlideNotes } from './notes'
-import { canonicalizePresentationXml } from './presentation-xml'
+import { canonicalizePresentationXml, MAX_PRESENTATION_XML_BYTES } from './presentation-xml'
 import { readSlideAdvanceTimeXml, readSlideHiddenXml, readSlideTransitionXml } from './generate'
 import { readSlideTimingXml } from './animation'
 
@@ -291,6 +291,8 @@ async function digestPart(archive: PackageArchive, path: string): Promise<string
   const bytes = archive.entries.get(path)
   if (!bytes) throw new TypeError('Referenced presentation part cannot be fingerprinted safely')
   if (/\.(?:xml|rels)$/i.test(path)) {
+    if (bytes.byteLength > MAX_PRESENTATION_XML_BYTES)
+      throw new TypeError('Presentation XML exceeds bounds before decoding')
     const xml = new TextDecoder().decode(bytes)
     return digestBytes(canonicalizePresentationXml(xml))
   }

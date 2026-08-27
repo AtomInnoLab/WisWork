@@ -1,7 +1,8 @@
-const MAX_XML_BYTES = 2 * 1024 * 1024
+export const MAX_PRESENTATION_XML_BYTES = 2 * 1024 * 1024
 const MAX_XML_NODES = 20_000
 const MAX_XML_DEPTH = 128
 const XML_NAMESPACE = 'http://www.w3.org/XML/1998/namespace'
+const XMLNS_NAMESPACE = 'http://www.w3.org/2000/xmlns/'
 
 const isXmlCodePoint = (code: number) =>
   code === 0x9 ||
@@ -67,7 +68,8 @@ interface Frame {
 /** Namespace-aware semantic XML canonicalization for bounded OOXML parts. */
 export function canonicalizePresentationXml(xml: string): Uint8Array {
   const inputBytes = new TextEncoder().encode(xml)
-  if (inputBytes.byteLength > MAX_XML_BYTES) throw new TypeError('Presentation XML exceeds bounds')
+  if (inputBytes.byteLength > MAX_PRESENTATION_XML_BYTES)
+    throw new TypeError('Presentation XML exceeds bounds')
 
   const tokens = xml.match(
     /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!\[CDATA\[[\s\S]*?\]\]>|<(?:[^< >"']|\s|"[^"]*"|'[^']*')*>|[^<]+/g,
@@ -84,6 +86,7 @@ export function canonicalizePresentationXml(xml: string): Uint8Array {
       output.push(`T${JSON.stringify(text)}`)
   }
   let nodes = 0
+  let roots = 0
 
   for (const token of tokens) {
     if (token.startsWith('<!--') || token.startsWith('<?')) continue
@@ -124,6 +127,8 @@ export function canonicalizePresentationXml(xml: string): Uint8Array {
     const rawAttrs = open[2]!
     flushText(stack.at(-1))
     const parentNamespaces = stack.at(-1)?.namespaces ?? new Map<string, string>()
+    if (stack.length === 0 && ++roots > 1)
+      throw new TypeError('Presentation XML must have exactly one root element')
     const namespaces = new Map(parentNamespaces)
     const attrs: Array<{ raw: string; value: string }> = []
     const declarations = new Set<string>()
@@ -137,7 +142,12 @@ export function canonicalizePresentationXml(xml: string): Uint8Array {
         if (declarations.has(prefix))
           throw new TypeError('Presentation XML has duplicate namespace declarations')
         declarations.add(prefix)
-        if (prefix === 'xmlns' || (prefix === 'xml' && value !== XML_NAMESPACE))
+        if (
+          prefix === 'xmlns' ||
+          value === XMLNS_NAMESPACE ||
+          (prefix === 'xml' && value !== XML_NAMESPACE) ||
+          (prefix !== 'xml' && value === XML_NAMESPACE)
+        )
           throw new TypeError('Presentation XML has an invalid namespace declaration')
         namespaces.set(prefix, value)
       } else attrs.push({ raw, value })
@@ -179,5 +189,6 @@ export function canonicalizePresentationXml(xml: string): Uint8Array {
       })
   }
   if (stack.length) throw new TypeError('Presentation XML is malformed')
+  if (roots !== 1) throw new TypeError('Presentation XML must have exactly one root element')
   return new TextEncoder().encode(output.join(''))
 }
