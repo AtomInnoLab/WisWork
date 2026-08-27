@@ -50,5 +50,13 @@ describe('LaTeX editor toolbar commands', () => {
       '\\includegraphics[width=\\linewidth]{plot.pdf}',
     )
     expect(latexEditorChange('Left & Right', 0, 12, 'table').insert).toContain('Left & Right \\\\')
+
+    for (const [selection, command] of [
+      ['figure', 'figure'],
+      ['table', 'table'],
+    ] as const) {
+      const change = latexEditorChange(selection, 0, selection.length, command)
+      expect(change.insert.slice(change.selection.anchor, change.selection.head)).toBe(selection)
+    }
   })
 })

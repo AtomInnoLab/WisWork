@@ -83,27 +83,28 @@ export function latexEditorChange(
     }
     case 'figure': {
       const image = selected || 'image'
+      const prefix =
+        '\\begin{figure}[htbp]\n' + '  \\centering\n' + '  \\includegraphics[width=\\linewidth]{'
       const insert =
-        '\\begin{figure}[htbp]\n' +
-        '  \\centering\n' +
-        `  \\includegraphics[width=\\linewidth]{${image}}\n` +
+        prefix +
+        `${image}}\n` +
         '  \\caption{Caption}\n' +
         '  \\label{fig:label}\n' +
         '\\end{figure}'
-      return change(insert, image)
+      return change(insert, image, prefix.length)
     }
     case 'table': {
       const cells = selected || 'A & B'
+      const prefix =
+        '\\begin{table}[htbp]\n' + '  \\centering\n' + '  \\begin{tabular}{ll}\n' + '    '
       const insert =
-        '\\begin{table}[htbp]\n' +
-        '  \\centering\n' +
-        '  \\begin{tabular}{ll}\n' +
-        `    ${cells} \\\\\n` +
+        prefix +
+        `${cells} \\\\\n` +
         '  \\end{tabular}\n' +
         '  \\caption{Caption}\n' +
         '  \\label{tab:label}\n' +
         '\\end{table}'
-      return change(insert, cells)
+      return change(insert, cells, prefix.length)
     }
     case 'cite':
       return wrap('\\cite{', '}', 'key')
