@@ -233,6 +233,74 @@ describe('DesktopPresentationHost', () => {
     })
   })
 
+  it('preserves connector endpoints across geometry-delete-geometry transaction boundaries', async () => {
+    const { session, slide, element: first } = await fixture()
+    first.nvId = '2'
+    const second = addElement(slide, {
+      kind: 'textbox',
+      offset: { x: 1_270_000, y: 127_000, cx: 127_000, cy: 127_000 },
+      paragraphs: [{ runs: [{ text: 'second' }] }],
+    })
+    second.nvId = '3'
+    const connector = {
+      id: 'connector-sequential',
+      type: 'shape',
+      nvId: '4',
+      anchor: { spIndex: 2, originalXml: '', range: [0, 0] },
+      transform: {
+        offset: { x: 0, y: 0, cx: 1, cy: 1 },
+        rot: 0,
+        flipH: false,
+        flipV: false,
+      },
+      connection: { start: { id: 2, idx: 3 }, end: { id: 3, idx: 1 } },
+    } as SlideElement
+    slide.elements.push(connector)
+    const firstTarget = {
+      slideId: slide.durableId,
+      elementId: first.creationId!,
+      expectedType: 'text' as const,
+      expectedFingerprint: await fingerprintSlideElement(session.opened, slide, first),
+    }
+    const secondTarget = {
+      slideId: slide.durableId,
+      elementId: second.creationId!,
+      expectedType: 'text' as const,
+      expectedFingerprint: await fingerprintSlideElement(session.opened, slide, second),
+    }
+    const receipt = await new PresentationTransactionExecutor(
+      new DesktopPresentationHost(session),
+      { verifyDelayMs: 0 },
+    ).execute({
+      transactionId: 'desktop-connector-delete-boundary',
+      expectedDeckRevision: await fingerprintPresentation(session.opened),
+      mode: 'atomic',
+      operations: [
+        {
+          kind: 'set_geometry',
+          clientId: 'move-a',
+          target: firstTarget,
+          geometry: { x: 20, y: 10, width: 20, height: 10 },
+        },
+        { kind: 'delete_element', clientId: 'delete-a', target: firstTarget },
+        {
+          kind: 'set_geometry',
+          clientId: 'move-b',
+          target: secondTarget,
+          geometry: { x: 120, y: 10, width: 10, height: 10 },
+        },
+      ],
+    })
+    expect(receipt).toMatchObject({ status: 'applied', operationCount: 3 })
+    expect(slide.elements).not.toContain(first)
+    expect(connector.transform.offset).toEqual({
+      x: 508_000,
+      y: 190_500,
+      cx: 1_016_000,
+      cy: 0,
+    })
+  })
+
   it('preflights repeated targets against one snapshot and commits one undo entry', async () => {
     const { session, slide, element } = await fixture()
     const elementFingerprint = await fingerprintSlideElement(session.opened, slide, element)
