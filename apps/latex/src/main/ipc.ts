@@ -4,6 +4,7 @@ import {
   MAX_IPC_PATH_LENGTH,
   MAX_IPC_TEXT_BYTES,
   type CompileRequest,
+  type ExportPdfResult,
   type FileRequest,
   type LatexIpcErrorCode,
   type LatexIpcResult,
@@ -32,6 +33,7 @@ export interface IpcMainLike {
 export interface RegisterLatexIpcOptions {
   ipcMain: IpcMainLike
   registry: ProjectSessionRegistry
+  exportPdf?: (sourcePath: string, suggestedName: string) => Promise<ExportPdfResult>
 }
 
 export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
@@ -120,6 +122,14 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
         : null,
     })),
   )
+  handle(LATEX_CHANNELS.pdfExport, (event, payload) =>
+    withSession(event, payload, registry, parseRevisionRequest, (session, request) => {
+      const sourcePath = session.pdfPath(request.revision)
+      if (!sourcePath) throw coded('LATEX_NOT_FOUND', 'Compiled PDF revision not found')
+      if (!options.exportPdf) throw coded('LATEX_INTERNAL', 'PDF export is unavailable')
+      return options.exportPdf(sourcePath, suggestedPdfName(session.mainFile))
+    }),
+  )
   handle(LATEX_CHANNELS.syncTexForward, (event, payload) =>
     withSession(event, payload, registry, parseSyncTexForward, (session, request) =>
       session.syncTexForward(request.revision, request.path, request.line),
@@ -204,6 +214,11 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
   return () => {
     for (const channel of channels) ipcMain.removeHandler(channel)
   }
+}
+
+function suggestedPdfName(mainFile: string | undefined): string {
+  const fileName = mainFile?.replaceAll('\\', '/').split('/').at(-1) ?? 'document.tex'
+  return /\.tex$/i.test(fileName) ? fileName.replace(/\.tex$/i, '.pdf') : `${fileName}.pdf`
 }
 
 async function withSession<TRequest extends SessionRequest, TResult>(

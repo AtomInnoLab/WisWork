@@ -1,5 +1,5 @@
-export { AtomicWriteCommittedError } from './atomic-write.js'
-export type { AtomicFileIdentity } from './atomic-write.js'
+export { atomicWriteFile, AtomicWriteCommittedError } from './atomic-write.js'
+export type { AtomicFileIdentity, AtomicWriteOptions } from './atomic-write.js'
 export { discoverMainFile } from './main-file.js'
 export type { MainFileProjectReader } from './main-file.js'
 export { DEFAULT_IMPORT_LIMITS, importLatexProject } from './import.js'

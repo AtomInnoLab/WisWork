@@ -29,6 +29,7 @@ import {
 import { LatexEditor, type LatexEditorHandle } from './editor/LatexEditor.js'
 import { useLatexLocale } from './i18n/locale.js'
 import { PdfPreview } from './pdf/PdfPreview.js'
+import { ExportPdfDialog } from './pdf/ExportPdfDialog.js'
 import { OpenTabs } from './project/OpenTabs.js'
 import { FileActionDialog, type FileAction } from './project/FileActionDialog.js'
 import { ProjectTree } from './project/ProjectTree.js'
@@ -98,6 +99,8 @@ export function App() {
   const editorRef = useRef<LatexEditorHandle>(null)
   const [filesOpen, setFilesOpen] = useState(true)
   const [previewOpen, setPreviewOpen] = useState(true)
+  const [exportingPdf, setExportingPdf] = useState(false)
+  const [staleExportOpen, setStaleExportOpen] = useState(false)
   const [fileAction, setFileAction] = useState<FileAction | null>(null)
   const [fileActionBusy, setFileActionBusy] = useState(false)
   const [editorContext, setEditorContext] = useState<
@@ -359,6 +362,24 @@ export function App() {
     compileQueue.current.request(compileOnce)
   }, [compileOnce])
   compileLatestRef.current = compileProject
+
+  const exportPdf = useCallback(async () => {
+    const preview = editorStateRef.current.preview
+    if (!projectId || !preview || exportingPdf) return
+    setExportingPdf(true)
+    setError(null)
+    try {
+      const result = await window.latexApi.exportPdf({
+        projectId,
+        revision: preview.revision,
+      })
+      if (!result.ok) setError(result.error.message)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setExportingPdf(false)
+    }
+  }, [exportingPdf, projectId])
 
   useEffect(() => {
     const unsubscribe = window.latexApi.onExternalChange((buffer) => {
@@ -705,6 +726,9 @@ export function App() {
         filesOpen={filesOpen}
         previewOpen={previewOpen}
         aiOpen={aiOpen}
+        pdfAvailable={Boolean(editorState.preview?.pdfUrl)}
+        pdfStale={editorState.previewStale}
+        exportingPdf={exportingPdf}
         onSave={() => {
           if (activePath) void savePath(activePath)
         }}
@@ -713,6 +737,10 @@ export function App() {
           if (closeFreeze.current.isFrozen()) return
           compileQueue.current.cancelPending()
           if (projectId) void window.latexApi.cancelCompile({ projectId })
+        }}
+        onExportPdf={() => {
+          if (editorState.previewStale) setStaleExportOpen(true)
+          else void exportPdf()
         }}
         onEditorCommand={(command) => {
           editorRef.current?.runCommand(command)
@@ -825,6 +853,19 @@ export function App() {
           if (!fileActionBusy) setFileAction(null)
         }}
         onSubmit={(value) => void submitFileAction(value)}
+      />
+      <ExportPdfDialog
+        open={staleExportOpen}
+        busy={exportingPdf}
+        onCancel={() => setStaleExportOpen(false)}
+        onCompile={() => {
+          setStaleExportOpen(false)
+          compileProject()
+        }}
+        onExportLast={() => {
+          setStaleExportOpen(false)
+          void exportPdf()
+        }}
       />
     </main>
   )

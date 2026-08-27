@@ -54,6 +54,11 @@ const en = {
   exportPdf: 'Export PDF',
   exportingPdf: 'Exporting…',
   exportPdfStale: 'Source has uncompiled changes; exports the last successful PDF',
+  exportPdfStaleTitle: 'PDF preview is out of date',
+  exportPdfStaleMessage:
+    'Source has uncompiled changes. Compile now, or export the last successfully compiled PDF.',
+  compileNow: 'Compile now',
+  exportLastPdf: 'Export last PDF',
   aiPanel: 'AI panel',
 } as const
 
@@ -116,6 +121,10 @@ const zhCN: LatexStrings = {
   exportPdf: '导出 PDF',
   exportingPdf: '正在导出…',
   exportPdfStale: '源码有尚未编译的更改，将导出上次成功的 PDF',
+  exportPdfStaleTitle: 'PDF 预览已过期',
+  exportPdfStaleMessage: '源码有尚未编译的更改。你可以立即编译，或导出上次成功编译的 PDF。',
+  compileNow: '立即编译',
+  exportLastPdf: '导出上次的 PDF',
   aiPanel: 'AI 面板',
 }
 

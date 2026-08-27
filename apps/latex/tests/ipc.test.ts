@@ -20,7 +20,7 @@ describe('LaTeX typed IPC boundary', () => {
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
   })
 
-  async function setup() {
+  async function setup(exportPdf = vi.fn()) {
     const root = await mkdtemp(join(tmpdir(), 'latex-ipc-'))
     roots.push(root)
     const projectRoot = join(root, 'project')
@@ -37,11 +37,52 @@ describe('LaTeX typed IPC boundary', () => {
       handle: (channel, handler) => handlers.set(channel, handler),
       removeHandler: vi.fn(),
     }
-    registerLatexIpc({ ipcMain, registry })
+    registerLatexIpc({ ipcMain, registry, exportPdf })
     const call = async <T>(channel: string, senderId: number, payload: unknown) =>
       (await handlers.get(channel)!({ sender: { id: senderId } }, payload)) as LatexIpcResult<T>
-    return { root, projectRoot, session, registry, call }
+    return { root, projectRoot, session, registry, call, exportPdf }
   }
+
+  it('exports only the PDF owned by the requested compile revision', async () => {
+    const exportPdf = vi.fn().mockResolvedValue({ state: 'written', path: '/exports/main.pdf' })
+    const { session, call } = await setup(exportPdf)
+    vi.spyOn(session, 'pdfPath').mockReturnValue('/private/compiled/revision-7.pdf')
+
+    await expect(
+      call(LATEX_CHANNELS.pdfExport, 11, { projectId: session.projectId, revision: 7 }),
+    ).resolves.toEqual({
+      ok: true,
+      value: { state: 'written', path: '/exports/main.pdf' },
+    })
+    expect(exportPdf).toHaveBeenCalledWith('/private/compiled/revision-7.pdf', 'main.pdf')
+  })
+
+  it('rejects missing PDF revisions and malformed export requests', async () => {
+    const exportPdf = vi.fn()
+    const { session, call } = await setup(exportPdf)
+    vi.spyOn(session, 'pdfPath').mockReturnValue(undefined)
+
+    await expect(
+      call(LATEX_CHANNELS.pdfExport, 11, { projectId: session.projectId, revision: 99 }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'LATEX_NOT_FOUND' } })
+    await expect(
+      call(LATEX_CHANNELS.pdfExport, 11, {
+        projectId: session.projectId,
+        revision: 7,
+        sourcePath: '/forged.pdf',
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'LATEX_INVALID_PAYLOAD' } })
+    await expect(
+      call(LATEX_CHANNELS.pdfExport, 99, { projectId: session.projectId, revision: 7 }),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'LATEX_FORBIDDEN_SENDER' } })
+    await expect(
+      call(LATEX_CHANNELS.pdfExport, 11, { projectId: 'forged-project', revision: 7 }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'LATEX_PROJECT_SESSION_MISMATCH' },
+    })
+    expect(exportPdf).not.toHaveBeenCalled()
+  })
 
   it('rejects forged senders and project IDs with stable error codes', async () => {
     const { session, call } = await setup()
