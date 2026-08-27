@@ -41,4 +41,14 @@ describe('LaTeX editor toolbar commands', () => {
     expect(latexEditorChange('', 0, 0, 'cite').insert).toBe('\\cite{key}')
     expect(latexEditorChange('', 0, 0, 'ref').insert).toBe('\\ref{label}')
   })
+
+  it('preserves selected content in structural and insert commands', () => {
+    expect(latexEditorChange('Introduction', 0, 12, 'section').insert).toBe(
+      '\\section{Introduction}\n',
+    )
+    expect(latexEditorChange('plot.pdf', 0, 8, 'figure').insert).toContain(
+      '\\includegraphics[width=\\linewidth]{plot.pdf}',
+    )
+    expect(latexEditorChange('Left & Right', 0, 12, 'table').insert).toContain('Left & Right \\\\')
+  })
 })

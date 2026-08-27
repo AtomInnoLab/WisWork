@@ -35,6 +35,11 @@ export function CompilePanel({
   const busy = compiling || bundleStatus.state === 'downloading'
   return (
     <section className="compile-panel">
+      {compiling && (
+        <div className="compile-operation-status" role="status">
+          {t('compiling')}
+        </div>
+      )}
       {showActions && (
         <header>
           <button

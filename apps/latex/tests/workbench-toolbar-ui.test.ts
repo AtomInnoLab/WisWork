@@ -21,6 +21,7 @@ describe('LaTeX workbench toolbar', () => {
     expect(app).toContain('onTogglePreview={() => setPreviewOpen((open) => !open)}')
     expect(app).toContain('onToggleAi={() => setAiOpen((open) => !open)}')
     expect(app).toContain('onEditorCommand={(command) =>')
+    expect(app).toContain("compiling={compiling || bundleStatus.state === 'downloading'}")
     expect(styles).toMatch(/\.latex-workbench-toolbar\s*{[^}]*display:\s*flex/s)
     expect(styles).toMatch(/\.latex-workbench-body\s*{[^}]*min-height:\s*0/s)
     expect(styles).toMatch(/\.latex-toolbar-tabs\s*{[^}]*min-height:\s*39px/s)
@@ -70,5 +71,26 @@ describe('LaTeX workbench toolbar', () => {
     ]) {
       expect(html).toContain(`>${command}<`)
     }
+  })
+
+  it('turns the sole compile action into cancel while work is busy', () => {
+    const html = renderToStaticMarkup(
+      createElement(WorkbenchToolbar, {
+        activePath: 'main.tex',
+        dirty: false,
+        disabled: false,
+        compiling: true,
+        filesOpen: true,
+        previewOpen: true,
+        aiOpen: true,
+        onSave: vi.fn(),
+        onCompile: vi.fn(),
+        onToggleFiles: vi.fn(),
+        onTogglePreview: vi.fn(),
+        onToggleAi: vi.fn(),
+      }),
+    )
+    expect(html).toContain('aria-label="Cancel"')
+    expect(html).not.toContain('aria-label="Compile"')
   })
 })

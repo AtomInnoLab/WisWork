@@ -276,6 +276,7 @@ export function WorkbenchToolbar({
               title={t('problems')}
               aria-label={`${t('problems')} (${diagnosticCount})`}
               aria-expanded={compileDetailsOpen}
+              aria-controls="latex-compile-results"
               onClick={() => setCompileDetailsOpen((open) => !open)}
             >
               <span className="latex-toolbar-icon-row latex-toolbar-glyph" aria-hidden="true">
@@ -328,7 +329,12 @@ export function WorkbenchToolbar({
         </div>
       </div>
       {compileDetailsOpen && compilePanel && (
-        <div className="latex-compile-popover" role="dialog" aria-label={t('compileResults')}>
+        <div
+          id="latex-compile-results"
+          className="latex-compile-popover"
+          role="region"
+          aria-label={t('compileResults')}
+        >
           {compilePanel}
         </div>
       )}

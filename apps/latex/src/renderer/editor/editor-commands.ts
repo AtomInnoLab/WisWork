@@ -60,9 +60,13 @@ export function latexEditorChange(
     case 'underline':
       return wrap('\\underline{', '}', 'text')
     case 'section':
-      return change('\\section{Title}\n', 'Title')
+      return change(`\\section{${selected || 'Title'}}\n`, selected || 'Title', '\\section{'.length)
     case 'subsection':
-      return change('\\subsection{Title}\n', 'Title')
+      return change(
+        `\\subsection{${selected || 'Title'}}\n`,
+        selected || 'Title',
+        '\\subsection{'.length,
+      )
     case 'itemize':
       return environment('itemize')
     case 'enumerate':
@@ -78,26 +82,28 @@ export function latexEditorChange(
       )
     }
     case 'figure': {
+      const image = selected || 'image'
       const insert =
         '\\begin{figure}[htbp]\n' +
         '  \\centering\n' +
-        '  \\includegraphics[width=\\linewidth]{image}\n' +
+        `  \\includegraphics[width=\\linewidth]{${image}}\n` +
         '  \\caption{Caption}\n' +
         '  \\label{fig:label}\n' +
         '\\end{figure}'
-      return change(insert, 'image')
+      return change(insert, image)
     }
     case 'table': {
+      const cells = selected || 'A & B'
       const insert =
         '\\begin{table}[htbp]\n' +
         '  \\centering\n' +
         '  \\begin{tabular}{ll}\n' +
-        '    A & B \\\\\n' +
+        `    ${cells} \\\\\n` +
         '  \\end{tabular}\n' +
         '  \\caption{Caption}\n' +
         '  \\label{tab:label}\n' +
         '\\end{table}'
-      return change(insert, 'A & B')
+      return change(insert, cells)
     }
     case 'cite':
       return wrap('\\cite{', '}', 'key')
