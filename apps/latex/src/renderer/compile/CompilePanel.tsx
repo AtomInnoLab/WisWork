@@ -12,6 +12,7 @@ export interface CompilePanelProps {
   onCancel: () => void
   onDiagnostic: (diagnostic: EditorDiagnostic) => void
   onAskAi: (diagnostic: EditorDiagnostic) => void
+  showActions?: boolean
 }
 
 export function runCompilePanelAction(disabled: boolean, action: () => void): void {
@@ -28,30 +29,33 @@ export function CompilePanel({
   onCancel,
   onDiagnostic,
   onAskAi,
+  showActions = true,
 }: CompilePanelProps) {
   const { t } = useLatexLocale()
   const busy = compiling || bundleStatus.state === 'downloading'
   return (
     <section className="compile-panel">
-      <header>
-        <button
-          type="button"
-          className="compile-button"
-          onClick={() => runCompilePanelAction(disabled, onCompile)}
-          disabled={busy || disabled}
-        >
-          {busy ? t('compiling') : t('compile')}
-        </button>
-        {busy && (
+      {showActions && (
+        <header>
           <button
             type="button"
-            onClick={() => runCompilePanelAction(disabled, onCancel)}
-            disabled={disabled}
+            className="compile-button"
+            onClick={() => runCompilePanelAction(disabled, onCompile)}
+            disabled={busy || disabled}
           >
-            {t('cancel')}
+            {busy ? t('compiling') : t('compile')}
           </button>
-        )}
-      </header>
+          {busy && (
+            <button
+              type="button"
+              onClick={() => runCompilePanelAction(disabled, onCancel)}
+              disabled={disabled}
+            >
+              {t('cancel')}
+            </button>
+          )}
+        </header>
+      )}
       <div className="bundle-status" role="status">
         {bundleStatus.state === 'downloading'
           ? `Downloading TeX bundle (${Math.floor(
