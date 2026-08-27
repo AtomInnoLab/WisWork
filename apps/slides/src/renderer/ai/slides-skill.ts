@@ -16,6 +16,7 @@ import {
   type TextFamilyExecutionResult,
   type TextFamilyTransactionRequest,
 } from './presentation-text-transactions'
+import type { SpeakerNotesDraftPreparation } from '../notes-draft'
 
 /**
  * Slides capability as an AgentSkill: deck outline context + three tools (read structure /
@@ -38,7 +39,7 @@ export interface DeckAccess {
     signal?: AbortSignal,
   ): Promise<TextFamilyExecutionResult>
   /** Mirror an already-applied notes transaction into the visible notes editor. */
-  prepareSpeakerNotesWrite?(slideIndex: number): Promise<number>
+  prepareSpeakerNotesWrite?(slideIndex: number): Promise<SpeakerNotesDraftPreparation>
   applySpeakerNotes?(slideIndex: number, text: string, expectedDraftVersion: number): void
   /** Survey: shows a card with options and waits for the user's choices, returning an answer summary. */
   askClarification?(questions: ClarifyQuestion[]): Promise<{ answers: string; cancelled?: boolean }>
@@ -2364,7 +2365,15 @@ async function executeTool(
         return fail(t('aiFailEditText'), 'speaker notes exceed the 12000 character limit')
       if (!access.executePresentationOperation)
         return fail(t('aiFailEditText'), 'speaker notes are unavailable in this host')
-      const draftVersion = (await access.prepareSpeakerNotesWrite?.(idx)) ?? 0
+      const draftPreparation = (await access.prepareSpeakerNotesWrite?.(idx)) ?? {
+        ready: true,
+        expectedDraftVersion: 0,
+      }
+      if (!draftPreparation.ready)
+        return fail(
+          t('aiFailEditText'),
+          'Speaker notes changed or could not be saved before the agent edit. No change was applied.',
+        )
       signal?.throwIfAborted()
       const execution = await access.executePresentationOperation(
         {
@@ -2394,7 +2403,8 @@ async function executeTool(
           summary: t('aiFailEditText'),
         }
       }
-      if (outcome.mutated) access.applySpeakerNotes?.(idx, text, draftVersion)
+      if (outcome.mutated)
+        access.applySpeakerNotes?.(idx, text, draftPreparation.expectedDraftVersion)
       return {
         output: outcome.mutated
           ? text

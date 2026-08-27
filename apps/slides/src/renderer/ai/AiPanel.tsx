@@ -48,6 +48,7 @@ import fileVoiceIcon from '../assets/file-voice.png'
 import fileDocumentIcon from '../assets/file-document.png'
 import fileGeneralIcon from '../assets/file-general.png'
 import { IconNewChat, IconSidebarCollapseLeft } from '../components/icons'
+import type { SpeakerNotesDraftPreparation } from '../notes-draft'
 import { createSlidesChatBindingCoordinator } from './chat-binding'
 
 interface ToolActivity {
@@ -262,7 +263,7 @@ interface AiPanelProps {
   /** Callback to update the path after AI generation lands on disk (title bar sync) */
   onPathChange?: (path: string) => void
   /** Mirror canonical notes commits into the notes editor; this callback never writes the deck. */
-  onPrepareSpeakerNotesWrite?: (slideIndex: number) => Promise<number>
+  onPrepareSpeakerNotesWrite?: (slideIndex: number) => Promise<SpeakerNotesDraftPreparation>
   onSpeakerNotesApplied?: (slideIndex: number, text: string, expectedDraftVersion: number) => void
   onAuthoritativeReloadRequired?: () => void
   /** Absolute path of the currently open file (for chat history persistence) */
@@ -774,7 +775,8 @@ export function AiPanel({
         return execution
       },
       prepareSpeakerNotesWrite: (slideIndex) =>
-        onPrepareSpeakerNotesWriteRef.current?.(slideIndex) ?? Promise.resolve(0),
+        onPrepareSpeakerNotesWriteRef.current?.(slideIndex) ??
+        Promise.resolve({ ready: true, expectedDraftVersion: 0 }),
       applySpeakerNotes: (slideIndex, text, expectedDraftVersion) =>
         onSpeakerNotesAppliedRef.current?.(slideIndex, text, expectedDraftVersion),
       askClarification: (questions: ClarifyQuestion[]) => {

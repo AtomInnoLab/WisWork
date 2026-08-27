@@ -178,7 +178,10 @@ describe('Slides canonical text-family transactions', () => {
   it('preserves a newer notes draft that appears while the transaction is running', async () => {
     let version = 1
     let visible = 'draft before agent'
-    access.prepareSpeakerNotesWrite = vi.fn(async () => version)
+    access.prepareSpeakerNotesWrite = vi.fn(async () => ({
+      ready: true,
+      expectedDraftVersion: version,
+    }))
     access.applySpeakerNotes = vi.fn((_slideIndex, text, expectedVersion) => {
       if (version === expectedVersion) visible = text
     })
@@ -203,6 +206,20 @@ describe('Slides canonical text-family transactions', () => {
     expect(result).toMatchObject({ mutated: true })
     expect(visible).toBe('user typed during agent write')
     expect(access.applySpeakerNotes).toHaveBeenCalledWith(0, 'agent notes', 1)
+  })
+
+  it('does not prepare or execute a notes transaction when draft persistence is unsafe', async () => {
+    access.prepareSpeakerNotesWrite = vi.fn(async () => ({
+      ready: false,
+      expectedDraftVersion: 3,
+    }))
+    const result = await createSlidesSkill(access).executeTool({
+      id: 'notes-not-ready',
+      name: 'set_speaker_notes',
+      input: { slideIndex: 0, text: 'agent notes' },
+    })
+    expect(result).toMatchObject({ mutated: false, isError: true })
+    expect(executePresentationOperation).not.toHaveBeenCalled()
   })
 
   it('stops the tool batch after an applied change whose authoritative refresh failed', async () => {
