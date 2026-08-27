@@ -7,7 +7,11 @@
  *  - insertBlankSlideWithLayout: insert a blank slide after a given position, with
  *    rels pointing at the chosen layout
  */
-import { collectDeckCreationIds, remintCreationIdsInXml } from './durable-targets'
+import {
+  collectDeckCreationIds,
+  remintCreationIdsInXml,
+  type CreationIdFactory,
+} from './durable-targets'
 import { resolveTarget, relsPathFor, type PackageArchive } from './zip'
 import { escapeXmlAttr } from './xml-utils'
 import type { SlideDeck } from './types'
@@ -202,6 +206,7 @@ export function prepareInsertSlideWithLayout(
   deck: SlideDeck,
   sourceIndex: number,
   layoutPath: string,
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): string | null {
   const src = deck.slides[sourceIndex]
   if (!src) return null
@@ -217,7 +222,7 @@ export function prepareInsertSlideWithLayout(
   }
   const newSlideXml = remintCreationIdsInXml(
     buildSlideXmlWithPlaceholders(layoutInfo.placeholders),
-    undefined,
+    identity?.creationIdFactory,
     collectDeckCreationIds(deck),
   )
 

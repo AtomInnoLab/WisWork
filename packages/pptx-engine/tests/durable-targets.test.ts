@@ -317,6 +317,38 @@ describe('durable presentation targets', () => {
     expect(await fingerprintSlide(opened, slide)).not.toBe(hidden)
   })
 
+  it('ignores unused layouts but binds the active theme and survives save/reopen', async () => {
+    const opened = await openPptx(await createBlankPptx())
+    const slide = opened.deck.slides[0]!
+    const before = await fingerprintSlide(opened, slide)
+    opened.archive.entries.set(
+      'ppt/slideLayouts/unused.xml',
+      new TextEncoder().encode('<p:sldLayout xmlns:p="urn:unused"><p:cSld/></p:sldLayout>'),
+    )
+    expect(await fingerprintSlide(opened, slide)).toBe(before)
+
+    const reopened = await openPptx(await savePptx(opened))
+    const reopenedSlide = reopened.deck.slides[0]!
+    expect(await fingerprintSlide(reopened, reopenedSlide)).toBe(before)
+
+    const layoutPath = reopened.archive.resolveSlideChain(reopenedSlide.path).layoutPath!
+    const layout = reopened.archive.readText(layoutPath)!
+    reopened.archive.entries.set(
+      layoutPath,
+      new TextEncoder().encode(layout.replace('<p:cSld', '<p:cSld showMasterSp="0"')),
+    )
+    expect(await fingerprintSlide(reopened, reopenedSlide)).not.toBe(before)
+    reopened.archive.entries.set(layoutPath, new TextEncoder().encode(layout))
+
+    const themePath = reopened.archive.resolveSlideChain(reopenedSlide.path).themePath!
+    const theme = reopened.archive.readText(themePath)!
+    reopened.archive.entries.set(
+      themePath,
+      new TextEncoder().encode(theme.replace(/val="[0-9A-Fa-f]{6}"/, 'val="010203"')),
+    )
+    expect(await fingerprintSlide(reopened, reopenedSlide)).not.toBe(before)
+  })
+
   it('fails closed instead of weakly fingerprinting passthrough content', async () => {
     const opened = await openPptx(await createBlankPptx())
     const slide = opened.deck.slides[0]!
@@ -330,6 +362,47 @@ describe('durable presentation targets', () => {
     }
     await expect(fingerprintSlideElement(opened, slide, passthrough)).rejects.toThrow(
       'cannot be fingerprinted safely',
+    )
+  })
+
+  it('fails closed when a referenced part graph exceeds its traversal bound', async () => {
+    const opened = await openPptx(await createBlankPptx())
+    const slide = opened.deck.slides[0]!
+    const element = addElement(
+      slide,
+      { kind: 'rect', offset: OFF_A },
+      { creationIdFactory: makeFactory() },
+    )
+    element.anchor.originalXml = element.anchor.originalXml.replace(
+      '</p:sp>',
+      '<a:blip r:embed="rIdBound"/></p:sp>',
+    )
+    const relsPath = 'ppt/slides/_rels/slide1.xml.rels'
+    const rels = opened.archive.readText(relsPath)!
+    opened.archive.entries.set(
+      relsPath,
+      new TextEncoder().encode(
+        rels.replace(
+          '</Relationships>',
+          '<Relationship Id="rIdBound" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/package" Target="../embeddings/node0.xml"/></Relationships>',
+        ),
+      ),
+    )
+    for (let i = 0; i < 257; i++) {
+      opened.archive.entries.set(
+        `ppt/embeddings/node${i}.xml`,
+        new TextEncoder().encode(`<root n="${i}"/>`),
+      )
+      if (i < 256)
+        opened.archive.entries.set(
+          `ppt/embeddings/_rels/node${i}.xml.rels`,
+          new TextEncoder().encode(
+            `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/package" Target="node${i + 1}.xml"/></Relationships>`,
+          ),
+        )
+    }
+    await expect(fingerprintSlideElement(opened, slide, element)).rejects.toThrow(
+      /graph exceeds bounds/,
     )
   })
 

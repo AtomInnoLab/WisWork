@@ -6,6 +6,9 @@ import {
 import type { Slide, SlideDeck, SlideElement, TextElement } from './types'
 import { resolveTarget, type PackageArchive } from './zip'
 import { getSlideNotes } from './notes'
+import { canonicalizePresentationXml } from './presentation-xml'
+import { readSlideAdvanceTimeXml, readSlideHiddenXml, readSlideTransitionXml } from './generate'
+import { readSlideTimingXml } from './animation'
 
 export const CREATION_ID_NAMESPACE = 'http://schemas.microsoft.com/office/drawing/2014/main'
 export const CREATION_ID_EXTENSION_URI = '{FF2B5EF4-FFF2-40B4-BE49-F238E27FC236}'
@@ -284,6 +287,16 @@ const digestBytes = async (bytes: Uint8Array | undefined): Promise<string> => {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
+async function digestPart(archive: PackageArchive, path: string): Promise<string> {
+  const bytes = archive.entries.get(path)
+  if (!bytes) throw new TypeError('Referenced presentation part cannot be fingerprinted safely')
+  if (/\.(?:xml|rels)$/i.test(path)) {
+    const xml = new TextDecoder().decode(bytes)
+    return digestBytes(canonicalizePresentationXml(xml))
+  }
+  return digestBytes(bytes)
+}
+
 function collectMediaRefs(element: SlideElement, refs: Set<string>): void {
   const collectFill = (fill: { type: string; mediaRef?: string } | undefined) => {
     if (fill?.type === 'image' && fill.mediaRef) refs.add(fill.mediaRef)
@@ -332,14 +345,28 @@ async function partGraphDigests(
   const visited = new Set<string>()
   const result: Record<string, string> = {}
   while (pending.length) {
-    if (visited.size >= 256) throw new TypeError('Referenced presentation graph exceeds bounds')
     const path = pending.shift()!
     if (visited.has(path)) continue
+    if (visited.size >= 256) throw new TypeError('Referenced presentation graph exceeds bounds')
     visited.add(path)
-    result[path] = await digestBytes(archive.entries.get(path))
+    result[path] = await digestPart(archive, path)
     for (const rel of archive.readRels(path).values()) {
-      // notesSlide points back to its owning slide; the current slide is fingerprinted semantically.
-      if (rel.type.endsWith('/slide')) continue
+      const suffix = rel.type.slice(rel.type.lastIndexOf('/'))
+      if (
+        !new Set([
+          '/slideMaster',
+          '/theme',
+          '/notesMaster',
+          '/image',
+          '/chart',
+          '/package',
+          '/oleObject',
+          '/media',
+          '/video',
+          '/audio',
+        ]).has(suffix)
+      )
+        continue
       if (rel.targetMode === 'External')
         throw new TypeError('External presentation parts cannot be fingerprinted safely')
       const target = resolveTarget(path, rel.target)
@@ -393,6 +420,8 @@ export async function fingerprintSlide(
   const roots = [chain.layoutPath, chain.masterPath, chain.themePath].filter(
     (path): path is string => !!path,
   )
+  for (const element of [...slide.elements, ...(slide.decorations ?? [])])
+    roots.push(...relatedElementParts(opened.archive, slide, element))
   const notesRel = [...opened.archive.readRels(slide.path).values()].find((rel) =>
     rel.type.endsWith('/notesSlide'),
   )
@@ -403,8 +432,10 @@ export async function fingerprintSlide(
       background: slide.background ?? null,
       elements: slide.elements.map(semanticElement),
       decorations: slide.decorations?.map(semanticElement) ?? null,
-      bodyPrefixDigest: await digestBytes(new TextEncoder().encode(slide.bodyPrefix)),
-      bodySuffixDigest: await digestBytes(new TextEncoder().encode(slide.bodySuffix)),
+      hidden: readSlideHiddenXml(slide.bodyPrefix),
+      transition: readSlideTransitionXml(slide.bodySuffix),
+      advanceTime: readSlideAdvanceTimeXml(slide.bodySuffix),
+      animations: readSlideTimingXml(slide.bodySuffix),
       notesDigest: await digestBytes(
         new TextEncoder().encode(getSlideNotes(opened.archive, slide.path)),
       ),

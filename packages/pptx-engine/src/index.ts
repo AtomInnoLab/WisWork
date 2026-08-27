@@ -1122,6 +1122,7 @@ const MIME_BY_EXT: Record<string, string> = {
 export async function mergeSlideFromPptx(
   target: OpenedPptx,
   sourceBytes: Uint8Array,
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): Promise<Slide | null> {
   const { deck, archive } = target
   const src = await PackageArchive.open(sourceBytes)
@@ -1132,7 +1133,11 @@ export async function mergeSlideFromPptx(
   let slideXml = src.readText(srcSlidePath)
   if (slideXml == null) return null
   // Copied source shapes are new target-deck objects and must never retain shared identities.
-  slideXml = remintCreationIdsInXml(slideXml, undefined, collectDeckCreationIds(deck))
+  slideXml = remintCreationIdsInXml(
+    slideXml,
+    identity?.creationIdFactory,
+    collectDeckCreationIds(deck),
+  )
   const srcRels = src.readRels(srcSlidePath)
 
   // Relative Target of any existing target slide's slideLayout (the appended slide reuses the same layout)
@@ -1220,8 +1225,15 @@ export function insertSlideWithLayout(
   opened: OpenedPptx,
   sourceIndex: number,
   layoutPath: string,
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): Slide | null {
-  const newPath = prepareInsertSlideWithLayout(opened.archive, opened.deck, sourceIndex, layoutPath)
+  const newPath = prepareInsertSlideWithLayout(
+    opened.archive,
+    opened.deck,
+    sourceIndex,
+    layoutPath,
+    identity,
+  )
   if (!newPath) return null
   const slide = parseSlideFromArchive(opened.archive, newPath)
   if (!slide) return null
@@ -1449,6 +1461,7 @@ export function setSlideLayout(
   opened: OpenedPptx,
   slideIndex: number,
   layoutPath: string,
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): Slide | null {
   const slide = opened.deck.slides[slideIndex]
   if (!slide) return null
@@ -1478,8 +1491,6 @@ export function setSlideLayout(
       `<Relationship Id="rId${maxRid + 1}" Type="${LAYOUT_REL_TYPE}" Target="${escapeXmlAttr(relTarget)}"/></Relationships>`,
     )
   }
-  opened.archive.entries.set(relsPath, Buffer.from(next, 'utf8'))
-
   const layoutPhs = parseLayoutPlaceholders(opened.archive.readText(layoutPath) ?? '')
   const taken = new Set<string>()
   let maxId = 1
@@ -1494,12 +1505,14 @@ export function setSlideLayout(
       maxId = Math.max(maxId, Number(idm[1]))
   }
   const missing = layoutPhs.filter((ph) => !taken.has(phSlotKey(ph.type, ph.idx)))
+  const missingXmls = ensureCreationIdsInXmlBatch(
+    missing.map((ph, i) => placeholderSpXml(ph, maxId + 1 + i)),
+    identity?.creationIdFactory,
+    collectSlideCreationIds(slide),
+  )
+  opened.archive.entries.set(relsPath, Buffer.from(next, 'utf8'))
   if (missing.length) {
-    const r = appendRawElements(
-      opened,
-      slideIndex,
-      missing.map((ph, i) => placeholderSpXml(ph, maxId + 1 + i)),
-    )
+    const r = appendRawElements(opened, slideIndex, missingXmls, { preserveCreationIds: true })
     if (r) return r.slide
   }
   return materializeSlide(opened, slideIndex)
