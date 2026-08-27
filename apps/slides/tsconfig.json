@@ -8,6 +8,7 @@
     "baseUrl": ".",
     "paths": {
       "@wiswork/pptx-engine": ["../../packages/pptx-engine/src/index.ts"],
+      "@wiswork/presentation-ops": ["../../packages/presentation-ops/src/index.ts"],
       "@wiswork/pptx-engine/table-grid": ["../../packages/pptx-engine/src/table-grid.ts"],
       "@wiswork/pptx-engine/background-promote": [
         "../../packages/pptx-engine/src/background-promote.ts"

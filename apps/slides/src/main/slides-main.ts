@@ -231,6 +231,7 @@ import { tm } from './i18n-main'
 import { tiffToPng } from './tiff-decode'
 import {
   beginHistoryBatch,
+  acquirePresentationPersistenceLease,
   buildAllRenderSlides,
   dialogParent,
   endHistoryBatch,
@@ -245,6 +246,7 @@ import {
   settleStaleHistoryBatch,
   runtime,
   scheduleHistoryNotify,
+  sessionHasActivePresentationTransaction,
   sessions,
   takeSnapshot,
   windowRefs,
@@ -478,7 +480,14 @@ setInterval(() => {
   autosaveRunning = true
   void (async () => {
     for (const [wcId, session] of sessions.entries()) {
-      if (session.masterEdit || !sessionDirty(session)) continue
+      if (
+        session.masterEdit ||
+        sessionHasActivePresentationTransaction(session) ||
+        !sessionDirty(session)
+      )
+        continue
+      const releasePersistence = acquirePresentationPersistenceLease(session)
+      if (!releasePersistence) continue
       let target: string
       if (session.path) {
         target = autosavePathFor(session.path)
@@ -503,6 +512,8 @@ setInterval(() => {
       } catch (error) {
         autosaveBackoff.set(backoffKey, AUTOSAVE_BACKOFF_TICKS)
         console.warn('[slides] autosave failed, retrying in ~5 min:', error)
+      } finally {
+        releasePersistence()
       }
     }
   })().finally(() => {
@@ -556,6 +567,7 @@ export async function requestSlidesClose(
   contents: WebContents,
   parent?: BrowserWindow | null,
 ): Promise<boolean> {
+  if (sessionHasActivePresentationTransaction(sessions.get(contents.id))) return false
   if (!slidesIsDirty(contents.id) || contents.isDestroyed()) return true
   // Autosave on and a path exists: save silently and proceed without bothering the user; only a failed save falls through to the dialog
   if (autoSavePrefByWc.get(contents.id) && sessions.get(contents.id)?.path) {
@@ -661,30 +673,39 @@ async function openAndBuild(
   wc: WebContents,
   path: string,
   fitWidthPx: number,
-): Promise<OpenResult> {
-  const raw = await readFile(path)
-  const { bytes, recovered } = await maybeRecoverBytes(path, new Uint8Array(raw))
-  await shapedMetricsReady() // Lay out only after complex-script shaped metrics are ready, avoiding an init race falling back to estimation
-  const opened = await openPptx(bytes)
-  sessions.set(wc.id, {
-    path,
-    opened,
-    fitWidthPx,
-    undoStack: [],
-    redoStack: [],
-    ...(recovered ? { metaDirty: true } : {}),
-  })
-  scheduleHistoryNotify(sessions.get(wc.id)!)
-  await pushRecent(path)
-  slidesOpenedHook?.(wc, path)
-  let slides = buildAllRenderSlides(opened, fitWidthPx)
-  // If the first layout pass had complex-script misses (Arabic/Thai etc.), re-lay out once with renderer-measured widths
-  if (await refineComplexWidths(wc)) slides = buildAllRenderSlides(opened, fitWidthPx)
-  return {
-    path,
-    slides,
-    size: { cx: opened.deck.size.cx, cy: opened.deck.size.cy },
-    defaultFont: deckDefaultFont(opened),
+): Promise<OpenResult | null> {
+  const previous = sessions.get(wc.id)
+  const releasePersistence = previous
+    ? acquirePresentationPersistenceLease(previous)
+    : () => undefined
+  if (!releasePersistence) return null
+  try {
+    const raw = await readFile(path)
+    const { bytes, recovered } = await maybeRecoverBytes(path, new Uint8Array(raw))
+    await shapedMetricsReady() // Lay out only after complex-script shaped metrics are ready, avoiding an init race falling back to estimation
+    const opened = await openPptx(bytes)
+    sessions.set(wc.id, {
+      path,
+      opened,
+      fitWidthPx,
+      undoStack: [],
+      redoStack: [],
+      ...(recovered ? { metaDirty: true } : {}),
+    })
+    scheduleHistoryNotify(sessions.get(wc.id)!)
+    await pushRecent(path)
+    slidesOpenedHook?.(wc, path)
+    let slides = buildAllRenderSlides(opened, fitWidthPx)
+    // If the first layout pass had complex-script misses (Arabic/Thai etc.), re-lay out once with renderer-measured widths
+    if (await refineComplexWidths(wc)) slides = buildAllRenderSlides(opened, fitWidthPx)
+    return {
+      path,
+      slides,
+      size: { cx: opened.deck.size.cx, cy: opened.deck.size.cy },
+      defaultFont: deckDefaultFont(opened),
+    }
+  } finally {
+    releasePersistence()
   }
 }
 
@@ -939,6 +960,7 @@ export function registerSlidesIpc(): void {
     if (queued && existsSync(queued)) {
       // Clear the queue only after a successful open: keep it on parse failure or a mid-flight renderer reload, so a remount can retry
       const result = await openAndBuild(e.sender, queued, fitWidthPx)
+      if (!result) return null
       if (pendingByWc.get(e.sender.id) === queued) pendingByWc.delete(e.sender.id)
       if (pendingOpenPath === queued) pendingOpenPath = null
       return result
@@ -1251,14 +1273,30 @@ export function registerSlidesIpc(): void {
   registerUnsupportedCloudIpc(ipcMain, (senderId) => sessions.has(senderId))
 
   ipcMain.handle('slides:new-blank', async (e, fitWidthPx: number): Promise<OpenResult> => {
-    const opened = await openPptx(await createBlankPptx())
-    sessions.set(e.sender.id, { path: '', opened, fitWidthPx, undoStack: [], redoStack: [] })
-    scheduleHistoryNotify(sessions.get(e.sender.id)!)
-    return {
-      path: '',
-      slides: buildAllRenderSlides(opened, fitWidthPx),
-      size: { cx: opened.deck.size.cx, cy: opened.deck.size.cy },
-      defaultFont: deckDefaultFont(opened),
+    const previous = sessions.get(e.sender.id)
+    const releasePersistence = previous
+      ? acquirePresentationPersistenceLease(previous)
+      : () => undefined
+    if (!releasePersistence) {
+      return {
+        path: previous!.path,
+        slides: buildAllRenderSlides(previous!.opened, fitWidthPx),
+        size: { ...previous!.opened.deck.size },
+        defaultFont: deckDefaultFont(previous!.opened),
+      }
+    }
+    try {
+      const opened = await openPptx(await createBlankPptx())
+      sessions.set(e.sender.id, { path: '', opened, fitWidthPx, undoStack: [], redoStack: [] })
+      scheduleHistoryNotify(sessions.get(e.sender.id)!)
+      return {
+        path: '',
+        slides: buildAllRenderSlides(opened, fitWidthPx),
+        size: { cx: opened.deck.size.cx, cy: opened.deck.size.cy },
+        defaultFont: deckDefaultFont(opened),
+      }
+    } finally {
+      releasePersistence()
     }
   })
 
@@ -3147,15 +3185,17 @@ export function registerSlidesIpc(): void {
   ipcMain.handle('slides:save', async (e) => {
     const session = sessions.get(e.sender.id)
     if (!session) return { ok: false, error: 'no file open' }
-    // Untitled (new blank file): the first save lands silently in the drafts folder (Save As keeps its dialog)
-    if (!session.path) {
-      const draftsDir = getDraftsDir()
-      if (!existsSync(draftsDir)) mkdirSync(draftsDir, { recursive: true })
-      session.path = pickDraftPath(draftsDir, tm('untitledDeck'))
-      await pushRecent(session.path)
-      slidesOpenedHook?.(e.sender, session.path)
-    }
+    const releasePersistence = acquirePresentationPersistenceLease(session)
+    if (!releasePersistence) return { ok: false, error: 'transaction_active' }
     try {
+      // Untitled (new blank file): the first save lands silently in the drafts folder (Save As keeps its dialog)
+      if (!session.path) {
+        const draftsDir = getDraftsDir()
+        if (!existsSync(draftsDir)) mkdirSync(draftsDir, { recursive: true })
+        session.path = pickDraftPath(draftsDir, tm('untitledDeck'))
+        await pushRecent(session.path)
+        slidesOpenedHook?.(e.sender, session.path)
+      }
       await savePptxToFile(session.opened, session.path)
       autosaveBackoff.delete(session.path)
       void rm(autosavePathFor(session.path), { force: true }).catch(() => {})
@@ -3173,6 +3213,8 @@ export function registerSlidesIpc(): void {
       }
     } catch (err) {
       return { ok: false, error: String(err) }
+    } finally {
+      releasePersistence()
     }
   })
 
@@ -3186,6 +3228,8 @@ export function registerSlidesIpc(): void {
     }
     const r = await showSaveDialogWithMemory(dialog, parent, options, getDraftsDir())
     if (r.canceled || !r.filePath) return { ok: false }
+    const releasePersistence = acquirePresentationPersistenceLease(session)
+    if (!releasePersistence) return { ok: false, error: 'transaction_active' }
     try {
       await savePptxToFile(session.opened, r.filePath)
       session.path = r.filePath
@@ -3202,6 +3246,8 @@ export function registerSlidesIpc(): void {
       }
     } catch (err) {
       return { ok: false, error: String(err) }
+    } finally {
+      releasePersistence()
     }
   })
 

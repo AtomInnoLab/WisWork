@@ -22,6 +22,7 @@ export default defineConfig({
         '../../packages/pptx-render/src/preset-geometry.ts',
       ),
       '@wiswork/pptx-engine': resolve(here, '../../packages/pptx-engine/src/index.ts'),
+      '@wiswork/presentation-ops': resolve(here, '../../packages/presentation-ops/src/index.ts'),
       '@wiswork/pptx-render': resolve(here, '../../packages/pptx-render/src/index.ts'),
     },
   },

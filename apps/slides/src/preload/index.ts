@@ -78,8 +78,13 @@ import type {
   SlidesApi,
   UiTheme,
 } from '../shared/ipc'
+import type { PresentationTransaction } from '@wiswork/presentation-ops'
 
 const api: SlidesApi = {
+  executePresentationTransaction: (transaction: PresentationTransaction) =>
+    ipcRenderer.invoke('slides:presentation-transaction', transaction),
+  cancelPresentationTransaction: (transactionId: string) =>
+    ipcRenderer.invoke('slides:presentation-transaction-cancel', transactionId),
   getLanguage: () => ipcRenderer.invoke('app:get-language'),
   onLanguageChanged: (handler) => {
     const listener = (

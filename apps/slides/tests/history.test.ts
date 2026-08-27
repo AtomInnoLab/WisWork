@@ -2,12 +2,15 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Session } from '../src/main/session-state'
 import {
   beginHistoryBatch,
+  acquirePresentationPersistenceLease,
+  acquirePresentationTransactionLease,
   endHistoryBatch,
   pushHistory,
   registerAiSnapshot,
   restoreAiSnapshot,
   restoreSnapshot,
   settleStaleHistoryBatch,
+  sessionHasActivePresentationTransaction,
 } from '../src/main/session-state'
 
 vi.mock('electron', () => ({
@@ -42,6 +45,21 @@ function setValue(session: Session, value: string): void {
 }
 
 describe('Slides main-process history batching', () => {
+  it('makes transaction and persistence leases mutually exclusive', () => {
+    const session = sessionWith('before')
+    const releaseTransaction = acquirePresentationTransactionLease(session)
+    expect(releaseTransaction).not.toBeNull()
+    expect(sessionHasActivePresentationTransaction(session)).toBe(true)
+    expect(acquirePresentationPersistenceLease(session)).toBeNull()
+    releaseTransaction!()
+
+    const releasePersistence = acquirePresentationPersistenceLease(session)
+    expect(releasePersistence).not.toBeNull()
+    expect(acquirePresentationTransactionLease(session)).toBeNull()
+    releasePersistence!()
+    expect(acquirePresentationTransactionLease(session)).not.toBeNull()
+  })
+
   it('collapses several edits into one pre-run snapshot', () => {
     const session = sessionWith('before')
     beginHistoryBatch(session)

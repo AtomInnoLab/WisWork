@@ -37,6 +37,12 @@ export interface Session {
   fitWidthPx: number
   undoStack: HistorySnapshot[]
   redoStack: HistorySnapshot[]
+  /** Synchronous generation for every non-transaction mutation/history restore. */
+  mutationGeneration?: number
+  /** Non-zero while a canonical presentation transaction owns the session. */
+  presentationTransactionDepth?: number
+  /** Non-zero while open/save/autosave owns the session persistence boundary. */
+  presentationPersistenceDepth?: number
   /** Nested history transaction used to collapse an AI tool/run into one undo step. */
   historyBatch?: {
     depth: number
@@ -55,6 +61,38 @@ export interface Session {
   historyNotifyScheduled?: boolean
 }
 export const sessions = new Map<number, Session>()
+
+export function sessionHasActivePresentationTransaction(session: Session | undefined): boolean {
+  return (session?.presentationTransactionDepth ?? 0) > 0
+}
+
+export function acquirePresentationTransactionLease(session: Session): (() => void) | null {
+  if ((session.presentationPersistenceDepth ?? 0) > 0) return null
+  session.presentationTransactionDepth = (session.presentationTransactionDepth ?? 0) + 1
+  let active = true
+  return () => {
+    if (!active) return
+    active = false
+    session.presentationTransactionDepth = Math.max(
+      0,
+      (session.presentationTransactionDepth ?? 1) - 1,
+    )
+  }
+}
+
+export function acquirePresentationPersistenceLease(session: Session): (() => void) | null {
+  if (sessionHasActivePresentationTransaction(session)) return null
+  session.presentationPersistenceDepth = (session.presentationPersistenceDepth ?? 0) + 1
+  let active = true
+  return () => {
+    if (!active) return
+    active = false
+    session.presentationPersistenceDepth = Math.max(
+      0,
+      (session.presentationPersistenceDepth ?? 1) - 1,
+    )
+  }
+}
 
 // ── Undo/redo (snapshot-based) ─────────────────────────────────────────
 // The document's source of truth lives in the main process (deck.slides mutated in place +
@@ -113,7 +151,16 @@ export function scheduleHistoryNotify(session: Session): void {
 
 /** Call before an edit operation: push onto the undo stack and clear the redo stack. */
 export function pushHistory(session: Session): void {
+  session.mutationGeneration = (session.mutationGeneration ?? 0) + 1
   session.undoStack.push(takeSnapshot(session))
+  trimHistory(session.undoStack)
+  session.redoStack = []
+  scheduleHistoryNotify(session)
+}
+
+/** Commit a previously captured write-before snapshot as exactly one undo step. */
+export function commitHistorySnapshot(session: Session, before: HistorySnapshot): void {
+  session.undoStack.push(cloneSnapshot(before))
   trimHistory(session.undoStack)
   session.redoStack = []
   scheduleHistoryNotify(session)
@@ -189,6 +236,7 @@ export function restoreAiSnapshot(session: Session, id: number): boolean {
 }
 
 export function restoreSnapshot(session: Session, snap: HistorySnapshot): void {
+  session.mutationGeneration = (session.mutationGeneration ?? 0) + 1
   // Clone: the live deck mutates elements in place, so handing a snapshot's own
   // arrays over would let later edits rewrite history still referenced by the
   // other stack (undo → edit → redo would replay mutated state).

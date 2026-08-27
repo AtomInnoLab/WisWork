@@ -13,10 +13,19 @@ import { AuthError, getElectronAuthRuntimeOrNull } from '@wiswork/auth'
 import { webSearch, imageSearch } from '@wiswork/ai-search'
 import { fetchWithSsrfGuard } from '@wiswork/electron-utils'
 import { addPicture, replacePictureBytes } from '@wiswork/pptx-engine'
+import { parsePresentationTransaction } from '@wiswork/presentation-ops'
 import { EMU_PER_PX_96 } from '@wiswork/pptx-render'
 import { tm } from './i18n-main'
-import { pushHistory, rebuildSlide, scheduleHistoryNotify, sessions } from './session-state'
+import {
+  acquirePresentationTransactionLease,
+  pushHistory,
+  rebuildSlide,
+  scheduleHistoryNotify,
+  sessions,
+} from './session-state'
 import { registerUnsupportedMediaIpc } from './unsupported-ipc'
+import { DesktopPresentationHost } from './operations/desktop-host'
+import { PresentationTransactionExecutor } from './operations/executor'
 
 // ---- AI settings + streaming proxy (the main process does the networking to avoid renderer CORS; implementation shared via @wiswork/ai-provider) ----
 
@@ -141,6 +150,67 @@ export function registerAiIpc(): void {
 // "No handler registered".
 export function registerSlidesOnlyAiIpc(): void {
   registerUnsupportedMediaIpc(ipcMain, (senderId) => sessions.has(senderId))
+
+  const transactionExecutors = new WeakMap<
+    NonNullable<ReturnType<typeof sessions.get>>,
+    PresentationTransactionExecutor<Awaited<ReturnType<DesktopPresentationHost['captureSnapshot']>>>
+  >()
+  const transactionControllers = new Map<string, Set<AbortController>>()
+  const controllerKey = (senderId: number, transactionId: string) => `${senderId}:${transactionId}`
+
+  ipcMain.handle('slides:presentation-transaction', async (event, value: unknown) => {
+    assertAiIpcSender(event)
+    const transaction = parsePresentationTransaction(value)
+    const session = sessions.get(event.sender.id)!
+    if (session.masterEdit || session.historyBatch || session.transformPreview) {
+      throw new AiIpcError('invalid_payload')
+    }
+    let executor = transactionExecutors.get(session)
+    if (!executor) {
+      executor = new PresentationTransactionExecutor(new DesktopPresentationHost(session))
+      transactionExecutors.set(session, executor)
+    }
+    const key = controllerKey(event.sender.id, transaction.transactionId)
+    const controller = new AbortController()
+    const releaseLease = acquirePresentationTransactionLease(session)
+    if (!releaseLease) {
+      return {
+        status: 'unchanged',
+        transactionId: transaction.transactionId,
+        code: 'write_not_applied',
+        operationCount: transaction.operations.length,
+      }
+    }
+    const controllers = transactionControllers.get(key) ?? new Set<AbortController>()
+    controllers.add(controller)
+    transactionControllers.set(key, controllers)
+    try {
+      return await executor.execute(transaction, controller.signal)
+    } finally {
+      releaseLease()
+      controllers.delete(controller)
+      if (controllers.size === 0) transactionControllers.delete(key)
+    }
+  })
+
+  ipcMain.handle(
+    'slides:presentation-transaction-cancel',
+    (event, transactionId: unknown): boolean => {
+      assertAiIpcSender(event)
+      if (
+        typeof transactionId !== 'string' ||
+        transactionId.length === 0 ||
+        transactionId.length > 128 ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(transactionId)
+      ) {
+        throw new AiIpcError('invalid_payload')
+      }
+      const controllers = transactionControllers.get(controllerKey(event.sender.id, transactionId))
+      if (!controllers?.size) return false
+      for (const controller of controllers) controller.abort()
+      return true
+    },
+  )
 
   // Download an image from a URL and insert it into the given page (image search -> insert in one step; download in the main process avoids CORS)
   ipcMain.handle(

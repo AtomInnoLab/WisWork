@@ -21,6 +21,8 @@ export const PRESENTATION_OPS_LIMITS = Object.freeze({
 
 const unsafeKeys = new Set(['__proto__', 'prototype', 'constructor'])
 const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/
+const slidePartIdentifierPattern = /^ppt\/slides\/slide[1-9][0-9]*\.xml$/
+const drawingCreationIdPattern = /^\{[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\}$/
 const fingerprintPattern = /^sha256:[0-9a-f]{64}$/
 const colorPattern = /^#[0-9A-Fa-f]{6}$/
 
@@ -73,6 +75,26 @@ const identifier = (value: unknown, name: string): string => {
   return result
 }
 
+const slideIdentifier = (value: unknown, name: string): string => {
+  const result = requiredString(value, name, PRESENTATION_OPS_LIMITS.maxIdentifierLength)
+  if (
+    (!identifierPattern.test(result) && !slidePartIdentifierPattern.test(result)) ||
+    unsafeKeys.has(result)
+  )
+    fail(`${name} is unsafe`)
+  return result
+}
+
+const elementIdentifier = (value: unknown, name: string): string => {
+  const result = requiredString(value, name, PRESENTATION_OPS_LIMITS.maxIdentifierLength)
+  if (
+    (!identifierPattern.test(result) && !drawingCreationIdPattern.test(result)) ||
+    unsafeKeys.has(result)
+  )
+    fail(`${name} is unsafe`)
+  return result
+}
+
 const fingerprint = (value: unknown, name: string): string => {
   if (typeof value !== 'string') fail(`${name} must be a SHA-256 fingerprint`)
   if (!fingerprintPattern.test(value)) fail(`${name} must be a SHA-256 fingerprint`)
@@ -100,8 +122,10 @@ const optional = <T>(
 const parseTarget = (value: unknown, requireElement: boolean): PresentationTarget => {
   const record = object(value, 'target')
   exactKeys(record, ['slideId', 'elementId', 'expectedType', 'expectedFingerprint'], 'target')
-  const slideId = identifier(record.slideId, 'target.slideId')
-  const elementId = optional(record, 'elementId', (item) => identifier(item, 'target.elementId'))
+  const slideId = slideIdentifier(record.slideId, 'target.slideId')
+  const elementId = optional(record, 'elementId', (item) =>
+    elementIdentifier(item, 'target.elementId'),
+  )
   const expectedType = optional(record, 'expectedType', (item) => {
     const types: readonly PresentationElementType[] = [
       'text',
@@ -237,7 +261,7 @@ export const parsePresentationOperation = (value: unknown): PresentationOperatio
       return {
         kind,
         clientId,
-        slideId: identifier(record.slideId, 'slideId'),
+        slideId: slideIdentifier(record.slideId, 'slideId'),
         text: requiredString(record.text, 'text'),
         geometry: parseGeometry(record.geometry),
       }
@@ -295,7 +319,7 @@ export const parsePresentationReceipt = (value: unknown): PresentationReceipt =>
           maxLength: PRESENTATION_OPS_LIMITS.maxReceiptIds,
         })
         const ids: string[] = []
-        for (const id of values) ids.push(identifier(id, 'receipt.createdId'))
+        for (const id of values) ids.push(elementIdentifier(id, 'receipt.createdId'))
         if (new Set(ids).size !== ids.length) fail('receipt.createdIds must be unique')
         return ids
       })
@@ -344,7 +368,9 @@ export const parsePresentationReceipt = (value: unknown): PresentationReceipt =>
       const operationIndex = optional(record, 'operationIndex', (item) =>
         boundedInteger(item, 'receipt.operationIndex', PRESENTATION_OPS_LIMITS.maxOperations - 1),
       )
-      const targetId = optional(record, 'targetId', (item) => identifier(item, 'receipt.targetId'))
+      const targetId = optional(record, 'targetId', (item) =>
+        elementIdentifier(item, 'receipt.targetId'),
+      )
       return {
         status: 'conflict',
         transactionId,

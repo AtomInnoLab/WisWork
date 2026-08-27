@@ -281,10 +281,19 @@ export interface OpenedPresentationForFingerprint {
   archive: PackageArchive
 }
 
+const immutableByteDigests = new WeakMap<Uint8Array, Promise<string>>()
+
 const digestBytes = async (bytes: Uint8Array | undefined): Promise<string> => {
   if (!bytes) throw new TypeError('Referenced presentation part cannot be fingerprinted safely')
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes)
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  const cached = immutableByteDigests.get(bytes)
+  if (cached) return cached
+  const pending = globalThis.crypto.subtle
+    .digest('SHA-256', Uint8Array.from(bytes))
+    .then((digest) =>
+      Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join(''),
+    )
+  immutableByteDigests.set(bytes, pending)
+  return pending
 }
 
 async function digestPart(archive: PackageArchive, path: string): Promise<string> {
@@ -455,6 +464,27 @@ export async function fingerprintSlide(
       deckSize: opened.deck.size,
     }),
   )
+}
+
+/** Stable semantic revision for one authoritative in-memory deck. */
+export async function fingerprintPresentation(
+  opened: OpenedPresentationForFingerprint,
+): Promise<string> {
+  const slides: Array<{ durableId: string; fingerprint: string }> = []
+  for (const slide of opened.deck.slides) {
+    slides.push({ durableId: slide.durableId, fingerprint: await fingerprintSlide(opened, slide) })
+  }
+  const paths = [...opened.archive.entries.keys()].sort()
+  if (paths.length > 1_000) throw new TypeError('Presentation package exceeds fingerprint bounds')
+  const packageParts: Array<{ path: string; digest: string }> = []
+  for (const path of paths) {
+    packageParts.push({ path, digest: await digestBytes(opened.archive.entries.get(path)) })
+  }
+  return fingerprintSemanticValue({
+    size: opened.deck.size,
+    slides,
+    packageParts,
+  })
 }
 
 type ResolvedTarget = {

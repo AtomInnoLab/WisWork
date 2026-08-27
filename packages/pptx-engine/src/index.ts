@@ -86,6 +86,7 @@ export {
   ensureCreationIdsInXmlBatch,
   fingerprintSlide,
   fingerprintSlideElement,
+  fingerprintPresentation,
   mintCreationId,
   mintUniqueCreationIds,
   normalizeCreationId,

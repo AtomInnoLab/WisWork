@@ -10,6 +10,7 @@
 import type { RenderSlide } from '@wiswork/pptx-render'
 import type { SlideComment, SectionInfo } from '@wiswork/pptx-engine'
 import type { AiSettings, AiStreamChunk, AiStreamRequest } from '@wiswork/ai-provider'
+import type { PresentationReceipt, PresentationTransaction } from '@wiswork/presentation-ops'
 
 import type { AccountStatus } from '@wiswork/auth'
 
@@ -994,6 +995,11 @@ export type MenuCommand =
   | 'paste'
 
 export interface SlidesApi {
+  /** Execute one strictly bounded, atomic desktop presentation transaction. */
+  executePresentationTransaction: (
+    transaction: PresentationTransaction,
+  ) => Promise<PresentationReceipt>
+  cancelPresentationTransaction: (transactionId: string) => Promise<boolean>
   /** current UI language (persisted by the shell in app-settings.json) */
   getLanguage: () => Promise<
     'zh' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'th' | 'id' | 'ru' | 'ar'

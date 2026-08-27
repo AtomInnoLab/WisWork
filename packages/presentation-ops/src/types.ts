@@ -8,6 +8,7 @@ export interface PresentationTarget {
 }
 
 export interface PresentationGeometry {
+  /** Geometry uses PowerPoint points; rotation uses degrees. */
   x: number
   y: number
   width: number

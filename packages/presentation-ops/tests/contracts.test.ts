@@ -24,6 +24,18 @@ const transaction = (operations: unknown[]) => ({
 })
 
 describe('presentation transaction parser', () => {
+  it('accepts bounded OPC slide identities and DrawingML creation IDs', () => {
+    const durableTarget = {
+      ...target,
+      slideId: 'ppt/slides/slide12.xml',
+      elementId: '{01234567-89AB-CDEF-0123-456789ABCDEF}',
+    }
+    expect(parsePresentationTarget(durableTarget)).toEqual(durableTarget)
+    expect(() =>
+      parsePresentationTarget({ ...durableTarget, slideId: 'ppt/../secrets.xml' }),
+    ).toThrow(/unsafe/i)
+  })
+
   it('parses every closed operation family', () => {
     const value = transaction([
       { kind: 'set_text', clientId: 'op-1', target, text: 'Hello' },
