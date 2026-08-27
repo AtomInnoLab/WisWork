@@ -18,6 +18,33 @@ describe('presentation XML semantic canonicalization', () => {
     expect(canonicalizePresentationXml(plain)).not.toEqual(canonicalizePresentationXml(spaced))
   })
 
+  it('merges adjacent character content across comments, CDATA, and entity tokens', () => {
+    const split = '<a:t xmlns:a="urn:test">a<!-- ignored --><![CDATA[b]]>&#99;</a:t>'
+    const plain = '<q:t xmlns:q="urn:test">abc</q:t>'
+    expect(canonicalizePresentationXml(split)).toEqual(canonicalizePresentationXml(plain))
+  })
+
+  it('preserves mixed-content child order and xml:space content', () => {
+    expect(canonicalizePresentationXml('<r>a<c/>b</r>')).not.toEqual(
+      canonicalizePresentationXml('<r>ab<c/></r>'),
+    )
+    expect(canonicalizePresentationXml('<t xml:space="preserve">a <!--x--> b</t>')).toEqual(
+      canonicalizePresentationXml('<t xml:space="preserve"><![CDATA[a  b]]></t>'),
+    )
+  })
+
+  it.each([
+    '<r xmlns="a" xmlns="b"/>',
+    '<r xmlns:x="a" xmlns:x="b"/>',
+    '<r>&unknown;</r>',
+    '<r>&#0;</r>',
+    '<r>&#xD800;</r>',
+    '<r>\u0001</r>',
+    '<!DOCTYPE r [<!ENTITY x "value">]><r>&x;</r>',
+  ])('rejects invalid or unsafe XML: %s', (xml) => {
+    expect(() => canonicalizePresentationXml(xml)).toThrow()
+  })
+
   it('fails closed when XML exceeds structural bounds', () => {
     const oversized = `<r>${'<n/>'.repeat(20_001)}</r>`
     expect(() => canonicalizePresentationXml(oversized)).toThrow('bounds')

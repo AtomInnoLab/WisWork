@@ -344,6 +344,21 @@ async function partGraphDigests(
   const pending = [...new Set(roots)].sort()
   const visited = new Set<string>()
   const result: Record<string, string> = {}
+  const allowedRelationships = new Set([
+    '/slideMaster',
+    '/theme',
+    '/notesMaster',
+    '/image',
+    '/chart',
+    '/chartStyle',
+    '/chartColorStyle',
+    '/chartUserShapes',
+    '/package',
+    '/oleObject',
+    '/media',
+    '/video',
+    '/audio',
+  ])
   while (pending.length) {
     const path = pending.shift()!
     if (visited.has(path)) continue
@@ -352,21 +367,11 @@ async function partGraphDigests(
     result[path] = await digestPart(archive, path)
     for (const rel of archive.readRels(path).values()) {
       const suffix = rel.type.slice(rel.type.lastIndexOf('/'))
-      if (
-        !new Set([
-          '/slideMaster',
-          '/theme',
-          '/notesMaster',
-          '/image',
-          '/chart',
-          '/package',
-          '/oleObject',
-          '/media',
-          '/video',
-          '/audio',
-        ]).has(suffix)
-      )
+      if (!allowedRelationships.has(suffix)) {
+        if (/^ppt\/charts\/chart[^/]*\.xml$/i.test(path))
+          throw new TypeError('Unknown chart relationship cannot be fingerprinted safely')
         continue
+      }
       if (rel.targetMode === 'External')
         throw new TypeError('External presentation parts cannot be fingerprinted safely')
       const target = resolveTarget(path, rel.target)

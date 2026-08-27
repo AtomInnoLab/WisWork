@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import type { PassthroughElement } from '../src/types'
 import {
   addElement,
+  addChart,
   addPicture,
   createBlankPptx,
   duplicateSlide,
@@ -403,6 +404,71 @@ describe('durable presentation targets', () => {
     }
     await expect(fingerprintSlideElement(opened, slide, element)).rejects.toThrow(
       /graph exceeds bounds/,
+    )
+  })
+
+  it('binds chart style, color style, and user-shape relationships and rejects unknown chart rels', async () => {
+    const opened = await openPptx(await createBlankPptx())
+    const result = addChart(
+      opened,
+      0,
+      { kind: 'bar', categories: ['A'], series: [{ name: 'S', values: [1] }], offset: OFF_A },
+      { creationIdFactory: makeFactory() },
+    )!
+    const element = opened.deck.slides[0]!.elements.find((item) => item.id === result.elementId)!
+    const chartPath = [...opened.archive.entries.keys()].find((path) =>
+      /^ppt\/charts\/chart\d+\.xml$/.test(path),
+    )!
+    const relsPath = `ppt/charts/_rels/${chartPath.split('/').pop()}.rels`
+    const relationships = [
+      ['rId1', 'http://schemas.microsoft.com/office/2011/relationships/chartStyle', 'style1.xml'],
+      [
+        'rId2',
+        'http://schemas.microsoft.com/office/2011/relationships/chartColorStyle',
+        'colors1.xml',
+      ],
+      [
+        'rId3',
+        'http://schemas.openxmlformats.org/officeDocument/2006/relationships/chartUserShapes',
+        '../drawings/drawing1.xml',
+      ],
+    ]
+    opened.archive.entries.set(
+      relsPath,
+      new TextEncoder().encode(
+        `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${relationships.map(([id, type, target]) => `<Relationship Id="${id}" Type="${type}" Target="${target}"/>`).join('')}</Relationships>`,
+      ),
+    )
+    for (const path of [
+      'ppt/charts/style1.xml',
+      'ppt/charts/colors1.xml',
+      'ppt/drawings/drawing1.xml',
+    ])
+      opened.archive.entries.set(path, new TextEncoder().encode('<root value="one"/>'))
+    let fingerprint = await fingerprintSlideElement(opened, opened.deck.slides[0]!, element)
+    for (const path of [
+      'ppt/charts/style1.xml',
+      'ppt/charts/colors1.xml',
+      'ppt/drawings/drawing1.xml',
+    ]) {
+      opened.archive.entries.set(path, new TextEncoder().encode('<root value="two"/>'))
+      const changed = await fingerprintSlideElement(opened, opened.deck.slides[0]!, element)
+      expect(changed).not.toBe(fingerprint)
+      fingerprint = changed
+    }
+    opened.archive.entries.set(
+      relsPath,
+      new TextEncoder().encode(
+        opened.archive
+          .readText(relsPath)!
+          .replace(
+            '</Relationships>',
+            '<Relationship Id="rId4" Type="urn:unknown/chartVisual" Target="mystery.xml"/></Relationships>',
+          ),
+      ),
+    )
+    await expect(fingerprintSlideElement(opened, opened.deck.slides[0]!, element)).rejects.toThrow(
+      /Unknown chart relationship/,
     )
   })
 
