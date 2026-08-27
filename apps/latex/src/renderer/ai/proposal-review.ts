@@ -153,14 +153,3 @@ export function validateReviewProposal(
   }
   return value as ReviewProposal
 }
-
-export async function proposalForSelection(
-  proposal: ReviewProposal,
-  selectedPaths: ReadonlySet<string>,
-  create: (files: Array<{ path: string; afterText: string }>) => Promise<ReviewProposal>,
-): Promise<ReviewProposal> {
-  const selected = proposal.files.filter((file) => selectedPaths.has(file.path))
-  if (selected.length === 0) throw new Error('Select at least one file')
-  if (selected.length === proposal.files.length) return proposal
-  return create(selected.map(({ path, afterText }) => ({ path, afterText })))
-}
