@@ -254,6 +254,7 @@ import {
   SlidesSessionBusyError,
   undoSession,
   withPresentationMutationLease,
+  withPresentationPersistenceLease,
   windowRefs,
   type Session,
 } from './session-state'
@@ -3329,28 +3330,32 @@ export function registerSlidesIpc(): void {
       defaultPath: defaultName,
       filters: [{ name: 'PowerPoint', extensions: ['pptx'] }],
     }
-    const r = await showSaveDialogWithMemory(dialog, parent, options, getDraftsDir())
-    if (r.canceled || !r.filePath) return { ok: false }
-    const releasePersistence = acquirePresentationPersistenceLease(session)
-    if (!releasePersistence) return { ok: false, error: 'transaction_active' }
     try {
-      await savePptxToFile(session.opened, r.filePath)
-      session.path = r.filePath
-      autosaveBackoff.delete(r.filePath)
-      dropUntitledRecovery(e.sender.id)
-      await pushRecent(r.filePath)
-      slidesOpenedHook?.(e.sender, r.filePath)
-      commitSaved(session.opened)
-      session.metaDirty = false
-      return {
-        ok: true,
-        path: r.filePath,
-        slides: buildAllRenderSlides(session.opened, session.fitWidthPx),
-      }
+      return await withPresentationPersistenceLease(session, async () => {
+        const r = await showSaveDialogWithMemory(dialog, parent, options, getDraftsDir())
+        if (r.canceled || !r.filePath) return { ok: false }
+        if (sessions.get(e.sender.id) !== session) {
+          return { ok: false, error: 'slides_session_busy' }
+        }
+        await savePptxToFile(session.opened, r.filePath)
+        session.path = r.filePath
+        autosaveBackoff.delete(r.filePath)
+        dropUntitledRecovery(e.sender.id)
+        await pushRecent(r.filePath)
+        slidesOpenedHook?.(e.sender, r.filePath)
+        commitSaved(session.opened)
+        session.metaDirty = false
+        return {
+          ok: true,
+          path: r.filePath,
+          slides: buildAllRenderSlides(session.opened, session.fitWidthPx),
+        }
+      })
     } catch (err) {
+      if (err instanceof SlidesSessionBusyError) {
+        return { ok: false, error: 'transaction_active' }
+      }
       return { ok: false, error: String(err) }
-    } finally {
-      releasePersistence()
     }
   })
 

@@ -321,6 +321,82 @@ describe('PresentationTransactionExecutor', () => {
     expect(fixture.counts()).toMatchObject({ applyCount: 1, historyCount: 1, generated: 1 })
   })
 
+  it('singleflights concurrent duplicate ids before acquiring one write lease', async () => {
+    const fixture = fakeHost()
+    const originalApply = fixture.host.apply
+    let resume!: () => void
+    let started!: () => void
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve
+    })
+    const applying = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    fixture.host.apply = async (planned, signal) => {
+      started()
+      await paused
+      return originalApply(planned, signal)
+    }
+    let leases = 0
+    let releases = 0
+    const executor = new PresentationTransactionExecutor(fixture.host, {
+      acquireWriteLease: () => {
+        leases += 1
+        return () => {
+          releases += 1
+        }
+      },
+    })
+    const tx = transaction([operation('a', 'shape-1', 'one')])
+    const first = executor.execute(tx)
+    await applying
+    const duplicate = executor.execute(structuredClone(tx))
+
+    expect(duplicate).toBe(first)
+    expect(leases).toBe(1)
+    resume()
+    const [firstReceipt, duplicateReceipt] = await Promise.all([first, duplicate])
+    expect(duplicateReceipt).toEqual(firstReceipt)
+    expect(duplicateReceipt).toBe(firstReceipt)
+    expect({ leases, releases }).toEqual({ leases: 1, releases: 1 })
+    expect(fixture.counts()).toMatchObject({ applyCount: 1, historyCount: 1 })
+  })
+
+  it('returns an exact cached receipt while a different transaction holds the write lease', async () => {
+    const fixture = fakeHost()
+    const executor = new PresentationTransactionExecutor(fixture.host)
+    const cachedTx = transaction([operation('a', 'shape-1', 'one')])
+    const cachedReceipt = await executor.execute(cachedTx)
+
+    let resume!: () => void
+    let started!: () => void
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve
+    })
+    const applying = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const originalApply = fixture.host.apply
+    fixture.host.apply = async (planned, signal) => {
+      started()
+      await paused
+      return originalApply(planned, signal)
+    }
+    const other = {
+      ...transaction([operation('b', 'shape-1', 'two')]),
+      transactionId: 'tx-2',
+      expectedDeckRevision: fixture.state.revision,
+    }
+    const busy = executor.execute(other)
+    await applying
+    const retry = await executor.execute(structuredClone(cachedTx))
+
+    expect(retry).toEqual(cachedReceipt)
+    expect(retry).toBe(cachedReceipt)
+    resume()
+    await busy
+  })
+
   it('fails closed at ledger capacity without forgetting an applied transaction', async () => {
     const fixture = fakeHost()
     const executor = new PresentationTransactionExecutor(fixture.host, {

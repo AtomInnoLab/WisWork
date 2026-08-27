@@ -137,6 +137,19 @@ export function acquirePresentationPersistenceLease(session: Session): (() => vo
   }
 }
 
+export async function withPresentationPersistenceLease<T>(
+  session: Session,
+  work: () => T | Promise<T>,
+): Promise<T> {
+  const release = acquirePresentationPersistenceLease(session)
+  if (!release) throw new SlidesSessionBusyError()
+  try {
+    return await work()
+  } finally {
+    release()
+  }
+}
+
 export function acquirePresentationMutationLease(session: Session): (() => void) | null {
   if (
     sessionHasActivePresentationTransaction(session) ||

@@ -17,6 +17,7 @@ import {
   SlidesSessionBusyError,
   undoSession,
   withPresentationMutationLease,
+  withPresentationPersistenceLease,
 } from '../src/main/session-state'
 
 vi.mock('electron', () => ({
@@ -151,6 +152,31 @@ describe('Slides main-process history batching', () => {
     const releaseTransaction = acquirePresentationTransactionLease(session)
     expect(releaseTransaction).not.toBeNull()
     releaseTransaction!()
+  })
+
+  it('holds Save As persistence ownership across a controlled dialog and releases on cancel', async () => {
+    const session = sessionWith('before')
+    let cancelDialog!: () => void
+    const dialog = new Promise<void>((resolve) => {
+      cancelDialog = resolve
+    })
+    const saveAs = withPresentationPersistenceLease(session, async () => {
+      await dialog
+      return { canceled: true as const }
+    })
+
+    await Promise.resolve()
+    expect(sessionBlocksPresentationClose(session)).toBe(true)
+    expect(acquirePresentationPersistenceLease(session)).toBeNull() // another save/open
+    expect(acquirePresentationTransactionLease(session)).toBeNull()
+    expect(acquirePresentationMutationLease(session)).toBeNull() // new blank / edit
+
+    cancelDialog()
+    await expect(saveAs).resolves.toEqual({ canceled: true })
+    expect(sessionBlocksPresentationClose(session)).toBe(false)
+    const release = acquirePresentationPersistenceLease(session)
+    expect(release).not.toBeNull()
+    release!()
   })
 
   it('collapses several edits into one pre-run snapshot', () => {

@@ -169,27 +169,19 @@ export function registerSlidesOnlyAiIpc(): void {
     }
     let executor = transactionExecutors.get(session)
     if (!executor) {
-      executor = new PresentationTransactionExecutor(new DesktopPresentationHost(session))
+      executor = new PresentationTransactionExecutor(new DesktopPresentationHost(session), {
+        acquireWriteLease: () => acquirePresentationTransactionLease(session),
+      })
       transactionExecutors.set(session, executor)
     }
     const key = controllerKey(event.sender.id, transaction.transactionId)
     const controller = new AbortController()
-    const releaseLease = acquirePresentationTransactionLease(session)
-    if (!releaseLease) {
-      return {
-        status: 'unchanged',
-        transactionId: transaction.transactionId,
-        code: 'write_not_applied',
-        operationCount: transaction.operations.length,
-      }
-    }
     const controllers = transactionControllers.get(key) ?? new Set<AbortController>()
     controllers.add(controller)
     transactionControllers.set(key, controllers)
     try {
       return await executor.execute(transaction, controller.signal)
     } finally {
-      releaseLease()
       controllers.delete(controller)
       if (controllers.size === 0) transactionControllers.delete(key)
     }

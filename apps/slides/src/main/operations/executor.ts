@@ -48,6 +48,7 @@ export interface PresentationTransactionExecutorOptions {
   verifyAttempts?: number
   verifyDelayMs?: number
   maxCachedReceipts?: number
+  acquireWriteLease?: () => (() => void) | null
 }
 
 interface CachedReceipt {
@@ -64,7 +65,12 @@ export class PresentationTransactionExecutor<Snapshot> {
   private readonly verifyAttempts: number
   private readonly verifyDelayMs: number
   private readonly maxCachedReceipts: number
+  private readonly acquireWriteLease: (() => (() => void) | null) | undefined
   private readonly receipts = new Map<string, CachedReceipt>()
+  private readonly inFlight = new Map<
+    string,
+    { signature: string; promise: Promise<PresentationReceipt> }
+  >()
   private active = Promise.resolve()
 
   constructor(
@@ -74,11 +80,47 @@ export class PresentationTransactionExecutor<Snapshot> {
     this.verifyAttempts = Math.max(1, Math.min(10, options.verifyAttempts ?? 3))
     this.verifyDelayMs = Math.max(0, Math.min(1_000, options.verifyDelayMs ?? 50))
     this.maxCachedReceipts = Math.max(1, Math.min(10_000, options.maxCachedReceipts ?? 10_000))
+    this.acquireWriteLease = options.acquireWriteLease
   }
 
   execute(input: PresentationTransaction, signal?: AbortSignal): Promise<PresentationReceipt> {
     const transaction = parsePresentationTransaction(input)
-    const run = this.active.then(() => this.executeExclusive(transaction, signal))
+    const signature = JSON.stringify(transaction)
+    const existing = this.inFlight.get(transaction.transactionId)
+    if (existing) {
+      if (existing.signature === signature) return existing.promise
+      return Promise.resolve({
+        status: 'conflict',
+        transactionId: transaction.transactionId,
+        code: 'target_stale',
+      })
+    }
+    const run = this.prepareExecute(transaction, signal)
+    this.inFlight.set(transaction.transactionId, { signature, promise: run })
+    const cleanup = () => {
+      if (this.inFlight.get(transaction.transactionId)?.promise === run) {
+        this.inFlight.delete(transaction.transactionId)
+      }
+    }
+    void run.then(cleanup, cleanup)
+    return run
+  }
+
+  private async prepareExecute(
+    transaction: PresentationTransaction,
+    signal?: AbortSignal,
+  ): Promise<PresentationReceipt> {
+    const digest = await fingerprintSemanticValue(transaction)
+    const cached = this.receipts.get(transaction.transactionId)
+    if (cached) {
+      if (cached.digest === digest) return cached.receipt
+      return {
+        status: 'conflict',
+        transactionId: transaction.transactionId,
+        code: 'target_stale',
+      }
+    }
+    const run = this.active.then(() => this.executeExclusive(transaction, digest, signal))
     this.active = run.then(
       () => undefined,
       () => undefined,
@@ -88,9 +130,11 @@ export class PresentationTransactionExecutor<Snapshot> {
 
   private async executeExclusive(
     transaction: PresentationTransaction,
+    digest: string,
     signal?: AbortSignal,
   ): Promise<PresentationReceipt> {
-    const digest = await fingerprintSemanticValue(transaction)
+    // Re-check after waiting behind a different transaction: it may have filled
+    // the bounded ledger while this transaction was queued.
     const cached = this.receipts.get(transaction.transactionId)
     if (cached) {
       if (cached.digest === digest) return cached.receipt
@@ -106,6 +150,23 @@ export class PresentationTransactionExecutor<Snapshot> {
       return unchangedReceipt(transaction, 'write_not_applied')
     }
 
+    const releaseLease = this.acquireWriteLease?.()
+    if (this.acquireWriteLease && !releaseLease) {
+      return this.cache(transaction, digest, unchangedReceipt(transaction, 'write_not_applied'))
+    }
+
+    try {
+      return await this.executeWithLease(transaction, digest, signal)
+    } finally {
+      releaseLease?.()
+    }
+  }
+
+  private async executeWithLease(
+    transaction: PresentationTransaction,
+    digest: string,
+    signal?: AbortSignal,
+  ): Promise<PresentationReceipt> {
     let writeStarted = false
     try {
       if (signal?.aborted)
