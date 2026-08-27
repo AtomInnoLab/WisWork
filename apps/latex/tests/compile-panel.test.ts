@@ -23,6 +23,25 @@ describe('CompilePanel bundle status', () => {
     expect(html).toContain('disabled=""')
   })
 
+  it('keeps active compilation status visible when toolbar actions are hidden', () => {
+    const html = renderToStaticMarkup(
+      createElement(CompilePanel, {
+        compiling: true,
+        bundleStatus: { state: 'ready', bytes: 1 },
+        diagnostics: [],
+        log: '',
+        onCompile: vi.fn(),
+        onCancel: vi.fn(),
+        onDiagnostic: vi.fn(),
+        onAskAi: vi.fn(),
+        showActions: false,
+      }),
+    )
+    expect(html).toContain('role="status"')
+    expect(html).toContain('Compiling…')
+    expect(html).not.toContain('compile-button')
+  })
+
   it('describes the indexed TeX bundle as online instead of locally installed', () => {
     const html = renderToStaticMarkup(
       createElement(CompilePanel, {

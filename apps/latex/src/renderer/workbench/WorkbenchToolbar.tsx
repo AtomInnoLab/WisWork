@@ -1,15 +1,24 @@
+import { useState, type ReactNode } from 'react'
+import type { LatexEditorCommand } from '../editor/editor-commands.js'
 import { useLatexLocale } from '../i18n/locale.js'
+
+type ToolbarEditorCommand = LatexEditorCommand | 'undo' | 'redo'
 
 interface WorkbenchToolbarProps {
   activePath: string | null
   dirty: boolean
   disabled: boolean
+  compileDisabled?: boolean
   compiling: boolean
+  diagnosticCount?: number
+  compilePanel?: ReactNode
   filesOpen: boolean
   previewOpen: boolean
   aiOpen: boolean
   onSave: () => void
   onCompile: () => void
+  onCancelCompile?: () => void
+  onEditorCommand?: (command: ToolbarEditorCommand) => void
   onToggleFiles: () => void
   onTogglePreview: () => void
   onToggleAi: () => void
@@ -54,21 +63,57 @@ function ToolbarIcon({ name }: { name: 'save' | 'compile' | 'files' | 'preview' 
   )
 }
 
+function EditorTool({
+  label,
+  glyph,
+  command,
+  disabled,
+  onCommand,
+}: {
+  label: string
+  glyph: string
+  command: ToolbarEditorCommand
+  disabled: boolean
+  onCommand: (command: ToolbarEditorCommand) => void
+}) {
+  return (
+    <button
+      type="button"
+      className="latex-toolbar-button"
+      title={label}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onCommand(command)}
+    >
+      <span className="latex-toolbar-icon-row latex-toolbar-glyph" aria-hidden="true">
+        {glyph}
+      </span>
+      <span>{label}</span>
+    </button>
+  )
+}
+
 export function WorkbenchToolbar({
   activePath,
   dirty,
   disabled,
+  compileDisabled = disabled,
   compiling,
+  diagnosticCount = 0,
+  compilePanel = null,
   filesOpen,
   previewOpen,
   aiOpen,
   onSave,
   onCompile,
+  onCancelCompile = () => undefined,
+  onEditorCommand = () => undefined,
   onToggleFiles,
   onTogglePreview,
   onToggleAi,
 }: WorkbenchToolbarProps) {
   const { t } = useLatexLocale()
+  const [compileDetailsOpen, setCompileDetailsOpen] = useState(false)
   return (
     <header className="latex-workbench-toolbar" role="toolbar" aria-label={t('toolbar')}>
       <div className="latex-toolbar-tabs">
@@ -91,18 +136,157 @@ export function WorkbenchToolbar({
       </div>
       <div className="latex-toolbar-body">
         <div className="latex-toolbar-group">
+          <EditorTool
+            label={t('undo')}
+            glyph="↶"
+            command="undo"
+            disabled={disabled}
+            onCommand={onEditorCommand}
+          />
+          <EditorTool
+            label={t('redo')}
+            glyph="↷"
+            command="redo"
+            disabled={disabled}
+            onCommand={onEditorCommand}
+          />
+        </div>
+        <span className="latex-toolbar-separator" aria-hidden="true" />
+        <div className="latex-toolbar-group">
+          <EditorTool
+            label={t('bold')}
+            glyph="B"
+            command="bold"
+            disabled={disabled}
+            onCommand={onEditorCommand}
+          />
+          <EditorTool
+            label={t('italic')}
+            glyph="I"
+            command="italic"
+            disabled={disabled}
+            onCommand={onEditorCommand}
+          />
+          <EditorTool
+            label={t('underline')}
+            glyph="U"
+            command="underline"
+            disabled={disabled}
+            onCommand={onEditorCommand}
+          />
+        </div>
+        <span className="latex-toolbar-separator" aria-hidden="true" />
+        <div className="latex-toolbar-group">
+          <EditorTool
+            label={t('section')}
+            glyph="§"
+            command="section"
+            disabled={disabled}
+            onCommand={onEditorCommand}
+          />
+          <EditorTool
+            label={t('subsection')}
+            glyph="§§"
+            command="subsection"
+            disabled={disabled}
+            onCommand={onEditorCommand}
+          />
+          <EditorTool
+            label={t('bulletedList')}
+            glyph="•"
+            command="itemize"
+            disabled={disabled}
+            onCommand={onEditorCommand}
+          />
+          <EditorTool
+            label={t('numberedList')}
+            glyph="1."
+            command="enumerate"
+            disabled={disabled}
+            onCommand={onEditorCommand}
+          />
+        </div>
+        <span className="latex-toolbar-separator" aria-hidden="true" />
+        <div className="latex-toolbar-group">
+          <EditorTool
+            label={t('inlineMath')}
+            glyph="$x$"
+            command="inlineMath"
+            disabled={disabled}
+            onCommand={onEditorCommand}
+          />
+          <EditorTool
+            label={t('equation')}
+            glyph="∑"
+            command="equation"
+            disabled={disabled}
+            onCommand={onEditorCommand}
+          />
+          <EditorTool
+            label={t('citation')}
+            glyph="[@]"
+            command="cite"
+            disabled={disabled}
+            onCommand={onEditorCommand}
+          />
+          <EditorTool
+            label={t('reference')}
+            glyph="↗"
+            command="ref"
+            disabled={disabled}
+            onCommand={onEditorCommand}
+          />
+        </div>
+        <span className="latex-toolbar-separator" aria-hidden="true" />
+        <div className="latex-toolbar-group">
+          <EditorTool
+            label={t('figure')}
+            glyph="▧"
+            command="figure"
+            disabled={disabled}
+            onCommand={onEditorCommand}
+          />
+          <EditorTool
+            label={t('table')}
+            glyph="▦"
+            command="table"
+            disabled={disabled}
+            onCommand={onEditorCommand}
+          />
+        </div>
+        <span className="latex-toolbar-separator" aria-hidden="true" />
+        <div className="latex-toolbar-group">
           <button
             type="button"
             className={`latex-toolbar-button${compiling ? ' busy' : ''}`}
-            title={compiling ? t('compiling') : t('compile')}
-            disabled={disabled}
-            onClick={onCompile}
+            title={compiling ? t('cancel') : t('compile')}
+            aria-label={compiling ? t('cancel') : t('compile')}
+            disabled={compileDisabled}
+            onClick={compiling ? onCancelCompile : onCompile}
           >
             <span className="latex-toolbar-icon-row">
               <ToolbarIcon name="compile" />
             </span>
-            <span>{compiling ? t('compiling') : t('compile')}</span>
+            <span>{compiling ? t('cancel') : t('compile')}</span>
           </button>
+          {compilePanel && (
+            <button
+              type="button"
+              className="latex-toolbar-button"
+              title={t('problems')}
+              aria-label={`${t('problems')} (${diagnosticCount})`}
+              aria-expanded={compileDetailsOpen}
+              aria-controls="latex-compile-results"
+              onClick={() => setCompileDetailsOpen((open) => !open)}
+            >
+              <span className="latex-toolbar-icon-row latex-toolbar-glyph" aria-hidden="true">
+                !
+              </span>
+              <span>
+                {t('problems')} ({diagnosticCount})
+              </span>
+            </button>
+          )}
         </div>
         <span className="latex-toolbar-separator" aria-hidden="true" />
         <div className="latex-toolbar-group">
@@ -130,9 +314,6 @@ export function WorkbenchToolbar({
             </span>
             <span>PDF</span>
           </button>
-        </div>
-        <span className="latex-toolbar-separator" aria-hidden="true" />
-        <div className="latex-toolbar-group">
           <button
             type="button"
             className="latex-toolbar-button ai-entry"
@@ -147,6 +328,16 @@ export function WorkbenchToolbar({
           </button>
         </div>
       </div>
+      {compileDetailsOpen && compilePanel && (
+        <div
+          id="latex-compile-results"
+          className="latex-compile-popover"
+          role="region"
+          aria-label={t('compileResults')}
+        >
+          {compilePanel}
+        </div>
+      )}
     </header>
   )
 }

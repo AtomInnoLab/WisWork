@@ -26,7 +26,7 @@ import {
   restoreEditorPreview,
   type EditorState,
 } from './editor/editor-state.js'
-import { LatexEditor } from './editor/LatexEditor.js'
+import { LatexEditor, type LatexEditorHandle } from './editor/LatexEditor.js'
 import { useLatexLocale } from './i18n/locale.js'
 import { PdfPreview } from './pdf/PdfPreview.js'
 import { OpenTabs } from './project/OpenTabs.js'
@@ -95,7 +95,7 @@ export function App() {
   const [compiling, setCompiling] = useState(false)
   const [bundleStatus, setBundleStatus] = useState<LatexBundleStatusDto>({ state: 'missing' })
   const [aiOpen, setAiOpen] = useState(true)
-  const [dockTab, setDockTab] = useState<'ai' | 'compile'>('ai')
+  const editorRef = useRef<LatexEditorHandle>(null)
   const [filesOpen, setFilesOpen] = useState(true)
   const [previewOpen, setPreviewOpen] = useState(true)
   const [fileAction, setFileAction] = useState<FileAction | null>(null)
@@ -671,8 +671,36 @@ export function App() {
       <WorkbenchToolbar
         activePath={activePath}
         dirty={Boolean(activeBuffer?.dirty)}
-        disabled={frozen || !projectId || !mainFile}
-        compiling={compiling}
+        disabled={frozen || !activeBuffer}
+        compileDisabled={frozen || !projectId || !mainFile}
+        compiling={compiling || bundleStatus.state === 'downloading'}
+        diagnosticCount={diagnostics.length}
+        compilePanel={
+          <CompilePanel
+            compiling={compiling}
+            disabled={frozen}
+            bundleStatus={bundleStatus}
+            diagnostics={diagnostics}
+            log={log}
+            onCompile={compileProject}
+            onCancel={() => undefined}
+            onDiagnostic={(diagnostic) => {
+              void openFile(diagnostic.path).then(() =>
+                setRevealTarget({ path: diagnostic.path, line: diagnostic.lineIndex + 1 }),
+              )
+            }}
+            onAskAi={(diagnostic) => {
+              setAiDiagnostic(diagnosticToAgentContext(diagnostic))
+              setHiddenAiContext((current) => {
+                const next = new Set(current)
+                next.delete('diagnostic')
+                return next
+              })
+              setAiOpen(true)
+            }}
+            showActions={false}
+          />
+        }
         filesOpen={filesOpen}
         previewOpen={previewOpen}
         aiOpen={aiOpen}
@@ -680,6 +708,14 @@ export function App() {
           if (activePath) void savePath(activePath)
         }}
         onCompile={compileProject}
+        onCancelCompile={() => {
+          if (closeFreeze.current.isFrozen()) return
+          compileQueue.current.cancelPending()
+          if (projectId) void window.latexApi.cancelCompile({ projectId })
+        }}
+        onEditorCommand={(command) => {
+          editorRef.current?.runCommand(command)
+        }}
         onToggleFiles={() => setFilesOpen((open) => !open)}
         onTogglePreview={() => setPreviewOpen((open) => !open)}
         onToggleAi={() => setAiOpen((open) => !open)}
@@ -713,6 +749,7 @@ export function App() {
             />
             {activeBuffer ? (
               <LatexEditor
+                ref={editorRef}
                 path={activeBuffer.path}
                 value={activeBuffer.text}
                 diagnostics={activeDiagnostics}
@@ -777,37 +814,6 @@ export function App() {
             onRemoveContext={(key) => setHiddenAiContext((current) => new Set([...current, key]))}
             onExpand={() => setAiOpen(true)}
             onCollapse={() => setAiOpen(false)}
-            activeTab={dockTab}
-            onTabChange={setDockTab}
-            compilePanel={
-              <CompilePanel
-                compiling={compiling}
-                disabled={frozen}
-                bundleStatus={bundleStatus}
-                diagnostics={diagnostics}
-                log={log}
-                onCompile={compileProject}
-                onCancel={() => {
-                  if (closeFreeze.current.isFrozen()) return
-                  compileQueue.current.cancelPending()
-                  if (projectId) void window.latexApi.cancelCompile({ projectId })
-                }}
-                onDiagnostic={(diagnostic) => {
-                  void openFile(diagnostic.path).then(() =>
-                    setRevealTarget({ path: diagnostic.path, line: diagnostic.lineIndex + 1 }),
-                  )
-                }}
-                onAskAi={(diagnostic) => {
-                  setAiDiagnostic(diagnosticToAgentContext(diagnostic))
-                  setHiddenAiContext((current) => {
-                    const next = new Set(current)
-                    next.delete('diagnostic')
-                    return next
-                  })
-                  setDockTab('ai')
-                }}
-              />
-            }
           />
         )}
       </div>
