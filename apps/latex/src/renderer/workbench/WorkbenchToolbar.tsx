@@ -3,9 +3,11 @@ import type { LatexEditorCommand } from '../editor/editor-commands.js'
 import { useLatexLocale } from '../i18n/locale.js'
 
 type ToolbarEditorCommand = LatexEditorCommand | 'undo' | 'redo'
+export type LatexRibbonTab = 'home' | 'insert' | 'compile' | 'pdf' | 'view'
 
 interface WorkbenchToolbarProps {
   activePath: string | null
+  mainFile?: string | null
   dirty: boolean
   disabled: boolean
   compileDisabled?: boolean
@@ -15,16 +17,25 @@ interface WorkbenchToolbarProps {
   filesOpen: boolean
   previewOpen: boolean
   aiOpen: boolean
+  pdfAvailable?: boolean
+  pdfStale?: boolean
+  exportingPdf?: boolean
+  initialTab?: LatexRibbonTab
   onSave: () => void
   onCompile: () => void
   onCancelCompile?: () => void
+  onExportPdf?: () => void
   onEditorCommand?: (command: ToolbarEditorCommand) => void
   onToggleFiles: () => void
   onTogglePreview: () => void
   onToggleAi: () => void
 }
 
-function ToolbarIcon({ name }: { name: 'save' | 'compile' | 'files' | 'preview' | 'ai' }) {
+function ToolbarIcon({
+  name,
+}: {
+  name: 'save' | 'compile' | 'files' | 'preview' | 'ai' | 'export'
+}) {
   if (name === 'save') {
     return (
       <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -52,6 +63,13 @@ function ToolbarIcon({ name }: { name: 'save' | 'compile' | 'files' | 'preview' 
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M6 3.75h8l4 4v12.5H6V3.75Z" />
         <path d="M14 3.75v4h4M8.75 13h6.5M8.75 16h6.5" />
+      </svg>
+    )
+  }
+  if (name === 'export') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 3.75v11M8 11l4 4 4-4M5 19.5h14" />
       </svg>
     )
   }
@@ -93,8 +111,13 @@ function EditorTool({
   )
 }
 
+function Separator() {
+  return <span className="latex-toolbar-separator" aria-hidden="true" />
+}
+
 export function WorkbenchToolbar({
   activePath,
+  mainFile = null,
   dirty,
   disabled,
   compileDisabled = disabled,
@@ -104,16 +127,40 @@ export function WorkbenchToolbar({
   filesOpen,
   previewOpen,
   aiOpen,
+  pdfAvailable = false,
+  pdfStale = false,
+  exportingPdf = false,
+  initialTab = 'home',
   onSave,
   onCompile,
   onCancelCompile = () => undefined,
+  onExportPdf = () => undefined,
   onEditorCommand = () => undefined,
   onToggleFiles,
   onTogglePreview,
   onToggleAi,
 }: WorkbenchToolbarProps) {
   const { t } = useLatexLocale()
+  const [activeTab, setActiveTab] = useState<LatexRibbonTab>(initialTab)
   const [compileDetailsOpen, setCompileDetailsOpen] = useState(false)
+  const tabs: Array<{ id: LatexRibbonTab; label: string }> = [
+    { id: 'home', label: t('home') },
+    { id: 'insert', label: t('insert') },
+    { id: 'compile', label: t('compile') },
+    { id: 'pdf', label: 'PDF' },
+    { id: 'view', label: t('view') },
+  ]
+
+  const editorTool = (label: string, glyph: string, command: ToolbarEditorCommand) => (
+    <EditorTool
+      label={label}
+      glyph={glyph}
+      command={command}
+      disabled={disabled}
+      onCommand={onEditorCommand}
+    />
+  )
+
   return (
     <header className="latex-workbench-toolbar" role="toolbar" aria-label={t('toolbar')}>
       <div className="latex-toolbar-tabs">
@@ -127,207 +174,228 @@ export function WorkbenchToolbar({
         >
           <ToolbarIcon name="save" />
         </button>
-        <span className="latex-toolbar-product">LaTeX</span>
+        <button
+          type="button"
+          className="latex-toolbar-quick-button"
+          title={t('undo')}
+          aria-label={t('undo')}
+          disabled={disabled}
+          onClick={() => onEditorCommand('undo')}
+        >
+          <span className="latex-toolbar-quick-glyph" aria-hidden="true">
+            ↶
+          </span>
+        </button>
+        <button
+          type="button"
+          className="latex-toolbar-quick-button"
+          title={t('redo')}
+          aria-label={t('redo')}
+          disabled={disabled}
+          onClick={() => onEditorCommand('redo')}
+        >
+          <span className="latex-toolbar-quick-glyph" aria-hidden="true">
+            ↷
+          </span>
+        </button>
+        <span className="latex-toolbar-quick-separator" aria-hidden="true" />
+        <nav className="latex-ribbon-tabs" role="tablist" aria-label={t('toolbarTabs')}>
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              aria-controls="latex-ribbon-band"
+              className={`latex-ribbon-tab${activeTab === tab.id ? ' active' : ''}`}
+              onClick={() => {
+                setActiveTab(tab.id)
+                setCompileDetailsOpen(false)
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
         <span className="latex-toolbar-spacer" />
+        {compiling && <span className="latex-toolbar-running">{t('compiling')}</span>}
         <span className="latex-toolbar-document" title={activePath ?? undefined}>
           {activePath ?? t('projectUnavailable')}
           {dirty && <span className="latex-toolbar-dirty" aria-label={t('unsavedChanges')} />}
         </span>
       </div>
-      <div className="latex-toolbar-body">
-        <div className="latex-toolbar-group">
-          <EditorTool
-            label={t('undo')}
-            glyph="↶"
-            command="undo"
-            disabled={disabled}
-            onCommand={onEditorCommand}
-          />
-          <EditorTool
-            label={t('redo')}
-            glyph="↷"
-            command="redo"
-            disabled={disabled}
-            onCommand={onEditorCommand}
-          />
-        </div>
-        <span className="latex-toolbar-separator" aria-hidden="true" />
-        <div className="latex-toolbar-group">
-          <EditorTool
-            label={t('bold')}
-            glyph="B"
-            command="bold"
-            disabled={disabled}
-            onCommand={onEditorCommand}
-          />
-          <EditorTool
-            label={t('italic')}
-            glyph="I"
-            command="italic"
-            disabled={disabled}
-            onCommand={onEditorCommand}
-          />
-          <EditorTool
-            label={t('underline')}
-            glyph="U"
-            command="underline"
-            disabled={disabled}
-            onCommand={onEditorCommand}
-          />
-        </div>
-        <span className="latex-toolbar-separator" aria-hidden="true" />
-        <div className="latex-toolbar-group">
-          <EditorTool
-            label={t('section')}
-            glyph="§"
-            command="section"
-            disabled={disabled}
-            onCommand={onEditorCommand}
-          />
-          <EditorTool
-            label={t('subsection')}
-            glyph="§§"
-            command="subsection"
-            disabled={disabled}
-            onCommand={onEditorCommand}
-          />
-          <EditorTool
-            label={t('bulletedList')}
-            glyph="•"
-            command="itemize"
-            disabled={disabled}
-            onCommand={onEditorCommand}
-          />
-          <EditorTool
-            label={t('numberedList')}
-            glyph="1."
-            command="enumerate"
-            disabled={disabled}
-            onCommand={onEditorCommand}
-          />
-        </div>
-        <span className="latex-toolbar-separator" aria-hidden="true" />
-        <div className="latex-toolbar-group">
-          <EditorTool
-            label={t('inlineMath')}
-            glyph="$x$"
-            command="inlineMath"
-            disabled={disabled}
-            onCommand={onEditorCommand}
-          />
-          <EditorTool
-            label={t('equation')}
-            glyph="∑"
-            command="equation"
-            disabled={disabled}
-            onCommand={onEditorCommand}
-          />
-          <EditorTool
-            label={t('citation')}
-            glyph="[@]"
-            command="cite"
-            disabled={disabled}
-            onCommand={onEditorCommand}
-          />
-          <EditorTool
-            label={t('reference')}
-            glyph="↗"
-            command="ref"
-            disabled={disabled}
-            onCommand={onEditorCommand}
-          />
-        </div>
-        <span className="latex-toolbar-separator" aria-hidden="true" />
-        <div className="latex-toolbar-group">
-          <EditorTool
-            label={t('figure')}
-            glyph="▧"
-            command="figure"
-            disabled={disabled}
-            onCommand={onEditorCommand}
-          />
-          <EditorTool
-            label={t('table')}
-            glyph="▦"
-            command="table"
-            disabled={disabled}
-            onCommand={onEditorCommand}
-          />
-        </div>
-        <span className="latex-toolbar-separator" aria-hidden="true" />
-        <div className="latex-toolbar-group">
-          <button
-            type="button"
-            className={`latex-toolbar-button${compiling ? ' busy' : ''}`}
-            title={compiling ? t('cancel') : t('compile')}
-            aria-label={compiling ? t('cancel') : t('compile')}
-            disabled={compileDisabled}
-            onClick={compiling ? onCancelCompile : onCompile}
-          >
-            <span className="latex-toolbar-icon-row">
-              <ToolbarIcon name="compile" />
-            </span>
-            <span>{compiling ? t('cancel') : t('compile')}</span>
-          </button>
-          {compilePanel && (
+
+      <div
+        id="latex-ribbon-band"
+        className="latex-toolbar-body"
+        role="tabpanel"
+        aria-label={tabs.find((tab) => tab.id === activeTab)?.label}
+      >
+        {activeTab === 'home' && (
+          <>
+            <div className="latex-toolbar-group">
+              <button
+                type="button"
+                className="latex-toolbar-button ai-entry"
+                title={aiOpen ? t('hideAi') : t('showAi')}
+                aria-pressed={aiOpen}
+                onClick={onToggleAi}
+              >
+                <span className="latex-toolbar-icon-row">
+                  <ToolbarIcon name="ai" />
+                </span>
+                <span>WisWork AI</span>
+              </button>
+            </div>
+            <Separator />
+            <div className="latex-toolbar-group">
+              {editorTool(t('bold'), 'B', 'bold')}
+              {editorTool(t('italic'), 'I', 'italic')}
+              {editorTool(t('underline'), 'U', 'underline')}
+            </div>
+            <Separator />
+            <div className="latex-toolbar-group">
+              {editorTool(t('section'), '§', 'section')}
+              {editorTool(t('subsection'), '§§', 'subsection')}
+              {editorTool(t('bulletedList'), '•', 'itemize')}
+              {editorTool(t('numberedList'), '1.', 'enumerate')}
+            </div>
+          </>
+        )}
+
+        {activeTab === 'insert' && (
+          <>
+            <div className="latex-toolbar-group">
+              {editorTool(t('inlineMath'), '$x$', 'inlineMath')}
+              {editorTool(t('equation'), '∑', 'equation')}
+            </div>
+            <Separator />
+            <div className="latex-toolbar-group">
+              {editorTool(t('figure'), '▧', 'figure')}
+              {editorTool(t('table'), '▦', 'table')}
+            </div>
+            <Separator />
+            <div className="latex-toolbar-group">
+              {editorTool(t('citation'), '[@]', 'cite')}
+              {editorTool(t('reference'), '↗', 'ref')}
+            </div>
+          </>
+        )}
+
+        {activeTab === 'compile' && (
+          <>
+            <div className="latex-toolbar-group">
+              <button
+                type="button"
+                className={`latex-toolbar-button${compiling ? ' busy' : ''}`}
+                title={compiling ? t('cancel') : t('compile')}
+                aria-label={compiling ? t('cancel') : t('compile')}
+                disabled={compileDisabled}
+                onClick={compiling ? onCancelCompile : onCompile}
+              >
+                <span className="latex-toolbar-icon-row">
+                  <ToolbarIcon name="compile" />
+                </span>
+                <span>{compiling ? t('cancel') : t('compile')}</span>
+              </button>
+              {compilePanel && (
+                <button
+                  type="button"
+                  className="latex-toolbar-button"
+                  title={t('problems')}
+                  aria-label={`${t('problems')} (${diagnosticCount})`}
+                  aria-expanded={compileDetailsOpen}
+                  aria-controls="latex-compile-results"
+                  onClick={() => setCompileDetailsOpen((open) => !open)}
+                >
+                  <span className="latex-toolbar-icon-row latex-toolbar-glyph" aria-hidden="true">
+                    !
+                  </span>
+                  <span>
+                    {t('problems')} ({diagnosticCount})
+                  </span>
+                </button>
+              )}
+            </div>
+            <Separator />
+            <div className="latex-toolbar-info-group">
+              <span>{t('mainFile')}</span>
+              <strong title={mainFile ?? undefined}>{mainFile ?? t('projectUnavailable')}</strong>
+            </div>
+          </>
+        )}
+
+        {activeTab === 'pdf' && (
+          <div className="latex-toolbar-group">
             <button
               type="button"
               className="latex-toolbar-button"
-              title={t('problems')}
-              aria-label={`${t('problems')} (${diagnosticCount})`}
-              aria-expanded={compileDetailsOpen}
-              aria-controls="latex-compile-results"
-              onClick={() => setCompileDetailsOpen((open) => !open)}
+              title={previewOpen ? t('hidePreview') : t('showPreview')}
+              aria-pressed={previewOpen}
+              onClick={onTogglePreview}
             >
-              <span className="latex-toolbar-icon-row latex-toolbar-glyph" aria-hidden="true">
-                !
+              <span className="latex-toolbar-icon-row">
+                <ToolbarIcon name="preview" />
               </span>
-              <span>
-                {t('problems')} ({diagnosticCount})
-              </span>
+              <span>{t('pdfPreview')}</span>
             </button>
-          )}
-        </div>
-        <span className="latex-toolbar-separator" aria-hidden="true" />
-        <div className="latex-toolbar-group">
-          <button
-            type="button"
-            className="latex-toolbar-button"
-            title={filesOpen ? t('hideFiles') : t('showFiles')}
-            aria-pressed={filesOpen}
-            onClick={onToggleFiles}
-          >
-            <span className="latex-toolbar-icon-row">
-              <ToolbarIcon name="files" />
-            </span>
-            <span>{t('files')}</span>
-          </button>
-          <button
-            type="button"
-            className="latex-toolbar-button"
-            title={previewOpen ? t('hidePreview') : t('showPreview')}
-            aria-pressed={previewOpen}
-            onClick={onTogglePreview}
-          >
-            <span className="latex-toolbar-icon-row">
-              <ToolbarIcon name="preview" />
-            </span>
-            <span>PDF</span>
-          </button>
-          <button
-            type="button"
-            className="latex-toolbar-button ai-entry"
-            title={aiOpen ? t('hideAi') : t('showAi')}
-            aria-pressed={aiOpen}
-            onClick={onToggleAi}
-          >
-            <span className="latex-toolbar-icon-row">
-              <ToolbarIcon name="ai" />
-            </span>
-            <span>WisWork AI</span>
-          </button>
-        </div>
+            <button
+              type="button"
+              className="latex-toolbar-button"
+              title={pdfStale ? t('exportPdfStale') : t('exportPdf')}
+              disabled={!pdfAvailable || exportingPdf}
+              onClick={onExportPdf}
+            >
+              <span className="latex-toolbar-icon-row">
+                <ToolbarIcon name="export" />
+              </span>
+              <span>{exportingPdf ? t('exportingPdf') : t('exportPdf')}</span>
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'view' && (
+          <div className="latex-toolbar-group">
+            <button
+              type="button"
+              className="latex-toolbar-button"
+              title={filesOpen ? t('hideFiles') : t('showFiles')}
+              aria-pressed={filesOpen}
+              onClick={onToggleFiles}
+            >
+              <span className="latex-toolbar-icon-row">
+                <ToolbarIcon name="files" />
+              </span>
+              <span>{t('files')}</span>
+            </button>
+            <button
+              type="button"
+              className="latex-toolbar-button"
+              title={previewOpen ? t('hidePreview') : t('showPreview')}
+              aria-pressed={previewOpen}
+              onClick={onTogglePreview}
+            >
+              <span className="latex-toolbar-icon-row">
+                <ToolbarIcon name="preview" />
+              </span>
+              <span>{t('pdfPreview')}</span>
+            </button>
+            <button
+              type="button"
+              className="latex-toolbar-button ai-entry"
+              title={aiOpen ? t('hideAi') : t('showAi')}
+              aria-pressed={aiOpen}
+              onClick={onToggleAi}
+            >
+              <span className="latex-toolbar-icon-row">
+                <ToolbarIcon name="ai" />
+              </span>
+              <span>{t('aiPanel')}</span>
+            </button>
+          </div>
+        )}
       </div>
+
       {compileDetailsOpen && compilePanel && (
         <div
           id="latex-compile-results"

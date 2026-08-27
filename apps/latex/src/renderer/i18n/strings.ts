@@ -45,6 +45,16 @@ const en = {
   reference: 'Reference',
   problems: 'Problems',
   compileResults: 'Compile results',
+  home: 'Home',
+  insert: 'Insert',
+  view: 'View',
+  toolbarTabs: 'LaTeX toolbar tabs',
+  mainFile: 'Main file',
+  pdfPreview: 'PDF preview',
+  exportPdf: 'Export PDF',
+  exportingPdf: 'Exporting…',
+  exportPdfStale: 'Source has uncompiled changes; exports the last successful PDF',
+  aiPanel: 'AI panel',
 } as const
 
 export type LatexStringKey = keyof typeof en
@@ -97,6 +107,16 @@ const zhCN: LatexStrings = {
   reference: '交叉引用',
   problems: '问题',
   compileResults: '编译结果',
+  home: '开始',
+  insert: '插入',
+  view: '视图',
+  toolbarTabs: 'LaTeX 工具栏导航',
+  mainFile: '主文件',
+  pdfPreview: 'PDF 预览',
+  exportPdf: '导出 PDF',
+  exportingPdf: '正在导出…',
+  exportPdfStale: '源码有尚未编译的更改，将导出上次成功的 PDF',
+  aiPanel: 'AI 面板',
 }
 
 export const SUPPORTED_LATEX_LOCALES = [
