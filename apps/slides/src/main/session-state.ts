@@ -41,6 +41,8 @@ export interface Session {
   mutationGeneration?: number
   /** Non-zero while a canonical presentation transaction owns the session. */
   presentationTransactionDepth?: number
+  /** Non-zero while an ordinary mutating IPC owns the session. */
+  presentationMutationDepth?: number
   /** Non-zero while open/save/autosave owns the session persistence boundary. */
   presentationPersistenceDepth?: number
   /** Nested history transaction used to collapse an AI tool/run into one undo step. */
@@ -66,22 +68,63 @@ export function sessionHasActivePresentationTransaction(session: Session | undef
   return (session?.presentationTransactionDepth ?? 0) > 0
 }
 
+export function sessionHasActivePresentationPersistence(session: Session | undefined): boolean {
+  return (session?.presentationPersistenceDepth ?? 0) > 0
+}
+
+export function sessionHasActivePresentationMutation(session: Session | undefined): boolean {
+  return (session?.presentationMutationDepth ?? 0) > 0
+}
+
+export function sessionBlocksPresentationClose(session: Session | undefined): boolean {
+  return (
+    sessionHasActivePresentationTransaction(session) ||
+    sessionHasActivePresentationPersistence(session) ||
+    sessionHasActivePresentationMutation(session)
+  )
+}
+
+export class SlidesSessionBusyError extends Error {
+  readonly code = 'slides_session_busy'
+
+  constructor() {
+    super('slides_session_busy')
+    this.name = 'SlidesSessionBusyError'
+  }
+}
+
+export function assertSessionMutationAvailable(session: Session): void {
+  if (
+    sessionHasActivePresentationTransaction(session) ||
+    sessionHasActivePresentationPersistence(session)
+  ) {
+    throw new SlidesSessionBusyError()
+  }
+}
+
 export function acquirePresentationTransactionLease(session: Session): (() => void) | null {
-  if ((session.presentationPersistenceDepth ?? 0) > 0) return null
-  session.presentationTransactionDepth = (session.presentationTransactionDepth ?? 0) + 1
+  if (
+    sessionHasActivePresentationTransaction(session) ||
+    sessionHasActivePresentationPersistence(session) ||
+    sessionHasActivePresentationMutation(session)
+  )
+    return null
+  session.presentationTransactionDepth = 1
   let active = true
   return () => {
     if (!active) return
     active = false
-    session.presentationTransactionDepth = Math.max(
-      0,
-      (session.presentationTransactionDepth ?? 1) - 1,
-    )
+    session.presentationTransactionDepth = 0
   }
 }
 
 export function acquirePresentationPersistenceLease(session: Session): (() => void) | null {
-  if (sessionHasActivePresentationTransaction(session)) return null
+  if (
+    sessionHasActivePresentationTransaction(session) ||
+    sessionHasActivePresentationPersistence(session) ||
+    sessionHasActivePresentationMutation(session)
+  )
+    return null
   session.presentationPersistenceDepth = (session.presentationPersistenceDepth ?? 0) + 1
   let active = true
   return () => {
@@ -91,6 +134,35 @@ export function acquirePresentationPersistenceLease(session: Session): (() => vo
       0,
       (session.presentationPersistenceDepth ?? 1) - 1,
     )
+  }
+}
+
+export function acquirePresentationMutationLease(session: Session): (() => void) | null {
+  if (
+    sessionHasActivePresentationTransaction(session) ||
+    sessionHasActivePresentationPersistence(session) ||
+    sessionHasActivePresentationMutation(session)
+  )
+    return null
+  session.presentationMutationDepth = 1
+  let active = true
+  return () => {
+    if (!active) return
+    active = false
+    session.presentationMutationDepth = 0
+  }
+}
+
+export async function withPresentationMutationLease<T>(
+  session: Session,
+  work: () => T | Promise<T>,
+): Promise<T> {
+  const release = acquirePresentationMutationLease(session)
+  if (!release) throw new SlidesSessionBusyError()
+  try {
+    return await work()
+  } finally {
+    release()
   }
 }
 
@@ -151,6 +223,7 @@ export function scheduleHistoryNotify(session: Session): void {
 
 /** Call before an edit operation: push onto the undo stack and clear the redo stack. */
 export function pushHistory(session: Session): void {
+  assertSessionMutationAvailable(session)
   session.mutationGeneration = (session.mutationGeneration ?? 0) + 1
   session.undoStack.push(takeSnapshot(session))
   trimHistory(session.undoStack)
@@ -168,6 +241,7 @@ export function commitHistorySnapshot(session: Session, before: HistorySnapshot)
 
 /** Begin a nestable transaction. Individual edit handlers keep their normal rollback behavior. */
 export function beginHistoryBatch(session: Session): void {
+  assertSessionMutationAvailable(session)
   if (session.historyBatch) {
     session.historyBatch.depth += 1
     return
@@ -186,6 +260,7 @@ export function beginHistoryBatch(session: Session): void {
  * so the caller can register it as an AI-panel rollback point.
  */
 export function endHistoryBatch(session: Session): HistorySnapshot | null {
+  assertSessionMutationAvailable(session)
   const batch = session.historyBatch
   if (!batch) return null
   batch.depth -= 1
@@ -236,6 +311,7 @@ export function restoreAiSnapshot(session: Session, id: number): boolean {
 }
 
 export function restoreSnapshot(session: Session, snap: HistorySnapshot): void {
+  assertSessionMutationAvailable(session)
   session.mutationGeneration = (session.mutationGeneration ?? 0) + 1
   // Clone: the live deck mutates elements in place, so handing a snapshot's own
   // arrays over would let later edits rewrite history still referenced by the
@@ -246,6 +322,26 @@ export function restoreSnapshot(session: Session, snap: HistorySnapshot): void {
   const entries = session.opened.archive.entries
   entries.clear()
   for (const [k, v] of fresh.entries) entries.set(k, v)
+}
+
+export function undoSession(session: Session): boolean {
+  assertSessionMutationAvailable(session)
+  settleStaleHistoryBatch(session)
+  if (session.undoStack.length === 0) return false
+  session.redoStack.push(takeSnapshot(session))
+  restoreSnapshot(session, session.undoStack.pop()!)
+  scheduleHistoryNotify(session)
+  return true
+}
+
+export function redoSession(session: Session): boolean {
+  assertSessionMutationAvailable(session)
+  settleStaleHistoryBatch(session)
+  if (session.redoStack.length === 0) return false
+  session.undoStack.push(takeSnapshot(session))
+  restoreSnapshot(session, session.redoStack.pop()!)
+  scheduleHistoryNotify(session)
+  return true
 }
 
 /**

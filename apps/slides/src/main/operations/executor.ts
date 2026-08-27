@@ -106,90 +106,104 @@ export class PresentationTransactionExecutor<Snapshot> {
       return unchangedReceipt(transaction, 'write_not_applied')
     }
 
-    if (signal?.aborted)
-      return this.cache(transaction, digest, unchangedReceipt(transaction, 'write_not_applied'))
-    const initialRevision = await this.host.readRevision()
-    if (initialRevision !== transaction.expectedDeckRevision) {
-      return this.cache(transaction, digest, {
-        status: 'conflict',
-        transactionId: transaction.transactionId,
-        code: 'target_stale',
-      })
-    }
-    const snapshot = await this.host.captureSnapshot()
-    if (signal?.aborted)
-      return this.cache(transaction, digest, unchangedReceipt(transaction, 'write_not_applied'))
-
-    const allocated = new Map<string, string>()
-    const plan = await this.host.plan(snapshot, transaction.operations, (clientId) => {
-      const existing = allocated.get(clientId)
-      if (existing) return existing
-      const created = this.host.allocateElementId()
-      allocated.set(clientId, created)
-      return created
-    })
-    if (plan.status === 'conflict')
-      return this.cache(transaction, digest, conflictReceipt(transaction, plan))
-    validatePlannedOperations(plan.operations)
-    if (plan.noOp)
-      return this.cache(transaction, digest, unchangedReceipt(transaction, 'operation_noop'))
-    if (signal?.aborted)
-      return this.cache(transaction, digest, unchangedReceipt(transaction, 'write_not_applied'))
-    // Planning may await fingerprints. Refuse to enter the write phase if any
-    // ordinary editor mutation raced with the authoritative snapshot.
-    if ((await this.host.readRevision()) !== initialRevision) {
-      return this.cache(transaction, digest, {
-        status: 'conflict',
-        transactionId: transaction.transactionId,
-        code: 'target_stale',
-      })
-    }
-
-    let appliedCount = 0
-    let lastRevision = initialRevision
+    let writeStarted = false
     try {
-      for (const planned of plan.operations) {
-        if (signal?.aborted) {
-          return await this.recover(transaction, digest, snapshot, plan.operations, appliedCount)
-        }
-        const result = await this.host.apply(planned, signal)
-        appliedCount += 1
-        lastRevision = result.revision
-        // Cancellation after the final apply is a completed-write verification case.
-        if (signal?.aborted && appliedCount < plan.operations.length) {
-          return await this.recover(transaction, digest, snapshot, plan.operations, appliedCount)
-        }
-      }
-    } catch {
-      return await this.recover(transaction, digest, snapshot, plan.operations, appliedCount)
-    }
-
-    for (let attempt = 0; attempt < this.verifyAttempts; attempt += 1) {
-      const verified = await this.host.verify(plan.operations)
-      if (verified.status === 'matched') {
-        if (!(await this.host.publishHistory(snapshot))) {
-          return this.cache(transaction, digest, uncertainReceipt(transaction))
-        }
+      if (signal?.aborted)
+        return this.cache(transaction, digest, unchangedReceipt(transaction, 'write_not_applied'))
+      const initialRevision = await this.host.readRevision()
+      if (initialRevision !== transaction.expectedDeckRevision) {
         return this.cache(transaction, digest, {
-          status: 'applied',
+          status: 'conflict',
           transactionId: transaction.transactionId,
-          resultingDeckRevision: verified.revision,
-          operationCount: transaction.operations.length,
-          ...(allocated.size ? { createdIds: [...allocated.values()] } : {}),
+          code: 'target_stale',
         })
       }
-      if (verified.status === 'mismatch') break
-      if (attempt + 1 < this.verifyAttempts) await delay(this.verifyDelayMs)
-    }
+      const snapshot = await this.host.captureSnapshot()
+      if (signal?.aborted)
+        return this.cache(transaction, digest, unchangedReceipt(transaction, 'write_not_applied'))
 
-    const current = await this.host.readRevision()
-    if (current === initialRevision) {
-      return this.cache(transaction, digest, unchangedReceipt(transaction, 'write_not_applied'))
+      const allocated = new Map<string, string>()
+      const plan = await this.host.plan(snapshot, transaction.operations, (clientId) => {
+        const existing = allocated.get(clientId)
+        if (existing) return existing
+        const created = this.host.allocateElementId()
+        allocated.set(clientId, created)
+        return created
+      })
+      if (plan.status === 'conflict')
+        return this.cache(transaction, digest, conflictReceipt(transaction, plan))
+      validatePlannedOperations(plan.operations)
+      if (plan.noOp)
+        return this.cache(transaction, digest, unchangedReceipt(transaction, 'operation_noop'))
+      if (signal?.aborted)
+        return this.cache(transaction, digest, unchangedReceipt(transaction, 'write_not_applied'))
+      // Planning may await fingerprints. Refuse to enter the write phase if any
+      // ordinary editor mutation raced with the authoritative snapshot.
+      if ((await this.host.readRevision()) !== initialRevision) {
+        return this.cache(transaction, digest, {
+          status: 'conflict',
+          transactionId: transaction.transactionId,
+          code: 'target_stale',
+        })
+      }
+
+      writeStarted = true
+      let appliedCount = 0
+      let lastRevision = initialRevision
+      try {
+        for (const planned of plan.operations) {
+          if (signal?.aborted) {
+            return await this.recover(transaction, digest, snapshot, plan.operations, appliedCount)
+          }
+          const result = await this.host.apply(planned, signal)
+          appliedCount += 1
+          lastRevision = result.revision
+          // Cancellation after the final apply is a completed-write verification case.
+          if (signal?.aborted && appliedCount < plan.operations.length) {
+            return await this.recover(transaction, digest, snapshot, plan.operations, appliedCount)
+          }
+        }
+      } catch {
+        return await this.recover(transaction, digest, snapshot, plan.operations, appliedCount)
+      }
+
+      for (let attempt = 0; attempt < this.verifyAttempts; attempt += 1) {
+        const verified = await this.host.verify(plan.operations)
+        if (verified.status === 'matched') {
+          if (!(await this.host.publishHistory(snapshot))) {
+            return this.cache(transaction, digest, uncertainReceipt(transaction))
+          }
+          return this.cache(transaction, digest, {
+            status: 'applied',
+            transactionId: transaction.transactionId,
+            resultingDeckRevision: verified.revision,
+            operationCount: transaction.operations.length,
+            ...(allocated.size ? { createdIds: [...allocated.values()] } : {}),
+          })
+        }
+        if (verified.status === 'mismatch') break
+        if (attempt + 1 < this.verifyAttempts) await delay(this.verifyDelayMs)
+      }
+
+      const current = await this.host.readRevision()
+      if (current === initialRevision) {
+        return this.cache(transaction, digest, unchangedReceipt(transaction, 'write_not_applied'))
+      }
+      if (current !== lastRevision) {
+        return this.cache(transaction, digest, uncertainReceipt(transaction))
+      }
+      return await this.recover(transaction, digest, snapshot, plan.operations, appliedCount)
+    } catch {
+      // Before entering the write phase the deck is provably untouched. After
+      // that boundary, never leak host details or claim a clean failure.
+      return this.cache(
+        transaction,
+        digest,
+        writeStarted
+          ? uncertainReceipt(transaction)
+          : unchangedReceipt(transaction, 'write_not_applied'),
+      )
     }
-    if (current !== lastRevision) {
-      return this.cache(transaction, digest, uncertainReceipt(transaction))
-    }
-    return await this.recover(transaction, digest, snapshot, plan.operations, appliedCount)
   }
 
   private async recover(

@@ -17,11 +17,13 @@ import { parsePresentationTransaction } from '@wiswork/presentation-ops'
 import { EMU_PER_PX_96 } from '@wiswork/pptx-render'
 import { tm } from './i18n-main'
 import {
+  acquirePresentationMutationLease,
   acquirePresentationTransactionLease,
   pushHistory,
   rebuildSlide,
   scheduleHistoryNotify,
   sessions,
+  SlidesSessionBusyError,
 } from './session-state'
 import { registerUnsupportedMediaIpc } from './unsupported-ipc'
 import { DesktopPresentationHost } from './operations/desktop-host'
@@ -251,29 +253,39 @@ export function registerSlidesOnlyAiIpc(): void {
         const buf = Buffer.from(await resp.arrayBuffer())
         const ct = resp.headers.get('content-type') ?? ''
         const ext = ct.includes('png') ? 'png' : ct.includes('gif') ? 'gif' : 'jpg'
-        const baseWidthPx = session.opened.deck.size.cx / EMU_PER_PX_96
+        const liveSession = sessions.get(e.sender.id)
+        const liveSlide = liveSession?.opened.deck.slides[op.slideIndex]
+        if (!liveSession || !liveSlide) return null
+        const baseWidthPx = liveSession.opened.deck.size.cx / EMU_PER_PX_96
         const scale = op.fitWidthPx / baseWidthPx
         const toEmu = (px: number) => Math.round((px / scale) * EMU_PER_PX_96)
-        pushHistory(session)
-        const el = addPicture(session.opened, slide, {
-          bytes: new Uint8Array(buf),
-          ext,
-          offset: {
-            x: toEmu(op.xPx),
-            y: toEmu(op.yPx),
-            cx: Math.max(1, toEmu(op.wPx)),
-            cy: Math.max(1, toEmu(op.hPx)),
-          },
-        })
-        if (!el) {
-          session.undoStack.pop()
-          scheduleHistoryNotify(session)
-          return null
+        const release = acquirePresentationMutationLease(liveSession)
+        if (!release) throw new SlidesSessionBusyError()
+        try {
+          pushHistory(liveSession)
+          const el = addPicture(liveSession.opened, liveSlide, {
+            bytes: new Uint8Array(buf),
+            ext,
+            offset: {
+              x: toEmu(op.xPx),
+              y: toEmu(op.yPx),
+              cx: Math.max(1, toEmu(op.wPx)),
+              cy: Math.max(1, toEmu(op.hPx)),
+            },
+          })
+          if (!el) {
+            liveSession.undoStack.pop()
+            scheduleHistoryNotify(liveSession)
+            return null
+          }
+          liveSession.fitWidthPx = op.fitWidthPx
+          const rebuilt = rebuildSlide(liveSession, op.slideIndex)
+          return rebuilt ? { slide: rebuilt, sourceId: el.id } : null
+        } finally {
+          release()
         }
-        session.fitWidthPx = op.fitWidthPx
-        const rebuilt = rebuildSlide(session, op.slideIndex)
-        return rebuilt ? { slide: rebuilt, sourceId: el.id } : null
-      } catch {
+      } catch (error) {
+        if (error instanceof SlidesSessionBusyError) throw error
         return null
       }
     },
@@ -304,22 +316,32 @@ export function registerSlidesOnlyAiIpc(): void {
         const buf = Buffer.from(await resp.arrayBuffer())
         const ct = resp.headers.get('content-type') ?? ''
         const ext = ct.includes('png') ? 'png' : ct.includes('gif') ? 'gif' : 'jpg'
-        pushHistory(session)
-        const ok = replacePictureBytes(
-          session.opened,
-          slide,
-          String(op.sourceId),
-          new Uint8Array(buf),
-          ext,
-          op.keepSrcRect ? { keepSrcRect: true } : undefined,
-        )
-        if (!ok) {
-          session.undoStack.pop()
-          scheduleHistoryNotify(session)
-          return null
+        const liveSession = sessions.get(e.sender.id)
+        const liveSlide = liveSession?.opened.deck.slides[op.slideIndex]
+        if (!liveSession || !liveSlide) return null
+        const release = acquirePresentationMutationLease(liveSession)
+        if (!release) throw new SlidesSessionBusyError()
+        try {
+          pushHistory(liveSession)
+          const ok = replacePictureBytes(
+            liveSession.opened,
+            liveSlide,
+            String(op.sourceId),
+            new Uint8Array(buf),
+            ext,
+            op.keepSrcRect ? { keepSrcRect: true } : undefined,
+          )
+          if (!ok) {
+            liveSession.undoStack.pop()
+            scheduleHistoryNotify(liveSession)
+            return null
+          }
+          return rebuildSlide(liveSession, op.slideIndex)
+        } finally {
+          release()
         }
-        return rebuildSlide(session, op.slideIndex)
-      } catch {
+      } catch (error) {
+        if (error instanceof SlidesSessionBusyError) throw error
         return null
       }
     },

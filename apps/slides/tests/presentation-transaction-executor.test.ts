@@ -216,6 +216,82 @@ describe('PresentationTransactionExecutor', () => {
     expect(fixture.counts().historyCount).toBe(0)
   })
 
+  it.each(['verify', 'post_write_read', 'recover_read', 'attribution', 'history_publish'] as const)(
+    'bounds %s exceptions after the write phase as uncertain',
+    async (phase) => {
+      const fixture = fakeHost(
+        phase === 'recover_read' || phase === 'attribution' ? { throwAt: 1 } : {},
+      )
+      if (phase === 'verify') fixture.host.verify = async () => Promise.reject(new Error('secret'))
+      if (phase === 'post_write_read') {
+        const originalRead = fixture.host.readRevision
+        let reads = 0
+        fixture.host.verify = async () => ({ status: 'mismatch' })
+        fixture.host.readRevision = async () => {
+          reads += 1
+          if (reads === 3) throw new Error('secret')
+          return originalRead()
+        }
+      }
+      if (phase === 'recover_read') {
+        const originalRead = fixture.host.readRevision
+        let reads = 0
+        fixture.host.readRevision = async () => {
+          reads += 1
+          if (reads === 3) throw new Error('secret')
+          return originalRead()
+        }
+      }
+      if (phase === 'attribution') {
+        fixture.host.isAttributableRevision = async () => Promise.reject(new Error('secret'))
+      }
+      if (phase === 'history_publish') {
+        fixture.host.publishHistory = async () => Promise.reject(new Error('secret'))
+      }
+      const receipt = await new PresentationTransactionExecutor(fixture.host).execute(
+        transaction([operation('a', 'shape-1', 'one')]),
+      )
+      expect(receipt).toEqual({
+        status: 'uncertain',
+        transactionId: 'tx-1',
+        code: 'write_state_uncertain',
+      })
+      expect(JSON.stringify(receipt)).not.toContain('secret')
+    },
+  )
+
+  it.each(['initial_read', 'snapshot', 'plan', 'prewrite_read'] as const)(
+    'bounds %s exceptions before the write phase as unchanged',
+    async (phase) => {
+      const fixture = fakeHost()
+      if (phase === 'initial_read')
+        fixture.host.readRevision = async () => Promise.reject(new Error('secret'))
+      if (phase === 'snapshot')
+        fixture.host.captureSnapshot = async () => Promise.reject(new Error('secret'))
+      if (phase === 'plan') fixture.host.plan = async () => Promise.reject(new Error('secret'))
+      if (phase === 'prewrite_read') {
+        const originalRead = fixture.host.readRevision
+        let reads = 0
+        fixture.host.readRevision = async () => {
+          reads += 1
+          if (reads === 2) throw new Error('secret')
+          return originalRead()
+        }
+      }
+      const receipt = await new PresentationTransactionExecutor(fixture.host).execute(
+        transaction([operation('a', 'shape-1', 'one')]),
+      )
+      expect(receipt).toEqual({
+        status: 'unchanged',
+        transactionId: 'tx-1',
+        code: 'write_not_applied',
+        operationCount: 1,
+      })
+      expect(fixture.counts()).toMatchObject({ applyCount: 0, historyCount: 0 })
+      expect(JSON.stringify(receipt)).not.toContain('secret')
+    },
+  )
+
   it('returns unchanged for a planned no-op', async () => {
     const fixture = fakeHost()
     fixture.host.plan = async () => ({ status: 'planned', operations: [], noOp: true })
