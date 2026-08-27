@@ -80,6 +80,14 @@ function contextChips(context: AgentContext): Array<{ key: AgentContextKey; labe
           },
         ]
       : []),
+    ...(normalized.compile
+      ? [
+          {
+            key: 'compile' as const,
+            label: `Compile context · ${normalized.compile.diagnostics.length} problems · log`,
+          },
+        ]
+      : []),
   ]
 }
 

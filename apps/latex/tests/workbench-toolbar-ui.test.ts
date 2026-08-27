@@ -32,6 +32,8 @@ describe('LaTeX workbench toolbar', () => {
     )
     expect(app).toContain('onSave={() =>')
     expect(app).toContain('onCompile={compileProject}')
+    expect(app).toContain('window.latexApi.getCompileDiagnostics({ projectId })')
+    expect(app).toContain("next.delete('compile')")
     expect(app).toContain('onToggleFiles={() => setFilesOpen((open) => !open)}')
     expect(app).toContain('onTogglePreview={() => setPreviewOpen((open) => !open)}')
     expect(app).toContain('onToggleAi={() => setAiOpen((open) => !open)}')
@@ -62,6 +64,10 @@ describe('LaTeX workbench toolbar', () => {
     expect(html.indexOf('aria-label="Save"')).toBeLessThan(html.indexOf('>Home<'))
     expect(html.indexOf('aria-label="Undo"')).toBeLessThan(html.indexOf('>Home<'))
     expect(html.indexOf('aria-label="Redo"')).toBeLessThan(html.indexOf('>Home<'))
+    expect(html).toContain('M3 4.5C3 3.67158')
+    expect(html).toContain('M5.91026 4L2.5 7.14791L5.91026 10.8205')
+    expect(html).toContain('M18.0897 4L21.5 7.14791L18.0897 10.8205')
+    expect(html).not.toContain('latex-toolbar-quick-glyph')
   })
 
   it('puts WisWork AI first on Home and separates tab-specific tools', () => {
@@ -86,6 +92,8 @@ describe('LaTeX workbench toolbar', () => {
     )
     expect(compile).toContain('aria-label="Compile"')
     expect(compile).toContain('>Problems (0)<')
+    expect(compile).toContain('data-compile-state="idle"')
+    expect(compile).toContain('m9 6 8 6-8 6V6Z')
 
     const pdf = renderToStaticMarkup(
       createElement(WorkbenchToolbar, {
@@ -126,5 +134,17 @@ describe('LaTeX workbench toolbar', () => {
     )
     expect(html).toContain('aria-label="Cancel"')
     expect(html).not.toMatch(/<button[^>]+aria-label="Compile"/)
+    expect(html).toContain('data-compile-state="running"')
+    expect(html).toContain('latex-compile-spinner')
+    expect(html).not.toContain('m9 6 8 6-8 6V6Z')
+  })
+
+  it('keeps ribbon tools equal height and animates the running compile indicator', () => {
+    const styles = read('../src/renderer/styles.css')
+    expect(styles).toMatch(
+      /\.latex-toolbar-group\s*>\s*\.latex-toolbar-button\s*{[^}]*height:\s*64px/s,
+    )
+    expect(styles).toMatch(/\.latex-compile-spinner\s*{[^}]*animation:/s)
+    expect(styles).toContain('@keyframes latex-compile-spin')
   })
 })

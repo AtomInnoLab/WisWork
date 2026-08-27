@@ -195,6 +195,13 @@ export interface CompileResultDto {
   log: string
 }
 
+export interface CompileDiagnosticsDto {
+  revision: number | null
+  diagnostics: readonly unknown[]
+  logSummary: string
+  logTruncated: boolean
+}
+
 export type LatexBundleStatusDto =
   | { state: 'missing' }
   | { state: 'downloading'; receivedBytes: number; totalBytes: number }
@@ -231,7 +238,7 @@ export interface LatexApi {
   listProjectFiles(request: SessionRequest): Promise<LatexIpcResult<unknown>>
   searchProjectText(request: AiProjectSearchRequest): Promise<LatexIpcResult<unknown>>
   readProjectText(request: AiProjectReadRequest): Promise<LatexIpcResult<unknown>>
-  getCompileDiagnostics(request: SessionRequest): Promise<LatexIpcResult<unknown>>
+  getCompileDiagnostics(request: SessionRequest): Promise<LatexIpcResult<CompileDiagnosticsDto>>
   compileProjectForAi(request: SessionRequest): Promise<LatexIpcResult<unknown>>
   resolveDirectoryChat(
     request: SessionRequest,

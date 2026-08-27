@@ -142,6 +142,8 @@ export class ProjectSession {
       sourceFingerprint?: string
     }
   >()
+  private latestCompileEvidence:
+    Pick<CompileResultDto, 'revision' | 'diagnostics' | 'log'> | undefined
   private disposed = false
   private confirmedEditRevision = 0
   private confirmedMutationInProgress = false
@@ -527,6 +529,7 @@ export class ProjectSession {
       synctexPath: restored.synctexPath,
       sourceFingerprint,
     })
+    this.latestCompileEvidence = value
   }
 
   latestCompile(): CompileResultDto | null {
@@ -648,12 +651,31 @@ export class ProjectSession {
           syncTex,
           sourceFingerprint,
         })
+        this.latestCompileEvidence = value
         while (this.compileResults.size > this.maxCompileResults) {
           const oldest = this.compileResults.keys().next().value as number | undefined
           if (oldest === undefined) break
           this.compileResults.delete(oldest)
         }
         return value
+      })
+      .catch((error: unknown) => {
+        if (
+          error instanceof TectonicRunError &&
+          error.code === 'TECTONIC_EXIT_NONZERO' &&
+          error.terminationConfirmed &&
+          error.exitCode !== null
+        ) {
+          this.latestCompileEvidence = {
+            revision,
+            diagnostics: normalizeProposalDiagnostics(
+              parseTectonicDiagnostics(error.log),
+              MAX_FORMAL_COMPILE_DIAGNOSTICS,
+            ),
+            log: error.log,
+          }
+        }
+        throw error
       })
       .finally(async () => {
         try {
@@ -832,10 +854,13 @@ export class ProjectSession {
   }
 
   getCompileDiagnosticsForAi() {
-    const latest = [...this.compileResults.values()].at(-1)
+    const latest = this.latestCompileEvidence
+    const log = latest?.log ?? ''
     return {
       revision: latest?.revision ?? null,
       diagnostics: (latest?.diagnostics ?? []).slice(0, 100),
+      logSummary: boundedUtf8(log, 16_000),
+      logTruncated: Buffer.byteLength(log, 'utf8') > 16_000,
     }
   }
 

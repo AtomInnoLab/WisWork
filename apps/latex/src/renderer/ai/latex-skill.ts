@@ -75,7 +75,7 @@ const TOOLS: AgentToolDef[] = [
   },
   {
     name: 'get_compile_diagnostics',
-    description: 'Read the latest bounded structured compile diagnostics.',
+    description: 'Read the latest bounded structured compile diagnostics and compiler log summary.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {

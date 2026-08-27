@@ -34,20 +34,21 @@ interface WorkbenchToolbarProps {
 function ToolbarIcon({
   name,
 }: {
-  name: 'save' | 'compile' | 'files' | 'preview' | 'ai' | 'export'
+  name: 'compile' | 'compile-running' | 'files' | 'preview' | 'ai' | 'export'
 }) {
-  if (name === 'save') {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M5 3.75h11.5L20.25 7.5v12.75H3.75V3.75H5Z" />
-        <path d="M7.5 3.75v5h8v-5M7 20.25v-7h10v7" />
-      </svg>
-    )
-  }
   if (name === 'compile') {
     return (
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="m9 6 8 6-8 6V6Z" />
+      </svg>
+    )
+  }
+  if (name === 'compile-running') {
+    return (
+      <svg className="latex-compile-spinner" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M19 12a7 7 0 1 1-2.05-4.95" />
+        <path d="m16.5 3.75.45 3.3 3.3-.45" />
+        <rect x="9.5" y="9.5" width="5" height="5" rx="0.7" />
       </svg>
     )
   }
@@ -77,6 +78,31 @@ function ToolbarIcon({
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M12 3.75 13.7 9l5.3 1.7-5.3 1.7L12 17.75l-1.7-5.35L5 10.7 10.3 9 12 3.75Z" />
       <path d="m18.25 15 .7 2.05L21 17.75l-2.05.7-.7 2.05-.7-2.05-2.05-.7 2.05-.7.7-2.05Z" />
+    </svg>
+  )
+}
+
+function QuickAccessIcon({ name }: { name: 'save' | 'undo' | 'redo' }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      {name === 'save' ? (
+        <>
+          <path d="M3 4.5C3 3.67158 3.67158 3 4.5 3H17.1407L21 6.60325V19.5C21 20.3285 20.3285 21 19.5 21H4.5C3.67158 21 3 20.3285 3 19.5V4.5Z" />
+          <path d="M12.0042 3L12 6.6923C12 6.86225 11.7761 7 11.5 7H7.5C7.22385 7 7 6.86225 7 6.6923V3H12.0042Z" />
+          <path d="M7 13H17" />
+          <path d="M7 17H12.0042" />
+        </>
+      ) : name === 'undo' ? (
+        <>
+          <path d="M5.91026 4L2.5 7.14791L5.91026 10.8205" />
+          <path d="M3.96154 7.41028H15.1636C18.5169 7.41028 21.3646 10.1484 21.4953 13.5C21.6334 17.0416 18.707 20.0769 15.1636 20.0769H6.88384" />
+        </>
+      ) : (
+        <>
+          <path d="M18.0897 4L21.5 7.14791L18.0897 10.8205" />
+          <path d="M20.0385 7.41028H8.83636C5.4831 7.41028 2.63537 10.1484 2.5047 13.5C2.36657 17.0416 5.29296 20.0769 8.83636 20.0769H17.1162" />
+        </>
+      )}
     </svg>
   )
 }
@@ -172,7 +198,7 @@ export function WorkbenchToolbar({
           disabled={disabled || !activePath || !dirty}
           onClick={onSave}
         >
-          <ToolbarIcon name="save" />
+          <QuickAccessIcon name="save" />
         </button>
         <button
           type="button"
@@ -182,9 +208,7 @@ export function WorkbenchToolbar({
           disabled={disabled}
           onClick={() => onEditorCommand('undo')}
         >
-          <span className="latex-toolbar-quick-glyph" aria-hidden="true">
-            ↶
-          </span>
+          <QuickAccessIcon name="undo" />
         </button>
         <button
           type="button"
@@ -194,9 +218,7 @@ export function WorkbenchToolbar({
           disabled={disabled}
           onClick={() => onEditorCommand('redo')}
         >
-          <span className="latex-toolbar-quick-glyph" aria-hidden="true">
-            ↷
-          </span>
+          <QuickAccessIcon name="redo" />
         </button>
         <span className="latex-toolbar-quick-separator" aria-hidden="true" />
         <nav className="latex-ribbon-tabs" role="tablist" aria-label={t('toolbarTabs')}>
@@ -288,13 +310,14 @@ export function WorkbenchToolbar({
               <button
                 type="button"
                 className={`latex-toolbar-button${compiling ? ' busy' : ''}`}
+                data-compile-state={compiling ? 'running' : 'idle'}
                 title={compiling ? t('cancel') : t('compile')}
                 aria-label={compiling ? t('cancel') : t('compile')}
                 disabled={compileDisabled}
                 onClick={compiling ? onCancelCompile : onCompile}
               >
                 <span className="latex-toolbar-icon-row">
-                  <ToolbarIcon name="compile" />
+                  <ToolbarIcon name={compiling ? 'compile-running' : 'compile'} />
                 </span>
                 <span>{compiling ? t('cancel') : t('compile')}</span>
               </button>
