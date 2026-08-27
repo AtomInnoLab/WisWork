@@ -260,6 +260,11 @@ interface AiPanelProps {
   onUndo?: () => void
   /** Callback to update the path after AI generation lands on disk (title bar sync) */
   onPathChange?: (path: string) => void
+  /** Persist and verify one slide's complete speaker-notes replacement. */
+  onSetSpeakerNotes?: (
+    slideIndex: number,
+    text: string,
+  ) => Promise<'applied' | 'unchanged' | 'uncertain'>
   /** Absolute path of the currently open file (for chat history persistence) */
   currentFilePath?: string | null
 }
@@ -338,6 +343,7 @@ export function AiPanel({
   onExpand,
   onCollapse,
   onPathChange,
+  onSetSpeakerNotes,
   currentFilePath,
 }: AiPanelProps) {
   const { t } = useI18n()
@@ -445,6 +451,8 @@ export function AiPanel({
   applySlideRef.current = applySlide
   const applyDeckRef = useRef(applyDeck)
   applyDeckRef.current = applyDeck
+  const onSetSpeakerNotesRef = useRef(onSetSpeakerNotes)
+  onSetSpeakerNotesRef.current = onSetSpeakerNotes
   const onPathChangeRef = useRef(onPathChange)
   onPathChangeRef.current = onPathChange
   const settingsRef = useRef(settings)
@@ -743,6 +751,8 @@ export function AiPanel({
       getSelectedIds: () => selectedRef.current,
       applySlide: (i, updated) => applySlideRef.current(i, updated),
       applyDeck: (all, goTo) => applyDeckRef.current(all, goTo),
+      setSpeakerNotes: (i, text) =>
+        onSetSpeakerNotesRef.current?.(i, text) ?? Promise.resolve('unchanged'),
       askClarification: (questions: ClarifyQuestion[]) => {
         return new Promise<{ answers: string; cancelled?: boolean }>((resolve) => {
           clarifyResolverRef.current = resolve

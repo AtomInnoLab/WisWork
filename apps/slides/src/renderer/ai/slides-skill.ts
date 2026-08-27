@@ -26,6 +26,8 @@ export interface DeckAccess {
   applySlide(slideIndex: number, updated: RenderSlide): void
   /** Replace the whole deck (after adding/removing slides) and jump to the goTo slide */
   applyDeck(slides: RenderSlide[], goTo?: number): void
+  /** Persist and verify a complete speaker-notes replacement for one slide. */
+  setSpeakerNotes?(slideIndex: number, text: string): Promise<'applied' | 'unchanged' | 'uncertain'>
   /** Survey: shows a card with options and waits for the user's choices, returning an answer summary. */
   askClarification?(questions: ClarifyQuestion[]): Promise<{ answers: string; cancelled?: boolean }>
   /**
@@ -117,6 +119,7 @@ const AGENT_SYSTEM_PROMPT = `You are the AI assistant inside WisWork Slides. Hel
 - Start with get_deck_context, and use read_slide when exact text, colors, or element details matter.
 - For a new presentation, use ask_clarification when requirements are ambiguous, then plan_deck. Build every page with add_slide and the local add_text_box, add_shape, add_chart, add_table, add_smartart, and insert_web_image tools. Empty decks are valid and may be built directly with these tools.
 - Use execute_slide_script for coordinated edits to existing elements. Use the individual set_element_* tools for focused changes.
+- Use set_speaker_notes to add, replace, or clear presenter notes without changing canvas content.
 - Use web_search for current facts and image_search for real imagery. Never invent precise figures; declare figure provenance through dataSource.
 - Keep layouts readable, consistent, within canvas bounds, and free of accidental overlaps. Verify the deck outline after substantial edits.
 - Read all text attachments before using their content. Prefer user-provided material over generic filler.
@@ -801,6 +804,22 @@ const ALL_TOOLS: AgentToolDef[] = [
         color: { type: 'string', description: '#RRGGBB' },
       },
       required: ['slideIndex', 'color'],
+    },
+  },
+  {
+    name: 'set_speaker_notes',
+    description:
+      'Replace the complete speaker notes for one slide. Newlines separate paragraphs; an empty string clears the notes. This changes presenter notes only, not canvas content.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slideIndex: { type: 'integer', description: 'Page number (0-based)' },
+        text: {
+          type: 'string',
+          description: 'Complete speaker notes text, at most 12000 characters',
+        },
+      },
+      required: ['slideIndex', 'text'],
     },
   },
   {
@@ -2263,6 +2282,38 @@ async function executeTool(
             : `Set the background of page ${idx + 1} to ${color}.`,
         mutated: true,
         summary: idx === -1 ? t('aiSumBackgroundAll') : t('aiSumBackground', { n: idx + 1 }),
+      }
+    }
+
+    case 'set_speaker_notes': {
+      const idx = call.input.slideIndex
+      const text = call.input.text
+      if (typeof idx !== 'number' || !Number.isInteger(idx) || !slides[idx])
+        return fail(t('aiFailEditText'), `slideIndex out of range (0-${slides.length - 1})`)
+      if (typeof text !== 'string')
+        return fail(t('aiFailEditText'), 'speaker notes text must be a string')
+      if (text.length > 12_000)
+        return fail(t('aiFailEditText'), 'speaker notes exceed the 12000 character limit')
+      if (!access.setSpeakerNotes)
+        return fail(t('aiFailEditText'), 'speaker notes are unavailable in this host')
+
+      const status = await access.setSpeakerNotes(idx, text)
+      if (status === 'unchanged') return fail(t('aiFailEditText'), 'Writing speaker notes failed')
+      if (status === 'uncertain') {
+        return {
+          output:
+            'The speaker notes write could not be verified. Inspect the slide notes before retrying.',
+          isError: true,
+          mutated: true,
+          summary: t('aiFailEditText'),
+        }
+      }
+      return {
+        output: text
+          ? `Wrote speaker notes for page ${idx + 1} (${text.length} characters).`
+          : `Cleared speaker notes for page ${idx + 1}.`,
+        mutated: true,
+        summary: t('aiSumEditText', { n: idx + 1 }),
       }
     }
 

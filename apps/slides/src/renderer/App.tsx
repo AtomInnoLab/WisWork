@@ -61,6 +61,7 @@ import { ToastHost } from './components/toast'
 import { showToast } from './components/toast-bus'
 import { t, useI18n } from './i18n/locale'
 import { AiPanel } from './ai/AiPanel'
+import { setAndVerifySpeakerNotes } from './ai/speaker-notes'
 import { ChartDataDialog } from './components/ChartDataDialog'
 import type { BrushFormat } from './format-brush'
 import { isTextUndoTarget, shouldRouteUndoToDeck } from './undo-routing'
@@ -3238,6 +3239,17 @@ export function App() {
                 onPathChange={(p) => {
                   setPath(p)
                   setDirty(false)
+                }}
+                onSetSpeakerNotes={async (slideIndex, text) => {
+                  if (notesDraftRef.current?.index !== slideIndex) await flushNotes()
+                  const status = await setAndVerifySpeakerNotes(window.slidesApi, slideIndex, text)
+                  if (status !== 'applied') return status
+                  setDirty(true)
+                  if (slideIndex === current) {
+                    notesDraftRef.current = null
+                    setNotesText(text)
+                  }
+                  return 'applied'
                 }}
                 currentFilePath={path}
               />

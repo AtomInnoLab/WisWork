@@ -25,6 +25,8 @@ interface AuditEntry {
   preview: string
   /** Pixels by which the text content height exceeds the box height (only meaningful when >0) */
   overflowPx: number
+  /** Pixels by which the widest laid-out line exceeds the text box inner width */
+  overflowXPx: number
 }
 
 const PREVIEW_MAX = 18
@@ -46,6 +48,7 @@ function collectEntries(nodes: RenderNode[]): AuditEntry[] {
     let hasText = false
     let preview = ''
     let overflowPx = 0
+    let overflowXPx = 0
     if (n.type === 'shape' || n.type === 'text') {
       const sn = n as ShapeRenderNode
       preview = textPreview(sn)
@@ -53,13 +56,34 @@ function collectEntries(nodes: RenderNode[]): AuditEntry[] {
       if (sn.text && hasText) {
         const inner = h - sn.text.insets.t - sn.text.insets.b
         overflowPx = Math.round(sn.text.contentHeight - inner)
+        const innerWidth = w - sn.text.insets.l - sn.text.insets.r
+        const widestRight = sn.text.lines.reduce(
+          (widest, line) =>
+            Math.max(
+              widest,
+              line.runs.reduce((right, run) => Math.max(right, run.x + run.widthPx), -Infinity),
+            ),
+          -Infinity,
+        )
+        overflowXPx = Math.round(Number.isFinite(widestRight) ? widestRight - innerWidth : 0)
       }
     } else if (n.type === 'group') {
       // If any child in the group has text, treat it as text content for overlap detection
       hasText = groupHasText(n as GroupRenderNode)
       preview = '(group)'
     }
-    out.push({ id: n.sourceId, type: n.type, x, y, w, h, hasText, preview, overflowPx })
+    out.push({
+      id: n.sourceId,
+      type: n.type,
+      x,
+      y,
+      w,
+      h,
+      hasText,
+      preview,
+      overflowPx,
+      overflowXPx,
+    })
   }
   return out
 }
@@ -116,6 +140,14 @@ export function auditSlideLayout(slide: RenderSlide): string[] {
     if (e.y + e.h > H + EDGE_TOLERANCE_PX)
       parts.push(`${Math.round(e.y + e.h - H)}px past the bottom edge`)
     if (parts.length) issues.push(`Out of bounds: ${label(e)} ${parts.join(', ')}`)
+  }
+
+  for (const e of entries) {
+    if (e.overflowXPx > OVERFLOW_TOLERANCE_PX) {
+      issues.push(
+        `Text overflow (width): ${label(e)} content exceeds the box width by ${e.overflowXPx}px (widen the box, reduce the font size, or turn on wrapping)`,
+      )
+    }
   }
 
   // 2. Text overflow

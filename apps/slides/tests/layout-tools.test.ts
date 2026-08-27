@@ -190,12 +190,103 @@ describe('auditSlideLayout', () => {
     expect(issues.some((s) => s.includes('Text overflow'))).toBe(true)
   })
 
+  it('detects a laid-out line wider than the text box inner width', () => {
+    const slide = slideOf([textNode('t1', box(80, 60, 200, 100), 'x'.repeat(20))])
+    const issues = auditSlideLayout(slide)
+
+    expect(
+      issues.some((issue) => issue.includes('Text overflow (width)') && issue.includes('64px')),
+    ).toBe(true)
+  })
+
   it('decoration layers and large background blocks are excluded', () => {
     const bg = textNode('bg', box(0, 0, 1280, 720), 'Background watermark')
     const deco = { ...textNode('deco', box(100, 100, 400, 200), 'Decoration'), decoration: true }
     const t = textNode('t1', box(150, 150, 400, 200), 'Body')
     const issues = auditSlideLayout(slideOf([bg, deco, t]))
     expect(issues).toHaveLength(0)
+  })
+})
+
+describe('set_speaker_notes tool', () => {
+  const slide = slideOf([])
+
+  it('advertises and writes bounded speaker notes through DeckAccess', async () => {
+    const setSpeakerNotes = vi.fn(async () => 'applied' as const)
+    const skill = createSlidesSkill({
+      getSlides: () => [slide],
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => {},
+      applyDeck: () => {},
+      setSpeakerNotes,
+      fitWidthPx: 1280,
+    })
+
+    expect(skill.tools.some((tool) => tool.name === 'set_speaker_notes')).toBe(true)
+    const result = await skill.executeTool({
+      id: 'notes-1',
+      name: 'set_speaker_notes',
+      input: { slideIndex: 0, text: 'Opening\nKey message' },
+    })
+
+    expect(setSpeakerNotes).toHaveBeenCalledWith(0, 'Opening\nKey message')
+    expect(result.mutated).toBe(true)
+    expect(result.isError).not.toBe(true)
+  })
+
+  it('rejects out-of-range slides and oversized notes before host access', async () => {
+    const setSpeakerNotes = vi.fn(async () => 'applied' as const)
+    const skill = createSlidesSkill({
+      getSlides: () => [slide],
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => {},
+      applyDeck: () => {},
+      setSpeakerNotes,
+      fitWidthPx: 1280,
+    })
+
+    const missing = await skill.executeTool({
+      id: 'notes-2',
+      name: 'set_speaker_notes',
+      input: { slideIndex: 2, text: 'No target' },
+    })
+    const oversized = await skill.executeTool({
+      id: 'notes-3',
+      name: 'set_speaker_notes',
+      input: { slideIndex: 0, text: 'x'.repeat(12_001) },
+    })
+    const malformed = await skill.executeTool({
+      id: 'notes-3b',
+      name: 'set_speaker_notes',
+      input: { slideIndex: '0', text: null },
+    })
+
+    expect(missing).toMatchObject({ isError: true, mutated: false })
+    expect(oversized).toMatchObject({ isError: true, mutated: false })
+    expect(malformed).toMatchObject({ isError: true, mutated: false })
+    expect(setSpeakerNotes).not.toHaveBeenCalled()
+  })
+
+  it('reports a host verification failure without claiming a mutation', async () => {
+    const skill = createSlidesSkill({
+      getSlides: () => [slide],
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => {},
+      applyDeck: () => {},
+      setSpeakerNotes: async () => 'uncertain',
+      fitWidthPx: 1280,
+    })
+
+    const result = await skill.executeTool({
+      id: 'notes-4',
+      name: 'set_speaker_notes',
+      input: { slideIndex: 0, text: 'Verify me' },
+    })
+
+    expect(result).toMatchObject({ isError: true, mutated: true })
   })
 })
 
