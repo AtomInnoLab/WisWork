@@ -16,7 +16,8 @@ import type { OpenedPptx } from './index'
 import {
   CREATION_ID_EXTENSION_URI,
   CREATION_ID_NAMESPACE,
-  mintCreationId,
+  collectSlideCreationIds,
+  mintUniqueCreationIds,
   readCreationId,
   type CreationIdFactory,
 } from './durable-targets'
@@ -31,13 +32,16 @@ export interface NewIdentityOptions {
   creationIdFactory?: CreationIdFactory
 }
 
-function creationIdXml(factory?: CreationIdFactory): string {
-  const id = mintCreationId(factory)
+function creationIdXml(id: string): string {
   return `<a:extLst><a:ext uri="${CREATION_ID_EXTENSION_URI}"><a16:creationId xmlns:a16="${CREATION_ID_NAMESPACE}" id="${id}"/></a:ext></a:extLst>`
 }
 
-function cNvPrXml(id: number, name: string, attributes = '', factory?: CreationIdFactory): string {
-  return `<p:cNvPr id="${id}" name="${escapeXmlAttr(name)}"${attributes}>${creationIdXml(factory)}</p:cNvPr>`
+function cNvPrXml(id: number, name: string, creationId: string, attributes = ''): string {
+  return `<p:cNvPr id="${id}" name="${escapeXmlAttr(name)}"${attributes}>${creationIdXml(creationId)}</p:cNvPr>`
+}
+
+function newCreationId(slide: Slide, factory?: CreationIdFactory): string {
+  return mintUniqueCreationIds(1, collectSlideCreationIds(slide), factory)[0]!
 }
 
 /**
@@ -84,6 +88,7 @@ function buildCxnSpXml(
   identity?: NewIdentityOptions,
 ): string {
   const id = nextCNvPrId(slide)
+  const creationId = newCreationId(slide, identity?.creationIdFactory)
   const name = `${
     def.prst.startsWith('bentConnector')
       ? 'Elbow Connector'
@@ -97,7 +102,7 @@ function buildCxnSpXml(
   const head = def.head ? '<a:headEnd type="triangle" w="med" len="med"/>' : ''
   const tail = def.tail ? '<a:tailEnd type="triangle" w="med" len="med"/>' : ''
   return (
-    `<p:cxnSp><p:nvCxnSpPr>${cNvPrXml(id, name, '', identity?.creationIdFactory)}` +
+    `<p:cxnSp><p:nvCxnSpPr>${cNvPrXml(id, name, creationId)}` +
     '<p:cNvCxnSpPr/><p:nvPr/></p:nvCxnSpPr>' +
     `<p:spPr><a:xfrm><a:off x="${o.x}" y="${o.y}"/><a:ext cx="${o.cx}" cy="${o.cy}"/></a:xfrm>` +
     `<a:prstGeom prst="${def.prst}"><a:avLst/></a:prstGeom>` +
@@ -126,6 +131,7 @@ export function buildSpXml(
   identity?: NewIdentityOptions,
 ): string {
   const id = nextCNvPrId(slide)
+  const creationId = newCreationId(slide, identity?.creationIdFactory)
   const isTextbox = opts.kind === 'textbox'
   const name = isTextbox ? `TextBox ${id}` : `Shape ${id}`
   const o = opts.offset
@@ -144,7 +150,7 @@ export function buildSpXml(
     .map((p) => generateParagraphXml(p))
     .join('')
   return (
-    `<p:sp><p:nvSpPr>${cNvPrXml(id, name, '', identity?.creationIdFactory)}` +
+    `<p:sp><p:nvSpPr>${cNvPrXml(id, name, creationId)}` +
     `<p:cNvSpPr${isTextbox ? ' txBox="1"' : ''}/><p:nvPr/></p:nvSpPr>` +
     `<p:spPr>${xfrm}${geom}${fill}${ln}</p:spPr>` +
     `<p:txBody><a:bodyPr wrap="square" rtlCol="0"/><a:lstStyle/>${paras}</p:txBody></p:sp>`
@@ -229,6 +235,7 @@ export function buildTableXml(
   identity?: NewIdentityOptions,
 ): string {
   const id = nextCNvPrId(slide)
+  const creationId = newCreationId(slide, identity?.creationIdFactory)
   const rows = Math.max(1, Math.floor(opts.rows))
   const cols = Math.max(1, Math.floor(opts.cols))
   const colW = Math.max(1, Math.floor(opts.offset.cx / cols))
@@ -240,7 +247,7 @@ export function buildTableXml(
     () => `<a:tr h="${rowH}">${cell.repeat(cols)}</a:tr>`,
   ).join('')
   return (
-    `<p:graphicFrame><p:nvGraphicFramePr>${cNvPrXml(id, `Table ${id}`, '', identity?.creationIdFactory)}` +
+    `<p:graphicFrame><p:nvGraphicFramePr>${cNvPrXml(id, `Table ${id}`, creationId)}` +
     '<p:cNvGraphicFramePr><a:graphicFrameLocks noGrp="1"/></p:cNvGraphicFramePr><p:nvPr/></p:nvGraphicFramePr>' +
     `<p:xfrm><a:off x="${opts.offset.x}" y="${opts.offset.y}"/><a:ext cx="${opts.offset.cx}" cy="${opts.offset.cy}"/></p:xfrm>` +
     '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table">' +
@@ -336,6 +343,8 @@ export function addPicture(
   opts: NewPictureOptions,
   identity?: NewIdentityOptions,
 ): PictureElement | null {
+  // Identity is allocated before media/relationship writes so exhaustion is mutation-free.
+  const creationId = newCreationId(slide, identity?.creationIdFactory)
   const added = addImageMediaAndRel(opened, slide, opts.bytes, opts.ext)
   if (!added) return null
   const { rid, mediaPath } = added
@@ -345,7 +354,7 @@ export function addPicture(
   const name = opts.name ?? `Picture ${id}`
   const descrAttr = opts.descr ? ` descr="${escapeXmlAttr(opts.descr)}"` : ''
   const xml =
-    `<p:pic><p:nvPicPr>${cNvPrXml(id, name, descrAttr, identity?.creationIdFactory)}` +
+    `<p:pic><p:nvPicPr>${cNvPrXml(id, name, creationId, descrAttr)}` +
     '<p:cNvPicPr/><p:nvPr/></p:nvPicPr>' +
     `<p:blipFill><a:blip r:embed="${rid}"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>` +
     `<p:spPr>${generateXfrmXml({ offset: opts.offset, rot: 0, flipH: false, flipV: false })}` +
@@ -416,6 +425,7 @@ export function buildGrpSpXml(
   identity?: NewIdentityOptions,
 ): string {
   const id = nextCNvPrId(slide)
+  const creationId = newCreationId(slide, identity?.creationIdFactory)
   const name = `Group ${id}`
   const { x, y, cx, cy } = bbox
   const grpXfrm =
@@ -425,7 +435,7 @@ export function buildGrpSpXml(
     `</a:xfrm>`
   return (
     `<p:grpSp>` +
-    `<p:nvGrpSpPr>${cNvPrXml(id, name, '', identity?.creationIdFactory)}` +
+    `<p:nvGrpSpPr>${cNvPrXml(id, name, creationId)}` +
     `<p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>` +
     `<p:grpSpPr>${grpXfrm}</p:grpSpPr>` +
     childrenXml +

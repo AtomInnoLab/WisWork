@@ -10,6 +10,7 @@ import type { Paragraph, Slide, TextElement } from './types'
 import { generateParagraphXml } from './generate'
 import { materializeSlide, type OpenedPptx } from './index'
 import { nextCNvPrId } from './insert'
+import { collectSlideCreationIds, readCreationId, remintCreationIdsInXml } from './durable-targets'
 
 export interface HeaderFooterOptions {
   /** Footer text; null/undefined/'' = no footer */
@@ -79,7 +80,8 @@ export function applyHeaderFooter(
     let dirty = slide.elements.length !== before
 
     // 2) Append enabled placeholders (order: dt left → ftr center → sldNum right)
-    const pushSp = (xml: string) => {
+    const pushSp = (sourceXml: string) => {
+      const xml = remintCreationIdsInXml(sourceXml, undefined, collectSlideCreationIds(slide))
       const el: TextElement = {
         // materialize reparses the whole slide, so these temporary model fields suffice
         id: `hfnew_${slide.elements.length}_${Date.now().toString(36)}`,
@@ -87,6 +89,7 @@ export function applyHeaderFooter(
         anchor: { spIndex: slide.elements.length, originalXml: xml, range: [0, 0] },
         transform: { offset: { x: 0, y: 0, cx: 0, cy: 0 }, rot: 0, flipH: false, flipV: false },
       }
+      el.creationId = readCreationId(xml)
       slide.elements.push(el)
       dirty = true
     }

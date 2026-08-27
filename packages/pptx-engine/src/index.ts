@@ -64,8 +64,13 @@ import {
 } from './slide-transfer'
 import { moveSlide } from './sections'
 import {
-  ensureElementCreationId,
+  collectDeckCreationIds,
+  collectSlideCreationIds,
+  ensureCreationIdsInXmlBatch,
+  mintUniqueCreationIds,
   remintCreationIdsInXml,
+  remintCreationIdsInXmlBatch,
+  setCreationIdInElementXml,
   type CreationIdFactory,
 } from './durable-targets'
 
@@ -73,17 +78,25 @@ export * from './types'
 export {
   CREATION_ID_EXTENSION_URI,
   CREATION_ID_NAMESPACE,
+  collectCreationIdsInXml,
+  collectDeckCreationIds,
+  collectSlideCreationIds,
   defaultCreationIdFactory,
   ensureElementCreationId,
+  ensureCreationIdsInXmlBatch,
   fingerprintSlide,
   fingerprintSlideElement,
   mintCreationId,
+  mintUniqueCreationIds,
   normalizeCreationId,
   readCreationId,
   remintCreationIdsInXml,
+  remintCreationIdsInXmlBatch,
+  resolvePresentationContainer,
   resolvePresentationTarget,
   setCreationIdInElementXml,
   type CreationIdFactory,
+  type OpenedPresentationForFingerprint,
   type PresentationTargetResolution,
 } from './durable-targets'
 export {
@@ -941,7 +954,14 @@ export function duplicateSlide(
   const newPath = nextSlidePath(archive)
   archive.entries.set(
     newPath,
-    Buffer.from(remintCreationIdsInXml(patchSlideXml(src), opts?.creationIdFactory), 'utf8'),
+    Buffer.from(
+      remintCreationIdsInXml(
+        patchSlideXml(src),
+        opts?.creationIdFactory,
+        collectDeckCreationIds(deck),
+      ),
+      'utf8',
+    ),
   )
 
   const srcRels = archive.readText(relsPathFor(src.path))
@@ -989,6 +1009,11 @@ export function pasteSlide(
 ): Slide | null {
   const { deck, archive } = opened
   if (deck.slides.length === 0) return null
+  const remintedSlideXml = remintCreationIdsInXml(
+    bundle.slideXml,
+    opts?.creationIdFactory,
+    collectDeckCreationIds(deck),
+  )
   const anchorIndex = Math.min(Math.max(afterIndex, -1), deck.slides.length - 1)
   const neighbour = deck.slides[anchorIndex] ?? deck.slides[0]
   const layoutPath =
@@ -998,10 +1023,7 @@ export function pasteSlide(
 
   const newPath = nextSlidePath(archive)
   const relsXml = materializeSlideBundle(archive, bundle, newPath, layoutPath)
-  archive.entries.set(
-    newPath,
-    Buffer.from(remintCreationIdsInXml(bundle.slideXml, opts?.creationIdFactory), 'utf8'),
-  )
+  archive.entries.set(newPath, Buffer.from(remintedSlideXml, 'utf8'))
   archive.entries.set(relsPathFor(newPath), Buffer.from(relsXml, 'utf8'))
 
   if (anchorIndex < 0) {
@@ -1109,6 +1131,8 @@ export async function mergeSlideFromPptx(
 
   let slideXml = src.readText(srcSlidePath)
   if (slideXml == null) return null
+  // Copied source shapes are new target-deck objects and must never retain shared identities.
+  slideXml = remintCreationIdsInXml(slideXml, undefined, collectDeckCreationIds(deck))
   const srcRels = src.readRels(srcSlidePath)
 
   // Relative Target of any existing target slide's slideLayout (the appended slide reuses the same layout)
@@ -1574,10 +1598,10 @@ export function appendRawElements(
   const slide = opened.deck.slides[slideIndex]
   if (!slide || !xmls.length) return null
   const before = slide.elements.length
-  for (const sourceXml of xmls) {
-    const xml = identity?.preserveCreationIds
-      ? sourceXml
-      : remintCreationIdsInXml(sourceXml, identity?.creationIdFactory)
+  const preparedXmls = identity?.preserveCreationIds
+    ? ensureCreationIdsInXmlBatch(xmls, identity?.creationIdFactory, collectSlideCreationIds(slide))
+    : remintCreationIdsInXmlBatch(xmls, identity?.creationIdFactory, collectSlideCreationIds(slide))
+  for (const xml of preparedXmls) {
     slide.elements.push({
       id: `rawnew_${slide.elements.length}`,
       type: 'passthrough',
@@ -2871,7 +2895,7 @@ export function pasteElements(
   }
 
   let nextId = nextCNvPrId(slide)
-  const xmls = items.map((item) => {
+  const relatedXmls = items.map((item) => {
     let xml = item.xml
     for (const rel of item.rels) {
       const key = `${rel.type} ${rel.target}`
@@ -2901,8 +2925,13 @@ export function pasteElements(
         .replace(/\bx="(-?\d+)"/, (_m, v: string) => `x="${Number(v) + shiftEmu.dx}"`)
         .replace(/\by="(-?\d+)"/, (_m, v: string) => `y="${Number(v) + shiftEmu.dy}"`),
     )
-    return remintCreationIdsInXml(xml, identity?.creationIdFactory)
+    return xml
   })
+  const xmls = remintCreationIdsInXmlBatch(
+    relatedXmls,
+    identity?.creationIdFactory,
+    collectSlideCreationIds(slide),
+  )
 
   if (relsDirty) archive.entries.set(relsPath, Buffer.from(relsXml, 'utf8'))
   return appendRawElements(opened, slideIndex, xmls, { preserveCreationIds: true })
@@ -2989,8 +3018,24 @@ export function groupElements(
   if (targets.length < 2) return null
   if (targets.some((e) => !GROUPABLE.has(e.type))) return null
 
-  // Grouping explicitly edits the selected objects, so legacy children are enrolled.
-  for (const target of targets) ensureElementCreationId(slide, target, identity?.creationIdFactory)
+  // Preallocate every missing child id plus the new group id before any XML/model mutation.
+  const missing = targets.filter((target) => !target.creationId)
+  const plannedIds = mintUniqueCreationIds(
+    missing.length + 1,
+    collectSlideCreationIds(slide),
+    identity?.creationIdFactory,
+  )
+  const patchedChildren = missing.map((target, index) => ({
+    target,
+    id: plannedIds[index]!,
+    xml: setCreationIdInElementXml(target.anchor.originalXml, plannedIds[index]!),
+  }))
+  for (const patched of patchedChildren) {
+    patched.target.anchor.originalXml = patched.xml
+    patched.target.creationId = patched.id
+  }
+  if (patchedChildren.length) slide.structureDirty = true
+  const groupCreationId = plannedIds[plannedIds.length - 1]!
 
   // Compute the bounding box
   const bbox = calcBoundingBox(targets)
@@ -2999,7 +3044,9 @@ export function groupElements(
   const childrenXml = targets.map((e) => patchedElementXml(e)).join('')
 
   // Build the grpSp XML
-  const grpXml = buildGrpSpXml(slide, bbox, childrenXml, identity)
+  const grpXml = buildGrpSpXml(slide, bbox, childrenXml, {
+    creationIdFactory: () => groupCreationId,
+  })
 
   // Remove the selected elements from the current slide
   const idSet = new Set(sourceIds)
