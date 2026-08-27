@@ -17,15 +17,19 @@ export function ExportPdfDialog({
   const { t } = useLatexLocale()
   const dialogRef = useRef<HTMLElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
+  const busyRef = useRef(busy)
+  const onCancelRef = useRef(onCancel)
+  busyRef.current = busy
+  onCancelRef.current = onCancel
   useEffect(() => {
     if (!open) return
     const previousFocus =
       document.activeElement instanceof HTMLElement ? document.activeElement : null
     cancelRef.current?.focus()
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !busy) {
+      if (event.key === 'Escape' && !busyRef.current) {
         event.preventDefault()
-        onCancel()
+        onCancelRef.current()
         return
       }
       if (event.key !== 'Tab') return
@@ -48,7 +52,7 @@ export function ExportPdfDialog({
       window.removeEventListener('keydown', onKeyDown)
       previousFocus?.focus()
     }
-  }, [busy, onCancel, open])
+  }, [open])
   if (!open) return null
 
   return (
