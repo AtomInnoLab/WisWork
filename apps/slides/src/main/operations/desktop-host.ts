@@ -10,7 +10,9 @@ import {
   mintUniqueCreationIds,
   resolvePresentationContainer,
   resolvePresentationTarget,
+  resizeTable,
   setSlideNotes,
+  updateConnectorsForMoved,
   type Fill,
   type GroupElement,
   type OpenedPptx,
@@ -171,6 +173,7 @@ function targetId(operation: PresentationOperation): string | undefined {
 function applyOperation(
   opened: OpenedPptx,
   planned: PlannedPresentationOperation,
+  connectorSourceIds: readonly string[] = [],
 ): { changed: boolean; metaDirty: boolean } {
   const operation = planned.operation
   const slideId = operation.kind === 'add_text_box' ? operation.slideId : operation.target.slideId
@@ -214,7 +217,7 @@ function applyOperation(
         throw new Error('Text operation target changed type')
       return { changed: replaceText(element, operation), metaDirty: false }
     case 'set_geometry': {
-      const next = {
+      const absolute = {
         x: Math.round(operation.geometry.x * EMU_PER_POINT),
         y: Math.round(operation.geometry.y * EMU_PER_POINT),
         cx: Math.round(operation.geometry.width * EMU_PER_POINT),
@@ -223,8 +226,29 @@ function applyOperation(
       const rotation = Math.round(
         (operation.geometry.rotation ?? element.transform.rot / 60_000) * 60_000,
       )
-      if (same(element.transform.offset, next) && element.transform.rot === rotation)
-        return { changed: false, metaDirty: false }
+      let next = absolute
+      if (location.directParent) {
+        const group = location.directParent
+        const childCoordinates = group.childOffset
+        const childX = childCoordinates?.x ?? group.transform.offset.x
+        const childY = childCoordinates?.y ?? group.transform.offset.y
+        const scaleX = childCoordinates?.cx ? group.transform.offset.cx / childCoordinates.cx : 1
+        const scaleY = childCoordinates?.cy ? group.transform.offset.cy / childCoordinates.cy : 1
+        if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY) || scaleX === 0 || scaleY === 0)
+          throw new Error('Group child coordinate system is invalid')
+        next = {
+          x: Math.round((absolute.x - group.transform.offset.x) / scaleX + childX),
+          y: Math.round((absolute.y - group.transform.offset.y) / scaleY + childY),
+          cx: Math.round(absolute.cx / Math.abs(scaleX)),
+          cy: Math.round(absolute.cy / Math.abs(scaleY)),
+        }
+      }
+      if (same(element.transform.offset, next) && element.transform.rot === rotation) {
+        const connectorChanged = connectorSourceIds.length
+          ? updateConnectorsForMoved(slide, [...connectorSourceIds]) > 0
+          : false
+        return { changed: connectorChanged, metaDirty: false }
+      }
       if (location.directParent) {
         if (
           !editGroupChildTransform(
@@ -236,11 +260,23 @@ function applyOperation(
           )
         )
           throw new Error('Group child transform failed')
+        if (connectorSourceIds.length) updateConnectorsForMoved(slide, [...connectorSourceIds])
         return { changed: true, metaDirty: false }
       }
+      const isTable = element.type === 'table'
+      if (isTable) resizeTable(slide, element.id, next.cx, next.cy)
       element.transform.offset = next
+      if (isTable) {
+        element.transform.offset.cx = (
+          element as Extract<SlideElement, { type: 'table' }>
+        ).colWidths.reduce((sum, value) => sum + value, 0)
+        element.transform.offset.cy = (
+          element as Extract<SlideElement, { type: 'table' }>
+        ).rowHeights.reduce((sum, value) => sum + value, 0)
+      }
       element.transform.rot = rotation
       element.dirtyTransform = true
+      if (connectorSourceIds.length) updateConnectorsForMoved(slide, [...connectorSourceIds])
       return { changed: true, metaDirty: false }
     }
     case 'set_fill': {
@@ -276,6 +312,7 @@ export class DesktopPresentationHost implements AtomicPresentationHost<DesktopSn
   private expectedRevisions: string[] = []
   private finalMetaDirty = false
   private transactionGeneration = 0
+  private connectorUpdates = new Map<number, readonly string[]>()
 
   constructor(
     private readonly session: Session,
@@ -357,12 +394,31 @@ export class DesktopPresentationHost implements AtomicPresentationHost<DesktopSn
       operation,
       ...(operation.kind === 'add_text_box' ? { createdId: allocateId(operation.clientId) } : {}),
     }))
+    this.connectorUpdates = new Map()
+    const movedBySlide = new Map<string, { lastIndex: number; sourceIds: string[] }>()
+    for (const [index, operation] of operations.entries()) {
+      if (operation.kind !== 'set_geometry') continue
+      const targetSlide = findSlide(simulated, operation.target.slideId)
+      const elementId = operation.target.elementId
+      const location =
+        targetSlide && elementId ? findElementLocation(targetSlide, elementId) : undefined
+      if (!location || location.directParent) continue
+      const entry = movedBySlide.get(operation.target.slideId) ?? {
+        lastIndex: index,
+        sourceIds: [],
+      }
+      entry.lastIndex = index
+      if (!entry.sourceIds.includes(location.element.id)) entry.sourceIds.push(location.element.id)
+      movedBySlide.set(operation.target.slideId, entry)
+    }
+    for (const entry of movedBySlide.values())
+      this.connectorUpdates.set(entry.lastIndex, entry.sourceIds)
     const revisions: string[] = []
     let changed = false
     let metaDirty = false
     try {
       for (const item of planned) {
-        const result = applyOperation(simulated, item)
+        const result = applyOperation(simulated, item, this.connectorUpdates.get(item.index))
         changed ||= result.changed
         metaDirty ||= result.metaDirty
         revisions.push(await fingerprintPresentation(simulated))
@@ -392,7 +448,7 @@ export class DesktopPresentationHost implements AtomicPresentationHost<DesktopSn
       throw new Error('Presentation transaction lease changed')
     if (planned.operation.kind !== 'add_text_box')
       this.enrollTarget(this.session.opened, planned.operation.target)
-    applyOperation(this.session.opened, planned)
+    applyOperation(this.session.opened, planned, this.connectorUpdates.get(planned.index))
     const revision = await fingerprintPresentation(this.session.opened)
     if ((this.session.mutationGeneration ?? 0) !== generation)
       throw new Error('Concurrent presentation mutation')

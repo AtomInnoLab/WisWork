@@ -110,11 +110,14 @@ describe('runLayoutScript editing primitives', () => {
     expect(r.ops[0]).toMatchObject({ id: 'a', x: 80, y: 200, w: 320, h: 100 })
   })
 
-  it('resizeBy resizes relatively, result never below 1px', () => {
+  it('resizeBy resizes relatively, result remains strictly positive', () => {
     const r = runLayoutScript(`resizeBy('b', -10, 20); resizeBy('a', -9999, -9999);`, els, canvas)
     expect(r.error).toBeUndefined()
     expect(r.ops.find((o) => o.id === 'b')).toMatchObject({ w: 300, h: 320 })
-    expect(r.ops.find((o) => o.id === 'a')).toMatchObject({ w: 1, h: 1 })
+    expect(r.ops.find((o) => o.id === 'a')).toMatchObject({
+      w: Number.EPSILON,
+      h: Number.EPSILON,
+    })
   })
 
   it('setText string collects a text op (split into paragraphs by \\n, one run each)', () => {
@@ -483,6 +486,7 @@ describe('execute_slide_script tool', () => {
   it('routes a pure multi-element geometry script through one canonical transaction', async () => {
     const deckAccess = access()
     const executePresentationOperation = vi.mocked(deckAccess.executePresentationOperation!)
+    ;(globalThis as any).window.slidesApi.editTransform = vi.fn()
     const api = (globalThis as any).window.slidesApi
     const result = await createSlidesSkill(deckAccess).executeTool({
       id: 'geometry-script',
@@ -509,6 +513,37 @@ describe('execute_slide_script tool', () => {
     expect(api.batchEditTransform).not.toHaveBeenCalled()
     expect(api.beginHistoryBatch).not.toHaveBeenCalled()
     expect(result).toMatchObject({ mutated: true })
+  })
+
+  it('compiles direct group-child geometry as absolute slide points at non-unit scale', async () => {
+    slide = {
+      ...slideOf([
+        groupNode('g1', box(200, 100, 400, 300), [textNode('c1', box(10, 20, 50, 30), 'Member')]),
+      ]),
+      scale: 2,
+    }
+    const deckAccess = access()
+    const executePresentationOperation = vi.mocked(deckAccess.executePresentationOperation!)
+    ;(globalThis as any).window.slidesApi.editTransform = vi.fn()
+    const result = await createSlidesSkill(deckAccess).executeTool({
+      id: 'geometry-group-scale',
+      name: 'execute_slide_script',
+      input: { slideIndex: 0, code: `setBox('c1', { x: 240, y: 180, w: 80, h: 40 });` },
+    } as any)
+
+    expect(result).toMatchObject({ mutated: true })
+    expect(executePresentationOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operations: [
+          {
+            sourceId: 'c1',
+            geometry: { x: 90, y: 67.5, width: 30, height: 15, rotation: 0 },
+          },
+        ],
+      }),
+      undefined,
+    )
+    expect((globalThis as any).window.slidesApi.editTransform).not.toHaveBeenCalled()
   })
 
   it('setStyle after setText in the same script: style merges onto the new text', async () => {

@@ -1,5 +1,6 @@
 import {
   fingerprintSemanticValue,
+  PRESENTATION_OPS_LIMITS,
   type PresentationGeometry,
   type PresentationOperation,
   type PresentationReceipt,
@@ -44,9 +45,28 @@ export async function executePreparedGeometryFamilyTransaction(
   refresh?: () => Promise<boolean>,
 ): Promise<TextFamilyExecutionResult> {
   signal?.throwIfAborted()
-  if (request.operations.length === 0 || request.operations.length > 50) {
+  const geometryIsBounded = ({
+    geometry,
+  }: GeometryFamilyTransactionRequest['operations'][number]) =>
+    [geometry.x, geometry.y, geometry.width, geometry.height].every(Number.isFinite) &&
+    Math.abs(geometry.x) <= PRESENTATION_OPS_LIMITS.maxCoordinateMagnitude &&
+    Math.abs(geometry.y) <= PRESENTATION_OPS_LIMITS.maxCoordinateMagnitude &&
+    geometry.width > 0 &&
+    geometry.width <= PRESENTATION_OPS_LIMITS.maxCoordinateMagnitude &&
+    geometry.height > 0 &&
+    geometry.height <= PRESENTATION_OPS_LIMITS.maxCoordinateMagnitude &&
+    (geometry.rotation === undefined ||
+      (Number.isFinite(geometry.rotation) && Math.abs(geometry.rotation) <= 360_000))
+  if (
+    request.operations.length === 0 ||
+    request.operations.length > PRESENTATION_OPS_LIMITS.maxOperations ||
+    !request.operations.every(geometryIsBounded)
+  ) {
     return {
-      receipt: unchanged(request.transactionId, Math.min(request.operations.length, 50)),
+      receipt: unchanged(
+        request.transactionId,
+        Math.min(request.operations.length, PRESENTATION_OPS_LIMITS.maxOperations),
+      ),
       authoritativeState: 'fresh',
     }
   }
@@ -54,9 +74,21 @@ export async function executePreparedGeometryFamilyTransaction(
     string,
     Extract<Awaited<ReturnType<SlidesApi['preparePresentationTarget']>>, { status: 'prepared' }>
   >()
+  const cancelPrepared = async (): Promise<void> => {
+    try {
+      await api.cancelPresentationTransaction(request.transactionId)
+    } catch {
+      // Cancellation is best-effort; the original AbortError remains authoritative.
+    }
+  }
+  const throwIfAbortedAfterPrepare = async (): Promise<void> => {
+    if (!signal?.aborted) return
+    if (prepared.size) await cancelPrepared()
+    signal.throwIfAborted()
+  }
   let expectedDeckRevision: string | undefined
   for (const item of request.operations) {
-    signal?.throwIfAborted()
+    await throwIfAbortedAfterPrepare()
     if (prepared.has(item.sourceId)) continue
     let result: Awaited<ReturnType<SlidesApi['preparePresentationTarget']>>
     try {
@@ -66,10 +98,18 @@ export async function executePreparedGeometryFamilyTransaction(
         sourceId: item.sourceId,
       })
     } catch {
+      if (signal?.aborted) {
+        await cancelPrepared()
+        signal.throwIfAborted()
+      }
       return {
         receipt: unchanged(request.transactionId, request.operations.length),
         authoritativeState: 'fresh',
       }
+    }
+    if (signal?.aborted) {
+      await cancelPrepared()
+      signal.throwIfAborted()
     }
     if (result.status === 'busy') {
       return {
@@ -103,9 +143,23 @@ export async function executePreparedGeometryFamilyTransaction(
     target: prepared.get(item.sourceId)!.target,
     geometry: item.geometry,
   }))
-  const cancel = () => void api.cancelPresentationTransaction(request.transactionId)
+  const cancel = () => {
+    try {
+      void api.cancelPresentationTransaction(request.transactionId).catch(() => false)
+    } catch {
+      // The AbortError still propagates from the guarded dispatch boundary.
+    }
+  }
+  if (signal?.aborted) {
+    await cancelPrepared()
+    signal.throwIfAborted()
+  }
   signal?.addEventListener('abort', cancel, { once: true })
   try {
+    if (signal?.aborted) {
+      await cancelPrepared()
+      signal.throwIfAborted()
+    }
     let receipt: PresentationReceipt
     try {
       receipt = await api.executePresentationTransaction({

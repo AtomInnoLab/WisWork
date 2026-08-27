@@ -1450,14 +1450,14 @@ async function executeTool(
         h?: number
         rotationDeg?: number
       }
-      const x = (typeof inp.x === 'number' ? inp.x : origin.x + b.x) - origin.x
-      const y = (typeof inp.y === 'number' ? inp.y : origin.y + b.y) - origin.y
+      const x = typeof inp.x === 'number' ? inp.x : origin.x + b.x
+      const y = typeof inp.y === 'number' ? inp.y : origin.y + b.y
       const w = typeof inp.w === 'number' ? inp.w : b.w
       const h = typeof inp.h === 'number' ? inp.h : b.h
       const rotation = normalizePresentationRotation(
         typeof inp.rotationDeg === 'number' ? inp.rotationDeg : b.rotationDeg,
       )
-      if (![x, y, w, h].every(Number.isFinite) || w < 1 || h < 1)
+      if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0)
         return fail(t('aiFailTransform'), 'Transform geometry is invalid')
       if (!access.executePresentationOperation)
         return fail(t('aiFailTransform'), 'Canonical presentation transactions are unavailable')
@@ -1560,12 +1560,11 @@ async function executeTool(
           const target = resolveEditTarget(slide, op.id)
           if (!target || 'nested' in target)
             throw new TypeError(`Geometry target ${op.id} is no longer editable`)
-          const origin = target.groupOrigin ?? { x: 0, y: 0 }
           return {
             sourceId: op.id,
             geometry: {
-              x: geometryPxToPoints(op.x - origin.x, slide.scale),
-              y: geometryPxToPoints(op.y - origin.y, slide.scale),
+              x: geometryPxToPoints(op.x, slide.scale),
+              y: geometryPxToPoints(op.y, slide.scale),
               width: geometryPxToPoints(op.w, slide.scale),
               height: geometryPxToPoints(op.h, slide.scale),
               rotation: normalizePresentationRotation(op.rotation),

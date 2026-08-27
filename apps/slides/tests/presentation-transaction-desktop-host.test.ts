@@ -29,7 +29,7 @@ import {
   savePptx,
 } from '@wiswork/pptx-engine'
 import type { PresentationTransaction } from '@wiswork/presentation-ops'
-import type { GroupElement } from '@wiswork/pptx-engine'
+import type { GroupElement, SlideElement, TableElement } from '@wiswork/pptx-engine'
 import { DesktopPresentationHost } from '../src/main/operations/desktop-host'
 import { PresentationTransactionExecutor } from '../src/main/operations/executor'
 import type { Session } from '../src/main/session-state'
@@ -62,7 +62,7 @@ describe('DesktopPresentationHost', () => {
     element.anchor.originalXml = childXml
     const groupXml =
       '<p:grpSp><p:nvGrpSpPr><p:cNvPr id="10" name="group"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>' +
-      '<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1000000" cy="1000000"/><a:chOff x="0" y="0"/><a:chExt cx="1000000" cy="1000000"/></a:xfrm></p:grpSpPr>' +
+      '<p:grpSpPr><a:xfrm><a:off x="100000" y="200000"/><a:ext cx="2000000" cy="3000000"/><a:chOff x="500000" y="600000"/><a:chExt cx="1000000" cy="1000000"/></a:xfrm></p:grpSpPr>' +
       childXml +
       '</p:grpSp>'
     const group: GroupElement = {
@@ -71,12 +71,12 @@ describe('DesktopPresentationHost', () => {
       creationId: '{AAAAAAAA-1111-2222-3333-BBBBBBBBBBBB}',
       anchor: { spIndex: 0, originalXml: groupXml, range: [0, groupXml.length] },
       transform: {
-        offset: { x: 0, y: 0, cx: 1_000_000, cy: 1_000_000 },
+        offset: { x: 100_000, y: 200_000, cx: 2_000_000, cy: 3_000_000 },
         rot: 0,
         flipH: false,
         flipV: false,
       },
-      childOffset: { x: 0, y: 0, cx: 1_000_000, cy: 1_000_000 },
+      childOffset: { x: 500_000, y: 600_000, cx: 1_000_000, cy: 1_000_000 },
       children: [element],
     }
     slide.elements = [group]
@@ -95,7 +95,7 @@ describe('DesktopPresentationHost', () => {
             expectedType: 'text',
             expectedFingerprint: await fingerprintSlideElement(session.opened, slide, element),
           },
-          geometry: { x: 10, y: 20, width: 30, height: 40, rotation: 15 },
+          geometry: { x: 30, y: 50, width: 40, height: 60, rotation: 15 },
         },
       ],
     }
@@ -105,7 +105,7 @@ describe('DesktopPresentationHost', () => {
     ).execute(transaction)
     expect(receipt).toMatchObject({ status: 'applied' })
     expect(group.anchor.originalXml).toContain(
-      '<a:off x="127000" y="254000"/><a:ext cx="381000" cy="508000"/>',
+      '<a:off x="640500" y="745000"/><a:ext cx="254000" cy="254000"/>',
     )
     expect(group.anchor.originalXml).toContain('rot="900000"')
 
@@ -113,10 +113,123 @@ describe('DesktopPresentationHost', () => {
     const reopenedGroup = reopened.deck.slides[0]!.elements[0]
     expect(reopenedGroup?.type).toBe('group')
     expect(reopenedGroup?.type === 'group' && reopenedGroup.children[0]?.transform.offset).toEqual({
-      x: 127_000,
-      y: 254_000,
-      cx: 381_000,
-      cy: 508_000,
+      x: 640_500,
+      y: 745_000,
+      cx: 254_000,
+      cy: 254_000,
+    })
+  })
+
+  it('resizes table grid geometry with the canonical frame', async () => {
+    const { session, slide } = await fixture()
+    const tableXml =
+      '<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="7" name="table"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>' +
+      '<p:xfrm><a:off x="0" y="0"/><a:ext cx="200" cy="100"/></p:xfrm>' +
+      '<a:graphic><a:graphicData><a:tbl><a:tblPr/><a:tblGrid><a:gridCol w="100"/><a:gridCol w="100"/></a:tblGrid>' +
+      '<a:tr h="100"><a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p/></a:txBody><a:tcPr/></a:tc><a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p/></a:txBody><a:tcPr/></a:tc></a:tr>' +
+      '</a:tbl></a:graphicData></a:graphic></p:graphicFrame>'
+    const table: TableElement = {
+      id: 'table',
+      type: 'table',
+      creationId: '{CCCCCCCC-1111-2222-3333-DDDDDDDDDDDD}',
+      nvId: '7',
+      anchor: { spIndex: 0, originalXml: tableXml, range: [0, tableXml.length] },
+      transform: {
+        offset: { x: 0, y: 0, cx: 200, cy: 100 },
+        rot: 0,
+        flipH: false,
+        flipV: false,
+      },
+      colWidths: [100, 100],
+      rowHeights: [100],
+      rows: [[{}, {}]],
+    }
+    slide.elements = [table]
+    const receipt = await new PresentationTransactionExecutor(
+      new DesktopPresentationHost(session),
+      { verifyDelayMs: 0 },
+    ).execute({
+      transactionId: 'desktop-table-geometry',
+      expectedDeckRevision: await fingerprintPresentation(session.opened),
+      mode: 'atomic',
+      operations: [
+        {
+          kind: 'set_geometry',
+          clientId: 'table-size',
+          target: {
+            slideId: slide.durableId,
+            elementId: table.creationId!,
+            expectedType: 'table',
+            expectedFingerprint: await fingerprintSlideElement(session.opened, slide, table),
+          },
+          geometry: { x: 1, y: 2, width: 30, height: 20 },
+        },
+      ],
+    })
+    expect(receipt).toMatchObject({ status: 'applied' })
+    expect(table.colWidths.reduce((sum, value) => sum + value, 0)).toBe(381_000)
+    expect(table.rowHeights.reduce((sum, value) => sum + value, 0)).toBe(254_000)
+    expect(table.transform.offset).toEqual({ x: 12_700, y: 25_400, cx: 381_000, cy: 254_000 })
+  })
+
+  it('updates attached connectors once from the final multi-operation geometry', async () => {
+    const { session, slide, element: first } = await fixture()
+    first.nvId = '2'
+    const second = addElement(slide, {
+      kind: 'textbox',
+      offset: { x: 1_270_000, y: 127_000, cx: 127_000, cy: 127_000 },
+      paragraphs: [{ runs: [{ text: 'second' }] }],
+    })
+    second.nvId = '3'
+    const connector = {
+      id: 'connector',
+      type: 'shape',
+      nvId: '4',
+      anchor: { spIndex: 2, originalXml: '', range: [0, 0] },
+      transform: {
+        offset: { x: 0, y: 0, cx: 1, cy: 1 },
+        rot: 0,
+        flipH: false,
+        flipV: false,
+      },
+      connection: { start: { id: 2, idx: 3 }, end: { id: 3, idx: 1 } },
+    } as SlideElement
+    slide.elements.push(connector)
+    const fingerprint = await fingerprintSlideElement(session.opened, slide, first)
+    const target = {
+      slideId: slide.durableId,
+      elementId: first.creationId!,
+      expectedType: 'text' as const,
+      expectedFingerprint: fingerprint,
+    }
+    const receipt = await new PresentationTransactionExecutor(
+      new DesktopPresentationHost(session),
+      { verifyDelayMs: 0 },
+    ).execute({
+      transactionId: 'desktop-dependent-connectors',
+      expectedDeckRevision: await fingerprintPresentation(session.opened),
+      mode: 'atomic',
+      operations: [
+        {
+          kind: 'set_geometry',
+          clientId: 'move-1',
+          target,
+          geometry: { x: 10, y: 10, width: 10, height: 10 },
+        },
+        {
+          kind: 'set_geometry',
+          clientId: 'move-2',
+          target,
+          geometry: { x: 20, y: 10, width: 20, height: 10 },
+        },
+      ],
+    })
+    expect(receipt).toMatchObject({ status: 'applied', operationCount: 2 })
+    expect(connector.transform.offset).toEqual({
+      x: 508_000,
+      y: 190_500,
+      cx: 762_000,
+      cy: 0,
     })
   })
 

@@ -156,7 +156,7 @@ export function runLayoutScript(
       rotation: num(p.rotation, 'rotation', cur.rotation),
       ...(el.groupId ? { groupId: el.groupId } : {}),
     }
-    if (next.w < 1 || next.h < 1) throw new Error(`setBox("${key}"): w/h must be ≥ 1px`)
+    if (next.w <= 0 || next.h <= 0) throw new Error(`setBox("${key}"): w/h must be > 0px`)
     pending.set(key, next)
   }
 
@@ -177,8 +177,8 @@ export function runLayoutScript(
     const el = guard('resizeBy', id)
     const base = pending.get(key) ?? el
     setBox(id, {
-      w: Math.max(1, base.w + reqNum(`resizeBy("${key}")`, 'dw', dw)),
-      h: Math.max(1, base.h + reqNum(`resizeBy("${key}")`, 'dh', dh)),
+      w: Math.max(Number.EPSILON, base.w + reqNum(`resizeBy("${key}")`, 'dw', dw)),
+      h: Math.max(Number.EPSILON, base.h + reqNum(`resizeBy("${key}")`, 'dh', dh)),
     })
   }
 
