@@ -1,3 +1,5 @@
+import { readStrictArray } from './strict-array'
+
 const unsafeKeys = new Set(['__proto__', 'prototype', 'constructor'])
 const MAX_DEPTH = 32
 const MAX_NODES = 10_000
@@ -31,9 +33,14 @@ const canonicalize = (value: unknown): string => {
     active.add(object)
     try {
       if (Array.isArray(item)) {
-        if (item.length > MAX_COLLECTION_LENGTH)
-          throw new TypeError('Semantic fingerprint array exceeds bounds')
-        return `[${item.map((child) => visit(child, depth + 1)).join(',')}]`
+        const values = readStrictArray(item, 'Semantic fingerprint array', {
+          maxLength: MAX_COLLECTION_LENGTH,
+        })
+        const children: string[] = []
+        for (let index = 0; index < values.length; index += 1) {
+          children.push(visit(values[index], depth + 1))
+        }
+        return `[${children.join(',')}]`
       }
       const prototype = Object.getPrototypeOf(item)
       if (prototype !== Object.prototype && prototype !== null)

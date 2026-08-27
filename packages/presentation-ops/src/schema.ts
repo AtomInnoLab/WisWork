@@ -8,6 +8,7 @@ import type {
   PresentationTarget,
   PresentationTransaction,
 } from './types'
+import { readStrictArray } from './strict-array'
 
 export const PRESENTATION_OPS_LIMITS = Object.freeze({
   maxOperations: 50,
@@ -260,16 +261,12 @@ export const parsePresentationTransaction = (value: unknown): PresentationTransa
   const record = object(value, 'transaction')
   exactKeys(record, ['transactionId', 'expectedDeckRevision', 'operations', 'mode'], 'transaction')
   if (record.mode !== 'atomic') fail('transaction.mode must be atomic')
-  if (!Array.isArray(record.operations)) {
-    fail('transaction.operations is out of bounds')
-  }
-  if (
-    record.operations.length === 0 ||
-    record.operations.length > PRESENTATION_OPS_LIMITS.maxOperations
-  ) {
-    fail('transaction.operations is out of bounds')
-  }
-  const operations = record.operations.map(parsePresentationOperation)
+  const operationValues = readStrictArray(record.operations, 'transaction.operations', {
+    minLength: 1,
+    maxLength: PRESENTATION_OPS_LIMITS.maxOperations,
+  })
+  const operations: PresentationOperation[] = []
+  for (const operation of operationValues) operations.push(parsePresentationOperation(operation))
   const clientIds = new Set<string>()
   for (const operation of operations) {
     if (clientIds.has(operation.clientId)) fail('operation.clientId must be unique')
@@ -294,10 +291,11 @@ export const parsePresentationReceipt = (value: unknown): PresentationReceipt =>
         'applied receipt',
       )
       const createdIds = optional(record, 'createdIds', (item) => {
-        if (!Array.isArray(item)) fail('receipt.createdIds is out of bounds')
-        if (item.length > PRESENTATION_OPS_LIMITS.maxReceiptIds)
-          fail('receipt.createdIds is out of bounds')
-        const ids = item.map((id) => identifier(id, 'receipt.createdId'))
+        const values = readStrictArray(item, 'receipt.createdIds', {
+          maxLength: PRESENTATION_OPS_LIMITS.maxReceiptIds,
+        })
+        const ids: string[] = []
+        for (const id of values) ids.push(identifier(id, 'receipt.createdId'))
         if (new Set(ids).size !== ids.length) fail('receipt.createdIds must be unique')
         return ids
       })

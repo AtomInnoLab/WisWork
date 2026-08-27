@@ -47,4 +47,33 @@ describe('semantic fingerprint', () => {
     Object.defineProperty(accessor, 'secret', { enumerable: true, get: () => 'value' })
     await expect(fingerprintSemanticValue(accessor)).rejects.toThrow(/accessor/i)
   })
+
+  it('rejects sparse arrays so holes cannot collide with empty arrays', async () => {
+    const sparse = Array(1)
+    await expect(fingerprintSemanticValue(sparse)).rejects.toThrow(/array/i)
+  })
+
+  it('rejects array extensions and non-standard prototypes', async () => {
+    const values: unknown[][] = [[], [], [], [], []]
+    Object.assign(values[0]!, { extra: true })
+    Object.defineProperty(values[1]!, 'hidden', { value: true })
+    values[2]![Symbol('hidden') as unknown as number] = true
+    Object.defineProperty(values[3]!, '__proto__', { value: true, enumerable: true })
+    Object.setPrototypeOf(values[4]!, null)
+    for (const value of values) await expect(fingerprintSemanticValue(value)).rejects.toThrow()
+  })
+
+  it('rejects array accessors without executing them', async () => {
+    let accessed = false
+    const value: unknown[] = []
+    Object.defineProperty(value, '0', {
+      enumerable: true,
+      get: () => {
+        accessed = true
+        return 'secret'
+      },
+    })
+    await expect(fingerprintSemanticValue(value)).rejects.toThrow(/accessor/i)
+    expect(accessed).toBe(false)
+  })
 })

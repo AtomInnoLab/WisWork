@@ -161,6 +161,36 @@ describe('presentation transaction parser', () => {
     )
     expect(() => parsePresentationTransaction(transaction(operations))).toThrow()
   })
+
+  it('strictly validates operation arrays without invoking accessors', () => {
+    const validOperation = { kind: 'delete_element', clientId: 'op-1', target }
+    const malformed: unknown[][] = [
+      [validOperation],
+      [validOperation],
+      [validOperation],
+      Array(1),
+      [validOperation],
+    ]
+    Object.assign(malformed[0]!, { extra: true })
+    Object.defineProperty(malformed[1]!, 'hidden', { value: true })
+    malformed[2]![Symbol('hidden') as unknown as number] = true
+    Object.setPrototypeOf(malformed[4]!, null)
+    for (const operations of malformed) {
+      expect(() => parsePresentationTransaction(transaction(operations))).toThrow(/array|field/i)
+    }
+
+    let accessed = false
+    const accessor: unknown[] = []
+    Object.defineProperty(accessor, '0', {
+      enumerable: true,
+      get: () => {
+        accessed = true
+        return validOperation
+      },
+    })
+    expect(() => parsePresentationTransaction(transaction(accessor))).toThrow(/accessor/i)
+    expect(accessed).toBe(false)
+  })
 })
 
 describe('presentation receipt parser', () => {
@@ -217,5 +247,33 @@ describe('presentation receipt parser', () => {
         ),
       }),
     ).toThrow()
+  })
+
+  it('strictly validates createdIds arrays without invoking accessors', () => {
+    const receipt = (createdIds: unknown) => ({
+      status: 'applied',
+      transactionId: 'tx-1',
+      resultingDeckRevision: fingerprint,
+      operationCount: 1,
+      createdIds,
+    })
+    const malformed: unknown[][] = [['shape-1'], ['shape-1'], ['shape-1'], Array(1), ['shape-1']]
+    Object.assign(malformed[0]!, { extra: true })
+    Object.defineProperty(malformed[1]!, 'hidden', { value: true })
+    malformed[2]![Symbol('hidden') as unknown as number] = true
+    Object.setPrototypeOf(malformed[4]!, null)
+    for (const ids of malformed) expect(() => parsePresentationReceipt(receipt(ids))).toThrow()
+
+    let accessed = false
+    const accessor: unknown[] = []
+    Object.defineProperty(accessor, '0', {
+      enumerable: true,
+      get: () => {
+        accessed = true
+        return 'shape-1'
+      },
+    })
+    expect(() => parsePresentationReceipt(receipt(accessor))).toThrow(/accessor/i)
+    expect(accessed).toBe(false)
   })
 })
