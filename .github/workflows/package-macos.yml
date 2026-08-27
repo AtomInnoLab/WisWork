@@ -102,6 +102,7 @@ jobs:
           "$TECTONIC" --version | grep -qi 'tectonic 0.16.9'
           test -f "$APP/Contents/Resources/modules/latex/renderer/index.html"
           test -z "$(find "$APP/Contents/Resources" -iname '*default_bundle*' -print -quit)"
+          test -z "$(find "$APP/Contents/Resources" \( -iname '*co''dex*' -o -iname '*enhanced*mode*' \) -print -quit)"
           test -n "$(find release -maxdepth 1 -name '*.dmg' -print -quit)"
           test -n "$(find release -maxdepth 1 -name '*.zip' -print -quit)"
           cd release
