@@ -6,6 +6,21 @@ import { WorkbenchToolbar } from '../src/renderer/workbench/WorkbenchToolbar.js'
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
 
+const toolbarProps = {
+  activePath: 'chapters/main.tex',
+  dirty: true,
+  disabled: false,
+  compiling: false,
+  filesOpen: true,
+  previewOpen: false,
+  aiOpen: true,
+  onSave: vi.fn(),
+  onCompile: vi.fn(),
+  onToggleFiles: vi.fn(),
+  onTogglePreview: vi.fn(),
+  onToggleAi: vi.fn(),
+}
+
 describe('LaTeX workbench toolbar', () => {
   it('puts document commands and workspace visibility controls above the editor', () => {
     const app = read('../src/renderer/App.tsx')
@@ -21,6 +36,10 @@ describe('LaTeX workbench toolbar', () => {
     expect(app).toContain('onTogglePreview={() => setPreviewOpen((open) => !open)}')
     expect(app).toContain('onToggleAi={() => setAiOpen((open) => !open)}')
     expect(app).toContain('onEditorCommand={(command) =>')
+    expect(app).toContain('pdfAvailable={Boolean(editorState.preview?.pdfUrl)}')
+    expect(app).toContain('if (editorState.previewStale) setStaleExportOpen(true)')
+    expect(app).toContain('<ExportPdfDialog')
+    expect(app.match(/mainFile=\{mainFile\}/g)).toHaveLength(2)
     expect(app).toContain("compiling={compiling || bundleStatus.state === 'downloading'}")
     expect(styles).toMatch(/\.latex-workbench-toolbar\s*{[^}]*display:\s*flex/s)
     expect(styles).toMatch(/\.latex-workbench-body\s*{[^}]*min-height:\s*0/s)
@@ -28,49 +47,63 @@ describe('LaTeX workbench toolbar', () => {
     expect(styles).toMatch(/\.latex-toolbar-body\s*{[^}]*height:\s*80px/s)
   })
 
-  it('exposes save, compile, and pressed workspace controls accessibly', () => {
-    const html = renderToStaticMarkup(
-      createElement(WorkbenchToolbar, {
-        activePath: 'chapters/main.tex',
-        dirty: true,
-        disabled: false,
-        compiling: false,
-        filesOpen: true,
-        previewOpen: false,
-        aiOpen: true,
-        onSave: vi.fn(),
-        onCompile: vi.fn(),
-        onToggleFiles: vi.fn(),
-        onTogglePreview: vi.fn(),
-        onToggleAi: vi.fn(),
-      }),
-    )
+  it('uses the shared quick-access row and five-tab ribbon contract', () => {
+    const html = renderToStaticMarkup(createElement(WorkbenchToolbar, toolbarProps))
 
     expect(html).toContain('role="toolbar"')
     expect(html).toContain('aria-label="Save"')
+    expect(html).toContain('aria-label="Undo"')
+    expect(html).toContain('aria-label="Redo"')
     expect(html).toContain('chapters/main.tex')
     expect(html).toContain('aria-label="Unsaved changes"')
-    expect(html.match(/aria-pressed="true"/g)).toHaveLength(2)
-    expect(html.match(/aria-pressed="false"/g)).toHaveLength(1)
-    for (const command of [
-      'Undo',
-      'Redo',
-      'Bold',
-      'Italic',
-      'Underline',
-      'Section',
-      'Subsection',
-      'Bulleted list',
-      'Numbered list',
-      'Inline math',
-      'Equation',
-      'Figure',
-      'Table',
-      'Citation',
-      'Reference',
-    ]) {
-      expect(html).toContain(`>${command}<`)
-    }
+    expect(html.match(/role="tab"/g)).toHaveLength(5)
+    for (const tab of ['Home', 'Insert', 'Compile', 'PDF', 'View'])
+      expect(html).toContain(`>${tab}<`)
+    expect(html.indexOf('aria-label="Save"')).toBeLessThan(html.indexOf('>Home<'))
+    expect(html.indexOf('aria-label="Undo"')).toBeLessThan(html.indexOf('>Home<'))
+    expect(html.indexOf('aria-label="Redo"')).toBeLessThan(html.indexOf('>Home<'))
+  })
+
+  it('puts WisWork AI first on Home and separates tab-specific tools', () => {
+    const home = renderToStaticMarkup(createElement(WorkbenchToolbar, toolbarProps))
+    expect(home.indexOf('>WisWork AI<')).toBeLessThan(home.indexOf('>Bold<'))
+    expect(home).toContain('>Section<')
+    expect(home).not.toContain('aria-label="Compile"')
+
+    const insert = renderToStaticMarkup(
+      createElement(WorkbenchToolbar, { ...toolbarProps, initialTab: 'insert' }),
+    )
+    for (const command of ['Inline math', 'Equation', 'Figure', 'Table', 'Citation', 'Reference'])
+      expect(insert).toContain(`>${command}<`)
+    expect(insert).not.toContain('>WisWork AI<')
+
+    const compile = renderToStaticMarkup(
+      createElement(WorkbenchToolbar, {
+        ...toolbarProps,
+        initialTab: 'compile',
+        compilePanel: createElement('div', null, 'compile results'),
+      }),
+    )
+    expect(compile).toContain('aria-label="Compile"')
+    expect(compile).toContain('>Problems (0)<')
+
+    const pdf = renderToStaticMarkup(
+      createElement(WorkbenchToolbar, {
+        ...toolbarProps,
+        initialTab: 'pdf',
+        pdfAvailable: true,
+        onExportPdf: vi.fn(),
+      }),
+    )
+    expect(pdf).toContain('>PDF preview<')
+    expect(pdf).toContain('>Export PDF<')
+
+    const view = renderToStaticMarkup(
+      createElement(WorkbenchToolbar, { ...toolbarProps, initialTab: 'view' }),
+    )
+    expect(view).toContain('>Files<')
+    expect(view).toContain('>PDF preview<')
+    expect(view).toContain('>AI panel<')
   })
 
   it('turns the sole compile action into cancel while work is busy', () => {
@@ -80,6 +113,7 @@ describe('LaTeX workbench toolbar', () => {
         dirty: false,
         disabled: false,
         compiling: true,
+        initialTab: 'compile',
         filesOpen: true,
         previewOpen: true,
         aiOpen: true,
@@ -91,6 +125,6 @@ describe('LaTeX workbench toolbar', () => {
       }),
     )
     expect(html).toContain('aria-label="Cancel"')
-    expect(html).not.toContain('aria-label="Compile"')
+    expect(html).not.toMatch(/<button[^>]+aria-label="Compile"/)
   })
 })

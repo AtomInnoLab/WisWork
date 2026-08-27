@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { access, readFile } from 'node:fs/promises'
+import { access, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { writeZipFixture } from '../packages/latex-project/tests/fixtures/zip'
 import {
@@ -40,6 +40,7 @@ test.describe('LaTeX project workflow', () => {
 BROKEN
 \end{document}`,
       )
+      await toolbar.getByRole('tab', { name: 'Compile', exact: true }).click()
       await toolbar.getByRole('button', { name: 'Compile', exact: true }).click()
       await expect(latexPage.getByRole('alert')).toHaveText('LaTeX operation failed')
 
@@ -53,6 +54,20 @@ Hello from WisWork
       await expect(latexPage.getByText('Remote TeX bundle configured')).toBeVisible()
       await expect.poll(() => readFile(join(projectPath, 'main.tex'), 'utf8')).toBe(valid)
       await expect(latexPage.locator('.pdf-preview canvas')).toBeVisible()
+
+      const exportedPdf = join(harness.root, 'exported.pdf')
+      await writeFile(join(projectPath, 'unopened-dependency.tex'), 'changed after compile')
+      await launched.app.evaluate(({ dialog }, selectedPath) => {
+        dialog.showSaveDialog = (async () => ({ canceled: false, filePath: selectedPath })) as never
+      }, exportedPdf)
+      await toolbar.getByRole('tab', { name: 'PDF', exact: true }).click()
+      await toolbar.getByRole('button', { name: 'Export PDF', exact: true }).click()
+      const staleDialog = latexPage.getByRole('dialog', { name: 'PDF preview is out of date' })
+      await expect(staleDialog).toBeVisible()
+      await staleDialog.getByRole('button', { name: 'Export last PDF', exact: true }).click()
+      await expect(staleDialog).toBeHidden()
+      await expect.poll(() => readFile(exportedPdf, 'utf8')).toContain('%PDF')
+
       await latexPage.getByRole('button', { name: 'Close PDF preview' }).click()
       await expect(latexPage.locator('.pdf-preview')).toHaveCount(0)
       await latexPage.getByRole('button', { name: 'Open PDF preview' }).click()

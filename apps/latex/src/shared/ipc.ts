@@ -20,6 +20,7 @@ export const LATEX_CHANNELS = {
   bundleStatus: 'latex:bundle:status',
   compileStart: 'latex:compile:start',
   compileCancel: 'latex:compile:cancel',
+  pdfExport: 'latex:pdf:export',
   syncTexForward: 'latex:synctex:forward',
   syncTexReverse: 'latex:synctex:reverse',
   proposalGet: 'latex:proposal:get',
@@ -85,6 +86,13 @@ export interface CompileRequest extends SessionRequest {
 export interface CompileRevisionRequest extends SessionRequest {
   revision: number
 }
+
+export interface ExportPdfRequest extends CompileRevisionRequest {
+  allowStale: boolean
+}
+
+export type ExportPdfResult =
+  { state: 'written'; path: string } | { state: 'cancelled' } | { state: 'stale' }
 
 export interface SyncTexForwardRequest extends CompileRevisionRequest {
   path: string
@@ -207,6 +215,7 @@ export interface LatexApi {
   deleteFile(request: FileRequest): Promise<LatexIpcResult<void>>
   compile(request: CompileRequest): Promise<LatexIpcResult<CompileResultDto>>
   cancelCompile(request: SessionRequest): Promise<LatexIpcResult<{ cancelled: boolean }>>
+  exportPdf(request: ExportPdfRequest): Promise<LatexIpcResult<ExportPdfResult>>
   getBundleStatus(request: SessionRequest): Promise<LatexIpcResult<LatexBundleStatusDto>>
   syncTexForward(
     request: SyncTexForwardRequest,

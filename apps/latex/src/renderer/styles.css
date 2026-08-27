@@ -159,8 +159,8 @@ button:disabled {
   position: relative;
   z-index: 30;
   display: flex;
-  height: 119px;
-  flex: 0 0 119px;
+  height: 120px;
+  flex: 0 0 120px;
   flex-direction: column;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
@@ -195,6 +195,7 @@ button:disabled {
 }
 
 .latex-toolbar-tabs {
+  flex: 0 0 39px;
   display: flex;
   min-height: 39px;
   align-items: center;
@@ -226,6 +227,54 @@ button:disabled {
   stroke-linejoin: round;
 }
 
+.latex-toolbar-quick-glyph {
+  font-size: 19px;
+  line-height: 1;
+}
+
+.latex-toolbar-quick-separator {
+  width: 1px;
+  height: 16px;
+  flex: 0 0 1px;
+  margin: 0 6px;
+  background: var(--border);
+}
+
+.latex-ribbon-tabs {
+  display: flex;
+  align-self: stretch;
+  align-items: center;
+  gap: 2px;
+}
+
+.latex-ribbon-tab {
+  position: relative;
+  align-self: stretch;
+  padding: 7px 9px 6px;
+  border-bottom: 2.5px solid transparent;
+  border-radius: 4px 4px 0 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.latex-ribbon-tab:hover,
+.latex-ribbon-tab.active {
+  color: var(--accent);
+}
+
+.latex-ribbon-tab.active::after {
+  position: absolute;
+  right: 13px;
+  bottom: -2.5px;
+  left: 13px;
+  height: 2.5px;
+  border-radius: 1px;
+  background: var(--accent);
+  content: '';
+}
+
 .latex-toolbar-product {
   padding: 0 5px;
   color: var(--accent);
@@ -235,6 +284,7 @@ button:disabled {
 }
 
 .latex-toolbar-body {
+  flex: 0 0 80px;
   display: flex;
   height: 80px;
   align-items: stretch;
@@ -254,6 +304,28 @@ button:disabled {
   align-items: center;
   gap: 2px;
   padding: 2px 4px;
+}
+
+.latex-toolbar-info-group {
+  display: flex;
+  min-width: 140px;
+  max-width: 240px;
+  flex: 0 0 auto;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  padding: 4px 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.latex-toolbar-info-group strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .latex-toolbar-separator {
@@ -329,6 +401,13 @@ button:disabled {
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.latex-toolbar-running {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .latex-toolbar-dirty {

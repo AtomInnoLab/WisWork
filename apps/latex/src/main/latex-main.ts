@@ -4,6 +4,7 @@ import type { BrowserWindow, WebContents, WebContentsView } from 'electron'
 import { LATEX_CHANNELS } from '../shared/ipc.js'
 import { LatexEditFlushCoordinator, type FlushWebContents } from './edit-flush.js'
 import { registerLatexIpc } from './ipc.js'
+import { exportPublishedPdf, type SavePdfDialog } from './export-pdf.js'
 import { ProjectSessionRegistry } from './project-session.js'
 import type { TectonicBundleAsset } from '@wiswork/latex-compiler'
 
@@ -69,7 +70,12 @@ export function createLatexView(projectPath: string): WebContentsView {
   const ownedRuntime = runtime
   const ownedRegistry = registry
   if (!ipcRegistered) {
-    unregisterIpc = registerLatexIpc({ ipcMain: electron.ipcMain, registry: ownedRegistry })
+    unregisterIpc = registerLatexIpc({
+      ipcMain: electron.ipcMain,
+      registry: ownedRegistry,
+      exportPdf: (sourcePath, suggestedName) =>
+        exportPublishedPdf(electron.dialog, sourcePath, suggestedName),
+    })
     ipcRegistered = true
   }
   const view = new electron.WebContentsView({
@@ -284,7 +290,7 @@ interface ElectronRuntime {
   WebContentsView: new (options: unknown) => WebContentsView
   ipcMain: Parameters<typeof registerLatexIpc>[0]['ipcMain'] &
     ConstructorParameters<typeof LatexEditFlushCoordinator>[0]
-  dialog: DialogLike
+  dialog: DialogLike & SavePdfDialog
   webContents: { fromId(id: number): WebContents | undefined }
 }
 
