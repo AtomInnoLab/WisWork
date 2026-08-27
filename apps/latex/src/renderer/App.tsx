@@ -100,6 +100,7 @@ export function App() {
   const [filesOpen, setFilesOpen] = useState(true)
   const [previewOpen, setPreviewOpen] = useState(true)
   const [exportingPdf, setExportingPdf] = useState(false)
+  const exportingPdfRef = useRef(false)
   const [staleExportOpen, setStaleExportOpen] = useState(false)
   const [fileAction, setFileAction] = useState<FileAction | null>(null)
   const [fileActionBusy, setFileActionBusy] = useState(false)
@@ -366,7 +367,8 @@ export function App() {
   const exportPdf = useCallback(
     async (allowStale = false) => {
       const preview = editorStateRef.current.preview
-      if (!projectId || !preview || exportingPdf) return
+      if (!projectId || !preview || exportingPdfRef.current) return false
+      exportingPdfRef.current = true
       setExportingPdf(true)
       setError(null)
       try {
@@ -375,15 +377,24 @@ export function App() {
           revision: preview.revision,
           allowStale,
         })
-        if (!result.ok) setError(result.error.message)
-        else if (result.value.state === 'stale') setStaleExportOpen(true)
+        if (!result.ok) {
+          setError(result.error.message)
+          return false
+        }
+        if (result.value.state === 'stale') {
+          setStaleExportOpen(true)
+          return false
+        }
+        return true
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : String(reason))
+        return false
       } finally {
+        exportingPdfRef.current = false
         setExportingPdf(false)
       }
     },
-    [exportingPdf, projectId],
+    [projectId],
   )
 
   useEffect(() => {
@@ -868,8 +879,9 @@ export function App() {
           compileProject()
         }}
         onExportLast={() => {
-          setStaleExportOpen(false)
-          void exportPdf(true)
+          void exportPdf(true).then((completed) => {
+            if (completed) setStaleExportOpen(false)
+          })
         }}
       />
     </main>
