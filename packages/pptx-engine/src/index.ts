@@ -63,8 +63,29 @@ import {
   type SlideBundle,
 } from './slide-transfer'
 import { moveSlide } from './sections'
+import {
+  ensureElementCreationId,
+  remintCreationIdsInXml,
+  type CreationIdFactory,
+} from './durable-targets'
 
 export * from './types'
+export {
+  CREATION_ID_EXTENSION_URI,
+  CREATION_ID_NAMESPACE,
+  defaultCreationIdFactory,
+  ensureElementCreationId,
+  fingerprintSlide,
+  fingerprintSlideElement,
+  mintCreationId,
+  normalizeCreationId,
+  readCreationId,
+  remintCreationIdsInXml,
+  resolvePresentationTarget,
+  setCreationIdInElementXml,
+  type CreationIdFactory,
+  type PresentationTargetResolution,
+} from './durable-targets'
 export {
   animClassOf,
   buildTimingXml,
@@ -911,14 +932,17 @@ function registerNewSlide(opened: OpenedPptx, sourceIndex: number, newPath: stri
 export function duplicateSlide(
   opened: OpenedPptx,
   sourceIndex: number,
-  opts?: { clearText?: boolean },
+  opts?: { clearText?: boolean; creationIdFactory?: CreationIdFactory },
 ): Slide | null {
   const { deck, archive } = opened
   const src = deck.slides[sourceIndex]
   if (!src) return null
 
   const newPath = nextSlidePath(archive)
-  archive.entries.set(newPath, Buffer.from(patchSlideXml(src), 'utf8'))
+  archive.entries.set(
+    newPath,
+    Buffer.from(remintCreationIdsInXml(patchSlideXml(src), opts?.creationIdFactory), 'utf8'),
+  )
 
   const srcRels = archive.readText(relsPathFor(src.path))
   if (srcRels) {
@@ -961,7 +985,7 @@ export function pasteSlide(
   opened: OpenedPptx,
   afterIndex: number,
   bundle: SlideBundle,
-  opts?: { keepSourceFormatting?: boolean },
+  opts?: { keepSourceFormatting?: boolean; creationIdFactory?: CreationIdFactory },
 ): Slide | null {
   const { deck, archive } = opened
   if (deck.slides.length === 0) return null
@@ -974,7 +998,10 @@ export function pasteSlide(
 
   const newPath = nextSlidePath(archive)
   const relsXml = materializeSlideBundle(archive, bundle, newPath, layoutPath)
-  archive.entries.set(newPath, Buffer.from(bundle.slideXml, 'utf8'))
+  archive.entries.set(
+    newPath,
+    Buffer.from(remintCreationIdsInXml(bundle.slideXml, opts?.creationIdFactory), 'utf8'),
+  )
   archive.entries.set(relsPathFor(newPath), Buffer.from(relsXml, 'utf8'))
 
   if (anchorIndex < 0) {
@@ -1542,11 +1569,15 @@ export function appendRawElements(
   opened: OpenedPptx,
   slideIndex: number,
   xmls: string[],
+  identity?: { preserveCreationIds?: boolean; creationIdFactory?: CreationIdFactory },
 ): { slide: Slide; elementIds: string[] } | null {
   const slide = opened.deck.slides[slideIndex]
   if (!slide || !xmls.length) return null
   const before = slide.elements.length
-  for (const xml of xmls) {
+  for (const sourceXml of xmls) {
+    const xml = identity?.preserveCreationIds
+      ? sourceXml
+      : remintCreationIdsInXml(sourceXml, identity?.creationIdFactory)
     slide.elements.push({
       id: `rawnew_${slide.elements.length}`,
       type: 'passthrough',
@@ -1566,10 +1597,13 @@ export function addTable(
   opened: OpenedPptx,
   slideIndex: number,
   opts: NewTableOptions,
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): { slide: Slide; elementId: string } | null {
   const slide = opened.deck.slides[slideIndex]
   if (!slide) return null
-  const r = appendRawElements(opened, slideIndex, [buildTableXml(slide, opts)])
+  const r = appendRawElements(opened, slideIndex, [buildTableXml(slide, opts, identity)], {
+    preserveCreationIds: true,
+  })
   return r ? { slide: r.slide, elementId: r.elementIds[r.elementIds.length - 1]! } : null
 }
 
@@ -2816,6 +2850,7 @@ export function pasteElements(
   slideIndex: number,
   items: ElementClipboardItem[],
   shiftEmu: { dx: number; dy: number },
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): { slide: Slide; elementIds: string[] } | null {
   const { archive, deck } = opened
   const slide = deck.slides[slideIndex]
@@ -2866,11 +2901,11 @@ export function pasteElements(
         .replace(/\bx="(-?\d+)"/, (_m, v: string) => `x="${Number(v) + shiftEmu.dx}"`)
         .replace(/\by="(-?\d+)"/, (_m, v: string) => `y="${Number(v) + shiftEmu.dy}"`),
     )
-    return xml
+    return remintCreationIdsInXml(xml, identity?.creationIdFactory)
   })
 
   if (relsDirty) archive.entries.set(relsPath, Buffer.from(relsXml, 'utf8'))
-  return appendRawElements(opened, slideIndex, xmls)
+  return appendRawElements(opened, slideIndex, xmls, { preserveCreationIds: true })
 }
 
 // ── Slide transitions ───────────────────────────────────────────────────
@@ -2941,6 +2976,7 @@ export function groupElements(
   opened: OpenedPptx,
   slideIndex: number,
   sourceIds: string[],
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): { slide: Slide; groupId: string } | null {
   const slide = opened.deck.slides[slideIndex]
   if (!slide || sourceIds.length < 2) return null
@@ -2953,6 +2989,9 @@ export function groupElements(
   if (targets.length < 2) return null
   if (targets.some((e) => !GROUPABLE.has(e.type))) return null
 
+  // Grouping explicitly edits the selected objects, so legacy children are enrolled.
+  for (const target of targets) ensureElementCreationId(slide, target, identity?.creationIdFactory)
+
   // Compute the bounding box
   const bbox = calcBoundingBox(targets)
 
@@ -2960,14 +2999,14 @@ export function groupElements(
   const childrenXml = targets.map((e) => patchedElementXml(e)).join('')
 
   // Build the grpSp XML
-  const grpXml = buildGrpSpXml(slide, bbox, childrenXml)
+  const grpXml = buildGrpSpXml(slide, bbox, childrenXml, identity)
 
   // Remove the selected elements from the current slide
   const idSet = new Set(sourceIds)
   slide.elements = slide.elements.filter((e) => !idSet.has(e.id))
 
   // Append the grpSp and reparse
-  const result = appendRawElements(opened, slideIndex, [grpXml])
+  const result = appendRawElements(opened, slideIndex, [grpXml], { preserveCreationIds: true })
   if (!result) return null
 
   return { slide: result.slide, groupId: result.elementIds[result.elementIds.length - 1]! }
@@ -3050,7 +3089,7 @@ export function ungroupElement(
     return materializeSlide(opened, slideIndex)
   }
 
-  const result = appendRawElements(opened, slideIndex, liftedXmls)
+  const result = appendRawElements(opened, slideIndex, liftedXmls, { preserveCreationIds: true })
   return result?.slide ?? null
 }
 

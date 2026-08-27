@@ -13,6 +13,32 @@ import { generateParagraphXml, generateXfrmXml } from './generate'
 import { escapeXmlAttr } from './xml-utils'
 import { relsPathFor } from './zip'
 import type { OpenedPptx } from './index'
+import {
+  CREATION_ID_EXTENSION_URI,
+  CREATION_ID_NAMESPACE,
+  mintCreationId,
+  readCreationId,
+  type CreationIdFactory,
+} from './durable-targets'
+
+function mintCreationIdFromXml(xml: string): string {
+  const id = readCreationId(xml)
+  if (!id) throw new Error('Generated element is missing its creationId')
+  return id
+}
+
+export interface NewIdentityOptions {
+  creationIdFactory?: CreationIdFactory
+}
+
+function creationIdXml(factory?: CreationIdFactory): string {
+  const id = mintCreationId(factory)
+  return `<a:extLst><a:ext uri="${CREATION_ID_EXTENSION_URI}"><a16:creationId xmlns:a16="${CREATION_ID_NAMESPACE}" id="${id}"/></a:ext></a:extLst>`
+}
+
+function cNvPrXml(id: number, name: string, attributes = '', factory?: CreationIdFactory): string {
+  return `<p:cNvPr id="${id}" name="${escapeXmlAttr(name)}"${attributes}>${creationIdXml(factory)}</p:cNvPr>`
+}
 
 /**
  * 'textbox' is a special value (plain text box without prstGeom); anything else is
@@ -55,6 +81,7 @@ function buildCxnSpXml(
   slide: Slide,
   opts: NewElementOptions,
   def: { prst: string; head?: boolean; tail?: boolean },
+  identity?: NewIdentityOptions,
 ): string {
   const id = nextCNvPrId(slide)
   const name = `${
@@ -70,7 +97,7 @@ function buildCxnSpXml(
   const head = def.head ? '<a:headEnd type="triangle" w="med" len="med"/>' : ''
   const tail = def.tail ? '<a:tailEnd type="triangle" w="med" len="med"/>' : ''
   return (
-    `<p:cxnSp><p:nvCxnSpPr><p:cNvPr id="${id}" name="${escapeXmlAttr(name)}"/>` +
+    `<p:cxnSp><p:nvCxnSpPr>${cNvPrXml(id, name, '', identity?.creationIdFactory)}` +
     '<p:cNvCxnSpPr/><p:nvPr/></p:nvCxnSpPr>' +
     `<p:spPr><a:xfrm><a:off x="${o.x}" y="${o.y}"/><a:ext cx="${o.cx}" cy="${o.cy}"/></a:xfrm>` +
     `<a:prstGeom prst="${def.prst}"><a:avLst/></a:prstGeom>` +
@@ -93,7 +120,11 @@ export function nextCNvPrId(slide: Slide): number {
   return max + 1
 }
 
-export function buildSpXml(slide: Slide, opts: NewElementOptions): string {
+export function buildSpXml(
+  slide: Slide,
+  opts: NewElementOptions,
+  identity?: NewIdentityOptions,
+): string {
   const id = nextCNvPrId(slide)
   const isTextbox = opts.kind === 'textbox'
   const name = isTextbox ? `TextBox ${id}` : `Shape ${id}`
@@ -113,7 +144,7 @@ export function buildSpXml(slide: Slide, opts: NewElementOptions): string {
     .map((p) => generateParagraphXml(p))
     .join('')
   return (
-    `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${escapeXmlAttr(name)}"/>` +
+    `<p:sp><p:nvSpPr>${cNvPrXml(id, name, '', identity?.creationIdFactory)}` +
     `<p:cNvSpPr${isTextbox ? ' txBox="1"' : ''}/><p:nvPr/></p:nvSpPr>` +
     `<p:spPr>${xfrm}${geom}${fill}${ln}</p:spPr>` +
     `<p:txBody><a:bodyPr wrap="square" rtlCol="0"/><a:lstStyle/>${paras}</p:txBody></p:sp>`
@@ -121,7 +152,11 @@ export function buildSpXml(slide: Slide, opts: NewElementOptions): string {
 }
 
 /** Synthesize a new element and hang it on the slide; returns the model element (immediately usable by the render layer). */
-export function addElement(slide: Slide, opts: NewElementOptions): TextElement {
+export function addElement(
+  slide: Slide,
+  opts: NewElementOptions,
+  identity?: NewIdentityOptions,
+): TextElement {
   const lineDef = LINE_KINDS[opts.kind]
   if (lineDef) {
     const stroke = opts.stroke ?? DEFAULT_LINE_STROKE
@@ -130,7 +165,7 @@ export function addElement(slide: Slide, opts: NewElementOptions): TextElement {
       type: 'shape',
       anchor: {
         spIndex: slide.elements.length,
-        originalXml: buildCxnSpXml(slide, opts, lineDef),
+        originalXml: buildCxnSpXml(slide, opts, lineDef, identity),
         range: [0, 0],
       },
       transform: { offset: { ...opts.offset }, rot: 0, flipH: false, flipV: false },
@@ -143,11 +178,12 @@ export function addElement(slide: Slide, opts: NewElementOptions): TextElement {
         ...(lineDef.tail ? { tailEnd: { type: 'triangle' as const } } : {}),
       },
     }
+    el.creationId = mintCreationIdFromXml(el.anchor.originalXml)
     slide.elements.push(el)
     slide.structureDirty = true
     return el
   }
-  const xml = buildSpXml(slide, opts)
+  const xml = buildSpXml(slide, opts, identity)
   const el: TextElement = {
     id: `spnew_${(insertCounter++).toString(36)}_${Date.now().toString(36)}`,
     type: opts.kind === 'textbox' ? 'text' : 'shape',
@@ -165,6 +201,7 @@ export function addElement(slide: Slide, opts: NewElementOptions): TextElement {
       : {}),
     text: { paragraphs: opts.paragraphs?.length ? opts.paragraphs : [{ runs: [{ text: '' }] }] },
   }
+  el.creationId = mintCreationIdFromXml(xml)
   slide.elements.push(el)
   slide.structureDirty = true
   return el
@@ -186,7 +223,11 @@ const DEFAULT_TABLE_STYLE_ID = '{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}'
  * default built-in style, empty cells). Insertion goes through appendRawElements
  * (materialize+reparse), reusing the existing table parsing/rendering pipeline.
  */
-export function buildTableXml(slide: Slide, opts: NewTableOptions): string {
+export function buildTableXml(
+  slide: Slide,
+  opts: NewTableOptions,
+  identity?: NewIdentityOptions,
+): string {
   const id = nextCNvPrId(slide)
   const rows = Math.max(1, Math.floor(opts.rows))
   const cols = Math.max(1, Math.floor(opts.cols))
@@ -199,7 +240,7 @@ export function buildTableXml(slide: Slide, opts: NewTableOptions): string {
     () => `<a:tr h="${rowH}">${cell.repeat(cols)}</a:tr>`,
   ).join('')
   return (
-    `<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="${id}" name="Table ${id}"/>` +
+    `<p:graphicFrame><p:nvGraphicFramePr>${cNvPrXml(id, `Table ${id}`, '', identity?.creationIdFactory)}` +
     '<p:cNvGraphicFramePr><a:graphicFrameLocks noGrp="1"/></p:cNvGraphicFramePr><p:nvPr/></p:nvGraphicFramePr>' +
     `<p:xfrm><a:off x="${opts.offset.x}" y="${opts.offset.y}"/><a:ext cx="${opts.offset.cx}" cy="${opts.offset.cy}"/></p:xfrm>` +
     '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table">' +
@@ -293,6 +334,7 @@ export function addPicture(
   opened: OpenedPptx,
   slide: Slide,
   opts: NewPictureOptions,
+  identity?: NewIdentityOptions,
 ): PictureElement | null {
   const added = addImageMediaAndRel(opened, slide, opts.bytes, opts.ext)
   if (!added) return null
@@ -303,7 +345,7 @@ export function addPicture(
   const name = opts.name ?? `Picture ${id}`
   const descrAttr = opts.descr ? ` descr="${escapeXmlAttr(opts.descr)}"` : ''
   const xml =
-    `<p:pic><p:nvPicPr><p:cNvPr id="${id}" name="${escapeXmlAttr(name)}"${descrAttr}/>` +
+    `<p:pic><p:nvPicPr>${cNvPrXml(id, name, descrAttr, identity?.creationIdFactory)}` +
     '<p:cNvPicPr/><p:nvPr/></p:nvPicPr>' +
     `<p:blipFill><a:blip r:embed="${rid}"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>` +
     `<p:spPr>${generateXfrmXml({ offset: opts.offset, rot: 0, flipH: false, flipV: false })}` +
@@ -317,6 +359,7 @@ export function addPicture(
     name,
     ...(opts.descr ? { descr: opts.descr } : {}),
     mediaRef: mediaPath,
+    creationId: mintCreationIdFromXml(xml),
   }
   slide.elements.push(el)
   slide.structureDirty = true
@@ -366,7 +409,12 @@ export function calcBoundingBox(elements: SlideElement[]): EmuRect {
  *  - childrenXml: concatenation of each child's raw XML fragment (passthrough
  *    children keep their original bytes)
  */
-export function buildGrpSpXml(slide: Slide, bbox: EmuRect, childrenXml: string): string {
+export function buildGrpSpXml(
+  slide: Slide,
+  bbox: EmuRect,
+  childrenXml: string,
+  identity?: NewIdentityOptions,
+): string {
   const id = nextCNvPrId(slide)
   const name = `Group ${id}`
   const { x, y, cx, cy } = bbox
@@ -377,7 +425,7 @@ export function buildGrpSpXml(slide: Slide, bbox: EmuRect, childrenXml: string):
     `</a:xfrm>`
   return (
     `<p:grpSp>` +
-    `<p:nvGrpSpPr><p:cNvPr id="${id}" name="${escapeXmlAttr(name)}"/>` +
+    `<p:nvGrpSpPr>${cNvPrXml(id, name, '', identity?.creationIdFactory)}` +
     `<p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>` +
     `<p:grpSpPr>${grpXfrm}</p:grpSpPr>` +
     childrenXml +

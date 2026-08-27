@@ -42,6 +42,7 @@ import type {
   TableCellBorders,
   ChartElement,
 } from './types'
+import { readCreationId } from './durable-targets'
 import { parseChartXml } from './chart'
 import { parseCustGeom } from './custgeom'
 import {
@@ -136,7 +137,11 @@ export function parseSlide(input: SlideParseInput): Slide {
       ...(sp.gapAfter ? { gapAfter: sp.gapAfter } : {}),
     }
     const el = parseShapeFragment(sp, fragXml, anchor, ctx)
-    if (el) elements.push(el)
+    if (el) {
+      const creationId = readCreationId(fragXml)
+      if (creationId) el.creationId = creationId
+      elements.push(el)
+    }
   })
 
   // Background: the slide's own <p:bg> wins, otherwise inherit layout→master (read-only).
@@ -147,6 +152,7 @@ export function parseSlide(input: SlideParseInput): Slide {
 
   return {
     path,
+    durableId: path,
     originalXml: slideXml,
     bodyPrefix: scan.bodyPrefix,
     bodySuffix: scan.bodySuffix,
@@ -579,6 +585,10 @@ function parseGroupChild(
       break
     default:
       return null
+  }
+  if (el && rawXml) {
+    const creationId = readCreationId(rawXml)
+    if (creationId) el.creationId = creationId
   }
   const nvId = groupChildNvId(child)
   if (el && nvId != null) el.nvId = nvId
