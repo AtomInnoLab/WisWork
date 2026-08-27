@@ -670,6 +670,7 @@ export function App() {
     <main className="latex-workbench">
       <WorkbenchToolbar
         activePath={activePath}
+        mainFile={mainFile}
         dirty={Boolean(activeBuffer?.dirty)}
         disabled={frozen || !activeBuffer}
         compileDisabled={frozen || !projectId || !mainFile}
