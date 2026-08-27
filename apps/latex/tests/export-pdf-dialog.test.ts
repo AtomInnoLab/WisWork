@@ -59,6 +59,18 @@ describe('stale PDF export dialog', () => {
     const buttons = Array.from(container.querySelectorAll('button'))
     expect(document.activeElement).toBe(buttons[0])
     buttons.at(-1)!.focus()
+    act(() => {
+      root.render(
+        createElement(ExportPdfDialog, {
+          open: true,
+          busy: false,
+          onCancel: vi.fn(),
+          onCompile: vi.fn(),
+          onExportLast: vi.fn(),
+        }),
+      )
+    })
+    expect(document.activeElement).toBe(buttons.at(-1))
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }))
     expect(document.activeElement).toBe(buttons[0])
 
