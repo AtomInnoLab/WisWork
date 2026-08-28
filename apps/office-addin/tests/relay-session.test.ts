@@ -204,8 +204,10 @@ describe('Office cloud relay session', () => {
       ...diagnostic,
       event_id: '00000000-0000-4000-8000-000000000003',
       error_code: 'office_recovery_failed:word_body_shape',
+      verification_stage: 'body_shape',
     })
     expect(frame(socket, 2).error_code).toBe('office_recovery_failed')
+    expect(frame(socket, 2)).not.toHaveProperty('verification_stage')
     socket.receive(
       JSON.stringify({
         version: 2,
