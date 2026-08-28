@@ -514,6 +514,52 @@ describe('Office persistent relay session', () => {
     },
   )
 
+  it.each([
+    ['malformed JSON', '{broken'],
+    [
+      'unexpected frame',
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pairing_12345678',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    ],
+    [
+      'unknown relay error',
+      JSON.stringify({ version: 2, type: 'relay.error', code: 'future_resume_error' }),
+    ],
+  ])('backs off without legacy fallback for pre-challenge %s', async (_label, payload) => {
+    const store = new FakeBindingStore(binding)
+    const sockets: FakeSocket[] = []
+    const scheduled: Array<() => void> = []
+    const session = createOfficeRelaySession({
+      capabilities: ['agent.v1'],
+      bindingStore: store,
+      createSocket: () => {
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+      schedule: (callback) => {
+        scheduled.push(callback)
+        return scheduled.length
+      },
+      cancelSchedule: () => undefined,
+    })
+    void session.connect('word')
+    await flush()
+    sockets[0]!.open()
+    sockets[0]!.onmessage?.({ data: payload })
+    await flush()
+
+    expect(store.forgets).toBe(0)
+    expect(sockets).toHaveLength(1)
+    expect(scheduled).toHaveLength(1)
+    expect(session.snapshot()).toEqual({ status: 'reconnecting' })
+  })
+
   it('retries multiple pre-challenge network closes and eventually resumes the binding', async () => {
     const store = new FakeBindingStore(binding)
     const sockets: FakeSocket[] = []

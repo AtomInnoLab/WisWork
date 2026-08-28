@@ -483,10 +483,8 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
 
   const protocolFailure = () => {
     if (connectionMode === 'enroll') fallbackToLegacy()
-    else if (connectionMode === 'resume' && storedBinding) {
-      if (resumeRecognized) scheduleResume()
-      else fallbackStoredBindingToLegacy()
-    } else revoke('offline')
+    else if (connectionMode === 'resume' && storedBinding) scheduleResume()
+    else revoke('offline')
   }
 
   const subscribeInvalidation = () => {
