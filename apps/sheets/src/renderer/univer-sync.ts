@@ -845,7 +845,8 @@ export interface MappedRangeRead {
   /// File-space end row actually requested; the indexing poll compares the
   /// raw cutoff against this.
   readonly fileEndRow: number
-  /// Actual UTF-8 JSON bytes received from the sidecar across this mapped read.
+  /// UTF-8 JSON size of sidecar results accepted by this mapped read. This is
+  /// an application acceptance cap, not a transport-level network byte cap.
   readonly byteCount: number
   /// A read may stop only when the sidecar has not indexed the rest yet.
   /// Callers use this explicit receipt to retry; errors never return partial data.
@@ -862,6 +863,9 @@ export const SIDECAR_READ_MAX_MS = 15_000
 
 export interface MappedRangeReadOptions {
   readonly signal?: AbortSignal
+  /// Reject after receipt, before mapping/return, when serialized results
+  /// exceed the caller's remaining aggregate acceptance budget.
+  readonly maxBytes?: number
   /// Workbook-instance guard supplied by callers that own the active ref.
   readonly isCurrent?: () => boolean
 }
@@ -1040,8 +1044,9 @@ export async function readSheetRangeMapped(
     )
     assertRangeReadCurrent(options, startedAt)
     bytes += rangeResultBytes(batch)
-    if (bytes > SIDECAR_READ_MAX_BYTES) {
-      throw new Error(`Range read exceeded the ${SIDECAR_READ_MAX_BYTES}-byte response limit.`)
+    const maxBytes = Math.min(SIDECAR_READ_MAX_BYTES, options.maxBytes ?? SIDECAR_READ_MAX_BYTES)
+    if (bytes > maxBytes) {
+      throw new Error(`Range read exceeded the ${maxBytes}-byte response acceptance limit.`)
     }
     batches.push(batch)
     // Later batches cannot have data before indexing reaches them; the

@@ -152,6 +152,15 @@ function disjointRanges(ranges: readonly IRange[]): IRange[] {
   return accepted
 }
 
+function rangesEqual(left: IRange, right: IRange): boolean {
+  return (
+    left.startRow === right.startRow &&
+    left.endRow === right.endRow &&
+    left.startColumn === right.startColumn &&
+    left.endColumn === right.endColumn
+  )
+}
+
 /** True when the loaded window covers the coordinate — the inner model owns it. */
 export function coveredByWindow(
   state: LazyWorkbookState,
@@ -525,6 +534,20 @@ export class LazyExtendedFindModel extends FindModel {
 
   async replaceAll(replaceString: string): Promise<IReplaceAllResult> {
     if (!this.stateIsCurrent()) return { success: 0, failure: 0 }
+    if (this.selectionRanges) {
+      let success = 0
+      let failure = 0
+      for (const match of this.getMatches() as LazyCellMatch[]) {
+        if (match.replaceable === false) {
+          failure += 1
+        } else if (await this.writeExtraReplacement(match, replaceString)) {
+          success += 1
+        } else {
+          failure += 1
+        }
+      }
+      return { success, failure }
+    }
     let success = 0
     let failure = 0
     try {
@@ -569,9 +592,16 @@ export class LazyExtendedFindModel extends FindModel {
     // forever and would never yield to the extras.
     const stripped = { ...params, noFocus: true, loop: false }
     try {
-      return direction === 'next'
-        ? this.inner.moveToNextMatch(stripped)
-        : this.inner.moveToPreviousMatch(stripped)
+      const maxSteps = Math.max(1, this.inner.getMatches().length + 1)
+      for (let step = 0; step < maxSteps; step += 1) {
+        const candidate =
+          direction === 'next'
+            ? this.inner.moveToNextMatch(stripped)
+            : this.inner.moveToPreviousMatch(stripped)
+        if (!candidate) return null
+        if (this.matchInSelection(candidate)) return candidate
+      }
+      return null
     } catch {
       return null
     }
@@ -579,10 +609,19 @@ export class LazyExtendedFindModel extends FindModel {
 
   private innerMatches(): IFindMatch[] {
     try {
-      return this.inner.getMatches()
+      const matches = this.inner.getMatches()
+      return matches.filter((match) => this.matchInSelection(match))
     } catch {
       return []
     }
+  }
+
+  private matchInSelection(match: IFindMatch): boolean {
+    if (!this.selectionRanges) return true
+    const value = match as LazyCellMatch
+    return this.selectionRanges.some((range) =>
+      insideRange(range, value.range.range.startRow, value.range.range.startColumn),
+    )
   }
 
   /** Extras that are still outside the (evolving) loaded window. */
@@ -738,19 +777,19 @@ export class LazyExtendedFindModel extends FindModel {
   private captureSelectionRanges(): readonly IRange[] | null {
     if (this.query.findScope === 'unit') return null
     try {
+      const worksheet = this.deps.runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
       const ranges =
-        this.deps.runtime.univerAPI
-          .getActiveWorkbook()
-          ?.getActiveSheet()
+        worksheet
           ?.getSelection()
           ?.getActiveRangeList()
           .map((range) => range.getRange()) ?? []
-      return ranges.length > 1 ||
-        ranges.some(
-          (range) => range.startRow !== range.endRow || range.startColumn !== range.endColumn,
-        )
-        ? disjointRanges(ranges)
-        : null
+      const isSingle = (range: IRange): boolean => {
+        const merged = worksheet?.getCellMergeData(range.startRow, range.startColumn)?.getRange()
+        return merged
+          ? rangesEqual(range, merged)
+          : range.startRow === range.endRow && range.startColumn === range.endColumn
+      }
+      return ranges.some((range) => !isSingle(range)) ? disjointRanges(ranges) : null
     } catch {
       return null
     }
@@ -812,7 +851,9 @@ export class LazyExtendedFindModel extends FindModel {
         this.deps.setMessage,
       )
       worksheet.scrollToCell(bounds.startRow, bounds.startColumn)
-      worksheet.getRange(bounds.startRow, bounds.startColumn, 1, 1).activate()
+      const target = worksheet.getRange(bounds.startRow, bounds.startColumn, 1, 1)
+      if (this.selectionRanges) worksheet.getSelection()?.updatePrimaryCell(target)
+      else target.activate()
       // Selection changes performed by Find itself are not external drift;
       // retain the original search ranges while advancing the live guard.
       this.selectionSignature = this.currentSelectionSignature()
@@ -835,14 +876,14 @@ export class LazyExtendedFindModel extends FindModel {
       if (!worksheet) return false
       const bounds = match.range.range
       const target = worksheet.getRange(bounds.startRow, bounds.startColumn, 1, 1)
+      const matchedText =
+        match.matchedText ??
+        (match.isFormula ? target.getFormula() : scalarToText(target.getValue())) ??
+        ''
       if (match.isFormula) {
-        target.setValues([
-          [{ f: replaceAllOccurrences(match.matchedText ?? '', this.query, replaceString) }],
-        ])
+        target.setValues([[{ f: replaceAllOccurrences(matchedText, this.query, replaceString) }]])
       } else {
-        target.setValues([
-          [{ v: replaceAllOccurrences(match.matchedText ?? '', this.query, replaceString) }],
-        ])
+        target.setValues([[{ v: replaceAllOccurrences(matchedText, this.query, replaceString) }]])
       }
       return true
     } catch {
@@ -966,6 +1007,10 @@ export class LazyExtendedFindModel extends FindModel {
               meta,
               {
                 signal: this.scanAbort.signal,
+                // The current desktop IPC does not expose streaming byte
+                // accounting; this limits accepted serialized responses after
+                // receipt and before they enter the aggregate match merge.
+                maxBytes: LAZY_FIND_MAX_BYTES - scannedBytes,
                 isCurrent: () =>
                   this.alive && this.isLiveGeneration() && this.scanTargetIsCurrent(worksheet),
               },

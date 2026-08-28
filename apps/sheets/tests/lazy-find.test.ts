@@ -387,13 +387,16 @@ function facade(
     noFilterModel = false,
     selectionRanges = [],
     hidden = { current: false },
+    mergedRanges = [],
   }: {
     noFilterModel?: boolean
     selectionRanges?: IRange[]
     hidden?: { current: boolean }
+    mergedRanges?: IRange[]
   } = {},
 ) {
   const setValues = vi.fn()
+  const updatePrimaryCell = vi.fn()
   // Selection follows activation, like the live grid does.
   const active = { row: 0, column: 0 }
   const worksheet = {
@@ -402,7 +405,18 @@ function facade(
     isSheetHidden: () => hidden.current,
     getSelection: () => ({
       getActiveRangeList: () => selectionRanges.map((range) => ({ getRange: () => range })),
+      updatePrimaryCell,
     }),
+    getCellMergeData: (row: number, column: number) => {
+      const range = mergedRanges.find(
+        (candidate) =>
+          row >= candidate.startRow &&
+          row <= candidate.endRow &&
+          column >= candidate.startColumn &&
+          column <= candidate.endColumn,
+      )
+      return range ? { getRange: () => range } : undefined
+    },
     scrollToCell: vi.fn(),
     getRange: vi.fn((row: number, column: number) => ({
       activate: () => {
@@ -410,6 +424,8 @@ function facade(
         active.column = column
       },
       setValues,
+      getValue: () => 'needle loaded',
+      getFormula: () => '',
     })),
   }
   const workbook = {
@@ -467,6 +483,7 @@ function facade(
     active,
     selectionRanges,
     hidden,
+    updatePrimaryCell,
   }
 }
 
@@ -933,7 +950,7 @@ describe('installLazyFindBridge', () => {
     bridge.dispose()
   })
 
-  it('treats multiple singleton selections as a scoped selection', async () => {
+  it('keeps multiple singleton selections on whole-sheet semantics', async () => {
     const selectionRanges = [
       { startRow: 100, endRow: 100, startColumn: 2, endColumn: 2 },
       { startRow: 700, endRow: 700, startColumn: 5, endColumn: 5 },
@@ -946,8 +963,87 @@ describe('installLazyFindBridge', () => {
     const bridge = installLazyFindBridge(harness)
     mockRead.mockResolvedValue(mapped([]))
     await harnessLookup(harness)(query())
-    await vi.waitFor(() => expect(mockRead).toHaveBeenCalledTimes(2))
-    expect(mockRead.mock.calls.map((call) => call[2])).toEqual(selectionRanges)
+    await vi.waitFor(() => expect(mockRead).toHaveBeenCalledTimes(1))
+    expect(mockRead.mock.calls[0]![2].startRow).toBe(0)
+    bridge.dispose()
+  })
+
+  it('treats an exact merged-cell selection as single but a larger range as scoped', async () => {
+    const merged = { startRow: 100, endRow: 101, startColumn: 2, endColumn: 3 }
+    const exact = facade(state({}), { selectionRanges: [{ ...merged }], mergedRanges: [merged] })
+    exact.providers.add({
+      find: vi.fn().mockResolvedValue([new FakeInnerModel([])]),
+      terminate: vi.fn(),
+    })
+    const exactBridge = installLazyFindBridge(exact)
+    mockRead.mockResolvedValue(mapped([]))
+    await harnessLookup(exact)(query())
+    await vi.waitFor(() => expect(mockRead).toHaveBeenCalledTimes(1))
+    expect(mockRead.mock.calls[0]![2].startRow).toBe(0)
+    exactBridge.dispose()
+
+    mockRead.mockClear()
+    const largerRange = { ...merged, endRow: 102 }
+    const larger = facade(state({}), { selectionRanges: [largerRange], mergedRanges: [merged] })
+    larger.providers.add({
+      find: vi.fn().mockResolvedValue([new FakeInnerModel([])]),
+      terminate: vi.fn(),
+    })
+    const largerBridge = installLazyFindBridge(larger)
+    await harnessLookup(larger)(query())
+    await vi.waitFor(() => expect(mockRead).toHaveBeenCalledTimes(1))
+    expect(mockRead.mock.calls[0]![2]).toEqual(largerRange)
+    largerBridge.dispose()
+  })
+
+  it('keeps immutable scoped ranges when Find focuses an out-of-window hit', async () => {
+    const selectionRanges = [{ startRow: 100, endRow: 120, startColumn: 2, endColumn: 3 }]
+    const harness = facade(state({}), { selectionRanges })
+    const inner = new FakeInnerModel([match('s1', 5, 5)])
+    harness.updatePrimaryCell.mockImplementation(() => {
+      // Close approximation of Univer's SetSelections-driven provider refresh:
+      // a loaded hit outside the immutable search union appears on refresh.
+      inner.matchesUpdate$.next([match('s1', 5, 5)])
+    })
+    harness.providers.add({ find: vi.fn().mockResolvedValue([inner]), terminate: vi.fn() })
+    const bridge = installLazyFindBridge(harness)
+    mockRead.mockResolvedValue(mapped([{ row: 110, column: 2, value: 'needle scoped' }]))
+    const model = (await harnessLookup(harness)(query()))[0]!
+    await vi.waitFor(() => expect(model.getMatches()).toHaveLength(1))
+    model.moveToNextMatch()
+    expect(harness.updatePrimaryCell).toHaveBeenCalledTimes(1)
+    expect(harness.selectionRanges).toEqual(selectionRanges)
+    expect(model.getMatches().map((item) => (item as LazyCellMatch).range.range.startRow)).toEqual([
+      110,
+    ])
+    bridge.dispose()
+  })
+
+  it('replaceAll writes only filtered in-scope inner matches', async () => {
+    const selectionRanges = [{ startRow: 100, endRow: 120, startColumn: 2, endColumn: 3 }]
+    const harness = facade(state({}), { selectionRanges })
+    const inner = new FakeInnerModel([match('s1', 5, 5), match('s1', 110, 2)])
+    harness.providers.add({ find: vi.fn().mockResolvedValue([inner]), terminate: vi.fn() })
+    const bridge = installLazyFindBridge(harness)
+    mockRead.mockResolvedValue(mapped([]))
+    const model = (await harnessLookup(harness)(query()))[0]!
+    await vi.waitFor(() => expect(mockRead).toHaveBeenCalled())
+    expect(await model.replaceAll('x')).toEqual({ success: 1, failure: 0 })
+    expect(harness.worksheet.getRange).toHaveBeenCalledWith(110, 2, 1, 1)
+    expect(harness.worksheet.getRange).not.toHaveBeenCalledWith(5, 5, 1, 1)
+    bridge.dispose()
+  })
+
+  it('skips out-of-scope inner cursor entries without exhausting navigation', async () => {
+    const selectionRanges = [{ startRow: 100, endRow: 120, startColumn: 2, endColumn: 3 }]
+    const harness = facade(state({}), { selectionRanges })
+    const inner = new CursorInnerModel([match('s1', 5, 5), match('s1', 110, 2)])
+    harness.providers.add({ find: vi.fn().mockResolvedValue([inner]), terminate: vi.fn() })
+    const bridge = installLazyFindBridge(harness)
+    mockRead.mockResolvedValue(mapped([]))
+    const model = (await harnessLookup(harness)(query()))[0]!
+    await vi.waitFor(() => expect(mockRead).toHaveBeenCalled())
+    expect((model.moveToNextMatch({ loop: false }) as LazyCellMatch).range.range.startRow).toBe(110)
     bridge.dispose()
   })
 
@@ -1076,6 +1172,10 @@ describe('installLazyFindBridge', () => {
     const model = (await harnessLookup(harness)(query()))[0]!
     await vi.waitFor(() => expect(harness.setMessage).toHaveBeenCalled())
     expect(mockRead).toHaveBeenCalledTimes(2)
+    expect(mockRead.mock.calls.map((call) => call[4]?.maxBytes)).toEqual([
+      16 * 1024 * 1024,
+      7 * 1024 * 1024,
+    ])
     expect(model.getMatches().map((item) => (item as LazyCellMatch).range.range.startRow)).toEqual([
       500,
     ])

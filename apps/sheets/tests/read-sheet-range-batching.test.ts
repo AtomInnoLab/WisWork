@@ -151,6 +151,18 @@ describe('readSheetRangeMapped bounded batching', () => {
     ).rejects.toThrow('batch two failed')
   })
 
+  it('rejects a response above the caller remaining byte acceptance budget', async () => {
+    await expect(
+      readSheetRangeMapped(
+        state(),
+        's1',
+        { startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 },
+        sheetMeta,
+        { maxBytes: 1 },
+      ),
+    ).rejects.toThrow('acceptance limit')
+  })
+
   it('aborts between batches without returning partial data', async () => {
     const controller = new AbortController()
     readWorkbookRange.mockImplementationOnce(async (call) => {
