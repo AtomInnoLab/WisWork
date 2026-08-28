@@ -178,6 +178,8 @@ import {
   type OfficeRelayClient,
 } from './office-relay-client'
 import { createOfficeRelayPool } from './office-relay-pool'
+import { createElectronOfficeRelayBindingStore } from './office-relay-binding-store'
+import { createOfficeRelayLifecycle, type OfficeRelayLifecycle } from './office-relay-lifecycle'
 import {
   createOfficeRetrievalProxy,
   officeRetrievalEndpointFromEnv,
@@ -286,6 +288,7 @@ let officeBridge: OfficeBridge | null = null
 let officeBridgeServer: OfficeBridgeHttpServer | null = null
 let officeBridgeDiagnostic = 'disabled'
 let officeRelay: OfficeRelayClient | null = null
+let officeRelayLifecycle: OfficeRelayLifecycle | null = null
 let officeRelayDiagnostic = 'disconnected'
 const requireAuthRuntime = (): ReturnType<typeof initializeElectronAuthRuntime> => {
   if (!authRuntime) throw new AuthError('auth_not_initialized')
@@ -1729,7 +1732,7 @@ function registerHomeIpc(): void {
     const status = await syncOfficeBridgeAvailability(officeBridge, () =>
       requireAuthRuntime().client.getValidAccountStatus(),
     )
-    if (!status.loggedIn) officeRelay?.revoke('auth_required')
+    await officeRelayLifecycle?.syncAccount().catch(() => undefined)
     return status
   })
   ipcMain.handle(HOME_CHANNELS.accountLogin, async (event, ...args: unknown[]) => {
@@ -1755,10 +1758,10 @@ function registerHomeIpc(): void {
     assertHomeAuthIpc(event, args)
     if (pendingLoginUrl) await shell.openExternal(pendingLoginUrl)
   })
-  ipcMain.handle(HOME_CHANNELS.accountLogout, (event, ...args: unknown[]) => {
+  ipcMain.handle(HOME_CHANNELS.accountLogout, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
     officeBridge?.setSessionAvailable(false)
-    officeRelay?.revoke('logout')
+    await officeRelayLifecycle?.logout().catch(() => undefined)
     return requireAuthRuntime().client.logout()
   })
   ipcMain.handle(HOME_CHANNELS.officeBridgeStatus, (event, ...args: unknown[]) => {
@@ -2530,8 +2533,12 @@ app.whenReady().then(async () => {
     fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
     onTerminalAuthLoss: () => {
       officeBridge?.setSessionAvailable(false)
-      officeRelay?.revoke('auth_required')
+      void officeRelayLifecycle?.terminalAuthLoss().catch(() => undefined)
     },
+  })
+  const officeRelayBindingStore = createElectronOfficeRelayBindingStore({
+    userDataPath: app.getPath('userData'),
+    safeStorage,
   })
   try {
     const retrievalEndpoint = officeRetrievalEndpointFromEnv(process.env)
@@ -2551,9 +2558,12 @@ app.whenReady().then(async () => {
           proxy: officeMessagesProxy,
           retrievalProxy,
           negotiateCapabilities: true,
+          persistentPairing: true,
           onPending: events.onPending,
           onPendingExpired: events.onPendingExpired,
           onStatus: events.onStatus,
+          onBinding: events.onBinding,
+          onBindingInvalidated: events.onBindingInvalidated,
         }),
       onPending: notifyOfficePairing,
       onPendingExpired: (pairingId) => {
@@ -2563,7 +2573,18 @@ app.whenReady().then(async () => {
       onStatus: (status) => {
         officeRelayDiagnostic = status
       },
+      onBinding: (binding) => officeRelayBindingStore.put(binding),
+      onBindingInvalidated: (binding) =>
+        officeRelayBindingStore.remove(binding.accountId, binding.bindingId),
+      onAuthRequired: () => officeRelayLifecycle?.terminalAuthLoss(),
     })
+    officeRelayLifecycle = createOfficeRelayLifecycle({
+      store: officeRelayBindingStore,
+      pool: officeRelay,
+      getAccountStatus: () => requireAuthRuntime().client.getAccountStatus(),
+      getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
+    })
+    await officeRelayLifecycle.syncAccount().catch(() => undefined)
   } catch {
     officeRelayDiagnostic = 'error:invalid_config'
     console.error('[office-relay] invalid endpoint configuration')
@@ -2627,6 +2648,7 @@ app.whenReady().then(async () => {
     await syncOfficeBridgeAvailability(officeBridge, () =>
       requireAuthRuntime().client.getValidAccountStatus(),
     )
+    await officeRelayLifecycle?.syncAccount()
   })
 
   app.setAccessibilitySupportEnabled(true)
@@ -2678,6 +2700,6 @@ app.on('before-quit', () => {
   stopSheetsSidecar()
   officeBridge?.revokeAll()
   officeBridge?.shutdown()
-  officeRelay?.revoke('shutdown')
+  officeRelayLifecycle?.shutdown()
   void officeBridgeServer?.stop()
 })

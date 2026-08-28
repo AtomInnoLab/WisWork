@@ -1,6 +1,7 @@
 import type { MessagesProxy } from '@wiswork/office-bridge'
 import WebSocket from 'ws'
 import type { OfficePairingRequest, OfficeRelayStatus } from '../shared/home-api'
+import type { OfficeRelayBinding } from './office-relay-binding-store'
 import type { OfficeRetrievalProxy } from './office-retrieval-proxy'
 export type { OfficeRelayStatus } from '../shared/home-api'
 
@@ -46,10 +47,15 @@ const RELAY_ERROR_CODES = new Set([
   'session_revoked',
   'unknown_type',
   'unsupported_host',
+  'auth_required',
+  'binding_unavailable',
+  'resume_limit',
+  'resume_rate_limited',
 ])
 const TERMINAL_REQUEST_CACHE_SIZE = 64
 const PRODUCTION_RELAY_ENDPOINT = 'wss://office.8-216-134-194.sslip.io/office-relay'
 const V2_CAPABILITIES = ['agent.v1', 'web-search.v1', 'web-fetch.v1', 'image-search.v1'] as const
+const PAIRING_RESUME_FEATURE = 'pairing-resume.v1'
 
 export interface RelaySocket {
   readyState: number
@@ -60,6 +66,8 @@ export interface RelaySocket {
 
 export interface OfficeRelayClient {
   claim(code: string): Promise<void>
+  resume(binding: OfficeRelayBinding): Promise<void>
+  revokeBinding(bindingId: string): Promise<void>
   approve(pairingId: string): Promise<boolean>
   reject(pairingId: string): boolean
   listPending(): OfficePairingRequest[]
@@ -99,29 +107,48 @@ export function officeRelayEndpointFromEnv(env: Record<string, string | undefine
 export function createOfficeRelayClient(options: {
   endpoint: string
   connect?: (url: string, accessToken: string) => RelaySocket
-  getValidAccountStatus(): Promise<{ loggedIn: boolean }>
+  getValidAccountStatus(): Promise<{ loggedIn: boolean; userId?: string }>
   getAccessToken(): Promise<string | null>
   proxy: MessagesProxy
   retrievalProxy?: OfficeRetrievalProxy
   negotiateCapabilities?: boolean
+  persistentPairing?: boolean
+  onBinding?: (binding: OfficeRelayBinding) => void | Promise<void>
+  onBindingInvalidated?: (bindingId: string) => void | Promise<void>
   onPending(pairing: OfficePairingRequest): void
   onPendingExpired?: (pairingId: string) => void
   onStatus?: (status: OfficeRelayStatus) => void
   maxRequestIds?: number
+  now?: () => number
 }): OfficeRelayClient {
   const connect = options.connect ?? connectAuthenticatedRelaySocket
   let socket: RelaySocket | null = null
   let diagnostic: OfficeRelayStatus = 'disconnected'
   let protocolVersion: 1 | 2 = 1
   const negotiateCapabilities =
-    options.negotiateCapabilities === true || Boolean(options.retrievalProxy)
+    options.negotiateCapabilities === true ||
+    Boolean(options.retrievalProxy) ||
+    options.persistentPairing === true
+  const persistentPairing = options.persistentPairing === true
   const offeredCapabilities = options.retrievalProxy ? [...V2_CAPABILITIES] : ['agent.v1']
-  let pending: (OfficePairingRequest & { capabilities?: string[] }) | null = null
+  let pending: (OfficePairingRequest & { capabilities?: string[]; features?: string[] }) | null =
+    null
   let session: { sessionId: string; capability: string; capabilities: string[] } | null = null
   let active: { requestId: string; controller: AbortController; remoteCancelled: boolean } | null =
     null
   let claimedCode: string | null = null
+  let claimedAccountId: string | null = null
   let negotiationPending = false
+  let enhancedNegotiation = false
+  let legacyFallbackAttempted = false
+  let action: 'idle' | 'claim' | 'resume' | 'revoke' = 'idle'
+  let resumeBinding: OfficeRelayBinding | null = null
+  let revocation: {
+    bindingId: string
+    resolve(): void
+    reject(error: Error): void
+    timer: ReturnType<typeof setTimeout>
+  } | null = null
   const requestIds = new Set<string>()
   const terminalRequestIds = new Set<string>()
   const terminalRequestOrder: string[] = []
@@ -167,7 +194,16 @@ export function createOfficeRelayClient(options: {
     pending = null
     approvalSentFor = null
     claimedCode = null
+    claimedAccountId = null
     negotiationPending = false
+    enhancedNegotiation = false
+    action = 'idle'
+    resumeBinding = null
+    if (revocation) {
+      clearTimeout(revocation.timer)
+      revocation.reject(new Error('relay_connection_failed'))
+      revocation = null
+    }
     session = null
     requestIds.clear()
     terminalRequestIds.clear()
@@ -297,6 +333,26 @@ export function createOfficeRelayClient(options: {
     }
   }
 
+  function fallbackToLegacyClaim(): boolean {
+    if (
+      action !== 'claim' ||
+      !negotiationPending ||
+      !enhancedNegotiation ||
+      legacyFallbackAttempted ||
+      !claimedCode
+    )
+      return false
+    const code = claimedCode
+    const current = socket
+    socket = null
+    legacyFallbackAttempted = true
+    negotiationPending = false
+    enhancedNegotiation = false
+    void beginClaim(code, false, false).catch(() => undefined)
+    if (current && current.readyState < 2) current.close(1000, 'legacy_fallback')
+    return true
+  }
+
   const receive = (event: { data?: unknown }, owner: number) => {
     if (owner !== generation || typeof event.data !== 'string')
       return clear('protocol_violation', true)
@@ -310,12 +366,14 @@ export function createOfficeRelayClient(options: {
     }
     const candidate = frame as Record<string, unknown>
     if (candidate.version === 2 && candidate.type === 'pc.negotiated') {
+      const negotiatedKeys = ['version', 'type', 'pairing_version', 'capabilities']
+      if (enhancedNegotiation) negotiatedKeys.push('features')
       if (
         !negotiateCapabilities ||
         !negotiationPending ||
         diagnostic !== 'claiming' ||
         !claimedCode ||
-        !exact(candidate, ['version', 'type', 'pairing_version', 'capabilities']) ||
+        !exact(candidate, negotiatedKeys) ||
         (candidate.pairing_version !== 1 && candidate.pairing_version !== 2) ||
         !Array.isArray(candidate.capabilities) ||
         candidate.capabilities.length < 1 ||
@@ -327,16 +385,25 @@ export function createOfficeRelayClient(options: {
             values.indexOf(value) !== index,
         ) ||
         (candidate.pairing_version === 1 &&
-          JSON.stringify(candidate.capabilities) !== JSON.stringify(['agent.v1']))
+          JSON.stringify(candidate.capabilities) !== JSON.stringify(['agent.v1'])) ||
+        (enhancedNegotiation &&
+          (!Array.isArray(candidate.features) ||
+            candidate.features.some(
+              (value, index, values) =>
+                value !== PAIRING_RESUME_FEATURE || values.indexOf(value) !== index,
+            ) ||
+            candidate.features.length > 1))
       )
         return clear('protocol_violation', true)
       protocolVersion = candidate.pairing_version
       negotiationPending = false
+      const negotiatedFeatures = enhancedNegotiation ? (candidate.features as string[]) : undefined
       send({
         version: protocolVersion,
         type: 'pc.claim',
         verification_code: claimedCode,
         ...(protocolVersion === 2 ? { capabilities: offeredCapabilities } : {}),
+        ...(protocolVersion === 2 && negotiatedFeatures ? { features: negotiatedFeatures } : {}),
       })
       return
     }
@@ -349,8 +416,10 @@ export function createOfficeRelayClient(options: {
       exact(candidate, ['version', 'type', 'code']) &&
       typeof candidate.code === 'string' &&
       RELAY_ERROR_CODES.has(candidate.code)
-    )
+    ) {
+      if (fallbackToLegacyClaim()) return
       return clear('relay_error', true)
+    }
     if (negotiationPending) return clear('protocol_violation', true)
     if (
       !frame ||
@@ -362,6 +431,32 @@ export function createOfficeRelayClient(options: {
     const typed = frame as Record<string, unknown>
     if (frameBytes > MAX_CONTROL_BYTES && typed.type !== 'relay.request')
       return clear('protocol_violation', true)
+    if (typed.type === 'pc.waiting_for_office') {
+      if (
+        action !== 'resume' ||
+        !resumeBinding ||
+        diagnostic !== 'connecting' ||
+        !exact(frame, ['version', 'type'])
+      )
+        return clear('protocol_violation', true)
+      setStatus('waiting_for_office')
+      return
+    }
+    if (typed.type === 'pc.binding_revoked') {
+      if (
+        action !== 'revoke' ||
+        !revocation ||
+        !exact(frame, ['version', 'type', 'binding_id']) ||
+        typed.binding_id !== revocation.bindingId
+      )
+        return clear('protocol_violation', true)
+      const completed = revocation
+      revocation = null
+      clearTimeout(completed.timer)
+      completed.resolve()
+      clear('binding_revoked', true)
+      return
+    }
     if (typed.type === 'pc.claimed') {
       const keys = [
         'version',
@@ -373,6 +468,7 @@ export function createOfficeRelayClient(options: {
         'expires_in',
       ]
       if (protocolVersion === 2) keys.push('capabilities')
+      if (enhancedNegotiation) keys.push('features')
       const negotiated =
         protocolVersion === 2 &&
         Array.isArray(typed.capabilities) &&
@@ -398,7 +494,11 @@ export function createOfficeRelayClient(options: {
         Number(typed.expires_in) > 120 ||
         diagnostic !== 'claiming' ||
         pending !== null ||
-        !negotiated
+        !negotiated ||
+        (enhancedNegotiation &&
+          (!Array.isArray(typed.features) ||
+            typed.features.length > 1 ||
+            typed.features.some((value) => value !== PAIRING_RESUME_FEATURE)))
       )
         return clear('protocol_violation', true)
       try {
@@ -414,6 +514,7 @@ export function createOfficeRelayClient(options: {
         origin: typed.origin,
         verificationCode: typed.verification_code as string,
         ...(protocolVersion === 2 ? { capabilities: negotiated } : {}),
+        ...(enhancedNegotiation ? { features: typed.features as string[] } : {}),
       }
       pairingTimer = setTimeout(
         () => {
@@ -433,6 +534,10 @@ export function createOfficeRelayClient(options: {
     if (typed.type === 'pc.approved') {
       const approvedKeys = ['version', 'type', 'session_id', 'capability', 'expires_in']
       if (protocolVersion === 2) approvedKeys.push('capabilities')
+      const resumed = action === 'resume'
+      const remembersBinding =
+        !resumed && pending?.features?.includes(PAIRING_RESUME_FEATURE) === true
+      if (remembersBinding) approvedKeys.push('features', 'binding_id')
       if (
         !exact(frame, approvedKeys) ||
         !validId(typed.session_id) ||
@@ -440,24 +545,47 @@ export function createOfficeRelayClient(options: {
         !Number.isSafeInteger(typed.expires_in) ||
         Number(typed.expires_in) < 1 ||
         Number(typed.expires_in) > 1_800 ||
-        !pending ||
-        approvalSentFor !== pending.pairingId ||
-        diagnostic !== 'awaiting_approval' ||
+        (!resumed && (!pending || approvalSentFor !== pending.pairingId)) ||
+        (resumed && !resumeBinding) ||
+        (!resumed && diagnostic !== 'awaiting_approval') ||
+        (resumed && diagnostic !== 'connecting' && diagnostic !== 'waiting_for_office') ||
         (protocolVersion === 2 &&
-          JSON.stringify(typed.capabilities) !== JSON.stringify(pending.capabilities))
+          JSON.stringify(typed.capabilities) !==
+            JSON.stringify(resumed ? resumeBinding?.capabilities : pending?.capabilities)) ||
+        (remembersBinding &&
+          (!validId(typed.binding_id) ||
+            JSON.stringify(typed.features) !== JSON.stringify([PAIRING_RESUME_FEATURE])))
       )
         return clear('protocol_violation', true)
+      const approvedPending = pending
+      const approvedAccountId = claimedAccountId
       session = {
         sessionId: typed.session_id,
         capability: typed.capability,
-        capabilities: pending.capabilities ?? ['agent.v1'],
+        capabilities: resumed
+          ? [...resumeBinding!.capabilities]
+          : (approvedPending?.capabilities ?? ['agent.v1']),
       }
       if (pairingTimer) clearTimeout(pairingTimer)
       pairingTimer = null
       pending = null
       approvalSentFor = null
+      action = 'idle'
+      resumeBinding = null
       sessionTimer = setTimeout(() => clear('session_expired', true), SESSION_ABSOLUTE_MAX_MS)
       setStatus('paired')
+      if (remembersBinding && approvedPending && approvedAccountId) {
+        void Promise.resolve(
+          options.onBinding?.({
+            bindingId: typed.binding_id as string,
+            accountId: approvedAccountId,
+            host: approvedPending.hostLabel,
+            origin: approvedPending.origin,
+            capabilities: [...(approvedPending.capabilities ?? ['agent.v1'])],
+            createdAt: (options.now ?? Date.now)(),
+          }),
+        ).catch(() => undefined)
+      }
       return
     }
     if (typed.type === 'relay.request') {
@@ -485,86 +613,180 @@ export function createOfficeRelayClient(options: {
       exact(frame, ['version', 'type', 'code']) &&
       typeof typed.code === 'string' &&
       RELAY_ERROR_CODES.has(typed.code)
-    )
-      return clear(typed.code === 'session_expired' ? 'session_expired' : 'relay_error', true)
+    ) {
+      if (
+        action === 'resume' &&
+        resumeBinding &&
+        (typed.code === 'binding_unavailable' || typed.code === 'capability_not_negotiated')
+      )
+        void Promise.resolve(options.onBindingInvalidated?.(resumeBinding.bindingId)).catch(
+          () => undefined,
+        )
+      const reason =
+        typed.code === 'session_expired' ||
+        typed.code === 'auth_required' ||
+        typed.code === 'binding_unavailable' ||
+        typed.code === 'capability_not_negotiated' ||
+        typed.code === 'resume_rate_limited' ||
+        typed.code === 'resume_limit' ||
+        typed.code === 'peer_unavailable'
+          ? typed.code
+          : 'relay_error'
+      return clear(reason, true)
+    }
     clear('protocol_violation', true)
+  }
+
+  const openAuthenticated = async (
+    owner: number,
+    expectedAccountId?: string,
+  ): Promise<{ accountId: string | null }> => {
+    const ensureCurrent = () => {
+      if (owner !== generation) throw new Error('relay_connection_failed')
+    }
+    const account = await options.getValidAccountStatus().catch((error) => {
+      ensureCurrent()
+      clear('auth_required', true)
+      throw error
+    })
+    ensureCurrent()
+    if (
+      !account.loggedIn ||
+      (expectedAccountId !== undefined && account.userId !== expectedAccountId)
+    ) {
+      clear('auth_required', true)
+      throw new Error('auth_required')
+    }
+    const accessToken = await options.getAccessToken().catch((error) => {
+      ensureCurrent()
+      clear('auth_required', true)
+      throw error
+    })
+    ensureCurrent()
+    if (!accessToken || !/^[\x21-\x7e]+$/.test(accessToken)) {
+      clear('auth_required', true)
+      throw new Error('auth_required')
+    }
+    setStatus('connecting')
+    let next: RelaySocket
+    try {
+      next = connect(options.endpoint, accessToken)
+    } catch {
+      clear('network_error', true)
+      throw new Error('relay_connection_failed')
+    }
+    socket = next
+    next.addEventListener('message', (event) => receive(event, owner))
+    next.addEventListener('close', () => {
+      if (owner !== generation) return
+      if (fallbackToLegacyClaim()) return
+      clear('relay_closed', false)
+    })
+    next.addEventListener('error', () => {
+      if (owner === generation) clear('network_error', true)
+    })
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error('relay_connection_timeout')),
+        CONNECT_TIMEOUT_MS,
+      )
+      next.addEventListener('open', () => {
+        clearTimeout(timeout)
+        resolve()
+      })
+      next.addEventListener('error', () => {
+        clearTimeout(timeout)
+        reject(new Error('relay_connection_failed'))
+      })
+      next.addEventListener('close', () => {
+        clearTimeout(timeout)
+        reject(new Error('relay_connection_failed'))
+      })
+    }).catch((error) => {
+      if (owner === generation) clear('network_error', true)
+      throw error
+    })
+    ensureCurrent()
+    return { accountId: account.userId ?? null }
+  }
+
+  async function beginClaim(code: string, enhanced: boolean, reset: boolean): Promise<void> {
+    if (reset) {
+      clear('new_claim', true)
+      legacyFallbackAttempted = false
+    }
+    generation += 1
+    const owner = generation
+    action = 'claim'
+    claimedCode = code
+    enhancedNegotiation = enhanced
+    const account = await openAuthenticated(owner)
+    if (enhanced && !account.accountId) {
+      clear('auth_required', true)
+      throw new Error('auth_required')
+    }
+    claimedAccountId = account.accountId
+    setStatus('claiming')
+    negotiationPending = negotiateCapabilities
+    send({
+      version: negotiateCapabilities ? 2 : protocolVersion,
+      type: negotiateCapabilities ? 'pc.negotiate' : 'pc.claim',
+      verification_code: code,
+      ...(negotiateCapabilities ? { capabilities: offeredCapabilities } : {}),
+      ...(enhanced ? { features: [PAIRING_RESUME_FEATURE] } : {}),
+    })
   }
 
   return {
     async claim(code) {
       if (!/^\d{6}$/.test(code)) throw new Error('invalid_verification_code')
-      clear('new_claim', true)
+      await beginClaim(code, persistentPairing, true)
+    },
+    async resume(binding) {
+      if (
+        !validId(binding.bindingId) ||
+        typeof binding.accountId !== 'string' ||
+        !HOSTS.has(binding.host) ||
+        !Array.isArray(binding.capabilities) ||
+        binding.capabilities.length < 1 ||
+        binding.capabilities.some(
+          (capability, index, values) =>
+            !V2_CAPABILITIES.includes(capability as (typeof V2_CAPABILITIES)[number]) ||
+            values.indexOf(capability) !== index,
+        )
+      )
+        throw new Error('invalid_office_binding')
+      clear('new_resume', true)
       generation += 1
       const owner = generation
-      const ensureCurrent = () => {
-        if (owner !== generation) throw new Error('relay_connection_failed')
-      }
-      const account = await options.getValidAccountStatus().catch((error) => {
-        ensureCurrent()
-        clear('auth_required', true)
-        throw error
-      })
-      ensureCurrent()
-      if (!account.loggedIn) {
-        clear('auth_required', true)
-        throw new Error('auth_required')
-      }
-      const accessToken = await options.getAccessToken().catch((error) => {
-        ensureCurrent()
-        clear('auth_required', true)
-        throw error
-      })
-      ensureCurrent()
-      if (!accessToken || !/^[\x21-\x7e]+$/.test(accessToken)) {
-        clear('auth_required', true)
-        throw new Error('auth_required')
-      }
-      setStatus('connecting')
-      let next: RelaySocket
-      try {
-        next = connect(options.endpoint, accessToken)
-      } catch {
-        clear('network_error', true)
-        throw new Error('relay_connection_failed')
-      }
-      socket = next
-      next.addEventListener('message', (event) => receive(event, owner))
-      next.addEventListener('close', () => {
-        if (owner === generation) clear('relay_closed', false)
-      })
-      next.addEventListener('error', () => {
-        if (owner === generation) clear('network_error', true)
-      })
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(
-          () => reject(new Error('relay_connection_timeout')),
-          CONNECT_TIMEOUT_MS,
-        )
-        next.addEventListener('open', () => {
-          clearTimeout(timeout)
-          resolve()
-        })
-        next.addEventListener('error', () => {
-          clearTimeout(timeout)
-          reject(new Error('relay_connection_failed'))
-        })
-        next.addEventListener('close', () => {
-          clearTimeout(timeout)
-          reject(new Error('relay_connection_failed'))
-        })
-      }).catch((error) => {
-        if (owner === generation) clear('network_error', true)
-        throw error
-      })
-      if (owner !== generation) throw new Error('relay_connection_failed')
-      claimedCode = code
-      setStatus('claiming')
-      negotiationPending = negotiateCapabilities
+      action = 'resume'
+      resumeBinding = { ...binding, capabilities: [...binding.capabilities] }
+      protocolVersion = 2
+      await openAuthenticated(owner, binding.accountId)
       send({
-        version: negotiateCapabilities ? 2 : protocolVersion,
-        type: negotiateCapabilities ? 'pc.negotiate' : 'pc.claim',
-        verification_code: code,
-        ...(negotiateCapabilities ? { capabilities: offeredCapabilities } : {}),
+        version: 2,
+        type: 'pc.resume',
+        binding_id: binding.bindingId,
+        capabilities: binding.capabilities,
+      })
+    },
+    async revokeBinding(bindingId) {
+      if (!validId(bindingId)) throw new Error('invalid_office_binding')
+      clear('new_revocation', true)
+      generation += 1
+      const owner = generation
+      action = 'revoke'
+      protocolVersion = 2
+      await openAuthenticated(owner)
+      return new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          if (revocation?.bindingId !== bindingId) return
+          revocation = null
+          reject(new Error('relay_connection_timeout'))
+          clear('network_error', true)
+        }, CONNECT_TIMEOUT_MS)
+        revocation = { bindingId, resolve, reject, timer }
+        send({ version: 2, type: 'pc.revoke_binding', binding_id: bindingId })
       })
     },
     async approve(pairingId) {
@@ -572,7 +794,7 @@ export function createOfficeRelayClient(options: {
         clear('auth_required', true)
         throw error
       })
-      if (!account.loggedIn) {
+      if (!account.loggedIn || (claimedAccountId && account.userId !== claimedAccountId)) {
         clear('auth_required', true)
         return false
       }
@@ -584,6 +806,7 @@ export function createOfficeRelayClient(options: {
         type: 'pc.approve',
         pairing_id: pairingId,
         ...(protocolVersion === 2 ? { capabilities: pending.capabilities } : {}),
+        ...(pending.features ? { features: pending.features } : {}),
       })
       return true
     },

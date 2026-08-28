@@ -4,6 +4,7 @@ import {
   officeRelayEndpointFromEnv,
   type RelaySocket,
 } from '../src/main/office-relay-client'
+import type { OfficeRelayBinding } from '../src/main/office-relay-binding-store'
 
 class FakeSocket implements RelaySocket {
   readyState = 0
@@ -796,5 +797,202 @@ describe('Office relay PC client', () => {
       expires_in: 120,
     })
     expect(client.status()).toBe('disconnected:protocol_violation')
+  })
+
+  it('conditionally negotiates pairing-resume.v1 and captures binding metadata after approval', async () => {
+    const socket = new FakeSocket()
+    const onBinding = vi.fn(async () => undefined)
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => socket,
+      getValidAccountStatus: async () => ({ loggedIn: true, userId: 'local-account' }),
+      getAccessToken: async () => 'fresh-token',
+      proxy: async () => ({ status: 200, body: new Uint8Array() }),
+      negotiateCapabilities: true,
+      persistentPairing: true,
+      onBinding,
+      onPending() {},
+    })
+    const claim = client.claim('123456')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await claim
+    expect(JSON.parse(socket.sent[0]!)).toEqual({
+      version: 2,
+      type: 'pc.negotiate',
+      verification_code: '123456',
+      capabilities: ['agent.v1'],
+      features: ['pairing-resume.v1'],
+    })
+    socket.message({
+      version: 2,
+      type: 'pc.negotiated',
+      pairing_version: 2,
+      capabilities: ['agent.v1'],
+      features: ['pairing-resume.v1'],
+    })
+    expect(JSON.parse(socket.sent[1]!)).toEqual({
+      version: 2,
+      type: 'pc.claim',
+      verification_code: '123456',
+      capabilities: ['agent.v1'],
+      features: ['pairing-resume.v1'],
+    })
+    socket.message({
+      version: 2,
+      type: 'pc.claimed',
+      pairing_id: 'pairing_12345678',
+      host: 'Word',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      verification_code: '123456',
+      expires_in: 120,
+      capabilities: ['agent.v1'],
+      features: ['pairing-resume.v1'],
+    })
+    await client.approve('pairing_12345678')
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+      version: 2,
+      type: 'pc.approve',
+      pairing_id: 'pairing_12345678',
+      capabilities: ['agent.v1'],
+      features: ['pairing-resume.v1'],
+    })
+    socket.message({
+      version: 2,
+      type: 'pc.approved',
+      session_id: 'session_12345678',
+      capability: 'secret-capability',
+      expires_in: 1800,
+      capabilities: ['agent.v1'],
+      features: ['pairing-resume.v1'],
+      binding_id: 'binding_word_12345678',
+    })
+    await vi.waitFor(() =>
+      expect(onBinding).toHaveBeenCalledWith({
+        bindingId: 'binding_word_12345678',
+        accountId: 'local-account',
+        host: 'Word',
+        origin: 'https://office.8-216-134-194.sslip.io',
+        capabilities: ['agent.v1'],
+        createdAt: expect.any(Number),
+      }),
+    )
+    expect(client.status()).toBe('paired')
+  })
+
+  it.each(['close', 'error'] as const)(
+    'reconnects once with ordinary v2 negotiation when an old Relay rejects enhanced negotiation via %s',
+    async (rejection) => {
+      const sockets: FakeSocket[] = []
+      const getAccessToken = vi
+        .fn()
+        .mockResolvedValueOnce('token-one')
+        .mockResolvedValueOnce('token-two')
+      const client = createOfficeRelayClient({
+        endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+        connect: () => {
+          const socket = new FakeSocket()
+          sockets.push(socket)
+          return socket
+        },
+        getValidAccountStatus: async () => ({ loggedIn: true, userId: 'local-account' }),
+        getAccessToken,
+        proxy: async () => ({ status: 200, body: new Uint8Array() }),
+        negotiateCapabilities: true,
+        persistentPairing: true,
+        onPending() {},
+      })
+      const claim = client.claim('123456')
+      await vi.waitFor(() => expect(sockets).toHaveLength(1))
+      sockets[0]!.open()
+      await claim
+      expect(JSON.parse(sockets[0]!.sent[0]!)).toHaveProperty('features', ['pairing-resume.v1'])
+      if (rejection === 'close') sockets[0]!.close()
+      else sockets[0]!.message({ version: 2, type: 'relay.error', code: 'invalid_frame' })
+      await vi.waitFor(() => expect(sockets).toHaveLength(2))
+      sockets[1]!.open()
+      await vi.waitFor(() => expect(sockets[1]!.sent).toHaveLength(1))
+      expect(JSON.parse(sockets[1]!.sent[0]!)).toEqual({
+        version: 2,
+        type: 'pc.negotiate',
+        verification_code: '123456',
+        capabilities: ['agent.v1'],
+      })
+      expect(getAccessToken).toHaveBeenNthCalledWith(1)
+      expect(getAccessToken).toHaveBeenNthCalledWith(2)
+    },
+  )
+
+  it('uses a fresh access token for pc.resume and accepts waiting_for_office then standard v2 approval', async () => {
+    const socket = new FakeSocket()
+    const getAccessToken = vi.fn(async () => 'resume-token')
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => socket,
+      getValidAccountStatus: async () => ({ loggedIn: true, userId: 'local-account' }),
+      getAccessToken,
+      proxy: async () => ({ status: 200, body: new Uint8Array() }),
+      negotiateCapabilities: true,
+      persistentPairing: true,
+      onPending() {},
+    })
+    const binding: OfficeRelayBinding = {
+      bindingId: 'binding_word_12345678',
+      accountId: 'local-account',
+      host: 'Word',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      capabilities: ['agent.v1'],
+      createdAt: 1,
+    }
+    const resume = client.resume(binding)
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await resume
+    expect(getAccessToken).toHaveBeenCalledOnce()
+    expect(JSON.parse(socket.sent[0]!)).toEqual({
+      version: 2,
+      type: 'pc.resume',
+      binding_id: 'binding_word_12345678',
+      capabilities: ['agent.v1'],
+    })
+    socket.message({ version: 2, type: 'pc.waiting_for_office' })
+    expect(client.status()).toBe('waiting_for_office')
+    socket.message({
+      version: 2,
+      type: 'pc.approved',
+      session_id: 'session_resume_12345678',
+      capability: 'fresh-capability',
+      expires_in: 1800,
+      capabilities: ['agent.v1'],
+    })
+    expect(client.status()).toBe('paired')
+  })
+
+  it('sends an exact authenticated revocation frame and requires its exact acknowledgement', async () => {
+    const socket = new FakeSocket()
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => socket,
+      getValidAccountStatus: async () => ({ loggedIn: true, userId: 'local-account' }),
+      getAccessToken: async () => 'revoke-token',
+      proxy: async () => ({ status: 200, body: new Uint8Array() }),
+      persistentPairing: true,
+      onPending() {},
+    })
+    const revocation = client.revokeBinding('binding_word_12345678')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1))
+    expect(JSON.parse(socket.sent[0]!)).toEqual({
+      version: 2,
+      type: 'pc.revoke_binding',
+      binding_id: 'binding_word_12345678',
+    })
+    socket.message({
+      version: 2,
+      type: 'pc.binding_revoked',
+      binding_id: 'binding_word_12345678',
+    })
+    await expect(revocation).resolves.toBeUndefined()
   })
 })

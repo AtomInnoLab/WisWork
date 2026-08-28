@@ -6,6 +6,7 @@ import {
   type RelaySocket,
 } from '../src/main/office-relay-client'
 import { createOfficeRelayPool } from '../src/main/office-relay-pool'
+import type { OfficeRelayBinding } from '../src/main/office-relay-binding-store'
 
 class FakeSocket implements RelaySocket {
   readyState = 0
@@ -38,6 +39,15 @@ type Child = OfficeRelayClient & {
   emitStatus(status: OfficeRelayStatus): void
 }
 
+const binding = (index: number): OfficeRelayBinding => ({
+  bindingId: `binding_${index}_12345678`,
+  accountId: 'account-one',
+  host: ['Word', 'Excel', 'PowerPoint'][index % 3] as OfficeRelayBinding['host'],
+  origin: 'https://office.8-216-134-194.sslip.io',
+  capabilities: ['agent.v1'],
+  createdAt: index + 1,
+})
+
 function harness(maxClients = 12) {
   const children: Child[] = []
   const pending = vi.fn()
@@ -55,6 +65,10 @@ function harness(maxClients = 12) {
         claim: vi.fn(async () => {
           events.onStatus('connecting')
         }),
+        resume: vi.fn(async () => {
+          events.onStatus('connecting')
+        }),
+        revokeBinding: vi.fn(async () => undefined),
         approve: vi.fn(async (id) => entries.some((entry) => entry.pairingId === id)),
         reject: vi.fn((id) => entries.some((entry) => entry.pairingId === id)),
         listPending: () => entries,
@@ -270,6 +284,8 @@ describe('Office relay pool', () => {
           attempts += 1
           if (attempts === 1) throw new Error('relay_connection_failed')
         },
+        resume: async () => undefined,
+        revokeBinding: async () => undefined,
         approve: async () => false,
         reject: () => false,
         listPending: () => [],
@@ -311,5 +327,97 @@ describe('Office relay pool', () => {
     children[0]!.emitStatus('disconnected:auth_required')
     expect(children[1]!.revoke).toHaveBeenCalledWith('auth_required')
     expect(children[2]!.revoke).toHaveBeenCalledWith('auth_required')
+  })
+
+  it('keeps twelve durable bindings in independent resume slots', async () => {
+    const { pool, children } = harness()
+    await Promise.all(Array.from({ length: 12 }, (_, index) => pool.resume(binding(index))))
+    expect(children).toHaveLength(12)
+    expect(
+      children.map((child) => (child.resume as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]),
+    ).toEqual(Array.from({ length: 12 }, (_, index) => binding(index)))
+    await expect(pool.resume(binding(12))).rejects.toThrow('relay_capacity_exceeded')
+  })
+
+  it('retries each disconnected binding with bounded exponential backoff and cancels on shutdown', async () => {
+    vi.useFakeTimers()
+    const children: Child[] = []
+    const delays: number[] = []
+    const pool = createOfficeRelayPool({
+      onPending() {},
+      random: () => 0.5,
+      baseReconnectMs: 100,
+      maxReconnectMs: 250,
+      setTimer(callback, delay) {
+        delays.push(delay)
+        return setTimeout(callback, delay)
+      },
+      clearTimer: clearTimeout,
+      createClient(events) {
+        let status: OfficeRelayStatus = 'disconnected'
+        const child: Child = {
+          claim: vi.fn(async () => undefined),
+          resume: vi.fn(async () => events.onStatus('connecting')),
+          revokeBinding: vi.fn(async () => undefined),
+          approve: vi.fn(async () => false),
+          reject: vi.fn(() => false),
+          listPending: () => [],
+          status: () => status,
+          revoke: vi.fn(),
+          emitPending() {},
+          emitStatus(next) {
+            status = next
+            events.onStatus(next)
+          },
+        }
+        children.push(child)
+        return child
+      },
+    })
+    await pool.resume(binding(0))
+    children[0]!.emitStatus('disconnected:network_error')
+    expect(delays).toEqual([100])
+    await vi.advanceTimersByTimeAsync(100)
+    expect(children[0]!.resume).toHaveBeenCalledTimes(2)
+    children[0]!.emitStatus('disconnected:relay_closed')
+    expect(delays).toEqual([100, 200])
+    await vi.advanceTimersByTimeAsync(200)
+    children[0]!.emitStatus('disconnected:resume_rate_limited')
+    expect(delays).toEqual([100, 200, 250])
+
+    pool.revoke('shutdown')
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(children[0]!.resume).toHaveBeenCalledTimes(3)
+    vi.useRealTimers()
+  })
+
+  it('removes a terminally invalid binding while keeping other resumed bindings', async () => {
+    const invalidated = vi.fn()
+    const children: Child[] = []
+    const pool = createOfficeRelayPool({
+      onPending() {},
+      onBindingInvalidated: invalidated,
+      createClient(events) {
+        const child: Child = {
+          claim: vi.fn(async () => undefined),
+          resume: vi.fn(async () => undefined),
+          revokeBinding: vi.fn(async () => undefined),
+          approve: vi.fn(async () => false),
+          reject: vi.fn(() => false),
+          listPending: () => [],
+          status: () => 'disconnected',
+          revoke: vi.fn(),
+          emitPending() {},
+          emitStatus: events.onStatus,
+        }
+        children.push(child)
+        return child
+      },
+    })
+    await Promise.all([pool.resume(binding(0)), pool.resume(binding(1))])
+    children[0]!.emitStatus('disconnected:binding_unavailable')
+    expect(invalidated).toHaveBeenCalledWith(binding(0))
+    children[1]!.emitStatus('paired')
+    expect(pool.status()).toBe('paired')
   })
 })
