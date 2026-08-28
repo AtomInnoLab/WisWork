@@ -103,6 +103,58 @@ function fakeHost(options?: {
 }
 
 describe('PresentationTransactionExecutor', () => {
+  it('revalidates a scoped guard inside the FIFO write lease before cache or planning', async () => {
+    const fixture = fakeHost()
+    let guardValid = true
+    let releaseFirst!: () => void
+    const firstGate = new Promise<void>((resolve) => (releaseFirst = resolve))
+    const originalApply = fixture.host.apply
+    let firstApply = true
+    fixture.host.apply = async (planned, signal) => {
+      if (firstApply) {
+        firstApply = false
+        await firstGate
+      }
+      return originalApply(planned, signal)
+    }
+    const executor = new PresentationTransactionExecutor(fixture.host, {
+      acquireWriteLease: () => () => undefined,
+      validateScopeGuard: () => guardValid,
+    })
+    const first = executor.execute(transaction([operation('a', 'shape-1', 'one')]))
+    const scoped = {
+      ...transaction([operation('b', 'shape-1', 'two')]),
+      transactionId: 'tx-scoped',
+    }
+    const guard = { documentId: 'doc', sessionId: 'session', generation: 1 }
+    const second = executor.execute(scoped, undefined, guard)
+    guardValid = false
+    releaseFirst()
+    await expect(first).resolves.toMatchObject({ status: 'applied' })
+    await expect(second).resolves.toMatchObject({ status: 'conflict', code: 'target_stale' })
+    expect(fixture.counts().applyCount).toBe(1)
+  })
+
+  it('does not return a cached receipt when its authoritative guard is stale', async () => {
+    const fixture = fakeHost()
+    let guardValid = true
+    const executor = new PresentationTransactionExecutor(fixture.host, {
+      acquireWriteLease: () => () => undefined,
+      validateScopeGuard: () => guardValid,
+    })
+    const tx = transaction([operation('a', 'shape-1', 'one')])
+    const guard = { documentId: 'doc', sessionId: 'session', generation: 1 }
+    await expect(executor.execute(tx, undefined, guard)).resolves.toMatchObject({
+      status: 'applied',
+    })
+    guardValid = false
+    await expect(executor.execute(tx, undefined, guard)).resolves.toMatchObject({
+      status: 'conflict',
+      code: 'target_stale',
+    })
+    expect(fixture.counts().applyCount).toBe(1)
+  })
+
   it('plans dependent operations sequentially and creates one history entry', async () => {
     const fixture = fakeHost()
     const receipt = await new PresentationTransactionExecutor(fixture.host).execute(

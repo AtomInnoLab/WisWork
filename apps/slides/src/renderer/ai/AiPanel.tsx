@@ -58,6 +58,7 @@ import type { SelectionScope } from './edit-queue'
 import { EditQueueCard } from './EditQueueCard'
 import {
   EditQueueCapacityError,
+  EDIT_QUEUE_DEFAULT_CAPACITY,
   SelectionEditQueue,
   type EditQueueSnapshot,
   type SelectionEditReceipt,
@@ -377,7 +378,10 @@ export function AiPanel({
     editQueueRef.current!.snapshot(),
   )
   const [queuedScope, setQueuedScope] = useState<SelectionScope | null>(null)
-  const captureGenerationRef = useRef(0)
+  const lifecycleEpochRef = useRef(0)
+  const pendingCapturesRef = useRef(new Map<string, number>())
+  const captureTailRef = useRef<Promise<void>>(Promise.resolve())
+  const persistedQueueTombstonesRef = useRef(new Set<string>())
   const mountedRef = useRef(true)
   const [chat, setChat] = useState<ChatEntry[]>([])
   const [qualityTimeline, setQualityTimeline] = useState<PresentationQualityReceipt[]>([])
@@ -500,13 +504,17 @@ export function AiPanel({
   useEffect(() => {
     const identity = `${current}:${selectedIds.join('\u0000')}`
     if (selectionIdentityRef.current !== identity) {
-      captureGenerationRef.current++
+      lifecycleEpochRef.current++
+      pendingCapturesRef.current.clear()
+      captureTailRef.current = Promise.resolve()
       editQueueRef.current?.cancelAll('selection changed')
     }
     selectionIdentityRef.current = identity
   }, [current, selectedIds])
   useEffect(() => {
-    captureGenerationRef.current++
+    lifecycleEpochRef.current++
+    pendingCapturesRef.current.clear()
+    captureTailRef.current = Promise.resolve()
     editQueueRef.current?.cancelAll('document changed')
   }, [currentFilePath])
   const applySlideRef = useRef(applySlide)
@@ -1319,18 +1327,40 @@ export function AiPanel({
       queue.subscribe(() => setQueueSnapshot(queue.snapshot()))
       setQueueSnapshot(queue.snapshot())
     }
+    const snapshot = editQueueRef.current!.snapshot()
+    if (
+      pendingCapturesRef.current.size + snapshot.queued + (snapshot.running ? 1 : 0) >=
+      EDIT_QUEUE_DEFAULT_CAPACITY
+    ) {
+      setAttachNotice('Selection edit queue is full.')
+      return
+    }
     const identity = selectionIdentityRef.current
-    const captureGeneration = ++captureGenerationRef.current
+    const invocationId = crypto.randomUUID()
+    const lifecycleEpoch = lifecycleEpochRef.current
     const taskAttachments = [...attachmentsRef.current]
+    pendingCapturesRef.current.set(invocationId, lifecycleEpoch)
+    const priorCapture = captureTailRef.current
+    let releaseCapture!: () => void
+    const captureTurn = new Promise<void>((resolve) => (releaseCapture = resolve))
+    captureTailRef.current = priorCapture.then(() => captureTurn)
+    setInput('')
+    setAttachments([])
+    attachmentsRef.current = []
     void window.slidesApi
       .captureAgentSelection({
         slideIndex: currentRef.current,
         sourceIds: [...selectedRef.current],
       })
-      .then((captured) => {
+      .then(async (captured) => {
+        await priorCapture
+        releaseCapture()
+        const pendingEpoch = pendingCapturesRef.current.get(invocationId)
+        pendingCapturesRef.current.delete(invocationId)
         if (
           !mountedRef.current ||
-          captureGeneration !== captureGenerationRef.current ||
+          pendingEpoch !== lifecycleEpoch ||
+          lifecycleEpoch !== lifecycleEpochRef.current ||
           identity !== selectionIdentityRef.current
         )
           return
@@ -1338,7 +1368,6 @@ export function AiPanel({
           setAttachNotice('The selection changed before it could be captured.')
           return
         }
-        const invocationId = crypto.randomUUID()
         try {
           const task = editQueueRef.current!.enqueue(
             { invocationId, instruction, scope: captured },
@@ -1386,11 +1415,18 @@ export function AiPanel({
             { role: 'assistant', text: 'Queued', streaming: false, queueTaskId: invocationId },
           ])
           persistMessage('user', instruction, undefined, taskAttachments)
-          setInput('')
-          if (taskAttachments.length > 0) {
-            setAttachments([])
-            attachmentsRef.current = []
-          }
+          void task.then(
+            (receipt) => {
+              if (
+                receipt.status === 'cancelled' &&
+                !persistedQueueTombstonesRef.current.has(invocationId)
+              ) {
+                persistedQueueTombstonesRef.current.add(invocationId)
+                persistMessage('assistant', 'Selection edit cancelled.')
+              }
+            },
+            () => undefined,
+          )
           void task.catch((error) => {
             setChat((previous) =>
               previous.map((entry) =>
@@ -1401,7 +1437,12 @@ export function AiPanel({
                   : entry,
               ),
             )
-            if (!(error instanceof DOMException && error.name === 'AbortError'))
+            const cancelled = error instanceof DOMException && error.name === 'AbortError'
+            if (cancelled && !persistedQueueTombstonesRef.current.has(invocationId)) {
+              persistedQueueTombstonesRef.current.add(invocationId)
+              persistMessage('assistant', 'Selection edit cancelled.')
+            }
+            if (!cancelled)
               setAttachNotice(error instanceof Error ? error.message : 'Selection edit failed')
           })
         } catch (error) {
@@ -1412,7 +1453,13 @@ export function AiPanel({
           )
         }
       })
-      .catch(() => setAttachNotice('The selection could not be captured.'))
+      .catch(async () => {
+        await priorCapture
+        releaseCapture()
+        pendingCapturesRef.current.delete(invocationId)
+        if (lifecycleEpoch === lifecycleEpochRef.current)
+          setAttachNotice('The selection could not be captured.')
+      })
   }
 
   /** Image attachments read as base64, sent multimodally with this user message (≤5MB per image, max 20; isomorphic to docs) */
@@ -1751,7 +1798,9 @@ export function AiPanel({
   }
 
   const cancel = () => {
-    captureGenerationRef.current++
+    lifecycleEpochRef.current++
+    pendingCapturesRef.current.clear()
+    captureTailRef.current = Promise.resolve()
     editQueueRef.current?.cancelAll('stop')
     activeSelectionScopeRef.current = undefined
     const wasPrelaunch = runStartingRef.current
@@ -1779,7 +1828,9 @@ export function AiPanel({
     mountedRef.current = true
     return () => {
       mountedRef.current = false
-      captureGenerationRef.current++
+      lifecycleEpochRef.current++
+      pendingCapturesRef.current.clear()
+      captureTailRef.current = Promise.resolve()
       editQueueRef.current?.dispose()
       launchTokenRef.current++
       runStartingRef.current = false
@@ -1795,7 +1846,9 @@ export function AiPanel({
     })
 
   const newChat = () => {
-    captureGenerationRef.current++
+    lifecycleEpochRef.current++
+    pendingCapturesRef.current.clear()
+    captureTailRef.current = Promise.resolve()
     editQueueRef.current?.cancelAll('new chat')
     activeSelectionScopeRef.current = undefined
     launchTokenRef.current++

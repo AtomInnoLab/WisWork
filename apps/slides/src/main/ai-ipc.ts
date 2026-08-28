@@ -345,6 +345,7 @@ export function registerSlidesOnlyAiIpc(): void {
         : undefined
     const transaction = parsePresentationTransaction(envelope?.transaction ?? value)
     const session = sessions.get(event.sender.id)!
+    let scopeGuard: import('./operations/executor').PresentationScopeGuard | undefined
     if (envelope) {
       const guard = validateSlidesAiObject(envelope.scopeGuard, [
         'documentId',
@@ -352,10 +353,15 @@ export function registerSlidesOnlyAiIpc(): void {
         'generation',
       ])
       const identity = ensureSessionInstanceIds(session)
+      scopeGuard = {
+        documentId: String(guard.documentId),
+        sessionId: String(guard.sessionId),
+        generation: Number(guard.generation),
+      }
       if (
-        guard.documentId !== identity.documentInstanceId ||
-        guard.sessionId !== identity.sessionInstanceId ||
-        guard.generation !== (session.mutationGeneration ?? 0)
+        scopeGuard.documentId !== identity.documentInstanceId ||
+        scopeGuard.sessionId !== identity.sessionInstanceId ||
+        scopeGuard.generation !== (session.mutationGeneration ?? 0)
       ) {
         return {
           status: 'conflict',
@@ -375,6 +381,14 @@ export function registerSlidesOnlyAiIpc(): void {
         }),
         {
           acquireWriteLease: () => acquirePresentationTransactionLease(session),
+          validateScopeGuard: (guard) => {
+            const identity = ensureSessionInstanceIds(session)
+            return (
+              guard.documentId === identity.documentInstanceId &&
+              guard.sessionId === identity.sessionInstanceId &&
+              guard.generation === (session.mutationGeneration ?? 0)
+            )
+          },
         },
       )
       transactionExecutors.set(session, executor)
@@ -385,7 +399,7 @@ export function registerSlidesOnlyAiIpc(): void {
     controllers.add(controller)
     transactionControllers.set(key, controllers)
     try {
-      return await executor.execute(transaction, controller.signal)
+      return await executor.execute(transaction, controller.signal, scopeGuard)
     } finally {
       preparedTargets.get(session)?.complete(transaction.transactionId)
       controllers.delete(controller)

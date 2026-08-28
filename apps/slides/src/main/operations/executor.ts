@@ -52,6 +52,13 @@ export interface PresentationTransactionExecutorOptions {
   acquireWriteLease?: () => (() => void) | null
   maxQueuedTransactions?: number
   fingerprintTransaction?: (transaction: PresentationTransaction) => Promise<string>
+  validateScopeGuard?: (guard: PresentationScopeGuard) => boolean
+}
+
+export interface PresentationScopeGuard {
+  documentId: string
+  sessionId: string
+  generation: number
 }
 
 interface CachedReceipt {
@@ -77,6 +84,7 @@ export class PresentationTransactionExecutor<Snapshot> {
   private readonly acquireWriteLease: (() => (() => void) | null) | undefined
   private readonly maxQueuedTransactions: number
   private readonly fingerprintTransaction: (transaction: PresentationTransaction) => Promise<string>
+  private readonly validateScopeGuard: ((guard: PresentationScopeGuard) => boolean) | undefined
   private readonly receipts = new Map<string, CachedReceipt>()
   private readonly inFlight = new Map<
     string,
@@ -100,11 +108,18 @@ export class PresentationTransactionExecutor<Snapshot> {
       ),
     )
     this.fingerprintTransaction = options.fingerprintTransaction ?? fingerprintSemanticValue
+    this.validateScopeGuard = options.validateScopeGuard
   }
 
-  execute(input: PresentationTransaction, signal?: AbortSignal): Promise<PresentationReceipt> {
+  execute(
+    input: PresentationTransaction,
+    signal?: AbortSignal,
+    scopeGuard?: PresentationScopeGuard,
+  ): Promise<PresentationReceipt> {
     const transaction = parsePresentationTransaction(input)
-    const signature = synchronousTransactionSignature(transaction)
+    const signature = scopeGuard
+      ? canonicalizeSemanticValue({ transaction, scopeGuard })
+      : synchronousTransactionSignature(transaction)
     const existing = this.inFlight.get(transaction.transactionId)
     if (existing) {
       if (existing.signature === signature) return existing.promise
@@ -114,7 +129,7 @@ export class PresentationTransactionExecutor<Snapshot> {
         code: 'target_stale',
       })
     }
-    const cached = this.receipts.get(transaction.transactionId)
+    const cached = scopeGuard ? undefined : this.receipts.get(transaction.transactionId)
     if (cached) {
       if (cached.signature === signature) return Promise.resolve(cached.receipt)
       return Promise.resolve({
@@ -129,7 +144,7 @@ export class PresentationTransactionExecutor<Snapshot> {
     // Occupy the FIFO slot synchronously. Digesting must happen only after the
     // preceding distinct transaction settles, otherwise a faster later digest
     // could overtake an earlier request.
-    const run = this.active.then(() => this.executeQueued(transaction, signal))
+    const run = this.active.then(() => this.executeQueued(transaction, signal, scopeGuard))
     this.active = run.then(
       () => undefined,
       () => undefined,
@@ -147,6 +162,7 @@ export class PresentationTransactionExecutor<Snapshot> {
   private async executeQueued(
     transaction: PresentationTransaction,
     signal?: AbortSignal,
+    scopeGuard?: PresentationScopeGuard,
   ): Promise<PresentationReceipt> {
     let digest: string
     try {
@@ -154,7 +170,7 @@ export class PresentationTransactionExecutor<Snapshot> {
     } catch {
       return unchangedReceipt(transaction, 'write_not_applied')
     }
-    const cached = this.receipts.get(transaction.transactionId)
+    const cached = scopeGuard ? undefined : this.receipts.get(transaction.transactionId)
     if (cached) {
       if (cached.digest === digest) return cached.receipt
       return {
@@ -163,17 +179,18 @@ export class PresentationTransactionExecutor<Snapshot> {
         code: 'target_stale',
       }
     }
-    return this.executeExclusive(transaction, digest, signal)
+    return this.executeExclusive(transaction, digest, signal, scopeGuard)
   }
 
   private async executeExclusive(
     transaction: PresentationTransaction,
     digest: string,
     signal?: AbortSignal,
+    scopeGuard?: PresentationScopeGuard,
   ): Promise<PresentationReceipt> {
     // Re-check after waiting behind a different transaction: it may have filled
     // the bounded ledger while this transaction was queued.
-    const cached = this.receipts.get(transaction.transactionId)
+    const cached = scopeGuard ? undefined : this.receipts.get(transaction.transactionId)
     if (cached) {
       if (cached.digest === digest) return cached.receipt
       return {
@@ -194,6 +211,13 @@ export class PresentationTransactionExecutor<Snapshot> {
     }
 
     try {
+      if (scopeGuard && (!this.validateScopeGuard || !this.validateScopeGuard(scopeGuard))) {
+        return {
+          status: 'conflict',
+          transactionId: transaction.transactionId,
+          code: 'target_stale',
+        }
+      }
       return await this.executeWithLease(transaction, digest, signal)
     } finally {
       releaseLease?.()
