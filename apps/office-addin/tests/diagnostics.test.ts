@@ -156,6 +156,53 @@ describe('Office safe diagnostics', () => {
     expect(diagnostics.exportJson()).not.toContain('secret document content')
   })
 
+  it('retains an allowlisted verification stage from a shallow error cause', () => {
+    const diagnostics = createOfficeDiagnostics({ host: 'word', build: 'dev' })
+    const staged = Object.assign(new Error('secret document content'), {
+      verificationStage: 'body_shape',
+    })
+    const wrapped = new Error('office_verify_failed', {
+      cause: new Error('verification failed', { cause: staged }),
+    })
+    diagnostics.record({ phase: 'verify', errorCode: 'office_verify_failed', error: wrapped })
+
+    expect(diagnostics.snapshot().events[0]).toMatchObject({
+      error_code: 'office_verify_failed',
+      verification_stage: 'body_shape',
+    })
+    const exported = diagnostics.exportJson()
+    expect(exported).toContain('"verification_stage": "body_shape"')
+    expect(exported).not.toContain('secret document content')
+  })
+
+  it('discards invalid and hostile verification stages without exposing content', () => {
+    const diagnostics = createOfficeDiagnostics({ host: 'word', build: 'dev' })
+    diagnostics.record({
+      phase: 'verify',
+      errorCode: 'office_verify_failed',
+      error: { verificationStage: 'paragraph contains secret document text' },
+    })
+    const hostile = Object.defineProperty({}, 'verificationStage', {
+      get() {
+        throw new Error('secret getter content')
+      },
+    })
+    expect(() =>
+      diagnostics.record({
+        phase: 'verify',
+        errorCode: 'office_verify_failed',
+        error: hostile,
+      }),
+    ).not.toThrow()
+
+    expect(diagnostics.snapshot().events).toHaveLength(2)
+    expect(diagnostics.snapshot().events[0]).not.toHaveProperty('verification_stage')
+    expect(diagnostics.snapshot().events[1]).not.toHaveProperty('verification_stage')
+    const exported = diagnostics.exportJson()
+    expect(exported).not.toContain('paragraph contains secret document text')
+    expect(exported).not.toContain('secret getter content')
+  })
+
   it('retains only allowlisted content-free Word recovery stages', () => {
     const diagnostics = createOfficeDiagnostics({ host: 'word', build: 'dev' })
     diagnostics.record({

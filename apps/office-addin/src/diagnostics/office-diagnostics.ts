@@ -7,6 +7,7 @@ export const MAX_DIAGNOSTIC_EXPORT_BYTES = 256 * 1024
 export type DiagnosticPhase =
   'tool' | 'proposal' | 'validate' | 'write' | 'verify' | 'recovery' | 'transport'
 export type DiagnosticOutcome = 'failed' | 'unsupported' | 'cancelled'
+export type VerificationStage = 'text' | 'body_shape' | 'content' | 'boundary'
 
 const ERROR_CODES = new Set([
   'agent_run_failed',
@@ -43,6 +44,7 @@ export interface OfficeDiagnosticEvent {
   office_error_code?: string
   office_error_name?: string
   office_error_location?: string
+  verification_stage?: VerificationStage
   duration_ms: number
   requirement_sets: Readonly<Record<string, boolean>>
 }
@@ -79,6 +81,12 @@ interface DiagnosticOptions {
 
 const PLATFORMS = new Set(['pc', 'mac', 'office_online', 'ios', 'android', 'universal', 'unknown'])
 const REQUIREMENT_SETS = new Set(['OfficeApi', 'WordApi', 'ExcelApi', 'PowerPointApi'])
+const VERIFICATION_STAGES = new Set<VerificationStage>([
+  'text',
+  'body_shape',
+  'content',
+  'boundary',
+])
 
 const PLATFORM_NAMES: Readonly<Record<string, string>> = Object.freeze({
   pc: 'pc',
@@ -133,13 +141,16 @@ const stableError = (value: unknown): string =>
 const outcome = (code: string): DiagnosticOutcome =>
   code === 'office_api_unsupported' ? 'unsupported' : code === 'cancelled' ? 'cancelled' : 'failed'
 
-function officeIdentifiers(
-  error: unknown,
-): Pick<
+type OfficeDiagnosticMetadata = Pick<
   OfficeDiagnosticEvent,
-  'office_error_code' | 'office_error_name' | 'office_error_location'
-> {
-  const result: Record<string, string> = {}
+  | 'office_error_code'
+  | 'office_error_name'
+  | 'office_error_location'
+  | 'verification_stage'
+>
+
+function officeIdentifiers(error: unknown): OfficeDiagnosticMetadata {
+  const result: OfficeDiagnosticMetadata = {}
   const seen = new Set<unknown>()
   let current = error
   for (let depth = 0; depth < 3; depth += 1) {
@@ -158,6 +169,17 @@ function officeIdentifiers(
       if (code && !result.office_error_code) result.office_error_code = code
       if (name && !result.office_error_name) result.office_error_name = name
       if (location && !result.office_error_location) result.office_error_location = location
+      try {
+        const stage = value.verificationStage
+        if (
+          typeof stage === 'string' &&
+          VERIFICATION_STAGES.has(stage as VerificationStage) &&
+          !result.verification_stage
+        )
+          result.verification_stage = stage as VerificationStage
+      } catch {
+        /* Ignore hostile accessors without interrupting the shallow cause walk. */
+      }
       current = value.cause
     } catch {
       break
