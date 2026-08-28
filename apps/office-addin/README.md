@@ -101,6 +101,15 @@ without persistent WebCrypto/IndexedDB support, or a new client connected to an 
 ordinary one-time pairing flow. The task pane never stores a Wispaper token, session capability,
 exportable private key, or credential in `localStorage` or Office document settings.
 
+Persistent pairing has coordinated, exact release controls. Office builds use
+`VITE_WISWORK_OFFICE_PAIRING_RESUME=0|1`; WisWork PC processes use
+`WISWORK_OFFICE_PAIRING_RESUME=0|1`; Relay uses `WISWORK_RELAY_PAIRING_RESUME=0|1`.
+All three default to `1`, and any value other than the exact strings `0` and `1` fails closed. The
+Office and PC switches disable feature advertisement, enrollment, and automatic resume while
+leaving ordinary v2 code pairing available. They do not open, read, rewrite, or delete the local
+binding stores while disabled. The Relay switch likewise leaves SQLite bindings untouched, so
+valid bindings can resume after all three switches are re-enabled.
+
 ## Develop and sideload
 
 From the repository root:
@@ -130,6 +139,23 @@ WisUsage connections, wildcard origins, or source maps in the deployment output.
 The local HTTP bridge is rollback-only. It is never selected automatically. A coordinated rollback
 build must set `VITE_WISWORK_OFFICE_TRANSPORT=loopback` and configure the same bounded port list on
 Office and PC. Remove that flag to return to Relay mode.
+
+For persistent pairing, deploy in the order **Relay → WisWork PC → taskpane**:
+
+1. Back up `bindings.sqlite`, deploy Relay with its state directory and
+   `WISWORK_RELAY_PAIRING_RESUME=1`, and verify legacy v1/v2 pairing plus one restart/resume in a
+   staging database.
+2. Deploy WisWork PC with `WISWORK_OFFICE_PAIRING_RESUME=1`; confirm ordinary code pairing before
+   enabling the taskpane build.
+3. Build and deploy the taskpane with `VITE_WISWORK_OFFICE_PAIRING_RESUME=1`, then observe resume,
+   fallback, and unexpected-revocation metrics.
+
+Roll back in reverse order using flags first: rebuild the taskpane with
+`VITE_WISWORK_OFFICE_PAIRING_RESUME=0`, restart WisWork PC with
+`WISWORK_OFFICE_PAIRING_RESUME=0`, then set `WISWORK_RELAY_PAIRING_RESUME=0` and restart Relay.
+Do not delete IndexedDB, `office-pairings.enc`, or `bindings.sqlite`. Re-enable in forward order to
+reuse bindings after confirming schema compatibility. Restore an older Relay binary only if it
+will not open or modify the preserved SQLite file.
 
 The new host/shared registries are enabled by default. Build with
 `VITE_WISWORK_OFFICE_HOST_SKILLS=0` to roll back to the legacy selection-only skill without
@@ -195,6 +221,15 @@ reduced-motion preferences. Every document mutation still requires an explicit i
 ## Manual Office acceptance
 
 Relay behavior must be checked on Windows and macOS desktop Office and Word Web before release:
+
+The real-key persistence rows below are manual release gates and were **not completed by automated
+verification** in this implementation task:
+
+| Host runtime            | Required real-key smoke                                                                                                               |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Windows Office WebView2 | Enroll with a non-exportable P-256 key, reload/restart Office and PC, and prove silent resume with a fresh session.                   |
+| macOS Office            | Repeat enrollment and restart/resume, then verify IndexedDB retains the non-exportable key without document/localStorage credentials. |
+| Word Web                | Pair, reload the browser taskpane, resume with the same binding, explicitly forget, and verify the next connection requires a code.   |
 
 1. Start WisWork PC signed in; sideload the configured manifest in Word, Excel, and PowerPoint.
 2. Confirm the task pane opens only the fixed WSS Relay and needs no loopback/PNA exception.

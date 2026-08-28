@@ -64,6 +64,8 @@ const binding: OfficeStoredBinding = {
 
 class FakeBindingStore implements OfficeBindingStore {
   current: OfficeStoredBinding | undefined
+  loads = 0
+  enrollments = 0
   saves: Array<{
     enrollment: OfficeBindingEnrollment
     bindingId: string
@@ -77,9 +79,11 @@ class FakeBindingStore implements OfficeBindingStore {
   }
 
   async load() {
+    this.loads += 1
     return this.current
   }
   async createEnrollment() {
+    this.enrollments += 1
     return enrollment
   }
   async save(
@@ -189,6 +193,39 @@ describe('Office binding invalidation channel', () => {
 })
 
 describe('Office persistent relay session', () => {
+  it('uses untouched ordinary v2 pairing when persistence is explicitly disabled', async () => {
+    const store = new FakeBindingStore(binding)
+    const channel = new FakeInvalidationChannel()
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({
+      capabilities: ['agent.v1'],
+      persistentPairing: false,
+      bindingStore: store,
+      bindingInvalidationChannel: channel,
+      createSocket: () => socket,
+    })
+
+    void session.connect('word')
+    await flush()
+    socket.open()
+
+    expect(sent(socket)).toEqual({
+      version: 2,
+      type: 'office.create',
+      host: 'Word',
+      capabilities: ['agent.v1'],
+    })
+    expect(store.loads).toBe(0)
+    expect(store.enrollments).toBe(0)
+    expect(store.signatures).toHaveLength(0)
+    expect(store.saves).toHaveLength(0)
+    expect(channel.listeners.size).toBe(0)
+
+    await session.forget()
+    expect(store.forgets).toBe(0)
+    expect(store.current).toBe(binding)
+  })
+
   it('enrolls once with a control feature separate from callable capabilities', async () => {
     const store = new FakeBindingStore()
     const sockets: FakeSocket[] = []

@@ -3,11 +3,22 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   completeOfficeRelayOAuthLogin,
   logoutWithOfficeRelay,
+  officePairingResumeEnabled,
   startOfficeRelayPersistence,
   syncOfficeRelayAccountSafely,
 } from '../src/main/office-relay-runtime'
 
 describe('Office relay runtime integration', () => {
+  it('parses the exact persistent-pairing environment kill switch fail closed', () => {
+    expect(officePairingResumeEnabled({})).toBe(true)
+    expect(officePairingResumeEnabled({ WISWORK_OFFICE_PAIRING_RESUME: '1' })).toBe(true)
+    expect(officePairingResumeEnabled({ WISWORK_OFFICE_PAIRING_RESUME: '0' })).toBe(false)
+    for (const value of ['', 'false', 'true', '2'])
+      expect(() => officePairingResumeEnabled({ WISWORK_OFFICE_PAIRING_RESUME: value })).toThrow(
+        'invalid_office_pairing_resume',
+      )
+  })
+
   it('always performs auth logout after binding invalidation fails and reports the binding diagnostic', async () => {
     const order: string[] = []
     let suspended = false

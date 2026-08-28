@@ -50,6 +50,13 @@ export function officeRemoteDiagnosticsEnabled(env: BuildEnv): boolean {
   throw new Error('invalid_office_remote_diagnostics')
 }
 
+export function officePairingResumeEnabled(env: BuildEnv): boolean {
+  const value = env.VITE_WISWORK_OFFICE_PAIRING_RESUME
+  if (value === undefined || value === '1') return true
+  if (value === '0') return false
+  throw new Error('invalid_office_pairing_resume')
+}
+
 export function officeBuildId(env: BuildEnv, fallback: string): string {
   const value = env.VITE_WISWORK_OFFICE_BUILD_ID || fallback
   if (!/^[A-Za-z0-9_.-]{3,96}$/.test(value)) throw new Error('invalid_office_build_id')
@@ -90,6 +97,7 @@ export function deploymentConfig(env: BuildEnv): DeploymentConfig | undefined {
     void officeWorkspaceMode(env)
     void officeCapabilityFlags(env)
     void officeRemoteDiagnosticsEnabled(env)
+    void officePairingResumeEnabled(env)
     void officeBuildId(env, 'development')
   } catch {
     return undefined

@@ -904,6 +904,7 @@ export function ConfiguredApp(
         ? createPcBridgeSession()
         : createOfficeRelaySession({
             capabilities: ['agent.v1'],
+            persistentPairing: __WISWORK_OFFICE_PAIRING_RESUME__,
           })),
     [props.connectionBridge, transportMode],
   )

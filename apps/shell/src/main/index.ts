@@ -172,16 +172,14 @@ import {
   syncOfficeBridgeAvailability,
 } from './office-bridge-runtime'
 import { registerOfficePairingIpc } from './office-pairing-ipc'
-import {
-  createOfficeRelayClient,
-  officeRelayEndpointFromEnv,
-} from './office-relay-client'
+import { createOfficeRelayClient, officeRelayEndpointFromEnv } from './office-relay-client'
 import { createOfficeRelayPool, type OfficeRelayPool } from './office-relay-pool'
 import { createElectronOfficeRelayBindingStore } from './office-relay-binding-store'
 import { createOfficeRelayLifecycle, type OfficeRelayLifecycle } from './office-relay-lifecycle'
 import {
   completeOfficeRelayOAuthLogin,
   logoutWithOfficeRelay,
+  officePairingResumeEnabled,
   startOfficeRelayPersistence,
   syncOfficeRelayAccountSafely,
 } from './office-relay-runtime'
@@ -2554,11 +2552,14 @@ app.whenReady().then(async () => {
       })
     },
   })
-  const officeRelayBindingStore = createElectronOfficeRelayBindingStore({
-    userDataPath: app.getPath('userData'),
-    safeStorage,
-  })
   try {
+    const persistentPairing = officePairingResumeEnabled(process.env)
+    const officeRelayBindingStore = persistentPairing
+      ? createElectronOfficeRelayBindingStore({
+          userDataPath: app.getPath('userData'),
+          safeStorage,
+        })
+      : undefined
     const retrievalEndpoint = officeRetrievalEndpointFromEnv(process.env)
     const retrievalProxy = retrievalEndpoint
       ? createOfficeRetrievalProxy({
@@ -2576,7 +2577,7 @@ app.whenReady().then(async () => {
           proxy: officeMessagesProxy,
           retrievalProxy,
           negotiateCapabilities: true,
-          persistentPairing: true,
+          persistentPairing,
           onPending: events.onPending,
           onPendingExpired: events.onPendingExpired,
           onStatus: events.onStatus,
@@ -2591,9 +2592,12 @@ app.whenReady().then(async () => {
       onStatus: (status) => {
         officeRelayDiagnostic = status
       },
-      onBinding: (binding) => officeRelayBindingStore.put(binding),
-      onBindingInvalidated: (binding) =>
-        officeRelayBindingStore.remove(binding.accountId, binding.bindingId),
+      onBinding: officeRelayBindingStore
+        ? (binding) => officeRelayBindingStore.put(binding)
+        : undefined,
+      onBindingInvalidated: officeRelayBindingStore
+        ? (binding) => officeRelayBindingStore.remove(binding.accountId, binding.bindingId)
+        : undefined,
       onAuthRequired: async () => {
         try {
           await officeRelayLifecycle?.terminalAuthLoss()
@@ -2603,15 +2607,16 @@ app.whenReady().then(async () => {
         }
       },
     })
-    officeRelayLifecycle = createOfficeRelayLifecycle({
-      store: officeRelayBindingStore,
-      pool: officeRelay,
-      getAccountStatus: () => requireAuthRuntime().client.getAccountStatus(),
-      getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
-    })
+    if (persistentPairing && officeRelayBindingStore)
+      officeRelayLifecycle = createOfficeRelayLifecycle({
+        store: officeRelayBindingStore,
+        pool: officeRelay,
+        getAccountStatus: () => requireAuthRuntime().client.getAccountStatus(),
+        getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
+      })
   } catch {
     officeRelayDiagnostic = 'error:invalid_config'
-    console.error('[office-relay] invalid endpoint configuration')
+    console.error('[office-relay] invalid configuration')
   }
   if (officeRelayLifecycle && officeRelay)
     await startOfficeRelayPersistence({

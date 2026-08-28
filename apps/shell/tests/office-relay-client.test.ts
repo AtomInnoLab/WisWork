@@ -180,6 +180,48 @@ describe('Office relay PC client', () => {
     })
   })
 
+  it('keeps ordinary v2 code pairing without enhanced fields when persistence is disabled', async () => {
+    const socket = new FakeSocket()
+    const onBinding = vi.fn()
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => socket,
+      getValidAccountStatus: async () => ({ loggedIn: true, userId: 'local-account' }),
+      getAccessToken: async () => 'access-token',
+      proxy: async () => ({ status: 200, body: new Uint8Array() }),
+      negotiateCapabilities: true,
+      persistentPairing: false,
+      onBinding,
+      onPending() {},
+    })
+
+    const claiming = client.claim('123456')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await claiming
+    expect(JSON.parse(socket.sent[0]!)).toEqual({
+      version: 2,
+      type: 'pc.negotiate',
+      verification_code: '123456',
+      capabilities: ['agent.v1'],
+    })
+    expect(JSON.parse(socket.sent[0]!)).not.toHaveProperty('features')
+
+    socket.message({
+      version: 2,
+      type: 'pc.negotiated',
+      pairing_version: 2,
+      capabilities: ['agent.v1'],
+    })
+    expect(JSON.parse(socket.sent[1]!)).toEqual({
+      version: 2,
+      type: 'pc.claim',
+      verification_code: '123456',
+      capabilities: ['agent.v1'],
+    })
+    expect(onBinding).not.toHaveBeenCalled()
+  })
+
   it('fails closed if the relay echoes a different human verification code', async () => {
     const { client, socket, pending } = setup()
     const claiming = client.claim('123456')
@@ -890,7 +932,10 @@ describe('Office relay PC client', () => {
         return socket
       },
       getValidAccountStatus: async () => ({ loggedIn: true, userId: 'local-account' }),
-      getAccessToken: vi.fn().mockResolvedValueOnce('pair-token').mockResolvedValueOnce('revoke-token'),
+      getAccessToken: vi
+        .fn()
+        .mockResolvedValueOnce('pair-token')
+        .mockResolvedValueOnce('revoke-token'),
       proxy: async () => ({ status: 200, body: new Uint8Array() }),
       persistentPairing: true,
       onBinding: async () => {
@@ -1054,9 +1099,7 @@ describe('Office relay PC client', () => {
       capabilities: ['agent.v1'],
       features: ['pairing-resume.v1'],
     })
-    await vi.waitFor(() =>
-      expect(client.status()).toBe('disconnected:protocol_violation'),
-    )
+    await vi.waitFor(() => expect(client.status()).toBe('disconnected:protocol_violation'))
   })
 
   it('uses exact legacy v1 frames after enhanced negotiation selects pairing_version 1', async () => {
@@ -1194,9 +1237,7 @@ describe('Office relay PC client', () => {
     await vi.waitFor(() => expect(sockets).toHaveLength(2))
     sockets[1]!.open()
     await second
-    expect(JSON.parse(sockets[1]!.sent[0]!)).toHaveProperty('features', [
-      'pairing-resume.v1',
-    ])
+    expect(JSON.parse(sockets[1]!.sent[0]!)).toHaveProperty('features', ['pairing-resume.v1'])
   })
 
   it('uses a fresh access token for pc.resume and accepts waiting_for_office then standard v2 approval', async () => {

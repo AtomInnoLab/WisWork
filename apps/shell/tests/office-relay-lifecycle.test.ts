@@ -148,7 +148,9 @@ describe('Office relay binding lifecycle', () => {
     ;(store.listForAccount as ReturnType<typeof vi.fn>).mockResolvedValue([])
     let inFlight = 0
     let maximumInFlight = 0
-    const failed = new Set(records.filter((_, index) => index % 17 === 0).map((entry) => entry.bindingId))
+    const failed = new Set(
+      records.filter((_, index) => index % 17 === 0).map((entry) => entry.bindingId),
+    )
     ;(pool.revokeBinding as ReturnType<typeof vi.fn>).mockImplementation(async (bindingId) => {
       inFlight += 1
       maximumInFlight = Math.max(maximumInFlight, inFlight)
@@ -227,5 +229,20 @@ describe('Office relay binding lifecycle', () => {
     expect(callback.indexOf("officeRelay?.suspend('account_switch')")).toBeLessThan(
       callback.indexOf('consumeCallback(callback)'),
     )
+  })
+
+  it('wires the PC kill switch before creating or syncing persistent binding state', () => {
+    const source = readFileSync(join(import.meta.dirname, '../src/main/index.ts'), 'utf8')
+    const bootstrap = source.slice(source.indexOf('const officeMessagesProxy'))
+    expect(bootstrap).toContain('officePairingResumeEnabled(process.env)')
+    expect(bootstrap.indexOf('officePairingResumeEnabled(process.env)')).toBeLessThan(
+      bootstrap.indexOf('createElectronOfficeRelayBindingStore'),
+    )
+    expect(bootstrap).toMatch(
+      /const officeRelayBindingStore = persistentPairing\s+\? createElectronOfficeRelayBindingStore/,
+    )
+    expect(bootstrap).toContain('persistentPairing,')
+    expect(bootstrap).toContain('if (persistentPairing && officeRelayBindingStore)')
+    expect(bootstrap).toContain("officeRelayDiagnostic = 'error:invalid_config'")
   })
 })

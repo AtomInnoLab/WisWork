@@ -75,3 +75,20 @@ Sequence:
 - Verify database and logs contain no token, private key, document content, request body, session capability, challenge, signature, binding id or subject hash output.
 - Deploy Relay -> PC -> taskpane. Roll back in reverse by feature flags first; preserve the SQLite database and encrypted PC store.
 - Run fresh full `npm test`, `npm run typecheck`, affected production builds, Relay `cargo test --locked`, `cargo clippy --locked --all-targets -- -D warnings`, license checks where available, and the real-host smoke matrix before claiming production readiness.
+
+## Task 4 release-control smoke matrix
+
+Roll out in the executable order Relay (`WISWORK_RELAY_PAIRING_RESUME=1`) -> WisWork PC
+(`WISWORK_OFFICE_PAIRING_RESUME=1`) -> taskpane
+(`VITE_WISWORK_OFFICE_PAIRING_RESUME=1`). Roll back in reverse with each exact flag set to `0`
+before replacing binaries or bundles. Disabled components continue ordinary v2 code pairing where
+applicable and must not open, mutate, or delete existing IndexedDB, encrypted PC, or SQLite binding
+records. Re-enable in forward order after schema compatibility is confirmed.
+
+| Gate                                                                                     | Automated coverage                                                                                                                                                               | Release status                          |
+| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| Legacy Office/PC against the new Relay and new clients against old Relay                 | `relay.rs::persistent_relay_keeps_legacy_v2_frames_exact_and_features_non_callable`, Office `falls back exactly once to ordinary v2...`, and PC `uses exact legacy v1 frames...` | Automated                               |
+| All three exact `0\|1` flags, invalid fail-closed configuration, no-store disabled paths | Relay config, Office build/session, and PC runtime/client tests                                                                                                                  | Automated                               |
+| Windows Office WebView2 real non-exportable key reload/restart/resume                    | Manual real-host steps in `apps/office-addin/README.md`                                                                                                                          | Not completed by automated verification |
+| macOS Office real non-exportable key reload/restart/resume                               | Manual real-host steps in `apps/office-addin/README.md`                                                                                                                          | Not completed by automated verification |
+| Word Web real non-exportable key reload/resume/forget                                    | Manual real-host steps in `apps/office-addin/README.md`                                                                                                                          | Not completed by automated verification |

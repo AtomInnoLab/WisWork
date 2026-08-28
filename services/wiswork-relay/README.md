@@ -34,3 +34,11 @@ The SQLite schema stores only live binding ids, Relay-computed OIDC subject hash
 The public endpoint is `wss://office.8-216-134-194.sslip.io/office-relay`; the health check is `/office-relay/health`. The service validates PC Bearer tokens only against the fixed Wispaper OIDC userinfo endpoint, immediately discards them, and must never log credentials or relay payloads.
 
 Before an upgrade, stop Relay and copy `bindings.sqlite` to protected backup storage. Start the new binary against a staging copy first; startup transactionally creates schema v1 and refuses unknown future schema versions without mutation. Test one enrollment, process restart, resume, and revocation before production cutover. For rollback, first set `WISWORK_RELAY_PAIRING_RESUME=0`; keep the database untouched. A previous binary can then be restored only if it does not open or modify this file. Re-enable after schema compatibility is confirmed.
+
+Coordinate the persistent-pairing rollout in the order Relay, WisWork PC, then taskpane. Roll back
+in reverse by setting the taskpane build flag `VITE_WISWORK_OFFICE_PAIRING_RESUME=0`, the PC process
+flag `WISWORK_OFFICE_PAIRING_RESUME=0`, and finally `WISWORK_RELAY_PAIRING_RESUME=0`. These switches
+disable enrollment and automatic resume without deleting IndexedDB, `office-pairings.enc`, or
+`bindings.sqlite`; re-enable in forward order after confirming schema compatibility. Windows
+Office WebView2, macOS Office, and Word Web real-key persistence smokes remain mandatory manual
+release gates and are not completed by the automated suites.

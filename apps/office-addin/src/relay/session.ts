@@ -91,10 +91,11 @@ export interface OfficeBindingInvalidationChannel {
   broadcast(message: OfficeBindingInvalidation): void
 }
 
-interface Dependencies {
+export interface OfficeRelaySessionDependencies {
   createSocket?: (url: string) => RelayWebSocket
   randomUUID?: () => string
   capabilities?: readonly OfficeRelayCapability[]
+  persistentPairing?: boolean
   bindingStore?: OfficeBindingStore
   schedule?: (callback: () => void, delay: number) => unknown
   cancelSchedule?: (handle: unknown) => void
@@ -197,23 +198,26 @@ export function createBrowserOfficeBindingInvalidationChannel(
   })
 }
 
-export function createOfficeRelaySession(dependencies: Dependencies = {}): OfficeRelaySession {
+export function createOfficeRelaySession(
+  dependencies: OfficeRelaySessionDependencies = {},
+): OfficeRelaySession {
   const createSocket = dependencies.createSocket ?? browserSocket
   const randomUUID = dependencies.randomUUID ?? (() => crypto.randomUUID())
   const requestedCapabilities = [...(dependencies.capabilities ?? [])]
-  const browserBindingStore = dependencies.bindingStore
-    ? undefined
-    : createBrowserOfficeBindingStore()
-  const browserInvalidationChannel = browserBindingStore
-    ? createBrowserOfficeBindingInvalidationChannel()
-    : undefined
+  const persistentPairing = dependencies.persistentPairing !== false
+  const configuredBindingStore = persistentPairing ? dependencies.bindingStore : undefined
+  const browserBindingStore =
+    persistentPairing && !configuredBindingStore ? createBrowserOfficeBindingStore() : undefined
+  const browserInvalidationChannel =
+    persistentPairing && browserBindingStore
+      ? createBrowserOfficeBindingInvalidationChannel()
+      : undefined
   const bindingInvalidationChannel =
-    dependencies.bindingInvalidationChannel ??
-    (dependencies.bindingStore ? undefined : browserInvalidationChannel)
+    (persistentPairing ? dependencies.bindingInvalidationChannel : undefined) ??
+    (configuredBindingStore ? undefined : browserInvalidationChannel)
   const bindingStore =
-    requestedCapabilities.length > 0
-      ? (dependencies.bindingStore ??
-        (bindingInvalidationChannel ? browserBindingStore : undefined))
+    persistentPairing && requestedCapabilities.length > 0
+      ? (configuredBindingStore ?? (bindingInvalidationChannel ? browserBindingStore : undefined))
       : undefined
   const schedule = dependencies.schedule ?? ((callback, delay) => setTimeout(callback, delay))
   const cancelSchedule =

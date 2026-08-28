@@ -1,3 +1,10 @@
+export function officePairingResumeEnabled(env: Record<string, string | undefined>): boolean {
+  const value = env.WISWORK_OFFICE_PAIRING_RESUME
+  if (value === undefined || value === '1') return true
+  if (value === '0') return false
+  throw new Error('invalid_office_pairing_resume')
+}
+
 export async function logoutWithOfficeRelay<T>(options: {
   invalidate(): Promise<void>
   logout(): Promise<T>

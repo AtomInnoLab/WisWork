@@ -8,6 +8,7 @@ import {
   officeBridgePorts,
   officeBuildId,
   officeCapabilityFlags,
+  officePairingResumeEnabled,
   officeRemoteDiagnosticsEnabled,
   renderDeploymentManifest,
 } from '../build-config.js'
@@ -121,6 +122,24 @@ describe('Office Add-in manifest and routes', () => {
     ).toBeUndefined()
   })
 
+  it('enables persistent pairing by default with an exact build rollback flag', () => {
+    expect(officePairingResumeEnabled({})).toBe(true)
+    expect(officePairingResumeEnabled({ VITE_WISWORK_OFFICE_PAIRING_RESUME: '1' })).toBe(true)
+    expect(officePairingResumeEnabled({ VITE_WISWORK_OFFICE_PAIRING_RESUME: '0' })).toBe(false)
+    expect(() =>
+      officePairingResumeEnabled({ VITE_WISWORK_OFFICE_PAIRING_RESUME: 'false' }),
+    ).toThrow('invalid_office_pairing_resume')
+    expect(() => officePairingResumeEnabled({ VITE_WISWORK_OFFICE_PAIRING_RESUME: '' })).toThrow(
+      'invalid_office_pairing_resume',
+    )
+    expect(
+      deploymentConfig({
+        ...validEnv,
+        VITE_WISWORK_OFFICE_PAIRING_RESUME: 'false',
+      }),
+    ).toBeUndefined()
+  })
+
   it('uses a validated deploy build identifier instead of an uncorrelated unknown value', async () => {
     expect(officeBuildId({ VITE_WISWORK_OFFICE_BUILD_ID: 'abc123def456' }, 'fallback')).toBe(
       'abc123def456',
@@ -138,6 +157,11 @@ describe('Office Add-in manifest and routes', () => {
     const readme = await readFile(resolve(import.meta.dirname, '../README.md'), 'utf8')
     expect(readme).toContain('wss://office.8-216-134-194.sslip.io/office-relay')
     expect(readme).toContain('VITE_WISWORK_OFFICE_TRANSPORT=loopback')
+    expect(readme).toContain('Relay → WisWork PC → taskpane')
+    expect(readme).toContain('VITE_WISWORK_OFFICE_PAIRING_RESUME=0')
+    expect(readme).toContain('WISWORK_OFFICE_PAIRING_RESUME=0')
+    expect(readme).toContain('WISWORK_RELAY_PAIRING_RESUME=0')
+    expect(readme).toMatch(/not completed by automated\s+verification/)
     expect(readme).not.toContain('WISWORK_OFFICE_ALLOWED_ORIGIN')
   })
 })
