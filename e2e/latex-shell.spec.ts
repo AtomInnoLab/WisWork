@@ -29,7 +29,7 @@ test.describe('LaTeX project workflow', () => {
       await launched.page.getByTestId('quick-new-tex').click()
       let latexPage = await waitForLatexPage(launched.app)
       await expect(latexPage.getByLabel('Editor: main.tex')).toBeVisible()
-      await expect(latexPage.getByRole('tab', { name: 'WisWork AI' })).toBeVisible()
+      await expect(latexPage.locator('.ai-panel-title').getByText('WisWork AI')).toBeVisible()
       await expect(latexPage.getByRole('tab', { name: '编译' })).toHaveCount(0)
       const toolbar = latexPage.getByRole('toolbar', { name: 'LaTeX toolbar' })
 
@@ -54,6 +54,28 @@ Hello from WisWork
       await expect(latexPage.getByText('Remote TeX bundle configured')).toBeVisible()
       await expect.poll(() => readFile(join(projectPath, 'main.tex'), 'utf8')).toBe(valid)
       await expect(latexPage.locator('.pdf-preview canvas')).toBeVisible()
+
+      await expect
+        .poll(async () => {
+          const boxes = await Promise.all(
+            ['.project-tree header', '.open-tabs', '.readonly-pdf-toolbar', '.ai-panel-header'].map(
+              (selector) => latexPage.locator(selector).boundingBox(),
+            ),
+          )
+          return boxes.map((box) => ({ y: Math.round(box?.y ?? -1), height: box?.height ?? -1 }))
+        })
+        .toEqual([
+          { y: 120, height: 48 },
+          { y: 120, height: 48 },
+          { y: 120, height: 48 },
+          { y: 120, height: 48 },
+        ])
+
+      await latexPage.getByRole('button', { name: 'Collapse AI panel' }).click()
+      const expandAi = latexPage.getByRole('button', { name: 'Expand AI panel' })
+      await expect(expandAi).toBeVisible()
+      await expandAi.click()
+      await expect(latexPage.getByRole('button', { name: 'Collapse AI panel' })).toBeVisible()
 
       const exportedPdf = join(harness.root, 'exported.pdf')
       await writeFile(join(projectPath, 'unopened-dependency.tex'), 'changed after compile')

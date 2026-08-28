@@ -1,9 +1,10 @@
 export { AiComposer } from './AiComposer'
 export { installScreenTips } from './screentip'
 export { AiTypingIndicator } from './AiTypingIndicator'
-export { IconSend, IconStop, type IconProps } from './icons'
+export { IconSend, IconSidebarCollapse, IconStop, type IconProps } from './icons'
 export { Markdown } from './Markdown'
 export { WisWorkAppMark } from './WisWorkAppMark'
+export { WisWorkAgentMark } from './WisWorkAgentMark'
 export {
   WORDART_PRESETS,
   wordArtSolidColor,
