@@ -69,10 +69,10 @@ describe('Office safe diagnostics', () => {
     expect(exported).not.toContain('never retain me')
   })
 
-  it('uploads only bounded failure events and isolates upload failures', async () => {
+  it('isolates asynchronous upload failures from staged Office diagnostics', async () => {
     const sent: unknown[] = []
     const diagnostics = createOfficeDiagnostics({
-      host: 'excel',
+      host: 'word',
       platform: 'unknown',
       build: 'dev',
       remoteEnabled: true,
@@ -84,18 +84,79 @@ describe('Office safe diagnostics', () => {
       now: () => 10,
     })
     diagnostics.startTrace()
-    diagnostics.setTool('set_cell_range')
+    diagnostics.setTool('write_document')
+    const stagedError = Object.assign(new Error('document contains payroll'), {
+      code: 'InvalidArgument',
+      verificationStage: 'content',
+      debugInfo: { errorLocation: 'Body.insertOoxml' },
+    })
     expect(() =>
       diagnostics.record({
         phase: 'verify',
         errorCode: 'office_verify_failed',
-        error: { message: 'cell A1 contains payroll', stack: 'secret stack' },
+        error: stagedError,
       }),
     ).not.toThrow()
-    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    await vi.waitFor(() =>
+      expect(diagnostics.snapshot().events.at(-1)?.error_code).toBe('diagnostic_upload_failed'),
+    )
+    expect(sent).toHaveLength(1)
     expect(JSON.stringify(sent)).not.toContain('payroll')
-    expect(JSON.stringify(sent)).not.toContain('secret stack')
-    expect(diagnostics.snapshot().events.at(-1)?.error_code).toBe('diagnostic_upload_failed')
+    expect(diagnostics.snapshot().events[0]).toMatchObject({
+      verification_stage: 'content',
+      office_error_code: 'InvalidArgument',
+      office_error_name: 'Error',
+      office_error_location: 'Body.insertOoxml',
+    })
+    expect(diagnostics.snapshot().events.at(-1)).toMatchObject({
+      phase: 'transport',
+      error_code: 'diagnostic_upload_failed',
+    })
+    expect(diagnostics.snapshot().events.at(-1)).not.toHaveProperty('verification_stage')
+    expect(diagnostics.snapshot().events.at(-1)).not.toHaveProperty('office_error_code')
+    expect(diagnostics.snapshot().events.at(-1)).not.toHaveProperty('office_error_name')
+    expect(diagnostics.snapshot().events.at(-1)).not.toHaveProperty('office_error_location')
+  })
+
+  it('isolates synchronous upload failures from staged Office diagnostics', () => {
+    const diagnostics = createOfficeDiagnostics({
+      host: 'word',
+      build: 'dev',
+      remoteEnabled: true,
+      send: () => {
+        throw new Error('relay secret failure')
+      },
+      randomUUID: () => '00000000-0000-4000-8000-000000000001',
+      now: () => 10,
+    })
+    const stagedError = Object.assign(new Error('secret document content'), {
+      code: 'InvalidArgument',
+      verificationStage: 'boundary',
+      debugInfo: { errorLocation: 'Body.insertOoxml' },
+    })
+
+    expect(() =>
+      diagnostics.record({
+        phase: 'verify',
+        errorCode: 'office_verify_failed',
+        error: stagedError,
+      }),
+    ).not.toThrow()
+
+    expect(diagnostics.snapshot().events[0]).toMatchObject({
+      verification_stage: 'boundary',
+      office_error_code: 'InvalidArgument',
+      office_error_name: 'Error',
+      office_error_location: 'Body.insertOoxml',
+    })
+    expect(diagnostics.snapshot().events.at(-1)).toMatchObject({
+      phase: 'transport',
+      error_code: 'diagnostic_upload_failed',
+    })
+    expect(diagnostics.snapshot().events.at(-1)).not.toHaveProperty('verification_stage')
+    expect(diagnostics.snapshot().events.at(-1)).not.toHaveProperty('office_error_code')
+    expect(diagnostics.snapshot().events.at(-1)).not.toHaveProperty('office_error_name')
+    expect(diagnostics.snapshot().events.at(-1)).not.toHaveProperty('office_error_location')
   })
 
   it('clears traces and records stable unsupported and cancellation outcomes', () => {

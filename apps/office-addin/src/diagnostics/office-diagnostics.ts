@@ -214,6 +214,22 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
   const local = (event: OfficeDiagnosticEvent) => {
     events = [...events, freezeEvent(event)].slice(-MAX_LOCAL_DIAGNOSTIC_EVENTS)
   }
+  const uploadFailureEvent = (event: OfficeDiagnosticEvent): OfficeDiagnosticEvent => {
+    const derived = {
+      ...event,
+      event_id: randomUUID(),
+      timestamp_ms: Math.max(0, Math.trunc(now())),
+      phase: 'transport' as const,
+      outcome: 'failed' as const,
+      error_code: 'diagnostic_upload_failed',
+      duration_ms: 0,
+    }
+    delete derived.office_error_code
+    delete derived.office_error_name
+    delete derived.office_error_location
+    delete derived.verification_stage
+    return derived
+  }
   const upload = (event: OfficeDiagnosticEvent) => {
     if (!options.remoteEnabled || !options.send || event.error_code === 'diagnostic_upload_failed')
       return
@@ -222,33 +238,12 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
       void Promise.resolve(result).catch(() => {
         if (uploadFailureRecorded) return
         uploadFailureRecorded = true
-        local(
-          freezeEvent({
-            ...event,
-            event_id: randomUUID(),
-            timestamp_ms: Math.max(0, Math.trunc(now())),
-            phase: 'transport',
-            outcome: 'failed',
-            error_code: 'diagnostic_upload_failed',
-            office_error_code: undefined,
-            office_error_name: undefined,
-            office_error_location: undefined,
-            duration_ms: 0,
-          }),
-        )
+        local(uploadFailureEvent(event))
       })
     } catch {
       if (!uploadFailureRecorded) {
         uploadFailureRecorded = true
-        local({
-          ...event,
-          event_id: randomUUID(),
-          timestamp_ms: Math.max(0, Math.trunc(now())),
-          phase: 'transport',
-          outcome: 'failed',
-          error_code: 'diagnostic_upload_failed',
-          duration_ms: 0,
-        })
+        local(uploadFailureEvent(event))
       }
     }
   }
