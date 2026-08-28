@@ -86,6 +86,7 @@ export class PresentationTransactionExecutor<Snapshot> {
   private readonly fingerprintTransaction: (transaction: PresentationTransaction) => Promise<string>
   private readonly validateScopeGuard: ((guard: PresentationScopeGuard) => boolean) | undefined
   private readonly receipts = new Map<string, CachedReceipt>()
+  private readonly receiptScopeGuards = new Map<string, string>()
   private readonly inFlight = new Map<
     string,
     { signature: string; promise: Promise<PresentationReceipt> }
@@ -199,7 +200,7 @@ export class PresentationTransactionExecutor<Snapshot> {
         code: 'target_stale',
       }
     }
-    if (this.receipts.size >= this.maxCachedReceipts) {
+    if (!scopeGuard && this.receipts.size >= this.maxCachedReceipts) {
       // Never forget an accepted transaction id: once the bounded ledger is
       // full, fail closed for new ids instead of making old writes replayable.
       return unchangedReceipt(transaction, 'write_not_applied')
@@ -217,6 +218,31 @@ export class PresentationTransactionExecutor<Snapshot> {
           transactionId: transaction.transactionId,
           code: 'target_stale',
         }
+      }
+      if (scopeGuard) {
+        const guardSignature = canonicalizeSemanticValue(scopeGuard)
+        const cached = this.receipts.get(transaction.transactionId)
+        if (cached) {
+          if (
+            cached.digest !== digest ||
+            this.receiptScopeGuards.get(transaction.transactionId) !== guardSignature
+          ) {
+            return {
+              status: 'conflict',
+              transactionId: transaction.transactionId,
+              code: 'target_stale',
+            }
+          }
+          return cached.receipt
+        }
+        if (this.receipts.size >= this.maxCachedReceipts) {
+          return unchangedReceipt(transaction, 'write_not_applied')
+        }
+        const receipt = await this.executeWithLease(transaction, digest, signal)
+        if (this.receipts.has(transaction.transactionId)) {
+          this.receiptScopeGuards.set(transaction.transactionId, guardSignature)
+        }
+        return receipt
       }
       return await this.executeWithLease(transaction, digest, signal)
     } finally {

@@ -155,6 +155,59 @@ describe('PresentationTransactionExecutor', () => {
     expect(fixture.counts().applyCount).toBe(1)
   })
 
+  it('returns the exact cached receipt for a valid scoped retry and applies once', async () => {
+    const fixture = fakeHost()
+    const executor = new PresentationTransactionExecutor(fixture.host, {
+      acquireWriteLease: () => () => undefined,
+      validateScopeGuard: () => true,
+    })
+    const tx = transaction([operation('a', 'shape-1', 'one')])
+    const guard = { documentId: 'doc', sessionId: 'session', generation: 1 }
+    const first = await executor.execute(tx, undefined, guard)
+    const retry = await executor.execute(structuredClone(tx), undefined, { ...guard })
+    expect(retry).toBe(first)
+    expect(fixture.counts().applyCount).toBe(1)
+  })
+
+  it('reuses an in-flight Promise only for the same transaction and normalized guard', async () => {
+    const fixture = fakeHost()
+    const executor = new PresentationTransactionExecutor(fixture.host, {
+      acquireWriteLease: () => () => undefined,
+      validateScopeGuard: () => true,
+    })
+    const tx = transaction([operation('a', 'shape-1', 'one')])
+    const guard = { documentId: 'doc', sessionId: 'session', generation: 1 }
+    const first = executor.execute(tx, undefined, guard)
+    const duplicate = executor.execute(structuredClone(tx), undefined, { ...guard })
+    const differentGuard = executor.execute(structuredClone(tx), undefined, {
+      ...guard,
+      generation: 2,
+    })
+    expect(duplicate).toBe(first)
+    await expect(differentGuard).resolves.toMatchObject({
+      status: 'conflict',
+      code: 'target_stale',
+    })
+    await expect(first).resolves.toMatchObject({ status: 'applied' })
+    expect(fixture.counts().applyCount).toBe(1)
+  })
+
+  it('conflicts on a valid but different guard after caching without replacing the receipt', async () => {
+    const fixture = fakeHost()
+    const executor = new PresentationTransactionExecutor(fixture.host, {
+      acquireWriteLease: () => () => undefined,
+      validateScopeGuard: () => true,
+    })
+    const tx = transaction([operation('a', 'shape-1', 'one')])
+    const guard = { documentId: 'doc', sessionId: 'session', generation: 1 }
+    const first = await executor.execute(tx, undefined, guard)
+    await expect(
+      executor.execute(structuredClone(tx), undefined, { ...guard, generation: 2 }),
+    ).resolves.toMatchObject({ status: 'conflict', code: 'target_stale' })
+    expect(await executor.execute(structuredClone(tx), undefined, guard)).toBe(first)
+    expect(fixture.counts().applyCount).toBe(1)
+  })
+
   it('plans dependent operations sequentially and creates one history entry', async () => {
     const fixture = fakeHost()
     const receipt = await new PresentationTransactionExecutor(fixture.host).execute(
