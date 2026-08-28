@@ -68,6 +68,20 @@ Challenges are random, connection-bound, single-use, limited per connection/IP, 
 - A new Relay issues binding fields only when Office and PC both negotiated `pairing-resume.v1`; old clients therefore never receive unknown fields.
 - New resume frame types fail closed on old Relay and trigger the bounded fallback to first pairing. No client treats protocol failure as authorization.
 
+### Exact enhanced-v2 contract
+
+`capabilities` always contains callable data capabilities only. The only control feature is the exact array `features: ["pairing-resume.v1"]`.
+
+- Enhanced Office enrollment starts with `office.create` using the existing v2 fields plus `features` and `binding_public_key`. The public key is strict unpadded Base64url of a 65-byte uncompressed P-256 SEC1 point whose first byte is `0x04`. An enhanced `office.created` echoes `features`; a legacy response has exactly its old fields.
+- Enhanced PC `pc.negotiate`, `pc.claim`, and `pc.approve` use their existing fields plus `features`; `pc.negotiated` and `pc.claimed` echo only the feature intersection.
+- When both endpoints negotiated the feature, initial `office.approved` and `pc.approved` use their existing v2 fields plus `features` and `binding_id`. Otherwise both approved frames retain the exact legacy schema and no binding is created.
+- Office resume uses `office.resume {version,type,binding_id,host,capabilities}`, receives `office.challenge {version,type,binding_id,challenge,expires_in}`, and answers `office.prove {version,type,binding_id,challenge,signature}`. The signature is strict unpadded Base64url of the raw 64-byte P-256 ECDSA signature.
+- The signed UTF-8 transcript is exactly `wiswork-office-resume-v1\n${bindingId}\n${challenge}\nhttps://office.8-216-134-194.sslip.io\n${host}`.
+- A proved Office endpoint without its PC receives `office.waiting_for_pc {version,type}`. PC resume uses `pc.resume {version,type,binding_id,capabilities}` and receives `pc.waiting_for_office {version,type}` when Office proof is absent.
+- A matched resume receives the existing standard v2 approved frames with callable data capabilities only. Resume state, rather than an extra frame field, identifies this path.
+- Authenticated PC revocation uses `pc.revoke_binding {version,type,binding_id}` and receives `pc.binding_revoked {version,type,binding_id}`.
+- Binding absence, revocation, host mismatch, or wrong subject is deliberately collapsed to `binding_unavailable`. Other stable resume errors are `invalid_proof`, `challenge_expired`, `resume_rate_limited`, `resume_limit`, `peer_unavailable`, and `capability_not_negotiated`.
+
 ## Persistence and migrations
 
 ### Relay
