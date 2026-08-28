@@ -217,7 +217,7 @@ function applyOperation(
       return { changed: replaceText(element, operation), metaDirty: false }
     case 'set_geometry': {
       const updateAttachedConnectors = (): boolean => {
-        if (location.directParent || element.type === 'table' || element.connection) return false
+        if (location.directParent) return false
         return updateConnectorsForMoved(slide, [element.id]) > 0
       }
       const absolute = {

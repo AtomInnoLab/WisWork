@@ -22,6 +22,8 @@ vi.mock('../src/main/session-state', () => ({
 import {
   addElement,
   addPicture,
+  addTable,
+  appendRawElements,
   createBlankPptx,
   fingerprintPresentation,
   fingerprintSlideElement,
@@ -170,6 +172,84 @@ describe('DesktopPresentationHost', () => {
     expect(table.colWidths.reduce((sum, value) => sum + value, 0)).toBe(381_000)
     expect(table.rowHeights.reduce((sum, value) => sum + value, 0)).toBe(254_000)
     expect(table.transform.offset).toEqual({ x: 12_700, y: 25_400, cx: 381_000, cy: 254_000 })
+  })
+
+  it('moves and resizes a real table with an attached connector across save/reopen', async () => {
+    const opened = await openPptx(await createBlankPptx())
+    const added = addTable(opened, 0, {
+      rows: 2,
+      cols: 2,
+      offset: { x: 0, y: 0, cx: 1_270_000, cy: 508_000 },
+    })!
+    const tableBeforeConnector = added.slide.elements.find(
+      (element) => element.id === added.elementId,
+    ) as TableElement
+    const tableSpid = /<p:cNvPr\b[^>]*\bid="(\d+)"/.exec(
+      tableBeforeConnector.anchor.originalXml,
+    )![1]!
+    const connectorXml =
+      `<p:cxnSp><p:nvCxnSpPr><p:cNvPr id="99" name="table connector"/>` +
+      `<p:cNvCxnSpPr><a:stCxn id="${tableSpid}" idx="3"/></p:cNvCxnSpPr><p:nvPr/></p:nvCxnSpPr>` +
+      '<p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="2000000" cy="1000000"/></a:xfrm>' +
+      '<a:prstGeom prst="line"><a:avLst/></a:prstGeom><a:ln><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln></p:spPr></p:cxnSp>'
+    expect(appendRawElements(opened, 0, [connectorXml])).not.toBeNull()
+    const slide = opened.deck.slides[0]!
+    const table = slide.elements.find((element) => element.type === 'table') as TableElement
+    const connector = slide.elements.find((element) => element.connection)!
+    const session: Session = {
+      path: '',
+      opened,
+      fitWidthPx: 960,
+      undoStack: [],
+      redoStack: [],
+    }
+    const receipt = await new PresentationTransactionExecutor(
+      new DesktopPresentationHost(session),
+      { verifyDelayMs: 0 },
+    ).execute({
+      transactionId: 'desktop-real-table-connector',
+      expectedDeckRevision: await fingerprintPresentation(opened),
+      mode: 'atomic',
+      operations: [
+        {
+          kind: 'set_geometry',
+          clientId: 'move-resize-table',
+          target: {
+            slideId: slide.durableId,
+            elementId: table.creationId!,
+            expectedType: 'table',
+            expectedFingerprint: await fingerprintSlideElement(opened, slide, table),
+          },
+          geometry: { x: 10, y: 20, width: 100, height: 50 },
+        },
+      ],
+    })
+    expect(receipt).toMatchObject({ status: 'applied', operationCount: 1 })
+    expect(connector.transform.offset).toEqual({
+      x: 1_397_000,
+      y: 571_500,
+      cx: 603_000,
+      cy: 428_500,
+    })
+
+    const reopened = await openPptx(await savePptx(opened))
+    const reopenedTable = reopened.deck.slides[0]!.elements.find(
+      (element) => element.type === 'table',
+    ) as TableElement
+    const reopenedConnector = reopened.deck.slides[0]!.elements.find(
+      (element) => element.connection,
+    )!
+    expect(reopenedTable.transform.offset).toEqual({
+      x: 127_000,
+      y: 254_000,
+      cx: 1_270_000,
+      cy: 635_000,
+    })
+    expect(reopenedConnector.transform.offset).toEqual(connector.transform.offset)
+    const reopenedTableSpid = Number(
+      /<p:cNvPr\b[^>]*\bid="(\d+)"/.exec(reopenedTable.anchor.originalXml)![1],
+    )
+    expect(reopenedConnector.connection?.start?.id).toBe(reopenedTableSpid)
   })
 
   it('updates attached connectors once from the final multi-operation geometry', async () => {
