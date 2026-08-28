@@ -848,6 +848,10 @@ export interface MappedRangeRead {
   /// UTF-8 JSON size of sidecar results accepted by this mapped read. This is
   /// an application acceptance cap, not a transport-level network byte cap.
   readonly byteCount: number
+  /** Actual sidecar requests issued after structural screen→file expansion. */
+  readonly requestBatchCount: number
+  /** Actual file-space cells requested across those sidecar requests. */
+  readonly requestedCellCount: number
   /// A read may stop only when the sidecar has not indexed the rest yet.
   /// Callers use this explicit receipt to retry; errors never return partial data.
   readonly truncated: null | { readonly reason: 'indexing'; readonly nextRow: number }
@@ -868,12 +872,16 @@ export interface MappedRangeReadOptions {
   /// Reject after receipt, before mapping/return, when serialized results
   /// exceed the caller's remaining aggregate acceptance budget.
   readonly maxBytes?: number
+  /** Remaining aggregate caller budgets, applied after structural mapping. */
+  readonly maxBatches?: number
+  readonly maxCells?: number
   /// Workbook-instance guard supplied by callers that own the active ref.
   readonly isCurrent?: () => boolean
 }
 
 /** Typed so callers can report an exhausted acceptance budget without parsing error text. */
 export class MappedRangeByteBudgetError extends Error {}
+export class MappedRangeRequestBudgetError extends Error {}
 
 export function isLazyWorkbookTargetCurrent(
   runtime: UniverRuntime,
@@ -1023,13 +1031,21 @@ export async function readSheetRangeMapped(
   }
   const height = fileRange.endRow - fileRange.startRow + 1
   const totalCells = width * height
-  if (totalCells > SIDECAR_READ_MAX_TOTAL_CELLS) {
-    throw new Error(`Range read exceeds the ${SIDECAR_READ_MAX_TOTAL_CELLS}-cell total limit.`)
+  const maxCells = Math.min(
+    SIDECAR_READ_MAX_TOTAL_CELLS,
+    options.maxCells ?? SIDECAR_READ_MAX_TOTAL_CELLS,
+  )
+  if (totalCells > maxCells) {
+    throw new MappedRangeRequestBudgetError(`Range read exceeds the ${maxCells}-cell total limit.`)
   }
   const batchRows = Math.floor(SIDECAR_READ_BATCH_CELLS / width)
   const batchCount = Math.ceil(height / batchRows)
-  if (batchCount > SIDECAR_READ_MAX_BATCHES) {
-    throw new Error(`Range read exceeds the ${SIDECAR_READ_MAX_BATCHES}-batch limit.`)
+  const maxBatches = Math.min(
+    SIDECAR_READ_MAX_BATCHES,
+    options.maxBatches ?? SIDECAR_READ_MAX_BATCHES,
+  )
+  if (batchCount > maxBatches) {
+    throw new MappedRangeRequestBudgetError(`Range read exceeds the ${maxBatches}-batch limit.`)
   }
   const batches: WorkbookRangeResult[] = []
   let bytes = 0
@@ -1077,6 +1093,12 @@ export async function readSheetRangeMapped(
         : indexedThroughScreenRow(ops, raw.indexedThroughRow),
     fileEndRow: fileRange.endRow,
     byteCount: bytes,
+    requestBatchCount: batches.length,
+    requestedCellCount: batches.reduce((count, _batch, index) => {
+      const startRow = fileRange.startRow + index * batchRows
+      const endRow = Math.min(startRow + batchRows - 1, fileRange.endRow)
+      return count + width * (endRow - startRow + 1)
+    }, 0),
     truncated,
   }
 }

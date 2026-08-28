@@ -7,6 +7,7 @@ import {
   ensureLazyRangeLoaded,
   isLazyWorkbookTargetCurrent,
   MappedRangeByteBudgetError,
+  MappedRangeRequestBudgetError,
   readSheetRangeMapped,
 } from './univer-sync'
 
@@ -34,6 +35,8 @@ export type SpreadsheetErrorCode =
   | '#BLOCKED!'
   | '#UNKNOWN!'
   | '#CONNECT!'
+  | '#BUSY!'
+  | '#PYTHON!'
 
 const ERROR_CODES = new Set<SpreadsheetErrorCode>([
   '#NULL!',
@@ -50,6 +53,8 @@ const ERROR_CODES = new Set<SpreadsheetErrorCode>([
   '#BLOCKED!',
   '#UNKNOWN!',
   '#CONNECT!',
+  '#BUSY!',
+  '#PYTHON!',
 ])
 
 export interface WorkbookErrorFinding {
@@ -96,6 +101,39 @@ function journalStamp(state: LazyWorkbookState): string {
     .map(([sheetId, entries]) => `${sheetId}:${entries.length}`)
     .join('|')
   return `${cells}/${ops}/${[...state.editJournal.filterDirty].sort().join(',')}`
+}
+
+function intersectRange(left: IRange, right: IRange): IRange | null {
+  const result = {
+    startRow: Math.max(left.startRow, right.startRow),
+    endRow: Math.min(left.endRow, right.endRow),
+    startColumn: Math.max(left.startColumn, right.startColumn),
+    endColumn: Math.min(left.endColumn, right.endColumn),
+  }
+  return result.startRow <= result.endRow && result.startColumn <= result.endColumn ? result : null
+}
+
+function subtractRange(range: IRange, blocker: IRange): IRange[] {
+  const overlap = intersectRange(range, blocker)
+  if (!overlap) return [range]
+  const result: IRange[] = []
+  if (range.startRow < overlap.startRow) result.push({ ...range, endRow: overlap.startRow - 1 })
+  if (overlap.endRow < range.endRow) result.push({ ...range, startRow: overlap.endRow + 1 })
+  if (range.startColumn < overlap.startColumn)
+    result.push({
+      startRow: overlap.startRow,
+      endRow: overlap.endRow,
+      startColumn: range.startColumn,
+      endColumn: overlap.startColumn - 1,
+    })
+  if (overlap.endColumn < range.endColumn)
+    result.push({
+      startRow: overlap.startRow,
+      endRow: overlap.endRow,
+      startColumn: overlap.endColumn + 1,
+      endColumn: range.endColumn,
+    })
+  return result
 }
 
 function terminal(
@@ -153,6 +191,17 @@ export async function scanStreamedWorkbookErrors(
     const worksheet = identity.worksheet(sheetId)
     if (!worksheet || !identity.isCurrent(sheetId, worksheet))
       return terminal('unavailable', [], cells, batches, bytes)
+    const cellMatrix = (
+      worksheet as {
+        getSheet?: () => {
+          getCellMatrix?: () => { getValue?: (row: number, column: number) => unknown }
+        }
+      }
+    )
+      .getSheet?.()
+      ?.getCellMatrix?.()
+    const liveCellAt = (row: number, column: number) =>
+      cellMatrix?.getValue?.(row, column) as { f?: unknown; v?: unknown } | undefined
     const journal = state.editJournal.cells.get(sheetId)
     const shadowed = new Set<string>()
     for (const entry of journal?.values() ?? []) {
@@ -162,14 +211,17 @@ export async function scanStreamedWorkbookErrors(
       cells += 1
       if (!entry.hasValue) continue
       shadowed.add(`${entry.row}:${entry.column}`)
-      const code = entry.formula ? errorCode(entry.value) : null
+      // Formula journal entries carry the authored formula but their saved
+      // value can be null; Univer owns the current computed result.
+      const current = entry.formula ? liveCellAt(entry.row, entry.column) : undefined
+      const code = entry.formula ? errorCode(current?.v) : null
       if (code)
         findings.push({ sheetId, address: formatAddress(entry.row, entry.column), errorCode: code })
       if (findings.length >= supplied.maxFindings)
         return terminal('truncated', findings, cells, batches, bytes)
     }
     const meta = original.get(sheetId)
-    if (!meta) {
+    if (!meta && !state.flags.preloadComplete) {
       // A newly duplicated sheet may contain inherited cells that are not in
       // the journal. Without file metadata it cannot be declared complete.
       if (state.editJournal.sheets.added.get(sheetId)?.sourceSheetId)
@@ -177,74 +229,165 @@ export async function scanStreamedWorkbookErrors(
       continue
     }
     const ops = state.editJournal.structuralOps.get(sheetId) ?? []
-    const rows = Math.max(0, meta.rowCount + netAxisDelta(ops, 'row'))
-    const columns = Math.max(0, meta.columnCount + netAxisDelta(ops, 'column'))
+    const liveWorksheet = worksheet as { getMaxRows?: () => number; getMaxColumns?: () => number }
+    const rows = meta
+      ? Math.max(0, meta.rowCount + netAxisDelta(ops, 'row'))
+      : Math.max(0, liveWorksheet.getMaxRows?.() ?? 0)
+    const columns = meta
+      ? Math.max(0, meta.columnCount + netAxisDelta(ops, 'column'))
+      : Math.max(0, liveWorksheet.getMaxColumns?.() ?? 0)
     if (!rows || !columns) continue
-    for (let startColumn = 0; startColumn < columns; startColumn += supplied.batchCells) {
-      const endColumn = Math.min(columns - 1, startColumn + supplied.batchCells - 1)
-      const width = endColumn - startColumn + 1
-      const rowsPerBatch = Math.max(1, Math.floor(supplied.batchCells / width))
-      for (let startRow = 0; startRow < rows; startRow += rowsPerBatch) {
-        const stop = stopped()
-        if (stop)
-          return terminal(stop, stop === 'unavailable' ? [] : findings, cells, batches, bytes)
-        const endRow = Math.min(rows - 1, startRow + rowsPerBatch - 1)
-        const batchCells = width * (endRow - startRow + 1)
-        if (cells + batchCells > supplied.maxCells || batches >= supplied.maxBatches)
-          return terminal('truncated', findings, cells, batches, bytes)
-        let mapped
-        try {
-          mapped = await readSheetRangeMapped(
-            state,
-            sheetId,
-            { startRow, endRow, startColumn, endColumn },
-            meta,
-            {
-              ...(identity.signal ? { signal: identity.signal } : {}),
-              maxBytes: Math.max(0, supplied.maxBytes - bytes),
-              maxMs: Math.max(0, supplied.maxMs - (now() - started)),
-              isCurrent: () =>
-                identity.isCurrent(sheetId, worksheet) &&
-                journalStamp(state) === stamp &&
-                (state.scanRevision ?? 0) === scanRevision,
-            },
-          )
-        } catch (error: unknown) {
-          const afterFailure = stopped()
-          const status =
-            afterFailure ??
-            (error instanceof MappedRangeByteBudgetError ? 'truncated' : 'unavailable')
-          return terminal(
-            status,
-            afterFailure === 'unavailable' ? [] : findings,
-            cells,
-            batches,
-            bytes,
-          )
-        }
-        const after = stopped()
-        if (after)
-          return terminal(after, after === 'unavailable' ? [] : findings, cells, batches, bytes)
-        if (!identity.isCurrent(sheetId, worksheet))
-          return terminal('unavailable', [], cells, batches, bytes)
-        if (!mapped) continue
-        const acceptedBytes =
-          mapped.byteCount ?? new TextEncoder().encode(JSON.stringify(mapped.screen)).byteLength
-        if (bytes + acceptedBytes > supplied.maxBytes)
-          return terminal('truncated', findings, cells, batches, bytes)
-        bytes += acceptedBytes
-        cells += batchCells
-        batches += 1
-        identity.onProgress?.({ cells, batches, bytes })
-        if (!mapped.raw.indexingComplete && (mapped.indexedThroughScreen ?? -1) < endRow)
-          return terminal('truncated', findings, cells, batches, bytes)
-        for (const cell of mapped.screen.cells) {
-          if (shadowed.has(`${cell.row}:${cell.column}`)) continue
-          const code = cell.formula ? errorCode(cell.value) : null
-          if (!code) continue
-          findings.push({ sheetId, address: formatAddress(cell.row, cell.column), errorCode: code })
-          if (findings.length >= supplied.maxFindings)
+    const fullRange: IRange = {
+      startRow: 0,
+      endRow: rows - 1,
+      startColumn: 0,
+      endColumn: columns - 1,
+    }
+    const loaded = state.flags.preloadComplete
+      ? fullRange
+      : state.loadedRanges.get(sheetId)
+        ? intersectRange(fullRange, state.loadedRanges.get(sheetId)!)
+        : null
+    if (loaded) {
+      for (
+        let startColumn = loaded.startColumn;
+        startColumn <= loaded.endColumn;
+        startColumn += supplied.batchCells
+      ) {
+        const endColumn = Math.min(loaded.endColumn, startColumn + supplied.batchCells - 1)
+        const loadedWidth = endColumn - startColumn + 1
+        const loadedRowsPerBatch = Math.max(1, Math.floor(supplied.batchCells / loadedWidth))
+        for (
+          let startRow = loaded.startRow;
+          startRow <= loaded.endRow;
+          startRow += loadedRowsPerBatch
+        ) {
+          const stop = stopped()
+          if (stop)
+            return terminal(stop, stop === 'unavailable' ? [] : findings, cells, batches, bytes)
+          const endRow = Math.min(loaded.endRow, startRow + loadedRowsPerBatch - 1)
+          if (batches >= supplied.maxBatches)
             return terminal('truncated', findings, cells, batches, bytes)
+          batches += 1
+          for (let row = startRow; row <= endRow; row += 1) {
+            for (let column = startColumn; column <= endColumn; column += 1) {
+              if (cells >= supplied.maxCells)
+                return terminal('truncated', findings, cells, batches, bytes)
+              cells += 1
+              if (shadowed.has(`${row}:${column}`)) continue
+              const cell = liveCellAt(row, column)
+              const code = typeof cell?.f === 'string' ? errorCode(cell.v) : null
+              if (code)
+                findings.push({ sheetId, address: formatAddress(row, column), errorCode: code })
+              if (findings.length >= supplied.maxFindings)
+                return terminal('truncated', findings, cells, batches, bytes)
+            }
+          }
+          const afterLoaded = stopped()
+          if (afterLoaded)
+            return terminal(
+              afterLoaded,
+              afterLoaded === 'unavailable' ? [] : findings,
+              cells,
+              batches,
+              bytes,
+            )
+          identity.onProgress?.({ cells, batches, bytes })
+        }
+      }
+    }
+    const sidecarRanges = !meta ? [] : loaded ? subtractRange(fullRange, loaded) : [fullRange]
+    for (const scanRange of sidecarRanges) {
+      for (
+        let startColumn = scanRange.startColumn;
+        startColumn <= scanRange.endColumn;
+        startColumn += supplied.batchCells
+      ) {
+        const endColumn = Math.min(scanRange.endColumn, startColumn + supplied.batchCells - 1)
+        const width = endColumn - startColumn + 1
+        const rowsPerBatch = Math.max(1, Math.floor(supplied.batchCells / width))
+        for (
+          let startRow = scanRange.startRow;
+          startRow <= scanRange.endRow;
+          startRow += rowsPerBatch
+        ) {
+          const stop = stopped()
+          if (stop)
+            return terminal(stop, stop === 'unavailable' ? [] : findings, cells, batches, bytes)
+          const endRow = Math.min(scanRange.endRow, startRow + rowsPerBatch - 1)
+          if (cells >= supplied.maxCells || batches >= supplied.maxBatches)
+            return terminal('truncated', findings, cells, batches, bytes)
+          let mapped
+          try {
+            mapped = await readSheetRangeMapped(
+              state,
+              sheetId,
+              { startRow, endRow, startColumn, endColumn },
+              meta!,
+              {
+                ...(identity.signal ? { signal: identity.signal } : {}),
+                maxBytes: Math.max(0, supplied.maxBytes - bytes),
+                maxMs: Math.max(0, supplied.maxMs - (now() - started)),
+                maxBatches: Math.max(0, supplied.maxBatches - batches),
+                maxCells: Math.max(0, supplied.maxCells - cells),
+                isCurrent: () =>
+                  identity.isCurrent(sheetId, worksheet) &&
+                  journalStamp(state) === stamp &&
+                  (state.scanRevision ?? 0) === scanRevision,
+              },
+            )
+          } catch (error: unknown) {
+            const afterFailure = stopped()
+            const status =
+              afterFailure ??
+              (error instanceof MappedRangeByteBudgetError ||
+              error instanceof MappedRangeRequestBudgetError
+                ? 'truncated'
+                : 'unavailable')
+            return terminal(
+              status,
+              afterFailure === 'unavailable' ? [] : findings,
+              cells,
+              batches,
+              bytes,
+            )
+          }
+          const after = stopped()
+          if (after)
+            return terminal(after, after === 'unavailable' ? [] : findings, cells, batches, bytes)
+          if (!identity.isCurrent(sheetId, worksheet))
+            return terminal('unavailable', [], cells, batches, bytes)
+          if (!mapped) continue
+          const acceptedBytes =
+            mapped.byteCount ?? new TextEncoder().encode(JSON.stringify(mapped.screen)).byteLength
+          if (bytes + acceptedBytes > supplied.maxBytes)
+            return terminal('truncated', findings, cells, batches, bytes)
+          bytes += acceptedBytes
+          cells += mapped.requestedCellCount
+          batches += mapped.requestBatchCount
+          identity.onProgress?.({ cells, batches, bytes })
+          if (!mapped.raw.indexingComplete && (mapped.indexedThroughScreen ?? -1) < endRow)
+            return terminal('truncated', findings, cells, batches, bytes)
+          for (const cell of mapped.screen.cells) {
+            if (shadowed.has(`${cell.row}:${cell.column}`)) continue
+            // Frozen strips and formula-closure cells can be live outside the
+            // main loaded rectangle. Any live formula shadows the file cache.
+            const live = liveCellAt(cell.row, cell.column)
+            const code =
+              typeof live?.f === 'string'
+                ? errorCode(live.v)
+                : cell.formula
+                  ? errorCode(cell.value)
+                  : null
+            if (!code) continue
+            findings.push({
+              sheetId,
+              address: formatAddress(cell.row, cell.column),
+              errorCode: code,
+            })
+            if (findings.length >= supplied.maxFindings)
+              return terminal('truncated', findings, cells, batches, bytes)
+          }
         }
       }
     }

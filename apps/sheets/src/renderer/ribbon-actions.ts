@@ -162,7 +162,7 @@ export function handleRibbonCommand(ctx: RibbonCommandContext, command: string):
   }
   if (command === 'error-checking') {
     const lazy = ctx.lazyWorkbookRef.current
-    if (lazy && !lazy.flags.preloadComplete) {
+    if (lazy) {
       void runStreamedErrorCheck({
         runtime,
         lazyWorkbookRef: ctx.lazyWorkbookRef,
@@ -183,7 +183,9 @@ export function handleRibbonCommand(ctx: RibbonCommandContext, command: string):
         if (
           typeof cell?.f === 'string' &&
           typeof value === 'string' &&
-          /^#(?:NULL!|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|N\/A)$/.test(value)
+          /^#(?:NULL!|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|N\/A|GETTING_DATA|SPILL!|CALC!|FIELD!|BLOCKED!|UNKNOWN!|CONNECT!|BUSY!|PYTHON!)$/.test(
+            value,
+          )
         )
           errors.push({ row, column, value })
         return undefined
