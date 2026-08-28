@@ -440,6 +440,23 @@ export const parsePresentationReceipt = (value: unknown): PresentationReceipt =>
           fail('receipt.createdTargets elementIds must be unique')
         return mappings
       })
+      const operationCount = boundedInteger(
+        record.operationCount,
+        'receipt.operationCount',
+        PRESENTATION_OPS_LIMITS.maxOperations,
+      )
+      if (
+        (createdIds?.length ?? 0) > operationCount ||
+        (createdTargets?.length ?? 0) > operationCount
+      )
+        fail('receipt created targets cannot exceed operationCount')
+      if (
+        createdIds !== undefined &&
+        createdTargets !== undefined &&
+        (createdIds.length !== createdTargets.length ||
+          createdIds.some((id, index) => id !== createdTargets[index]!.elementId))
+      )
+        fail('receipt createdIds and createdTargets must identify the same elements')
       return {
         status: 'applied',
         transactionId,
@@ -447,11 +464,7 @@ export const parsePresentationReceipt = (value: unknown): PresentationReceipt =>
           record.resultingDeckRevision,
           'receipt.resultingDeckRevision',
         ),
-        operationCount: boundedInteger(
-          record.operationCount,
-          'receipt.operationCount',
-          PRESENTATION_OPS_LIMITS.maxOperations,
-        ),
+        operationCount,
         ...(createdIds === undefined ? {} : { createdIds }),
         ...(createdTargets === undefined ? {} : { createdTargets }),
       }

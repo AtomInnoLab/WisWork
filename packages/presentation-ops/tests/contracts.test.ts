@@ -290,6 +290,15 @@ describe('presentation receipt parser', () => {
         createdTargets: [{ ...receipt.createdTargets[0], rawText: 'forbidden' }],
       }),
     ).toThrow(/unknown field/i)
+    expect(() =>
+      parsePresentationReceipt({
+        ...receipt,
+        createdIds: ['{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}'],
+      }),
+    ).toThrow(/same elements/i)
+    expect(() => parsePresentationReceipt({ ...receipt, operationCount: 0 })).toThrow(
+      /operationCount/i,
+    )
   })
 
   it.each([

@@ -8,6 +8,7 @@ import {
   addElement,
   deleteElement,
   deleteElementWithCleanup,
+  groupElements,
 } from '../src/index'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -111,16 +112,21 @@ describe('add/delete element', () => {
     const victimNvId = /<p:cNvPr\s[^>]*\bid="(\d+)"/.exec(victim.anchor.originalXml)![1]
     victim.anchor.originalXml = victim.anchor.originalXml.replace(
       '</p:cNvPr>',
-      '<a:hlinkClick r:id="rIdExclusive"/></p:cNvPr>',
-    )
-    survivor.anchor.originalXml = survivor.anchor.originalXml.replace(
-      '</p:cNvPr>',
-      '<a:hlinkClick r:id="rIdShared"/></p:cNvPr>',
+      '<d:hlinkClick xmlns:d="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:o="http://schemas.openxmlformats.org/officeDocument/2006/relationships" o:id=\'rIdExclusive\'/>' +
+        '<d:blip xmlns:d="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:o="http://schemas.openxmlformats.org/officeDocument/2006/relationships" o:embed=\'rIdShared\'/></p:cNvPr>',
     )
     connector.anchor.originalXml = connector.anchor.originalXml.replace(
       '<p:cNvCxnSpPr/>',
-      `<p:cNvCxnSpPr><a:stCxn id="${victimNvId}" idx="0"/><a:endCxn id="${victimNvId}" idx="2"/></p:cNvCxnSpPr>`,
+      `<p:cNvCxnSpPr><d:stCxn xmlns:d="http://schemas.openxmlformats.org/drawingml/2006/main" id='${victimNvId}' idx='0'/><d:endCxn xmlns:d="http://schemas.openxmlformats.org/drawingml/2006/main" id='${victimNvId}' idx='2'/></p:cNvCxnSpPr>`,
     )
+    const grouped = groupElements(opened, 0, [survivor.id, connector.id])!
+    const activeSlide = grouped.slide
+    const activeVictim = activeSlide.elements.find(
+      (element) => element.creationId === victim.creationId,
+    )!
+    const group = activeSlide.elements.find((element) => element.type === 'group')!
+    group.anchor.gapAfter =
+      '<x:ref xmlns:x="urn:test" xmlns:o="http://schemas.openxmlformats.org/officeDocument/2006/relationships" o:link=\'rIdShared\'/>'
     const relsPath = 'ppt/slides/_rels/slide1.xml.rels'
     const rels = opened.archive.readText(relsPath)!
     opened.archive.entries.set(
@@ -128,22 +134,22 @@ describe('add/delete element', () => {
       Buffer.from(
         rels.replace(
           '</Relationships>',
-          '<Relationship Id="rIdExclusive" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://exclusive.invalid" TargetMode="External"/>' +
-            '<Relationship Id="rIdShared" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://shared.invalid" TargetMode="External"/>' +
+          '<pr:Relationship xmlns:pr="http://schemas.openxmlformats.org/package/2006/relationships" Id=\'rIdExclusive\' Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://exclusive.invalid" TargetMode="External"/>' +
+            '<pr:Relationship xmlns:pr="http://schemas.openxmlformats.org/package/2006/relationships" Id=\'rIdShared\' Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://shared.invalid" TargetMode="External"/>' +
             '</Relationships>',
         ),
       ),
     )
 
-    expect(deleteElementWithCleanup(opened, slide, victim.id)).toBe(true)
+    expect(deleteElementWithCleanup(opened, activeSlide, activeVictim.id)).toBe(true)
     const reopened = await openPptx(await savePptx(opened))
     const xml = reopened.archive.readText(slide.path)!
     const reopenedRels = reopened.archive.readText(relsPath)!
-    expect(xml).not.toMatch(new RegExp(`<a:(?:stCxn|endCxn)[^>]*id="${victimNvId}"`))
-    expect(reopenedRels).not.toContain('Id="rIdExclusive"')
-    expect(reopenedRels).toContain('Id="rIdShared"')
+    expect(xml).not.toMatch(new RegExp(`(?:stCxn|endCxn)[^>]*id=['"]${victimNvId}['"]`))
+    expect(reopenedRels).not.toContain('rIdExclusive')
+    expect(reopenedRels).toContain('rIdShared')
     for (const [path, bytes] of mediaBefore) expect(reopened.archive.readBytes(path)).toEqual(bytes)
-    expect(reopened.deck.slides[0]!.elements).toHaveLength(slide.elements.length)
+    expect(reopened.deck.slides[0]!.elements).toHaveLength(activeSlide.elements.length)
   })
 
   it('fails closed when unsupported timing XML still targets the deleted shape', async () => {
@@ -151,9 +157,13 @@ describe('add/delete element', () => {
     const slide = opened.deck.slides[0]!
     const victim = addElement(slide, { kind: 'rect', offset: { ...OFF } })
     const victimNvId = /<p:cNvPr\s[^>]*\bid="(\d+)"/.exec(victim.anchor.originalXml)![1]
-    slide.bodySuffix += `<p:timing><p:spTgt spid="${victimNvId}"/></p:timing>`
+    slide.bodySuffix += `<z:timing xmlns:z="http://schemas.openxmlformats.org/presentationml/2006/main"><z:spTgt spid='${victimNvId}'/></z:timing>`
     const count = slide.elements.length
+    const beforeElements = structuredClone(slide.elements)
+    const beforeEntries = new Map(opened.archive.entries)
     expect(deleteElementWithCleanup(opened, slide, victim.id)).toBe(false)
     expect(slide.elements).toHaveLength(count)
+    expect(slide.elements).toEqual(beforeElements)
+    expect(opened.archive.entries).toEqual(beforeEntries)
   })
 })

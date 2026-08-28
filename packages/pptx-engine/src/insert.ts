@@ -384,24 +384,121 @@ export function deleteElement(slide: Slide, elementId: string): boolean {
   return true
 }
 
-const referencedRelationshipIds = (xml: string): Set<string> => {
+const OFFICE_REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+const DRAWING_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+const PACKAGE_REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
+const MAX_DELETE_XML_LENGTH = 16 * 1024 * 1024
+const MAX_DELETE_XML_TAGS = 200_000
+
+interface XmlAttributeToken {
+  prefix: string
+  localName: string
+  namespaceUri?: string
+  value: string
+}
+
+interface XmlElementToken {
+  start: number
+  end: number
+  localName: string
+  namespaceUri?: string
+  attributes: XmlAttributeToken[]
+}
+
+const splitQName = (name: string): { prefix: string; localName: string } => {
+  const separator = name.indexOf(':')
+  return separator < 0
+    ? { prefix: '', localName: name }
+    : { prefix: name.slice(0, separator), localName: name.slice(separator + 1) }
+}
+
+const rootNamespaces = (xml: string): Map<string, string> => {
+  const namespaces = new Map<string, string>()
+  const root = /<[A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?\b([^<>]*)>/.exec(xml)?.[1] ?? ''
+  for (const match of root.matchAll(/\bxmlns(?::([A-Za-z_][\w.-]*))?\s*=\s*(["'])([^"']+)\2/g))
+    namespaces.set(match[1] ?? '', match[3]!)
+  return namespaces
+}
+
+const inspectXml = (
+  xml: string,
+  inheritedNamespaces: ReadonlyMap<string, string>,
+  visit: (element: XmlElementToken) => void,
+): void => {
+  if (xml.length > MAX_DELETE_XML_LENGTH) throw new Error('XML inspection bound exceeded')
+  const stack: Array<{ namespaces: Map<string, string>; name?: string }> = [
+    { namespaces: new Map(inheritedNamespaces) },
+  ]
+  const tagPattern =
+    /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<![^>]*>|<\/?([A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?)([^<>]*?)\/?\s*>/g
+  let tags = 0
+  for (const match of xml.matchAll(tagPattern)) {
+    if (++tags > MAX_DELETE_XML_TAGS) throw new Error('XML tag bound exceeded')
+    const raw = match[0]
+    if (raw.startsWith('<!') || raw.startsWith('<?')) continue
+    if (raw.startsWith('</')) {
+      const frame = stack.pop()
+      if (!frame?.name || frame.name !== match[1]) throw new Error('Malformed XML nesting')
+      continue
+    }
+    const namespaces = new Map(stack.at(-1)!.namespaces)
+    const attributes: Array<{ name: string; value: string }> = []
+    const attributePattern = /([A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?)\s*=\s*(["'])([^"']*)\2/g
+    const rawAttributes = match[2] ?? ''
+    const parsedAttributeSpans: [number, number][] = []
+    for (const attribute of rawAttributes.matchAll(attributePattern)) {
+      parsedAttributeSpans.push([attribute.index!, attribute.index! + attribute[0].length])
+      const name = attribute[1]!
+      const value = attribute[3]!
+      if (name === 'xmlns') namespaces.set('', value)
+      else if (name.startsWith('xmlns:')) namespaces.set(name.slice(6), value)
+      else attributes.push({ name, value })
+    }
+    if (applyRemovals(rawAttributes, parsedAttributeSpans).trim())
+      throw new Error('Malformed XML attributes')
+    const qname = splitQName(match[1]!)
+    visit({
+      start: match.index!,
+      end: match.index! + raw.length,
+      localName: qname.localName,
+      namespaceUri: namespaces.get(qname.prefix),
+      attributes: attributes.map(({ name, value }) => {
+        const attributeName = splitQName(name)
+        return {
+          ...attributeName,
+          ...(attributeName.prefix ? { namespaceUri: namespaces.get(attributeName.prefix) } : {}),
+          value,
+        }
+      }),
+    })
+    if (!/\/\s*>$/.test(raw)) stack.push({ namespaces, name: match[1]! })
+  }
+  if (stack.length !== 1) throw new Error('Unclosed XML element')
+}
+
+const relationshipReferences = (
+  xml: string,
+  namespaces: ReadonlyMap<string, string>,
+): Set<string> => {
   const ids = new Set<string>()
-  for (const match of xml.matchAll(/\br:(?:id|embed|link)\s*=\s*(["'])([^"']+)\1/g))
-    ids.add(match[2]!)
+  inspectXml(xml, namespaces, (element) => {
+    for (const attribute of element.attributes)
+      if (
+        attribute.namespaceUri === OFFICE_REL_NS &&
+        (attribute.localName === 'id' ||
+          attribute.localName === 'embed' ||
+          attribute.localName === 'link')
+      )
+        ids.add(attribute.value)
+  })
   return ids
 }
 
-const disconnectNvId = (element: SlideElement, nvId: string): void => {
-  const pattern = new RegExp(`<a:(?:stCxn|endCxn)\\b[^>]*\\bid=(["'])${nvId}\\1[^>]*/>`, 'g')
-  const patched = element.anchor.originalXml.replace(pattern, '')
-  if (patched !== element.anchor.originalXml) {
-    element.anchor.originalXml = patched
-    if (element.connection?.start?.id === Number(nvId)) delete element.connection.start
-    if (element.connection?.end?.id === Number(nvId)) delete element.connection.end
-    if (element.connection && !element.connection.start && !element.connection.end)
-      delete element.connection
-  }
-  if (element.type === 'group') for (const child of element.children) disconnectNvId(child, nvId)
+const applyRemovals = (xml: string, removals: readonly [number, number][]): string => {
+  let patched = xml
+  for (const [start, end] of [...removals].sort((a, b) => b[0] - a[0]))
+    patched = patched.slice(0, start) + patched.slice(end)
+  return patched
 }
 
 /**
@@ -418,35 +515,99 @@ export function deleteElementWithCleanup(
   const index = slide.elements.findIndex((element) => element.id === elementId)
   if (index < 0) return false
   const victim = slide.elements[index]!
-  const nvId = /<p:cNvPr\b[^>]*\bid=(["'])(\d+)\1/.exec(victim.anchor.originalXml)?.[2]
-  if (nvId && new RegExp(`\\bspid=(["'])${nvId}\\1`).test(`${slide.bodyPrefix}${slide.bodySuffix}`))
-    return false
-  const candidateRIds = referencedRelationshipIds(victim.anchor.originalXml)
-  slide.elements.splice(index, 1)
-  if (nvId) for (const element of slide.elements) disconnectNvId(element, nvId)
+  try {
+    const namespaces = rootNamespaces(slide.bodyPrefix)
+    let nvId: string | undefined
+    inspectXml(victim.anchor.originalXml, namespaces, (element) => {
+      if (element.localName !== 'cNvPr') return
+      const id = element.attributes.find(
+        (attribute) => !attribute.prefix && attribute.localName === 'id',
+      )?.value
+      if (id && /^\d+$/.test(id)) nvId = id
+    })
+    if (!nvId) return false
 
-  const survivingXml =
-    slide.bodyPrefix +
-    slide.elements
-      .map((element) => element.anchor.originalXml + (element.anchor.gapAfter ?? ''))
-      .join('') +
-    slide.bodySuffix
-  const survivingRIds = referencedRelationshipIds(survivingXml)
-  const removableRIds = [...candidateRIds].filter((id) => !survivingRIds.has(id))
-  if (removableRIds.length) {
+    const candidateRIds = relationshipReferences(victim.anchor.originalXml, namespaces)
+    const patchedElements = new Map<SlideElement, string>()
+    const survivingRIds = new Set<string>()
+    const inspectSurvivingXml = (xml: string, connectorOwner?: SlideElement): void => {
+      const removals: [number, number][] = []
+      inspectXml(xml, namespaces, (element) => {
+        for (const attribute of element.attributes) {
+          if (
+            attribute.namespaceUri === OFFICE_REL_NS &&
+            (attribute.localName === 'id' ||
+              attribute.localName === 'embed' ||
+              attribute.localName === 'link')
+          )
+            survivingRIds.add(attribute.value)
+          if (!attribute.prefix && attribute.localName === 'spid' && attribute.value === nvId)
+            throw new Error('Unsupported shape reference')
+        }
+        if (
+          connectorOwner &&
+          element.namespaceUri === DRAWING_NS &&
+          (element.localName === 'stCxn' || element.localName === 'endCxn') &&
+          element.attributes.some(
+            (attribute) =>
+              !attribute.prefix && attribute.localName === 'id' && attribute.value === nvId,
+          )
+        )
+          removals.push([element.start, element.end])
+      })
+      if (connectorOwner && removals.length)
+        patchedElements.set(connectorOwner, applyRemovals(xml, removals))
+    }
+
+    const completeSurvivingXml =
+      slide.bodyPrefix +
+      slide.elements
+        .filter((element) => element !== victim)
+        .map((element) => element.anchor.originalXml + (element.anchor.gapAfter ?? ''))
+        .join('') +
+      slide.bodySuffix
+    inspectSurvivingXml(completeSurvivingXml)
+    for (const element of slide.elements) {
+      if (element === victim) continue
+      inspectSurvivingXml(element.anchor.originalXml, element)
+    }
+
+    const removableRIds = new Set([...candidateRIds].filter((id) => !survivingRIds.has(id)))
     const relsPath = relsPathFor(slide.path)
     const rels = opened.archive.readText(relsPath)
-    if (rels) {
-      const removable = new Set(removableRIds)
-      const patched = rels.replace(
-        /<Relationship\b[^>]*\bId=(["'])([^"']+)\1[^>]*\/>/g,
-        (xml, _quote, id) => (removable.has(String(id)) ? '' : xml),
-      )
-      opened.archive.entries.set(relsPath, Buffer.from(patched, 'utf8'))
+    let patchedRels: string | undefined
+    if (removableRIds.size) {
+      if (!rels) return false
+      const relRemovals: [number, number][] = []
+      inspectXml(rels, new Map([['', PACKAGE_REL_NS]]), (element) => {
+        if (element.namespaceUri !== PACKAGE_REL_NS || element.localName !== 'Relationship') return
+        const id = element.attributes.find(
+          (attribute) => !attribute.prefix && attribute.localName === 'Id',
+        )?.value
+        if (id && removableRIds.has(id)) relRemovals.push([element.start, element.end])
+      })
+      if (relRemovals.length !== removableRIds.size) return false
+      patchedRels = applyRemovals(rels, relRemovals)
     }
+
+    // Commit only after every namespace/reference check and patch plan has succeeded.
+    for (const [element, xml] of patchedElements) element.anchor.originalXml = xml
+    const syncConnections = (element: SlideElement): void => {
+      if (element.connection?.start?.id === Number(nvId)) delete element.connection.start
+      if (element.connection?.end?.id === Number(nvId)) delete element.connection.end
+      if (element.connection && !element.connection.start && !element.connection.end)
+        delete element.connection
+      if (element.type === 'group') for (const child of element.children) syncConnections(child)
+    }
+    for (const element of slide.elements) if (element !== victim) syncConnections(element)
+    if (patchedRels !== undefined)
+      opened.archive.entries.set(relsPath, Buffer.from(patchedRels, 'utf8'))
+    slide.elements.splice(index, 1)
+    slide.structureDirty = true
+    return true
+  } catch {
+    return false
   }
-  slide.structureDirty = true
-  return true
 }
 
 // ── Grouping (p:grpSp) ──────────────────────────────────────────────────────
