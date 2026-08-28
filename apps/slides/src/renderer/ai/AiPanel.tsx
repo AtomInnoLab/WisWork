@@ -55,6 +55,13 @@ import { IconNewChat, IconSidebarCollapseLeft } from '../components/icons'
 import type { SpeakerNotesDraftPreparation } from '../notes-draft'
 import { createSlidesChatBindingCoordinator } from './chat-binding'
 import type { SelectionScope } from './edit-queue'
+import { EditQueueCard } from './EditQueueCard'
+import {
+  EditQueueCapacityError,
+  SelectionEditQueue,
+  type EditQueueSnapshot,
+  type SelectionEditReceipt,
+} from './edit-queue'
 
 interface ToolActivity {
   name: string
@@ -362,6 +369,12 @@ export function AiPanel({
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [selectionScopeEnabled, setSelectionScopeEnabled] = useState(false)
+  const editQueueRef = useRef<SelectionEditQueue | null>(null)
+  if (!editQueueRef.current) editQueueRef.current = new SelectionEditQueue()
+  const [queueSnapshot, setQueueSnapshot] = useState<EditQueueSnapshot>(() =>
+    editQueueRef.current!.snapshot(),
+  )
+  const [queuedScope, setQueuedScope] = useState<SelectionScope | null>(null)
   const [chat, setChat] = useState<ChatEntry[]>([])
   const [qualityTimeline, setQualityTimeline] = useState<PresentationQualityReceipt[]>([])
   /** Past conversation restored from JSONL (read-only transcript, not fed to the model) */
@@ -462,20 +475,32 @@ export function AiPanel({
   const selectedRef = useRef(selectedIds)
   selectedRef.current = selectedIds
   const activeSelectionScopeRef = useRef<SelectionScope | undefined>(undefined)
+  const activeQueueRunRef = useRef<
+    | {
+        taskId: string
+        invocationId: string
+        resolve: (receipt: SelectionEditReceipt) => void
+        reject: (error: unknown) => void
+        status: SelectionEditReceipt['status']
+        transactionId?: string
+        markWriteStarted: () => void
+      }
+    | undefined
+  >(undefined)
+  useEffect(
+    () => editQueueRef.current!.subscribe(() => setQueueSnapshot(editQueueRef.current!.snapshot())),
+    [],
+  )
   const selectionIdentityRef = useRef(`${current}:${selectedIds.join('\u0000')}`)
   useEffect(() => {
     const identity = `${current}:${selectedIds.join('\u0000')}`
-    if (selectionIdentityRef.current !== identity && activeSelectionScopeRef.current) {
-      activeSelectionScopeRef.current = undefined
-      cancel()
+    if (selectionIdentityRef.current !== identity) {
+      editQueueRef.current?.cancelAll('selection changed')
     }
     selectionIdentityRef.current = identity
   }, [current, selectedIds])
   useEffect(() => {
-    if (activeSelectionScopeRef.current) {
-      activeSelectionScopeRef.current = undefined
-      cancel()
-    }
+    editQueueRef.current?.cancelAll('document changed')
   }, [currentFilePath])
   const applySlideRef = useRef(applySlide)
   applySlideRef.current = applySlide
@@ -806,6 +831,7 @@ export function AiPanel({
       applySlide: (i, updated) => applySlideRef.current(i, updated),
       applyDeck: (all, goTo) => applyDeckRef.current(all, goTo),
       executePresentationOperation: async (request, signal) => {
+        if (activeSelectionScopeRef.current) activeQueueRunRef.current?.markWriteStarted()
         const refresh = async () => {
           const refreshed = await window.slidesApi.getRenderSlides()
           if (!refreshed) return false
@@ -838,6 +864,17 @@ export function AiPanel({
         if (execution.authoritativeState === 'reload_required')
           onAuthoritativeReloadRequiredRef.current?.()
         const receipt = execution.receipt
+        if (activeSelectionScopeRef.current && activeQueueRunRef.current) {
+          activeQueueRunRef.current.transactionId = receipt.transactionId
+          activeQueueRunRef.current.status =
+            receipt.status === 'uncertain'
+              ? 'uncertain'
+              : receipt.status === 'conflict'
+                ? 'conflict'
+                : receipt.status === 'applied'
+                  ? 'applied'
+                  : activeQueueRunRef.current.status
+        }
         const sessionId = String(activeRunTokenRef.current)
         const pages =
           'backgrounds' in request
@@ -1072,7 +1109,7 @@ export function AiPanel({
           setChat((prev) => [...prev, { role: 'assistant', text: '', streaming: true }])
         },
         onDone: ({ text, cancelled, turnLimit }) => {
-          activeSelectionScopeRef.current = undefined
+          if (activeQueueRunRef.current) qcPagesRef.current = []
           const finalText = turnLimit
             ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
             : text || (cancelled ? tGlobal('aiStoppedNote') : '')
@@ -1112,6 +1149,18 @@ export function AiPanel({
               runSnapshotIdRef.current = snapshot
               patchLastAssistant({ snapshotId: snapshot })
             },
+          }).finally(() => {
+            const queued = activeQueueRunRef.current
+            activeQueueRunRef.current = undefined
+            activeSelectionScopeRef.current = undefined
+            if (queued) {
+              queued.resolve({
+                taskId: queued.taskId,
+                invocationId: queued.invocationId,
+                ...(queued.transactionId ? { transactionId: queued.transactionId } : {}),
+                status: cancelled && queued.status === 'unchanged' ? 'cancelled' : queued.status,
+              })
+            }
           })
           // Persist the assistant message; tools store the whole run's full activity —
           // side effects outside the updater (StrictMode double-invokes updaters, duplicating history writes)
@@ -1120,7 +1169,6 @@ export function AiPanel({
           }
         },
         onError: (error) => {
-          activeSelectionScopeRef.current = undefined
           qcPagesRef.current = []
           setChat((prev) => {
             const next = [...prev]
@@ -1159,7 +1207,13 @@ export function AiPanel({
               })
             })
             .catch(() => {})
-          void finishHistoryBatch().finally(() => setBusy(false))
+          void finishHistoryBatch().finally(() => {
+            setBusy(false)
+            const queued = activeQueueRunRef.current
+            activeQueueRunRef.current = undefined
+            activeSelectionScopeRef.current = undefined
+            queued?.reject(new Error(error))
+          })
         },
       },
     })
@@ -1223,6 +1277,7 @@ export function AiPanel({
       return
     }
     const identity = selectionIdentityRef.current
+    const taskAttachments = [...attachmentsRef.current]
     void window.slidesApi
       .captureAgentSelection({
         slideIndex: currentRef.current,
@@ -1234,8 +1289,52 @@ export function AiPanel({
           setAttachNotice('The selection changed before it could be captured.')
           return
         }
-        activeSelectionScopeRef.current = captured
-        runWith(instruction, instruction)
+        const invocationId = crypto.randomUUID()
+        try {
+          const task = editQueueRef.current!.enqueue(
+            { invocationId, instruction, scope: captured },
+            ({ taskId, scope, signal, markWriteStarted }) => {
+              activeSelectionScopeRef.current = scope
+              setQueuedScope(scope)
+              return new Promise<SelectionEditReceipt>((resolve, reject) => {
+                activeQueueRunRef.current = {
+                  taskId,
+                  invocationId,
+                  resolve,
+                  reject,
+                  status: 'unchanged',
+                  markWriteStarted,
+                }
+                const onAbort = () => {
+                  launchTokenRef.current++
+                  loopRef.current?.stop()
+                }
+                signal.addEventListener('abort', onAbort, { once: true })
+                if (!runWith(instruction, instruction, { attachments: taskAttachments })) {
+                  signal.removeEventListener('abort', onAbort)
+                  activeQueueRunRef.current = undefined
+                  activeSelectionScopeRef.current = undefined
+                  reject(new Error('Agent run is busy'))
+                }
+              })
+            },
+          )
+          setInput('')
+          if (taskAttachments.length > 0) {
+            setAttachments([])
+            attachmentsRef.current = []
+          }
+          void task.catch((error) => {
+            if (!(error instanceof DOMException && error.name === 'AbortError'))
+              setAttachNotice(error instanceof Error ? error.message : 'Selection edit failed')
+          })
+        } catch (error) {
+          setAttachNotice(
+            error instanceof EditQueueCapacityError
+              ? 'Selection edit queue is full.'
+              : 'Selection edit could not be queued.',
+          )
+        }
       })
       .catch(() => setAttachNotice('The selection could not be captured.'))
   }
@@ -1280,7 +1379,7 @@ export function AiPanel({
     instruction: string,
     displayText?: string,
     opts?: { slideShot?: boolean; attachments?: AttachmentMeta[] },
-  ) => {
+  ): boolean => {
     const loop = loopRef.current
     // runStartingRef: loop.run is called only after attachments are read asynchronously, during which loop.busy is still false,
     // so duplicate triggers must be blocked synchronously (e.g. StrictMode double-running the preset autoRun effect),
@@ -1293,7 +1392,7 @@ export function AiPanel({
       runStartingRef.current ||
       qcRunningRef.current
     )
-      return
+      return false
     runStartingRef.current = true
     const launchToken = ++launchTokenRef.current
     activeRunTokenRef.current = launchToken
@@ -1369,6 +1468,7 @@ export function AiPanel({
         runStartingRef.current = false
         void finishHistoryBatch().finally(() => setBusy(false))
       })
+    return true
   }
 
   /** Post-generation quality review. It is read-only and has no history/rollback boundary. */
@@ -1558,6 +1658,7 @@ export function AiPanel({
   }
 
   const cancel = () => {
+    editQueueRef.current?.cancelAll('stop')
     activeSelectionScopeRef.current = undefined
     const wasPrelaunch = runStartingRef.current
     launchTokenRef.current++
@@ -1582,6 +1683,7 @@ export function AiPanel({
   // Abort a QC pass still running when the panel unmounts (new file / panel remount by key)
   useEffect(
     () => () => {
+      editQueueRef.current?.dispose()
       launchTokenRef.current++
       runStartingRef.current = false
       qcAbortRef.current?.abort()
@@ -1597,6 +1699,7 @@ export function AiPanel({
     })
 
   const newChat = () => {
+    editQueueRef.current?.cancelAll('new chat')
     activeSelectionScopeRef.current = undefined
     launchTokenRef.current++
     runStartingRef.current = false
@@ -1997,6 +2100,15 @@ export function AiPanel({
         </div>
       ) : (
         <div className="ai-composer">
+          {queuedScope &&
+            (queueSnapshot.running || queueSnapshot.queued > 0 || queueSnapshot.paused) && (
+              <EditQueueCard
+                scope={queuedScope}
+                queue={queueSnapshot}
+                onResume={() => editQueueRef.current?.resume()}
+                onCancel={() => editQueueRef.current?.cancelAll('cancelled')}
+              />
+            )}
           {attachNotice && <div className="ai-attach-notice">{attachNotice}</div>}
           <div className="ai-input-box">
             {attachments.length > 0 && (
@@ -2103,7 +2215,7 @@ export function AiPanel({
               >
                 <img src={attachIcon} alt="" aria-hidden />
               </button>
-              {busy ? (
+              {busy && !selectionScopeEnabled ? (
                 <button
                   className="ai-send-btn ai-stop-btn"
                   onClick={cancel}

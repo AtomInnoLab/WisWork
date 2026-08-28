@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
+import { renderToStaticMarkup } from 'react-dom/server'
+import React from 'react'
+import { EditQueueCard } from '../src/renderer/ai/EditQueueCard'
 import {
   SelectionEditQueue,
   SelectionScopeConflict,
@@ -33,6 +36,22 @@ const applied = (taskId: string): SelectionEditReceipt => ({
 })
 
 describe('SelectionEditQueue', () => {
+  it('renders running, queued, paused, resume and cancel state without raw scope data', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(EditQueueCard, {
+        scope: scope(),
+        queue: { queued: 2, running: false, paused: true, receipts: [] },
+        onCancel: () => undefined,
+        onResume: () => undefined,
+      }),
+    )
+    expect(html).toContain('Paused for review')
+    expect(html).toContain('Continue')
+    expect(html).toContain('Cancel')
+    expect(html).not.toContain('shape-1')
+    expect(html).not.toContain('sha256:')
+  })
+
   it('runs different tasks FIFO and continues after an ordinary failure', async () => {
     const order: string[] = []
     const queue = new SelectionEditQueue({ maxQueued: 20 })
