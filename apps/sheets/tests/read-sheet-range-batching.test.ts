@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   SIDECAR_READ_BATCH_CELLS,
   SIDECAR_READ_MAX_TOTAL_CELLS,
+  ensureLazyRangeLoaded,
+  isLazyWorkbookTargetCurrent,
   readSheetRangeMapped,
 } from '../src/renderer/univer-sync'
 import type { LazyWorkbookState } from '../src/renderer/univer-state'
@@ -40,6 +42,7 @@ const readWorkbookRange = vi.fn(rangeResult)
 function state(sessionId = 'session-1'): LazyWorkbookState {
   return {
     file: { sessionId, sheets: [] },
+    expectedWorkbookId: 'file-sha-one',
     generation: 1,
     editJournal: { cells: new Map(), structuralOps: new Map() },
   } as unknown as LazyWorkbookState
@@ -203,5 +206,98 @@ describe('readSheetRangeMapped bounded batching', () => {
       ),
     ).rejects.toThrow('workbook changed')
     expect(readWorkbookRange).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects an old worksheet callback after the active workbook switches before I/O', async () => {
+    const oldState = state()
+    const newState = { ...state('session-2'), expectedWorkbookId: 'file-sha-two' }
+    const oldCore = { getUnitId: () => oldState.expectedWorkbookId }
+    const newCore = { getUnitId: () => newState.expectedWorkbookId }
+    const active = {
+      getId: () => newState.expectedWorkbookId,
+      getWorkbook: () => newCore,
+    }
+    const runtime = { univerAPI: { getActiveWorkbook: () => active } }
+    const oldWorksheet = { getWorkbook: () => oldCore }
+    const lazyRef = { current: newState }
+
+    await expect(
+      readSheetRangeMapped(
+        oldState,
+        's1',
+        { startRow: 0, endRow: 299, startColumn: 0, endColumn: 199 },
+        sheetMeta,
+        {
+          isCurrent: () =>
+            isLazyWorkbookTargetCurrent(
+              runtime as never,
+              lazyRef as never,
+              oldState,
+              oldWorksheet as never,
+            ),
+        },
+      ),
+    ).rejects.toThrow('workbook changed')
+    expect(readWorkbookRange).not.toHaveBeenCalled()
+  })
+
+  it('does not patch when an old worksheet callback enters after a switch', async () => {
+    const newState = {
+      ...state('session-2'),
+      expectedWorkbookId: 'file-sha-two',
+      file: { ...state('session-2').file, sheets: [sheetMeta] },
+      loadedRanges: new Map(),
+    } as unknown as LazyWorkbookState
+    const oldCore = { getUnitId: () => 'file-sha-one' }
+    const newCore = { getUnitId: () => newState.expectedWorkbookId }
+    const getRange = vi.fn()
+    const oldWorksheet = {
+      getSheetId: () => 's1',
+      getWorkbook: () => oldCore,
+      getRange,
+    }
+    const runtime = {
+      univerAPI: {
+        getActiveWorkbook: () => ({
+          getId: () => newState.expectedWorkbookId,
+          getWorkbook: () => newCore,
+        }),
+      },
+    }
+
+    await expect(
+      ensureLazyRangeLoaded(
+        runtime as never,
+        { current: newState },
+        oldWorksheet as never,
+        { startRow: 0, endRow: 10, startColumn: 0, endColumn: 10 },
+        vi.fn(),
+      ),
+    ).resolves.toBe(false)
+    expect(readWorkbookRange).not.toHaveBeenCalled()
+    expect(getRange).not.toHaveBeenCalled()
+  })
+
+  it('rejects a wrong state even while its worksheet workbook is still active', async () => {
+    const activeState = state()
+    const wrongState = { ...state('session-2'), expectedWorkbookId: 'file-sha-two' }
+    const activeCore = { getUnitId: () => activeState.expectedWorkbookId }
+    const active = {
+      getId: () => activeState.expectedWorkbookId,
+      getWorkbook: () => activeCore,
+    }
+    const runtime = { univerAPI: { getActiveWorkbook: () => active } }
+    const worksheet = { getWorkbook: () => activeCore }
+    const lazyRef = { current: wrongState }
+
+    expect(
+      isLazyWorkbookTargetCurrent(
+        runtime as never,
+        lazyRef as never,
+        wrongState,
+        worksheet as never,
+      ),
+    ).toBe(false)
+    expect(readWorkbookRange).not.toHaveBeenCalled()
   })
 })

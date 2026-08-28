@@ -18,6 +18,10 @@ export type UniverWorksheet = NonNullable<ReturnType<ActiveWorkbook['getActiveSh
 
 export interface LazyWorkbookState {
   readonly file: WorkbookFile
+  /// Authoritative Univer unit id created for this file instance. Async lazy
+  /// reads must match this id; capturing whichever workbook is active would
+  /// let a stale callback validate itself after a document switch.
+  readonly expectedWorkbookId: string
   readonly generation: number
   readonly loadedRanges: Map<string, IRange>
   readonly loadingKeys: Map<string, string>

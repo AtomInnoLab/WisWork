@@ -18,6 +18,7 @@ import {
   loadSnapshotIntoUniver,
   loadVisibleRange,
   loadWorkbookSkeleton,
+  workbookSkeletonId,
   matrixBounds,
   measureImage,
   navigateToAnchor,
@@ -2887,6 +2888,7 @@ export function App(): React.JSX.Element {
     demoVisualDisposablesRef.current = []
     const state: LazyWorkbookState = {
       file: selected,
+      expectedWorkbookId: workbookSkeletonId(selected),
       generation: Date.now(),
       loadedRanges: new Map(),
       loadingKeys: new Map(),

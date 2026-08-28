@@ -106,6 +106,10 @@ import {
 export const MINIMUM_SHEET_ROW_COUNT = 1000
 export const MINIMUM_SHEET_COLUMN_COUNT = 26
 
+export function workbookSkeletonId(file: Pick<WorkbookFile, 'sha256'>): string {
+  return `file-${file.sha256}`
+}
+
 export function syncUniver(runtime: UniverRuntime | null, snapshot: WorkbookSnapshot): void {
   const workbook = runtime?.univerAPI.getActiveWorkbook()
   if (!workbook) return
@@ -286,7 +290,7 @@ export function loadWorkbookSkeleton(runtime: UniverRuntime | null, file: Workbo
   const activeWorkbook = runtime.univerAPI.getActiveWorkbook()
   if (activeWorkbook) runtime.univerAPI.disposeUnit(activeWorkbook.getId())
   runtime.univerAPI.createWorkbook({
-    id: `file-${file.sha256}`,
+    id: workbookSkeletonId(file),
     name: file.name,
     sheetOrder: file.sheets.map((sheet) => sheet.id),
     sheets: Object.fromEntries(
@@ -731,7 +735,7 @@ export async function loadVisibleRange(
     screenColumnCount,
   )
   await loadRange(runtime, lazyWorkbookRef, worksheet, range, setMessage)
-  await loadFrozenColumnStrip(lazyWorkbookRef, worksheet, sheet, range)
+  await loadFrozenColumnStrip(runtime, lazyWorkbookRef, worksheet, sheet, range)
 }
 
 /// Streams every sheet's formula list, computes the dependency closure, and
@@ -858,6 +862,29 @@ export interface MappedRangeReadOptions {
   readonly signal?: AbortSignal
   /// Workbook-instance guard supplied by callers that own the active ref.
   readonly isCurrent?: () => boolean
+}
+
+export function isLazyWorkbookTargetCurrent(
+  runtime: UniverRuntime,
+  lazyWorkbookRef: { readonly current: LazyWorkbookState | null },
+  state: LazyWorkbookState,
+  worksheet: UniverWorksheet,
+): boolean {
+  if (lazyWorkbookRef.current !== state) return false
+  try {
+    const active = runtime.univerAPI.getActiveWorkbook()
+    if (!active || active.getId() !== state.expectedWorkbookId) return false
+    const activeCore = active.getWorkbook()
+    const worksheetCore = worksheet.getWorkbook()
+    return (
+      activeCore === worksheetCore &&
+      activeCore.getUnitId() === state.expectedWorkbookId &&
+      worksheetCore.getUnitId() === state.expectedWorkbookId
+    )
+  } catch {
+    // Disposed facades can throw while a workbook is being replaced.
+    return false
+  }
 }
 
 function assertRangeReadCurrent(options: MappedRangeReadOptions, startedAt: number): void {
@@ -1484,6 +1511,7 @@ async function runFormulaRecalc(
 /// After horizontal scrolling the viewport range no longer covers frozen
 /// columns; fetch that strip separately (patched without eviction).
 async function loadFrozenColumnStrip(
+  runtime: UniverRuntime,
   lazyWorkbookRef: { current: LazyWorkbookState | null },
   worksheet: UniverWorksheet,
   sheet: WorkbookFile['sheets'][number],
@@ -1491,7 +1519,13 @@ async function loadFrozenColumnStrip(
 ): Promise<void> {
   const state = lazyWorkbookRef.current
   const frozenColumns = sheet.freeze?.frozenColumns ?? 0
-  if (!state || frozenColumns === 0 || frozenColumns > 8) return
+  if (
+    !state ||
+    !isLazyWorkbookTargetCurrent(runtime, lazyWorkbookRef, state, worksheet) ||
+    frozenColumns === 0 ||
+    frozenColumns > 8
+  )
+    return
   if (viewportRange.startColumn < frozenColumns) return
   const sheetId = worksheet.getSheetId()
   const stripRange: IRange = {
@@ -1505,9 +1539,9 @@ async function loadFrozenColumnStrip(
   state.frozenStripKeys.set(sheetId, stripKey)
   try {
     const mapped = await readSheetRangeMapped(state, sheetId, stripRange, sheet, {
-      isCurrent: () => lazyWorkbookRef.current === state,
+      isCurrent: () => isLazyWorkbookTargetCurrent(runtime, lazyWorkbookRef, state, worksheet),
     })
-    if (lazyWorkbookRef.current !== state || !mapped) {
+    if (!isLazyWorkbookTargetCurrent(runtime, lazyWorkbookRef, state, worksheet) || !mapped) {
       state.frozenStripKeys.delete(sheetId)
       return
     }
@@ -1551,7 +1585,7 @@ async function loadRange(
   waitAttempt = 0,
 ): Promise<void> {
   const state = lazyWorkbookRef.current
-  if (!state) return
+  if (!state || !isLazyWorkbookTargetCurrent(runtime, lazyWorkbookRef, state, worksheet)) return
   const sheetId = worksheet.getSheetId()
   const loaded = state.loadedRanges.get(sheetId)
   if (!isRetry && loaded && containsRange(loaded, range)) return
@@ -1561,17 +1595,16 @@ async function loadRange(
   if (previousTimer) clearTimeout(previousTimer)
   state.retryTimers.delete(sheetId)
   state.loadingKeys.set(sheetId, requestKey)
-  const workbookId = runtime.univerAPI.getActiveWorkbook()?.getId()
-
   try {
     const sheetMeta = state.file.sheets.find((candidate) => candidate.id === sheetId)
     if (!sheetMeta) return
     const mapped = await readSheetRangeMapped(state, sheetId, range, sheetMeta, {
-      isCurrent: () =>
-        lazyWorkbookRef.current === state &&
-        runtime.univerAPI.getActiveWorkbook()?.getId() === workbookId,
+      isCurrent: () => isLazyWorkbookTargetCurrent(runtime, lazyWorkbookRef, state, worksheet),
     })
-    if (lazyWorkbookRef.current !== state || state.loadingKeys.get(sheetId) !== requestKey) {
+    if (
+      !isLazyWorkbookTargetCurrent(runtime, lazyWorkbookRef, state, worksheet) ||
+      state.loadingKeys.get(sheetId) !== requestKey
+    ) {
       return
     }
     if (!mapped) {
@@ -1663,7 +1696,7 @@ async function loadRange(
           if (lazyWorkbookRef.current !== state) return
           state.loadingKeys.delete(sheetId)
           void loadRange(runtime, lazyWorkbookRef, worksheet, range, setMessage, true).then(() =>
-            loadFrozenColumnStrip(lazyWorkbookRef, worksheet, sheet, range),
+            loadFrozenColumnStrip(runtime, lazyWorkbookRef, worksheet, sheet, range),
           )
         }, 250)
         state.retryTimers.set(sheetId, timer)
