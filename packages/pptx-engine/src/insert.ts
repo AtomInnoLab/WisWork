@@ -387,6 +387,8 @@ export function deleteElement(slide: Slide, elementId: string): boolean {
 const OFFICE_REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 const DRAWING_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main'
 const PACKAGE_REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
+const XML_NS = 'http://www.w3.org/XML/1998/namespace'
+const XMLNS_NS = 'http://www.w3.org/2000/xmlns/'
 const MAX_DELETE_XML_LENGTH = 16 * 1024 * 1024
 const MAX_DELETE_XML_TAGS = 200_000
 
@@ -412,14 +414,6 @@ const splitQName = (name: string): { prefix: string; localName: string } => {
     : { prefix: name.slice(0, separator), localName: name.slice(separator + 1) }
 }
 
-const rootNamespaces = (xml: string): Map<string, string> => {
-  const namespaces = new Map<string, string>()
-  const root = /<[A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?\b([^<>]*)>/.exec(xml)?.[1] ?? ''
-  for (const match of root.matchAll(/\bxmlns(?::([A-Za-z_][\w.-]*))?\s*=\s*(["'])([^"']+)\2/g))
-    namespaces.set(match[1] ?? '', match[3]!)
-  return namespaces
-}
-
 const inspectXml = (
   xml: string,
   inheritedNamespaces: ReadonlyMap<string, string>,
@@ -427,14 +421,17 @@ const inspectXml = (
 ): void => {
   if (xml.length > MAX_DELETE_XML_LENGTH) throw new Error('XML inspection bound exceeded')
   const stack: Array<{ namespaces: Map<string, string>; name?: string }> = [
-    { namespaces: new Map(inheritedNamespaces) },
+    { namespaces: new Map([...inheritedNamespaces, ['xml', XML_NS]]) },
   ]
   const tagPattern =
     /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<![^>]*>|<\/?([A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?)([^<>]*?)\/?\s*>/g
   let tags = 0
+  let cursor = 0
   for (const match of xml.matchAll(tagPattern)) {
+    if (xml.slice(cursor, match.index).includes('<')) throw new Error('Unrecognized XML token')
     if (++tags > MAX_DELETE_XML_TAGS) throw new Error('XML tag bound exceeded')
     const raw = match[0]
+    cursor = match.index! + raw.length
     if (raw.startsWith('<!') || raw.startsWith('<?')) continue
     if (raw.startsWith('</')) {
       const frame = stack.pop()
@@ -450,13 +447,28 @@ const inspectXml = (
       parsedAttributeSpans.push([attribute.index!, attribute.index! + attribute[0].length])
       const name = attribute[1]!
       const value = attribute[3]!
-      if (name === 'xmlns') namespaces.set('', value)
-      else if (name.startsWith('xmlns:')) namespaces.set(name.slice(6), value)
-      else attributes.push({ name, value })
+      if (name === 'xmlns') {
+        if (value === XML_NS || value === XMLNS_NS)
+          throw new Error('Invalid default namespace declaration')
+        namespaces.set('', value)
+      } else if (name.startsWith('xmlns:')) {
+        const prefix = name.slice(6)
+        if (
+          !prefix ||
+          prefix === 'xmlns' ||
+          !value ||
+          value === XMLNS_NS ||
+          (prefix === 'xml' && value !== XML_NS) ||
+          (prefix !== 'xml' && value === XML_NS)
+        )
+          throw new Error('Invalid namespace declaration')
+        namespaces.set(prefix, value)
+      } else attributes.push({ name, value })
     }
     if (applyRemovals(rawAttributes, parsedAttributeSpans).trim())
       throw new Error('Malformed XML attributes')
     const qname = splitQName(match[1]!)
+    if (qname.prefix && !namespaces.has(qname.prefix)) throw new Error('Unbound element prefix')
     visit({
       start: match.index!,
       end: match.index! + raw.length,
@@ -464,6 +476,8 @@ const inspectXml = (
       namespaceUri: namespaces.get(qname.prefix),
       attributes: attributes.map(({ name, value }) => {
         const attributeName = splitQName(name)
+        if (attributeName.prefix && !namespaces.has(attributeName.prefix))
+          throw new Error('Unbound attribute prefix')
         return {
           ...attributeName,
           ...(attributeName.prefix ? { namespaceUri: namespaces.get(attributeName.prefix) } : {}),
@@ -473,25 +487,8 @@ const inspectXml = (
     })
     if (!/\/\s*>$/.test(raw)) stack.push({ namespaces, name: match[1]! })
   }
+  if (xml.slice(cursor).includes('<')) throw new Error('Unrecognized XML token')
   if (stack.length !== 1) throw new Error('Unclosed XML element')
-}
-
-const relationshipReferences = (
-  xml: string,
-  namespaces: ReadonlyMap<string, string>,
-): Set<string> => {
-  const ids = new Set<string>()
-  inspectXml(xml, namespaces, (element) => {
-    for (const attribute of element.attributes)
-      if (
-        attribute.namespaceUri === OFFICE_REL_NS &&
-        (attribute.localName === 'id' ||
-          attribute.localName === 'embed' ||
-          attribute.localName === 'link')
-      )
-        ids.add(attribute.value)
-  })
-  return ids
 }
 
 const applyRemovals = (xml: string, removals: readonly [number, number][]): string => {
@@ -500,6 +497,41 @@ const applyRemovals = (xml: string, removals: readonly [number, number][]): stri
     patched = patched.slice(0, start) + patched.slice(end)
   return patched
 }
+
+interface SlideXmlSegment {
+  start: number
+  end: number
+  xml: string
+  element?: SlideElement
+}
+
+const reconstructSlideSegments = (
+  slide: Slide,
+  excluded?: SlideElement,
+): { xml: string; segments: SlideXmlSegment[] } => {
+  const segments: SlideXmlSegment[] = []
+  let xml = ''
+  const append = (value: string, element?: SlideElement) => {
+    const start = xml.length
+    xml += value
+    segments.push({ start, end: xml.length, xml: value, ...(element ? { element } : {}) })
+  }
+  append(slide.bodyPrefix)
+  for (const element of slide.elements) {
+    if (element === excluded) continue
+    append(element.anchor.originalXml, element)
+    if (element.anchor.gapAfter) append(element.anchor.gapAfter)
+  }
+  append(slide.bodySuffix)
+  return { xml, segments }
+}
+
+const segmentContaining = (
+  segments: readonly SlideXmlSegment[],
+  start: number,
+  end: number,
+): SlideXmlSegment | undefined =>
+  segments.find((segment) => start >= segment.start && end <= segment.end)
 
 /**
  * Authoritative package-aware deletion. It removes relationship records referenced only by the
@@ -516,61 +548,62 @@ export function deleteElementWithCleanup(
   if (index < 0) return false
   const victim = slide.elements[index]!
   try {
-    const namespaces = rootNamespaces(slide.bodyPrefix)
     let nvId: string | undefined
-    inspectXml(victim.anchor.originalXml, namespaces, (element) => {
-      if (element.localName !== 'cNvPr') return
-      const id = element.attributes.find(
-        (attribute) => !attribute.prefix && attribute.localName === 'id',
-      )?.value
-      if (id && /^\d+$/.test(id)) nvId = id
+    const candidateRIds = new Set<string>()
+    const current = reconstructSlideSegments(slide)
+    inspectXml(current.xml, new Map(), (element) => {
+      const segment = segmentContaining(current.segments, element.start, element.end)
+      if (segment?.element !== victim) return
+      if (element.localName === 'cNvPr') {
+        const id = element.attributes.find(
+          (attribute) => !attribute.prefix && attribute.localName === 'id',
+        )?.value
+        if (id && /^\d+$/.test(id)) nvId = id
+      }
+      for (const attribute of element.attributes)
+        if (
+          attribute.namespaceUri === OFFICE_REL_NS &&
+          (attribute.localName === 'id' ||
+            attribute.localName === 'embed' ||
+            attribute.localName === 'link')
+        )
+          candidateRIds.add(attribute.value)
     })
     if (!nvId) return false
 
-    const candidateRIds = relationshipReferences(victim.anchor.originalXml, namespaces)
-    const patchedElements = new Map<SlideElement, string>()
+    const elementRemovals = new Map<SlideElement, [number, number][]>()
     const survivingRIds = new Set<string>()
-    const inspectSurvivingXml = (xml: string, connectorOwner?: SlideElement): void => {
-      const removals: [number, number][] = []
-      inspectXml(xml, namespaces, (element) => {
-        for (const attribute of element.attributes) {
-          if (
-            attribute.namespaceUri === OFFICE_REL_NS &&
-            (attribute.localName === 'id' ||
-              attribute.localName === 'embed' ||
-              attribute.localName === 'link')
-          )
-            survivingRIds.add(attribute.value)
-          if (!attribute.prefix && attribute.localName === 'spid' && attribute.value === nvId)
-            throw new Error('Unsupported shape reference')
-        }
+    const surviving = reconstructSlideSegments(slide, victim)
+    inspectXml(surviving.xml, new Map(), (element) => {
+      for (const attribute of element.attributes) {
         if (
-          connectorOwner &&
-          element.namespaceUri === DRAWING_NS &&
-          (element.localName === 'stCxn' || element.localName === 'endCxn') &&
-          element.attributes.some(
-            (attribute) =>
-              !attribute.prefix && attribute.localName === 'id' && attribute.value === nvId,
-          )
+          attribute.namespaceUri === OFFICE_REL_NS &&
+          (attribute.localName === 'id' ||
+            attribute.localName === 'embed' ||
+            attribute.localName === 'link')
         )
-          removals.push([element.start, element.end])
-      })
-      if (connectorOwner && removals.length)
-        patchedElements.set(connectorOwner, applyRemovals(xml, removals))
-    }
-
-    const completeSurvivingXml =
-      slide.bodyPrefix +
-      slide.elements
-        .filter((element) => element !== victim)
-        .map((element) => element.anchor.originalXml + (element.anchor.gapAfter ?? ''))
-        .join('') +
-      slide.bodySuffix
-    inspectSurvivingXml(completeSurvivingXml)
-    for (const element of slide.elements) {
-      if (element === victim) continue
-      inspectSurvivingXml(element.anchor.originalXml, element)
-    }
+          survivingRIds.add(attribute.value)
+        if (!attribute.prefix && attribute.localName === 'spid' && attribute.value === nvId)
+          throw new Error('Unsupported shape reference')
+      }
+      if (
+        element.namespaceUri === DRAWING_NS &&
+        (element.localName === 'stCxn' || element.localName === 'endCxn') &&
+        element.attributes.some(
+          (attribute) =>
+            !attribute.prefix && attribute.localName === 'id' && attribute.value === nvId,
+        )
+      ) {
+        const segment = segmentContaining(surviving.segments, element.start, element.end)
+        if (!segment?.element) throw new Error('Connector reference is outside an element')
+        const removals = elementRemovals.get(segment.element) ?? []
+        removals.push([element.start - segment.start, element.end - segment.start])
+        elementRemovals.set(segment.element, removals)
+      }
+    })
+    const patchedElements = new Map<SlideElement, string>()
+    for (const [element, removals] of elementRemovals)
+      patchedElements.set(element, applyRemovals(element.anchor.originalXml, removals))
 
     const removableRIds = new Set([...candidateRIds].filter((id) => !survivingRIds.has(id)))
     const relsPath = relsPathFor(slide.path)
@@ -590,6 +623,9 @@ export function deleteElementWithCleanup(
       patchedRels = applyRemovals(rels, relRemovals)
     }
 
+    const patchedRelsBytes =
+      patchedRels === undefined ? undefined : Buffer.from(patchedRels, 'utf8')
+
     // Commit only after every namespace/reference check and patch plan has succeeded.
     for (const [element, xml] of patchedElements) element.anchor.originalXml = xml
     const syncConnections = (element: SlideElement): void => {
@@ -599,9 +635,8 @@ export function deleteElementWithCleanup(
         delete element.connection
       if (element.type === 'group') for (const child of element.children) syncConnections(child)
     }
-    for (const element of slide.elements) if (element !== victim) syncConnections(element)
-    if (patchedRels !== undefined)
-      opened.archive.entries.set(relsPath, Buffer.from(patchedRels, 'utf8'))
+    for (const element of patchedElements.keys()) syncConnections(element)
+    if (patchedRelsBytes !== undefined) opened.archive.entries.set(relsPath, patchedRelsBytes)
     slide.elements.splice(index, 1)
     slide.structureDirty = true
     return true

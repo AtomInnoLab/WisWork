@@ -109,15 +109,18 @@ describe('add/delete element', () => {
     const victim = addElement(slide, { kind: 'rect', offset: { ...OFF } })
     const survivor = addElement(slide, { kind: 'rect', offset: { ...OFF } })
     const connector = addElement(slide, { kind: 'line', offset: { ...OFF } })
+    slide.bodyPrefix = slide.bodyPrefix.replace(
+      '<p:cSld>',
+      '<p:cSld xmlns:d="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:o="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
+    )
     const victimNvId = /<p:cNvPr\s[^>]*\bid="(\d+)"/.exec(victim.anchor.originalXml)![1]
     victim.anchor.originalXml = victim.anchor.originalXml.replace(
       '</p:cNvPr>',
-      '<d:hlinkClick xmlns:d="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:o="http://schemas.openxmlformats.org/officeDocument/2006/relationships" o:id=\'rIdExclusive\'/>' +
-        '<d:blip xmlns:d="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:o="http://schemas.openxmlformats.org/officeDocument/2006/relationships" o:embed=\'rIdShared\'/></p:cNvPr>',
+      "<d:hlinkClick o:id='rIdExclusive'/><d:blip o:embed='rIdShared'/></p:cNvPr>",
     )
     connector.anchor.originalXml = connector.anchor.originalXml.replace(
       '<p:cNvCxnSpPr/>',
-      `<p:cNvCxnSpPr><d:stCxn xmlns:d="http://schemas.openxmlformats.org/drawingml/2006/main" id='${victimNvId}' idx='0'/><d:endCxn xmlns:d="http://schemas.openxmlformats.org/drawingml/2006/main" id='${victimNvId}' idx='2'/></p:cNvCxnSpPr>`,
+      `<p:cNvCxnSpPr><d:stCxn id='${victimNvId}' idx='0'/><d:endCxn id='${victimNvId}' idx='2'/></p:cNvCxnSpPr>`,
     )
     const grouped = groupElements(opened, 0, [survivor.id, connector.id])!
     const activeSlide = grouped.slide
@@ -125,6 +128,14 @@ describe('add/delete element', () => {
       (element) => element.creationId === victim.creationId,
     )!
     const group = activeSlide.elements.find((element) => element.type === 'group')!
+    if (group.type !== 'group') throw new Error('expected group')
+    const nestedConnector = group.children.find(
+      (element) => element.type === 'shape' && element.presetGeometry === 'line',
+    )!
+    nestedConnector.connection = {
+      start: { id: Number(victimNvId), idx: 0 },
+      end: { id: Number(victimNvId), idx: 2 },
+    }
     group.anchor.gapAfter =
       '<x:ref xmlns:x="urn:test" xmlns:o="http://schemas.openxmlformats.org/officeDocument/2006/relationships" o:link=\'rIdShared\'/>'
     const relsPath = 'ppt/slides/_rels/slide1.xml.rels'
@@ -142,6 +153,7 @@ describe('add/delete element', () => {
     )
 
     expect(deleteElementWithCleanup(opened, activeSlide, activeVictim.id)).toBe(true)
+    expect(nestedConnector.connection).toBeUndefined()
     const reopened = await openPptx(await savePptx(opened))
     const xml = reopened.archive.readText(slide.path)!
     const reopenedRels = reopened.archive.readText(relsPath)!
@@ -163,6 +175,34 @@ describe('add/delete element', () => {
     const beforeEntries = new Map(opened.archive.entries)
     expect(deleteElementWithCleanup(opened, slide, victim.id)).toBe(false)
     expect(slide.elements).toHaveLength(count)
+    expect(slide.elements).toEqual(beforeElements)
+    expect(opened.archive.entries).toEqual(beforeEntries)
+  })
+
+  it.each([
+    [
+      'unbound relationship prefix',
+      (victim: any) => {
+        victim.anchor.originalXml = victim.anchor.originalXml.replace(
+          '</p:cNvPr>',
+          '<a:hlinkClick unbound:id="rIdUnsafe"/></p:cNvPr>',
+        )
+      },
+    ],
+    [
+      'stray less-than in a gap',
+      (_victim: any, slide: any) => {
+        slide.elements[0]!.anchor.gapAfter = 'invalid<text'
+      },
+    ],
+  ])('fails closed with zero mutation for %s', async (_label, corrupt) => {
+    const opened = await openPptx(fx('01_standard_business.pptx'))
+    const slide = opened.deck.slides[0]!
+    const victim = addElement(slide, { kind: 'rect', offset: { ...OFF } })
+    corrupt(victim, slide)
+    const beforeElements = structuredClone(slide.elements)
+    const beforeEntries = new Map(opened.archive.entries)
+    expect(deleteElementWithCleanup(opened, slide, victim.id)).toBe(false)
     expect(slide.elements).toEqual(beforeElements)
     expect(opened.archive.entries).toEqual(beforeEntries)
   })
