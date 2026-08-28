@@ -134,6 +134,8 @@ const api: SlidesApi = {
   batchEditTransform: (op: BatchEditTransformOp) =>
     ipcRenderer.invoke('slides:batch-edit-transform', op),
   getRenderSlides: () => ipcRenderer.invoke('slides:get-render-slides'),
+  getQualityIdentityMap: (slideIndex: number) =>
+    ipcRenderer.invoke('slides:get-quality-identity-map', slideIndex),
   addElement: (op: AddElementOp) => ipcRenderer.invoke('slides:add-element', op),
   deleteElement: (op: DeleteElementOp) => ipcRenderer.invoke('slides:delete-element', op),
   addSlide: (op: AddSlideOp) => ipcRenderer.invoke('slides:add-slide', op),

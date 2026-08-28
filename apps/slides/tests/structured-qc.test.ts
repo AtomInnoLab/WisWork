@@ -4,6 +4,7 @@ import {
   auditSlideQuality,
   compareQualityFindings,
   createDeterministicQualityReceipt,
+  qualityFindingKey,
 } from '../src/renderer/ai/layout-audit'
 import {
   shouldRunVisualQc,
@@ -187,6 +188,18 @@ describe('structured deterministic quality audit', () => {
     })
     expect(findings[0]).not.toHaveProperty('elementId')
     expect(JSON.stringify(findings)).not.toContain('runtime-source')
+  })
+
+  it('keeps same-code identity-insufficient findings distinct with stable non-authority ordinals', () => {
+    const findings = auditSlideQuality(
+      slide([
+        text('runtime-a', box(-20, 10, 50, 30), 'x'),
+        text('runtime-b', box(-30, 50, 50, 30), 'x'),
+      ]),
+      { slideId: 'ppt/slides/slide1.xml' },
+    ).filter((finding) => finding.code === 'element_off_slide')
+    expect(findings.map((finding) => finding.evidence.ordinal)).toEqual([0, 1])
+    expect(new Set(findings.map(qualityFindingKey))).toHaveProperty('size', 2)
   })
 })
 

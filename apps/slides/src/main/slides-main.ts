@@ -259,6 +259,7 @@ import {
   windowRefs,
   type Session,
 } from './session-state'
+import { buildQualityIdentityMap } from './operations/quality-identity'
 import { registerAiIpc, registerSlidesOnlyAiIpc } from './ai-ipc'
 import { registerUnsupportedCloudIpc } from './unsupported-ipc'
 
@@ -1330,6 +1331,12 @@ export function registerSlidesIpc(): void {
     const session = sessions.get(e.sender.id)
     if (!session) return null
     return session.opened.deck.slides.map((_, i) => rebuildSlide(session, i))
+  })
+
+  handle('slides:get-quality-identity-map', (e, slideIndex: number) => {
+    const session = sessions.get(e.sender.id)
+    const slide = session?.opened.deck.slides[slideIndex]
+    return slide ? buildQualityIdentityMap(slide) : null
   })
 
   handle('slides:batch-edit-transform', (e, op: BatchEditTransformOp) => {

@@ -15,6 +15,7 @@ import {
   publishAppliedDeterministicQuality,
 } from '../src/renderer/ai/slide-qc'
 import type { DeckAccess } from '../src/renderer/ai/slides-skill'
+import { createElectronTransport } from '../src/renderer/ai/transport'
 
 const access: DeckAccess = {
   getSlides: () => [],
@@ -26,6 +27,32 @@ const access: DeckAccess = {
 }
 
 describe('visual quality receipts', () => {
+  it('measures the exact IPC envelope including settings before slidesApi.aiStream', async () => {
+    const previous = window.slidesApi
+    const aiStream = vi.fn()
+    const onError = vi.fn()
+    Object.assign(window, {
+      slidesApi: {
+        aiStream,
+        aiStreamCancel: vi.fn(),
+        onAiStream: vi.fn(() => () => {}),
+      },
+    })
+    try {
+      createElectronTransport(
+        () => ({ hugeEnvelopeSetting: 'X'.repeat(2 * 1024 * 1024) }) as never,
+        { maxSerializedRequestBytes: 2 * 1024 * 1024 },
+      ).stream(
+        { system: 'small', messages: [], tools: [] },
+        { onDelta: vi.fn(), onToolCall: vi.fn(), onDone: vi.fn(), onError },
+      )
+      await vi.waitFor(() => expect(onError).toHaveBeenCalledWith('quality_request_too_large'))
+      expect(aiStream).not.toHaveBeenCalled()
+    } finally {
+      Object.assign(window, { slidesApi: previous })
+    }
+  })
+
   it('publishes one deterministic receipt for one applied AiPanel transaction', async () => {
     const published = vi.fn()
     const completedKeys = new Set<string>()
@@ -56,6 +83,57 @@ describe('visual quality receipts', () => {
     })
   })
 
+  it('publishes distinct durable creation IDs for two overflowing production elements', async () => {
+    const published = vi.fn()
+    const overflowing = (sourceId: string) => ({
+      id: sourceId,
+      sourceId,
+      type: 'shape',
+      box: {
+        x: -20,
+        y: 0,
+        w: 10,
+        h: 10,
+        rotationDeg: 0,
+        flipH: false,
+        flipV: false,
+        centerX: -15,
+        centerY: 5,
+      },
+      fill: { kind: 'none' },
+    })
+    const one: DeckAccess = {
+      ...access,
+      getSlides: () => [
+        {
+          widthPx: 1280,
+          heightPx: 720,
+          nodes: [overflowing('runtime-a'), overflowing('runtime-b')],
+        } as never,
+      ],
+    }
+    await publishAppliedDeterministicQuality({
+      transactionId: 'tx-two',
+      receiptStatus: 'applied',
+      sessionId: 's',
+      pageIndexes: [0],
+      completedKeys: new Set(),
+      access: one,
+      prepareSlide: async () => ({
+        status: 'prepared',
+        slideId: 'ppt/slides/slide1.xml',
+        elementIds: { 'runtime-a': 'creation-a', 'runtime-b': 'creation-b' },
+      }),
+      publish: published,
+      isCurrent: () => true,
+    })
+    const receipt = published.mock.calls[0]![0]
+    expect(receipt.findings.map((finding: { elementId?: string }) => finding.elementId)).toEqual([
+      'creation-a',
+      'creation-b',
+    ])
+  })
+
   it('publishes nothing when the AiPanel session becomes stale during durable target resolution', async () => {
     let resolvePrepare!: (value: { status: string; slideId?: string }) => void
     let current = true
@@ -79,6 +157,42 @@ describe('visual quality receipts', () => {
     resolvePrepare({ status: 'prepared', slideId: 'ppt/slides/slide1.xml' })
     await expect(pending).resolves.toEqual([])
     expect(published).not.toHaveBeenCalled()
+  })
+
+  it('publishes deterministic receipts for targets 21 through 50 independently of visual cap', async () => {
+    const slides = Array.from({ length: 50 }, () => ({ widthPx: 1280, heightPx: 720, nodes: [] }))
+    const published = vi.fn()
+    const pages = Array.from({ length: 50 }, (_, index) => index)
+    await expect(
+      publishAppliedDeterministicQuality({
+        transactionId: 'tx-50',
+        receiptStatus: 'applied',
+        sessionId: 's',
+        pageIndexes: pages,
+        completedKeys: new Set(),
+        access: { ...access, getSlides: () => slides as never },
+        prepareSlide: async (pageIndex) => ({
+          status: 'prepared',
+          slideId: `ppt/slides/slide${pageIndex + 1}.xml`,
+        }),
+        publish: published,
+        isCurrent: () => true,
+      }),
+    ).resolves.toHaveLength(50)
+    expect(published).toHaveBeenCalledTimes(50)
+  })
+
+  it('emits an explicit visual capacity receipt instead of silently skipping', () => {
+    expect(
+      toVisualQualityReceipt('qc-1', 'tx-1', 'ppt/slides/slide21.xml', {
+        ok: false,
+        edited: false,
+        reply: '',
+        preIssues: 0,
+        postIssues: 0,
+        error: 'visual_capacity_exceeded',
+      }),
+    ).toMatchObject({ status: 'unavailable', code: 'visual_capacity_exceeded' })
   })
 
   it('never copies model text into the shared receipt', () => {
@@ -217,6 +331,42 @@ describe('qcSlidePage cancellation', () => {
     await expect(
       qcSlidePage({ access: one, transport, pageIndex: 0, screenshot: null }),
     ).resolves.toMatchObject({ ok: true, edited: false, error: 'offline' })
+  })
+
+  it('rejects a full serialized request over 2 MiB before delegating transport', async () => {
+    const delegate = vi.fn()
+    const one: DeckAccess = {
+      ...access,
+      getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] } as never],
+    }
+    await expect(
+      qcSlidePage({
+        access: one,
+        transport: { stream: delegate },
+        pageIndex: 0,
+        screenshot: null,
+        systemSuffix: () => 'X'.repeat(2 * 1024 * 1024),
+      }),
+    ).resolves.toMatchObject({ edited: false, error: 'quality_request_too_large' })
+    expect(delegate).not.toHaveBeenCalled()
+  })
+
+  it('delegates once when the complete serialized request is under 2 MiB', async () => {
+    const delegate = vi.fn((_request, callbacks) => {
+      queueMicrotask(() => {
+        callbacks.onDelta('OK')
+        callbacks.onDone()
+      })
+      return { cancel: vi.fn() }
+    })
+    const one: DeckAccess = {
+      ...access,
+      getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] } as never],
+    }
+    await expect(
+      qcSlidePage({ access: one, transport: { stream: delegate }, pageIndex: 0, screenshot: null }),
+    ).resolves.toMatchObject({ edited: false, reply: 'OK' })
+    expect(delegate).toHaveBeenCalledOnce()
   })
 
   it('discards a late visual result after the session switches', async () => {

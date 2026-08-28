@@ -6,6 +6,7 @@ import {
   AgentLoop,
   type AgentImage,
   type AgentSkill,
+  type AgentStreamRequest,
   type AgentTransport,
 } from '@wiswork/agent-core'
 import type { PresentationQualityReceipt } from '@wiswork/presentation-ops'
@@ -19,15 +20,38 @@ export function isQcEnabled(): boolean {
 
 /** Cost ceiling per generation run — beyond this the tail pages are skipped (reported to the user) */
 export const QC_MAX_PAGES = 20
+export const DETERMINISTIC_QC_MAX_PAGES = 50
 
 export const VISUAL_QC_LIMITS = Object.freeze({
   maxScreenshots: QC_MAX_PAGES,
-  maxTransportRequestBytes: 2_000_000,
+  maxTransportRequestBytes: 2 * 1024 * 1024,
   /** Leaves 50 KB for the bounded prompt, system message, and provider JSON envelope. */
   maxScreenshotRequestBytes: 1_950_000,
   maxSummaryElements: 100,
   maxPromptChars: 12_000,
 })
+
+export function visualQcRequestBytes(request: AgentStreamRequest): number {
+  return new TextEncoder().encode(JSON.stringify(request)).byteLength
+}
+
+export function createBoundedVisualQcTransport(delegate: AgentTransport): AgentTransport {
+  return {
+    stream(request, callbacks) {
+      let bytes = Infinity
+      try {
+        bytes = visualQcRequestBytes(request)
+      } catch {
+        // A non-serializable request is unavailable at the same boundary.
+      }
+      if (bytes > VISUAL_QC_LIMITS.maxTransportRequestBytes) {
+        queueMicrotask(() => callbacks.onError('quality_request_too_large'))
+        return { cancel: () => {} }
+      }
+      return delegate.stream(request, callbacks)
+    },
+  }
+}
 
 export function visualQcImageRequestBytes(image: AgentImage): number {
   return new TextEncoder().encode(JSON.stringify({ images: [image] })).byteLength
@@ -54,7 +78,11 @@ export async function publishAppliedDeterministicQuality(opts: {
   pageIndexes: readonly number[]
   completedKeys: Set<string>
   access: DeckAccess
-  prepareSlide: (pageIndex: number) => Promise<{ status: string; slideId?: string }>
+  prepareSlide: (pageIndex: number) => Promise<{
+    status: string
+    slideId?: string
+    elementIds?: Readonly<Record<string, string>>
+  }>
   publish: (receipt: PresentationQualityReceipt) => void
   signal?: AbortSignal
   isCurrent: () => boolean
@@ -69,7 +97,7 @@ export async function publishAppliedDeterministicQuality(opts: {
     opts.completedKeys.delete(oldest)
   }
   const published: number[] = []
-  for (const pageIndex of [...new Set(opts.pageIndexes)].slice(0, QC_MAX_PAGES)) {
+  for (const pageIndex of [...new Set(opts.pageIndexes)].slice(0, DETERMINISTIC_QC_MAX_PAGES)) {
     opts.signal?.throwIfAborted()
     if (!opts.isCurrent()) return published
     const prepared = await opts.prepareSlide(pageIndex)
@@ -82,6 +110,9 @@ export async function publishAppliedDeterministicQuality(opts: {
         qualityRunId: `qc-det-${pageIndex}-${opts.transactionId.slice(0, 100)}`,
         transactionId: opts.transactionId,
         slideId: prepared.slideId,
+        ...(prepared.elementIds
+          ? { elementCreationId: (sourceId) => prepared.elementIds?.[sourceId] }
+          : {}),
       }),
     )
     published.push(pageIndex)
@@ -190,7 +221,9 @@ export function toVisualQualityReceipt(
       code:
         result.error === 'screenshot_unavailable'
           ? 'screenshot_unavailable'
-          : 'transport_unavailable',
+          : result.error === 'visual_capacity_exceeded'
+            ? 'visual_capacity_exceeded'
+            : 'transport_unavailable',
     }
   }
   return {
@@ -337,7 +370,7 @@ export function qcSlidePage(opts: QcPageOptions): Promise<QcPageResult> {
       })
     }
     const loop = new AgentLoop({
-      transport,
+      transport: createBoundedVisualQcTransport(transport),
       skill: createSlideFixSkill(access),
       maxTurns: 1,
       ...(systemSuffix ? { systemSuffix } : {}),

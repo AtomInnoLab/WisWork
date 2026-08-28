@@ -1045,6 +1045,12 @@ export interface SlidesApi {
   batchEditTransform: (op: BatchEditTransformOp) => Promise<RenderSlide | null>
   /** Read-only: RenderSlide for every page of the current session (E2E driver/debug use) */
   getRenderSlides: () => Promise<RenderSlide[] | null>
+  /** Read-only durable identity map for structured QC; never enrolls or mutates legacy elements. */
+  getQualityIdentityMap: (slideIndex: number) => Promise<{
+    slideId: string
+    elementIds: Record<string, string>
+    truncated: boolean
+  } | null>
   /** Update the picture crop srcRect (0..1 ratios; null = full image); returns the updated page */
   editPictureSrcRect: (op: EditPictureSrcRectOp) => Promise<RenderSlide | null>
   /** Whole-picture opacity */

@@ -190,6 +190,7 @@ export function auditSlideQuality(
   }
   const entries = collectEntries(slide.nodes)
   const findings: PresentationQualityFinding[] = []
+  let identityOrdinal = 0
   const add = (finding: PresentationQualityFinding) => {
     if (findings.length >= MAX_QUALITY_FINDINGS) return
     const elementId = finding.elementId
@@ -200,6 +201,10 @@ export function auditSlideQuality(
       : undefined
     const durableFinding = {
       ...finding,
+      evidence:
+        finding.elementId && !elementId
+          ? { ...finding.evidence, ordinal: identityOrdinal++ }
+          : finding.evidence,
     }
     delete durableFinding.elementId
     delete durableFinding.relatedElementId
@@ -346,7 +351,7 @@ export function createDeterministicQualityReceipt(
 export function qualityFindingKey(finding: PresentationQualityFinding): string {
   return [
     finding.slideId,
-    finding.elementId ?? '',
+    finding.elementId ?? `ordinal-${finding.evidence.ordinal ?? ''}`,
     finding.relatedElementId ?? '',
     finding.code,
   ].join(':')

@@ -125,6 +125,7 @@ export const parsePresentationQualityReceipt = (value: unknown): PresentationQua
     'transport_unavailable',
     'cancelled',
     'stale_session',
+    'visual_capacity_exceeded',
   ] as const
   if (!codes.includes(record.code as (typeof codes)[number]))
     fail('quality receipt.code is unknown')

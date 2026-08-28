@@ -814,13 +814,14 @@ export function AiPanel({
           completedKeys: completedQcTransactionsRef.current,
           access,
           prepareSlide: async (pageIndex) => {
-            const prepared = await window.slidesApi.preparePresentationTarget({
-              transactionId: `qc-target-${pageIndex}-${receipt.transactionId.slice(0, 100)}`,
-              slideIndex: pageIndex,
-            })
-            return prepared.status === 'prepared'
-              ? { status: 'prepared', slideId: prepared.target.slideId }
-              : { status: prepared.status }
+            const identity = await window.slidesApi.getQualityIdentityMap(pageIndex)
+            return identity
+              ? {
+                  status: 'prepared',
+                  slideId: identity.slideId,
+                  elementIds: identity.elementIds,
+                }
+              : { status: 'missing' }
           },
           publish: publishQualityReceipt,
           signal,
@@ -1324,7 +1325,9 @@ export function AiPanel({
       activeRunTokenRef.current === sessionToken &&
       !controller.signal.aborted
     const capped = pages.slice(0, QC_MAX_PAGES)
-    const transport = createElectronTransport(() => settingsRef.current)
+    const transport = createElectronTransport(() => settingsRef.current, {
+      maxSerializedRequestBytes: 2 * 1024 * 1024,
+    })
     const header = tGlobal('aiQcStart', { count: capped.length })
     const lines: string[] = []
     const receipts: PresentationQualityReceipt[] = []
@@ -1425,6 +1428,33 @@ export function AiPanel({
       }
       if (!isCurrentQc()) return
       if (pages.length > capped.length) {
+        for (const page of pages.slice(capped.length)) {
+          const transactionId = qcTransactionByPageRef.current.get(page)
+          const deterministic = transactionId
+            ? [...qualityReceiptsRef.current]
+                .reverse()
+                .find(
+                  (receipt) =>
+                    receipt.transactionId === transactionId && receipt.source === 'deterministic',
+                )
+            : undefined
+          if (!transactionId || !deterministic) continue
+          const receipt = toVisualQualityReceipt(
+            `qc-vis-${page}-${transactionId.slice(0, 100)}`,
+            transactionId,
+            deterministic.slideId,
+            {
+              ok: false,
+              edited: false,
+              reply: '',
+              preIssues: 0,
+              postIssues: 0,
+              error: 'visual_capacity_exceeded',
+            },
+          )
+          publishQualityReceipt(receipt)
+          receipts.push(receipt)
+        }
         lines.push(tGlobal('aiQcCapped', { count: pages.length - capped.length }))
       }
       if (controller.signal.aborted) lines.push(tGlobal('aiQcStopped'))

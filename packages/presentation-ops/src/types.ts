@@ -173,5 +173,10 @@ export type PresentationQualityReceipt =
       slideId: string
       source: 'visual'
       status: 'unavailable' | 'cancelled'
-      code: 'screenshot_unavailable' | 'transport_unavailable' | 'cancelled' | 'stale_session'
+      code:
+        | 'screenshot_unavailable'
+        | 'transport_unavailable'
+        | 'cancelled'
+        | 'stale_session'
+        | 'visual_capacity_exceeded'
     }
