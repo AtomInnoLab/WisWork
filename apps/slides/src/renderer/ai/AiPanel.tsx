@@ -12,6 +12,7 @@ import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
 import { createSlidesSkill, type DeckAccess, type ClarifyQuestion } from './slides-skill'
 import { executePreparedTextFamilyTransaction } from './presentation-text-transactions'
 import { executePreparedGeometryFamilyTransaction } from './presentation-geometry-transactions'
+import { executePreparedBackgroundFamilyTransaction } from './presentation-background-transactions'
 import { extractJsonObject, parseOutlineJson } from './outline-json'
 import { createFilesSkill } from './files-skill'
 import { createElectronTransport } from './transport'
@@ -760,24 +761,17 @@ export function AiPanel({
       applySlide: (i, updated) => applySlideRef.current(i, updated),
       applyDeck: (all, goTo) => applyDeckRef.current(all, goTo),
       executePresentationOperation: async (request, signal) => {
-        const execution = await ('operations' in request
-          ? executePreparedGeometryFamilyTransaction(
-              window.slidesApi,
-              request,
-              signal,
-              async () => {
-                const refreshed = await window.slidesApi.getRenderSlides()
-                if (!refreshed) return false
-                applyDeckRef.current(refreshed, currentRef.current)
-                return true
-              },
-            )
-          : executePreparedTextFamilyTransaction(window.slidesApi, request, signal, async () => {
-              const refreshed = await window.slidesApi.getRenderSlides()
-              if (!refreshed) return false
-              applyDeckRef.current(refreshed, currentRef.current)
-              return true
-            }))
+        const refresh = async () => {
+          const refreshed = await window.slidesApi.getRenderSlides()
+          if (!refreshed) return false
+          applyDeckRef.current(refreshed, currentRef.current)
+          return true
+        }
+        const execution = await ('backgrounds' in request
+          ? executePreparedBackgroundFamilyTransaction(window.slidesApi, request, signal, refresh)
+          : 'operations' in request
+            ? executePreparedGeometryFamilyTransaction(window.slidesApi, request, signal, refresh)
+            : executePreparedTextFamilyTransaction(window.slidesApi, request, signal, refresh))
         if (execution.authoritativeState === 'reload_required')
           onAuthoritativeReloadRequiredRef.current?.()
         return execution

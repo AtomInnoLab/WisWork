@@ -72,12 +72,30 @@ describe('presentation transaction parser', () => {
         target: { slideId: 'slide-1', expectedFingerprint: fingerprint },
         notes: 'Private presenter notes',
       },
+      {
+        kind: 'set_slide_background',
+        clientId: 'op-8',
+        target: { slideId: 'slide-1', expectedFingerprint: fingerprint },
+        color: '#1A2B3C',
+      },
     ])
 
     expect(parsePresentationTransaction(value)).toEqual(value)
     expect(JSON.parse(JSON.stringify(parsePresentationTransaction(value)))).toEqual(value)
     expect(parsePresentationOperation(value.operations[0])).toEqual(value.operations[0])
     expect(parsePresentationTarget(target)).toEqual(target)
+  })
+
+  it('rejects generic payloads on slide background operations', () => {
+    expect(() =>
+      parsePresentationOperation({
+        kind: 'set_slide_background',
+        clientId: 'background-1',
+        target: { slideId: 'slide-1', expectedFingerprint: fingerprint },
+        color: '#1A2B3C',
+        payload: {},
+      }),
+    ).toThrow(/unknown field payload/i)
   })
 
   it('accepts only a strictly typed reference to an earlier generated element', () => {

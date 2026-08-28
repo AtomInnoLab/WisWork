@@ -360,6 +360,17 @@ export const parsePresentationOperation = (value: unknown): PresentationOperatio
         target: parseTarget(record.target, false),
         notes: requiredString(record.notes, 'notes'),
       }
+    case 'set_slide_background': {
+      exactKeys(record, ['kind', 'clientId', 'target', 'color'], 'set_slide_background')
+      if (typeof record.color !== 'string' || !colorPattern.test(record.color))
+        fail('background.color is invalid')
+      return {
+        kind,
+        clientId,
+        target: parseTarget(record.target, false),
+        color: record.color.toUpperCase(),
+      }
+    }
     default:
       return fail('operation.kind is unknown')
   }

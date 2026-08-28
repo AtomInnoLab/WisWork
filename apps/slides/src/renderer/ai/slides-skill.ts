@@ -23,6 +23,10 @@ import {
   normalizePresentationRotation,
   type GeometryFamilyTransactionRequest,
 } from './presentation-geometry-transactions'
+import {
+  backgroundToolTransactionId,
+  type BackgroundFamilyTransactionRequest,
+} from './presentation-background-transactions'
 
 /**
  * Slides capability as an AgentSkill: deck outline context + three tools (read structure /
@@ -41,7 +45,10 @@ export interface DeckAccess {
   applyDeck(slides: RenderSlide[], goTo?: number): void
   /** Execute one canonical, durable presentation transaction for an enrolled tool family. */
   executePresentationOperation?(
-    request: TextFamilyTransactionRequest | GeometryFamilyTransactionRequest,
+    request:
+      | TextFamilyTransactionRequest
+      | GeometryFamilyTransactionRequest
+      | BackgroundFamilyTransactionRequest,
     signal?: AbortSignal,
   ): Promise<TextFamilyExecutionResult>
   /** Mirror an already-applied notes transaction into the visible notes editor. */
@@ -2785,20 +2792,29 @@ async function executeTool(
         return fail(t('aiFailBackground'), `slideIndex out of range (0-${slides.length - 1} or -1)`)
       if (!/^#?[0-9a-fA-F]{6}$/.test(color))
         return fail(t('aiFailBackground'), 'color must be #RRGGBB')
-      const r = await window.slidesApi.editBackground({
-        slideIndex: idx,
-        color: color.startsWith('#') ? color : `#${color}`,
-        fitWidthPx: access.fitWidthPx,
-      })
-      signal?.throwIfAborted()
-      if (!r) return fail(t('aiFailBackground'), 'Setting failed')
-      access.applyDeck(r)
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailBackground'), 'Canonical presentation transactions are unavailable')
+      const normalizedColor = `#${color.replace(/^#/, '').toUpperCase()}`
+      const backgrounds = (idx === -1 ? slides.map((_slide, slideIndex) => slideIndex) : [idx]).map(
+        (slideIndex) => ({ slideIndex, color: normalizedColor }),
+      )
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await backgroundToolTransactionId(call),
+          backgrounds,
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (!outcome.ok)
+        return fail(t('aiFailBackground'), outcome.detail ?? 'Setting was not applied')
       return {
         output:
           idx === -1
-            ? `Set the background of all ${r.length} pages to ${color}.`
-            : `Set the background of page ${idx + 1} to ${color}.`,
-        mutated: true,
+            ? `${outcome.mutated ? 'Set' : 'Kept'} the background of all ${slides.length} pages at ${normalizedColor}.`
+            : `${outcome.mutated ? 'Set' : 'Kept'} the background of page ${idx + 1} at ${normalizedColor}.`,
+        mutated: outcome.mutated,
+        ...(execution.authoritativeState === 'reload_required' ? { stopToolBatch: true } : {}),
         summary: idx === -1 ? t('aiSumBackgroundAll') : t('aiSumBackground', { n: idx + 1 }),
       }
     }

@@ -26,6 +26,7 @@ import {
   appendRawElements,
   createBlankPptx,
   fingerprintPresentation,
+  fingerprintSlide,
   fingerprintSlideElement,
   openPptx,
   savePptx,
@@ -55,6 +56,33 @@ async function fixture() {
 }
 
 describe('DesktopPresentationHost', () => {
+  it('sets a fingerprint-bound slide background and survives save/reopen', async () => {
+    const { session, slide } = await fixture()
+    const transaction: PresentationTransaction = {
+      transactionId: 'desktop-slide-background',
+      expectedDeckRevision: await fingerprintPresentation(session.opened),
+      mode: 'atomic',
+      operations: [
+        {
+          kind: 'set_slide_background',
+          clientId: 'background-1',
+          target: {
+            slideId: slide.durableId,
+            expectedFingerprint: await fingerprintSlide(session.opened, slide),
+          },
+          color: '#1A2B3C',
+        },
+      ],
+    }
+    const receipt = await new PresentationTransactionExecutor(
+      new DesktopPresentationHost(session),
+      { verifyDelayMs: 0 },
+    ).execute(transaction)
+    expect(receipt).toMatchObject({ status: 'applied', operationCount: 1 })
+    const reopened = await openPptx(await savePptx(session.opened))
+    expect(reopened.deck.slides[0]!.background).toEqual({ type: 'solid', color: '#1A2B3C' })
+  })
+
   it('patches direct group-child geometry through the group XML and survives save/reopen', async () => {
     const { session, slide, element } = await fixture()
     const childXml =

@@ -87,6 +87,11 @@ export type PresentationOperation =
       target: PresentationTarget
       notes: string
     })
+  | (OperationBase & {
+      kind: 'set_slide_background'
+      target: PresentationTarget
+      color: string
+    })
 
 export interface PresentationTransaction {
   transactionId: string

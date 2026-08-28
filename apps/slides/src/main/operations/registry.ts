@@ -8,6 +8,7 @@ export const PRESENTATION_OPERATION_KINDS = Object.freeze([
   'add_text_box',
   'delete_element',
   'set_speaker_notes',
+  'set_slide_background',
 ] as const satisfies readonly PresentationOperation['kind'][])
 
 const operationKinds = new Set<string>(PRESENTATION_OPERATION_KINDS)

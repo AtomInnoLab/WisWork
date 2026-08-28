@@ -19,6 +19,7 @@ import {
   resolvePresentationTarget,
   resizeTable,
   setSlideNotes,
+  setSlideBackground,
   updateConnectorsForMoved,
   type Fill,
   type GroupElement,
@@ -229,6 +230,12 @@ function applyOperation(
     if (!setSlideNotes(opened, index, operation.notes))
       throw new Error('Speaker notes write failed')
     return { changed: true, metaDirty: true }
+  }
+  if (operation.kind === 'set_slide_background') {
+    if (same(slide.background, { type: 'solid', color: operation.color }))
+      return { changed: false, metaDirty: false }
+    setSlideBackground(slide, operation.color)
+    return { changed: true, metaDirty: false }
   }
   if (isGeneratedTarget(operation.target))
     throw new Error('Generated target was not materialized during planning')
