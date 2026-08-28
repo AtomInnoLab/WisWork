@@ -1101,6 +1101,65 @@ describe('installLazyFindBridge', () => {
     bridge.dispose()
   })
 
+  it.each([
+    {
+      kind: 'ordinary',
+      raw: { v: 'prefix NEEDLE suffix' } as ICellData,
+      loaded: { ...match('s1', 110, 2), replaceable: true },
+      extra: { row: 700, column: 3, value: 'prefix NEEDLE suffix' },
+      overrides: {},
+      read: (cell: ICellData) => cell.v,
+    },
+    {
+      kind: 'formula',
+      raw: { f: '=NEEDLE+NEEDLE', v: 2 } as ICellData,
+      loaded: { ...match('s1', 110, 2), replaceable: true, isFormula: true },
+      extra: { row: 700, column: 3, value: 2, formula: '=NEEDLE+NEEDLE' },
+      overrides: { findBy: 'formula' },
+      read: (cell: ICellData) => cell.f,
+    },
+    {
+      kind: 'rich text',
+      raw: { p: { body: { dataStream: 'prefix NEEDLE suffix\r\n' } } } as ICellData,
+      loaded: { ...match('s1', 110, 2), replaceable: true },
+      extra: { row: 700, column: 3, value: 'prefix NEEDLE suffix' },
+      overrides: {},
+      read: (cell: ICellData) => cell.p?.body?.dataStream,
+    },
+  ])('uses the preprocessed padded query for loaded and extra $kind replacements', async (item) => {
+    const selectionRanges = [{ startRow: 100, endRow: 800, startColumn: 2, endColumn: 3 }]
+    const harness = facade(state({}), {
+      selectionRanges,
+      rawCells: new Map([['110:2', item.raw]]),
+    })
+    harness.providers.add({
+      find: vi.fn().mockResolvedValue([new FakeInnerModel([item.loaded])]),
+      terminate: vi.fn(),
+    })
+    const bridge = installLazyFindBridge(harness)
+    mockRead.mockResolvedValue(mapped([item.extra]))
+    const model = (
+      await harnessLookup(harness)(query({ findString: '  NeEdLe  ', ...item.overrides }))
+    )[0]!
+    await vi.waitFor(() => expect(model.getMatches()).toHaveLength(2))
+
+    expect(await model.replaceAll('found')).toEqual({ success: 2, failure: 0 })
+    const params = harness.executeCommand.mock.calls[0]![1] as unknown as {
+      replacements: { value: Record<number, Record<number, ICellData>> }[]
+    }
+    expect(item.read(params.replacements[0]!.value[110]![2]!)).toContain('found')
+    expect(harness.setValues).toHaveBeenCalledWith([
+      [
+        expect.objectContaining(
+          item.overrides.findBy === 'formula'
+            ? { f: expect.stringContaining('found') }
+            : { v: expect.stringContaining('found') },
+        ),
+      ],
+    ])
+    bridge.dispose()
+  })
+
   it('batches loaded ordinary cells once and writes each sidecar-only extra once', async () => {
     const selectionRanges = [{ startRow: 100, endRow: 900, startColumn: 2, endColumn: 3 }]
     const rawCells = new Map<string, ICellData>([['110:2', { v: 'needle loaded' }]])

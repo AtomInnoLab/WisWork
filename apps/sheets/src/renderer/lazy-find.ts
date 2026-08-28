@@ -669,11 +669,13 @@ export class LazyExtendedFindModel extends FindModel {
     replaceString: string,
   ): ICellData | null {
     if (!current) return null
+    const needle = preprocessNeedle(this.query)
+    if (!needle) return null
     const flags = this.query.caseSensitive ? 'g' : 'ig'
     if (match.isFormula) {
       if (this.query.findBy !== FindBy.FORMULA || !current.f) return null
       return {
-        f: current.f.replace(new RegExp(escapeRegExp(this.query.findString), flags), replaceString),
+        f: current.f.replace(new RegExp(escapeRegExp(needle), flags), replaceString),
         v: null,
       }
     }
@@ -681,19 +683,12 @@ export class LazyExtendedFindModel extends FindModel {
       const richText = Tools.deepClone(current.p)
       const body = richText.body
       if (!body) return null
-      replaceInDocumentBody(
-        body,
-        this.query.findString,
-        replaceString,
-        this.query.caseSensitive === true,
-      )
+      replaceInDocumentBody(body, needle, replaceString, this.query.caseSensitive === true)
       return { p: richText }
     }
     if (current.v === null || current.v === undefined) return null
     return {
-      v: current.v
-        .toString()
-        .replace(new RegExp(escapeRegExp(this.query.findString), flags), replaceString),
+      v: current.v.toString().replace(new RegExp(escapeRegExp(needle), flags), replaceString),
     }
   }
 
