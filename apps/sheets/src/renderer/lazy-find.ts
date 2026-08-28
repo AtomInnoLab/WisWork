@@ -12,7 +12,15 @@
  * activates its sheet, starts loading its range, scrolls to it, and selects
  * it, so the grid shows real data instead of an empty jump.
  */
-import type { IRange, Workbook } from '@univerjs/core'
+import type { ICellData, IRange, Workbook } from '@univerjs/core'
+import {
+  escapeRegExp,
+  ICommandService,
+  IUniverInstanceService,
+  ObjectMatrix,
+  replaceInDocumentBody,
+  Tools,
+} from '@univerjs/core'
 import {
   FindBy,
   FindModel,
@@ -23,7 +31,7 @@ import {
   type IFindReplaceProvider,
   type IReplaceAllResult,
 } from '@univerjs/find-replace'
-import { IUniverInstanceService } from '@univerjs/core'
+import { SheetReplaceCommand } from '@univerjs/sheets-find-replace'
 import { Subject, type Subscription } from 'rxjs'
 export const LAZY_FIND_BATCH_CELLS = 18_000
 export const LAZY_FIND_MAX_SCAN_CELLS = 400_000
@@ -535,18 +543,7 @@ export class LazyExtendedFindModel extends FindModel {
   async replaceAll(replaceString: string): Promise<IReplaceAllResult> {
     if (!this.stateIsCurrent()) return { success: 0, failure: 0 }
     if (this.selectionRanges) {
-      let success = 0
-      let failure = 0
-      for (const match of this.getMatches() as LazyCellMatch[]) {
-        if (match.replaceable === false) {
-          failure += 1
-        } else if (await this.writeExtraReplacement(match, replaceString)) {
-          success += 1
-        } else {
-          failure += 1
-        }
-      }
-      return { success, failure }
+      return this.replaceAllInFrozenSelection(replaceString)
     }
     let success = 0
     let failure = 0
@@ -566,6 +563,138 @@ export class LazyExtendedFindModel extends FindModel {
       else failure += 1
     }
     return { success, failure }
+  }
+
+  private async replaceAllInFrozenSelection(replaceString: string): Promise<IReplaceAllResult> {
+    const seen = new Set<string>()
+    const loaded = this.innerMatches().filter((match): match is LazyCellMatch => {
+      const key = matchKey(match as LazyCellMatch)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    const extras = this.currentExtras().filter((match) => {
+      const key = matchKey(match)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+
+    let success = 0
+    let failure = loaded.filter((match) => match.replaceable === false).length
+    const replaceableLoaded = loaded.filter((match) => match.replaceable !== false)
+    let native: IReplaceAllResult
+    try {
+      native = await this.replaceLoadedMatches(replaceableLoaded, replaceString)
+    } catch {
+      native = { success: 0, failure: replaceableLoaded.length }
+    }
+    success += native.success
+    failure += native.failure
+
+    for (const extra of extras) {
+      if (extra.replaceable !== true) {
+        failure += 1
+      } else if (await this.writeExtraReplacement(extra, replaceString)) {
+        success += 1
+      } else {
+        failure += 1
+      }
+    }
+    return { success, failure }
+  }
+
+  private async replaceLoadedMatches(
+    matches: LazyCellMatch[],
+    replaceString: string,
+  ): Promise<IReplaceAllResult> {
+    if (matches.length === 0) return { success: 0, failure: 0 }
+    const workbook = this.deps.runtime.univer
+      .__getInjector()
+      .get(IUniverInstanceService)
+      .getUnit<Workbook>(this.unitId)
+    if (!workbook) return { success: 0, failure: matches.length }
+
+    const bySheet = new Map<string, LazyCellMatch[]>()
+    for (const match of matches) {
+      const sheetMatches = bySheet.get(match.range.subUnitId) ?? []
+      sheetMatches.push(match)
+      bySheet.set(match.range.subUnitId, sheetMatches)
+    }
+    const replacements: Array<{
+      count: number
+      subUnitId: string
+      value: ReturnType<ObjectMatrix<ICellData>['getMatrix']>
+    }> = []
+    let failureCount = 0
+    for (const [subUnitId, sheetMatches] of bySheet) {
+      const worksheet = workbook.getSheetBySheetId(subUnitId)
+      if (!worksheet) {
+        failureCount += sheetMatches.length
+        continue
+      }
+      const matrix = new ObjectMatrix<ICellData>()
+      let count = 0
+      for (const match of sheetMatches) {
+        const { startRow, startColumn } = match.range.range
+        const current = worksheet.getCellRaw(startRow, startColumn)
+        const replacement = this.replacedCellData(match, current ?? null, replaceString)
+        if (!replacement) {
+          failureCount += 1
+          continue
+        }
+        matrix.setValue(startRow, startColumn, replacement)
+        count += 1
+      }
+      if (count > 0) replacements.push({ count, subUnitId, value: matrix.getMatrix() })
+    }
+    if (replacements.length === 0) return { success: 0, failure: failureCount }
+    try {
+      const result = (await this.deps.runtime.univer
+        .__getInjector()
+        .get(ICommandService)
+        .executeCommand(SheetReplaceCommand.id, {
+          unitId: this.unitId,
+          replacements,
+        })) as unknown as IReplaceAllResult
+      return { success: result.success, failure: result.failure + failureCount }
+    } catch {
+      return { success: 0, failure: matches.length }
+    }
+  }
+
+  private replacedCellData(
+    match: LazyCellMatch,
+    current: ICellData | null | undefined,
+    replaceString: string,
+  ): ICellData | null {
+    if (!current) return null
+    const flags = this.query.caseSensitive ? 'g' : 'ig'
+    if (match.isFormula) {
+      if (this.query.findBy !== FindBy.FORMULA || !current.f) return null
+      return {
+        f: current.f.replace(new RegExp(escapeRegExp(this.query.findString), flags), replaceString),
+        v: null,
+      }
+    }
+    if (current.p?.body) {
+      const richText = Tools.deepClone(current.p)
+      const body = richText.body
+      if (!body) return null
+      replaceInDocumentBody(
+        body,
+        this.query.findString,
+        replaceString,
+        this.query.caseSensitive === true,
+      )
+      return { p: richText }
+    }
+    if (current.v === null || current.v === undefined) return null
+    return {
+      v: current.v
+        .toString()
+        .replace(new RegExp(escapeRegExp(this.query.findString), flags), replaceString),
+    }
   }
 
   focusSelection(): void {
