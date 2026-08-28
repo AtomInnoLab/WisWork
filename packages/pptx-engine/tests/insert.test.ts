@@ -206,4 +206,22 @@ describe('add/delete element', () => {
     expect(slide.elements).toEqual(beforeElements)
     expect(opened.archive.entries).toEqual(beforeEntries)
   })
+
+  it('maps many XML tokens to many slide segments with linear work', async () => {
+    const opened = await openPptx(fx('01_standard_business.pptx'))
+    const slide = opened.deck.slides[0]!
+    const victim = addElement(slide, { kind: 'rect', offset: { ...OFF } })
+    for (let index = 0; index < 2_000; index++) {
+      const element = addElement(slide, { kind: 'rect', offset: { ...OFF } })
+      element.anchor.gapAfter = `<x:marker xmlns:x="urn:test" value="${index}"/>`
+    }
+    const metrics = { segmentComparisons: 0, segmentCount: 0, tokenCount: 0 }
+
+    expect(deleteElementWithCleanup(opened, slide, victim.id, metrics)).toBe(true)
+    expect(metrics.segmentCount).toBeGreaterThan(4_000)
+    expect(metrics.tokenCount).toBeGreaterThan(10_000)
+    expect(metrics.segmentComparisons).toBeLessThanOrEqual(
+      metrics.segmentCount + metrics.tokenCount,
+    )
+  })
 })

@@ -505,16 +505,30 @@ interface SlideXmlSegment {
   element?: SlideElement
 }
 
+export interface DeleteElementCleanupMetrics {
+  segmentComparisons: number
+  segmentCount: number
+  tokenCount: number
+}
+
 const reconstructSlideSegments = (
   slide: Slide,
   excluded?: SlideElement,
-): { xml: string; segments: SlideXmlSegment[] } => {
+): {
+  xml: string
+  segments: SlideXmlSegment[]
+  elementSegments: Map<SlideElement, SlideXmlSegment>
+} => {
   const segments: SlideXmlSegment[] = []
+  const elementSegments = new Map<SlideElement, SlideXmlSegment>()
   let xml = ''
   const append = (value: string, element?: SlideElement) => {
+    if (!value) return
     const start = xml.length
     xml += value
-    segments.push({ start, end: xml.length, xml: value, ...(element ? { element } : {}) })
+    const segment = { start, end: xml.length, xml: value, ...(element ? { element } : {}) }
+    segments.push(segment)
+    if (element) elementSegments.set(element, segment)
   }
   append(slide.bodyPrefix)
   for (const element of slide.elements) {
@@ -523,15 +537,40 @@ const reconstructSlideSegments = (
     if (element.anchor.gapAfter) append(element.anchor.gapAfter)
   }
   append(slide.bodySuffix)
-  return { xml, segments }
+  return { xml, segments, elementSegments }
 }
 
-const segmentContaining = (
+const validateSlideSegments = (segments: readonly SlideXmlSegment[], xmlLength: number): void => {
+  let previousEnd = 0
+  for (const segment of segments) {
+    if (segment.start !== previousEnd || segment.end <= segment.start)
+      throw new Error('Invalid slide XML segment ranges')
+    previousEnd = segment.end
+  }
+  if (previousEnd !== xmlLength) throw new Error('Incomplete slide XML segment coverage')
+}
+
+const createMonotonicSegmentLocator = (
   segments: readonly SlideXmlSegment[],
-  start: number,
-  end: number,
-): SlideXmlSegment | undefined =>
-  segments.find((segment) => start >= segment.start && end <= segment.end)
+  xmlLength: number,
+  metrics?: DeleteElementCleanupMetrics,
+): ((start: number, end: number) => SlideXmlSegment | undefined) => {
+  validateSlideSegments(segments, xmlLength)
+  let index = 0
+  let previousStart = -1
+  return (start, end) => {
+    if (start < previousStart || end < start) throw new Error('Non-monotonic XML token range')
+    previousStart = start
+    while (index < segments.length && start >= segments[index]!.end) {
+      if (metrics) metrics.segmentComparisons++
+      index++
+    }
+    if (index >= segments.length) return undefined
+    if (metrics) metrics.segmentComparisons++
+    const segment = segments[index]!
+    return start >= segment.start && end <= segment.end ? segment : undefined
+  }
+}
 
 /**
  * Authoritative package-aware deletion. It removes relationship records referenced only by the
@@ -543,6 +582,7 @@ export function deleteElementWithCleanup(
   opened: OpenedPptx,
   slide: Slide,
   elementId: string,
+  metrics?: DeleteElementCleanupMetrics,
 ): boolean {
   const index = slide.elements.findIndex((element) => element.id === elementId)
   if (index < 0) return false
@@ -551,9 +591,13 @@ export function deleteElementWithCleanup(
     let nvId: string | undefined
     const candidateRIds = new Set<string>()
     const current = reconstructSlideSegments(slide)
+    validateSlideSegments(current.segments, current.xml.length)
+    const victimSegment = current.elementSegments.get(victim)
+    if (!victimSegment) return false
+    if (metrics) metrics.segmentCount += current.segments.length
     inspectXml(current.xml, new Map(), (element) => {
-      const segment = segmentContaining(current.segments, element.start, element.end)
-      if (segment?.element !== victim) return
+      if (metrics) metrics.tokenCount++
+      if (element.start < victimSegment.start || element.end > victimSegment.end) return
       if (element.localName === 'cNvPr') {
         const id = element.attributes.find(
           (attribute) => !attribute.prefix && attribute.localName === 'id',
@@ -574,7 +618,16 @@ export function deleteElementWithCleanup(
     const elementRemovals = new Map<SlideElement, [number, number][]>()
     const survivingRIds = new Set<string>()
     const surviving = reconstructSlideSegments(slide, victim)
+    if (metrics) metrics.segmentCount += surviving.segments.length
+    const locateSurvivingSegment = createMonotonicSegmentLocator(
+      surviving.segments,
+      surviving.xml.length,
+      metrics,
+    )
     inspectXml(surviving.xml, new Map(), (element) => {
+      if (metrics) metrics.tokenCount++
+      const segment = locateSurvivingSegment(element.start, element.end)
+      if (!segment) throw new Error('XML token crosses slide segment boundary')
       for (const attribute of element.attributes) {
         if (
           attribute.namespaceUri === OFFICE_REL_NS &&
@@ -594,7 +647,6 @@ export function deleteElementWithCleanup(
             !attribute.prefix && attribute.localName === 'id' && attribute.value === nvId,
         )
       ) {
-        const segment = segmentContaining(surviving.segments, element.start, element.end)
         if (!segment?.element) throw new Error('Connector reference is outside an element')
         const removals = elementRemovals.get(segment.element) ?? []
         removals.push([element.start - segment.start, element.end - segment.start])
