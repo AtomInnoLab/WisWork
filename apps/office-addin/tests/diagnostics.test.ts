@@ -305,9 +305,12 @@ describe('Office safe diagnostics', () => {
       code: 'InvalidArgument',
       debugInfo: { errorLocation: 'Body.insertOoxml' },
     })
-    const staged = Object.assign(new Error('word_write_verification_failed', { cause: officeError }), {
-      verificationStage: 'content',
-    })
+    const staged = Object.assign(
+      new Error('word_write_verification_failed', { cause: officeError }),
+      {
+        verificationStage: 'content',
+      },
+    )
     const wrapped = new Error('office_verify_failed', { cause: staged })
 
     diagnostics.record({ phase: 'verify', errorCode: 'office_verify_failed', error: wrapped })
@@ -323,9 +326,12 @@ describe('Office safe diagnostics', () => {
 
   it('does not replace an outer specialized Office name with a deeper generic name', () => {
     const diagnostics = createOfficeDiagnostics({ host: 'word', build: 'dev' })
-    const specialized = Object.assign(new Error('office failure', { cause: new Error('wrapped') }), {
-      name: 'RichApi.Error',
-    })
+    const specialized = Object.assign(
+      new Error('office failure', { cause: new Error('wrapped') }),
+      {
+        name: 'RichApi.Error',
+      },
+    )
 
     diagnostics.record({ phase: 'write', errorCode: 'office_write_failed', error: specialized })
 

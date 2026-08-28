@@ -143,10 +143,7 @@ const outcome = (code: string): DiagnosticOutcome =>
 
 type OfficeDiagnosticMetadata = Pick<
   OfficeDiagnosticEvent,
-  | 'office_error_code'
-  | 'office_error_name'
-  | 'office_error_location'
-  | 'verification_stage'
+  'office_error_code' | 'office_error_name' | 'office_error_location' | 'verification_stage'
 >
 
 function safeProperty(value: Record<string, unknown>, property: string): unknown {
@@ -173,7 +170,10 @@ function officeIdentifiers(error: unknown): OfficeDiagnosticMetadata {
         : undefined
     const code = identifier(safeProperty(value, 'code'), '')
     const name = identifier(safeProperty(value, 'name'), '')
-    const location = identifier(debugInfo ? safeProperty(debugInfo, 'errorLocation') : undefined, '')
+    const location = identifier(
+      debugInfo ? safeProperty(debugInfo, 'errorLocation') : undefined,
+      '',
+    )
     if (code && !result.office_error_code) result.office_error_code = code
     if (
       name &&

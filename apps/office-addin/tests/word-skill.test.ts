@@ -1175,9 +1175,7 @@ describe('browser Word adapter', () => {
   })
 
   it('reports append-boundary verification failures with a bounded stage', async () => {
-    installNativeWriteRuntime((target) =>
-      target.replace('<w:r>', '<w:r><w:rPr><w:b/></w:rPr>'),
-    )
+    installNativeWriteRuntime((target) => target.replace('<w:r>', '<w:r><w:rPr><w:b/></w:rPr>'))
     const write = {
       mode: 'append' as const,
       blocks: [{ type: 'paragraph' as const, spans: [{ text: 'New' }] }],
@@ -1226,10 +1224,7 @@ describe('browser Word adapter', () => {
     let committed = SIMPLE_WORD_DOCUMENT
     const body = {
       insertOoxml: vi.fn((xml: string) => {
-        committed = xml.replace(
-          '<w:p>',
-          '<w:p><w:pPr><w:spacing w:after="0"/></w:pPr>',
-        )
+        committed = xml.replace('<w:p>', '<w:p><w:pPr><w:spacing w:after="0"/></w:pPr>')
       }),
       getOoxml: vi.fn(() => ({ value: reads++ < 2 ? SIMPLE_WORD_DOCUMENT : committed })),
     }

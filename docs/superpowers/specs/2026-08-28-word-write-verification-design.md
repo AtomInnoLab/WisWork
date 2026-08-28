@@ -44,13 +44,13 @@ and include it in local snapshots/exports while the relay serializer omits it.
 
 ## Classification Rules
 
-| Observation | Error | Rationale |
-| --- | --- | --- |
-| Commit readback equals the original fingerprint | `office_write_failed` | The requested mutation did not commit. |
-| Commit readback passes semantic verification | success | Word may normalize irrelevant OOXML, but requested content and structure are present. |
-| Commit readback changed but fails semantic verification | `office_verify_failed` | The result is not acceptable, but the actor that produced the third state is not provable. |
-| Readback itself fails after a possibly applied commit | `office_state_uncertain` | The document may be partially changed and cannot be inspected safely. |
-| A fingerprinted, successfully verified post-write state changes before the separate verification pass | `office_concurrent_change` | A known committed state existed and was subsequently replaced or edited. |
+| Observation                                                                                           | Error                      | Rationale                                                                                  |
+| ----------------------------------------------------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------ |
+| Commit readback equals the original fingerprint                                                       | `office_write_failed`      | The requested mutation did not commit.                                                     |
+| Commit readback passes semantic verification                                                          | success                    | Word may normalize irrelevant OOXML, but requested content and structure are present.      |
+| Commit readback changed but fails semantic verification                                               | `office_verify_failed`     | The result is not acceptable, but the actor that produced the third state is not provable. |
+| Readback itself fails after a possibly applied commit                                                 | `office_state_uncertain`   | The document may be partially changed and cannot be inspected safely.                      |
+| A fingerprinted, successfully verified post-write state changes before the separate verification pass | `office_concurrent_change` | A known committed state existed and was subsequently replaced or edited.                   |
 
 `executeOperations` remains unchanged because its exact text operation model and
 existing tests intentionally classify a third full-text state as concurrent.
