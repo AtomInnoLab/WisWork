@@ -19,6 +19,7 @@ import type {
   Transform,
 } from './types'
 import { patchSlideBackgroundXml } from './generate'
+import { locatePresentationBackground } from './presentation-xml'
 import { elementSpid } from './animation'
 
 const EMU_PER_PX = 9525
@@ -54,7 +55,7 @@ function hasVisibleText(el: TextElement): boolean {
 
 /** Whether the slide part itself contains a local background override (not layout/master inheritance). */
 export function hasExplicitSlideBackground(slide: Slide): boolean {
-  return /<p:bg(?:\s[^>]*)?(?:\/>|>[\s\S]*?<\/p:bg>)/.test(slide.bodyPrefix)
+  return locatePresentationBackground(slide.bodyPrefix).backgroundRange !== undefined
 }
 
 /**
