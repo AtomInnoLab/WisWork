@@ -25,7 +25,11 @@ import type {
   ProposalPresentationEvent,
 } from './agent/presentation-state.js'
 import { createPcBridgeSession } from './pc-bridge/session.js'
-import { createOfficeRelaySession, officeTransportMode } from './relay/session.js'
+import {
+  createOfficeRelaySession,
+  officeTransportMode,
+  type OfficeRelayStatus,
+} from './relay/session.js'
 import {
   createBrowserOfficeRuntime,
   createOfficeDocumentClient,
@@ -44,6 +48,39 @@ const agentProductLabels: Record<OfficeHost, string> = {
   excel: 'AI Sheets',
   powerpoint: 'AI Slides',
   unknown: 'WisWork AI',
+}
+
+export function relayConnectionPresentation(
+  status: OfficeRelayStatus | 'signed_out',
+  verificationCode?: string,
+) {
+  const detail = {
+    offline: 'Connect again to create a new secure pairing with WisWork PC.',
+    connecting: 'Connecting securely to the WisWork Office Relay…',
+    reconnecting: 'Reconnecting to WisWork PC…',
+    signed_out: 'Sign in to WisWork PC first.',
+    pending: verificationCode
+      ? `Enter code ${verificationCode} in WisWork PC, then approve the matching request.`
+      : 'Enter the pairing code in WisWork PC.',
+    waiting_for_pc: verificationCode
+      ? `Enter code ${verificationCode} in WisWork PC to continue.`
+      : 'Waiting for a signed-in WisWork PC.',
+    rejected: 'The connection was rejected in WisWork PC.',
+    expired: 'The connection request expired. Try again.',
+    connected: '',
+  }[status]
+  const busy = status === 'connecting' || status === 'reconnecting' || status === 'pending'
+  return Object.freeze({
+    title:
+      status === 'reconnecting'
+        ? 'Reconnecting to WisWork PC…'
+        : status === 'waiting_for_pc' && !verificationCode
+          ? 'Waiting for WisWork PC'
+          : 'Connect to WisWork PC',
+    detail,
+    busy,
+    actionDisabled: busy,
+  })
 }
 
 type DisplayProposal = OfficeProposal | StructuredProposal
@@ -838,9 +875,9 @@ function ConfiguredApp() {
       transportMode === 'loopback'
         ? createPcBridgeSession()
         : createOfficeRelaySession({
-            ...(remoteDiagnosticsEnabled ? { capabilities: ['agent.v1'] } : {}),
+            capabilities: ['agent.v1'],
           }),
-    [remoteDiagnosticsEnabled, transportMode],
+    [transportMode],
   )
   const bridgeState = useSyncExternalStore(
     (listener) => bridge.subscribe(listener),
@@ -931,28 +968,19 @@ function ConfiguredApp() {
     )
   }
   if (bridgeState.status !== 'connected') {
-    const detail = {
-      offline: 'Connect again to create a new secure pairing with WisWork PC.',
-      connecting: 'Connecting securely to the WisWork Office Relay…',
-      signed_out: 'Sign in to WisWork PC first.',
-      pending: bridgeState.verificationCode
-        ? `Enter code ${bridgeState.verificationCode} in WisWork PC, then approve the matching request.`
-        : 'Enter the pairing code in WisWork PC.',
-      waiting_for_pc: bridgeState.verificationCode
-        ? `Enter code ${bridgeState.verificationCode} in WisWork PC to continue.`
-        : 'Waiting for a signed-in WisWork PC.',
-      rejected: 'The connection was rejected in WisWork PC.',
-      expired: 'The connection request expired. Try again.',
-    }[bridgeState.status]
+    const presentation = relayConnectionPresentation(
+      bridgeState.status,
+      bridgeState.verificationCode,
+    )
     return (
       <StatusScreen
-        title="Connect to WisWork PC"
-        detail={detail}
-        busy={bridgeState.status === 'connecting' || bridgeState.status === 'pending'}
+        title={presentation.title}
+        detail={presentation.detail}
+        busy={presentation.busy}
       >
         <button
           type="button"
-          disabled={bridgeState.status === 'connecting' || bridgeState.status === 'pending'}
+          disabled={presentation.actionDisabled}
           onClick={() => {
             void bridge.connect(host)
           }}
@@ -974,7 +1002,8 @@ function ConfiguredApp() {
   const disconnect = () => {
     workspace.session.logout()
     workspace.runtime.dispose()
-    bridge.disconnect()
+    if ('forget' in bridge) void bridge.forget().catch(() => undefined)
+    else bridge.disconnect()
   }
   const WorkspaceComponent = workspaceComponentForMode(workspaceMode)
   return (

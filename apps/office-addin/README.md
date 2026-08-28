@@ -2,7 +2,9 @@
 
 An Office.js task pane for Word, Excel, and PowerPoint. It reuses the signed-in WisWork PC account
 through a consented cloud Relay. Wispaper credentials remain in the PC process; the task pane keeps
-only a short-lived socket-bound capability in memory. Document writes still require confirmation.
+only a short-lived socket-bound capability in memory. On supported hosts it also keeps a
+non-exportable P-256 private key in IndexedDB so an explicitly approved PC can restore a fresh
+session after ordinary disconnects. Document writes still require confirmation.
 
 ## Shipped tool surface
 
@@ -91,6 +93,14 @@ The task pane connects by default to the fixed secure Relay at
 connections; no inbound port is opened on the user's computer. Enter the six-digit Office code in
 the signed-in PC app and approve the matching host/code. Credentials remain in WisWork PC.
 
+When Office, WisWork PC, and Relay all negotiate the control feature `pairing-resume.v1`, that first
+approval remembers the Office installation. Reloads, restarts, network loss, and session rollover
+then prove possession of the IndexedDB key and wait for the matching signed-in PC before receiving
+new socket-bound capabilities. The control feature is never a callable Agent capability. A host
+without persistent WebCrypto/IndexedDB support, or a new client connected to an old Relay, uses the
+ordinary one-time pairing flow. The task pane never stores a Wispaper token, session capability,
+exportable private key, or credential in `localStorage` or Office document settings.
+
 ## Develop and sideload
 
 From the repository root:
@@ -171,11 +181,15 @@ are cleared with the conversation by **New task**, logout, Relay loss, or dispos
 is designed for 280–500 px task panes and follows the shared light/dark tokens, forced-colors, and
 reduced-motion preferences. Every document mutation still requires an explicit inline confirmation.
 
-- **PC offline:** Office keeps the short-lived code visible so it can be entered after PC starts.
+- **PC offline:** a remembered Office installation keeps its binding and waits for the matching PC;
+  an ordinary one-time pairing keeps its short-lived code visible.
 - **PC signed out:** approval is refused; sign in through the existing WisWork PC flow first.
-- **Approval:** every new task-pane session requires visible approval in WisWork PC. Approve only when the same six-digit verification code is visible in both Office and the PC confirmation dialog.
-- **Revocation:** Office logout/disconnect drops the in-memory capability. PC logout, bridge shutdown, or PC restart revokes every pairing and active stream.
-- **Relay restart/network loss:** the in-memory session is revoked; reconnect creates a new pairing.
+- **Approval:** the first enhanced pairing requires visible approval in WisWork PC. Approve only
+  when the same six-digit verification code is visible in both Office and the PC confirmation dialog.
+- **Revocation:** task-pane disposal and network loss cancel work and retry while preserving a valid
+  binding. Explicit Office logout forgets the local key; PC logout/account change revokes the binding.
+- **Relay restart/network loss:** the in-memory capability and active request are discarded; a valid
+  binding creates a fresh session without replaying interrupted work.
 - **Rollback:** deploy Office and PC rollback settings together. There is no silent HTTP downgrade.
 
 ## Manual Office acceptance
@@ -187,10 +201,16 @@ Relay behavior must be checked on Windows and macOS desktop Office and Word Web 
 3. Connect, approve in PC, and verify the Agent conversation appears and streams using the same Wispaper account and credits as PC.
 4. Verify Reject never changes the document, stale proposals fail, and Confirm applies exactly one replacement or append.
 5. Log out of WisWork PC during an active stream. Verify the stream stops, Office clears conversation/proposals, and reconnect requires a new approval.
-6. Stop WisWork PC and verify Office returns to its offline state without retaining a capability. Restart and pair again.
-7. Restart the Relay and verify both clients revoke in-memory state and require a new pairing.
-8. Repeat pairing and one streamed request in Word Web.
-9. Inspect Office storage, logs, and network frames: no Wispaper credential may appear.
+6. Stop WisWork PC and verify Office shows **Waiting for WisWork PC**, retains no session capability,
+   and silently reconnects with fresh capabilities after the same account returns.
+7. Restart the Relay and verify Office reconnects through challenge/proof without replaying an
+   interrupted request or showing a new code.
+8. Explicitly log out in Office and verify the binding is forgotten and the next connection shows a
+   new code. Repeat pairing and one streamed request in Word Web.
+9. Repeat with IndexedDB/WebCrypto unavailable and against a legacy Relay; verify ordinary v2 pairing.
+10. Inspect IndexedDB, Office document settings, localStorage, logs, and network frames: only the
+    schema-versioned non-exportable binding key/metadata may persist; no Wispaper credential or
+    session capability may appear.
 
 For the host-tool release candidate, also complete these checks on both Windows and macOS desktop
 Office (with host-specific API-set acceptance still required):
