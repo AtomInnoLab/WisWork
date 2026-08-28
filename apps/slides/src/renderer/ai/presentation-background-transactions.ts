@@ -46,6 +46,7 @@ export async function executePreparedBackgroundFamilyTransaction(
   signal?: AbortSignal,
   refresh?: () => Promise<boolean>,
   scope?: SelectionScope,
+  onDispatch?: () => void,
 ): Promise<TextFamilyExecutionResult> {
   signal?.throwIfAborted()
   if (
@@ -148,7 +149,10 @@ export async function executePreparedBackgroundFamilyTransaction(
     }
     let receipt: PresentationReceipt
     try {
-      receipt = await api.executePresentationTransaction(transaction)
+      onDispatch?.()
+      receipt = scope
+        ? await api.executePresentationTransaction(transaction, scope)
+        : await api.executePresentationTransaction(transaction)
     } catch {
       signal?.throwIfAborted()
       receipt = {

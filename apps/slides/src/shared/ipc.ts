@@ -1025,6 +1025,7 @@ export interface SlidesApi {
   /** Execute one strictly bounded, atomic desktop presentation transaction. */
   executePresentationTransaction: (
     transaction: PresentationTransaction,
+    scopeGuard?: { documentId: string; sessionId: string; generation: number },
   ) => Promise<PresentationReceipt>
   cancelPresentationTransaction: (transactionId: string) => Promise<boolean>
   /** current UI language (persisted by the shell in app-settings.json) */

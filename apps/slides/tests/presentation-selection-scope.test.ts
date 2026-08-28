@@ -38,6 +38,7 @@ describe('canonical transaction selection scope', () => {
   it('rejects an out-of-scope prepared target before transaction dispatch', async () => {
     const executePresentationTransaction = vi.fn()
     const cancelPresentationTransaction = vi.fn(async () => true)
+    const onDispatch = vi.fn()
     const result = await executePreparedGeometryFamilyTransaction(
       {
         preparePresentationTarget: vi.fn(async () => ({
@@ -61,10 +62,12 @@ describe('canonical transaction selection scope', () => {
       undefined,
       undefined,
       scope,
+      onDispatch,
     )
 
     expect(result.receipt).toMatchObject({ status: 'conflict', code: 'target_stale' })
     expect(executePresentationTransaction).not.toHaveBeenCalled()
+    expect(onDispatch).not.toHaveBeenCalled()
     expect(cancelPresentationTransaction).toHaveBeenCalledWith('tx-scope')
   })
 })

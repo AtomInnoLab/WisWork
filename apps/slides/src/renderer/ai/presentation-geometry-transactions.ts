@@ -73,6 +73,7 @@ export async function executePreparedGeometryFamilyTransaction(
   signal?: AbortSignal,
   refresh?: () => Promise<boolean>,
   scope?: SelectionScope,
+  onDispatch?: () => void,
 ): Promise<TextFamilyExecutionResult> {
   signal?.throwIfAborted()
   const compileOperation = (
@@ -299,12 +300,16 @@ export async function executePreparedGeometryFamilyTransaction(
     }
     let receipt: PresentationReceipt
     try {
-      receipt = await api.executePresentationTransaction({
+      onDispatch?.()
+      const transaction = {
         transactionId: request.transactionId,
         expectedDeckRevision: expectedDeckRevision!,
         operations,
-        mode: 'atomic',
-      })
+        mode: 'atomic' as const,
+      }
+      receipt = scope
+        ? await api.executePresentationTransaction(transaction, scope)
+        : await api.executePresentationTransaction(transaction)
     } catch {
       signal?.throwIfAborted()
       receipt = {

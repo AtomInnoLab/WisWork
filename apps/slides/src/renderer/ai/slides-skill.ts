@@ -1317,7 +1317,7 @@ async function executeTool(
     if (!allowed.has(call.name))
       return fail(call.name, 'selection_scope_conflict: tool is unavailable for a scoped edit')
   }
-  if (!call.invocationId) {
+  if (!('invocationId' in call) || !call.invocationId) {
     state ??= {}
     state.fallbackInvocationIds ??= new WeakMap()
     let invocationId = state.fallbackInvocationIds.get(call)

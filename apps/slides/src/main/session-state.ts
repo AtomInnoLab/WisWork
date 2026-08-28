@@ -7,6 +7,7 @@
 import { BrowserWindow, webContents } from 'electron'
 import type { WebContents } from 'electron'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { materializeSlide, type OpenedPptx, type Slide } from '@wiswork/pptx-engine'
 import { buildRenderSlide, type FontMetricsProvider, type RenderSlide } from '@wiswork/pptx-render'
 import { createSystemFontMetrics } from './fonts'
@@ -32,6 +33,9 @@ export function configureSlidesRuntime(paths: RuntimePaths): void {
 
 // One session per renderer process (standalone window or shell tab), keyed by webContents.id
 export interface Session {
+  /** Opaque identities regenerated when a renderer session/document is replaced. */
+  sessionInstanceId?: string
+  documentInstanceId?: string
   path: string
   opened: OpenedPptx
   fitWidthPx: number
@@ -63,6 +67,18 @@ export interface Session {
   historyNotifyScheduled?: boolean
 }
 export const sessions = new Map<number, Session>()
+
+export function ensureSessionInstanceIds(session: Session): {
+  sessionInstanceId: string
+  documentInstanceId: string
+} {
+  session.sessionInstanceId ??= randomUUID()
+  session.documentInstanceId ??= randomUUID()
+  return {
+    sessionInstanceId: session.sessionInstanceId,
+    documentInstanceId: session.documentInstanceId,
+  }
+}
 
 export function sessionHasActivePresentationTransaction(session: Session | undefined): boolean {
   return (session?.presentationTransactionDepth ?? 0) > 0

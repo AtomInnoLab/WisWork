@@ -84,8 +84,11 @@ const api: SlidesApi = {
   captureAgentSelection: (request) => ipcRenderer.invoke('slides:agent-selection-capture', request),
   preparePresentationTarget: (request) =>
     ipcRenderer.invoke('slides:presentation-target-prepare', request),
-  executePresentationTransaction: (transaction: PresentationTransaction) =>
-    ipcRenderer.invoke('slides:presentation-transaction', transaction),
+  executePresentationTransaction: (transaction: PresentationTransaction, scopeGuard) =>
+    ipcRenderer.invoke(
+      'slides:presentation-transaction',
+      scopeGuard ? { transaction, scopeGuard } : transaction,
+    ),
   cancelPresentationTransaction: (transactionId: string) =>
     ipcRenderer.invoke('slides:presentation-transaction-cancel', transactionId),
   getLanguage: () => ipcRenderer.invoke('app:get-language'),

@@ -235,6 +235,8 @@ interface ChatEntry {
   /** attachments consumed from the composer by this user message (read-only echo chips) */
   attachments?: AttachmentMeta[]
   qualityReceipts?: readonly PresentationQualityReceipt[]
+  /** In-memory correlation only; never contains durable scope ids/content. */
+  queueTaskId?: string
 }
 
 /** Empty deck → generation starters; deck with content → polish starters */
@@ -375,6 +377,8 @@ export function AiPanel({
     editQueueRef.current!.snapshot(),
   )
   const [queuedScope, setQueuedScope] = useState<SelectionScope | null>(null)
+  const captureGenerationRef = useRef(0)
+  const mountedRef = useRef(true)
   const [chat, setChat] = useState<ChatEntry[]>([])
   const [qualityTimeline, setQualityTimeline] = useState<PresentationQualityReceipt[]>([])
   /** Past conversation restored from JSONL (read-only transcript, not fed to the model) */
@@ -487,6 +491,7 @@ export function AiPanel({
       }
     | undefined
   >(undefined)
+  const activeQueueTaskIdRef = useRef<string | undefined>(undefined)
   useEffect(
     () => editQueueRef.current!.subscribe(() => setQueueSnapshot(editQueueRef.current!.snapshot())),
     [],
@@ -495,11 +500,13 @@ export function AiPanel({
   useEffect(() => {
     const identity = `${current}:${selectedIds.join('\u0000')}`
     if (selectionIdentityRef.current !== identity) {
+      captureGenerationRef.current++
       editQueueRef.current?.cancelAll('selection changed')
     }
     selectionIdentityRef.current = identity
   }, [current, selectedIds])
   useEffect(() => {
+    captureGenerationRef.current++
     editQueueRef.current?.cancelAll('document changed')
   }, [currentFilePath])
   const applySlideRef = useRef(applySlide)
@@ -676,11 +683,23 @@ export function AiPanel({
   ) => {
     setChat((prev) => {
       const next = [...prev]
-      const last = next[next.length - 1]
+      const activeId = activeQueueTaskIdRef.current
+      const index = activeId
+        ? next.findIndex((entry) => entry.role === 'assistant' && entry.queueTaskId === activeId)
+        : next.length - 1
+      const last = next[index]
       if (!last || last.role !== 'assistant') return prev
-      next[next.length - 1] = { ...last, ...(typeof patch === 'function' ? patch(last) : patch) }
+      next[index] = { ...last, ...(typeof patch === 'function' ? patch(last) : patch) }
       return next
     })
+  }
+
+  const queuedAssistantIndex = (entries: readonly ChatEntry[], taskId: string): number => {
+    for (let index = entries.length - 1; index >= 0; index--) {
+      const entry = entries[index]
+      if (entry?.role === 'assistant' && entry.queueTaskId === taskId) return index
+    }
+    return -1
   }
 
   const finishHistoryBatch = async (publishSnapshot = true) => {
@@ -831,7 +850,6 @@ export function AiPanel({
       applySlide: (i, updated) => applySlideRef.current(i, updated),
       applyDeck: (all, goTo) => applyDeckRef.current(all, goTo),
       executePresentationOperation: async (request, signal) => {
-        if (activeSelectionScopeRef.current) activeQueueRunRef.current?.markWriteStarted()
         const refresh = async () => {
           const refreshed = await window.slidesApi.getRenderSlides()
           if (!refreshed) return false
@@ -845,6 +863,7 @@ export function AiPanel({
               signal,
               refresh,
               activeSelectionScopeRef.current,
+              () => activeQueueRunRef.current?.markWriteStarted(),
             )
           : 'operations' in request
             ? executePreparedGeometryFamilyTransaction(
@@ -853,6 +872,7 @@ export function AiPanel({
                 signal,
                 refresh,
                 activeSelectionScopeRef.current,
+                () => activeQueueRunRef.current?.markWriteStarted(),
               )
             : executePreparedTextFamilyTransaction(
                 window.slidesApi,
@@ -860,6 +880,7 @@ export function AiPanel({
                 signal,
                 refresh,
                 activeSelectionScopeRef.current,
+                () => activeQueueRunRef.current?.markWriteStarted(),
               ))
         if (execution.authoritativeState === 'reload_required')
           onAuthoritativeReloadRequiredRef.current?.()
@@ -1106,7 +1127,17 @@ export function AiPanel({
         onTurnEnd: () => {
           lastTurnToolsRef.current = []
           patchLastAssistant({ streaming: false })
-          setChat((prev) => [...prev, { role: 'assistant', text: '', streaming: true }])
+          setChat((prev) => [
+            ...prev,
+            {
+              role: 'assistant',
+              text: '',
+              streaming: true,
+              ...(activeQueueTaskIdRef.current
+                ? { queueTaskId: activeQueueTaskIdRef.current }
+                : {}),
+            },
+          ])
         },
         onDone: ({ text, cancelled, turnLimit }) => {
           if (activeQueueRunRef.current) qcPagesRef.current = []
@@ -1116,16 +1147,18 @@ export function AiPanel({
           const ranTools = runToolsRef.current.length > 0
           setChat((prev) => {
             const next = [...prev]
-            const last = next.at(-1)
+            const activeId = activeQueueTaskIdRef.current
+            const index = activeId ? queuedAssistantIndex(next, activeId) : next.length - 1
+            const last = next[index]
             if (!last || last.role !== 'assistant') return prev
             // Tool-heavy runs often end with an empty closing turn. Earlier
             // bubbles already show the executed work — drop the empty trailing
             // bubble instead of mislabeling the whole run as "no content".
             if (!finalText && !last.text && !last.tools?.length && ranTools) {
-              next.pop()
+              next.splice(index, 1)
               return next
             }
-            next[next.length - 1] = {
+            next[index] = {
               ...last,
               streaming: false,
               text: finalText || (last.tools?.length ? last.text : tGlobal('aiNoResponse')),
@@ -1152,6 +1185,7 @@ export function AiPanel({
           }).finally(() => {
             const queued = activeQueueRunRef.current
             activeQueueRunRef.current = undefined
+            activeQueueTaskIdRef.current = undefined
             activeSelectionScopeRef.current = undefined
             if (queued) {
               queued.resolve({
@@ -1172,17 +1206,19 @@ export function AiPanel({
           qcPagesRef.current = []
           setChat((prev) => {
             const next = [...prev]
+            const activeId = activeQueueTaskIdRef.current
             // the loop rolled this run's user message out of the model context — surface that
             for (let i = next.length - 1; i >= 0; i--) {
               const entry = next[i]!
-              if (entry.role === 'user') {
+              if (entry.role === 'user' && (!activeId || entry.queueTaskId === activeId)) {
                 next[i] = { ...entry, undelivered: true }
                 break
               }
             }
-            const last = next.at(-1)
+            const index = activeId ? queuedAssistantIndex(next, activeId) : next.length - 1
+            const last = next[index]
             if (last?.role === 'assistant') {
-              next[next.length - 1] = {
+              next[index] = {
                 ...last,
                 streaming: false,
                 error,
@@ -1211,6 +1247,7 @@ export function AiPanel({
             setBusy(false)
             const queued = activeQueueRunRef.current
             activeQueueRunRef.current = undefined
+            activeQueueTaskIdRef.current = undefined
             activeSelectionScopeRef.current = undefined
             queued?.reject(new Error(error))
           })
@@ -1276,7 +1313,14 @@ export function AiPanel({
       runWith(instruction)
       return
     }
+    if (editQueueRef.current!.isDisposed) {
+      const queue = new SelectionEditQueue()
+      editQueueRef.current = queue
+      queue.subscribe(() => setQueueSnapshot(queue.snapshot()))
+      setQueueSnapshot(queue.snapshot())
+    }
     const identity = selectionIdentityRef.current
+    const captureGeneration = ++captureGenerationRef.current
     const taskAttachments = [...attachmentsRef.current]
     void window.slidesApi
       .captureAgentSelection({
@@ -1284,7 +1328,12 @@ export function AiPanel({
         sourceIds: [...selectedRef.current],
       })
       .then((captured) => {
-        if (identity !== selectionIdentityRef.current) return
+        if (
+          !mountedRef.current ||
+          captureGeneration !== captureGenerationRef.current ||
+          identity !== selectionIdentityRef.current
+        )
+          return
         if (captured.status !== 'captured') {
           setAttachNotice('The selection changed before it could be captured.')
           return
@@ -1294,6 +1343,7 @@ export function AiPanel({
           const task = editQueueRef.current!.enqueue(
             { invocationId, instruction, scope: captured },
             ({ taskId, scope, signal, markWriteStarted }) => {
+              activeQueueTaskIdRef.current = invocationId
               activeSelectionScopeRef.current = scope
               setQueuedScope(scope)
               return new Promise<SelectionEditReceipt>((resolve, reject) => {
@@ -1310,7 +1360,13 @@ export function AiPanel({
                   loopRef.current?.stop()
                 }
                 signal.addEventListener('abort', onAbort, { once: true })
-                if (!runWith(instruction, instruction, { attachments: taskAttachments })) {
+                if (
+                  !runWith(instruction, instruction, {
+                    attachments: taskAttachments,
+                    prequeued: true,
+                    queueTaskId: invocationId,
+                  })
+                ) {
                   signal.removeEventListener('abort', onAbort)
                   activeQueueRunRef.current = undefined
                   activeSelectionScopeRef.current = undefined
@@ -1319,12 +1375,32 @@ export function AiPanel({
               })
             },
           )
+          setChat((previous) => [
+            ...previous,
+            {
+              role: 'user',
+              text: instruction,
+              queueTaskId: invocationId,
+              ...(taskAttachments.length ? { attachments: taskAttachments } : {}),
+            },
+            { role: 'assistant', text: 'Queued', streaming: false, queueTaskId: invocationId },
+          ])
+          persistMessage('user', instruction, undefined, taskAttachments)
           setInput('')
           if (taskAttachments.length > 0) {
             setAttachments([])
             attachmentsRef.current = []
           }
           void task.catch((error) => {
+            setChat((previous) =>
+              previous.map((entry) =>
+                entry.queueTaskId === invocationId
+                  ? entry.role === 'user'
+                    ? { ...entry, undelivered: true }
+                    : { ...entry, streaming: false, text: 'Cancelled' }
+                  : entry,
+              ),
+            )
             if (!(error instanceof DOMException && error.name === 'AbortError'))
               setAttachNotice(error instanceof Error ? error.message : 'Selection edit failed')
           })
@@ -1378,7 +1454,12 @@ export function AiPanel({
   const runWith = (
     instruction: string,
     displayText?: string,
-    opts?: { slideShot?: boolean; attachments?: AttachmentMeta[] },
+    opts?: {
+      slideShot?: boolean
+      attachments?: AttachmentMeta[]
+      prequeued?: boolean
+      queueTaskId?: string
+    },
   ): boolean => {
     const loop = loopRef.current
     // runStartingRef: loop.run is called only after attachments are read asynchronously, during which loop.busy is still false,
@@ -1420,12 +1501,23 @@ export function AiPanel({
     stickToBottomRef.current = true
     // Internal orchestration prompts (like deck-planning notes) skip the chat bubble and go only to the model
     const shown = displayText ?? instruction
-    setChat((prev) => [
-      // Fallback: clear leftover streaming flags on history entries, avoiding orphan "thinking" placeholders
-      ...prev.map((e) => (e.role === 'assistant' && e.streaming ? { ...e, streaming: false } : e)),
-      { role: 'user', text: shown, ...(sentAtts.length > 0 ? { attachments: sentAtts } : {}) },
-      { role: 'assistant', text: '', streaming: true },
-    ])
+    if (!opts?.prequeued)
+      setChat((prev) => [
+        // Fallback: clear leftover streaming flags on history entries, avoiding orphan "thinking" placeholders
+        ...prev.map((e) =>
+          e.role === 'assistant' && e.streaming ? { ...e, streaming: false } : e,
+        ),
+        { role: 'user', text: shown, ...(sentAtts.length > 0 ? { attachments: sentAtts } : {}) },
+        { role: 'assistant', text: '', streaming: true },
+      ])
+    else
+      setChat((previous) =>
+        previous.map((entry) =>
+          entry.role === 'assistant' && entry.queueTaskId === opts.queueTaskId
+            ? { ...entry, text: '', streaming: true }
+            : entry,
+        ),
+      )
     runStartedAtRef.current = Date.now()
     setBusy(true)
     void collectImageAttachments(sentAtts)
@@ -1455,9 +1547,10 @@ export function AiPanel({
             // leaves no duplicate-launch window and keeps Stop authoritative while
             // beginHistoryBatch is still in flight.
             runStartingRef.current = false
-            recordSlidesRunAttachments(sentAtts, (runAttachments) =>
-              persistMessage('user', shown, undefined, [...runAttachments]),
-            )
+            if (!opts?.prequeued)
+              recordSlidesRunAttachments(sentAtts, (runAttachments) =>
+                persistMessage('user', shown, undefined, [...runAttachments]),
+              )
             return loop.run(modelInstruction, images)
           },
         })
@@ -1658,6 +1751,7 @@ export function AiPanel({
   }
 
   const cancel = () => {
+    captureGenerationRef.current++
     editQueueRef.current?.cancelAll('stop')
     activeSelectionScopeRef.current = undefined
     const wasPrelaunch = runStartingRef.current
@@ -1681,17 +1775,19 @@ export function AiPanel({
   }
 
   // Abort a QC pass still running when the panel unmounts (new file / panel remount by key)
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      captureGenerationRef.current++
       editQueueRef.current?.dispose()
       launchTokenRef.current++
       runStartingRef.current = false
       qcAbortRef.current?.abort()
       dismissClarify()
       loopRef.current?.stop()
-    },
-    [],
-  )
+    }
+  }, [])
 
   const retry = () =>
     runWith(lastInstructionRef.current, lastDisplayTextRef.current, {
@@ -1699,6 +1795,7 @@ export function AiPanel({
     })
 
   const newChat = () => {
+    captureGenerationRef.current++
     editQueueRef.current?.cancelAll('new chat')
     activeSelectionScopeRef.current = undefined
     launchTokenRef.current++

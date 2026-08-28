@@ -31,6 +31,7 @@ import { tm } from './i18n-main'
 import {
   acquirePresentationMutationLease,
   acquirePresentationTransactionLease,
+  ensureSessionInstanceIds,
   pushHistory,
   rebuildSlide,
   scheduleHistoryNotify,
@@ -250,10 +251,11 @@ export function registerSlidesOnlyAiIpc(): void {
       })
     }
     if ((session.mutationGeneration ?? 0) !== generation) return { status: 'busy' } as const
+    const identity = ensureSessionInstanceIds(session)
     return {
       status: 'captured',
-      documentId: `presentation-${event.sender.id}`,
-      sessionId: `renderer-${event.sender.id}`,
+      documentId: identity.documentInstanceId,
+      sessionId: identity.sessionInstanceId,
       generation,
       slides: [{ slideId: slide.durableId, elements }],
     } as const
@@ -337,8 +339,31 @@ export function registerSlidesOnlyAiIpc(): void {
 
   ipcMain.handle('slides:presentation-transaction', async (event, value: unknown) => {
     assertAiIpcSender(event)
-    const transaction = parsePresentationTransaction(value)
+    const envelope =
+      value && typeof value === 'object' && !Array.isArray(value) && 'transaction' in value
+        ? validateSlidesAiObject(value, ['transaction', 'scopeGuard'])
+        : undefined
+    const transaction = parsePresentationTransaction(envelope?.transaction ?? value)
     const session = sessions.get(event.sender.id)!
+    if (envelope) {
+      const guard = validateSlidesAiObject(envelope.scopeGuard, [
+        'documentId',
+        'sessionId',
+        'generation',
+      ])
+      const identity = ensureSessionInstanceIds(session)
+      if (
+        guard.documentId !== identity.documentInstanceId ||
+        guard.sessionId !== identity.sessionInstanceId ||
+        guard.generation !== (session.mutationGeneration ?? 0)
+      ) {
+        return {
+          status: 'conflict',
+          transactionId: transaction.transactionId,
+          code: 'target_stale',
+        } as const
+      }
+    }
     if (session.masterEdit || session.historyBatch || session.transformPreview) {
       throw new AiIpcError('invalid_payload')
     }

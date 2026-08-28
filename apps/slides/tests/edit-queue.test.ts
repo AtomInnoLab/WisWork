@@ -95,6 +95,17 @@ describe('SelectionEditQueue', () => {
     expect(run).toHaveBeenCalledTimes(2)
   })
 
+  it('fails closed after disposal so a late capture callback cannot revive it', () => {
+    const queue = new SelectionEditQueue()
+    queue.dispose()
+    expect(() =>
+      queue.enqueue(
+        { invocationId: 'late', instruction: 'x', scope: scope() },
+        async ({ taskId }) => applied(taskId),
+      ),
+    ).toThrow(/disposed/i)
+  })
+
   it('cancels queued and active work on selection generation or document changes without retargeting', async () => {
     let activeSignal!: AbortSignal
     const queue = new SelectionEditQueue()

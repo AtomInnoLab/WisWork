@@ -34,7 +34,6 @@ describe('Slides canonical background tool transaction', () => {
     }
     const result = await createSlidesSkill(access).executeTool({
       id: 'background-call',
-      invocationId: 'background-invocation',
       name: 'set_slide_background',
       input: { slideIndex: -1, color: '#1a2b3c' },
     })

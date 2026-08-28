@@ -99,6 +99,7 @@ export async function executePreparedTextFamilyTransaction(
   signal?: AbortSignal,
   refresh?: () => Promise<boolean>,
   scope?: SelectionScope,
+  onDispatch?: () => void,
 ): Promise<TextFamilyExecutionResult> {
   signal?.throwIfAborted()
   const cached = preparationCache.get(request.transactionId)
@@ -213,7 +214,10 @@ export async function executePreparedTextFamilyTransaction(
   signal?.addEventListener('abort', cancel, { once: true })
   try {
     try {
-      const receipt = await api.executePresentationTransaction(transaction)
+      onDispatch?.()
+      const receipt = scope
+        ? await api.executePresentationTransaction(transaction, scope)
+        : await api.executePresentationTransaction(transaction)
       if (receipt.status !== 'applied' || !refresh) return { receipt, authoritativeState: 'fresh' }
       try {
         return {

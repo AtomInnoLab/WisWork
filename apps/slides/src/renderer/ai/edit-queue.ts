@@ -178,6 +178,7 @@ export class SelectionEditQueue {
   private receipts: SelectionEditReceipt[] = []
   private readonly invocations = new Map<string, Promise<SelectionEditReceipt>>()
   private listeners = new Set<() => void>()
+  private disposed = false
 
   constructor(options: { maxQueued?: number } = {}) {
     this.capacity = options.maxQueued ?? EDIT_QUEUE_DEFAULT_CAPACITY
@@ -185,10 +186,15 @@ export class SelectionEditQueue {
       throw new RangeError('Queue capacity must be a positive integer')
   }
 
+  get isDisposed(): boolean {
+    return this.disposed
+  }
+
   enqueue(
     input: SelectionEditTaskInput,
     runner: SelectionEditRunner,
   ): Promise<SelectionEditReceipt> {
+    if (this.disposed) throw new Error('Selection edit queue is disposed')
     const existing = this.invocations.get(input.invocationId)
     if (existing) return existing
     if (this.entries.length + (this.active ? 1 : 0) >= this.capacity)
@@ -214,7 +220,7 @@ export class SelectionEditQueue {
     this.entries.push(entry)
     this.invocations.set(input.invocationId, promise)
     this.emit()
-    void this.pump()
+    queueMicrotask(() => void this.pump())
     return promise
   }
 
@@ -265,6 +271,8 @@ export class SelectionEditQueue {
   }
 
   dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
     this.cancelAll('queue disposed')
     this.listeners.clear()
   }
