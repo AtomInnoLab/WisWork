@@ -1197,6 +1197,7 @@ function normalizedDocumentText(value: string): string {
 
 type NativeVerificationStage = 'text' | 'body_shape' | 'content' | 'boundary'
 type NativeVerificationResult = { valid: true } | { valid: false; stage: NativeVerificationStage }
+const MAX_HOST_TRAILING_EMPTY_PARAGRAPHS = 8
 
 function nativeDocumentVerificationFailure(stage: NativeVerificationStage, cause: unknown): Error {
   const stagedCause = Object.assign(new Error('word_write_verification_failed', { cause }), {
@@ -1263,28 +1264,31 @@ function verifyNativeDocumentWriteDetailed(
     )
   let valid: boolean
   if (write.mode === 'replace') {
-    valid = insertedMatches(afterParts.content)
-    if (
-      !valid &&
-      afterParts.content.length > expected.length &&
-      insertedMatches(afterParts.content.slice(0, expected.length)) &&
-      expected[expected.length - 1]?.type === 'table'
+    const afterContent = withoutTrailingEmptyParagraphs(
+      afterParts.content,
+      expected.length,
+      MAX_HOST_TRAILING_EMPTY_PARAGRAPHS,
     )
-      valid = afterParts.content
-        .slice(expected.length)
-        .every((element) =>
-          isEmptyParagraph(elementSignature(element, afterParts.numbering, afterParts.styles)),
-        )
+    valid = insertedMatches(afterContent)
   } else if (write.mode === 'append') {
-    const afterContent = withoutTrailingEmptyParagraphs(afterParts.content)
+    const afterContent = withoutTrailingEmptyParagraphs(
+      afterParts.content,
+      appendBoundary.length + expected.length,
+      MAX_HOST_TRAILING_EMPTY_PARAGRAPHS,
+    )
     const inserted = afterContent.slice(-expected.length)
     const currentBoundary = withoutTrailingTableParagraphs(afterContent.slice(0, -expected.length))
     valid = canonicalEqual(appendBoundary, currentBoundary) && insertedMatches(inserted)
   } else {
+    const afterContent = withoutTrailingEmptyParagraphs(
+      afterParts.content,
+      expected.length + beforeParts.content.length,
+      MAX_HOST_TRAILING_EMPTY_PARAGRAPHS,
+    )
     valid =
-      afterParts.content.length === expected.length + beforeParts.content.length &&
-      insertedMatches(afterParts.content.slice(0, expected.length)) &&
-      canonicalEqual(beforeParts.content, afterParts.content.slice(expected.length))
+      afterContent.length === expected.length + beforeParts.content.length &&
+      insertedMatches(afterContent.slice(0, expected.length)) &&
+      canonicalEqual(beforeParts.content, afterContent.slice(expected.length))
   }
   if (valid) return { valid: true }
   const expectedLength =
@@ -1325,10 +1329,6 @@ function bodyParts(xml: string): {
   }
 }
 
-function isEmptyParagraph(signature: DocumentSignature | undefined): boolean {
-  return signature?.type === 'paragraph' && signature.text === ''
-}
-
 function withoutTrailingTableParagraphs(elements: Element[]): Element[] {
   const boundary = withoutTrailingEmptyParagraphs(elements)
   return boundary.length < elements.length && boundary.at(-1)?.localName === 'tbl'
@@ -1336,16 +1336,35 @@ function withoutTrailingTableParagraphs(elements: Element[]): Element[] {
     : elements
 }
 
-function withoutTrailingEmptyParagraphs(elements: Element[]): Element[] {
+function withoutTrailingEmptyParagraphs(
+  elements: Element[],
+  minimumLength = 0,
+  maximumRemoved = Number.POSITIVE_INFINITY,
+): Element[] {
   let boundary = elements.length
+  let removed = 0
   while (
-    boundary > 0 &&
-    elements[boundary - 1]?.namespaceURI === W_NS &&
-    elements[boundary - 1]?.localName === 'p' &&
-    wordText(elements[boundary - 1]!) === ''
-  )
+    boundary > minimumLength &&
+    removed < maximumRemoved &&
+    isHostGeneratedEmptyParagraph(elements[boundary - 1])
+  ) {
     boundary -= 1
+    removed += 1
+  }
   return elements.slice(0, boundary)
+}
+
+function isHostGeneratedEmptyParagraph(element: Element | undefined): boolean {
+  if (element?.namespaceURI !== W_NS || element.localName !== 'p' || wordText(element) !== '')
+    return false
+  return directElements(element).every(
+    (child) =>
+      child.namespaceURI === W_NS &&
+      child.localName === 'pPr' &&
+      directElements(child).every(
+        (property) => property.namespaceURI === W_NS && property.localName === 'spacing',
+      ),
+  )
 }
 
 function stableFingerprintOoxml(xml: string): string {
