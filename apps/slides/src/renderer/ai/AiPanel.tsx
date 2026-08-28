@@ -54,6 +54,7 @@ import fileGeneralIcon from '../assets/file-general.png'
 import { IconNewChat, IconSidebarCollapseLeft } from '../components/icons'
 import type { SpeakerNotesDraftPreparation } from '../notes-draft'
 import { createSlidesChatBindingCoordinator } from './chat-binding'
+import type { SelectionScope } from './edit-queue'
 
 interface ToolActivity {
   name: string
@@ -360,6 +361,7 @@ export function AiPanel({
   const { t } = useI18n()
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [selectionScopeEnabled, setSelectionScopeEnabled] = useState(false)
   const [chat, setChat] = useState<ChatEntry[]>([])
   const [qualityTimeline, setQualityTimeline] = useState<PresentationQualityReceipt[]>([])
   /** Past conversation restored from JSONL (read-only transcript, not fed to the model) */
@@ -459,6 +461,22 @@ export function AiPanel({
   currentRef.current = current
   const selectedRef = useRef(selectedIds)
   selectedRef.current = selectedIds
+  const activeSelectionScopeRef = useRef<SelectionScope | undefined>(undefined)
+  const selectionIdentityRef = useRef(`${current}:${selectedIds.join('\u0000')}`)
+  useEffect(() => {
+    const identity = `${current}:${selectedIds.join('\u0000')}`
+    if (selectionIdentityRef.current !== identity && activeSelectionScopeRef.current) {
+      activeSelectionScopeRef.current = undefined
+      cancel()
+    }
+    selectionIdentityRef.current = identity
+  }, [current, selectedIds])
+  useEffect(() => {
+    if (activeSelectionScopeRef.current) {
+      activeSelectionScopeRef.current = undefined
+      cancel()
+    }
+  }, [currentFilePath])
   const applySlideRef = useRef(applySlide)
   applySlideRef.current = applySlide
   const applyDeckRef = useRef(applyDeck)
@@ -784,6 +802,7 @@ export function AiPanel({
       getSlides: () => slidesRef.current,
       getCurrent: () => currentRef.current,
       getSelectedIds: () => selectedRef.current,
+      getSelectionScope: () => activeSelectionScopeRef.current,
       applySlide: (i, updated) => applySlideRef.current(i, updated),
       applyDeck: (all, goTo) => applyDeckRef.current(all, goTo),
       executePresentationOperation: async (request, signal) => {
@@ -794,10 +813,28 @@ export function AiPanel({
           return true
         }
         const execution = await ('backgrounds' in request
-          ? executePreparedBackgroundFamilyTransaction(window.slidesApi, request, signal, refresh)
+          ? executePreparedBackgroundFamilyTransaction(
+              window.slidesApi,
+              request,
+              signal,
+              refresh,
+              activeSelectionScopeRef.current,
+            )
           : 'operations' in request
-            ? executePreparedGeometryFamilyTransaction(window.slidesApi, request, signal, refresh)
-            : executePreparedTextFamilyTransaction(window.slidesApi, request, signal, refresh))
+            ? executePreparedGeometryFamilyTransaction(
+                window.slidesApi,
+                request,
+                signal,
+                refresh,
+                activeSelectionScopeRef.current,
+              )
+            : executePreparedTextFamilyTransaction(
+                window.slidesApi,
+                request,
+                signal,
+                refresh,
+                activeSelectionScopeRef.current,
+              ))
         if (execution.authoritativeState === 'reload_required')
           onAuthoritativeReloadRequiredRef.current?.()
         const receipt = execution.receipt
@@ -1035,6 +1072,7 @@ export function AiPanel({
           setChat((prev) => [...prev, { role: 'assistant', text: '', streaming: true }])
         },
         onDone: ({ text, cancelled, turnLimit }) => {
+          activeSelectionScopeRef.current = undefined
           const finalText = turnLimit
             ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
             : text || (cancelled ? tGlobal('aiStoppedNote') : '')
@@ -1082,6 +1120,7 @@ export function AiPanel({
           }
         },
         onError: (error) => {
+          activeSelectionScopeRef.current = undefined
           qcPagesRef.current = []
           setChat((prev) => {
             const next = [...prev]
@@ -1177,7 +1216,29 @@ export function AiPanel({
     // `open` dep: re-measure after expand restores a draft
   }, [input, open])
 
-  const run = () => runWith(input.trim())
+  const run = () => {
+    const instruction = input.trim()
+    if (!selectionScopeEnabled || selectedRef.current.length === 0) {
+      runWith(instruction)
+      return
+    }
+    const identity = selectionIdentityRef.current
+    void window.slidesApi
+      .captureAgentSelection({
+        slideIndex: currentRef.current,
+        sourceIds: [...selectedRef.current],
+      })
+      .then((captured) => {
+        if (identity !== selectionIdentityRef.current) return
+        if (captured.status !== 'captured') {
+          setAttachNotice('The selection changed before it could be captured.')
+          return
+        }
+        activeSelectionScopeRef.current = captured
+        runWith(instruction, instruction)
+      })
+      .catch(() => setAttachNotice('The selection could not be captured.'))
+  }
 
   /** Image attachments read as base64, sent multimodally with this user message (≤5MB per image, max 20; isomorphic to docs) */
   const MAX_IMAGES_PER_MESSAGE = 20
@@ -1497,6 +1558,7 @@ export function AiPanel({
   }
 
   const cancel = () => {
+    activeSelectionScopeRef.current = undefined
     const wasPrelaunch = runStartingRef.current
     launchTokenRef.current++
     if (wasPrelaunch) {
@@ -1535,6 +1597,7 @@ export function AiPanel({
     })
 
   const newChat = () => {
+    activeSelectionScopeRef.current = undefined
     launchTokenRef.current++
     runStartingRef.current = false
     dismissClarify()
@@ -2023,6 +2086,15 @@ export function AiPanel({
               rows={1}
             />
             <div className="ai-input-footer">
+              <label className="ai-selection-scope-toggle">
+                <input
+                  type="checkbox"
+                  checked={selectionScopeEnabled}
+                  disabled={selectedIds.length === 0 || busy}
+                  onChange={(event) => setSelectionScopeEnabled(event.target.checked)}
+                />
+                Edit selection
+              </label>
               <button
                 className="ai-attach-btn"
                 onClick={pickAttachments}

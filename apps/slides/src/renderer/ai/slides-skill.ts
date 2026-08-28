@@ -17,6 +17,7 @@ import {
   type TextFamilyTransactionRequest,
 } from './presentation-text-transactions'
 import type { SpeakerNotesDraftPreparation } from '../notes-draft'
+import { selectionScopeSummary, type SelectionScope } from './edit-queue'
 import {
   geometryPxToPoints,
   geometryToolTransactionId,
@@ -40,6 +41,8 @@ export interface DeckAccess {
   getSlides(): RenderSlide[]
   getCurrent(): number
   getSelectedIds(): string[]
+  /** Immutable durable scope for the active queued run, if any. */
+  getSelectionScope?(): SelectionScope | undefined
   applySlide(slideIndex: number, updated: RenderSlide): void
   /** Replace the whole deck (after adding/removing slides) and jump to the goTo slide */
   applyDeck(slides: RenderSlide[], goTo?: number): void
@@ -1182,12 +1185,31 @@ export function createSlidesSkill(access: DeckAccess): AgentSkill {
   // The HTML pipeline was already used in this conversation → later calls without an explicit mode default to append.
   // Safety net for when the AI ignores the "pass all pages at once" constraint: separate calls no longer overwrite each other (P0-1).
   const state: SkillState = {}
+  const scopedTools = new Set([
+    'set_element_text',
+    'set_element_style',
+    'set_element_transform',
+    'execute_layout_script',
+    'execute_slide_script',
+    'set_element_fill',
+    'set_element_stroke',
+    'add_text_box',
+    'set_slide_background',
+    'set_speaker_notes',
+    'delete_element',
+  ])
   return {
     id: 'slides',
     systemPrompt: AGENT_SYSTEM_PROMPT,
-    tools: TOOLS,
+    get tools() {
+      return access.getSelectionScope?.()
+        ? TOOLS.filter((tool) => scopedTools.has(tool.name))
+        : TOOLS
+    },
     buildContext: () =>
-      `<deck outline>\n${buildDeckOutline(access.getSlides(), access.getCurrent(), access.getSelectedIds())}\n</deck outline>`,
+      access.getSelectionScope?.()
+        ? `<selection scope>\n${selectionScopeSummary(access.getSelectionScope()!)}. This scope is immutable and enforced by the host.\n</selection scope>`
+        : `<deck outline>\n${buildDeckOutline(access.getSlides(), access.getCurrent(), access.getSelectedIds())}\n</deck outline>`,
     executeTool: (call, signal) => executeTool(access, call, state, signal),
   }
 }
@@ -1277,6 +1299,24 @@ async function executeTool(
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted()
+  const activeScope = access.getSelectionScope?.()
+  if (activeScope) {
+    const allowed = new Set([
+      'set_element_text',
+      'set_element_style',
+      'set_element_transform',
+      'execute_layout_script',
+      'execute_slide_script',
+      'set_element_fill',
+      'set_element_stroke',
+      'add_text_box',
+      'set_slide_background',
+      'set_speaker_notes',
+      'delete_element',
+    ])
+    if (!allowed.has(call.name))
+      return fail(call.name, 'selection_scope_conflict: tool is unavailable for a scoped edit')
+  }
   if (!call.invocationId) {
     state ??= {}
     state.fallbackInvocationIds ??= new WeakMap()
