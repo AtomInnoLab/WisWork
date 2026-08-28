@@ -220,6 +220,7 @@ describe('add/delete element', () => {
     expect(deleteElementWithCleanup(opened, slide, victim.id, metrics)).toBe(true)
     expect(metrics.segmentCount).toBeGreaterThan(4_000)
     expect(metrics.tokenCount).toBeGreaterThan(10_000)
+    expect(metrics.segmentComparisons).toBeGreaterThan(metrics.segmentCount)
     expect(metrics.segmentComparisons).toBeLessThanOrEqual(
       metrics.segmentCount + metrics.tokenCount,
     )

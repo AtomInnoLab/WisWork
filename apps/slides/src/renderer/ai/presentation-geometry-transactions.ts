@@ -6,7 +6,6 @@ import {
   type PresentationElementTarget,
   type PresentationFill,
   type PresentationStroke,
-  type PresentationTarget,
   type PresentationTextParagraph,
   type PresentationOperation,
   type PresentationReceipt,
