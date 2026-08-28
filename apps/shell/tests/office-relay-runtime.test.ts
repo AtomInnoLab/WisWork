@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  completeOfficeRelayOAuthLogin,
   logoutWithOfficeRelay,
   startOfficeRelayPersistence,
+  syncOfficeRelayAccountSafely,
 } from '../src/main/office-relay-runtime'
 
 describe('Office relay runtime integration', () => {
@@ -58,5 +60,56 @@ describe('Office relay runtime integration', () => {
         },
       }),
     ).resolves.toBe(false)
+  })
+
+  it('returns the real account status while isolating accountStatus binding storage failure', async () => {
+    const account = { loggedIn: true, userId: 'account-one' }
+    const suspend = vi.fn()
+    const diagnostic = vi.fn()
+    await expect(
+      syncOfficeRelayAccountSafely({
+        getAccountStatus: async () => account,
+        syncBindingLifecycle: async () => {
+          throw new Error('secure_storage_unavailable')
+        },
+        suspend,
+        onBindingFailure: diagnostic,
+      }),
+    ).resolves.toBe(account)
+    expect(suspend).toHaveBeenCalledWith('binding_lifecycle')
+    expect(diagnostic).toHaveBeenCalledOnce()
+  })
+
+  it('keeps OAuth login successful after binding sync failure but propagates auth failure', async () => {
+    const account = { loggedIn: true, userId: 'account-two' }
+    const consumeCallback = vi.fn(async () => undefined)
+    const getAccountStatus = vi.fn(async () => account)
+    const diagnostic = vi.fn()
+    await expect(
+      completeOfficeRelayOAuthLogin({
+        consumeCallback,
+        getAccountStatus,
+        syncBindingLifecycle: async () => {
+          throw new Error('invalid_binding_schema')
+        },
+        suspend: vi.fn(),
+        onBindingFailure: diagnostic,
+      }),
+    ).resolves.toBe(account)
+    expect(consumeCallback).toHaveBeenCalledOnce()
+    expect(diagnostic).toHaveBeenCalledOnce()
+
+    const authFailure = new Error('invalid_oauth_state')
+    await expect(
+      completeOfficeRelayOAuthLogin({
+        consumeCallback: async () => {
+          throw authFailure
+        },
+        getAccountStatus,
+        syncBindingLifecycle: vi.fn(async () => undefined),
+        suspend: vi.fn(),
+        onBindingFailure: vi.fn(),
+      }),
+    ).rejects.toBe(authFailure)
   })
 })

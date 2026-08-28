@@ -179,7 +179,12 @@ import {
 import { createOfficeRelayPool, type OfficeRelayPool } from './office-relay-pool'
 import { createElectronOfficeRelayBindingStore } from './office-relay-binding-store'
 import { createOfficeRelayLifecycle, type OfficeRelayLifecycle } from './office-relay-lifecycle'
-import { logoutWithOfficeRelay, startOfficeRelayPersistence } from './office-relay-runtime'
+import {
+  completeOfficeRelayOAuthLogin,
+  logoutWithOfficeRelay,
+  startOfficeRelayPersistence,
+  syncOfficeRelayAccountSafely,
+} from './office-relay-runtime'
 import {
   createOfficeRetrievalProxy,
   officeRetrievalEndpointFromEnv,
@@ -1729,11 +1734,17 @@ function registerHomeIpc(): void {
   let pendingLoginUrl = ''
   ipcMain.handle(HOME_CHANNELS.accountStatus, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
-    const status = await syncOfficeBridgeAvailability(officeBridge, () =>
-      requireAuthRuntime().client.getValidAccountStatus(),
-    )
-    await officeRelayLifecycle?.syncAccount()
-    return status
+    return syncOfficeRelayAccountSafely({
+      getAccountStatus: () =>
+        syncOfficeBridgeAvailability(officeBridge, () =>
+          requireAuthRuntime().client.getValidAccountStatus(),
+        ),
+      syncBindingLifecycle: () => officeRelayLifecycle?.syncAccount() ?? Promise.resolve(),
+      suspend: (reason) => officeRelay?.suspend(reason),
+      onBindingFailure: () => {
+        officeRelayDiagnostic = 'error:binding_lifecycle'
+      },
+    })
   })
   ipcMain.handle(HOME_CHANNELS.accountLogin, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
@@ -2666,11 +2677,18 @@ app.whenReady().then(async () => {
   })
   void authDeepLinks.initialize(async (callback) => {
     officeRelay?.suspend('account_switch')
-    await requireAuthRuntime().client.consumeCallback(callback)
-    await syncOfficeBridgeAvailability(officeBridge, () =>
-      requireAuthRuntime().client.getValidAccountStatus(),
-    )
-    await officeRelayLifecycle?.syncAccount()
+    await completeOfficeRelayOAuthLogin({
+      consumeCallback: () => requireAuthRuntime().client.consumeCallback(callback),
+      getAccountStatus: () =>
+        syncOfficeBridgeAvailability(officeBridge, () =>
+          requireAuthRuntime().client.getValidAccountStatus(),
+        ),
+      syncBindingLifecycle: () => officeRelayLifecycle?.syncAccount() ?? Promise.resolve(),
+      suspend: (reason) => officeRelay?.suspend(reason),
+      onBindingFailure: () => {
+        officeRelayDiagnostic = 'error:binding_lifecycle'
+      },
+    })
   })
 
   app.setAccessibilitySupportEnabled(true)

@@ -37,3 +37,40 @@ export async function startOfficeRelayPersistence(options: {
     return false
   }
 }
+
+export async function syncOfficeRelayAccountSafely<T>(options: {
+  getAccountStatus(): Promise<T>
+  syncBindingLifecycle(): Promise<void>
+  suspend(reason: string): void
+  onBindingFailure(error: unknown): void
+}): Promise<T> {
+  // Authentication/account failures are outside the binding boundary and must propagate.
+  const account = await options.getAccountStatus()
+  try {
+    await options.syncBindingLifecycle()
+  } catch (error) {
+    try {
+      options.suspend('binding_lifecycle')
+    } catch {
+      // The account result remains authoritative even if the binding pool is partially built.
+    }
+    try {
+      options.onBindingFailure(error)
+    } catch {
+      // Renderer diagnostics must not change authentication semantics.
+    }
+  }
+  return account
+}
+
+export async function completeOfficeRelayOAuthLogin<T>(options: {
+  consumeCallback(): Promise<unknown>
+  getAccountStatus(): Promise<T>
+  syncBindingLifecycle(): Promise<void>
+  suspend(reason: string): void
+  onBindingFailure(error: unknown): void
+}): Promise<T> {
+  // OAuth validation failures deliberately remain visible to the deep-link queue.
+  await options.consumeCallback()
+  return syncOfficeRelayAccountSafely(options)
+}
