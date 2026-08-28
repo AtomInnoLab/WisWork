@@ -134,6 +134,15 @@ async fn server_with_all_limits(
 }
 
 async fn server_with_binding_database(path: &Path, challenge_ttl: Option<Duration>) -> String {
+    server_with_binding_database_handle(path, challenge_ttl)
+        .await
+        .0
+}
+
+async fn server_with_binding_database_handle(
+    path: &Path,
+    challenge_ttl: Option<Duration>,
+) -> (String, tokio::task::JoinHandle<()>) {
     let auth_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let auth_addr = auth_listener.local_addr().unwrap();
     let auth = axum::Router::new().route(
@@ -167,7 +176,7 @@ async fn server_with_binding_database(path: &Path, challenge_ttl: Option<Duratio
         config.resume_challenge_ttl = challenge_ttl;
     }
     let router = try_app(config).unwrap();
-    tokio::spawn(async move {
+    let server = tokio::spawn(async move {
         axum::serve(
             listener,
             router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
@@ -175,7 +184,7 @@ async fn server_with_binding_database(path: &Path, challenge_ttl: Option<Duratio
         .await
         .unwrap()
     });
-    format!("ws://{addr}/office-relay")
+    (format!("ws://{addr}/office-relay"), server)
 }
 
 async fn server_with_limits(
@@ -452,12 +461,15 @@ async fn enhanced_enrollment_is_opt_in_and_requires_explicit_approval() {
 #[tokio::test]
 async fn resumes_after_relay_restart_with_fresh_ephemeral_session() {
     let path = database_path("restart");
-    let first_url = server_with_binding_database(&path, None).await;
+    let (first_url, first_server) = server_with_binding_database_handle(&path, None).await;
     let signing_key = SigningKey::from_slice(&[8_u8; 32]).unwrap();
     let (mut first_office, mut first_pc, initial_office, initial_pc, binding_id) =
         enroll(&first_url, &signing_key).await;
     first_office.close(None).await.unwrap();
     first_pc.close(None).await.unwrap();
+    first_server.abort();
+    assert!(first_server.await.unwrap_err().is_cancelled());
+    assert!(connect_async(&first_url).await.is_err());
 
     let restarted_url = server_with_binding_database(&path, None).await;
     let (_office, _pc, resumed_office, resumed_pc) =
@@ -636,6 +648,92 @@ async fn resume_fails_closed_for_wrong_subject_host_and_capabilities() {
         recv(&mut wrong_capability).await["code"],
         "capability_not_negotiated"
     );
+}
+
+#[tokio::test]
+async fn resume_capabilities_must_be_exact_callable_only() {
+    let path = database_path("resume-capabilities-exact");
+    let url = server_with_binding_database(&path, None).await;
+    let signing_key = SigningKey::from_slice(&[22_u8; 32]).unwrap();
+    let (_office, _pc, _, _, binding_id) = enroll(&url, &signing_key).await;
+    let invalid_capabilities = [
+        json!(["agent.v1", "pairing-resume.v1"]),
+        json!(["agent.v1", "future-callable.v1"]),
+        json!(["unknown.v1"]),
+        json!(["agent.v1", "agent.v1"]),
+    ];
+    for offered in &invalid_capabilities {
+        let mut office = socket(&url, ORIGIN).await;
+        send(
+            &mut office,
+            json!({"version":2,"type":"office.resume","binding_id":binding_id,"host":"Word","capabilities":offered}),
+        )
+        .await;
+        let response = recv(&mut office).await;
+        assert_eq!(response["type"], "relay.error");
+        assert_eq!(response["code"], "invalid_frame");
+
+        let mut pc = pc_socket(&url).await;
+        send(
+            &mut pc,
+            json!({"version":2,"type":"pc.resume","binding_id":binding_id,"capabilities":offered}),
+        )
+        .await;
+        let response = recv(&mut pc).await;
+        assert_eq!(response["type"], "relay.error");
+        assert_eq!(response["code"], "invalid_frame");
+    }
+}
+
+#[tokio::test]
+async fn invalid_binding_probes_consume_the_office_ip_limit_before_lookup() {
+    let path = database_path("invalid-binding-rate-limit");
+    let url = server_with_binding_database(&path, None).await;
+    for attempt in 0..21 {
+        let mut office = socket(&url, ORIGIN).await;
+        send(
+            &mut office,
+            json!({"version":2,"type":"office.resume","binding_id":"A".repeat(43),"host":"Word","capabilities":["agent.v1"]}),
+        )
+        .await;
+        assert_eq!(
+            recv(&mut office).await["code"],
+            if attempt < 20 {
+                "binding_unavailable"
+            } else {
+                "resume_rate_limited"
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn wrong_host_and_callable_scope_probes_consume_the_same_ip_limit() {
+    let path = database_path("wrong-scope-rate-limit");
+    let url = server_with_binding_database(&path, None).await;
+    let signing_key = SigningKey::from_slice(&[23_u8; 32]).unwrap();
+    let (_office, _pc, _, _, binding_id) = enroll(&url, &signing_key).await;
+    for attempt in 0..21 {
+        let mut office = socket(&url, ORIGIN).await;
+        let (host, capabilities) = if attempt % 2 == 0 {
+            ("Excel", json!(["agent.v1"]))
+        } else {
+            ("Word", json!(["web-fetch.v1"]))
+        };
+        send(
+            &mut office,
+            json!({"version":2,"type":"office.resume","binding_id":binding_id,"host":host,"capabilities":capabilities}),
+        )
+        .await;
+        assert_eq!(
+            recv(&mut office).await["code"],
+            if attempt < 20 {
+                "binding_unavailable"
+            } else {
+                "resume_rate_limited"
+            }
+        );
+    }
 }
 
 #[tokio::test]

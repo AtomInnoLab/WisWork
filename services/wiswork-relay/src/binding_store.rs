@@ -116,6 +116,10 @@ impl BindingStore {
                             capabilities_json, created_at, last_used_at, revoked_at
                      FROM durable_bindings LIMIT 0",
                 )?;
+                transaction.execute(
+                    "DELETE FROM durable_bindings WHERE revoked_at IS NOT NULL",
+                    [],
+                )?;
             }
             future => return Err(BindingStoreError::FutureSchema(future)),
         }
@@ -216,11 +220,36 @@ impl BindingStore {
             .lock()
             .expect("binding database mutex")
             .execute(
-                "UPDATE durable_bindings SET revoked_at = ?3
-             WHERE binding_id = ?1 AND subject_hash = ?2 AND revoked_at IS NULL",
-                params![id, subject.as_slice(), unix_time()?],
+                "DELETE FROM durable_bindings
+                 WHERE binding_id = ?1 AND subject_hash = ?2 AND revoked_at IS NULL",
+                params![id, subject.as_slice()],
             )?;
         Ok(changed == 1)
+    }
+
+    #[cfg(test)]
+    pub fn live_count(&self, subject: &[u8; 32]) -> i64 {
+        self.connection
+            .lock()
+            .expect("binding database mutex")
+            .query_row(
+                "SELECT count(*) FROM durable_bindings
+                 WHERE subject_hash = ?1 AND revoked_at IS NULL",
+                params![subject.as_slice()],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[cfg(test)]
+    fn total_count(&self) -> i64 {
+        self.connection
+            .lock()
+            .expect("binding database mutex")
+            .query_row("SELECT count(*) FROM durable_bindings", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
     }
 }
 
@@ -283,5 +312,17 @@ mod tests {
         ));
         assert!(store.revoke(&binding(0).id, &[3; 32]).unwrap());
         store.enroll(&binding(12)).unwrap();
+    }
+
+    #[test]
+    fn repeated_enrollment_and_revocation_keeps_database_rows_bounded() {
+        let store = BindingStore::open(None).unwrap();
+        for index in 0..100_u8 {
+            let binding = binding(index);
+            store.enroll(&binding).unwrap();
+            assert!(store.revoke(&binding.id, &binding.subject).unwrap());
+        }
+        assert_eq!(store.live_count(&[3; 32]), 0);
+        assert_eq!(store.total_count(), 0);
     }
 }

@@ -105,6 +105,8 @@ struct Inner {
     http: reqwest::Client,
     auth_slots: Arc<Semaphore>,
     bindings: BindingStore,
+    #[cfg(test)]
+    fail_approval_delivery: std::sync::atomic::AtomicBool,
 }
 #[derive(Clone)]
 struct Tx {
@@ -213,6 +215,8 @@ pub fn try_app(config: Config) -> Result<Router, BindingStoreError> {
                 .expect("fixed HTTP client"),
             auth_slots: Arc::new(Semaphore::new(32)),
             bindings,
+            #[cfg(test)]
+            fail_approval_delivery: std::sync::atomic::AtomicBool::new(false),
         }),
     };
     let sweeper = state.clone();
@@ -640,6 +644,26 @@ fn capabilities(m: &Map<String, Value>) -> Result<Vec<String>, &'static str> {
         if SUPPORTED_CAPABILITIES.contains(&name) {
             result.push(name.to_owned());
         }
+    }
+    Ok(result)
+}
+
+fn resume_capabilities(m: &Map<String, Value>) -> Result<Vec<String>, &'static str> {
+    let values = m
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .ok_or("invalid_frame")?;
+    if values.is_empty() || values.len() > SUPPORTED_CAPABILITIES.len() {
+        return Err("invalid_frame");
+    }
+    let mut result = Vec::with_capacity(values.len());
+    let mut seen = HashSet::with_capacity(values.len());
+    for value in values {
+        let name = value.as_str().ok_or("invalid_frame")?;
+        if !SUPPORTED_CAPABILITIES.contains(&name) || !seen.insert(name) {
+            return Err("invalid_frame");
+        }
+        result.push(name.to_owned());
     }
     Ok(result)
 }
@@ -1128,6 +1152,12 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
     {
         return Err("invalid_frame");
     }
+    let pc_sender = tx.sender.clone();
+    let office_sender = pending.office_tx.sender.clone();
+    let pc_permit = pc_sender.try_reserve().map_err(|_| "peer_unavailable")?;
+    let office_permit = office_sender
+        .try_reserve()
+        .map_err(|_| "peer_unavailable")?;
     let p = s.pairings.remove(&id).ok_or("invalid_pairing")?;
     let remembered_binding = if p.negotiated_features == [PAIRING_RESUME] {
         let binding_id = token();
@@ -1170,13 +1200,25 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
     } else {
         json!({"version":1,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs()})
     };
-    if tx.sender.capacity() == 0
-        || p.office_tx.sender.capacity() == 0
-        || try_send(tx, pc_approved).is_err()
-        || try_send(&p.office_tx, office_approved).is_err()
+    #[cfg(test)]
+    let fail_delivery = app
+        .inner
+        .fail_approval_delivery
+        .swap(false, Ordering::SeqCst);
+    #[cfg(not(test))]
+    let fail_delivery = false;
+    if deliver_approval(
+        pc_permit,
+        office_permit,
+        pc_approved,
+        office_approved,
+        fail_delivery,
+    )
+    .is_err()
     {
-        tx.failed.notify_one();
-        p.office_tx.failed.notify_one();
+        if let (Some(binding_id), Some(subject)) = (remembered_binding.as_deref(), p.pc_subject) {
+            let _ = app.inner.bindings.revoke(binding_id, &subject);
+        }
         return Err("peer_unavailable");
     }
     s.codes.remove(&p.code);
@@ -1213,6 +1255,21 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
     Ok(())
 }
 
+fn deliver_approval(
+    pc_permit: mpsc::Permit<'_, Message>,
+    office_permit: mpsc::Permit<'_, Message>,
+    pc_frame: Value,
+    office_frame: Value,
+    fail_delivery: bool,
+) -> Result<(), ()> {
+    if fail_delivery {
+        return Err(());
+    }
+    pc_permit.send(Message::Text(pc_frame.to_string().into()));
+    office_permit.send(Message::Text(office_frame.to_string().into()));
+    Ok(())
+}
+
 async fn office_resume(
     app: &App,
     conn: u64,
@@ -1231,12 +1288,17 @@ async fn office_resume(
     {
         return Err("invalid_frame");
     }
+    {
+        let mut store = app.inner.state.lock().await;
+        expire(&mut store, app.inner.config.pairing_ttl);
+        consume_office_resume_attempt(&mut store, conn, peer, app.inner.config.pairing_ttl)?;
+    }
     let binding_id = string(&m, "binding_id")?;
     if !valid_token(binding_id) {
         return Err("binding_unavailable");
     }
     let host = string(&m, "host")?;
-    let requested_capabilities = capabilities(&m)?;
+    let requested_capabilities = resume_capabilities(&m)?;
     let binding = app
         .inner
         .bindings
@@ -1254,22 +1316,6 @@ async fn office_resume(
     let challenge = URL_SAFE_NO_PAD.encode(challenge_bytes);
     let mut store = app.inner.state.lock().await;
     expire(&mut store, app.inner.config.pairing_ttl);
-    let ip_attempts = store
-        .resume_attempts
-        .entry(peer)
-        .or_insert((Instant::now(), 0));
-    if ip_attempts.0.elapsed() > app.inner.config.pairing_ttl {
-        *ip_attempts = (Instant::now(), 0);
-    }
-    ip_attempts.1 = ip_attempts.1.saturating_add(1);
-    if ip_attempts.1 > 20 {
-        return Err("resume_rate_limited");
-    }
-    let attempts = store.connection_resume_attempts.entry(conn).or_default();
-    *attempts = attempts.saturating_add(1);
-    if *attempts > 5 {
-        return Err("resume_rate_limited");
-    }
     if store.resume_challenges.contains_key(&conn) || store.office_resumes.contains_key(&conn) {
         return Err("resume_limit");
     }
@@ -1369,7 +1415,7 @@ async fn pc_resume(
     if !valid_token(binding_id) {
         return Err("binding_unavailable");
     }
-    let offered_capabilities = capabilities(&m)?;
+    let offered_capabilities = resume_capabilities(&m)?;
     let binding = app
         .inner
         .bindings
@@ -1411,6 +1457,31 @@ async fn pc_resume(
             tx,
             json!({"version":PROTOCOL_V2,"type":"pc.waiting_for_office"}),
         );
+    }
+    Ok(())
+}
+
+fn consume_office_resume_attempt(
+    store: &mut Store,
+    conn: u64,
+    peer: IpAddr,
+    window: Duration,
+) -> Result<(), &'static str> {
+    let ip_attempts = store
+        .resume_attempts
+        .entry(peer)
+        .or_insert((Instant::now(), 0));
+    if ip_attempts.0.elapsed() > window {
+        *ip_attempts = (Instant::now(), 0);
+    }
+    ip_attempts.1 = ip_attempts.1.saturating_add(1);
+    if ip_attempts.1 > 20 {
+        return Err("resume_rate_limited");
+    }
+    let attempts = store.connection_resume_attempts.entry(conn).or_default();
+    *attempts = attempts.saturating_add(1);
+    if *attempts > 5 {
+        return Err("resume_rate_limited");
     }
     Ok(())
 }
@@ -2171,7 +2242,7 @@ async fn pc_error(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'s
 fn expire(s: &mut Store, ttl: Duration) {
     let now = Instant::now();
     s.resume_challenges
-        .retain(|_, challenge| challenge.expires + ttl > now);
+        .retain(|_, challenge| challenge.expires > now);
     s.office_resumes.retain(|_, resume| resume.expires > now);
     s.pc_resumes.retain(|_, resume| resume.expires > now);
     let dead: Vec<_> = s
@@ -2287,6 +2358,67 @@ async fn cleanup(app: &App, conn: u64) {
 mod tests {
     use super::*;
 
+    fn test_app() -> App {
+        App {
+            inner: Arc::new(Inner {
+                state: Mutex::new(Store::default()),
+                next: AtomicU64::new(1),
+                config: Config::default(),
+                http: reqwest::Client::builder()
+                    .no_proxy()
+                    .build()
+                    .expect("test HTTP client"),
+                auth_slots: Arc::new(Semaphore::new(1)),
+                bindings: BindingStore::open(None).unwrap(),
+                fail_approval_delivery: std::sync::atomic::AtomicBool::new(false),
+            }),
+        }
+    }
+
+    async fn insert_test_pairing(app: &App, office_tx: Tx, pc_tx: Tx, subject: [u8; 32]) {
+        let signing_key = p256::ecdsa::SigningKey::from_slice(&[21_u8; 32]).unwrap();
+        let public_key: [u8; 65] = signing_key
+            .verifying_key()
+            .to_encoded_point(false)
+            .as_bytes()
+            .try_into()
+            .unwrap();
+        app.inner.state.lock().await.pairings.insert(
+            "pairing".to_owned(),
+            Pairing {
+                version: PROTOCOL_V2,
+                id: "pairing".to_owned(),
+                code: "123456".to_owned(),
+                host: "Word".to_owned(),
+                office: 1,
+                office_tx,
+                pc: Some((2, pc_tx)),
+                expires: Instant::now() + Duration::from_secs(60),
+                attempts: 0,
+                requested_capabilities: vec!["agent.v1".to_owned()],
+                negotiated_capabilities: vec!["agent.v1".to_owned()],
+                negotiated_subject: None,
+                features: vec![PAIRING_RESUME.to_owned()],
+                negotiated_features: vec![PAIRING_RESUME.to_owned()],
+                binding_public_key: Some(public_key),
+                pc_subject: Some(subject),
+            },
+        );
+    }
+
+    fn test_approval_frame() -> Map<String, Value> {
+        json!({
+            "version": 2,
+            "type": "pc.approve",
+            "pairing_id": "pairing",
+            "capabilities": ["agent.v1"],
+            "features": [PAIRING_RESUME],
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
+
     #[tokio::test]
     async fn saturated_diagnostic_response_never_marks_connection_failed() {
         let (sender, _receiver) = mpsc::channel(1);
@@ -2349,5 +2481,107 @@ mod tests {
         ] {
             assert!(!resume_audit.contains(secret));
         }
+    }
+
+    #[tokio::test]
+    async fn saturated_office_approval_queue_does_not_leave_a_live_binding() {
+        let app = test_app();
+        let (office_sender, _office_receiver) = mpsc::channel(1);
+        office_sender
+            .try_send(Message::Ping(Vec::new().into()))
+            .unwrap();
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let (pc_sender, _pc_receiver) = mpsc::channel(2);
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let subject = [4_u8; 32];
+        insert_test_pairing(&app, office_tx, pc_tx.clone(), subject).await;
+
+        assert_eq!(
+            approve(&app, 2, &pc_tx, test_approval_frame()).await,
+            Err("peer_unavailable")
+        );
+        assert_eq!(app.inner.bindings.live_count(&subject), 0);
+    }
+
+    #[tokio::test]
+    async fn saturated_pc_approval_queue_does_not_leave_a_live_binding() {
+        let app = test_app();
+        let (office_sender, _office_receiver) = mpsc::channel(2);
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let (pc_sender, _pc_receiver) = mpsc::channel(1);
+        pc_sender
+            .try_send(Message::Ping(Vec::new().into()))
+            .unwrap();
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let subject = [6_u8; 32];
+        insert_test_pairing(&app, office_tx, pc_tx.clone(), subject).await;
+
+        assert_eq!(
+            approve(&app, 2, &pc_tx, test_approval_frame()).await,
+            Err("peer_unavailable")
+        );
+        assert_eq!(app.inner.bindings.live_count(&subject), 0);
+    }
+
+    #[tokio::test]
+    async fn post_commit_delivery_failure_compensates_the_new_binding() {
+        let app = test_app();
+        let (office_sender, _office_receiver) = mpsc::channel(2);
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let (pc_sender, _pc_receiver) = mpsc::channel(2);
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let subject = [5_u8; 32];
+        insert_test_pairing(&app, office_tx, pc_tx.clone(), subject).await;
+        app.inner
+            .fail_approval_delivery
+            .store(true, Ordering::SeqCst);
+
+        assert_eq!(
+            approve(&app, 2, &pc_tx, test_approval_frame()).await,
+            Err("peer_unavailable")
+        );
+        assert_eq!(app.inner.bindings.live_count(&subject), 0);
+    }
+
+    #[test]
+    fn challenge_sweeper_removes_entries_at_the_proof_deadline() {
+        let mut store = Store::default();
+        store.resume_challenges.insert(
+            1,
+            ResumeChallenge {
+                binding: Binding {
+                    id: "A".repeat(43),
+                    subject: [1; 32],
+                    public_key: [0; 65],
+                    host: "Word".to_owned(),
+                    origin: OFFICE_ORIGIN.to_owned(),
+                    capabilities: vec!["agent.v1".to_owned()],
+                },
+                challenge: "challenge".to_owned(),
+                expires: Instant::now(),
+            },
+        );
+
+        expire(&mut store, Duration::from_secs(120));
+
+        assert!(store.resume_challenges.is_empty());
     }
 }
