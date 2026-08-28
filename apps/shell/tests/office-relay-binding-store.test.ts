@@ -134,11 +134,17 @@ describe('Office relay encrypted binding store', () => {
     },
     { version: 1, bindings: [wordBinding({ accountId: '' })], tombstones: [] },
   ])(
-    'deletes an encrypted file whose decrypted payload violates the exact schema',
+    'latches an encrypted file whose decrypted payload violates the exact schema',
     async (value) => {
-      const { store, unlink } = harness(value)
-      await expect(store.listForAccount('account-one')).resolves.toEqual([])
-      expect(unlink).toHaveBeenCalledWith('/profile/office-pairings.enc')
+      const { store, unlink, encrypted } = harness(value)
+      await expect(store.listForAccount('account-one')).rejects.toThrow(
+        'invalid_office_binding_store',
+      )
+      await expect(store.listForAccount('account-one')).rejects.toThrow(
+        'invalid_office_binding_store',
+      )
+      expect(unlink).not.toHaveBeenCalled()
+      expect(encrypted()).not.toBeNull()
     },
   )
 

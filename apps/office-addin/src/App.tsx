@@ -886,8 +886,14 @@ export function ConfiguredApp(
   props: {
     documentClient?: OfficeDocumentClient
     connectionBridge?: ConnectionBridge
+    workspaceFactory?: (dependencies: {
+      host: Exclude<OfficeHost, 'unknown'>
+      document: OfficeDocumentClient
+      bridge: ConnectionBridge
+    }) => { runtime: OfficeHostRuntime; session: OfficeAgentSession; ui: OfficeWorkspaceUi }
   } = {},
 ) {
+  const workspaceFactory = props.workspaceFactory
   const document = useMemo(
     () => props.documentClient ?? createOfficeDocumentClient(createBrowserOfficeRuntime()),
     [props.documentClient],
@@ -922,6 +928,25 @@ export function ConfiguredApp(
   const [hostSupported, setHostSupported] = useState(false)
   const [status, setStatus] = useState('Connecting to Office…')
   const [busy, setBusy] = useState(true)
+  const [pairingForgetError, setPairingForgetError] = useState(false)
+  const [pairingForgetBusy, setPairingForgetBusy] = useState(false)
+
+  const forgetPairing = async () => {
+    if (!('forget' in bridge)) {
+      bridge.disconnect()
+      setPairingForgetError(false)
+      return
+    }
+    setPairingForgetBusy(true)
+    try {
+      await bridge.forget()
+      setPairingForgetError(false)
+    } catch {
+      setPairingForgetError(true)
+    } finally {
+      setPairingForgetBusy(false)
+    }
+  }
 
   useEffect(() => {
     let active = true
@@ -935,33 +960,36 @@ export function ConfiguredApp(
           setHostSupported(activeHost !== 'unknown')
           if (activeHost !== 'unknown') {
             void bridge.connect(activeHost)
-            const environment = officeDiagnosticEnvironment(activeHost)
-            const diagnostics = createOfficeDiagnostics({
-              host: activeHost,
-              platform: environment.platform,
-              build: __WISWORK_OFFICE_BUILD_ID__,
-              requirementSets: environment.requirementSets,
-              remoteEnabled: remoteDiagnosticsEnabled,
-              send: (event) => {
-                if (!('sendDiagnostic' in bridge)) throw new Error('diagnostic_upload_failed')
-                return bridge.sendDiagnostic(event)
-              },
-            })
-            const runtime = createOfficeHostRuntime(activeHost, {
-              enableHostSkills: import.meta.env.VITE_WISWORK_OFFICE_HOST_SKILLS !== '0',
-              enableConversions: capabilityFlags.conversions,
-              enableSkillPackages: capabilityFlags.skillPackages,
-              enableImportMedia: capabilityFlags.importMedia,
-              document,
-              diagnostics,
-            })
-            const session = createOfficeAgentSession({
-              transport: createPcBridgeAgentTransport(bridge),
-              skill: runtime.skill,
-              proposals: runtime.proposals,
-              diagnostics,
-            })
-            created = { runtime, session, ui: createOfficeWorkspaceUi(runtime, diagnostics) }
+            if (workspaceFactory) created = workspaceFactory({ host: activeHost, document, bridge })
+            else {
+              const environment = officeDiagnosticEnvironment(activeHost)
+              const diagnostics = createOfficeDiagnostics({
+                host: activeHost,
+                platform: environment.platform,
+                build: __WISWORK_OFFICE_BUILD_ID__,
+                requirementSets: environment.requirementSets,
+                remoteEnabled: remoteDiagnosticsEnabled,
+                send: (event) => {
+                  if (!('sendDiagnostic' in bridge)) throw new Error('diagnostic_upload_failed')
+                  return bridge.sendDiagnostic(event)
+                },
+              })
+              const runtime = createOfficeHostRuntime(activeHost, {
+                enableHostSkills: import.meta.env.VITE_WISWORK_OFFICE_HOST_SKILLS !== '0',
+                enableConversions: capabilityFlags.conversions,
+                enableSkillPackages: capabilityFlags.skillPackages,
+                enableImportMedia: capabilityFlags.importMedia,
+                document,
+                diagnostics,
+              })
+              const session = createOfficeAgentSession({
+                transport: createPcBridgeAgentTransport(bridge),
+                skill: runtime.skill,
+                proposals: runtime.proposals,
+                diagnostics,
+              })
+              created = { runtime, session, ui: createOfficeWorkspaceUi(runtime, diagnostics) }
+            }
             setWorkspace(created)
           }
           setStatus(
@@ -982,7 +1010,7 @@ export function ConfiguredApp(
       created?.runtime.dispose()
       bridge.disconnect()
     }
-  }, [bridge, capabilityFlags, document, remoteDiagnosticsEnabled])
+  }, [bridge, capabilityFlags, document, remoteDiagnosticsEnabled, workspaceFactory])
 
   useEffect(() => {
     if (bridgeState.status !== 'connected' && workspace) {
@@ -998,6 +1026,19 @@ export function ConfiguredApp(
     )
   }
   if (bridgeState.status !== 'connected') {
+    if (pairingForgetError) {
+      return (
+        <StatusScreen
+          title="Couldn’t forget this Office pairing"
+          detail="This taskpane is disconnected, but its saved pairing could not be removed. Try again before reconnecting."
+          busy={pairingForgetBusy}
+        >
+          <button type="button" disabled={pairingForgetBusy} onClick={() => void forgetPairing()}>
+            {pairingForgetBusy ? 'Forgetting pairing…' : 'Try forgetting again'}
+          </button>
+        </StatusScreen>
+      )
+    }
     const presentation = relayConnectionPresentation(
       bridgeState.status,
       bridgeState.verificationCode,
@@ -1032,8 +1073,7 @@ export function ConfiguredApp(
   const disconnect = () => {
     workspace.session.logout()
     workspace.runtime.dispose()
-    if ('forget' in bridge) void bridge.forget().catch(() => undefined)
-    else bridge.disconnect()
+    void forgetPairing()
   }
   const WorkspaceComponent = workspaceComponentForMode(workspaceMode)
   const connectionNotice =

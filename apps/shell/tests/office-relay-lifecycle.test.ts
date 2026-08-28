@@ -62,8 +62,8 @@ function harness() {
     resume: vi.fn(async (binding: OfficeRelayBinding) => {
       order.push(`resume:${binding.bindingId}`)
     }),
-    revokeBinding: vi.fn(async (bindingId: string) => {
-      order.push(`revoke:${bindingId}`)
+    revokeBinding: vi.fn(async (bindingId: string, expectedAccountId: string) => {
+      order.push(`revoke:${bindingId}:${expectedAccountId}`)
     }),
     approve: vi.fn(async () => false),
     reject: vi.fn(() => false),
@@ -108,7 +108,7 @@ describe('Office relay binding lifecycle', () => {
     const { lifecycle, order, tombstones } = harness()
     await lifecycle.syncAccount()
     expect(order).toEqual([
-      'revoke:binding_stale_12345678',
+      'revoke:binding_stale_12345678:account-one',
       'ack:binding_stale_12345678',
       'activate',
       'resume:binding_one_12345678',
@@ -135,6 +135,27 @@ describe('Office relay binding lifecycle', () => {
     expect(releases).toHaveLength(12)
     releases.forEach((release) => release())
     await syncing
+  })
+
+  it('does not activate or resume when an auth epoch becomes stale during account sync', async () => {
+    const { lifecycle, store, pool } = harness()
+    ;(store.listTombstonesForAccount as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    let release!: () => void
+    ;(store.listForAccount as ReturnType<typeof vi.fn>).mockImplementation(
+      () =>
+        new Promise<OfficeRelayBinding[]>((resolve) => {
+          release = () => resolve([makeBinding('account-one', 'delayed')])
+        }),
+    )
+    let current = true
+    const syncing = lifecycle.syncAccount(() => current)
+    await vi.waitFor(() => expect(store.listForAccount).toHaveBeenCalledOnce())
+    current = false
+    release()
+    await syncing
+
+    expect(pool.activate).not.toHaveBeenCalled()
+    expect(pool.resume).not.toHaveBeenCalled()
   })
 
   it('drains every tombstone with at most twelve revocations in flight and retains failures', async () => {
@@ -185,15 +206,27 @@ describe('Office relay binding lifecycle', () => {
     ])
   })
 
-  it('queues old-account revocation on account switch and starts only the new account bindings', async () => {
-    const { lifecycle, setAccount, order } = harness()
+  it('never delivers old-account tombstones with replacement credentials and retries on old-account return', async () => {
+    const { lifecycle, setAccount, order, tombstones } = harness()
     await lifecycle.syncAccount()
     order.length = 0
     setAccount({ loggedIn: true, userId: 'account-two' })
 
     await lifecycle.syncAccount()
     expect(order[0]).toBe('suspend:account_switch')
+    expect(order.some((entry) => entry.startsWith('revoke:binding_one'))).toBe(false)
+    expect(tombstones.get('account-one')?.map((entry) => entry.bindingId)).toEqual([
+      'binding_one_12345678',
+      'binding_two_12345678',
+    ])
     expect(order.at(-1)).toBe('resume:binding_three_12345678')
+
+    order.length = 0
+    setAccount({ loggedIn: true, userId: 'account-one' })
+    await lifecycle.syncAccount()
+    expect(order).toContain('revoke:binding_one_12345678:account-one')
+    expect(order).toContain('revoke:binding_two_12345678:account-one')
+    expect(tombstones.get('account-one')).toEqual([])
   })
 
   it('tombstones on terminal auth loss but preserves everything on normal shutdown', async () => {
@@ -241,8 +274,26 @@ describe('Office relay binding lifecycle', () => {
     expect(bootstrap).toMatch(
       /const officeRelayBindingStore = persistentPairing\s+\? createElectronOfficeRelayBindingStore/,
     )
-    expect(bootstrap).toContain('persistentPairing,')
+    expect(bootstrap).toContain('persistentPairing: () => officeRelayPersistenceAvailable')
     expect(bootstrap).toContain('if (persistentPairing && officeRelayBindingStore)')
+    expect(bootstrap).toContain('fallbackToOrdinaryOfficeRelay({')
+    expect(bootstrap).toContain('terminalOfficeRelayAuthLoss(officeRelayLifecycle, officeRelay)')
     expect(bootstrap).toContain("officeRelayDiagnostic = 'error:invalid_config'")
+  })
+
+  it('wires one-time relay closure and OAuth reactivation through executable runtime controls', () => {
+    const source = readFileSync(join(import.meta.dirname, '../src/main/index.ts'), 'utf8')
+    expect(source).toContain(
+      'invalidate: () => logoutOfficeRelaySession(officeRelayLifecycle, officeRelay)',
+    )
+    expect(source).toContain('shutdownOfficeRelaySession(officeRelayLifecycle, officeRelay)')
+    expect(source).toContain('syncOfficeRelaySession(')
+    expect(source).toContain('officeRelayPersistenceAvailable,')
+    expect(source).toMatch(
+      /onBindingFailure:[\s\S]*lockOfficeRelayPersistence\([\s\S]*reason: 'logout'/,
+    )
+    expect(source).toMatch(
+      /terminalOfficeRelayAuthLoss[\s\S]*lockOfficeRelayPersistence\([\s\S]*reason: 'auth_required'/,
+    )
   })
 })

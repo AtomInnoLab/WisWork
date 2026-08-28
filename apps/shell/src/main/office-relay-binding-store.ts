@@ -168,6 +168,7 @@ export function createOfficeRelayBindingStore(
   options: OfficeRelayBindingStoreOptions,
 ): OfficeRelayBindingStore {
   let operation = Promise.resolve()
+  let loadFailure: Error | null = null
   const now = options.now ?? Date.now
 
   const requireEncryption = () => {
@@ -180,20 +181,21 @@ export function createOfficeRelayBindingStore(
   }
 
   const load = async (): Promise<BindingFile> => {
+    if (loadFailure) throw loadFailure
     requireEncryption()
     const encrypted = await options.readFile(options.path)
     if (!encrypted) return { version: STORE_VERSION, bindings: [], tombstones: [] }
     if (encrypted.byteLength > MAX_FILE_BYTES) {
-      await options.unlink(options.path).catch(() => undefined)
-      return { version: STORE_VERSION, bindings: [], tombstones: [] }
+      loadFailure = new Error('invalid_office_binding_store')
+      throw loadFailure
     }
     try {
       const parsed = parseFile(JSON.parse(options.safeStorage.decryptString(encrypted)))
       if (!parsed) throw new Error('invalid')
       return parsed
     } catch {
-      await options.unlink(options.path).catch(() => undefined)
-      return { version: STORE_VERSION, bindings: [], tombstones: [] }
+      loadFailure = new Error('invalid_office_binding_store')
+      throw loadFailure
     }
   }
 

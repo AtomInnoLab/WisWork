@@ -178,10 +178,18 @@ import { createElectronOfficeRelayBindingStore } from './office-relay-binding-st
 import { createOfficeRelayLifecycle, type OfficeRelayLifecycle } from './office-relay-lifecycle'
 import {
   completeOfficeRelayOAuthLogin,
+  createOfficeRelayActivationFence,
+  invalidateOfficeRelayBindingForCurrentAccount,
+  lockOfficeRelayPersistence,
+  logoutOfficeRelaySession,
   logoutWithOfficeRelay,
   officePairingResumeEnabled,
+  shutdownOfficeRelaySession,
+  saveOfficeRelayBindingForCurrentAccount,
   startOfficeRelayPersistence,
   syncOfficeRelayAccountSafely,
+  syncOfficeRelaySession,
+  terminalOfficeRelayAuthLoss,
 } from './office-relay-runtime'
 import {
   createOfficeRetrievalProxy,
@@ -292,11 +300,35 @@ let officeBridgeServer: OfficeBridgeHttpServer | null = null
 let officeBridgeDiagnostic = 'disabled'
 let officeRelay: OfficeRelayPool | null = null
 let officeRelayLifecycle: OfficeRelayLifecycle | null = null
+let officeRelayPersistenceAvailable = false
 let officeRelayDiagnostic = 'disconnected'
+const officeRelayActivationFence = createOfficeRelayActivationFence()
 const requireAuthRuntime = (): ReturnType<typeof initializeElectronAuthRuntime> => {
   if (!authRuntime) throw new AuthError('auth_not_initialized')
   return authRuntime
 }
+
+function disableOfficeRelayPersistence(): void {
+  officeRelayPersistenceAvailable = false
+  officeRelayLifecycle = null
+}
+
+async function fallbackToOrdinaryOfficeRelay(options: {
+  expectedEpoch: number
+  allowUnlock: boolean
+  suspendedReason: string
+}): Promise<void> {
+  if (!officeRelayActivationFence.isCurrent(options.expectedEpoch)) {
+    return
+  }
+  disableOfficeRelayPersistence()
+  await officeRelayActivationFence.settle({
+    ...options,
+    getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
+    pool: officeRelay,
+  })
+}
+
 let accountLoginSender: Electron.WebContents | null = null
 const authDeepLinks = createAuthDeepLinkQueue({
   notify(event) {
@@ -1732,13 +1764,37 @@ function registerHomeIpc(): void {
   let pendingLoginUrl = ''
   ipcMain.handle(HOME_CHANNELS.accountStatus, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
+    const expectedEpoch = officeRelayActivationFence.snapshot()
     return syncOfficeRelayAccountSafely({
       getAccountStatus: () =>
         syncOfficeBridgeAvailability(officeBridge, () =>
           requireAuthRuntime().client.getValidAccountStatus(),
         ),
-      syncBindingLifecycle: () => officeRelayLifecycle?.syncAccount() ?? Promise.resolve(),
-      suspend: (reason) => officeRelay?.suspend(reason),
+      syncBindingLifecycle: async (account) => {
+        if (officeRelayPersistenceAvailable) {
+          await syncOfficeRelaySession(
+            account,
+            officeRelayPersistenceAvailable,
+            officeRelayLifecycle,
+            officeRelay,
+            () => expectedEpoch === officeRelayActivationFence.snapshot(),
+          )
+          if (expectedEpoch !== officeRelayActivationFence.snapshot())
+            officeRelay?.suspend('auth_required')
+          return
+        }
+        await fallbackToOrdinaryOfficeRelay({
+          expectedEpoch,
+          allowUnlock: true,
+          suspendedReason: 'auth_required',
+        })
+      },
+      fallbackToOrdinary: () =>
+        fallbackToOrdinaryOfficeRelay({
+          expectedEpoch,
+          allowUnlock: true,
+          suspendedReason: 'binding_lifecycle',
+        }),
       onBindingFailure: () => {
         officeRelayDiagnostic = 'error:binding_lifecycle'
       },
@@ -1770,13 +1826,24 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.accountLogout, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
     officeBridge?.setSessionAvailable(false)
-    return logoutWithOfficeRelay({
-      invalidate: () => officeRelayLifecycle?.logout() ?? Promise.resolve(),
-      logout: () => requireAuthRuntime().client.logout(),
-      onBindingFailure: () => {
-        officeRelayDiagnostic = 'error:binding_lifecycle'
-      },
-    })
+    officeRelayActivationFence.lock()
+    try {
+      return await logoutWithOfficeRelay({
+        invalidate: () => logoutOfficeRelaySession(officeRelayLifecycle, officeRelay),
+        logout: () => requireAuthRuntime().client.logout(),
+        onBindingFailure: () => {
+          officeRelayDiagnostic = 'error:binding_lifecycle'
+          lockOfficeRelayPersistence({
+            disable: disableOfficeRelayPersistence,
+            pool: officeRelay,
+            reason: 'logout',
+          })
+        },
+      })
+    } finally {
+      officeRelayActivationFence.lock()
+      officeRelay?.suspend('logout')
+    }
   })
   ipcMain.handle(HOME_CHANNELS.officeBridgeStatus, (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
@@ -2547,13 +2614,25 @@ app.whenReady().then(async () => {
     fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
     onTerminalAuthLoss: () => {
       officeBridge?.setSessionAvailable(false)
-      void officeRelayLifecycle?.terminalAuthLoss().catch(() => {
-        officeRelayDiagnostic = 'error:binding_lifecycle'
-      })
+      officeRelayActivationFence.lock()
+      void terminalOfficeRelayAuthLoss(officeRelayLifecycle, officeRelay)
+        .catch(() => {
+          officeRelayDiagnostic = 'error:binding_lifecycle'
+          lockOfficeRelayPersistence({
+            disable: disableOfficeRelayPersistence,
+            pool: officeRelay,
+            reason: 'auth_required',
+          })
+        })
+        .finally(() => {
+          officeRelayActivationFence.lock()
+          officeRelay?.suspend('auth_required')
+        })
     },
   })
   try {
     const persistentPairing = officePairingResumeEnabled(process.env)
+    officeRelayPersistenceAvailable = persistentPairing
     const officeRelayBindingStore = persistentPairing
       ? createElectronOfficeRelayBindingStore({
           userDataPath: app.getPath('userData'),
@@ -2577,7 +2656,7 @@ app.whenReady().then(async () => {
           proxy: officeMessagesProxy,
           retrievalProxy,
           negotiateCapabilities: true,
-          persistentPairing,
+          persistentPairing: () => officeRelayPersistenceAvailable,
           onPending: events.onPending,
           onPendingExpired: events.onPendingExpired,
           onStatus: events.onStatus,
@@ -2593,17 +2672,58 @@ app.whenReady().then(async () => {
         officeRelayDiagnostic = status
       },
       onBinding: officeRelayBindingStore
-        ? (binding) => officeRelayBindingStore.put(binding)
+        ? (binding) =>
+            saveOfficeRelayBindingForCurrentAccount({
+              binding,
+              persistenceAvailable: () => officeRelayPersistenceAvailable,
+              getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
+              put: (entry) => officeRelayBindingStore.put(entry),
+              tombstoneAccount: (accountId) => officeRelayBindingStore.tombstoneAccount(accountId),
+              onStorageFailure: async () => {
+                officeRelayDiagnostic = 'error:binding_lifecycle'
+                officeRelayActivationFence.lock()
+                await fallbackToOrdinaryOfficeRelay({
+                  expectedEpoch: officeRelayActivationFence.snapshot(),
+                  allowUnlock: false,
+                  suspendedReason: 'binding_lifecycle',
+                })
+              },
+            })
         : undefined,
       onBindingInvalidated: officeRelayBindingStore
-        ? (binding) => officeRelayBindingStore.remove(binding.accountId, binding.bindingId)
+        ? (binding) =>
+            invalidateOfficeRelayBindingForCurrentAccount({
+              binding,
+              persistenceAvailable: () => officeRelayPersistenceAvailable,
+              getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
+              remove: (accountId, bindingId) =>
+                officeRelayBindingStore.remove(accountId, bindingId),
+              onStorageFailure: async () => {
+                officeRelayDiagnostic = 'error:binding_lifecycle'
+                officeRelayActivationFence.lock()
+                await fallbackToOrdinaryOfficeRelay({
+                  expectedEpoch: officeRelayActivationFence.snapshot(),
+                  allowUnlock: false,
+                  suspendedReason: 'binding_lifecycle',
+                })
+              },
+            })
         : undefined,
       onAuthRequired: async () => {
+        officeRelayActivationFence.lock()
         try {
-          await officeRelayLifecycle?.terminalAuthLoss()
+          await terminalOfficeRelayAuthLoss(officeRelayLifecycle, officeRelay)
         } catch (error) {
           officeRelayDiagnostic = 'error:binding_lifecycle'
+          lockOfficeRelayPersistence({
+            disable: disableOfficeRelayPersistence,
+            pool: officeRelay,
+            reason: 'auth_required',
+          })
           throw error
+        } finally {
+          officeRelayActivationFence.lock()
+          officeRelay?.suspend('auth_required')
         }
       },
     })
@@ -2615,17 +2735,29 @@ app.whenReady().then(async () => {
         getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
       })
   } catch {
+    officeRelayPersistenceAvailable = false
+    officeRelayLifecycle = null
     officeRelayDiagnostic = 'error:invalid_config'
     console.error('[office-relay] invalid configuration')
   }
-  if (officeRelayLifecycle && officeRelay)
+  if (officeRelayLifecycle && officeRelay) {
+    const expectedEpoch = officeRelayActivationFence.snapshot()
     await startOfficeRelayPersistence({
-      sync: () => officeRelayLifecycle!.syncAccount(),
-      suspend: (reason) => officeRelay!.suspend(reason),
+      sync: () =>
+        officeRelayLifecycle!.syncAccount(
+          () => expectedEpoch === officeRelayActivationFence.snapshot(),
+        ),
+      fallbackToOrdinary: () =>
+        fallbackToOrdinaryOfficeRelay({
+          expectedEpoch,
+          allowUnlock: true,
+          suspendedReason: 'binding_lifecycle',
+        }),
       onBindingFailure: () => {
         officeRelayDiagnostic = 'error:binding_lifecycle'
       },
     })
+  }
   if (officeBridgeEnabled(process.env, app.isPackaged)) {
     officeBridgeDiagnostic = 'error'
     const initialAccount = await requireAuthRuntime()
@@ -2681,15 +2813,40 @@ app.whenReady().then(async () => {
     isTrustedSender: (sender) => Boolean(shellWindow && sender === shellWindow.webContents),
   })
   void authDeepLinks.initialize(async (callback) => {
+    officeRelayActivationFence.lock()
     officeRelay?.suspend('account_switch')
+    const expectedEpoch = officeRelayActivationFence.snapshot()
     await completeOfficeRelayOAuthLogin({
       consumeCallback: () => requireAuthRuntime().client.consumeCallback(callback),
       getAccountStatus: () =>
         syncOfficeBridgeAvailability(officeBridge, () =>
           requireAuthRuntime().client.getValidAccountStatus(),
         ),
-      syncBindingLifecycle: () => officeRelayLifecycle?.syncAccount() ?? Promise.resolve(),
-      suspend: (reason) => officeRelay?.suspend(reason),
+      syncBindingLifecycle: async (account) => {
+        if (officeRelayPersistenceAvailable) {
+          await syncOfficeRelaySession(
+            account,
+            officeRelayPersistenceAvailable,
+            officeRelayLifecycle,
+            officeRelay,
+            () => expectedEpoch === officeRelayActivationFence.snapshot(),
+          )
+          if (expectedEpoch !== officeRelayActivationFence.snapshot())
+            officeRelay?.suspend('auth_required')
+          return
+        }
+        await fallbackToOrdinaryOfficeRelay({
+          expectedEpoch,
+          allowUnlock: true,
+          suspendedReason: 'auth_required',
+        })
+      },
+      fallbackToOrdinary: () =>
+        fallbackToOrdinaryOfficeRelay({
+          expectedEpoch,
+          allowUnlock: true,
+          suspendedReason: 'binding_lifecycle',
+        }),
       onBindingFailure: () => {
         officeRelayDiagnostic = 'error:binding_lifecycle'
       },
@@ -2745,6 +2902,7 @@ app.on('before-quit', () => {
   stopSheetsSidecar()
   officeBridge?.revokeAll()
   officeBridge?.shutdown()
-  officeRelayLifecycle?.shutdown()
+  officeRelayActivationFence.lock()
+  shutdownOfficeRelaySession(officeRelayLifecycle, officeRelay)
   void officeBridgeServer?.stop()
 })

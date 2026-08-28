@@ -2,7 +2,7 @@ import type { OfficeRelayBindingStore } from './office-relay-binding-store'
 import type { OfficeRelayPool } from './office-relay-pool'
 
 export interface OfficeRelayLifecycle {
-  syncAccount(): Promise<void>
+  syncAccount(canActivate?: () => boolean): Promise<void>
   logout(): Promise<void>
   terminalAuthLoss(): Promise<void>
   shutdown(): void
@@ -30,16 +30,14 @@ export function createOfficeRelayLifecycle(options: {
       while (nextIndex < tombstones.length) {
         const tombstone = tombstones[nextIndex++]!
         try {
-          await options.pool.revokeBinding(tombstone.bindingId)
+          await options.pool.revokeBinding(tombstone.bindingId, accountId)
           await options.store.acknowledgeTombstone(accountId, tombstone.bindingId)
         } catch {
           // Keep the encrypted tombstone for this same account's next authenticated startup.
         }
       }
     }
-    await Promise.all(
-      Array.from({ length: Math.min(12, tombstones.length) }, () => worker()),
-    )
+    await Promise.all(Array.from({ length: Math.min(12, tombstones.length) }, () => worker()))
   }
 
   const invalidate = async (
@@ -49,7 +47,7 @@ export function createOfficeRelayLifecycle(options: {
     options.pool.suspend(reason)
     try {
       await options.store.tombstoneAccount(accountId)
-      await deliverTombstones(accountId)
+      if (reason === 'logout') await deliverTombstones(accountId)
       if (activeAccountId === accountId) activeAccountId = null
     } finally {
       options.pool.suspend(reason)
@@ -57,8 +55,9 @@ export function createOfficeRelayLifecycle(options: {
   }
 
   return {
-    syncAccount() {
+    syncAccount(canActivate) {
       return serialize(async () => {
+        if (canActivate && !canActivate()) return
         const localAccount = await (options.getAccountStatus ?? options.getValidAccountStatus)()
         if (!activeAccountId && localAccount.loggedIn && localAccount.userId)
           activeAccountId = localAccount.userId
@@ -72,8 +71,14 @@ export function createOfficeRelayLifecycle(options: {
         activeAccountId = account.userId
         await deliverTombstones(account.userId)
         const bindings = await options.store.listForAccount(account.userId)
+        if (canActivate && !canActivate()) return
         options.pool.activate()
-        await Promise.all(bindings.slice(0, 12).map((binding) => options.pool.resume(binding)))
+        await Promise.all(
+          bindings.slice(0, 12).map(async (binding) => {
+            if (canActivate && !canActivate()) return
+            await options.pool.resume(binding)
+          }),
+        )
       })
     },
     logout() {

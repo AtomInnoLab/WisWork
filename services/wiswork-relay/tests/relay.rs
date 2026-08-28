@@ -143,6 +143,14 @@ async fn server_with_binding_database_handle(
     path: &Path,
     challenge_ttl: Option<Duration>,
 ) -> (String, tokio::task::JoinHandle<()>) {
+    server_with_binding_database_config(path, challenge_ttl, None).await
+}
+
+async fn server_with_binding_database_config(
+    path: &Path,
+    challenge_ttl: Option<Duration>,
+    pairing_ttl: Option<Duration>,
+) -> (String, tokio::task::JoinHandle<()>) {
     let auth_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let auth_addr = auth_listener.local_addr().unwrap();
     let auth = axum::Router::new().route(
@@ -170,10 +178,14 @@ async fn server_with_binding_database_handle(
     let mut config = Config {
         auth_url: format!("http://{auth_addr}/oidc/me"),
         binding_database: Some(path.to_owned()),
+        max_claim_attempts: 20,
         ..Config::default()
     };
     if let Some(challenge_ttl) = challenge_ttl {
         config.resume_challenge_ttl = challenge_ttl;
+    }
+    if let Some(pairing_ttl) = pairing_ttl {
+        config.pairing_ttl = pairing_ttl;
     }
     let router = try_app(config).unwrap();
     let server = tokio::spawn(async move {
@@ -372,6 +384,29 @@ async fn enroll(
         }),
     )
     .await;
+    let offer = recv(&mut office).await;
+    assert_eq!(
+        offer,
+        json!({
+            "version": 2,
+            "type": "office.binding_offer",
+            "pairing_id": claimed["pairing_id"],
+            "binding_id": offer["binding_id"],
+            "capabilities": ["agent.v1"],
+            "features": ["pairing-resume.v1"],
+        })
+    );
+    send(
+        &mut office,
+        json!({
+            "version": 2,
+            "type": "office.binding_ready",
+            "pairing_id": claimed["pairing_id"],
+            "binding_id": offer["binding_id"],
+        }),
+    )
+    .await;
+    complete_office_binding_commit(&mut office, &claimed, &offer).await;
     let pc_ready = recv(&mut pc).await;
     let office_ready = recv(&mut office).await;
     assert_eq!(pc_ready["features"], json!(["pairing-resume.v1"]));
@@ -379,6 +414,29 @@ async fn enroll(
     assert_eq!(pc_ready["binding_id"], office_ready["binding_id"]);
     let binding_id = office_ready["binding_id"].as_str().unwrap().to_owned();
     (office, pc, office_ready, pc_ready, binding_id)
+}
+
+async fn complete_office_binding_commit(office: &mut TestSocket, claimed: &Value, offer: &Value) {
+    let commit = recv(office).await;
+    assert_eq!(
+        commit,
+        json!({
+            "version": 2,
+            "type": "office.binding_commit",
+            "pairing_id": claimed["pairing_id"],
+            "binding_id": offer["binding_id"],
+        })
+    );
+    send(
+        office,
+        json!({
+            "version": 2,
+            "type": "office.binding_committed",
+            "pairing_id": claimed["pairing_id"],
+            "binding_id": offer["binding_id"],
+        }),
+    )
+    .await;
 }
 
 async fn start_office_resume(
@@ -447,6 +505,20 @@ async fn enhanced_enrollment_is_opt_in_and_requires_explicit_approval() {
         json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1"],"features":["pairing-resume.v1"]}),
     )
     .await;
+    let offer = recv(&mut office).await;
+    assert_eq!(offer["type"], "office.binding_offer");
+    let count: i64 = connection
+        .query_row("SELECT count(*) FROM durable_bindings", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.binding_ready","pairing_id":claimed["pairing_id"],"binding_id":offer["binding_id"]}),
+    )
+    .await;
+    complete_office_binding_commit(&mut office, &claimed, &offer).await;
     let pc_ready = recv(&mut pc).await;
     let office_ready = recv(&mut office).await;
     assert_eq!(pc_ready["binding_id"], office_ready["binding_id"]);
@@ -456,6 +528,217 @@ async fn enhanced_enrollment_is_opt_in_and_requires_explicit_approval() {
         })
         .unwrap();
     assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn office_binding_abort_degrades_to_an_explicit_short_session_without_db_row() {
+    let path = database_path("office-abort");
+    let url = server_with_binding_database(&path, None).await;
+    let signing_key = SigningKey::from_slice(&[24_u8; 32]).unwrap();
+    let (mut office, mut pc, claimed) = begin_enrollment(&url, &signing_key).await;
+    send(
+        &mut pc,
+        json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1"],"features":["pairing-resume.v1"]}),
+    )
+    .await;
+    let offer = recv(&mut office).await;
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.binding_abort","pairing_id":claimed["pairing_id"],"binding_id":offer["binding_id"]}),
+    )
+    .await;
+    let aborted = recv(&mut office).await;
+    let office_ready = recv(&mut office).await;
+    let pc_ready = recv(&mut pc).await;
+    assert_eq!(
+        aborted,
+        json!({"version":2,"type":"office.binding_aborted","pairing_id":claimed["pairing_id"],"binding_id":offer["binding_id"]})
+    );
+    for approved in [&office_ready, &pc_ready] {
+        assert_eq!(approved["features"], json!([]));
+        assert!(approved.get("binding_id").is_none());
+    }
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT count(*) FROM durable_bindings", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn activation_abort_compensates_the_relay_row_before_short_session_fallback() {
+    let path = database_path("activation-abort");
+    let url = server_with_binding_database(&path, None).await;
+    let signing_key = SigningKey::from_slice(&[30_u8; 32]).unwrap();
+    let (mut office, mut pc, claimed) = begin_enrollment(&url, &signing_key).await;
+    send(
+        &mut pc,
+        json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1"],"features":["pairing-resume.v1"]}),
+    )
+    .await;
+    let offer = recv(&mut office).await;
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.binding_ready","pairing_id":claimed["pairing_id"],"binding_id":offer["binding_id"]}),
+    )
+    .await;
+    assert_eq!(recv(&mut office).await["type"], "office.binding_commit");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM durable_bindings WHERE revoked_at IS NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.binding_abort","pairing_id":claimed["pairing_id"],"binding_id":offer["binding_id"]}),
+    )
+    .await;
+    assert_eq!(recv(&mut office).await["type"], "office.binding_aborted");
+    assert_eq!(recv(&mut office).await["features"], json!([]));
+    assert_eq!(recv(&mut pc).await["features"], json!([]));
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM durable_bindings WHERE revoked_at IS NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn binding_ready_is_bound_to_the_office_that_received_the_offer() {
+    let path = database_path("binding-ready-bound");
+    let url = server_with_binding_database(&path, None).await;
+    let signing_key = SigningKey::from_slice(&[28_u8; 32]).unwrap();
+    let (mut office, mut pc, claimed) = begin_enrollment(&url, &signing_key).await;
+    send(
+        &mut pc,
+        json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1"],"features":["pairing-resume.v1"]}),
+    )
+    .await;
+    let offer = recv(&mut office).await;
+
+    let mut attacker = socket(&url, ORIGIN).await;
+    send(
+        &mut attacker,
+        json!({"version":2,"type":"office.binding_ready","pairing_id":claimed["pairing_id"],"binding_id":offer["binding_id"]}),
+    )
+    .await;
+    assert_eq!(recv(&mut attacker).await["code"], "invalid_pairing");
+
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.binding_ready","pairing_id":claimed["pairing_id"],"binding_id":offer["binding_id"]}),
+    )
+    .await;
+    complete_office_binding_commit(&mut office, &claimed, &offer).await;
+    assert_eq!(recv(&mut pc).await["type"], "pc.approved");
+    assert_eq!(recv(&mut office).await["type"], "office.approved");
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT count(*) FROM durable_bindings", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn approved_pc_disconnect_aborts_staging_and_old_code_cannot_cross_accounts() {
+    let path = database_path("approved-pc-disconnect");
+    let url = server_with_binding_database(&path, None).await;
+    let signing_key = SigningKey::from_slice(&[29_u8; 32]).unwrap();
+    let (mut office, mut pc, claimed) = begin_enrollment(&url, &signing_key).await;
+    send(
+        &mut pc,
+        json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1"],"features":["pairing-resume.v1"]}),
+    )
+    .await;
+    let offer = recv(&mut office).await;
+    pc.close(None).await.unwrap();
+    assert_eq!(recv(&mut office).await["type"], "office.binding_aborted");
+    assert_eq!(recv(&mut office).await["type"], "office.pc_offline");
+
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.binding_ready","pairing_id":claimed["pairing_id"],"binding_id":offer["binding_id"]}),
+    )
+    .await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), office.next())
+            .await
+            .is_err()
+    );
+
+    let mut other_account = pc_socket_with_token(&url, "legitimate-test-token")
+        .await
+        .unwrap();
+    send(
+        &mut other_account,
+        json!({"version":2,"type":"pc.claim","verification_code":claimed["verification_code"],"capabilities":["agent.v1"],"features":["pairing-resume.v1"]}),
+    )
+    .await;
+    assert_eq!(recv(&mut other_account).await["code"], "invalid_code");
+    let connection = rusqlite::Connection::open(path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT count(*) FROM durable_bindings", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn binding_limit_degrades_with_the_same_explicit_short_session_contract() {
+    let path = database_path("binding-limit-fallback");
+    for chunk in 0..2_u8 {
+        let (url, server) = server_with_binding_database_handle(&path, None).await;
+        for offset in 1..=6_u8 {
+            let byte = chunk * 6 + offset;
+            let signing_key = SigningKey::from_slice(&[byte; 32]).unwrap();
+            let (mut office, mut pc, _, _, _) = enroll(&url, &signing_key).await;
+            office.close(None).await.unwrap();
+            pc.close(None).await.unwrap();
+        }
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
+    let url = server_with_binding_database(&path, None).await;
+    let signing_key = SigningKey::from_slice(&[25_u8; 32]).unwrap();
+    let (mut office, mut pc, claimed) = begin_enrollment(&url, &signing_key).await;
+    send(
+        &mut pc,
+        json!({"version":2,"type":"pc.approve","pairing_id":claimed["pairing_id"],"capabilities":["agent.v1"],"features":["pairing-resume.v1"]}),
+    )
+    .await;
+    let offer = recv(&mut office).await;
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.binding_ready","pairing_id":claimed["pairing_id"],"binding_id":offer["binding_id"]}),
+    )
+    .await;
+    assert_eq!(recv(&mut office).await["type"], "office.binding_aborted");
+    let office_ready = recv(&mut office).await;
+    let pc_ready = recv(&mut pc).await;
+    assert_eq!(office_ready["features"], json!([]));
+    assert_eq!(pc_ready["features"], json!([]));
+    assert!(office_ready.get("binding_id").is_none());
+    assert!(pc_ready.get("binding_id").is_none());
 }
 
 #[tokio::test]
@@ -538,6 +821,51 @@ async fn pc_can_wait_before_office_proves_the_binding() {
     assert_eq!(office_ready["type"], "office.approved");
     assert_eq!(pc_ready["type"], "pc.approved");
     assert_eq!(office_ready["session_id"], pc_ready["session_id"]);
+}
+
+#[tokio::test]
+async fn expired_resume_waiter_is_notified_and_can_retry_on_the_same_socket() {
+    let path = database_path("resume-waiter-expiry");
+    let (enroll_url, enroll_server) = server_with_binding_database_handle(&path, None).await;
+    let signing_key = SigningKey::from_slice(&[27_u8; 32]).unwrap();
+    let (_office, _pc, _, _, binding_id) = enroll(&enroll_url, &signing_key).await;
+    enroll_server.abort();
+    assert!(enroll_server.await.unwrap_err().is_cancelled());
+
+    let (url, _server) =
+        server_with_binding_database_config(&path, None, Some(Duration::from_millis(500))).await;
+    let (mut office, _) = start_office_resume(&url, &signing_key, &binding_id).await;
+    assert_eq!(recv(&mut office).await["type"], "office.waiting_for_pc");
+    let expired = tokio::time::timeout(Duration::from_secs(2), recv(&mut office))
+        .await
+        .unwrap();
+    assert_eq!(expired["code"], "peer_unavailable");
+
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.resume","binding_id":binding_id,"host":"Word","capabilities":["agent.v1"]}),
+    )
+    .await;
+    let challenge = recv(&mut office).await;
+    assert_eq!(challenge["type"], "office.challenge");
+    let challenge_value = challenge["challenge"].as_str().unwrap();
+    let transcript =
+        format!("wiswork-office-resume-v1\n{binding_id}\n{challenge_value}\n{ORIGIN}\nWord");
+    let signature: Signature = signing_key.sign(transcript.as_bytes());
+    send(
+        &mut office,
+        json!({"version":2,"type":"office.prove","binding_id":binding_id,"challenge":challenge_value,"signature":URL_SAFE_NO_PAD.encode(signature.to_bytes())}),
+    )
+    .await;
+    assert_eq!(recv(&mut office).await["type"], "office.waiting_for_pc");
+    let mut pc = pc_socket(&url).await;
+    send(
+        &mut pc,
+        json!({"version":2,"type":"pc.resume","binding_id":binding_id,"capabilities":["agent.v1"]}),
+    )
+    .await;
+    assert_eq!(recv(&mut pc).await["type"], "pc.approved");
+    assert_eq!(recv(&mut office).await["type"], "office.approved");
 }
 
 #[tokio::test]
@@ -758,6 +1086,52 @@ async fn revocation_terminates_sessions_and_prevents_future_resume() {
         recv(&mut resume_office).await["code"],
         "binding_unavailable"
     );
+
+    send(
+        &mut revoker,
+        json!({"version":2,"type":"pc.revoke_binding","binding_id":binding_id}),
+    )
+    .await;
+    assert_eq!(recv(&mut revoker).await["type"], "pc.binding_revoked");
+
+    let mut wrong_subject = pc_socket_with_token(&url, "legitimate-test-token")
+        .await
+        .unwrap();
+    send(
+        &mut wrong_subject,
+        json!({"version":2,"type":"pc.revoke_binding","binding_id":binding_id}),
+    )
+    .await;
+    assert_eq!(
+        recv(&mut wrong_subject).await["code"],
+        "binding_unavailable"
+    );
+}
+
+#[tokio::test]
+async fn authenticated_revocation_retry_is_acknowledged_after_relay_restart() {
+    let path = database_path("revoke-retry-restart");
+    let (url, server) = server_with_binding_database_handle(&path, None).await;
+    let signing_key = SigningKey::from_slice(&[26_u8; 32]).unwrap();
+    let (_office, _pc, _, _, binding_id) = enroll(&url, &signing_key).await;
+    let mut revoker = pc_socket(&url).await;
+    send(
+        &mut revoker,
+        json!({"version":2,"type":"pc.revoke_binding","binding_id":binding_id}),
+    )
+    .await;
+    assert_eq!(recv(&mut revoker).await["type"], "pc.binding_revoked");
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+
+    let restarted_url = server_with_binding_database(&path, None).await;
+    let mut retry = pc_socket(&restarted_url).await;
+    send(
+        &mut retry,
+        json!({"version":2,"type":"pc.revoke_binding","binding_id":binding_id}),
+    )
+    .await;
+    assert_eq!(recv(&mut retry).await["type"], "pc.binding_revoked");
 }
 
 #[test]
@@ -778,6 +1152,43 @@ fn unknown_database_schema_fails_without_mutation() {
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
     assert_eq!(version, 2);
+}
+
+#[tokio::test]
+async fn disabled_pairing_resume_never_opens_or_mutates_the_configured_database() {
+    let path = database_path("disabled-future-schema");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch("PRAGMA user_version = 999;")
+        .unwrap();
+    drop(connection);
+    let result = try_app(Config {
+        pairing_resume_enabled: false,
+        binding_database: Some(path.clone()),
+        ..Config::default()
+    });
+    assert!(result.is_ok());
+    let connection = rusqlite::Connection::open(path).unwrap();
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 999);
+}
+
+#[tokio::test]
+async fn disabled_binary_starts_without_a_binding_database_environment_variable() {
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_wiswork-relay"))
+        .env("WISWORK_RELAY_PAIRING_RESUME", "0")
+        .env("WISWORK_RELAY_PORT", "0")
+        .env_remove("WISWORK_RELAY_BINDING_DB")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(child.try_wait().unwrap().is_none());
+    child.kill().await.unwrap();
+    let status = child.wait().await.unwrap();
+    assert!(!status.success());
 }
 
 #[test]

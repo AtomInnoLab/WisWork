@@ -67,7 +67,7 @@ export interface RelaySocket {
 export interface OfficeRelayClient {
   claim(code: string): Promise<void>
   resume(binding: OfficeRelayBinding): Promise<void>
-  revokeBinding(bindingId: string): Promise<void>
+  revokeBinding(bindingId: string, expectedAccountId: string): Promise<void>
   approve(pairingId: string): Promise<boolean>
   reject(pairingId: string): boolean
   listPending(): OfficePairingRequest[]
@@ -112,7 +112,7 @@ export function createOfficeRelayClient(options: {
   proxy: MessagesProxy
   retrievalProxy?: OfficeRetrievalProxy
   negotiateCapabilities?: boolean
-  persistentPairing?: boolean
+  persistentPairing?: boolean | (() => boolean)
   onBinding?: (binding: OfficeRelayBinding) => void | Promise<void>
   onBindingInvalidated?: (bindingId: string) => void | Promise<void>
   onPending(pairing: OfficePairingRequest): void
@@ -128,8 +128,12 @@ export function createOfficeRelayClient(options: {
   const negotiateCapabilities =
     options.negotiateCapabilities === true ||
     Boolean(options.retrievalProxy) ||
-    options.persistentPairing === true
-  const persistentPairing = options.persistentPairing === true
+    options.persistentPairing === true ||
+    typeof options.persistentPairing === 'function'
+  const persistentPairingEnabled = () =>
+    typeof options.persistentPairing === 'function'
+      ? options.persistentPairing() === true
+      : options.persistentPairing === true
   const offeredCapabilities = options.retrievalProxy ? [...V2_CAPABILITIES] : ['agent.v1']
   let pending: (OfficePairingRequest & { capabilities?: string[]; features?: string[] }) | null =
     null
@@ -546,19 +550,26 @@ export function createOfficeRelayClient(options: {
       return
     }
     if (typed.type === 'pc.approved') {
-      if (
-        acceptedApprovalSignature !== null &&
-        frameSignature(typed) === acceptedApprovalSignature
-      )
+      if (acceptedApprovalSignature !== null && frameSignature(typed) === acceptedApprovalSignature)
         return
       const approvedKeys = ['version', 'type', 'session_id', 'capability', 'expires_in']
       if (protocolVersion === 2) approvedKeys.push('capabilities')
       const resumed = action === 'resume'
+      const featureResultExpected =
+        !resumed && pending !== null && Object.hasOwn(pending, 'features')
       const remembersBinding =
-        !resumed && pending?.features?.includes(PAIRING_RESUME_FEATURE) === true
-      if (remembersBinding) approvedKeys.push('features', 'binding_id')
+        featureResultExpected && pending?.features?.includes(PAIRING_RESUME_FEATURE) === true
+      const durableBindingApproval =
+        remembersBinding && exact(frame, [...approvedKeys, 'features', 'binding_id'])
+      const shortSessionFallback =
+        featureResultExpected &&
+        exact(frame, [...approvedKeys, 'features']) &&
+        Array.isArray(typed.features) &&
+        typed.features.length === 0
       if (
-        !exact(frame, approvedKeys) ||
+        (featureResultExpected
+          ? !durableBindingApproval && !shortSessionFallback
+          : !exact(frame, approvedKeys)) ||
         !validId(typed.session_id) ||
         !validId(typed.capability) ||
         !Number.isSafeInteger(typed.expires_in) ||
@@ -571,7 +582,7 @@ export function createOfficeRelayClient(options: {
         (protocolVersion === 2 &&
           JSON.stringify(typed.capabilities) !==
             JSON.stringify(resumed ? resumeBinding?.capabilities : pending?.capabilities)) ||
-        (remembersBinding &&
+        (durableBindingApproval &&
           (!validId(typed.binding_id) ||
             JSON.stringify(typed.features) !== JSON.stringify([PAIRING_RESUME_FEATURE])))
       )
@@ -596,7 +607,7 @@ export function createOfficeRelayClient(options: {
       }
       if (pairingTimer) clearTimeout(pairingTimer)
       pairingTimer = null
-      if (!remembersBinding || !approvedPending || !approvedAccountId) {
+      if (!durableBindingApproval || !approvedPending || !approvedAccountId) {
         finalizeApproval()
         return
       }
@@ -610,9 +621,14 @@ export function createOfficeRelayClient(options: {
             capabilities: [...(approvedPending.capabilities ?? ['agent.v1'])],
             createdAt: (options.now ?? Date.now)(),
           })
-        } catch {
+        } catch (error) {
+          if (error instanceof Error && error.message === 'stale_binding_account') {
+            clear('binding_not_remembered', true)
+            return
+          }
           await revokeBindingRemote(
             typed.binding_id as string,
+            approvedAccountId,
             'binding_not_remembered',
           ).catch(() => {
             clear('binding_not_remembered', true)
@@ -649,6 +665,14 @@ export function createOfficeRelayClient(options: {
       typeof typed.code === 'string' &&
       RELAY_ERROR_CODES.has(typed.code)
     ) {
+      if (action === 'revoke' && revocation && typed.code === 'binding_unavailable') {
+        const completed = revocation
+        revocation = null
+        clearTimeout(completed.timer)
+        completed.resolve()
+        clear(completed.completionReason, true)
+        return
+      }
       if (
         action === 'resume' &&
         resumeBinding &&
@@ -701,6 +725,18 @@ export function createOfficeRelayClient(options: {
     if (!accessToken || !/^[\x21-\x7e]+$/.test(accessToken)) {
       clear('auth_required', true)
       throw new Error('auth_required')
+    }
+    if (expectedAccountId !== undefined) {
+      const confirmed = await options.getValidAccountStatus().catch((error) => {
+        ensureCurrent()
+        clear('auth_required', true)
+        throw error
+      })
+      ensureCurrent()
+      if (!confirmed.loggedIn || confirmed.userId !== expectedAccountId) {
+        clear('auth_required', true)
+        throw new Error('auth_required')
+      }
     }
     setStatus('connecting')
     let next: RelaySocket
@@ -798,15 +834,17 @@ export function createOfficeRelayClient(options: {
 
   async function revokeBindingRemote(
     bindingId: string,
+    expectedAccountId: string,
     completionReason: 'binding_revoked' | 'binding_not_remembered' = 'binding_revoked',
   ): Promise<void> {
-    if (!validId(bindingId)) throw new Error('invalid_office_binding')
+    if (!validId(bindingId) || typeof expectedAccountId !== 'string' || !expectedAccountId)
+      throw new Error('invalid_office_binding')
     clear('new_revocation', true)
     generation += 1
     const owner = generation
     action = 'revoke'
     protocolVersion = 2
-    await openAuthenticated(owner)
+    await openAuthenticated(owner, expectedAccountId)
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (revocation?.bindingId !== bindingId) return
@@ -822,7 +860,7 @@ export function createOfficeRelayClient(options: {
   return {
     async claim(code) {
       if (!/^\d{6}$/.test(code)) throw new Error('invalid_verification_code')
-      await beginClaim(code, persistentPairing, true)
+      await beginClaim(code, persistentPairingEnabled(), true)
     },
     async resume(binding) {
       if (
@@ -852,8 +890,8 @@ export function createOfficeRelayClient(options: {
         capabilities: binding.capabilities,
       })
     },
-    async revokeBinding(bindingId) {
-      return revokeBindingRemote(bindingId)
+    async revokeBinding(bindingId, expectedAccountId) {
+      return revokeBindingRemote(bindingId, expectedAccountId)
     },
     async approve(pairingId) {
       const account = await options.getValidAccountStatus().catch((error) => {

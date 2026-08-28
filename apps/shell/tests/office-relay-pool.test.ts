@@ -489,7 +489,7 @@ describe('Office relay pool', () => {
       },
     })
     await pool.resume(binding(0))
-    const revoking = pool.revokeBinding(binding(0).bindingId)
+    const revoking = pool.revokeBinding(binding(0).bindingId, binding(0).accountId)
     await expect(pool.claim('111111')).rejects.toThrow('relay_capacity_exceeded')
     release()
     await revoking

@@ -133,6 +133,27 @@ struct Pairing {
     negotiated_features: Vec<String>,
     binding_public_key: Option<[u8; 65]>,
     pc_subject: Option<[u8; 32]>,
+    pending_binding: Option<PendingBinding>,
+}
+#[derive(Clone)]
+struct PendingBinding {
+    id: String,
+    pc: u64,
+    pc_tx: Tx,
+    subject: [u8; 32],
+    capabilities: Vec<String>,
+    phase: PendingBindingPhase,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PendingBindingPhase {
+    Offered,
+    CommitSent,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BindingResult {
+    Ready,
+    Abort,
+    Committed,
 }
 struct Active {
     id: String,
@@ -165,6 +186,16 @@ struct ResumeChallenge {
     challenge: String,
     expires: Instant,
 }
+struct ExpiredResumeChallenge {
+    binding_hash: [u8; 32],
+    challenge_hash: [u8; 32],
+    expires: Instant,
+}
+struct CompletedBindingOffer {
+    office: u64,
+    binding_id: String,
+    expires: Instant,
+}
 struct OfficeResume {
     binding: Binding,
     office: u64,
@@ -193,11 +224,15 @@ struct Store {
     preauth_attempts: HashMap<IpAddr, (Instant, u8)>,
     global_preauth: (Option<Instant>, u32),
     resume_challenges: HashMap<u64, ResumeChallenge>,
+    expired_resume_challenges: HashMap<u64, ExpiredResumeChallenge>,
+    completed_binding_offers: HashMap<String, CompletedBindingOffer>,
     office_resumes: HashMap<u64, OfficeResume>,
     pc_resumes: HashMap<u64, PcResume>,
     connection_resume_attempts: HashMap<u64, u8>,
     resume_attempts: HashMap<IpAddr, (Instant, u8)>,
     global_resume_attempts: (Option<Instant>, u32),
+    denied_bindings: HashSet<String>,
+    pending_revocations: HashMap<String, [u8; 32]>,
 }
 
 pub fn app(config: Config) -> Router {
@@ -205,7 +240,11 @@ pub fn app(config: Config) -> Router {
 }
 
 pub fn try_app(config: Config) -> Result<Router, BindingStoreError> {
-    let bindings = BindingStore::open(config.binding_database.as_deref())?;
+    let bindings = if config.pairing_resume_enabled {
+        BindingStore::open(config.binding_database.as_deref())?
+    } else {
+        BindingStore::disabled()
+    };
     let state = App {
         inner: Arc::new(Inner {
             state: Mutex::new(Store::default()),
@@ -240,7 +279,7 @@ fn spawn_sweeper(state: &App) -> tokio::task::JoinHandle<()> {
                 break;
             };
             let mut store = inner.state.lock().await;
-            expire(&mut store, inner.config.pairing_ttl);
+            expire(&inner, &mut store);
         }
     })
 }
@@ -741,13 +780,24 @@ async fn process(
     match kind {
         "office.create" => create(app, conn, tx, origin, peer, map).await,
         "office.resume" => office_resume(app, conn, tx, origin, peer, map).await,
-        "office.prove" => office_prove(app, conn, tx, map).await,
+        "office.prove" if app.inner.config.pairing_resume_enabled => {
+            office_prove(app, conn, tx, map).await
+        }
+        "office.binding_ready" if app.inner.config.pairing_resume_enabled => {
+            office_binding_result(app, conn, map, BindingResult::Ready).await
+        }
+        "office.binding_abort" if app.inner.config.pairing_resume_enabled => {
+            office_binding_result(app, conn, map, BindingResult::Abort).await
+        }
+        "office.binding_committed" if app.inner.config.pairing_resume_enabled => {
+            office_binding_result(app, conn, map, BindingResult::Committed).await
+        }
         "pc.negotiate" => negotiate(app, tx, subject.ok_or("auth_required")?, map).await,
         "pc.claim" => claim(app, conn, tx, subject.ok_or("auth_required")?, map).await,
         "pc.approve" => approve(app, conn, tx, map).await,
         "pc.reject" => reject(app, conn, map).await,
         "pc.resume" => pc_resume(app, conn, tx, subject.ok_or("auth_required")?, map).await,
-        "pc.revoke_binding" => {
+        "pc.revoke_binding" if app.inner.config.pairing_resume_enabled => {
             revoke_binding(app, conn, tx, subject.ok_or("auth_required")?, map).await
         }
         "office.request" => request(app, conn, map).await,
@@ -801,7 +851,7 @@ async fn negotiate(
         return Err("invalid_code");
     }
     let mut store = app.inner.state.lock().await;
-    expire(&mut store, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut store);
     if store
         .global_claims
         .0
@@ -912,7 +962,7 @@ async fn create(
         return Err("unsupported_host");
     }
     let mut store = app.inner.state.lock().await;
-    expire(&mut store, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut store);
     let per_connection = store.connection_pairings.entry(conn).or_default();
     if *per_connection >= 4 {
         return Err("pairing_limit");
@@ -969,6 +1019,7 @@ async fn create(
         negotiated_features: Vec::new(),
         binding_public_key: public_key,
         pc_subject: None,
+        pending_binding: None,
     };
     store.codes.insert(code.clone(), id.clone());
     store.pairings.insert(id.clone(), pairing);
@@ -1023,7 +1074,7 @@ async fn claim(
         return Err("invalid_code");
     }
     let mut s = app.inner.state.lock().await;
-    expire(&mut s, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut s);
     let negotiated_claim = s
         .codes
         .get(code)
@@ -1122,7 +1173,12 @@ async fn claim(
     Ok(())
 }
 
-async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result<(), &'static str> {
+async fn approve(
+    app: &App,
+    conn: u64,
+    _tx: &Tx,
+    m: Map<String, Value>,
+) -> Result<(), &'static str> {
     let protocol = version(&m)?;
     let enhanced = protocol == PROTOCOL_V2 && m.contains_key("features");
     let expected: &[&str] = if enhanced {
@@ -1147,7 +1203,7 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
         Vec::new()
     };
     let mut s = app.inner.state.lock().await;
-    expire(&mut s, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut s);
     if s.sessions.len() >= 10_000 {
         return Err("relay_busy");
     }
@@ -1163,100 +1219,376 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
     {
         return Err("invalid_frame");
     }
-    let pc_sender = tx.sender.clone();
-    let office_sender = pending.office_tx.sender.clone();
-    let pc_permit = pc_sender.try_reserve().map_err(|_| "peer_unavailable")?;
-    let office_permit = office_sender
-        .try_reserve()
-        .map_err(|_| "peer_unavailable")?;
-    let p = s.pairings.remove(&id).ok_or("invalid_pairing")?;
-    let remembered_binding = if p.negotiated_features == [PAIRING_RESUME] {
+    if pending.negotiated_features == [PAIRING_RESUME] {
+        if pending.pending_binding.is_some() {
+            return Err("invalid_pairing");
+        }
         let binding_id = token();
-        let binding = Binding {
-            id: binding_id.clone(),
-            subject: p.pc_subject.ok_or("auth_required")?,
-            public_key: p.binding_public_key.ok_or("invalid_frame")?,
-            host: p.host.clone(),
-            origin: OFFICE_ORIGIN.to_owned(),
-            capabilities: approved_capabilities.clone(),
-        };
-        app.inner
-            .bindings
-            .enroll(&binding)
-            .ok()
-            .map(|()| binding_id)
+        let office_tx = pending.office_tx.clone();
+        let approved_pc = pending.pc.clone().ok_or("peer_unavailable")?;
+        let approved_subject = pending.pc_subject.ok_or("auth_required")?;
+        try_send(
+            &office_tx,
+            json!({
+                "version": PROTOCOL_V2,
+                "type": "office.binding_offer",
+                "pairing_id": id,
+                "binding_id": binding_id,
+                "capabilities": approved_capabilities,
+                "features": [PAIRING_RESUME],
+            }),
+        )
+        .map_err(|_| "peer_unavailable")?;
+        let pairing = s.pairings.get_mut(&id).ok_or("invalid_pairing")?;
+        pairing.pending_binding = Some(PendingBinding {
+            id: binding_id,
+            pc: approved_pc.0,
+            pc_tx: approved_pc.1,
+            subject: approved_subject,
+            capabilities: approved_capabilities,
+            phase: PendingBindingPhase::Offered,
+        });
+        let code = pairing.code.clone();
+        s.codes.remove(&code);
+        return Ok(());
+    }
+    let p = s.pairings.remove(&id).ok_or("invalid_pairing")?;
+    establish_pairing_session(&app.inner, &mut s, p, None, false, None, None)
+}
+
+async fn office_binding_result(
+    app: &App,
+    conn: u64,
+    m: Map<String, Value>,
+    result: BindingResult,
+) -> Result<(), &'static str> {
+    if version(&m)? != PROTOCOL_V2 || !exact(&m, &["version", "type", "pairing_id", "binding_id"]) {
+        return Err("invalid_frame");
+    }
+    let pairing_id = string(&m, "pairing_id")?.to_owned();
+    let binding_id = string(&m, "binding_id")?.to_owned();
+    if !valid_token(&pairing_id) || !valid_token(&binding_id) {
+        return Err("invalid_pairing");
+    }
+    let mut store = app.inner.state.lock().await;
+    if store
+        .completed_binding_offers
+        .get(&pairing_id)
+        .is_some_and(|completed| {
+            completed.office == conn
+                && completed.binding_id == binding_id
+                && completed.expires > Instant::now()
+        })
+    {
+        return Ok(());
+    }
+    let pending = store.pairings.get(&pairing_id).ok_or("invalid_pairing")?;
+    let approved = pending.pending_binding.as_ref().ok_or("invalid_pairing")?;
+    if pending.office != conn
+        || pending.version != PROTOCOL_V2
+        || approved.id != binding_id
+        || pending.pc.as_ref().map(|pc| pc.0) != Some(approved.pc)
+        || pending.pc_subject != Some(approved.subject)
+        || pending.negotiated_capabilities != approved.capabilities
+        || pending.negotiated_features != [PAIRING_RESUME]
+    {
+        return Err("invalid_pairing");
+    }
+    let approved = approved.clone();
+    let pending_expires = pending.expires;
+    let office_tx = pending.office_tx.clone();
+    let public_key = pending.binding_public_key.ok_or("invalid_frame")?;
+    let host = pending.host.clone();
+    if pending_expires <= Instant::now() {
+        let pairing = store
+            .pairings
+            .remove(&pairing_id)
+            .ok_or("invalid_pairing")?;
+        let committed = approved.phase == PendingBindingPhase::CommitSent;
+        return fallback_staged_pairing(&app.inner, &mut store, pairing, binding_id, committed);
+    }
+    match result {
+        BindingResult::Abort => {
+            let pairing = store
+                .pairings
+                .remove(&pairing_id)
+                .ok_or("invalid_pairing")?;
+            fallback_staged_pairing(
+                &app.inner,
+                &mut store,
+                pairing,
+                binding_id,
+                approved.phase == PendingBindingPhase::CommitSent,
+            )
+        }
+        BindingResult::Ready if approved.phase == PendingBindingPhase::CommitSent => {
+            if try_send(
+                &office_tx,
+                json!({"version":PROTOCOL_V2,"type":"office.binding_commit","pairing_id":pairing_id,"binding_id":binding_id}),
+            )
+            .is_err()
+            {
+                let pairing = store
+                    .pairings
+                    .remove(&pairing_id)
+                    .ok_or("invalid_pairing")?;
+                return fallback_staged_pairing(
+                    &app.inner,
+                    &mut store,
+                    pairing,
+                    binding_id,
+                    true,
+                );
+            }
+            Ok(())
+        }
+        BindingResult::Ready => {
+            let binding = Binding {
+                id: binding_id.clone(),
+                subject: approved.subject,
+                public_key,
+                host: host.clone(),
+                origin: OFFICE_ORIGIN.to_owned(),
+                capabilities: approved.capabilities.clone(),
+            };
+            if app.inner.bindings.enroll_pending(&binding).is_err() {
+                let pairing = store
+                    .pairings
+                    .remove(&pairing_id)
+                    .ok_or("invalid_pairing")?;
+                return fallback_staged_pairing(&app.inner, &mut store, pairing, binding_id, false);
+            }
+            let pairing = store
+                .pairings
+                .get_mut(&pairing_id)
+                .ok_or("invalid_pairing")?;
+            pairing
+                .pending_binding
+                .as_mut()
+                .ok_or("invalid_pairing")?
+                .phase = PendingBindingPhase::CommitSent;
+            if try_send(
+                &pairing.office_tx,
+                json!({"version":PROTOCOL_V2,"type":"office.binding_commit","pairing_id":pairing_id,"binding_id":binding_id}),
+            )
+            .is_err()
+            {
+                let pairing = store
+                    .pairings
+                    .remove(&pairing_id)
+                    .ok_or("invalid_pairing")?;
+                return fallback_staged_pairing(
+                    &app.inner,
+                    &mut store,
+                    pairing,
+                    binding_id,
+                    true,
+                );
+            }
+            Ok(())
+        }
+        BindingResult::Committed if approved.phase == PendingBindingPhase::CommitSent => {
+            let pairing = store
+                .pairings
+                .remove(&pairing_id)
+                .ok_or("invalid_pairing")?;
+            remember_completed_offer(&app.inner, &mut store, pairing_id, conn, binding_id.clone());
+            establish_pairing_session(
+                &app.inner,
+                &mut store,
+                pairing,
+                Some(binding_id),
+                true,
+                None,
+                Some(approved.subject),
+            )
+        }
+        BindingResult::Committed => Err("invalid_pairing"),
+    }
+}
+
+fn fallback_staged_pairing(
+    inner: &Inner,
+    store: &mut Store,
+    pairing: Pairing,
+    binding_id: String,
+    committed: bool,
+) -> Result<(), &'static str> {
+    remember_completed_offer(
+        inner,
+        store,
+        pairing.id.clone(),
+        pairing.office,
+        binding_id.clone(),
+    );
+    if committed {
+        compensate_binding(inner, store, &pairing, Some(&binding_id));
+    }
+    let abort_frame = json!({
+        "version": PROTOCOL_V2,
+        "type": "office.binding_aborted",
+        "pairing_id": pairing.id,
+        "binding_id": binding_id,
+    });
+    establish_pairing_session(inner, store, pairing, None, true, Some(abort_frame), None)
+}
+
+fn establish_pairing_session(
+    inner: &Inner,
+    store: &mut Store,
+    pairing: Pairing,
+    mut remembered_binding: Option<String>,
+    mut explicit_features: bool,
+    mut abort_frame: Option<Value>,
+    activate_subject: Option<[u8; 32]>,
+) -> Result<(), &'static str> {
+    store.codes.remove(&pairing.code);
+    if store.sessions.len() >= 10_000 {
+        compensate_binding(inner, store, &pairing, remembered_binding.as_deref());
+        abort_committed_binding(&pairing, remembered_binding.as_deref());
+        send_pending_abort(&pairing, abort_frame.as_ref());
+        terminate_pairing(&pairing);
+        return Err("relay_busy");
+    }
+    let approved_pc = if let Some(approved) = pairing.pending_binding.as_ref() {
+        if pairing.pc.as_ref().map(|pc| pc.0) != Some(approved.pc)
+            || pairing.pc_subject != Some(approved.subject)
+            || pairing.negotiated_capabilities != approved.capabilities
+        {
+            compensate_binding(inner, store, &pairing, remembered_binding.as_deref());
+            abort_committed_binding(&pairing, remembered_binding.as_deref());
+            send_pending_abort(&pairing, abort_frame.as_ref());
+            terminate_pairing(&pairing);
+            return Err("invalid_pairing");
+        }
+        Some((approved.pc, approved.pc_tx.clone()))
     } else {
-        None
+        pairing.pc.clone()
+    };
+    let Some((pc_conn, pc_tx)) = approved_pc else {
+        compensate_binding(inner, store, &pairing, remembered_binding.as_deref());
+        abort_committed_binding(&pairing, remembered_binding.as_deref());
+        send_pending_abort(&pairing, abort_frame.as_ref());
+        terminate_pairing(&pairing);
+        return Err("peer_unavailable");
+    };
+    let pc_sender = pc_tx.sender.clone();
+    let office_sender = pairing.office_tx.sender.clone();
+    let pc_permit = match pc_sender.try_reserve() {
+        Ok(permit) => permit,
+        Err(_) => {
+            compensate_binding(inner, store, &pairing, remembered_binding.as_deref());
+            abort_committed_binding(&pairing, remembered_binding.as_deref());
+            send_pending_abort(&pairing, abort_frame.as_ref());
+            terminate_pairing(&pairing);
+            return Err("peer_unavailable");
+        }
+    };
+    let office_message_count = if abort_frame.is_some() || activate_subject.is_some() {
+        2
+    } else {
+        1
+    };
+    let mut office_permits = match office_sender.try_reserve_many(office_message_count) {
+        Ok(permits) => permits,
+        Err(_) => {
+            compensate_binding(inner, store, &pairing, remembered_binding.as_deref());
+            abort_committed_binding(&pairing, remembered_binding.as_deref());
+            send_pending_abort(&pairing, abort_frame.as_ref());
+            terminate_pairing(&pairing);
+            return Err("peer_unavailable");
+        }
     };
     let sid = token();
     let oc = token();
     let pc = token();
-    let expires = app
-        .inner
-        .config
-        .session_ttl
-        .min(app.inner.config.session_max_ttl);
+    let expires = inner.config.session_ttl.min(inner.config.session_max_ttl);
     let now = Instant::now();
+    #[cfg(test)]
+    let fail_delivery = inner.fail_approval_delivery.swap(false, Ordering::SeqCst);
+    #[cfg(not(test))]
+    let fail_delivery = false;
+    if fail_delivery {
+        drop(pc_permit);
+        drop(office_permits);
+        compensate_binding(inner, store, &pairing, remembered_binding.as_deref());
+        abort_committed_binding(&pairing, remembered_binding.as_deref());
+        send_pending_abort(&pairing, abort_frame.as_ref());
+        terminate_pairing(&pairing);
+        return Err("peer_unavailable");
+    }
+    if let (Some(binding_id), Some(subject)) = (remembered_binding.as_deref(), activate_subject)
+        && !matches!(
+            inner.bindings.activate_pending(binding_id, &subject),
+            Ok(true)
+        )
+    {
+        let binding_id = binding_id.to_owned();
+        compensate_binding(inner, store, &pairing, Some(&binding_id));
+        abort_frame = Some(json!({
+            "version": PROTOCOL_V2,
+            "type": "office.binding_aborted",
+            "pairing_id": pairing.id,
+            "binding_id": binding_id,
+        }));
+        remembered_binding = None;
+        explicit_features = true;
+    }
     let pc_approved = if let Some(binding_id) = remembered_binding.as_ref() {
-        json!({"version":protocol,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs(),"capabilities":approved_capabilities,"features":[PAIRING_RESUME],"binding_id":binding_id})
-    } else if protocol == PROTOCOL_V2 {
-        json!({"version":protocol,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs(),"capabilities":approved_capabilities})
+        json!({"version":pairing.version,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs(),"capabilities":pairing.negotiated_capabilities,"features":[PAIRING_RESUME],"binding_id":binding_id})
+    } else if pairing.version == PROTOCOL_V2 && explicit_features {
+        json!({"version":pairing.version,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs(),"capabilities":pairing.negotiated_capabilities,"features":[]})
+    } else if pairing.version == PROTOCOL_V2 {
+        json!({"version":pairing.version,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs(),"capabilities":pairing.negotiated_capabilities})
     } else {
         json!({"version":1,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs()})
     };
     let office_approved = if let Some(binding_id) = remembered_binding.as_ref() {
-        json!({"version":protocol,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs(),"capabilities":approved_capabilities,"features":[PAIRING_RESUME],"binding_id":binding_id})
-    } else if protocol == PROTOCOL_V2 {
-        json!({"version":protocol,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs(),"capabilities":approved_capabilities})
+        json!({"version":pairing.version,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs(),"capabilities":pairing.negotiated_capabilities,"features":[PAIRING_RESUME],"binding_id":binding_id})
+    } else if pairing.version == PROTOCOL_V2 && explicit_features {
+        json!({"version":pairing.version,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs(),"capabilities":pairing.negotiated_capabilities,"features":[]})
+    } else if pairing.version == PROTOCOL_V2 {
+        json!({"version":pairing.version,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs(),"capabilities":pairing.negotiated_capabilities})
     } else {
         json!({"version":1,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs()})
     };
-    #[cfg(test)]
-    let fail_delivery = app
-        .inner
-        .fail_approval_delivery
-        .swap(false, Ordering::SeqCst);
-    #[cfg(not(test))]
-    let fail_delivery = false;
-    if deliver_approval(
-        pc_permit,
-        office_permit,
-        pc_approved,
-        office_approved,
-        fail_delivery,
-    )
-    .is_err()
-    {
-        if let (Some(binding_id), Some(subject)) = (remembered_binding.as_deref(), p.pc_subject) {
-            let _ = app.inner.bindings.revoke(binding_id, &subject);
-        }
-        return Err("peer_unavailable");
+    if let Some(abort_frame) = abort_frame {
+        office_permits
+            .next()
+            .expect("reserved binding abort permit")
+            .send(Message::Text(abort_frame.to_string().into()));
     }
-    s.codes.remove(&p.code);
-    s.connection_sessions
-        .entry(p.office)
+    pc_permit.send(Message::Text(pc_approved.to_string().into()));
+    office_permits
+        .next()
+        .expect("reserved Office approval permit")
+        .send(Message::Text(office_approved.to_string().into()));
+    store
+        .connection_sessions
+        .entry(pairing.office)
         .or_default()
         .insert(sid.clone());
-    s.connection_sessions
-        .entry(conn)
+    store
+        .connection_sessions
+        .entry(pc_conn)
         .or_default()
         .insert(sid.clone());
-    s.sessions.insert(
+    store.sessions.insert(
         sid,
         Session {
-            version: protocol,
-            host: p.host,
-            office: p.office,
-            office_tx: p.office_tx,
-            pc: conn,
-            pc_tx: tx.clone(),
+            version: pairing.version,
+            host: pairing.host,
+            office: pairing.office,
+            office_tx: pairing.office_tx,
+            pc: pc_conn,
+            pc_tx,
             office_cap: oc,
             pc_cap: pc,
             expires: now + expires,
-            absolute_expires: now + app.inner.config.session_max_ttl,
+            absolute_expires: now + inner.config.session_max_ttl,
             active: None,
             used_requests: VecDeque::new(),
-            capabilities: approved_capabilities,
+            capabilities: pairing.negotiated_capabilities,
             diagnostics: 0,
             diagnostic_window_started: now,
             diagnostic_window_count: 0,
@@ -1266,19 +1598,85 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
     Ok(())
 }
 
-fn deliver_approval(
-    pc_permit: mpsc::Permit<'_, Message>,
-    office_permit: mpsc::Permit<'_, Message>,
-    pc_frame: Value,
-    office_frame: Value,
-    fail_delivery: bool,
-) -> Result<(), ()> {
-    if fail_delivery {
-        return Err(());
+fn compensate_binding(
+    inner: &Inner,
+    store: &mut Store,
+    pairing: &Pairing,
+    binding_id: Option<&str>,
+) {
+    let subject = pairing
+        .pending_binding
+        .as_ref()
+        .map(|pending| pending.subject)
+        .or(pairing.pc_subject);
+    if let (Some(binding_id), Some(subject)) = (binding_id, subject)
+        && !matches!(inner.bindings.revoke(binding_id, &subject), Ok(true))
+    {
+        store.denied_bindings.insert(binding_id.to_owned());
+        store
+            .pending_revocations
+            .insert(binding_id.to_owned(), subject);
     }
-    pc_permit.send(Message::Text(pc_frame.to_string().into()));
-    office_permit.send(Message::Text(office_frame.to_string().into()));
-    Ok(())
+}
+
+fn abort_committed_binding(pairing: &Pairing, binding_id: Option<&str>) {
+    if let Some(binding_id) = binding_id {
+        send(
+            &pairing.office_tx,
+            json!({
+                "version": PROTOCOL_V2,
+                "type": "office.binding_aborted",
+                "pairing_id": pairing.id,
+                "binding_id": binding_id,
+            }),
+        );
+    }
+}
+
+fn send_pending_abort(pairing: &Pairing, abort_frame: Option<&Value>) {
+    if let Some(abort_frame) = abort_frame {
+        send(&pairing.office_tx, abort_frame.clone());
+    }
+}
+
+fn terminate_pairing(pairing: &Pairing) {
+    pairing.office_tx.failed.notify_one();
+    if let Some(approved) = pairing.pending_binding.as_ref() {
+        approved.pc_tx.failed.notify_one();
+    } else if let Some((_, pc_tx)) = pairing.pc.as_ref() {
+        pc_tx.failed.notify_one();
+    }
+}
+
+fn remember_completed_offer(
+    inner: &Inner,
+    store: &mut Store,
+    pairing_id: String,
+    office: u64,
+    binding_id: String,
+) {
+    if store.completed_binding_offers.len() >= 10_000 {
+        store
+            .completed_binding_offers
+            .retain(|_, completed| completed.expires > Instant::now());
+    }
+    if store.completed_binding_offers.len() >= 10_000
+        && let Some(oldest) = store
+            .completed_binding_offers
+            .iter()
+            .min_by_key(|(_, completed)| completed.expires)
+            .map(|(pairing_id, _)| pairing_id.clone())
+    {
+        store.completed_binding_offers.remove(&oldest);
+    }
+    store.completed_binding_offers.insert(
+        pairing_id,
+        CompletedBindingOffer {
+            office,
+            binding_id,
+            expires: Instant::now() + inner.config.pairing_ttl,
+        },
+    );
 }
 
 async fn office_resume(
@@ -1313,6 +1711,16 @@ async fn office_resume(
     if !valid_token(binding_id) {
         return Err("binding_unavailable");
     }
+    if app
+        .inner
+        .state
+        .lock()
+        .await
+        .denied_bindings
+        .contains(binding_id)
+    {
+        return Err("binding_unavailable");
+    }
     let host = string(&m, "host")?;
     let requested_capabilities = resume_capabilities(&m)?;
     let binding = app
@@ -1331,7 +1739,7 @@ async fn office_resume(
     rand::rng().fill(&mut challenge_bytes);
     let challenge = URL_SAFE_NO_PAD.encode(challenge_bytes);
     let mut store = app.inner.state.lock().await;
-    expire(&mut store, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut store);
     if store.resume_challenges.contains_key(&conn) || store.office_resumes.contains_key(&conn) {
         return Err("resume_limit");
     }
@@ -1351,6 +1759,7 @@ async fn office_resume(
                     .min(RESUME_CHALLENGE_MAX),
         },
     );
+    store.expired_resume_challenges.remove(&conn);
     send(
         tx,
         json!({"version":PROTOCOL_V2,"type":"office.challenge","binding_id":binding_id,"challenge":challenge,"expires_in":app.inner.config.resume_challenge_ttl.min(RESUME_CHALLENGE_MAX).as_secs()}),
@@ -1376,10 +1785,25 @@ async fn office_prove(
     let challenge_value = string(&m, "challenge")?;
     let signature_value = string(&m, "signature")?;
     let mut store = app.inner.state.lock().await;
-    let challenge = store
-        .resume_challenges
-        .remove(&conn)
-        .ok_or("invalid_proof")?;
+    let challenge = match store.resume_challenges.remove(&conn) {
+        Some(challenge) => challenge,
+        None => {
+            let matching_expired =
+                store
+                    .expired_resume_challenges
+                    .get(&conn)
+                    .is_some_and(|expired| {
+                        expired.binding_hash == sha256_bytes(binding_id.as_bytes())
+                            && expired.challenge_hash == sha256_bytes(challenge_value.as_bytes())
+                            && expired.expires > Instant::now()
+                    });
+            if matching_expired {
+                store.expired_resume_challenges.remove(&conn);
+                return Err("challenge_expired");
+            }
+            return Err("invalid_proof");
+        }
+    };
     if challenge.expires <= Instant::now() {
         return Err("challenge_expired");
     }
@@ -1431,6 +1855,16 @@ async fn pc_resume(
     if !valid_token(binding_id) {
         return Err("binding_unavailable");
     }
+    if app
+        .inner
+        .state
+        .lock()
+        .await
+        .denied_bindings
+        .contains(binding_id)
+    {
+        return Err("binding_unavailable");
+    }
     let offered_capabilities = resume_capabilities(&m)?;
     let binding = app
         .inner
@@ -1445,7 +1879,7 @@ async fn pc_resume(
         return Err("capability_not_negotiated");
     }
     let mut store = app.inner.state.lock().await;
-    expire(&mut store, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut store);
     let attempts = store.connection_resume_attempts.entry(conn).or_default();
     *attempts = attempts.saturating_add(1);
     if *attempts > 5 {
@@ -1523,6 +1957,9 @@ fn consume_office_resume_attempt(
 }
 
 fn complete_resume(app: &App, store: &mut Store, binding_id: &str) -> Result<bool, &'static str> {
+    if store.denied_bindings.contains(binding_id) {
+        return Err("binding_unavailable");
+    }
     let office_conn = store
         .office_resumes
         .iter()
@@ -1647,6 +2084,8 @@ async fn revoke_binding(
         return Err("binding_unavailable");
     }
     let mut store = app.inner.state.lock().await;
+    store.denied_bindings.remove(binding_id);
+    store.pending_revocations.remove(binding_id);
     store
         .resume_challenges
         .retain(|_, challenge| challenge.binding.id != binding_id);
@@ -1709,6 +2148,10 @@ fn valid_token(value: &str) -> bool {
 
 fn resume_transcript(binding_id: &str, challenge: &str, host: &str) -> String {
     format!("wiswork-office-resume-v1\n{binding_id}\n{challenge}\n{OFFICE_ORIGIN}\n{host}")
+}
+
+fn sha256_bytes(value: &[u8]) -> [u8; 32] {
+    Sha256::digest(value).into()
 }
 
 const DIAGNOSTIC_REQUIRED_KEYS: &[&str] = &[
@@ -1877,7 +2320,7 @@ async fn diagnostic(
     }
 
     let mut store = app.inner.state.lock().await;
-    expire(&mut store, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut store);
     let session = store.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.office != conn || session.office_cap != cap || session.version != PROTOCOL_V2 {
         return Err("invalid_capability");
@@ -1950,6 +2393,22 @@ async fn reject(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'sta
     }
     let p = s.pairings.remove(id).unwrap();
     s.codes.remove(&p.code);
+    if let Some(approved) = p.pending_binding.as_ref() {
+        if approved.phase == PendingBindingPhase::CommitSent {
+            compensate_binding(&app.inner, &mut s, &p, Some(&approved.id));
+        }
+        remember_completed_offer(
+            &app.inner,
+            &mut s,
+            p.id.clone(),
+            p.office,
+            approved.id.clone(),
+        );
+        send(
+            &p.office_tx,
+            json!({"version":PROTOCOL_V2,"type":"office.binding_aborted","pairing_id":p.id,"binding_id":approved.id}),
+        );
+    }
     send(
         &p.office_tx,
         json!({"version":protocol,"type":"office.rejected"}),
@@ -1992,7 +2451,7 @@ async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'st
         return Err("invalid_frame");
     }
     let mut st = app.inner.state.lock().await;
-    expire(&mut st, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut st);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.office != conn || session.office_cap != cap || session.version != protocol {
         return Err("invalid_capability");
@@ -2073,7 +2532,7 @@ async fn cancel(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'sta
     }
     let (sid, cap, rid) = session_fields(&m)?;
     let mut st = app.inner.state.lock().await;
-    expire(&mut st, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut st);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.office != conn || session.office_cap != cap || session.version != protocol {
         return Err("invalid_capability");
@@ -2117,7 +2576,7 @@ async fn chunk(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
         return Err("chunk_too_large");
     }
     let mut st = app.inner.state.lock().await;
-    expire(&mut st, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut st);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
@@ -2178,7 +2637,7 @@ async fn start(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
         return Err("invalid_content_type");
     }
     let mut store = app.inner.state.lock().await;
-    expire(&mut store, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut store);
     let session = store.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
@@ -2209,7 +2668,7 @@ async fn done(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stati
     }
     let (sid, cap, rid) = session_fields(&m)?;
     let mut st = app.inner.state.lock().await;
-    expire(&mut st, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut st);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
@@ -2255,7 +2714,7 @@ async fn pc_error(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'s
         return Err("invalid_frame");
     }
     let mut st = app.inner.state.lock().await;
-    expire(&mut st, app.inner.config.pairing_ttl);
+    expire(&app.inner, &mut st);
     let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
     if session.pc != conn || session.pc_cap != cap || session.version != protocol {
         return Err("invalid_capability");
@@ -2275,12 +2734,65 @@ async fn pc_error(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'s
     Ok(())
 }
 
-fn expire(s: &mut Store, ttl: Duration) {
+fn expire(inner: &Inner, s: &mut Store) {
     let now = Instant::now();
-    s.resume_challenges
+    let pending_revocations: Vec<_> = s
+        .pending_revocations
+        .iter()
+        .map(|(binding_id, subject)| (binding_id.clone(), *subject))
+        .collect();
+    for (binding_id, subject) in pending_revocations {
+        let converged = matches!(inner.bindings.revoke(&binding_id, &subject), Ok(true))
+            || matches!(inner.bindings.get_live(&binding_id), Ok(None));
+        if converged {
+            s.pending_revocations.remove(&binding_id);
+            s.denied_bindings.remove(&binding_id);
+        }
+    }
+    let expired_challenges: Vec<_> = s
+        .resume_challenges
+        .iter()
+        .filter(|(_, challenge)| challenge.expires <= now)
+        .map(|(conn, _)| *conn)
+        .collect();
+    for conn in expired_challenges {
+        if let Some(challenge) = s.resume_challenges.remove(&conn) {
+            s.expired_resume_challenges.insert(
+                conn,
+                ExpiredResumeChallenge {
+                    binding_hash: sha256_bytes(challenge.binding.id.as_bytes()),
+                    challenge_hash: sha256_bytes(challenge.challenge.as_bytes()),
+                    expires: now + inner.config.pairing_ttl,
+                },
+            );
+        }
+    }
+    s.expired_resume_challenges
         .retain(|_, challenge| challenge.expires > now);
-    s.office_resumes.retain(|_, resume| resume.expires > now);
-    s.pc_resumes.retain(|_, resume| resume.expires > now);
+    s.completed_binding_offers
+        .retain(|_, completed| completed.expires > now);
+    let expired_office_resumes: Vec<_> = s
+        .office_resumes
+        .iter()
+        .filter(|(_, resume)| resume.expires <= now)
+        .map(|(conn, _)| *conn)
+        .collect();
+    for conn in expired_office_resumes {
+        if let Some(resume) = s.office_resumes.remove(&conn) {
+            versioned_error(&resume.office_tx, PROTOCOL_V2, "peer_unavailable");
+        }
+    }
+    let expired_pc_resumes: Vec<_> = s
+        .pc_resumes
+        .iter()
+        .filter(|(_, resume)| resume.expires <= now)
+        .map(|(conn, _)| *conn)
+        .collect();
+    for conn in expired_pc_resumes {
+        if let Some(resume) = s.pc_resumes.remove(&conn) {
+            versioned_error(&resume.pc_tx, PROTOCOL_V2, "peer_unavailable");
+        }
+    }
     let dead: Vec<_> = s
         .pairings
         .iter()
@@ -2289,11 +2801,19 @@ fn expire(s: &mut Store, ttl: Duration) {
         .collect();
     for id in dead {
         if let Some(p) = s.pairings.remove(&id) {
-            s.codes.remove(&p.code);
-            send(
-                &p.office_tx,
-                json!({"version":p.version,"type":"office.expired"}),
-            );
+            if let Some(binding_id) = p.pending_binding.as_ref().map(|pending| pending.id.clone()) {
+                let committed = p
+                    .pending_binding
+                    .as_ref()
+                    .is_some_and(|pending| pending.phase == PendingBindingPhase::CommitSent);
+                let _ = fallback_staged_pairing(inner, s, p, binding_id, committed);
+            } else {
+                s.codes.remove(&p.code);
+                send(
+                    &p.office_tx,
+                    json!({"version":p.version,"type":"office.expired"}),
+                );
+            }
         }
     }
     let expired_sessions: Vec<_> = s
@@ -2321,13 +2841,13 @@ fn expire(s: &mut Store, ttl: Duration) {
         }
     }
     s.claim_attempts
-        .retain(|_, (started, _)| started.elapsed() <= ttl);
+        .retain(|_, (started, _)| started.elapsed() <= inner.config.pairing_ttl);
     s.create_attempts
-        .retain(|_, (started, _)| started.elapsed() <= ttl);
+        .retain(|_, (started, _)| started.elapsed() <= inner.config.pairing_ttl);
     s.preauth_attempts
-        .retain(|_, (started, _)| started.elapsed() <= ttl);
+        .retain(|_, (started, _)| started.elapsed() <= inner.config.pairing_ttl);
     s.resume_attempts
-        .retain(|_, (started, _)| started.elapsed() <= ttl);
+        .retain(|_, (started, _)| started.elapsed() <= inner.config.pairing_ttl);
 }
 async fn cleanup(app: &App, conn: u64) {
     let mut s = app.inner.state.lock().await;
@@ -2335,6 +2855,9 @@ async fn cleanup(app: &App, conn: u64) {
     s.connection_sessions.remove(&conn);
     s.connection_resume_attempts.remove(&conn);
     s.resume_challenges.remove(&conn);
+    s.expired_resume_challenges.remove(&conn);
+    s.completed_binding_offers
+        .retain(|_, completed| completed.office != conn);
     s.office_resumes.remove(&conn);
     s.pc_resumes.remove(&conn);
     let pids: Vec<_> = s
@@ -2346,6 +2869,52 @@ async fn cleanup(app: &App, conn: u64) {
     for id in pids {
         if let Some(p) = s.pairings.remove(&id) {
             s.codes.remove(&p.code);
+            if let Some(approved) = p
+                .pending_binding
+                .as_ref()
+                .filter(|approved| approved.phase == PendingBindingPhase::CommitSent)
+            {
+                compensate_binding(&app.inner, &mut s, &p, Some(&approved.id));
+            }
+            if let Some((_, pc_tx)) = p.pc {
+                versioned_error(&pc_tx, p.version, "peer_unavailable");
+            }
+        }
+    }
+    let staged_pc_pairings: Vec<_> = s
+        .pairings
+        .iter()
+        .filter(|(_, pairing)| {
+            pairing
+                .pending_binding
+                .as_ref()
+                .is_some_and(|approved| approved.pc == conn)
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in staged_pc_pairings {
+        if let Some(pairing) = s.pairings.remove(&id) {
+            s.codes.remove(&pairing.code);
+            if let Some(approved) = pairing.pending_binding.as_ref() {
+                if approved.phase == PendingBindingPhase::CommitSent {
+                    compensate_binding(&app.inner, &mut s, &pairing, Some(&approved.id));
+                }
+                remember_completed_offer(
+                    &app.inner,
+                    &mut s,
+                    pairing.id.clone(),
+                    pairing.office,
+                    approved.id.clone(),
+                );
+                send(
+                    &pairing.office_tx,
+                    json!({"version":PROTOCOL_V2,"type":"office.binding_aborted","pairing_id":pairing.id,"binding_id":approved.id}),
+                );
+                send(
+                    &pairing.office_tx,
+                    json!({"version":PROTOCOL_V2,"type":"office.pc_offline"}),
+                );
+            }
         }
     }
     for pairing in s.pairings.values_mut() {
@@ -2399,6 +2968,10 @@ mod tests {
     }
 
     fn test_app_with_config(config: Config) -> App {
+        test_app_with_bindings(config, BindingStore::open(None).unwrap())
+    }
+
+    fn test_app_with_bindings(config: Config, bindings: BindingStore) -> App {
         App {
             inner: Arc::new(Inner {
                 state: Mutex::new(Store::default()),
@@ -2409,7 +2982,7 @@ mod tests {
                     .build()
                     .expect("test HTTP client"),
                 auth_slots: Arc::new(Semaphore::new(1)),
-                bindings: BindingStore::open(None).unwrap(),
+                bindings,
                 fail_approval_delivery: std::sync::atomic::AtomicBool::new(false),
             }),
         }
@@ -2423,11 +2996,14 @@ mod tests {
             .as_bytes()
             .try_into()
             .unwrap();
-        app.inner.state.lock().await.pairings.insert(
-            "pairing".to_owned(),
+        let pairing_id = "A".repeat(43);
+        let mut store = app.inner.state.lock().await;
+        store.codes.insert("123456".to_owned(), pairing_id.clone());
+        store.pairings.insert(
+            pairing_id.clone(),
             Pairing {
                 version: PROTOCOL_V2,
-                id: "pairing".to_owned(),
+                id: pairing_id,
                 code: "123456".to_owned(),
                 host: "Word".to_owned(),
                 office: 1,
@@ -2442,6 +3018,7 @@ mod tests {
                 negotiated_features: vec![PAIRING_RESUME.to_owned()],
                 binding_public_key: Some(public_key),
                 pc_subject: Some(subject),
+                pending_binding: None,
             },
         );
     }
@@ -2450,9 +3027,39 @@ mod tests {
         json!({
             "version": 2,
             "type": "pc.approve",
-            "pairing_id": "pairing",
+            "pairing_id": "A".repeat(43),
             "capabilities": ["agent.v1"],
             "features": [PAIRING_RESUME],
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
+
+    async fn test_binding_result_frame(app: &App, result: BindingResult) -> Map<String, Value> {
+        let binding_id = app
+            .inner
+            .state
+            .lock()
+            .await
+            .pairings
+            .get(&"A".repeat(43))
+            .and_then(|pairing| {
+                pairing
+                    .pending_binding
+                    .as_ref()
+                    .map(|pending| pending.id.clone())
+            })
+            .unwrap();
+        json!({
+            "version": 2,
+            "type": match result {
+                BindingResult::Ready => "office.binding_ready",
+                BindingResult::Abort => "office.binding_abort",
+                BindingResult::Committed => "office.binding_committed",
+            },
+            "pairing_id": "A".repeat(43),
+            "binding_id": binding_id,
         })
         .as_object()
         .unwrap()
@@ -2552,7 +3159,7 @@ mod tests {
     #[tokio::test]
     async fn saturated_pc_approval_queue_does_not_leave_a_live_binding() {
         let app = test_app();
-        let (office_sender, _office_receiver) = mpsc::channel(2);
+        let (office_sender, mut office_receiver) = mpsc::channel(2);
         let office_tx = Tx {
             sender: office_sender,
             failed: Arc::new(Notify::new()),
@@ -2570,6 +3177,18 @@ mod tests {
 
         assert_eq!(
             approve(&app, 2, &pc_tx, test_approval_frame()).await,
+            Ok(())
+        );
+        let _offer = office_receiver.recv().await.unwrap();
+        let result = test_binding_result_frame(&app, BindingResult::Ready).await;
+        assert_eq!(
+            office_binding_result(&app, 1, result, BindingResult::Ready).await,
+            Ok(())
+        );
+        let _commit = office_receiver.recv().await.unwrap();
+        let result = test_binding_result_frame(&app, BindingResult::Committed).await;
+        assert_eq!(
+            office_binding_result(&app, 1, result, BindingResult::Committed).await,
             Err("peer_unavailable")
         );
         assert_eq!(app.inner.bindings.live_count(&subject), 0);
@@ -2578,7 +3197,7 @@ mod tests {
     #[tokio::test]
     async fn post_commit_delivery_failure_compensates_the_new_binding() {
         let app = test_app();
-        let (office_sender, _office_receiver) = mpsc::channel(2);
+        let (office_sender, mut office_receiver) = mpsc::channel(2);
         let office_tx = Tx {
             sender: office_sender,
             failed: Arc::new(Notify::new()),
@@ -2596,9 +3215,249 @@ mod tests {
 
         assert_eq!(
             approve(&app, 2, &pc_tx, test_approval_frame()).await,
+            Ok(())
+        );
+        let _offer = office_receiver.recv().await.unwrap();
+        let result = test_binding_result_frame(&app, BindingResult::Ready).await;
+        assert_eq!(
+            office_binding_result(&app, 1, result, BindingResult::Ready).await,
+            Ok(())
+        );
+        let _commit = office_receiver.recv().await.unwrap();
+        let result = test_binding_result_frame(&app, BindingResult::Committed).await;
+        assert_eq!(
+            office_binding_result(&app, 1, result, BindingResult::Committed).await,
             Err("peer_unavailable")
         );
         assert_eq!(app.inner.bindings.live_count(&subject), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_compensation_denies_resume_until_the_sweeper_converges_revocation() {
+        let app = test_app();
+        let (office_sender, mut office_receiver) = mpsc::channel(4);
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let (pc_sender, _pc_receiver) = mpsc::channel(4);
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let subject = [9_u8; 32];
+        insert_test_pairing(&app, office_tx.clone(), pc_tx.clone(), subject).await;
+        assert_eq!(
+            approve(&app, 2, &pc_tx, test_approval_frame()).await,
+            Ok(())
+        );
+        let _offer = office_receiver.recv().await.unwrap();
+        let ready = test_binding_result_frame(&app, BindingResult::Ready).await;
+        assert_eq!(
+            office_binding_result(&app, 1, ready, BindingResult::Ready).await,
+            Ok(())
+        );
+        let _commit = office_receiver.recv().await.unwrap();
+        let committed = test_binding_result_frame(&app, BindingResult::Committed).await;
+        let binding_id = string(&committed, "binding_id").unwrap().to_owned();
+        app.inner
+            .fail_approval_delivery
+            .store(true, Ordering::SeqCst);
+        app.inner.bindings.fail_next_revoke();
+        assert_eq!(
+            office_binding_result(&app, 1, committed, BindingResult::Committed).await,
+            Err("peer_unavailable")
+        );
+        assert_eq!(app.inner.bindings.live_count(&subject), 0);
+        {
+            let store = app.inner.state.lock().await;
+            assert!(store.denied_bindings.contains(&binding_id));
+            assert!(store.pending_revocations.contains_key(&binding_id));
+            assert!(!store.codes.contains_key("123456"));
+        }
+        let resume = json!({
+            "version": 2,
+            "type": "office.resume",
+            "binding_id": binding_id,
+            "host": "Word",
+            "capabilities": ["agent.v1"],
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
+            office_resume(
+                &app,
+                3,
+                &office_tx,
+                Some(OFFICE_ORIGIN),
+                "2001:db8::9".parse().unwrap(),
+                resume,
+            )
+            .await,
+            Err("binding_unavailable")
+        );
+        {
+            let mut store = app.inner.state.lock().await;
+            expire(&app.inner, &mut store);
+            assert!(!store.denied_bindings.contains(&binding_id));
+            assert!(!store.pending_revocations.contains_key(&binding_id));
+        }
+        assert_eq!(app.inner.bindings.live_count(&subject), 0);
+    }
+
+    #[tokio::test]
+    async fn approval_delivery_failure_cannot_resume_after_relay_restart() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "wiswork-relay-failed-activation-{}-{unique}.sqlite",
+            std::process::id()
+        ));
+        let app =
+            test_app_with_bindings(Config::default(), BindingStore::open(Some(&path)).unwrap());
+        let (office_sender, mut office_receiver) = mpsc::channel(4);
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let (pc_sender, _pc_receiver) = mpsc::channel(4);
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let subject = [11_u8; 32];
+        insert_test_pairing(&app, office_tx, pc_tx.clone(), subject).await;
+        assert_eq!(
+            approve(&app, 2, &pc_tx, test_approval_frame()).await,
+            Ok(())
+        );
+        let _offer = office_receiver.recv().await.unwrap();
+        let ready = test_binding_result_frame(&app, BindingResult::Ready).await;
+        assert_eq!(
+            office_binding_result(&app, 1, ready, BindingResult::Ready).await,
+            Ok(())
+        );
+        let _commit = office_receiver.recv().await.unwrap();
+        let committed = test_binding_result_frame(&app, BindingResult::Committed).await;
+        let binding_id = string(&committed, "binding_id").unwrap().to_owned();
+        app.inner
+            .fail_approval_delivery
+            .store(true, Ordering::SeqCst);
+        app.inner.bindings.fail_next_revoke();
+        assert_eq!(
+            office_binding_result(&app, 1, committed, BindingResult::Committed).await,
+            Err("peer_unavailable")
+        );
+        drop(app);
+
+        let restarted =
+            test_app_with_bindings(Config::default(), BindingStore::open(Some(&path)).unwrap());
+        let (retry_sender, _retry_receiver) = mpsc::channel(2);
+        let retry_tx = Tx {
+            sender: retry_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let resume = json!({
+            "version": 2,
+            "type": "office.resume",
+            "binding_id": binding_id,
+            "host": "Word",
+            "capabilities": ["agent.v1"],
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
+            office_resume(
+                &restarted,
+                3,
+                &retry_tx,
+                Some(OFFICE_ORIGIN),
+                "2001:db8::11".parse().unwrap(),
+                resume,
+            )
+            .await,
+            Err("binding_unavailable")
+        );
+        drop(restarted);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_capacity_failure_compensates_and_terminates_both_approved_peers() {
+        let app = test_app();
+        let (office_sender, mut office_receiver) = mpsc::channel(4);
+        let office_failed = Arc::new(Notify::new());
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: office_failed.clone(),
+        };
+        let (pc_sender, _pc_receiver) = mpsc::channel(4);
+        let pc_failed = Arc::new(Notify::new());
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: pc_failed.clone(),
+        };
+        let subject = [10_u8; 32];
+        insert_test_pairing(&app, office_tx.clone(), pc_tx.clone(), subject).await;
+        assert_eq!(
+            approve(&app, 2, &pc_tx, test_approval_frame()).await,
+            Ok(())
+        );
+        let _offer = office_receiver.recv().await.unwrap();
+        let ready = test_binding_result_frame(&app, BindingResult::Ready).await;
+        assert_eq!(
+            office_binding_result(&app, 1, ready, BindingResult::Ready).await,
+            Ok(())
+        );
+        let _commit = office_receiver.recv().await.unwrap();
+        {
+            let mut store = app.inner.state.lock().await;
+            let now = Instant::now();
+            for index in 0..10_000 {
+                store.sessions.insert(
+                    format!("dummy-{index}"),
+                    Session {
+                        version: PROTOCOL_V2,
+                        host: "Word".to_owned(),
+                        office: 100,
+                        office_tx: office_tx.clone(),
+                        pc: 101,
+                        pc_tx: pc_tx.clone(),
+                        office_cap: "office".to_owned(),
+                        pc_cap: "pc".to_owned(),
+                        expires: now + Duration::from_secs(60),
+                        absolute_expires: now + Duration::from_secs(60),
+                        active: None,
+                        used_requests: VecDeque::new(),
+                        capabilities: vec!["agent.v1".to_owned()],
+                        diagnostics: 0,
+                        diagnostic_window_started: now,
+                        diagnostic_window_count: 0,
+                        binding_id: None,
+                    },
+                );
+            }
+        }
+        let committed = test_binding_result_frame(&app, BindingResult::Committed).await;
+        assert_eq!(
+            office_binding_result(&app, 1, committed, BindingResult::Committed).await,
+            Err("relay_busy")
+        );
+        assert_eq!(app.inner.bindings.live_count(&subject), 0);
+        {
+            let store = app.inner.state.lock().await;
+            assert!(!store.codes.contains_key("123456"));
+        }
+        tokio::time::timeout(Duration::from_millis(10), office_failed.notified())
+            .await
+            .expect("Office writer must terminate");
+        tokio::time::timeout(Duration::from_millis(10), pc_failed.notified())
+            .await
+            .expect("PC writer must terminate");
     }
 
     #[test]
@@ -2620,9 +3479,163 @@ mod tests {
             },
         );
 
-        expire(&mut store, Duration::from_secs(120));
+        let app = test_app();
+        expire(&app.inner, &mut store);
 
         assert!(store.resume_challenges.is_empty());
+        assert!(store.expired_resume_challenges.contains_key(&1));
+    }
+
+    #[tokio::test]
+    async fn swept_challenge_still_reports_challenge_expired_to_its_connection() {
+        let app = test_app();
+        app.inner
+            .state
+            .lock()
+            .await
+            .expired_resume_challenges
+            .insert(
+                1,
+                ExpiredResumeChallenge {
+                    binding_hash: Sha256::digest("A".repeat(43).as_bytes()).into(),
+                    challenge_hash: Sha256::digest(b"challenge").into(),
+                    expires: Instant::now() + Duration::from_secs(60),
+                },
+            );
+        let (sender, _receiver) = mpsc::channel(1);
+        let tx = Tx {
+            sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let frame = json!({
+            "version": 2,
+            "type": "office.prove",
+            "binding_id": "A".repeat(43),
+            "challenge": "challenge",
+            "signature": "signature",
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let mut unrelated = frame.clone();
+        unrelated.insert("challenge".to_owned(), Value::String("other".to_owned()));
+        assert_eq!(
+            office_prove(&app, 1, &tx, unrelated).await,
+            Err("invalid_proof")
+        );
+        assert_eq!(
+            office_prove(&app, 1, &tx, frame).await,
+            Err("challenge_expired")
+        );
+    }
+
+    #[tokio::test]
+    async fn sweeper_notifies_both_kinds_of_expired_resume_waiter() {
+        let app = test_app();
+        let (office_sender, mut office_receiver) = mpsc::channel(1);
+        let (pc_sender, mut pc_receiver) = mpsc::channel(1);
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let binding = Binding {
+            id: "A".repeat(43),
+            subject: [1; 32],
+            public_key: [0; 65],
+            host: "Word".to_owned(),
+            origin: OFFICE_ORIGIN.to_owned(),
+            capabilities: vec!["agent.v1".to_owned()],
+        };
+        let mut store = Store::default();
+        store.office_resumes.insert(
+            1,
+            OfficeResume {
+                binding,
+                office: 1,
+                office_tx,
+                expires: Instant::now(),
+            },
+        );
+        store.pc_resumes.insert(
+            2,
+            PcResume {
+                binding_id: "A".repeat(43),
+                pc: 2,
+                pc_tx,
+                subject: [1; 32],
+                capabilities: vec!["agent.v1".to_owned()],
+                expires: Instant::now(),
+            },
+        );
+        expire(&app.inner, &mut store);
+        for receiver in [&mut office_receiver, &mut pc_receiver] {
+            let Message::Text(text) = receiver.try_recv().unwrap() else {
+                panic!("expected text frame")
+            };
+            let frame: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(frame["code"], "peer_unavailable");
+        }
+    }
+
+    #[tokio::test]
+    async fn expired_binding_offer_aborts_and_degrades_to_a_short_session() {
+        let app = test_app();
+        let (office_sender, mut office_receiver) = mpsc::channel(4);
+        let (pc_sender, mut pc_receiver) = mpsc::channel(4);
+        let office_tx = Tx {
+            sender: office_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let pc_tx = Tx {
+            sender: pc_sender,
+            failed: Arc::new(Notify::new()),
+        };
+        insert_test_pairing(&app, office_tx, pc_tx, [8; 32]).await;
+        {
+            let mut store = app.inner.state.lock().await;
+            let pairing = store.pairings.get_mut(&"A".repeat(43)).unwrap();
+            let (pc, pc_tx) = pairing.pc.clone().unwrap();
+            pairing.pending_binding = Some(PendingBinding {
+                id: "A".repeat(43),
+                pc,
+                pc_tx,
+                subject: pairing.pc_subject.unwrap(),
+                capabilities: pairing.negotiated_capabilities.clone(),
+                phase: PendingBindingPhase::Offered,
+            });
+            pairing.expires = Instant::now();
+        }
+        let late_ready = test_binding_result_frame(&app, BindingResult::Ready).await;
+        let duplicate_late_ready = late_ready.clone();
+        assert_eq!(
+            office_binding_result(&app, 1, late_ready, BindingResult::Ready).await,
+            Ok(())
+        );
+        let Message::Text(aborted) = office_receiver.recv().await.unwrap() else {
+            panic!("expected binding abort")
+        };
+        let aborted: Value = serde_json::from_str(&aborted).unwrap();
+        assert_eq!(aborted["type"], "office.binding_aborted");
+        let Message::Text(office_approved) = office_receiver.recv().await.unwrap() else {
+            panic!("expected office approval")
+        };
+        let Message::Text(pc_approved) = pc_receiver.recv().await.unwrap() else {
+            panic!("expected pc approval")
+        };
+        for text in [office_approved, pc_approved] {
+            let frame: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(frame["features"], json!([]));
+            assert!(frame.get("binding_id").is_none());
+        }
+        assert_eq!(
+            office_binding_result(&app, 1, duplicate_late_ready, BindingResult::Ready,).await,
+            Ok(())
+        );
+        assert_eq!(app.inner.state.lock().await.sessions.len(), 1);
     }
 
     #[test]

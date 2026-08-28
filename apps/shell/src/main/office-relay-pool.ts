@@ -118,7 +118,12 @@ export function createOfficeRelayPool(options: {
     }, delay)
   }
 
-  let ensureWaitingResume: (binding: OfficeRelayBinding) => Promise<void>
+  async function ensureWaitingResume(binding: OfficeRelayBinding): Promise<void> {
+    if (suspended || slots.size >= maximum) return
+    const owners = bindingOwners.get(binding.bindingId)
+    if (owners && [...owners].some((owner) => owner.status !== 'paired')) return
+    await startResumeSlot(binding).catch(() => undefined)
+  }
 
   const initialize = (slot: Slot): OfficeRelayClient => {
     const client = options.createClient({
@@ -232,13 +237,6 @@ export function createOfficeRelayPool(options: {
     }
   }
 
-  ensureWaitingResume = async (binding) => {
-    if (suspended || slots.size >= maximum) return
-    const owners = bindingOwners.get(binding.bindingId)
-    if (owners && [...owners].some((owner) => owner.status !== 'paired')) return
-    await startResumeSlot(binding).catch(() => undefined)
-  }
-
   const revokeAll = (reason: string) => {
     if (revoking) return
     revoking = true
@@ -294,7 +292,7 @@ export function createOfficeRelayPool(options: {
       if (owners && [...owners].some((owner) => owner.status !== 'paired')) return
       await startResumeSlot(binding)
     },
-    async revokeBinding(bindingId) {
+    async revokeBinding(bindingId, expectedAccountId) {
       const owners = [...(bindingOwners.get(bindingId) ?? [])]
       let slot = owners[0]
       let temporary = false
@@ -315,7 +313,7 @@ export function createOfficeRelayPool(options: {
       if (slot.retryTimer) clearTimer(slot.retryTimer)
       slot.retryTimer = null
       try {
-        await slot.client!.revokeBinding(bindingId)
+        await slot.client!.revokeBinding(bindingId, expectedAccountId)
       } finally {
         for (const owner of owners) {
           if (owner !== slot) owner.client?.revoke('binding_revoked')

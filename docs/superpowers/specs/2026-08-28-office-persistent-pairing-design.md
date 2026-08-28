@@ -74,12 +74,13 @@ Challenges are random, connection-bound, single-use, limited per connection/IP, 
 
 - Enhanced Office enrollment starts with `office.create` using the existing v2 fields plus `features` and `binding_public_key`. The public key is strict unpadded Base64url of a 65-byte uncompressed P-256 SEC1 point whose first byte is `0x04`. An enhanced `office.created` echoes `features`; a legacy response has exactly its old fields.
 - Enhanced PC `pc.negotiate`, `pc.claim`, and `pc.approve` use their existing fields plus `features`; `pc.negotiated` and `pc.claimed` echo only the feature intersection.
-- When both endpoints negotiated the feature, initial `office.approved` and `pc.approved` use their existing v2 fields plus `features` and `binding_id`. Otherwise both approved frames retain the exact legacy schema and no binding is created.
+- When both endpoints negotiated the feature, PC approval first yields exact `office.binding_offer {version,type,pairing_id,binding_id,capabilities,features}` only to Office. Relay has not yet written SQLite or created a session. Office persists the binding as pending and sends exact `office.binding_ready {version,type,pairing_id,binding_id}`; local persistence failure sends exact `office.binding_abort {version,type,pairing_id,binding_id}`.
+- A matching ready frame from the original Office connection writes a non-resumable pending SQLite row and yields exact `office.binding_commit {version,type,pairing_id,binding_id}`. Office atomically activates its pending record and responds with exact `office.binding_committed {version,type,pairing_id,binding_id}`; activation failure uses the existing exact `office.binding_abort`. Relay activates the SQLite row only after the matching committed frame, and only then do initial `office.approved` and `pc.approved` add `features:["pairing-resume.v1"]` and `binding_id`. Office abort, offer/commit timeout, enrollment database/limit failure, or compensated delivery failure sends exact `office.binding_aborted {version,type,pairing_id,binding_id}` so Office deletes pending state. Abort or enrollment failure degrades to a short session whose approved frames contain explicit `features:[]` and no `binding_id`. Ordinary v1 and v2 approved schemas remain exact and unchanged.
 - Office resume uses `office.resume {version,type,binding_id,host,capabilities}`, receives `office.challenge {version,type,binding_id,challenge,expires_in}`, and answers `office.prove {version,type,binding_id,challenge,signature}`. The signature is strict unpadded Base64url of the raw 64-byte P-256 ECDSA signature.
 - The signed UTF-8 transcript is exactly `wiswork-office-resume-v1\n${bindingId}\n${challenge}\nhttps://office.8-216-134-194.sslip.io\n${host}`.
 - A proved Office endpoint without its PC receives `office.waiting_for_pc {version,type}`. PC resume uses `pc.resume {version,type,binding_id,capabilities}` and receives `pc.waiting_for_office {version,type}` when Office proof is absent.
 - A matched resume receives the existing standard v2 approved frames with callable data capabilities only. Resume state, rather than an extra frame field, identifies this path.
-- Authenticated PC revocation uses `pc.revoke_binding {version,type,binding_id}` and receives `pc.binding_revoked {version,type,binding_id}`.
+- Authenticated PC revocation uses `pc.revoke_binding {version,type,binding_id}` and receives `pc.binding_revoked {version,type,binding_id}`. Lost-ack retries are idempotently acknowledged only when the retained tombstone belongs to the same authenticated subject.
 - Binding absence, revocation, host mismatch, or wrong subject is deliberately collapsed to `binding_unavailable`. Other stable resume errors are `invalid_proof`, `challenge_expired`, `resume_rate_limited`, `resume_limit`, `peer_unavailable`, and `capability_not_negotiated`.
 
 ## Persistence and migrations
@@ -89,7 +90,9 @@ Challenges are random, connection-bound, single-use, limited per connection/IP, 
 - SQLite schema version 1 stores durable binding metadata and public keys.
 - The systemd unit uses `StateDirectory=wiswork-relay` and a mode that is writable only by the dynamic service user.
 - Schema creation/migration is transactional. Unknown future schema versions fail startup without mutating the database.
+- Enrollment-pending rows are excluded from resume lookup and pruned at startup, closing the crash window before final activation acknowledgement.
 - In tests, an in-memory database is allowed; production persistent pairing requires an explicit database path.
+- With `WISWORK_RELAY_PAIRING_RESUME=0`, Relay does not require, open, initialize, migrate, prune, or revoke against the SQLite store.
 
 ### WisWork PC
 
@@ -99,8 +102,11 @@ Challenges are random, connection-bound, single-use, limited per connection/IP, 
 
 ### Office taskpane
 
-- IndexedDB stores a schema-versioned binding record and a non-exportable `CryptoKey`; it never stores a Wispaper token, relay capability, or exportable private key.
-- Corrupt, mismatched-host, mismatched-capability, or unusable key records are deleted and require first pairing.
+- IndexedDB v2 stores independent `Word`, `Excel`, and `PowerPoint` slots, migrating the legacy single active record into only its recorded host. Each slot contains a schema-versioned binding and a non-exportable `CryptoKey`; it never stores a Wispaper token, relay capability, or exportable private key.
+- Initial enrollment takes an expiring per-host IndexedDB lease and stages with compare-and-set. A second same-host taskpane cannot overwrite the first key, and a stranded pending key is never eligible for resume and expires locally after the enrollment window.
+- Incoming WebSocket control frames are processed serially. Every asynchronous continuation checks its connection generation before publishing state, and enhanced approval is accepted only after the exact offer/ready/commit/committed sequence.
+- Explicit forget first writes a durable per-host blocked marker, then atomically deletes the matching binding and marker. Reload cannot resume a blocked binding; deletion failure keeps the taskpane disconnected and presents a retry action, and cross-taskpane invalidation is broadcast only after durable deletion succeeds.
+- Corrupt, expired-pending, mismatched-host, mismatched-capability, or unusable key cleanup rechecks the record identity inside one read-write transaction, so stale cleanup cannot delete a newer live binding.
 - Document settings are not used, so bindings cannot travel with a shared document.
 
 ## State and failure handling

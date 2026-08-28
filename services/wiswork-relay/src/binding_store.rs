@@ -8,6 +8,8 @@ use std::{
 
 const SCHEMA_VERSION: i64 = 1;
 const MAX_BINDINGS_PER_SUBJECT: i64 = 12;
+const MAX_REVOKED_BINDINGS_PER_SUBJECT: i64 = 24;
+const PENDING_BINDING: i64 = -1;
 
 #[derive(Debug)]
 pub enum BindingStoreError {
@@ -68,12 +70,24 @@ pub(crate) struct Binding {
 }
 
 pub(crate) struct BindingStore {
-    connection: Mutex<Connection>,
+    connection: Option<Mutex<Connection>>,
     #[cfg(test)]
     get_live_calls: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    fail_next_revoke: std::sync::atomic::AtomicBool,
 }
 
 impl BindingStore {
+    pub fn disabled() -> Self {
+        Self {
+            connection: None,
+            #[cfg(test)]
+            get_live_calls: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            fail_next_revoke: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
     pub fn open(path: Option<&Path>) -> Result<Self, BindingStoreError> {
         let connection = match path {
             Some(path) => {
@@ -85,16 +99,23 @@ impl BindingStore {
         connection.busy_timeout(std::time::Duration::from_secs(2))?;
         connection.execute_batch("PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON;")?;
         let store = Self {
-            connection: Mutex::new(connection),
+            connection: Some(Mutex::new(connection)),
             #[cfg(test)]
             get_live_calls: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            fail_next_revoke: std::sync::atomic::AtomicBool::new(false),
         };
         store.initialize()?;
         Ok(store)
     }
 
     fn initialize(&self) -> Result<(), BindingStoreError> {
-        let mut connection = self.connection.lock().expect("binding database mutex");
+        let mut connection = self
+            .connection
+            .as_ref()
+            .expect("enabled binding store")
+            .lock()
+            .expect("binding database mutex");
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = transaction.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         match version {
@@ -121,8 +142,8 @@ impl BindingStore {
                      FROM durable_bindings LIMIT 0",
                 )?;
                 transaction.execute(
-                    "DELETE FROM durable_bindings WHERE revoked_at IS NOT NULL",
-                    [],
+                    "DELETE FROM durable_bindings WHERE revoked_at = ?1",
+                    [PENDING_BINDING],
                 )?;
             }
             future => return Err(BindingStoreError::FutureSchema(future)),
@@ -131,16 +152,34 @@ impl BindingStore {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn enroll(&self, binding: &Binding) -> Result<(), BindingStoreError> {
+        self.enroll_with_state(binding, None)
+    }
+
+    pub fn enroll_pending(&self, binding: &Binding) -> Result<(), BindingStoreError> {
+        self.enroll_with_state(binding, Some(PENDING_BINDING))
+    }
+
+    fn enroll_with_state(
+        &self,
+        binding: &Binding,
+        revoked_at: Option<i64>,
+    ) -> Result<(), BindingStoreError> {
         let now = unix_time()?;
         let capabilities = serde_json::to_string(&binding.capabilities)
             .map_err(|_| BindingStoreError::CorruptRecord)?;
-        let mut connection = self.connection.lock().expect("binding database mutex");
+        let mut connection = self
+            .connection
+            .as_ref()
+            .ok_or(BindingStoreError::CorruptRecord)?
+            .lock()
+            .expect("binding database mutex");
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let count: i64 = transaction.query_row(
             "SELECT count(*) FROM durable_bindings
-             WHERE subject_hash = ?1 AND revoked_at IS NULL",
-            params![binding.subject.as_slice()],
+             WHERE subject_hash = ?1 AND (revoked_at IS NULL OR revoked_at = ?2)",
+            params![binding.subject.as_slice(), PENDING_BINDING],
             |row| row.get(0),
         )?;
         if count >= MAX_BINDINGS_PER_SUBJECT {
@@ -150,7 +189,7 @@ impl BindingStore {
             "INSERT INTO durable_bindings (
                 binding_id, subject_hash, public_key, host, origin,
                 capabilities_json, created_at, last_used_at, revoked_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, NULL)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)",
             params![
                 binding.id,
                 binding.subject.as_slice(),
@@ -159,17 +198,42 @@ impl BindingStore {
                 binding.origin,
                 capabilities,
                 now,
+                revoked_at,
             ],
         )?;
         transaction.commit()?;
         Ok(())
     }
 
+    pub fn activate_pending(
+        &self,
+        id: &str,
+        subject: &[u8; 32],
+    ) -> Result<bool, BindingStoreError> {
+        let changed = self
+            .connection
+            .as_ref()
+            .ok_or(BindingStoreError::CorruptRecord)?
+            .lock()
+            .expect("binding database mutex")
+            .execute(
+                "UPDATE durable_bindings SET revoked_at = NULL, last_used_at = ?3
+                 WHERE binding_id = ?1 AND subject_hash = ?2 AND revoked_at = ?4",
+                params![id, subject.as_slice(), unix_time()?, PENDING_BINDING],
+            )?;
+        Ok(changed == 1)
+    }
+
     pub fn get_live(&self, id: &str) -> Result<Option<Binding>, BindingStoreError> {
         #[cfg(test)]
         self.get_live_calls
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let connection = self.connection.lock().expect("binding database mutex");
+        let connection = self
+            .connection
+            .as_ref()
+            .ok_or(BindingStoreError::CorruptRecord)?
+            .lock()
+            .expect("binding database mutex");
         let row = connection
             .query_row(
                 "SELECT binding_id, subject_hash, public_key, host, origin, capabilities_json
@@ -211,6 +275,8 @@ impl BindingStore {
     pub fn touch(&self, id: &str) -> Result<bool, BindingStoreError> {
         let changed = self
             .connection
+            .as_ref()
+            .ok_or(BindingStoreError::CorruptRecord)?
             .lock()
             .expect("binding database mutex")
             .execute(
@@ -222,21 +288,69 @@ impl BindingStore {
     }
 
     pub fn revoke(&self, id: &str, subject: &[u8; 32]) -> Result<bool, BindingStoreError> {
-        let changed = self
+        #[cfg(test)]
+        if self
+            .fail_next_revoke
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(BindingStoreError::CorruptRecord);
+        }
+        let mut connection = self
             .connection
+            .as_ref()
+            .ok_or(BindingStoreError::CorruptRecord)?
             .lock()
-            .expect("binding database mutex")
-            .execute(
+            .expect("binding database mutex");
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing: Option<(Vec<u8>, Option<i64>)> = transaction
+            .query_row(
+                "SELECT subject_hash, revoked_at FROM durable_bindings WHERE binding_id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((owner, revoked_at)) = existing else {
+            return Ok(false);
+        };
+        if owner.as_slice() != subject.as_slice() {
+            return Ok(false);
+        }
+        if revoked_at == Some(PENDING_BINDING) {
+            transaction.execute(
                 "DELETE FROM durable_bindings
-                 WHERE binding_id = ?1 AND subject_hash = ?2 AND revoked_at IS NULL",
-                params![id, subject.as_slice()],
+                 WHERE binding_id = ?1 AND subject_hash = ?2 AND revoked_at = ?3",
+                params![id, subject.as_slice(), PENDING_BINDING],
             )?;
-        Ok(changed == 1)
+        } else if revoked_at.is_none() {
+            transaction.execute(
+                "UPDATE durable_bindings SET revoked_at = ?2
+                 WHERE binding_id = ?1 AND revoked_at IS NULL",
+                params![id, unix_time()?],
+            )?;
+            transaction.execute(
+                "DELETE FROM durable_bindings
+                 WHERE binding_id IN (
+                    SELECT binding_id FROM durable_bindings
+                    WHERE subject_hash = ?1 AND revoked_at IS NOT NULL AND revoked_at != ?3
+                    ORDER BY revoked_at DESC, rowid DESC
+                    LIMIT -1 OFFSET ?2
+                 )",
+                params![
+                    subject.as_slice(),
+                    MAX_REVOKED_BINDINGS_PER_SUBJECT,
+                    PENDING_BINDING
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(true)
     }
 
     #[cfg(test)]
     pub fn live_count(&self, subject: &[u8; 32]) -> i64 {
         self.connection
+            .as_ref()
+            .expect("enabled binding store")
             .lock()
             .expect("binding database mutex")
             .query_row(
@@ -255,8 +369,16 @@ impl BindingStore {
     }
 
     #[cfg(test)]
+    pub fn fail_next_revoke(&self) {
+        self.fail_next_revoke
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
     fn total_count(&self) -> i64 {
         self.connection
+            .as_ref()
+            .expect("enabled binding store")
             .lock()
             .expect("binding database mutex")
             .query_row("SELECT count(*) FROM durable_bindings", [], |row| {
@@ -336,6 +458,68 @@ mod tests {
             assert!(store.revoke(&binding.id, &binding.subject).unwrap());
         }
         assert_eq!(store.live_count(&[3; 32]), 0);
-        assert_eq!(store.total_count(), 0);
+        assert_eq!(store.total_count(), MAX_REVOKED_BINDINGS_PER_SUBJECT);
+    }
+
+    #[test]
+    fn revocation_is_idempotent_only_for_the_authenticated_owner() {
+        let store = BindingStore::open(None).unwrap();
+        let enrolled = binding(1);
+        store.enroll(&enrolled).unwrap();
+        assert!(store.revoke(&enrolled.id, &enrolled.subject).unwrap());
+        assert!(store.revoke(&enrolled.id, &enrolled.subject).unwrap());
+        assert!(!store.revoke(&enrolled.id, &[4; 32]).unwrap());
+        assert!(!store.revoke(&binding(2).id, &enrolled.subject).unwrap());
+    }
+
+    #[test]
+    fn pending_binding_is_not_live_until_activation() {
+        let store = BindingStore::open(None).unwrap();
+        let pending = binding(7);
+        store.enroll_pending(&pending).unwrap();
+        assert!(store.get_live(&pending.id).unwrap().is_none());
+        assert!(
+            store
+                .activate_pending(&pending.id, &pending.subject)
+                .unwrap()
+        );
+        assert!(store.get_live(&pending.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn revoking_a_pending_binding_deletes_the_row_and_releases_the_subject_limit() {
+        let store = BindingStore::open(None).unwrap();
+        for index in 0..12 {
+            store.enroll_pending(&binding(index)).unwrap();
+        }
+        assert_eq!(store.total_count(), 12);
+
+        let revoked = binding(0);
+        assert!(store.revoke(&revoked.id, &revoked.subject).unwrap());
+        assert_eq!(store.total_count(), 11);
+        store.enroll_pending(&binding(12)).unwrap();
+        assert_eq!(store.total_count(), 12);
+    }
+
+    #[test]
+    fn startup_prunes_uncommitted_pending_bindings() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "wiswork-relay-pending-{}-{unique}.sqlite",
+            std::process::id()
+        ));
+        let pending = binding(8);
+        {
+            let store = BindingStore::open(Some(&path)).unwrap();
+            store.enroll_pending(&pending).unwrap();
+            assert_eq!(store.total_count(), 1);
+        }
+        let reopened = BindingStore::open(Some(&path)).unwrap();
+        assert_eq!(reopened.total_count(), 0);
+        drop(reopened);
+        std::fs::remove_file(path).unwrap();
     }
 }
