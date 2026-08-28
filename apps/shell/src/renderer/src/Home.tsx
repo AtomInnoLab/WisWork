@@ -409,7 +409,7 @@ export function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: Proj
 
       {mutation.errorCode && (
         <div className="proj-operation-error" role="alert">
-          Project operation failed. Try again. [{mutation.errorCode}]
+          {t('projectOperationFailed')} [{mutation.errorCode}]
         </div>
       )}
 

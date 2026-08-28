@@ -66,6 +66,9 @@ describe('ProjectPanel mutation failures', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       'PROJECT_CREATE_FAILED',
     )
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      '项目操作失败，请重试。',
+    )
     expect(container.textContent).not.toContain('/Users/alice/private')
     expect(container.textContent).not.toContain('secret-token')
     expect(input.value).toBe('Quarterly plan')
