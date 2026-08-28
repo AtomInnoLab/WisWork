@@ -33,6 +33,9 @@ class FakeSocket implements RelayWebSocket {
 }
 
 const frame = (socket: FakeSocket, index: number) => JSON.parse(socket.sent[index]!)
+const flushFrames = async () => {
+  for (let turn = 0; turn < 4; turn += 1) await Promise.resolve()
+}
 
 describe('Office cloud relay session', () => {
   const diagnostic: OfficeDiagnosticEvent = {
@@ -82,6 +85,7 @@ describe('Office cloud relay session', () => {
         expires_in: 120,
       }),
     )
+    await flushFrames()
     expect(session.snapshot()).toEqual({ status: 'pending', verificationCode: '123456' })
     socket.receive(
       JSON.stringify({
@@ -95,6 +99,7 @@ describe('Office cloud relay session', () => {
     await connecting
     expect(session.snapshot()).toEqual({ status: 'connected' })
     socket.receive(JSON.stringify({ version: 1, type: 'relay.error', code: 'session_expired' }))
+    await flushFrames()
     expect(session.snapshot()).toEqual({ status: 'expired' })
   })
 

@@ -1,6 +1,14 @@
 import type { OfficeHost } from '../office-document.js'
 import type { OfficeDiagnosticEvent } from '../diagnostics/office-diagnostics.js'
 import { officeTransportMode, type OfficeTransportMode } from '../../build-config.js'
+import {
+  OFFICE_RELAY_ORIGIN,
+  PAIRING_RESUME_FEATURE,
+  createBrowserOfficeBindingStore,
+  type OfficeBindingEnrollment,
+  type OfficeBindingStore,
+  type OfficeStoredBinding,
+} from './binding-store.js'
 
 export const OFFICE_RELAY_URL = 'wss://office.8-216-134-194.sslip.io/office-relay'
 const MESSAGES_PATH = '/v1/office/messages'
@@ -38,12 +46,20 @@ export interface RelayWebSocket {
 }
 
 export type OfficeRelayStatus =
-  'offline' | 'connecting' | 'pending' | 'waiting_for_pc' | 'rejected' | 'expired' | 'connected'
+  | 'offline'
+  | 'connecting'
+  | 'reconnecting'
+  | 'pending'
+  | 'waiting_for_pc'
+  | 'rejected'
+  | 'expired'
+  | 'connected'
 
 export interface OfficeRelaySnapshot {
   status: OfficeRelayStatus
   verificationCode?: string
   capabilities?: readonly string[]
+  remembered?: false
 }
 
 export interface OfficeRelaySession {
@@ -51,6 +67,7 @@ export interface OfficeRelaySession {
   subscribe(listener: () => void): () => void
   connect(host: OfficeHost): Promise<void>
   disconnect(): void
+  forget(): Promise<void>
   authenticatedFetch(path: typeof MESSAGES_PATH, init: RequestInit): Promise<Response>
   capabilityFetch(
     capability: OfficeRelayCapability,
@@ -63,10 +80,27 @@ export interface OfficeRelaySession {
 export type OfficeRelayCapability =
   'agent.v1' | 'web-search.v1' | 'web-fetch.v1' | 'image-search.v1'
 
-interface Dependencies {
+export interface OfficeBindingInvalidation {
+  readonly origin: typeof OFFICE_RELAY_ORIGIN
+  readonly host: Exclude<OfficeHost, 'unknown'>
+  readonly bindingId: string
+}
+
+export interface OfficeBindingInvalidationChannel {
+  subscribe(listener: (message: OfficeBindingInvalidation) => void): () => void
+  broadcast(message: OfficeBindingInvalidation): void
+}
+
+export interface OfficeRelaySessionDependencies {
   createSocket?: (url: string) => RelayWebSocket
   randomUUID?: () => string
   capabilities?: readonly OfficeRelayCapability[]
+  persistentPairing?: boolean
+  bindingStore?: OfficeBindingStore
+  schedule?: (callback: () => void, delay: number) => unknown
+  cancelSchedule?: (handle: unknown) => void
+  random?: () => number
+  bindingInvalidationChannel?: OfficeBindingInvalidationChannel
 }
 
 interface ActiveRequest {
@@ -87,6 +121,8 @@ const hostLabels: Record<Exclude<OfficeHost, 'unknown'>, string> = {
   excel: 'Excel',
   powerpoint: 'PowerPoint',
 }
+const matchesHost = (value: unknown): value is Exclude<OfficeHost, 'unknown'> =>
+  value === 'word' || value === 'excel' || value === 'powerpoint'
 const encoder = new TextEncoder()
 const exactKeys = (value: Record<string, unknown>, keys: readonly string[]) =>
   Object.keys(value).length === keys.length && keys.every((key) => key in value)
@@ -97,19 +133,121 @@ const opaque = (value: unknown): value is string =>
   /^[A-Za-z0-9_-]+$/.test(value)
 const expiry = (value: unknown, maximum: number): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= maximum
+const resumeFeature = (value: unknown): value is [typeof PAIRING_RESUME_FEATURE] =>
+  Array.isArray(value) && value.length === 1 && value[0] === PAIRING_RESUME_FEATURE
 
 function browserSocket(url: string): RelayWebSocket {
   return new WebSocket(url) as unknown as RelayWebSocket
 }
 
-export function createOfficeRelaySession(dependencies: Dependencies = {}): OfficeRelaySession {
+interface BindingBroadcastChannel {
+  onmessage: ((event: MessageEvent<unknown>) => void) | null
+  postMessage(message: unknown): void
+}
+
+export function createBrowserOfficeBindingInvalidationChannel(
+  createChannel: (name: string) => BindingBroadcastChannel = (name) => new BroadcastChannel(name),
+): OfficeBindingInvalidationChannel | undefined {
+  let channel: BindingBroadcastChannel
+  try {
+    channel = createChannel('wiswork-office-pairing-v1')
+  } catch {
+    return undefined
+  }
+  const listeners = new Set<(message: OfficeBindingInvalidation) => void>()
+  channel.onmessage = (event) => {
+    const value = event.data
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return
+    const message = value as Record<string, unknown>
+    if (
+      !exactKeys(message, ['version', 'type', 'origin', 'host', 'binding_id']) ||
+      message.version !== 1 ||
+      message.type !== 'binding.forgotten' ||
+      message.origin !== OFFICE_RELAY_ORIGIN ||
+      !matchesHost(message.host) ||
+      !opaque(message.binding_id)
+    )
+      return
+    const invalidation = Object.freeze({
+      origin: OFFICE_RELAY_ORIGIN,
+      host: message.host,
+      bindingId: message.binding_id,
+    })
+    listeners.forEach((listener) => listener(invalidation))
+  }
+  return Object.freeze({
+    subscribe(listener: (message: OfficeBindingInvalidation) => void) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    broadcast(message: OfficeBindingInvalidation) {
+      if (
+        message.origin !== OFFICE_RELAY_ORIGIN ||
+        !matchesHost(message.host) ||
+        !opaque(message.bindingId)
+      )
+        return
+      channel.postMessage({
+        version: 1,
+        type: 'binding.forgotten',
+        origin: OFFICE_RELAY_ORIGIN,
+        host: message.host,
+        binding_id: message.bindingId,
+      })
+    },
+  })
+}
+
+export function createOfficeRelaySession(
+  dependencies: OfficeRelaySessionDependencies = {},
+): OfficeRelaySession {
   const createSocket = dependencies.createSocket ?? browserSocket
   const randomUUID = dependencies.randomUUID ?? (() => crypto.randomUUID())
   const requestedCapabilities = [...(dependencies.capabilities ?? [])]
+  const persistentPairing = dependencies.persistentPairing !== false
+  const configuredBindingStore = persistentPairing ? dependencies.bindingStore : undefined
+  const browserBindingStore =
+    persistentPairing && !configuredBindingStore ? createBrowserOfficeBindingStore() : undefined
+  const browserInvalidationChannel =
+    persistentPairing && browserBindingStore
+      ? createBrowserOfficeBindingInvalidationChannel()
+      : undefined
+  const bindingInvalidationChannel =
+    (persistentPairing ? dependencies.bindingInvalidationChannel : undefined) ??
+    (configuredBindingStore ? undefined : browserInvalidationChannel)
+  const bindingStore =
+    persistentPairing && requestedCapabilities.length > 0
+      ? (configuredBindingStore ?? (bindingInvalidationChannel ? browserBindingStore : undefined))
+      : undefined
+  const schedule = dependencies.schedule ?? ((callback, delay) => setTimeout(callback, delay))
+  const cancelSchedule =
+    dependencies.cancelSchedule ??
+    ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>))
+  const random = dependencies.random ?? Math.random
   const protocolVersion = requestedCapabilities.length > 0 ? 2 : 1
   const listeners = new Set<() => void>()
   let state: OfficeRelaySnapshot = { status: 'offline' }
   let socket: RelayWebSocket | undefined
+  let host: Exclude<OfficeHost, 'unknown'> | undefined
+  let connectionMode: 'legacy' | 'enroll' | 'resume' = 'legacy'
+  let storedBinding: OfficeStoredBinding | undefined
+  let enrollment: OfficeBindingEnrollment | undefined
+  let bindingOffer:
+    | {
+        bindingId: string
+        capabilities: OfficeRelayCapability[]
+        status: 'staging' | 'staged' | 'committed' | 'aborting'
+      }
+    | undefined
+  let enhancedFallbackUsed = false
+  let resumeFallbackUsed = false
+  let resumeRecognized = false
+  let explicitlyDisconnected = false
+  let retryAttempt = 0
+  let retryTimer: unknown
+  let challengeInFlight = false
+  let remembered: false | undefined
+  let abortedEnrollmentApproval = false
   let pairingId: string | undefined
   let sessionId: string | undefined
   let capability: string | undefined
@@ -118,6 +256,12 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   let generation = 0
   let settleConnect: (() => void) | undefined
   let pairingTimer: ReturnType<typeof setTimeout> | undefined
+  let unsubscribeInvalidation: (() => void) | undefined
+  let bindingDeletionBarrier: Promise<void> | undefined
+  let pendingForgetInvalidation: OfficeBindingInvalidation | undefined
+  let pendingBindingCleanup: OfficeBindingInvalidation | undefined
+  let bindingInvalidationEpoch = 0
+  const invalidatedBindings = new Map<string, number>()
   const pendingDiagnostics = new Map<string, { resolve(): void; reject(error: Error): void }>()
   const terminalRequestIds = new Set<string>()
   const terminalRequestOrder: string[] = []
@@ -150,13 +294,16 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       }
     } else active.reject(new Error(error ?? 'relay_disconnected'))
   }
-  const revoke = (status: OfficeRelayStatus = 'offline', close = true) => {
+  const revoke = (status: OfficeRelayStatus = 'offline', close = true, settle = true) => {
     generation += 1
     finishRequest('relay_disconnected')
     pairingId = undefined
     sessionId = undefined
     capability = undefined
     negotiatedCapabilities = []
+    challengeInFlight = false
+    remembered = undefined
+    abortedEnrollmentApproval = false
     for (const pending of pendingDiagnostics.values())
       pending.reject(new Error('diagnostic_unavailable'))
     pendingDiagnostics.clear()
@@ -166,12 +313,75 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     pairingTimer = undefined
     const activeSocket = socket
     socket = undefined
+    if (activeSocket) {
+      activeSocket.onopen = null
+      activeSocket.onmessage = null
+      activeSocket.onerror = null
+      activeSocket.onclose = null
+    }
     if (close && activeSocket && activeSocket.readyState <= 1) activeSocket.close()
-    settleConnect?.()
-    settleConnect = undefined
+    if (settle) {
+      settleConnect?.()
+      settleConnect = undefined
+    }
     publish({ status })
   }
-  const protocolFailure = () => revoke('offline')
+  const cancelRetry = () => {
+    if (retryTimer === undefined) return
+    cancelSchedule(retryTimer)
+    retryTimer = undefined
+  }
+  const markBindingInvalid = (bindingId: string) => {
+    bindingInvalidationEpoch += 1
+    invalidatedBindings.delete(bindingId)
+    invalidatedBindings.set(bindingId, bindingInvalidationEpoch)
+    while (invalidatedBindings.size > 32)
+      invalidatedBindings.delete(invalidatedBindings.keys().next().value!)
+  }
+  const beginBindingDeletion = (
+    targetHost: Exclude<OfficeHost, 'unknown'> | undefined,
+    bindingId: string | undefined,
+    afterCommit?: () => void,
+  ) => {
+    const previous = bindingDeletionBarrier
+    const deletion = (async () => {
+      if (previous) await previous.catch(() => undefined)
+      if (targetHost) await bindingStore?.forget(targetHost, bindingId)
+      afterCommit?.()
+    })()
+    bindingDeletionBarrier = deletion
+    void deletion
+      .finally(() => {
+        if (bindingDeletionBarrier === deletion) bindingDeletionBarrier = undefined
+      })
+      .catch(() => undefined)
+    return deletion
+  }
+  const deleteActivatedBinding = async (binding: OfficeStoredBinding, epoch: number) => {
+    const cleanup = {
+      origin: OFFICE_RELAY_ORIGIN,
+      host: binding.host,
+      bindingId: binding.bindingId,
+    } as const
+    pendingBindingCleanup = cleanup
+    markBindingInvalid(binding.bindingId)
+    storedBinding = undefined
+    try {
+      await beginBindingDeletion(binding.host, binding.bindingId, () => {
+        if (pendingBindingCleanup?.bindingId === binding.bindingId) {
+          bindingInvalidationChannel?.broadcast(cleanup)
+          pendingBindingCleanup = undefined
+        }
+      })
+      return epoch === generation
+    } catch {
+      if (epoch === generation) {
+        explicitlyDisconnected = true
+        revoke('offline')
+      }
+      return false
+    }
+  }
   const send = (value: Record<string, unknown>) => {
     if (!socket || socket.readyState !== 1) throw new Error('relay_disconnected')
     const encoded = JSON.stringify(value)
@@ -180,8 +390,208 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     socket.send(encoded)
   }
 
-  const handleFrame = (data: unknown, epoch: number) => {
-    if (epoch !== generation || typeof data !== 'string') return protocolFailure()
+  const scheduleResume = () => {
+    if (explicitlyDisconnected || !storedBinding || !host) return revoke('offline')
+    revoke('reconnecting', true, false)
+    cancelRetry()
+    const base = Math.min(30_000, 500 * 2 ** Math.min(retryAttempt, 6))
+    const delay = Math.min(30_000, Math.round(base * (0.75 + 0.5 * random())))
+    retryAttempt += 1
+    retryTimer = schedule(() => {
+      retryTimer = undefined
+      if (explicitlyDisconnected || !storedBinding || !host) return
+      startAttempt('resume')
+    }, delay)
+  }
+
+  const abandonEnrollment = () => {
+    const abandoned = enrollment
+    const abandonedBindingId = bindingOffer?.bindingId
+    enrollment = undefined
+    bindingOffer = undefined
+    if (abandoned) void bindingStore?.abort(abandoned, abandonedBindingId).catch(() => undefined)
+  }
+
+  const fallbackToLegacy = () => {
+    if (enhancedFallbackUsed || explicitlyDisconnected || !host) return revoke('offline')
+    enhancedFallbackUsed = true
+    abandonEnrollment()
+    startAttempt('legacy')
+  }
+
+  const fallbackStoredBindingToLegacy = () => {
+    if (resumeFallbackUsed || explicitlyDisconnected || !host) return revoke('offline')
+    resumeFallbackUsed = true
+    startAttempt('legacy')
+  }
+
+  const handleDisconnect = (epoch: number) => {
+    if (epoch !== generation || explicitlyDisconnected) return
+    if (connectionMode === 'enroll') return fallbackToLegacy()
+    if (connectionMode === 'resume' && storedBinding) return scheduleResume()
+    revoke('offline', false)
+  }
+
+  const startAttempt = (mode: 'legacy' | 'enroll' | 'resume') => {
+    if (!host || explicitlyDisconnected) return
+    revoke(state.status === 'reconnecting' ? 'reconnecting' : 'connecting', true, false)
+    connectionMode = mode
+    if (mode === 'resume') resumeRecognized = false
+    const epoch = generation
+    let opened: RelayWebSocket
+    try {
+      opened = createSocket(OFFICE_RELAY_URL)
+    } catch {
+      if (mode === 'enroll') fallbackToLegacy()
+      else if (mode === 'resume') scheduleResume()
+      else revoke('offline')
+      return
+    }
+    socket = opened
+    opened.onopen = () => {
+      if (epoch !== generation || !host) return
+      try {
+        if (mode === 'resume' && storedBinding) {
+          send({
+            version: 2,
+            type: 'office.resume',
+            binding_id: storedBinding.bindingId,
+            host: hostLabels[host],
+            capabilities: requestedCapabilities,
+          })
+        } else if (mode === 'enroll' && enrollment) {
+          send({
+            version: 2,
+            type: 'office.create',
+            host: hostLabels[host],
+            capabilities: requestedCapabilities,
+            features: [PAIRING_RESUME_FEATURE],
+            binding_public_key: enrollment.publicKey,
+          })
+        } else {
+          send({
+            version: protocolVersion,
+            type: 'office.create',
+            host: hostLabels[host],
+            ...(protocolVersion === 2 ? { capabilities: requestedCapabilities } : {}),
+          })
+        }
+      } catch {
+        handleDisconnect(epoch)
+      }
+    }
+    let frameQueue = Promise.resolve()
+    opened.onmessage = (event) => {
+      frameQueue = frameQueue
+        .then(() => handleFrame(event.data, epoch))
+        .catch(() => {
+          if (epoch === generation) protocolFailure()
+        })
+    }
+    opened.onerror = () => handleDisconnect(epoch)
+    opened.onclose = () => handleDisconnect(epoch)
+  }
+
+  const prepareEnrollment = async (intent: number) => {
+    if (!bindingStore || !host) return startAttempt('legacy')
+    try {
+      const prepared = await bindingStore.createEnrollment(host, requestedCapabilities)
+      if (intent !== generation || explicitlyDisconnected) {
+        await bindingStore.abort(prepared).catch(() => undefined)
+        return
+      }
+      enrollment = prepared
+      bindingOffer = undefined
+      startAttempt('enroll')
+    } catch {
+      if (intent === generation && !explicitlyDisconnected) startAttempt('legacy')
+    }
+  }
+
+  const beginConnection = async (intent: number) => {
+    if (!bindingStore || !host || protocolVersion !== 2) return startAttempt('legacy')
+    const connectingHost = host
+    try {
+      if (pendingBindingCleanup?.host === connectingHost) {
+        const cleanup = pendingBindingCleanup
+        await bindingStore.forget(connectingHost, cleanup.bindingId)
+        if (intent !== generation || explicitlyDisconnected) return
+        bindingInvalidationChannel?.broadcast(cleanup)
+        pendingBindingCleanup = undefined
+      } else {
+        // A previous taskpane may have durably blocked a binding before its delete failed.
+        await bindingStore.forget(connectingHost)
+        if (intent !== generation || explicitlyDisconnected) return
+      }
+    } catch {
+      if (intent === generation) {
+        explicitlyDisconnected = true
+        revoke('offline')
+      }
+      return
+    }
+    try {
+      const loaded = await bindingStore.load(connectingHost, requestedCapabilities)
+      if (intent !== generation || explicitlyDisconnected) return
+      if (loaded) {
+        if (invalidatedBindings.has(loaded.bindingId)) await prepareEnrollment(intent)
+        else {
+          storedBinding = loaded
+          startAttempt('resume')
+        }
+      } else {
+        await prepareEnrollment(intent)
+      }
+    } catch {
+      if (intent === generation && !explicitlyDisconnected) startAttempt('legacy')
+    }
+  }
+
+  const invalidateBindingAndEnroll = () => {
+    const invalidated = storedBinding
+    if (invalidated) markBindingInvalid(invalidated.bindingId)
+    storedBinding = undefined
+    enrollment = undefined
+    bindingOffer = undefined
+    retryAttempt = 0
+    cancelRetry()
+    revoke('connecting', true, false)
+    const intent = generation
+    void beginBindingDeletion(host, invalidated?.bindingId)
+      .then(async () => {
+        if (intent === generation && !explicitlyDisconnected) await prepareEnrollment(intent)
+      })
+      .catch(() => {
+        if (intent === generation) revoke('offline')
+      })
+  }
+
+  const protocolFailure = () => {
+    if (connectionMode === 'enroll') fallbackToLegacy()
+    else if (connectionMode === 'resume' && storedBinding) scheduleResume()
+    else revoke('offline')
+  }
+
+  const subscribeInvalidation = () => {
+    if (!bindingInvalidationChannel || unsubscribeInvalidation) return
+    unsubscribeInvalidation = bindingInvalidationChannel.subscribe((message) => {
+      if (message.origin !== OFFICE_RELAY_ORIGIN || !host || message.host !== host) return
+      markBindingInvalid(message.bindingId)
+      if (message.bindingId !== storedBinding?.bindingId) return
+      explicitlyDisconnected = true
+      cancelRetry()
+      storedBinding = undefined
+      enrollment = undefined
+      bindingOffer = undefined
+      unsubscribeInvalidation?.()
+      unsubscribeInvalidation = undefined
+      revoke('offline')
+    })
+  }
+
+  const handleFrame = async (data: unknown, epoch: number) => {
+    if (epoch !== generation) return
+    if (typeof data !== 'string') return protocolFailure()
     const frameBytes = encoder.encode(data).byteLength
     if (frameBytes > MAX_RELAY_FRAME_BYTES) return protocolFailure()
     let frame: Record<string, unknown>
@@ -194,6 +604,89 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     }
     if (frame.version !== protocolVersion || typeof frame.type !== 'string')
       return protocolFailure()
+
+    if (
+      frame.type === 'relay.error' &&
+      exactKeys(frame, ['version', 'type', 'code']) &&
+      typeof frame.code === 'string'
+    ) {
+      if (connectionMode === 'enroll' && frame.code === 'invalid_frame') {
+        fallbackToLegacy()
+        return
+      }
+      if (connectionMode === 'resume') {
+        if (
+          [
+            'binding_unavailable',
+            'binding_revoked',
+            'invalid_proof',
+            'capability_not_negotiated',
+          ].includes(frame.code)
+        ) {
+          invalidateBindingAndEnroll()
+          return
+        }
+        if (!resumeRecognized && ['invalid_frame', 'unknown_type'].includes(frame.code)) {
+          fallbackStoredBindingToLegacy()
+          return
+        }
+        if (
+          [
+            'session_revoked',
+            'challenge_expired',
+            'resume_rate_limited',
+            'resume_limit',
+            'peer_unavailable',
+          ].includes(frame.code)
+        ) {
+          scheduleResume()
+          return
+        }
+      }
+    }
+
+    if (frame.type === 'office.challenge') {
+      if (
+        connectionMode !== 'resume' ||
+        (state.status !== 'connecting' && state.status !== 'reconnecting') ||
+        frameBytes > MAX_CONTROL_FRAME_BYTES ||
+        challengeInFlight ||
+        !storedBinding ||
+        !exactKeys(frame, ['version', 'type', 'binding_id', 'challenge', 'expires_in']) ||
+        frame.binding_id !== storedBinding.bindingId ||
+        !opaque(frame.challenge) ||
+        !expiry(frame.expires_in, 30)
+      )
+        return protocolFailure()
+      resumeRecognized = true
+      challengeInFlight = true
+      try {
+        const signature = await bindingStore?.sign(storedBinding, frame.challenge)
+        if (epoch !== generation || !signature) return
+        send({
+          version: 2,
+          type: 'office.prove',
+          binding_id: storedBinding.bindingId,
+          challenge: frame.challenge,
+          signature,
+        })
+      } catch {
+        if (epoch === generation) invalidateBindingAndEnroll()
+      }
+      return
+    }
+
+    if (frame.type === 'office.waiting_for_pc') {
+      if (
+        connectionMode !== 'resume' ||
+        (state.status !== 'connecting' && state.status !== 'reconnecting') ||
+        frameBytes > MAX_CONTROL_FRAME_BYTES ||
+        !exactKeys(frame, ['version', 'type'])
+      )
+        return protocolFailure()
+      publish({ status: 'waiting_for_pc' })
+      return
+    }
 
     if (frame.type === 'office.diagnostic.accepted') {
       if (
@@ -229,30 +722,223 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       exactKeys(frame, ['version', 'type', 'code']) &&
       frame.code === 'session_expired'
     ) {
-      revoke('expired')
+      if (connectionMode === 'resume' && storedBinding) scheduleResume()
+      else revoke('expired')
       return
     }
 
     if (frame.type === 'office.created') {
+      const expectedKeys = ['version', 'type', 'pairing_id', 'verification_code', 'expires_in']
+      if (connectionMode === 'enroll') expectedKeys.push('features')
       if (
-        state.status !== 'connecting' ||
+        (connectionMode !== 'legacy' && connectionMode !== 'enroll') ||
+        (state.status !== 'connecting' && state.status !== 'reconnecting') ||
         frameBytes > MAX_CONTROL_FRAME_BYTES ||
-        !exactKeys(frame, ['version', 'type', 'pairing_id', 'verification_code', 'expires_in']) ||
+        !exactKeys(frame, expectedKeys) ||
         !opaque(frame.pairing_id) ||
         typeof frame.verification_code !== 'string' ||
         !/^\d{6}$/.test(frame.verification_code) ||
-        !expiry(frame.expires_in, 120)
+        !expiry(frame.expires_in, 120) ||
+        (connectionMode === 'enroll' && !resumeFeature(frame.features))
       )
         return protocolFailure()
       pairingId = frame.pairing_id
       if (pairingTimer !== undefined) clearTimeout(pairingTimer)
-      pairingTimer = setTimeout(() => revoke('expired'), frame.expires_in * 1000)
+      pairingTimer = setTimeout(() => {
+        abandonEnrollment()
+        revoke('expired')
+      }, frame.expires_in * 1000)
       publish({ status: 'pending', verificationCode: frame.verification_code })
+      return
+    }
+    if (frame.type === 'office.binding_offer') {
+      const offeredCapabilities =
+        Array.isArray(frame.capabilities) &&
+        frame.capabilities.length > 0 &&
+        frame.capabilities.every(
+          (value, index, values) =>
+            typeof value === 'string' &&
+            requestedCapabilities.includes(value as OfficeRelayCapability) &&
+            values.indexOf(value) === index,
+        )
+          ? (frame.capabilities as OfficeRelayCapability[])
+          : undefined
+      if (
+        connectionMode !== 'enroll' ||
+        state.status !== 'pending' ||
+        frameBytes > MAX_CONTROL_FRAME_BYTES ||
+        !exactKeys(frame, [
+          'version',
+          'type',
+          'pairing_id',
+          'binding_id',
+          'capabilities',
+          'features',
+        ]) ||
+        frame.pairing_id !== pairingId ||
+        !opaque(frame.binding_id) ||
+        !offeredCapabilities ||
+        !resumeFeature(frame.features) ||
+        !bindingStore ||
+        !enrollment ||
+        bindingOffer
+      )
+        return protocolFailure()
+      const offeredEnrollment = enrollment
+      const offeredBindingId = frame.binding_id
+      bindingOffer = {
+        bindingId: offeredBindingId,
+        capabilities: [...offeredCapabilities],
+        status: 'staging',
+      }
+      try {
+        await bindingStore.stage(offeredEnrollment, offeredBindingId, offeredCapabilities)
+        if (epoch !== generation) {
+          await bindingStore.abort(offeredEnrollment, offeredBindingId).catch(() => undefined)
+          return
+        }
+        bindingOffer = {
+          bindingId: offeredBindingId,
+          capabilities: [...offeredCapabilities],
+          status: 'staged',
+        }
+        send({
+          version: 2,
+          type: 'office.binding_ready',
+          pairing_id: pairingId,
+          binding_id: offeredBindingId,
+        })
+      } catch {
+        await bindingStore.abort(offeredEnrollment, offeredBindingId).catch(() => undefined)
+        if (epoch !== generation) return
+        enrollment = undefined
+        bindingOffer = {
+          bindingId: offeredBindingId,
+          capabilities: [...offeredCapabilities],
+          status: 'aborting',
+        }
+        try {
+          send({
+            version: 2,
+            type: 'office.binding_abort',
+            pairing_id: pairingId,
+            binding_id: offeredBindingId,
+          })
+        } catch {
+          handleDisconnect(epoch)
+        }
+      }
+      return
+    }
+    if (frame.type === 'office.binding_commit') {
+      if (
+        connectionMode !== 'enroll' ||
+        state.status !== 'pending' ||
+        frameBytes > MAX_CONTROL_FRAME_BYTES ||
+        !exactKeys(frame, ['version', 'type', 'pairing_id', 'binding_id']) ||
+        frame.pairing_id !== pairingId ||
+        frame.binding_id !== bindingOffer?.bindingId ||
+        bindingOffer?.status !== 'staged' ||
+        !bindingStore ||
+        !enrollment
+      )
+        return protocolFailure()
+      const committingEnrollment = enrollment
+      const committingOffer = bindingOffer
+      let activated: OfficeStoredBinding
+      try {
+        activated = await bindingStore.activate(
+          committingEnrollment,
+          committingOffer.bindingId,
+          committingOffer.capabilities,
+        )
+      } catch {
+        await bindingStore
+          .abort(committingEnrollment, committingOffer.bindingId)
+          .catch(() => undefined)
+        if (epoch !== generation) return
+        enrollment = undefined
+        storedBinding = undefined
+        bindingOffer = { ...committingOffer, status: 'aborting' }
+        try {
+          send({
+            version: 2,
+            type: 'office.binding_abort',
+            pairing_id: pairingId,
+            binding_id: committingOffer.bindingId,
+          })
+        } catch {
+          handleDisconnect(epoch)
+        }
+        return
+      }
+      if (epoch !== generation) return
+      storedBinding = activated
+      enrollment = undefined
+      bindingOffer = { ...committingOffer, status: 'committed' }
+      try {
+        send({
+          version: 2,
+          type: 'office.binding_committed',
+          pairing_id: pairingId,
+          binding_id: committingOffer.bindingId,
+        })
+      } catch {
+        await deleteActivatedBinding(activated, epoch)
+        if (epoch !== generation) return
+        enrollment = undefined
+        storedBinding = undefined
+        bindingOffer = { ...committingOffer, status: 'aborting' }
+        explicitlyDisconnected = true
+        revoke('offline')
+      }
+      return
+    }
+    if (frame.type === 'office.binding_aborted') {
+      if (
+        connectionMode !== 'enroll' ||
+        state.status !== 'pending' ||
+        frameBytes > MAX_CONTROL_FRAME_BYTES ||
+        !exactKeys(frame, ['version', 'type', 'pairing_id', 'binding_id']) ||
+        frame.pairing_id !== pairingId ||
+        frame.binding_id !== bindingOffer?.bindingId ||
+        !bindingOffer
+      )
+        return protocolFailure()
+      if (bindingOffer.status === 'staged' && enrollment && bindingStore) {
+        await bindingStore.abort(enrollment, bindingOffer.bindingId).catch(() => undefined)
+        if (epoch !== generation) return
+      }
+      if (bindingOffer.status === 'committed' && storedBinding && bindingStore) {
+        const deleted = await deleteActivatedBinding(storedBinding, epoch)
+        if (!deleted || epoch !== generation) return
+      }
+      enrollment = undefined
+      bindingOffer = undefined
+      connectionMode = 'legacy'
+      remembered = false
+      abortedEnrollmentApproval = true
       return
     }
     if (frame.type === 'office.approved') {
       const approvedKeys = ['version', 'type', 'session_id', 'capability', 'expires_in']
       if (protocolVersion === 2) approvedKeys.push('capabilities')
+      const committedOffer = bindingOffer?.status === 'committed' ? bindingOffer : undefined
+      const enhancedApproval =
+        connectionMode === 'enroll' &&
+        Boolean(committedOffer) &&
+        resumeFeature(frame.features) &&
+        frame.binding_id === committedOffer?.bindingId &&
+        exactKeys(frame, [...approvedKeys, 'features', 'binding_id'])
+      const abortedShortApproval =
+        connectionMode === 'legacy' &&
+        remembered === false &&
+        abortedEnrollmentApproval &&
+        Array.isArray(frame.features) &&
+        frame.features.length === 0 &&
+        exactKeys(frame, [...approvedKeys, 'features'])
+      const standardApproval =
+        connectionMode !== 'enroll' && !abortedEnrollmentApproval && exactKeys(frame, approvedKeys)
       const approvedCapabilities =
         protocolVersion === 2 &&
         Array.isArray(frame.capabilities) &&
@@ -268,16 +954,31 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
             ? (['agent.v1'] as OfficeRelayCapability[])
             : undefined
       if (
-        (state.status !== 'pending' && state.status !== 'waiting_for_pc') ||
+        (connectionMode === 'resume'
+          ? state.status !== 'connecting' &&
+            state.status !== 'reconnecting' &&
+            state.status !== 'waiting_for_pc'
+          : state.status !== 'pending' && state.status !== 'waiting_for_pc') ||
         frameBytes > MAX_CONTROL_FRAME_BYTES ||
-        !pairingId ||
-        !exactKeys(frame, approvedKeys) ||
+        (connectionMode !== 'resume' && !pairingId) ||
+        (!standardApproval && !enhancedApproval && !abortedShortApproval) ||
         !opaque(frame.session_id) ||
         !opaque(frame.capability) ||
         !expiry(frame.expires_in, 1800) ||
-        !approvedCapabilities
+        !approvedCapabilities ||
+        (enhancedApproval && !storedBinding) ||
+        (committedOffer &&
+          enhancedApproval &&
+          (approvedCapabilities.length !== committedOffer.capabilities.length ||
+            approvedCapabilities.some(
+              (value, index) => value !== committedOffer.capabilities[index],
+            )))
       )
         return protocolFailure()
+      if (enhancedApproval && storedBinding) {
+        bindingOffer = undefined
+        connectionMode = 'resume'
+      }
       sessionId = frame.session_id
       capability = frame.capability
       negotiatedCapabilities = approvedCapabilities
@@ -286,11 +987,14 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       pairingTimer = undefined
       settleConnect?.()
       settleConnect = undefined
+      retryAttempt = 0
+      abortedEnrollmentApproval = false
       publish({
         status: 'connected',
         ...(protocolVersion === 2
           ? { capabilities: Object.freeze([...negotiatedCapabilities]) }
           : {}),
+        ...(remembered === false ? { remembered: false as const } : {}),
       })
       return
     }
@@ -308,7 +1012,10 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
             ? 'expired'
             : 'waiting_for_pc'
       if (status === 'waiting_for_pc') publish({ status, verificationCode: state.verificationCode })
-      else revoke(status)
+      else {
+        abandonEnrollment()
+        revoke(status)
+      }
       return
     }
     if (
@@ -433,45 +1140,93 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
-    connect(host) {
+    connect(nextHost) {
+      const abandoned = enrollment
+      const abandonedBindingId = bindingOffer?.bindingId
+      explicitlyDisconnected = true
+      cancelRetry()
       revoke('offline')
-      if (host === 'unknown') return Promise.resolve()
-      const epoch = generation
+      storedBinding = undefined
+      enrollment = undefined
+      bindingOffer = undefined
+      if (abandoned) void bindingStore?.abort(abandoned, abandonedBindingId).catch(() => undefined)
+      enhancedFallbackUsed = false
+      resumeFallbackUsed = false
+      retryAttempt = 0
+      host = nextHost === 'unknown' ? undefined : nextHost
+      if (!host) return Promise.resolve()
+      explicitlyDisconnected = false
       publish({ status: 'connecting' })
       return new Promise<void>((resolve) => {
         settleConnect = resolve
-        let opened: RelayWebSocket
-        try {
-          opened = createSocket(OFFICE_RELAY_URL)
-        } catch {
-          revoke('offline')
+        const intent = generation
+        const deletion = bindingDeletionBarrier
+        if (!deletion) {
+          subscribeInvalidation()
+          void beginConnection(intent)
           return
         }
-        socket = opened
-        opened.onopen = () => {
-          if (epoch !== generation) return
+        void (async () => {
           try {
-            send({
-              version: protocolVersion,
-              type: 'office.create',
-              host: hostLabels[host],
-              ...(protocolVersion === 2 ? { capabilities: requestedCapabilities } : {}),
-            })
+            await deletion
           } catch {
-            protocolFailure()
+            if (intent === generation) {
+              explicitlyDisconnected = true
+              revoke('offline')
+            }
+            return
           }
-        }
-        opened.onmessage = (event) => handleFrame(event.data, epoch)
-        opened.onerror = () => {
-          if (epoch === generation) revoke('offline')
-        }
-        opened.onclose = () => {
-          if (epoch === generation) revoke('offline', false)
-        }
+          if (intent !== generation || explicitlyDisconnected || !host) return
+          subscribeInvalidation()
+          await beginConnection(intent)
+        })()
       })
     },
     disconnect() {
+      const abandoned = enrollment
+      const abandonedBindingId = bindingOffer?.bindingId
+      explicitlyDisconnected = true
+      cancelRetry()
+      unsubscribeInvalidation?.()
+      unsubscribeInvalidation = undefined
+      enrollment = undefined
+      bindingOffer = undefined
+      if (abandoned) void bindingStore?.abort(abandoned, abandonedBindingId).catch(() => undefined)
       revoke('offline')
+    },
+    async forget() {
+      const abandoned = enrollment
+      const forgotten = storedBinding ?? pendingForgetInvalidation
+      const targetHost = forgotten?.host ?? enrollment?.host ?? host
+      const targetBindingId = forgotten?.bindingId ?? bindingOffer?.bindingId
+      if (targetHost && targetBindingId) {
+        markBindingInvalid(targetBindingId)
+        pendingForgetInvalidation = {
+          origin: OFFICE_RELAY_ORIGIN,
+          host: targetHost,
+          bindingId: targetBindingId,
+        }
+      }
+      explicitlyDisconnected = true
+      cancelRetry()
+      unsubscribeInvalidation?.()
+      unsubscribeInvalidation = undefined
+      storedBinding = undefined
+      enrollment = undefined
+      bindingOffer = undefined
+      revoke('offline')
+      if (abandoned) await bindingStore?.abort(abandoned, targetBindingId)
+      if (!targetBindingId) return
+      await beginBindingDeletion(targetHost, targetBindingId, () => {
+        if (pendingForgetInvalidation) {
+          bindingInvalidationChannel?.broadcast({
+            origin: OFFICE_RELAY_ORIGIN,
+            host: pendingForgetInvalidation.host,
+            bindingId: pendingForgetInvalidation.bindingId,
+          })
+          pendingForgetInvalidation = undefined
+        }
+      })
     },
     async authenticatedFetch(path, init) {
       if (

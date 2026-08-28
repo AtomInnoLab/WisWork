@@ -24,11 +24,18 @@ import type {
   OfficePresentationEvent,
   ProposalPresentationEvent,
 } from './agent/presentation-state.js'
-import { createPcBridgeSession } from './pc-bridge/session.js'
-import { createOfficeRelaySession, officeTransportMode } from './relay/session.js'
+import { createPcBridgeSession, type PcBridgeSession } from './pc-bridge/session.js'
+import {
+  createOfficeRelaySession,
+  officeTransportMode,
+  type OfficeRelaySession,
+  type OfficeRelaySnapshot,
+  type OfficeRelayStatus,
+} from './relay/session.js'
 import {
   createBrowserOfficeRuntime,
   createOfficeDocumentClient,
+  type OfficeDocumentClient,
   type OfficeHost,
 } from './office-document.js'
 
@@ -44,6 +51,45 @@ const agentProductLabels: Record<OfficeHost, string> = {
   excel: 'AI Sheets',
   powerpoint: 'AI Slides',
   unknown: 'WisWork AI',
+}
+
+export function relayConnectionPresentation(
+  status: OfficeRelayStatus | 'signed_out',
+  verificationCode?: string,
+) {
+  const detail = {
+    offline: 'Connect again to create a new secure pairing with WisWork PC.',
+    connecting: 'Connecting securely to the WisWork Office Relay…',
+    reconnecting: 'Reconnecting to WisWork PC…',
+    signed_out: 'Sign in to WisWork PC first.',
+    pending: verificationCode
+      ? `Enter code ${verificationCode} in WisWork PC, then approve the matching request.`
+      : 'Enter the pairing code in WisWork PC.',
+    waiting_for_pc: verificationCode
+      ? `Enter code ${verificationCode} in WisWork PC to continue.`
+      : 'Waiting for a signed-in WisWork PC.',
+    rejected: 'The connection was rejected in WisWork PC.',
+    expired: 'The connection request expired. Try again.',
+    connected: '',
+  }[status]
+  const busy = status === 'connecting' || status === 'reconnecting' || status === 'pending'
+  return Object.freeze({
+    title:
+      status === 'reconnecting'
+        ? 'Reconnecting to WisWork PC…'
+        : status === 'waiting_for_pc' && !verificationCode
+          ? 'Waiting for WisWork PC'
+          : 'Connect to WisWork PC',
+    detail,
+    busy,
+    actionDisabled: busy,
+  })
+}
+
+export function relayPersistenceNotice(snapshot: OfficeRelaySnapshot): string | undefined {
+  return snapshot.status === 'connected' && snapshot.remembered === false
+    ? 'Connected, but this Office installation was not remembered. Pair again after reconnecting.'
+    : undefined
 }
 
 type DisplayProposal = OfficeProposal | StructuredProposal
@@ -406,6 +452,7 @@ export function AgentWorkspace(props: {
   host: OfficeHost
   initialPanel?: WorkspacePanelName
   legacy?: boolean
+  connectionNotice?: string
 }) {
   const { session, ui, disconnect, host } = props
   const state = useOfficeAgent(session)
@@ -519,6 +566,12 @@ export function AgentWorkspace(props: {
       {diagnosticStatus && (
         <p className="diagnostic-status" role="status">
           {diagnosticStatus}
+        </p>
+      )}
+
+      {props.connectionNotice && (
+        <p className="diagnostic-status" role="status">
+          {props.connectionNotice}
         </p>
       )}
 
@@ -818,6 +871,7 @@ export function LegacyAgentWorkspace(props: {
   ui: OfficeWorkspaceUi
   disconnect: () => void
   host: OfficeHost
+  connectionNotice?: string
 }) {
   return <AgentWorkspace {...props} legacy />
 }
@@ -826,8 +880,24 @@ export function workspaceComponentForMode(mode: 'workspace' | 'legacy') {
   return mode === 'legacy' ? LegacyAgentWorkspace : AgentWorkspace
 }
 
-function ConfiguredApp() {
-  const document = useMemo(() => createOfficeDocumentClient(createBrowserOfficeRuntime()), [])
+type ConnectionBridge = PcBridgeSession | OfficeRelaySession
+
+export function ConfiguredApp(
+  props: {
+    documentClient?: OfficeDocumentClient
+    connectionBridge?: ConnectionBridge
+    workspaceFactory?: (dependencies: {
+      host: Exclude<OfficeHost, 'unknown'>
+      document: OfficeDocumentClient
+      bridge: ConnectionBridge
+    }) => { runtime: OfficeHostRuntime; session: OfficeAgentSession; ui: OfficeWorkspaceUi }
+  } = {},
+) {
+  const workspaceFactory = props.workspaceFactory
+  const document = useMemo(
+    () => props.documentClient ?? createOfficeDocumentClient(createBrowserOfficeRuntime()),
+    [props.documentClient],
+  )
   const transportMode = useMemo(() => officeTransportMode(import.meta.env), [])
   const remoteDiagnosticsEnabled = useMemo(
     () => transportMode === 'relay' && officeRemoteDiagnosticsEnabled(import.meta.env),
@@ -835,12 +905,14 @@ function ConfiguredApp() {
   )
   const bridge = useMemo(
     () =>
-      transportMode === 'loopback'
+      props.connectionBridge ??
+      (transportMode === 'loopback'
         ? createPcBridgeSession()
         : createOfficeRelaySession({
-            ...(remoteDiagnosticsEnabled ? { capabilities: ['agent.v1'] } : {}),
-          }),
-    [remoteDiagnosticsEnabled, transportMode],
+            capabilities: ['agent.v1'],
+            persistentPairing: __WISWORK_OFFICE_PAIRING_RESUME__,
+          })),
+    [props.connectionBridge, transportMode],
   )
   const bridgeState = useSyncExternalStore(
     (listener) => bridge.subscribe(listener),
@@ -856,6 +928,25 @@ function ConfiguredApp() {
   const [hostSupported, setHostSupported] = useState(false)
   const [status, setStatus] = useState('Connecting to Office…')
   const [busy, setBusy] = useState(true)
+  const [pairingForgetError, setPairingForgetError] = useState(false)
+  const [pairingForgetBusy, setPairingForgetBusy] = useState(false)
+
+  const forgetPairing = async () => {
+    if (!('forget' in bridge)) {
+      bridge.disconnect()
+      setPairingForgetError(false)
+      return
+    }
+    setPairingForgetBusy(true)
+    try {
+      await bridge.forget()
+      setPairingForgetError(false)
+    } catch {
+      setPairingForgetError(true)
+    } finally {
+      setPairingForgetBusy(false)
+    }
+  }
 
   useEffect(() => {
     let active = true
@@ -868,33 +959,37 @@ function ConfiguredApp() {
           setHost(activeHost)
           setHostSupported(activeHost !== 'unknown')
           if (activeHost !== 'unknown') {
-            const environment = officeDiagnosticEnvironment(activeHost)
-            const diagnostics = createOfficeDiagnostics({
-              host: activeHost,
-              platform: environment.platform,
-              build: __WISWORK_OFFICE_BUILD_ID__,
-              requirementSets: environment.requirementSets,
-              remoteEnabled: remoteDiagnosticsEnabled,
-              send: (event) => {
-                if (!('sendDiagnostic' in bridge)) throw new Error('diagnostic_upload_failed')
-                return bridge.sendDiagnostic(event)
-              },
-            })
-            const runtime = createOfficeHostRuntime(activeHost, {
-              enableHostSkills: import.meta.env.VITE_WISWORK_OFFICE_HOST_SKILLS !== '0',
-              enableConversions: capabilityFlags.conversions,
-              enableSkillPackages: capabilityFlags.skillPackages,
-              enableImportMedia: capabilityFlags.importMedia,
-              document,
-              diagnostics,
-            })
-            const session = createOfficeAgentSession({
-              transport: createPcBridgeAgentTransport(bridge),
-              skill: runtime.skill,
-              proposals: runtime.proposals,
-              diagnostics,
-            })
-            created = { runtime, session, ui: createOfficeWorkspaceUi(runtime, diagnostics) }
+            void bridge.connect(activeHost)
+            if (workspaceFactory) created = workspaceFactory({ host: activeHost, document, bridge })
+            else {
+              const environment = officeDiagnosticEnvironment(activeHost)
+              const diagnostics = createOfficeDiagnostics({
+                host: activeHost,
+                platform: environment.platform,
+                build: __WISWORK_OFFICE_BUILD_ID__,
+                requirementSets: environment.requirementSets,
+                remoteEnabled: remoteDiagnosticsEnabled,
+                send: (event) => {
+                  if (!('sendDiagnostic' in bridge)) throw new Error('diagnostic_upload_failed')
+                  return bridge.sendDiagnostic(event)
+                },
+              })
+              const runtime = createOfficeHostRuntime(activeHost, {
+                enableHostSkills: import.meta.env.VITE_WISWORK_OFFICE_HOST_SKILLS !== '0',
+                enableConversions: capabilityFlags.conversions,
+                enableSkillPackages: capabilityFlags.skillPackages,
+                enableImportMedia: capabilityFlags.importMedia,
+                document,
+                diagnostics,
+              })
+              const session = createOfficeAgentSession({
+                transport: createPcBridgeAgentTransport(bridge),
+                skill: runtime.skill,
+                proposals: runtime.proposals,
+                diagnostics,
+              })
+              created = { runtime, session, ui: createOfficeWorkspaceUi(runtime, diagnostics) }
+            }
             setWorkspace(created)
           }
           setStatus(
@@ -915,7 +1010,7 @@ function ConfiguredApp() {
       created?.runtime.dispose()
       bridge.disconnect()
     }
-  }, [bridge, capabilityFlags, document, remoteDiagnosticsEnabled])
+  }, [bridge, capabilityFlags, document, remoteDiagnosticsEnabled, workspaceFactory])
 
   useEffect(() => {
     if (bridgeState.status !== 'connected' && workspace) {
@@ -931,28 +1026,32 @@ function ConfiguredApp() {
     )
   }
   if (bridgeState.status !== 'connected') {
-    const detail = {
-      offline: 'Connect again to create a new secure pairing with WisWork PC.',
-      connecting: 'Connecting securely to the WisWork Office Relay…',
-      signed_out: 'Sign in to WisWork PC first.',
-      pending: bridgeState.verificationCode
-        ? `Enter code ${bridgeState.verificationCode} in WisWork PC, then approve the matching request.`
-        : 'Enter the pairing code in WisWork PC.',
-      waiting_for_pc: bridgeState.verificationCode
-        ? `Enter code ${bridgeState.verificationCode} in WisWork PC to continue.`
-        : 'Waiting for a signed-in WisWork PC.',
-      rejected: 'The connection was rejected in WisWork PC.',
-      expired: 'The connection request expired. Try again.',
-    }[bridgeState.status]
+    if (pairingForgetError) {
+      return (
+        <StatusScreen
+          title="Couldn’t forget this Office pairing"
+          detail="This taskpane is disconnected, but its saved pairing could not be removed. Try again before reconnecting."
+          busy={pairingForgetBusy}
+        >
+          <button type="button" disabled={pairingForgetBusy} onClick={() => void forgetPairing()}>
+            {pairingForgetBusy ? 'Forgetting pairing…' : 'Try forgetting again'}
+          </button>
+        </StatusScreen>
+      )
+    }
+    const presentation = relayConnectionPresentation(
+      bridgeState.status,
+      bridgeState.verificationCode,
+    )
     return (
       <StatusScreen
-        title="Connect to WisWork PC"
-        detail={detail}
-        busy={bridgeState.status === 'connecting' || bridgeState.status === 'pending'}
+        title={presentation.title}
+        detail={presentation.detail}
+        busy={presentation.busy}
       >
         <button
           type="button"
-          disabled={bridgeState.status === 'connecting' || bridgeState.status === 'pending'}
+          disabled={presentation.actionDisabled}
           onClick={() => {
             void bridge.connect(host)
           }}
@@ -974,15 +1073,20 @@ function ConfiguredApp() {
   const disconnect = () => {
     workspace.session.logout()
     workspace.runtime.dispose()
-    bridge.disconnect()
+    void forgetPairing()
   }
   const WorkspaceComponent = workspaceComponentForMode(workspaceMode)
+  const connectionNotice =
+    'remembered' in bridgeState
+      ? relayPersistenceNotice(bridgeState as OfficeRelaySnapshot)
+      : undefined
   return (
     <WorkspaceComponent
       session={workspace.session}
       ui={workspace.ui}
       disconnect={disconnect}
       host={host}
+      connectionNotice={connectionNotice}
     />
   )
 }

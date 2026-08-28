@@ -8,7 +8,12 @@ Type=simple
 DynamicUser=yes
 ExecStart=/opt/wiswork-relay/wiswork-relay
 Environment=WISWORK_RELAY_PORT=43190
+Environment=WISWORK_RELAY_BINDING_DB=/var/lib/wiswork-relay/bindings.sqlite
+Environment=WISWORK_RELAY_PAIRING_RESUME=1
 EnvironmentFile=-/etc/wiswork-relay.env
+StateDirectory=wiswork-relay
+StateDirectoryMode=0700
+UMask=0077
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=yes
