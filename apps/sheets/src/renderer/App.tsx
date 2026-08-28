@@ -1571,6 +1571,7 @@ export function App(): React.JSX.Element {
           }
           return
         }
+        state.scanRevision = (state.scanRevision ?? 0) + 1
         const params = event.params as
           | {
               unitId?: string
@@ -2893,6 +2894,7 @@ export function App(): React.JSX.Element {
       file: selected,
       expectedWorkbookId: workbookSkeletonId(selected),
       generation: Date.now(),
+      scanRevision: 0,
       loadedRanges: new Map(),
       loadingKeys: new Map(),
       retryTimers: new Map(),

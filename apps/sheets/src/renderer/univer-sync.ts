@@ -863,12 +863,17 @@ export const SIDECAR_READ_MAX_MS = 15_000
 
 export interface MappedRangeReadOptions {
   readonly signal?: AbortSignal
+  /** Optional stricter caller deadline; never widens the sidecar's hard cap. */
+  readonly maxMs?: number
   /// Reject after receipt, before mapping/return, when serialized results
   /// exceed the caller's remaining aggregate acceptance budget.
   readonly maxBytes?: number
   /// Workbook-instance guard supplied by callers that own the active ref.
   readonly isCurrent?: () => boolean
 }
+
+/** Typed so callers can report an exhausted acceptance budget without parsing error text. */
+export class MappedRangeByteBudgetError extends Error {}
 
 export function isLazyWorkbookTargetCurrent(
   runtime: UniverRuntime,
@@ -898,8 +903,9 @@ function assertRangeReadCurrent(options: MappedRangeReadOptions, startedAt: numb
   if (options.isCurrent && !options.isCurrent()) {
     throw new Error('Range read cancelled because the active workbook changed.')
   }
-  if (Date.now() - startedAt > SIDECAR_READ_MAX_MS) {
-    throw new Error(`Range read exceeded the ${SIDECAR_READ_MAX_MS}ms time limit.`)
+  const maxMs = Math.min(options.maxMs ?? SIDECAR_READ_MAX_MS, SIDECAR_READ_MAX_MS)
+  if (Date.now() - startedAt > maxMs) {
+    throw new Error(`Range read exceeded the ${maxMs}ms time limit.`)
   }
 }
 
@@ -913,7 +919,8 @@ async function readWorkbookRangeBounded(
   startedAt: number,
 ): Promise<WorkbookRangeResult> {
   assertRangeReadCurrent(options, startedAt)
-  const remainingMs = SIDECAR_READ_MAX_MS - (Date.now() - startedAt)
+  const maxMs = Math.min(options.maxMs ?? SIDECAR_READ_MAX_MS, SIDECAR_READ_MAX_MS)
+  const remainingMs = maxMs - (Date.now() - startedAt)
   return await new Promise<WorkbookRangeResult>((resolve, reject) => {
     let settled = false
     const finish = (callback: () => void) => {
@@ -926,10 +933,7 @@ async function readWorkbookRangeBounded(
     const onAbort = () =>
       finish(() => reject(new DOMException('Range read aborted.', 'AbortError')))
     const timer = setTimeout(
-      () =>
-        finish(() =>
-          reject(new Error(`Range read exceeded the ${SIDECAR_READ_MAX_MS}ms time limit.`)),
-        ),
+      () => finish(() => reject(new Error(`Range read exceeded the ${maxMs}ms time limit.`))),
       Math.max(0, remainingMs),
     )
     options.signal?.addEventListener('abort', onAbort, { once: true })
@@ -1046,7 +1050,9 @@ export async function readSheetRangeMapped(
     bytes += rangeResultBytes(batch)
     const maxBytes = Math.min(SIDECAR_READ_MAX_BYTES, options.maxBytes ?? SIDECAR_READ_MAX_BYTES)
     if (bytes > maxBytes) {
-      throw new Error(`Range read exceeded the ${maxBytes}-byte response acceptance limit.`)
+      throw new MappedRangeByteBudgetError(
+        `Range read exceeded the ${maxBytes}-byte response acceptance limit.`,
+      )
     }
     batches.push(batch)
     // Later batches cannot have data before indexing reaches them; the
