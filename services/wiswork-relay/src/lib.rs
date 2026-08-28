@@ -1,3 +1,5 @@
+mod binding_store;
+
 use axum::{
     Router,
     extract::{
@@ -8,9 +10,14 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
+use binding_store::{Binding, BindingStore};
 use futures_util::{SinkExt, StreamExt};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
+use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 use rand::{Rng, distr::Alphanumeric};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -18,6 +25,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     net::{IpAddr, SocketAddr},
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -25,6 +33,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{Mutex, Notify, Semaphore, mpsc};
+
+pub use binding_store::BindingStoreError;
 
 pub const OFFICE_ORIGIN: &str = "https://office.8-216-134-194.sslip.io";
 const CONTROL_MAX: usize = 16 * 1024;
@@ -35,6 +45,8 @@ const RESPONSE_MAX: usize = 16 * 1024 * 1024;
 const DIAGNOSTIC_MAX: usize = 4 * 1024;
 const DIAGNOSTIC_SESSION_MAX: u16 = 100;
 const PROTOCOL_V2: u64 = 2;
+const PAIRING_RESUME: &str = "pairing-resume.v1";
+const RESUME_CHALLENGE_MAX: Duration = Duration::from_secs(30);
 const SUPPORTED_CAPABILITIES: &[&str] = &[
     "agent.v1",
     "web-search.v1",
@@ -56,6 +68,9 @@ pub struct Config {
     pub jwks_url: String,
     pub issuer: String,
     pub audience: String,
+    pub binding_database: Option<PathBuf>,
+    pub pairing_resume_enabled: bool,
+    pub resume_challenge_ttl: Duration,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -72,6 +87,9 @@ impl Default for Config {
             jwks_url: "https://auth.wispaper.ai/oidc/jwks".into(),
             issuer: "https://auth.wispaper.ai/oidc".into(),
             audience: "i9au2rbqzktme4runr9gy".into(),
+            binding_database: None,
+            pairing_resume_enabled: true,
+            resume_challenge_ttl: RESUME_CHALLENGE_MAX,
         }
     }
 }
@@ -86,6 +104,7 @@ struct Inner {
     config: Config,
     http: reqwest::Client,
     auth_slots: Arc<Semaphore>,
+    bindings: BindingStore,
 }
 #[derive(Clone)]
 struct Tx {
@@ -105,6 +124,10 @@ struct Pairing {
     requested_capabilities: Vec<String>,
     negotiated_capabilities: Vec<String>,
     negotiated_subject: Option<[u8; 32]>,
+    features: Vec<String>,
+    negotiated_features: Vec<String>,
+    binding_public_key: Option<[u8; 65]>,
+    pc_subject: Option<[u8; 32]>,
 }
 struct Active {
     id: String,
@@ -130,6 +153,26 @@ struct Session {
     diagnostics: u16,
     diagnostic_window_started: Instant,
     diagnostic_window_count: u8,
+    binding_id: Option<String>,
+}
+struct ResumeChallenge {
+    binding: Binding,
+    challenge: String,
+    expires: Instant,
+}
+struct OfficeResume {
+    binding: Binding,
+    office: u64,
+    office_tx: Tx,
+    expires: Instant,
+}
+struct PcResume {
+    binding_id: String,
+    pc: u64,
+    pc_tx: Tx,
+    subject: [u8; 32],
+    capabilities: Vec<String>,
+    expires: Instant,
 }
 #[derive(Default)]
 struct Store {
@@ -144,9 +187,19 @@ struct Store {
     connection_sessions: HashMap<u64, HashSet<String>>,
     preauth_attempts: HashMap<IpAddr, (Instant, u8)>,
     global_preauth: (Option<Instant>, u32),
+    resume_challenges: HashMap<u64, ResumeChallenge>,
+    office_resumes: HashMap<u64, OfficeResume>,
+    pc_resumes: HashMap<u64, PcResume>,
+    connection_resume_attempts: HashMap<u64, u8>,
+    resume_attempts: HashMap<IpAddr, (Instant, u8)>,
 }
 
 pub fn app(config: Config) -> Router {
+    try_app(config).expect("binding database initialization failed")
+}
+
+pub fn try_app(config: Config) -> Result<Router, BindingStoreError> {
+    let bindings = BindingStore::open(config.binding_database.as_deref())?;
     let state = App {
         inner: Arc::new(Inner {
             state: Mutex::new(Store::default()),
@@ -159,6 +212,7 @@ pub fn app(config: Config) -> Router {
                 .build()
                 .expect("fixed HTTP client"),
             auth_slots: Arc::new(Semaphore::new(32)),
+            bindings,
         }),
     };
     let sweeper = state.clone();
@@ -170,10 +224,10 @@ pub fn app(config: Config) -> Router {
             expire(&mut store, sweeper.inner.config.pairing_ttl);
         }
     });
-    Router::new()
+    Ok(Router::new()
         .route("/office-relay", get(upgrade))
         .route("/office-relay/health", get(|| async { "ok" }))
-        .with_state(state)
+        .with_state(state))
 }
 
 async fn upgrade(
@@ -590,6 +644,40 @@ fn capabilities(m: &Map<String, Value>) -> Result<Vec<String>, &'static str> {
     Ok(result)
 }
 
+fn features(m: &Map<String, Value>, enabled: bool) -> Result<Vec<String>, &'static str> {
+    let values = m
+        .get("features")
+        .and_then(Value::as_array)
+        .ok_or("invalid_frame")?;
+    if values.len() > 1 {
+        return Err("invalid_frame");
+    }
+    let mut result = Vec::new();
+    let mut seen = HashSet::new();
+    for value in values {
+        let name = value.as_str().ok_or("invalid_frame")?;
+        if name != PAIRING_RESUME || !seen.insert(name) {
+            return Err("invalid_frame");
+        }
+        if enabled && name == PAIRING_RESUME {
+            result.push(name.to_owned());
+        }
+    }
+    Ok(result)
+}
+
+fn binding_public_key(m: &Map<String, Value>) -> Result<[u8; 65], &'static str> {
+    let encoded = string(m, "binding_public_key")?;
+    let decoded = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| "invalid_frame")?;
+    let key: [u8; 65] = decoded.try_into().map_err(|_| "invalid_frame")?;
+    if key[0] != 4 || VerifyingKey::from_sec1_bytes(&key).is_err() {
+        return Err("invalid_frame");
+    }
+    Ok(key)
+}
+
 async fn process(
     app: &App,
     conn: u64,
@@ -617,10 +705,16 @@ async fn process(
     }
     match kind {
         "office.create" => create(app, conn, tx, origin, peer, map).await,
+        "office.resume" => office_resume(app, conn, tx, origin, peer, map).await,
+        "office.prove" => office_prove(app, conn, tx, map).await,
         "pc.negotiate" => negotiate(app, tx, subject.ok_or("auth_required")?, map).await,
         "pc.claim" => claim(app, conn, tx, subject.ok_or("auth_required")?, map).await,
         "pc.approve" => approve(app, conn, tx, map).await,
         "pc.reject" => reject(app, conn, map).await,
+        "pc.resume" => pc_resume(app, conn, tx, subject.ok_or("auth_required")?, map).await,
+        "pc.revoke_binding" => {
+            revoke_binding(app, conn, tx, subject.ok_or("auth_required")?, map).await
+        }
         "office.request" => request(app, conn, map).await,
         "office.cancel" => cancel(app, conn, map).await,
         "office.diagnostic" => {
@@ -646,15 +740,27 @@ async fn negotiate(
     subject: [u8; 32],
     m: Map<String, Value>,
 ) -> Result<(), &'static str> {
-    if version(&m)? != PROTOCOL_V2
-        || !exact(
-            &m,
-            &["version", "type", "verification_code", "capabilities"],
-        )
-    {
+    let enhanced = m.contains_key("features");
+    let expected: &[&str] = if enhanced {
+        &[
+            "version",
+            "type",
+            "verification_code",
+            "capabilities",
+            "features",
+        ]
+    } else {
+        &["version", "type", "verification_code", "capabilities"]
+    };
+    if version(&m)? != PROTOCOL_V2 || !exact(&m, expected) {
         return Err("invalid_frame");
     }
     let offered = capabilities(&m)?;
+    let offered_features = if enhanced {
+        features(&m, app.inner.config.pairing_resume_enabled)?
+    } else {
+        Vec::new()
+    };
     let code = string(&m, "verification_code")?;
     if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err("invalid_code");
@@ -706,10 +812,20 @@ async fn negotiate(
         return Err("claim_limit");
     }
     pairing.negotiated_capabilities.clone_from(&negotiated);
+    pairing.negotiated_features = pairing
+        .features
+        .iter()
+        .filter(|name| offered_features.contains(name))
+        .cloned()
+        .collect();
     pairing.negotiated_subject = Some(subject);
     send(
         tx,
-        json!({"version":PROTOCOL_V2,"type":"pc.negotiated","pairing_version":pairing.version,"capabilities":negotiated}),
+        if enhanced {
+            json!({"version":PROTOCOL_V2,"type":"pc.negotiated","pairing_version":pairing.version,"capabilities":negotiated,"features":pairing.negotiated_features})
+        } else {
+            json!({"version":PROTOCOL_V2,"type":"pc.negotiated","pairing_version":pairing.version,"capabilities":negotiated})
+        },
     );
     Ok(())
 }
@@ -723,7 +839,17 @@ async fn create(
     m: Map<String, Value>,
 ) -> Result<(), &'static str> {
     let protocol = version(&m)?;
-    let expected: &[&str] = if protocol == PROTOCOL_V2 {
+    let enhanced = protocol == PROTOCOL_V2 && m.contains_key("features");
+    let expected: &[&str] = if enhanced {
+        &[
+            "version",
+            "type",
+            "host",
+            "capabilities",
+            "features",
+            "binding_public_key",
+        ]
+    } else if protocol == PROTOCOL_V2 {
         &["version", "type", "host", "capabilities"]
     } else {
         &["version", "type", "host"]
@@ -735,6 +861,16 @@ async fn create(
         capabilities(&m)?
     } else {
         vec!["agent.v1".to_owned()]
+    };
+    let requested_features = if enhanced {
+        features(&m, app.inner.config.pairing_resume_enabled)?
+    } else {
+        Vec::new()
+    };
+    let public_key = if enhanced {
+        Some(binding_public_key(&m)?)
+    } else {
+        None
     };
     let host = string(&m, "host")?;
     if !matches!(host, "Word" | "Excel" | "PowerPoint") {
@@ -794,12 +930,20 @@ async fn create(
         requested_capabilities,
         negotiated_capabilities: Vec::new(),
         negotiated_subject: None,
+        features: requested_features.clone(),
+        negotiated_features: Vec::new(),
+        binding_public_key: public_key,
+        pc_subject: None,
     };
     store.codes.insert(code.clone(), id.clone());
     store.pairings.insert(id.clone(), pairing);
     send(
         tx,
-        json!({"version":protocol,"type":"office.created","pairing_id":id,"verification_code":code,"expires_in":app.inner.config.pairing_ttl.as_secs()}),
+        if enhanced {
+            json!({"version":protocol,"type":"office.created","pairing_id":id,"verification_code":code,"expires_in":app.inner.config.pairing_ttl.as_secs(),"features":requested_features})
+        } else {
+            json!({"version":protocol,"type":"office.created","pairing_id":id,"verification_code":code,"expires_in":app.inner.config.pairing_ttl.as_secs()})
+        },
     );
     Ok(())
 }
@@ -812,7 +956,16 @@ async fn claim(
     m: Map<String, Value>,
 ) -> Result<(), &'static str> {
     let protocol = version(&m)?;
-    let expected: &[&str] = if protocol == PROTOCOL_V2 {
+    let enhanced = protocol == PROTOCOL_V2 && m.contains_key("features");
+    let expected: &[&str] = if enhanced {
+        &[
+            "version",
+            "type",
+            "verification_code",
+            "capabilities",
+            "features",
+        ]
+    } else if protocol == PROTOCOL_V2 {
         &["version", "type", "verification_code", "capabilities"]
     } else {
         &["version", "type", "verification_code"]
@@ -824,6 +977,11 @@ async fn claim(
         capabilities(&m)?
     } else {
         vec!["agent.v1".to_owned()]
+    };
+    let offered_features = if enhanced {
+        features(&m, app.inner.config.pairing_resume_enabled)?
+    } else {
+        Vec::new()
     };
     let code = string(&m, "verification_code")?;
     if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
@@ -843,6 +1001,13 @@ async fn claim(
                         .requested_capabilities
                         .iter()
                         .filter(|name| offered.contains(name))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                && pairing.negotiated_features
+                    == pairing
+                        .features
+                        .iter()
+                        .filter(|name| offered_features.contains(name))
                         .cloned()
                         .collect::<Vec<_>>()
         });
@@ -889,6 +1054,12 @@ async fn claim(
         .filter(|name| offered.contains(name))
         .cloned()
         .collect();
+    let negotiated_features: Vec<_> = p
+        .features
+        .iter()
+        .filter(|name| offered_features.contains(name))
+        .cloned()
+        .collect();
     if negotiated_capabilities.is_empty() {
         return Err("capability_not_negotiated");
     }
@@ -900,10 +1071,14 @@ async fn claim(
     }
     p.pc = Some((conn, tx.clone()));
     p.negotiated_capabilities = negotiated_capabilities;
+    p.negotiated_features = negotiated_features;
+    p.pc_subject = Some(subject);
     p.negotiated_subject = None;
     send(
         tx,
-        if protocol == PROTOCOL_V2 {
+        if enhanced {
+            json!({"version":protocol,"type":"pc.claimed","pairing_id":p.id,"host":p.host,"origin":OFFICE_ORIGIN,"verification_code":p.code,"expires_in":p.expires.saturating_duration_since(Instant::now()).as_secs(),"capabilities":p.negotiated_capabilities,"features":p.negotiated_features})
+        } else if protocol == PROTOCOL_V2 {
             json!({"version":protocol,"type":"pc.claimed","pairing_id":p.id,"host":p.host,"origin":OFFICE_ORIGIN,"verification_code":p.code,"expires_in":p.expires.saturating_duration_since(Instant::now()).as_secs(),"capabilities":p.negotiated_capabilities})
         } else {
             json!({"version":1,"type":"pc.claimed","pairing_id":p.id,"host":p.host,"origin":OFFICE_ORIGIN,"verification_code":p.code,"expires_in":p.expires.saturating_duration_since(Instant::now()).as_secs()})
@@ -914,7 +1089,10 @@ async fn claim(
 
 async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result<(), &'static str> {
     let protocol = version(&m)?;
-    let expected: &[&str] = if protocol == PROTOCOL_V2 {
+    let enhanced = protocol == PROTOCOL_V2 && m.contains_key("features");
+    let expected: &[&str] = if enhanced {
+        &["version", "type", "pairing_id", "capabilities", "features"]
+    } else if protocol == PROTOCOL_V2 {
         &["version", "type", "pairing_id", "capabilities"]
     } else {
         &["version", "type", "pairing_id"]
@@ -928,6 +1106,11 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
     } else {
         vec!["agent.v1".to_owned()]
     };
+    let approved_features = if enhanced {
+        features(&m, app.inner.config.pairing_resume_enabled)?
+    } else {
+        Vec::new()
+    };
     let mut s = app.inner.state.lock().await;
     expire(&mut s, app.inner.config.pairing_ttl);
     if s.sessions.len() >= 10_000 {
@@ -940,7 +1123,30 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
     if approved_capabilities != pending.negotiated_capabilities {
         return Err("capability_not_negotiated");
     }
+    if approved_features != pending.negotiated_features
+        || (!pending.negotiated_features.is_empty() && !enhanced)
+    {
+        return Err("invalid_frame");
+    }
     let p = s.pairings.remove(&id).ok_or("invalid_pairing")?;
+    let remembered_binding = if p.negotiated_features == [PAIRING_RESUME] {
+        let binding_id = token();
+        let binding = Binding {
+            id: binding_id.clone(),
+            subject: p.pc_subject.ok_or("auth_required")?,
+            public_key: p.binding_public_key.ok_or("invalid_frame")?,
+            host: p.host.clone(),
+            origin: OFFICE_ORIGIN.to_owned(),
+            capabilities: approved_capabilities.clone(),
+        };
+        app.inner
+            .bindings
+            .enroll(&binding)
+            .ok()
+            .map(|()| binding_id)
+    } else {
+        None
+    };
     let sid = token();
     let oc = token();
     let pc = token();
@@ -950,12 +1156,16 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
         .session_ttl
         .min(app.inner.config.session_max_ttl);
     let now = Instant::now();
-    let pc_approved = if protocol == PROTOCOL_V2 {
+    let pc_approved = if let Some(binding_id) = remembered_binding.as_ref() {
+        json!({"version":protocol,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs(),"capabilities":approved_capabilities,"features":[PAIRING_RESUME],"binding_id":binding_id})
+    } else if protocol == PROTOCOL_V2 {
         json!({"version":protocol,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs(),"capabilities":approved_capabilities})
     } else {
         json!({"version":1,"type":"pc.approved","session_id":sid,"capability":pc,"expires_in":expires.as_secs()})
     };
-    let office_approved = if protocol == PROTOCOL_V2 {
+    let office_approved = if let Some(binding_id) = remembered_binding.as_ref() {
+        json!({"version":protocol,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs(),"capabilities":approved_capabilities,"features":[PAIRING_RESUME],"binding_id":binding_id})
+    } else if protocol == PROTOCOL_V2 {
         json!({"version":protocol,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs(),"capabilities":approved_capabilities})
     } else {
         json!({"version":1,"type":"office.approved","session_id":sid,"capability":oc,"expires_in":expires.as_secs()})
@@ -997,9 +1207,401 @@ async fn approve(app: &App, conn: u64, tx: &Tx, m: Map<String, Value>) -> Result
             diagnostics: 0,
             diagnostic_window_started: now,
             diagnostic_window_count: 0,
+            binding_id: remembered_binding,
         },
     );
     Ok(())
+}
+
+async fn office_resume(
+    app: &App,
+    conn: u64,
+    tx: &Tx,
+    origin: Option<&str>,
+    peer: IpAddr,
+    m: Map<String, Value>,
+) -> Result<(), &'static str> {
+    if !app.inner.config.pairing_resume_enabled
+        || version(&m)? != PROTOCOL_V2
+        || !exact(
+            &m,
+            &["version", "type", "binding_id", "host", "capabilities"],
+        )
+        || origin != Some(OFFICE_ORIGIN)
+    {
+        return Err("invalid_frame");
+    }
+    let binding_id = string(&m, "binding_id")?;
+    if !valid_token(binding_id) {
+        return Err("binding_unavailable");
+    }
+    let host = string(&m, "host")?;
+    let requested_capabilities = capabilities(&m)?;
+    let binding = app
+        .inner
+        .bindings
+        .get_live(binding_id)
+        .map_err(|_| "binding_unavailable")?
+        .ok_or("binding_unavailable")?;
+    if binding.host != host
+        || binding.origin != OFFICE_ORIGIN
+        || binding.capabilities != requested_capabilities
+    {
+        return Err("binding_unavailable");
+    }
+    let mut challenge_bytes = [0_u8; 32];
+    rand::rng().fill(&mut challenge_bytes);
+    let challenge = URL_SAFE_NO_PAD.encode(challenge_bytes);
+    let mut store = app.inner.state.lock().await;
+    expire(&mut store, app.inner.config.pairing_ttl);
+    let ip_attempts = store
+        .resume_attempts
+        .entry(peer)
+        .or_insert((Instant::now(), 0));
+    if ip_attempts.0.elapsed() > app.inner.config.pairing_ttl {
+        *ip_attempts = (Instant::now(), 0);
+    }
+    ip_attempts.1 = ip_attempts.1.saturating_add(1);
+    if ip_attempts.1 > 20 {
+        return Err("resume_rate_limited");
+    }
+    let attempts = store.connection_resume_attempts.entry(conn).or_default();
+    *attempts = attempts.saturating_add(1);
+    if *attempts > 5 {
+        return Err("resume_rate_limited");
+    }
+    if store.resume_challenges.contains_key(&conn) || store.office_resumes.contains_key(&conn) {
+        return Err("resume_limit");
+    }
+    if store.resume_challenges.len() + store.office_resumes.len() >= 10_000 {
+        return Err("resume_limit");
+    }
+    store.resume_challenges.insert(
+        conn,
+        ResumeChallenge {
+            binding,
+            challenge: challenge.clone(),
+            expires: Instant::now()
+                + app
+                    .inner
+                    .config
+                    .resume_challenge_ttl
+                    .min(RESUME_CHALLENGE_MAX),
+        },
+    );
+    send(
+        tx,
+        json!({"version":PROTOCOL_V2,"type":"office.challenge","binding_id":binding_id,"challenge":challenge,"expires_in":app.inner.config.resume_challenge_ttl.min(RESUME_CHALLENGE_MAX).as_secs()}),
+    );
+    Ok(())
+}
+
+async fn office_prove(
+    app: &App,
+    conn: u64,
+    tx: &Tx,
+    m: Map<String, Value>,
+) -> Result<(), &'static str> {
+    if version(&m)? != PROTOCOL_V2
+        || !exact(
+            &m,
+            &["version", "type", "binding_id", "challenge", "signature"],
+        )
+    {
+        return Err("invalid_frame");
+    }
+    let binding_id = string(&m, "binding_id")?;
+    let challenge_value = string(&m, "challenge")?;
+    let signature_value = string(&m, "signature")?;
+    let mut store = app.inner.state.lock().await;
+    let challenge = store
+        .resume_challenges
+        .remove(&conn)
+        .ok_or("invalid_proof")?;
+    if challenge.expires <= Instant::now() {
+        return Err("challenge_expired");
+    }
+    if challenge.binding.id != binding_id || challenge.challenge != challenge_value {
+        return Err("invalid_proof");
+    }
+    let signature_bytes = URL_SAFE_NO_PAD
+        .decode(signature_value)
+        .map_err(|_| "invalid_proof")?;
+    let signature = Signature::from_slice(&signature_bytes).map_err(|_| "invalid_proof")?;
+    let verifying_key = VerifyingKey::from_sec1_bytes(&challenge.binding.public_key)
+        .map_err(|_| "invalid_proof")?;
+    let transcript = resume_transcript(binding_id, challenge_value, &challenge.binding.host);
+    verifying_key
+        .verify(transcript.as_bytes(), &signature)
+        .map_err(|_| "invalid_proof")?;
+    store.office_resumes.insert(
+        conn,
+        OfficeResume {
+            binding: challenge.binding,
+            office: conn,
+            office_tx: tx.clone(),
+            expires: Instant::now() + app.inner.config.pairing_ttl,
+        },
+    );
+    if !complete_resume(app, &mut store, binding_id)? {
+        send(
+            tx,
+            json!({"version":PROTOCOL_V2,"type":"office.waiting_for_pc"}),
+        );
+    }
+    Ok(())
+}
+
+async fn pc_resume(
+    app: &App,
+    conn: u64,
+    tx: &Tx,
+    subject: [u8; 32],
+    m: Map<String, Value>,
+) -> Result<(), &'static str> {
+    if !app.inner.config.pairing_resume_enabled
+        || version(&m)? != PROTOCOL_V2
+        || !exact(&m, &["version", "type", "binding_id", "capabilities"])
+    {
+        return Err("invalid_frame");
+    }
+    let binding_id = string(&m, "binding_id")?;
+    if !valid_token(binding_id) {
+        return Err("binding_unavailable");
+    }
+    let offered_capabilities = capabilities(&m)?;
+    let binding = app
+        .inner
+        .bindings
+        .get_live(binding_id)
+        .map_err(|_| "binding_unavailable")?
+        .ok_or("binding_unavailable")?;
+    if binding.subject != subject {
+        return Err("binding_unavailable");
+    }
+    if binding.capabilities != offered_capabilities {
+        return Err("capability_not_negotiated");
+    }
+    let mut store = app.inner.state.lock().await;
+    expire(&mut store, app.inner.config.pairing_ttl);
+    let attempts = store.connection_resume_attempts.entry(conn).or_default();
+    *attempts = attempts.saturating_add(1);
+    if *attempts > 5 {
+        return Err("resume_rate_limited");
+    }
+    if store.pc_resumes.contains_key(&conn) {
+        return Err("resume_limit");
+    }
+    if store.pc_resumes.len() >= 10_000 {
+        return Err("resume_limit");
+    }
+    store.pc_resumes.insert(
+        conn,
+        PcResume {
+            binding_id: binding.id.clone(),
+            pc: conn,
+            pc_tx: tx.clone(),
+            subject,
+            capabilities: offered_capabilities,
+            expires: Instant::now() + app.inner.config.pairing_ttl,
+        },
+    );
+    if !complete_resume(app, &mut store, binding_id)? {
+        send(
+            tx,
+            json!({"version":PROTOCOL_V2,"type":"pc.waiting_for_office"}),
+        );
+    }
+    Ok(())
+}
+
+fn complete_resume(app: &App, store: &mut Store, binding_id: &str) -> Result<bool, &'static str> {
+    let office_conn = store
+        .office_resumes
+        .iter()
+        .find(|(_, resume)| resume.binding.id == binding_id)
+        .map(|(conn, _)| *conn);
+    let pc_conn = store
+        .pc_resumes
+        .iter()
+        .find(|(_, resume)| resume.binding_id == binding_id)
+        .map(|(conn, _)| *conn);
+    let (Some(office_conn), Some(pc_conn)) = (office_conn, pc_conn) else {
+        return Ok(false);
+    };
+    if store.sessions.len() >= 10_000 {
+        return Err("relay_busy");
+    }
+    let pending_office = store
+        .office_resumes
+        .get(&office_conn)
+        .ok_or("peer_unavailable")?;
+    let pending_pc = store.pc_resumes.get(&pc_conn).ok_or("peer_unavailable")?;
+    let live_binding = app.inner.bindings.get_live(binding_id).ok().flatten();
+    let binding_is_live = live_binding.is_some_and(|binding| {
+        binding.subject == pending_pc.subject
+            && binding.host == pending_office.binding.host
+            && binding.origin == pending_office.binding.origin
+            && binding.capabilities == pending_pc.capabilities
+    }) && matches!(app.inner.bindings.touch(binding_id), Ok(true));
+    if !binding_is_live {
+        if let Some(office) = store.office_resumes.remove(&office_conn) {
+            versioned_error(&office.office_tx, PROTOCOL_V2, "binding_unavailable");
+        }
+        if let Some(pc) = store.pc_resumes.remove(&pc_conn) {
+            versioned_error(&pc.pc_tx, PROTOCOL_V2, "binding_unavailable");
+        }
+        return Ok(true);
+    }
+    let office = store
+        .office_resumes
+        .remove(&office_conn)
+        .ok_or("peer_unavailable")?;
+    let pc = store
+        .pc_resumes
+        .remove(&pc_conn)
+        .ok_or("peer_unavailable")?;
+    if office.binding.subject != pc.subject || office.binding.capabilities != pc.capabilities {
+        return Err("binding_unavailable");
+    }
+    let session_id = token();
+    let office_capability = token();
+    let pc_capability = token();
+    let expires = app
+        .inner
+        .config
+        .session_ttl
+        .min(app.inner.config.session_max_ttl);
+    let office_frame = json!({"version":PROTOCOL_V2,"type":"office.approved","session_id":session_id,"capability":office_capability,"expires_in":expires.as_secs(),"capabilities":office.binding.capabilities});
+    let pc_frame = json!({"version":PROTOCOL_V2,"type":"pc.approved","session_id":session_id,"capability":pc_capability,"expires_in":expires.as_secs(),"capabilities":office.binding.capabilities});
+    if office.office_tx.sender.capacity() == 0
+        || pc.pc_tx.sender.capacity() == 0
+        || try_send(&office.office_tx, office_frame).is_err()
+        || try_send(&pc.pc_tx, pc_frame).is_err()
+    {
+        office.office_tx.failed.notify_one();
+        pc.pc_tx.failed.notify_one();
+        return Err("peer_unavailable");
+    }
+    let now = Instant::now();
+    store
+        .connection_sessions
+        .entry(office.office)
+        .or_default()
+        .insert(session_id.clone());
+    store
+        .connection_sessions
+        .entry(pc.pc)
+        .or_default()
+        .insert(session_id.clone());
+    store.sessions.insert(
+        session_id,
+        Session {
+            version: PROTOCOL_V2,
+            host: office.binding.host,
+            office: office.office,
+            office_tx: office.office_tx,
+            pc: pc.pc,
+            pc_tx: pc.pc_tx,
+            office_cap: office_capability,
+            pc_cap: pc_capability,
+            expires: now + expires,
+            absolute_expires: now + app.inner.config.session_max_ttl,
+            active: None,
+            used_requests: VecDeque::new(),
+            capabilities: office.binding.capabilities,
+            diagnostics: 0,
+            diagnostic_window_started: now,
+            diagnostic_window_count: 0,
+            binding_id: Some(binding_id.to_owned()),
+        },
+    );
+    Ok(true)
+}
+
+async fn revoke_binding(
+    app: &App,
+    _conn: u64,
+    tx: &Tx,
+    subject: [u8; 32],
+    m: Map<String, Value>,
+) -> Result<(), &'static str> {
+    if version(&m)? != PROTOCOL_V2 || !exact(&m, &["version", "type", "binding_id"]) {
+        return Err("invalid_frame");
+    }
+    let binding_id = string(&m, "binding_id")?;
+    if !valid_token(binding_id)
+        || !app
+            .inner
+            .bindings
+            .revoke(binding_id, &subject)
+            .map_err(|_| "binding_unavailable")?
+    {
+        return Err("binding_unavailable");
+    }
+    let mut store = app.inner.state.lock().await;
+    store
+        .resume_challenges
+        .retain(|_, challenge| challenge.binding.id != binding_id);
+    let waiting_office: Vec<u64> = store
+        .office_resumes
+        .iter()
+        .filter(|(_, resume)| resume.binding.id == binding_id)
+        .map(|(conn, _)| *conn)
+        .collect();
+    for conn in waiting_office {
+        if let Some(resume) = store.office_resumes.remove(&conn) {
+            versioned_error(&resume.office_tx, PROTOCOL_V2, "binding_unavailable");
+        }
+    }
+    let waiting_pc: Vec<u64> = store
+        .pc_resumes
+        .iter()
+        .filter(|(_, resume)| resume.binding_id == binding_id)
+        .map(|(conn, _)| *conn)
+        .collect();
+    for conn in waiting_pc {
+        if let Some(resume) = store.pc_resumes.remove(&conn) {
+            versioned_error(&resume.pc_tx, PROTOCOL_V2, "binding_unavailable");
+        }
+    }
+    send(
+        tx,
+        json!({"version":PROTOCOL_V2,"type":"pc.binding_revoked","binding_id":binding_id}),
+    );
+    let sessions: Vec<String> = store
+        .sessions
+        .iter()
+        .filter(|(_, session)| session.binding_id.as_deref() == Some(binding_id))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for session_id in sessions {
+        if let Some(session) = store.sessions.remove(&session_id) {
+            if let Some(ids) = store.connection_sessions.get_mut(&session.office) {
+                ids.remove(&session_id);
+            }
+            if let Some(ids) = store.connection_sessions.get_mut(&session.pc) {
+                ids.remove(&session_id);
+            }
+            if let Some(active) = session.active.as_ref() {
+                send(
+                    &session.pc_tx,
+                    json!({"version":PROTOCOL_V2,"type":"relay.cancel","session_id":session_id,"request_id":active.id}),
+                );
+            }
+            versioned_error(&session.office_tx, PROTOCOL_V2, "session_revoked");
+            versioned_error(&session.pc_tx, PROTOCOL_V2, "session_revoked");
+        }
+    }
+    Ok(())
+}
+
+fn valid_token(value: &str) -> bool {
+    value.len() == 43 && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
+fn resume_transcript(binding_id: &str, challenge: &str, host: &str) -> String {
+    format!("wiswork-office-resume-v1\n{binding_id}\n{challenge}\n{OFFICE_ORIGIN}\n{host}")
 }
 
 const DIAGNOSTIC_REQUIRED_KEYS: &[&str] = &[
@@ -1568,6 +2170,10 @@ async fn pc_error(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'s
 
 fn expire(s: &mut Store, ttl: Duration) {
     let now = Instant::now();
+    s.resume_challenges
+        .retain(|_, challenge| challenge.expires + ttl > now);
+    s.office_resumes.retain(|_, resume| resume.expires > now);
+    s.pc_resumes.retain(|_, resume| resume.expires > now);
     let dead: Vec<_> = s
         .pairings
         .iter()
@@ -1613,11 +2219,17 @@ fn expire(s: &mut Store, ttl: Duration) {
         .retain(|_, (started, _)| started.elapsed() <= ttl);
     s.preauth_attempts
         .retain(|_, (started, _)| started.elapsed() <= ttl);
+    s.resume_attempts
+        .retain(|_, (started, _)| started.elapsed() <= ttl);
 }
 async fn cleanup(app: &App, conn: u64) {
     let mut s = app.inner.state.lock().await;
     s.connection_pairings.remove(&conn);
     s.connection_sessions.remove(&conn);
+    s.connection_resume_attempts.remove(&conn);
+    s.resume_challenges.remove(&conn);
+    s.office_resumes.remove(&conn);
+    s.pc_resumes.remove(&conn);
     let pids: Vec<_> = s
         .pairings
         .iter()
@@ -1721,5 +2333,21 @@ mod tests {
         assert!(!serialized.contains("secret-session"));
         assert!(!serialized.contains("secret-request"));
         assert!(!serialized.contains("secret-document-data"));
+
+        let resume_audit = protocol_error_log(
+            43,
+            true,
+            r#"{"version":2,"type":"office.prove","binding_id":"secret-binding","challenge":"secret-challenge","signature":"secret-signature","subject_hash":"secret-subject"}"#,
+            "invalid_proof",
+        )
+        .to_string();
+        for secret in [
+            "secret-binding",
+            "secret-challenge",
+            "secret-signature",
+            "secret-subject",
+        ] {
+            assert!(!resume_audit.contains(secret));
+        }
     }
 }
