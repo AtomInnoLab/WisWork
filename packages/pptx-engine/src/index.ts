@@ -169,7 +169,12 @@ export {
   type AlignRect,
 } from './align'
 export { createBlankPptx } from './blank'
-export { promoteSlideBackground, isBackgroundLikeElement } from './background-promote'
+export {
+  promoteSlideBackground,
+  isBackgroundLikeElement,
+  hasExplicitSlideBackground,
+  recolorFullBleedBackdrops,
+} from './background-promote'
 export {
   applyThemeToArchive,
   buildColorMap,

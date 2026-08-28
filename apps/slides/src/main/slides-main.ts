@@ -129,6 +129,7 @@ import {
   setElementParagraphFormat,
   setGroupChildParagraphFormat,
   setSlideBackground,
+  recolorFullBleedBackdrops,
   setSlideAdvanceTime,
   setSlideHidden,
   setSlideNotes,
@@ -1597,29 +1598,6 @@ export function registerSlidesIpc(): void {
     // ungroupElement already updated deck.slides[slideIndex] internally
     return rebuildSlide(session, op.slideIndex)
   })
-
-  // Full-page "backdrop" rectangles: design templates often use a text-free solid rectangle
-  // covering the whole page as background; changing only the page background would be hidden
-  // behind them — so recolor such rectangles along with the background.
-  const recolorFullBleedBackdrops = (
-    slide: Slide,
-    size: { cx: number; cy: number },
-    color: string,
-  ) => {
-    for (const el of slide.elements) {
-      if (el.type !== 'shape' && el.type !== 'text') continue
-      const shaped = el as TextElement
-      const fillType = shaped.fill?.type
-      if (fillType !== 'solid' && fillType !== 'gradient') continue
-      if (shaped.text?.paragraphs.some((p) => p.runs.some((r) => r.text.trim()))) continue
-      const { x, y, cx, cy } = el.transform.offset
-      const coversX = x <= size.cx * 0.05 && x + cx >= size.cx * 0.95
-      const coversY = y <= size.cy * 0.05 && y + cy >= size.cy * 0.95
-      if (!coversX || !coversY) continue
-      shaped.fill = { type: 'solid', color }
-      shaped.dirtyFill = true
-    }
-  }
 
   handle('slides:edit-background', (e, op: EditBackgroundOp) => {
     const session = sessions.get(e.sender.id)

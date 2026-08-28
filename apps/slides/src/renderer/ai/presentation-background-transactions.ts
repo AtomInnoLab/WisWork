@@ -65,6 +65,11 @@ export async function executePreparedBackgroundFamilyTransaction(
       // Best effort only; the original outcome remains authoritative.
     }
   }
+  const throwIfAbortedAfterPrepare = async (): Promise<void> => {
+    if (!signal?.aborted) return
+    await cancel()
+    signal.throwIfAborted()
+  }
   let expectedDeckRevision: string | undefined
   for (const background of request.backgrounds) {
     signal?.throwIfAborted()
@@ -75,16 +80,17 @@ export async function executePreparedBackgroundFamilyTransaction(
         slideIndex: background.slideIndex,
       })
     } catch {
-      if (prepared.length) await cancel()
+      await cancel()
       signal?.throwIfAborted()
       return unchanged(request.transactionId, request.backgrounds.length)
     }
+    await throwIfAbortedAfterPrepare()
     if (result.status === 'busy') {
-      if (prepared.length) await cancel()
+      await cancel()
       return unchanged(request.transactionId, request.backgrounds.length)
     }
     if (result.status === 'conflict') {
-      if (prepared.length) await cancel()
+      await cancel()
       return {
         receipt: { status: 'conflict', transactionId: request.transactionId, code: result.code },
         authoritativeState: 'fresh',
@@ -101,6 +107,8 @@ export async function executePreparedBackgroundFamilyTransaction(
     prepared.push(result)
   }
 
+  await throwIfAbortedAfterPrepare()
+
   const operations: PresentationOperation[] = request.backgrounds.map((background, index) => ({
     kind: 'set_slide_background',
     clientId: `background-${index + 1}`,
@@ -116,6 +124,10 @@ export async function executePreparedBackgroundFamilyTransaction(
   const abort = () => void api.cancelPresentationTransaction(request.transactionId)
   signal?.addEventListener('abort', abort, { once: true })
   try {
+    if (signal?.aborted) {
+      await cancel()
+      signal.throwIfAborted()
+    }
     let receipt: PresentationReceipt
     try {
       receipt = await api.executePresentationTransaction(transaction)

@@ -101,4 +101,41 @@ describe('background family transaction preparation', () => {
     expect(api.preparePresentationTarget).not.toHaveBeenCalled()
     expect(api.executePresentationTransaction).not.toHaveBeenCalled()
   })
+
+  it.each(['middle', 'final'] as const)(
+    'cancels every prepared token when aborted after the %s preparation',
+    async (phase) => {
+      const controller = new AbortController()
+      let calls = 0
+      const api = {
+        preparePresentationTarget: vi.fn(async () => {
+          calls += 1
+          if ((phase === 'middle' && calls === 1) || (phase === 'final' && calls === 2))
+            controller.abort()
+          return {
+            status: 'prepared' as const,
+            expectedDeckRevision: fp('a'),
+            target: { slideId: `slide-${calls}`, expectedFingerprint: fp('b') },
+          }
+        }),
+        executePresentationTransaction: vi.fn(),
+        cancelPresentationTransaction: vi.fn(async () => true),
+      }
+      await expect(
+        executePreparedBackgroundFamilyTransaction(
+          api as any,
+          {
+            transactionId: `slides-background-abort-${phase}`,
+            backgrounds: [
+              { slideIndex: 0, color: '#112233' },
+              { slideIndex: 1, color: '#112233' },
+            ],
+          },
+          controller.signal,
+        ),
+      ).rejects.toMatchObject({ name: 'AbortError' })
+      expect(api.cancelPresentationTransaction).toHaveBeenCalledOnce()
+      expect(api.executePresentationTransaction).not.toHaveBeenCalled()
+    },
+  )
 })

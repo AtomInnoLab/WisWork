@@ -14,10 +14,12 @@ import {
   editGroupChildStroke,
   editGroupChildTransform,
   getSlideNotes,
+  hasExplicitSlideBackground,
   mintUniqueCreationIds,
   resolvePresentationContainer,
   resolvePresentationTarget,
   resizeTable,
+  recolorFullBleedBackdrops,
   setSlideNotes,
   setSlideBackground,
   updateConnectorsForMoved,
@@ -232,9 +234,12 @@ function applyOperation(
     return { changed: true, metaDirty: true }
   }
   if (operation.kind === 'set_slide_background') {
-    if (same(slide.background, { type: 'solid', color: operation.color }))
-      return { changed: false, metaDirty: false }
-    setSlideBackground(slide, operation.color)
+    const localBackgroundChanged =
+      !hasExplicitSlideBackground(slide) ||
+      !same(slide.background, { type: 'solid', color: operation.color })
+    const backdropChanged = recolorFullBleedBackdrops(slide, opened.deck.size, operation.color) > 0
+    if (!localBackgroundChanged && !backdropChanged) return { changed: false, metaDirty: false }
+    if (localBackgroundChanged) setSlideBackground(slide, operation.color)
     return { changed: true, metaDirty: false }
   }
   if (isGeneratedTarget(operation.target))

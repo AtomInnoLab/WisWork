@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { Buffer } from 'node:buffer'
 
 vi.mock('../src/main/session-state', () => ({
   commitHistorySnapshot: (session: { undoStack: unknown[] }, snapshot: unknown) => {
@@ -29,6 +30,7 @@ import {
   fingerprintSlide,
   fingerprintSlideElement,
   openPptx,
+  patchSlideBackgroundXml,
   savePptx,
 } from '@wiswork/pptx-engine'
 import type { PresentationTransaction } from '@wiswork/presentation-ops'
@@ -58,6 +60,23 @@ async function fixture() {
 describe('DesktopPresentationHost', () => {
   it('sets a fingerprint-bound slide background and survives save/reopen', async () => {
     const { session, slide } = await fixture()
+    const backdropXml =
+      '<p:sp><p:nvSpPr><p:cNvPr id="8" name="backdrop"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>' +
+      '<p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="12192000" cy="6858000"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:gradFill><a:gsLst><a:gs pos="0"><a:srgbClr val="000000"/></a:gs></a:gsLst></a:gradFill></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p/></p:txBody></p:sp>'
+    const backdrop = addElement(slide, {
+      kind: 'rect',
+      offset: { x: 0, y: 0, cx: session.opened.deck.size.cx, cy: session.opened.deck.size.cy },
+    })
+    backdrop.anchor.originalXml = backdropXml
+    backdrop.fill = {
+      type: 'gradient',
+      angle: 0,
+      stops: [{ pos: 0, color: '#000000' }],
+    }
+    slide.elements = [backdrop, ...slide.elements]
+    slide.structureDirty = true
+    slide.background = { type: 'solid', color: '#1A2B3C' }
+    expect(slide.bodyPrefix).not.toContain('<p:bg>')
     const transaction: PresentationTransaction = {
       transactionId: 'desktop-slide-background',
       expectedDeckRevision: await fingerprintPresentation(session.opened),
@@ -79,8 +98,26 @@ describe('DesktopPresentationHost', () => {
       { verifyDelayMs: 0 },
     ).execute(transaction)
     expect(receipt).toMatchObject({ status: 'applied', operationCount: 1 })
+    expect(backdrop.fill).toEqual({ type: 'solid', color: '#1A2B3C' })
     const reopened = await openPptx(await savePptx(session.opened))
     expect(reopened.deck.slides[0]!.background).toEqual({ type: 'solid', color: '#1A2B3C' })
+    expect(reopened.deck.slides[0]!.bodyPrefix).toContain('<p:bg>')
+    const reopenedBackdrop = reopened.deck.slides[0]!.elements[0]!
+    expect(
+      reopenedBackdrop.type === 'shape' || reopenedBackdrop.type === 'text'
+        ? reopenedBackdrop.fill
+        : undefined,
+    ).toEqual({ type: 'solid', color: '#1A2B3C' })
+    const layoutPath = reopened.archive.resolveSlideChain(reopened.deck.slides[0]!.path).layoutPath!
+    reopened.archive.entries.set(
+      layoutPath,
+      Buffer.from(patchSlideBackgroundXml(reopened.archive.readText(layoutPath)!, '#FF0000')),
+    )
+    const afterLayoutChange = await openPptx(await savePptx(reopened))
+    expect(afterLayoutChange.deck.slides[0]!.background).toEqual({
+      type: 'solid',
+      color: '#1A2B3C',
+    })
   })
 
   it('patches direct group-child geometry through the group XML and survives save/reopen', async () => {
