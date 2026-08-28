@@ -106,9 +106,10 @@ module import is required in the Word adapter.
 
 ## Rollback, Migration, Security, and Release
 
-There is no migration or persisted-state change. Roll back by reverting the two
-scoped commits. The optional local JSON field is backward compatible; relay v2
-wire output is byte-shape compatible apart from unrelated generated identifiers.
+There is no migration or persisted-state change. Roll back by reverting the final
+merge or squash commit, or the complete commit set for this change. The optional
+local JSON field is backward compatible; relay v2 wire output is byte-shape
+compatible apart from unrelated generated identifiers.
 Release through the normal Office add-in build after CI. Review must explicitly
 check fail-closed behavior, unknown-state rollback avoidance, cause-chain bounds,
 and absence of document-derived diagnostic data.

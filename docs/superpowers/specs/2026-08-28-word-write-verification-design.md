@@ -106,6 +106,7 @@ future relay protocol owner must explicitly version and review transmission of
 
 ## Rollback
 
-The change is code-only with no migration or persisted state. Rollback is a
-single commit revert. Older diagnostic exports remain valid because the field is
-optional, and relay v2 frames remain unchanged.
+The change is code-only with no migration or persisted state. Roll back by
+reverting the final merge or squash commit, or the complete commit set for this
+change. Older diagnostic exports remain valid because the field is optional, and
+relay v2 frames remain unchanged.

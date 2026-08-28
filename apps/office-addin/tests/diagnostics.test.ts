@@ -159,6 +159,49 @@ describe('Office safe diagnostics', () => {
     expect(diagnostics.snapshot().events.at(-1)).not.toHaveProperty('office_error_location')
   })
 
+  it('ignores an out-of-order upload rejection from an older trace', async () => {
+    const rejectors: Array<(error: Error) => void> = []
+    let id = 0
+    const diagnostics = createOfficeDiagnostics({
+      host: 'word',
+      build: 'dev',
+      remoteEnabled: true,
+      send: () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectors.push(reject)
+        }),
+      randomUUID: () => `00000000-0000-4000-8000-${String(++id).padStart(12, '0')}`,
+      now: () => 10,
+    })
+    diagnostics.startTrace()
+    diagnostics.record({ phase: 'write', errorCode: 'office_write_failed' })
+    const currentTrace = diagnostics.startTrace()
+    diagnostics.record({ phase: 'verify', errorCode: 'office_verify_failed' })
+
+    rejectors[0]?.(new Error('old trace rejection'))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(
+      diagnostics
+        .snapshot()
+        .events.filter((event) => event.error_code === 'diagnostic_upload_failed'),
+    ).toEqual([])
+
+    rejectors[1]?.(new Error('current trace rejection'))
+    await vi.waitFor(() =>
+      expect(
+        diagnostics
+          .snapshot()
+          .events.filter((event) => event.error_code === 'diagnostic_upload_failed'),
+      ).toHaveLength(1),
+    )
+    expect(diagnostics.snapshot().events.at(-1)).toMatchObject({
+      trace_id: currentTrace,
+      phase: 'transport',
+      error_code: 'diagnostic_upload_failed',
+    })
+  })
+
   it('clears traces and records stable unsupported and cancellation outcomes', () => {
     const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'dev' })
     diagnostics.startTrace()
@@ -199,6 +242,44 @@ describe('Office safe diagnostics', () => {
     ).not.toThrow()
     expect(diagnostics.snapshot().events[0]).not.toHaveProperty('office_error_location')
   })
+
+  it.each(['debugInfo', 'code', 'name', 'verificationStage'] as const)(
+    'ignores a hostile outer %s accessor while retaining safe nested metadata',
+    (property) => {
+      const diagnostics = createOfficeDiagnostics({ host: 'word', build: 'dev' })
+      const officeError = Object.assign(new Error('secret document content'), {
+        name: 'RichApi.Error',
+        code: 'InvalidArgument',
+        debugInfo: { errorLocation: 'Body.insertOoxml' },
+      })
+      const staged = Object.assign(
+        new Error('word_write_verification_failed', { cause: officeError }),
+        { verificationStage: 'boundary' },
+      )
+      const hostile = Object.defineProperty({ cause: staged }, property, {
+        get() {
+          throw new Error('secret hostile getter')
+        },
+      })
+
+      expect(() =>
+        diagnostics.record({
+          phase: 'verify',
+          errorCode: 'office_verify_failed',
+          error: hostile,
+        }),
+      ).not.toThrow()
+      expect(diagnostics.snapshot().events[0]).toMatchObject({
+        verification_stage: 'boundary',
+        office_error_code: 'InvalidArgument',
+        office_error_name: 'RichApi.Error',
+        office_error_location: 'Body.insertOoxml',
+      })
+      const exported = diagnostics.exportJson()
+      expect(exported).not.toContain('secret document content')
+      expect(exported).not.toContain('secret hostile getter')
+    },
+  )
 
   it('extracts only allowlisted identifiers from a shallow wrapped Office error', () => {
     const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'dev' })

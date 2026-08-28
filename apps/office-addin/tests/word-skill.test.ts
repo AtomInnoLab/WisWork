@@ -1206,6 +1206,53 @@ describe('browser Word adapter', () => {
     expect(body.insertOoxml).toHaveBeenCalledOnce()
   })
 
+  it('classifies a same-content native no-op as a failed write', async () => {
+    const { body } = installNativeWriteRuntime(() => SIMPLE_WORD_DOCUMENT)
+    const write = {
+      mode: 'replace' as const,
+      blocks: [{ type: 'paragraph' as const, spans: [{ text: 'Old' }] }],
+      semanticText: 'Old',
+      structure: { headings: 0, lists: 0, tables: 0 },
+    }
+
+    await expect(new BrowserWordAdapter().executeDocumentWrite(write)).rejects.toThrow(
+      'office_write_failed',
+    )
+    expect(body.insertOoxml).toHaveBeenCalledOnce()
+  })
+
+  it('waits for a changed fingerprint when a same-content commit is delayed', async () => {
+    let reads = 0
+    let committed = SIMPLE_WORD_DOCUMENT
+    const body = {
+      insertOoxml: vi.fn((xml: string) => {
+        committed = xml.replace(
+          '<w:p>',
+          '<w:p><w:pPr><w:spacing w:after="0"/></w:pPr>',
+        )
+      }),
+      getOoxml: vi.fn(() => ({ value: reads++ < 2 ? SIMPLE_WORD_DOCUMENT : committed })),
+    }
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ document: { body }, sync: vi.fn() }),
+      },
+    })
+    const write = {
+      mode: 'replace' as const,
+      blocks: [{ type: 'paragraph' as const, spans: [{ text: 'Old' }] }],
+      semanticText: 'Old',
+      structure: { headings: 0, lists: 0, tables: 0 },
+    }
+    const subject = new BrowserWordAdapter()
+
+    await expect(subject.executeDocumentWrite(write)).resolves.toBeUndefined()
+    await expect(subject.verifyDocumentWrite(write)).resolves.toBe(true)
+    expect(body.getOoxml).toHaveBeenCalledTimes(4)
+  })
+
   it('reports a native post-commit readback failure as state uncertain', async () => {
     let reads = 0
     const body = {

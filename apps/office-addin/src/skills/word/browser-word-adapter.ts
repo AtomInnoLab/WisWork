@@ -630,7 +630,9 @@ export class BrowserWordAdapter implements WordAdapter {
         try {
           postValue = await readUntilConverged({
             read: () => readWordBodyInContext(context, body),
-            accept: (value) => verifyNativeDocumentWrite(original, value, write),
+            accept: (value) =>
+              stableFingerprintOoxml(value) !== beforeFingerprint &&
+              verifyNativeDocumentWrite(original, value, write),
           })
         } catch (error) {
           readError = error
@@ -638,14 +640,15 @@ export class BrowserWordAdapter implements WordAdapter {
         if (readError) throw new Error('office_state_uncertain', { cause: readError })
         if (postValue === undefined)
           throw new Error('office_state_uncertain', { cause: writeError })
+        const postFingerprint = stableFingerprintOoxml(postValue)
+        if (postFingerprint === beforeFingerprint)
+          throw new Error('office_write_failed', { cause: writeError })
         const verification = verifyNativeDocumentWriteDetailed(original, postValue, write)
         if (!verification.valid) {
-          if (stableFingerprintOoxml(postValue) === beforeFingerprint)
-            throw new Error('office_write_failed', { cause: writeError })
           throw nativeDocumentVerificationFailure(verification.stage, writeError)
         }
         this.expectedDocument = {
-          fingerprint: stableFingerprintOoxml(postValue),
+          fingerprint: postFingerprint,
           originalFingerprint: beforeFingerprint,
         }
         if (signal?.aborted) throw new Error('office_state_uncertain')
