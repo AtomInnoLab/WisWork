@@ -514,7 +514,7 @@ describe('Office persistent relay session', () => {
     },
   )
 
-  it('falls back once when an old Relay closes before recognizing stored-binding resume', async () => {
+  it('retries multiple pre-challenge network closes and eventually resumes the binding', async () => {
     const store = new FakeBindingStore(binding)
     const sockets: FakeSocket[] = []
     const scheduled: Array<() => void> = []
@@ -532,19 +532,45 @@ describe('Office persistent relay session', () => {
       },
       cancelSchedule: () => undefined,
     })
-    void session.connect('word')
+    const connecting = session.connect('word')
     await flush()
     sockets[0]!.open()
     sockets[0]!.close()
     await flush()
 
-    expect(scheduled).toHaveLength(0)
-    expect(sockets).toHaveLength(2)
+    expect(scheduled).toHaveLength(1)
+    expect(sockets).toHaveLength(1)
+    scheduled[0]!()
+    await flush()
     sockets[1]!.open()
-    expect(sent(sockets[1]!).type).toBe('office.create')
+    expect(sent(sockets[1]!).type).toBe('office.resume')
     sockets[1]!.close()
     await flush()
-    expect(sockets).toHaveLength(2)
+    expect(scheduled).toHaveLength(2)
+    scheduled[1]!()
+    await flush()
+    sockets[2]!.open()
+    expect(sent(sockets[2]!).type).toBe('office.resume')
+    sockets[2]!.receive({
+      version: 2,
+      type: 'office.challenge',
+      binding_id: binding.bindingId,
+      challenge: 'challenge_12345678',
+      expires_in: 30,
+    })
+    await flush()
+    sockets[2]!.receive({
+      version: 2,
+      type: 'office.approved',
+      session_id: 'session_12345678',
+      capability: 'session_capability_12345678',
+      expires_in: 1800,
+      capabilities: ['agent.v1'],
+    })
+    await connecting
+
+    expect(store.forgets).toBe(0)
+    expect(session.snapshot()).toEqual({ status: 'connected', capabilities: ['agent.v1'] })
   })
 
   it('invalidates synchronously before asynchronous terminal binding deletion', async () => {
@@ -649,6 +675,78 @@ describe('Office persistent relay session', () => {
     expect(sessions[1]!.snapshot()).toEqual({ status: 'offline' })
     sockets[1]!.close()
     expect(scheduled).toHaveLength(0)
+  })
+
+  it('blocks an immediate reconnect until manual binding deletion commits', async () => {
+    const store = new FakeBindingStore(binding)
+    let releaseDelete!: () => void
+    store.forget = vi.fn(async () => {
+      await new Promise<void>((resolve) => (releaseDelete = resolve))
+      store.current = undefined
+    })
+    const sockets: FakeSocket[] = []
+    const session = createOfficeRelaySession({
+      capabilities: ['agent.v1'],
+      bindingStore: store,
+      bindingInvalidationChannel: new FakeInvalidationChannel(),
+      createSocket: () => {
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+    })
+    void session.connect('word')
+    await flush()
+    sockets[0]!.open()
+
+    const forgetting = session.forget()
+    const reconnecting = session.connect('word')
+    await flush()
+    expect(sockets).toHaveLength(1)
+
+    releaseDelete()
+    await forgetting
+    await flush()
+    expect(sockets).toHaveLength(2)
+    sockets[1]!.open()
+    expect(sent(sockets[1]!)).toMatchObject({
+      type: 'office.create',
+      features: [PAIRING_RESUME_FEATURE],
+    })
+    void reconnecting
+  })
+
+  it('does not resume a binding invalidated by broadcast while its load is pending', async () => {
+    const store = new FakeBindingStore(binding)
+    let releaseLoad!: (loaded: OfficeStoredBinding) => void
+    store.load = vi.fn(
+      async () => new Promise<OfficeStoredBinding>((resolve) => (releaseLoad = resolve)),
+    )
+    const channel = new FakeInvalidationChannel()
+    const sockets: FakeSocket[] = []
+    const session = createOfficeRelaySession({
+      capabilities: ['agent.v1'],
+      bindingStore: store,
+      bindingInvalidationChannel: channel,
+      createSocket: () => {
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+    })
+    void session.connect('word')
+    await flush()
+
+    channel.broadcast({ origin: binding.origin, host: binding.host, bindingId: binding.bindingId })
+    releaseLoad(binding)
+    await flush()
+
+    expect(sockets).toHaveLength(1)
+    sockets[0]!.open()
+    expect(sent(sockets[0]!)).toMatchObject({
+      type: 'office.create',
+      features: [PAIRING_RESUME_FEATURE],
+    })
   })
 
   it('ignores forget broadcasts for a different host or binding', async () => {

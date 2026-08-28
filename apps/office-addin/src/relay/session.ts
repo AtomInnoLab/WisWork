@@ -245,6 +245,9 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   let settleConnect: (() => void) | undefined
   let pairingTimer: ReturnType<typeof setTimeout> | undefined
   let unsubscribeInvalidation: (() => void) | undefined
+  let bindingDeletionBarrier: Promise<void> | undefined
+  let bindingInvalidationEpoch = 0
+  const invalidatedBindings = new Map<string, number>()
   const pendingDiagnostics = new Map<string, { resolve(): void; reject(error: Error): void }>()
   const terminalRequestIds = new Set<string>()
   const terminalRequestOrder: string[] = []
@@ -313,6 +316,28 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     cancelSchedule(retryTimer)
     retryTimer = undefined
   }
+  const markBindingInvalid = (bindingId: string) => {
+    bindingInvalidationEpoch += 1
+    invalidatedBindings.delete(bindingId)
+    invalidatedBindings.set(bindingId, bindingInvalidationEpoch)
+    while (invalidatedBindings.size > 32)
+      invalidatedBindings.delete(invalidatedBindings.keys().next().value!)
+  }
+  const beginBindingDeletion = (afterCommit?: () => void) => {
+    const previous = bindingDeletionBarrier
+    const deletion = (async () => {
+      if (previous) await previous.catch(() => undefined)
+      await bindingStore?.forget()
+      afterCommit?.()
+    })()
+    bindingDeletionBarrier = deletion
+    void deletion
+      .finally(() => {
+        if (bindingDeletionBarrier === deletion) bindingDeletionBarrier = undefined
+      })
+      .catch(() => undefined)
+    return deletion
+  }
   const send = (value: Record<string, unknown>) => {
     if (!socket || socket.readyState !== 1) throw new Error('relay_disconnected')
     const encoded = JSON.stringify(value)
@@ -351,8 +376,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   const handleDisconnect = (epoch: number) => {
     if (epoch !== generation || explicitlyDisconnected) return
     if (connectionMode === 'enroll') return fallbackToLegacy()
-    if (connectionMode === 'resume' && storedBinding)
-      return resumeRecognized ? scheduleResume() : fallbackStoredBindingToLegacy()
+    if (connectionMode === 'resume' && storedBinding) return scheduleResume()
     revoke('offline', false)
   }
 
@@ -427,8 +451,11 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       const loaded = await bindingStore.load(host, requestedCapabilities)
       if (intent !== generation || explicitlyDisconnected) return
       if (loaded) {
-        storedBinding = loaded
-        startAttempt('resume')
+        if (invalidatedBindings.has(loaded.bindingId)) await prepareEnrollment(intent)
+        else {
+          storedBinding = loaded
+          startAttempt('resume')
+        }
       } else {
         await prepareEnrollment(intent)
       }
@@ -438,16 +465,20 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   }
 
   const invalidateBindingAndEnroll = () => {
+    if (storedBinding) markBindingInvalid(storedBinding.bindingId)
     storedBinding = undefined
     enrollment = undefined
     retryAttempt = 0
     cancelRetry()
     revoke('connecting', true, false)
     const intent = generation
-    void (async () => {
-      await bindingStore?.forget().catch(() => undefined)
-      if (intent === generation && !explicitlyDisconnected) await prepareEnrollment(intent)
-    })()
+    void beginBindingDeletion()
+      .then(async () => {
+        if (intent === generation && !explicitlyDisconnected) await prepareEnrollment(intent)
+      })
+      .catch(() => {
+        if (intent === generation) revoke('offline')
+      })
   }
 
   const protocolFailure = () => {
@@ -461,13 +492,9 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   const subscribeInvalidation = () => {
     if (!bindingInvalidationChannel || unsubscribeInvalidation) return
     unsubscribeInvalidation = bindingInvalidationChannel.subscribe((message) => {
-      if (
-        message.origin !== OFFICE_RELAY_ORIGIN ||
-        !host ||
-        message.host !== host ||
-        message.bindingId !== storedBinding?.bindingId
-      )
-        return
+      if (message.origin !== OFFICE_RELAY_ORIGIN || !host || message.host !== host) return
+      markBindingInvalid(message.bindingId)
+      if (message.bindingId !== storedBinding?.bindingId) return
       explicitlyDisconnected = true
       cancelRetry()
       storedBinding = undefined
@@ -868,11 +895,30 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       host = nextHost === 'unknown' ? undefined : nextHost
       if (!host) return Promise.resolve()
       explicitlyDisconnected = false
-      subscribeInvalidation()
       publish({ status: 'connecting' })
       return new Promise<void>((resolve) => {
         settleConnect = resolve
-        void beginConnection(generation)
+        const intent = generation
+        const deletion = bindingDeletionBarrier
+        if (!deletion) {
+          subscribeInvalidation()
+          void beginConnection(intent)
+          return
+        }
+        void (async () => {
+          try {
+            await deletion
+          } catch {
+            if (intent === generation) {
+              explicitlyDisconnected = true
+              revoke('offline')
+            }
+            return
+          }
+          if (intent !== generation || explicitlyDisconnected || !host) return
+          subscribeInvalidation()
+          await beginConnection(intent)
+        })()
       })
     },
     disconnect() {
@@ -884,6 +930,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     },
     async forget() {
       const forgotten = storedBinding
+      if (forgotten) markBindingInvalid(forgotten.bindingId)
       explicitlyDisconnected = true
       cancelRetry()
       unsubscribeInvalidation?.()
@@ -891,13 +938,14 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       storedBinding = undefined
       enrollment = undefined
       revoke('offline')
-      if (forgotten)
-        bindingInvalidationChannel?.broadcast({
-          origin: OFFICE_RELAY_ORIGIN,
-          host: forgotten.host,
-          bindingId: forgotten.bindingId,
-        })
-      await bindingStore?.forget()
+      await beginBindingDeletion(() => {
+        if (forgotten)
+          bindingInvalidationChannel?.broadcast({
+            origin: OFFICE_RELAY_ORIGIN,
+            host: forgotten.host,
+            bindingId: forgotten.bindingId,
+          })
+      })
     },
     async authenticatedFetch(path, init) {
       if (
