@@ -5,7 +5,6 @@ import type {
   AccountStatus,
   OfficePairingRequest,
   OfficeBridgeStatus,
-  OfficeRelayStatus,
   HomeApi,
   LatexRecentProjectEntry,
   RecentEntry,
@@ -17,6 +16,7 @@ import type {
   UiLanguage,
   AppTheme,
 } from '../shared/home-api'
+import { sanitizeOfficeRelayStatus } from './office-relay-status'
 import { HOME_CHANNELS, OFFICE_PAIRING_CHANNELS, PROJECT_CHANNELS } from '../shared/home-api'
 import type { TabsApi, TabSummary } from '../shared/tabs-api'
 import { TABS_CHANNELS } from '../shared/tabs-api'
@@ -251,28 +251,7 @@ const homeApi: HomeApi = {
   },
   async officeRelayStatus() {
     const result: unknown = await ipcRenderer.invoke(OFFICE_PAIRING_CHANNELS.relayStatus)
-    const safe = new Set<OfficeRelayStatus>([
-      'disconnected',
-      'connecting',
-      'claiming',
-      'awaiting_approval',
-      'paired',
-      'disconnected:auth_required',
-      'disconnected:logout',
-      'disconnected:network_error',
-      'disconnected:new_claim',
-      'disconnected:pairing_expired',
-      'disconnected:protocol_violation',
-      'disconnected:rejected',
-      'disconnected:relay_error',
-      'disconnected:relay_closed',
-      'disconnected:session_expired',
-      'disconnected:shutdown',
-      'error:invalid_config',
-    ])
-    return typeof result === 'string' && safe.has(result as OfficeRelayStatus)
-      ? (result as OfficeRelayStatus)
-      : 'disconnected'
+    return sanitizeOfficeRelayStatus(result)
   },
   async getAppVersion() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getAppVersion)

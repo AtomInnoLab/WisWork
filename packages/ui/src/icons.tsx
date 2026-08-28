@@ -47,3 +47,13 @@ export function IconEnter(props: IconProps) {
     </Svg>
   )
 }
+
+export function IconSidebarCollapse(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="3" y="3.76" width="10.01" height="8.47" rx="0.77" />
+      <path d="M 9.93 3.76 v 8.47" />
+      <path d="M 4.54 8 h 3.39 M 6.61 6.38 8.23 8 l -1.62 1.62" strokeWidth="1" />
+    </Svg>
+  )
+}

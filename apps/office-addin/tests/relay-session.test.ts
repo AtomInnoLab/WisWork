@@ -33,6 +33,9 @@ class FakeSocket implements RelayWebSocket {
 }
 
 const frame = (socket: FakeSocket, index: number) => JSON.parse(socket.sent[index]!)
+const flushFrames = async () => {
+  for (let turn = 0; turn < 4; turn += 1) await Promise.resolve()
+}
 
 describe('Office cloud relay session', () => {
   const diagnostic: OfficeDiagnosticEvent = {
@@ -82,6 +85,7 @@ describe('Office cloud relay session', () => {
         expires_in: 120,
       }),
     )
+    await flushFrames()
     expect(session.snapshot()).toEqual({ status: 'pending', verificationCode: '123456' })
     socket.receive(
       JSON.stringify({
@@ -95,6 +99,7 @@ describe('Office cloud relay session', () => {
     await connecting
     expect(session.snapshot()).toEqual({ status: 'connected' })
     socket.receive(JSON.stringify({ version: 1, type: 'relay.error', code: 'session_expired' }))
+    await flushFrames()
     expect(session.snapshot()).toEqual({ status: 'expired' })
   })
 
@@ -204,8 +209,10 @@ describe('Office cloud relay session', () => {
       ...diagnostic,
       event_id: '00000000-0000-4000-8000-000000000003',
       error_code: 'office_recovery_failed:word_body_shape',
+      verification_stage: 'body_shape',
     })
     expect(frame(socket, 2).error_code).toBe('office_recovery_failed')
+    expect(frame(socket, 2)).not.toHaveProperty('verification_stage')
     socket.receive(
       JSON.stringify({
         version: 2,

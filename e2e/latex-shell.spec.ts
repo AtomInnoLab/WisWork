@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { access, readFile } from 'node:fs/promises'
+import { access, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { writeZipFixture } from '../packages/latex-project/tests/fixtures/zip'
 import {
@@ -29,10 +29,9 @@ test.describe('LaTeX project workflow', () => {
       await launched.page.getByTestId('quick-new-tex').click()
       let latexPage = await waitForLatexPage(launched.app)
       await expect(latexPage.getByLabel('Editor: main.tex')).toBeVisible()
-      await expect(latexPage.getByRole('tab')).toHaveCount(2)
-      await expect(latexPage.getByRole('tab', { name: 'WisWork AI' })).toBeVisible()
-      await latexPage.getByRole('tab', { name: '编译' }).click()
-      const compilePanel = latexPage.getByRole('tabpanel')
+      await expect(latexPage.locator('.ai-panel-title').getByText('WisWork AI')).toBeVisible()
+      await expect(latexPage.getByRole('tab', { name: '编译' })).toHaveCount(0)
+      const toolbar = latexPage.getByRole('toolbar', { name: 'LaTeX toolbar' })
 
       await editLatexSource(
         latexPage,
@@ -41,7 +40,8 @@ test.describe('LaTeX project workflow', () => {
 BROKEN
 \end{document}`,
       )
-      await compilePanel.getByRole('button', { name: 'Compile' }).click()
+      await toolbar.getByRole('tab', { name: 'Compile', exact: true }).click()
+      await toolbar.getByRole('button', { name: 'Compile', exact: true }).click()
       await expect(latexPage.getByRole('alert')).toHaveText('LaTeX operation failed')
 
       const valid = String.raw`\documentclass{article}
@@ -49,10 +49,47 @@ BROKEN
 Hello from WisWork
 \end{document}`
       await editLatexSource(latexPage, valid)
-      await compilePanel.getByRole('button', { name: 'Compile' }).click()
+      await toolbar.getByRole('button', { name: 'Compile', exact: true }).click()
+      await toolbar.getByRole('button', { name: /Problems/ }).click()
       await expect(latexPage.getByText('Remote TeX bundle configured')).toBeVisible()
       await expect.poll(() => readFile(join(projectPath, 'main.tex'), 'utf8')).toBe(valid)
       await expect(latexPage.locator('.pdf-preview canvas')).toBeVisible()
+
+      await expect
+        .poll(async () => {
+          const boxes = await Promise.all(
+            ['.project-tree header', '.open-tabs', '.readonly-pdf-toolbar', '.ai-panel-header'].map(
+              (selector) => latexPage.locator(selector).boundingBox(),
+            ),
+          )
+          return boxes.map((box) => ({ y: Math.round(box?.y ?? -1), height: box?.height ?? -1 }))
+        })
+        .toEqual([
+          { y: 120, height: 48 },
+          { y: 120, height: 48 },
+          { y: 120, height: 48 },
+          { y: 120, height: 48 },
+        ])
+
+      await latexPage.getByRole('button', { name: 'Collapse AI panel' }).click()
+      const expandAi = latexPage.getByRole('button', { name: 'Expand AI panel' })
+      await expect(expandAi).toBeVisible()
+      await expandAi.click()
+      await expect(latexPage.getByRole('button', { name: 'Collapse AI panel' })).toBeVisible()
+
+      const exportedPdf = join(harness.root, 'exported.pdf')
+      await writeFile(join(projectPath, 'unopened-dependency.tex'), 'changed after compile')
+      await launched.app.evaluate(({ dialog }, selectedPath) => {
+        dialog.showSaveDialog = (async () => ({ canceled: false, filePath: selectedPath })) as never
+      }, exportedPdf)
+      await toolbar.getByRole('tab', { name: 'PDF', exact: true }).click()
+      await toolbar.getByRole('button', { name: 'Export PDF', exact: true }).click()
+      const staleDialog = latexPage.getByRole('dialog', { name: 'PDF preview is out of date' })
+      await expect(staleDialog).toBeVisible()
+      await staleDialog.getByRole('button', { name: 'Export last PDF', exact: true }).click()
+      await expect(staleDialog).toBeHidden()
+      await expect.poll(() => readFile(exportedPdf, 'utf8')).toContain('%PDF')
+
       await latexPage.getByRole('button', { name: 'Close PDF preview' }).click()
       await expect(latexPage.locator('.pdf-preview')).toHaveCount(0)
       await latexPage.getByRole('button', { name: 'Open PDF preview' }).click()

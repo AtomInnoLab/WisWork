@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { constants, watch as watchFs } from 'node:fs'
-import { lstat, mkdir, open, rm } from 'node:fs/promises'
+import { lstat, mkdir, open, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   commitCompileGeneration,
@@ -20,6 +20,7 @@ import {
 } from '@wiswork/latex-compiler'
 import {
   openLatexProject,
+  atomicWriteFile,
   ProjectPathPolicy,
   ProposalStore,
   SnapshotStore,
@@ -39,6 +40,7 @@ import {
   MAX_FORMAL_COMPILE_DIAGNOSTICS,
   normalizeProposalDiagnostics,
 } from '../shared/proposal-verification.js'
+import { fingerprintProjectDirectory } from './source-fingerprint.js'
 
 export class MainFileRenameError extends Error {}
 
@@ -137,8 +139,11 @@ export class ProjectSession {
       pdfPath: string | null
       synctexPath: string | null
       syncTex?: SyncTeXIndex
+      sourceFingerprint?: string
     }
   >()
+  private latestCompileEvidence:
+    Pick<CompileResultDto, 'revision' | 'diagnostics' | 'log'> | undefined
   private disposed = false
   private confirmedEditRevision = 0
   private confirmedMutationInProgress = false
@@ -508,6 +513,7 @@ export class ProjectSession {
       return
     }
     if (!restored?.pdfPath) return
+    const sourceFingerprint = await this.loadCompileFingerprint(restored.generationId)
     const value: CompileResultDto = {
       revision: 0,
       pdfUrl: `wiswork-latex-pdf://${this.projectId}/0`,
@@ -521,7 +527,9 @@ export class ProjectSession {
       ...value,
       pdfPath: restored.pdfPath,
       synctexPath: restored.synctexPath,
+      sourceFingerprint,
     })
+    this.latestCompileEvidence = value
   }
 
   latestCompile(): CompileResultDto | null {
@@ -559,6 +567,7 @@ export class ProjectSession {
     )
     let staged: StagedCompileResult | undefined
     let committed: CompileIsolatedResult | undefined
+    let sourceFingerprint: string | undefined
     const promise = this.compileQueue
       .request({
         projectId: this.projectId,
@@ -576,6 +585,7 @@ export class ProjectSession {
           ])
           if (this.cancelledCompileTokens.has(token)) throw new Error('Compile cancelled')
           this.assertAllBuffersPersisted()
+          sourceFingerprint = await fingerprintProjectDirectory(this.project.rootPath)
           staged = await this.compiler({
             projectDirectory: this.project.rootPath,
             temporaryRoot,
@@ -601,6 +611,18 @@ export class ProjectSession {
         if (!committed || this.activeCompile?.token !== token)
           throw new Error('Stale compile result')
         const result = committed
+        try {
+          if (
+            sourceFingerprint &&
+            sourceFingerprint === (await fingerprintProjectDirectory(this.project.rootPath))
+          ) {
+            await this.saveCompileFingerprint(result.generationId, sourceFingerprint)
+          } else {
+            sourceFingerprint = undefined
+          }
+        } catch {
+          sourceFingerprint = undefined
+        }
         let syncTex: SyncTeXIndex | undefined
         if (result.synctexPath) {
           try {
@@ -627,13 +649,33 @@ export class ProjectSession {
           pdfPath: result.pdfPath,
           synctexPath: result.synctexPath,
           syncTex,
+          sourceFingerprint,
         })
+        this.latestCompileEvidence = value
         while (this.compileResults.size > this.maxCompileResults) {
           const oldest = this.compileResults.keys().next().value as number | undefined
           if (oldest === undefined) break
           this.compileResults.delete(oldest)
         }
         return value
+      })
+      .catch((error: unknown) => {
+        if (
+          error instanceof TectonicRunError &&
+          error.code === 'TECTONIC_EXIT_NONZERO' &&
+          error.terminationConfirmed &&
+          error.exitCode !== null
+        ) {
+          this.latestCompileEvidence = {
+            revision,
+            diagnostics: normalizeProposalDiagnostics(
+              parseTectonicDiagnostics(error.log),
+              MAX_FORMAL_COMPILE_DIAGNOSTICS,
+            ),
+            log: error.log,
+          }
+        }
+        throw error
       })
       .finally(async () => {
         try {
@@ -675,6 +717,52 @@ export class ProjectSession {
 
   pdfPath(revision: number): string | undefined {
     return this.compileResults.get(revision)?.pdfPath ?? undefined
+  }
+
+  async exportablePdf(revision: number): Promise<{ path: string; stale: boolean } | null> {
+    const result = this.compileResults.get(revision)
+    if (!result?.pdfPath) return null
+    if (this.isDirty() || !result.sourceFingerprint) return { path: result.pdfPath, stale: true }
+    try {
+      return {
+        path: result.pdfPath,
+        stale:
+          (await fingerprintProjectDirectory(this.project.rootPath)) !== result.sourceFingerprint,
+      }
+    } catch {
+      return { path: result.pdfPath, stale: true }
+    }
+  }
+
+  private compileFingerprintPath(): string {
+    return join(this.compileCacheDirectory(), 'source-fingerprint.json')
+  }
+
+  private async saveCompileFingerprint(generationId: string, fingerprint: string): Promise<void> {
+    await atomicWriteFile(
+      this.compileFingerprintPath(),
+      Buffer.from(`${JSON.stringify({ schemaVersion: 1, generationId, fingerprint })}\n`),
+    )
+  }
+
+  private async loadCompileFingerprint(generationId: string): Promise<string | undefined> {
+    try {
+      const value = JSON.parse(await readFile(this.compileFingerprintPath(), 'utf8')) as Record<
+        string,
+        unknown
+      >
+      if (
+        value.schemaVersion === 1 &&
+        value.generationId === generationId &&
+        typeof value.fingerprint === 'string' &&
+        /^[a-f0-9]{64}$/.test(value.fingerprint)
+      ) {
+        return value.fingerprint
+      }
+    } catch {
+      return undefined
+    }
+    return undefined
   }
 
   syncTexForward(revision: number, path: string, line: number) {
@@ -766,10 +854,13 @@ export class ProjectSession {
   }
 
   getCompileDiagnosticsForAi() {
-    const latest = [...this.compileResults.values()].at(-1)
+    const latest = this.latestCompileEvidence
+    const log = latest?.log ?? ''
     return {
       revision: latest?.revision ?? null,
       diagnostics: (latest?.diagnostics ?? []).slice(0, 100),
+      logSummary: boundedUtf8(log, 16_000),
+      logTruncated: Buffer.byteLength(log, 'utf8') > 16_000,
     }
   }
 

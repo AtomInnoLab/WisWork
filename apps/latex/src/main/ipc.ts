@@ -4,6 +4,8 @@ import {
   MAX_IPC_PATH_LENGTH,
   MAX_IPC_TEXT_BYTES,
   type CompileRequest,
+  type ExportPdfResult,
+  type ExportPdfRequest,
   type FileRequest,
   type LatexIpcErrorCode,
   type LatexIpcResult,
@@ -32,6 +34,7 @@ export interface IpcMainLike {
 export interface RegisterLatexIpcOptions {
   ipcMain: IpcMainLike
   registry: ProjectSessionRegistry
+  exportPdf?: (sourcePath: string, suggestedName: string) => Promise<ExportPdfResult>
 }
 
 export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
@@ -120,6 +123,15 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
         : null,
     })),
   )
+  handle(LATEX_CHANNELS.pdfExport, (event, payload) =>
+    withSession(event, payload, registry, parseExportPdfRequest, async (session, request) => {
+      const available = await session.exportablePdf(request.revision)
+      if (!available) throw coded('LATEX_NOT_FOUND', 'Compiled PDF revision not found')
+      if (available.stale && !request.allowStale) return { state: 'stale' as const }
+      if (!options.exportPdf) throw coded('LATEX_INTERNAL', 'PDF export is unavailable')
+      return options.exportPdf(available.path, suggestedPdfName(session.mainFile))
+    }),
+  )
   handle(LATEX_CHANNELS.syncTexForward, (event, payload) =>
     withSession(event, payload, registry, parseSyncTexForward, (session, request) =>
       session.syncTexForward(request.revision, request.path, request.line),
@@ -206,6 +218,11 @@ export function registerLatexIpc(options: RegisterLatexIpcOptions): () => void {
   }
 }
 
+function suggestedPdfName(mainFile: string | undefined): string {
+  const fileName = mainFile?.replaceAll('\\', '/').split('/').at(-1) ?? 'document.tex'
+  return /\.tex$/i.test(fileName) ? fileName.replace(/\.tex$/i, '.pdf') : `${fileName}.pdf`
+}
+
 async function withSession<TRequest extends SessionRequest, TResult>(
   event: IpcEventLike,
   payload: unknown,
@@ -280,6 +297,16 @@ function parseRevisionRequest(value: unknown): SessionRequest & { revision: numb
   return {
     projectId: boundedString(item.projectId, 'projectId', 128),
     revision: revision(item.revision),
+  }
+}
+
+function parseExportPdfRequest(value: unknown): ExportPdfRequest {
+  const item = exactObject(value, ['projectId', 'revision', 'allowStale'])
+  if (typeof item.allowStale !== 'boolean') invalid('allowStale is invalid')
+  return {
+    projectId: boundedString(item.projectId, 'projectId', 128),
+    revision: revision(item.revision),
+    allowStale: item.allowStale,
   }
 }
 

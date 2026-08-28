@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { TectonicRunError } from '@wiswork/latex-compiler'
 import { ProjectSessionRegistry, UnsavedBuffersError } from '../src/main/project-session.js'
 
 describe('LaTeX project sessions', () => {
@@ -734,5 +735,73 @@ describe('LaTeX project sessions', () => {
     expect(loadCurrentGeneration.mock.calls[1]?.[0]).toBe(firstCache)
     expect(second.latestCompile()).toMatchObject({ revision: 0, log: 'cached log' })
     expect(second.pdfPath(0)).toBe(pdfPath)
+  })
+
+  it('authoritatively marks a compiled PDF stale when an unopened dependency changes', async () => {
+    const { root, projectRoot } = await setup()
+    await writeFile(join(projectRoot, 'chapter.tex'), 'before')
+    const pdfPath = join(root, 'compiled.pdf')
+    await writeFile(pdfPath, '%PDF')
+    const compileLog = `compile failure context\n${'x'.repeat(20_000)}`
+    const compiler = vi.fn(async () => ({
+      generationId: 'fresh-source',
+      stagingDirectory: join(root, 'stage'),
+      files: [],
+      log: compileLog,
+      synctexInputRoot: '/tmp/job/input',
+      workspaceCleaned: true as const,
+    })) as never
+    const commitGeneration = vi.fn(async () => ({
+      generationId: 'fresh-source',
+      pdfPath,
+      synctexPath: null,
+      synctexInputRoot: '/tmp/job/input',
+      logPath: join(root, 'compiled.log'),
+      log: compileLog,
+      published: [pdfPath],
+      workspaceCleaned: true as const,
+    }))
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler,
+      commitGeneration: commitGeneration as never,
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
+    }).attach(11, projectRoot)
+
+    await session.compile(7, 'main.tex')
+    expect(session.getCompileDiagnosticsForAi()).toMatchObject({
+      revision: 7,
+      logTruncated: true,
+    })
+    expect(session.getCompileDiagnosticsForAi().logSummary).toContain('compile failure context')
+    expect(
+      Buffer.byteLength(session.getCompileDiagnosticsForAi().logSummary, 'utf8'),
+    ).toBeLessThanOrEqual(16_000)
+    await expect(session.exportablePdf(7)).resolves.toEqual({ path: pdfPath, stale: false })
+    await writeFile(join(projectRoot, 'chapter.tex'), 'after')
+    await expect(session.exportablePdf(7)).resolves.toEqual({ path: pdfPath, stale: true })
+  })
+
+  it('exposes bounded diagnostics and logs from the latest failed compile to AI', async () => {
+    const { root, projectRoot } = await setup()
+    const log = `main.tex:3:7: error: Undefined control sequence\n${'x'.repeat(20_000)}`
+    const failure = new TectonicRunError('TECTONIC_EXIT_NONZERO', 'compile failed', log, 1)
+    failure.terminationConfirmed = true
+    const session = await new ProjectSessionRegistry({
+      watch: () => ({ close() {} }),
+      compiler: vi.fn(async () => {
+        throw failure
+      }) as never,
+      compilerRuntime: { tectonicPath: '/fixed/tectonic', userDataPath: root },
+    }).attach(11, projectRoot)
+
+    await expect(session.compile(8, 'main.tex')).rejects.toBe(failure)
+    const evidence = session.getCompileDiagnosticsForAi()
+    expect(evidence).toMatchObject({ revision: 8, logTruncated: true })
+    expect(evidence.diagnostics).toEqual([
+      expect.objectContaining({ path: 'main.tex', severity: 'error' }),
+    ])
+    expect(evidence.logSummary).toContain('Undefined control sequence')
+    expect(Buffer.byteLength(evidence.logSummary, 'utf8')).toBeLessThanOrEqual(16_000)
   })
 })

@@ -63,6 +63,20 @@ describe('configured Office build output', () => {
     await expect(access(resolve(dist, 'manifest.xml'))).rejects.toThrow()
   }, 15_000)
 
+  it('fails the build for an invalid persistent-pairing rollback flag', async () => {
+    const key = 'VITE_WISWORK_OFFICE_PAIRING_RESUME'
+    const prior = process.env[key]
+    process.env[key] = 'false'
+    try {
+      await expect(
+        build({ configFile: resolve(appRoot, 'vite.config.ts'), logLevel: 'silent' }),
+      ).rejects.toThrow('invalid_office_pairing_resume')
+    } finally {
+      if (prior === undefined) delete process.env[key]
+      else process.env[key] = prior
+    }
+  }, 15_000)
+
   it('can build the retained legacy workspace with only its independent rollback flag', async () => {
     const configured = {
       VITE_WISWORK_ADDIN_ORIGIN: 'https://office.example',

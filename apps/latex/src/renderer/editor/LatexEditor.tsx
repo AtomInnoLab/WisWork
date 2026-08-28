@@ -1,6 +1,13 @@
-import { useEffect, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { autocompletion, completionKeymap } from '@codemirror/autocomplete'
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentWithTab,
+  redo,
+  undo,
+} from '@codemirror/commands'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { setDiagnostics, lintGutter, type Diagnostic } from '@codemirror/lint'
 import { searchKeymap } from '@codemirror/search'
@@ -18,6 +25,7 @@ import {
 } from '@codemirror/view'
 import type { EditorDiagnostic } from '../compile/diagnostics.js'
 import { captureEditorContext, type EditorContextSnapshot } from '../ai/agent-context.js'
+import { latexEditorChange, type LatexEditorCommand } from './editor-commands.js'
 import { latexLanguageExtensions } from './latex-language.js'
 
 const latexHighlightStyle = HighlightStyle.define([
@@ -73,6 +81,10 @@ export interface LatexEditorProps {
   revealLine?: number | null
 }
 
+export interface LatexEditorHandle {
+  runCommand: (command: LatexEditorCommand | 'undo' | 'redo') => boolean
+}
+
 function editorDiagnostics(
   view: EditorView,
   diagnostics: readonly EditorDiagnostic[],
@@ -91,18 +103,21 @@ function editorDiagnostics(
   })
 }
 
-export function LatexEditor({
-  path,
-  value,
-  diagnostics,
-  readOnly = false,
-  onChange,
-  onSave,
-  onCompile,
-  onCursorLine,
-  onContextChange,
-  revealLine,
-}: LatexEditorProps) {
+export const LatexEditor = forwardRef<LatexEditorHandle, LatexEditorProps>(function LatexEditor(
+  {
+    path,
+    value,
+    diagnostics,
+    readOnly = false,
+    onChange,
+    onSave,
+    onCompile,
+    onCursorLine,
+    onContextChange,
+    revealLine,
+  },
+  ref,
+) {
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const readOnlyCompartment = useRef(new Compartment())
@@ -112,6 +127,29 @@ export function LatexEditor({
   const currentInput = useRef({ value, diagnostics, readOnly })
   callbacks.current = { onChange, onSave, onCompile, onCursorLine, onContextChange }
   currentInput.current = { value, diagnostics, readOnly }
+
+  useImperativeHandle(ref, () => ({
+    runCommand(command) {
+      const view = viewRef.current
+      if (!view || currentInput.current.readOnly) return false
+      if (command === 'undo') return undo(view)
+      if (command === 'redo') return redo(view)
+      const selection = view.state.selection.main
+      const change = latexEditorChange(
+        view.state.doc.toString(),
+        selection.from,
+        selection.to,
+        command,
+      )
+      view.dispatch({
+        changes: { from: change.from, to: change.to, insert: change.insert },
+        selection: change.selection,
+        scrollIntoView: true,
+      })
+      view.focus()
+      return true
+    },
+  }))
 
   useEffect(() => {
     const host = hostRef.current
@@ -241,4 +279,4 @@ export function LatexEditor({
   }, [revealLine])
 
   return <div ref={hostRef} className="latex-editor" aria-label={`Editor: ${path}`} />
-}
+})

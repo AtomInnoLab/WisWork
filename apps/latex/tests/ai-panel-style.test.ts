@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { AiPanel } from '../src/renderer/ai/AiPanel.js'
+import { AgentActivity, AiPanel } from '../src/renderer/ai/AiPanel.js'
 import type { AgentContext } from '../src/renderer/ai/agent-context.js'
 
 describe('LaTeX AI dock', () => {
@@ -16,56 +16,78 @@ describe('LaTeX AI dock', () => {
     expect(html).not.toContain('writer@example.com')
   })
 
-  it('keeps both workspace tabs visible while collapsed', () => {
+  it('uses the same icon-only collapsed rail as the other document editors', () => {
     const html = renderToStaticMarkup(
-      createElement(AiPanel, { projectId: 'project-1', open: false, activeTab: 'compile' }),
+      createElement(AiPanel, { projectId: 'project-1', open: false }),
     )
-    expect(html.match(/role="tab"/g)).toHaveLength(2)
-    expect(html).toContain('WisWork AI')
-    expect(html).toContain('编译')
-    expect(html).toContain('aria-selected="true"')
+    expect(html).toContain('class="latex-ai-rail"')
+    expect(html).toContain('aria-label="Expand AI panel"')
+    expect(html).toContain('viewBox="0 0 130 130.025"')
+    expect(html).not.toContain('role="tab"')
+    expect(html).not.toContain('编译')
     const styles = readFileSync(new URL('../src/renderer/styles.css', import.meta.url), 'utf8')
-    const railButtons = styles.match(/\.latex-ai-rail > button\s*\{([^}]*)\}/)?.[1] ?? ''
-    expect(railButtons).toContain('flex: 0 0 auto')
-    expect(railButtons).not.toContain('min-height: 112px')
+    expect(styles).toMatch(/\.latex-ai-rail\s*{[^}]*flex:\s*0 0 38px/s)
   })
 
-  it('has only WisWork AI and 编译 tabs, with editing kept inside AI', () => {
-    const aiHtml = renderToStaticMarkup(
-      createElement(AiPanel, {
-        projectId: 'project-1',
-        activeTab: 'ai',
-        compilePanel: createElement('div', null, 'compile evidence'),
-      }),
-    )
-    expect(aiHtml.match(/role="tab"/g)).toHaveLength(2)
-    expect(aiHtml).toContain('WisWork AI')
-    expect(aiHtml).toContain('编译')
-    expect(aiHtml).toContain('Edit LaTeX with WisWork AI')
-    expect(aiHtml).not.toContain('compile evidence')
-
-    const compileHtml = renderToStaticMarkup(
-      createElement(AiPanel, {
-        projectId: 'project-1',
-        activeTab: 'compile',
-        compilePanel: createElement('div', null, 'compile evidence'),
-      }),
-    )
-    expect(compileHtml).toContain('compile evidence')
-    expect(compileHtml).not.toContain('Edit LaTeX with WisWork AI')
-    expect(compileHtml).not.toContain('>编辑<')
-  })
-
-  it('uses the shared WisWork chat design and product app icon', () => {
+  it('keeps compilation out of the AI dock', () => {
     const html = renderToStaticMarkup(
-      createElement(AiPanel, { projectId: 'project-1', disabled: false }),
+      createElement(AiPanel, {
+        projectId: 'project-1',
+      }),
+    )
+    expect(html).toContain('WisWork AI')
+    expect(html).toContain('Edit LaTeX with WisWork AI')
+    expect(html).not.toContain('编译')
+    expect(html).not.toContain('dock-compile-content')
+  })
+
+  it('uses the canonical document AI title and collapse icons', () => {
+    const html = renderToStaticMarkup(
+      createElement(AiPanel, {
+        projectId: 'project-1',
+        disabled: false,
+        onCollapse: () => undefined,
+      }),
     )
     expect(html).toContain('class="latex-ai-dock"')
     expect(html).toContain('class="ai-panel-header"')
+    expect(html).toContain('class="ai-panel-title"')
     expect(html).toContain('class="ai-chat"')
     expect(html).toContain('class="ai-input-box"')
-    expect(html).toContain('class="ai-brand-icon"')
+    expect(html).toContain('viewBox="0 0 130 130.025"')
+    expect(html).toContain('M 4.54 8 h 3.39')
+    expect(html).not.toContain('class="workspace-tabs"')
+    expect(html).not.toContain('>›</button>')
+    expect(html).toContain('M13 3.5v4a2.5')
+    expect(html).not.toContain('>Send</button>')
     expect(html).toContain('Loading project chat…')
+  })
+
+  it('shows agent events with the shared collapsible work-group treatment', () => {
+    const running = renderToStaticMarkup(
+      createElement(AgentActivity, {
+        entries: [
+          { id: 'read', kind: 'read', label: 'Read main.tex', state: 'success' },
+          { id: 'compile', kind: 'compile', label: 'Compile project', state: 'running' },
+        ],
+      }),
+    )
+    expect(running).toContain('class="ai-work-group"')
+    expect(running).toContain('class="ai-work-group-summary running"')
+    expect(running).toContain('Working')
+    expect(running.match(/class="ai-step-row"/g)).toHaveLength(2)
+    expect(running).toContain('class="ai-step-icon running"')
+
+    const completed = renderToStaticMarkup(
+      createElement(AgentActivity, {
+        entries: [
+          { id: 'read', kind: 'read', label: 'Read main.tex', state: 'success' },
+          { id: 'compile', kind: 'compile', label: 'Compile failed', state: 'error' },
+        ],
+      }),
+    )
+    expect(completed).toContain('Worked · 2 steps')
+    expect(completed).toContain('class="ai-step-icon error"')
   })
 
   it('stays after the main work area and resizes from its left edge', () => {

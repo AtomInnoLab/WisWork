@@ -302,9 +302,7 @@ export class BrowserWordAdapter implements WordAdapter {
   private expectedDocument:
     | {
         fingerprint: string
-        original: string
         originalFingerprint: string
-        write: WordDocumentWrite
       }
     | undefined
   constructor(
@@ -632,26 +630,26 @@ export class BrowserWordAdapter implements WordAdapter {
         try {
           postValue = await readUntilConverged({
             read: () => readWordBodyInContext(context, body),
-            accept: (value) => verifyNativeDocumentWrite(original, value, write),
+            accept: (value) =>
+              stableFingerprintOoxml(value) !== beforeFingerprint &&
+              verifyNativeDocumentWrite(original, value, write),
           })
         } catch (error) {
           readError = error
         }
         if (readError) throw new Error('office_state_uncertain', { cause: readError })
-        const verified =
-          postValue !== undefined &&
-          new TextEncoder().encode(postValue).byteLength <= MAX_WORD_OOXML_BYTES &&
-          verifyNativeDocumentWrite(original, postValue, write)
-        if (!verified) {
-          if (postValue && stableFingerprintOoxml(postValue) === beforeFingerprint)
-            throw new Error('office_write_failed', { cause: writeError })
-          throw new Error('office_concurrent_change', { cause: writeError })
+        if (postValue === undefined)
+          throw new Error('office_state_uncertain', { cause: writeError })
+        const postFingerprint = stableFingerprintOoxml(postValue)
+        if (postFingerprint === beforeFingerprint)
+          throw new Error('office_write_failed', { cause: writeError })
+        const verification = verifyNativeDocumentWriteDetailed(original, postValue, write)
+        if (!verification.valid) {
+          throw nativeDocumentVerificationFailure(verification.stage, writeError)
         }
         this.expectedDocument = {
-          fingerprint: stableFingerprintOoxml(postValue!),
-          original,
+          fingerprint: postFingerprint,
           originalFingerprint: beforeFingerprint,
-          write,
         }
         if (signal?.aborted) throw new Error('office_state_uncertain')
       },
@@ -666,9 +664,7 @@ export class BrowserWordAdapter implements WordAdapter {
     try {
       current = await readUntilConverged({
         read: () => readBodyOoxml(signal),
-        accept: (value) =>
-          stableFingerprintOoxml(value) === expected.fingerprint ||
-          verifyNativeDocumentWrite(expected.original, value, expected.write),
+        accept: (value) => stableFingerprintOoxml(value) === expected.fingerprint,
       })
     } catch (error) {
       throw new Error('office_state_uncertain', { cause: error })
@@ -676,8 +672,6 @@ export class BrowserWordAdapter implements WordAdapter {
     const currentFingerprint = stableFingerprintOoxml(current)
     if (currentFingerprint === expected.fingerprint && !signal?.aborted) return true
     if (currentFingerprint === expected.originalFingerprint) return false
-    if (!signal?.aborted && verifyNativeDocumentWrite(expected.original, current, expected.write))
-      return true
     throw new Error('office_concurrent_change')
   }
 }
@@ -1203,6 +1197,14 @@ function normalizedDocumentText(value: string): string {
 
 type NativeVerificationStage = 'text' | 'body_shape' | 'content' | 'boundary'
 type NativeVerificationResult = { valid: true } | { valid: false; stage: NativeVerificationStage }
+const MAX_HOST_TRAILING_EMPTY_PARAGRAPHS = 8
+
+function nativeDocumentVerificationFailure(stage: NativeVerificationStage, cause: unknown): Error {
+  const stagedCause = Object.assign(new Error('word_write_verification_failed', { cause }), {
+    verificationStage: stage,
+  })
+  return new Error('office_verify_failed', { cause: stagedCause })
+}
 
 function verifyNativeDocumentWriteDetailed(
   before: string,
@@ -1262,28 +1264,31 @@ function verifyNativeDocumentWriteDetailed(
     )
   let valid: boolean
   if (write.mode === 'replace') {
-    valid = insertedMatches(afterParts.content)
-    if (
-      !valid &&
-      afterParts.content.length > expected.length &&
-      insertedMatches(afterParts.content.slice(0, expected.length)) &&
-      expected[expected.length - 1]?.type === 'table'
+    const afterContent = withoutTrailingEmptyParagraphs(
+      afterParts.content,
+      expected.length,
+      MAX_HOST_TRAILING_EMPTY_PARAGRAPHS,
     )
-      valid = afterParts.content
-        .slice(expected.length)
-        .every((element) =>
-          isEmptyParagraph(elementSignature(element, afterParts.numbering, afterParts.styles)),
-        )
+    valid = insertedMatches(afterContent)
   } else if (write.mode === 'append') {
-    const afterContent = withoutTrailingEmptyParagraphs(afterParts.content)
+    const afterContent = withoutTrailingEmptyParagraphs(
+      afterParts.content,
+      appendBoundary.length + expected.length,
+      MAX_HOST_TRAILING_EMPTY_PARAGRAPHS,
+    )
     const inserted = afterContent.slice(-expected.length)
     const currentBoundary = withoutTrailingTableParagraphs(afterContent.slice(0, -expected.length))
     valid = canonicalEqual(appendBoundary, currentBoundary) && insertedMatches(inserted)
   } else {
+    const afterContent = withoutTrailingEmptyParagraphs(
+      afterParts.content,
+      expected.length + beforeParts.content.length,
+      MAX_HOST_TRAILING_EMPTY_PARAGRAPHS,
+    )
     valid =
-      afterParts.content.length === expected.length + beforeParts.content.length &&
-      insertedMatches(afterParts.content.slice(0, expected.length)) &&
-      canonicalEqual(beforeParts.content, afterParts.content.slice(expected.length))
+      afterContent.length === expected.length + beforeParts.content.length &&
+      insertedMatches(afterContent.slice(0, expected.length)) &&
+      canonicalEqual(beforeParts.content, afterContent.slice(expected.length))
   }
   if (valid) return { valid: true }
   const expectedLength =
@@ -1324,10 +1329,6 @@ function bodyParts(xml: string): {
   }
 }
 
-function isEmptyParagraph(signature: DocumentSignature | undefined): boolean {
-  return signature?.type === 'paragraph' && signature.text === ''
-}
-
 function withoutTrailingTableParagraphs(elements: Element[]): Element[] {
   const boundary = withoutTrailingEmptyParagraphs(elements)
   return boundary.length < elements.length && boundary.at(-1)?.localName === 'tbl'
@@ -1335,16 +1336,35 @@ function withoutTrailingTableParagraphs(elements: Element[]): Element[] {
     : elements
 }
 
-function withoutTrailingEmptyParagraphs(elements: Element[]): Element[] {
+function withoutTrailingEmptyParagraphs(
+  elements: Element[],
+  minimumLength = 0,
+  maximumRemoved = Number.POSITIVE_INFINITY,
+): Element[] {
   let boundary = elements.length
+  let removed = 0
   while (
-    boundary > 0 &&
-    elements[boundary - 1]?.namespaceURI === W_NS &&
-    elements[boundary - 1]?.localName === 'p' &&
-    wordText(elements[boundary - 1]!) === ''
-  )
+    boundary > minimumLength &&
+    removed < maximumRemoved &&
+    isHostGeneratedEmptyParagraph(elements[boundary - 1])
+  ) {
     boundary -= 1
+    removed += 1
+  }
   return elements.slice(0, boundary)
+}
+
+function isHostGeneratedEmptyParagraph(element: Element | undefined): boolean {
+  if (element?.namespaceURI !== W_NS || element.localName !== 'p' || wordText(element) !== '')
+    return false
+  return directElements(element).every(
+    (child) =>
+      child.namespaceURI === W_NS &&
+      child.localName === 'pPr' &&
+      directElements(child).every(
+        (property) => property.namespaceURI === W_NS && property.localName === 'spacing',
+      ),
+  )
 }
 
 function stableFingerprintOoxml(xml: string): string {

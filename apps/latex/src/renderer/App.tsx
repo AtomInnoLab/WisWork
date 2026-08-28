@@ -8,6 +8,7 @@ import { CompilePanel } from './compile/CompilePanel.js'
 import { AiPanel } from './ai/AiPanel.js'
 import {
   diagnosticToAgentContext,
+  buildCompileAgentContext,
   editorContextForActivePath,
   type AgentContext,
   type AgentContextKey,
@@ -26,9 +27,10 @@ import {
   restoreEditorPreview,
   type EditorState,
 } from './editor/editor-state.js'
-import { LatexEditor } from './editor/LatexEditor.js'
+import { LatexEditor, type LatexEditorHandle } from './editor/LatexEditor.js'
 import { useLatexLocale } from './i18n/locale.js'
 import { PdfPreview } from './pdf/PdfPreview.js'
+import { ExportPdfDialog } from './pdf/ExportPdfDialog.js'
 import { OpenTabs } from './project/OpenTabs.js'
 import { FileActionDialog, type FileAction } from './project/FileActionDialog.js'
 import { ProjectTree } from './project/ProjectTree.js'
@@ -95,9 +97,12 @@ export function App() {
   const [compiling, setCompiling] = useState(false)
   const [bundleStatus, setBundleStatus] = useState<LatexBundleStatusDto>({ state: 'missing' })
   const [aiOpen, setAiOpen] = useState(true)
-  const [dockTab, setDockTab] = useState<'ai' | 'compile'>('ai')
+  const editorRef = useRef<LatexEditorHandle>(null)
   const [filesOpen, setFilesOpen] = useState(true)
   const [previewOpen, setPreviewOpen] = useState(true)
+  const [exportingPdf, setExportingPdf] = useState(false)
+  const exportingPdfRef = useRef(false)
+  const [staleExportOpen, setStaleExportOpen] = useState(false)
   const [fileAction, setFileAction] = useState<FileAction | null>(null)
   const [fileActionBusy, setFileActionBusy] = useState(false)
   const [editorContext, setEditorContext] = useState<
@@ -326,6 +331,28 @@ export function App() {
         revision: begun.request.revision,
       })
       if (!result.ok) {
+        try {
+          const evidence = await window.latexApi.getCompileDiagnostics({ projectId })
+          if (evidence.ok && evidence.value.revision === begun.request.revision) {
+            setLog(evidence.value.logSummary)
+            setDiagnostics(
+              mapCompileDiagnostics(
+                evidence.value.diagnostics.flatMap((value) => {
+                  const parsed = diagnosticInput(value)
+                  return parsed ? [parsed] : []
+                }),
+                new Set(files),
+              ),
+            )
+            setHiddenAiContext((current) => {
+              const next = new Set(current)
+              next.delete('compile')
+              return next
+            })
+          }
+        } catch {
+          // Preserve the original compile failure when evidence refresh is unavailable.
+        }
         setError(result.error.message)
         return
       }
@@ -346,6 +373,11 @@ export function App() {
           new Set(files),
         ),
       )
+      setHiddenAiContext((current) => {
+        const next = new Set(current)
+        next.delete('compile')
+        return next
+      })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
@@ -359,6 +391,39 @@ export function App() {
     compileQueue.current.request(compileOnce)
   }, [compileOnce])
   compileLatestRef.current = compileProject
+
+  const exportPdf = useCallback(
+    async (allowStale = false) => {
+      const preview = editorStateRef.current.preview
+      if (!projectId || !preview || exportingPdfRef.current) return false
+      exportingPdfRef.current = true
+      setExportingPdf(true)
+      setError(null)
+      try {
+        const result = await window.latexApi.exportPdf({
+          projectId,
+          revision: preview.revision,
+          allowStale,
+        })
+        if (!result.ok) {
+          setError(result.error.message)
+          return false
+        }
+        if (result.value.state === 'stale') {
+          setStaleExportOpen(true)
+          return false
+        }
+        return true
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason))
+        return false
+      } finally {
+        exportingPdfRef.current = false
+        setExportingPdf(false)
+      }
+    },
+    [projectId],
+  )
 
   useEffect(() => {
     const unsubscribe = window.latexApi.onExternalChange((buffer) => {
@@ -645,6 +710,10 @@ export function App() {
   )
   const activeDiagnostics = diagnostics.filter((item) => item.path === activePath)
   const sensitiveAiContext = Boolean(activePath && isAiSensitivePath(activePath))
+  const compileAgentContext = useMemo(
+    () => buildCompileAgentContext(diagnostics, log),
+    [diagnostics, log],
+  )
   const agentContext = useMemo<AgentContext>(() => {
     if (activePath && isAiSensitivePath(activePath)) return {}
     const currentEditor = editorContextForActivePath(editorContext, activePath)
@@ -657,8 +726,11 @@ export function App() {
         ? { selection: currentEditor.selection }
         : {}),
       ...(!hiddenAiContext.has('diagnostic') && aiDiagnostic ? { diagnostic: aiDiagnostic } : {}),
+      ...(!hiddenAiContext.has('compile') && compileAgentContext
+        ? { compile: compileAgentContext }
+        : {}),
     }
-  }, [activePath, aiDiagnostic, editorContext, hiddenAiContext])
+  }, [activePath, aiDiagnostic, compileAgentContext, editorContext, hiddenAiContext])
 
   useEffect(() => {
     forwardGate.current.invalidate()
@@ -670,16 +742,60 @@ export function App() {
     <main className="latex-workbench">
       <WorkbenchToolbar
         activePath={activePath}
+        mainFile={mainFile}
         dirty={Boolean(activeBuffer?.dirty)}
-        disabled={frozen || !projectId || !mainFile}
-        compiling={compiling}
+        disabled={frozen || !activeBuffer}
+        compileDisabled={frozen || !projectId || !mainFile}
+        compiling={compiling || bundleStatus.state === 'downloading'}
+        diagnosticCount={diagnostics.length}
+        compilePanel={
+          <CompilePanel
+            compiling={compiling}
+            disabled={frozen}
+            bundleStatus={bundleStatus}
+            diagnostics={diagnostics}
+            log={log}
+            onCompile={compileProject}
+            onCancel={() => undefined}
+            onDiagnostic={(diagnostic) => {
+              void openFile(diagnostic.path).then(() =>
+                setRevealTarget({ path: diagnostic.path, line: diagnostic.lineIndex + 1 }),
+              )
+            }}
+            onAskAi={(diagnostic) => {
+              setAiDiagnostic(diagnosticToAgentContext(diagnostic))
+              setHiddenAiContext((current) => {
+                const next = new Set(current)
+                next.delete('diagnostic')
+                return next
+              })
+              setAiOpen(true)
+            }}
+            showActions={false}
+          />
+        }
         filesOpen={filesOpen}
         previewOpen={previewOpen}
         aiOpen={aiOpen}
+        pdfAvailable={Boolean(editorState.preview?.pdfUrl)}
+        pdfStale={editorState.previewStale}
+        exportingPdf={exportingPdf}
         onSave={() => {
           if (activePath) void savePath(activePath)
         }}
         onCompile={compileProject}
+        onCancelCompile={() => {
+          if (closeFreeze.current.isFrozen()) return
+          compileQueue.current.cancelPending()
+          if (projectId) void window.latexApi.cancelCompile({ projectId })
+        }}
+        onExportPdf={() => {
+          if (editorState.previewStale) setStaleExportOpen(true)
+          else void exportPdf(false)
+        }}
+        onEditorCommand={(command) => {
+          editorRef.current?.runCommand(command)
+        }}
         onToggleFiles={() => setFilesOpen((open) => !open)}
         onTogglePreview={() => setPreviewOpen((open) => !open)}
         onToggleAi={() => setAiOpen((open) => !open)}
@@ -713,6 +829,7 @@ export function App() {
             />
             {activeBuffer ? (
               <LatexEditor
+                ref={editorRef}
                 path={activeBuffer.path}
                 value={activeBuffer.text}
                 diagnostics={activeDiagnostics}
@@ -777,37 +894,6 @@ export function App() {
             onRemoveContext={(key) => setHiddenAiContext((current) => new Set([...current, key]))}
             onExpand={() => setAiOpen(true)}
             onCollapse={() => setAiOpen(false)}
-            activeTab={dockTab}
-            onTabChange={setDockTab}
-            compilePanel={
-              <CompilePanel
-                compiling={compiling}
-                disabled={frozen}
-                bundleStatus={bundleStatus}
-                diagnostics={diagnostics}
-                log={log}
-                onCompile={compileProject}
-                onCancel={() => {
-                  if (closeFreeze.current.isFrozen()) return
-                  compileQueue.current.cancelPending()
-                  if (projectId) void window.latexApi.cancelCompile({ projectId })
-                }}
-                onDiagnostic={(diagnostic) => {
-                  void openFile(diagnostic.path).then(() =>
-                    setRevealTarget({ path: diagnostic.path, line: diagnostic.lineIndex + 1 }),
-                  )
-                }}
-                onAskAi={(diagnostic) => {
-                  setAiDiagnostic(diagnosticToAgentContext(diagnostic))
-                  setHiddenAiContext((current) => {
-                    const next = new Set(current)
-                    next.delete('diagnostic')
-                    return next
-                  })
-                  setDockTab('ai')
-                }}
-              />
-            }
           />
         )}
       </div>
@@ -818,6 +904,20 @@ export function App() {
           if (!fileActionBusy) setFileAction(null)
         }}
         onSubmit={(value) => void submitFileAction(value)}
+      />
+      <ExportPdfDialog
+        open={staleExportOpen}
+        busy={exportingPdf}
+        onCancel={() => setStaleExportOpen(false)}
+        onCompile={() => {
+          setStaleExportOpen(false)
+          compileProject()
+        }}
+        onExportLast={() => {
+          void exportPdf(true).then((completed) => {
+            if (completed) setStaleExportOpen(false)
+          })
+        }}
       />
     </main>
   )

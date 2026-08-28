@@ -18,6 +18,7 @@ const api: LatexApi = {
   deleteFile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.fileDelete, request),
   compile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.compileStart, request),
   cancelCompile: (request) => ipcRenderer.invoke(LATEX_CHANNELS.compileCancel, request),
+  exportPdf: (request) => ipcRenderer.invoke(LATEX_CHANNELS.pdfExport, request),
   getBundleStatus: (request) => ipcRenderer.invoke(LATEX_CHANNELS.bundleStatus, request),
   syncTexForward: (request) => ipcRenderer.invoke(LATEX_CHANNELS.syncTexForward, request),
   syncTexReverse: (request) => ipcRenderer.invoke(LATEX_CHANNELS.syncTexReverse, request),

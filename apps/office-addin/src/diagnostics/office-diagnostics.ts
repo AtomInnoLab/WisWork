@@ -7,6 +7,7 @@ export const MAX_DIAGNOSTIC_EXPORT_BYTES = 256 * 1024
 export type DiagnosticPhase =
   'tool' | 'proposal' | 'validate' | 'write' | 'verify' | 'recovery' | 'transport'
 export type DiagnosticOutcome = 'failed' | 'unsupported' | 'cancelled'
+export type VerificationStage = 'text' | 'body_shape' | 'content' | 'boundary'
 
 const ERROR_CODES = new Set([
   'agent_run_failed',
@@ -43,6 +44,7 @@ export interface OfficeDiagnosticEvent {
   office_error_code?: string
   office_error_name?: string
   office_error_location?: string
+  verification_stage?: VerificationStage
   duration_ms: number
   requirement_sets: Readonly<Record<string, boolean>>
 }
@@ -79,6 +81,12 @@ interface DiagnosticOptions {
 
 const PLATFORMS = new Set(['pc', 'mac', 'office_online', 'ios', 'android', 'universal', 'unknown'])
 const REQUIREMENT_SETS = new Set(['OfficeApi', 'WordApi', 'ExcelApi', 'PowerPointApi'])
+const VERIFICATION_STAGES = new Set<VerificationStage>([
+  'text',
+  'body_shape',
+  'content',
+  'boundary',
+])
 
 const PLATFORM_NAMES: Readonly<Record<string, string>> = Object.freeze({
   pc: 'pc',
@@ -133,35 +141,54 @@ const stableError = (value: unknown): string =>
 const outcome = (code: string): DiagnosticOutcome =>
   code === 'office_api_unsupported' ? 'unsupported' : code === 'cancelled' ? 'cancelled' : 'failed'
 
-function officeIdentifiers(
-  error: unknown,
-): Pick<
+type OfficeDiagnosticMetadata = Pick<
   OfficeDiagnosticEvent,
-  'office_error_code' | 'office_error_name' | 'office_error_location'
-> {
-  const result: Record<string, string> = {}
+  'office_error_code' | 'office_error_name' | 'office_error_location' | 'verification_stage'
+>
+
+function safeProperty(value: Record<string, unknown>, property: string): unknown {
+  try {
+    return value[property]
+  } catch {
+    return undefined
+  }
+}
+
+function officeIdentifiers(error: unknown): OfficeDiagnosticMetadata {
+  const result: OfficeDiagnosticMetadata = {}
   const seen = new Set<unknown>()
   let current = error
   for (let depth = 0; depth < 3; depth += 1) {
     if (!current || (typeof current !== 'object' && typeof current !== 'function')) break
     if (seen.has(current)) break
     seen.add(current)
-    try {
-      const value = current as Record<string, unknown>
-      const debugInfo =
-        value.debugInfo && typeof value.debugInfo === 'object'
-          ? (value.debugInfo as Record<string, unknown>)
-          : undefined
-      const code = identifier(value.code, '')
-      const name = identifier(value.name, '')
-      const location = identifier(debugInfo?.errorLocation, '')
-      if (code && !result.office_error_code) result.office_error_code = code
-      if (name && !result.office_error_name) result.office_error_name = name
-      if (location && !result.office_error_location) result.office_error_location = location
-      current = value.cause
-    } catch {
-      break
-    }
+    const value = current as Record<string, unknown>
+    const debugInfoValue = safeProperty(value, 'debugInfo')
+    const debugInfo =
+      debugInfoValue && typeof debugInfoValue === 'object'
+        ? (debugInfoValue as Record<string, unknown>)
+        : undefined
+    const code = identifier(safeProperty(value, 'code'), '')
+    const name = identifier(safeProperty(value, 'name'), '')
+    const location = identifier(
+      debugInfo ? safeProperty(debugInfo, 'errorLocation') : undefined,
+      '',
+    )
+    if (code && !result.office_error_code) result.office_error_code = code
+    if (
+      name &&
+      (!result.office_error_name || (result.office_error_name === 'Error' && name !== 'Error'))
+    )
+      result.office_error_name = name
+    if (location && !result.office_error_location) result.office_error_location = location
+    const stage = safeProperty(value, 'verificationStage')
+    if (
+      typeof stage === 'string' &&
+      VERIFICATION_STAGES.has(stage as VerificationStage) &&
+      !result.verification_stage
+    )
+      result.verification_stage = stage as VerificationStage
+    current = safeProperty(value, 'cause')
   }
   return result
 }
@@ -186,53 +213,51 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
   const build = identifier(options.build, 'unknown', 64)
   let events: OfficeDiagnosticEvent[] = []
   let traceId: string | undefined
+  let traceGeneration = 0
   let tool = 'unknown'
   let uploadFailureRecorded = false
 
   const local = (event: OfficeDiagnosticEvent) => {
     events = [...events, freezeEvent(event)].slice(-MAX_LOCAL_DIAGNOSTIC_EVENTS)
   }
+  const uploadFailureEvent = (event: OfficeDiagnosticEvent): OfficeDiagnosticEvent => {
+    const derived = {
+      ...event,
+      event_id: randomUUID(),
+      timestamp_ms: Math.max(0, Math.trunc(now())),
+      phase: 'transport' as const,
+      outcome: 'failed' as const,
+      error_code: 'diagnostic_upload_failed',
+      duration_ms: 0,
+    }
+    delete derived.office_error_code
+    delete derived.office_error_name
+    delete derived.office_error_location
+    delete derived.verification_stage
+    return derived
+  }
   const upload = (event: OfficeDiagnosticEvent) => {
     if (!options.remoteEnabled || !options.send || event.error_code === 'diagnostic_upload_failed')
       return
+    const generation = traceGeneration
     try {
       const result = options.send(event)
       void Promise.resolve(result).catch(() => {
-        if (uploadFailureRecorded) return
+        if (generation !== traceGeneration || uploadFailureRecorded) return
         uploadFailureRecorded = true
-        local(
-          freezeEvent({
-            ...event,
-            event_id: randomUUID(),
-            timestamp_ms: Math.max(0, Math.trunc(now())),
-            phase: 'transport',
-            outcome: 'failed',
-            error_code: 'diagnostic_upload_failed',
-            office_error_code: undefined,
-            office_error_name: undefined,
-            office_error_location: undefined,
-            duration_ms: 0,
-          }),
-        )
+        local(uploadFailureEvent(event))
       })
     } catch {
-      if (!uploadFailureRecorded) {
+      if (generation === traceGeneration && !uploadFailureRecorded) {
         uploadFailureRecorded = true
-        local({
-          ...event,
-          event_id: randomUUID(),
-          timestamp_ms: Math.max(0, Math.trunc(now())),
-          phase: 'transport',
-          outcome: 'failed',
-          error_code: 'diagnostic_upload_failed',
-          duration_ms: 0,
-        })
+        local(uploadFailureEvent(event))
       }
     }
   }
 
   return {
     startTrace() {
+      traceGeneration += 1
       traceId = randomUUID()
       tool = 'unknown'
       uploadFailureRecorded = false
@@ -242,7 +267,10 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
       tool = identifier(name, 'unknown', 128)
     },
     record(input) {
-      if (!traceId) traceId = randomUUID()
+      if (!traceId) {
+        traceGeneration += 1
+        traceId = randomUUID()
+      }
       const errorCode = stableError(input.errorCode)
       const event = freezeEvent({
         event_id: randomUUID(),
@@ -277,6 +305,7 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
       return value
     },
     clear() {
+      traceGeneration += 1
       events = []
       traceId = undefined
       tool = 'unknown'

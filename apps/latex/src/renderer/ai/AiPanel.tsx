@@ -1,6 +1,12 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AgentLoop } from '@wiswork/agent-core'
-import { AiComposer, AiTypingIndicator, Markdown, WisWorkAppMark } from '@wiswork/ui'
+import {
+  AiComposer,
+  AiTypingIndicator,
+  IconSidebarCollapse,
+  Markdown,
+  WisWorkAgentMark,
+} from '@wiswork/ui'
 import { createLatexSkill } from './latex-skill.js'
 import { loadProposalForReview } from './proposal-review.js'
 import { ProposalWorkflow, validateUndoProposal } from './proposal-workflow.js'
@@ -80,30 +86,108 @@ function contextChips(context: AgentContext): Array<{ key: AgentContextKey; labe
           },
         ]
       : []),
+    ...(normalized.compile
+      ? [
+          {
+            key: 'compile' as const,
+            label: `Compile context · ${normalized.compile.diagnostics.length} problems · log`,
+          },
+        ]
+      : []),
   ]
 }
 
-function TaskTimeline({ entries }: { entries: readonly TaskTimelineEntry[] }) {
-  if (!entries.length) return null
+function ActivityStepIcon({ state }: { state: TaskTimelineEntry['state'] }) {
+  if (state === 'running') {
+    return (
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor">
+        <path d="M6.5 3.5h11M6.5 20.5h11M8 3.5v3.2c0 2.6 4 4.2 4 5.3 0 1.1 4 2.7 4 5.3v3.2M16 3.5v3.2c0 2.6-4 4.2-4 5.3 0 1.1-4 2.7-4 5.3v3.2" />
+      </svg>
+    )
+  }
+  if (state === 'error') {
+    return (
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor">
+        <circle cx="12" cy="12" r="9" />
+        <path d="m9.2 9.2 5.6 5.6M14.8 9.2l-5.6 5.6" />
+      </svg>
+    )
+  }
+  if (state === 'cancelled') {
+    return (
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor">
+        <circle cx="12" cy="12" r="9" />
+        <path d="M8 12h8" />
+      </svg>
+    )
+  }
   return (
-    <section className="agent-task-timeline" aria-label="Agent task timeline">
-      <div className="agent-task-timeline-title">Task activity</div>
-      <ol>
-        {entries.map((entry) => (
-          <li key={entry.id} className={`timeline-${entry.state}`}>
-            <span className="timeline-state" aria-label={entry.state} />
-            <div>
-              <div className="timeline-label">{entry.label}</div>
-              {entry.detail && (
-                <details>
-                  <summary>Details</summary>
-                  <pre>{entry.detail}</pre>
-                </details>
-              )}
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor">
+      <circle cx="12" cy="12" r="9" />
+      <path d="m8.5 12.4 2.4 2.4 4.6-5" />
+    </svg>
+  )
+}
+
+export function AgentActivity({ entries }: { entries: readonly TaskTimelineEntry[] }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [userOpen, setUserOpen] = useState<boolean | null>(null)
+  if (!entries.length) return null
+  const running = entries.some((entry) => entry.state === 'running')
+  const open = userOpen ?? running
+  return (
+    <section className="ai-work-group" aria-label="Agent task activity">
+      <button
+        type="button"
+        className={`ai-work-group-summary${running ? ' running' : ''}`}
+        aria-expanded={open}
+        onClick={() => setUserOpen(!open)}
+      >
+        {running && !open && <span className="ai-tool-chip-spinner" aria-hidden="true" />}
+        <span className="ai-work-group-label">
+          {running ? 'Working' : `Worked · ${entries.length} steps`}
+        </span>
+        <span className={`ai-tool-chip-caret${open ? ' open' : ''}`} aria-hidden="true">
+          ›
+        </span>
+      </button>
+      <div className={`ai-work-group-body${open ? ' open' : ''}`}>
+        <div className="ai-work-group-body-inner">
+          {entries.map((entry) => (
+            <div key={entry.id} className="ai-step-row">
+              <span className={`ai-step-icon ${entry.state}`} aria-label={entry.state}>
+                <ActivityStepIcon state={entry.state} />
+              </span>
+              <div className="ai-step-content">
+                {entry.detail ? (
+                  <button
+                    type="button"
+                    className="ai-step-title clickable"
+                    aria-expanded={expanded.has(entry.id)}
+                    onClick={() =>
+                      setExpanded((current) => {
+                        const next = new Set(current)
+                        if (next.has(entry.id)) next.delete(entry.id)
+                        else next.add(entry.id)
+                        return next
+                      })
+                    }
+                  >
+                    {entry.label}
+                  </button>
+                ) : (
+                  <span className="ai-step-title">{entry.label}</span>
+                )}
+                {entry.detail && expanded.has(entry.id) && (
+                  <div className="ai-step-detail">
+                    <pre className="ai-tool-output">{entry.detail}</pre>
+                  </div>
+                )}
+              </div>
             </div>
-          </li>
-        ))}
-      </ol>
+          ))}
+        </div>
+      </div>
     </section>
   )
 }
@@ -118,9 +202,6 @@ export function AiPanel({
   context = {},
   sensitiveContextBlocked = false,
   onRemoveContext,
-  activeTab = 'ai',
-  onTabChange = () => undefined,
-  compilePanel = null,
 }: {
   projectId: string
   disabled?: boolean
@@ -131,9 +212,6 @@ export function AiPanel({
   context?: AgentContext
   sensitiveContextBlocked?: boolean
   onRemoveContext?: (key: AgentContextKey) => void
-  activeTab?: 'ai' | 'compile'
-  onTabChange?: (tab: 'ai' | 'compile') => void
-  compilePanel?: ReactNode
 }) {
   const [input, setInput] = useState('')
   const [text, setText] = useState('')
@@ -387,6 +465,7 @@ export function AiPanel({
     setBusy(true)
     setStatus(null)
     setText('')
+    setTimeline([])
     setInput('')
     setChat((current) => [...current, { role: 'user', text: instruction }])
     const ids = chatIdsRef.current
@@ -456,33 +535,15 @@ export function AiPanel({
   // Keep the component mounted while collapsed so its transcript, draft and active run survive.
   if (!open) {
     return (
-      <aside className="latex-ai-rail" role="tablist" aria-label="Workspace panel">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === 'ai'}
-          className={activeTab === 'ai' ? 'active' : undefined}
-          onClick={() => {
-            onTabChange('ai')
-            onExpand?.()
-          }}
-        >
-          <WisWorkAppMark className="ai-brand-icon" size={22} />
-          <span>WisWork AI</span>
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === 'compile'}
-          className={activeTab === 'compile' ? 'active' : undefined}
-          onClick={() => {
-            onTabChange('compile')
-            onExpand?.()
-          }}
-        >
-          <span>编译</span>
-        </button>
-      </aside>
+      <button
+        type="button"
+        className="latex-ai-rail"
+        title="Expand AI panel"
+        aria-label="Expand AI panel"
+        onClick={onExpand}
+      >
+        <WisWorkAgentMark size={22} />
+      </button>
     )
   }
 
@@ -499,164 +560,134 @@ export function AiPanel({
           onPointerDown={() => setResizing(true)}
         />
         <header className="ai-panel-header">
-          <div className="workspace-tabs" role="tablist" aria-label="Workspace panel">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === 'ai'}
-              className={activeTab === 'ai' ? 'active' : undefined}
-              onClick={() => onTabChange('ai')}
-            >
-              <WisWorkAppMark className="ai-brand-icon" size={25} />
-              <span>WisWork AI</span>
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === 'compile'}
-              className={activeTab === 'compile' ? 'active' : undefined}
-              onClick={() => onTabChange('compile')}
-            >
-              编译
-            </button>
-          </div>
+          <span className="ai-panel-title">
+            <WisWorkAgentMark size={22} />
+            <span>WisWork AI</span>
+          </span>
           {onCollapse && (
             <button className="ai-header-btn" onClick={onCollapse} aria-label="Collapse AI panel">
-              ›
+              <IconSidebarCollapse size={15} />
             </button>
           )}
         </header>
-        {activeTab === 'ai' ? (
-          <>
-            <div className="ai-chat" aria-live="polite" role="tabpanel">
-              {chat.length === 0 && !text && !proposalWorkflow.proposal && (
-                <div className="ai-chat-empty">
-                  <div className="ai-chat-empty-title">Edit LaTeX with WisWork AI</div>
-                  <div className="ai-chat-empty-body">
-                    Ask questions, fix compilation issues, or propose project-wide changes.
-                  </div>
-                  <div className="ai-starter-list">
-                    {[
-                      'Explain this document',
-                      'Fix LaTeX errors',
-                      'Improve the current section',
-                    ].map((starter) => (
-                      <button
-                        key={starter}
-                        className="ai-starter"
-                        onClick={() => setInput(starter)}
-                      >
-                        {starter}
-                      </button>
-                    ))}
-                  </div>
+        <div className="ai-chat" aria-live="polite" role="tabpanel">
+          {chat.length === 0 && !text && !proposalWorkflow.proposal && (
+            <div className="ai-chat-empty">
+              <div className="ai-chat-empty-title">Edit LaTeX with WisWork AI</div>
+              <div className="ai-chat-empty-body">
+                Ask questions, fix compilation issues, or propose project-wide changes.
+              </div>
+              <div className="ai-starter-list">
+                {['Explain this document', 'Fix LaTeX errors', 'Improve the current section'].map(
+                  (starter) => (
+                    <button key={starter} className="ai-starter" onClick={() => setInput(starter)}>
+                      {starter}
+                    </button>
+                  ),
+                )}
+              </div>
+            </div>
+          )}
+          {chat.map((entry, index) => (
+            <div key={`${entry.role}-${index}`} className={`ai-msg ai-msg-${entry.role}`}>
+              {entry.role === 'assistant' ? (
+                <div className="ai-md">
+                  <Markdown text={entry.text} />
                 </div>
+              ) : (
+                entry.text
               )}
-              {chat.map((entry, index) => (
-                <div key={`${entry.role}-${index}`} className={`ai-msg ai-msg-${entry.role}`}>
-                  {entry.role === 'assistant' ? (
-                    <div className="ai-md">
-                      <Markdown text={entry.text} />
-                    </div>
-                  ) : (
-                    entry.text
-                  )}
-                </div>
+            </div>
+          ))}
+          {text && (
+            <div className="ai-msg ai-msg-assistant">
+              <div className="ai-md">
+                <Markdown text={text} />
+              </div>
+            </div>
+          )}
+          {busy && !text && <AiTypingIndicator label="WisWork is working" />}
+          <AgentActivity entries={timeline} />
+          {proposalWorkflow.proposal && proposalWorkflow.verification && (
+            <ProposalReview
+              proposal={proposalWorkflow.proposal}
+              selection={proposalWorkflow.selection}
+              busy={busy || proposalWorkflow.busy || disabled}
+              verification={proposalWorkflow.verification}
+              riskArmed={proposalWorkflow.riskArmed}
+              onSelectionChange={(selection) => workflow.setSelection(selection)}
+              onPrimaryAction={() => void workflow.primaryAction()}
+              onCancel={() => workflow.cancel()}
+            />
+          )}
+          {status && (
+            <div className="ai-status" role="status">
+              {status}
+            </div>
+          )}
+          {proposalWorkflow.status && (
+            <div className="ai-status" role="status">
+              {proposalWorkflow.status}
+            </div>
+          )}
+          {proposalWorkflow.snapshotId && (
+            <button
+              className="ai-undo-button"
+              disabled={busy || disabled}
+              onClick={() => void undo()}
+            >
+              Undo AI changes
+            </button>
+          )}
+        </div>
+        <div className="ai-composer-wrap">
+          {sensitiveContextBlocked && (
+            <div className="ai-status" role="status">
+              Sensitive files remain editable, but cannot be attached as AI context.
+            </div>
+          )}
+          {contextChips(context).length > 0 && (
+            <div className="ai-context-chips" aria-label="Attached context">
+              {contextChips(context).map((chip) => (
+                <span className="ai-context-chip" key={chip.key}>
+                  <span>{chip.label}</span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${chip.key} context`}
+                    onClick={() => onRemoveContext?.(chip.key)}
+                  >
+                    ×
+                  </button>
+                </span>
               ))}
-              {text && (
-                <div className="ai-msg ai-msg-assistant">
-                  <div className="ai-md">
-                    <Markdown text={text} />
-                  </div>
-                </div>
-              )}
-              {busy && !text && <AiTypingIndicator label="WisWork is working" />}
-              <TaskTimeline entries={timeline} />
-              {proposalWorkflow.proposal && proposalWorkflow.verification && (
-                <ProposalReview
-                  proposal={proposalWorkflow.proposal}
-                  selection={proposalWorkflow.selection}
-                  busy={busy || proposalWorkflow.busy || disabled}
-                  verification={proposalWorkflow.verification}
-                  riskArmed={proposalWorkflow.riskArmed}
-                  onSelectionChange={(selection) => workflow.setSelection(selection)}
-                  onPrimaryAction={() => void workflow.primaryAction()}
-                  onCancel={() => workflow.cancel()}
-                />
-              )}
-              {status && (
-                <div className="ai-status" role="status">
-                  {status}
-                </div>
-              )}
-              {proposalWorkflow.status && (
-                <div className="ai-status" role="status">
-                  {proposalWorkflow.status}
-                </div>
-              )}
-              {proposalWorkflow.snapshotId && (
-                <button
-                  className="ai-undo-button"
-                  disabled={busy || disabled}
-                  onClick={() => void undo()}
-                >
-                  Undo AI changes
-                </button>
-              )}
             </div>
-            <div className="ai-composer-wrap">
-              {sensitiveContextBlocked && (
-                <div className="ai-status" role="status">
-                  Sensitive files remain editable, but cannot be attached as AI context.
-                </div>
-              )}
-              {contextChips(context).length > 0 && (
-                <div className="ai-context-chips" aria-label="Attached context">
-                  {contextChips(context).map((chip) => (
-                    <span className="ai-context-chip" key={chip.key}>
-                      <span>{chip.label}</span>
-                      <button
-                        type="button"
-                        aria-label={`Remove ${chip.key} context`}
-                        onClick={() => onRemoveContext?.(chip.key)}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-              <AiComposer
-                value={input}
-                busy={busy}
-                placeholder={
-                  chatLoadState === 'loading'
-                    ? 'Loading project chat…'
-                    : 'Ask WisWork AI about this LaTeX project'
-                }
-                hintIdle={
-                  chatLoadState === 'error'
-                    ? 'Chat history unavailable · messages will not be saved'
-                    : 'Enter to send · Shift+Enter for new line'
-                }
-                hintBusy="Working…"
-                hintIdleTitle="Enter to send"
-                sendLabel="Send"
-                stopLabel="Stop"
-                ariaLabel="Ask WisWork AI"
-                onChange={(value) => {
-                  if (chatLoadState !== 'loading') setInput(value)
-                }}
-                onSend={send}
-                onStop={cancel}
-              />
-            </div>
-          </>
-        ) : (
-          <div className="dock-compile-content" role="tabpanel">
-            {compilePanel}
-          </div>
-        )}
+          )}
+          <AiComposer
+            value={input}
+            busy={busy}
+            placeholder={
+              chatLoadState === 'loading'
+                ? 'Loading project chat…'
+                : 'Ask WisWork AI about this LaTeX project'
+            }
+            hintIdle={
+              chatLoadState === 'error'
+                ? 'Chat history unavailable · messages will not be saved'
+                : 'Enter to send · Shift+Enter for new line'
+            }
+            hintBusy="Working…"
+            hintIdleTitle="Enter to send"
+            sendLabel="Send"
+            stopLabel="Stop"
+            ariaLabel="Ask WisWork AI"
+            iconOnly
+            onChange={(value) => {
+              if (chatLoadState !== 'loading') setInput(value)
+            }}
+            onSend={send}
+            onStop={cancel}
+          />
+        </div>
       </aside>
     </div>
   )
