@@ -51,6 +51,31 @@ function call(name: string, input: Record<string, unknown> = {}) {
   return { id: 'call-1', name, input }
 }
 
+const SIMPLE_WORD_DOCUMENT =
+  '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:body></w:document>'
+
+function installNativeWriteRuntime(transform: (target: string) => string) {
+  let current = SIMPLE_WORD_DOCUMENT
+  let pending: string | undefined
+  const body = {
+    insertOoxml: vi.fn((xml: string) => {
+      pending = xml
+    }),
+    getOoxml: vi.fn(() => ({ value: current })),
+  }
+  const sync = vi.fn(async () => {
+    if (pending) current = transform(pending)
+    pending = undefined
+  })
+  Object.assign(globalThis, {
+    Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+    Word: {
+      run: (callback: (context: unknown) => unknown) => callback({ document: { body }, sync }),
+    },
+  })
+  return { body, current: () => current }
+}
+
 describe('Word compatibility skill', () => {
   it('exposes the exact host inventory without shared or other-host tools', () => {
     const skill = createWordSkill({
@@ -850,7 +875,7 @@ describe('browser Word adapter', () => {
     await expect(subject.verifyDocumentWrite(write)).resolves.toBe(true)
   })
 
-  it('accepts semantically identical Word OOXML normalized after the write sync', async () => {
+  it('reports a change after a fingerprinted successful write as concurrent', async () => {
     let current =
       '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:body></w:document>'
     let pending: string | undefined
@@ -896,7 +921,7 @@ describe('browser Word adapter', () => {
     await subject.executeDocumentWrite(write)
     current = current.replace('<w:tblPr>', '<w:tblPr><w:tblW w:w="0" w:type="auto"/>')
 
-    await expect(subject.verifyDocumentWrite(write)).resolves.toBe(true)
+    await expect(subject.verifyDocumentWrite(write)).rejects.toThrow('office_concurrent_change')
   })
 
   it('accepts multiple transient empty paragraphs Word appends after a final table', async () => {
@@ -1128,7 +1153,85 @@ describe('browser Word adapter', () => {
       structure: { headings: 0, lists: 0, tables: 0 },
     }
 
-    await expect(subject.executeDocumentWrite(write)).rejects.toThrow('office_concurrent_change')
+    await expect(subject.executeDocumentWrite(write)).rejects.toMatchObject({
+      message: 'office_verify_failed',
+      cause: { verificationStage: 'text' },
+    })
+  })
+
+  it('reports body-shape verification failures with a bounded stage', async () => {
+    installNativeWriteRuntime((target) => target.replace('</w:body>', '<w:p/></w:body>'))
+    const write = {
+      mode: 'replace' as const,
+      blocks: [{ type: 'paragraph' as const, spans: [{ text: 'New' }] }],
+      semanticText: 'New',
+      structure: { headings: 0, lists: 0, tables: 0 },
+    }
+
+    await expect(new BrowserWordAdapter().executeDocumentWrite(write)).rejects.toMatchObject({
+      message: 'office_verify_failed',
+      cause: { verificationStage: 'body_shape' },
+    })
+  })
+
+  it('reports append-boundary verification failures with a bounded stage', async () => {
+    installNativeWriteRuntime((target) =>
+      target.replace('<w:r>', '<w:r><w:rPr><w:b/></w:rPr>'),
+    )
+    const write = {
+      mode: 'append' as const,
+      blocks: [{ type: 'paragraph' as const, spans: [{ text: 'New' }] }],
+      semanticText: 'New',
+      structure: { headings: 0, lists: 0, tables: 0 },
+    }
+
+    await expect(new BrowserWordAdapter().executeDocumentWrite(write)).rejects.toMatchObject({
+      message: 'office_verify_failed',
+      cause: { verificationStage: 'boundary' },
+    })
+  })
+
+  it('classifies an exact original native document state as unchanged', async () => {
+    const { body } = installNativeWriteRuntime(() => SIMPLE_WORD_DOCUMENT)
+    const write = {
+      mode: 'replace' as const,
+      blocks: [{ type: 'paragraph' as const, spans: [{ text: 'New' }] }],
+      semanticText: 'New',
+      structure: { headings: 0, lists: 0, tables: 0 },
+    }
+
+    await expect(new BrowserWordAdapter().executeDocumentWrite(write)).rejects.toThrow(
+      'office_write_failed',
+    )
+    expect(body.insertOoxml).toHaveBeenCalledOnce()
+  })
+
+  it('reports a native post-commit readback failure as state uncertain', async () => {
+    let reads = 0
+    const body = {
+      insertOoxml: vi.fn(),
+      getOoxml: vi.fn(() => {
+        if (reads++ > 0) throw new Error('host_read_failed')
+        return { value: SIMPLE_WORD_DOCUMENT }
+      }),
+    }
+    Object.assign(globalThis, {
+      Office: { context: { host: 'Word', requirements: { isSetSupported: () => true } } },
+      Word: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ document: { body }, sync: vi.fn() }),
+      },
+    })
+
+    await expect(
+      new BrowserWordAdapter().executeDocumentWrite({
+        mode: 'replace',
+        blocks: [{ type: 'paragraph', spans: [{ text: 'New' }] }],
+        semanticText: 'New',
+        structure: { headings: 0, lists: 0, tables: 0 },
+      }),
+    ).rejects.toThrow('office_state_uncertain')
+    expect(body.insertOoxml).toHaveBeenCalledOnce()
   })
 
   it('does not risk a whole-body restore when cancellation arrives during the write sync', async () => {
@@ -1279,7 +1382,7 @@ describe('browser Word adapter', () => {
       syncCount += 1
       if (syncCount === 2) {
         current = original.replace('Original', 'User concurrent edit')
-        throw new Error('host_sync_failed')
+        throw Object.assign(new Error('host_sync_failed'), { code: 'GeneralException' })
       }
     })
     Object.assign(globalThis, {
@@ -1296,7 +1399,13 @@ describe('browser Word adapter', () => {
         semanticText: 'Agent edit',
         structure: { headings: 0, lists: 0, tables: 0 },
       }),
-    ).rejects.toThrow('office_concurrent_change')
+    ).rejects.toMatchObject({
+      message: 'office_verify_failed',
+      cause: {
+        verificationStage: 'text',
+        cause: { code: 'GeneralException' },
+      },
+    })
     expect(insertOoxml).toHaveBeenCalledOnce()
     expect(current).toContain('User concurrent edit')
   })
@@ -1581,7 +1690,10 @@ describe('browser Word adapter', () => {
         semanticText: 'Plain',
         structure: { headings: 0, lists: 0, tables: 0 },
       }),
-    ).rejects.toThrow('office_concurrent_change')
+    ).rejects.toMatchObject({
+      message: 'office_verify_failed',
+      cause: { verificationStage: 'content' },
+    })
   })
 
   it('rejects bold inherited by a plain span from Word document defaults', async () => {
@@ -1612,6 +1724,9 @@ describe('browser Word adapter', () => {
         semanticText: 'Plain',
         structure: { headings: 0, lists: 0, tables: 0 },
       }),
-    ).rejects.toThrow('office_concurrent_change')
+    ).rejects.toMatchObject({
+      message: 'office_verify_failed',
+      cause: { verificationStage: 'content' },
+    })
   })
 })

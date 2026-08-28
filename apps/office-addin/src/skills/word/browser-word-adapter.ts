@@ -302,9 +302,7 @@ export class BrowserWordAdapter implements WordAdapter {
   private expectedDocument:
     | {
         fingerprint: string
-        original: string
         originalFingerprint: string
-        write: WordDocumentWrite
       }
     | undefined
   constructor(
@@ -638,20 +636,17 @@ export class BrowserWordAdapter implements WordAdapter {
           readError = error
         }
         if (readError) throw new Error('office_state_uncertain', { cause: readError })
-        const verified =
-          postValue !== undefined &&
-          new TextEncoder().encode(postValue).byteLength <= MAX_WORD_OOXML_BYTES &&
-          verifyNativeDocumentWrite(original, postValue, write)
-        if (!verified) {
-          if (postValue && stableFingerprintOoxml(postValue) === beforeFingerprint)
+        if (postValue === undefined)
+          throw new Error('office_state_uncertain', { cause: writeError })
+        const verification = verifyNativeDocumentWriteDetailed(original, postValue, write)
+        if (!verification.valid) {
+          if (stableFingerprintOoxml(postValue) === beforeFingerprint)
             throw new Error('office_write_failed', { cause: writeError })
-          throw new Error('office_concurrent_change', { cause: writeError })
+          throw nativeDocumentVerificationFailure(verification.stage, writeError)
         }
         this.expectedDocument = {
-          fingerprint: stableFingerprintOoxml(postValue!),
-          original,
+          fingerprint: stableFingerprintOoxml(postValue),
           originalFingerprint: beforeFingerprint,
-          write,
         }
         if (signal?.aborted) throw new Error('office_state_uncertain')
       },
@@ -666,9 +661,7 @@ export class BrowserWordAdapter implements WordAdapter {
     try {
       current = await readUntilConverged({
         read: () => readBodyOoxml(signal),
-        accept: (value) =>
-          stableFingerprintOoxml(value) === expected.fingerprint ||
-          verifyNativeDocumentWrite(expected.original, value, expected.write),
+        accept: (value) => stableFingerprintOoxml(value) === expected.fingerprint,
       })
     } catch (error) {
       throw new Error('office_state_uncertain', { cause: error })
@@ -676,8 +669,6 @@ export class BrowserWordAdapter implements WordAdapter {
     const currentFingerprint = stableFingerprintOoxml(current)
     if (currentFingerprint === expected.fingerprint && !signal?.aborted) return true
     if (currentFingerprint === expected.originalFingerprint) return false
-    if (!signal?.aborted && verifyNativeDocumentWrite(expected.original, current, expected.write))
-      return true
     throw new Error('office_concurrent_change')
   }
 }
@@ -1203,6 +1194,13 @@ function normalizedDocumentText(value: string): string {
 
 type NativeVerificationStage = 'text' | 'body_shape' | 'content' | 'boundary'
 type NativeVerificationResult = { valid: true } | { valid: false; stage: NativeVerificationStage }
+
+function nativeDocumentVerificationFailure(stage: NativeVerificationStage, cause: unknown): Error {
+  const stagedCause = Object.assign(new Error('word_write_verification_failed', { cause }), {
+    verificationStage: stage,
+  })
+  return new Error('office_verify_failed', { cause: stagedCause })
+}
 
 function verifyNativeDocumentWriteDetailed(
   before: string,
