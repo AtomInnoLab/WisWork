@@ -1,4 +1,9 @@
-import type { PresentationOperation, PresentationTarget } from '@wiswork/presentation-ops'
+import type {
+  PresentationElementTarget,
+  PresentationGeneratedTarget,
+  PresentationOperation,
+  PresentationTarget,
+} from '@wiswork/presentation-ops'
 import {
   addElement,
   collectDeckCreationIds,
@@ -176,15 +181,26 @@ function same(valueA: unknown, valueB: unknown): boolean {
 }
 
 function targetId(operation: PresentationOperation): string | undefined {
-  return 'target' in operation ? operation.target.elementId : undefined
+  return 'target' in operation && 'elementId' in operation.target
+    ? operation.target.elementId
+    : undefined
 }
+
+const isGeneratedTarget = (
+  target: PresentationElementTarget,
+): target is PresentationGeneratedTarget => 'createdByClientId' in target
 
 function applyOperation(
   opened: OpenedPptx,
   planned: PlannedPresentationOperation,
 ): { changed: boolean; metaDirty: boolean } {
   const operation = planned.operation
-  const slideId = operation.kind === 'add_text_box' ? operation.slideId : operation.target.slideId
+  const slideId = (() => {
+    if (operation.kind === 'add_text_box') return operation.slideId
+    if (isGeneratedTarget(operation.target))
+      throw new Error('Generated target was not materialized during planning')
+    return operation.target.slideId
+  })()
   const slide = findSlide(opened, slideId)
   if (!slide) throw new Error('Planned slide disappeared')
   if (operation.kind === 'add_text_box') {
@@ -214,6 +230,8 @@ function applyOperation(
       throw new Error('Speaker notes write failed')
     return { changed: true, metaDirty: true }
   }
+  if (isGeneratedTarget(operation.target))
+    throw new Error('Generated target was not materialized during planning')
   const elementId = operation.target.elementId
   if (!elementId) throw new Error('Planned element target disappeared')
   const location = findElementLocation(slide, elementId)
@@ -331,7 +349,10 @@ function applyOperation(
 }
 
 function conflictTarget(operation: PresentationOperation): PresentationTarget {
-  return operation.kind === 'add_text_box' ? { slideId: operation.slideId } : operation.target
+  if (operation.kind === 'add_text_box') return { slideId: operation.slideId }
+  if (isGeneratedTarget(operation.target))
+    throw new Error('Generated target has no authoritative pre-state')
+  return operation.target
 }
 
 export class DesktopPresentationHost implements AtomicPresentationHost<DesktopSnapshot> {
@@ -387,7 +408,9 @@ export class DesktopPresentationHost implements AtomicPresentationHost<DesktopSn
     // Every external precondition is resolved against the same authoritative snapshot.
     const authoritative = openedFromSnapshot(this.session, snapshot)
     for (const [index, operation] of operations.entries()) {
-      if (operation.kind !== 'add_text_box') this.enrollTarget(authoritative, operation.target)
+      if (operation.kind !== 'add_text_box' && !isGeneratedTarget(operation.target))
+        this.enrollTarget(authoritative, operation.target)
+      if (operation.kind !== 'add_text_box' && isGeneratedTarget(operation.target)) continue
       const resolution =
         operation.kind === 'add_text_box'
           ? await resolvePresentationContainer(authoritative.deck, conflictTarget(operation))
@@ -412,14 +435,28 @@ export class DesktopPresentationHost implements AtomicPresentationHost<DesktopSn
 
     const simulated = openedFromSnapshot(this.session, snapshot)
     for (const operation of operations) {
-      if (operation.kind !== 'add_text_box') this.enrollTarget(simulated, operation.target)
+      if (operation.kind !== 'add_text_box' && !isGeneratedTarget(operation.target))
+        this.enrollTarget(simulated, operation.target)
     }
     const initialSimulatedRevision = await fingerprintPresentation(simulated)
-    const planned = operations.map((operation, index) => ({
-      index,
-      operation,
-      ...(operation.kind === 'add_text_box' ? { createdId: allocateId(operation.clientId) } : {}),
-    }))
+    const generated = new Map<string, { slideId: string; elementId: string }>()
+    const planned = operations.map((operation, index) => {
+      if (operation.kind === 'add_text_box') {
+        const createdId = allocateId(operation.clientId)
+        generated.set(operation.clientId, { slideId: operation.slideId, elementId: createdId })
+        return { index, operation, createdId }
+      }
+      if (!isGeneratedTarget(operation.target)) return { index, operation }
+      const target = generated.get(operation.target.createdByClientId)
+      if (!target) throw new Error('Generated target references no earlier insertion')
+      return {
+        index,
+        operation: {
+          ...operation,
+          target: { ...target, expectedType: 'text' as const },
+        } as PresentationOperation,
+      }
+    })
     const revisions: string[] = []
     let changed = false
     let metaDirty = false
@@ -453,7 +490,7 @@ export class DesktopPresentationHost implements AtomicPresentationHost<DesktopSn
     const generation = this.session.mutationGeneration ?? 0
     if (generation !== this.transactionGeneration)
       throw new Error('Presentation transaction lease changed')
-    if (planned.operation.kind !== 'add_text_box')
+    if (planned.operation.kind !== 'add_text_box' && !isGeneratedTarget(planned.operation.target))
       this.enrollTarget(this.session.opened, planned.operation.target)
     applyOperation(this.session.opened, planned)
     const revision = await fingerprintPresentation(this.session.opened)

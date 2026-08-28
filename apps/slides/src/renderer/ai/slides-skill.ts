@@ -277,7 +277,7 @@ const ALL_TOOLS: AgentToolDef[] = [
   {
     name: 'execute_slide_script',
     description:
-      "[Preferred tool for editing a slide's existing elements] Runs your JS edit script against one page; a single script covers: position/size/alignment/distribution/relative nudges/text/style/fill/stroke." +
+      '[Preferred tool for editing a slide] Runs your JS edit script against one page; a single script covers: add/delete/position/size/alignment/distribution/relative nudges/text/style/fill/stroke.' +
       ' At run time the script automatically receives the real geometry and text of every element on the page (els) — **no read_slide needed first**; read-write combined, compute from els inside the script.' +
       ' Geometry changes are applied atomically in one batch (undoable as a whole), the rest in script order, and a layout audit (overlap/out-of-bounds/text overflow) is returned at the end.' +
       ' Far more reliable than individual set_element_* calls — coordinate math happens at execution site, not from memory. If the audit reports problems, call this tool again immediately to fix.\n' +
@@ -291,6 +291,8 @@ const ALL_TOOLS: AgentToolDef[] = [
       '- setStyle(id, {fontSize?,color?,bold?,italic?,underline?,align?,fontFamily?}): change style without changing text, pass only fields to change\n' +
       "- setFill(id, colorOrNone): solid fill '#RRGGBB' or 'none'\n" +
       '- setStroke(id, {color?,widthPt?} | null): stroke; pass null to remove\n' +
+      '- addText(clientId, textOrParagraphs, {x,y,w,h,rotation?}): add a text box and return its transaction-local id; later primitives may use that id\n' +
+      '- delete(id): delete a top-level existing element or a text box added earlier in this script; later use of that id fails closed\n' +
       '- log(...): debug output (echoed back to you); the return value is echoed back to you (put a summary there)\n' +
       '- Supported computation: const/let, arithmetic, if/for/for...of/while, functions/arrows, JSON object/array literals, Math, regex.test, and safe array/string methods. No classes, async, modules, constructors, prototypes, or dynamic code.\n' +
       'Example 1 — three cards equal width, equal spacing:\n' +
@@ -306,7 +308,7 @@ const ALL_TOOLS: AgentToolDef[] = [
         code: {
           type: 'string',
           description:
-            'JS script body (synchronous code; may use els/canvas plus setBox/moveBy/resizeBy/setText/setStyle/setFill/setStroke/log; may return a summary)',
+            'JS script body (synchronous code; may use els/canvas plus addText/delete/setBox/moveBy/resizeBy/setText/setStyle/setFill/setStroke/log; may return a summary)',
         },
         explanation: {
           type: 'string',
@@ -1546,7 +1548,7 @@ async function executeTool(
       const returnedStr = r.returned !== undefined ? `\nScript returned: ${r.returned}` : ''
       if (r.ops.length === 0 && r.edits.length === 0) {
         return {
-          output: `Script finished but called no edit primitives (setBox/moveBy/setText/setStyle/setFill/setStroke); the page was not modified.${returnedStr}${logsStr}`,
+          output: `Script finished but called no edit primitives (addText/delete/setBox/moveBy/setText/setStyle/setFill/setStroke); the page was not modified.${returnedStr}${logsStr}`,
           mutated: false,
           summary: t('aiSumScriptNoop', { n: idx + 1 }),
         }
@@ -1604,18 +1606,64 @@ async function executeTool(
               : {}),
           }))
         }
+        const generatedIds = new Set<string>()
         for (const edit of r.edits) {
-          const target = resolveEditTarget(slide, edit.id)
-          if (!target || 'nested' in target)
+          if (edit.kind === 'add_text') {
+            const paragraphs = canonicalParagraphs(edit.paragraphs)
+            if (!paragraphs)
+              return fail(t('aiFailScript'), `addText("${edit.id}"): unsupported rich formatting`)
+            const text = paragraphs
+              .map((paragraph) => paragraph.runs.map((run) => run.text).join(''))
+              .join('\n')
+            operations.push({
+              kind: 'add_text_box',
+              clientId: edit.id,
+              text,
+              geometry: {
+                x: geometryPxToPoints(edit.geometry.x, slide.scale),
+                y: geometryPxToPoints(edit.geometry.y, slide.scale),
+                width: geometryPxToPoints(edit.geometry.w, slide.scale),
+                height: geometryPxToPoints(edit.geometry.h, slide.scale),
+                rotation: normalizePresentationRotation(edit.geometry.rotation),
+              },
+            })
+            generatedIds.add(edit.id)
+            paragraphState.set(edit.id, edit.paragraphs)
+            operations.push({
+              createdByClientId: edit.id,
+              kind: 'set_text',
+              paragraphs,
+            })
+            continue
+          }
+          if (edit.kind === 'delete') {
+            if (generatedIds.has(edit.id)) {
+              operations.push({ createdByClientId: edit.id, kind: 'delete_element' })
+              continue
+            }
+            const target = resolveEditTarget(slide, edit.id)
+            if (!target || 'nested' in target || target.groupId)
+              return fail(t('aiFailScript'), `Delete target ${edit.id} is no longer editable`)
+            operations.push({ sourceId: edit.id, kind: 'delete_element' })
+            continue
+          }
+          const generated = generatedIds.has(edit.id)
+          const target = generated ? undefined : resolveEditTarget(slide, edit.id)
+          const existingTarget = target && !('nested' in target) ? target : undefined
+          if (!generated && !existingTarget)
             return fail(t('aiFailScript'), `Target ${edit.id} is no longer editable`)
+          const targetReference = generated ? { createdByClientId: edit.id } : { sourceId: edit.id }
           if (edit.kind === 'fill') {
-            if (!(target.node.type === 'text' || target.node.type === 'shape'))
+            if (
+              !generated &&
+              !(existingTarget!.node.type === 'text' || existingTarget!.node.type === 'shape')
+            )
               return fail(
                 t('aiFailScript'),
                 `setFill("${edit.id}"): element does not support a durable fill`,
               )
             operations.push({
-              sourceId: edit.id,
+              ...targetReference,
               kind: 'set_fill',
               fill:
                 edit.fill === 'none'
@@ -1623,17 +1671,20 @@ async function executeTool(
                   : { kind: 'solid', color: edit.fill.toUpperCase() },
             })
           } else if (edit.kind === 'stroke') {
-            if (!(
-              target.node.type === 'text' ||
-              target.node.type === 'shape' ||
-              target.node.type === 'picture'
-            ))
+            if (
+              !generated &&
+              !(
+                existingTarget!.node.type === 'text' ||
+                existingTarget!.node.type === 'shape' ||
+                existingTarget!.node.type === 'picture'
+              )
+            )
               return fail(
                 t('aiFailScript'),
                 `setStroke("${edit.id}"): element does not support a durable stroke`,
               )
             operations.push({
-              sourceId: edit.id,
+              ...targetReference,
               kind: 'set_stroke',
               stroke: edit.stroke && {
                 color: edit.stroke.color.toUpperCase(),
@@ -1641,7 +1692,10 @@ async function executeTool(
               },
             })
           } else if (edit.kind === 'text') {
-            if (!(target.node.type === 'text' || target.node.type === 'shape'))
+            if (
+              !generated &&
+              !(existingTarget!.node.type === 'text' || existingTarget!.node.type === 'shape')
+            )
               return fail(
                 t('aiFailScript'),
                 `setText("${edit.id}"): element does not support text editing`,
@@ -1660,15 +1714,19 @@ async function executeTool(
                 `setText("${edit.id}"): rich paragraph formatting is not supported by atomic scripts`,
               )
             operations.push({
-              sourceId: edit.id,
+              ...targetReference,
               kind: 'set_text',
               paragraphs,
             })
-          } else {
-            if (!(target.node.type === 'text' || target.node.type === 'shape'))
+          } else if (edit.kind === 'style') {
+            if (
+              !generated &&
+              !(existingTarget!.node.type === 'text' || existingTarget!.node.type === 'shape')
+            )
               return fail(t('aiFailScript'), `setStyle("${edit.id}"): text element not found`)
             const current =
-              paragraphState.get(edit.id) ?? nodeToParagraphs(target.node as ShapeRenderNode)
+              paragraphState.get(edit.id) ??
+              nodeToParagraphs(existingTarget!.node as ShapeRenderNode)
             if (!current.length)
               return fail(
                 t('aiFailScript'),
@@ -1683,10 +1741,12 @@ async function executeTool(
                 `setStyle("${edit.id}"): existing rich paragraph formatting cannot be preserved atomically`,
               )
             operations.push({
-              sourceId: edit.id,
+              ...targetReference,
               kind: 'set_text',
               paragraphs: canonical,
             })
+          } else {
+            return fail(t('aiFailScript'), 'Unsupported script operation')
           }
         }
         const execution = await access.executePresentationOperation(
@@ -1853,7 +1913,7 @@ async function executeTool(
               failures.push(`setFill("${e.id}"): element does not support fill`)
               continue
             }
-          } else {
+          } else if (e.kind === 'stroke') {
             updated = await window.slidesApi.editStroke({
               slideIndex: idx,
               sourceId: e.id,
@@ -1865,7 +1925,7 @@ async function executeTool(
               failures.push(`setStroke("${e.id}"): element does not support stroke`)
               continue
             }
-          }
+          } else continue
           current = updated
           access.applySlide(idx, updated)
           counts[e.kind] += 1
@@ -2286,19 +2346,83 @@ async function executeTool(
       }
     }
 
-    case 'add_text_box':
+    case 'add_text_box': {
+      const idx = Number(call.input.slideIndex)
+      if (!slides[idx])
+        return fail(t('aiFailNewElement'), `slideIndex out of range (0-${slides.length - 1})`)
+      const paragraphs = toEditParagraphs(call.input.paragraphs)
+      if (!paragraphs) return fail(t('aiFailNewTextbox'), 'paragraphs must be a non-empty array')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailNewTextbox'), 'Canonical presentation transactions are unavailable')
+      const clientId = 'created-text-box'
+      const canonical = paragraphs.map((paragraph) => ({
+        runs: paragraph.runs.map((run) => ({
+          ...run,
+          ...(run.color ? { color: run.color.toUpperCase() } : {}),
+        })),
+        ...(paragraph.align === 'left' ||
+        paragraph.align === 'center' ||
+        paragraph.align === 'right'
+          ? { align: paragraph.align }
+          : {}),
+      }))
+      const text = canonical.map((p) => p.runs.map((run) => run.text).join('')).join('\n')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await geometryToolTransactionId(call),
+          slideIndex: idx,
+          operations: [
+            {
+              kind: 'add_text_box',
+              clientId,
+              text,
+              geometry: {
+                x: geometryPxToPoints(
+                  Number(call.input.x),
+                  slides[idx]!.scale || access.fitWidthPx / slides[idx]!.widthPx,
+                ),
+                y: geometryPxToPoints(
+                  Number(call.input.y),
+                  slides[idx]!.scale || access.fitWidthPx / slides[idx]!.widthPx,
+                ),
+                width: geometryPxToPoints(
+                  Number(call.input.w),
+                  slides[idx]!.scale || access.fitWidthPx / slides[idx]!.widthPx,
+                ),
+                height: geometryPxToPoints(
+                  Number(call.input.h),
+                  slides[idx]!.scale || access.fitWidthPx / slides[idx]!.widthPx,
+                ),
+              },
+            },
+            { kind: 'set_text', createdByClientId: clientId, paragraphs: canonical },
+          ],
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (!outcome.ok)
+        return fail(t('aiFailNewTextbox'), outcome.detail ?? 'Insertion was not applied')
+      const createdId =
+        execution.receipt.status === 'applied' ? execution.receipt.createdIds?.[0] : undefined
+      return {
+        output: outcome.mutated
+          ? `Created a new text box on page ${idx + 1}${createdId ? `, durable element id=${createdId}` : ''}.`
+          : `The requested text box already exists from this tool invocation.`,
+        mutated: outcome.mutated,
+        ...(execution.authoritativeState === 'reload_required' ? { stopToolBatch: true } : {}),
+        summary: t('aiSumNewTextbox', { n: idx + 1 }),
+      }
+    }
+
     case 'add_shape': {
       const idx = Number(call.input.slideIndex)
       if (!slides[idx])
         return fail(t('aiFailNewElement'), `slideIndex out of range (0-${slides.length - 1})`)
-      const isShape = call.name === 'add_shape'
       const paragraphs = toEditParagraphs(call.input.paragraphs)
-      if (!isShape && !paragraphs)
-        return fail(t('aiFailNewTextbox'), 'paragraphs must be a non-empty array')
-      const kind = isShape ? String(call.input.kind) : 'textbox'
-      if (isShape && !/^[a-zA-Z][a-zA-Z0-9]*$/.test(kind)) {
+      const kind = String(call.input.kind)
+      if (!/^[a-zA-Z][a-zA-Z0-9]*$/.test(kind))
         return fail(t('aiFailNewShape'), `Invalid shape name: ${kind}`)
-      }
       const r = await window.slidesApi.addElement({
         slideIndex: idx,
         kind,
@@ -2308,17 +2432,15 @@ async function executeTool(
         hPx: Number(call.input.h),
         fitWidthPx: access.fitWidthPx,
         ...(paragraphs ? { paragraphs } : {}),
-        ...(isShape && call.input.fillColor ? { fillColor: String(call.input.fillColor) } : {}),
+        ...(call.input.fillColor ? { fillColor: String(call.input.fillColor) } : {}),
       })
       signal?.throwIfAborted()
       if (!r) return fail(t('aiFailNewElement'), 'Insertion failed')
       access.applySlide(idx, r.slide)
       return {
-        output: `Created a new ${isShape ? 'shape' : 'text box'} on page ${idx + 1}, element id=${r.sourceId}.`,
+        output: `Created a new shape on page ${idx + 1}, element id=${r.sourceId}.`,
         mutated: true,
-        summary: isShape
-          ? t('aiSumNewShape', { n: idx + 1 })
-          : t('aiSumNewTextbox', { n: idx + 1 }),
+        summary: t('aiSumNewShape', { n: idx + 1 }),
       }
     }
 
@@ -2730,17 +2852,27 @@ async function executeTool(
           `Element ${sourceId} is inside a group${gid ? ` (${gid})` : ''}; call ungroup_element on the group first and then delete it, or delete the whole group`,
         )
       }
-      const updated = await window.slidesApi.deleteElement({ slideIndex: idx, sourceId })
-      signal?.throwIfAborted()
-      if (!updated)
-        return fail(
-          t('aiFailDeleteElement'),
-          `Element ${sourceId} not found on page ${idx + 1} (ids change after regenerate/ungroup/save; call read_slide for fresh ids)`,
-        )
-      access.applySlide(idx, updated)
+      if (!target)
+        return fail(t('aiFailDeleteElement'), `Element ${sourceId} not found on page ${idx + 1}`)
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailDeleteElement'), 'Canonical presentation transactions are unavailable')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await geometryToolTransactionId(call),
+          slideIndex: idx,
+          operations: [{ sourceId, kind: 'delete_element' }],
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (!outcome.ok)
+        return fail(t('aiFailDeleteElement'), outcome.detail ?? 'Deletion was not applied')
       return {
-        output: `Deleted element ${sourceId} from page ${idx + 1}.`,
-        mutated: true,
+        output: outcome.mutated
+          ? `Deleted element ${sourceId} from page ${idx + 1}.`
+          : `Element ${sourceId} was already deleted by this tool invocation.`,
+        mutated: outcome.mutated,
+        ...(execution.authoritativeState === 'reload_required' ? { stopToolBatch: true } : {}),
         summary: t('aiSumDeleteElement', { n: idx + 1 }),
       }
     }

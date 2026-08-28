@@ -596,6 +596,61 @@ describe('renderer geometry transaction contract', () => {
     expectedFingerprint: fp(id === 'a' ? 'a' : 'b'),
   })
 
+  it('prepares the slide container once and preserves typed generated references', async () => {
+    const container = { slideId: 'ppt/slides/slide1.xml', expectedFingerprint: fp('c') }
+    const api = {
+      preparePresentationTarget: vi.fn(async (request: { sourceId?: string }) => {
+        expect(request.sourceId).toBeUndefined()
+        return { status: 'prepared' as const, expectedDeckRevision: fp('0'), target: container }
+      }),
+      executePresentationTransaction: vi.fn(async (transaction) => ({
+        status: 'applied' as const,
+        transactionId: transaction.transactionId,
+        resultingDeckRevision: fp('1'),
+        operationCount: transaction.operations.length,
+        createdIds: ['{11111111-2222-3333-4444-555555555555}'],
+      })),
+      cancelPresentationTransaction: vi.fn(async () => true),
+    }
+    const result = await executePreparedGeometryFamilyTransaction(api, {
+      transactionId: 'add-generated-delete',
+      slideIndex: 0,
+      operations: [
+        {
+          kind: 'add_text_box',
+          clientId: 'created',
+          text: 'draft',
+          geometry: { x: 1, y: 2, width: 3, height: 4 },
+        },
+        {
+          kind: 'set_text',
+          createdByClientId: 'created',
+          paragraphs: [{ runs: [{ text: 'final' }] }],
+        },
+        { kind: 'delete_element', createdByClientId: 'created' },
+      ],
+    })
+    expect(result.receipt).toMatchObject({ status: 'applied', createdIds: [expect.any(String)] })
+    expect(api.preparePresentationTarget).toHaveBeenCalledTimes(1)
+    expect(api.executePresentationTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedDeckRevision: fp('0'),
+        operations: [
+          expect.objectContaining({
+            kind: 'add_text_box',
+            clientId: 'created',
+            slideId: container.slideId,
+          }),
+          expect.objectContaining({ kind: 'set_text', target: { createdByClientId: 'created' } }),
+          expect.objectContaining({
+            kind: 'delete_element',
+            target: { createdByClientId: 'created' },
+          }),
+        ],
+      }),
+    )
+  })
+
   it('prepares every durable target and emits one ordered atomic transaction', async () => {
     const api = {
       preparePresentationTarget: vi.fn(async ({ sourceId }: { sourceId?: string }) => ({

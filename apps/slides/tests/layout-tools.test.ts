@@ -337,7 +337,9 @@ describe('execute_layout_script tool', () => {
     executePresentationOperation: async (request) => {
       if (!('operations' in request)) throw new Error('expected geometry transaction')
       const nodes = slide.nodes.map((node) => {
-        const operation = request.operations.find((item) => item.sourceId === node.sourceId)
+        const operation = request.operations.find(
+          (item) => 'sourceId' in item && item.sourceId === node.sourceId,
+        )
         if (!operation || !('geometry' in operation)) return node
         const geometry = operation.geometry
         return {

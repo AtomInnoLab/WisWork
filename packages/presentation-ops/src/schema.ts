@@ -1,5 +1,6 @@
 import type {
   PresentationElementType,
+  PresentationElementTarget,
   PresentationFill,
   PresentationGeometry,
   PresentationOperation,
@@ -155,6 +156,15 @@ const parseTarget = (value: unknown, requireElement: boolean): PresentationTarge
   }
 }
 
+const parseElementTarget = (value: unknown): PresentationElementTarget => {
+  const record = object(value, 'target')
+  if (Object.hasOwn(record, 'createdByClientId')) {
+    exactKeys(record, ['createdByClientId'], 'generated target')
+    return { createdByClientId: identifier(record.createdByClientId, 'target.createdByClientId') }
+  }
+  return parseTarget(value, true)
+}
+
 export const parsePresentationTarget = (value: unknown): PresentationTarget => {
   const record = object(value, 'target')
   return parseTarget(value, Object.hasOwn(record, 'elementId'))
@@ -297,13 +307,13 @@ export const parsePresentationOperation = (value: unknown): PresentationOperatio
         ? {
             kind,
             clientId,
-            target: parseTarget(record.target, true),
+            target: parseElementTarget(record.target),
             text: requiredString(record.text, 'text'),
           }
         : {
             kind,
             clientId,
-            target: parseTarget(record.target, true),
+            target: parseElementTarget(record.target),
             paragraphs: parseTextParagraphs(record.paragraphs),
           }
     case 'set_geometry':
@@ -311,7 +321,7 @@ export const parsePresentationOperation = (value: unknown): PresentationOperatio
       return {
         kind,
         clientId,
-        target: parseTarget(record.target, true),
+        target: parseElementTarget(record.target),
         geometry: parseGeometry(record.geometry),
       }
     case 'set_fill':
@@ -319,7 +329,7 @@ export const parsePresentationOperation = (value: unknown): PresentationOperatio
       return {
         kind,
         clientId,
-        target: parseTarget(record.target, true),
+        target: parseElementTarget(record.target),
         fill: parseFill(record.fill),
       }
     case 'set_stroke':
@@ -327,7 +337,7 @@ export const parsePresentationOperation = (value: unknown): PresentationOperatio
       return {
         kind,
         clientId,
-        target: parseTarget(record.target, true),
+        target: parseElementTarget(record.target),
         stroke: record.stroke === null ? null : parseStroke(record.stroke),
       }
     case 'add_text_box':
@@ -341,7 +351,7 @@ export const parsePresentationOperation = (value: unknown): PresentationOperatio
       }
     case 'delete_element':
       exactKeys(record, ['kind', 'clientId', 'target'], 'delete_element')
-      return { kind, clientId, target: parseTarget(record.target, true) }
+      return { kind, clientId, target: parseElementTarget(record.target) }
     case 'set_speaker_notes':
       exactKeys(record, ['kind', 'clientId', 'target', 'notes'], 'set_speaker_notes')
       return {
@@ -368,6 +378,14 @@ export const parsePresentationTransaction = (value: unknown): PresentationTransa
   const clientIds = new Set<string>()
   for (const operation of operations) {
     if (clientIds.has(operation.clientId)) fail('operation.clientId must be unique')
+    if ('target' in operation && 'createdByClientId' in operation.target) {
+      const createdByClientId = operation.target.createdByClientId
+      if (!clientIds.has(createdByClientId))
+        fail('generated target must reference an earlier add_text_box')
+      const creator = operations.find((candidate) => candidate.clientId === createdByClientId)
+      if (creator?.kind !== 'add_text_box')
+        fail('generated target must reference an earlier add_text_box')
+    }
     clientIds.add(operation.clientId)
   }
   return {

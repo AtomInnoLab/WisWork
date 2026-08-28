@@ -475,6 +475,53 @@ describe('execute_slide_script tool', () => {
     expect(applied).toBeNull()
   })
 
+  it('compiles addText follow-up edits and delete through a typed generated target', async () => {
+    const deckAccess = access()
+    const executePresentationOperation = vi.mocked(deckAccess.executePresentationOperation!)
+    const skill = createSlidesSkill(deckAccess)
+    const result = await skill.executeTool({
+      id: 'add-delete',
+      invocationId: 'invocation-add-delete',
+      name: 'execute_slide_script',
+      input: {
+        slideIndex: 0,
+        code: `
+          const id = addText('new-title', 'Draft', {x: 20, y: 30, w: 300, h: 80});
+          setText(id, 'Final');
+          setStyle(id, {bold: true, color: '#112233'});
+          setBox(id, {x: 40});
+          delete(id);
+        `,
+      },
+    } as any)
+    expect(result.isError, result.output).toBeFalsy()
+    const request = executePresentationOperation.mock.calls[0]![0] as any
+    expect(request.operations).toEqual([
+      expect.objectContaining({
+        kind: 'add_text_box',
+        clientId: 'new-title',
+        text: 'Draft',
+        geometry: expect.objectContaining({ x: 30 }),
+      }),
+      expect.objectContaining({ kind: 'set_text', createdByClientId: 'new-title' }),
+      expect.objectContaining({ kind: 'set_text', createdByClientId: 'new-title' }),
+      expect.objectContaining({ kind: 'set_text', createdByClientId: 'new-title' }),
+      { kind: 'delete_element', createdByClientId: 'new-title' },
+    ])
+  })
+
+  it('fails closed when an existing element is used after delete in the same script', async () => {
+    const deckAccess = access()
+    const result = await createSlidesSkill(deckAccess).executeTool({
+      id: 'delete-then-edit',
+      invocationId: 'invocation-delete-then-edit',
+      name: 'execute_slide_script',
+      input: { slideIndex: 0, code: `delete('t1'); setText('t1', 'must not apply');` },
+    } as any)
+    expect(result.isError).toBe(true)
+    expect(deckAccess.executePresentationOperation).not.toHaveBeenCalled()
+  })
+
   it('routes a pure multi-element geometry script through one canonical transaction', async () => {
     const deckAccess = access()
     const executePresentationOperation = vi.mocked(deckAccess.executePresentationOperation!)

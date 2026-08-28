@@ -80,6 +80,42 @@ describe('presentation transaction parser', () => {
     expect(parsePresentationTarget(target)).toEqual(target)
   })
 
+  it('accepts only a strictly typed reference to an earlier generated element', () => {
+    const value = transaction([
+      {
+        kind: 'add_text_box',
+        clientId: 'create-1',
+        slideId: 'slide-1',
+        text: 'New',
+        geometry: { x: 10, y: 20, width: 100, height: 40 },
+      },
+      {
+        kind: 'set_text',
+        clientId: 'edit-1',
+        target: { createdByClientId: 'create-1' },
+        text: 'Updated',
+      },
+      {
+        kind: 'delete_element',
+        clientId: 'delete-1',
+        target: { createdByClientId: 'create-1' },
+      },
+    ])
+    expect(parsePresentationTransaction(value)).toEqual(value)
+    expect(() =>
+      parsePresentationTransaction({
+        ...value,
+        operations: [value.operations[1], value.operations[0]],
+      }),
+    ).toThrow(/earlier add_text_box/i)
+    expect(() =>
+      parsePresentationOperation({
+        ...(value.operations[1] as Record<string, unknown>),
+        target: { createdByClientId: 'create-1', elementId: 'string-hack' },
+      }),
+    ).toThrow()
+  })
+
   it('preserves bounded rich paragraphs for text replacement', () => {
     const rich = {
       kind: 'set_text',

@@ -17,6 +17,16 @@ function makeAccess(slides: RenderSlide[] = []): DeckAccess {
     getSelectedIds: () => [],
     applySlide: () => {},
     applyDeck: () => {},
+    executePresentationOperation: async (request) => ({
+      receipt: {
+        status: 'applied',
+        transactionId: request.transactionId,
+        resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+        operationCount: 'operations' in request ? request.operations.length : 1,
+        createdIds: ['{11111111-2222-3333-4444-555555555555}'],
+      },
+      authoritativeState: 'fresh',
+    }),
     fitWidthPx: 1280,
   }
 }

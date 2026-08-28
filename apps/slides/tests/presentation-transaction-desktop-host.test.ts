@@ -497,6 +497,42 @@ describe('DesktopPresentationHost', () => {
     expect(session.opened.deck.slides[0]!.elements.at(-1)?.creationId).toBe(receipt.createdIds?.[0])
   })
 
+  it('resolves generated targets sequentially and treats add then delete as one net no-op', async () => {
+    const { session, slide } = await fixture()
+    const before = await fingerprintPresentation(session.opened)
+    const receipt = await new PresentationTransactionExecutor(
+      new DesktopPresentationHost(session),
+      { verifyDelayMs: 0 },
+    ).execute({
+      transactionId: 'desktop-add-edit-delete',
+      expectedDeckRevision: before,
+      mode: 'atomic',
+      operations: [
+        {
+          kind: 'add_text_box',
+          clientId: 'created',
+          slideId: slide.durableId,
+          text: 'new',
+          geometry: { x: 1, y: 2, width: 3, height: 4 },
+        },
+        {
+          kind: 'set_text',
+          clientId: 'edited',
+          target: { createdByClientId: 'created' },
+          text: 'edited',
+        },
+        {
+          kind: 'delete_element',
+          clientId: 'deleted',
+          target: { createdByClientId: 'created' },
+        },
+      ],
+    })
+    expect(receipt).toMatchObject({ status: 'unchanged', code: 'operation_noop' })
+    expect(await fingerprintPresentation(session.opened)).toBe(before)
+    expect(session.undoStack).toHaveLength(0)
+  })
+
   it('enrolls a generated durable id inside the same atomic text transaction and survives reopen', async () => {
     const { session, slide, element } = await fixture()
     delete element.creationId

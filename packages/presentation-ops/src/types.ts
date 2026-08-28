@@ -7,6 +7,13 @@ export interface PresentationTarget {
   expectedFingerprint?: string
 }
 
+/** A target created by an earlier insertion in the same atomic transaction. */
+export interface PresentationGeneratedTarget {
+  createdByClientId: string
+}
+
+export type PresentationElementTarget = PresentationTarget | PresentationGeneratedTarget
+
 export interface PresentationGeometry {
   /** Geometry uses PowerPoint points; rotation uses degrees. */
   x: number
@@ -49,16 +56,23 @@ export type PresentationTextReplacement =
   | { paragraphs: readonly PresentationTextParagraph[]; text?: never }
 
 export type PresentationOperation =
-  | (OperationBase & { kind: 'set_text'; target: PresentationTarget } & PresentationTextReplacement)
+  | (OperationBase & {
+      kind: 'set_text'
+      target: PresentationElementTarget
+    } & PresentationTextReplacement)
   | (OperationBase & {
       kind: 'set_geometry'
-      target: PresentationTarget
+      target: PresentationElementTarget
       geometry: PresentationGeometry
     })
-  | (OperationBase & { kind: 'set_fill'; target: PresentationTarget; fill: PresentationFill })
+  | (OperationBase & {
+      kind: 'set_fill'
+      target: PresentationElementTarget
+      fill: PresentationFill
+    })
   | (OperationBase & {
       kind: 'set_stroke'
-      target: PresentationTarget
+      target: PresentationElementTarget
       stroke: PresentationStroke | null
     })
   | (OperationBase & {
@@ -67,7 +81,7 @@ export type PresentationOperation =
       text: string
       geometry: PresentationGeometry
     })
-  | (OperationBase & { kind: 'delete_element'; target: PresentationTarget })
+  | (OperationBase & { kind: 'delete_element'; target: PresentationElementTarget })
   | (OperationBase & {
       kind: 'set_speaker_notes'
       target: PresentationTarget

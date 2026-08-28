@@ -3,6 +3,7 @@ import {
   parsePresentationOperation,
   PRESENTATION_OPS_LIMITS,
   type PresentationGeometry,
+  type PresentationElementTarget,
   type PresentationFill,
   type PresentationStroke,
   type PresentationTarget,
@@ -20,10 +21,23 @@ export interface GeometryFamilyTransactionRequest {
 }
 
 export type CanonicalElementOperation =
-  | { sourceId: string; geometry: PresentationGeometry }
-  | { sourceId: string; kind: 'set_fill'; fill: PresentationFill }
-  | { sourceId: string; kind: 'set_stroke'; stroke: PresentationStroke | null }
-  | { sourceId: string; kind: 'set_text'; paragraphs: readonly PresentationTextParagraph[] }
+  | ({ kind?: 'set_geometry'; geometry: PresentationGeometry } & CanonicalTargetReference)
+  | ({ kind: 'set_fill'; fill: PresentationFill } & CanonicalTargetReference)
+  | ({ kind: 'set_stroke'; stroke: PresentationStroke | null } & CanonicalTargetReference)
+  | ({
+      kind: 'set_text'
+      paragraphs: readonly PresentationTextParagraph[]
+    } & CanonicalTargetReference)
+  | {
+      kind: 'add_text_box'
+      clientId: string
+      text: string
+      geometry: PresentationGeometry
+    }
+  | ({ kind: 'delete_element' } & CanonicalTargetReference)
+
+type CanonicalTargetReference =
+  { sourceId: string; createdByClientId?: never } | { createdByClientId: string; sourceId?: never }
 
 export async function geometryToolTransactionId(call: {
   name: string
@@ -59,20 +73,44 @@ export async function executePreparedGeometryFamilyTransaction(
   const compileOperation = (
     item: CanonicalElementOperation,
     index: number,
-    target: PresentationTarget,
+    target: PresentationElementTarget,
   ): PresentationOperation => {
+    if (item.kind === 'add_text_box')
+      return {
+        kind: 'add_text_box',
+        clientId: item.clientId,
+        slideId:
+          'slideId' in target
+            ? target.slideId
+            : (() => {
+                throw new TypeError('Insertion requires a slide target')
+              })(),
+        text: item.text,
+        geometry: item.geometry,
+      }
+    const clientPrefix =
+      item.kind === 'set_fill'
+        ? 'fill'
+        : item.kind === 'set_stroke'
+          ? 'stroke'
+          : item.kind === 'set_text'
+            ? 'text'
+            : item.kind === 'delete_element'
+              ? 'delete'
+              : 'geometry'
+    const clientId = `${clientPrefix}-${index + 1}`
     if ('geometry' in item)
       return {
         kind: 'set_geometry',
-        clientId: `geometry-${index + 1}`,
+        clientId,
         target,
         geometry: item.geometry,
       }
-    if (item.kind === 'set_fill')
-      return { kind: 'set_fill', clientId: `fill-${index + 1}`, target, fill: item.fill }
+    if (item.kind === 'set_fill') return { kind: 'set_fill', clientId, target, fill: item.fill }
     if (item.kind === 'set_stroke')
-      return { kind: 'set_stroke', clientId: `stroke-${index + 1}`, target, stroke: item.stroke }
-    return { kind: 'set_text', clientId: `text-${index + 1}`, target, paragraphs: item.paragraphs }
+      return { kind: 'set_stroke', clientId, target, stroke: item.stroke }
+    if (item.kind === 'delete_element') return { kind: 'delete_element', clientId, target }
+    return { kind: 'set_text', clientId, target, paragraphs: item.paragraphs }
   }
   const geometryIsBounded = (item: GeometryFamilyTransactionRequest['operations'][number]) => {
     if (!('geometry' in item)) return true
@@ -105,11 +143,21 @@ export async function executePreparedGeometryFamilyTransaction(
   try {
     request.operations.forEach((item, index) => {
       parsePresentationOperation(
-        compileOperation(item, index, {
-          slideId: 'slide-preflight',
-          elementId: 'element-preflight',
-          expectedFingerprint: `sha256:${'0'.repeat(64)}`,
-        }),
+        compileOperation(
+          item,
+          index,
+          item.kind === 'add_text_box'
+            ? {
+                slideId: 'slide-preflight',
+              }
+            : 'createdByClientId' in item && typeof item.createdByClientId === 'string'
+              ? { createdByClientId: item.createdByClientId }
+              : {
+                  slideId: 'slide-preflight',
+                  elementId: 'element-preflight',
+                  expectedFingerprint: `sha256:${'0'.repeat(64)}`,
+                },
+        ),
       )
     })
   } catch {
@@ -137,13 +185,16 @@ export async function executePreparedGeometryFamilyTransaction(
   let expectedDeckRevision: string | undefined
   for (const item of request.operations) {
     await throwIfAbortedAfterPrepare()
-    if (prepared.has(item.sourceId)) continue
+    if ('createdByClientId' in item && typeof item.createdByClientId === 'string') continue
+    const sourceId = item.kind === 'add_text_box' ? undefined : item.sourceId
+    const preparationKey = sourceId ?? '__slide_container__'
+    if (prepared.has(preparationKey)) continue
     let result: Awaited<ReturnType<SlidesApi['preparePresentationTarget']>>
     try {
       result = await api.preparePresentationTarget({
         transactionId: request.transactionId,
         slideIndex: request.slideIndex,
-        sourceId: item.sourceId,
+        ...(sourceId === undefined ? {} : { sourceId }),
       })
     } catch {
       if (signal?.aborted) {
@@ -186,12 +237,15 @@ export async function executePreparedGeometryFamilyTransaction(
       }
     }
     expectedDeckRevision = result.expectedDeckRevision
-    prepared.set(item.sourceId, result)
+    prepared.set(preparationKey, result)
   }
 
-  const operations: PresentationOperation[] = request.operations.map((item, index) =>
-    compileOperation(item, index, prepared.get(item.sourceId)!.target),
-  )
+  const operations: PresentationOperation[] = request.operations.map((item, index) => {
+    if ('createdByClientId' in item && typeof item.createdByClientId === 'string')
+      return compileOperation(item, index, { createdByClientId: item.createdByClientId })
+    const key = item.kind === 'add_text_box' ? '__slide_container__' : item.sourceId!
+    return compileOperation(item, index, prepared.get(key)!.target)
+  })
   const cancel = () => {
     try {
       void api.cancelPresentationTransaction(request.transactionId).catch(() => false)
