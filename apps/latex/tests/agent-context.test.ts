@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { Text } from '@codemirror/state'
 import {
   MAX_DIAGNOSTIC_MESSAGE_CHARS,
+  MAX_COMPILE_DIAGNOSTICS,
+  MAX_COMPILE_LOG_CHARS,
   MAX_SELECTION_CHARS,
+  buildCompileAgentContext,
   captureEditorContext,
   editorContextForActivePath,
   serializeAgentPrompt,
@@ -51,6 +54,28 @@ describe('LaTeX agent context', () => {
       prompt.match(/<untrusted_latex_context>\n([\s\S]*?)\n<\/untrusted_latex_context>/)?.[1] ?? '',
     ) as AgentContext
     expect(serializedMessage.diagnostic?.message).toHaveLength(MAX_DIAGNOSTIC_MESSAGE_CHARS)
+  })
+
+  it('provides bounded compile diagnostics and logs as removable agent context', () => {
+    const compile = buildCompileAgentContext(
+      Array.from({ length: MAX_COMPILE_DIAGNOSTICS + 3 }, (_, index) => ({
+        path: index === 0 ? 'secret.tex' : `chapter-${index}.tex`,
+        lineIndex: index,
+        columnIndex: 0,
+        severity: 'error' as const,
+        message: `problem ${index}`,
+      })),
+      `compiler start\n${'x'.repeat(MAX_COMPILE_LOG_CHARS + 20)}`,
+    )
+    expect(compile?.diagnostics).toHaveLength(MAX_COMPILE_DIAGNOSTICS)
+    expect(compile?.diagnostics.some((item) => item.path === 'secret.tex')).toBe(false)
+    expect(compile?.logExcerpt.length).toBeLessThanOrEqual(MAX_COMPILE_LOG_CHARS)
+    expect(compile?.truncated).toBe(true)
+
+    const prompt = serializeAgentPrompt('Fix the build.', { compile: compile! })
+    expect(prompt).toContain('chapter-1.tex')
+    expect(prompt).toContain('[earlier compiler log omitted]')
+    expect(prompt).not.toContain('secret.tex')
   })
 
   it('reads only the bounded prefix from CodeMirror and never leaves an orphan surrogate', () => {

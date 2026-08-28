@@ -227,11 +227,6 @@ button:disabled {
   stroke-linejoin: round;
 }
 
-.latex-toolbar-quick-glyph {
-  font-size: 19px;
-  line-height: 1;
-}
-
 .latex-toolbar-quick-separator {
   width: 1px;
   height: 16px;
@@ -349,6 +344,11 @@ button:disabled {
   white-space: nowrap;
 }
 
+.latex-toolbar-group > .latex-toolbar-button {
+  height: 64px;
+  align-self: stretch;
+}
+
 .latex-toolbar-button:hover:not(:disabled) {
   background: var(--hover);
 }
@@ -382,6 +382,17 @@ button:disabled {
 
 .latex-toolbar-button.busy .latex-toolbar-icon-row {
   animation: latex-toolbar-pulse 1s ease-in-out infinite alternate;
+}
+
+.latex-compile-spinner {
+  animation: latex-compile-spin 900ms linear infinite;
+  transform-origin: center;
+}
+
+@keyframes latex-compile-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .latex-toolbar-spacer {

@@ -8,6 +8,7 @@ import { CompilePanel } from './compile/CompilePanel.js'
 import { AiPanel } from './ai/AiPanel.js'
 import {
   diagnosticToAgentContext,
+  buildCompileAgentContext,
   editorContextForActivePath,
   type AgentContext,
   type AgentContextKey,
@@ -330,6 +331,28 @@ export function App() {
         revision: begun.request.revision,
       })
       if (!result.ok) {
+        try {
+          const evidence = await window.latexApi.getCompileDiagnostics({ projectId })
+          if (evidence.ok && evidence.value.revision === begun.request.revision) {
+            setLog(evidence.value.logSummary)
+            setDiagnostics(
+              mapCompileDiagnostics(
+                evidence.value.diagnostics.flatMap((value) => {
+                  const parsed = diagnosticInput(value)
+                  return parsed ? [parsed] : []
+                }),
+                new Set(files),
+              ),
+            )
+            setHiddenAiContext((current) => {
+              const next = new Set(current)
+              next.delete('compile')
+              return next
+            })
+          }
+        } catch {
+          // Preserve the original compile failure when evidence refresh is unavailable.
+        }
         setError(result.error.message)
         return
       }
@@ -350,6 +373,11 @@ export function App() {
           new Set(files),
         ),
       )
+      setHiddenAiContext((current) => {
+        const next = new Set(current)
+        next.delete('compile')
+        return next
+      })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
@@ -682,6 +710,10 @@ export function App() {
   )
   const activeDiagnostics = diagnostics.filter((item) => item.path === activePath)
   const sensitiveAiContext = Boolean(activePath && isAiSensitivePath(activePath))
+  const compileAgentContext = useMemo(
+    () => buildCompileAgentContext(diagnostics, log),
+    [diagnostics, log],
+  )
   const agentContext = useMemo<AgentContext>(() => {
     if (activePath && isAiSensitivePath(activePath)) return {}
     const currentEditor = editorContextForActivePath(editorContext, activePath)
@@ -694,8 +726,11 @@ export function App() {
         ? { selection: currentEditor.selection }
         : {}),
       ...(!hiddenAiContext.has('diagnostic') && aiDiagnostic ? { diagnostic: aiDiagnostic } : {}),
+      ...(!hiddenAiContext.has('compile') && compileAgentContext
+        ? { compile: compileAgentContext }
+        : {}),
     }
-  }, [activePath, aiDiagnostic, editorContext, hiddenAiContext])
+  }, [activePath, aiDiagnostic, compileAgentContext, editorContext, hiddenAiContext])
 
   useEffect(() => {
     forwardGate.current.invalidate()
