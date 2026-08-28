@@ -1,6 +1,6 @@
 # Slides Font Management Design
 
-**Status:** GO, phased and feature-gated
+**Status:** Stage 1 GO; stages 2 and 3 conditional GO; font embedding NO-GO
 
 **Scope:** WisWork PC Slides only; no Taskpane, Relay, or Office.js changes
 
@@ -10,7 +10,7 @@
 
 Proceed in three independently releasable stages: deterministic font discovery and substitution, document-scoped private-font registration, then an optional curated download/install manager. Do not ship a public font CDN, arbitrary remote URLs, or font embedding in PPTX until the corresponding legal and round-trip gates pass.
 
-The immediate **GO** is for stages 1 and 2. Stage 3 is **conditional GO** only after every catalog file has recorded provenance, redistribution terms, immutable hash, and a controlled CDN origin. PPTX font embedding remains **NO-GO** in this proposal.
+The immediate **GO** is for stage 1. Stage 2 is **conditional GO** only after its filesystem, platform sandbox, licensing, consent, and enterprise-control gates pass. Stage 3 is **conditional GO** only after every catalog file has recorded provenance, redistribution terms, immutable hash, and a controlled CDN origin. PPTX font embedding remains **NO-GO** in this proposal.
 
 ## Problem and authority
 
@@ -19,8 +19,9 @@ A presentation run names a requested family, but that name is not proof that the
 Authority must be explicit:
 
 - The PPTX run/theme/placeholder font name is authoritative for intent and must remain unchanged unless the user explicitly applies a font edit.
-- The resolved local face bytes are authoritative for both metrics and drawing during the current render.
-- A deterministic resolver record—requested family, script hint, style, resolved face, source class, and face digest—is authoritative for diagnostics and fixture comparison.
+- The exact resolved local face bytes and variable-font instance are authoritative for both metrics and drawing during the current render. Family name or filename alone is not a face identity.
+- A deterministic resolver record—requested family, script/language hint, weight/style/stretch, variable-axis coordinates, resolved PostScript/face name, collection face index, source class, byte digest, parser/shaper version, platform font inventory version, and alias-table version—is authoritative for diagnostics and fixture comparison.
+- Fixture expectations name an exact face digest and instance, or an explicitly approved fallback tier and digest. “Same family class” is not sufficient authority.
 - System, Microsoft Office private, Apple on-demand, Office cloud-cache, WisWork-managed, and bundled fallback directories are read-only inputs except the WisWork-managed store.
 - The renderer never receives arbitrary filesystem paths. Main process exposes bounded face metadata and bytes for only deck-referenced faces through typed IPC.
 - Font downloads are never authoritative over a better exact locally installed face; a catalog file is accepted only after SHA-256 and family/style inspection succeed.
@@ -29,13 +30,19 @@ Authority must be explicit:
 
 ### Stage 1 — deterministic resolution and measurement
 
-Build a main-process font registry with a cheap filename/family index and lazy parsing. Resolve by normalized family, localized aliases, style, script/language hint, and platform-specific fallback. TTC/OTC handling must select a face rather than treating the collection as a single font. The same resolved face must feed the shaping/metric provider and the drawing-family decision.
+Build a main-process font registry with a cheap filename/family index and lazy parsing. Resolve by normalized family, localized aliases, style, script/language hint, and platform-specific fallback. TTC/OTC handling must select a face rather than treating the collection as a single font. Variable fonts require a fully specified, clamped axis instance; an implicit platform default is not deterministic authority. The same resolved face and instance must feed the shaping/metric provider and the drawing-family decision.
 
-This stage should learn from upstream's useful separation of discovery, lazy parsing, aliases, script classification, and fallback, but WisWork should own a smaller reviewed alias table and observable resolution result rather than importing the full table wholesale.
+This stage should learn from upstream's useful separation of discovery, lazy parsing, aliases, script classification, and fallback, but WisWork should own a smaller reviewed, versioned alias table rather than importing the full table wholesale. Alias entries require fixture evidence and an owner; changes are fidelity changes and invalidate affected goldens and caches.
+
+Fallback is tiered and observable: exact face, approved metric-compatible substitute, same-script substitute, then bundled emergency fallback. A lower tier may keep the deck usable but cannot count as an exact-match acceptance success or conceal a missing-font regression.
 
 ### Stage 2 — document-scoped private faces
 
 For Office-private, cloud-cache, on-demand, and WisWork-managed files that Chromium cannot resolve, main process returns only deck-referenced face IDs. The renderer requests bytes by opaque ID, creates `FontFace` objects with the correct weight/style, waits for load, and invalidates the canvas exactly once per changed face set. Close/dispose removes document-scoped faces and clears byte references.
+
+Discovery uses a compiled per-platform root allowlist, not configurable directory strings: documented OS font roots, the current user's documented font root, explicitly supported Microsoft Office font/cache roots, explicitly supported Apple font-asset roots, and the WisWork-managed store. Every candidate is canonicalized and must remain beneath its allowed root. Directory traversal does not follow symlinks; files are opened with no-follow semantics where available, then ownership, regular-file type, permissions, device/inode, size, and canonical location are revalidated on the open descriptor before and after reading. World-writable files, unexpected owners, links, network mounts, and files that change during the read are rejected. The digest is computed from the validated bytes, not from a prior path scan, closing symlink and TOCTOU gaps.
+
+macOS sandbox/hardened-runtime and Windows packaging must be proven on signed release artifacts. Required entitlements/capabilities are least-privilege and documented; the feature must not request broad user-selected-file or full-disk access merely to scan fonts. If Office or Apple private roots are inaccessible under the supported sandbox, Stage 2 degrades to approved system/managed sources rather than weakening the sandbox.
 
 IPC limits:
 
@@ -44,6 +51,7 @@ IPC limits:
 - SFNT magic, table bounds, declared length, and family/style metadata are validated before bytes cross IPC.
 - No renderer-controlled path, directory scan, or URL is accepted.
 - Resolution errors degrade to a deterministic bundled fallback and produce safe diagnostics, not raw paths.
+- Private-root discovery is off by default until the user accepts a local-font access explanation, and administrators can disable Office/Apple/private-font discovery independently. Denial is sticky and does not trigger repeated prompts.
 
 ### Stage 3 — curated store and local install
 
@@ -64,7 +72,7 @@ Local install is explicit user action through a native file picker. Accept `.ttf
 
 The upstream implementation relies on `opentype.js`, HarfBuzz shaping, Electron `FontFace`, bundled Carlito, platform font directories, and a curated OFL catalog. WisWork may reuse existing compatible parsing/shaping dependencies, but adding or upgrading either library requires security and deterministic-output review.
 
-Every bundled or downloadable font needs: upstream URL, exact version/commit, copyright holder, license text, redistribution and modification flags, file SHA-256, and generated third-party notice entry. OFL reserved font names and modified-font naming requirements must be checked per family. Microsoft/Apple/OS fonts may be read for local rendering but must never be redistributed or uploaded. User-installed font bytes remain local and are excluded from diagnostics, telemetry, and model context.
+Every bundled or downloadable font needs: upstream URL, exact version/commit, copyright holder, license text, redistribution and modification flags, file SHA-256, and generated third-party notice entry. OFL reserved font names and modified-font naming requirements must be checked per family. Microsoft/Apple/OS fonts may be read for local rendering only after legal review confirms that the intended discovery and in-process use are permitted for each supported product/platform; they must never be copied into the WisWork store, redistributed, persisted in caches beyond the document session, uploaded, or exposed to another user. An inability to establish permission makes that source class NO-GO, not a reason to infer permission. User-installed font bytes remain local and are excluded from diagnostics, telemetry, and model context.
 
 Upstream's catalog declares 65 files totaling about 69.1 MiB uncompressed, so mirroring it is not a zero-cost dependency and must not be silently bundled.
 
@@ -78,7 +86,7 @@ Fixtures must be legally redistributable or generated from licensed test fonts a
 - Missing fonts, localized family aliases, TTC/OTC faces, Office-private fonts, user fonts, corrupt fonts, hash mismatch, interrupted download, and same-family collisions.
 - Cross-platform reference screenshots from current PowerPoint on supported macOS and Windows versions.
 
-Each golden records resolved-face digest, line breaks, glyph-run bounds, slide overflow, and a pixel comparison after fonts report loaded. Fixtures that rely on proprietary local fonts run only in a licensed private lane; public CI uses OFL fixtures.
+Each golden records the resolver/alias versions, exact resolved-face digest, collection index, variable-axis instance, approved fallback tier, line breaks, glyph-run bounds, slide overflow, and a pixel comparison after fonts report loaded. Fixtures that rely on proprietary local fonts run only in a licensed private lane; public CI uses OFL fixtures.
 
 ## Release size and performance budget
 
@@ -98,15 +106,21 @@ Safe metrics include resolution outcome class, script, source class, elapsed tim
 
 ### Stage 1 GO gate
 
-- At least 99.5% of corpus runs use the expected face class and 100% are deterministic across three opens.
+- At least 99.5% of the general corpus uses the expected exact face digest/instance or fixture-approved fallback digest, and 100% is deterministic across three opens on the same declared platform inventory.
+- The release-blocking subset covering simplified/traditional Chinese, Japanese, Korean, Arabic/RTL, Indic/complex script, and mixed-script runs must resolve to its exact expected digest/instance, preserve shaping order, and meet line-break and overflow goldens at 100%. A fallback in this subset fails the gate unless that exact fallback is the fixture's explicitly approved expectation.
+- Reports separate every fallback tier; aggregate pixel or line-break scores cannot mask an exact-face, CJK, RTL, or mixed-script failure.
 - No save-without-edit fixture changes declared font semantics.
 - Line-break agreement with PowerPoint is at least 99% for supported fixtures; no new clipped text or overflow.
 - Parser fuzzing rejects malformed files without crash, hang, or unbounded allocation.
 
-### Stage 2 GO gate
+### Stage 2 conditional GO gate
 
 - Measurement and canvas drawing use the same face digest for every private-face fixture.
-- No path-capability escape, renderer filesystem access, cross-document face leak, or post-close retained bytes.
+- The platform root allowlist, canonical containment, no-follow open, descriptor revalidation, ownership/permission policy, and symlink/TOCTOU adversarial tests pass on every supported OS.
+- Signed packaged applications pass sandbox/hardened-runtime/entitlement tests without broad filesystem permission; inaccessible roots fail closed.
+- Legal approves each Office/Apple source class, and tests prove private bytes are neither persisted nor redistributed.
+- User consent, denial persistence, and enterprise-disable controls pass product, privacy, and managed-device tests before private-root discovery is enabled.
+- No path-capability escape, renderer filesystem access, cross-user or cross-document face leak, or post-close retained bytes.
 - The limits above are tested, and missing/failed faces reliably fall back.
 
 ### Stage 3 GO gate
