@@ -11,6 +11,12 @@ const pairing = (pairingId: string, hostLabel: 'Word' | 'Excel' = 'Word') => ({
 })
 
 describe('Office pairing renderer recovery', () => {
+  it('does not expose the internal Office bridge diagnostic in the account menu', () => {
+    const source = readFileSync(new URL('../src/renderer/src/Home.tsx', import.meta.url), 'utf8')
+    expect(source).not.toContain('Office bridge:')
+    expect(source).not.toContain('officeBridgeStatus')
+  })
+
   it('disables Allow until a trusted account status confirms login', () => {
     const source = readFileSync(new URL('../src/renderer/src/Home.tsx', import.meta.url), 'utf8')
     expect(source).toContain(
