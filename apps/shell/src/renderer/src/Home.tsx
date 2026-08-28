@@ -533,7 +533,6 @@ function AccountEntry() {
   const langCloseTimer = useRef<number | null>(null)
   const [loggingOut, setLoggingOut] = useState(false)
   const [appVersion, setAppVersion] = useState('')
-  const [officeBridgeStatus, setOfficeBridgeStatus] = useState('disabled')
   const [officeRelayStatus, setOfficeRelayStatus] = useState('disconnected')
   const [officeRelayCode, setOfficeRelayCode] = useState('')
   const [officeRelayBusy, setOfficeRelayBusy] = useState(false)
@@ -552,9 +551,6 @@ function AccountEntry() {
       })
     void window.aiOffice.getAppVersion?.().then((v) => {
       if (alive && v) setAppVersion(v)
-    })
-    void window.aiOffice.officeBridgeStatus().then((value) => {
-      if (alive) setOfficeBridgeStatus(value)
     })
     void window.aiOffice.officeRelayStatus().then((value) => {
       if (alive) setOfficeRelayStatus(value)
@@ -843,9 +839,6 @@ function AccountEntry() {
               <span className="version-row-value">{appVersion}</span>
             </div>
           )}
-          <div className="account-menu-version" role="status">
-            Office bridge: {officeBridgeStatus}
-          </div>
           {loggedIn && (
             <div className="office-relay-claim">
               <label htmlFor="office-relay-code">Connect Office with its 6-digit code</label>
