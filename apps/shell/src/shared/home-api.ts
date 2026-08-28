@@ -167,7 +167,6 @@ export type OfficeBridgeStatus =
   | `ready:${number}`
   | 'error:pool_exhausted'
   | 'error:invalid_config'
-  | 'error:binding_lifecycle'
   | 'error:bind_failed'
 
 export type OfficeRelayStatus =
@@ -199,6 +198,7 @@ export type OfficeRelayStatus =
   | 'disconnected:account_switch'
   | 'disconnected:shutdown'
   | 'error:invalid_config'
+  | 'error:binding_lifecycle'
 
 export interface RenameResult {
   ok: boolean

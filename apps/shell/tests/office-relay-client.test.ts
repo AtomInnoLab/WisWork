@@ -949,6 +949,116 @@ describe('Office relay PC client', () => {
     await vi.waitFor(() => expect(client.status()).toBe('disconnected:binding_not_remembered'))
   })
 
+  it('serializes approval persistence before requests and ignores an exact duplicate approval', async () => {
+    const socket = new FakeSocket()
+    let releaseBinding!: () => void
+    const bindingSaved = new Promise<void>((resolve) => {
+      releaseBinding = resolve
+    })
+    const onBinding = vi.fn(() => bindingSaved)
+    const proxy = vi.fn(async () => ({ status: 200, body: new Uint8Array() }))
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => socket,
+      getValidAccountStatus: async () => ({ loggedIn: true, userId: 'local-account' }),
+      getAccessToken: async () => 'token',
+      proxy,
+      persistentPairing: true,
+      onBinding,
+      onPending() {},
+    })
+    const claim = client.claim('123456')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await claim
+    socket.message({
+      version: 2,
+      type: 'pc.negotiated',
+      pairing_version: 2,
+      capabilities: ['agent.v1'],
+      features: ['pairing-resume.v1'],
+    })
+    socket.message({
+      version: 2,
+      type: 'pc.claimed',
+      pairing_id: 'pairing_12345678',
+      host: 'Word',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      verification_code: '123456',
+      expires_in: 120,
+      capabilities: ['agent.v1'],
+      features: ['pairing-resume.v1'],
+    })
+    await client.approve('pairing_12345678')
+    const approved = {
+      version: 2,
+      type: 'pc.approved',
+      session_id: 'session_12345678',
+      capability: 'secret-capability',
+      expires_in: 1800,
+      capabilities: ['agent.v1'],
+      features: ['pairing-resume.v1'],
+      binding_id: 'binding_word_12345678',
+    }
+    socket.message(approved)
+    await vi.waitFor(() => expect(onBinding).toHaveBeenCalledOnce())
+    socket.message(approved)
+    socket.message({
+      version: 2,
+      type: 'relay.request',
+      session_id: 'session_12345678',
+      request_id: 'request_12345678',
+      capability_name: 'agent.v1',
+      body: {},
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(client.status()).not.toBe('disconnected:protocol_violation')
+    expect(proxy).not.toHaveBeenCalled()
+
+    releaseBinding()
+    await vi.waitFor(() => expect(client.status()).toBe('paired'))
+    await vi.waitFor(() => expect(proxy).toHaveBeenCalledOnce())
+    expect(onBinding).toHaveBeenCalledOnce()
+  })
+
+  it('rejects a claimed feature upgrade beyond the negotiated intersection', async () => {
+    const socket = new FakeSocket()
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => socket,
+      getValidAccountStatus: async () => ({ loggedIn: true, userId: 'local-account' }),
+      getAccessToken: async () => 'token',
+      proxy: async () => ({ status: 200, body: new Uint8Array() }),
+      persistentPairing: true,
+      onPending() {},
+    })
+    const claim = client.claim('123456')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await claim
+    socket.message({
+      version: 2,
+      type: 'pc.negotiated',
+      pairing_version: 2,
+      capabilities: ['agent.v1'],
+      features: [],
+    })
+    socket.message({
+      version: 2,
+      type: 'pc.claimed',
+      pairing_id: 'pairing_12345678',
+      host: 'Word',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      verification_code: '123456',
+      expires_in: 120,
+      capabilities: ['agent.v1'],
+      features: ['pairing-resume.v1'],
+    })
+    await vi.waitFor(() =>
+      expect(client.status()).toBe('disconnected:protocol_violation'),
+    )
+  })
+
   it('uses exact legacy v1 frames after enhanced negotiation selects pairing_version 1', async () => {
     const socket = new FakeSocket()
     const client = createOfficeRelayClient({

@@ -351,6 +351,12 @@ describe('Office relay pool', () => {
     expect(active.children[0]!.revoke).toHaveBeenCalledWith('account_switch')
   })
 
+  it('publishes the persistent lifecycle diagnostic when startup suspension disables the pool', () => {
+    const { pool } = harness()
+    pool.suspend('binding_lifecycle')
+    expect(pool.status()).toBe('error:binding_lifecycle')
+  })
+
   it('keeps twelve durable bindings in independent resume slots', async () => {
     const { pool, children } = harness()
     await Promise.all(Array.from({ length: 12 }, (_, index) => pool.resume(binding(index))))
@@ -456,5 +462,110 @@ describe('Office relay pool', () => {
     expect(invalidated).toHaveBeenCalledWith(binding(0))
     children[1]!.emitStatus('paired')
     expect(pool.status()).toBe('paired')
+  })
+
+  it('keeps a revocation slot reserved across the child new_revocation transition', async () => {
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const pool = createOfficeRelayPool({
+      maxClients: 1,
+      onPending() {},
+      createClient(events) {
+        return {
+          claim: vi.fn(async () => undefined),
+          resume: vi.fn(async () => events.onStatus('connecting')),
+          revokeBinding: vi.fn(async () => {
+            events.onStatus('disconnected:new_revocation')
+            await blocked
+          }),
+          approve: vi.fn(async () => false),
+          reject: vi.fn(() => false),
+          listPending: vi.fn(() => []),
+          status: vi.fn(() => 'connecting' as const),
+          revoke: vi.fn(),
+        }
+      },
+    })
+    await pool.resume(binding(0))
+    const revoking = pool.revokeBinding(binding(0).bindingId)
+    await expect(pool.claim('111111')).rejects.toThrow('relay_capacity_exceeded')
+    release()
+    await revoking
+  })
+
+  it('publishes binding_not_remembered after real-client persistence failure revocation', async () => {
+    const sockets: FakeSocket[] = []
+    const statuses: OfficeRelayStatus[] = []
+    const pool = createOfficeRelayPool({
+      onPending() {},
+      onStatus: (status) => statuses.push(status),
+      onBinding: async () => {
+        throw new Error('disk_failure')
+      },
+      createClient: (events) =>
+        createOfficeRelayClient({
+          endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+          connect: () => {
+            const socket = new FakeSocket()
+            sockets.push(socket)
+            return socket
+          },
+          getValidAccountStatus: async () => ({ loggedIn: true, userId: 'account-one' }),
+          getAccessToken: async () => 'token',
+          proxy: async () => ({ status: 200, body: new Uint8Array() }),
+          persistentPairing: true,
+          onPending: events.onPending,
+          onPendingExpired: events.onPendingExpired,
+          onStatus: events.onStatus,
+          onBinding: events.onBinding,
+          onBindingInvalidated: events.onBindingInvalidated,
+        }),
+    })
+    const claim = pool.claim('123456')
+    await vi.waitFor(() => expect(sockets).toHaveLength(1))
+    sockets[0]!.open()
+    await claim
+    sockets[0]!.message({
+      version: 2,
+      type: 'pc.negotiated',
+      pairing_version: 2,
+      capabilities: ['agent.v1'],
+      features: ['pairing-resume.v1'],
+    })
+    sockets[0]!.message({
+      version: 2,
+      type: 'pc.claimed',
+      pairing_id: 'pairing_12345678',
+      host: 'Word',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      verification_code: '123456',
+      expires_in: 120,
+      capabilities: ['agent.v1'],
+      features: ['pairing-resume.v1'],
+    })
+    await vi.waitFor(() => expect(pool.listPending()).toHaveLength(1))
+    await pool.approve('pairing_12345678')
+    sockets[0]!.message({
+      version: 2,
+      type: 'pc.approved',
+      session_id: 'session_12345678',
+      capability: 'secret-capability',
+      expires_in: 1800,
+      capabilities: ['agent.v1'],
+      features: ['pairing-resume.v1'],
+      binding_id: 'binding_word_12345678',
+    })
+    await vi.waitFor(() => expect(sockets).toHaveLength(2))
+    sockets[1]!.open()
+    await vi.waitFor(() => expect(sockets[1]!.sent).toHaveLength(1))
+    sockets[1]!.message({
+      version: 2,
+      type: 'pc.binding_revoked',
+      binding_id: 'binding_word_12345678',
+    })
+    await vi.waitFor(() => expect(pool.status()).toBe('disconnected:binding_not_remembered'))
+    expect(statuses).toContain('disconnected:binding_not_remembered')
   })
 })

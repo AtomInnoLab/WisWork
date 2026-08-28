@@ -25,15 +25,20 @@ export function createOfficeRelayLifecycle(options: {
 
   const deliverTombstones = async (accountId: string) => {
     const tombstones = await options.store.listTombstonesForAccount(accountId)
-    await Promise.all(
-      tombstones.map(async (tombstone) => {
+    let nextIndex = 0
+    const worker = async () => {
+      while (nextIndex < tombstones.length) {
+        const tombstone = tombstones[nextIndex++]!
         try {
           await options.pool.revokeBinding(tombstone.bindingId)
           await options.store.acknowledgeTombstone(accountId, tombstone.bindingId)
         } catch {
           // Keep the encrypted tombstone for this same account's next authenticated startup.
         }
-      }),
+      }
+    }
+    await Promise.all(
+      Array.from({ length: Math.min(12, tombstones.length) }, () => worker()),
     )
   }
 

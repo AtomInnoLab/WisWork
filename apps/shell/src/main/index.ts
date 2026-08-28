@@ -179,6 +179,7 @@ import {
 import { createOfficeRelayPool, type OfficeRelayPool } from './office-relay-pool'
 import { createElectronOfficeRelayBindingStore } from './office-relay-binding-store'
 import { createOfficeRelayLifecycle, type OfficeRelayLifecycle } from './office-relay-lifecycle'
+import { logoutWithOfficeRelay, startOfficeRelayPersistence } from './office-relay-runtime'
 import {
   createOfficeRetrievalProxy,
   officeRetrievalEndpointFromEnv,
@@ -1760,8 +1761,13 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.accountLogout, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
     officeBridge?.setSessionAvailable(false)
-    await officeRelayLifecycle?.logout()
-    return requireAuthRuntime().client.logout()
+    return logoutWithOfficeRelay({
+      invalidate: () => officeRelayLifecycle?.logout() ?? Promise.resolve(),
+      logout: () => requireAuthRuntime().client.logout(),
+      onBindingFailure: () => {
+        officeRelayDiagnostic = 'error:binding_lifecycle'
+      },
+    })
   })
   ipcMain.handle(HOME_CHANNELS.officeBridgeStatus, (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
@@ -2596,7 +2602,14 @@ app.whenReady().then(async () => {
     officeRelayDiagnostic = 'error:invalid_config'
     console.error('[office-relay] invalid endpoint configuration')
   }
-  if (officeRelayLifecycle) await officeRelayLifecycle.syncAccount()
+  if (officeRelayLifecycle && officeRelay)
+    await startOfficeRelayPersistence({
+      sync: () => officeRelayLifecycle!.syncAccount(),
+      suspend: (reason) => officeRelay!.suspend(reason),
+      onBindingFailure: () => {
+        officeRelayDiagnostic = 'error:binding_lifecycle'
+      },
+    })
   if (officeBridgeEnabled(process.env, app.isPackaged)) {
     officeBridgeDiagnostic = 'error'
     const initialAccount = await requireAuthRuntime()

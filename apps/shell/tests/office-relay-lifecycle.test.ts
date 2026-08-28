@@ -137,6 +137,34 @@ describe('Office relay binding lifecycle', () => {
     await syncing
   })
 
+  it('drains every tombstone with at most twelve revocations in flight and retains failures', async () => {
+    const { lifecycle, store, pool } = harness()
+    const records = Array.from({ length: 256 }, (_, index) => ({
+      bindingId: `binding_bulk_${index}_12345678`,
+      accountId: 'account-one',
+      createdAt: index,
+    }))
+    ;(store.listTombstonesForAccount as ReturnType<typeof vi.fn>).mockResolvedValue(records)
+    ;(store.listForAccount as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    let inFlight = 0
+    let maximumInFlight = 0
+    const failed = new Set(records.filter((_, index) => index % 17 === 0).map((entry) => entry.bindingId))
+    ;(pool.revokeBinding as ReturnType<typeof vi.fn>).mockImplementation(async (bindingId) => {
+      inFlight += 1
+      maximumInFlight = Math.max(maximumInFlight, inFlight)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      inFlight -= 1
+      if (failed.has(bindingId)) throw new Error('offline')
+    })
+
+    await lifecycle.syncAccount()
+    expect(pool.revokeBinding).toHaveBeenCalledTimes(256)
+    expect(maximumInFlight).toBeLessThanOrEqual(12)
+    expect(store.acknowledgeTombstone).toHaveBeenCalledTimes(256 - failed.size)
+    for (const bindingId of failed)
+      expect(store.acknowledgeTombstone).not.toHaveBeenCalledWith('account-one', bindingId)
+  })
+
   it('deletes active records before remote logout revocation and retains failed tombstones', async () => {
     const { lifecycle, store, pool, order, tombstones } = harness()
     await lifecycle.syncAccount()
@@ -193,10 +221,8 @@ describe('Office relay binding lifecycle', () => {
     expect(pool.revokeBinding).not.toHaveBeenCalledWith('binding_one_12345678')
   })
 
-  it('does not let index swallow lifecycle failures before auth logout or startup', () => {
+  it('blocks account switching before consuming the replacement credentials', () => {
     const source = readFileSync(join(import.meta.dirname, '../src/main/index.ts'), 'utf8')
-    expect(source).not.toContain('officeRelayLifecycle?.logout().catch')
-    expect(source).not.toContain('officeRelayLifecycle.syncAccount().catch')
     const callback = source.slice(source.indexOf('void authDeepLinks.initialize'))
     expect(callback.indexOf("officeRelay?.suspend('account_switch')")).toBeLessThan(
       callback.indexOf('consumeCallback(callback)'),

@@ -140,7 +140,12 @@ export function createOfficeRelayPool(options: {
       },
       onStatus(status) {
         if (!slots.has(slot)) return
-        if (status === 'disconnected:new_claim' || status === 'disconnected:new_resume') return
+        if (
+          status === 'disconnected:new_claim' ||
+          status === 'disconnected:new_resume' ||
+          status === 'disconnected:new_revocation'
+        )
+          return
         slot.status = status
         if (status === 'disconnected:auth_required') {
           void Promise.resolve(options.onAuthRequired?.()).catch(() => undefined)
@@ -243,7 +248,10 @@ export function createOfficeRelayPool(options: {
     bindingOwners.clear()
     pairingOwners.clear()
     approving.clear()
-    fallbackStatus = `disconnected:${reason}` as OfficeRelayStatus
+    fallbackStatus =
+      reason === 'binding_lifecycle'
+        ? 'error:binding_lifecycle'
+        : (`disconnected:${reason}` as OfficeRelayStatus)
     for (const pairingId of pendingIds) options.onPendingExpired?.(pairingId)
     for (const slot of children) {
       if (slot.retryTimer) clearTimer(slot.retryTimer)
