@@ -208,6 +208,49 @@ describe('PresentationTransactionExecutor', () => {
     expect(fixture.counts().applyCount).toBe(1)
   })
 
+  it('does not cache a scoped lease-busy result so the same invocation can retry', async () => {
+    const fixture = fakeHost()
+    let attempts = 0
+    const executor = new PresentationTransactionExecutor(fixture.host, {
+      acquireWriteLease: () => (++attempts === 1 ? null : () => undefined),
+      validateScopeGuard: () => true,
+    })
+    const tx = transaction([operation('a', 'shape-1', 'one')])
+    const guard = { documentId: 'doc', sessionId: 'session', generation: 1 }
+    await expect(executor.execute(tx, undefined, guard)).resolves.toMatchObject({
+      status: 'unchanged',
+      code: 'write_not_applied',
+    })
+    await expect(
+      executor.execute(structuredClone(tx), undefined, { ...guard }),
+    ).resolves.toMatchObject({ status: 'applied' })
+    expect(fixture.counts().applyCount).toBe(1)
+  })
+
+  it('revalidates a scoped guard after lease-busy instead of replaying the transient result', async () => {
+    const fixture = fakeHost()
+    let attempts = 0
+    let guardValid = true
+    const executor = new PresentationTransactionExecutor(fixture.host, {
+      acquireWriteLease: () => (++attempts === 1 ? null : () => undefined),
+      validateScopeGuard: () => guardValid,
+    })
+    const tx = transaction([operation('a', 'shape-1', 'one')])
+    const guard = { documentId: 'doc', sessionId: 'session', generation: 1 }
+    await expect(executor.execute(tx, undefined, guard)).resolves.toMatchObject({
+      status: 'unchanged',
+      code: 'write_not_applied',
+    })
+    guardValid = false
+    await expect(
+      executor.execute(structuredClone(tx), undefined, { ...guard }),
+    ).resolves.toMatchObject({
+      status: 'conflict',
+      code: 'target_stale',
+    })
+    expect(fixture.counts().applyCount).toBe(0)
+  })
+
   it('plans dependent operations sequentially and creates one history entry', async () => {
     const fixture = fakeHost()
     const receipt = await new PresentationTransactionExecutor(fixture.host).execute(

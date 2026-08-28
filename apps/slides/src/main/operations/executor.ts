@@ -208,7 +208,8 @@ export class PresentationTransactionExecutor<Snapshot> {
 
     const releaseLease = this.acquireWriteLease?.()
     if (this.acquireWriteLease && !releaseLease) {
-      return this.cache(transaction, digest, unchangedReceipt(transaction, 'write_not_applied'))
+      const unavailable = unchangedReceipt(transaction, 'write_not_applied')
+      return scopeGuard ? unavailable : this.cache(transaction, digest, unavailable)
     }
 
     try {
