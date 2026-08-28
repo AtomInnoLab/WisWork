@@ -338,7 +338,7 @@ describe('execute_layout_script tool', () => {
       if (!('operations' in request)) throw new Error('expected geometry transaction')
       const nodes = slide.nodes.map((node) => {
         const operation = request.operations.find((item) => item.sourceId === node.sourceId)
-        if (!operation) return node
+        if (!operation || !('geometry' in operation)) return node
         const geometry = operation.geometry
         return {
           ...node,

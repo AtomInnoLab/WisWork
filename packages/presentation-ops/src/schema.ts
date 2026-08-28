@@ -328,7 +328,7 @@ export const parsePresentationOperation = (value: unknown): PresentationOperatio
         kind,
         clientId,
         target: parseTarget(record.target, true),
-        stroke: parseStroke(record.stroke),
+        stroke: record.stroke === null ? null : parseStroke(record.stroke),
       }
     case 'add_text_box':
       exactKeys(record, ['kind', 'clientId', 'slideId', 'text', 'geometry'], 'add_text_box')

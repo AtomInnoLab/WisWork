@@ -57,6 +57,7 @@ describe('presentation transaction parser', () => {
         target,
         stroke: { color: '#000000', width: 1.5, dash: 'dash' },
       },
+      { kind: 'set_stroke', clientId: 'op-4b', target, stroke: null },
       {
         kind: 'add_text_box',
         clientId: 'op-5',

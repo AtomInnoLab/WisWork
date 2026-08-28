@@ -59,7 +59,7 @@ export type PresentationOperation =
   | (OperationBase & {
       kind: 'set_stroke'
       target: PresentationTarget
-      stroke: PresentationStroke
+      stroke: PresentationStroke | null
     })
   | (OperationBase & {
       kind: 'add_text_box'

@@ -1,7 +1,12 @@
 import {
   fingerprintSemanticValue,
+  parsePresentationOperation,
   PRESENTATION_OPS_LIMITS,
   type PresentationGeometry,
+  type PresentationFill,
+  type PresentationStroke,
+  type PresentationTarget,
+  type PresentationTextParagraph,
   type PresentationOperation,
   type PresentationReceipt,
 } from '@wiswork/presentation-ops'
@@ -11,8 +16,14 @@ import type { TextFamilyExecutionResult } from './presentation-text-transactions
 export interface GeometryFamilyTransactionRequest {
   transactionId: string
   slideIndex: number
-  operations: readonly { sourceId: string; geometry: PresentationGeometry }[]
+  operations: readonly CanonicalElementOperation[]
 }
+
+export type CanonicalElementOperation =
+  | { sourceId: string; geometry: PresentationGeometry }
+  | { sourceId: string; kind: 'set_fill'; fill: PresentationFill }
+  | { sourceId: string; kind: 'set_stroke'; stroke: PresentationStroke | null }
+  | { sourceId: string; kind: 'set_text'; paragraphs: readonly PresentationTextParagraph[] }
 
 export async function geometryToolTransactionId(call: {
   name: string
@@ -45,18 +56,39 @@ export async function executePreparedGeometryFamilyTransaction(
   refresh?: () => Promise<boolean>,
 ): Promise<TextFamilyExecutionResult> {
   signal?.throwIfAborted()
-  const geometryIsBounded = ({
-    geometry,
-  }: GeometryFamilyTransactionRequest['operations'][number]) =>
-    [geometry.x, geometry.y, geometry.width, geometry.height].every(Number.isFinite) &&
-    Math.abs(geometry.x) <= PRESENTATION_OPS_LIMITS.maxCoordinateMagnitude &&
-    Math.abs(geometry.y) <= PRESENTATION_OPS_LIMITS.maxCoordinateMagnitude &&
-    geometry.width > 0 &&
-    geometry.width <= PRESENTATION_OPS_LIMITS.maxCoordinateMagnitude &&
-    geometry.height > 0 &&
-    geometry.height <= PRESENTATION_OPS_LIMITS.maxCoordinateMagnitude &&
-    (geometry.rotation === undefined ||
-      (Number.isFinite(geometry.rotation) && Math.abs(geometry.rotation) <= 360_000))
+  const compileOperation = (
+    item: CanonicalElementOperation,
+    index: number,
+    target: PresentationTarget,
+  ): PresentationOperation => {
+    if ('geometry' in item)
+      return {
+        kind: 'set_geometry',
+        clientId: `geometry-${index + 1}`,
+        target,
+        geometry: item.geometry,
+      }
+    if (item.kind === 'set_fill')
+      return { kind: 'set_fill', clientId: `fill-${index + 1}`, target, fill: item.fill }
+    if (item.kind === 'set_stroke')
+      return { kind: 'set_stroke', clientId: `stroke-${index + 1}`, target, stroke: item.stroke }
+    return { kind: 'set_text', clientId: `text-${index + 1}`, target, paragraphs: item.paragraphs }
+  }
+  const geometryIsBounded = (item: GeometryFamilyTransactionRequest['operations'][number]) => {
+    if (!('geometry' in item)) return true
+    const { geometry } = item
+    return (
+      [geometry.x, geometry.y, geometry.width, geometry.height].every(Number.isFinite) &&
+      Math.abs(geometry.x) <= PRESENTATION_OPS_LIMITS.maxCoordinateMagnitude &&
+      Math.abs(geometry.y) <= PRESENTATION_OPS_LIMITS.maxCoordinateMagnitude &&
+      geometry.width > 0 &&
+      geometry.width <= PRESENTATION_OPS_LIMITS.maxCoordinateMagnitude &&
+      geometry.height > 0 &&
+      geometry.height <= PRESENTATION_OPS_LIMITS.maxCoordinateMagnitude &&
+      (geometry.rotation === undefined ||
+        (Number.isFinite(geometry.rotation) && Math.abs(geometry.rotation) <= 360_000))
+    )
+  }
   if (
     request.operations.length === 0 ||
     request.operations.length > PRESENTATION_OPS_LIMITS.maxOperations ||
@@ -67,6 +99,22 @@ export async function executePreparedGeometryFamilyTransaction(
         request.transactionId,
         Math.min(request.operations.length, PRESENTATION_OPS_LIMITS.maxOperations),
       ),
+      authoritativeState: 'fresh',
+    }
+  }
+  try {
+    request.operations.forEach((item, index) => {
+      parsePresentationOperation(
+        compileOperation(item, index, {
+          slideId: 'slide-preflight',
+          elementId: 'element-preflight',
+          expectedFingerprint: `sha256:${'0'.repeat(64)}`,
+        }),
+      )
+    })
+  } catch {
+    return {
+      receipt: unchanged(request.transactionId, request.operations.length),
       authoritativeState: 'fresh',
     }
   }
@@ -102,6 +150,7 @@ export async function executePreparedGeometryFamilyTransaction(
         await cancelPrepared()
         signal.throwIfAborted()
       }
+      if (prepared.size) await cancelPrepared()
       return {
         receipt: unchanged(request.transactionId, request.operations.length),
         authoritativeState: 'fresh',
@@ -112,18 +161,21 @@ export async function executePreparedGeometryFamilyTransaction(
       signal.throwIfAborted()
     }
     if (result.status === 'busy') {
+      if (prepared.size) await cancelPrepared()
       return {
         receipt: unchanged(request.transactionId, request.operations.length),
         authoritativeState: 'fresh',
       }
     }
     if (result.status === 'conflict') {
+      if (prepared.size) await cancelPrepared()
       return {
         receipt: { status: 'conflict', transactionId: request.transactionId, code: result.code },
         authoritativeState: 'fresh',
       }
     }
     if (expectedDeckRevision && result.expectedDeckRevision !== expectedDeckRevision) {
+      if (prepared.size) await cancelPrepared()
       return {
         receipt: {
           status: 'conflict',
@@ -137,12 +189,9 @@ export async function executePreparedGeometryFamilyTransaction(
     prepared.set(item.sourceId, result)
   }
 
-  const operations: PresentationOperation[] = request.operations.map((item, index) => ({
-    kind: 'set_geometry',
-    clientId: `geometry-${index + 1}`,
-    target: prepared.get(item.sourceId)!.target,
-    geometry: item.geometry,
-  }))
+  const operations: PresentationOperation[] = request.operations.map((item, index) =>
+    compileOperation(item, index, prepared.get(item.sourceId)!.target),
+  )
   const cancel = () => {
     try {
       void api.cancelPresentationTransaction(request.transactionId).catch(() => false)
@@ -176,7 +225,13 @@ export async function executePreparedGeometryFamilyTransaction(
         code: 'write_state_uncertain',
       }
     }
-    if (receipt.status !== 'applied' || !refresh) return { receipt, authoritativeState: 'fresh' }
+    if (receipt.status !== 'applied' && receipt.status !== 'uncertain')
+      return { receipt, authoritativeState: 'fresh' }
+    if (!refresh)
+      return {
+        receipt,
+        authoritativeState: receipt.status === 'uncertain' ? 'reload_required' : 'fresh',
+      }
     try {
       return { receipt, authoritativeState: (await refresh()) ? 'fresh' : 'reload_required' }
     } catch {

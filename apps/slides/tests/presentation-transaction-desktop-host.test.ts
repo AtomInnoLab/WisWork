@@ -59,9 +59,15 @@ describe('DesktopPresentationHost', () => {
     const { session, slide, element } = await fixture()
     const childXml =
       '<p:sp><p:nvSpPr><p:cNvPr id="2" name="child"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>' +
-      '<p:spPr><a:xfrm><a:off x="1" y="2"/><a:ext cx="10" cy="4"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>before</a:t></a:r></a:p></p:txBody></p:sp>'
+      '<p:spPr><a:xfrm><a:off x="1" y="2"/><a:ext cx="10" cy="4"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:ln w="12700"><a:solidFill><a:srgbClr val="111111"/></a:solidFill><a:prstDash val="dash"/><a:headEnd type="triangle"/></a:ln></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>before</a:t></a:r></a:p></p:txBody></p:sp>'
     element.nvId = '2'
     element.anchor.originalXml = childXml
+    element.stroke = {
+      fill: { type: 'solid', color: '#111111' },
+      width: 12_700,
+      dash: 'dash',
+      headEnd: { type: 'triangle' },
+    }
     const groupXml =
       '<p:grpSp><p:nvGrpSpPr><p:cNvPr id="10" name="group"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>' +
       '<p:grpSpPr><a:xfrm><a:off x="100000" y="200000"/><a:ext cx="2000000" cy="3000000"/><a:chOff x="500000" y="600000"/><a:chExt cx="1000000" cy="1000000"/></a:xfrm></p:grpSpPr>' +
@@ -99,6 +105,28 @@ describe('DesktopPresentationHost', () => {
           },
           geometry: { x: 30, y: 50, width: 40, height: 60, rotation: 15 },
         },
+        {
+          kind: 'set_fill',
+          clientId: 'fill',
+          target: {
+            slideId: slide.durableId,
+            elementId: element.creationId!,
+            expectedType: 'text',
+            expectedFingerprint: await fingerprintSlideElement(session.opened, slide, element),
+          },
+          fill: { kind: 'solid', color: '#123456' },
+        },
+        {
+          kind: 'set_stroke',
+          clientId: 'stroke',
+          target: {
+            slideId: slide.durableId,
+            elementId: element.creationId!,
+            expectedType: 'text',
+            expectedFingerprint: await fingerprintSlideElement(session.opened, slide, element),
+          },
+          stroke: { color: '#654321', width: 2 },
+        },
       ],
     }
     const receipt = await new PresentationTransactionExecutor(
@@ -120,6 +148,22 @@ describe('DesktopPresentationHost', () => {
       cx: 254_000,
       cy: 254_000,
     })
+    const reopenedChild = reopenedGroup?.type === 'group' ? reopenedGroup.children[0] : undefined
+    expect(
+      reopenedChild && (reopenedChild.type === 'text' || reopenedChild.type === 'shape')
+        ? reopenedChild.fill
+        : undefined,
+    ).toEqual({ type: 'solid', color: '#123456' })
+    expect(
+      reopenedChild && (reopenedChild.type === 'text' || reopenedChild.type === 'shape')
+        ? reopenedChild.stroke?.fill
+        : undefined,
+    ).toEqual({ type: 'solid', color: '#654321' })
+    expect(
+      reopenedChild && (reopenedChild.type === 'text' || reopenedChild.type === 'shape')
+        ? reopenedChild.stroke
+        : undefined,
+    ).toMatchObject({ dash: 'dash', headEnd: { type: 'triangle' } })
   })
 
   it('resizes table grid geometry with the canonical frame', async () => {
@@ -701,6 +745,68 @@ describe('DesktopPresentationHost', () => {
         ? reopenedElement.stroke?.dash
         : undefined,
     ).toBe('dashDot')
+  })
+
+  it('removes a stroke across save and reopen', async () => {
+    const { session, slide, element } = await fixture()
+    if (element.type !== 'text' && element.type !== 'shape') throw new Error('expected shape')
+    element.stroke = { fill: { type: 'solid', color: '#112233' }, width: 12_700 }
+    const tx: PresentationTransaction = {
+      transactionId: 'desktop-remove-stroke',
+      expectedDeckRevision: await fingerprintPresentation(session.opened),
+      mode: 'atomic',
+      operations: [
+        {
+          kind: 'set_stroke',
+          clientId: 'stroke-none',
+          target: {
+            slideId: slide.durableId,
+            elementId: element.creationId!,
+            expectedType: 'text',
+            expectedFingerprint: await fingerprintSlideElement(session.opened, slide, element),
+          },
+          stroke: null,
+        },
+      ],
+    }
+    expect(
+      await new PresentationTransactionExecutor(new DesktopPresentationHost(session)).execute(tx),
+    ).toMatchObject({ status: 'applied' })
+    const reopened = await openPptx(await savePptx(session.opened))
+    const reopenedElement = reopened.deck.slides[0]!.elements.find(
+      (candidate) => candidate.creationId === element.creationId,
+    )
+    expect(
+      reopenedElement && (reopenedElement.type === 'text' || reopenedElement.type === 'shape')
+        ? reopenedElement.stroke
+        : undefined,
+    ).toBeUndefined()
+  })
+
+  it('treats removing an absent stroke as a no-op with no history', async () => {
+    const { session, slide, element } = await fixture()
+    const tx: PresentationTransaction = {
+      transactionId: 'desktop-remove-absent-stroke',
+      expectedDeckRevision: await fingerprintPresentation(session.opened),
+      mode: 'atomic',
+      operations: [
+        {
+          kind: 'set_stroke',
+          clientId: 'stroke-none',
+          target: {
+            slideId: slide.durableId,
+            elementId: element.creationId!,
+            expectedType: 'text',
+            expectedFingerprint: await fingerprintSlideElement(session.opened, slide, element),
+          },
+          stroke: null,
+        },
+      ],
+    }
+    expect(
+      await new PresentationTransactionExecutor(new DesktopPresentationHost(session)).execute(tx),
+    ).toMatchObject({ status: 'unchanged', code: 'operation_noop' })
+    expect(session.undoStack).toHaveLength(0)
   })
 
   it('fails closed when a durable element target is missing', async () => {

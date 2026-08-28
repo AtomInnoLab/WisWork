@@ -5,6 +5,8 @@ import {
   deleteElement,
   fingerprintPresentation,
   ensureElementCreationId,
+  editGroupChildFill,
+  editGroupChildStroke,
   editGroupChildTransform,
   getSlideNotes,
   mintUniqueCreationIds,
@@ -140,7 +142,9 @@ function replaceText(
   return true
 }
 
-function fillValue(operation: Extract<PresentationOperation, { kind: 'set_fill' }>): Fill {
+function fillValue(
+  operation: Extract<PresentationOperation, { kind: 'set_fill' }>,
+): Extract<Fill, { type: 'none' | 'solid' }> {
   if (operation.fill.kind === 'none') return { type: 'none' }
   const alpha = Math.round(255 * (1 - (operation.fill.transparency ?? 0)))
     .toString(16)
@@ -152,8 +156,13 @@ function fillValue(operation: Extract<PresentationOperation, { kind: 'set_fill' 
   }
 }
 
-function strokeValue(operation: Extract<PresentationOperation, { kind: 'set_stroke' }>): Stroke {
+function strokeValue(
+  operation: Extract<PresentationOperation, { kind: 'set_stroke' }>,
+  current?: Stroke,
+): Stroke | undefined {
+  if (operation.stroke === null) return undefined
   return {
+    ...current,
     fill: { type: 'solid', color: operation.stroke.color },
     width: Math.round(operation.stroke.width * EMU_PER_POINT),
     ...(operation.stroke.dash === undefined
@@ -283,6 +292,12 @@ function applyOperation(
         throw new Error('Fill operation target changed type')
       const next = fillValue(operation)
       if (same(element.fill, next)) return { changed: false, metaDirty: false }
+      if (location.directParent) {
+        const fill = next.type === 'none' ? 'none' : next.color
+        if (!editGroupChildFill(slide, location.directParent.id, element.id, fill))
+          throw new Error('Group child fill failed')
+        return { changed: true, metaDirty: false }
+      }
       element.fill = next
       element.dirtyFill = true
       return { changed: true, metaDirty: false }
@@ -290,8 +305,21 @@ function applyOperation(
     case 'set_stroke': {
       if (element.type !== 'text' && element.type !== 'shape' && element.type !== 'picture')
         throw new Error('Stroke operation target changed type')
-      const next = strokeValue(operation)
+      const next = strokeValue(operation, element.stroke)
       if (same(element.stroke, next)) return { changed: false, metaDirty: false }
+      if (location.directParent) {
+        const stroke = operation.stroke && {
+          color: operation.stroke.color,
+          widthEmu: Math.round(operation.stroke.width * EMU_PER_POINT),
+          ...(operation.stroke.dash === undefined
+            ? {}
+            : { dash: operation.stroke.dash === 'dash_dot' ? 'dashDot' : operation.stroke.dash }),
+        }
+        if (!editGroupChildStroke(slide, location.directParent.id, element.id, stroke))
+          throw new Error('Group child stroke failed')
+        element.stroke = next
+        return { changed: true, metaDirty: false }
+      }
       element.stroke = next
       element.dirtyStroke = true
       return { changed: true, metaDirty: false }

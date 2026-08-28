@@ -372,6 +372,63 @@ describe('Slides canonical geometry-family transactions', () => {
   })
 })
 
+describe('Slides canonical fill/stroke-family transactions', () => {
+  it.each([
+    [
+      'set_element_fill',
+      { fill: '#12abef' },
+      { kind: 'set_fill', fill: { kind: 'solid', color: '#12ABEF' } },
+    ],
+    ['set_element_fill', { fill: 'none' }, { kind: 'set_fill', fill: { kind: 'none' } }],
+    [
+      'set_element_stroke',
+      { color: '#12abef', widthPt: 2 },
+      { kind: 'set_stroke', stroke: { color: '#12ABEF', width: 2 } },
+    ],
+    [
+      'set_element_stroke',
+      { color: '#12abef', widthPt: 0 },
+      { kind: 'set_stroke', stroke: { color: '#12ABEF', width: 0 } },
+    ],
+    ['set_element_stroke', { remove: true }, { kind: 'set_stroke', stroke: null }],
+  ] as const)(
+    'routes %s through one canonical style transaction',
+    async (name, patch, operation) => {
+      const executePresentationOperation = vi.fn(async (request) => ({
+        receipt: {
+          status: 'applied' as const,
+          transactionId: request.transactionId,
+          resultingDeckRevision: fp('b'),
+          operationCount: 1,
+        },
+        authoritativeState: 'fresh' as const,
+      }))
+      const legacy = { editFill: vi.fn(), editStroke: vi.fn() }
+      ;(globalThis as any).window = { slidesApi: legacy }
+      const result = await createSlidesSkill({
+        getSlides: () => [slide],
+        getCurrent: () => 0,
+        getSelectedIds: () => [],
+        applySlide: vi.fn(),
+        applyDeck: vi.fn(),
+        executePresentationOperation,
+        fitWidthPx: 1280,
+      }).executeTool({
+        id: `paint-${name}`,
+        name,
+        input: { slideIndex: 0, sourceId: '2', ...patch },
+      })
+      expect(executePresentationOperation).toHaveBeenCalledWith(
+        expect.objectContaining({ slideIndex: 0, operations: [{ sourceId: '2', ...operation }] }),
+        undefined,
+      )
+      expect(legacy.editFill).not.toHaveBeenCalled()
+      expect(legacy.editStroke).not.toHaveBeenCalled()
+      expect(result).toMatchObject({ mutated: true })
+    },
+  )
+})
+
 describe('text tool invocation identity', () => {
   it('reuses one nonce for transport retry but not for a later identical invocation', async () => {
     const base = { id: 'same', name: 'set_element_text', input: { text: 'same' } }
@@ -581,6 +638,164 @@ describe('renderer geometry transaction contract', () => {
         ],
       }),
     )
+  })
+
+  it('emits ordered fill/stroke operations using authoritative prepared targets', async () => {
+    const api = {
+      preparePresentationTarget: vi.fn(async ({ sourceId }: { sourceId?: string }) => ({
+        status: 'prepared' as const,
+        expectedDeckRevision: fp('0'),
+        target: target(sourceId!),
+      })),
+      executePresentationTransaction: vi.fn(async (transaction) => ({
+        status: 'applied' as const,
+        transactionId: transaction.transactionId,
+        resultingDeckRevision: fp('1'),
+        operationCount: transaction.operations.length,
+      })),
+      cancelPresentationTransaction: vi.fn(async () => true),
+    }
+    await executePreparedGeometryFamilyTransaction(api, {
+      transactionId: 'paint-many',
+      slideIndex: 0,
+      operations: [
+        {
+          sourceId: 'a',
+          kind: 'set_fill',
+          fill: { kind: 'solid', color: '#112233', transparency: 0.25 },
+        },
+        { sourceId: 'b', kind: 'set_stroke', stroke: null },
+        {
+          sourceId: 'a',
+          kind: 'set_stroke',
+          stroke: { color: '#445566', width: 2, dash: 'dash_dot' },
+        },
+      ],
+    })
+    expect(api.preparePresentationTarget).toHaveBeenCalledTimes(2)
+    expect(api.executePresentationTransaction).toHaveBeenCalledWith({
+      transactionId: 'paint-many',
+      expectedDeckRevision: fp('0'),
+      mode: 'atomic',
+      operations: [
+        {
+          kind: 'set_fill',
+          clientId: 'fill-1',
+          target: target('a'),
+          fill: { kind: 'solid', color: '#112233', transparency: 0.25 },
+        },
+        { kind: 'set_stroke', clientId: 'stroke-2', target: target('b'), stroke: null },
+        {
+          kind: 'set_stroke',
+          clientId: 'stroke-3',
+          target: target('a'),
+          stroke: { color: '#445566', width: 2, dash: 'dash_dot' },
+        },
+      ],
+    })
+  })
+
+  it('rejects invalid canonical paint/text payloads before target preparation', async () => {
+    const api = {
+      preparePresentationTarget: vi.fn(),
+      executePresentationTransaction: vi.fn(),
+      cancelPresentationTransaction: vi.fn(async () => true),
+    }
+    await expect(
+      executePreparedGeometryFamilyTransaction(api, {
+        transactionId: 'invalid-paint',
+        slideIndex: 0,
+        operations: [
+          { sourceId: 'a', kind: 'set_stroke', stroke: { color: '#112233', width: 1001 } },
+        ],
+      }),
+    ).resolves.toMatchObject({ receipt: { status: 'unchanged', code: 'write_not_applied' } })
+    await expect(
+      executePreparedGeometryFamilyTransaction(api, {
+        transactionId: 'invalid-rich-text',
+        slideIndex: 0,
+        operations: [
+          {
+            sourceId: 'a',
+            kind: 'set_text',
+            paragraphs: [{ runs: [{ text: 'x', strike: true } as any] }],
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({ receipt: { status: 'unchanged', code: 'write_not_applied' } })
+    expect(api.preparePresentationTarget).not.toHaveBeenCalled()
+    expect(api.executePresentationTransaction).not.toHaveBeenCalled()
+  })
+
+  it('cancels earlier preparations when a later target cannot prepare, allowing retry', async () => {
+    const api = {
+      preparePresentationTarget: vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: 'prepared' as const,
+          expectedDeckRevision: fp('0'),
+          target: target('a'),
+        })
+        .mockResolvedValueOnce({ status: 'busy' as const }),
+      executePresentationTransaction: vi.fn(),
+      cancelPresentationTransaction: vi.fn(async () => true),
+    }
+    await expect(
+      executePreparedGeometryFamilyTransaction(api, {
+        transactionId: 'prepare-cleanup',
+        slideIndex: 0,
+        operations: [
+          { sourceId: 'a', kind: 'set_fill', fill: { kind: 'none' } },
+          { sourceId: 'b', kind: 'set_fill', fill: { kind: 'none' } },
+        ],
+      }),
+    ).resolves.toMatchObject({ receipt: { status: 'unchanged' } })
+    expect(api.cancelPresentationTransaction).toHaveBeenCalledWith('prepare-cleanup')
+    expect(api.executePresentationTransaction).not.toHaveBeenCalled()
+  })
+
+  it('refreshes after an uncertain write and requires reload when authority cannot be restored', async () => {
+    const api = {
+      preparePresentationTarget: vi.fn(async ({ sourceId }: { sourceId?: string }) => ({
+        status: 'prepared' as const,
+        expectedDeckRevision: fp('0'),
+        target: target(sourceId!),
+      })),
+      executePresentationTransaction: vi.fn(async (transaction) => ({
+        status: 'uncertain' as const,
+        transactionId: transaction.transactionId,
+        code: 'write_state_uncertain' as const,
+      })),
+      cancelPresentationTransaction: vi.fn(async () => true),
+    }
+    const request = {
+      transactionId: 'uncertain-paint',
+      slideIndex: 0,
+      operations: [{ sourceId: 'a', kind: 'set_fill' as const, fill: { kind: 'none' as const } }],
+    }
+    await expect(
+      executePreparedGeometryFamilyTransaction(api, request, undefined, async () => true),
+    ).resolves.toMatchObject({ receipt: { status: 'uncertain' }, authoritativeState: 'fresh' })
+    await expect(
+      executePreparedGeometryFamilyTransaction(
+        api,
+        { ...request, transactionId: 'uncertain-paint-reload' },
+        undefined,
+        async () => false,
+      ),
+    ).resolves.toMatchObject({
+      receipt: { status: 'uncertain' },
+      authoritativeState: 'reload_required',
+    })
+    await expect(
+      executePreparedGeometryFamilyTransaction(api, {
+        ...request,
+        transactionId: 'uncertain-paint-no-refresh',
+      }),
+    ).resolves.toMatchObject({
+      receipt: { status: 'uncertain' },
+      authoritativeState: 'reload_required',
+    })
   })
 
   it('fails closed when target preparations observe different deck revisions', async () => {

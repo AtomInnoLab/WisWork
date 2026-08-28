@@ -1551,26 +1551,144 @@ async function executeTool(
           summary: t('aiSumScriptNoop', { n: idx + 1 }),
         }
       }
-      // A pure geometry script is one canonical atomic transaction. A mixed script stays wholly
-      // on the legacy path until every family in it can be compiled into the same transaction.
-      if (r.ops.length > 0 && r.edits.length === 0) {
+      // Every primitive exposed by this DSL now belongs to an enrolled canonical family. Compile
+      // the complete script before preparing any target so an unsupported paint/text target fails
+      // closed without a proposal, mutation, or partially executed prefix.
+      if (r.ops.length > 0 || r.edits.length > 0) {
         if (!access.executePresentationOperation)
           return fail(t('aiFailScript'), 'Canonical presentation transactions are unavailable')
-        const operations = r.ops.map((op) => {
-          const target = resolveEditTarget(slide, op.id)
+        const operations: GeometryFamilyTransactionRequest['operations'][number][] = r.ops.map(
+          (op) => {
+            const target = resolveEditTarget(slide, op.id)
+            if (!target || 'nested' in target)
+              throw new TypeError(`Geometry target ${op.id} is no longer editable`)
+            return {
+              sourceId: op.id,
+              geometry: {
+                x: geometryPxToPoints(op.x, slide.scale),
+                y: geometryPxToPoints(op.y, slide.scale),
+                width: geometryPxToPoints(op.w, slide.scale),
+                height: geometryPxToPoints(op.h, slide.scale),
+                rotation: normalizePresentationRotation(op.rotation),
+              },
+            }
+          },
+        )
+        const paragraphState = new Map<string, EditParagraph[]>()
+        const canonicalParagraphs = (paragraphs: readonly EditParagraph[]) => {
+          const paragraphKeys = new Set(['runs', 'align'])
+          const runKeys = new Set([
+            'text',
+            'bold',
+            'italic',
+            'underline',
+            'fontSize',
+            'fontFamily',
+            'color',
+          ])
+          if (
+            paragraphs.some(
+              (paragraph) =>
+                Object.keys(paragraph).some((key) => !paragraphKeys.has(key)) ||
+                paragraph.align === 'justify' ||
+                paragraph.runs.some((run) => Object.keys(run).some((key) => !runKeys.has(key))),
+            )
+          )
+            return null
+          return paragraphs.map((paragraph) => ({
+            runs: paragraph.runs.map((run) => ({ ...run })),
+            ...(paragraph.align === 'left' ||
+            paragraph.align === 'center' ||
+            paragraph.align === 'right'
+              ? { align: paragraph.align }
+              : {}),
+          }))
+        }
+        for (const edit of r.edits) {
+          const target = resolveEditTarget(slide, edit.id)
           if (!target || 'nested' in target)
-            throw new TypeError(`Geometry target ${op.id} is no longer editable`)
-          return {
-            sourceId: op.id,
-            geometry: {
-              x: geometryPxToPoints(op.x, slide.scale),
-              y: geometryPxToPoints(op.y, slide.scale),
-              width: geometryPxToPoints(op.w, slide.scale),
-              height: geometryPxToPoints(op.h, slide.scale),
-              rotation: normalizePresentationRotation(op.rotation),
-            },
+            return fail(t('aiFailScript'), `Target ${edit.id} is no longer editable`)
+          if (edit.kind === 'fill') {
+            if (!(target.node.type === 'text' || target.node.type === 'shape'))
+              return fail(
+                t('aiFailScript'),
+                `setFill("${edit.id}"): element does not support a durable fill`,
+              )
+            operations.push({
+              sourceId: edit.id,
+              kind: 'set_fill',
+              fill:
+                edit.fill === 'none'
+                  ? { kind: 'none' }
+                  : { kind: 'solid', color: edit.fill.toUpperCase() },
+            })
+          } else if (edit.kind === 'stroke') {
+            if (!(
+              target.node.type === 'text' ||
+              target.node.type === 'shape' ||
+              target.node.type === 'picture'
+            ))
+              return fail(
+                t('aiFailScript'),
+                `setStroke("${edit.id}"): element does not support a durable stroke`,
+              )
+            operations.push({
+              sourceId: edit.id,
+              kind: 'set_stroke',
+              stroke: edit.stroke && {
+                color: edit.stroke.color.toUpperCase(),
+                width: edit.stroke.widthPt,
+              },
+            })
+          } else if (edit.kind === 'text') {
+            if (!(target.node.type === 'text' || target.node.type === 'shape'))
+              return fail(
+                t('aiFailScript'),
+                `setText("${edit.id}"): element does not support text editing`,
+              )
+            paragraphState.set(
+              edit.id,
+              edit.paragraphs.map((paragraph) => ({
+                ...paragraph,
+                runs: paragraph.runs.map((run) => ({ ...run })),
+              })),
+            )
+            const paragraphs = canonicalParagraphs(paragraphState.get(edit.id)!)
+            if (!paragraphs)
+              return fail(
+                t('aiFailScript'),
+                `setText("${edit.id}"): rich paragraph formatting is not supported by atomic scripts`,
+              )
+            operations.push({
+              sourceId: edit.id,
+              kind: 'set_text',
+              paragraphs,
+            })
+          } else {
+            if (!(target.node.type === 'text' || target.node.type === 'shape'))
+              return fail(t('aiFailScript'), `setStyle("${edit.id}"): text element not found`)
+            const current =
+              paragraphState.get(edit.id) ?? nodeToParagraphs(target.node as ShapeRenderNode)
+            if (!current.length)
+              return fail(
+                t('aiFailScript'),
+                `setStyle("${edit.id}"): this element has no text to format`,
+              )
+            const paragraphs = mergeStyleIntoParagraphs(current, edit.style)
+            paragraphState.set(edit.id, paragraphs)
+            const canonical = canonicalParagraphs(paragraphs)
+            if (!canonical)
+              return fail(
+                t('aiFailScript'),
+                `setStyle("${edit.id}"): existing rich paragraph formatting cannot be preserved atomically`,
+              )
+            operations.push({
+              sourceId: edit.id,
+              kind: 'set_text',
+              paragraphs: canonical,
+            })
           }
-        })
+        }
         const execution = await access.executePresentationOperation(
           {
             transactionId: await geometryToolTransactionId(call),
@@ -1601,10 +1719,22 @@ async function executeTool(
         }
         const refreshed = access.getSlides()[idx] ?? slide
         const audit = formatAudit(auditSlideLayout(refreshed))
+        const counts = {
+          text: r.edits.filter((edit) => edit.kind === 'text').length,
+          style: r.edits.filter((edit) => edit.kind === 'style').length,
+          fill: r.edits.filter((edit) => edit.kind === 'fill').length,
+          stroke: r.edits.filter((edit) => edit.kind === 'stroke').length,
+        }
+        const parts: string[] = []
+        if (r.ops.length) parts.push(`layout ${r.ops.length} element(s)`)
+        if (counts.text) parts.push(`text ${counts.text} item(s)`)
+        if (counts.style) parts.push(`style ${counts.style} item(s)`)
+        if (counts.fill) parts.push(`fill ${counts.fill} item(s)`)
+        if (counts.stroke) parts.push(`stroke ${counts.stroke} item(s)`)
         return {
           output: outcome.mutated
-            ? `Script applied: layout ${r.ops.length} element(s).${returnedStr}${logsStr}${audit ? `\n${audit}` : ''}`
-            : `Script geometry already matched the requested layout.${returnedStr}${logsStr}${audit ? `\n${audit}` : ''}`,
+            ? `Script applied: ${parts.join(', ')}.${returnedStr}${logsStr}${audit ? `\n${audit}` : ''}`
+            : `Script already matched the requested state.${returnedStr}${logsStr}${audit ? `\n${audit}` : ''}`,
           mutated: outcome.mutated,
           summary: t('aiSumScript', { n: idx + 1 }),
         }
@@ -1775,18 +1905,48 @@ async function executeTool(
       const target = resolveEditTarget(slides[idx]!, sourceId)
       const terr = targetError(target, sourceId, idx + 1)
       if (terr || !target || 'nested' in target) return fail(t('aiFailFill'), terr!)
-      const updated = await window.slidesApi.editFill({
-        slideIndex: idx,
-        sourceId,
-        fill: String(call.input.fill),
-        ...(target.groupId ? { groupId: target.groupId } : {}),
-      })
-      signal?.throwIfAborted()
-      if (!updated) return fail(t('aiFailFill'), `Element ${sourceId} does not support fill`)
-      access.applySlide(idx, updated)
+      if (!(target.node.type === 'text' || target.node.type === 'shape'))
+        return fail(t('aiFailFill'), `Element ${sourceId} does not support a durable fill`)
+      const rawFill = String(call.input.fill)
+      const fill =
+        rawFill === 'none'
+          ? ({ kind: 'none' } as const)
+          : /^#?[0-9a-fA-F]{6}$/.test(rawFill)
+            ? ({ kind: 'solid', color: `#${rawFill.replace(/^#/, '').toUpperCase()}` } as const)
+            : null
+      if (!fill) return fail(t('aiFailFill'), 'fill must be #RRGGBB or none')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailFill'), 'Canonical presentation transactions are unavailable')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await geometryToolTransactionId(call),
+          slideIndex: idx,
+          operations: [{ sourceId, kind: 'set_fill', fill }],
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required')
+        return {
+          output: 'The fill was applied, but reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumFill', { n: idx + 1 }),
+        }
+      if (!outcome.ok)
+        return {
+          output: outcome.mutated
+            ? 'The fill change may be partially applied. Inspect the slide before retrying.'
+            : `The fill was not applied (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailFill'),
+        }
       return {
-        output: `Set the fill of element ${sourceId} on page ${idx + 1}.`,
-        mutated: true,
+        output: outcome.mutated
+          ? `Set the fill of element ${sourceId} on page ${idx + 1}.`
+          : `Element ${sourceId} already had the requested fill.`,
+        mutated: outcome.mutated,
         summary: t('aiSumFill', { n: idx + 1 }),
       }
     }
@@ -1803,18 +1963,55 @@ async function executeTool(
       const target = resolveEditTarget(slides[idx]!, sourceId)
       const terr = targetError(target, sourceId, idx + 1)
       if (terr || !target || 'nested' in target) return fail(t('aiFailStroke'), terr!)
-      const updated = await window.slidesApi.editStroke({
-        slideIndex: idx,
-        sourceId,
-        stroke,
-        ...(target.groupId ? { groupId: target.groupId } : {}),
-      })
-      signal?.throwIfAborted()
-      if (!updated) return fail(t('aiFailStroke'), `Element ${sourceId} does not support stroke`)
-      access.applySlide(idx, updated)
+      if (!(
+        target.node.type === 'text' ||
+        target.node.type === 'shape' ||
+        target.node.type === 'picture'
+      ))
+        return fail(t('aiFailStroke'), `Element ${sourceId} does not support a durable stroke`)
+      if (
+        stroke &&
+        (!/^#[0-9a-fA-F]{6}$/.test(stroke.color) ||
+          !Number.isFinite(stroke.widthPt) ||
+          stroke.widthPt < 0)
+      )
+        return fail(t('aiFailStroke'), 'stroke color/width is invalid')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailStroke'), 'Canonical presentation transactions are unavailable')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await geometryToolTransactionId(call),
+          slideIndex: idx,
+          operations: [
+            {
+              sourceId,
+              kind: 'set_stroke',
+              stroke: stroke && { color: stroke.color.toUpperCase(), width: stroke.widthPt },
+            },
+          ],
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required')
+        return {
+          output: 'The stroke was applied, but reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumStroke', { n: idx + 1 }),
+        }
+      if (!outcome.ok)
+        return {
+          output: outcome.mutated
+            ? 'The stroke change may be partially applied. Inspect the slide before retrying.'
+            : `The stroke was not applied (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailStroke'),
+        }
       return {
         output: `${remove ? 'Removed' : 'Set'} the stroke of element ${sourceId} on page ${idx + 1}.`,
-        mutated: true,
+        mutated: outcome.mutated,
         summary: t('aiSumStroke', { n: idx + 1 }),
       }
     }
