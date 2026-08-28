@@ -143,6 +143,7 @@ export type PresentationQualityCode =
   | 'empty_placeholder'
   | 'low_contrast'
   | 'visual_quality'
+  | 'quality_capacity_exceeded'
 
 export type PresentationQualitySeverity = 'warning' | 'important' | 'critical'
 
@@ -159,6 +160,8 @@ export interface PresentationQualityFinding {
 export type PresentationQualityReceipt =
   | {
       qualityRunId: string
+      transactionId: string
+      slideId: string
       source: 'deterministic' | 'visual'
       status: 'available'
       findings: readonly PresentationQualityFinding[]
@@ -166,6 +169,8 @@ export type PresentationQualityReceipt =
     }
   | {
       qualityRunId: string
+      transactionId: string
+      slideId: string
       source: 'visual'
       status: 'unavailable' | 'cancelled'
       code: 'screenshot_unavailable' | 'transport_unavailable' | 'cancelled' | 'stale_session'

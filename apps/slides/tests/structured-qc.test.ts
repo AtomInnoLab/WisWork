@@ -5,7 +5,11 @@ import {
   compareQualityFindings,
   createDeterministicQualityReceipt,
 } from '../src/renderer/ai/layout-audit'
-import { shouldRunVisualQc, VISUAL_QC_LIMITS } from '../src/renderer/ai/slide-qc'
+import {
+  shouldRunVisualQc,
+  VISUAL_QC_LIMITS,
+  visualQcImageRequestBytes,
+} from '../src/renderer/ai/slide-qc'
 
 const box = (x: number, y: number, w: number, h: number): PlacedBox => ({
   x,
@@ -71,7 +75,7 @@ describe('structured deterministic quality audit', () => {
   it('returns stable identity-only findings for both overflow axes and bounds', () => {
     const findings = auditSlideQuality(
       slide([text('overflow', box(950, -20, 100, 40), 'PRIVATE', 80, 120)]),
-      { slideId: 'slide-1' },
+      { slideId: 'slide-1', elementCreationId: (id) => id },
     )
     expect(findings.map((f) => f.code)).toEqual([
       'element_off_slide',
@@ -129,11 +133,38 @@ describe('structured deterministic quality audit', () => {
     expect(a.length).toBeLessThanOrEqual(50)
   })
 
+  it('bounds collision work before pairwise growth', () => {
+    const stats = { candidatePairs: 0, elements: 0 }
+    const nodes = Array.from({ length: 2_000 }, (_, i) =>
+      text(`t${i}`, box(i % 100, i % 100, 50, 20), 'x'),
+    )
+    const findings = auditSlideQuality(slide(nodes), { slideId: 'slide-1', stats })
+    expect(stats.elements).toBeLessThanOrEqual(500)
+    expect(stats.candidatePairs).toBeLessThanOrEqual(5_000)
+    expect(findings[0]).toMatchObject({ code: 'quality_capacity_exceeded', severity: 'critical' })
+  })
+
+  it('bounds sweep-line candidates even when overlaps are intentionally ignored', () => {
+    const stats = { candidatePairs: 0, elements: 0 }
+    const pictures = Array.from({ length: 500 }, (_, i) => ({
+      id: `p${i}`,
+      sourceId: `p${i}`,
+      type: 'picture' as const,
+      box: box(0, 0, 100, 100),
+    })) as unknown as RenderNode[]
+    const findings = auditSlideQuality(slide(pictures), { slideId: 'slide-1', stats })
+    expect(stats.candidatePairs).toBe(5_000)
+    expect(findings).toEqual([
+      expect.objectContaining({ code: 'quality_capacity_exceeded', severity: 'critical' }),
+    ])
+  })
+
   it('emits a separate receipt with durable creation IDs and comparable stable keys', () => {
     const before = createDeterministicQualityReceipt(
       slide([text('source-1', box(-20, 10, 50, 30), 'x')]),
       {
         qualityRunId: 'qc-1',
+        transactionId: 'tx-1',
         slideId: 'ppt/slides/slide1.xml',
         elementCreationId: () => 'creation-1',
       },
@@ -148,6 +179,14 @@ describe('structured deterministic quality audit', () => {
       introduced: [],
       resolved: ['ppt/slides/slide1.xml:creation-1::element_off_slide'],
     })
+  })
+
+  it('omits runtime source IDs when no durable creation-ID mapping exists', () => {
+    const findings = auditSlideQuality(slide([text('runtime-source', box(-20, 10, 50, 30), 'x')]), {
+      slideId: 'ppt/slides/slide1.xml',
+    })
+    expect(findings[0]).not.toHaveProperty('elementId')
+    expect(JSON.stringify(findings)).not.toContain('runtime-source')
   })
 })
 
@@ -181,6 +220,17 @@ describe('visual QC policy', () => {
       }),
     ).toBe(false)
     expect(VISUAL_QC_LIMITS.maxScreenshots).toBeLessThanOrEqual(20)
-    expect(VISUAL_QC_LIMITS.maxScreenshotBytes).toBeLessThanOrEqual(2_000_000)
+    expect(VISUAL_QC_LIMITS.maxScreenshotRequestBytes).toBeLessThanOrEqual(2_000_000)
+    expect(
+      VISUAL_QC_LIMITS.maxPromptChars + VISUAL_QC_LIMITS.maxScreenshotRequestBytes,
+    ).toBeLessThan(VISUAL_QC_LIMITS.maxTransportRequestBytes)
+  })
+
+  it('caps the actual serialized image request, including JSON overhead', () => {
+    const image = { mime: 'image/png', base64: 'A'.repeat(1_999_960) }
+    expect(visualQcImageRequestBytes(image)).toBeGreaterThan(1_999_960)
+    expect(visualQcImageRequestBytes(image)).toBeGreaterThan(
+      VISUAL_QC_LIMITS.maxScreenshotRequestBytes,
+    )
   })
 })

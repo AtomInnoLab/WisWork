@@ -12,6 +12,7 @@ import {
   qcSlidePage,
   captureCurrentQcShot,
   toVisualQualityReceipt,
+  publishAppliedDeterministicQuality,
 } from '../src/renderer/ai/slide-qc'
 import type { DeckAccess } from '../src/renderer/ai/slides-skill'
 
@@ -25,8 +26,63 @@ const access: DeckAccess = {
 }
 
 describe('visual quality receipts', () => {
+  it('publishes one deterministic receipt for one applied AiPanel transaction', async () => {
+    const published = vi.fn()
+    const completedKeys = new Set<string>()
+    const one: DeckAccess = {
+      ...access,
+      getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] } as never],
+    }
+    const run = () =>
+      publishAppliedDeterministicQuality({
+        transactionId: 'tx-1',
+        receiptStatus: 'applied',
+        sessionId: 'session-1',
+        pageIndexes: [0, 0],
+        completedKeys,
+        access: one,
+        prepareSlide: async () => ({ status: 'prepared', slideId: 'ppt/slides/slide1.xml' }),
+        publish: published,
+        isCurrent: () => true,
+      })
+    await expect(run()).resolves.toEqual([0])
+    await expect(run()).resolves.toEqual([])
+    expect(published).toHaveBeenCalledOnce()
+    expect(published.mock.calls[0]![0]).toMatchObject({
+      transactionId: 'tx-1',
+      slideId: 'ppt/slides/slide1.xml',
+      source: 'deterministic',
+      status: 'available',
+    })
+  })
+
+  it('publishes nothing when the AiPanel session becomes stale during durable target resolution', async () => {
+    let resolvePrepare!: (value: { status: string; slideId?: string }) => void
+    let current = true
+    const published = vi.fn()
+    const one: DeckAccess = {
+      ...access,
+      getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] } as never],
+    }
+    const pending = publishAppliedDeterministicQuality({
+      transactionId: 'tx-stale',
+      receiptStatus: 'applied',
+      sessionId: 'session-1',
+      pageIndexes: [0],
+      completedKeys: new Set(),
+      access: one,
+      prepareSlide: () => new Promise((resolve) => (resolvePrepare = resolve)),
+      publish: published,
+      isCurrent: () => current,
+    })
+    current = false
+    resolvePrepare({ status: 'prepared', slideId: 'ppt/slides/slide1.xml' })
+    await expect(pending).resolves.toEqual([])
+    expect(published).not.toHaveBeenCalled()
+  })
+
   it('never copies model text into the shared receipt', () => {
-    const receipt = toVisualQualityReceipt('qc-1', 'slide-1', {
+    const receipt = toVisualQualityReceipt('qc-1', 'tx-1', 'slide-1', {
       ok: true,
       edited: false,
       reply: 'PRIVATE quoted content',
@@ -39,7 +95,7 @@ describe('visual quality receipts', () => {
 
   it('keeps transport failure independent as quality unavailable', () => {
     expect(
-      toVisualQualityReceipt('qc-1', 'slide-1', {
+      toVisualQualityReceipt('qc-1', 'tx-1', 'slide-1', {
         ok: true,
         edited: false,
         reply: '',
@@ -49,6 +105,8 @@ describe('visual quality receipts', () => {
       }),
     ).toEqual({
       qualityRunId: 'qc-1',
+      transactionId: 'tx-1',
+      slideId: 'slide-1',
       source: 'visual',
       status: 'unavailable',
       code: 'transport_unavailable',

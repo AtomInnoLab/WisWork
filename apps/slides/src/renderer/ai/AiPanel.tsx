@@ -31,10 +31,12 @@ import {
   isQcEnabled,
   qcSlidePage,
   QC_MAX_PAGES,
-  shouldRunVisualQc,
+  publishAppliedDeterministicQuality,
+  toVisualQualityReceipt,
 } from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
 import { Markdown } from '@wiswork/ui'
+import type { PresentationQualityReceipt } from '@wiswork/presentation-ops'
 import { WisWorkMark } from '../components/icons'
 import sendEnterOn from '../assets/send-enter-on.png'
 import sendEnterOff from '../assets/send-enter-off.png'
@@ -224,6 +226,7 @@ interface ChatEntry {
   snapshotId?: number
   /** attachments consumed from the composer by this user message (read-only echo chips) */
   attachments?: AttachmentMeta[]
+  qualityReceipts?: readonly PresentationQualityReceipt[]
 }
 
 /** Empty deck → generation starters; deck with content → polish starters */
@@ -270,6 +273,8 @@ interface AiPanelProps {
   onAuthoritativeReloadRequired?: () => void
   /** Absolute path of the currently open file (for chat history persistence) */
   currentFilePath?: string | null
+  /** Structured, bounded quality timeline hook; receipts are separate from mutation receipts. */
+  onQualityReceipt?: (receipt: PresentationQualityReceipt) => void
 }
 
 /** Some locales already end the label with an ellipsis — normalize to exactly one. */
@@ -349,12 +354,14 @@ export function AiPanel({
   onSpeakerNotesApplied,
   onPrepareSpeakerNotesWrite,
   onAuthoritativeReloadRequired,
+  onQualityReceipt,
   currentFilePath,
 }: AiPanelProps) {
   const { t } = useI18n()
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [chat, setChat] = useState<ChatEntry[]>([])
+  const [qualityTimeline, setQualityTimeline] = useState<PresentationQualityReceipt[]>([])
   /** Past conversation restored from JSONL (read-only transcript, not fed to the model) */
   const [historicChat, setHistoricChat] = useState<ChatEntry[]>([])
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null)
@@ -533,6 +540,9 @@ export function AiPanel({
       onReset: () => {
         setChat([])
         setHistoricChat([])
+        setQualityTimeline([])
+        qualityReceiptsRef.current = []
+        qcTransactionByPageRef.current.clear()
       },
     })
   }
@@ -591,6 +601,21 @@ export function AiPanel({
   const qcAbortRef = useRef<AbortController | null>(null)
   const qcRunningRef = useRef(false)
   const completedQcTransactionsRef = useRef(new Set<string>())
+  const qualityReceiptsRef = useRef<PresentationQualityReceipt[]>([])
+  const qcTransactionByPageRef = useRef(new Map<number, string>())
+  const publishQualityReceipt = (receipt: PresentationQualityReceipt) => {
+    qualityReceiptsRef.current = [...qualityReceiptsRef.current, receipt].slice(-100)
+    setQualityTimeline((previous) =>
+      [
+        ...previous.filter(
+          (item) =>
+            item.transactionId !== receipt.transactionId || item.slideId !== receipt.slideId,
+        ),
+        receipt,
+      ].slice(-100),
+    )
+    onQualityReceipt?.(receipt)
+  }
   /** Latest runQcPass closure; the loop's onDone (built once) calls through this ref */
   const runQcPassRef = useRef<() => Promise<void>>(() => Promise.resolve())
   /** DeckAccess reused by the QC pass (same executors as the main loop's slides skill) */
@@ -777,27 +802,35 @@ export function AiPanel({
           onAuthoritativeReloadRequiredRef.current?.()
         const receipt = execution.receipt
         const sessionId = String(activeRunTokenRef.current)
-        if (
-          shouldRunVisualQc({
-            receiptStatus: receipt.status,
-            requested: isQcEnabled(),
-            transactionId: receipt.transactionId,
-            sessionId,
-            completedKeys: completedQcTransactionsRef.current,
-          })
-        ) {
-          const key = `${sessionId}:${receipt.transactionId}`
-          completedQcTransactionsRef.current.add(key)
-          while (completedQcTransactionsRef.current.size > 100) {
-            const oldest = completedQcTransactionsRef.current.values().next().value
-            if (oldest === undefined) break
-            completedQcTransactionsRef.current.delete(oldest)
-          }
-          const pages =
-            'backgrounds' in request
-              ? request.backgrounds.map((background) => background.slideIndex)
-              : [request.slideIndex]
-          qcPagesRef.current = [...new Set([...qcPagesRef.current, ...pages])]
+        const pages =
+          'backgrounds' in request
+            ? request.backgrounds.map((background) => background.slideIndex)
+            : [request.slideIndex]
+        const qualityPages = await publishAppliedDeterministicQuality({
+          transactionId: receipt.transactionId,
+          receiptStatus: receipt.status,
+          sessionId,
+          pageIndexes: pages,
+          completedKeys: completedQcTransactionsRef.current,
+          access,
+          prepareSlide: async (pageIndex) => {
+            const prepared = await window.slidesApi.preparePresentationTarget({
+              transactionId: `qc-target-${pageIndex}-${receipt.transactionId.slice(0, 100)}`,
+              slideIndex: pageIndex,
+            })
+            return prepared.status === 'prepared'
+              ? { status: 'prepared', slideId: prepared.target.slideId }
+              : { status: prepared.status }
+          },
+          publish: publishQualityReceipt,
+          signal,
+          isCurrent: () =>
+            activeRunTokenRef.current === Number(sessionId) && !(signal?.aborted ?? false),
+        })
+        if (isQcEnabled()) {
+          for (const page of qualityPages)
+            qcTransactionByPageRef.current.set(page, receipt.transactionId)
+          qcPagesRef.current = [...new Set([...qcPagesRef.current, ...qualityPages])]
             .filter((page) => page >= 0)
             .sort((left, right) => left - right)
         }
@@ -1285,10 +1318,16 @@ export function AiPanel({
     qcRunningRef.current = true
     const controller = new AbortController()
     qcAbortRef.current = controller
+    const sessionToken = activeRunTokenRef.current
+    const isCurrentQc = () =>
+      qcAbortRef.current === controller &&
+      activeRunTokenRef.current === sessionToken &&
+      !controller.signal.aborted
     const capped = pages.slice(0, QC_MAX_PAGES)
     const transport = createElectronTransport(() => settingsRef.current)
     const header = tGlobal('aiQcStart', { count: capped.length })
     const lines: string[] = []
+    const receipts: PresentationQualityReceipt[] = []
     const renderEntry = () => [header, ...lines].join('\n')
     setBusy(true)
     stickToBottomRef.current = true
@@ -1305,15 +1344,41 @@ export function AiPanel({
     try {
       for (const page of capped) {
         activePage = page
-        if (controller.signal.aborted || qcAbortRef.current !== controller) break
+        if (!isCurrentQc()) break
         const captured = await captureCurrentQcShot({
           capture: () => captureSlideShot(page),
           signal: controller.signal,
-          isCurrent: () => qcAbortRef.current === controller,
+          isCurrent: isCurrentQc,
         })
         if (!captured) break
         const shot = captured.value
         if (!shot) {
+          const transactionId = qcTransactionByPageRef.current.get(page)
+          const deterministic = transactionId
+            ? [...qualityReceiptsRef.current]
+                .reverse()
+                .find(
+                  (receipt) =>
+                    receipt.transactionId === transactionId && receipt.source === 'deterministic',
+                )
+            : undefined
+          if (deterministic) {
+            const receipt = toVisualQualityReceipt(
+              `qc-vis-${page}-${transactionId!.slice(0, 100)}`,
+              transactionId!,
+              deterministic.slideId,
+              {
+                ok: false,
+                edited: false,
+                reply: '',
+                preIssues: 0,
+                postIssues: 0,
+                error: 'screenshot_unavailable',
+              },
+            )
+            publishQualityReceipt(receipt)
+            receipts.push(receipt)
+          }
           if (slidesRef.current[page]) lines.push(tGlobal('aiQcPageSkipped', { n: page + 1 }))
           continue
         }
@@ -1324,18 +1389,41 @@ export function AiPanel({
           screenshot: shot,
           systemSuffix: aiLangDirective,
           signal: controller.signal,
-          isCurrent: () => qcAbortRef.current === controller,
+          isCurrent: isCurrentQc,
         })
-        if (controller.signal.aborted) break
-        if (result.error) {
-          lines.push(tGlobal('aiQcPageFailed', { n: page + 1, error: result.error }))
-        } else if (result.reply && result.reply.toUpperCase() !== 'OK') {
-          lines.push(tGlobal('aiQcPageFixed', { n: page + 1, summary: result.reply }))
+        if (!isCurrentQc()) break
+        const transactionId = qcTransactionByPageRef.current.get(page)
+        const deterministic = transactionId
+          ? [...qualityReceiptsRef.current]
+              .reverse()
+              .find(
+                (receipt) =>
+                  receipt.transactionId === transactionId && receipt.source === 'deterministic',
+              )
+          : undefined
+        const qualityReceipt =
+          transactionId && deterministic
+            ? toVisualQualityReceipt(
+                `qc-vis-${page}-${transactionId.slice(0, 100)}`,
+                transactionId,
+                deterministic.slideId,
+                result,
+              )
+            : undefined
+        if (qualityReceipt) {
+          publishQualityReceipt(qualityReceipt)
+          receipts.push(qualityReceipt)
+        }
+        if (qualityReceipt?.status !== 'available') {
+          lines.push(tGlobal('aiQcUnavailable', { n: page + 1, error: 'quality_unavailable' }))
+        } else if (qualityReceipt.findings.length > 0) {
+          lines.push(tGlobal('aiQcPageIssues', { n: page + 1, summary: result.reply }))
         } else {
-          lines.push(tGlobal('aiQcPageOk', { n: page + 1 }))
+          lines.push(tGlobal('aiQcPassed', { n: page + 1 }))
         }
         patchLastAssistant({ text: renderEntry() })
       }
+      if (!isCurrentQc()) return
       if (pages.length > capped.length) {
         lines.push(tGlobal('aiQcCapped', { count: pages.length - capped.length }))
       }
@@ -1346,19 +1434,27 @@ export function AiPanel({
       } else {
         // Keep host/deck details out of the UI and persisted chat. The exact
         // failure remains observable through existing local diagnostics.
-        lines.push(tGlobal('aiQcPageFailed', { n: activePage + 1, error: 'qc_failed' }))
+        lines.push(tGlobal('aiQcUnavailable', { n: activePage + 1, error: 'quality_unavailable' }))
       }
     } finally {
-      qcRunningRef.current = false
-      qcAbortRef.current = null
-      const finalText = renderEntry()
-      patchLastAssistant({
-        streaming: false,
-        text: finalText,
-        snapshotId: runSnapshotIdRef.current ?? undefined,
-      })
-      persistMessage('assistant', finalText)
-      setBusy(false)
+      if (!isCurrentQc()) {
+        if (qcAbortRef.current === controller) {
+          qcRunningRef.current = false
+          qcAbortRef.current = null
+        }
+      } else {
+        qcRunningRef.current = false
+        qcAbortRef.current = null
+        const finalText = renderEntry()
+        patchLastAssistant({
+          streaming: false,
+          text: finalText,
+          snapshotId: runSnapshotIdRef.current ?? undefined,
+          qualityReceipts: receipts,
+        })
+        persistMessage('assistant', finalText)
+        setBusy(false)
+      }
     }
   }
   runQcPassRef.current = runQcPass
@@ -1416,6 +1512,9 @@ export function AiPanel({
     loopRef.current?.reset()
     setBusy(false)
     setChat([])
+    setQualityTimeline([])
+    qualityReceiptsRef.current = []
+    qcTransactionByPageRef.current.clear()
     sentAttachmentsRef.current = []
     readAttachmentPathsRef.current.clear()
     inputRef.current?.focus()
@@ -1591,7 +1690,24 @@ export function AiPanel({
             <div className="ai-history-sep">{t('aiHistorySep')}</div>
           </>
         )}
-        {chat.length === 0 && historicChat.length === 0 && (
+        {qualityTimeline.map((receipt) => {
+          const pageNumber = /slide([1-9][0-9]*)\.xml$/.exec(receipt.slideId)?.[1] ?? '?'
+          const text =
+            receipt.status !== 'available'
+              ? t('aiQcUnavailable', { n: pageNumber, error: 'quality_unavailable' })
+              : receipt.findings.length > 0
+                ? t('aiQcPageIssues', { n: pageNumber, summary: `${receipt.findings.length}` })
+                : t('aiQcPassed', { n: pageNumber })
+          return (
+            <div
+              key={`${receipt.transactionId}:${receipt.slideId}`}
+              className="ai-msg ai-msg-assistant ai-msg-quality"
+            >
+              <Markdown text={text} />
+            </div>
+          )
+        })}
+        {chat.length === 0 && historicChat.length === 0 && qualityTimeline.length === 0 && (
           <div className="ai-chat-empty">
             <div className="ai-chat-empty-title">
               {t(deckEmpty ? 'aiEmptyGenTitle' : 'aiEmptyTitle')}

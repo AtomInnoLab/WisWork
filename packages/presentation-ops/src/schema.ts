@@ -26,6 +26,8 @@ export const PRESENTATION_OPS_LIMITS = Object.freeze({
   maxTextRuns: 4_000,
   maxQualityFindings: 50,
   maxQualityEvidenceFields: 8,
+  maxQualityEvidenceKeyLength: 64,
+  maxQualityEvidenceMagnitude: 1_000_000,
 })
 
 const qualityCodes: readonly PresentationQualityCode[] = [
@@ -37,6 +39,7 @@ const qualityCodes: readonly PresentationQualityCode[] = [
   'empty_placeholder',
   'low_contrast',
   'visual_quality',
+  'quality_capacity_exceeded',
 ]
 
 const parseQualityFinding = (value: unknown, index: number): PresentationQualityFinding => {
@@ -56,8 +59,16 @@ const parseQualityFinding = (value: unknown, index: number): PresentationQuality
     fail(`${name}.evidence has too many fields`)
   const evidence: Record<string, number> = {}
   for (const [key, evidenceValue] of Object.entries(evidenceRecord)) {
-    if (!identifierPattern.test(key) || unsafeKeys.has(key)) fail(`${name}.evidence key is unsafe`)
-    evidence[key] = finiteNumber(evidenceValue, `${name}.evidence.${key}`)
+    if (
+      key.length > PRESENTATION_OPS_LIMITS.maxQualityEvidenceKeyLength ||
+      !identifierPattern.test(key) ||
+      unsafeKeys.has(key)
+    )
+      fail(`${name}.evidence key is unsafe`)
+    const parsed = finiteNumber(evidenceValue, `${name}.evidence.${key}`)
+    if (Math.abs(parsed) > PRESENTATION_OPS_LIMITS.maxQualityEvidenceMagnitude)
+      fail(`${name}.evidence.${key} is out of bounds`)
+    evidence[key] = parsed
   }
   const elementId = optional(record, 'elementId', (item) =>
     elementIdentifier(item, `${name}.elementId`),
@@ -80,7 +91,7 @@ export const parsePresentationQualityReceipt = (value: unknown): PresentationQua
   if (record.status === 'available') {
     exactKeys(
       record,
-      ['qualityRunId', 'source', 'status', 'findings', 'truncated'],
+      ['qualityRunId', 'transactionId', 'slideId', 'source', 'status', 'findings', 'truncated'],
       'quality receipt',
     )
     if (!['deterministic', 'visual'].includes(record.source as string))
@@ -94,13 +105,19 @@ export const parsePresentationQualityReceipt = (value: unknown): PresentationQua
     if (typeof record.truncated !== 'boolean') fail('quality receipt.truncated must be boolean')
     return {
       qualityRunId: identifier(record.qualityRunId, 'qualityRunId'),
+      transactionId: identifier(record.transactionId, 'transactionId'),
+      slideId: slideIdentifier(record.slideId, 'slideId'),
       source: record.source as 'deterministic' | 'visual',
       status: 'available',
       findings: values.map(parseQualityFinding),
       truncated: record.truncated,
     }
   }
-  exactKeys(record, ['qualityRunId', 'source', 'status', 'code'], 'quality receipt')
+  exactKeys(
+    record,
+    ['qualityRunId', 'transactionId', 'slideId', 'source', 'status', 'code'],
+    'quality receipt',
+  )
   if (record.source !== 'visual' || !['unavailable', 'cancelled'].includes(record.status as string))
     fail('quality receipt status is unknown')
   const codes = [
@@ -113,6 +130,8 @@ export const parsePresentationQualityReceipt = (value: unknown): PresentationQua
     fail('quality receipt.code is unknown')
   return {
     qualityRunId: identifier(record.qualityRunId, 'qualityRunId'),
+    transactionId: identifier(record.transactionId, 'transactionId'),
+    slideId: slideIdentifier(record.slideId, 'slideId'),
     source: 'visual',
     status: record.status as 'unavailable' | 'cancelled',
     code: record.code as (typeof codes)[number],

@@ -142,6 +142,8 @@ const OVERLAP_MIN_AREA = 400
 const BACKGROUND_AREA_RATIO = 0.7
 const MAX_ISSUES = 12
 export const MAX_QUALITY_FINDINGS = 50
+export const MAX_QUALITY_ELEMENTS = 500
+export const MAX_COLLISION_CANDIDATES = 5_000
 
 function colorContrast(foreground: string, background: string): number | null {
   const parse = (value: string) => {
@@ -163,22 +165,48 @@ function colorContrast(foreground: string, background: string): number | null {
 /** Pure, bounded and content-free QC contract for transaction quality receipts. */
 export function auditSlideQuality(
   slide: RenderSlide,
-  identity: { slideId: string; elementCreationId?: (sourceId: string) => string | undefined },
+  identity: {
+    slideId: string
+    elementCreationId?: (sourceId: string) => string | undefined
+    stats?: { candidatePairs: number; elements: number }
+  },
 ): PresentationQualityFinding[] {
+  if (identity.stats) {
+    identity.stats.elements = Math.min(slide.nodes.length, MAX_QUALITY_ELEMENTS)
+    identity.stats.candidatePairs = 0
+  }
+  if (slide.nodes.length > MAX_QUALITY_ELEMENTS) {
+    return [
+      {
+        code: 'quality_capacity_exceeded',
+        severity: 'critical',
+        slideId: identity.slideId,
+        evidence: {
+          elementCount: Math.min(slide.nodes.length, 1_000_000),
+          elementLimit: MAX_QUALITY_ELEMENTS,
+        },
+      },
+    ]
+  }
   const entries = collectEntries(slide.nodes)
   const findings: PresentationQualityFinding[] = []
   const add = (finding: PresentationQualityFinding) => {
     if (findings.length >= MAX_QUALITY_FINDINGS) return
     const elementId = finding.elementId
-      ? (identity.elementCreationId?.(finding.elementId) ?? finding.elementId)
+      ? identity.elementCreationId?.(finding.elementId)
       : undefined
     const relatedElementId = finding.relatedElementId
-      ? (identity.elementCreationId?.(finding.relatedElementId) ?? finding.relatedElementId)
+      ? identity.elementCreationId?.(finding.relatedElementId)
       : undefined
-    findings.push({
+    const durableFinding = {
       ...finding,
-      ...(elementId === undefined ? {} : { elementId }),
-      ...(relatedElementId === undefined ? {} : { relatedElementId }),
+    }
+    delete durableFinding.elementId
+    delete durableFinding.relatedElementId
+    findings.push({
+      ...durableFinding,
+      ...(elementId ? { elementId } : {}),
+      ...(relatedElementId ? { relatedElementId } : {}),
     })
   }
   for (const e of entries) {
@@ -243,10 +271,23 @@ export function auditSlideQuality(
   const content = entries.filter(
     (e) => isContent(e) && e.w * e.h < slide.widthPx * slide.heightPx * BACKGROUND_AREA_RATIO,
   )
-  for (let i = 0; i < content.length && findings.length < MAX_QUALITY_FINDINGS; i++) {
-    for (let j = i + 1; j < content.length && findings.length < MAX_QUALITY_FINDINGS; j++) {
-      const a = content[i]!,
-        b = content[j]!
+  const ordered = [...content].sort(
+    (left, right) => left.x - right.x || left.id.localeCompare(right.id),
+  )
+  let capacityExceeded = false
+  let candidatePairs = 0
+  for (let i = 0; i < ordered.length && findings.length < MAX_QUALITY_FINDINGS; i++) {
+    const a = ordered[i]!
+    for (let j = i + 1; j < ordered.length && findings.length < MAX_QUALITY_FINDINGS; j++) {
+      const b = ordered[j]!
+      if (b.x >= a.x + a.w) break
+      candidatePairs += 1
+      if (identity.stats)
+        identity.stats.candidatePairs = Math.min(candidatePairs, MAX_COLLISION_CANDIDATES)
+      if (candidatePairs > MAX_COLLISION_CANDIDATES) {
+        capacityExceeded = true
+        break
+      }
       if (!a.hasText && !b.hasText) continue
       const ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)
       const iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y)
@@ -267,7 +308,17 @@ export function auditSlideQuality(
         },
       })
     }
+    if (capacityExceeded) break
   }
+  if (capacityExceeded)
+    return [
+      {
+        code: 'quality_capacity_exceeded',
+        severity: 'critical',
+        slideId: identity.slideId,
+        evidence: { candidateLimit: MAX_COLLISION_CANDIDATES },
+      },
+    ]
   return findings
 }
 
@@ -275,6 +326,7 @@ export function createDeterministicQualityReceipt(
   slide: RenderSlide,
   identity: {
     qualityRunId: string
+    transactionId: string
     slideId: string
     elementCreationId?: (sourceId: string) => string | undefined
   },
@@ -282,6 +334,8 @@ export function createDeterministicQualityReceipt(
   const findings = auditSlideQuality(slide, identity)
   return {
     qualityRunId: identity.qualityRunId,
+    transactionId: identity.transactionId,
+    slideId: identity.slideId,
     source: 'deterministic',
     status: 'available',
     findings,

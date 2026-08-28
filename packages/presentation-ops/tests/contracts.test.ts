@@ -29,6 +29,8 @@ describe('presentation quality receipt parser', () => {
     expect(
       parsePresentationQualityReceipt({
         qualityRunId: 'qc-1',
+        transactionId: 'tx-1',
+        slideId: 'ppt/slides/slide1.xml',
         source: 'deterministic',
         status: 'available',
         findings: [
@@ -56,6 +58,8 @@ describe('presentation quality receipt parser', () => {
     expect(() =>
       parsePresentationQualityReceipt({
         qualityRunId: 'qc-1',
+        transactionId: 'tx-1',
+        slideId: 'slide-1',
         source: 'deterministic',
         status: 'available',
         findings: [{ ...finding, text: 'secret' }],
@@ -65,10 +69,40 @@ describe('presentation quality receipt parser', () => {
     expect(() =>
       parsePresentationQualityReceipt({
         qualityRunId: 'qc-1',
+        transactionId: 'tx-1',
+        slideId: 'slide-1',
         source: 'deterministic',
         status: 'available',
         findings: Array.from({ length: 51 }, () => finding),
         truncated: true,
+      }),
+    ).toThrow(/out of bounds/)
+  })
+
+  it('rejects oversized evidence keys and values', () => {
+    const base = {
+      qualityRunId: 'qc-1',
+      transactionId: 'tx-1',
+      slideId: 'slide-1',
+      source: 'deterministic',
+      status: 'available',
+      truncated: false,
+    }
+    const finding = {
+      code: 'element_off_slide',
+      severity: 'important',
+      slideId: 'slide-1',
+    }
+    expect(() =>
+      parsePresentationQualityReceipt({
+        ...base,
+        findings: [{ ...finding, evidence: { ['x'.repeat(65)]: 1 } }],
+      }),
+    ).toThrow(/evidence key/)
+    expect(() =>
+      parsePresentationQualityReceipt({
+        ...base,
+        findings: [{ ...finding, evidence: { overflowPx: 1_000_001 } }],
       }),
     ).toThrow(/out of bounds/)
   })
