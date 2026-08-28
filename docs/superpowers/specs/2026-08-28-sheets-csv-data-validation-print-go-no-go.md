@@ -43,6 +43,7 @@ CSV has no workbook-preservation authority. It is a lossy interchange projection
 - **Import byte authority:** the selected file bytes. BOM is authoritative. Without a BOM, strict UTF-8 is tried first; heuristic legacy decoding is advisory and must be disclosed or user-selectable when ambiguous.
 - **Import value authority:** parsed fields. Only unambiguous plain decimal tokens may become numbers; dates, formulas, booleans, locale-formatted numbers, identifiers with leading zeroes, and strings beginning with `=`, `+`, `-`, or `@` remain text unless the user explicitly selects conversion behavior.
 - **Export value authority:** live calculated display values of the selected sheet, with formula view temporarily suppressed. The exporter must never silently substitute unloaded file cells with blanks or stale caches.
+- **Formula-injection authority:** safe export is the default. For classification only, ignore a leading BOM and scan past every Unicode whitespace/control code point; if the first remaining character is `=`, `+`, `-`, or `@`, prefix the logical field value with one ASCII apostrophe before CSV quoting. The export result reports only the number of escaped cells. The alternative, byte-for-byte visible-text mode, requires a blocking per-export choice labeled as executable-content risk; it is never remembered and is unavailable to unattended/agent-triggered export.
 - **Scope authority:** the active sheet at command start, captured by stable workbook and sheet identity. A later tab switch must not redirect the export.
 - **Output authority:** a newly created CSV file. CSV export must never overwrite the source XLSX through the normal save path.
 
@@ -74,7 +75,7 @@ The save request carries workbook identity, sheet identity, index generation, ru
 - Delimiter sniffing can be wrong for one-column data, decimal commas, malformed quoting, or embedded newlines.
 - Export loses formulas, styles, validations, comments, drawings, hidden sheets, additional sheets, and workbook metadata. A blocking loss dialog must name formula flattening and active-sheet-only scope.
 - Display strings are locale-dependent and may not round-trip numerically.
-- Cells beginning with spreadsheet formula markers can become CSV-injection payloads when opened elsewhere. Default export preserves visible values but warns for dangerous leading characters; any escaping policy must be explicit because prefixing changes data.
+- Cells beginning with spreadsheet formula markers can become CSV-injection payloads when opened elsewhere. Detection must cover `=`, `+`, `-`, and `@` after a leading BOM and any Unicode whitespace/control characters, including tabs, CR/LF, NUL, and non-breaking spaces. Default export prefixes one ASCII apostrophe and reports the changed-cell count. Verbatim export requires the blocking, one-shot consent described above; a warning alone is never sufficient.
 - A rectangular used range can be enormous even when sparse. `rows × columns`, estimated output bytes, deadline, and final bytes must all have independent caps.
 - A single IPC string is unsuitable for large exports and can duplicate memory several times across renderer serialization, validation, and main-process write.
 
@@ -121,7 +122,8 @@ At minimum:
 
 - UTF-8 with and without BOM; UTF-16LE/BE; GB18030, Shift_JIS, Big5, EUC-KR, and Windows-1252;
 - comma, semicolon, and tab delimiters; quoted delimiter/newline/quote; CRLF/LF/CR; empty cells/rows; trailing newline; ragged rows;
-- leading zeroes, very large integers, exponent notation, decimal comma, date-like strings, formula-marker strings, NUL/control characters, and malformed/unclosed quotes;
+- leading zeroes, very large integers, exponent notation, decimal comma, date-like strings, and malformed/unclosed quotes;
+- injection strings beginning directly or after BOM, ASCII/Unicode whitespace, tabs, CR/LF, NUL, and other controls with each of `=`, `+`, `-`, and `@`; fixtures assert the safe exported bytes, the escaped-cell count, and that Excel and LibreOffice reopen them as inert text;
 - one sheet with formulas/styles plus a multi-sheet workbook to assert every loss warning;
 - dense and sparse boundaries immediately below and above cell, character, byte, and deadline caps;
 - open/export/reopen in current Excel for Windows and Mac, LibreOffice Calc, and a strict CSV parser.
@@ -167,7 +169,7 @@ Exceeding a hard stop is **NO-GO**, not a reason to silently truncate.
 
 1. Freeze the fixture corpus and semantic manifests.
 2. Record current signed artifact sizes and performance on release hardware.
-3. Add capability flags and telemetry containing only safe counts, phase, duration, and error code; never cell content, paths, formulas, or validation messages.
+3. Add capability flags and telemetry containing only coarse bucketed counts, phase, duration, and allowlisted error code. Telemetry must never contain cell content, escaped prefixes or suffixes, paths, filenames, sheet names, formulas, validation messages, delimiter samples, encodings inferred from content, hashes derived from cell values, or raw exception messages.
 
 **Gate:** all baseline fixtures reproduce; license/SBOM review passes; no runtime behavior changes.
 
@@ -179,6 +181,10 @@ Implement loss dialogs and active-sheet identity capture first. For fully loaded
 
 - every encoding/quoting fixture passes and Excel/Calc reopen without silent column shifts;
 - formula/multi-sheet/style loss warnings are blocking and tested;
+- CSV import stores every formula-marker fixture as inert text and never creates or executes a formula; export defaults to apostrophe escaping after BOM/whitespace/control normalization, and current Excel plus LibreOffice reopen every escaped fixture without executing it;
+- verbatim visible-text export is possible only after the explicit one-shot executable-content consent, is unavailable to unattended/agent calls, and has separate Excel/LibreOffice reopen fixtures documenting the intentionally accepted behavior;
+- import and export enforce the declared row, column, cell, character, byte, deadline, and IPC/chunk boundaries at the exact below/at/above cases without truncation or partial success;
+- escape counts and all CSV diagnostics/telemetry contain only the allowlisted coarse metadata and no cell-derived or document-identifying content;
 - stale workbook/sheet identity, cancellation, disk-full, write failure, and app close leave the original untouched and remove the temp file;
 - all applicable resource caps and signed-size budgets pass on release hardware.
 
@@ -245,5 +251,8 @@ A capability is **GO** only if all of the following are true:
 5. Performance, memory, byte, page/cell, deadline, and cancellation caps pass on release hardware.
 6. The capability can be independently disabled without changing file readability.
 7. Product documentation states every lossy or non-Excel-identical behavior.
+8. CSV import cannot create or execute formulas from file fields; default CSV export neutralizes direct and whitespace/control-obfuscated formula markers, and Excel/LibreOffice reopen fixtures prove the result is inert.
+9. Any verbatim CSV mode requires per-export explicit consent, cannot be invoked unattended, and its accepted risk is covered by reopen fixtures; telemetry and diagnostics contain no cell-derived or document-identifying data.
+10. Import/export boundary fixtures pass immediately below, at, and above every configured row, column, cell, character, byte, time, and transport cap without truncation.
 
 If any item fails, that capability is **NO-GO** while the other two may proceed independently. Approval of this design authorizes fixture and prototype work only; production runtime still requires a phase-specific implementation plan and review.
