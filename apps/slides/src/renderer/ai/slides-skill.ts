@@ -1780,20 +1780,44 @@ async function executeTool(
         const refreshed = access.getSlides()[idx] ?? slide
         const audit = formatAudit(auditSlideLayout(refreshed))
         const counts = {
+          add: r.edits.filter((edit) => edit.kind === 'add_text').length,
+          delete: r.edits.filter((edit) => edit.kind === 'delete').length,
           text: r.edits.filter((edit) => edit.kind === 'text').length,
           style: r.edits.filter((edit) => edit.kind === 'style').length,
           fill: r.edits.filter((edit) => edit.kind === 'fill').length,
           stroke: r.edits.filter((edit) => edit.kind === 'stroke').length,
         }
         const parts: string[] = []
+        if (counts.add) parts.push(`add ${counts.add} text box(es)`)
+        if (counts.delete) parts.push(`delete ${counts.delete} element(s)`)
         if (r.ops.length) parts.push(`layout ${r.ops.length} element(s)`)
         if (counts.text) parts.push(`text ${counts.text} item(s)`)
         if (counts.style) parts.push(`style ${counts.style} item(s)`)
         if (counts.fill) parts.push(`fill ${counts.fill} item(s)`)
         if (counts.stroke) parts.push(`stroke ${counts.stroke} item(s)`)
+        const createdTargetSummary =
+          execution.receipt.status === 'applied' && execution.receipt.createdTargets?.length
+            ? r.edits
+                .filter((edit) => edit.kind === 'add_text')
+                .map((edit) => {
+                  const operationIndex = operations.findIndex(
+                    (operation) =>
+                      operation.kind === 'add_text_box' && operation.clientId === edit.id,
+                  )
+                  const target =
+                    execution.receipt.status === 'applied'
+                      ? execution.receipt.createdTargets?.find(
+                          (created) => created.clientId === `op-${operationIndex + 1}`,
+                        )
+                      : undefined
+                  return target ? `${edit.id}=${target.elementId}` : null
+                })
+                .filter((value): value is string => value !== null)
+                .join(', ')
+            : ''
         return {
           output: outcome.mutated
-            ? `Script applied: ${parts.join(', ')}.${returnedStr}${logsStr}${audit ? `\n${audit}` : ''}`
+            ? `Script applied: ${parts.join(', ')}.${createdTargetSummary ? ` Created targets: ${createdTargetSummary}.` : ''}${returnedStr}${logsStr}${audit ? `\n${audit}` : ''}`
             : `Script already matched the requested state.${returnedStr}${logsStr}${audit ? `\n${audit}` : ''}`,
           mutated: outcome.mutated,
           summary: t('aiSumScript', { n: idx + 1 }),
@@ -2404,7 +2428,10 @@ async function executeTool(
       if (!outcome.ok)
         return fail(t('aiFailNewTextbox'), outcome.detail ?? 'Insertion was not applied')
       const createdId =
-        execution.receipt.status === 'applied' ? execution.receipt.createdIds?.[0] : undefined
+        execution.receipt.status === 'applied'
+          ? (execution.receipt.createdTargets?.find((target) => target.clientId === 'op-1')
+              ?.elementId ?? execution.receipt.createdIds?.[0])
+          : undefined
       return {
         output: outcome.mutated
           ? `Created a new text box on page ${idx + 1}${createdId ? `, durable element id=${createdId}` : ''}.`

@@ -403,7 +403,14 @@ export const parsePresentationReceipt = (value: unknown): PresentationReceipt =>
     case 'applied': {
       exactKeys(
         record,
-        ['status', 'transactionId', 'resultingDeckRevision', 'operationCount', 'createdIds'],
+        [
+          'status',
+          'transactionId',
+          'resultingDeckRevision',
+          'operationCount',
+          'createdIds',
+          'createdTargets',
+        ],
         'applied receipt',
       )
       const createdIds = optional(record, 'createdIds', (item) => {
@@ -414,6 +421,24 @@ export const parsePresentationReceipt = (value: unknown): PresentationReceipt =>
         for (const id of values) ids.push(elementIdentifier(id, 'receipt.createdId'))
         if (new Set(ids).size !== ids.length) fail('receipt.createdIds must be unique')
         return ids
+      })
+      const createdTargets = optional(record, 'createdTargets', (item) => {
+        const values = readStrictArray(item, 'receipt.createdTargets', {
+          maxLength: PRESENTATION_OPS_LIMITS.maxReceiptIds,
+        })
+        const mappings = values.map((value) => {
+          const mapping = object(value, 'receipt.createdTarget')
+          exactKeys(mapping, ['clientId', 'elementId'], 'receipt.createdTarget')
+          return {
+            clientId: identifier(mapping.clientId, 'receipt.createdTarget.clientId'),
+            elementId: elementIdentifier(mapping.elementId, 'receipt.createdTarget.elementId'),
+          }
+        })
+        if (new Set(mappings.map((item) => item.clientId)).size !== mappings.length)
+          fail('receipt.createdTargets clientIds must be unique')
+        if (new Set(mappings.map((item) => item.elementId)).size !== mappings.length)
+          fail('receipt.createdTargets elementIds must be unique')
+        return mappings
       })
       return {
         status: 'applied',
@@ -428,6 +453,7 @@ export const parsePresentationReceipt = (value: unknown): PresentationReceipt =>
           PRESENTATION_OPS_LIMITS.maxOperations,
         ),
         ...(createdIds === undefined ? {} : { createdIds }),
+        ...(createdTargets === undefined ? {} : { createdTargets }),
       }
     }
     case 'unchanged': {

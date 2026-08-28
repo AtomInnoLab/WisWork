@@ -384,6 +384,71 @@ export function deleteElement(slide: Slide, elementId: string): boolean {
   return true
 }
 
+const referencedRelationshipIds = (xml: string): Set<string> => {
+  const ids = new Set<string>()
+  for (const match of xml.matchAll(/\br:(?:id|embed|link)\s*=\s*(["'])([^"']+)\1/g))
+    ids.add(match[2]!)
+  return ids
+}
+
+const disconnectNvId = (element: SlideElement, nvId: string): void => {
+  const pattern = new RegExp(`<a:(?:stCxn|endCxn)\\b[^>]*\\bid=(["'])${nvId}\\1[^>]*/>`, 'g')
+  const patched = element.anchor.originalXml.replace(pattern, '')
+  if (patched !== element.anchor.originalXml) {
+    element.anchor.originalXml = patched
+    if (element.connection?.start?.id === Number(nvId)) delete element.connection.start
+    if (element.connection?.end?.id === Number(nvId)) delete element.connection.end
+    if (element.connection && !element.connection.start && !element.connection.end)
+      delete element.connection
+  }
+  if (element.type === 'group') for (const child of element.children) disconnectNvId(child, nvId)
+}
+
+/**
+ * Authoritative package-aware deletion. It removes relationship records referenced only by the
+ * deleted fragment and detaches surviving connectors from the deleted cNvPr id. Orphan target
+ * parts are intentionally retained: deleting them is unsafe when another package part shares the
+ * same media/chart target, while an unreferenced OPC part is valid and recoverable.
+ */
+export function deleteElementWithCleanup(
+  opened: OpenedPptx,
+  slide: Slide,
+  elementId: string,
+): boolean {
+  const index = slide.elements.findIndex((element) => element.id === elementId)
+  if (index < 0) return false
+  const victim = slide.elements[index]!
+  const nvId = /<p:cNvPr\b[^>]*\bid=(["'])(\d+)\1/.exec(victim.anchor.originalXml)?.[2]
+  if (nvId && new RegExp(`\\bspid=(["'])${nvId}\\1`).test(`${slide.bodyPrefix}${slide.bodySuffix}`))
+    return false
+  const candidateRIds = referencedRelationshipIds(victim.anchor.originalXml)
+  slide.elements.splice(index, 1)
+  if (nvId) for (const element of slide.elements) disconnectNvId(element, nvId)
+
+  const survivingXml =
+    slide.bodyPrefix +
+    slide.elements
+      .map((element) => element.anchor.originalXml + (element.anchor.gapAfter ?? ''))
+      .join('') +
+    slide.bodySuffix
+  const survivingRIds = referencedRelationshipIds(survivingXml)
+  const removableRIds = [...candidateRIds].filter((id) => !survivingRIds.has(id))
+  if (removableRIds.length) {
+    const relsPath = relsPathFor(slide.path)
+    const rels = opened.archive.readText(relsPath)
+    if (rels) {
+      const removable = new Set(removableRIds)
+      const patched = rels.replace(
+        /<Relationship\b[^>]*\bId=(["'])([^"']+)\1[^>]*\/>/g,
+        (xml, _quote, id) => (removable.has(String(id)) ? '' : xml),
+      )
+      opened.archive.entries.set(relsPath, Buffer.from(patched, 'utf8'))
+    }
+  }
+  slide.structureDirty = true
+  return true
+}
+
 // ── Grouping (p:grpSp) ──────────────────────────────────────────────────────
 
 /**

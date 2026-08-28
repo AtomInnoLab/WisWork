@@ -278,6 +278,14 @@ export class PresentationTransactionExecutor<Snapshot> {
             resultingDeckRevision: verified.revision,
             operationCount: transaction.operations.length,
             ...(allocated.size ? { createdIds: [...allocated.values()] } : {}),
+            ...(allocated.size
+              ? {
+                  createdTargets: [...allocated].map(([clientId, elementId]) => ({
+                    clientId,
+                    elementId,
+                  })),
+                }
+              : {}),
           })
         }
         if (verified.status === 'mismatch') break

@@ -318,7 +318,11 @@ describe('PresentationTransactionExecutor', () => {
     const executor = new PresentationTransactionExecutor(fixture.host)
     const first = await executor.execute(tx)
     const second = await executor.execute(tx)
-    expect(first).toMatchObject({ status: 'applied', createdIds: ['created-1'] })
+    expect(first).toMatchObject({
+      status: 'applied',
+      createdIds: ['created-1'],
+      createdTargets: [{ clientId: 'new', elementId: 'created-1' }],
+    })
     expect(second).toEqual(first)
     expect(fixture.counts()).toMatchObject({ applyCount: 1, historyCount: 1, generated: 1 })
   })

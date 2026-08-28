@@ -495,6 +495,8 @@ describe('execute_slide_script tool', () => {
       },
     } as any)
     expect(result.isError, result.output).toBeFalsy()
+    expect(result.output).toContain('add 1 text box')
+    expect(result.output).toContain('delete 1 element')
     const request = executePresentationOperation.mock.calls[0]![0] as any
     expect(request.operations).toEqual([
       expect.objectContaining({

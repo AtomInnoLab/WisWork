@@ -275,6 +275,23 @@ describe('presentation transaction parser', () => {
 })
 
 describe('presentation receipt parser', () => {
+  it('strictly parses bounded created target mappings', () => {
+    const receipt = {
+      status: 'applied',
+      transactionId: 'tx-1',
+      resultingDeckRevision: fingerprint,
+      operationCount: 2,
+      createdTargets: [{ clientId: 'op-1', elementId: '{01234567-89AB-CDEF-0123-456789ABCDEF}' }],
+    }
+    expect(parsePresentationReceipt(receipt)).toEqual(receipt)
+    expect(() =>
+      parsePresentationReceipt({
+        ...receipt,
+        createdTargets: [{ ...receipt.createdTargets[0], rawText: 'forbidden' }],
+      }),
+    ).toThrow(/unknown field/i)
+  })
+
   it.each([
     {
       status: 'applied',

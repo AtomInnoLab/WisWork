@@ -8,6 +8,7 @@ export {
 } from './schema'
 export type {
   PresentationElementType,
+  PresentationCreatedTarget,
   PresentationElementTarget,
   PresentationFill,
   PresentationGeometry,

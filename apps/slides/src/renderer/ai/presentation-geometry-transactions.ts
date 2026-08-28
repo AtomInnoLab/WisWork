@@ -1,6 +1,6 @@
 import {
   fingerprintSemanticValue,
-  parsePresentationOperation,
+  parsePresentationTransaction,
   PRESENTATION_OPS_LIMITS,
   type PresentationGeometry,
   type PresentationElementTarget,
@@ -72,13 +72,13 @@ export async function executePreparedGeometryFamilyTransaction(
   signal?.throwIfAborted()
   const compileOperation = (
     item: CanonicalElementOperation,
-    index: number,
+    clientId: string,
     target: PresentationElementTarget,
   ): PresentationOperation => {
     if (item.kind === 'add_text_box')
       return {
         kind: 'add_text_box',
-        clientId: item.clientId,
+        clientId,
         slideId:
           'slideId' in target
             ? target.slideId
@@ -88,17 +88,6 @@ export async function executePreparedGeometryFamilyTransaction(
         text: item.text,
         geometry: item.geometry,
       }
-    const clientPrefix =
-      item.kind === 'set_fill'
-        ? 'fill'
-        : item.kind === 'set_stroke'
-          ? 'stroke'
-          : item.kind === 'set_text'
-            ? 'text'
-            : item.kind === 'delete_element'
-              ? 'delete'
-              : 'geometry'
-    const clientId = `${clientPrefix}-${index + 1}`
     if ('geometry' in item)
       return {
         kind: 'set_geometry',
@@ -140,25 +129,35 @@ export async function executePreparedGeometryFamilyTransaction(
       authoritativeState: 'fresh',
     }
   }
+  const internalClientIds = request.operations.map((_item, index) => `op-${index + 1}`)
+  const generatedClientIds = new Map<string, string>()
+  const preflightOperations: PresentationOperation[] = []
   try {
     request.operations.forEach((item, index) => {
-      parsePresentationOperation(
-        compileOperation(
-          item,
-          index,
-          item.kind === 'add_text_box'
-            ? {
-                slideId: 'slide-preflight',
-              }
-            : 'createdByClientId' in item && typeof item.createdByClientId === 'string'
-              ? { createdByClientId: item.createdByClientId }
-              : {
-                  slideId: 'slide-preflight',
-                  elementId: 'element-preflight',
-                  expectedFingerprint: `sha256:${'0'.repeat(64)}`,
-                },
-        ),
-      )
+      let target: PresentationElementTarget
+      if (item.kind === 'add_text_box') {
+        if (generatedClientIds.has(item.clientId))
+          throw new TypeError('Duplicate generated target alias')
+        generatedClientIds.set(item.clientId, internalClientIds[index]!)
+        target = { slideId: 'slide-preflight' }
+      } else if ('createdByClientId' in item && typeof item.createdByClientId === 'string') {
+        const generatedClientId = generatedClientIds.get(item.createdByClientId)
+        if (!generatedClientId) throw new TypeError('Generated target alias must refer backward')
+        target = { createdByClientId: generatedClientId }
+      } else {
+        target = {
+          slideId: 'slide-preflight',
+          elementId: 'element-preflight',
+          expectedFingerprint: `sha256:${'0'.repeat(64)}`,
+        }
+      }
+      preflightOperations.push(compileOperation(item, internalClientIds[index]!, target))
+    })
+    parsePresentationTransaction({
+      transactionId: request.transactionId,
+      expectedDeckRevision: `sha256:${'0'.repeat(64)}`,
+      operations: preflightOperations,
+      mode: 'atomic',
     })
   } catch {
     return {
@@ -241,11 +240,29 @@ export async function executePreparedGeometryFamilyTransaction(
   }
 
   const operations: PresentationOperation[] = request.operations.map((item, index) => {
-    if ('createdByClientId' in item && typeof item.createdByClientId === 'string')
-      return compileOperation(item, index, { createdByClientId: item.createdByClientId })
+    if ('createdByClientId' in item && typeof item.createdByClientId === 'string') {
+      const generatedClientId = generatedClientIds.get(item.createdByClientId)!
+      return compileOperation(item, internalClientIds[index]!, {
+        createdByClientId: generatedClientId,
+      })
+    }
     const key = item.kind === 'add_text_box' ? '__slide_container__' : item.sourceId!
-    return compileOperation(item, index, prepared.get(key)!.target)
+    return compileOperation(item, internalClientIds[index]!, prepared.get(key)!.target)
   })
+  try {
+    parsePresentationTransaction({
+      transactionId: request.transactionId,
+      expectedDeckRevision: expectedDeckRevision!,
+      operations,
+      mode: 'atomic',
+    })
+  } catch {
+    await cancelPrepared()
+    return {
+      receipt: unchanged(request.transactionId, request.operations.length),
+      authoritativeState: 'fresh',
+    }
+  }
   const cancel = () => {
     try {
       void api.cancelPresentationTransaction(request.transactionId).catch(() => false)

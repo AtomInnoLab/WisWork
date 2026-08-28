@@ -95,6 +95,11 @@ export interface PresentationTransaction {
   mode: 'atomic'
 }
 
+export interface PresentationCreatedTarget {
+  clientId: string
+  elementId: string
+}
+
 export type PresentationReceipt =
   | {
       status: 'applied'
@@ -102,6 +107,7 @@ export type PresentationReceipt =
       resultingDeckRevision: string
       operationCount: number
       createdIds?: readonly string[]
+      createdTargets?: readonly PresentationCreatedTarget[]
     }
   | {
       status: 'unchanged'

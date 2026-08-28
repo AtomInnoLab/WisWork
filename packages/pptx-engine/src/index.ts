@@ -151,6 +151,7 @@ export {
   addElement,
   addPicture,
   deleteElement,
+  deleteElementWithCleanup,
   buildSpXml,
   buildTableXml,
   buildGrpSpXml,

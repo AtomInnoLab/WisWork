@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RenderSlide, ShapeRenderNode } from '@wiswork/pptx-render'
-import type { PresentationReceipt } from '@wiswork/presentation-ops'
+import type { PresentationOperation, PresentationReceipt } from '@wiswork/presentation-ops'
 import { createSlidesSkill, type DeckAccess } from '../src/renderer/ai/slides-skill'
 import { executePreparedTextFamilyTransaction } from '../src/renderer/ai/presentation-text-transactions'
 import { textToolTransactionId } from '../src/renderer/ai/presentation-text-transactions'
@@ -638,17 +638,79 @@ describe('renderer geometry transaction contract', () => {
         operations: [
           expect.objectContaining({
             kind: 'add_text_box',
-            clientId: 'created',
+            clientId: 'op-1',
             slideId: container.slideId,
           }),
-          expect.objectContaining({ kind: 'set_text', target: { createdByClientId: 'created' } }),
+          expect.objectContaining({ kind: 'set_text', target: { createdByClientId: 'op-1' } }),
           expect.objectContaining({
             kind: 'delete_element',
-            target: { createdByClientId: 'created' },
+            target: { createdByClientId: 'op-1' },
           }),
         ],
       }),
     )
+  })
+
+  it('allocates collision-free internal client ids and rejects forward aliases before dispatch', async () => {
+    const container = { slideId: 'ppt/slides/slide1.xml', expectedFingerprint: fp('c') }
+    const api = {
+      preparePresentationTarget: vi.fn(async () => ({
+        status: 'prepared' as const,
+        expectedDeckRevision: fp('0'),
+        target: container,
+      })),
+      executePresentationTransaction: vi.fn(async (transaction) => ({
+        status: 'applied' as const,
+        transactionId: transaction.transactionId,
+        resultingDeckRevision: fp('1'),
+        operationCount: transaction.operations.length,
+      })),
+      cancelPresentationTransaction: vi.fn(async () => true),
+    }
+    await executePreparedGeometryFamilyTransaction(api, {
+      transactionId: 'collision-free',
+      slideIndex: 0,
+      operations: [
+        {
+          kind: 'add_text_box',
+          clientId: 'text-2',
+          text: 'draft',
+          geometry: { x: 1, y: 2, width: 3, height: 4 },
+        },
+        {
+          kind: 'set_text',
+          createdByClientId: 'text-2',
+          paragraphs: [{ runs: [{ text: 'final' }] }],
+        },
+      ],
+    })
+    const transaction = api.executePresentationTransaction.mock.calls[0]![0]
+    expect(
+      transaction.operations.map((operation: PresentationOperation) => operation.clientId),
+    ).toEqual(['op-1', 'op-2'])
+    expect(transaction.operations[1]!.target).toEqual({ createdByClientId: 'op-1' })
+
+    api.preparePresentationTarget.mockClear()
+    api.executePresentationTransaction.mockClear()
+    const invalid = await executePreparedGeometryFamilyTransaction(api, {
+      transactionId: 'forward-ref',
+      slideIndex: 0,
+      operations: [
+        { kind: 'set_text', createdByClientId: 'later', paragraphs: [{ runs: [{ text: 'no' }] }] },
+        {
+          kind: 'add_text_box',
+          clientId: 'later',
+          text: 'later',
+          geometry: { x: 1, y: 2, width: 3, height: 4 },
+        },
+      ],
+    })
+    expect(invalid).toMatchObject({
+      receipt: { status: 'unchanged', code: 'write_not_applied' },
+      authoritativeState: 'fresh',
+    })
+    expect(api.preparePresentationTarget).not.toHaveBeenCalled()
+    expect(api.executePresentationTransaction).not.toHaveBeenCalled()
   })
 
   it('prepares every durable target and emits one ordered atomic transaction', async () => {
@@ -682,12 +744,12 @@ describe('renderer geometry transaction contract', () => {
         operations: [
           expect.objectContaining({
             kind: 'set_geometry',
-            clientId: 'geometry-1',
+            clientId: 'op-1',
             target: target('a'),
           }),
           expect.objectContaining({
             kind: 'set_geometry',
-            clientId: 'geometry-2',
+            clientId: 'op-2',
             target: target('b'),
           }),
         ],
@@ -735,14 +797,14 @@ describe('renderer geometry transaction contract', () => {
       operations: [
         {
           kind: 'set_fill',
-          clientId: 'fill-1',
+          clientId: 'op-1',
           target: target('a'),
           fill: { kind: 'solid', color: '#112233', transparency: 0.25 },
         },
-        { kind: 'set_stroke', clientId: 'stroke-2', target: target('b'), stroke: null },
+        { kind: 'set_stroke', clientId: 'op-2', target: target('b'), stroke: null },
         {
           kind: 'set_stroke',
-          clientId: 'stroke-3',
+          clientId: 'op-3',
           target: target('a'),
           stroke: { color: '#445566', width: 2, dash: 'dash_dot' },
         },

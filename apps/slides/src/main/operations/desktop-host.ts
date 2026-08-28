@@ -7,7 +7,7 @@ import type {
 import {
   addElement,
   collectDeckCreationIds,
-  deleteElement,
+  deleteElementWithCleanup,
   fingerprintPresentation,
   ensureElementCreationId,
   editGroupChildFill,
@@ -343,7 +343,8 @@ function applyOperation(
       return { changed: true, metaDirty: false }
     }
     case 'delete_element':
-      if (!deleteElement(slide, element.id)) throw new Error('Element deletion failed')
+      if (!deleteElementWithCleanup(opened, slide, element.id))
+        throw new Error('Element deletion failed')
       return { changed: true, metaDirty: false }
   }
 }
