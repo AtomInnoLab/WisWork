@@ -30,6 +30,7 @@ export const LAZY_FIND_MAX_SCAN_CELLS = 400_000
 export const LAZY_FIND_MAX_MATCHES = 10_000
 export const LAZY_FIND_MAX_BATCHES = 64
 export const LAZY_FIND_MAX_MS = 10_000
+export const LAZY_FIND_MAX_BYTES = 16 * 1024 * 1024
 export const LAZY_FIND_MAX_QUERY_LENGTH = 4_096
 import { t } from './i18n/locale'
 import { netAxisDelta } from './view-transform'
@@ -112,6 +113,45 @@ function insideRange(range: IRange | undefined, row: number, column: number): bo
   )
 }
 
+function subtractRange(range: IRange, blocker: IRange): IRange[] {
+  const top = Math.max(range.startRow, blocker.startRow)
+  const bottom = Math.min(range.endRow, blocker.endRow)
+  const left = Math.max(range.startColumn, blocker.startColumn)
+  const right = Math.min(range.endColumn, blocker.endColumn)
+  if (top > bottom || left > right) return [range]
+  const pieces: IRange[] = []
+  if (range.startRow < top) pieces.push({ ...range, endRow: top - 1 })
+  if (bottom < range.endRow) pieces.push({ ...range, startRow: bottom + 1 })
+  if (range.startColumn < left) {
+    pieces.push({
+      startRow: top,
+      endRow: bottom,
+      startColumn: range.startColumn,
+      endColumn: left - 1,
+    })
+  }
+  if (right < range.endColumn) {
+    pieces.push({
+      startRow: top,
+      endRow: bottom,
+      startColumn: right + 1,
+      endColumn: range.endColumn,
+    })
+  }
+  return pieces
+}
+
+function disjointRanges(ranges: readonly IRange[]): IRange[] {
+  const accepted: IRange[] = []
+  for (const range of ranges) {
+    let pieces = [{ ...range }]
+    for (const blocker of accepted)
+      pieces = pieces.flatMap((piece) => subtractRange(piece, blocker))
+    accepted.push(...pieces)
+  }
+  return accepted
+}
+
 /** True when the loaded window covers the coordinate — the inner model owns it. */
 export function coveredByWindow(
   state: LazyWorkbookState,
@@ -153,12 +193,14 @@ export function collectJournalMatches(
   sheetId: string,
   test: LazyCellTest,
   limit = Number.POSITIVE_INFINITY,
+  accept: (row: number, column: number) => boolean = () => true,
 ): ScanCell[] {
   const found: ScanCell[] = []
   if (limit <= 0) return found
   const journal = state.editJournal.cells.get(sheetId)
   for (const entry of journal?.values() ?? []) {
     if (!entry.hasValue) continue
+    if (!accept(entry.row, entry.column)) continue
     if (coveredByWindow(state, sheetId, entry.row, entry.column)) continue
     if (!test({ value: scalarToText(entry.value), formula: entry.formula })) continue
     found.push({ row: entry.row, column: entry.column, value: entry.value, formula: entry.formula })
@@ -316,6 +358,10 @@ export class LazyExtendedFindModel extends FindModel {
   private alive = true
   private truncated = false
   private readonly scanAbort = new AbortController()
+  private deadlineExpired = false
+  private readonly deadlineTimer: ReturnType<typeof setTimeout>
+  private selectionSignature: string
+  private readonly selectionRanges: readonly IRange[] | null
   private extras: LazyCellMatch[] = []
   private lastFocusedExtra: LazyCellMatch | null = null
   private pendingInner: IFindMatch | null = null
@@ -334,6 +380,13 @@ export class LazyExtendedFindModel extends FindModel {
     this.deps = deps
     this.isLiveGeneration = isLiveGeneration
     this.unitId = inner.unitId
+    this.selectionSignature = this.currentSelectionSignature()
+    this.selectionRanges = this.captureSelectionRanges()
+    this.deadlineTimer = setTimeout(() => {
+      if (!this.alive) return
+      this.deadlineExpired = true
+      this.scanAbort.abort()
+    }, LAZY_FIND_MAX_MS)
     // The inner model refreshes itself when grid mutations stream regions in
     // or evict them; forward those moments so the dialog count stays right.
     this.forwardSub = inner.matchesUpdate$.subscribe(() => this.emitMerged())
@@ -342,6 +395,7 @@ export class LazyExtendedFindModel extends FindModel {
 
   override dispose(): void {
     this.alive = false
+    clearTimeout(this.deadlineTimer)
     this.scanAbort.abort()
     this.forwardSub.unsubscribe()
     this.matchesUpdate$.complete()
@@ -350,14 +404,17 @@ export class LazyExtendedFindModel extends FindModel {
   }
 
   getMatches(): IFindMatch[] {
+    if (!this.stateIsCurrent()) return []
     return mergeFindMatches(this.innerMatches(), this.currentExtras())
   }
 
   moveToNextMatch(params?: IFindMoveParams): LazyCellMatch | null {
+    if (!this.stateIsCurrent()) return null
     return this.moveThroughMatches('next', params)
   }
 
   moveToPreviousMatch(params?: IFindMoveParams): LazyCellMatch | null {
+    if (!this.stateIsCurrent()) return null
     return this.moveThroughMatches('previous', params)
   }
 
@@ -451,6 +508,7 @@ export class LazyExtendedFindModel extends FindModel {
   }
 
   async replace(replaceString: string): Promise<boolean> {
+    if (!this.stateIsCurrent()) return false
     // Only an extra that currently holds the segmented cursor may be
     // written; otherwise the inner session owns the current match.
     const extra = this.lastFocusedExtra
@@ -466,6 +524,7 @@ export class LazyExtendedFindModel extends FindModel {
   }
 
   async replaceAll(replaceString: string): Promise<IReplaceAllResult> {
+    if (!this.stateIsCurrent()) return { success: 0, failure: 0 }
     let success = 0
     let failure = 0
     try {
@@ -529,6 +588,7 @@ export class LazyExtendedFindModel extends FindModel {
   /** Extras that are still outside the (evolving) loaded window. */
   private currentExtras(): LazyCellMatch[] {
     return this.extras.filter((match) => {
+      if (!this.sheetAllowed(match)) return false
       if (
         coveredByWindow(
           this.state,
@@ -640,7 +700,71 @@ export class LazyExtendedFindModel extends FindModel {
     if (this.deps.lazyWorkbookRef.current !== this.state) return false
     try {
       const active = this.deps.runtime.univerAPI.getActiveWorkbook()
-      return active?.getId() === this.unitId && active.getId() === this.state.expectedWorkbookId
+      return (
+        active?.getId() === this.unitId &&
+        active.getId() === this.state.expectedWorkbookId &&
+        this.currentSelectionSignature() === this.selectionSignature
+      )
+    } catch {
+      return false
+    }
+  }
+
+  private currentSelectionSignature(): string {
+    try {
+      const workbook = this.deps.runtime.univerAPI.getActiveWorkbook()
+      if (!workbook) return 'unavailable'
+      if (this.query.findScope === 'unit') {
+        return JSON.stringify(
+          workbook.getSheets().map((sheet) => [sheet.getSheetId(), sheet.isSheetHidden() === true]),
+        )
+      }
+      const activeSheet = workbook.getActiveSheet()
+      if (!activeSheet) return 'unavailable'
+      const ranges = activeSheet.getSelection()?.getActiveRangeList() ?? []
+      return JSON.stringify([
+        activeSheet.getSheetId(),
+        activeSheet.isSheetHidden() === true,
+        ranges.map((range) => {
+          const value = range.getRange()
+          return [value.startRow, value.endRow, value.startColumn, value.endColumn]
+        }),
+      ])
+    } catch {
+      return 'unavailable'
+    }
+  }
+
+  private captureSelectionRanges(): readonly IRange[] | null {
+    if (this.query.findScope === 'unit') return null
+    try {
+      const ranges =
+        this.deps.runtime.univerAPI
+          .getActiveWorkbook()
+          ?.getActiveSheet()
+          ?.getSelection()
+          ?.getActiveRangeList()
+          .map((range) => range.getRange()) ?? []
+      return ranges.length > 1 ||
+        ranges.some(
+          (range) => range.startRow !== range.endRow || range.startColumn !== range.endColumn,
+        )
+        ? disjointRanges(ranges)
+        : null
+    } catch {
+      return null
+    }
+  }
+
+  private sheetAllowed(match: LazyCellMatch): boolean {
+    if (this.query.findScope !== 'unit') return true
+    try {
+      return (
+        this.deps.runtime.univerAPI
+          .getActiveWorkbook()
+          ?.getSheetBySheetId(match.range.subUnitId)
+          ?.isSheetHidden() !== true
+      )
     } catch {
       return false
     }
@@ -689,6 +813,9 @@ export class LazyExtendedFindModel extends FindModel {
       )
       worksheet.scrollToCell(bounds.startRow, bounds.startColumn)
       worksheet.getRange(bounds.startRow, bounds.startColumn, 1, 1).activate()
+      // Selection changes performed by Find itself are not external drift;
+      // retain the original search ranges while advancing the live guard.
+      this.selectionSignature = this.currentSelectionSignature()
       this.emitMerged()
       this.activelyChangingMatch$.next(match)
     } catch {
@@ -738,16 +865,18 @@ export class LazyExtendedFindModel extends FindModel {
     const sheets = workbook.getSheets()
     const targets =
       this.query.findScope === 'unit'
-        ? sheets
+        ? sheets.filter((sheet) => sheet.isSheetHidden() !== true)
         : sheets.filter((sheet) => sheet.getSheetId() === workbook.getActiveSheet()?.getSheetId())
     const sheetOrder = new Map(sheets.map((sheet, index) => [sheet.getSheetId(), index] as const))
     const comparator = extraComparator(sheetOrder, this.query.findDirection === 'column')
     const collected: (ScanCell & { sheetId: string })[] = []
+    const collectedKeys = new Set<string>()
     // Budget counts scanned extent, not hits — the AI-side findInLazyWorkbook
     // semantics. Counting hits would scan sparse multi-million-cell sheets
     // end to end.
     let scannedCells = 0
     let scannedBatches = 0
+    let scannedBytes = 0
     const startedAt = Date.now()
 
     for (const worksheet of targets) {
@@ -758,8 +887,14 @@ export class LazyExtendedFindModel extends FindModel {
         sheetId,
         test,
         Math.max(0, LAZY_FIND_MAX_MATCHES - collected.length),
+        (row, column) =>
+          !this.selectionRanges ||
+          this.selectionRanges.some((range) => insideRange(range, row, column)),
       )
       for (const cell of journalMatches) {
+        const key = `${sheetId}|${cell.row}|${cell.column}`
+        if (collectedKeys.has(key)) continue
+        collectedKeys.add(key)
         collected.push({ ...cell, sheetId })
       }
       if (collected.length >= LAZY_FIND_MAX_MATCHES) this.truncated = true
@@ -774,76 +909,122 @@ export class LazyExtendedFindModel extends FindModel {
       const screenRows = Math.max(meta.rowCount + netAxisDelta(ops, 'row'), 0)
       const screenColumns = Math.max(meta.columnCount + netAxisDelta(ops, 'column'), 0)
       if (screenRows <= 0 || screenColumns <= 0) continue
-      if (screenColumns > LAZY_FIND_BATCH_CELLS) {
-        this.truncated = true
-        break
-      }
+      const scanRanges = (
+        this.selectionRanges ?? [
+          {
+            startRow: 0,
+            endRow: screenRows - 1,
+            startColumn: 0,
+            endColumn: screenColumns - 1,
+          },
+        ]
+      )
+        .map((range) => ({
+          startRow: Math.max(0, range.startRow),
+          endRow: Math.min(screenRows - 1, range.endRow),
+          startColumn: Math.max(0, range.startColumn),
+          endColumn: Math.min(screenColumns - 1, range.endColumn),
+        }))
+        .filter((range) => range.startRow <= range.endRow && range.startColumn <= range.endColumn)
       const shadowed = journalShadowKeys(this.state, sheetId)
-      const batchRows = Math.max(1, Math.floor(LAZY_FIND_BATCH_CELLS / screenColumns))
-      for (let startRow = 0; startRow < screenRows; startRow += batchRows) {
-        if (!this.alive || !this.isLiveGeneration() || !this.scanTargetIsCurrent(worksheet)) return
-        if (this.truncated) break
-        if (
-          scannedCells >= LAZY_FIND_MAX_SCAN_CELLS ||
-          scannedBatches >= LAZY_FIND_MAX_BATCHES ||
-          Date.now() - startedAt >= LAZY_FIND_MAX_MS ||
-          collected.length >= LAZY_FIND_MAX_MATCHES
-        ) {
+      for (const scanRange of scanRanges) {
+        const scanColumns = scanRange.endColumn - scanRange.startColumn + 1
+        if (scanColumns > LAZY_FIND_BATCH_CELLS) {
           this.truncated = true
           break
         }
-        const endRow = Math.min(startRow + batchRows - 1, screenRows - 1)
-        let mapped
-        try {
-          mapped = await readSheetRangeMapped(
-            this.state,
-            sheetId,
-            { startRow, endRow, startColumn: 0, endColumn: screenColumns - 1 },
-            meta,
-            {
-              signal: this.scanAbort.signal,
-              isCurrent: () =>
-                this.alive && this.isLiveGeneration() && this.scanTargetIsCurrent(worksheet),
-            },
-          )
-        } catch {
-          if (!this.alive || this.scanAbort.signal.aborted || !this.isLiveGeneration()) return
-          this.truncated = true
-          break
-        }
-        if (!this.scanTargetIsCurrent(worksheet)) return
-        if (!mapped) continue
-        scannedBatches += 1
-        scannedCells += (endRow - startRow + 1) * screenColumns
-        if (
-          !mapped.raw.indexingComplete &&
-          (mapped.indexedThroughScreen === null || mapped.indexedThroughScreen < endRow)
+        const batchRows = Math.max(1, Math.floor(LAZY_FIND_BATCH_CELLS / scanColumns))
+        for (
+          let startRow = scanRange.startRow;
+          startRow <= scanRange.endRow;
+          startRow += batchRows
         ) {
-          this.truncated = true
-        }
-        for (const cell of mapped.screen.cells) {
-          if (shadowed.has(`${cell.row}:${cell.column}`)) continue
-          if (coveredByWindow(this.state, sheetId, cell.row, cell.column)) continue
-          if (!test({ value: scalarToText(cell.value), formula: cell.formula })) continue
-          collected.push({
-            row: cell.row,
-            column: cell.column,
-            value: cell.value,
-            formula: cell.formula,
-            sheetId,
-          })
-          if (collected.length >= LAZY_FIND_MAX_MATCHES) {
+          if (!this.alive || !this.isLiveGeneration() || !this.scanTargetIsCurrent(worksheet))
+            return
+          if (this.truncated) break
+          if (
+            scannedCells >= LAZY_FIND_MAX_SCAN_CELLS ||
+            scannedBatches >= LAZY_FIND_MAX_BATCHES ||
+            Date.now() - startedAt >= LAZY_FIND_MAX_MS ||
+            collected.length >= LAZY_FIND_MAX_MATCHES
+          ) {
             this.truncated = true
             break
           }
+          const endRow = Math.min(startRow + batchRows - 1, scanRange.endRow)
+          let mapped
+          try {
+            mapped = await readSheetRangeMapped(
+              this.state,
+              sheetId,
+              {
+                startRow,
+                endRow,
+                startColumn: scanRange.startColumn,
+                endColumn: scanRange.endColumn,
+              },
+              meta,
+              {
+                signal: this.scanAbort.signal,
+                isCurrent: () =>
+                  this.alive && this.isLiveGeneration() && this.scanTargetIsCurrent(worksheet),
+              },
+            )
+          } catch {
+            if (!this.alive || !this.isLiveGeneration()) return
+            if (this.scanAbort.signal.aborted && !this.deadlineExpired) return
+            this.truncated = true
+            break
+          }
+          if (this.deadlineExpired) {
+            this.truncated = true
+            break
+          }
+          if (!this.scanTargetIsCurrent(worksheet)) return
+          if (!mapped) continue
+          scannedBytes +=
+            mapped.byteCount ?? new TextEncoder().encode(JSON.stringify(mapped.screen)).byteLength
+          if (scannedBytes > LAZY_FIND_MAX_BYTES) {
+            this.truncated = true
+            break
+          }
+          scannedBatches += 1
+          scannedCells += (endRow - startRow + 1) * scanColumns
+          if (
+            !mapped.raw.indexingComplete &&
+            (mapped.indexedThroughScreen === null || mapped.indexedThroughScreen < endRow)
+          ) {
+            this.truncated = true
+          }
+          for (const cell of mapped.screen.cells) {
+            const collectedKey = `${sheetId}|${cell.row}|${cell.column}`
+            if (collectedKeys.has(collectedKey)) continue
+            if (shadowed.has(`${cell.row}:${cell.column}`)) continue
+            if (coveredByWindow(this.state, sheetId, cell.row, cell.column)) continue
+            if (!test({ value: scalarToText(cell.value), formula: cell.formula })) continue
+            collectedKeys.add(collectedKey)
+            collected.push({
+              row: cell.row,
+              column: cell.column,
+              value: cell.value,
+              formula: cell.formula,
+              sheetId,
+            })
+            if (collected.length >= LAZY_FIND_MAX_MATCHES) {
+              this.truncated = true
+              break
+            }
+          }
+          this.refreshExtras(collected, comparator, unitId)
+          this.emitMerged()
         }
-        this.refreshExtras(collected, comparator, unitId)
-        this.emitMerged()
+        if (this.truncated) break
       }
       if (this.truncated) break
     }
 
     this.refreshExtras(collected, comparator, unitId)
+    clearTimeout(this.deadlineTimer)
     if (this.truncated && this.alive && this.isLiveGeneration()) {
       // Report what was actually scanned — truncation can also come from a
       // failed read or indexing lag long before the budget.

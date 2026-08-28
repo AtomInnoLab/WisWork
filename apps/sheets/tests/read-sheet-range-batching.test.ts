@@ -82,6 +82,7 @@ describe('readSheetRangeMapped bounded batching', () => {
     expect(result?.screen.cells.map((cell) => cell.styleIndex)).toEqual([0, 90, 180, 270])
     expect(result?.screen.cells.map((cell) => cell.formula)).toEqual(['=0', '=90', '=180', '=270'])
     expect(result?.screen.merges).toHaveLength(1)
+    expect(result?.byteCount).toBeGreaterThan(0)
     expect(result?.truncated).toBeNull()
   })
 

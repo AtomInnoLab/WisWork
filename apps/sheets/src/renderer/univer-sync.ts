@@ -845,6 +845,8 @@ export interface MappedRangeRead {
   /// File-space end row actually requested; the indexing poll compares the
   /// raw cutoff against this.
   readonly fileEndRow: number
+  /// Actual UTF-8 JSON bytes received from the sidecar across this mapped read.
+  readonly byteCount: number
   /// A read may stop only when the sidecar has not indexed the rest yet.
   /// Callers use this explicit receipt to retry; errors never return partial data.
   readonly truncated: null | { readonly reason: 'indexing'; readonly nextRow: number }
@@ -1063,6 +1065,7 @@ export async function readSheetRangeMapped(
         ? raw.indexedThroughRow
         : indexedThroughScreenRow(ops, raw.indexedThroughRow),
     fileEndRow: fileRange.endRow,
+    byteCount: bytes,
     truncated,
   }
 }

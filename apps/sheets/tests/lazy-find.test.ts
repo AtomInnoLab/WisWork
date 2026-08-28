@@ -383,7 +383,15 @@ class CursorInnerModel extends FakeInnerModel {
 
 function facade(
   lazyState: LazyWorkbookState | null,
-  { noFilterModel = false }: { noFilterModel?: boolean } = {},
+  {
+    noFilterModel = false,
+    selectionRanges = [],
+    hidden = { current: false },
+  }: {
+    noFilterModel?: boolean
+    selectionRanges?: IRange[]
+    hidden?: { current: boolean }
+  } = {},
 ) {
   const setValues = vi.fn()
   // Selection follows activation, like the live grid does.
@@ -391,6 +399,10 @@ function facade(
   const worksheet = {
     getSheetId: () => 's1',
     getSheetName: () => 'Sheet1',
+    isSheetHidden: () => hidden.current,
+    getSelection: () => ({
+      getActiveRangeList: () => selectionRanges.map((range) => ({ getRange: () => range })),
+    }),
     scrollToCell: vi.fn(),
     getRange: vi.fn((row: number, column: number) => ({
       activate: () => {
@@ -453,6 +465,8 @@ function facade(
     registrations,
     rowFiltered,
     active,
+    selectionRanges,
+    hidden,
   }
 }
 
@@ -472,11 +486,13 @@ function mapped(
     value: string | number | boolean | null
     formula?: string
   }[],
+  byteCount = 128,
 ): MappedResult {
   return {
     raw: { indexingComplete: true },
     indexedThroughScreen: 999,
     fileEndRow: 999,
+    byteCount,
     screen: { cells, rows: [], merges: [], hyperlinks: [] },
   } as unknown as MappedResult
 }
@@ -830,6 +846,239 @@ describe('installLazyFindBridge', () => {
     expect(capturedOptions?.signal).toBeInstanceOf(AbortSignal)
     expect(capturedOptions?.isCurrent?.()).toBe(false)
     await vi.waitFor(() => expect(models[0]!.getMatches()).toHaveLength(0))
+    bridge.dispose()
+  })
+
+  it('restricts current-sheet search and replacement to multiple non-single selections', async () => {
+    const selectionRanges = [
+      { startRow: 100, endRow: 120, startColumn: 2, endColumn: 3 },
+      { startRow: 700, endRow: 710, startColumn: 5, endColumn: 6 },
+    ]
+    const harness = facade(state({ rowCount: 1_000 }), { selectionRanges })
+    harness.providers.add({
+      find: vi.fn().mockResolvedValue([new FakeInnerModel([])]),
+      terminate: vi.fn(),
+    })
+    const bridge = installLazyFindBridge(harness)
+    mockRead.mockImplementation(async (_state, _sheet, range) =>
+      mapped([{ row: range.startRow, column: range.startColumn, value: 'needle selected' }]),
+    )
+
+    const model = (await harnessLookup(harness)(query()))[0]!
+    await vi.waitFor(() => expect(model.getMatches()).toHaveLength(2))
+    expect(mockRead.mock.calls.map((call) => call[2])).toEqual(selectionRanges)
+    expect((await model.replaceAll('x')).success).toBe(2)
+    expect(harness.setValues).toHaveBeenCalledTimes(2)
+
+    selectionRanges[0] = { startRow: 300, endRow: 320, startColumn: 2, endColumn: 3 }
+    expect(model.getMatches()).toHaveLength(0)
+    bridge.dispose()
+  })
+
+  it('does not let overlapping selections consume scan budget twice', async () => {
+    const selectionRanges = [
+      { startRow: 100, endRow: 120, startColumn: 2, endColumn: 3 },
+      { startRow: 110, endRow: 130, startColumn: 3, endColumn: 4 },
+    ]
+    const harness = facade(state({}), { selectionRanges })
+    harness.providers.add({
+      find: vi.fn().mockResolvedValue([new FakeInnerModel([])]),
+      terminate: vi.fn(),
+    })
+    const bridge = installLazyFindBridge(harness)
+    mockRead.mockResolvedValue(mapped([]))
+    await harnessLookup(harness)(query())
+    await vi.waitFor(() => expect(mockRead).toHaveBeenCalledTimes(3))
+    const cells = new Set<string>()
+    for (const call of mockRead.mock.calls) {
+      const range = call[2]
+      for (let row = range.startRow; row <= range.endRow; row += 1) {
+        for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+          expect(cells.has(`${row}:${column}`)).toBe(false)
+          cells.add(`${row}:${column}`)
+        }
+      }
+    }
+    expect(cells.size).toBe(73)
+    bridge.dispose()
+  })
+
+  it('blocks inner replacement after the captured selection drifts', async () => {
+    const selectionRanges = [{ startRow: 100, endRow: 120, startColumn: 2, endColumn: 3 }]
+    const harness = facade(state({}), { selectionRanges })
+    const inner = new FakeInnerModel([match('s1', 105, 2)])
+    harness.providers.add({ find: vi.fn().mockResolvedValue([inner]), terminate: vi.fn() })
+    const bridge = installLazyFindBridge(harness)
+    mockRead.mockResolvedValue(mapped([]))
+    const model = (await harnessLookup(harness)(query()))[0]!
+    selectionRanges[0] = { startRow: 300, endRow: 320, startColumn: 2, endColumn: 3 }
+    expect(await model.replace('x')).toBe(false)
+    expect(await model.replaceAll('x')).toEqual({ success: 0, failure: 0 })
+    bridge.dispose()
+  })
+
+  it('keeps single-cell selection on whole-sheet semantics', async () => {
+    const harness = facade(state({}), {
+      selectionRanges: [{ startRow: 3, endRow: 3, startColumn: 4, endColumn: 4 }],
+    })
+    harness.providers.add({
+      find: vi.fn().mockResolvedValue([new FakeInnerModel([])]),
+      terminate: vi.fn(),
+    })
+    const bridge = installLazyFindBridge(harness)
+    mockRead.mockResolvedValue(mapped([{ row: 500, column: 3, value: 'needle' }]))
+    const model = (await harnessLookup(harness)(query()))[0]!
+    await settle(model)
+    expect(mockRead.mock.calls[0]![2].startRow).toBe(0)
+    bridge.dispose()
+  })
+
+  it('treats multiple singleton selections as a scoped selection', async () => {
+    const selectionRanges = [
+      { startRow: 100, endRow: 100, startColumn: 2, endColumn: 2 },
+      { startRow: 700, endRow: 700, startColumn: 5, endColumn: 5 },
+    ]
+    const harness = facade(state({}), { selectionRanges })
+    harness.providers.add({
+      find: vi.fn().mockResolvedValue([new FakeInnerModel([])]),
+      terminate: vi.fn(),
+    })
+    const bridge = installLazyFindBridge(harness)
+    mockRead.mockResolvedValue(mapped([]))
+    await harnessLookup(harness)(query())
+    await vi.waitFor(() => expect(mockRead).toHaveBeenCalledTimes(2))
+    expect(mockRead.mock.calls.map((call) => call[2])).toEqual(selectionRanges)
+    bridge.dispose()
+  })
+
+  it('filters journal entries by selection before applying the match cap', async () => {
+    const entries = new Map<
+      string,
+      { row: number; column: number; value: string; hasValue: true }
+    >()
+    for (let row = 0; row < 10_000; row += 1) {
+      entries.set(`${row}:0`, {
+        row: row + 20_000,
+        column: 0,
+        value: 'needle outside',
+        hasValue: true,
+      })
+    }
+    entries.set('500:3', { row: 500, column: 3, value: 'needle selected', hasValue: true })
+    const lazyState = state({
+      journalCells: new Map([['s1', entries]]) as LazyWorkbookState['editJournal']['cells'],
+    })
+    const selectionRanges = [{ startRow: 500, endRow: 501, startColumn: 3, endColumn: 3 }]
+    const harness = facade(lazyState, { selectionRanges })
+    harness.providers.add({
+      find: vi.fn().mockResolvedValue([new FakeInnerModel([])]),
+      terminate: vi.fn(),
+    })
+    const bridge = installLazyFindBridge(harness)
+    mockRead.mockResolvedValue(mapped([]))
+    const model = (await harnessLookup(harness)(query()))[0]!
+    await vi.waitFor(() => expect(model.getMatches()).toHaveLength(1))
+    expect((model.getMatches()[0] as LazyCellMatch).range.range.startRow).toBe(500)
+    bridge.dispose()
+  })
+
+  it('fails closed for navigation after selection drift', async () => {
+    const selectionRanges = [{ startRow: 100, endRow: 120, startColumn: 2, endColumn: 3 }]
+    const harness = facade(state({}), { selectionRanges })
+    harness.providers.add({
+      find: vi.fn().mockResolvedValue([new FakeInnerModel([])]),
+      terminate: vi.fn(),
+    })
+    const bridge = installLazyFindBridge(harness)
+    mockRead.mockResolvedValue(mapped([{ row: 110, column: 2, value: 'needle' }]))
+    const model = (await harnessLookup(harness)(query()))[0]!
+    await settle(model)
+    selectionRanges[0] = { startRow: 300, endRow: 320, startColumn: 2, endColumn: 3 }
+    expect(model.moveToNextMatch()).toBeNull()
+    expect(model.moveToPreviousMatch()).toBeNull()
+    bridge.dispose()
+  })
+
+  it('dynamically excludes hidden sheets only for workbook scope', async () => {
+    const hidden = { current: true }
+    const harness = facade(state({}), { hidden })
+    harness.providers.add({
+      find: vi.fn().mockResolvedValue([new FakeInnerModel([])]),
+      terminate: vi.fn(),
+    })
+    const bridge = installLazyFindBridge(harness)
+    mockRead.mockResolvedValue(mapped([{ row: 500, column: 3, value: 'needle' }]))
+    const workbookModel = (await harnessLookup(harness)(query({ findScope: 'unit' })))[0]!
+    await Promise.resolve()
+    expect(mockRead).not.toHaveBeenCalled()
+    expect(workbookModel.getMatches()).toHaveLength(0)
+    hidden.current = false
+    expect(workbookModel.getMatches()).toHaveLength(0)
+
+    const visibleWorkbookModel = (await harnessLookup(harness)(query({ findScope: 'unit' })))[0]!
+    await settle(visibleWorkbookModel)
+    expect(visibleWorkbookModel.getMatches()).toHaveLength(1)
+    hidden.current = true
+    expect(visibleWorkbookModel.getMatches()).toHaveLength(0)
+
+    mockRead.mockClear()
+    const currentSheetModel = (await harnessLookup(harness)(query()))[0]!
+    await settle(currentSheetModel)
+    expect(currentSheetModel.getMatches()).toHaveLength(1)
+    bridge.dispose()
+  })
+
+  it('aborts a deferred batch at the global deadline and ignores its late result', async () => {
+    vi.useFakeTimers()
+    try {
+      const harness = facade(state({}))
+      harness.providers.add({
+        find: vi.fn().mockResolvedValue([new FakeInnerModel([])]),
+        terminate: vi.fn(),
+      })
+      const bridge = installLazyFindBridge(harness)
+      let resolveRead!: (result: MappedResult) => void
+      let signal: AbortSignal | undefined
+      mockRead.mockImplementation(
+        async (_state, _sheet, _range, _meta, options) =>
+          await new Promise<MappedResult>((resolve) => {
+            resolveRead = resolve
+            signal = options?.signal
+          }),
+      )
+      const model = (await harnessLookup(harness)(query()))[0]!
+      await vi.advanceTimersByTimeAsync(10_001)
+      expect(signal?.aborted).toBe(true)
+      resolveRead(mapped([{ row: 500, column: 3, value: 'late needle' }]))
+      await vi.runAllTimersAsync()
+      expect(model.getMatches()).toHaveLength(0)
+      bridge.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops before merging a batch that exceeds the cumulative byte budget', async () => {
+    const harness = facade(state({ rowCount: 10_000 }))
+    harness.providers.add({
+      find: vi.fn().mockResolvedValue([new FakeInnerModel([])]),
+      terminate: vi.fn(),
+    })
+    const bridge = installLazyFindBridge(harness)
+    mockRead
+      .mockResolvedValueOnce(
+        mapped([{ row: 500, column: 3, value: 'needle first' }], 9 * 1024 * 1024),
+      )
+      .mockResolvedValueOnce(
+        mapped([{ row: 3_000, column: 3, value: 'needle rejected' }], 9 * 1024 * 1024),
+      )
+
+    const model = (await harnessLookup(harness)(query()))[0]!
+    await vi.waitFor(() => expect(harness.setMessage).toHaveBeenCalled())
+    expect(mockRead).toHaveBeenCalledTimes(2)
+    expect(model.getMatches().map((item) => (item as LazyCellMatch).range.range.startRow)).toEqual([
+      500,
+    ])
     bridge.dispose()
   })
 })
