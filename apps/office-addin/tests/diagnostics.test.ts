@@ -217,6 +217,40 @@ describe('Office safe diagnostics', () => {
     expect(diagnostics.exportJson()).not.toContain('secret document content')
   })
 
+  it('preserves a specialized Office error name through a staged verification cause', () => {
+    const diagnostics = createOfficeDiagnostics({ host: 'word', build: 'dev' })
+    const officeError = Object.assign(new Error('secret document content'), {
+      name: 'RichApi.Error',
+      code: 'InvalidArgument',
+      debugInfo: { errorLocation: 'Body.insertOoxml' },
+    })
+    const staged = Object.assign(new Error('word_write_verification_failed', { cause: officeError }), {
+      verificationStage: 'content',
+    })
+    const wrapped = new Error('office_verify_failed', { cause: staged })
+
+    diagnostics.record({ phase: 'verify', errorCode: 'office_verify_failed', error: wrapped })
+
+    expect(diagnostics.snapshot().events[0]).toMatchObject({
+      verification_stage: 'content',
+      office_error_code: 'InvalidArgument',
+      office_error_name: 'RichApi.Error',
+      office_error_location: 'Body.insertOoxml',
+    })
+    expect(diagnostics.exportJson()).not.toContain('secret document content')
+  })
+
+  it('does not replace an outer specialized Office name with a deeper generic name', () => {
+    const diagnostics = createOfficeDiagnostics({ host: 'word', build: 'dev' })
+    const specialized = Object.assign(new Error('office failure', { cause: new Error('wrapped') }), {
+      name: 'RichApi.Error',
+    })
+
+    diagnostics.record({ phase: 'write', errorCode: 'office_write_failed', error: specialized })
+
+    expect(diagnostics.snapshot().events[0]?.office_error_name).toBe('RichApi.Error')
+  })
+
   it('retains an allowlisted verification stage from a shallow error cause', () => {
     const diagnostics = createOfficeDiagnostics({ host: 'word', build: 'dev' })
     const staged = Object.assign(new Error('secret document content'), {

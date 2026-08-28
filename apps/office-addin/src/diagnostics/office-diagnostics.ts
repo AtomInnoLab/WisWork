@@ -167,7 +167,11 @@ function officeIdentifiers(error: unknown): OfficeDiagnosticMetadata {
       const name = identifier(value.name, '')
       const location = identifier(debugInfo?.errorLocation, '')
       if (code && !result.office_error_code) result.office_error_code = code
-      if (name && !result.office_error_name) result.office_error_name = name
+      if (
+        name &&
+        (!result.office_error_name || (result.office_error_name === 'Error' && name !== 'Error'))
+      )
+        result.office_error_name = name
       if (location && !result.office_error_location) result.office_error_location = location
       try {
         const stage = value.verificationStage
