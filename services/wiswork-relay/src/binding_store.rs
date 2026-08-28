@@ -69,6 +69,8 @@ pub(crate) struct Binding {
 
 pub(crate) struct BindingStore {
     connection: Mutex<Connection>,
+    #[cfg(test)]
+    get_live_calls: std::sync::atomic::AtomicUsize,
 }
 
 impl BindingStore {
@@ -84,6 +86,8 @@ impl BindingStore {
         connection.execute_batch("PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON;")?;
         let store = Self {
             connection: Mutex::new(connection),
+            #[cfg(test)]
+            get_live_calls: std::sync::atomic::AtomicUsize::new(0),
         };
         store.initialize()?;
         Ok(store)
@@ -162,6 +166,9 @@ impl BindingStore {
     }
 
     pub fn get_live(&self, id: &str) -> Result<Option<Binding>, BindingStoreError> {
+        #[cfg(test)]
+        self.get_live_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let connection = self.connection.lock().expect("binding database mutex");
         let row = connection
             .query_row(
@@ -239,6 +246,12 @@ impl BindingStore {
                 |row| row.get(0),
             )
             .unwrap()
+    }
+
+    #[cfg(test)]
+    pub fn get_live_call_count(&self) -> usize {
+        self.get_live_calls
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     #[cfg(test)]

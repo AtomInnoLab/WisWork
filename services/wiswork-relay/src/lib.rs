@@ -47,6 +47,7 @@ const DIAGNOSTIC_SESSION_MAX: u16 = 100;
 const PROTOCOL_V2: u64 = 2;
 const PAIRING_RESUME: &str = "pairing-resume.v1";
 const RESUME_CHALLENGE_MAX: Duration = Duration::from_secs(30);
+const MAX_TRACKED_RESUME_IPS: usize = 10_000;
 const SUPPORTED_CAPABILITIES: &[&str] = &[
     "agent.v1",
     "web-search.v1",
@@ -62,6 +63,7 @@ pub struct Config {
     pub request_ttl: Duration,
     pub max_claim_attempts: u8,
     pub max_global_claims: u32,
+    pub max_global_resume_attempts: u32,
     pub diagnostic_window: Duration,
     pub max_diagnostics_per_window: u8,
     pub auth_url: String,
@@ -81,6 +83,7 @@ impl Default for Config {
             request_ttl: Duration::from_secs(300),
             max_claim_attempts: 5,
             max_global_claims: 1_000,
+            max_global_resume_attempts: 1_000,
             diagnostic_window: Duration::from_secs(1),
             max_diagnostics_per_window: 10,
             auth_url: "https://auth.wispaper.ai/oidc/me".into(),
@@ -194,6 +197,7 @@ struct Store {
     pc_resumes: HashMap<u64, PcResume>,
     connection_resume_attempts: HashMap<u64, u8>,
     resume_attempts: HashMap<IpAddr, (Instant, u8)>,
+    global_resume_attempts: (Option<Instant>, u32),
 }
 
 pub fn app(config: Config) -> Router {
@@ -219,19 +223,26 @@ pub fn try_app(config: Config) -> Result<Router, BindingStoreError> {
             fail_approval_delivery: std::sync::atomic::AtomicBool::new(false),
         }),
     };
-    let sweeper = state.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
-        loop {
-            interval.tick().await;
-            let mut store = sweeper.inner.state.lock().await;
-            expire(&mut store, sweeper.inner.config.pairing_ttl);
-        }
-    });
+    drop(spawn_sweeper(&state));
     Ok(Router::new()
         .route("/office-relay", get(upgrade))
         .route("/office-relay/health", get(|| async { "ok" }))
         .with_state(state))
+}
+
+fn spawn_sweeper(state: &App) -> tokio::task::JoinHandle<()> {
+    let sweeper = Arc::downgrade(&state.inner);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+            let Some(inner) = sweeper.upgrade() else {
+                break;
+            };
+            let mut store = inner.state.lock().await;
+            expire(&mut store, inner.config.pairing_ttl);
+        }
+    })
 }
 
 async fn upgrade(
@@ -1290,8 +1301,13 @@ async fn office_resume(
     }
     {
         let mut store = app.inner.state.lock().await;
-        expire(&mut store, app.inner.config.pairing_ttl);
-        consume_office_resume_attempt(&mut store, conn, peer, app.inner.config.pairing_ttl)?;
+        consume_office_resume_attempt(
+            &mut store,
+            conn,
+            peer,
+            app.inner.config.pairing_ttl,
+            app.inner.config.max_global_resume_attempts,
+        )?;
     }
     let binding_id = string(&m, "binding_id")?;
     if !valid_token(binding_id) {
@@ -1466,7 +1482,27 @@ fn consume_office_resume_attempt(
     conn: u64,
     peer: IpAddr,
     window: Duration,
+    max_global_attempts: u32,
 ) -> Result<(), &'static str> {
+    if store
+        .global_resume_attempts
+        .0
+        .is_none_or(|start| start.elapsed() > window)
+    {
+        store.global_resume_attempts = (Some(Instant::now()), 0);
+        store
+            .resume_attempts
+            .retain(|_, (started, _)| started.elapsed() <= window);
+    }
+    store.global_resume_attempts.1 = store.global_resume_attempts.1.saturating_add(1);
+    if store.global_resume_attempts.1 > max_global_attempts {
+        return Err("resume_rate_limited");
+    }
+    if store.resume_attempts.len() >= MAX_TRACKED_RESUME_IPS
+        && !store.resume_attempts.contains_key(&peer)
+    {
+        return Err("relay_busy");
+    }
     let ip_attempts = store
         .resume_attempts
         .entry(peer)
@@ -2359,11 +2395,15 @@ mod tests {
     use super::*;
 
     fn test_app() -> App {
+        test_app_with_config(Config::default())
+    }
+
+    fn test_app_with_config(config: Config) -> App {
         App {
             inner: Arc::new(Inner {
                 state: Mutex::new(Store::default()),
                 next: AtomicU64::new(1),
-                config: Config::default(),
+                config,
                 http: reqwest::Client::builder()
                     .no_proxy()
                     .build()
@@ -2583,5 +2623,133 @@ mod tests {
         expire(&mut store, Duration::from_secs(120));
 
         assert!(store.resume_challenges.is_empty());
+    }
+
+    #[test]
+    fn resume_attempt_ip_guard_does_not_grow_past_ten_thousand() {
+        let mut store = Store::default();
+        for index in 0..10_000_u128 {
+            store.resume_attempts.insert(
+                IpAddr::V6(std::net::Ipv6Addr::from(index)),
+                (Instant::now(), 1),
+            );
+        }
+
+        assert_eq!(
+            consume_office_resume_attempt(
+                &mut store,
+                20_001,
+                IpAddr::V6(std::net::Ipv6Addr::from(10_001_u128)),
+                Duration::from_secs(120),
+                20_000,
+            ),
+            Err("relay_busy")
+        );
+        assert_eq!(store.resume_attempts.len(), 10_000);
+        assert!(!store.connection_resume_attempts.contains_key(&20_001));
+    }
+
+    #[tokio::test]
+    async fn global_resume_budget_precedes_binding_lookup_and_ip_tracking() {
+        let config = Config {
+            max_global_resume_attempts: 1,
+            ..Config::default()
+        };
+        let app = test_app_with_config(config);
+        let (sender, _receiver) = mpsc::channel(4);
+        let tx = Tx {
+            sender,
+            failed: Arc::new(Notify::new()),
+        };
+        let frame = || {
+            json!({
+                "version": 2,
+                "type": "office.resume",
+                "binding_id": "A".repeat(43),
+                "host": "Word",
+                "capabilities": ["agent.v1"]
+            })
+            .as_object()
+            .unwrap()
+            .clone()
+        };
+
+        assert_eq!(
+            office_resume(
+                &app,
+                1,
+                &tx,
+                Some(OFFICE_ORIGIN),
+                "2001:db8::1".parse().unwrap(),
+                frame(),
+            )
+            .await,
+            Err("binding_unavailable")
+        );
+        assert_eq!(app.inner.bindings.get_live_call_count(), 1);
+        for (conn, ip) in [(2, "2001:db8::2"), (3, "2001:db8::3")] {
+            assert_eq!(
+                office_resume(
+                    &app,
+                    conn,
+                    &tx,
+                    Some(OFFICE_ORIGIN),
+                    ip.parse().unwrap(),
+                    frame(),
+                )
+                .await,
+                Err("resume_rate_limited")
+            );
+        }
+        assert_eq!(app.inner.bindings.get_live_call_count(), 1);
+        let store = app.inner.state.lock().await;
+        assert_eq!(store.resume_attempts.len(), 1);
+        assert!(!store.connection_resume_attempts.contains_key(&2));
+        assert!(!store.connection_resume_attempts.contains_key(&3));
+    }
+
+    #[test]
+    fn expired_resume_attempt_window_clears_and_accepts_a_fresh_attempt() {
+        let mut store = Store::default();
+        let window = Duration::from_secs(1);
+        store.global_resume_attempts = (Some(Instant::now() - window - window), 99);
+        store.resume_attempts.insert(
+            "2001:db8::1".parse().unwrap(),
+            (Instant::now() - window - window, 20),
+        );
+
+        assert_eq!(store.resume_attempts.len(), 1);
+        assert_eq!(
+            consume_office_resume_attempt(&mut store, 1, "2001:db8::2".parse().unwrap(), window, 1,),
+            Ok(())
+        );
+        assert_eq!(store.global_resume_attempts.1, 1);
+        assert_eq!(store.resume_attempts.len(), 1);
+        assert!(
+            store
+                .resume_attempts
+                .contains_key(&"2001:db8::2".parse().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn sweeper_releases_the_app_and_binding_database() {
+        let path = std::env::temp_dir().join(format!("wiswork-relay-sweeper-{}.sqlite3", token()));
+        let config = Config {
+            binding_database: Some(path.clone()),
+            ..Config::default()
+        };
+        let app = test_app_with_config(config);
+        let weak = Arc::downgrade(&app.inner);
+        let sweeper = spawn_sweeper(&app);
+
+        drop(app);
+        tokio::time::timeout(Duration::from_secs(1), sweeper)
+            .await
+            .expect("sweeper should stop when the app is dropped")
+            .unwrap();
+        assert!(weak.upgrade().is_none());
+        drop(BindingStore::open(Some(&path)).unwrap());
+        std::fs::remove_file(path).unwrap();
     }
 }
