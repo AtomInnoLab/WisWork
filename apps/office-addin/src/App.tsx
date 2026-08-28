@@ -24,15 +24,18 @@ import type {
   OfficePresentationEvent,
   ProposalPresentationEvent,
 } from './agent/presentation-state.js'
-import { createPcBridgeSession } from './pc-bridge/session.js'
+import { createPcBridgeSession, type PcBridgeSession } from './pc-bridge/session.js'
 import {
   createOfficeRelaySession,
   officeTransportMode,
+  type OfficeRelaySession,
+  type OfficeRelaySnapshot,
   type OfficeRelayStatus,
 } from './relay/session.js'
 import {
   createBrowserOfficeRuntime,
   createOfficeDocumentClient,
+  type OfficeDocumentClient,
   type OfficeHost,
 } from './office-document.js'
 
@@ -81,6 +84,12 @@ export function relayConnectionPresentation(
     busy,
     actionDisabled: busy,
   })
+}
+
+export function relayPersistenceNotice(snapshot: OfficeRelaySnapshot): string | undefined {
+  return snapshot.status === 'connected' && snapshot.remembered === false
+    ? 'Connected, but this Office installation was not remembered. Pair again after reconnecting.'
+    : undefined
 }
 
 type DisplayProposal = OfficeProposal | StructuredProposal
@@ -443,6 +452,7 @@ export function AgentWorkspace(props: {
   host: OfficeHost
   initialPanel?: WorkspacePanelName
   legacy?: boolean
+  connectionNotice?: string
 }) {
   const { session, ui, disconnect, host } = props
   const state = useOfficeAgent(session)
@@ -556,6 +566,12 @@ export function AgentWorkspace(props: {
       {diagnosticStatus && (
         <p className="diagnostic-status" role="status">
           {diagnosticStatus}
+        </p>
+      )}
+
+      {props.connectionNotice && (
+        <p className="diagnostic-status" role="status">
+          {props.connectionNotice}
         </p>
       )}
 
@@ -855,6 +871,7 @@ export function LegacyAgentWorkspace(props: {
   ui: OfficeWorkspaceUi
   disconnect: () => void
   host: OfficeHost
+  connectionNotice?: string
 }) {
   return <AgentWorkspace {...props} legacy />
 }
@@ -863,8 +880,18 @@ export function workspaceComponentForMode(mode: 'workspace' | 'legacy') {
   return mode === 'legacy' ? LegacyAgentWorkspace : AgentWorkspace
 }
 
-function ConfiguredApp() {
-  const document = useMemo(() => createOfficeDocumentClient(createBrowserOfficeRuntime()), [])
+type ConnectionBridge = PcBridgeSession | OfficeRelaySession
+
+export function ConfiguredApp(
+  props: {
+    documentClient?: OfficeDocumentClient
+    connectionBridge?: ConnectionBridge
+  } = {},
+) {
+  const document = useMemo(
+    () => props.documentClient ?? createOfficeDocumentClient(createBrowserOfficeRuntime()),
+    [props.documentClient],
+  )
   const transportMode = useMemo(() => officeTransportMode(import.meta.env), [])
   const remoteDiagnosticsEnabled = useMemo(
     () => transportMode === 'relay' && officeRemoteDiagnosticsEnabled(import.meta.env),
@@ -872,12 +899,13 @@ function ConfiguredApp() {
   )
   const bridge = useMemo(
     () =>
-      transportMode === 'loopback'
+      props.connectionBridge ??
+      (transportMode === 'loopback'
         ? createPcBridgeSession()
         : createOfficeRelaySession({
             capabilities: ['agent.v1'],
-          }),
-    [transportMode],
+          })),
+    [props.connectionBridge, transportMode],
   )
   const bridgeState = useSyncExternalStore(
     (listener) => bridge.subscribe(listener),
@@ -905,6 +933,7 @@ function ConfiguredApp() {
           setHost(activeHost)
           setHostSupported(activeHost !== 'unknown')
           if (activeHost !== 'unknown') {
+            void bridge.connect(activeHost)
             const environment = officeDiagnosticEnvironment(activeHost)
             const diagnostics = createOfficeDiagnostics({
               host: activeHost,
@@ -1006,12 +1035,17 @@ function ConfiguredApp() {
     else bridge.disconnect()
   }
   const WorkspaceComponent = workspaceComponentForMode(workspaceMode)
+  const connectionNotice =
+    'remembered' in bridgeState
+      ? relayPersistenceNotice(bridgeState as OfficeRelaySnapshot)
+      : undefined
   return (
     <WorkspaceComponent
       session={workspace.session}
       ui={workspace.ui}
       disconnect={disconnect}
       host={host}
+      connectionNotice={connectionNotice}
     />
   )
 }

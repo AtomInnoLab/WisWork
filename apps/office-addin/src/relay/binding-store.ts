@@ -312,12 +312,19 @@ class IndexedDbBindingDatabase implements OfficeBindingDatabase {
   }
 }
 
+export function createIndexedDbOfficeBindingDatabase(factory: IDBFactory): OfficeBindingDatabase {
+  return new IndexedDbBindingDatabase(factory)
+}
+
 export function createBrowserOfficeBindingStore(): OfficeBindingStore | undefined {
   try {
     const factory = globalThis.indexedDB
     const subtle = globalThis.crypto?.subtle
     if (!factory || !subtle) return undefined
-    return createOfficeBindingStore({ database: new IndexedDbBindingDatabase(factory), subtle })
+    return createOfficeBindingStore({
+      database: createIndexedDbOfficeBindingDatabase(factory),
+      subtle,
+    })
   } catch {
     return undefined
   }

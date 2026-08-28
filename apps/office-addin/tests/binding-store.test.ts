@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   OFFICE_BINDING_DATABASE_SCHEMA,
   OFFICE_RELAY_ORIGIN,
+  createIndexedDbOfficeBindingDatabase,
   createOfficeBindingStore,
   type OfficeBindingDatabase,
 } from '../src/relay/binding-store.js'
@@ -21,6 +22,57 @@ class MemoryBindingDatabase implements OfficeBindingDatabase {
   async delete(): Promise<void> {
     this.deletes += 1
     this.value = undefined
+  }
+}
+
+class DeterministicIdbFactory {
+  readonly values = new Map<IDBValidKey, unknown>()
+  readonly transactions: IDBTransactionMode[] = []
+  private created = false
+
+  open(_name: string, _version?: number): IDBOpenDBRequest {
+    const request = {} as IDBOpenDBRequest
+    const database = {
+      objectStoreNames: { contains: () => this.created },
+      createObjectStore: () => {
+        this.created = true
+      },
+      close: () => undefined,
+      transaction: (_store: string, mode: IDBTransactionMode) => {
+        this.transactions.push(mode)
+        const transaction = {} as IDBTransaction
+        const complete = () => queueMicrotask(() => transaction.oncomplete?.(new Event('complete')))
+        transaction.objectStore = () =>
+          ({
+            get: (key: IDBValidKey) => {
+              const result = {} as IDBRequest
+              queueMicrotask(() => {
+                Object.defineProperty(result, 'result', { value: this.values.get(key) })
+                result.onsuccess?.(new Event('success'))
+              })
+              return result
+            },
+            put: (value: unknown, key: IDBValidKey) => {
+              this.values.set(key, value)
+              complete()
+              return {} as IDBRequest
+            },
+            delete: (key: IDBValidKey) => {
+              this.values.delete(key)
+              complete()
+              return {} as IDBRequest
+            },
+          }) as IDBObjectStore
+        return transaction
+      },
+    } as unknown as IDBDatabase
+    queueMicrotask(() => {
+      Object.defineProperty(request, 'result', { value: database })
+      if (!this.created)
+        request.onupgradeneeded?.(new Event('upgradeneeded') as IDBVersionChangeEvent)
+      request.onsuccess?.(new Event('success'))
+    })
+    return request
   }
 }
 
@@ -146,5 +198,28 @@ describe('Office persistent binding store', () => {
     const store = createOfficeBindingStore({ database, subtle: crypto.subtle })
 
     await expect(store.load('word', ['agent.v1'])).rejects.toThrow('binding_storage_unavailable')
+  })
+
+  it('persists and reloads a non-exportable CryptoKey through the IndexedDB adapter contract', async () => {
+    const factory = new DeterministicIdbFactory()
+    const first = createOfficeBindingStore({
+      database: createIndexedDbOfficeBindingDatabase(factory as unknown as IDBFactory),
+      subtle: crypto.subtle,
+    })
+    const enrollment = await first.createEnrollment('word', ['agent.v1'])
+    await first.save(enrollment, 'binding_12345678', ['agent.v1'])
+
+    const reloaded = createOfficeBindingStore({
+      database: createIndexedDbOfficeBindingDatabase(factory as unknown as IDBFactory),
+      subtle: crypto.subtle,
+    })
+    const record = await reloaded.load('word', ['agent.v1'])
+
+    expect(record?.privateKey).toBe(enrollment.privateKey)
+    expect(record?.privateKey.extractable).toBe(false)
+    expect(await reloaded.sign(record!, 'challenge_12345678')).toMatch(/^[A-Za-z0-9_-]+$/)
+    await reloaded.forget()
+    await expect(reloaded.load('word', ['agent.v1'])).resolves.toBeUndefined()
+    expect(factory.transactions).toEqual(['readwrite', 'readonly', 'readwrite', 'readonly'])
   })
 })

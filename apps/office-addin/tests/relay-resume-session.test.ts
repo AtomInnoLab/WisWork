@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createOfficeRelaySession, type RelayWebSocket } from '../src/relay/session.js'
+import {
+  createBrowserOfficeBindingInvalidationChannel,
+  createOfficeRelaySession,
+  type OfficeBindingInvalidation,
+  type OfficeBindingInvalidationChannel,
+  type RelayWebSocket,
+} from '../src/relay/session.js'
 import {
   PAIRING_RESUME_FEATURE,
   type OfficeBindingEnrollment,
@@ -101,6 +107,87 @@ const flush = async () => {
 
 const sent = (socket: FakeSocket, index = 0) => JSON.parse(socket.sent[index]!)
 
+class FakeInvalidationChannel implements OfficeBindingInvalidationChannel {
+  listeners = new Set<(message: OfficeBindingInvalidation) => void>()
+
+  subscribe(listener: (message: OfficeBindingInvalidation) => void) {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  broadcast(message: OfficeBindingInvalidation) {
+    for (const listener of this.listeners) listener(message)
+  }
+}
+
+describe('Office binding invalidation channel', () => {
+  it('accepts only the exact origin-scoped wire shape and emits the canonical shape', () => {
+    const postMessage = vi.fn<(message: unknown) => void>()
+    let rawChannel:
+      | {
+          onmessage: ((event: MessageEvent<unknown>) => void) | null
+          postMessage(message: unknown): void
+        }
+      | undefined
+    const channel = createBrowserOfficeBindingInvalidationChannel((name) => {
+      expect(name).toBe('wiswork-office-pairing-v1')
+      rawChannel = { onmessage: null, postMessage }
+      return rawChannel
+    })!
+    const listener = vi.fn()
+    channel.subscribe(listener)
+
+    rawChannel!.onmessage?.({
+      data: {
+        version: 1,
+        type: 'binding.forgotten',
+        origin: binding.origin,
+        host: 'word',
+        binding_id: binding.bindingId,
+        extra: true,
+      },
+    } as MessageEvent<unknown>)
+    rawChannel!.onmessage?.({
+      data: {
+        version: 1,
+        type: 'binding.forgotten',
+        origin: 'https://attacker.example',
+        host: 'word',
+        binding_id: binding.bindingId,
+      },
+    } as MessageEvent<unknown>)
+    expect(listener).not.toHaveBeenCalled()
+
+    rawChannel!.onmessage?.({
+      data: {
+        version: 1,
+        type: 'binding.forgotten',
+        origin: binding.origin,
+        host: 'word',
+        binding_id: binding.bindingId,
+      },
+    } as MessageEvent<unknown>)
+    expect(listener).toHaveBeenCalledWith({
+      origin: binding.origin,
+      host: 'word',
+      bindingId: binding.bindingId,
+    })
+
+    channel.broadcast({
+      origin: binding.origin,
+      host: 'word',
+      bindingId: binding.bindingId,
+    })
+    expect(postMessage).toHaveBeenCalledWith({
+      version: 1,
+      type: 'binding.forgotten',
+      origin: binding.origin,
+      host: 'word',
+      binding_id: binding.bindingId,
+    })
+  })
+})
+
 describe('Office persistent relay session', () => {
   it('enrolls once with a control feature separate from callable capabilities', async () => {
     const store = new FakeBindingStore()
@@ -157,6 +244,47 @@ describe('Office persistent relay session', () => {
     await expect(session.capabilityFetch(PAIRING_RESUME_FEATURE as never, {})).rejects.toThrow(
       'relay_capability_unavailable',
     )
+  })
+
+  it('keeps the short session but marks it not remembered when binding persistence fails', async () => {
+    const store = new FakeBindingStore()
+    store.save = async () => {
+      throw new Error('binding_storage_unavailable')
+    }
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({
+      capabilities: ['agent.v1'],
+      bindingStore: store,
+      createSocket: () => socket,
+    })
+    const connecting = session.connect('word')
+    await flush()
+    socket.open()
+    socket.receive({
+      version: 2,
+      type: 'office.created',
+      pairing_id: 'pairing_12345678',
+      verification_code: '123456',
+      expires_in: 120,
+      features: [PAIRING_RESUME_FEATURE],
+    })
+    socket.receive({
+      version: 2,
+      type: 'office.approved',
+      session_id: 'session_12345678',
+      capability: 'session_capability_12345678',
+      expires_in: 1800,
+      capabilities: ['agent.v1'],
+      features: [PAIRING_RESUME_FEATURE],
+      binding_id: 'binding_12345678',
+    })
+
+    await connecting
+    expect(session.snapshot()).toEqual({
+      status: 'connected',
+      capabilities: ['agent.v1'],
+      remembered: false,
+    })
   })
 
   it('resumes by signing the exact Relay challenge and preserves waiting_for_pc', async () => {
@@ -254,15 +382,39 @@ describe('Office persistent relay session', () => {
     expect(store.saves).toHaveLength(0)
   })
 
-  it.each([
-    'binding_unavailable',
-    'binding_revoked',
-    'session_revoked',
-    'invalid_proof',
-    'capability_not_negotiated',
-  ])('clears terminal %s bindings and returns to enhanced first pairing', async (code) => {
+  it.each(['binding_unavailable', 'binding_revoked', 'invalid_proof', 'capability_not_negotiated'])(
+    'clears terminal %s bindings and returns to enhanced first pairing',
+    async (code) => {
+      const store = new FakeBindingStore(binding)
+      const sockets: FakeSocket[] = []
+      const session = createOfficeRelaySession({
+        capabilities: ['agent.v1'],
+        bindingStore: store,
+        createSocket: () => {
+          const socket = new FakeSocket()
+          sockets.push(socket)
+          return socket
+        },
+      })
+      void session.connect('word')
+      await flush()
+      sockets[0]!.open()
+      sockets[0]!.receive({ version: 2, type: 'relay.error', code })
+      await flush()
+      expect(store.forgets).toBe(1)
+      expect(sockets).toHaveLength(2)
+      sockets[1]!.open()
+      expect(sent(sockets[1]!)).toMatchObject({
+        type: 'office.create',
+        features: [PAIRING_RESUME_FEATURE],
+      })
+    },
+  )
+
+  it('treats session_revoked as transient PC loss and resumes the retained binding', async () => {
     const store = new FakeBindingStore(binding)
     const sockets: FakeSocket[] = []
+    const scheduled: Array<() => void> = []
     const session = createOfficeRelaySession({
       capabilities: ['agent.v1'],
       bindingStore: store,
@@ -271,19 +423,253 @@ describe('Office persistent relay session', () => {
         sockets.push(socket)
         return socket
       },
+      schedule: (callback) => {
+        scheduled.push(callback)
+        return scheduled.length
+      },
+      cancelSchedule: () => undefined,
+      random: () => 0.5,
+    })
+    const connecting = session.connect('word')
+    await flush()
+    sockets[0]!.open()
+    sockets[0]!.receive({
+      version: 2,
+      type: 'office.challenge',
+      binding_id: binding.bindingId,
+      challenge: 'challenge_12345678',
+      expires_in: 30,
+    })
+    await flush()
+    sockets[0]!.receive({
+      version: 2,
+      type: 'office.approved',
+      session_id: 'session_12345678',
+      capability: 'session_capability_12345678',
+      expires_in: 1800,
+      capabilities: ['agent.v1'],
+    })
+    await connecting
+
+    sockets[0]!.receive({ version: 2, type: 'relay.error', code: 'session_revoked' })
+    await flush()
+    expect(store.forgets).toBe(0)
+    expect(session.snapshot()).toEqual({ status: 'reconnecting' })
+    expect(scheduled).toHaveLength(1)
+    scheduled[0]!()
+    await flush()
+    sockets[1]!.open()
+    sockets[1]!.receive({
+      version: 2,
+      type: 'office.challenge',
+      binding_id: binding.bindingId,
+      challenge: 'challenge_87654321',
+      expires_in: 30,
+    })
+    await flush()
+    sockets[1]!.receive({ version: 2, type: 'office.waiting_for_pc' })
+    expect(session.snapshot()).toEqual({ status: 'waiting_for_pc' })
+  })
+
+  it.each(['invalid_frame', 'unknown_type'])(
+    'falls back once from a stored binding when an old Relay returns %s',
+    async (code) => {
+      const store = new FakeBindingStore(binding)
+      const sockets: FakeSocket[] = []
+      const scheduled: Array<() => void> = []
+      const session = createOfficeRelaySession({
+        capabilities: ['agent.v1'],
+        bindingStore: store,
+        createSocket: () => {
+          const socket = new FakeSocket()
+          sockets.push(socket)
+          return socket
+        },
+        schedule: (callback) => {
+          scheduled.push(callback)
+          return scheduled.length
+        },
+        cancelSchedule: () => undefined,
+      })
+      void session.connect('word')
+      await flush()
+      sockets[0]!.open()
+      sockets[0]!.receive({ version: 2, type: 'relay.error', code })
+      await flush()
+
+      expect(store.forgets).toBe(0)
+      expect(scheduled).toHaveLength(0)
+      expect(sockets).toHaveLength(2)
+      sockets[1]!.open()
+      expect(sent(sockets[1]!)).toEqual({
+        version: 2,
+        type: 'office.create',
+        host: 'Word',
+        capabilities: ['agent.v1'],
+      })
+      sockets[1]!.close()
+      await flush()
+      expect(sockets).toHaveLength(2)
+      expect(session.snapshot()).toEqual({ status: 'offline' })
+    },
+  )
+
+  it('falls back once when an old Relay closes before recognizing stored-binding resume', async () => {
+    const store = new FakeBindingStore(binding)
+    const sockets: FakeSocket[] = []
+    const scheduled: Array<() => void> = []
+    const session = createOfficeRelaySession({
+      capabilities: ['agent.v1'],
+      bindingStore: store,
+      createSocket: () => {
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+      schedule: (callback) => {
+        scheduled.push(callback)
+        return scheduled.length
+      },
+      cancelSchedule: () => undefined,
     })
     void session.connect('word')
     await flush()
     sockets[0]!.open()
-    sockets[0]!.receive({ version: 2, type: 'relay.error', code })
+    sockets[0]!.close()
     await flush()
-    expect(store.forgets).toBe(1)
+
+    expect(scheduled).toHaveLength(0)
     expect(sockets).toHaveLength(2)
     sockets[1]!.open()
-    expect(sent(sockets[1]!)).toMatchObject({
-      type: 'office.create',
-      features: [PAIRING_RESUME_FEATURE],
+    expect(sent(sockets[1]!).type).toBe('office.create')
+    sockets[1]!.close()
+    await flush()
+    expect(sockets).toHaveLength(2)
+  })
+
+  it('invalidates synchronously before asynchronous terminal binding deletion', async () => {
+    const store = new FakeBindingStore(binding)
+    let releaseForget!: () => void
+    store.forget = async () => new Promise<void>((resolve) => (releaseForget = resolve))
+    const sockets: FakeSocket[] = []
+    const scheduled: Array<() => void> = []
+    const session = createOfficeRelaySession({
+      capabilities: ['agent.v1'],
+      bindingStore: store,
+      createSocket: () => {
+        const socket = new FakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+      schedule: (callback) => {
+        scheduled.push(callback)
+        return scheduled.length
+      },
+      cancelSchedule: () => undefined,
     })
+    void session.connect('word')
+    await flush()
+    sockets[0]!.open()
+    sockets[0]!.receive({ version: 2, type: 'relay.error', code: 'invalid_proof' })
+    await flush()
+
+    expect(sockets[0]!.readyState).toBe(3)
+    sockets[0]!.close()
+    expect(scheduled).toHaveLength(0)
+    releaseForget()
+    await flush()
+    await flush()
+    expect(sockets).toHaveLength(2)
+    sockets[1]!.open()
+    expect(sent(sockets[1]!).type).toBe('office.create')
+  })
+
+  it('invalidates synchronously before deleting an unusable signing key', async () => {
+    const store = new FakeBindingStore(binding)
+    store.sign = async () => {
+      throw new Error('binding_key_unusable')
+    }
+    let releaseForget!: () => void
+    store.forget = async () => new Promise<void>((resolve) => (releaseForget = resolve))
+    const socket = new FakeSocket()
+    const scheduled: Array<() => void> = []
+    const session = createOfficeRelaySession({
+      capabilities: ['agent.v1'],
+      bindingStore: store,
+      createSocket: () => socket,
+      schedule: (callback) => {
+        scheduled.push(callback)
+        return scheduled.length
+      },
+      cancelSchedule: () => undefined,
+    })
+    void session.connect('word')
+    await flush()
+    socket.open()
+    socket.receive({
+      version: 2,
+      type: 'office.challenge',
+      binding_id: binding.bindingId,
+      challenge: 'challenge_12345678',
+      expires_in: 30,
+    })
+    await flush()
+
+    expect(socket.readyState).toBe(3)
+    socket.close()
+    expect(scheduled).toHaveLength(0)
+    releaseForget()
+  })
+
+  it('broadcasts manual forget across same-origin host/binding taskpanes', async () => {
+    const store = new FakeBindingStore(binding)
+    const channel = new FakeInvalidationChannel()
+    const sockets = [new FakeSocket(), new FakeSocket()]
+    const scheduled: Array<() => void> = []
+    const sessions = sockets.map((socket) =>
+      createOfficeRelaySession({
+        capabilities: ['agent.v1'],
+        bindingStore: store,
+        bindingInvalidationChannel: channel,
+        createSocket: () => socket,
+        schedule: (callback) => {
+          scheduled.push(callback)
+          return scheduled.length
+        },
+        cancelSchedule: () => undefined,
+      }),
+    )
+    void sessions[0]!.connect('word')
+    void sessions[1]!.connect('word')
+    await flush()
+    sockets.forEach((socket) => socket.open())
+
+    await sessions[0]!.forget()
+
+    expect(sessions[1]!.snapshot()).toEqual({ status: 'offline' })
+    sockets[1]!.close()
+    expect(scheduled).toHaveLength(0)
+  })
+
+  it('ignores forget broadcasts for a different host or binding', async () => {
+    const store = new FakeBindingStore(binding)
+    const channel = new FakeInvalidationChannel()
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({
+      capabilities: ['agent.v1'],
+      bindingStore: store,
+      bindingInvalidationChannel: channel,
+      createSocket: () => socket,
+    })
+    void session.connect('word')
+    await flush()
+    socket.open()
+
+    channel.broadcast({ origin: binding.origin, host: 'excel', bindingId: binding.bindingId })
+    channel.broadcast({ origin: binding.origin, host: 'word', bindingId: 'binding_other' })
+
+    expect(session.snapshot()).toEqual({ status: 'connecting' })
+    expect(socket.readyState).toBe(1)
   })
 
   it.each(['challenge_expired', 'resume_rate_limited', 'resume_limit', 'peer_unavailable'])(
@@ -333,6 +719,15 @@ describe('Office persistent relay session', () => {
     void session.connect('word')
     await flush()
     socket.open()
+    socket.receive({
+      version: 2,
+      type: 'office.challenge',
+      binding_id: binding.bindingId,
+      challenge: 'challenge_12345678',
+      expires_in: 30,
+    })
+    await flush()
+    socket.receive({ version: 2, type: 'office.waiting_for_pc' })
     socket.close()
     await flush()
     expect(scheduled).toHaveLength(1)

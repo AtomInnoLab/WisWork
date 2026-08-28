@@ -175,9 +175,8 @@ import { registerOfficePairingIpc } from './office-pairing-ipc'
 import {
   createOfficeRelayClient,
   officeRelayEndpointFromEnv,
-  type OfficeRelayClient,
 } from './office-relay-client'
-import { createOfficeRelayPool } from './office-relay-pool'
+import { createOfficeRelayPool, type OfficeRelayPool } from './office-relay-pool'
 import { createElectronOfficeRelayBindingStore } from './office-relay-binding-store'
 import { createOfficeRelayLifecycle, type OfficeRelayLifecycle } from './office-relay-lifecycle'
 import {
@@ -287,7 +286,7 @@ let authRuntime: ReturnType<typeof initializeElectronAuthRuntime> | null = null
 let officeBridge: OfficeBridge | null = null
 let officeBridgeServer: OfficeBridgeHttpServer | null = null
 let officeBridgeDiagnostic = 'disabled'
-let officeRelay: OfficeRelayClient | null = null
+let officeRelay: OfficeRelayPool | null = null
 let officeRelayLifecycle: OfficeRelayLifecycle | null = null
 let officeRelayDiagnostic = 'disconnected'
 const requireAuthRuntime = (): ReturnType<typeof initializeElectronAuthRuntime> => {
@@ -1732,7 +1731,7 @@ function registerHomeIpc(): void {
     const status = await syncOfficeBridgeAvailability(officeBridge, () =>
       requireAuthRuntime().client.getValidAccountStatus(),
     )
-    await officeRelayLifecycle?.syncAccount().catch(() => undefined)
+    await officeRelayLifecycle?.syncAccount()
     return status
   })
   ipcMain.handle(HOME_CHANNELS.accountLogin, async (event, ...args: unknown[]) => {
@@ -1761,7 +1760,7 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.accountLogout, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
     officeBridge?.setSessionAvailable(false)
-    await officeRelayLifecycle?.logout().catch(() => undefined)
+    await officeRelayLifecycle?.logout()
     return requireAuthRuntime().client.logout()
   })
   ipcMain.handle(HOME_CHANNELS.officeBridgeStatus, (event, ...args: unknown[]) => {
@@ -2533,7 +2532,9 @@ app.whenReady().then(async () => {
     fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
     onTerminalAuthLoss: () => {
       officeBridge?.setSessionAvailable(false)
-      void officeRelayLifecycle?.terminalAuthLoss().catch(() => undefined)
+      void officeRelayLifecycle?.terminalAuthLoss().catch(() => {
+        officeRelayDiagnostic = 'error:binding_lifecycle'
+      })
     },
   })
   const officeRelayBindingStore = createElectronOfficeRelayBindingStore({
@@ -2576,7 +2577,14 @@ app.whenReady().then(async () => {
       onBinding: (binding) => officeRelayBindingStore.put(binding),
       onBindingInvalidated: (binding) =>
         officeRelayBindingStore.remove(binding.accountId, binding.bindingId),
-      onAuthRequired: () => officeRelayLifecycle?.terminalAuthLoss(),
+      onAuthRequired: async () => {
+        try {
+          await officeRelayLifecycle?.terminalAuthLoss()
+        } catch (error) {
+          officeRelayDiagnostic = 'error:binding_lifecycle'
+          throw error
+        }
+      },
     })
     officeRelayLifecycle = createOfficeRelayLifecycle({
       store: officeRelayBindingStore,
@@ -2584,11 +2592,11 @@ app.whenReady().then(async () => {
       getAccountStatus: () => requireAuthRuntime().client.getAccountStatus(),
       getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
     })
-    await officeRelayLifecycle.syncAccount().catch(() => undefined)
   } catch {
     officeRelayDiagnostic = 'error:invalid_config'
     console.error('[office-relay] invalid endpoint configuration')
   }
+  if (officeRelayLifecycle) await officeRelayLifecycle.syncAccount()
   if (officeBridgeEnabled(process.env, app.isPackaged)) {
     officeBridgeDiagnostic = 'error'
     const initialAccount = await requireAuthRuntime()
@@ -2644,6 +2652,7 @@ app.whenReady().then(async () => {
     isTrustedSender: (sender) => Boolean(shellWindow && sender === shellWindow.webContents),
   })
   void authDeepLinks.initialize(async (callback) => {
+    officeRelay?.suspend('account_switch')
     await requireAuthRuntime().client.consumeCallback(callback)
     await syncOfficeBridgeAvailability(officeBridge, () =>
       requireAuthRuntime().client.getValidAccountStatus(),

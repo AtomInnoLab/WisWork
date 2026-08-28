@@ -41,10 +41,14 @@ export function createOfficeRelayLifecycle(options: {
     accountId: string,
     reason: 'logout' | 'auth_required' | 'account_switch',
   ) => {
-    await options.store.tombstoneAccount(accountId)
-    await deliverTombstones(accountId)
-    options.pool.revoke(reason)
-    if (activeAccountId === accountId) activeAccountId = null
+    options.pool.suspend(reason)
+    try {
+      await options.store.tombstoneAccount(accountId)
+      await deliverTombstones(accountId)
+      if (activeAccountId === accountId) activeAccountId = null
+    } finally {
+      options.pool.suspend(reason)
+    }
   }
 
   return {
@@ -63,10 +67,12 @@ export function createOfficeRelayLifecycle(options: {
         activeAccountId = account.userId
         await deliverTombstones(account.userId)
         const bindings = await options.store.listForAccount(account.userId)
-        for (const binding of bindings) await options.pool.resume(binding)
+        options.pool.activate()
+        await Promise.all(bindings.slice(0, 12).map((binding) => options.pool.resume(binding)))
       })
     },
     logout() {
+      options.pool.suspend('logout')
       return serialize(async () => {
         const localAccount = await (
           options.getAccountStatus ?? options.getValidAccountStatus
@@ -75,18 +81,19 @@ export function createOfficeRelayLifecycle(options: {
           activeAccountId ??
           (localAccount.loggedIn && localAccount.userId ? localAccount.userId : null)
         if (account) await invalidate(account, 'logout')
-        else options.pool.revoke('logout')
+        else options.pool.suspend('logout')
       })
     },
     terminalAuthLoss() {
+      options.pool.suspend('auth_required')
       return serialize(async () => {
         const account = activeAccountId
         if (account) await invalidate(account, 'auth_required')
-        else options.pool.revoke('auth_required')
+        else options.pool.suspend('auth_required')
       })
     },
     shutdown() {
-      options.pool.revoke('shutdown')
+      options.pool.suspend('shutdown')
     },
   }
 }

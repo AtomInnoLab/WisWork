@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import type {
   OfficeRelayBinding,
@@ -68,6 +70,8 @@ function harness() {
     listPending: vi.fn(() => []),
     status: vi.fn(() => 'disconnected' as const),
     revoke: vi.fn((reason?: string) => order.push(`disconnect:${reason}`)),
+    suspend: vi.fn((reason?: string) => order.push(`suspend:${reason}`)),
+    activate: vi.fn(() => order.push('activate')),
   } satisfies OfficeRelayPool
   const lifecycle = createOfficeRelayLifecycle({
     store,
@@ -97,7 +101,7 @@ describe('Office relay binding lifecycle', () => {
     })
     await lifecycle.syncAccount()
     expect(store.tombstoneAccount).toHaveBeenCalledWith('account-one')
-    expect(pool.revoke).toHaveBeenCalledWith('auth_required')
+    expect(pool.suspend).toHaveBeenCalledWith('auth_required')
   })
 
   it('retries same-account tombstones before resuming every active binding at startup', async () => {
@@ -106,10 +110,31 @@ describe('Office relay binding lifecycle', () => {
     expect(order).toEqual([
       'revoke:binding_stale_12345678',
       'ack:binding_stale_12345678',
+      'activate',
       'resume:binding_one_12345678',
       'resume:binding_two_12345678',
     ])
     expect(tombstones.get('account-one')).toEqual([])
+  })
+
+  it('starts resume work concurrently while enforcing the twelve-slot bound', async () => {
+    const { lifecycle, store, pool } = harness()
+    ;(store.listForAccount as ReturnType<typeof vi.fn>).mockResolvedValue(
+      Array.from({ length: 13 }, (_, index) => makeBinding('account-one', `parallel_${index}`)),
+    )
+    const releases: Array<() => void> = []
+    ;(pool.resume as ReturnType<typeof vi.fn>).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          releases.push(resolve)
+        }),
+    )
+
+    const syncing = lifecycle.syncAccount()
+    await vi.waitFor(() => expect(pool.resume).toHaveBeenCalledTimes(12))
+    expect(releases).toHaveLength(12)
+    releases.forEach((release) => release())
+    await syncing
   })
 
   it('deletes active records before remote logout revocation and retains failed tombstones', async () => {
@@ -120,9 +145,10 @@ describe('Office relay binding lifecycle', () => {
       .mockRejectedValueOnce(new Error('offline'))
       .mockResolvedValue(undefined)
 
-    await lifecycle.logout()
-    expect(order[0]).toBe('tombstone:account-one')
-    expect(order.at(-1)).toBe('disconnect:logout')
+    const loggingOut = lifecycle.logout()
+    expect(order[0]).toBe('suspend:logout')
+    await loggingOut
+    expect(order[0]).toBe('suspend:logout')
     expect(store.tombstoneAccount).toHaveBeenCalledWith('account-one')
     expect(tombstones.get('account-one')!.map((entry) => entry.bindingId)).toEqual([
       'binding_one_12345678',
@@ -136,8 +162,7 @@ describe('Office relay binding lifecycle', () => {
     setAccount({ loggedIn: true, userId: 'account-two' })
 
     await lifecycle.syncAccount()
-    expect(order[0]).toBe('tombstone:account-one')
-    expect(order).toContain('disconnect:account_switch')
+    expect(order[0]).toBe('suspend:account_switch')
     expect(order.at(-1)).toBe('resume:binding_three_12345678')
   })
 
@@ -146,12 +171,35 @@ describe('Office relay binding lifecycle', () => {
     await lifecycle.syncAccount()
     order.length = 0
     lifecycle.shutdown()
-    expect(order).toEqual(['disconnect:shutdown'])
+    expect(order).toEqual(['suspend:shutdown'])
     expect(store.tombstoneAccount).not.toHaveBeenCalled()
 
     setAccount({ loggedIn: false })
     await lifecycle.terminalAuthLoss()
     expect(store.tombstoneAccount).toHaveBeenCalledWith('account-one')
-    expect(pool.revoke).toHaveBeenLastCalledWith('auth_required')
+    expect(pool.suspend).toHaveBeenLastCalledWith('auth_required')
+  })
+
+  it('suspends sockets and retry loops in finally even when local tombstoning fails', async () => {
+    const { lifecycle, store, pool, order } = harness()
+    await lifecycle.syncAccount()
+    order.length = 0
+    ;(store.tombstoneAccount as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('disk_failure'),
+    )
+
+    await expect(lifecycle.logout()).rejects.toThrow('disk_failure')
+    expect(order).toEqual(['suspend:logout', 'suspend:logout', 'suspend:logout'])
+    expect(pool.revokeBinding).not.toHaveBeenCalledWith('binding_one_12345678')
+  })
+
+  it('does not let index swallow lifecycle failures before auth logout or startup', () => {
+    const source = readFileSync(join(import.meta.dirname, '../src/main/index.ts'), 'utf8')
+    expect(source).not.toContain('officeRelayLifecycle?.logout().catch')
+    expect(source).not.toContain('officeRelayLifecycle.syncAccount().catch')
+    const callback = source.slice(source.indexOf('void authDeepLinks.initialize'))
+    expect(callback.indexOf("officeRelay?.suspend('account_switch')")).toBeLessThan(
+      callback.indexOf('consumeCallback(callback)'),
+    )
   })
 })

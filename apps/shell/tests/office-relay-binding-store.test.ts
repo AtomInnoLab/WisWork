@@ -182,6 +182,34 @@ describe('Office relay encrypted binding store', () => {
     await expect(store.listTombstonesForAccount('account-one')).resolves.toEqual([])
   })
 
+  it('retains tombstones beyond the independent twelve-active-binding bound until ack', async () => {
+    const { store } = harness()
+    for (let batch = 0; batch < 2; batch += 1) {
+      for (let index = 0; index < 12; index += 1) {
+        await store.put(
+          wordBinding({
+            bindingId: `binding_tombstone_${batch}_${String(index).padStart(2, '0')}`,
+            createdAt: batch * 12 + index,
+          }),
+        )
+      }
+      await store.tombstoneAccount('account-one')
+    }
+    expect(await store.listForAccount('account-one')).toEqual([])
+    expect(await store.listTombstonesForAccount('account-one')).toHaveLength(24)
+  })
+
+  it('rejects new enrollment at the safe total-record limit without dropping tombstones', async () => {
+    const tombstones = Array.from({ length: 256 }, (_, index) => ({
+      bindingId: `binding_retained_${String(index).padStart(4, '0')}`,
+      accountId: 'account-one',
+      createdAt: index,
+    }))
+    const { store } = harness({ version: 1, bindings: [], tombstones })
+    await expect(store.put(wordBinding())).rejects.toThrow('office_binding_store_limit')
+    expect(await store.listTombstonesForAccount('account-one')).toHaveLength(256)
+  })
+
   it('removes only the invalidated binding without creating a revocation tombstone', async () => {
     const { store } = harness()
     await store.put(wordBinding())

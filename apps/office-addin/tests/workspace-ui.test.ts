@@ -31,6 +31,7 @@ function workspaceMarkup(
   overrides: Partial<OfficeAgentSnapshot> = {},
   panel?: WorkspacePanelName,
   host: 'word' | 'excel' | 'powerpoint' | 'unknown' = 'word',
+  connectionNotice?: string,
 ) {
   const snapshot: OfficeAgentSnapshot = {
     assistantText: 'Draft ready',
@@ -88,6 +89,7 @@ function workspaceMarkup(
       disconnect: vi.fn(),
       host,
       initialPanel: panel,
+      connectionNotice,
     }),
   )
 }
@@ -107,6 +109,14 @@ describe('Office Agent workspace UI', () => {
     expect(html).not.toContain('Edits always require your approval')
     expect(html).toContain('aria-label="Message WisWork Agent"')
     expect(html).not.toContain('<pre')
+  })
+
+  it('announces when the current relay session could not be remembered', () => {
+    const notice =
+      'Connected, but this Office installation was not remembered. Pair again after reconnecting.'
+    const html = workspaceMarkup({}, undefined, 'word', notice)
+    expect(html).toContain('role="status"')
+    expect(html).toContain(notice)
   })
 
   it('renders Markdown only for assistant timeline messages', () => {

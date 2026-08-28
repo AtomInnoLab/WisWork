@@ -8,7 +8,7 @@ interface ChildEvents {
   onPending(pairing: OfficePairingRequest): void
   onPendingExpired(pairingId: string): void
   onStatus(status: OfficeRelayStatus): void
-  onBinding(binding: OfficeRelayBinding): void
+  onBinding(binding: OfficeRelayBinding): Promise<void>
   onBindingInvalidated(bindingId: string): void
 }
 
@@ -21,7 +21,10 @@ interface Slot {
   retryTimer: ReturnType<typeof setTimeout> | null
 }
 
-export type OfficeRelayPool = OfficeRelayClient
+export interface OfficeRelayPool extends OfficeRelayClient {
+  suspend(reason: string): void
+  activate(): void
+}
 
 export function createOfficeRelayPool(options: {
   createClient(events: ChildEvents): OfficeRelayClient
@@ -43,12 +46,13 @@ export function createOfficeRelayPool(options: {
     throw new Error('invalid_relay_pool_capacity')
 
   const slots = new Set<Slot>()
-  const bindingOwners = new Map<string, Slot>()
+  const bindingOwners = new Map<string, Set<Slot>>()
   const pairingOwners = new Map<string, Slot>()
   const approving = new Set<string>()
   let fallbackStatus: OfficeRelayStatus = 'disconnected'
   let publishedStatus: OfficeRelayStatus = 'disconnected'
   let revoking = false
+  let suspended = false
   const baseReconnectMs = options.baseReconnectMs ?? 1_000
   const maxReconnectMs = options.maxReconnectMs ?? 30_000
   const random = options.random ?? Math.random
@@ -76,13 +80,22 @@ export function createOfficeRelayPool(options: {
     if (!slots.delete(slot)) return
     if (slot.retryTimer) clearTimer(slot.retryTimer)
     slot.retryTimer = null
-    if (slot.binding && bindingOwners.get(slot.binding.bindingId) === slot)
-      bindingOwners.delete(slot.binding.bindingId)
+    if (slot.binding) {
+      const owners = bindingOwners.get(slot.binding.bindingId)
+      owners?.delete(slot)
+      if (owners?.size === 0) bindingOwners.delete(slot.binding.bindingId)
+    }
     for (const pairingId of slot.pairings) {
       pairingOwners.delete(pairingId)
       approving.delete(pairingId)
     }
     slot.pairings.clear()
+  }
+
+  const addBindingOwner = (bindingId: string, slot: Slot) => {
+    const owners = bindingOwners.get(bindingId) ?? new Set<Slot>()
+    owners.add(slot)
+    bindingOwners.set(bindingId, owners)
   }
 
   const retryable = (status: OfficeRelayStatus): boolean =>
@@ -104,6 +117,8 @@ export function createOfficeRelayPool(options: {
       void slot.client.resume(slot.binding).catch(() => scheduleReconnect(slot))
     }, delay)
   }
+
+  let ensureWaitingResume: (binding: OfficeRelayBinding) => Promise<void>
 
   const initialize = (slot: Slot): OfficeRelayClient => {
     const client = options.createClient({
@@ -139,6 +154,7 @@ export function createOfficeRelayPool(options: {
             approving.delete(pairingId)
           }
           slot.pairings.clear()
+          if (slot.binding) void ensureWaitingResume(slot.binding)
         }
         if (
           slot.binding &&
@@ -157,26 +173,65 @@ export function createOfficeRelayPool(options: {
         }
         publish()
       },
-      onBinding(binding) {
-        const existing = bindingOwners.get(binding.bindingId)
-        if (existing && existing !== slot) {
-          slot.client?.revoke('protocol_violation')
-          return
+      async onBinding(binding) {
+        if (!slots.has(slot) || suspended) {
+          slot.client?.revoke('binding_lifecycle_suspended')
+          throw new Error('binding_lifecycle_suspended')
         }
+        await options.onBinding?.(binding)
+        if (!slots.has(slot) || suspended) throw new Error('binding_lifecycle_suspended')
         slot.binding = { ...binding, capabilities: [...binding.capabilities] }
-        bindingOwners.set(binding.bindingId, slot)
-        void Promise.resolve(options.onBinding?.(binding)).catch(() => undefined)
+        addBindingOwner(binding.bindingId, slot)
+        if (slot.status === 'paired') void ensureWaitingResume(slot.binding)
       },
       onBindingInvalidated(bindingId) {
         if (!slot.binding || slot.binding.bindingId !== bindingId) return
         const invalid = slot.binding
-        remove(slot)
+        for (const owner of [...(bindingOwners.get(bindingId) ?? [])]) {
+          if (owner !== slot) owner.client?.revoke('binding_unavailable')
+          remove(owner)
+        }
         void Promise.resolve(options.onBindingInvalidated?.(invalid)).catch(() => undefined)
         publish()
       },
     })
     slot.client = client
     return client
+  }
+
+  const startResumeSlot = async (binding: OfficeRelayBinding): Promise<void> => {
+    if (suspended) throw new Error('relay_suspended')
+    if (slots.size >= maximum) throw new Error('relay_capacity_exceeded')
+    const slot: Slot = {
+      client: null,
+      status: 'connecting',
+      pairings: new Set(),
+      binding: { ...binding, capabilities: [...binding.capabilities] },
+      retryCount: 0,
+      retryTimer: null,
+    }
+    slots.add(slot)
+    addBindingOwner(binding.bindingId, slot)
+    publish()
+    try {
+      const client = initialize(slot)
+      await client.resume({ ...binding, capabilities: [...binding.capabilities] })
+    } catch (error) {
+      if (slots.has(slot) && retryable(slot.status)) {
+        scheduleReconnect(slot)
+        return
+      }
+      remove(slot)
+      publish()
+      throw error
+    }
+  }
+
+  ensureWaitingResume = async (binding) => {
+    if (suspended || slots.size >= maximum) return
+    const owners = bindingOwners.get(binding.bindingId)
+    if (owners && [...owners].some((owner) => owner.status !== 'paired')) return
+    await startResumeSlot(binding).catch(() => undefined)
   }
 
   const revokeAll = (reason: string) => {
@@ -201,6 +256,7 @@ export function createOfficeRelayPool(options: {
 
   return {
     async claim(code) {
+      if (suspended) throw new Error('relay_suspended')
       if (!/^\d{6}$/.test(code)) throw new Error('invalid_verification_code')
       if (slots.size >= maximum) throw new Error('relay_capacity_exceeded')
 
@@ -225,34 +281,14 @@ export function createOfficeRelayPool(options: {
       }
     },
     async resume(binding) {
-      if (bindingOwners.has(binding.bindingId)) return
-      if (slots.size >= maximum) throw new Error('relay_capacity_exceeded')
-      const slot: Slot = {
-        client: null,
-        status: 'connecting',
-        pairings: new Set(),
-        binding: { ...binding, capabilities: [...binding.capabilities] },
-        retryCount: 0,
-        retryTimer: null,
-      }
-      slots.add(slot)
-      bindingOwners.set(binding.bindingId, slot)
-      publish()
-      try {
-        const client = initialize(slot)
-        await client.resume({ ...binding, capabilities: [...binding.capabilities] })
-      } catch (error) {
-        if (slots.has(slot) && retryable(slot.status)) {
-          scheduleReconnect(slot)
-          return
-        }
-        remove(slot)
-        publish()
-        throw error
-      }
+      if (suspended) throw new Error('relay_suspended')
+      const owners = bindingOwners.get(binding.bindingId)
+      if (owners && [...owners].some((owner) => owner.status !== 'paired')) return
+      await startResumeSlot(binding)
     },
     async revokeBinding(bindingId) {
-      let slot = bindingOwners.get(bindingId)
+      const owners = [...(bindingOwners.get(bindingId) ?? [])]
+      let slot = owners[0]
       let temporary = false
       if (!slot) {
         if (slots.size >= maximum) throw new Error('relay_capacity_exceeded')
@@ -273,6 +309,10 @@ export function createOfficeRelayPool(options: {
       try {
         await slot.client!.revokeBinding(bindingId)
       } finally {
+        for (const owner of owners) {
+          if (owner !== slot) owner.client?.revoke('binding_revoked')
+          remove(owner)
+        }
         if (temporary || slots.has(slot)) remove(slot)
         publish()
       }
@@ -296,6 +336,16 @@ export function createOfficeRelayPool(options: {
       )
     },
     status: aggregate,
-    revoke: revokeAll,
+    revoke(reason = 'revoked') {
+      suspended = true
+      revokeAll(reason)
+    },
+    suspend(reason) {
+      suspended = true
+      revokeAll(reason)
+    },
+    activate() {
+      suspended = false
+    },
   }
 }

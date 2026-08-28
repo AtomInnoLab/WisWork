@@ -167,6 +167,7 @@ export type OfficeBridgeStatus =
   | `ready:${number}`
   | 'error:pool_exhausted'
   | 'error:invalid_config'
+  | 'error:binding_lifecycle'
   | 'error:bind_failed'
 
 export type OfficeRelayStatus =
@@ -190,6 +191,7 @@ export type OfficeRelayStatus =
   | 'disconnected:session_expired'
   | 'disconnected:binding_unavailable'
   | 'disconnected:binding_revoked'
+  | 'disconnected:binding_not_remembered'
   | 'disconnected:capability_not_negotiated'
   | 'disconnected:peer_unavailable'
   | 'disconnected:resume_limit'

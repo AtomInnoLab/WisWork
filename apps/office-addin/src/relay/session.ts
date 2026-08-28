@@ -59,6 +59,7 @@ export interface OfficeRelaySnapshot {
   status: OfficeRelayStatus
   verificationCode?: string
   capabilities?: readonly string[]
+  remembered?: false
 }
 
 export interface OfficeRelaySession {
@@ -79,6 +80,17 @@ export interface OfficeRelaySession {
 export type OfficeRelayCapability =
   'agent.v1' | 'web-search.v1' | 'web-fetch.v1' | 'image-search.v1'
 
+export interface OfficeBindingInvalidation {
+  readonly origin: typeof OFFICE_RELAY_ORIGIN
+  readonly host: Exclude<OfficeHost, 'unknown'>
+  readonly bindingId: string
+}
+
+export interface OfficeBindingInvalidationChannel {
+  subscribe(listener: (message: OfficeBindingInvalidation) => void): () => void
+  broadcast(message: OfficeBindingInvalidation): void
+}
+
 interface Dependencies {
   createSocket?: (url: string) => RelayWebSocket
   randomUUID?: () => string
@@ -87,6 +99,7 @@ interface Dependencies {
   schedule?: (callback: () => void, delay: number) => unknown
   cancelSchedule?: (handle: unknown) => void
   random?: () => number
+  bindingInvalidationChannel?: OfficeBindingInvalidationChannel
 }
 
 interface ActiveRequest {
@@ -107,6 +120,8 @@ const hostLabels: Record<Exclude<OfficeHost, 'unknown'>, string> = {
   excel: 'Excel',
   powerpoint: 'PowerPoint',
 }
+const matchesHost = (value: unknown): value is Exclude<OfficeHost, 'unknown'> =>
+  value === 'word' || value === 'excel' || value === 'powerpoint'
 const encoder = new TextEncoder()
 const exactKeys = (value: Record<string, unknown>, keys: readonly string[]) =>
   Object.keys(value).length === keys.length && keys.every((key) => key in value)
@@ -124,13 +139,81 @@ function browserSocket(url: string): RelayWebSocket {
   return new WebSocket(url) as unknown as RelayWebSocket
 }
 
+interface BindingBroadcastChannel {
+  onmessage: ((event: MessageEvent<unknown>) => void) | null
+  postMessage(message: unknown): void
+}
+
+export function createBrowserOfficeBindingInvalidationChannel(
+  createChannel: (name: string) => BindingBroadcastChannel = (name) => new BroadcastChannel(name),
+): OfficeBindingInvalidationChannel | undefined {
+  let channel: BindingBroadcastChannel
+  try {
+    channel = createChannel('wiswork-office-pairing-v1')
+  } catch {
+    return undefined
+  }
+  const listeners = new Set<(message: OfficeBindingInvalidation) => void>()
+  channel.onmessage = (event) => {
+    const value = event.data
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return
+    const message = value as Record<string, unknown>
+    if (
+      !exactKeys(message, ['version', 'type', 'origin', 'host', 'binding_id']) ||
+      message.version !== 1 ||
+      message.type !== 'binding.forgotten' ||
+      message.origin !== OFFICE_RELAY_ORIGIN ||
+      !matchesHost(message.host) ||
+      !opaque(message.binding_id)
+    )
+      return
+    const invalidation = Object.freeze({
+      origin: OFFICE_RELAY_ORIGIN,
+      host: message.host,
+      bindingId: message.binding_id,
+    })
+    listeners.forEach((listener) => listener(invalidation))
+  }
+  return Object.freeze({
+    subscribe(listener: (message: OfficeBindingInvalidation) => void) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    broadcast(message: OfficeBindingInvalidation) {
+      if (
+        message.origin !== OFFICE_RELAY_ORIGIN ||
+        !matchesHost(message.host) ||
+        !opaque(message.bindingId)
+      )
+        return
+      channel.postMessage({
+        version: 1,
+        type: 'binding.forgotten',
+        origin: OFFICE_RELAY_ORIGIN,
+        host: message.host,
+        binding_id: message.bindingId,
+      })
+    },
+  })
+}
+
 export function createOfficeRelaySession(dependencies: Dependencies = {}): OfficeRelaySession {
   const createSocket = dependencies.createSocket ?? browserSocket
   const randomUUID = dependencies.randomUUID ?? (() => crypto.randomUUID())
   const requestedCapabilities = [...(dependencies.capabilities ?? [])]
+  const browserBindingStore = dependencies.bindingStore
+    ? undefined
+    : createBrowserOfficeBindingStore()
+  const browserInvalidationChannel = browserBindingStore
+    ? createBrowserOfficeBindingInvalidationChannel()
+    : undefined
+  const bindingInvalidationChannel =
+    dependencies.bindingInvalidationChannel ??
+    (dependencies.bindingStore ? undefined : browserInvalidationChannel)
   const bindingStore =
     requestedCapabilities.length > 0
-      ? (dependencies.bindingStore ?? createBrowserOfficeBindingStore())
+      ? (dependencies.bindingStore ??
+        (bindingInvalidationChannel ? browserBindingStore : undefined))
       : undefined
   const schedule = dependencies.schedule ?? ((callback, delay) => setTimeout(callback, delay))
   const cancelSchedule =
@@ -146,10 +229,13 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   let storedBinding: OfficeStoredBinding | undefined
   let enrollment: OfficeBindingEnrollment | undefined
   let enhancedFallbackUsed = false
+  let resumeFallbackUsed = false
+  let resumeRecognized = false
   let explicitlyDisconnected = false
   let retryAttempt = 0
   let retryTimer: unknown
   let challengeInFlight = false
+  let remembered: false | undefined
   let pairingId: string | undefined
   let sessionId: string | undefined
   let capability: string | undefined
@@ -158,6 +244,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
   let generation = 0
   let settleConnect: (() => void) | undefined
   let pairingTimer: ReturnType<typeof setTimeout> | undefined
+  let unsubscribeInvalidation: (() => void) | undefined
   const pendingDiagnostics = new Map<string, { resolve(): void; reject(error: Error): void }>()
   const terminalRequestIds = new Set<string>()
   const terminalRequestOrder: string[] = []
@@ -198,6 +285,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     capability = undefined
     negotiatedCapabilities = []
     challengeInFlight = false
+    remembered = undefined
     for (const pending of pendingDiagnostics.values())
       pending.reject(new Error('diagnostic_unavailable'))
     pendingDiagnostics.clear()
@@ -254,10 +342,17 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     startAttempt('legacy')
   }
 
+  const fallbackStoredBindingToLegacy = () => {
+    if (resumeFallbackUsed || explicitlyDisconnected || !host) return revoke('offline')
+    resumeFallbackUsed = true
+    startAttempt('legacy')
+  }
+
   const handleDisconnect = (epoch: number) => {
     if (epoch !== generation || explicitlyDisconnected) return
     if (connectionMode === 'enroll') return fallbackToLegacy()
-    if (connectionMode === 'resume' && storedBinding) return scheduleResume()
+    if (connectionMode === 'resume' && storedBinding)
+      return resumeRecognized ? scheduleResume() : fallbackStoredBindingToLegacy()
     revoke('offline', false)
   }
 
@@ -265,6 +360,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     if (!host || explicitlyDisconnected) return
     revoke(state.status === 'reconnecting' ? 'reconnecting' : 'connecting', true, false)
     connectionMode = mode
+    if (mode === 'resume') resumeRecognized = false
     const epoch = generation
     let opened: RelayWebSocket
     try {
@@ -341,10 +437,45 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     }
   }
 
+  const invalidateBindingAndEnroll = () => {
+    storedBinding = undefined
+    enrollment = undefined
+    retryAttempt = 0
+    cancelRetry()
+    revoke('connecting', true, false)
+    const intent = generation
+    void (async () => {
+      await bindingStore?.forget().catch(() => undefined)
+      if (intent === generation && !explicitlyDisconnected) await prepareEnrollment(intent)
+    })()
+  }
+
   const protocolFailure = () => {
     if (connectionMode === 'enroll') fallbackToLegacy()
-    else if (connectionMode === 'resume' && storedBinding) scheduleResume()
-    else revoke('offline')
+    else if (connectionMode === 'resume' && storedBinding) {
+      if (resumeRecognized) scheduleResume()
+      else fallbackStoredBindingToLegacy()
+    } else revoke('offline')
+  }
+
+  const subscribeInvalidation = () => {
+    if (!bindingInvalidationChannel || unsubscribeInvalidation) return
+    unsubscribeInvalidation = bindingInvalidationChannel.subscribe((message) => {
+      if (
+        message.origin !== OFFICE_RELAY_ORIGIN ||
+        !host ||
+        message.host !== host ||
+        message.bindingId !== storedBinding?.bindingId
+      )
+        return
+      explicitlyDisconnected = true
+      cancelRetry()
+      storedBinding = undefined
+      enrollment = undefined
+      unsubscribeInvalidation?.()
+      unsubscribeInvalidation = undefined
+      revoke('offline')
+    })
   }
 
   const handleFrame = async (data: unknown, epoch: number) => {
@@ -377,23 +508,25 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
           [
             'binding_unavailable',
             'binding_revoked',
-            'session_revoked',
             'invalid_proof',
             'capability_not_negotiated',
           ].includes(frame.code)
         ) {
-          await bindingStore?.forget().catch(() => undefined)
-          if (epoch !== generation) return
-          storedBinding = undefined
-          retryAttempt = 0
-          revoke('connecting', true, false)
-          await prepareEnrollment(generation)
+          invalidateBindingAndEnroll()
+          return
+        }
+        if (!resumeRecognized && ['invalid_frame', 'unknown_type'].includes(frame.code)) {
+          fallbackStoredBindingToLegacy()
           return
         }
         if (
-          ['challenge_expired', 'resume_rate_limited', 'resume_limit', 'peer_unavailable'].includes(
-            frame.code,
-          )
+          [
+            'session_revoked',
+            'challenge_expired',
+            'resume_rate_limited',
+            'resume_limit',
+            'peer_unavailable',
+          ].includes(frame.code)
         ) {
           scheduleResume()
           return
@@ -414,6 +547,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
         !expiry(frame.expires_in, 30)
       )
         return protocolFailure()
+      resumeRecognized = true
       challengeInFlight = true
       try {
         const signature = await bindingStore?.sign(storedBinding, frame.challenge)
@@ -426,11 +560,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
           signature,
         })
       } catch {
-        await bindingStore?.forget().catch(() => undefined)
-        if (epoch !== generation) return
-        storedBinding = undefined
-        revoke('connecting', true, false)
-        await prepareEnrollment(generation)
+        if (epoch === generation) invalidateBindingAndEnroll()
       }
       return
     }
@@ -481,7 +611,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       exactKeys(frame, ['version', 'type', 'code']) &&
       frame.code === 'session_expired'
     ) {
-      if (storedBinding) scheduleResume()
+      if (connectionMode === 'resume' && storedBinding) scheduleResume()
       else revoke('expired')
       return
     }
@@ -557,10 +687,13 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
             capabilities: Object.freeze([...approvedCapabilities]),
             privateKey: enrollment.privateKey,
           })
+          enrollment = undefined
           connectionMode = 'resume'
         } catch {
           storedBinding = undefined
+          enrollment = undefined
           connectionMode = 'legacy'
+          remembered = false
         }
       } else if (connectionMode === 'enroll') {
         enrollment = undefined
@@ -580,6 +713,7 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
         ...(protocolVersion === 2
           ? { capabilities: Object.freeze([...negotiatedCapabilities]) }
           : {}),
+        ...(remembered === false ? { remembered: false as const } : {}),
       })
       return
     }
@@ -729,10 +863,12 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
       storedBinding = undefined
       enrollment = undefined
       enhancedFallbackUsed = false
+      resumeFallbackUsed = false
       retryAttempt = 0
       host = nextHost === 'unknown' ? undefined : nextHost
       if (!host) return Promise.resolve()
       explicitlyDisconnected = false
+      subscribeInvalidation()
       publish({ status: 'connecting' })
       return new Promise<void>((resolve) => {
         settleConnect = resolve
@@ -742,14 +878,25 @@ export function createOfficeRelaySession(dependencies: Dependencies = {}): Offic
     disconnect() {
       explicitlyDisconnected = true
       cancelRetry()
+      unsubscribeInvalidation?.()
+      unsubscribeInvalidation = undefined
       revoke('offline')
     },
     async forget() {
+      const forgotten = storedBinding
       explicitlyDisconnected = true
       cancelRetry()
-      revoke('offline')
+      unsubscribeInvalidation?.()
+      unsubscribeInvalidation = undefined
       storedBinding = undefined
       enrollment = undefined
+      revoke('offline')
+      if (forgotten)
+        bindingInvalidationChannel?.broadcast({
+          origin: OFFICE_RELAY_ORIGIN,
+          host: forgotten.host,
+          bindingId: forgotten.bindingId,
+        })
       await bindingStore?.forget()
     },
     async authenticatedFetch(path, init) {

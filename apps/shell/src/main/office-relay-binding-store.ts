@@ -4,6 +4,7 @@ import { join } from 'node:path'
 
 const STORE_VERSION = 1
 const MAX_BINDINGS_PER_ACCOUNT = 12
+const MAX_TOTAL_RECORDS = 256
 const MAX_FILE_BYTES = 1024 * 1024
 const IDENTIFIER = /^[A-Za-z0-9_-]{8,128}$/
 const HOSTS = new Set(['Word', 'Excel', 'PowerPoint'])
@@ -130,10 +131,10 @@ function parseFile(value: unknown): BindingFile | null {
   const bindings = value.bindings.map(parseBinding)
   const tombstones = value.tombstones.map(parseTombstone)
   if (bindings.some((entry) => !entry) || tombstones.some((entry) => !entry)) return null
+  if (bindings.length + tombstones.length > MAX_TOTAL_RECORDS) return null
   const liveKeys = new Set<string>()
   const tombstoneKeys = new Set<string>()
   const liveCounts = new Map<string, number>()
-  const tombstoneCounts = new Map<string, number>()
   for (const binding of bindings as OfficeRelayBinding[]) {
     const key = `${binding.accountId}\0${binding.bindingId}`
     if (liveKeys.has(key)) return null
@@ -146,9 +147,6 @@ function parseFile(value: unknown): BindingFile | null {
     const key = `${tombstone.accountId}\0${tombstone.bindingId}`
     if (tombstoneKeys.has(key) || liveKeys.has(key)) return null
     tombstoneKeys.add(key)
-    const count = (tombstoneCounts.get(tombstone.accountId) ?? 0) + 1
-    if (count > MAX_BINDINGS_PER_ACCOUNT) return null
-    tombstoneCounts.set(tombstone.accountId, count)
   }
   return {
     version: STORE_VERSION,
@@ -252,6 +250,8 @@ export function createOfficeRelayBindingStore(
             MAX_BINDINGS_PER_ACCOUNT
         )
           throw new Error('office_binding_limit')
+        if (existing < 0 && file.bindings.length + file.tombstones.length >= MAX_TOTAL_RECORDS)
+          throw new Error('office_binding_store_limit')
         if (existing >= 0) file.bindings[existing] = cloneBinding(parsed)
         else file.bindings.push(cloneBinding(parsed))
         file.tombstones = file.tombstones.filter(
@@ -291,7 +291,7 @@ export function createOfficeRelayBindingStore(
         }
         file.tombstones = [
           ...file.tombstones.filter((entry) => entry.accountId !== accountId),
-          ...[...tombstones.values()].slice(-MAX_BINDINGS_PER_ACCOUNT),
+          ...tombstones.values(),
         ]
         await save(file)
       })

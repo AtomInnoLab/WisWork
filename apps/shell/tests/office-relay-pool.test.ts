@@ -37,6 +37,7 @@ class FakeSocket implements RelaySocket {
 type Child = OfficeRelayClient & {
   emitPending(pairingId: string, hostLabel?: 'Word' | 'Excel' | 'PowerPoint'): void
   emitStatus(status: OfficeRelayStatus): void
+  emitBinding(binding: OfficeRelayBinding): Promise<void>
 }
 
 const binding = (index: number): OfficeRelayBinding => ({
@@ -52,12 +53,14 @@ function harness(maxClients = 12) {
   const children: Child[] = []
   const pending = vi.fn()
   const expired = vi.fn()
+  const remembered = vi.fn()
   const statuses: OfficeRelayStatus[] = []
   const pool = createOfficeRelayPool({
     maxClients,
     onPending: pending,
     onPendingExpired: expired,
     onStatus: (status) => statuses.push(status),
+    onBinding: remembered,
     createClient(events) {
       let status: OfficeRelayStatus = 'disconnected'
       let entries: ReturnType<OfficeRelayClient['listPending']> = []
@@ -97,12 +100,15 @@ function harness(maxClients = 12) {
           }
           events.onStatus(next)
         },
+        emitBinding(value) {
+          return events.onBinding(value)
+        },
       }
       children.push(child)
       return child
     },
   })
-  return { pool, children, pending, expired, statuses }
+  return { pool, children, pending, expired, statuses, remembered }
 }
 
 describe('Office relay pool', () => {
@@ -329,6 +335,22 @@ describe('Office relay pool', () => {
     expect(children[2]!.revoke).toHaveBeenCalledWith('auth_required')
   })
 
+  it('blocks late binding capture and new enrollment after lifecycle suspension', async () => {
+    const { pool, children } = harness()
+    ;(pool as OfficeRelayPool & { suspend(reason: string): void }).suspend('logout')
+    await expect(pool.claim('111111')).rejects.toThrow('relay_suspended')
+    expect(children).toHaveLength(0)
+
+    const active = harness()
+    await active.pool.claim('111111')
+    active.pool.suspend('account_switch')
+    await expect(active.children[0]!.emitBinding(binding(0))).rejects.toThrow(
+      'binding_lifecycle_suspended',
+    )
+    expect(active.remembered).not.toHaveBeenCalled()
+    expect(active.children[0]!.revoke).toHaveBeenCalledWith('account_switch')
+  })
+
   it('keeps twelve durable bindings in independent resume slots', async () => {
     const { pool, children } = harness()
     await Promise.all(Array.from({ length: 12 }, (_, index) => pool.resume(binding(index))))
@@ -337,6 +359,21 @@ describe('Office relay pool', () => {
       children.map((child) => (child.resume as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]),
     ).toEqual(Array.from({ length: 12 }, (_, index) => binding(index)))
     await expect(pool.resume(binding(12))).rejects.toThrow('relay_capacity_exceeded')
+  })
+
+  it('replenishes one waiting resume so the same binding can create independent concurrent sessions', async () => {
+    const { pool, children } = harness()
+    await pool.resume(binding(0))
+    expect(children).toHaveLength(1)
+
+    children[0]!.emitStatus('paired')
+    await vi.waitFor(() => expect(children).toHaveLength(2))
+    expect(children[1]!.resume).toHaveBeenCalledWith(binding(0))
+
+    children[1]!.emitStatus('paired')
+    await vi.waitFor(() => expect(children).toHaveLength(3))
+    expect(children[0]!.revoke).not.toHaveBeenCalled()
+    expect(children[1]!.revoke).not.toHaveBeenCalled()
   })
 
   it('retries each disconnected binding with bounded exponential backoff and cancels on shutdown', async () => {
