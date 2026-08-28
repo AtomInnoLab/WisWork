@@ -5,6 +5,9 @@ import type {
   PresentationGeometry,
   PresentationOperation,
   PresentationReceipt,
+  PresentationQualityCode,
+  PresentationQualityFinding,
+  PresentationQualityReceipt,
   PresentationStroke,
   PresentationTarget,
   PresentationTextParagraph,
@@ -21,7 +24,100 @@ export const PRESENTATION_OPS_LIMITS = Object.freeze({
   maxStrokeWidth: 1_000,
   maxTextParagraphs: 1_000,
   maxTextRuns: 4_000,
+  maxQualityFindings: 50,
+  maxQualityEvidenceFields: 8,
 })
+
+const qualityCodes: readonly PresentationQualityCode[] = [
+  'element_off_slide',
+  'text_overflow_horizontal',
+  'text_overflow_vertical',
+  'element_collision',
+  'tiny_text',
+  'empty_placeholder',
+  'low_contrast',
+  'visual_quality',
+]
+
+const parseQualityFinding = (value: unknown, index: number): PresentationQualityFinding => {
+  const name = `findings[${index}]`
+  const record = object(value, name)
+  exactKeys(
+    record,
+    ['code', 'severity', 'slideId', 'elementId', 'relatedElementId', 'evidence'],
+    name,
+  )
+  if (!qualityCodes.includes(record.code as PresentationQualityCode))
+    fail(`${name}.code is unknown`)
+  if (!['warning', 'important', 'critical'].includes(record.severity as string))
+    fail(`${name}.severity is unknown`)
+  const evidenceRecord = object(record.evidence, `${name}.evidence`)
+  if (Object.keys(evidenceRecord).length > PRESENTATION_OPS_LIMITS.maxQualityEvidenceFields)
+    fail(`${name}.evidence has too many fields`)
+  const evidence: Record<string, number> = {}
+  for (const [key, evidenceValue] of Object.entries(evidenceRecord)) {
+    if (!identifierPattern.test(key) || unsafeKeys.has(key)) fail(`${name}.evidence key is unsafe`)
+    evidence[key] = finiteNumber(evidenceValue, `${name}.evidence.${key}`)
+  }
+  const elementId = optional(record, 'elementId', (item) =>
+    elementIdentifier(item, `${name}.elementId`),
+  )
+  const relatedElementId = optional(record, 'relatedElementId', (item) =>
+    elementIdentifier(item, `${name}.relatedElementId`),
+  )
+  return {
+    code: record.code as PresentationQualityCode,
+    severity: record.severity as PresentationQualityFinding['severity'],
+    slideId: slideIdentifier(record.slideId, `${name}.slideId`),
+    ...(elementId === undefined ? {} : { elementId }),
+    ...(relatedElementId === undefined ? {} : { relatedElementId }),
+    evidence,
+  }
+}
+
+export const parsePresentationQualityReceipt = (value: unknown): PresentationQualityReceipt => {
+  const record = object(value, 'quality receipt')
+  if (record.status === 'available') {
+    exactKeys(
+      record,
+      ['qualityRunId', 'source', 'status', 'findings', 'truncated'],
+      'quality receipt',
+    )
+    if (!['deterministic', 'visual'].includes(record.source as string))
+      fail('quality receipt.source is unknown')
+    const values = readStrictArray(record.findings, 'findings', {
+      minLength: 0,
+      maxLength: PRESENTATION_OPS_LIMITS.maxQualityFindings,
+    })
+    if (values.length > PRESENTATION_OPS_LIMITS.maxQualityFindings)
+      fail('quality receipt has too many findings')
+    if (typeof record.truncated !== 'boolean') fail('quality receipt.truncated must be boolean')
+    return {
+      qualityRunId: identifier(record.qualityRunId, 'qualityRunId'),
+      source: record.source as 'deterministic' | 'visual',
+      status: 'available',
+      findings: values.map(parseQualityFinding),
+      truncated: record.truncated,
+    }
+  }
+  exactKeys(record, ['qualityRunId', 'source', 'status', 'code'], 'quality receipt')
+  if (record.source !== 'visual' || !['unavailable', 'cancelled'].includes(record.status as string))
+    fail('quality receipt status is unknown')
+  const codes = [
+    'screenshot_unavailable',
+    'transport_unavailable',
+    'cancelled',
+    'stale_session',
+  ] as const
+  if (!codes.includes(record.code as (typeof codes)[number]))
+    fail('quality receipt.code is unknown')
+  return {
+    qualityRunId: identifier(record.qualityRunId, 'qualityRunId'),
+    source: 'visual',
+    status: record.status as 'unavailable' | 'cancelled',
+    code: record.code as (typeof codes)[number],
+  }
+}
 
 const unsafeKeys = new Set(['__proto__', 'prototype', 'constructor'])
 const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/

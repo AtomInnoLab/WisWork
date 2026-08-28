@@ -1,7 +1,7 @@
 /**
- * Post-generation layout QC helpers:
+ * Post-transaction quality review helpers:
  *  - generatedPageRange / mergeQcPages: which pages a landing marks for QC (incl. insert_at shifting)
- *  - createSlideFixSkill: tool allowlist wraps the full slides skill without losing the executor
+ *  - createSlideFixSkill: read-only visual reviewer with no executor tools
  */
 import { describe, it, expect, vi } from 'vitest'
 import {
@@ -11,7 +11,7 @@ import {
   isQcEnabled,
   qcSlidePage,
   captureCurrentQcShot,
-  runQcInHistoryBatch,
+  toVisualQualityReceipt,
 } from '../src/renderer/ai/slide-qc'
 import type { DeckAccess } from '../src/renderer/ai/slides-skill'
 
@@ -23,6 +23,38 @@ const access: DeckAccess = {
   applyDeck: () => {},
   fitWidthPx: 1280,
 }
+
+describe('visual quality receipts', () => {
+  it('never copies model text into the shared receipt', () => {
+    const receipt = toVisualQualityReceipt('qc-1', 'slide-1', {
+      ok: true,
+      edited: false,
+      reply: 'PRIVATE quoted content',
+      preIssues: 0,
+      postIssues: 0,
+    })
+    expect(receipt).toMatchObject({ status: 'available', findings: [{ code: 'visual_quality' }] })
+    expect(JSON.stringify(receipt)).not.toContain('PRIVATE')
+  })
+
+  it('keeps transport failure independent as quality unavailable', () => {
+    expect(
+      toVisualQualityReceipt('qc-1', 'slide-1', {
+        ok: true,
+        edited: false,
+        reply: '',
+        preIssues: 0,
+        postIssues: 0,
+        error: 'offline details',
+      }),
+    ).toEqual({
+      qualityRunId: 'qc-1',
+      source: 'visual',
+      status: 'unavailable',
+      code: 'transport_unavailable',
+    })
+  })
+})
 
 describe('generatedPageRange', () => {
   it('replace covers the whole deck', () => {
@@ -62,12 +94,12 @@ describe('mergeQcPages', () => {
 })
 
 describe('createSlideFixSkill', () => {
-  it('exposes only read_slide and execute_slide_script', () => {
+  it('is a read-only visual reviewer with no mutation tools', () => {
     const skill = createSlideFixSkill(access)
-    expect(skill.tools.map((t) => t.name).sort()).toEqual(['execute_slide_script', 'read_slide'])
+    expect(skill.tools).toEqual([])
   })
 
-  it('delegates execution to the slides executor (read_slide works)', async () => {
+  it('rejects tool execution at the quality boundary', async () => {
     const one: DeckAccess = {
       ...access,
       getSlides: () => [
@@ -80,8 +112,8 @@ describe('createSlideFixSkill', () => {
     }
     const skill = createSlideFixSkill(one)
     const r = await skill.executeTool({ id: 't1', name: 'read_slide', input: { slideIndex: 0 } })
-    expect(r.isError).toBeFalsy()
-    expect(r.output).toContain('Canvas 1280×720px')
+    expect(r.isError).toBe(true)
+    expect(r.output).toBe('quality_read_only')
   })
 })
 
@@ -96,6 +128,65 @@ describe('isQcEnabled', () => {
 })
 
 describe('qcSlidePage cancellation', () => {
+  it('maps an oversized screenshot to quality unavailable without transport or mutation', async () => {
+    const stream = vi.fn()
+    const one: DeckAccess = {
+      ...access,
+      getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] } as never],
+    }
+    await expect(
+      qcSlidePage({
+        access: one,
+        transport: { stream },
+        pageIndex: 0,
+        screenshot: { mime: 'image/png', base64: 'A'.repeat(2_700_000) },
+      }),
+    ).resolves.toMatchObject({ ok: false, edited: false, error: 'screenshot_unavailable' })
+    expect(stream).not.toHaveBeenCalled()
+  })
+
+  it('maps transport failure to quality failure without changing the applied state', async () => {
+    const one: DeckAccess = {
+      ...access,
+      getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] } as never],
+    }
+    const transport = {
+      stream: (_request: unknown, callbacks: { onError: (error: string) => void }) => {
+        queueMicrotask(() => callbacks.onError('offline'))
+        return { cancel: vi.fn() }
+      },
+    }
+    await expect(
+      qcSlidePage({ access: one, transport, pageIndex: 0, screenshot: null }),
+    ).resolves.toMatchObject({ ok: true, edited: false, error: 'offline' })
+  })
+
+  it('discards a late visual result after the session switches', async () => {
+    let callbacks!: { onDelta: (text: string) => void; onDone: () => void }
+    let current = true
+    const one: DeckAccess = {
+      ...access,
+      getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] } as never],
+    }
+    const pending = qcSlidePage({
+      access: one,
+      transport: {
+        stream: (_request: unknown, next: typeof callbacks) => {
+          callbacks = next
+          return { cancel: vi.fn() }
+        },
+      },
+      pageIndex: 0,
+      screenshot: null,
+      isCurrent: () => current,
+    })
+    await vi.waitFor(() => expect(callbacks).toBeTruthy())
+    current = false
+    callbacks.onDelta('late warning')
+    callbacks.onDone()
+    await expect(pending).resolves.toMatchObject({ ok: false, error: 'stale_session', reply: '' })
+  })
+
   it('rejects an already-aborted run before starting transport work', async () => {
     const stream = vi.fn()
     const controller = new AbortController()
@@ -151,48 +242,5 @@ describe('qcSlidePage cancellation', () => {
     controller.abort()
     resolveCapture('late-shot')
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
-  })
-
-  it.each(['success', 'reject', 'abort'] as const)(
-    'ends an opened QC history batch exactly once on %s',
-    async (mode) => {
-      const controller = new AbortController()
-      const end = vi.fn(async () => 42)
-      const run = vi.fn(async () => {
-        if (mode === 'reject') throw new Error('qc failed')
-        if (mode === 'abort') {
-          controller.abort()
-          controller.signal.throwIfAborted()
-        }
-        return 'ok'
-      })
-      const pending = runQcInHistoryBatch({
-        begin: async () => true,
-        end,
-        run,
-        signal: controller.signal,
-        isCurrent: () => true,
-      })
-
-      if (mode === 'success') await expect(pending).resolves.toEqual({ result: 'ok', batchId: 42 })
-      else await expect(pending).rejects.toBeTruthy()
-      expect(end).toHaveBeenCalledOnce()
-    },
-  )
-
-  it('closes a newly opened batch without starting stale QC', async () => {
-    const end = vi.fn(async () => 42)
-    const run = vi.fn(async () => 'late')
-    await expect(
-      runQcInHistoryBatch({
-        begin: async () => true,
-        end,
-        run,
-        signal: new AbortController().signal,
-        isCurrent: () => false,
-      }),
-    ).resolves.toBeNull()
-    expect(run).not.toHaveBeenCalled()
-    expect(end).toHaveBeenCalledOnce()
   })
 })

@@ -3,6 +3,7 @@ export {
   PRESENTATION_OPS_LIMITS,
   parsePresentationOperation,
   parsePresentationReceipt,
+  parsePresentationQualityReceipt,
   parsePresentationTarget,
   parsePresentationTransaction,
 } from './schema'
@@ -15,6 +16,10 @@ export type {
   PresentationGeneratedTarget,
   PresentationOperation,
   PresentationReceipt,
+  PresentationQualityCode,
+  PresentationQualityFinding,
+  PresentationQualityReceipt,
+  PresentationQualitySeverity,
   PresentationStroke,
   PresentationTarget,
   PresentationTextParagraph,

@@ -133,3 +133,40 @@ export type PresentationReceipt =
       code: 'write_state_uncertain'
       operationIndex?: number
     }
+
+export type PresentationQualityCode =
+  | 'element_off_slide'
+  | 'text_overflow_horizontal'
+  | 'text_overflow_vertical'
+  | 'element_collision'
+  | 'tiny_text'
+  | 'empty_placeholder'
+  | 'low_contrast'
+  | 'visual_quality'
+
+export type PresentationQualitySeverity = 'warning' | 'important' | 'critical'
+
+export interface PresentationQualityFinding {
+  code: PresentationQualityCode
+  severity: PresentationQualitySeverity
+  slideId: string
+  elementId?: string
+  relatedElementId?: string
+  /** Numeric, geometry-only evidence. Raw slide content is never part of this contract. */
+  evidence: Readonly<Record<string, number>>
+}
+
+export type PresentationQualityReceipt =
+  | {
+      qualityRunId: string
+      source: 'deterministic' | 'visual'
+      status: 'available'
+      findings: readonly PresentationQualityFinding[]
+      truncated: boolean
+    }
+  | {
+      qualityRunId: string
+      source: 'visual'
+      status: 'unavailable' | 'cancelled'
+      code: 'screenshot_unavailable' | 'transport_unavailable' | 'cancelled' | 'stale_session'
+    }

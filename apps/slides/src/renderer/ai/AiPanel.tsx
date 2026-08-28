@@ -31,7 +31,7 @@ import {
   isQcEnabled,
   qcSlidePage,
   QC_MAX_PAGES,
-  runQcInHistoryBatch,
+  shouldRunVisualQc,
 } from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
 import { Markdown } from '@wiswork/ui'
@@ -590,6 +590,7 @@ export function AiPanel({
   const qcPagesRef = useRef<number[]>([])
   const qcAbortRef = useRef<AbortController | null>(null)
   const qcRunningRef = useRef(false)
+  const completedQcTransactionsRef = useRef(new Set<string>())
   /** Latest runQcPass closure; the loop's onDone (built once) calls through this ref */
   const runQcPassRef = useRef<() => Promise<void>>(() => Promise.resolve())
   /** DeckAccess reused by the QC pass (same executors as the main loop's slides skill) */
@@ -774,6 +775,32 @@ export function AiPanel({
             : executePreparedTextFamilyTransaction(window.slidesApi, request, signal, refresh))
         if (execution.authoritativeState === 'reload_required')
           onAuthoritativeReloadRequiredRef.current?.()
+        const receipt = execution.receipt
+        const sessionId = String(activeRunTokenRef.current)
+        if (
+          shouldRunVisualQc({
+            receiptStatus: receipt.status,
+            requested: isQcEnabled(),
+            transactionId: receipt.transactionId,
+            sessionId,
+            completedKeys: completedQcTransactionsRef.current,
+          })
+        ) {
+          const key = `${sessionId}:${receipt.transactionId}`
+          completedQcTransactionsRef.current.add(key)
+          while (completedQcTransactionsRef.current.size > 100) {
+            const oldest = completedQcTransactionsRef.current.values().next().value
+            if (oldest === undefined) break
+            completedQcTransactionsRef.current.delete(oldest)
+          }
+          const pages =
+            'backgrounds' in request
+              ? request.backgrounds.map((background) => background.slideIndex)
+              : [request.slideIndex]
+          qcPagesRef.current = [...new Set([...qcPagesRef.current, ...pages])]
+            .filter((page) => page >= 0)
+            .sort((left, right) => left - right)
+        }
         return execution
       },
       prepareSpeakerNotesWrite: (slideIndex) =>
@@ -1249,12 +1276,7 @@ export function AiPanel({
       })
   }
 
-  /**
-   * Post-generation layout QC: each page landed by this run gets one focused vision pass in a
-   * fresh AgentLoop (screenshot + inventory → constrained fixes via execute_slide_script).
-   * Each page's edits sit in their own history batch; if the deterministic audit says the page
-   * got worse, that batch is rolled back. Progress streams into one assistant chat entry.
-   */
+  /** Post-generation quality review. It is read-only and has no history/rollback boundary. */
   const runQcPass = async () => {
     const pages = qcPagesRef.current
     qcPagesRef.current = []
@@ -1279,9 +1301,6 @@ export function AiPanel({
       ),
       { role: 'assistant', text: header, streaming: true },
     ])
-    // First kept QC batch — the run's own batch takes precedence (it is earlier,
-    // so restoring it rewinds past the QC edits too)
-    let qcSnapshotId: number | null = null
     let activePage = capped[0] ?? 0
     try {
       for (const page of capped) {
@@ -1298,41 +1317,20 @@ export function AiPanel({
           if (slidesRef.current[page]) lines.push(tGlobal('aiQcPageSkipped', { n: page + 1 }))
           continue
         }
-        const qcRun = await runQcInHistoryBatch({
-          begin: () => window.slidesApi.beginHistoryBatch(),
-          end: () => window.slidesApi.endHistoryBatch(),
-          run: () =>
-            qcSlidePage({
-              access,
-              transport,
-              pageIndex: page,
-              screenshot: shot,
-              systemSuffix: aiLangDirective,
-              signal: controller.signal,
-            }),
+        const result = await qcSlidePage({
+          access,
+          transport,
+          pageIndex: page,
+          screenshot: shot,
+          systemSuffix: aiLangDirective,
           signal: controller.signal,
           isCurrent: () => qcAbortRef.current === controller,
         })
-        if (!qcRun) break
-        const { result, batchId } = qcRun
         if (controller.signal.aborted) break
         if (result.error) {
           lines.push(tGlobal('aiQcPageFailed', { n: page + 1, error: result.error }))
-        } else if (result.edited && result.postIssues > result.preIssues) {
-          // The fix made the deterministic audit worse — undo this page's batch
-          if (typeof batchId === 'number') {
-            const restored = await window.slidesApi.aiSnapshotRestore(batchId)
-            if (restored)
-              applyDeckRef.current(restored, Math.min(currentRef.current, restored.length - 1))
-          }
-          lines.push(tGlobal('aiQcPageReverted', { n: page + 1 }))
-        } else if (result.edited) {
-          const summary =
-            result.reply && result.reply.toUpperCase() !== 'OK'
-              ? result.reply
-              : tGlobal('aiQcPageFixedDefault')
-          lines.push(tGlobal('aiQcPageFixed', { n: page + 1, summary }))
-          if (typeof batchId === 'number' && qcSnapshotId == null) qcSnapshotId = batchId
+        } else if (result.reply && result.reply.toUpperCase() !== 'OK') {
+          lines.push(tGlobal('aiQcPageFixed', { n: page + 1, summary: result.reply }))
         } else {
           lines.push(tGlobal('aiQcPageOk', { n: page + 1 }))
         }
@@ -1357,7 +1355,7 @@ export function AiPanel({
       patchLastAssistant({
         streaming: false,
         text: finalText,
-        snapshotId: runSnapshotIdRef.current ?? qcSnapshotId ?? undefined,
+        snapshotId: runSnapshotIdRef.current ?? undefined,
       })
       persistMessage('assistant', finalText)
       setBusy(false)

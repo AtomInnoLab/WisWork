@@ -4,6 +4,10 @@ import type {
   RenderSlide,
   ShapeRenderNode,
 } from '@wiswork/pptx-render'
+import type {
+  PresentationQualityFinding,
+  PresentationQualityReceipt,
+} from '@wiswork/presentation-ops'
 
 /**
  * Deterministic layout audit (modeled on the Google Slides add-in review_google_slides_addin geometry-only checks):
@@ -27,6 +31,9 @@ interface AuditEntry {
   overflowPx: number
   /** Pixels by which the widest laid-out line exceeds the text box inner width */
   overflowXPx: number
+  minFontSizePx: number
+  emptyPlaceholder: boolean
+  contrastRatio: number | null
 }
 
 const PREVIEW_MAX = 18
@@ -49,11 +56,18 @@ function collectEntries(nodes: RenderNode[]): AuditEntry[] {
     let preview = ''
     let overflowPx = 0
     let overflowXPx = 0
+    let minFontSizePx = Infinity
+    let contrastRatio: number | null = null
     if (n.type === 'shape' || n.type === 'text') {
       const sn = n as ShapeRenderNode
       preview = textPreview(sn)
       hasText = preview.length > 0
       if (sn.text && hasText) {
+        minFontSizePx = sn.text.lines.reduce(
+          (minimum, line) =>
+            line.runs.reduce((value, run) => Math.min(value, run.fontSizePx), minimum),
+          Infinity,
+        )
         const inner = h - sn.text.insets.t - sn.text.insets.b
         overflowPx = Math.round(sn.text.contentHeight - inner)
         const innerWidth = w - sn.text.insets.l - sn.text.insets.r
@@ -66,6 +80,10 @@ function collectEntries(nodes: RenderNode[]): AuditEntry[] {
           -Infinity,
         )
         overflowXPx = Math.round(Number.isFinite(widestRight) ? widestRight - innerWidth : 0)
+        const colors = new Set(sn.text.lines.flatMap((line) => line.runs.map((run) => run.color)))
+        const background = sn.fill.kind === 'solid' ? sn.fill.color : null
+        if (colors.size === 1 && background)
+          contrastRatio = colorContrast([...colors][0]!, background)
       }
     } else if (n.type === 'group') {
       // If any child in the group has text, treat it as text content for overlap detection
@@ -83,6 +101,9 @@ function collectEntries(nodes: RenderNode[]): AuditEntry[] {
       preview,
       overflowPx,
       overflowXPx,
+      minFontSizePx,
+      emptyPlaceholder: n.type === 'placeholder-chip' && !hasText,
+      contrastRatio,
     })
   }
   return out
@@ -120,6 +141,174 @@ const OVERLAP_MIN_AREA = 400
 /** Background color blocks (≥70% of canvas area) don't participate in overlap detection */
 const BACKGROUND_AREA_RATIO = 0.7
 const MAX_ISSUES = 12
+export const MAX_QUALITY_FINDINGS = 50
+
+function colorContrast(foreground: string, background: string): number | null {
+  const parse = (value: string) => {
+    const match = /^#([0-9a-f]{6})$/i.exec(value)
+    if (!match) return null
+    return [0, 2, 4].map((offset) => Number.parseInt(match[1]!.slice(offset, offset + 2), 16) / 255)
+  }
+  const fg = parse(foreground),
+    bg = parse(background)
+  if (!fg || !bg) return null
+  const luminance = (rgb: number[]) =>
+    0.2126 * channel(rgb[0]!) + 0.7152 * channel(rgb[1]!) + 0.0722 * channel(rgb[2]!)
+  const channel = (value: number) =>
+    value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+  const [lighter, darker] = [luminance(fg), luminance(bg)].sort((a, b) => b - a)
+  return (lighter! + 0.05) / (darker! + 0.05)
+}
+
+/** Pure, bounded and content-free QC contract for transaction quality receipts. */
+export function auditSlideQuality(
+  slide: RenderSlide,
+  identity: { slideId: string; elementCreationId?: (sourceId: string) => string | undefined },
+): PresentationQualityFinding[] {
+  const entries = collectEntries(slide.nodes)
+  const findings: PresentationQualityFinding[] = []
+  const add = (finding: PresentationQualityFinding) => {
+    if (findings.length >= MAX_QUALITY_FINDINGS) return
+    const elementId = finding.elementId
+      ? (identity.elementCreationId?.(finding.elementId) ?? finding.elementId)
+      : undefined
+    const relatedElementId = finding.relatedElementId
+      ? (identity.elementCreationId?.(finding.relatedElementId) ?? finding.relatedElementId)
+      : undefined
+    findings.push({
+      ...finding,
+      ...(elementId === undefined ? {} : { elementId }),
+      ...(relatedElementId === undefined ? {} : { relatedElementId }),
+    })
+  }
+  for (const e of entries) {
+    const leftPx = Math.max(0, -e.x)
+    const topPx = Math.max(0, -e.y)
+    const rightPx = Math.max(0, e.x + e.w - slide.widthPx)
+    const bottomPx = Math.max(0, e.y + e.h - slide.heightPx)
+    if (Math.max(leftPx, topPx, rightPx, bottomPx) > EDGE_TOLERANCE_PX)
+      add({
+        code: 'element_off_slide',
+        severity: 'important',
+        slideId: identity.slideId,
+        elementId: e.id,
+        evidence: {
+          leftPx: Math.round(leftPx),
+          topPx: Math.round(topPx),
+          rightPx: Math.round(rightPx),
+          bottomPx: Math.round(bottomPx),
+        },
+      })
+    if (e.overflowXPx > OVERFLOW_TOLERANCE_PX)
+      add({
+        code: 'text_overflow_horizontal',
+        severity: 'important',
+        slideId: identity.slideId,
+        elementId: e.id,
+        evidence: { overflowPx: e.overflowXPx },
+      })
+    if (e.overflowPx > OVERFLOW_TOLERANCE_PX)
+      add({
+        code: 'text_overflow_vertical',
+        severity: 'important',
+        slideId: identity.slideId,
+        elementId: e.id,
+        evidence: { overflowPx: e.overflowPx },
+      })
+    if (e.minFontSizePx < 10)
+      add({
+        code: 'tiny_text',
+        severity: 'warning',
+        slideId: identity.slideId,
+        elementId: e.id,
+        evidence: { fontSizePx: e.minFontSizePx },
+      })
+    if (e.emptyPlaceholder)
+      add({
+        code: 'empty_placeholder',
+        severity: 'warning',
+        slideId: identity.slideId,
+        elementId: e.id,
+        evidence: {},
+      })
+    if (e.contrastRatio !== null && e.contrastRatio < 4.5)
+      add({
+        code: 'low_contrast',
+        severity: 'important',
+        slideId: identity.slideId,
+        elementId: e.id,
+        evidence: { contrastRatioMilli: Math.round(e.contrastRatio * 1000) },
+      })
+  }
+  const content = entries.filter(
+    (e) => isContent(e) && e.w * e.h < slide.widthPx * slide.heightPx * BACKGROUND_AREA_RATIO,
+  )
+  for (let i = 0; i < content.length && findings.length < MAX_QUALITY_FINDINGS; i++) {
+    for (let j = i + 1; j < content.length && findings.length < MAX_QUALITY_FINDINGS; j++) {
+      const a = content[i]!,
+        b = content[j]!
+      if (!a.hasText && !b.hasText) continue
+      const ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x)
+      const iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y)
+      if (ix <= 0 || iy <= 0) continue
+      const overlapAreaPx = ix * iy
+      const ratio = overlapAreaPx / Math.min(a.w * a.h, b.w * b.h)
+      if (overlapAreaPx < OVERLAP_MIN_AREA || ratio < OVERLAP_RATIO) continue
+      const [elementId, relatedElementId] = [a.id, b.id].sort()
+      add({
+        code: 'element_collision',
+        severity: 'important',
+        slideId: identity.slideId,
+        elementId,
+        relatedElementId,
+        evidence: {
+          overlapAreaPx: Math.round(overlapAreaPx),
+          overlapRatioPermille: Math.round(ratio * 1000),
+        },
+      })
+    }
+  }
+  return findings
+}
+
+export function createDeterministicQualityReceipt(
+  slide: RenderSlide,
+  identity: {
+    qualityRunId: string
+    slideId: string
+    elementCreationId?: (sourceId: string) => string | undefined
+  },
+): PresentationQualityReceipt {
+  const findings = auditSlideQuality(slide, identity)
+  return {
+    qualityRunId: identity.qualityRunId,
+    source: 'deterministic',
+    status: 'available',
+    findings,
+    truncated: findings.length === MAX_QUALITY_FINDINGS,
+  }
+}
+
+export function qualityFindingKey(finding: PresentationQualityFinding): string {
+  return [
+    finding.slideId,
+    finding.elementId ?? '',
+    finding.relatedElementId ?? '',
+    finding.code,
+  ].join(':')
+}
+
+export function compareQualityFindings(
+  before: readonly PresentationQualityFinding[],
+  after: readonly PresentationQualityFinding[],
+): { introduced: string[]; resolved: string[] } {
+  const beforeKeys = new Set(before.map(qualityFindingKey))
+  const afterKeys = new Set(after.map(qualityFindingKey))
+  return {
+    introduced: [...afterKeys].filter((key) => !beforeKeys.has(key)).sort(),
+    resolved: [...beforeKeys].filter((key) => !afterKeys.has(key)).sort(),
+  }
+}
 
 /**
  * Audit one page's layout and return the list of problems (empty array = pass).

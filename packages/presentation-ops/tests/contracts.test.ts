@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   PRESENTATION_OPS_LIMITS,
+  parsePresentationQualityReceipt,
   parsePresentationOperation,
   parsePresentationReceipt,
   parsePresentationTarget,
@@ -21,6 +22,56 @@ const transaction = (operations: unknown[]) => ({
   expectedDeckRevision: fingerprint,
   mode: 'atomic',
   operations,
+})
+
+describe('presentation quality receipt parser', () => {
+  it('accepts a bounded quality receipt independent from a mutation receipt', () => {
+    expect(
+      parsePresentationQualityReceipt({
+        qualityRunId: 'qc-1',
+        source: 'deterministic',
+        status: 'available',
+        findings: [
+          {
+            code: 'text_overflow_vertical',
+            severity: 'important',
+            slideId: 'ppt/slides/slide1.xml',
+            elementId: '{11111111-1111-1111-1111-111111111111}',
+            evidence: { overflowPx: 12 },
+          },
+        ],
+        truncated: false,
+      }),
+    ).toMatchObject({ qualityRunId: 'qc-1', status: 'available' })
+  })
+
+  it('rejects raw content and over-cap quality findings', () => {
+    const finding = {
+      code: 'empty_placeholder',
+      severity: 'warning',
+      slideId: 'slide-1',
+      elementId: 'shape-1',
+      evidence: {},
+    }
+    expect(() =>
+      parsePresentationQualityReceipt({
+        qualityRunId: 'qc-1',
+        source: 'deterministic',
+        status: 'available',
+        findings: [{ ...finding, text: 'secret' }],
+        truncated: false,
+      }),
+    ).toThrow(/unknown field text/)
+    expect(() =>
+      parsePresentationQualityReceipt({
+        qualityRunId: 'qc-1',
+        source: 'deterministic',
+        status: 'available',
+        findings: Array.from({ length: 51 }, () => finding),
+        truncated: true,
+      }),
+    ).toThrow(/out of bounds/)
+  })
 })
 
 describe('presentation transaction parser', () => {
