@@ -7,6 +7,11 @@ import {
 } from '@wiswork/presentation-ops'
 import type { SlidesApi } from '../../shared/ipc'
 import type { TextFamilyExecutionResult } from './presentation-text-transactions'
+import {
+  assertOperationsWithinSelectionScope,
+  SelectionScopeConflict,
+  type SelectionScope,
+} from './edit-queue'
 
 export interface BackgroundFamilyTransactionRequest {
   transactionId: string
@@ -40,6 +45,7 @@ export async function executePreparedBackgroundFamilyTransaction(
   request: BackgroundFamilyTransactionRequest,
   signal?: AbortSignal,
   refresh?: () => Promise<boolean>,
+  scope?: SelectionScope,
 ): Promise<TextFamilyExecutionResult> {
   signal?.throwIfAborted()
   if (
@@ -115,6 +121,18 @@ export async function executePreparedBackgroundFamilyTransaction(
     target: prepared[index]!.target,
     color: background.color.toUpperCase(),
   }))
+  if (scope) {
+    try {
+      assertOperationsWithinSelectionScope(scope, operations)
+    } catch (error) {
+      await cancel()
+      if (!(error instanceof SelectionScopeConflict)) throw error
+      return {
+        receipt: { status: 'conflict', transactionId: request.transactionId, code: 'target_stale' },
+        authoritativeState: 'fresh',
+      }
+    }
+  }
   const transaction = parsePresentationTransaction({
     transactionId: request.transactionId,
     expectedDeckRevision,

@@ -10,7 +10,11 @@
 import type { RenderSlide } from '@wiswork/pptx-render'
 import type { SlideComment, SectionInfo } from '@wiswork/pptx-engine'
 import type { AiSettings, AiStreamChunk, AiStreamRequest } from '@wiswork/ai-provider'
-import type { PresentationReceipt, PresentationTransaction } from '@wiswork/presentation-ops'
+import type {
+  PresentationElementType,
+  PresentationReceipt,
+  PresentationTransaction,
+} from '@wiswork/presentation-ops'
 
 import type { AccountStatus } from '@wiswork/auth'
 
@@ -995,6 +999,25 @@ export type MenuCommand =
   | 'paste'
 
 export interface SlidesApi {
+  /** Capture a bounded renderer selection as authoritative durable targets. */
+  captureAgentSelection: (request: { slideIndex: number; sourceIds: string[] }) => Promise<
+    | {
+        status: 'captured'
+        documentId: string
+        sessionId: string
+        generation: number
+        slides: Array<{
+          slideId: string
+          elements: Array<{
+            elementId: string
+            expectedType: PresentationElementType
+            expectedFingerprint: string
+          }>
+        }>
+      }
+    | { status: 'conflict'; code: 'target_missing' | 'target_ambiguous' | 'target_stale' }
+    | { status: 'busy' }
+  >
   /** Resolve a legacy renderer locator to an authoritative, durable transaction target. */
   preparePresentationTarget: (
     request: PresentationTargetRequest,

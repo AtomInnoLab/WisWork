@@ -81,6 +81,7 @@ import type {
 import type { PresentationTransaction } from '@wiswork/presentation-ops'
 
 const api: SlidesApi = {
+  captureAgentSelection: (request) => ipcRenderer.invoke('slides:agent-selection-capture', request),
   preparePresentationTarget: (request) =>
     ipcRenderer.invoke('slides:presentation-target-prepare', request),
   executePresentationTransaction: (transaction: PresentationTransaction) =>

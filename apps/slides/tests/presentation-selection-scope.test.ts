@@ -1,0 +1,53 @@
+import { describe, expect, it, vi } from 'vitest'
+import { executePreparedGeometryFamilyTransaction } from '../src/renderer/ai/presentation-geometry-transactions'
+import type { SelectionScope } from '../src/renderer/ai/edit-queue'
+
+const fingerprint = `sha256:${'a'.repeat(64)}`
+const scope: SelectionScope = {
+  documentId: 'doc',
+  sessionId: 'session',
+  generation: 1,
+  slides: [
+    {
+      slideId: 'slide-1',
+      elements: [
+        { elementId: 'selected', expectedType: 'shape', expectedFingerprint: fingerprint },
+      ],
+    },
+  ],
+}
+
+describe('canonical transaction selection scope', () => {
+  it('rejects an out-of-scope prepared target before transaction dispatch', async () => {
+    const executePresentationTransaction = vi.fn()
+    const cancelPresentationTransaction = vi.fn(async () => true)
+    const result = await executePreparedGeometryFamilyTransaction(
+      {
+        preparePresentationTarget: vi.fn(async () => ({
+          status: 'prepared' as const,
+          expectedDeckRevision: fingerprint,
+          target: {
+            slideId: 'slide-1',
+            elementId: 'other',
+            expectedType: 'shape' as const,
+            expectedFingerprint: fingerprint,
+          },
+        })),
+        executePresentationTransaction,
+        cancelPresentationTransaction,
+      },
+      {
+        transactionId: 'tx-scope',
+        slideIndex: 0,
+        operations: [{ sourceId: 'legacy-other', geometry: { x: 1, y: 1, width: 10, height: 10 } }],
+      },
+      undefined,
+      undefined,
+      scope,
+    )
+
+    expect(result.receipt).toMatchObject({ status: 'conflict', code: 'target_stale' })
+    expect(executePresentationTransaction).not.toHaveBeenCalled()
+    expect(cancelPresentationTransaction).toHaveBeenCalledWith('tx-scope')
+  })
+})

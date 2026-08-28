@@ -4,6 +4,11 @@ import {
   type PresentationReceipt,
 } from '@wiswork/presentation-ops'
 import type { EditParagraph, SlidesApi } from '../../shared/ipc'
+import {
+  assertOperationsWithinSelectionScope,
+  SelectionScopeConflict,
+  type SelectionScope,
+} from './edit-queue'
 
 export type TextFamilyOperation =
   | { kind: 'set_text'; paragraphs: readonly EditParagraph[] }
@@ -93,6 +98,7 @@ export async function executePreparedTextFamilyTransaction(
   request: TextFamilyTransactionRequest,
   signal?: AbortSignal,
   refresh?: () => Promise<boolean>,
+  scope?: SelectionScope,
 ): Promise<TextFamilyExecutionResult> {
   signal?.throwIfAborted()
   const cached = preparationCache.get(request.transactionId)
@@ -190,6 +196,18 @@ export async function executePreparedTextFamilyTransaction(
     expectedDeckRevision: preparation.expectedDeckRevision,
     operations: [operation],
     mode: 'atomic' as const,
+  }
+  if (scope) {
+    try {
+      assertOperationsWithinSelectionScope(scope, [operation])
+    } catch (error) {
+      if (!(error instanceof SelectionScopeConflict)) throw error
+      await api.cancelPresentationTransaction(request.transactionId).catch(() => false)
+      return {
+        receipt: { status: 'conflict', transactionId: request.transactionId, code: 'target_stale' },
+        authoritativeState: 'fresh',
+      }
+    }
   }
   const cancel = () => void api.cancelPresentationTransaction(request.transactionId)
   signal?.addEventListener('abort', cancel, { once: true })

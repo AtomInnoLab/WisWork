@@ -12,6 +12,11 @@ import {
 } from '@wiswork/presentation-ops'
 import type { SlidesApi } from '../../shared/ipc'
 import type { TextFamilyExecutionResult } from './presentation-text-transactions'
+import {
+  assertOperationsWithinSelectionScope,
+  SelectionScopeConflict,
+  type SelectionScope,
+} from './edit-queue'
 
 export interface GeometryFamilyTransactionRequest {
   transactionId: string
@@ -67,6 +72,7 @@ export async function executePreparedGeometryFamilyTransaction(
   request: GeometryFamilyTransactionRequest,
   signal?: AbortSignal,
   refresh?: () => Promise<boolean>,
+  scope?: SelectionScope,
 ): Promise<TextFamilyExecutionResult> {
   signal?.throwIfAborted()
   const compileOperation = (
@@ -248,6 +254,18 @@ export async function executePreparedGeometryFamilyTransaction(
     const key = item.kind === 'add_text_box' ? '__slide_container__' : item.sourceId!
     return compileOperation(item, internalClientIds[index]!, prepared.get(key)!.target)
   })
+  if (scope) {
+    try {
+      assertOperationsWithinSelectionScope(scope, operations)
+    } catch (error) {
+      await cancelPrepared()
+      if (!(error instanceof SelectionScopeConflict)) throw error
+      return {
+        receipt: { status: 'conflict', transactionId: request.transactionId, code: 'target_stale' },
+        authoritativeState: 'fresh',
+      }
+    }
+  }
   try {
     parsePresentationTransaction({
       transactionId: request.transactionId,

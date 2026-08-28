@@ -131,31 +131,34 @@ const validateAndCopyScope = (scope: SelectionScope): SelectionScope => {
  */
 export function assertOperationsWithinSelectionScope(
   scope: SelectionScope,
-  operations: readonly {
-    target?: {
+  operations: readonly unknown[],
+): void {
+  const captured = validateAndCopyScope(scope)
+  for (const operation of operations) {
+    if (!operation || typeof operation !== 'object' || Array.isArray(operation))
+      throw new SelectionScopeConflict()
+    const target = (operation as { target?: unknown }).target
+    if (!target || typeof target !== 'object' || Array.isArray(target))
+      throw new SelectionScopeConflict()
+    const durable = target as {
       slideId?: unknown
       elementId?: unknown
       expectedType?: unknown
       expectedFingerprint?: unknown
     }
-  }[],
-): void {
-  const captured = validateAndCopyScope(scope)
-  for (const operation of operations) {
-    const target = operation.target
-    if (!target || typeof target.slideId !== 'string') throw new SelectionScopeConflict()
-    const slide = captured.slides.find((item) => item.slideId === target.slideId)
+    if (typeof durable.slideId !== 'string') throw new SelectionScopeConflict()
+    const slide = captured.slides.find((item) => item.slideId === durable.slideId)
     if (!slide) throw new SelectionScopeConflict()
-    if (typeof target.elementId !== 'string') {
+    if (typeof durable.elementId !== 'string') {
       if (!slide.allowSlideTarget || (slide.elements?.length ?? 0) > 0)
         throw new SelectionScopeConflict()
       continue
     }
-    const element = slide.elements?.find((item) => item.elementId === target.elementId)
+    const element = slide.elements?.find((item) => item.elementId === durable.elementId)
     if (!element) throw new SelectionScopeConflict()
-    if (element.expectedType && target.expectedType !== element.expectedType)
+    if (element.expectedType && durable.expectedType !== element.expectedType)
       throw new SelectionScopeConflict('Selected element type changed')
-    if (element.expectedFingerprint && target.expectedFingerprint !== element.expectedFingerprint)
+    if (element.expectedFingerprint && durable.expectedFingerprint !== element.expectedFingerprint)
       throw new SelectionScopeConflict('Selected element fingerprint changed')
   }
 }

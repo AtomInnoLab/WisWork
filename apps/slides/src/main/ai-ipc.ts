@@ -211,6 +211,54 @@ export function registerSlidesOnlyAiIpc(): void {
     return matches
   }
 
+  ipcMain.handle('slides:agent-selection-capture', async (event, value: unknown) => {
+    assertAiIpcSender(event)
+    const request = validateSlidesAiObject(value, ['slideIndex', 'sourceIds'], 4_096)
+    if (!Number.isInteger(request.slideIndex) || (request.slideIndex as number) < 0)
+      throw new AiIpcError('invalid_payload')
+    if (
+      !Array.isArray(request.sourceIds) ||
+      request.sourceIds.length < 1 ||
+      request.sourceIds.length > 10
+    )
+      throw new AiIpcError('invalid_payload')
+    const sourceIds = request.sourceIds.map((sourceId) => validateSlidesAiString(sourceId, 128))
+    if (new Set(sourceIds).size !== sourceIds.length) throw new AiIpcError('invalid_payload')
+    const session = sessions.get(event.sender.id)!
+    if (
+      sessionHasActivePresentationTransaction(session) ||
+      sessionHasActivePresentationMutation(session) ||
+      sessionHasActivePresentationPersistence(session)
+    )
+      return { status: 'busy' } as const
+    const generation = session.mutationGeneration ?? 0
+    const slide = session.opened.deck.slides[request.slideIndex as number]
+    if (!slide) return { status: 'conflict', code: 'target_missing' } as const
+    const elements = []
+    for (const sourceId of sourceIds) {
+      const matches = findLegacyElements(slide.elements, sourceId)
+      if (matches.length === 0) return { status: 'conflict', code: 'target_missing' } as const
+      if (matches.length !== 1) return { status: 'conflict', code: 'target_ambiguous' } as const
+      const element = matches[0]!
+      const expectedType = elementType(element)
+      if (!expectedType || !element.creationId)
+        return { status: 'conflict', code: 'target_stale' } as const
+      elements.push({
+        elementId: element.creationId,
+        expectedType,
+        expectedFingerprint: await fingerprintSlideElement(session.opened, slide, element),
+      })
+    }
+    if ((session.mutationGeneration ?? 0) !== generation) return { status: 'busy' } as const
+    return {
+      status: 'captured',
+      documentId: `presentation-${event.sender.id}`,
+      sessionId: `renderer-${event.sender.id}`,
+      generation,
+      slides: [{ slideId: slide.durableId, elements }],
+    } as const
+  })
+
   ipcMain.handle('slides:presentation-target-prepare', async (event, value: unknown) => {
     assertAiIpcSender(event)
     const request = validateSlidesAiObject(value, ['transactionId', 'slideIndex', 'sourceId'])
