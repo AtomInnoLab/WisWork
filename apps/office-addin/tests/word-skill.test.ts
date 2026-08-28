@@ -1159,8 +1159,86 @@ describe('browser Word adapter', () => {
     })
   })
 
-  it('reports body-shape verification failures with a bounded stage', async () => {
+  it('accepts a host-added trailing empty paragraph after paragraph content', async () => {
     installNativeWriteRuntime((target) => target.replace('</w:body>', '<w:p/></w:body>'))
+    const write = {
+      mode: 'replace' as const,
+      blocks: [{ type: 'paragraph' as const, spans: [{ text: 'New' }] }],
+      semanticText: 'New',
+      structure: { headings: 0, lists: 0, tables: 0 },
+    }
+
+    const subject = new BrowserWordAdapter()
+    await expect(subject.executeDocumentWrite(write)).resolves.toBeUndefined()
+    await expect(subject.verifyDocumentWrite(write)).resolves.toBe(true)
+  })
+
+  it('accepts up to eight host-added trailing empty paragraphs', async () => {
+    installNativeWriteRuntime((target) =>
+      target.replace('</w:body>', `${'<w:p/>'.repeat(8)}</w:body>`),
+    )
+    const write = {
+      mode: 'replace' as const,
+      blocks: [{ type: 'paragraph' as const, spans: [{ text: 'New' }] }],
+      semanticText: 'New',
+      structure: { headings: 0, lists: 0, tables: 0 },
+    }
+
+    await expect(new BrowserWordAdapter().executeDocumentWrite(write)).resolves.toBeUndefined()
+  })
+
+  it('does not ignore a trailing paragraph containing non-text document structure', async () => {
+    installNativeWriteRuntime((target) =>
+      target.replace('</w:body>', '<w:p><w:r><w:drawing/></w:r></w:p></w:body>'),
+    )
+    const write = {
+      mode: 'replace' as const,
+      blocks: [{ type: 'paragraph' as const, spans: [{ text: 'New' }] }],
+      semanticText: 'New',
+      structure: { headings: 0, lists: 0, tables: 0 },
+    }
+
+    await expect(new BrowserWordAdapter().executeDocumentWrite(write)).rejects.toMatchObject({
+      message: 'office_verify_failed',
+      cause: { verificationStage: 'body_shape' },
+    })
+  })
+
+  it('does not ignore a trailing empty paragraph with semantic paragraph properties', async () => {
+    installNativeWriteRuntime((target) =>
+      target.replace('</w:body>', '<w:p><w:pPr><w:pageBreakBefore/></w:pPr></w:p></w:body>'),
+    )
+    const write = {
+      mode: 'replace' as const,
+      blocks: [{ type: 'paragraph' as const, spans: [{ text: 'New' }] }],
+      semanticText: 'New',
+      structure: { headings: 0, lists: 0, tables: 0 },
+    }
+
+    await expect(new BrowserWordAdapter().executeDocumentWrite(write)).rejects.toMatchObject({
+      message: 'office_verify_failed',
+      cause: { verificationStage: 'body_shape' },
+    })
+  })
+
+  it('accepts a host-added trailing empty paragraph after a prepend write', async () => {
+    installNativeWriteRuntime((target) => target.replace('</w:body>', '<w:p/></w:body>'))
+    const write = {
+      mode: 'prepend' as const,
+      blocks: [{ type: 'paragraph' as const, spans: [{ text: 'New' }] }],
+      semanticText: 'New',
+      structure: { headings: 0, lists: 0, tables: 0 },
+    }
+
+    const subject = new BrowserWordAdapter()
+    await expect(subject.executeDocumentWrite(write)).resolves.toBeUndefined()
+    await expect(subject.verifyDocumentWrite(write)).resolves.toBe(true)
+  })
+
+  it('reports excessive trailing empty paragraphs as a bounded body-shape failure', async () => {
+    installNativeWriteRuntime((target) =>
+      target.replace('</w:body>', `${'<w:p/>'.repeat(9)}</w:body>`),
+    )
     const write = {
       mode: 'replace' as const,
       blocks: [{ type: 'paragraph' as const, spans: [{ text: 'New' }] }],
