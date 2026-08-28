@@ -281,6 +281,9 @@ describe('patchElementStroke', () => {
 })
 
 describe('setSlideBackground', () => {
+  const PML = 'http://schemas.openxmlformats.org/presentationml/2006/main'
+  const DML = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+
   it('injects <p:bg> and round-trips through save → reopen', async () => {
     const opened = await openPptx(await createBlankPptx())
     setSlideBackground(opened.deck.slides[0]!, '#1A2B3C')
@@ -299,5 +302,73 @@ describe('setSlideBackground', () => {
 
     const reopened = await openPptx(await savePptx(opened))
     expect(reopened.deck.slides[0]!.background).toEqual({ type: 'solid', color: '#222222' })
+  })
+
+  it('materializes and replaces a background using the cSld namespace bindings', async () => {
+    const opened = await openPptx(await createBlankPptx())
+    const slide = opened.deck.slides[0]!
+    slide.bodyPrefix =
+      `<q:sld xmlns:q="${PML}" xmlns:d="${DML}"><q:cSld>` +
+      '<!-- <q:bg><q:bgPr/></q:bg> --><![CDATA[<q:bg/>]]><q:spTree>'
+    setSlideBackground(slide, '#112233')
+    expect(slide.bodyPrefix).toContain('<q:bg><q:bgPr><d:solidFill>')
+    expect(slide.bodyPrefix.match(/<q:bg>/g)).toHaveLength(2) // one real node plus the comment text
+
+    setSlideBackground(slide, '#445566')
+    expect(slide.bodyPrefix).toContain('<d:srgbClr val="445566"/>')
+    expect(slide.bodyPrefix.match(/<q:bg>/g)).toHaveLength(2)
+    expect(slide.bodyPrefix).toContain('<!-- <q:bg><q:bgPr/></q:bg> -->')
+    expect(slide.bodyPrefix).toContain('<![CDATA[<q:bg/>]]>')
+  })
+
+  it('preserves an existing background element alternate prefix binding', async () => {
+    const opened = await openPptx(await createBlankPptx())
+    const slide = opened.deck.slides[0]!
+    slide.bodyPrefix =
+      `<p:sld xmlns:p="${PML}" xmlns:a="${DML}"><p:cSld>` +
+      `<z:bg xmlns:z="${PML}"><z:bgPr><a:solidFill><a:srgbClr val="111111"/></a:solidFill></z:bgPr></z:bg>` +
+      '<p:spTree>'
+    setSlideBackground(slide, '#223344')
+    expect(slide.bodyPrefix).toContain(`<z:bg xmlns:z="${PML}"><z:bgPr>`)
+    expect(slide.bodyPrefix).not.toContain('<p:bg>')
+  })
+
+  it('round-trips materialized and replaced backgrounds with alternate prefixes', async () => {
+    const seed = await openPptx(await createBlankPptx())
+    const path = seed.deck.slides[0]!.path
+    const alternateXml = seed.archive
+      .readText(path)!
+      .replace('<p:cSld>', `<q:cSld xmlns:q="${PML}">`)
+      .replace('</p:cSld>', '</q:cSld>')
+    seed.archive.entries.set(path, Buffer.from(alternateXml))
+    const alternate = await openPptx(await savePptx(seed))
+    setSlideBackground(alternate.deck.slides[0]!, '#112233')
+    const once = await openPptx(await savePptx(alternate))
+    expect(once.archive.readText(path)).toContain('<q:bg><q:bgPr><a:solidFill>')
+    expect(once.deck.slides[0]!.background).toEqual({ type: 'solid', color: '#112233' })
+
+    setSlideBackground(once.deck.slides[0]!, '#445566')
+    const twice = await openPptx(await savePptx(once))
+    expect(twice.archive.readText(path)).toContain('<a:srgbClr val="445566"/>')
+    expect((twice.archive.readText(path)!.match(/<q:bg>/g) ?? []).length).toBe(1)
+  })
+
+  it.each([
+    '<q:sld><q:cSld><q:spTree>',
+    `<q:sld xmlns:q="${PML}"><q:cSld><broken`,
+    `<q:sld xmlns:q="${PML}"><q:cSld></q:wrong>`,
+  ])('fails closed without mutating malformed or unbound XML: %s', (bodyPrefix) => {
+    const slide = {
+      path: 'ppt/slides/slide1.xml',
+      durableId: 'ppt/slides/slide1.xml',
+      originalXml: bodyPrefix,
+      bodyPrefix,
+      bodySuffix: '',
+      elements: [],
+      background: { type: 'solid' as const, color: '#FFFFFF' },
+    }
+    expect(() => setSlideBackground(slide, '#112233')).toThrow()
+    expect(slide.bodyPrefix).toBe(bodyPrefix)
+    expect(slide.background).toEqual({ type: 'solid', color: '#FFFFFF' })
   })
 })

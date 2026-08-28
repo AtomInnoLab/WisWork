@@ -10,6 +10,9 @@ import type { RenderSlide } from '@wiswork/pptx-render'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
 import { createSlidesSkill, type DeckAccess, type ClarifyQuestion } from './slides-skill'
+import { executePreparedTextFamilyTransaction } from './presentation-text-transactions'
+import { executePreparedGeometryFamilyTransaction } from './presentation-geometry-transactions'
+import { executePreparedBackgroundFamilyTransaction } from './presentation-background-transactions'
 import { extractJsonObject, parseOutlineJson } from './outline-json'
 import { createFilesSkill } from './files-skill'
 import { createElectronTransport } from './transport'
@@ -28,10 +31,12 @@ import {
   isQcEnabled,
   qcSlidePage,
   QC_MAX_PAGES,
-  runQcInHistoryBatch,
+  publishAppliedDeterministicQuality,
+  toVisualQualityReceipt,
 } from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
 import { Markdown } from '@wiswork/ui'
+import type { PresentationQualityReceipt } from '@wiswork/presentation-ops'
 import { WisWorkMark } from '../components/icons'
 import sendEnterOn from '../assets/send-enter-on.png'
 import sendEnterOff from '../assets/send-enter-off.png'
@@ -47,7 +52,17 @@ import fileVoiceIcon from '../assets/file-voice.png'
 import fileDocumentIcon from '../assets/file-document.png'
 import fileGeneralIcon from '../assets/file-general.png'
 import { IconNewChat, IconSidebarCollapseLeft } from '../components/icons'
+import type { SpeakerNotesDraftPreparation } from '../notes-draft'
 import { createSlidesChatBindingCoordinator } from './chat-binding'
+import type { SelectionScope } from './edit-queue'
+import { EditQueueCard } from './EditQueueCard'
+import {
+  EditQueueCapacityError,
+  EDIT_QUEUE_DEFAULT_CAPACITY,
+  SelectionEditQueue,
+  type EditQueueSnapshot,
+  type SelectionEditReceipt,
+} from './edit-queue'
 
 interface ToolActivity {
   name: string
@@ -220,6 +235,9 @@ interface ChatEntry {
   snapshotId?: number
   /** attachments consumed from the composer by this user message (read-only echo chips) */
   attachments?: AttachmentMeta[]
+  qualityReceipts?: readonly PresentationQualityReceipt[]
+  /** In-memory correlation only; never contains durable scope ids/content. */
+  queueTaskId?: string
 }
 
 /** Empty deck → generation starters; deck with content → polish starters */
@@ -260,8 +278,14 @@ interface AiPanelProps {
   onUndo?: () => void
   /** Callback to update the path after AI generation lands on disk (title bar sync) */
   onPathChange?: (path: string) => void
+  /** Mirror canonical notes commits into the notes editor; this callback never writes the deck. */
+  onPrepareSpeakerNotesWrite?: (slideIndex: number) => Promise<SpeakerNotesDraftPreparation>
+  onSpeakerNotesApplied?: (slideIndex: number, text: string, expectedDraftVersion: number) => void
+  onAuthoritativeReloadRequired?: () => void
   /** Absolute path of the currently open file (for chat history persistence) */
   currentFilePath?: string | null
+  /** Structured, bounded quality timeline hook; receipts are separate from mutation receipts. */
+  onQualityReceipt?: (receipt: PresentationQualityReceipt) => void
 }
 
 /** Some locales already end the label with an ellipsis — normalize to exactly one. */
@@ -338,12 +362,29 @@ export function AiPanel({
   onExpand,
   onCollapse,
   onPathChange,
+  onSpeakerNotesApplied,
+  onPrepareSpeakerNotesWrite,
+  onAuthoritativeReloadRequired,
+  onQualityReceipt,
   currentFilePath,
 }: AiPanelProps) {
   const { t } = useI18n()
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [selectionScopeEnabled, setSelectionScopeEnabled] = useState(false)
+  const editQueueRef = useRef<SelectionEditQueue | null>(null)
+  if (!editQueueRef.current) editQueueRef.current = new SelectionEditQueue()
+  const [queueSnapshot, setQueueSnapshot] = useState<EditQueueSnapshot>(() =>
+    editQueueRef.current!.snapshot(),
+  )
+  const [queuedScope, setQueuedScope] = useState<SelectionScope | null>(null)
+  const lifecycleEpochRef = useRef(0)
+  const pendingCapturesRef = useRef(new Map<string, number>())
+  const captureTailRef = useRef<Promise<void>>(Promise.resolve())
+  const persistedQueueTombstonesRef = useRef(new Set<string>())
+  const mountedRef = useRef(true)
   const [chat, setChat] = useState<ChatEntry[]>([])
+  const [qualityTimeline, setQualityTimeline] = useState<PresentationQualityReceipt[]>([])
   /** Past conversation restored from JSONL (read-only transcript, not fed to the model) */
   const [historicChat, setHistoricChat] = useState<ChatEntry[]>([])
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null)
@@ -441,10 +482,51 @@ export function AiPanel({
   currentRef.current = current
   const selectedRef = useRef(selectedIds)
   selectedRef.current = selectedIds
+  const activeSelectionScopeRef = useRef<SelectionScope | undefined>(undefined)
+  const activeQueueRunRef = useRef<
+    | {
+        taskId: string
+        invocationId: string
+        resolve: (receipt: SelectionEditReceipt) => void
+        reject: (error: unknown) => void
+        status: SelectionEditReceipt['status']
+        transactionId?: string
+        markWriteStarted: () => void
+      }
+    | undefined
+  >(undefined)
+  const activeQueueTaskIdRef = useRef<string | undefined>(undefined)
+  useEffect(
+    () => editQueueRef.current!.subscribe(() => setQueueSnapshot(editQueueRef.current!.snapshot())),
+    [],
+  )
+  const selectionIdentityRef = useRef(`${current}:${selectedIds.join('\u0000')}`)
+  useEffect(() => {
+    const identity = `${current}:${selectedIds.join('\u0000')}`
+    if (selectionIdentityRef.current !== identity) {
+      lifecycleEpochRef.current++
+      pendingCapturesRef.current.clear()
+      captureTailRef.current = Promise.resolve()
+      editQueueRef.current?.cancelAll('selection changed')
+    }
+    selectionIdentityRef.current = identity
+  }, [current, selectedIds])
+  useEffect(() => {
+    lifecycleEpochRef.current++
+    pendingCapturesRef.current.clear()
+    captureTailRef.current = Promise.resolve()
+    editQueueRef.current?.cancelAll('document changed')
+  }, [currentFilePath])
   const applySlideRef = useRef(applySlide)
   applySlideRef.current = applySlide
   const applyDeckRef = useRef(applyDeck)
   applyDeckRef.current = applyDeck
+  const onSpeakerNotesAppliedRef = useRef(onSpeakerNotesApplied)
+  onSpeakerNotesAppliedRef.current = onSpeakerNotesApplied
+  const onPrepareSpeakerNotesWriteRef = useRef(onPrepareSpeakerNotesWrite)
+  onPrepareSpeakerNotesWriteRef.current = onPrepareSpeakerNotesWrite
+  const onAuthoritativeReloadRequiredRef = useRef(onAuthoritativeReloadRequired)
+  onAuthoritativeReloadRequiredRef.current = onAuthoritativeReloadRequired
   const onPathChangeRef = useRef(onPathChange)
   onPathChangeRef.current = onPathChange
   const settingsRef = useRef(settings)
@@ -516,6 +598,9 @@ export function AiPanel({
       onReset: () => {
         setChat([])
         setHistoricChat([])
+        setQualityTimeline([])
+        qualityReceiptsRef.current = []
+        qcTransactionByPageRef.current.clear()
       },
     })
   }
@@ -573,6 +658,22 @@ export function AiPanel({
   const qcPagesRef = useRef<number[]>([])
   const qcAbortRef = useRef<AbortController | null>(null)
   const qcRunningRef = useRef(false)
+  const completedQcTransactionsRef = useRef(new Set<string>())
+  const qualityReceiptsRef = useRef<PresentationQualityReceipt[]>([])
+  const qcTransactionByPageRef = useRef(new Map<number, string>())
+  const publishQualityReceipt = (receipt: PresentationQualityReceipt) => {
+    qualityReceiptsRef.current = [...qualityReceiptsRef.current, receipt].slice(-100)
+    setQualityTimeline((previous) =>
+      [
+        ...previous.filter(
+          (item) =>
+            item.transactionId !== receipt.transactionId || item.slideId !== receipt.slideId,
+        ),
+        receipt,
+      ].slice(-100),
+    )
+    onQualityReceipt?.(receipt)
+  }
   /** Latest runQcPass closure; the loop's onDone (built once) calls through this ref */
   const runQcPassRef = useRef<() => Promise<void>>(() => Promise.resolve())
   /** DeckAccess reused by the QC pass (same executors as the main loop's slides skill) */
@@ -590,11 +691,23 @@ export function AiPanel({
   ) => {
     setChat((prev) => {
       const next = [...prev]
-      const last = next[next.length - 1]
+      const activeId = activeQueueTaskIdRef.current
+      const index = activeId
+        ? next.findIndex((entry) => entry.role === 'assistant' && entry.queueTaskId === activeId)
+        : next.length - 1
+      const last = next[index]
       if (!last || last.role !== 'assistant') return prev
-      next[next.length - 1] = { ...last, ...(typeof patch === 'function' ? patch(last) : patch) }
+      next[index] = { ...last, ...(typeof patch === 'function' ? patch(last) : patch) }
       return next
     })
+  }
+
+  const queuedAssistantIndex = (entries: readonly ChatEntry[], taskId: string): number => {
+    for (let index = entries.length - 1; index >= 0; index--) {
+      const entry = entries[index]
+      if (entry?.role === 'assistant' && entry.queueTaskId === taskId) return index
+    }
+    return -1
   }
 
   const finishHistoryBatch = async (publishSnapshot = true) => {
@@ -741,8 +854,97 @@ export function AiPanel({
       getSlides: () => slidesRef.current,
       getCurrent: () => currentRef.current,
       getSelectedIds: () => selectedRef.current,
+      getSelectionScope: () => activeSelectionScopeRef.current,
       applySlide: (i, updated) => applySlideRef.current(i, updated),
       applyDeck: (all, goTo) => applyDeckRef.current(all, goTo),
+      executePresentationOperation: async (request, signal) => {
+        const refresh = async () => {
+          const refreshed = await window.slidesApi.getRenderSlides()
+          if (!refreshed) return false
+          applyDeckRef.current(refreshed, currentRef.current)
+          return true
+        }
+        const execution = await ('backgrounds' in request
+          ? executePreparedBackgroundFamilyTransaction(
+              window.slidesApi,
+              request,
+              signal,
+              refresh,
+              activeSelectionScopeRef.current,
+              () => activeQueueRunRef.current?.markWriteStarted(),
+            )
+          : 'operations' in request
+            ? executePreparedGeometryFamilyTransaction(
+                window.slidesApi,
+                request,
+                signal,
+                refresh,
+                activeSelectionScopeRef.current,
+                () => activeQueueRunRef.current?.markWriteStarted(),
+              )
+            : executePreparedTextFamilyTransaction(
+                window.slidesApi,
+                request,
+                signal,
+                refresh,
+                activeSelectionScopeRef.current,
+                () => activeQueueRunRef.current?.markWriteStarted(),
+              ))
+        if (execution.authoritativeState === 'reload_required')
+          onAuthoritativeReloadRequiredRef.current?.()
+        const receipt = execution.receipt
+        if (activeSelectionScopeRef.current && activeQueueRunRef.current) {
+          activeQueueRunRef.current.transactionId = receipt.transactionId
+          activeQueueRunRef.current.status =
+            receipt.status === 'uncertain'
+              ? 'uncertain'
+              : receipt.status === 'conflict'
+                ? 'conflict'
+                : receipt.status === 'applied'
+                  ? 'applied'
+                  : activeQueueRunRef.current.status
+        }
+        const sessionId = String(activeRunTokenRef.current)
+        const pages =
+          'backgrounds' in request
+            ? request.backgrounds.map((background) => background.slideIndex)
+            : [request.slideIndex]
+        const qualityPages = await publishAppliedDeterministicQuality({
+          transactionId: receipt.transactionId,
+          receiptStatus: receipt.status,
+          sessionId,
+          pageIndexes: pages,
+          completedKeys: completedQcTransactionsRef.current,
+          access,
+          prepareSlide: async (pageIndex) => {
+            const identity = await window.slidesApi.getQualityIdentityMap(pageIndex)
+            return identity
+              ? {
+                  status: 'prepared',
+                  slideId: identity.slideId,
+                  elementIds: identity.elementIds,
+                }
+              : { status: 'missing' }
+          },
+          publish: publishQualityReceipt,
+          signal,
+          isCurrent: () =>
+            activeRunTokenRef.current === Number(sessionId) && !(signal?.aborted ?? false),
+        })
+        if (isQcEnabled()) {
+          for (const page of qualityPages)
+            qcTransactionByPageRef.current.set(page, receipt.transactionId)
+          qcPagesRef.current = [...new Set([...qcPagesRef.current, ...qualityPages])]
+            .filter((page) => page >= 0)
+            .sort((left, right) => left - right)
+        }
+        return execution
+      },
+      prepareSpeakerNotesWrite: (slideIndex) =>
+        onPrepareSpeakerNotesWriteRef.current?.(slideIndex) ??
+        Promise.resolve({ ready: true, expectedDraftVersion: 0 }),
+      applySpeakerNotes: (slideIndex, text, expectedDraftVersion) =>
+        onSpeakerNotesAppliedRef.current?.(slideIndex, text, expectedDraftVersion),
       askClarification: (questions: ClarifyQuestion[]) => {
         return new Promise<{ answers: string; cancelled?: boolean }>((resolve) => {
           clarifyResolverRef.current = resolve
@@ -933,25 +1135,38 @@ export function AiPanel({
         onTurnEnd: () => {
           lastTurnToolsRef.current = []
           patchLastAssistant({ streaming: false })
-          setChat((prev) => [...prev, { role: 'assistant', text: '', streaming: true }])
+          setChat((prev) => [
+            ...prev,
+            {
+              role: 'assistant',
+              text: '',
+              streaming: true,
+              ...(activeQueueTaskIdRef.current
+                ? { queueTaskId: activeQueueTaskIdRef.current }
+                : {}),
+            },
+          ])
         },
         onDone: ({ text, cancelled, turnLimit }) => {
+          if (activeQueueRunRef.current) qcPagesRef.current = []
           const finalText = turnLimit
             ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
             : text || (cancelled ? tGlobal('aiStoppedNote') : '')
           const ranTools = runToolsRef.current.length > 0
           setChat((prev) => {
             const next = [...prev]
-            const last = next.at(-1)
+            const activeId = activeQueueTaskIdRef.current
+            const index = activeId ? queuedAssistantIndex(next, activeId) : next.length - 1
+            const last = next[index]
             if (!last || last.role !== 'assistant') return prev
             // Tool-heavy runs often end with an empty closing turn. Earlier
             // bubbles already show the executed work — drop the empty trailing
             // bubble instead of mislabeling the whole run as "no content".
             if (!finalText && !last.text && !last.tools?.length && ranTools) {
-              next.pop()
+              next.splice(index, 1)
               return next
             }
-            next[next.length - 1] = {
+            next[index] = {
               ...last,
               streaming: false,
               text: finalText || (last.tools?.length ? last.text : tGlobal('aiNoResponse')),
@@ -975,6 +1190,19 @@ export function AiPanel({
               runSnapshotIdRef.current = snapshot
               patchLastAssistant({ snapshotId: snapshot })
             },
+          }).finally(() => {
+            const queued = activeQueueRunRef.current
+            activeQueueRunRef.current = undefined
+            activeQueueTaskIdRef.current = undefined
+            activeSelectionScopeRef.current = undefined
+            if (queued) {
+              queued.resolve({
+                taskId: queued.taskId,
+                invocationId: queued.invocationId,
+                ...(queued.transactionId ? { transactionId: queued.transactionId } : {}),
+                status: cancelled && queued.status === 'unchanged' ? 'cancelled' : queued.status,
+              })
+            }
           })
           // Persist the assistant message; tools store the whole run's full activity —
           // side effects outside the updater (StrictMode double-invokes updaters, duplicating history writes)
@@ -986,17 +1214,19 @@ export function AiPanel({
           qcPagesRef.current = []
           setChat((prev) => {
             const next = [...prev]
+            const activeId = activeQueueTaskIdRef.current
             // the loop rolled this run's user message out of the model context — surface that
             for (let i = next.length - 1; i >= 0; i--) {
               const entry = next[i]!
-              if (entry.role === 'user') {
+              if (entry.role === 'user' && (!activeId || entry.queueTaskId === activeId)) {
                 next[i] = { ...entry, undelivered: true }
                 break
               }
             }
-            const last = next.at(-1)
+            const index = activeId ? queuedAssistantIndex(next, activeId) : next.length - 1
+            const last = next[index]
             if (last?.role === 'assistant') {
-              next[next.length - 1] = {
+              next[index] = {
                 ...last,
                 streaming: false,
                 error,
@@ -1021,7 +1251,14 @@ export function AiPanel({
               })
             })
             .catch(() => {})
-          void finishHistoryBatch().finally(() => setBusy(false))
+          void finishHistoryBatch().finally(() => {
+            setBusy(false)
+            const queued = activeQueueRunRef.current
+            activeQueueRunRef.current = undefined
+            activeQueueTaskIdRef.current = undefined
+            activeSelectionScopeRef.current = undefined
+            queued?.reject(new Error(error))
+          })
         },
       },
     })
@@ -1078,7 +1315,152 @@ export function AiPanel({
     // `open` dep: re-measure after expand restores a draft
   }, [input, open])
 
-  const run = () => runWith(input.trim())
+  const run = () => {
+    const instruction = input.trim()
+    if (!selectionScopeEnabled || selectedRef.current.length === 0) {
+      runWith(instruction)
+      return
+    }
+    if (editQueueRef.current!.isDisposed) {
+      const queue = new SelectionEditQueue()
+      editQueueRef.current = queue
+      queue.subscribe(() => setQueueSnapshot(queue.snapshot()))
+      setQueueSnapshot(queue.snapshot())
+    }
+    const snapshot = editQueueRef.current!.snapshot()
+    if (
+      pendingCapturesRef.current.size + snapshot.queued + (snapshot.running ? 1 : 0) >=
+      EDIT_QUEUE_DEFAULT_CAPACITY
+    ) {
+      setAttachNotice('Selection edit queue is full.')
+      return
+    }
+    const identity = selectionIdentityRef.current
+    const invocationId = crypto.randomUUID()
+    const lifecycleEpoch = lifecycleEpochRef.current
+    const taskAttachments = [...attachmentsRef.current]
+    pendingCapturesRef.current.set(invocationId, lifecycleEpoch)
+    const priorCapture = captureTailRef.current
+    let releaseCapture!: () => void
+    const captureTurn = new Promise<void>((resolve) => (releaseCapture = resolve))
+    captureTailRef.current = priorCapture.then(() => captureTurn)
+    setInput('')
+    setAttachments([])
+    attachmentsRef.current = []
+    void window.slidesApi
+      .captureAgentSelection({
+        slideIndex: currentRef.current,
+        sourceIds: [...selectedRef.current],
+      })
+      .then(async (captured) => {
+        await priorCapture
+        releaseCapture()
+        const pendingEpoch = pendingCapturesRef.current.get(invocationId)
+        pendingCapturesRef.current.delete(invocationId)
+        if (
+          !mountedRef.current ||
+          pendingEpoch !== lifecycleEpoch ||
+          lifecycleEpoch !== lifecycleEpochRef.current ||
+          identity !== selectionIdentityRef.current
+        )
+          return
+        if (captured.status !== 'captured') {
+          setAttachNotice('The selection changed before it could be captured.')
+          return
+        }
+        try {
+          const task = editQueueRef.current!.enqueue(
+            { invocationId, instruction, scope: captured },
+            ({ taskId, scope, signal, markWriteStarted }) => {
+              activeQueueTaskIdRef.current = invocationId
+              activeSelectionScopeRef.current = scope
+              setQueuedScope(scope)
+              return new Promise<SelectionEditReceipt>((resolve, reject) => {
+                activeQueueRunRef.current = {
+                  taskId,
+                  invocationId,
+                  resolve,
+                  reject,
+                  status: 'unchanged',
+                  markWriteStarted,
+                }
+                const onAbort = () => {
+                  launchTokenRef.current++
+                  loopRef.current?.stop()
+                }
+                signal.addEventListener('abort', onAbort, { once: true })
+                if (
+                  !runWith(instruction, instruction, {
+                    attachments: taskAttachments,
+                    prequeued: true,
+                    queueTaskId: invocationId,
+                  })
+                ) {
+                  signal.removeEventListener('abort', onAbort)
+                  activeQueueRunRef.current = undefined
+                  activeSelectionScopeRef.current = undefined
+                  reject(new Error('Agent run is busy'))
+                }
+              })
+            },
+          )
+          setChat((previous) => [
+            ...previous,
+            {
+              role: 'user',
+              text: instruction,
+              queueTaskId: invocationId,
+              ...(taskAttachments.length ? { attachments: taskAttachments } : {}),
+            },
+            { role: 'assistant', text: 'Queued', streaming: false, queueTaskId: invocationId },
+          ])
+          persistMessage('user', instruction, undefined, taskAttachments)
+          void task.then(
+            (receipt) => {
+              if (
+                receipt.status === 'cancelled' &&
+                !persistedQueueTombstonesRef.current.has(invocationId)
+              ) {
+                persistedQueueTombstonesRef.current.add(invocationId)
+                persistMessage('assistant', 'Selection edit cancelled.')
+              }
+            },
+            () => undefined,
+          )
+          void task.catch((error) => {
+            setChat((previous) =>
+              previous.map((entry) =>
+                entry.queueTaskId === invocationId
+                  ? entry.role === 'user'
+                    ? { ...entry, undelivered: true }
+                    : { ...entry, streaming: false, text: 'Cancelled' }
+                  : entry,
+              ),
+            )
+            const cancelled = error instanceof DOMException && error.name === 'AbortError'
+            if (cancelled && !persistedQueueTombstonesRef.current.has(invocationId)) {
+              persistedQueueTombstonesRef.current.add(invocationId)
+              persistMessage('assistant', 'Selection edit cancelled.')
+            }
+            if (!cancelled)
+              setAttachNotice(error instanceof Error ? error.message : 'Selection edit failed')
+          })
+        } catch (error) {
+          setAttachNotice(
+            error instanceof EditQueueCapacityError
+              ? 'Selection edit queue is full.'
+              : 'Selection edit could not be queued.',
+          )
+        }
+      })
+      .catch(async () => {
+        await priorCapture
+        releaseCapture()
+        pendingCapturesRef.current.delete(invocationId)
+        if (lifecycleEpoch === lifecycleEpochRef.current)
+          setAttachNotice('The selection could not be captured.')
+      })
+  }
 
   /** Image attachments read as base64, sent multimodally with this user message (≤5MB per image, max 20; isomorphic to docs) */
   const MAX_IMAGES_PER_MESSAGE = 20
@@ -1119,8 +1501,13 @@ export function AiPanel({
   const runWith = (
     instruction: string,
     displayText?: string,
-    opts?: { slideShot?: boolean; attachments?: AttachmentMeta[] },
-  ) => {
+    opts?: {
+      slideShot?: boolean
+      attachments?: AttachmentMeta[]
+      prequeued?: boolean
+      queueTaskId?: string
+    },
+  ): boolean => {
     const loop = loopRef.current
     // runStartingRef: loop.run is called only after attachments are read asynchronously, during which loop.busy is still false,
     // so duplicate triggers must be blocked synchronously (e.g. StrictMode double-running the preset autoRun effect),
@@ -1133,7 +1520,7 @@ export function AiPanel({
       runStartingRef.current ||
       qcRunningRef.current
     )
-      return
+      return false
     runStartingRef.current = true
     const launchToken = ++launchTokenRef.current
     activeRunTokenRef.current = launchToken
@@ -1161,12 +1548,23 @@ export function AiPanel({
     stickToBottomRef.current = true
     // Internal orchestration prompts (like deck-planning notes) skip the chat bubble and go only to the model
     const shown = displayText ?? instruction
-    setChat((prev) => [
-      // Fallback: clear leftover streaming flags on history entries, avoiding orphan "thinking" placeholders
-      ...prev.map((e) => (e.role === 'assistant' && e.streaming ? { ...e, streaming: false } : e)),
-      { role: 'user', text: shown, ...(sentAtts.length > 0 ? { attachments: sentAtts } : {}) },
-      { role: 'assistant', text: '', streaming: true },
-    ])
+    if (!opts?.prequeued)
+      setChat((prev) => [
+        // Fallback: clear leftover streaming flags on history entries, avoiding orphan "thinking" placeholders
+        ...prev.map((e) =>
+          e.role === 'assistant' && e.streaming ? { ...e, streaming: false } : e,
+        ),
+        { role: 'user', text: shown, ...(sentAtts.length > 0 ? { attachments: sentAtts } : {}) },
+        { role: 'assistant', text: '', streaming: true },
+      ])
+    else
+      setChat((previous) =>
+        previous.map((entry) =>
+          entry.role === 'assistant' && entry.queueTaskId === opts.queueTaskId
+            ? { ...entry, text: '', streaming: true }
+            : entry,
+        ),
+      )
     runStartedAtRef.current = Date.now()
     setBusy(true)
     void collectImageAttachments(sentAtts)
@@ -1196,9 +1594,10 @@ export function AiPanel({
             // leaves no duplicate-launch window and keeps Stop authoritative while
             // beginHistoryBatch is still in flight.
             runStartingRef.current = false
-            recordSlidesRunAttachments(sentAtts, (runAttachments) =>
-              persistMessage('user', shown, undefined, [...runAttachments]),
-            )
+            if (!opts?.prequeued)
+              recordSlidesRunAttachments(sentAtts, (runAttachments) =>
+                persistMessage('user', shown, undefined, [...runAttachments]),
+              )
             return loop.run(modelInstruction, images)
           },
         })
@@ -1209,14 +1608,10 @@ export function AiPanel({
         runStartingRef.current = false
         void finishHistoryBatch().finally(() => setBusy(false))
       })
+    return true
   }
 
-  /**
-   * Post-generation layout QC: each page landed by this run gets one focused vision pass in a
-   * fresh AgentLoop (screenshot + inventory → constrained fixes via execute_slide_script).
-   * Each page's edits sit in their own history batch; if the deterministic audit says the page
-   * got worse, that batch is rolled back. Progress streams into one assistant chat entry.
-   */
+  /** Post-generation quality review. It is read-only and has no history/rollback boundary. */
   const runQcPass = async () => {
     const pages = qcPagesRef.current
     qcPagesRef.current = []
@@ -1225,10 +1620,18 @@ export function AiPanel({
     qcRunningRef.current = true
     const controller = new AbortController()
     qcAbortRef.current = controller
+    const sessionToken = activeRunTokenRef.current
+    const isCurrentQc = () =>
+      qcAbortRef.current === controller &&
+      activeRunTokenRef.current === sessionToken &&
+      !controller.signal.aborted
     const capped = pages.slice(0, QC_MAX_PAGES)
-    const transport = createElectronTransport(() => settingsRef.current)
+    const transport = createElectronTransport(() => settingsRef.current, {
+      maxSerializedRequestBytes: 2 * 1024 * 1024,
+    })
     const header = tGlobal('aiQcStart', { count: capped.length })
     const lines: string[] = []
+    const receipts: PresentationQualityReceipt[] = []
     const renderEntry = () => [header, ...lines].join('\n')
     setBusy(true)
     stickToBottomRef.current = true
@@ -1241,66 +1644,118 @@ export function AiPanel({
       ),
       { role: 'assistant', text: header, streaming: true },
     ])
-    // First kept QC batch — the run's own batch takes precedence (it is earlier,
-    // so restoring it rewinds past the QC edits too)
-    let qcSnapshotId: number | null = null
     let activePage = capped[0] ?? 0
     try {
       for (const page of capped) {
         activePage = page
-        if (controller.signal.aborted || qcAbortRef.current !== controller) break
+        if (!isCurrentQc()) break
         const captured = await captureCurrentQcShot({
           capture: () => captureSlideShot(page),
           signal: controller.signal,
-          isCurrent: () => qcAbortRef.current === controller,
+          isCurrent: isCurrentQc,
         })
         if (!captured) break
         const shot = captured.value
         if (!shot) {
+          const transactionId = qcTransactionByPageRef.current.get(page)
+          const deterministic = transactionId
+            ? [...qualityReceiptsRef.current]
+                .reverse()
+                .find(
+                  (receipt) =>
+                    receipt.transactionId === transactionId && receipt.source === 'deterministic',
+                )
+            : undefined
+          if (deterministic) {
+            const receipt = toVisualQualityReceipt(
+              `qc-vis-${page}-${transactionId!.slice(0, 100)}`,
+              transactionId!,
+              deterministic.slideId,
+              {
+                ok: false,
+                edited: false,
+                reply: '',
+                preIssues: 0,
+                postIssues: 0,
+                error: 'screenshot_unavailable',
+              },
+            )
+            publishQualityReceipt(receipt)
+            receipts.push(receipt)
+          }
           if (slidesRef.current[page]) lines.push(tGlobal('aiQcPageSkipped', { n: page + 1 }))
           continue
         }
-        const qcRun = await runQcInHistoryBatch({
-          begin: () => window.slidesApi.beginHistoryBatch(),
-          end: () => window.slidesApi.endHistoryBatch(),
-          run: () =>
-            qcSlidePage({
-              access,
-              transport,
-              pageIndex: page,
-              screenshot: shot,
-              systemSuffix: aiLangDirective,
-              signal: controller.signal,
-            }),
+        const result = await qcSlidePage({
+          access,
+          transport,
+          pageIndex: page,
+          screenshot: shot,
+          systemSuffix: aiLangDirective,
           signal: controller.signal,
-          isCurrent: () => qcAbortRef.current === controller,
+          isCurrent: isCurrentQc,
         })
-        if (!qcRun) break
-        const { result, batchId } = qcRun
-        if (controller.signal.aborted) break
-        if (result.error) {
-          lines.push(tGlobal('aiQcPageFailed', { n: page + 1, error: result.error }))
-        } else if (result.edited && result.postIssues > result.preIssues) {
-          // The fix made the deterministic audit worse — undo this page's batch
-          if (typeof batchId === 'number') {
-            const restored = await window.slidesApi.aiSnapshotRestore(batchId)
-            if (restored)
-              applyDeckRef.current(restored, Math.min(currentRef.current, restored.length - 1))
-          }
-          lines.push(tGlobal('aiQcPageReverted', { n: page + 1 }))
-        } else if (result.edited) {
-          const summary =
-            result.reply && result.reply.toUpperCase() !== 'OK'
-              ? result.reply
-              : tGlobal('aiQcPageFixedDefault')
-          lines.push(tGlobal('aiQcPageFixed', { n: page + 1, summary }))
-          if (typeof batchId === 'number' && qcSnapshotId == null) qcSnapshotId = batchId
+        if (!isCurrentQc()) break
+        const transactionId = qcTransactionByPageRef.current.get(page)
+        const deterministic = transactionId
+          ? [...qualityReceiptsRef.current]
+              .reverse()
+              .find(
+                (receipt) =>
+                  receipt.transactionId === transactionId && receipt.source === 'deterministic',
+              )
+          : undefined
+        const qualityReceipt =
+          transactionId && deterministic
+            ? toVisualQualityReceipt(
+                `qc-vis-${page}-${transactionId.slice(0, 100)}`,
+                transactionId,
+                deterministic.slideId,
+                result,
+              )
+            : undefined
+        if (qualityReceipt) {
+          publishQualityReceipt(qualityReceipt)
+          receipts.push(qualityReceipt)
+        }
+        if (qualityReceipt?.status !== 'available') {
+          lines.push(tGlobal('aiQcUnavailable', { n: page + 1, error: 'quality_unavailable' }))
+        } else if (qualityReceipt.findings.length > 0) {
+          lines.push(tGlobal('aiQcPageIssues', { n: page + 1, summary: result.reply }))
         } else {
-          lines.push(tGlobal('aiQcPageOk', { n: page + 1 }))
+          lines.push(tGlobal('aiQcPassed', { n: page + 1 }))
         }
         patchLastAssistant({ text: renderEntry() })
       }
+      if (!isCurrentQc()) return
       if (pages.length > capped.length) {
+        for (const page of pages.slice(capped.length)) {
+          const transactionId = qcTransactionByPageRef.current.get(page)
+          const deterministic = transactionId
+            ? [...qualityReceiptsRef.current]
+                .reverse()
+                .find(
+                  (receipt) =>
+                    receipt.transactionId === transactionId && receipt.source === 'deterministic',
+                )
+            : undefined
+          if (!transactionId || !deterministic) continue
+          const receipt = toVisualQualityReceipt(
+            `qc-vis-${page}-${transactionId.slice(0, 100)}`,
+            transactionId,
+            deterministic.slideId,
+            {
+              ok: false,
+              edited: false,
+              reply: '',
+              preIssues: 0,
+              postIssues: 0,
+              error: 'visual_capacity_exceeded',
+            },
+          )
+          publishQualityReceipt(receipt)
+          receipts.push(receipt)
+        }
         lines.push(tGlobal('aiQcCapped', { count: pages.length - capped.length }))
       }
       if (controller.signal.aborted) lines.push(tGlobal('aiQcStopped'))
@@ -1310,19 +1765,27 @@ export function AiPanel({
       } else {
         // Keep host/deck details out of the UI and persisted chat. The exact
         // failure remains observable through existing local diagnostics.
-        lines.push(tGlobal('aiQcPageFailed', { n: activePage + 1, error: 'qc_failed' }))
+        lines.push(tGlobal('aiQcUnavailable', { n: activePage + 1, error: 'quality_unavailable' }))
       }
     } finally {
-      qcRunningRef.current = false
-      qcAbortRef.current = null
-      const finalText = renderEntry()
-      patchLastAssistant({
-        streaming: false,
-        text: finalText,
-        snapshotId: runSnapshotIdRef.current ?? qcSnapshotId ?? undefined,
-      })
-      persistMessage('assistant', finalText)
-      setBusy(false)
+      if (!isCurrentQc()) {
+        if (qcAbortRef.current === controller) {
+          qcRunningRef.current = false
+          qcAbortRef.current = null
+        }
+      } else {
+        qcRunningRef.current = false
+        qcAbortRef.current = null
+        const finalText = renderEntry()
+        patchLastAssistant({
+          streaming: false,
+          text: finalText,
+          snapshotId: runSnapshotIdRef.current ?? undefined,
+          qualityReceipts: receipts,
+        })
+        persistMessage('assistant', finalText)
+        setBusy(false)
+      }
     }
   }
   runQcPassRef.current = runQcPass
@@ -1335,6 +1798,11 @@ export function AiPanel({
   }
 
   const cancel = () => {
+    lifecycleEpochRef.current++
+    pendingCapturesRef.current.clear()
+    captureTailRef.current = Promise.resolve()
+    editQueueRef.current?.cancelAll('stop')
+    activeSelectionScopeRef.current = undefined
     const wasPrelaunch = runStartingRef.current
     launchTokenRef.current++
     if (wasPrelaunch) {
@@ -1356,16 +1824,21 @@ export function AiPanel({
   }
 
   // Abort a QC pass still running when the panel unmounts (new file / panel remount by key)
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      lifecycleEpochRef.current++
+      pendingCapturesRef.current.clear()
+      captureTailRef.current = Promise.resolve()
+      editQueueRef.current?.dispose()
       launchTokenRef.current++
       runStartingRef.current = false
       qcAbortRef.current?.abort()
       dismissClarify()
       loopRef.current?.stop()
-    },
-    [],
-  )
+    }
+  }, [])
 
   const retry = () =>
     runWith(lastInstructionRef.current, lastDisplayTextRef.current, {
@@ -1373,6 +1846,11 @@ export function AiPanel({
     })
 
   const newChat = () => {
+    lifecycleEpochRef.current++
+    pendingCapturesRef.current.clear()
+    captureTailRef.current = Promise.resolve()
+    editQueueRef.current?.cancelAll('new chat')
+    activeSelectionScopeRef.current = undefined
     launchTokenRef.current++
     runStartingRef.current = false
     dismissClarify()
@@ -1380,6 +1858,9 @@ export function AiPanel({
     loopRef.current?.reset()
     setBusy(false)
     setChat([])
+    setQualityTimeline([])
+    qualityReceiptsRef.current = []
+    qcTransactionByPageRef.current.clear()
     sentAttachmentsRef.current = []
     readAttachmentPathsRef.current.clear()
     inputRef.current?.focus()
@@ -1555,7 +2036,24 @@ export function AiPanel({
             <div className="ai-history-sep">{t('aiHistorySep')}</div>
           </>
         )}
-        {chat.length === 0 && historicChat.length === 0 && (
+        {qualityTimeline.map((receipt) => {
+          const pageNumber = /slide([1-9][0-9]*)\.xml$/.exec(receipt.slideId)?.[1] ?? '?'
+          const text =
+            receipt.status !== 'available'
+              ? t('aiQcUnavailable', { n: pageNumber, error: 'quality_unavailable' })
+              : receipt.findings.length > 0
+                ? t('aiQcPageIssues', { n: pageNumber, summary: `${receipt.findings.length}` })
+                : t('aiQcPassed', { n: pageNumber })
+          return (
+            <div
+              key={`${receipt.transactionId}:${receipt.slideId}`}
+              className="ai-msg ai-msg-assistant ai-msg-quality"
+            >
+              <Markdown text={text} />
+            </div>
+          )
+        })}
+        {chat.length === 0 && historicChat.length === 0 && qualityTimeline.length === 0 && (
           <div className="ai-chat-empty">
             <div className="ai-chat-empty-title">
               {t(deckEmpty ? 'aiEmptyGenTitle' : 'aiEmptyTitle')}
@@ -1752,6 +2250,15 @@ export function AiPanel({
         </div>
       ) : (
         <div className="ai-composer">
+          {queuedScope &&
+            (queueSnapshot.running || queueSnapshot.queued > 0 || queueSnapshot.paused) && (
+              <EditQueueCard
+                scope={queuedScope}
+                queue={queueSnapshot}
+                onResume={() => editQueueRef.current?.resume()}
+                onCancel={() => editQueueRef.current?.cancelAll('cancelled')}
+              />
+            )}
           {attachNotice && <div className="ai-attach-notice">{attachNotice}</div>}
           <div className="ai-input-box">
             {attachments.length > 0 && (
@@ -1841,6 +2348,15 @@ export function AiPanel({
               rows={1}
             />
             <div className="ai-input-footer">
+              <label className="ai-selection-scope-toggle">
+                <input
+                  type="checkbox"
+                  checked={selectionScopeEnabled}
+                  disabled={selectedIds.length === 0 || busy}
+                  onChange={(event) => setSelectionScopeEnabled(event.target.checked)}
+                />
+                Edit selection
+              </label>
               <button
                 className="ai-attach-btn"
                 onClick={pickAttachments}
@@ -1849,7 +2365,7 @@ export function AiPanel({
               >
                 <img src={attachIcon} alt="" aria-hidden />
               </button>
-              {busy ? (
+              {busy && !selectionScopeEnabled ? (
                 <button
                   className="ai-send-btn ai-stop-btn"
                   onClick={cancel}

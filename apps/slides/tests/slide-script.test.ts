@@ -110,11 +110,14 @@ describe('runLayoutScript editing primitives', () => {
     expect(r.ops[0]).toMatchObject({ id: 'a', x: 80, y: 200, w: 320, h: 100 })
   })
 
-  it('resizeBy resizes relatively, result never below 1px', () => {
+  it('resizeBy resizes relatively, result remains strictly positive', () => {
     const r = runLayoutScript(`resizeBy('b', -10, 20); resizeBy('a', -9999, -9999);`, els, canvas)
     expect(r.error).toBeUndefined()
     expect(r.ops.find((o) => o.id === 'b')).toMatchObject({ w: 300, h: 320 })
-    expect(r.ops.find((o) => o.id === 'a')).toMatchObject({ w: 1, h: 1 })
+    expect(r.ops.find((o) => o.id === 'a')).toMatchObject({
+      w: Number.EPSILON,
+      h: Number.EPSILON,
+    })
   })
 
   it('setText string collects a text op (split into paragraphs by \\n, one run each)', () => {
@@ -362,6 +365,15 @@ describe('execute_slide_script tool', () => {
       slide = updated
     },
     applyDeck: () => {},
+    executePresentationOperation: vi.fn(async (request) => ({
+      receipt: {
+        status: 'applied' as const,
+        transactionId: request.transactionId,
+        resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+        operationCount: 1,
+      },
+      authoritativeState: 'fresh' as const,
+    })),
     fitWidthPx: 1280,
   })
 
@@ -414,8 +426,10 @@ describe('execute_slide_script tool', () => {
     }
   })
 
-  it('mixed script: layout + text + style + fill + stroke all dispatched in order', async () => {
-    const skill = createSlidesSkill(access())
+  it('mixed enrolled families compile into one ordered canonical transaction', async () => {
+    const deckAccess = access()
+    const executePresentationOperation = vi.mocked(deckAccess.executePresentationOperation!)
+    const skill = createSlidesSkill(deckAccess)
     const r = await skill.executeTool({
       id: '1',
       name: 'execute_slide_script',
@@ -433,46 +447,150 @@ describe('execute_slide_script tool', () => {
     } as any)
     expect((r as any).isError).toBeFalsy()
     expect(r.mutated).toBe(true)
+    expect(executePresentationOperation).toHaveBeenCalledTimes(1)
+    expect(executePresentationOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operations: [
+          expect.objectContaining({ sourceId: 't1', geometry: expect.objectContaining({ x: 60 }) }),
+          expect.objectContaining({ sourceId: 't2', kind: 'set_text' }),
+          expect.objectContaining({ sourceId: 't1', kind: 'set_text' }),
+          { sourceId: 't2', kind: 'set_fill', fill: { kind: 'solid', color: '#F8FAFC' } },
+          { sourceId: 't2', kind: 'set_stroke', stroke: { color: '#E2E8F0', width: 1 } },
+        ],
+      }),
+      undefined,
+    )
     const api = (globalThis as any).window.slidesApi
-    // Geometry: one batch; moveBy is based on real coordinates (100-20=80)
-    expect(api.batchEditTransform).toHaveBeenCalledTimes(1)
-    expect(api.batchEditTransform.mock.calls[0][0].items).toEqual([
-      { sourceId: 't1', xPx: 80, yPx: 100, wPx: 400, hPx: 100, rotationDeg: 0 },
-    ])
-    // Text + style each take one editText call (style = current paragraphs merged/overridden then written back whole)
-    expect(api.editText).toHaveBeenCalledTimes(2)
-    expect(api.editText.mock.calls[0][0]).toMatchObject({
-      sourceId: 't2',
-      paragraphs: [{ runs: [{ text: 'New subtitle' }] }],
-    })
-    const styleCall = api.editText.mock.calls[1][0]
-    expect(styleCall.sourceId).toBe('t1')
-    expect(styleCall.paragraphs[0].runs[0]).toMatchObject({
-      text: 'Title',
-      color: '#1a73e8',
-      bold: true,
-      fontSize: 18, // original 24px -> 18pt kept
-      fontFamily: 'Arial', // non-overridden fields kept
-    })
-    expect(api.editFill).toHaveBeenCalledWith({ slideIndex: 0, sourceId: 't2', fill: '#f8fafc' })
-    expect(api.editStroke).toHaveBeenCalledWith({
-      slideIndex: 0,
-      sourceId: 't2',
-      stroke: { color: '#e2e8f0', widthPt: 1 },
-    })
-    expect(api.beginHistoryBatch).toHaveBeenCalledTimes(1)
-    expect(api.endHistoryBatch).toHaveBeenCalledTimes(1)
+    expect(api.batchEditTransform).not.toHaveBeenCalled()
+    expect(api.editText).not.toHaveBeenCalled()
+    expect(api.editFill).not.toHaveBeenCalled()
+    expect(api.editStroke).not.toHaveBeenCalled()
+    expect(api.beginHistoryBatch).not.toHaveBeenCalled()
     expect(r.output).toContain('layout 1 element(s)')
     expect(r.output).toContain('text 1 item(s)')
     expect(r.output).toContain('style 1 item(s)')
     expect(r.output).toContain('fill 1 item(s)')
     expect(r.output).toContain('stroke 1 item(s)')
     expect(r.output).toContain('<layout-audit>')
-    expect(applied).not.toBeNull()
+    expect(applied).toBeNull()
+  })
+
+  it('compiles addText follow-up edits and delete through a typed generated target', async () => {
+    const deckAccess = access()
+    const executePresentationOperation = vi.mocked(deckAccess.executePresentationOperation!)
+    const skill = createSlidesSkill(deckAccess)
+    const result = await skill.executeTool({
+      id: 'add-delete',
+      invocationId: 'invocation-add-delete',
+      name: 'execute_slide_script',
+      input: {
+        slideIndex: 0,
+        code: `
+          const id = addText('new-title', 'Draft', {x: 20, y: 30, w: 300, h: 80});
+          setText(id, 'Final');
+          setStyle(id, {bold: true, color: '#112233'});
+          setBox(id, {x: 40});
+          delete(id);
+        `,
+      },
+    } as any)
+    expect(result.isError, result.output).toBeFalsy()
+    expect(result.output).toContain('add 1 text box')
+    expect(result.output).toContain('delete 1 element')
+    const request = executePresentationOperation.mock.calls[0]![0] as any
+    expect(request.operations).toEqual([
+      expect.objectContaining({
+        kind: 'add_text_box',
+        clientId: 'new-title',
+        text: 'Draft',
+        geometry: expect.objectContaining({ x: 30 }),
+      }),
+      expect.objectContaining({ kind: 'set_text', createdByClientId: 'new-title' }),
+      expect.objectContaining({ kind: 'set_text', createdByClientId: 'new-title' }),
+      expect.objectContaining({ kind: 'set_text', createdByClientId: 'new-title' }),
+      { kind: 'delete_element', createdByClientId: 'new-title' },
+    ])
+  })
+
+  it('fails closed when an existing element is used after delete in the same script', async () => {
+    const deckAccess = access()
+    const result = await createSlidesSkill(deckAccess).executeTool({
+      id: 'delete-then-edit',
+      invocationId: 'invocation-delete-then-edit',
+      name: 'execute_slide_script',
+      input: { slideIndex: 0, code: `delete('t1'); setText('t1', 'must not apply');` },
+    } as any)
+    expect(result.isError).toBe(true)
+    expect(deckAccess.executePresentationOperation).not.toHaveBeenCalled()
+  })
+
+  it('routes a pure multi-element geometry script through one canonical transaction', async () => {
+    const deckAccess = access()
+    const executePresentationOperation = vi.mocked(deckAccess.executePresentationOperation!)
+    ;(globalThis as any).window.slidesApi.editTransform = vi.fn()
+    const api = (globalThis as any).window.slidesApi
+    const result = await createSlidesSkill(deckAccess).executeTool({
+      id: 'geometry-script',
+      name: 'execute_slide_script',
+      input: {
+        slideIndex: 0,
+        code: "moveBy('t1', 20, 0); setBox('t2', { x: 200, rotation: 370 });",
+      },
+    } as any)
+
+    expect(executePresentationOperation).toHaveBeenCalledTimes(1)
+    expect(executePresentationOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operations: [
+          expect.objectContaining({ sourceId: 't1' }),
+          expect.objectContaining({
+            sourceId: 't2',
+            geometry: expect.objectContaining({ rotation: 10 }),
+          }),
+        ],
+      }),
+      undefined,
+    )
+    expect(api.batchEditTransform).not.toHaveBeenCalled()
+    expect(api.beginHistoryBatch).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ mutated: true })
+  })
+
+  it('compiles direct group-child geometry as absolute slide points at non-unit scale', async () => {
+    slide = {
+      ...slideOf([
+        groupNode('g1', box(200, 100, 400, 300), [textNode('c1', box(10, 20, 50, 30), 'Member')]),
+      ]),
+      scale: 2,
+    }
+    const deckAccess = access()
+    const executePresentationOperation = vi.mocked(deckAccess.executePresentationOperation!)
+    ;(globalThis as any).window.slidesApi.editTransform = vi.fn()
+    const result = await createSlidesSkill(deckAccess).executeTool({
+      id: 'geometry-group-scale',
+      name: 'execute_slide_script',
+      input: { slideIndex: 0, code: `setBox('c1', { x: 240, y: 180, w: 80, h: 40 });` },
+    } as any)
+
+    expect(result).toMatchObject({ mutated: true })
+    expect(executePresentationOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operations: [
+          {
+            sourceId: 'c1',
+            geometry: { x: 90, y: 67.5, width: 30, height: 15, rotation: 0 },
+          },
+        ],
+      }),
+      undefined,
+    )
+    expect((globalThis as any).window.slidesApi.editTransform).not.toHaveBeenCalled()
   })
 
   it('setStyle after setText in the same script: style merges onto the new text', async () => {
-    const skill = createSlidesSkill(access())
+    const deckAccess = access()
+    const executePresentationOperation = vi.mocked(deckAccess.executePresentationOperation!)
+    const skill = createSlidesSkill(deckAccess)
     await skill.executeTool({
       id: '2',
       name: 'execute_slide_script',
@@ -481,15 +599,24 @@ describe('execute_slide_script tool', () => {
         code: `setText('t1', 'Edited title'); setStyle('t1', { fontSize: 32 });`,
       },
     } as any)
-    const api = (globalThis as any).window.slidesApi
-    const styleCall = api.editText.mock.calls[1][0]
-    expect(styleCall.paragraphs[0].runs[0]).toMatchObject({ text: 'Edited title', fontSize: 32 })
+    const request = executePresentationOperation.mock.calls[0]![0] as any
+    expect(request.operations[1].paragraphs[0].runs[0]).toMatchObject({
+      text: 'Edited title',
+      fontSize: 32,
+    })
   })
 
-  it('one failing edit does not crash the batch: failures reported honestly, successes kept', async () => {
-    const api = (globalThis as any).window.slidesApi
-    api.editFill.mockResolvedValueOnce(null)
-    const skill = createSlidesSkill(access())
+  it('a rejected mixed transaction reports failure without legacy partial success', async () => {
+    const deckAccess = access()
+    deckAccess.executePresentationOperation = vi.fn(async (request) => ({
+      receipt: {
+        status: 'conflict' as const,
+        transactionId: request.transactionId,
+        code: 'target_stale' as const,
+      },
+      authoritativeState: 'fresh' as const,
+    }))
+    const skill = createSlidesSkill(deckAccess)
     const r = await skill.executeTool({
       id: '3',
       name: 'execute_slide_script',
@@ -498,17 +625,67 @@ describe('execute_slide_script tool', () => {
         code: `setFill('t1', '#ff0000'); setText('t2', 'still applied');`,
       },
     } as any)
-    expect((r as any).isError).toBeFalsy()
-    expect(r.mutated).toBe(true)
-    expect(r.output).toContain('setFill("t1")')
-    expect(r.output).toContain('failed')
-    expect(r.output).toContain('text 1 item(s)')
+    expect((r as any).isError).toBe(true)
+    expect(r.mutated).toBe(false)
+    expect((globalThis as any).window.slidesApi.editFill).not.toHaveBeenCalled()
+    expect((globalThis as any).window.slidesApi.editText).not.toHaveBeenCalled()
+  })
+
+  it('fails closed before transaction or legacy mutation when a mixed script targets unsupported picture fill', async () => {
+    slide = slideOf([
+      textNode('t1', box(0, 0, 100, 40), 'Text'),
+      {
+        id: 'p1',
+        sourceId: 'p1',
+        type: 'picture',
+        box: box(100, 100, 200, 100),
+        imageUrl: 'data:image/png;base64,AA==',
+      } as unknown as RenderNode,
+    ])
+    const deckAccess = access()
+    const executePresentationOperation = vi.mocked(deckAccess.executePresentationOperation!)
+    const result = await createSlidesSkill(deckAccess).executeTool({
+      id: 'unsupported-picture-fill',
+      name: 'execute_slide_script',
+      input: { slideIndex: 0, code: `setText('t1', 'must not land'); setFill('p1', '#ff0000');` },
+    } as any)
+    expect(result).toMatchObject({ mutated: false, isError: true })
+    expect(executePresentationOperation).not.toHaveBeenCalled()
+    expect((globalThis as any).window.slidesApi.editText).not.toHaveBeenCalled()
+    expect((globalThis as any).window.slidesApi.editFill).not.toHaveBeenCalled()
+    expect((globalThis as any).window.slidesApi.beginHistoryBatch).not.toHaveBeenCalled()
+  })
+
+  it('fails closed instead of dropping rich paragraph fields in a mixed atomic script', async () => {
+    const deckAccess = access()
+    const executePresentationOperation = vi.mocked(deckAccess.executePresentationOperation!)
+    const result = await createSlidesSkill(deckAccess).executeTool({
+      id: 'unsupported-rich-text',
+      name: 'execute_slide_script',
+      input: {
+        slideIndex: 0,
+        code: `setText('t1', [{ runs: [{ text: 'x', strike: true }] }]); setFill('t1', '#ff0000');`,
+      },
+    } as any)
+    expect(result).toMatchObject({ mutated: false, isError: true })
+    expect(result.output).toContain('rich paragraph formatting')
+    expect(executePresentationOperation).not.toHaveBeenCalled()
+    expect((globalThis as any).window.slidesApi.editText).not.toHaveBeenCalled()
+    expect((globalThis as any).window.slidesApi.editFill).not.toHaveBeenCalled()
   })
 
   it('all operations fail → isError', async () => {
-    const api = (globalThis as any).window.slidesApi
-    api.editFill.mockResolvedValue(null)
-    const skill = createSlidesSkill(access())
+    const deckAccess = access()
+    deckAccess.executePresentationOperation = vi.fn(async (request) => ({
+      receipt: {
+        status: 'unchanged' as const,
+        transactionId: request.transactionId,
+        code: 'write_not_applied' as const,
+        operationCount: 1,
+      },
+      authoritativeState: 'fresh' as const,
+    }))
+    const skill = createSlidesSkill(deckAccess)
     const r = await skill.executeTool({
       id: '4',
       name: 'execute_slide_script',
@@ -529,13 +706,14 @@ describe('execute_slide_script tool', () => {
     expect((globalThis as any).window.slidesApi.editText).not.toHaveBeenCalled()
   })
 
-  it('group child: setBox routes through editTransform (groupId + group-local px), setText carries groupId', async () => {
+  it('group child: geometry and text share one durable canonical transaction', async () => {
     slide = slideOf([
       groupNode('g1', box(200, 100, 400, 300), [textNode('c1', box(10, 20, 50, 30), 'Member')]),
     ])
+    const deckAccess = access()
+    const executePresentationOperation = vi.mocked(deckAccess.executePresentationOperation!)
     const api = (globalThis as any).window.slidesApi
-    api.editTransform = vi.fn(async () => ({ ...slide }))
-    const skill = createSlidesSkill(access())
+    const skill = createSlidesSkill(deckAccess)
     const r = await skill.executeTool({
       id: '7',
       name: 'execute_slide_script',
@@ -544,21 +722,17 @@ describe('execute_slide_script tool', () => {
     expect((r as any).isError).toBeFalsy()
     expect(r.mutated).toBe(true)
     expect(api.batchEditTransform).not.toHaveBeenCalled()
-    // els shows c1 at absolute (210,120); setBox x:240 → group-local (240-200, 120-100)
-    expect(api.editTransform).toHaveBeenCalledWith({
-      slideIndex: 0,
-      sourceId: 'c1',
-      groupId: 'g1',
-      xPx: 40,
-      yPx: 20,
-      wPx: 50,
-      hPx: 30,
-      rotationDeg: 0,
-      fitWidthPx: 1280,
-    })
-    expect(api.editText).toHaveBeenCalledWith(
-      expect.objectContaining({ sourceId: 'c1', groupId: 'g1' }),
+    expect(executePresentationOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operations: [
+          { sourceId: 'c1', geometry: { x: 180, y: 90, width: 37.5, height: 22.5, rotation: 0 } },
+          expect.objectContaining({ sourceId: 'c1', kind: 'set_text' }),
+        ],
+      }),
+      undefined,
     )
+    expect(api.editTransform).toBeUndefined()
+    expect(api.editText).not.toHaveBeenCalled()
   })
 
   it('set_element_text auto-routes direct group children; nested-deep children get an ungroup hint', async () => {
@@ -568,16 +742,18 @@ describe('execute_slide_script tool', () => {
         groupNode('g2', box(100, 100, 200, 200), [textNode('cc', box(5, 5, 20, 10), 'Deep')]),
       ]),
     ])
-    const api = (globalThis as any).window.slidesApi
-    const skill = createSlidesSkill(access())
+    const deckAccess = access()
+    const executePresentationOperation = vi.mocked(deckAccess.executePresentationOperation!)
+    const skill = createSlidesSkill(deckAccess)
     const r = await skill.executeTool({
       id: '8',
       name: 'set_element_text',
       input: { slideIndex: 0, sourceId: 'c1', paragraphs: [{ text: 'x' }] },
     } as any)
     expect((r as any).isError).toBeFalsy()
-    expect(api.editText).toHaveBeenCalledWith(
-      expect.objectContaining({ sourceId: 'c1', groupId: 'g1' }),
+    expect(executePresentationOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceId: 'c1' }),
+      undefined,
     )
     const r2 = await skill.executeTool({
       id: '9',
@@ -589,16 +765,17 @@ describe('execute_slide_script tool', () => {
   })
 
   it('set_element_text does not apply a late IPC result after the run is stopped', async () => {
-    let resolveEdit!: (value: typeof slide) => void
-    const api = (globalThis as any).window.slidesApi
-    api.editText = vi.fn(
-      () =>
-        new Promise<typeof slide>((resolve) => {
-          resolveEdit = resolve
-        }),
-    )
     const controller = new AbortController()
-    const skill = createSlidesSkill(access())
+    const deckAccess = access()
+    deckAccess.executePresentationOperation = vi.fn((_request, signal) => {
+      if (signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'))
+      return new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), {
+          once: true,
+        })
+      })
+    })
+    const skill = createSlidesSkill(deckAccess)
     const pending = skill.executeTool(
       {
         id: 'abort-edit',
@@ -609,23 +786,25 @@ describe('execute_slide_script tool', () => {
     )
 
     controller.abort()
-    resolveEdit({ ...slide })
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
     expect(applied).toBeNull()
   })
 
   it('execute_slide_script stops after an in-flight operation and sends no later IPC', async () => {
-    let resolveText!: (value: null) => void
     const api = (globalThis as any).window.slidesApi
-    api.editText = vi.fn(
-      () =>
-        new Promise<null>((resolve) => {
-          resolveText = resolve
+    const deckAccess = access()
+    deckAccess.executePresentationOperation = vi.fn(
+      (_request, signal) =>
+        new Promise<never>((_resolve, reject) => {
+          signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('Aborted', 'AbortError')),
+            { once: true },
+          )
         }),
     )
-    api.editFill = vi.fn(async () => ({ ...slide }))
     const controller = new AbortController()
-    const pending = createSlidesSkill(access()).executeTool(
+    const pending = createSlidesSkill(deckAccess).executeTool(
       {
         id: 'abort-script',
         name: 'execute_slide_script',
@@ -637,25 +816,20 @@ describe('execute_slide_script tool', () => {
       controller.signal,
     )
 
-    await vi.waitFor(() => expect(api.editText).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(deckAccess.executePresentationOperation).toHaveBeenCalledOnce())
     controller.abort()
-    resolveText(null)
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(api.editText).not.toHaveBeenCalled()
     expect(api.editFill).not.toHaveBeenCalled()
     expect(applied).toBeNull()
   })
 
-  it('execute_slide_script closes the batch when aborted while beginHistoryBatch resolves', async () => {
-    let resolveBegin!: (value: boolean) => void
+  it('execute_slide_script aborts before canonical dispatch without opening legacy history', async () => {
     const api = (globalThis as any).window.slidesApi
-    api.beginHistoryBatch = vi.fn(
-      () =>
-        new Promise<boolean>((resolve) => {
-          resolveBegin = resolve
-        }),
-    )
+    const deckAccess = access()
     const controller = new AbortController()
-    const pending = createSlidesSkill(access()).executeTool(
+    controller.abort()
+    const pending = createSlidesSkill(deckAccess).executeTool(
       {
         id: 'abort-begin-script',
         name: 'execute_slide_script',
@@ -663,11 +837,10 @@ describe('execute_slide_script tool', () => {
       } as any,
       controller.signal,
     )
-
-    controller.abort()
-    resolveBegin(true)
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
-    expect(api.endHistoryBatch).toHaveBeenCalledOnce()
+    expect(deckAccess.executePresentationOperation).not.toHaveBeenCalled()
+    expect(api.beginHistoryBatch).not.toHaveBeenCalled()
+    expect(api.endHistoryBatch).not.toHaveBeenCalled()
     expect(api.editText).not.toHaveBeenCalled()
   })
 

@@ -18,6 +18,7 @@ import {
   loadSnapshotIntoUniver,
   loadVisibleRange,
   loadWorkbookSkeleton,
+  workbookSkeletonId,
   matrixBounds,
   measureImage,
   navigateToAnchor,
@@ -245,6 +246,7 @@ import { installMultiRowAutofit } from './autofit-multi-row'
 import { installCopyMaterialize } from './copy-materialize'
 import { applyUniverLocale } from './univer-locales'
 import { installRuleDetail } from './univer-rule-detail'
+import { installLazyFindBridge } from './lazy-find'
 import { installPopulatedDataValidationArrow } from './data-validation-arrow'
 import { installFormulaNullResultFix } from './formula-null-result'
 import { installNumberFormatFix } from './numfmt-fix'
@@ -1363,6 +1365,7 @@ export function App(): React.JSX.Element {
     // Rule-management panels show what each rule actually does: list options /
     // source range, CF formula text, ⚠ on #REF! dead rules.
     const ruleDetailDisposable = installRuleDetail(runtime)
+    const lazyFindDisposable = installLazyFindBridge({ runtime, lazyWorkbookRef, setMessage })
     const scrollDisposable = runtime.univerAPI.addEvent(
       runtime.univerAPI.Event.Scroll,
       (params) => {
@@ -2174,6 +2177,7 @@ export function App(): React.JSX.Element {
       copyMaterializeDisposable.dispose()
       dataValidationArrowDisposable.dispose()
       ruleDetailDisposable()
+      lazyFindDisposable.dispose()
       scrollDisposable.dispose()
       zoomDisposable.dispose()
       editStartDisposable.dispose()
@@ -2887,6 +2891,7 @@ export function App(): React.JSX.Element {
     demoVisualDisposablesRef.current = []
     const state: LazyWorkbookState = {
       file: selected,
+      expectedWorkbookId: workbookSkeletonId(selected),
       generation: Date.now(),
       loadedRanges: new Map(),
       loadingKeys: new Map(),

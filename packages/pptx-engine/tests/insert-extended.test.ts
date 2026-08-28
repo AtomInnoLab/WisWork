@@ -39,8 +39,35 @@ const here = dirname(fileURLToPath(import.meta.url))
 const fx = (name: string) => readFileSync(join(here, 'fixtures', name))
 
 const OFF = { x: 914400, y: 914400, cx: 4572000, cy: 2743200 }
+const COLLISION = '{00000000-0000-4000-8000-000000000001}'
+const archiveSnapshot = (opened: Awaited<ReturnType<typeof openPptx>>) =>
+  [...opened.archive.entries].map(([path, bytes]) => [path, Buffer.from(bytes).toString('base64')])
+
+function seedCollision(opened: Awaited<ReturnType<typeof openPptx>>) {
+  addElement(
+    opened.deck.slides[0]!,
+    { kind: 'rect', offset: { ...OFF } },
+    { creationIdFactory: () => COLLISION },
+  )
+}
 
 describe('addChart', () => {
+  it('does not mutate package or model when creationId allocation is exhausted', async () => {
+    const opened = await openPptx(fx('01_standard_business.pptx'))
+    seedCollision(opened)
+    const archive = archiveSnapshot(opened)
+    const model = JSON.stringify(opened.deck)
+    expect(() =>
+      addChart(
+        opened,
+        0,
+        { kind: 'bar', categories: ['A'], series: [{ name: 'S', values: [1] }], offset: OFF },
+        { creationIdFactory: () => COLLISION },
+      ),
+    ).toThrow(/unique creationId/)
+    expect(archiveSnapshot(opened)).toEqual(archive)
+    expect(JSON.stringify(opened.deck)).toBe(model)
+  })
   it('bar chart round-trips categories/series and renders as chart element', async () => {
     const opened = await openPptx(fx('01_standard_business.pptx'))
     const r = addChart(opened, 0, {
@@ -444,6 +471,32 @@ describe('addSmartArt (shape-group simplification)', () => {
 })
 
 describe('addMedia / addModel3d', () => {
+  it.each(['media', 'model'] as const)(
+    'leaves package and model untouched on %s identity exhaustion',
+    async (kind) => {
+      const opened = await openPptx(fx('01_standard_business.pptx'))
+      seedCollision(opened)
+      const archive = archiveSnapshot(opened)
+      const model = JSON.stringify(opened.deck)
+      const invoke = () =>
+        kind === 'media'
+          ? addMedia(
+              opened,
+              0,
+              { kind: 'video', bytes: new Uint8Array([1]), ext: 'mp4', offset: OFF },
+              { creationIdFactory: () => COLLISION },
+            )
+          : addModel3d(
+              opened,
+              0,
+              { bytes: new Uint8Array([1]), ext: 'glb', offset: OFF },
+              { creationIdFactory: () => COLLISION },
+            )
+      expect(invoke).toThrow(/unique creationId/)
+      expect(archiveSnapshot(opened)).toEqual(archive)
+      expect(JSON.stringify(opened.deck)).toBe(model)
+    },
+  )
   it('video embeds media part with dual rels and parses back as picture.media', async () => {
     const opened = await openPptx(fx('01_standard_business.pptx'))
     const bytes = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]) // fake mp4 header
@@ -626,6 +679,19 @@ describe('setElementLink / getElementLink', () => {
 })
 
 describe('applyHeaderFooter', () => {
+  it('preflights all target identities before removing existing footer shapes', async () => {
+    const opened = await openPptx(fx('01_standard_business.pptx'))
+    seedCollision(opened)
+    const archive = archiveSnapshot(opened)
+    const model = JSON.stringify(opened.deck)
+    expect(() =>
+      applyHeaderFooter(opened, { footer: 'safe' }, undefined, {
+        creationIdFactory: () => COLLISION,
+      }),
+    ).toThrow(/unique creationId/)
+    expect(archiveSnapshot(opened)).toEqual(archive)
+    expect(JSON.stringify(opened.deck)).toBe(model)
+  })
   it('writes footer + slide number + date placeholders into every slide', async () => {
     const opened = await openPptx(fx('01_standard_business.pptx'))
     const changed = applyHeaderFooter(opened, {

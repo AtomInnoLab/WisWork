@@ -19,6 +19,7 @@ const transform = (x: number, y: number, cx: number, cy: number) => ({
 
 const slideOf = (elements: Slide['elements']): Slide => ({
   path: 'ppt/slides/slide1.xml',
+  durableId: 'ppt/slides/slide1.xml',
   originalXml: '',
   bodyPrefix: '',
   bodySuffix: '',

@@ -78,8 +78,19 @@ import type {
   SlidesApi,
   UiTheme,
 } from '../shared/ipc'
+import type { PresentationTransaction } from '@wiswork/presentation-ops'
 
 const api: SlidesApi = {
+  captureAgentSelection: (request) => ipcRenderer.invoke('slides:agent-selection-capture', request),
+  preparePresentationTarget: (request) =>
+    ipcRenderer.invoke('slides:presentation-target-prepare', request),
+  executePresentationTransaction: (transaction: PresentationTransaction, scopeGuard) =>
+    ipcRenderer.invoke(
+      'slides:presentation-transaction',
+      scopeGuard ? { transaction, scopeGuard } : transaction,
+    ),
+  cancelPresentationTransaction: (transactionId: string) =>
+    ipcRenderer.invoke('slides:presentation-transaction-cancel', transactionId),
   getLanguage: () => ipcRenderer.invoke('app:get-language'),
   onLanguageChanged: (handler) => {
     const listener = (
@@ -127,6 +138,8 @@ const api: SlidesApi = {
   batchEditTransform: (op: BatchEditTransformOp) =>
     ipcRenderer.invoke('slides:batch-edit-transform', op),
   getRenderSlides: () => ipcRenderer.invoke('slides:get-render-slides'),
+  getQualityIdentityMap: (slideIndex: number) =>
+    ipcRenderer.invoke('slides:get-quality-identity-map', slideIndex),
   addElement: (op: AddElementOp) => ipcRenderer.invoke('slides:add-element', op),
   deleteElement: (op: DeleteElementOp) => ipcRenderer.invoke('slides:delete-element', op),
   addSlide: (op: AddSlideOp) => ipcRenderer.invoke('slides:add-slide', op),

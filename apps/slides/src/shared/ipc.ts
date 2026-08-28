@@ -10,6 +10,11 @@
 import type { RenderSlide } from '@wiswork/pptx-render'
 import type { SlideComment, SectionInfo } from '@wiswork/pptx-engine'
 import type { AiSettings, AiStreamChunk, AiStreamRequest } from '@wiswork/ai-provider'
+import type {
+  PresentationElementType,
+  PresentationReceipt,
+  PresentationTransaction,
+} from '@wiswork/presentation-ops'
 
 import type { AccountStatus } from '@wiswork/auth'
 
@@ -994,6 +999,35 @@ export type MenuCommand =
   | 'paste'
 
 export interface SlidesApi {
+  /** Capture a bounded renderer selection as authoritative durable targets. */
+  captureAgentSelection: (request: { slideIndex: number; sourceIds: string[] }) => Promise<
+    | {
+        status: 'captured'
+        documentId: string
+        sessionId: string
+        generation: number
+        slides: Array<{
+          slideId: string
+          elements: Array<{
+            elementId: string
+            expectedType: PresentationElementType
+            expectedFingerprint: string
+          }>
+        }>
+      }
+    | { status: 'conflict'; code: 'target_missing' | 'target_ambiguous' | 'target_stale' }
+    | { status: 'busy' }
+  >
+  /** Resolve a legacy renderer locator to an authoritative, durable transaction target. */
+  preparePresentationTarget: (
+    request: PresentationTargetRequest,
+  ) => Promise<PresentationTargetPreparation>
+  /** Execute one strictly bounded, atomic desktop presentation transaction. */
+  executePresentationTransaction: (
+    transaction: PresentationTransaction,
+    scopeGuard?: { documentId: string; sessionId: string; generation: number },
+  ) => Promise<PresentationReceipt>
+  cancelPresentationTransaction: (transactionId: string) => Promise<boolean>
   /** current UI language (persisted by the shell in app-settings.json) */
   getLanguage: () => Promise<
     'zh' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'th' | 'id' | 'ru' | 'ar'
@@ -1035,6 +1069,12 @@ export interface SlidesApi {
   batchEditTransform: (op: BatchEditTransformOp) => Promise<RenderSlide | null>
   /** Read-only: RenderSlide for every page of the current session (E2E driver/debug use) */
   getRenderSlides: () => Promise<RenderSlide[] | null>
+  /** Read-only durable identity map for structured QC; never enrolls or mutates legacy elements. */
+  getQualityIdentityMap: (slideIndex: number) => Promise<{
+    slideId: string
+    elementIds: Record<string, string>
+    truncated: boolean
+  } | null>
   /** Update the picture crop srcRect (0..1 ratios; null = full image); returns the updated page */
   editPictureSrcRect: (op: EditPictureSrcRectOp) => Promise<RenderSlide | null>
   /** Whole-picture opacity */
@@ -1380,6 +1420,24 @@ export interface SlidesApi {
   /** Presenter: subscribe to navigation actions sent back by the audience window */
   onAudienceNav: (handler: (action: AudienceNavAction) => void) => () => void
 }
+
+export interface PresentationTargetRequest {
+  transactionId: string
+  slideIndex: number
+  sourceId?: string
+}
+
+export type PresentationTargetPreparation =
+  | {
+      status: 'prepared'
+      expectedDeckRevision: string
+      target: import('@wiswork/presentation-ops').PresentationTarget
+    }
+  | {
+      status: 'conflict'
+      code: 'target_stale' | 'target_missing' | 'target_ambiguous'
+    }
+  | { status: 'busy' }
 
 declare global {
   interface Window {

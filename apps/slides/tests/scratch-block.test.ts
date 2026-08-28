@@ -71,6 +71,18 @@ function mkAccess(slides: RenderSlide[]): DeckAccess {
     getSelectedIds: () => [],
     applySlide: () => {},
     applyDeck: () => {},
+    executePresentationOperation: async (
+      request: Parameters<NonNullable<DeckAccess['executePresentationOperation']>>[0],
+    ) => ({
+      receipt: {
+        status: 'applied',
+        transactionId: request.transactionId,
+        resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+        operationCount: 'operations' in request ? request.operations.length : 1,
+        createdIds: ['{11111111-2222-3333-4444-555555555555}'],
+      },
+      authoritativeState: 'fresh',
+    }),
     fitWidthPx: 1280,
   } as unknown as DeckAccess
 }
@@ -101,7 +113,7 @@ describe('local creation on a blank deck', () => {
   it('empty deck + add_text_box is allowed', async () => {
     const r = await createSlidesSkill(mkAccess([blankDeck])).executeTool!(call('add_text_box'))
     expect(r.isError).toBeUndefined()
-    expect((window as any).slidesApi.addElement).toHaveBeenCalledOnce()
+    expect((window as any).slidesApi.addElement).not.toHaveBeenCalled()
   })
   it('empty deck + add_shape is allowed', async () => {
     const r = await createSlidesSkill(mkAccess([blankDeck])).executeTool!(call('add_shape'))
@@ -116,6 +128,6 @@ describe('local creation on a blank deck', () => {
   it('existing rich deck (lots of content) + add_text_box → allowed (fine-tuning is legitimate)', async () => {
     const r = await createSlidesSkill(mkAccess([richDeck])).executeTool!(call('add_text_box'))
     expect(r.isError).toBeUndefined()
-    expect((window as any).slidesApi.addElement).toHaveBeenCalledOnce()
+    expect((window as any).slidesApi.addElement).not.toHaveBeenCalled()
   })
 })

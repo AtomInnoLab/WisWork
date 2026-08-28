@@ -106,6 +106,10 @@ import {
 export const MINIMUM_SHEET_ROW_COUNT = 1000
 export const MINIMUM_SHEET_COLUMN_COUNT = 26
 
+export function workbookSkeletonId(file: Pick<WorkbookFile, 'sha256'>): string {
+  return `file-${file.sha256}`
+}
+
 export function syncUniver(runtime: UniverRuntime | null, snapshot: WorkbookSnapshot): void {
   const workbook = runtime?.univerAPI.getActiveWorkbook()
   if (!workbook) return
@@ -286,7 +290,7 @@ export function loadWorkbookSkeleton(runtime: UniverRuntime | null, file: Workbo
   const activeWorkbook = runtime.univerAPI.getActiveWorkbook()
   if (activeWorkbook) runtime.univerAPI.disposeUnit(activeWorkbook.getId())
   runtime.univerAPI.createWorkbook({
-    id: `file-${file.sha256}`,
+    id: workbookSkeletonId(file),
     name: file.name,
     sheetOrder: file.sheets.map((sheet) => sheet.id),
     sheets: Object.fromEntries(
@@ -731,7 +735,7 @@ export async function loadVisibleRange(
     screenColumnCount,
   )
   await loadRange(runtime, lazyWorkbookRef, worksheet, range, setMessage)
-  await loadFrozenColumnStrip(lazyWorkbookRef, worksheet, sheet, range)
+  await loadFrozenColumnStrip(runtime, lazyWorkbookRef, worksheet, sheet, range)
 }
 
 /// Streams every sheet's formula list, computes the dependency closure, and
@@ -833,7 +837,7 @@ export async function activateFormulaClosure(
   setMessage(t('appClosureActive', { count: closure.formulaCount.toLocaleString() }))
 }
 
-interface MappedRangeRead {
+export interface MappedRangeRead {
   /// Result arrays translated into screen coordinates.
   readonly screen: Pick<WorkbookRangeResult, 'cells' | 'rows' | 'merges' | 'hyperlinks'>
   readonly raw: WorkbookRangeResult
@@ -841,6 +845,135 @@ interface MappedRangeRead {
   /// File-space end row actually requested; the indexing poll compares the
   /// raw cutoff against this.
   readonly fileEndRow: number
+  /// UTF-8 JSON size of sidecar results accepted by this mapped read. This is
+  /// an application acceptance cap, not a transport-level network byte cap.
+  readonly byteCount: number
+  /// A read may stop only when the sidecar has not indexed the rest yet.
+  /// Callers use this explicit receipt to retry; errors never return partial data.
+  readonly truncated: null | { readonly reason: 'indexing'; readonly nextRow: number }
+}
+
+/// Keep below the shared IPC protocol's 20k hard limit so response metadata
+/// cannot turn a boundary request into an oversized sidecar message.
+export const SIDECAR_READ_BATCH_CELLS = 18_000
+export const SIDECAR_READ_MAX_BATCHES = 32
+export const SIDECAR_READ_MAX_TOTAL_CELLS = SIDECAR_READ_BATCH_CELLS * SIDECAR_READ_MAX_BATCHES
+export const SIDECAR_READ_MAX_BYTES = 16 * 1024 * 1024
+export const SIDECAR_READ_MAX_MS = 15_000
+
+export interface MappedRangeReadOptions {
+  readonly signal?: AbortSignal
+  /// Reject after receipt, before mapping/return, when serialized results
+  /// exceed the caller's remaining aggregate acceptance budget.
+  readonly maxBytes?: number
+  /// Workbook-instance guard supplied by callers that own the active ref.
+  readonly isCurrent?: () => boolean
+}
+
+export function isLazyWorkbookTargetCurrent(
+  runtime: UniverRuntime,
+  lazyWorkbookRef: { readonly current: LazyWorkbookState | null },
+  state: LazyWorkbookState,
+  worksheet: UniverWorksheet,
+): boolean {
+  if (lazyWorkbookRef.current !== state) return false
+  try {
+    const active = runtime.univerAPI.getActiveWorkbook()
+    if (!active || active.getId() !== state.expectedWorkbookId) return false
+    const activeCore = active.getWorkbook()
+    const worksheetCore = worksheet.getWorkbook()
+    return (
+      activeCore === worksheetCore &&
+      activeCore.getUnitId() === state.expectedWorkbookId &&
+      worksheetCore.getUnitId() === state.expectedWorkbookId
+    )
+  } catch {
+    // Disposed facades can throw while a workbook is being replaced.
+    return false
+  }
+}
+
+function assertRangeReadCurrent(options: MappedRangeReadOptions, startedAt: number): void {
+  if (options.signal?.aborted) throw new DOMException('Range read aborted.', 'AbortError')
+  if (options.isCurrent && !options.isCurrent()) {
+    throw new Error('Range read cancelled because the active workbook changed.')
+  }
+  if (Date.now() - startedAt > SIDECAR_READ_MAX_MS) {
+    throw new Error(`Range read exceeded the ${SIDECAR_READ_MAX_MS}ms time limit.`)
+  }
+}
+
+function rangeResultBytes(result: WorkbookRangeResult): number {
+  return new TextEncoder().encode(JSON.stringify(result)).byteLength
+}
+
+async function readWorkbookRangeBounded(
+  request: { readonly sessionId: string; readonly sheetId: string; readonly range: IRange },
+  options: MappedRangeReadOptions,
+  startedAt: number,
+): Promise<WorkbookRangeResult> {
+  assertRangeReadCurrent(options, startedAt)
+  const remainingMs = SIDECAR_READ_MAX_MS - (Date.now() - startedAt)
+  return await new Promise<WorkbookRangeResult>((resolve, reject) => {
+    let settled = false
+    const finish = (callback: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      options.signal?.removeEventListener('abort', onAbort)
+      callback()
+    }
+    const onAbort = () =>
+      finish(() => reject(new DOMException('Range read aborted.', 'AbortError')))
+    const timer = setTimeout(
+      () =>
+        finish(() =>
+          reject(new Error(`Range read exceeded the ${SIDECAR_READ_MAX_MS}ms time limit.`)),
+        ),
+      Math.max(0, remainingMs),
+    )
+    options.signal?.addEventListener('abort', onAbort, { once: true })
+    if (options.signal?.aborted) onAbort()
+    if (!settled) {
+      void window.desktopApi.readWorkbookRange(request).then(
+        (result) => finish(() => resolve(result)),
+        (error: unknown) => finish(() => reject(error)),
+      )
+    }
+  })
+}
+
+function mergeBatchedRangeResults(
+  batches: readonly WorkbookRangeResult[],
+): Pick<WorkbookRangeResult, 'cells' | 'rows' | 'merges' | 'hyperlinks'> {
+  const cells = new Map<string, WorkbookRangeResult['cells'][number]>()
+  const rows = new Map<number, WorkbookRangeResult['rows'][number]>()
+  const merges = new Map<string, WorkbookRangeResult['merges'][number]>()
+  const hyperlinks = new Map<string, WorkbookRangeResult['hyperlinks'][number]>()
+  for (const batch of batches) {
+    for (const cell of batch.cells) cells.set(`${cell.row}:${cell.column}`, cell)
+    for (const row of batch.rows) rows.set(row.row, row)
+    for (const merge of batch.merges) {
+      merges.set(`${merge.startRow}:${merge.startColumn}:${merge.endRow}:${merge.endColumn}`, merge)
+    }
+    for (const hyperlink of batch.hyperlinks) {
+      hyperlinks.set(`${hyperlink.row}:${hyperlink.column}`, hyperlink)
+    }
+  }
+  const byCell = (left: { row: number; column: number }, right: { row: number; column: number }) =>
+    left.row - right.row || left.column - right.column
+  return {
+    cells: [...cells.values()].sort(byCell),
+    rows: [...rows.values()].sort((left, right) => left.row - right.row),
+    merges: [...merges.values()].sort(
+      (left, right) =>
+        left.startRow - right.startRow ||
+        left.startColumn - right.startColumn ||
+        left.endRow - right.endRow ||
+        left.endColumn - right.endColumn,
+    ),
+    hyperlinks: [...hyperlinks.values()].sort(byCell),
+  }
 }
 
 /// Reads a screen-space range, translating through the sheet's journaled
@@ -848,27 +981,23 @@ interface MappedRangeRead {
 /// journal-owned (inserted this session — nothing streams into it). A
 /// request spanning deleted file rows can exceed the sidecar's per-read
 /// cell budget, so file reads are split into row batches.
-async function readSheetRangeMapped(
+export async function readSheetRangeMapped(
   state: LazyWorkbookState,
   sheetId: string,
   screenRange: IRange,
   sheet: WorkbookFile['sheets'][number],
+  options: MappedRangeReadOptions = {},
 ): Promise<MappedRangeRead | null> {
-  const ops = state.editJournal.structuralOps.get(sheetId) ?? []
-  if (ops.length === 0) {
-    const raw = await window.desktopApi.readWorkbookRange({
-      sessionId: state.file.sessionId,
-      sheetId,
-      range: screenRange,
-    })
-    return {
-      screen: raw,
-      raw,
-      indexedThroughScreen: raw.indexedThroughRow,
-      fileEndRow: screenRange.endRow,
-    }
+  const startedAt = Date.now()
+  assertRangeReadCurrent(options, startedAt)
+  if (
+    screenRange.startRow > screenRange.endRow ||
+    screenRange.startColumn > screenRange.endColumn
+  ) {
+    throw new Error('Range read boundaries are reversed.')
   }
-  const mappedRange = screenRangeToFileRange(ops, screenRange)
+  const ops = state.editJournal.structuralOps.get(sheetId) ?? []
+  const mappedRange = ops.length === 0 ? screenRange : screenRangeToFileRange(ops, screenRange)
   if (
     !mappedRange ||
     mappedRange.startRow >= sheet.rowCount ||
@@ -883,34 +1012,66 @@ async function readSheetRangeMapped(
     endColumn: Math.min(mappedRange.endColumn, sheet.columnCount - 1),
   }
   const width = fileRange.endColumn - fileRange.startColumn + 1
-  const batchRows = Math.max(1, Math.floor(18_000 / width))
-  const cells: WorkbookRangeResult['cells'] = []
-  const rows: WorkbookRangeResult['rows'] = []
-  const merges: WorkbookRangeResult['merges'] = []
-  const hyperlinks: WorkbookRangeResult['hyperlinks'] = []
-  let raw: WorkbookRangeResult | null = null
+  if (width > SIDECAR_READ_BATCH_CELLS) {
+    throw new Error(
+      `Range read single row exceeds the ${SIDECAR_READ_BATCH_CELLS}-cell batch limit.`,
+    )
+  }
+  const height = fileRange.endRow - fileRange.startRow + 1
+  const totalCells = width * height
+  if (totalCells > SIDECAR_READ_MAX_TOTAL_CELLS) {
+    throw new Error(`Range read exceeds the ${SIDECAR_READ_MAX_TOTAL_CELLS}-cell total limit.`)
+  }
+  const batchRows = Math.floor(SIDECAR_READ_BATCH_CELLS / width)
+  const batchCount = Math.ceil(height / batchRows)
+  if (batchCount > SIDECAR_READ_MAX_BATCHES) {
+    throw new Error(`Range read exceeds the ${SIDECAR_READ_MAX_BATCHES}-batch limit.`)
+  }
+  const batches: WorkbookRangeResult[] = []
+  let bytes = 0
+  let truncated: MappedRangeRead['truncated'] = null
   for (let startRow = fileRange.startRow; startRow <= fileRange.endRow; startRow += batchRows) {
+    assertRangeReadCurrent(options, startedAt)
     const endRow = Math.min(startRow + batchRows - 1, fileRange.endRow)
-    const batch = await window.desktopApi.readWorkbookRange({
-      sessionId: state.file.sessionId,
-      sheetId,
-      range: { ...fileRange, startRow, endRow },
-    })
-    cells.push(...batch.cells)
-    rows.push(...batch.rows)
-    merges.push(...batch.merges)
-    hyperlinks.push(...batch.hyperlinks)
-    raw = batch
+    const batch = await readWorkbookRangeBounded(
+      {
+        sessionId: state.file.sessionId,
+        sheetId,
+        range: { ...fileRange, startRow, endRow },
+      },
+      options,
+      startedAt,
+    )
+    assertRangeReadCurrent(options, startedAt)
+    bytes += rangeResultBytes(batch)
+    const maxBytes = Math.min(SIDECAR_READ_MAX_BYTES, options.maxBytes ?? SIDECAR_READ_MAX_BYTES)
+    if (bytes > maxBytes) {
+      throw new Error(`Range read exceeded the ${maxBytes}-byte response acceptance limit.`)
+    }
+    batches.push(batch)
     // Later batches cannot have data before indexing reaches them; the
     // regular retry poll picks the rest up.
-    if (batch.indexedThroughRow === null || batch.indexedThroughRow < endRow) break
+    if (batch.indexedThroughRow === null || batch.indexedThroughRow < endRow) {
+      truncated = {
+        reason: 'indexing',
+        nextRow: Math.max(startRow, (batch.indexedThroughRow ?? -1) + 1),
+      }
+      break
+    }
   }
+  const raw = batches.at(-1)
   if (!raw) return null
+  const merged = mergeBatchedRangeResults(batches)
   return {
-    screen: mapRangeResultToScreen(ops, { ...raw, cells, rows, merges, hyperlinks }),
+    screen: ops.length === 0 ? merged : mapRangeResultToScreen(ops, { ...raw, ...merged }),
     raw,
-    indexedThroughScreen: indexedThroughScreenRow(ops, raw.indexedThroughRow),
+    indexedThroughScreen:
+      ops.length === 0
+        ? raw.indexedThroughRow
+        : indexedThroughScreenRow(ops, raw.indexedThroughRow),
     fileEndRow: fileRange.endRow,
+    byteCount: bytes,
+    truncated,
   }
 }
 
@@ -1358,6 +1519,7 @@ async function runFormulaRecalc(
 /// After horizontal scrolling the viewport range no longer covers frozen
 /// columns; fetch that strip separately (patched without eviction).
 async function loadFrozenColumnStrip(
+  runtime: UniverRuntime,
   lazyWorkbookRef: { current: LazyWorkbookState | null },
   worksheet: UniverWorksheet,
   sheet: WorkbookFile['sheets'][number],
@@ -1365,7 +1527,13 @@ async function loadFrozenColumnStrip(
 ): Promise<void> {
   const state = lazyWorkbookRef.current
   const frozenColumns = sheet.freeze?.frozenColumns ?? 0
-  if (!state || frozenColumns === 0 || frozenColumns > 8) return
+  if (
+    !state ||
+    !isLazyWorkbookTargetCurrent(runtime, lazyWorkbookRef, state, worksheet) ||
+    frozenColumns === 0 ||
+    frozenColumns > 8
+  )
+    return
   if (viewportRange.startColumn < frozenColumns) return
   const sheetId = worksheet.getSheetId()
   const stripRange: IRange = {
@@ -1378,8 +1546,10 @@ async function loadFrozenColumnStrip(
   if (state.frozenStripKeys.get(sheetId) === stripKey) return
   state.frozenStripKeys.set(sheetId, stripKey)
   try {
-    const mapped = await readSheetRangeMapped(state, sheetId, stripRange, sheet)
-    if (lazyWorkbookRef.current !== state || !mapped) {
+    const mapped = await readSheetRangeMapped(state, sheetId, stripRange, sheet, {
+      isCurrent: () => isLazyWorkbookTargetCurrent(runtime, lazyWorkbookRef, state, worksheet),
+    })
+    if (!isLazyWorkbookTargetCurrent(runtime, lazyWorkbookRef, state, worksheet) || !mapped) {
       state.frozenStripKeys.delete(sheetId)
       return
     }
@@ -1423,7 +1593,7 @@ async function loadRange(
   waitAttempt = 0,
 ): Promise<void> {
   const state = lazyWorkbookRef.current
-  if (!state) return
+  if (!state || !isLazyWorkbookTargetCurrent(runtime, lazyWorkbookRef, state, worksheet)) return
   const sheetId = worksheet.getSheetId()
   const loaded = state.loadedRanges.get(sheetId)
   if (!isRetry && loaded && containsRange(loaded, range)) return
@@ -1433,12 +1603,16 @@ async function loadRange(
   if (previousTimer) clearTimeout(previousTimer)
   state.retryTimers.delete(sheetId)
   state.loadingKeys.set(sheetId, requestKey)
-
   try {
     const sheetMeta = state.file.sheets.find((candidate) => candidate.id === sheetId)
     if (!sheetMeta) return
-    const mapped = await readSheetRangeMapped(state, sheetId, range, sheetMeta)
-    if (lazyWorkbookRef.current !== state || state.loadingKeys.get(sheetId) !== requestKey) {
+    const mapped = await readSheetRangeMapped(state, sheetId, range, sheetMeta, {
+      isCurrent: () => isLazyWorkbookTargetCurrent(runtime, lazyWorkbookRef, state, worksheet),
+    })
+    if (
+      !isLazyWorkbookTargetCurrent(runtime, lazyWorkbookRef, state, worksheet) ||
+      state.loadingKeys.get(sheetId) !== requestKey
+    ) {
       return
     }
     if (!mapped) {
@@ -1530,7 +1704,7 @@ async function loadRange(
           if (lazyWorkbookRef.current !== state) return
           state.loadingKeys.delete(sheetId)
           void loadRange(runtime, lazyWorkbookRef, worksheet, range, setMessage, true).then(() =>
-            loadFrozenColumnStrip(lazyWorkbookRef, worksheet, sheet, range),
+            loadFrozenColumnStrip(runtime, lazyWorkbookRef, worksheet, sheet, range),
           )
         }, 250)
         state.retryTimers.set(sheetId, timer)

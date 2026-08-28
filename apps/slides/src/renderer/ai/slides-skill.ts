@@ -10,6 +10,24 @@ import type { AddSmartArtOp, AgentToolCall, AgentToolDef, EditParagraph } from '
 import { auditSlideLayout, formatAudit } from './layout-audit'
 import { runLayoutScript, type LayoutScriptElement, type SlideStylePatch } from './layout-script'
 import { t } from '../i18n/locale'
+import {
+  textFamilyReceiptOutcome,
+  textToolTransactionId,
+  type TextFamilyExecutionResult,
+  type TextFamilyTransactionRequest,
+} from './presentation-text-transactions'
+import type { SpeakerNotesDraftPreparation } from '../notes-draft'
+import { selectionScopeSummary, type SelectionScope } from './edit-queue'
+import {
+  geometryPxToPoints,
+  geometryToolTransactionId,
+  normalizePresentationRotation,
+  type GeometryFamilyTransactionRequest,
+} from './presentation-geometry-transactions'
+import {
+  backgroundToolTransactionId,
+  type BackgroundFamilyTransactionRequest,
+} from './presentation-background-transactions'
 
 /**
  * Slides capability as an AgentSkill: deck outline context + three tools (read structure /
@@ -23,9 +41,22 @@ export interface DeckAccess {
   getSlides(): RenderSlide[]
   getCurrent(): number
   getSelectedIds(): string[]
+  /** Immutable durable scope for the active queued run, if any. */
+  getSelectionScope?(): SelectionScope | undefined
   applySlide(slideIndex: number, updated: RenderSlide): void
   /** Replace the whole deck (after adding/removing slides) and jump to the goTo slide */
   applyDeck(slides: RenderSlide[], goTo?: number): void
+  /** Execute one canonical, durable presentation transaction for an enrolled tool family. */
+  executePresentationOperation?(
+    request:
+      | TextFamilyTransactionRequest
+      | GeometryFamilyTransactionRequest
+      | BackgroundFamilyTransactionRequest,
+    signal?: AbortSignal,
+  ): Promise<TextFamilyExecutionResult>
+  /** Mirror an already-applied notes transaction into the visible notes editor. */
+  prepareSpeakerNotesWrite?(slideIndex: number): Promise<SpeakerNotesDraftPreparation>
+  applySpeakerNotes?(slideIndex: number, text: string, expectedDraftVersion: number): void
   /** Survey: shows a card with options and waits for the user's choices, returning an answer summary. */
   askClarification?(questions: ClarifyQuestion[]): Promise<{ answers: string; cancelled?: boolean }>
   /**
@@ -117,6 +148,7 @@ const AGENT_SYSTEM_PROMPT = `You are the AI assistant inside WisWork Slides. Hel
 - Start with get_deck_context, and use read_slide when exact text, colors, or element details matter.
 - For a new presentation, use ask_clarification when requirements are ambiguous, then plan_deck. Build every page with add_slide and the local add_text_box, add_shape, add_chart, add_table, add_smartart, and insert_web_image tools. Empty decks are valid and may be built directly with these tools.
 - Use execute_slide_script for coordinated edits to existing elements. Use the individual set_element_* tools for focused changes.
+- Use set_speaker_notes to add, replace, or clear presenter notes without changing canvas content.
 - Use web_search for current facts and image_search for real imagery. Never invent precise figures; declare figure provenance through dataSource.
 - Keep layouts readable, consistent, within canvas bounds, and free of accidental overlaps. Verify the deck outline after substantial edits.
 - Read all text attachments before using their content. Prefer user-provided material over generic filler.
@@ -255,7 +287,7 @@ const ALL_TOOLS: AgentToolDef[] = [
   {
     name: 'execute_slide_script',
     description:
-      "[Preferred tool for editing a slide's existing elements] Runs your JS edit script against one page; a single script covers: position/size/alignment/distribution/relative nudges/text/style/fill/stroke." +
+      '[Preferred tool for editing a slide] Runs your JS edit script against one page; a single script covers: add/delete/position/size/alignment/distribution/relative nudges/text/style/fill/stroke.' +
       ' At run time the script automatically receives the real geometry and text of every element on the page (els) — **no read_slide needed first**; read-write combined, compute from els inside the script.' +
       ' Geometry changes are applied atomically in one batch (undoable as a whole), the rest in script order, and a layout audit (overlap/out-of-bounds/text overflow) is returned at the end.' +
       ' Far more reliable than individual set_element_* calls — coordinate math happens at execution site, not from memory. If the audit reports problems, call this tool again immediately to fix.\n' +
@@ -269,6 +301,8 @@ const ALL_TOOLS: AgentToolDef[] = [
       '- setStyle(id, {fontSize?,color?,bold?,italic?,underline?,align?,fontFamily?}): change style without changing text, pass only fields to change\n' +
       "- setFill(id, colorOrNone): solid fill '#RRGGBB' or 'none'\n" +
       '- setStroke(id, {color?,widthPt?} | null): stroke; pass null to remove\n' +
+      '- addText(clientId, textOrParagraphs, {x,y,w,h,rotation?}): add a text box and return its transaction-local id; later primitives may use that id\n' +
+      '- delete(id): delete a top-level existing element or a text box added earlier in this script; later use of that id fails closed\n' +
       '- log(...): debug output (echoed back to you); the return value is echoed back to you (put a summary there)\n' +
       '- Supported computation: const/let, arithmetic, if/for/for...of/while, functions/arrows, JSON object/array literals, Math, regex.test, and safe array/string methods. No classes, async, modules, constructors, prototypes, or dynamic code.\n' +
       'Example 1 — three cards equal width, equal spacing:\n' +
@@ -284,7 +318,7 @@ const ALL_TOOLS: AgentToolDef[] = [
         code: {
           type: 'string',
           description:
-            'JS script body (synchronous code; may use els/canvas plus setBox/moveBy/resizeBy/setText/setStyle/setFill/setStroke/log; may return a summary)',
+            'JS script body (synchronous code; may use els/canvas plus addText/delete/setBox/moveBy/resizeBy/setText/setStyle/setFill/setStroke/log; may return a summary)',
         },
         explanation: {
           type: 'string',
@@ -804,6 +838,22 @@ const ALL_TOOLS: AgentToolDef[] = [
     },
   },
   {
+    name: 'set_speaker_notes',
+    description:
+      'Replace the complete speaker notes for one slide. Newlines separate paragraphs; an empty string clears the notes. This changes presenter notes only, not canvas content.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slideIndex: { type: 'integer', description: 'Page number (0-based)' },
+        text: {
+          type: 'string',
+          description: 'Complete speaker notes text, at most 12000 characters',
+        },
+      },
+      required: ['slideIndex', 'text'],
+    },
+  },
+  {
     name: 'delete_element',
     description: 'Delete one element from a page.',
     inputSchema: {
@@ -1135,17 +1185,37 @@ export function createSlidesSkill(access: DeckAccess): AgentSkill {
   // The HTML pipeline was already used in this conversation → later calls without an explicit mode default to append.
   // Safety net for when the AI ignores the "pass all pages at once" constraint: separate calls no longer overwrite each other (P0-1).
   const state: SkillState = {}
+  const scopedTools = new Set([
+    'set_element_text',
+    'set_element_style',
+    'set_element_transform',
+    'execute_layout_script',
+    'execute_slide_script',
+    'set_element_fill',
+    'set_element_stroke',
+    'add_text_box',
+    'set_slide_background',
+    'set_speaker_notes',
+    'delete_element',
+  ])
   return {
     id: 'slides',
     systemPrompt: AGENT_SYSTEM_PROMPT,
-    tools: TOOLS,
+    get tools() {
+      return access.getSelectionScope?.()
+        ? TOOLS.filter((tool) => scopedTools.has(tool.name))
+        : TOOLS
+    },
     buildContext: () =>
-      `<deck outline>\n${buildDeckOutline(access.getSlides(), access.getCurrent(), access.getSelectedIds())}\n</deck outline>`,
+      access.getSelectionScope?.()
+        ? `<selection scope>\n${selectionScopeSummary(access.getSelectionScope()!)}. This scope is immutable and enforced by the host.\n</selection scope>`
+        : `<deck outline>\n${buildDeckOutline(access.getSlides(), access.getCurrent(), access.getSelectedIds())}\n</deck outline>`,
     executeTool: (call, signal) => executeTool(access, call, state, signal),
   }
 }
 
 interface SkillState {
+  fallbackInvocationIds?: WeakMap<AgentToolCall, string>
   /** A web_search ran in this conversation — unlocks dataSource:'search' in the figure gate */
   webSearched?: boolean
   /** Most recently available Style Skill (used by save_style_template) */
@@ -1229,6 +1299,39 @@ async function executeTool(
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted()
+  const activeScope = access.getSelectionScope?.()
+  if (activeScope) {
+    const allowed = new Set([
+      'set_element_text',
+      'set_element_style',
+      'set_element_transform',
+      'execute_layout_script',
+      'execute_slide_script',
+      'set_element_fill',
+      'set_element_stroke',
+      'add_text_box',
+      'set_slide_background',
+      'set_speaker_notes',
+      'delete_element',
+    ])
+    if (!allowed.has(call.name))
+      return fail(call.name, 'selection_scope_conflict: tool is unavailable for a scoped edit')
+  }
+  if (!('invocationId' in call) || !call.invocationId) {
+    state ??= {}
+    state.fallbackInvocationIds ??= new WeakMap()
+    let invocationId = state.fallbackInvocationIds.get(call)
+    if (!invocationId) {
+      invocationId = globalThis.crypto.randomUUID()
+      state.fallbackInvocationIds.set(call, invocationId)
+    }
+    Object.defineProperty(call, 'invocationId', {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: invocationId,
+    })
+  }
   const unguardedAccess = access
   access = {
     ...unguardedAccess,
@@ -1279,27 +1382,44 @@ async function executeTool(
       const target = resolveEditTarget(slide, sourceId)
       const terr = targetError(target, sourceId, idx + 1)
       if (terr || !target || 'nested' in target) return fail(t('aiFailEditText'), terr!)
-      const updated = await window.slidesApi.editText({
-        slideIndex: idx,
-        sourceId,
-        paragraphs,
-        ...(target.groupId ? { groupId: target.groupId } : {}),
-      })
-      signal?.throwIfAborted()
-      if (!updated)
-        return fail(
-          t('aiFailEditText'),
-          `Element ${sourceId} (${target.node.type}) does not support text editing` +
-            (target.node.type === 'table'
-              ? '; use edit_table_cell for tables'
-              : target.node.type === 'chart'
-                ? '; use edit_chart for charts'
-                : ''),
-        )
-      access.applySlide(idx, updated)
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailEditText'), 'Canonical presentation transactions are unavailable')
+      const transactionId = await textToolTransactionId(call)
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId,
+          slideIndex: idx,
+          sourceId,
+          operation: { kind: 'set_text', paragraphs },
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required') {
+        return {
+          output:
+            'The text change was applied, but the editor could not refresh authoritative state. Reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumEditText', { n: idx + 1 }),
+        }
+      }
+      if (!outcome.ok) {
+        return {
+          output:
+            outcome.detail === 'write_state_uncertain'
+              ? 'The text change may be partially applied. Inspect the slide before retrying.'
+              : `The text change was not applied (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailEditText'),
+        }
+      }
       return {
-        output: `Replaced the text of element ${sourceId} on page ${idx + 1} (${paragraphs.length} paragraphs).`,
-        mutated: true,
+        output: outcome.mutated
+          ? `Replaced the text of element ${sourceId} on page ${idx + 1} (${paragraphs.length} paragraphs).`
+          : `Element ${sourceId} on page ${idx + 1} already had the requested text.`,
+        mutated: outcome.mutated,
         summary: t('aiSumEditText', { n: idx + 1 }),
       }
     }
@@ -1320,19 +1440,42 @@ async function executeTool(
       if (!cur.length) return fail(t('aiFailStyle'), 'This element has no text to format')
       const ov = call.input as SlideStylePatch
       const paragraphs = mergeStyleIntoParagraphs(cur, ov)
-      const updated = await window.slidesApi.editText({
-        slideIndex: idx,
-        sourceId,
-        paragraphs,
-        ...(target.groupId ? { groupId: target.groupId } : {}),
-      })
-      signal?.throwIfAborted()
-      if (!updated)
-        return fail(t('aiFailStyle'), `Element ${sourceId} does not support format editing`)
-      access.applySlide(idx, updated)
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailStyle'), 'Canonical presentation transactions are unavailable')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await textToolTransactionId(call),
+          slideIndex: idx,
+          sourceId,
+          operation: { kind: 'set_text', paragraphs },
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required') {
+        return {
+          output:
+            'The formatting change was applied, but the editor could not refresh authoritative state. Reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumStyle', { n: idx + 1 }),
+        }
+      }
+      if (!outcome.ok) {
+        return {
+          output: outcome.mutated
+            ? 'The formatting change may be partially applied. Inspect the slide before retrying.'
+            : `The formatting change was not applied (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailStyle'),
+        }
+      }
       return {
-        output: `Updated the formatting of element ${sourceId} on page ${idx + 1}.`,
-        mutated: true,
+        output: outcome.mutated
+          ? `Updated the formatting of element ${sourceId} on page ${idx + 1}.`
+          : `Element ${sourceId} on page ${idx + 1} already had the requested formatting.`,
+        mutated: outcome.mutated,
         summary: t('aiSumStyle', { n: idx + 1 }),
       }
     }
@@ -1356,20 +1499,57 @@ async function executeTool(
         h?: number
         rotationDeg?: number
       }
-      const updated = await window.slidesApi.editTransform({
-        slideIndex: idx,
-        sourceId,
-        ...(target.groupId ? { groupId: target.groupId } : {}),
-        xPx: (typeof inp.x === 'number' ? inp.x : origin.x + b.x) - origin.x,
-        yPx: (typeof inp.y === 'number' ? inp.y : origin.y + b.y) - origin.y,
-        wPx: typeof inp.w === 'number' ? inp.w : b.w,
-        hPx: typeof inp.h === 'number' ? inp.h : b.h,
-        rotationDeg: typeof inp.rotationDeg === 'number' ? inp.rotationDeg : b.rotationDeg,
-        fitWidthPx: access.fitWidthPx,
-      })
-      signal?.throwIfAborted()
-      if (!updated) return fail(t('aiFailTransform'), 'Transform failed')
-      access.applySlide(idx, updated)
+      const x = typeof inp.x === 'number' ? inp.x : origin.x + b.x
+      const y = typeof inp.y === 'number' ? inp.y : origin.y + b.y
+      const w = typeof inp.w === 'number' ? inp.w : b.w
+      const h = typeof inp.h === 'number' ? inp.h : b.h
+      const rotation = normalizePresentationRotation(
+        typeof inp.rotationDeg === 'number' ? inp.rotationDeg : b.rotationDeg,
+      )
+      if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0)
+        return fail(t('aiFailTransform'), 'Transform geometry is invalid')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailTransform'), 'Canonical presentation transactions are unavailable')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await geometryToolTransactionId(call),
+          slideIndex: idx,
+          operations: [
+            {
+              sourceId,
+              geometry: {
+                x: geometryPxToPoints(x, slide.scale),
+                y: geometryPxToPoints(y, slide.scale),
+                width: geometryPxToPoints(w, slide.scale),
+                height: geometryPxToPoints(h, slide.scale),
+                rotation,
+              },
+            },
+          ],
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required') {
+        return {
+          output:
+            'The transform was applied, but the editor could not refresh authoritative state. Reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumTransform', { n: idx + 1 }),
+        }
+      }
+      if (!outcome.ok) {
+        return {
+          output: outcome.mutated
+            ? 'The transform may be partially applied. Inspect the slide before retrying.'
+            : `The transform was not applied (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailTransform'),
+        }
+      }
+      const updated = access.getSlides()[idx] ?? slide
       const afterTarget = resolveEditTarget(updated, sourceId)
       const after = afterTarget && !('nested' in afterTarget) ? afterTarget : null
       const nb = after
@@ -1387,8 +1567,10 @@ async function executeTool(
         ? `\n⚠️ The layout audit found ${issues.length} issue(s) on this page:\n${issues.map((s) => `- ${s}`).join('\n')}\nFor multi-element layout adjustments switch to execute_slide_script (it reads every element's real geometry and applies atomically).`
         : ''
       return {
-        output: `Adjusted the position/size of element ${sourceId} on page ${idx + 1}. ${boxStr}${auditStr}`,
-        mutated: true,
+        output: outcome.mutated
+          ? `Adjusted the position/size of element ${sourceId} on page ${idx + 1}. ${boxStr}${auditStr}`
+          : `Element ${sourceId} on page ${idx + 1} already had the requested geometry.${auditStr}`,
+        mutated: outcome.mutated,
         summary: t('aiSumTransform', { n: idx + 1 }),
       }
     }
@@ -1413,9 +1595,279 @@ async function executeTool(
       const returnedStr = r.returned !== undefined ? `\nScript returned: ${r.returned}` : ''
       if (r.ops.length === 0 && r.edits.length === 0) {
         return {
-          output: `Script finished but called no edit primitives (setBox/moveBy/setText/setStyle/setFill/setStroke); the page was not modified.${returnedStr}${logsStr}`,
+          output: `Script finished but called no edit primitives (addText/delete/setBox/moveBy/setText/setStyle/setFill/setStroke); the page was not modified.${returnedStr}${logsStr}`,
           mutated: false,
           summary: t('aiSumScriptNoop', { n: idx + 1 }),
+        }
+      }
+      // Every primitive exposed by this DSL now belongs to an enrolled canonical family. Compile
+      // the complete script before preparing any target so an unsupported paint/text target fails
+      // closed without a proposal, mutation, or partially executed prefix.
+      if (r.ops.length > 0 || r.edits.length > 0) {
+        if (!access.executePresentationOperation)
+          return fail(t('aiFailScript'), 'Canonical presentation transactions are unavailable')
+        const operations: GeometryFamilyTransactionRequest['operations'][number][] = r.ops.map(
+          (op) => {
+            const target = resolveEditTarget(slide, op.id)
+            if (!target || 'nested' in target)
+              throw new TypeError(`Geometry target ${op.id} is no longer editable`)
+            return {
+              sourceId: op.id,
+              geometry: {
+                x: geometryPxToPoints(op.x, slide.scale),
+                y: geometryPxToPoints(op.y, slide.scale),
+                width: geometryPxToPoints(op.w, slide.scale),
+                height: geometryPxToPoints(op.h, slide.scale),
+                rotation: normalizePresentationRotation(op.rotation),
+              },
+            }
+          },
+        )
+        const paragraphState = new Map<string, EditParagraph[]>()
+        const canonicalParagraphs = (paragraphs: readonly EditParagraph[]) => {
+          const paragraphKeys = new Set(['runs', 'align'])
+          const runKeys = new Set([
+            'text',
+            'bold',
+            'italic',
+            'underline',
+            'fontSize',
+            'fontFamily',
+            'color',
+          ])
+          if (
+            paragraphs.some(
+              (paragraph) =>
+                Object.keys(paragraph).some((key) => !paragraphKeys.has(key)) ||
+                paragraph.align === 'justify' ||
+                paragraph.runs.some((run) => Object.keys(run).some((key) => !runKeys.has(key))),
+            )
+          )
+            return null
+          return paragraphs.map((paragraph) => ({
+            runs: paragraph.runs.map((run) => ({ ...run })),
+            ...(paragraph.align === 'left' ||
+            paragraph.align === 'center' ||
+            paragraph.align === 'right'
+              ? { align: paragraph.align }
+              : {}),
+          }))
+        }
+        const generatedIds = new Set<string>()
+        for (const edit of r.edits) {
+          if (edit.kind === 'add_text') {
+            const paragraphs = canonicalParagraphs(edit.paragraphs)
+            if (!paragraphs)
+              return fail(t('aiFailScript'), `addText("${edit.id}"): unsupported rich formatting`)
+            const text = paragraphs
+              .map((paragraph) => paragraph.runs.map((run) => run.text).join(''))
+              .join('\n')
+            operations.push({
+              kind: 'add_text_box',
+              clientId: edit.id,
+              text,
+              geometry: {
+                x: geometryPxToPoints(edit.geometry.x, slide.scale),
+                y: geometryPxToPoints(edit.geometry.y, slide.scale),
+                width: geometryPxToPoints(edit.geometry.w, slide.scale),
+                height: geometryPxToPoints(edit.geometry.h, slide.scale),
+                rotation: normalizePresentationRotation(edit.geometry.rotation),
+              },
+            })
+            generatedIds.add(edit.id)
+            paragraphState.set(edit.id, edit.paragraphs)
+            operations.push({
+              createdByClientId: edit.id,
+              kind: 'set_text',
+              paragraphs,
+            })
+            continue
+          }
+          if (edit.kind === 'delete') {
+            if (generatedIds.has(edit.id)) {
+              operations.push({ createdByClientId: edit.id, kind: 'delete_element' })
+              continue
+            }
+            const target = resolveEditTarget(slide, edit.id)
+            if (!target || 'nested' in target || target.groupId)
+              return fail(t('aiFailScript'), `Delete target ${edit.id} is no longer editable`)
+            operations.push({ sourceId: edit.id, kind: 'delete_element' })
+            continue
+          }
+          const generated = generatedIds.has(edit.id)
+          const target = generated ? undefined : resolveEditTarget(slide, edit.id)
+          const existingTarget = target && !('nested' in target) ? target : undefined
+          if (!generated && !existingTarget)
+            return fail(t('aiFailScript'), `Target ${edit.id} is no longer editable`)
+          const targetReference = generated ? { createdByClientId: edit.id } : { sourceId: edit.id }
+          if (edit.kind === 'fill') {
+            if (
+              !generated &&
+              !(existingTarget!.node.type === 'text' || existingTarget!.node.type === 'shape')
+            )
+              return fail(
+                t('aiFailScript'),
+                `setFill("${edit.id}"): element does not support a durable fill`,
+              )
+            operations.push({
+              ...targetReference,
+              kind: 'set_fill',
+              fill:
+                edit.fill === 'none'
+                  ? { kind: 'none' }
+                  : { kind: 'solid', color: edit.fill.toUpperCase() },
+            })
+          } else if (edit.kind === 'stroke') {
+            if (
+              !generated &&
+              !(
+                existingTarget!.node.type === 'text' ||
+                existingTarget!.node.type === 'shape' ||
+                existingTarget!.node.type === 'picture'
+              )
+            )
+              return fail(
+                t('aiFailScript'),
+                `setStroke("${edit.id}"): element does not support a durable stroke`,
+              )
+            operations.push({
+              ...targetReference,
+              kind: 'set_stroke',
+              stroke: edit.stroke && {
+                color: edit.stroke.color.toUpperCase(),
+                width: edit.stroke.widthPt,
+              },
+            })
+          } else if (edit.kind === 'text') {
+            if (
+              !generated &&
+              !(existingTarget!.node.type === 'text' || existingTarget!.node.type === 'shape')
+            )
+              return fail(
+                t('aiFailScript'),
+                `setText("${edit.id}"): element does not support text editing`,
+              )
+            paragraphState.set(
+              edit.id,
+              edit.paragraphs.map((paragraph) => ({
+                ...paragraph,
+                runs: paragraph.runs.map((run) => ({ ...run })),
+              })),
+            )
+            const paragraphs = canonicalParagraphs(paragraphState.get(edit.id)!)
+            if (!paragraphs)
+              return fail(
+                t('aiFailScript'),
+                `setText("${edit.id}"): rich paragraph formatting is not supported by atomic scripts`,
+              )
+            operations.push({
+              ...targetReference,
+              kind: 'set_text',
+              paragraphs,
+            })
+          } else if (edit.kind === 'style') {
+            if (
+              !generated &&
+              !(existingTarget!.node.type === 'text' || existingTarget!.node.type === 'shape')
+            )
+              return fail(t('aiFailScript'), `setStyle("${edit.id}"): text element not found`)
+            const current =
+              paragraphState.get(edit.id) ??
+              nodeToParagraphs(existingTarget!.node as ShapeRenderNode)
+            if (!current.length)
+              return fail(
+                t('aiFailScript'),
+                `setStyle("${edit.id}"): this element has no text to format`,
+              )
+            const paragraphs = mergeStyleIntoParagraphs(current, edit.style)
+            paragraphState.set(edit.id, paragraphs)
+            const canonical = canonicalParagraphs(paragraphs)
+            if (!canonical)
+              return fail(
+                t('aiFailScript'),
+                `setStyle("${edit.id}"): existing rich paragraph formatting cannot be preserved atomically`,
+              )
+            operations.push({
+              ...targetReference,
+              kind: 'set_text',
+              paragraphs: canonical,
+            })
+          } else {
+            return fail(t('aiFailScript'), 'Unsupported script operation')
+          }
+        }
+        const execution = await access.executePresentationOperation(
+          {
+            transactionId: await geometryToolTransactionId(call),
+            slideIndex: idx,
+            operations,
+          },
+          signal,
+        )
+        const outcome = textFamilyReceiptOutcome(execution.receipt)
+        if (execution.authoritativeState === 'reload_required') {
+          return {
+            output:
+              'The layout changes were applied, but authoritative state could not be refreshed. Reloading is required before more edits.',
+            mutated: true,
+            stopToolBatch: true,
+            summary: t('aiSumScript', { n: idx + 1 }),
+          }
+        }
+        if (!outcome.ok) {
+          return {
+            output: outcome.mutated
+              ? 'The layout changes may be partially applied. Inspect the slide before retrying.'
+              : `The layout changes were not applied (${outcome.detail ?? 'write_not_applied'}).`,
+            isError: true,
+            mutated: outcome.mutated,
+            summary: t('aiFailScript'),
+          }
+        }
+        const refreshed = access.getSlides()[idx] ?? slide
+        const audit = formatAudit(auditSlideLayout(refreshed))
+        const counts = {
+          add: r.edits.filter((edit) => edit.kind === 'add_text').length,
+          delete: r.edits.filter((edit) => edit.kind === 'delete').length,
+          text: r.edits.filter((edit) => edit.kind === 'text').length,
+          style: r.edits.filter((edit) => edit.kind === 'style').length,
+          fill: r.edits.filter((edit) => edit.kind === 'fill').length,
+          stroke: r.edits.filter((edit) => edit.kind === 'stroke').length,
+        }
+        const parts: string[] = []
+        if (counts.add) parts.push(`add ${counts.add} text box(es)`)
+        if (counts.delete) parts.push(`delete ${counts.delete} element(s)`)
+        if (r.ops.length) parts.push(`layout ${r.ops.length} element(s)`)
+        if (counts.text) parts.push(`text ${counts.text} item(s)`)
+        if (counts.style) parts.push(`style ${counts.style} item(s)`)
+        if (counts.fill) parts.push(`fill ${counts.fill} item(s)`)
+        if (counts.stroke) parts.push(`stroke ${counts.stroke} item(s)`)
+        const createdTargetSummary =
+          execution.receipt.status === 'applied' && execution.receipt.createdTargets?.length
+            ? r.edits
+                .filter((edit) => edit.kind === 'add_text')
+                .map((edit) => {
+                  const operationIndex = operations.findIndex(
+                    (operation) =>
+                      operation.kind === 'add_text_box' && operation.clientId === edit.id,
+                  )
+                  const target =
+                    execution.receipt.status === 'applied'
+                      ? execution.receipt.createdTargets?.find(
+                          (created) => created.clientId === `op-${operationIndex + 1}`,
+                        )
+                      : undefined
+                  return target ? `${edit.id}=${target.elementId}` : null
+                })
+                .filter((value): value is string => value !== null)
+                .join(', ')
+            : ''
+        return {
+          output: outcome.mutated
+            ? `Script applied: ${parts.join(', ')}.${createdTargetSummary ? ` Created targets: ${createdTargetSummary}.` : ''}${returnedStr}${logsStr}${audit ? `\n${audit}` : ''}`
+            : `Script already matched the requested state.${returnedStr}${logsStr}${audit ? `\n${audit}` : ''}`,
+          mutated: outcome.mutated,
+          summary: t('aiSumScript', { n: idx + 1 }),
         }
       }
       // ── Dispatch: geometry applied atomically once via batchEditTransform, the rest serially in script order,
@@ -1532,7 +1984,7 @@ async function executeTool(
               failures.push(`setFill("${e.id}"): element does not support fill`)
               continue
             }
-          } else {
+          } else if (e.kind === 'stroke') {
             updated = await window.slidesApi.editStroke({
               slideIndex: idx,
               sourceId: e.id,
@@ -1544,7 +1996,7 @@ async function executeTool(
               failures.push(`setStroke("${e.id}"): element does not support stroke`)
               continue
             }
-          }
+          } else continue
           current = updated
           access.applySlide(idx, updated)
           counts[e.kind] += 1
@@ -1584,18 +2036,48 @@ async function executeTool(
       const target = resolveEditTarget(slides[idx]!, sourceId)
       const terr = targetError(target, sourceId, idx + 1)
       if (terr || !target || 'nested' in target) return fail(t('aiFailFill'), terr!)
-      const updated = await window.slidesApi.editFill({
-        slideIndex: idx,
-        sourceId,
-        fill: String(call.input.fill),
-        ...(target.groupId ? { groupId: target.groupId } : {}),
-      })
-      signal?.throwIfAborted()
-      if (!updated) return fail(t('aiFailFill'), `Element ${sourceId} does not support fill`)
-      access.applySlide(idx, updated)
+      if (!(target.node.type === 'text' || target.node.type === 'shape'))
+        return fail(t('aiFailFill'), `Element ${sourceId} does not support a durable fill`)
+      const rawFill = String(call.input.fill)
+      const fill =
+        rawFill === 'none'
+          ? ({ kind: 'none' } as const)
+          : /^#?[0-9a-fA-F]{6}$/.test(rawFill)
+            ? ({ kind: 'solid', color: `#${rawFill.replace(/^#/, '').toUpperCase()}` } as const)
+            : null
+      if (!fill) return fail(t('aiFailFill'), 'fill must be #RRGGBB or none')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailFill'), 'Canonical presentation transactions are unavailable')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await geometryToolTransactionId(call),
+          slideIndex: idx,
+          operations: [{ sourceId, kind: 'set_fill', fill }],
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required')
+        return {
+          output: 'The fill was applied, but reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumFill', { n: idx + 1 }),
+        }
+      if (!outcome.ok)
+        return {
+          output: outcome.mutated
+            ? 'The fill change may be partially applied. Inspect the slide before retrying.'
+            : `The fill was not applied (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailFill'),
+        }
       return {
-        output: `Set the fill of element ${sourceId} on page ${idx + 1}.`,
-        mutated: true,
+        output: outcome.mutated
+          ? `Set the fill of element ${sourceId} on page ${idx + 1}.`
+          : `Element ${sourceId} already had the requested fill.`,
+        mutated: outcome.mutated,
         summary: t('aiSumFill', { n: idx + 1 }),
       }
     }
@@ -1612,18 +2094,55 @@ async function executeTool(
       const target = resolveEditTarget(slides[idx]!, sourceId)
       const terr = targetError(target, sourceId, idx + 1)
       if (terr || !target || 'nested' in target) return fail(t('aiFailStroke'), terr!)
-      const updated = await window.slidesApi.editStroke({
-        slideIndex: idx,
-        sourceId,
-        stroke,
-        ...(target.groupId ? { groupId: target.groupId } : {}),
-      })
-      signal?.throwIfAborted()
-      if (!updated) return fail(t('aiFailStroke'), `Element ${sourceId} does not support stroke`)
-      access.applySlide(idx, updated)
+      if (!(
+        target.node.type === 'text' ||
+        target.node.type === 'shape' ||
+        target.node.type === 'picture'
+      ))
+        return fail(t('aiFailStroke'), `Element ${sourceId} does not support a durable stroke`)
+      if (
+        stroke &&
+        (!/^#[0-9a-fA-F]{6}$/.test(stroke.color) ||
+          !Number.isFinite(stroke.widthPt) ||
+          stroke.widthPt < 0)
+      )
+        return fail(t('aiFailStroke'), 'stroke color/width is invalid')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailStroke'), 'Canonical presentation transactions are unavailable')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await geometryToolTransactionId(call),
+          slideIndex: idx,
+          operations: [
+            {
+              sourceId,
+              kind: 'set_stroke',
+              stroke: stroke && { color: stroke.color.toUpperCase(), width: stroke.widthPt },
+            },
+          ],
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required')
+        return {
+          output: 'The stroke was applied, but reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumStroke', { n: idx + 1 }),
+        }
+      if (!outcome.ok)
+        return {
+          output: outcome.mutated
+            ? 'The stroke change may be partially applied. Inspect the slide before retrying.'
+            : `The stroke was not applied (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailStroke'),
+        }
       return {
         output: `${remove ? 'Removed' : 'Set'} the stroke of element ${sourceId} on page ${idx + 1}.`,
-        mutated: true,
+        mutated: outcome.mutated,
         summary: t('aiSumStroke', { n: idx + 1 }),
       }
     }
@@ -1898,19 +2417,86 @@ async function executeTool(
       }
     }
 
-    case 'add_text_box':
+    case 'add_text_box': {
+      const idx = Number(call.input.slideIndex)
+      if (!slides[idx])
+        return fail(t('aiFailNewElement'), `slideIndex out of range (0-${slides.length - 1})`)
+      const paragraphs = toEditParagraphs(call.input.paragraphs)
+      if (!paragraphs) return fail(t('aiFailNewTextbox'), 'paragraphs must be a non-empty array')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailNewTextbox'), 'Canonical presentation transactions are unavailable')
+      const clientId = 'created-text-box'
+      const canonical = paragraphs.map((paragraph) => ({
+        runs: paragraph.runs.map((run) => ({
+          ...run,
+          ...(run.color ? { color: run.color.toUpperCase() } : {}),
+        })),
+        ...(paragraph.align === 'left' ||
+        paragraph.align === 'center' ||
+        paragraph.align === 'right'
+          ? { align: paragraph.align }
+          : {}),
+      }))
+      const text = canonical.map((p) => p.runs.map((run) => run.text).join('')).join('\n')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await geometryToolTransactionId(call),
+          slideIndex: idx,
+          operations: [
+            {
+              kind: 'add_text_box',
+              clientId,
+              text,
+              geometry: {
+                x: geometryPxToPoints(
+                  Number(call.input.x),
+                  slides[idx]!.scale || access.fitWidthPx / slides[idx]!.widthPx,
+                ),
+                y: geometryPxToPoints(
+                  Number(call.input.y),
+                  slides[idx]!.scale || access.fitWidthPx / slides[idx]!.widthPx,
+                ),
+                width: geometryPxToPoints(
+                  Number(call.input.w),
+                  slides[idx]!.scale || access.fitWidthPx / slides[idx]!.widthPx,
+                ),
+                height: geometryPxToPoints(
+                  Number(call.input.h),
+                  slides[idx]!.scale || access.fitWidthPx / slides[idx]!.widthPx,
+                ),
+              },
+            },
+            { kind: 'set_text', createdByClientId: clientId, paragraphs: canonical },
+          ],
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (!outcome.ok)
+        return fail(t('aiFailNewTextbox'), outcome.detail ?? 'Insertion was not applied')
+      const createdId =
+        execution.receipt.status === 'applied'
+          ? (execution.receipt.createdTargets?.find((target) => target.clientId === 'op-1')
+              ?.elementId ?? execution.receipt.createdIds?.[0])
+          : undefined
+      return {
+        output: outcome.mutated
+          ? `Created a new text box on page ${idx + 1}${createdId ? `, durable element id=${createdId}` : ''}.`
+          : `The requested text box already exists from this tool invocation.`,
+        mutated: outcome.mutated,
+        ...(execution.authoritativeState === 'reload_required' ? { stopToolBatch: true } : {}),
+        summary: t('aiSumNewTextbox', { n: idx + 1 }),
+      }
+    }
+
     case 'add_shape': {
       const idx = Number(call.input.slideIndex)
       if (!slides[idx])
         return fail(t('aiFailNewElement'), `slideIndex out of range (0-${slides.length - 1})`)
-      const isShape = call.name === 'add_shape'
       const paragraphs = toEditParagraphs(call.input.paragraphs)
-      if (!isShape && !paragraphs)
-        return fail(t('aiFailNewTextbox'), 'paragraphs must be a non-empty array')
-      const kind = isShape ? String(call.input.kind) : 'textbox'
-      if (isShape && !/^[a-zA-Z][a-zA-Z0-9]*$/.test(kind)) {
+      const kind = String(call.input.kind)
+      if (!/^[a-zA-Z][a-zA-Z0-9]*$/.test(kind))
         return fail(t('aiFailNewShape'), `Invalid shape name: ${kind}`)
-      }
       const r = await window.slidesApi.addElement({
         slideIndex: idx,
         kind,
@@ -1920,17 +2506,15 @@ async function executeTool(
         hPx: Number(call.input.h),
         fitWidthPx: access.fitWidthPx,
         ...(paragraphs ? { paragraphs } : {}),
-        ...(isShape && call.input.fillColor ? { fillColor: String(call.input.fillColor) } : {}),
+        ...(call.input.fillColor ? { fillColor: String(call.input.fillColor) } : {}),
       })
       signal?.throwIfAborted()
       if (!r) return fail(t('aiFailNewElement'), 'Insertion failed')
       access.applySlide(idx, r.slide)
       return {
-        output: `Created a new ${isShape ? 'shape' : 'text box'} on page ${idx + 1}, element id=${r.sourceId}.`,
+        output: `Created a new shape on page ${idx + 1}, element id=${r.sourceId}.`,
         mutated: true,
-        summary: isShape
-          ? t('aiSumNewShape', { n: idx + 1 })
-          : t('aiSumNewTextbox', { n: idx + 1 }),
+        summary: t('aiSumNewShape', { n: idx + 1 }),
       }
     }
 
@@ -2248,21 +2832,92 @@ async function executeTool(
         return fail(t('aiFailBackground'), `slideIndex out of range (0-${slides.length - 1} or -1)`)
       if (!/^#?[0-9a-fA-F]{6}$/.test(color))
         return fail(t('aiFailBackground'), 'color must be #RRGGBB')
-      const r = await window.slidesApi.editBackground({
-        slideIndex: idx,
-        color: color.startsWith('#') ? color : `#${color}`,
-        fitWidthPx: access.fitWidthPx,
-      })
-      signal?.throwIfAborted()
-      if (!r) return fail(t('aiFailBackground'), 'Setting failed')
-      access.applyDeck(r)
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailBackground'), 'Canonical presentation transactions are unavailable')
+      const normalizedColor = `#${color.replace(/^#/, '').toUpperCase()}`
+      const backgrounds = (idx === -1 ? slides.map((_slide, slideIndex) => slideIndex) : [idx]).map(
+        (slideIndex) => ({ slideIndex, color: normalizedColor }),
+      )
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await backgroundToolTransactionId(call),
+          backgrounds,
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (!outcome.ok)
+        return fail(t('aiFailBackground'), outcome.detail ?? 'Setting was not applied')
       return {
         output:
           idx === -1
-            ? `Set the background of all ${r.length} pages to ${color}.`
-            : `Set the background of page ${idx + 1} to ${color}.`,
-        mutated: true,
+            ? `${outcome.mutated ? 'Set' : 'Kept'} the background of all ${slides.length} pages at ${normalizedColor}.`
+            : `${outcome.mutated ? 'Set' : 'Kept'} the background of page ${idx + 1} at ${normalizedColor}.`,
+        mutated: outcome.mutated,
+        ...(execution.authoritativeState === 'reload_required' ? { stopToolBatch: true } : {}),
         summary: idx === -1 ? t('aiSumBackgroundAll') : t('aiSumBackground', { n: idx + 1 }),
+      }
+    }
+
+    case 'set_speaker_notes': {
+      const idx = call.input.slideIndex
+      const text = call.input.text
+      if (typeof idx !== 'number' || !Number.isInteger(idx) || !slides[idx])
+        return fail(t('aiFailEditText'), `slideIndex out of range (0-${slides.length - 1})`)
+      if (typeof text !== 'string')
+        return fail(t('aiFailEditText'), 'speaker notes text must be a string')
+      if (text.length > 12_000)
+        return fail(t('aiFailEditText'), 'speaker notes exceed the 12000 character limit')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailEditText'), 'speaker notes are unavailable in this host')
+      const draftPreparation = (await access.prepareSpeakerNotesWrite?.(idx)) ?? {
+        ready: true,
+        expectedDraftVersion: 0,
+      }
+      if (!draftPreparation.ready)
+        return fail(
+          t('aiFailEditText'),
+          'Speaker notes changed or could not be saved before the agent edit. No change was applied.',
+        )
+      signal?.throwIfAborted()
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await textToolTransactionId(call),
+          slideIndex: idx,
+          operation: { kind: 'set_speaker_notes', notes: text },
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (execution.authoritativeState === 'reload_required') {
+        return {
+          output:
+            'The speaker notes were applied, but the editor could not refresh authoritative state. Reloading is required before more edits.',
+          mutated: true,
+          stopToolBatch: true,
+          summary: t('aiSumEditText', { n: idx + 1 }),
+        }
+      }
+      if (!outcome.ok) {
+        return {
+          output: outcome.mutated
+            ? 'The speaker notes write could not be verified. Inspect the slide notes before retrying.'
+            : `The speaker notes were not changed (${outcome.detail ?? 'write_not_applied'}).`,
+          isError: true,
+          mutated: outcome.mutated,
+          summary: t('aiFailEditText'),
+        }
+      }
+      if (outcome.mutated)
+        access.applySpeakerNotes?.(idx, text, draftPreparation.expectedDraftVersion)
+      return {
+        output: outcome.mutated
+          ? text
+            ? `Wrote speaker notes for page ${idx + 1} (${text.length} characters).`
+            : `Cleared speaker notes for page ${idx + 1}.`
+          : `Speaker notes on page ${idx + 1} already matched.`,
+        mutated: outcome.mutated,
+        summary: t('aiSumEditText', { n: idx + 1 }),
       }
     }
 
@@ -2280,17 +2935,27 @@ async function executeTool(
           `Element ${sourceId} is inside a group${gid ? ` (${gid})` : ''}; call ungroup_element on the group first and then delete it, or delete the whole group`,
         )
       }
-      const updated = await window.slidesApi.deleteElement({ slideIndex: idx, sourceId })
-      signal?.throwIfAborted()
-      if (!updated)
-        return fail(
-          t('aiFailDeleteElement'),
-          `Element ${sourceId} not found on page ${idx + 1} (ids change after regenerate/ungroup/save; call read_slide for fresh ids)`,
-        )
-      access.applySlide(idx, updated)
+      if (!target)
+        return fail(t('aiFailDeleteElement'), `Element ${sourceId} not found on page ${idx + 1}`)
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailDeleteElement'), 'Canonical presentation transactions are unavailable')
+      const execution = await access.executePresentationOperation(
+        {
+          transactionId: await geometryToolTransactionId(call),
+          slideIndex: idx,
+          operations: [{ sourceId, kind: 'delete_element' }],
+        },
+        signal,
+      )
+      const outcome = textFamilyReceiptOutcome(execution.receipt)
+      if (!outcome.ok)
+        return fail(t('aiFailDeleteElement'), outcome.detail ?? 'Deletion was not applied')
       return {
-        output: `Deleted element ${sourceId} from page ${idx + 1}.`,
-        mutated: true,
+        output: outcome.mutated
+          ? `Deleted element ${sourceId} from page ${idx + 1}.`
+          : `Element ${sourceId} was already deleted by this tool invocation.`,
+        mutated: outcome.mutated,
+        ...(execution.authoritativeState === 'reload_required' ? { stopToolBatch: true } : {}),
         summary: t('aiSumDeleteElement', { n: idx + 1 }),
       }
     }

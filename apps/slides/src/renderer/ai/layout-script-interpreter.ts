@@ -145,6 +145,8 @@ export interface LayoutInterpreterGlobals {
   setStyle: HostCall
   setFill: HostCall
   setStroke: HostCall
+  addText: HostCall
+  delete: HostCall
   log: HostCall
 }
 
@@ -197,6 +199,8 @@ export function interpretLayoutScript(
     'setStyle',
     'setFill',
     'setStroke',
+    'addText',
+    'delete',
     'log',
   ] as const) {
     exposeCall(name)
@@ -544,6 +548,9 @@ export function interpretLayoutScript(
             return -Number(value)
           case 'typeof':
             return typeof value
+          case 'delete':
+            globals.delete(cloneData(value))
+            return true
           default:
             throw new Error(`Unary operator "${String(node.operator)}" is not supported`)
         }

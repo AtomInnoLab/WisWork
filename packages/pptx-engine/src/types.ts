@@ -263,6 +263,8 @@ export interface PPrDirty {
 
 interface ElementBase {
   id: string
+  /** Stable DrawingML a16:creationId; independent from the editor-session id above. */
+  creationId?: string
   type: ElementType
   anchor: ByteAnchor
   transform: Transform
@@ -429,6 +431,8 @@ export type SlideElement =
 export interface Slide {
   /** Path inside the zip, e.g. ppt/slides/slide1.xml */
   path: string
+  /** Stable package-part identity. Reordering slides does not change this path. */
+  durableId: string
   /** Full original slideN.xml string (the base for save patches) */
   originalXml: string
   /** Body prefix / suffix (bytes outside the <p:spTree> content, kept verbatim on save) */

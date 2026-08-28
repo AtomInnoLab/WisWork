@@ -11,6 +11,7 @@ import type { EmuRect, Slide } from './types'
 import { escapeXmlAttr, escapeXmlText } from './xml-utils'
 import { appendRawElements, type OpenedPptx } from './index'
 import { nextCNvPrId } from './insert'
+import type { CreationIdFactory } from './durable-targets'
 import { layoutShapes, type SmartArtChildShape, type SmartArtLayout } from './smartart-layout'
 
 export type { SmartArtLayout } from './smartart-layout'
@@ -62,9 +63,10 @@ export function addSmartArt(
   opened: OpenedPptx,
   slideIndex: number,
   opts: NewSmartArtOptions,
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): { slide: Slide; elementId: string } | null {
   const slide = opened.deck.slides[slideIndex]
   if (!slide || !opts.items.length) return null
-  const r = appendRawElements(opened, slideIndex, [buildSmartArtXml(slide, opts)])
+  const r = appendRawElements(opened, slideIndex, [buildSmartArtXml(slide, opts)], identity)
   return r ? { slide: r.slide, elementId: r.elementIds[r.elementIds.length - 1]! } : null
 }

@@ -9,7 +9,13 @@
 import type { Paragraph, Slide, TextElement } from './types'
 import { generateParagraphXml } from './generate'
 import { materializeSlide, type OpenedPptx } from './index'
-import { nextCNvPrId } from './insert'
+import {
+  collectCreationIdsInXml,
+  collectDeckCreationIds,
+  ensureCreationIdsInXmlBatch,
+  readCreationId,
+  type CreationIdFactory,
+} from './durable-targets'
 
 export interface HeaderFooterOptions {
   /** Footer text; null/undefined/'' = no footer */
@@ -25,13 +31,12 @@ export interface HeaderFooterOptions {
 const HF_TYPES = new Set(['ftr', 'sldNum', 'dt'])
 
 function hfSpXml(
-  slide: Slide,
+  id: number,
   type: 'dt' | 'ftr' | 'sldNum',
   idx: number,
   box: { x: number; y: number; cx: number; cy: number },
   para: Paragraph,
 ): string {
-  const id = nextCNvPrId(slide)
   const nameMap = {
     dt: 'Date Placeholder',
     ftr: 'Footer Placeholder',
@@ -58,6 +63,7 @@ export function applyHeaderFooter(
   opened: OpenedPptx,
   opts: HeaderFooterOptions,
   slideIndexes?: number[],
+  identity?: { creationIdFactory?: CreationIdFactory },
 ): boolean {
   const { deck } = opened
   const targets = slideIndexes ?? deck.slides.map((_, i) => i)
@@ -66,35 +72,30 @@ export function applyHeaderFooter(
   const barY = Math.round(cy * 0.93)
   const style = { fontSize: 12, color: '898989' }
   let changed = false
+  const plans: Array<{ slide: Slide; index: number; xmls: string[] }> = []
+  const reserved = collectDeckCreationIds(deck)
 
   for (const i of targets) {
     const slide = deck.slides[i]
     if (!slide) continue
 
-    // 1) Remove existing footer-family placeholders
-    const before = slide.elements.length
-    slide.elements = slide.elements.filter(
+    const retained = slide.elements.filter(
       (el) => !(el.placeholder && HF_TYPES.has(el.placeholder)),
     )
-    let dirty = slide.elements.length !== before
-
-    // 2) Append enabled placeholders (order: dt left → ftr center → sldNum right)
-    const pushSp = (xml: string) => {
-      const el: TextElement = {
-        // materialize reparses the whole slide, so these temporary model fields suffice
-        id: `hfnew_${slide.elements.length}_${Date.now().toString(36)}`,
-        type: 'text',
-        anchor: { spIndex: slide.elements.length, originalXml: xml, range: [0, 0] },
-        transform: { offset: { x: 0, y: 0, cx: 0, cy: 0 }, rot: 0, flipH: false, flipV: false },
-      }
-      slide.elements.push(el)
-      dirty = true
-    }
-
-    if (opts.date) {
-      pushSp(
+    let nextId =
+      Math.max(
+        1,
+        ...retained.map((el) =>
+          Number(/<p:cNvPr\b[^>]*\bid="(\d+)"/.exec(el.anchor.originalXml)?.[1] ?? 1),
+        ),
+      ) + 1
+    const takeId = () => nextId++
+    const raw: string[] = []
+    const pushRaw = (xml: string) => raw.push(xml)
+    if (opts.date)
+      pushRaw(
         hfSpXml(
-          slide,
+          takeId(),
           'dt',
           10,
           { x: Math.round(cx * 0.05), y: barY, cx: Math.round(cx * 0.22), cy: barH },
@@ -108,35 +109,56 @@ export function applyHeaderFooter(
           },
         ),
       )
-    }
-    if (opts.footer) {
-      pushSp(
+    if (opts.footer)
+      pushRaw(
         hfSpXml(
-          slide,
+          takeId(),
           'ftr',
           11,
           { x: Math.round(cx * 0.3), y: barY, cx: Math.round(cx * 0.4), cy: barH },
-          {
-            align: 'center',
-            runs: [{ text: opts.footer, ...style }],
-          },
+          { align: 'center', runs: [{ text: opts.footer, ...style }] },
         ),
       )
-    }
-    if (opts.slideNum) {
-      pushSp(
+    if (opts.slideNum)
+      pushRaw(
         hfSpXml(
-          slide,
+          takeId(),
           'sldNum',
           12,
           { x: Math.round(cx * 0.86), y: barY, cx: Math.round(cx * 0.09), cy: barH },
-          {
-            align: 'right',
-            runs: [{ text: String(i + 1), field: 'slidenum', ...style }],
-          },
+          { align: 'right', runs: [{ text: String(i + 1), field: 'slidenum', ...style }] },
         ),
       )
+    const xmls = ensureCreationIdsInXmlBatch(raw, identity?.creationIdFactory, reserved)
+    for (const xml of xmls) for (const id of collectCreationIdsInXml(xml)) reserved.add(id)
+    plans.push({
+      slide,
+      index: i,
+      xmls,
+    })
+  }
+
+  // All factories have succeeded for all target slides before the first model mutation.
+  for (const { slide, index: i, xmls } of plans) {
+    const before = slide.elements.length
+    slide.elements = slide.elements.filter(
+      (el) => !(el.placeholder && HF_TYPES.has(el.placeholder)),
+    )
+    let dirty = slide.elements.length !== before
+    const pushSp = (xml: string) => {
+      const el: TextElement = {
+        // materialize reparses the whole slide, so these temporary model fields suffice
+        id: `hfnew_${slide.elements.length}_${Date.now().toString(36)}`,
+        type: 'text',
+        anchor: { spIndex: slide.elements.length, originalXml: xml, range: [0, 0] },
+        transform: { offset: { x: 0, y: 0, cx: 0, cy: 0 }, rot: 0, flipH: false, flipV: false },
+      }
+      el.creationId = readCreationId(xml)
+      slide.elements.push(el)
+      dirty = true
     }
+
+    xmls.forEach(pushSp)
 
     if (dirty) {
       slide.structureDirty = true
