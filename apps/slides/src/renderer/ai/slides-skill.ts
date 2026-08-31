@@ -1,4 +1,4 @@
-import type { AgentSkill, ToolDisplay } from '@wiswork/agent-core'
+import type { AgentSkill, FinalResponseReviewContext, ToolDisplay } from '@wiswork/agent-core'
 import type {
   GroupRenderNode,
   PictureRenderNode,
@@ -147,12 +147,51 @@ const AGENT_SYSTEM_PROMPT = `You are the AI assistant inside WisWork Slides. Hel
 ## Workflow
 - Start with get_deck_context, and use read_slide when exact text, colors, or element details matter.
 - For a new presentation, use ask_clarification when requirements are ambiguous, then plan_deck. Build every page with add_slide and the local add_text_box, add_shape, add_chart, add_table, add_smartart, and insert_web_image tools. Empty decks are valid and may be built directly with these tools.
+- Supported editing capability map:
+  - Change existing text font, size, color, emphasis, or alignment with set_element_style; for coordinated edits use execute_slide_script and setStyle.
+  - Move, resize, rotate, or align titles and other elements with set_element_transform; for coordinated edits use execute_slide_script and setBox/moveBy/resizeBy.
+  - For a multi-page request, inspect and edit each target page (one tool call per target slideIndex), then verify the affected pages. Do not infer that changing one page changes the others.
+- An edit request must not finish with inspection or advice only. Apply the requested supported edits and verify them before responding.
+- Claim a capability limitation only after the relevant tool explicitly returns unsupported or fail-closed. Do not infer limitations from a read result or from unfamiliarity with a tool.
 - Use execute_slide_script for coordinated edits to existing elements. Use the individual set_element_* tools for focused changes.
 - Use set_speaker_notes to add, replace, or clear presenter notes without changing canvas content.
 - Use web_search for current facts and image_search for real imagery. Never invent precise figures; declare figure provenance through dataSource.
 - Keep layouts readable, consistent, within canvas bounds, and free of accidental overlaps. Verify the deck outline after substantial edits.
 - Read all text attachments before using their content. Prefer user-provided material over generic filler.
 - If a requested capability is unavailable, report that limitation clearly and continue with the supported local tools when possible.`
+
+const SLIDES_CAPABILITY_CORRECTION =
+  '[System correction] This requested edit is supported. Use the available Slides editing tools to apply it, verify the result, and only then report completion. Do not stop at inspection or advice.'
+
+const DENIAL_ASSERTION =
+  /(?:无法|不能|不支持|不可用|没有(?:办法|能力)|只能|\bcannot\b|\bcan't\b|\bunable to\b|\bdoes not support\b|\bnot supported\b|\bunavailable\b|\bonly (?:can|allows?)\b)/i
+const SUPPORTED_TEXT_STYLE =
+  /(?:字体|文字|文本|标题|重点文字).{0,16}(?:颜色|色彩|字号|大小|字体|加粗|粗体|斜体|下划线|样式|格式)|(?:font|text|title).{0,24}(?:colou?r|size|family|style|format|bold|italic|underline|alignment)/i
+const SUPPORTED_GEOMETRY =
+  /(?:(?:标题(?:栏)?|元素|文本框|形状|图片).{0,16}(?:位置|尺寸|大小|移动|调整|对齐|旋转|坐标|布局)|(?:移动|调整|对齐|旋转).{0,16}(?:标题(?:栏)?|元素|文本框|形状|图片))|(?:(?:title|element|text box|shape|image).{0,24}(?:position|size|geometry|alignment|rotation)|(?:move|resize|position|align|rotate).{0,24}(?:title|element|text box|shape|image))/i
+const EXPLICIT_TOOL_FAILURE =
+  /(?:已尝试|已提交|调用).{0,32}(?:失败|未能应用)|(?:读取|工具|操作).{0,20}失败|(?:set_element_(?:style|transform)|execute_slide_script|相关工具|the (?:style|transform|script) tool).{0,40}(?:returned|returns|返回|报错).{0,20}(?:unsupported|fail-closed|不支持)|\b(?:tool|operation|request)\b.{0,32}\b(?:failed|error|fail-closed)\b|\b(?:failed|error|fail-closed)\b.{0,32}\b(?:tool|operation|request|set_element_|execute_slide_script)\b/i
+const REAL_UNSUPPORTED_FAMILY =
+  /(?:嵌入字体|字体打包|平滑切换|变体过渡|embedded fonts?|font packaging|morph transitions?)/i
+const QUALIFIED_UNCERTAINTY = /(?:不能保证|cannot guarantee|can't guarantee)/i
+
+/**
+ * Rejects only a narrow, tool-free false denial of an editing family that
+ * Slides already exposes. The correction is constant and cannot echo deck or
+ * response content into a later model turn.
+ */
+export function reviewSlidesFinalResponse({
+  text,
+  mutated,
+}: FinalResponseReviewContext): string | undefined {
+  if (mutated || !text.trim()) return undefined
+  if (/[?？]\s*$/.test(text.trim())) return undefined
+  if (REAL_UNSUPPORTED_FAMILY.test(text)) return undefined
+  if (EXPLICIT_TOOL_FAILURE.test(text) || QUALIFIED_UNCERTAINTY.test(text)) return undefined
+  if (!DENIAL_ASSERTION.test(text)) return undefined
+  if (!SUPPORTED_TEXT_STYLE.test(text) && !SUPPORTED_GEOMETRY.test(text)) return undefined
+  return SLIDES_CAPABILITY_CORRECTION
+}
 
 /** Paragraph schema (shared by set_element_text / add_text_box / add_shape) */
 const PARAGRAPHS_DEF = {
@@ -1210,6 +1249,7 @@ export function createSlidesSkill(access: DeckAccess): AgentSkill {
       access.getSelectionScope?.()
         ? `<selection scope>\n${selectionScopeSummary(access.getSelectionScope()!)}. This scope is immutable and enforced by the host.\n</selection scope>`
         : `<deck outline>\n${buildDeckOutline(access.getSlides(), access.getCurrent(), access.getSelectedIds())}\n</deck outline>`,
+    reviewFinalResponse: reviewSlidesFinalResponse,
     executeTool: (call, signal) => executeTool(access, call, state, signal),
   }
 }
