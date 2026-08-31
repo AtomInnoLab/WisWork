@@ -61,6 +61,8 @@ export interface DeckAccess {
   ): Promise<SlidesAcceptanceAuthority>
   taskReviewAdapter?: SlidesTaskReviewAdapter
   onTaskReviewComplete?(receipt: PresentationCompletionReceipt): void | Promise<void>
+  beginTaskCorrectionHistory?(): Promise<boolean>
+  finishTaskCorrectionHistory?(): Promise<string | undefined>
   /** Immutable durable scope for the active queued run, if any. */
   getSelectionScope?(): SelectionScope | undefined
   applySlide(slideIndex: number, updated: RenderSlide): void
@@ -1519,11 +1521,25 @@ export function createSlidesSkill(access: DeckAccess): AgentSkill {
                     // complete paragraph structure; acceptance facts intentionally omit both.
                     throw new Error('unsupported_correction')
                   })()
-            const execution = await access.executePresentationOperation(request, signal)
+            const opened = await access.beginTaskCorrectionHistory?.()
+            let execution: TextFamilyExecutionResult
+            let correctionRollbackId: string | undefined
+            try {
+              execution = await access.executePresentationOperation(request, signal)
+            } finally {
+              if (opened) correctionRollbackId = await access.finishTaskCorrectionHistory?.()
+            }
             if (execution.receipt.status !== 'applied' && execution.receipt.status !== 'unchanged')
               throw new Error('correction_not_applied')
+            if (
+              execution.receipt.status === 'applied' &&
+              (execution.receipt.mutatedTargets?.length !== 1 ||
+                execution.receipt.mutatedTargets[0] !== targetToken)
+            )
+              throw new Error('correction_scope_mismatch')
             return {
               mutationReceiptId: execution.receipt.transactionId,
+              ...(correctionRollbackId ? { rollbackId: correctionRollbackId } : {}),
               correctedCheckIds: [intent.checkId],
             }
           },
@@ -1538,26 +1554,11 @@ export function createSlidesSkill(access: DeckAccess): AgentSkill {
           if (!access.executePresentationOperation)
             throw new Error('Canonical presentation transactions are unavailable')
           const result = await access.executePresentationOperation(request, signal)
-          const slideIndex = 'slideIndex' in request ? request.slideIndex : undefined
-          const sourceIds =
-            'sourceId' in request && request.sourceId
-              ? [request.sourceId]
-              : 'operations' in request
-                ? request.operations.flatMap((operation) =>
-                    'sourceId' in operation && typeof operation.sourceId === 'string'
-                      ? [operation.sourceId]
-                      : [],
-                  )
-                : []
           controller.recordMutation({
             transactionId: result.receipt.transactionId,
             status: result.receipt.status,
             mutatedTargetTokens:
-              result.receipt.status === 'applied' && slideIndex !== undefined
-                ? sourceIds
-                    .map((sourceId) => enrolledTargets.get(`${slideIndex + 1}:${sourceId}`))
-                    .filter((value): value is string => !!value)
-                : [],
+              result.receipt.status === 'applied' ? [...(result.receipt.mutatedTargets ?? [])] : [],
           })
           return result
         },

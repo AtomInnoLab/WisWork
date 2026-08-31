@@ -60,11 +60,12 @@ const review = (status: VisualReviewResult['status']): VisualReviewResult =>
 function adapter(reviews: VisualReviewResult[] = [review('pass')]): SlidesTaskReviewAdapter {
   let pass = 0
   return {
-    refresh: vi.fn(async () => ({
+    refresh: vi.fn(async (lineage) => ({
       documentToken: 'doc-1',
       sessionToken: 'session-1',
       revision,
       leaseToken: `lease-${pass}`,
+      ...lineage,
     })),
     verifyDeterministic: vi.fn(async () => [{ checkId: 'color', status: 'pass' as const }]),
     capture: vi.fn(async ({ slide, role, authority }) => ({
@@ -102,6 +103,29 @@ describe('PC task-specific rendered verification', () => {
       mutationReceiptIds: ['edit-1'],
     })
     expect(a.capture).toHaveBeenCalledTimes(2)
+    expect(a.refresh).toHaveBeenCalledWith(
+      { baseRevision: digest, mutationReceiptIds: ['edit-1'] },
+      undefined,
+    )
+    expect(a.verifyDeterministic).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      ['title-2'],
+      undefined,
+    )
+  })
+
+  it('always clears ephemeral screenshot state when review fails', async () => {
+    const a = adapter()
+    const cleanup = vi.fn()
+    a.cleanup = cleanup
+    vi.mocked(a.review).mockRejectedValueOnce(new Error('offline'))
+    await runSlidesTaskReview({
+      contract: contract(),
+      initialMutationReceiptIds: ['edit-1'],
+      adapter: a,
+    })
+    expect(cleanup).toHaveBeenCalledOnce()
   })
 
   it('fails closed on screenshot revision mismatch', async () => {
@@ -271,7 +295,7 @@ describe('PC task-specific rendered verification', () => {
       rollbackId: 'undo-original',
       adapter: a,
     })
-    expect(result.rollbackId).toBe('undo-1')
+    expect(result.rollbackId).toBe('undo-original')
   })
 
   it('enforces the eight screenshot and 2 MiB visual bounds', async () => {

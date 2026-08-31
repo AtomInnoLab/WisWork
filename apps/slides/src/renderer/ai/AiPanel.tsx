@@ -871,16 +871,21 @@ export function AiPanel({
         return snapshot
       },
       taskReviewAdapter: {
-        refresh: async (signal) => {
+        refresh: async (lineage, signal) => {
           signal?.throwIfAborted()
           const refreshed = await window.slidesApi.getRenderSlides()
           if (!refreshed) throw new Error('authoritative_refresh_unavailable')
           applyDeckRef.current(refreshed, currentRef.current)
           const lease = await window.slidesApi.getAcceptanceAuthorityLease()
           if (!lease) throw new Error('authoritative_lease_unavailable')
-          return lease
+          const historyId = await finishHistoryBatch(false)
+          return {
+            ...lease,
+            ...lineage,
+            ...(typeof historyId === 'number' ? { rollbackId: `history-${historyId}` } : {}),
+          }
         },
-        verifyDeterministic: async (contract, authority) => {
+        verifyDeterministic: async (contract, authority, plannedMutationTargets) => {
           const textChecks = contract.checks.flatMap((check) =>
             check.kind === 'element_property' &&
             check.property === 'text' &&
@@ -902,20 +907,50 @@ export function AiPanel({
             expectedSessionToken: authority.sessionToken,
             expectedRevision: authority.revision,
             leaseToken: authority.leaseToken,
+            baseRevision: authority.baseRevision,
+            mutationReceiptIds: authority.mutationReceiptIds,
             ...(textChecks.length ? { textChecks } : {}),
           })
           if (!snapshot) throw new Error('acceptance_inspection_unavailable')
+          const mutatedTargetTokens = snapshot.mutatedTargetTokens ?? []
+          const {
+            mutatedTargetTokens: _targets,
+            sourceTargetTokens: _sources,
+            ...authoritySnapshot
+          } = snapshot
           const verified = await verifyAndBrandSlidesAcceptanceAuthority(
             contract,
-            snapshot,
+            authoritySnapshot,
             (request) => window.slidesApi.verifyAcceptanceTextProof(request),
           )
-          return verifySlidesAcceptance(contract, verified, { mode: 'prewrite' })
+          return verifySlidesAcceptance(contract, verified, {
+            mode: 'postwrite',
+            mutatedTargetTokens,
+            plannedMutationTargets,
+          })
         },
         capture: async ({ slide, role, authority, signal }) => {
           signal?.throwIfAborted()
           const image = await captureSlideShot(slide - 1)
           if (!image) return null
+          const after = await window.slidesApi.inspectAcceptanceAuthority({
+            affectedSlides: [slide],
+            referenceSlides: [],
+            expectedDocumentToken: authority.documentToken,
+            expectedSessionToken: authority.sessionToken,
+            expectedRevision: authority.revision,
+            leaseToken: authority.leaseToken,
+            baseRevision: authority.baseRevision,
+            mutationReceiptIds: authority.mutationReceiptIds,
+          })
+          if (
+            !after ||
+            after.documentToken !== authority.documentToken ||
+            after.sessionToken !== authority.sessionToken ||
+            after.revision !== authority.revision ||
+            after.leaseToken !== authority.leaseToken
+          )
+            return null
           const bytes = Math.ceil((image.base64.length * 3) / 4)
           const mediaToken = `media-${crypto.randomUUID().replaceAll('-', '')}`
           taskImages.set(mediaToken, image)
@@ -940,8 +975,14 @@ export function AiPanel({
         },
         isCurrent: (authority) =>
           authority.sessionToken.length > 0 && activeRunTokenRef.current === launchTokenRef.current,
+        cleanup: () => taskImages.clear(),
       },
       onTaskReviewComplete: (receipt) => {
+        const historyId = receipt.rollbackId?.match(/^history-([1-9][0-9]*)$/)?.[1]
+        if (historyId) {
+          runSnapshotIdRef.current = Number(historyId)
+          patchLastAssistant({ snapshotId: Number(historyId) })
+        }
         if (isQcEnabled())
           qcPagesRef.current = [
             ...new Set([
@@ -949,6 +990,16 @@ export function AiPanel({
               ...receipt.affectedSlides.map((slide) => slide - 1),
             ]),
           ]
+      },
+      beginTaskCorrectionHistory: async () => {
+        if (historyBatchActiveRef.current) return false
+        const opened = await window.slidesApi.beginHistoryBatch()
+        if (opened) historyBatchActiveRef.current = true
+        return opened
+      },
+      finishTaskCorrectionHistory: async () => {
+        const id = await finishHistoryBatch(false)
+        return typeof id === 'number' ? `history-${id}` : undefined
       },
       applySlide: (i, updated) => applySlideRef.current(i, updated),
       applyDeck: (all, goTo) => applyDeckRef.current(all, goTo),

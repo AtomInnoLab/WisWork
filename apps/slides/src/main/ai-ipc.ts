@@ -224,6 +224,8 @@ export function registerSlidesOnlyAiIpc(): void {
         'leaseToken',
         'textChecks',
         'sourceTargets',
+        'baseRevision',
+        'mutationReceiptIds',
       ],
       16_384,
     )
@@ -275,6 +277,22 @@ export function registerSlidesOnlyAiIpc(): void {
               }
             })
           })()
+    const baseRevision =
+      request.baseRevision === undefined
+        ? undefined
+        : validateSlidesAiString(request.baseRevision, 71)
+    const mutationReceiptIds =
+      request.mutationReceiptIds === undefined
+        ? undefined
+        : (() => {
+            if (!Array.isArray(request.mutationReceiptIds) || request.mutationReceiptIds.length > 3)
+              throw new AiIpcError('invalid_payload')
+            return request.mutationReceiptIds.map((id) => validateSlidesAiString(id, 128))
+          })()
+    if (baseRevision !== undefined && !/^sha256:[0-9a-f]{64}$/.test(baseRevision))
+      throw new AiIpcError('invalid_payload')
+    if (mutationReceiptIds && new Set(mutationReceiptIds).size !== mutationReceiptIds.length)
+      throw new AiIpcError('invalid_payload')
     if (!/^sha256:[0-9a-f]{64}$/.test(expectedRevision)) throw new AiIpcError('invalid_payload')
     const session = sessions.get(event.sender.id)!
     if (
@@ -284,16 +302,43 @@ export function registerSlidesOnlyAiIpc(): void {
     )
       return null
     const generation = session.mutationGeneration ?? 0
-    const snapshot = await inspectSlidesAcceptanceAuthority(session, {
-      affectedSlides: pages(request.affectedSlides),
-      referenceSlides: pages(request.referenceSlides),
-      expectedDocumentToken,
-      expectedSessionToken,
-      expectedRevision,
-      leaseToken,
-      ...(textChecks ? { textChecks } : {}),
-      ...(sourceTargets ? { sourceTargets } : {}),
-    })
+    let provedLineage:
+      | { baseRevision: string; resultingRevision: string; mutatedTargets: readonly string[] }
+      | undefined
+    if (baseRevision !== undefined || mutationReceiptIds !== undefined) {
+      if (!baseRevision || !mutationReceiptIds?.length) return null
+      const executor = transactionExecutors.get(session)
+      const chain = mutationReceiptIds.map((id) => executor?.appliedLineage(id))
+      if (
+        chain.some((item) => !item) ||
+        chain[0]!.baseRevision !== baseRevision ||
+        chain.some(
+          (item, index) => index > 0 && chain[index - 1]!.resultingRevision !== item!.baseRevision,
+        )
+      )
+        return null
+      provedLineage = {
+        baseRevision,
+        resultingRevision: chain.at(-1)!.resultingRevision,
+        mutatedTargets: [...new Set(chain.flatMap((item) => [...item!.mutatedTargets]))],
+      }
+    }
+    const snapshot = await inspectSlidesAcceptanceAuthority(
+      session,
+      {
+        affectedSlides: pages(request.affectedSlides),
+        referenceSlides: pages(request.referenceSlides),
+        expectedDocumentToken,
+        expectedSessionToken,
+        expectedRevision,
+        leaseToken,
+        ...(textChecks ? { textChecks } : {}),
+        ...(sourceTargets ? { sourceTargets } : {}),
+        ...(baseRevision ? { baseRevision } : {}),
+        ...(mutationReceiptIds ? { mutationReceiptIds } : {}),
+      },
+      provedLineage,
+    )
     return (session.mutationGeneration ?? 0) === generation ? snapshot : null
   })
 

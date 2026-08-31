@@ -33,7 +33,7 @@ import {
   patchSlideBackgroundXml,
   savePptx,
 } from '@wiswork/pptx-engine'
-import type { PresentationTransaction } from '@wiswork/presentation-ops'
+import { fingerprintSemanticValue, type PresentationTransaction } from '@wiswork/presentation-ops'
 import type { GroupElement, SlideElement, TableElement } from '@wiswork/pptx-engine'
 import { DesktopPresentationHost } from '../src/main/operations/desktop-host'
 import { PresentationTransactionExecutor } from '../src/main/operations/executor'
@@ -97,7 +97,12 @@ describe('DesktopPresentationHost', () => {
       new DesktopPresentationHost(session),
       { verifyDelayMs: 0 },
     ).execute(transaction)
-    expect(receipt).toMatchObject({ status: 'applied', operationCount: 1 })
+    const slideToken = `slide:${(await fingerprintSemanticValue({ slideId: slide.durableId })).slice('sha256:'.length)}`
+    expect(receipt).toMatchObject({
+      status: 'applied',
+      operationCount: 1,
+      mutatedTargets: [slideToken],
+    })
     expect(backdrop.fill).toEqual({ type: 'solid', color: '#1A2B3C' })
     const reopened = await openPptx(await savePptx(session.opened))
     expect(reopened.deck.slides[0]!.background).toEqual({ type: 'solid', color: '#1A2B3C' })

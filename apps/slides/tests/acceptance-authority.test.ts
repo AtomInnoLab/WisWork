@@ -132,6 +132,49 @@ describe('PC authoritative acceptance inspection', () => {
     ).rejects.toThrow(/bounded/)
   })
 
+  it('publishes postwrite base revision only with receipt-proved current lineage', async () => {
+    const bytes = await readFile(
+      join(__dirname, '../../../packages/pptx-engine/tests/fixtures/01_standard_business.pptx'),
+    )
+    const opened = await openPptx(bytes)
+    const session = {
+      opened,
+      documentInstanceId: 'doc-lineage',
+      sessionInstanceId: 'session-lineage',
+    } as Session
+    const lease = await inspectSlidesAcceptanceLease(session)
+    const baseRevision = `sha256:${'0'.repeat(64)}`
+    const request = {
+      affectedSlides: [1],
+      referenceSlides: [],
+      expectedDocumentToken: 'doc-lineage',
+      expectedSessionToken: 'session-lineage',
+      expectedRevision: lease!.revision,
+      leaseToken: lease!.leaseToken,
+      baseRevision,
+      mutationReceiptIds: ['tx-1'],
+    }
+    await expect(inspectSlidesAcceptanceAuthority(session, request)).resolves.toBeNull()
+    await expect(
+      inspectSlidesAcceptanceAuthority(session, request, {
+        baseRevision,
+        resultingRevision: lease!.revision,
+        mutatedTargets: ['target-proof'],
+      }),
+    ).resolves.toMatchObject({
+      baseRevision,
+      revision: lease!.revision,
+      mutatedTargetTokens: ['target-proof'],
+    })
+    await expect(
+      inspectSlidesAcceptanceAuthority(session, request, {
+        baseRevision,
+        resultingRevision: `sha256:${'f'.repeat(64)}`,
+        mutatedTargets: ['target-proof'],
+      }),
+    ).resolves.toBeNull()
+  })
+
   it('returns contract-bound text digests without exposing raw text', async () => {
     const bytes = await readFile(
       join(__dirname, '../../../packages/pptx-engine/tests/fixtures/01_standard_business.pptx'),

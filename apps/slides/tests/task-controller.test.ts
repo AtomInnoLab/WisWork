@@ -40,9 +40,11 @@ function adapter(overrides: Partial<SlidesTaskReviewAdapter> = {}): SlidesTaskRe
     sessionToken: 'session-1',
     revision: `sha256:${'b'.repeat(64)}`,
     leaseToken: 'lease-1',
+    baseRevision: contract.baseRevision,
+    mutationReceiptIds: ['tx-1'],
   }
   return {
-    refresh: async () => authority,
+    refresh: async (lineage) => ({ ...authority, ...lineage }),
     verifyDeterministic: async () => [{ checkId: 'check-001', status: 'pass' }],
     capture: async ({ slide, role }) => ({
       slide,
@@ -277,6 +279,8 @@ describe('Slides verified task controller', () => {
           sessionToken: 'replacement',
           revision: `sha256:${'b'.repeat(64)}`,
           leaseToken: 'lease-2',
+          baseRevision: contract.baseRevision,
+          mutationReceiptIds: ['tx-1'],
         }),
       }),
       afterTaskReview: () => {

@@ -157,6 +157,35 @@ describe('AgentLoop', () => {
       )
     })
 
+    it('accepts authoritative host correction passes without double-counting model turns', async () => {
+      const hostCorrected = { ...receipt(), correctionPasses: 2 }
+      const done = vi.fn()
+      const loop = new AgentLoop({
+        transport: scriptedTransport([
+          (cb) => {
+            cb.onToolCall({ id: 'call-1', name: 'do_thing', input: { slideIndex: 1 } })
+            cb.onDone()
+          },
+          (cb) => cb.onDone(),
+        ]),
+        skill: {
+          ...makeSkill(() => ({ output: 'ok', summary: 'done', mutated: true })),
+          presentation: {
+            prepare: () => ({ kind: 'bypass' }),
+            enroll: () => ({ kind: 'ready', contract }),
+            complete: () => ({ kind: 'receipt', receipt: hostCorrected }),
+          },
+        },
+        events: { onDone: done },
+      })
+      loop.run('edit')
+      await flush()
+      await flush()
+      expect(done).toHaveBeenCalledWith(
+        expect.objectContaining({ presentation: expect.objectContaining({ correctionPasses: 2 }) }),
+      )
+    })
+
     it('dispatches zero tools when authoritative enrollment fails', async () => {
       const execute = vi.fn(() => ({ output: 'ok', summary: 'done', mutated: true }))
       const transport = scriptedTransport([

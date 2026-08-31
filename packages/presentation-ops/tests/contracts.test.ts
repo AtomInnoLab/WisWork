@@ -384,6 +384,7 @@ describe('presentation receipt parser', () => {
       transactionId: 'tx-1',
       resultingDeckRevision: fingerprint,
       operationCount: 2,
+      mutatedTargets: ['target:abc'],
       createdTargets: [{ clientId: 'op-1', elementId: '{01234567-89AB-CDEF-0123-456789ABCDEF}' }],
     }
     expect(parsePresentationReceipt(receipt)).toEqual(receipt)
@@ -402,6 +403,9 @@ describe('presentation receipt parser', () => {
     expect(() => parsePresentationReceipt({ ...receipt, operationCount: 0 })).toThrow(
       /operationCount/i,
     )
+    expect(() =>
+      parsePresentationReceipt({ ...receipt, mutatedTargets: ['target:abc', 'target:abc'] }),
+    ).toThrow(/unique/i)
   })
 
   it.each([

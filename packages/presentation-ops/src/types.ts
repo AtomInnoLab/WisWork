@@ -111,6 +111,8 @@ export type PresentationReceipt =
       transactionId: string
       resultingDeckRevision: string
       operationCount: number
+      /** Opaque authority tokens actually mutated by the committed transaction. */
+      mutatedTargets?: readonly string[]
       createdIds?: readonly string[]
       createdTargets?: readonly PresentationCreatedTarget[]
     }

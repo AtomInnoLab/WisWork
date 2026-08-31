@@ -1186,7 +1186,7 @@ export class AgentLoop<TSnapshot = unknown> {
     try {
       const receipt = parsePresentationCompletionReceipt(completionValue, contract)
       // A receipt may not under-report corrections already orchestrated here.
-      if (receipt.correctionPasses !== this.presentationCorrectionPasses)
+      if (receipt.correctionPasses < this.presentationCorrectionPasses)
         throw new TypeError('presentation correction count mismatch')
       const facts = renderPresentationCompletionFacts(receipt, contract)
       const text = renderPresentationCompletionText(facts)

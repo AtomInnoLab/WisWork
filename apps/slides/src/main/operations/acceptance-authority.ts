@@ -109,6 +109,11 @@ async function elementFact(
 export async function inspectSlidesAcceptanceAuthority(
   session: Session,
   request: SlidesAcceptanceAuthorityRequest,
+  provedLineage?: {
+    baseRevision: string
+    resultingRevision: string
+    mutatedTargets: readonly string[]
+  },
 ): Promise<SlidesAcceptanceAuthoritySnapshot | null> {
   if (!session.documentInstanceId || !session.sessionInstanceId) return null
   if (request.affectedSlides.length > 50 || request.referenceSlides.length > 50)
@@ -123,6 +128,13 @@ export async function inspectSlidesAcceptanceAuthority(
   )
     throw new TypeError('Acceptance inspection page is invalid')
   const revision = await fingerprintPresentation(session.opened)
+  if (
+    (request.baseRevision !== undefined || request.mutationReceiptIds !== undefined) &&
+    (!provedLineage ||
+      provedLineage.baseRevision !== request.baseRevision ||
+      provedLineage.resultingRevision !== revision)
+  )
+    return null
   const lease = leases.get(session)
   if (
     !lease ||
@@ -195,6 +207,12 @@ export async function inspectSlidesAcceptanceAuthority(
     documentToken: session.documentInstanceId,
     sessionToken: session.sessionInstanceId,
     revision,
+    ...(provedLineage
+      ? {
+          baseRevision: provedLineage.baseRevision,
+          mutatedTargetTokens: [...provedLineage.mutatedTargets],
+        }
+      : {}),
     leaseToken: lease.leaseToken,
     ...(Object.keys(textMatches).length ? { textMatches } : {}),
     ...(Object.keys(sourceTargetTokens).length ? { sourceTargetTokens } : {}),

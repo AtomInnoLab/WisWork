@@ -18,6 +18,9 @@ export type SlidesTaskReviewAuthority = {
   sessionToken: string
   revision: string
   leaseToken: string
+  baseRevision?: string
+  mutationReceiptIds?: string[]
+  rollbackId?: string
 }
 
 export type SlidesTaskScreenshot = {
@@ -32,10 +35,14 @@ export type SlidesTaskScreenshot = {
 
 export interface SlidesTaskReviewAdapter {
   /** Refreshes the renderer, then returns a new main-process authority lease. */
-  refresh(signal?: AbortSignal): Promise<SlidesTaskReviewAuthority>
+  refresh(
+    input: { baseRevision: string; mutationReceiptIds: string[] },
+    signal?: AbortSignal,
+  ): Promise<SlidesTaskReviewAuthority>
   verifyDeterministic(
     contract: PresentationAcceptanceContract,
     authority: SlidesTaskReviewAuthority,
+    plannedMutationTargets: string[],
     signal?: AbortSignal,
   ): Promise<SlidesDeterministicResult[]>
   capture(input: {
@@ -52,6 +59,7 @@ export interface SlidesTaskReviewAdapter {
     signal?: AbortSignal,
   ): Promise<{ mutationReceiptId: string; rollbackId?: string; correctedCheckIds: string[] }>
   isCurrent(authority: SlidesTaskReviewAuthority): boolean
+  cleanup?(): void
 }
 
 /** Strict, read-only reviewer. Images are ephemeral and are never copied into facts or receipts. */
@@ -199,6 +207,7 @@ function accountedReceipt(input: {
 export async function runSlidesTaskReview(input: {
   contract: PresentationAcceptanceContract
   initialMutationReceiptIds: string[]
+  plannedMutationTargets?: string[]
   rollbackId?: string
   adapter: SlidesTaskReviewAdapter
   signal?: AbortSignal
@@ -211,16 +220,28 @@ export async function runSlidesTaskReview(input: {
   try {
     for (;;) {
       input.signal?.throwIfAborted()
-      const authority = await input.adapter.refresh(input.signal)
+      const authority = await input.adapter.refresh(
+        { baseRevision: contract.baseRevision, mutationReceiptIds: receipts },
+        input.signal,
+      )
+      if (!rollbackId && authority.rollbackId) rollbackId = authority.rollbackId
       if (
         authority.documentToken !== contract.documentToken ||
         authority.sessionToken !== contract.sessionToken ||
+        authority.baseRevision !== contract.baseRevision ||
+        JSON.stringify(authority.mutationReceiptIds) !== JSON.stringify(receipts) ||
         !input.adapter.isCurrent(authority)
       )
         return unavailable(contract, receipts, correctionPasses, rollbackId, 'stale_authority')
       const deterministic = await input.adapter.verifyDeterministic(
         contract,
         authority,
+        input.plannedMutationTargets ??
+          contract.checks.flatMap((check) =>
+            check.kind === 'element_property' && check.roleOrTarget.kind === 'target'
+              ? [check.roleOrTarget.targetToken]
+              : [],
+          ),
         input.signal,
       )
       const expectedCheckIds = contract.checks.map(({ id }) => id).sort()
@@ -334,7 +355,7 @@ export async function runSlidesTaskReview(input: {
       const correction = await input.adapter.correct(visual.fixIntents, authority, input.signal)
       receipts.push(correction.mutationReceiptId)
       correctionPasses += 1
-      if (correction.rollbackId) rollbackId = correction.rollbackId
+      if (!rollbackId && correction.rollbackId) rollbackId = correction.rollbackId
       const expectedCorrected = [...new Set(visual.fixIntents.map(({ checkId }) => checkId))].sort()
       const provedCorrected = [...new Set(correction.correctedCheckIds)].sort()
       if (
@@ -354,5 +375,7 @@ export async function runSlidesTaskReview(input: {
       rollbackId,
       cancelled ? (receipts.length ? 'cancelled_after_apply' : 'cancelled') : 'review_unavailable',
     )
+  } finally {
+    input.adapter.cleanup?.()
   }
 }

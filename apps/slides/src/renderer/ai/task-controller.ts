@@ -189,6 +189,7 @@ export function createSlidesTaskController(deps: {
         receipt = await runSlidesTaskReview({
           contract,
           initialMutationReceiptIds: applied.map(({ transactionId }) => transactionId),
+          plannedMutationTargets: enrollment.plannedMutationTargets,
           ...(rollbackId ? { rollbackId } : {}),
           adapter: deps.reviewAdapter,
           signal,

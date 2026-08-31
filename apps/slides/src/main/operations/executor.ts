@@ -65,6 +65,7 @@ interface CachedReceipt {
   digest: string
   signature: string
   receipt: PresentationReceipt
+  baseRevision: string
 }
 
 export const MAX_QUEUED_PRESENTATION_TRANSACTIONS = 64
@@ -158,6 +159,21 @@ export class PresentationTransactionExecutor<Snapshot> {
     }
     void run.then(cleanup, cleanup)
     return run
+  }
+
+  appliedLineage(
+    transactionId: string,
+  ):
+    | { baseRevision: string; resultingRevision: string; mutatedTargets: readonly string[] }
+    | undefined {
+    const cached = this.receipts.get(transactionId)
+    return cached?.receipt.status === 'applied' && cached.receipt.mutatedTargets
+      ? {
+          baseRevision: cached.baseRevision,
+          resultingRevision: cached.receipt.resultingDeckRevision,
+          mutatedTargets: cached.receipt.mutatedTargets,
+        }
+      : undefined
   }
 
   private async executeQueued(
@@ -323,11 +339,35 @@ export class PresentationTransactionExecutor<Snapshot> {
           if (!(await this.host.publishHistory(snapshot))) {
             return this.cache(transaction, digest, uncertainReceipt(transaction))
           }
+          const mutatedTargets = [
+            ...new Set(
+              await Promise.all(
+                transaction.operations.flatMap((operation) =>
+                  'target' in operation && 'slideId' in operation.target
+                    ? [
+                        fingerprintSemanticValue(
+                          'elementId' in operation.target
+                            ? {
+                                slideId: operation.target.slideId,
+                                elementId: operation.target.elementId,
+                              }
+                            : { slideId: operation.target.slideId },
+                        ).then(
+                          (value) =>
+                            `${'elementId' in operation.target ? 'target' : 'slide'}:${value.slice('sha256:'.length)}`,
+                        ),
+                      ]
+                    : [],
+                ),
+              ),
+            ),
+          ]
           return this.cache(transaction, digest, {
             status: 'applied',
             transactionId: transaction.transactionId,
             resultingDeckRevision: verified.revision,
             operationCount: transaction.operations.length,
+            mutatedTargets,
             ...(allocated.size ? { createdIds: [...allocated.values()] } : {}),
             ...(allocated.size
               ? {
@@ -392,6 +432,7 @@ export class PresentationTransactionExecutor<Snapshot> {
       digest,
       signature: synchronousTransactionSignature(transaction),
       receipt,
+      baseRevision: transaction.expectedDeckRevision,
     })
     return receipt
   }
