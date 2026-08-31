@@ -25,10 +25,15 @@ export interface TectonicPlatformAsset {
   readonly url: string
   readonly bytes: number
   readonly sha256: string
-  readonly archive: {
-    readonly format: 'tar.gz' | 'zip'
-    readonly executable: 'tectonic' | 'tectonic.exe'
-  }
+  readonly archive:
+    | {
+        readonly format: 'tar.gz'
+        readonly executable: 'tectonic'
+      }
+    | {
+        readonly format: 'zip'
+        readonly executable: 'tectonic.exe'
+      }
 }
 
 export interface TectonicBundleAsset {
@@ -136,12 +141,10 @@ export function parseTectonicManifest(value: unknown): TectonicManifest {
     platforms.add(platform)
     const archive = record(item.archive, `manifest.tectonic.assets[${index}].archive`)
     exactKeys(archive, ['format', 'executable'], 'Tectonic archive')
-    const archiveFormat = string(archive.format, 'archive.format')
-    const archiveExecutable = id(archive.executable, 'archive.executable')
     let parsedArchive: TectonicPlatformAsset['archive']
-    if (archiveFormat === 'tar.gz' && archiveExecutable === 'tectonic') {
+    if (archive.format === 'tar.gz' && archive.executable === 'tectonic') {
       parsedArchive = Object.freeze({ format: 'tar.gz', executable: 'tectonic' })
-    } else if (archiveFormat === 'zip' && archiveExecutable === 'tectonic.exe') {
+    } else if (archive.format === 'zip' && archive.executable === 'tectonic.exe') {
       parsedArchive = Object.freeze({ format: 'zip', executable: 'tectonic.exe' })
     } else {
       manifestError('Tectonic archive layout is invalid')

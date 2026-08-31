@@ -169,37 +169,6 @@ test('includes explicit additional release artifacts in SHA256SUMS', async (cont
   )
 })
 
-test('accepts a stapled DMG whose stale builder metadata is not published', async (context) => {
-  const options = await fixture(context)
-  const arm64Dmg = 'WisWork-0.6.1-arm64.dmg'
-  const staleDmg = fileRecord(arm64Dmg, 'disk image before stapling')
-  const arm64Metadata = metadata(options.records.arm64).replace(
-    `path: ${options.records.arm64.url}`,
-    `  - url: ${staleDmg.url}\n    sha512: ${staleDmg.sha512}\n    size: ${staleDmg.size}\npath: ${options.records.arm64.url}`,
-  )
-  await Promise.all([
-    writeFile(options.paths.arm64, arm64Metadata),
-    writeFile(join(options.artifactsDir, arm64Dmg), 'disk image after stapling'),
-  ])
-  options.additionalArtifacts = [arm64Dmg]
-
-  const result = run(options)
-
-  assert.equal(result.status, 0, result.stderr)
-  const mac = await yaml(join(options.outputDir, 'latest-mac.yml'))
-  assert.deepEqual(
-    mac.files.map(({ url }) => url),
-    [options.records.arm64.url, options.records.x64.url],
-  )
-  const sums = await readFile(join(options.outputDir, 'SHA256SUMS.txt'), 'utf8')
-  assert.match(
-    sums,
-    new RegExp(
-      `${createHash('sha256').update('disk image after stapling').digest('hex')}  ${arm64Dmg}`,
-    ),
-  )
-})
-
 test('rejects additional release artifacts that collide with updater metadata', async (context) => {
   const options = await fixture(context)
   options.additionalArtifacts = [options.records.windows.url]

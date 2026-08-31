@@ -2,6 +2,8 @@ node_modules
 out/
 dist/
 release/
+!/tools/release/
+!/tools/release/*.mjs
 *.log
 .DS_Store
 .refs/

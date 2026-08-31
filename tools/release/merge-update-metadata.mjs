@@ -202,15 +202,9 @@ export async function writeReleaseMetadata(options) {
   ])
   const merged = mergeMetadata({ windows, macArm64, macX64, version: options.version })
 
-  const validatedByUrl = new Map()
-  // electron-builder creates latest-mac.yml before Apple notarization is stapled.
-  // Stapling mutates DMG bytes, so any DMG records in that intermediate metadata
-  // are stale by design. Only ZIP/EXE records are updater authority; DMGs are
-  // validated below as final additional release artifacts and receive fresh sums.
-  for (const record of merged.outputRecords) {
-    validatedByUrl.set(record.url, await validateRecord(record, options.artifactsDir))
-  }
-  const outputRecords = merged.outputRecords.map((record) => validatedByUrl.get(record.url))
+  const outputRecords = await Promise.all(
+    merged.outputRecords.map((record) => validateRecord(record, options.artifactsDir)),
+  )
   const outputUrls = new Set(outputRecords.map((record) => record.url))
   const additionalRecords = []
   for (const url of options.additionalArtifacts ?? []) {

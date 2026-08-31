@@ -1,28 +1,50 @@
 /**
  * electron-builder configuration (moved out of package.json "build" so the
- * auto-update feed URL can be injected at build time instead of living in
- * the repo).
+ * release update provider can be selected at build time instead of living in
+ * the repo. Contributor builds select no provider and omit auto-update.
  *
- * WISWORK_UPDATE_URL — public base URL of the update channel (the generic
- * provider prefix that serves latest.yml / latest-mac.yml). Required for
- * release builds; CI provides it as a repository secret. For local release
- * builds put it in apps/shell/electron-builder.env (gitignored) — the
- * electron-builder CLI loads that file automatically.
+ * WISWORK_UPDATE_PROVIDER — explicit release provider: github or generic.
+ * WISWORK_UPDATE_URL — required public HTTPS base URL for the generic
+ * provider (the prefix that serves latest.yml / latest-mac.yml).
  *
- * When the variable is unset (forks, PR smoke builds, plain local packaging)
- * the publish config is omitted: electron-builder then bakes no
- * app-update.yml into the app and in-app auto-update stays disabled.
+ * Releases explicitly select a provider. When WISWORK_UPDATE_PROVIDER is
+ * unset (forks, PR smoke builds, plain local packaging), electron-builder
+ * bakes no app-update.yml into the app and in-app auto-update stays disabled.
  */
 
 const { execFileSync } = require('node:child_process')
 const { existsSync } = require('node:fs')
 const { join } = require('node:path')
 
+const updateProvider = process.env.WISWORK_UPDATE_PROVIDER
 const updateUrl = process.env.WISWORK_UPDATE_URL
+
+function updatePublishConfig() {
+  if (updateProvider == null || updateProvider === '') return undefined
+  if (updateProvider === 'github') {
+    return [{ provider: 'github', owner: 'AtomInnoLab', repo: 'WisWork', releaseType: 'release' }]
+  }
+  if (updateProvider === 'generic') {
+    let url
+    try {
+      url = new URL(updateUrl)
+    } catch {
+      throw new Error('WISWORK_UPDATE_URL must be an HTTPS URL for the generic provider')
+    }
+    if (url.protocol !== 'https:' || url.username || url.password) {
+      throw new Error('WISWORK_UPDATE_URL must be an HTTPS URL without credentials')
+    }
+    return [{ provider: 'generic', url: url.toString().replace(/\/+$/, ''), channel: 'latest' }]
+  }
+  throw new Error('WISWORK_UPDATE_PROVIDER must be github or generic')
+}
+
 // Explicitly scoped to disposable test artifacts. Production release jobs
 // must omit this variable so signing and notarization remain fail-closed.
 const unsignedMacBuild = process.env.WISWORK_UNSIGNED_MAC_BUILD === '1'
 const tectonicSource = process.env.WISWORK_TECTONIC_SOURCE
+const macArtifactName =
+  process.arch === 'x64' ? 'WisWork-${version}.${ext}' : 'WisWork-${version}-arm64.${ext}'
 // WISWORK_MAC_X64=1 — opt into packaging the Intel (x64) dmg/zip alongside
 // arm64. Off by default: Intel packages must only ever ship signed with the
 // company certificate (planned dual-track pipeline), so the current release
@@ -103,7 +125,6 @@ function assertModuleTreesPresent() {
 const config = {
   appId: 'com.atominnolab.wiswork',
   productName: 'WisWork',
-  artifactName: 'WisWork-${version}-${arch}.${ext}',
   // Resolve from the installed package so runtime dependency updates cannot
   // leave a stale hard-coded packaging pin.
   electronVersion: require('electron/package.json').version,
@@ -216,10 +237,13 @@ const config = {
   ],
   npmRebuild: false,
   mac: {
+    // The release workflow packages each macOS architecture on its matching
+    // native runner, preserving the stable arm64 suffix and arch-less Intel names.
+    artifactName: macArtifactName,
     // Two separate arch packages (NOT universal): arm64 keeps the exact
     // artifact names and update-feed entries it always had, x64 (opt-in via
     // WISWORK_MAC_X64=1, see includeMacX64 above) adds Intel support with
-    // electron-builder's default arch-less names. Both zips land in one latest-mac.yml and
+    // electron-builder's default arch-less names. Both ZIPs land in one latest-mac.yml and
     // electron-updater picks by process.arch. Dual-arch packs ship the same
     // lipo fat xlsx-sidecar (see assertUniversalSidecar above).
     target: [
@@ -244,6 +268,7 @@ const config = {
     ],
   },
   win: {
+    artifactName: 'WisWork-${version}-${arch}.${ext}',
     target: [
       {
         target: 'nsis',
@@ -251,8 +276,10 @@ const config = {
       },
     ],
     extraResources: [
+      // Windows packaging intentionally uses the native MSVC sidecar built by
+      // cargo build --release, not a MinGW cross target.
       {
-        from: '../sheets/native/xlsx-engine/target/x86_64-pc-windows-gnu/release/xlsx-sidecar.exe',
+        from: '../sheets/native/xlsx-engine/target/release/xlsx-sidecar.exe',
         to: 'native/xlsx-sidecar.exe',
       },
       {
@@ -346,14 +373,7 @@ const config = {
   afterAllArtifactBuild: unsignedMacBuild ? undefined : 'build/notarize-dmg.js',
 }
 
-if (updateUrl) {
-  config.publish = [
-    {
-      provider: 'generic',
-      url: updateUrl.replace(/\/+$/, ''),
-      channel: 'latest',
-    },
-  ]
-}
+const publish = updatePublishConfig()
+if (publish) config.publish = publish
 
 module.exports = config

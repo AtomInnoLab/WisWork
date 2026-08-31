@@ -4,6 +4,7 @@ import { app, shell } from 'electron'
 import type { BrowserWindow } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import type { UpdateInfo } from 'electron-updater'
+import { load as loadYaml } from 'js-yaml'
 import { createI18n, getUiLang, htmlLang } from '@wiswork/i18n'
 import type { UpdateChannel, UpdateUiState, UpdateUiStrings } from '../shared/update-api'
 import {
@@ -330,14 +331,13 @@ const MANUAL_FALLBACK_AFTER = 2
 // feed (see manualDownloadUrlFor), which matches channel, track, and arch.
 const DOWNLOAD_PAGE_URL = 'https://github.com/AtomInnoLab/WisWork/releases/latest'
 
-/// Trusted HTTPS base URL baked into resources/app-update.yml. Manual download
-/// links are always rebuilt from this base rather than trusting URLs supplied
-/// by remotely fetched update metadata.
-function updateFeedBaseUrl(): string | null {
+type PackagedUpdateProvider =
+  | { kind: 'github'; owner: 'AtomInnoLab'; repo: 'WisWork' }
+  | { kind: 'generic'; baseUrl: string }
+  | { kind: 'none' }
+
+function trustedHttpsBaseUrl(value: string): string | null {
   try {
-    const yml = readFileSync(path.join(process.resourcesPath, 'app-update.yml'), 'utf8')
-    const value = /^url:\s*['"]?([^'"\s]+)/m.exec(yml)?.[1]
-    if (!value) return null
     const url = new URL(value)
     if (url.protocol !== 'https:' || url.username || url.password) return null
     url.pathname = `${url.pathname.replace(/\/+$/, '')}/`
@@ -349,13 +349,55 @@ function updateFeedBaseUrl(): string | null {
   }
 }
 
+function plainObject(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? Object.getPrototypeOf(value) === Object.prototype
+      ? (value as Record<string, unknown>)
+      : null
+    : null
+}
+
+// Read only the local Electron Builder config bundled with this app. Remote
+// update metadata must not decide either the provider or the fallback host.
+function packagedUpdateProvider(): PackagedUpdateProvider {
+  try {
+    const yml = readFileSync(path.join(process.resourcesPath, 'app-update.yml'), 'utf8')
+    const config = plainObject(loadYaml(yml, { json: false, maxAliases: 0 }))
+    if (config === null) return { kind: 'none' }
+    const provider = config.provider
+    if (provider === 'github') {
+      return config.owner === 'AtomInnoLab' && config.repo === 'WisWork'
+        ? { kind: 'github', owner: 'AtomInnoLab', repo: 'WisWork' }
+        : { kind: 'none' }
+    }
+    if (provider === 'generic') {
+      const baseUrl = config.url
+      if (typeof baseUrl !== 'string') return { kind: 'none' }
+      const trustedBaseUrl = baseUrl === null ? null : trustedHttpsBaseUrl(baseUrl)
+      return trustedBaseUrl === null
+        ? { kind: 'none' }
+        : { kind: 'generic', baseUrl: trustedBaseUrl }
+    }
+    return { kind: 'none' }
+  } catch {
+    return { kind: 'none' }
+  }
+}
+
+/// Trusted HTTPS base URL baked into resources/app-update.yml. Manual download
+/// links are always rebuilt from this base rather than trusting URLs supplied
+/// by remotely fetched update metadata.
+function updateFeedBaseUrl(provider = packagedUpdateProvider()): string | null {
+  return provider.kind === 'generic' ? provider.baseUrl : null
+}
+
 /// Picks the manual-install artifact for this platform/arch from the update
 /// feed's file list: macOS wants the dmg matching process.arch (the zip is
 /// Squirrel-only), Windows the NSIS exe, Linux the AppImage. Served feeds may
 /// carry either feed-relative names or absolute CDN URLs (mac-release-upload
 /// rewrites every url: entry to absolute), but only their basename is used.
 /// The final URL is always rebuilt against the trusted baked feed base.
-function manualDownloadUrlFor(info: UpdateInfo): string | null {
+function manualDownloadUrlFor(info: UpdateInfo, provider: PackagedUpdateProvider): string | null {
   const basenames = (info.files ?? []).flatMap((file) => {
     try {
       const pathname = new URL(file.url, 'https://metadata.invalid/').pathname
@@ -379,8 +421,17 @@ function manualDownloadUrlFor(info: UpdateInfo): string | null {
     chosen = pick((name) => name.endsWith('.AppImage'))
   }
   if (chosen === null) return null
-  const base = updateFeedBaseUrl()
-  return base === null ? null : new URL(encodeURIComponent(chosen), base).toString()
+  if (provider.kind === 'generic') {
+    const base = updateFeedBaseUrl(provider)
+    return base === null ? null : new URL(encodeURIComponent(chosen), base).toString()
+  }
+  if (provider.kind === 'github') {
+    const tag = (info as UpdateInfo & { tag?: unknown }).tag
+    return typeof tag === 'string' && /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(tag)
+      ? `https://github.com/${provider.owner}/${provider.repo}/releases/download/${tag}/${encodeURIComponent(chosen)}`
+      : null
+  }
+  return null
 }
 
 let started = false
@@ -392,9 +443,14 @@ let dismissedVersion: string | null = null
 // Windows, beta-mac.yml on macOS, beta-linux.yml on Linux x64.
 const CHANNEL_FEED: Record<UpdateChannel, string> = { stable: 'latest', beta: 'beta' }
 
+function channelFor(provider: PackagedUpdateProvider, requested: UpdateChannel): string {
+  return provider.kind === 'generic' ? CHANNEL_FEED[requested] : 'latest'
+}
+
 // true once the packaged-run updater is configured; channel switches before
 // that (or in dev runs) must not touch electron-updater
 let updaterActive = false
+let activeProvider: PackagedUpdateProvider = { kind: 'none' }
 
 function log(...args: unknown[]): void {
   console.log('[updater]', ...args)
@@ -430,7 +486,10 @@ function initialState(version: string): UpdateUiState {
 
 export function applyUpdateChannel(channel: UpdateChannel): void {
   if (!updaterActive) return
-  autoUpdater.channel = CHANNEL_FEED[channel]
+  if (activeProvider.kind === 'github' && channel === 'beta') return
+  const nextChannel = channelFor(activeProvider, channel)
+  if (autoUpdater.channel === nextChannel) return
+  autoUpdater.channel = nextChannel
   // the channel setter unconditionally flips allowDowngrade to true; force it
   // back off since a beta user switching to stable must not downgrade
   autoUpdater.allowDowngrade = false
@@ -461,8 +520,13 @@ export function initAutoUpdater(
   const isLinuxAppImage = process.platform === 'linux' && Boolean(process.env.APPIMAGE)
   if (process.platform !== 'win32' && process.platform !== 'darwin' && !isLinuxAppImage) return
 
+  activeProvider = packagedUpdateProvider()
+  if (activeProvider.kind === 'none') {
+    log('no trusted packaged update provider; updater disabled')
+    return
+  }
   updaterActive = true
-  autoUpdater.channel = CHANNEL_FEED[initialChannel]
+  autoUpdater.channel = channelFor(activeProvider, initialChannel)
   // the channel setter unconditionally flips allowDowngrade to true; force it
   // back off since a beta user switching to stable must not downgrade
   autoUpdater.allowDowngrade = false
@@ -526,7 +590,7 @@ export function initAutoUpdater(
     const sameVersionRecheck = info.version === latestSeenVersion
     if (!sameVersionRecheck) failedAttempts = 0
     latestSeenVersion = info.version
-    manualDownloadUrl = manualDownloadUrlFor(info)
+    manualDownloadUrl = manualDownloadUrlFor(info, activeProvider)
     log('update available:', info.version)
     // a periodic recheck resolving to the version the open dialog already
     // shows must not reset its phase to 'available' — that would wipe an

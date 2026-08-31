@@ -99,12 +99,24 @@ const FIRST_CHECK_DELAY_MS = 15_000
 const RECHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
 
 let platformSpy: { restore: () => void } | null = null
+let resourcesPathSpy: { restore: () => void } | null = null
 
 function setPlatform(platform: string): void {
   const original = Object.getOwnPropertyDescriptor(process, 'platform')!
   Object.defineProperty(process, 'platform', { value: platform })
   platformSpy = {
     restore: () => Object.defineProperty(process, 'platform', original),
+  }
+}
+
+function setResourcesPath(resourcesPath: string): void {
+  const original = Object.getOwnPropertyDescriptor(process, 'resourcesPath')
+  Object.defineProperty(process, 'resourcesPath', { value: resourcesPath, configurable: true })
+  resourcesPathSpy = {
+    restore: () => {
+      if (original) Object.defineProperty(process, 'resourcesPath', original)
+      else Reflect.deleteProperty(process, 'resourcesPath')
+    },
   }
 }
 
@@ -145,16 +157,17 @@ beforeEach(() => {
   closeUpdateWindow.mockClear()
   openExternal.mockClear()
   readFileSyncMock.mockReset()
-  readFileSyncMock.mockImplementation(() => {
-    throw new Error('no app-update.yml')
-  })
+  readFileSyncMock.mockReturnValue('provider: generic\nurl: https://cdn.example.com/mac/\n')
   setPlatform('darwin')
+  setResourcesPath('/res')
 })
 
 afterEach(() => {
   vi.useRealTimers()
   platformSpy?.restore()
   platformSpy = null
+  resourcesPathSpy?.restore()
+  resourcesPathSpy = null
   delete process.env.WISWORK_FAKE_UPDATE
 })
 
@@ -373,7 +386,7 @@ describe('manual download fallback', () => {
 
   it('picks the arch-less dmg for x64 installs', async () => {
     Object.defineProperty(process, 'resourcesPath', { value: '/res', configurable: true })
-    readFileSyncMock.mockReturnValue('url: https://cdn.example.com/mac\n')
+    readFileSyncMock.mockReturnValue('provider: generic\nurl: https://cdn.example.com/mac\n')
     const restoreArch = setArch('x64')
     try {
       const actions = await failTwiceIntoManual(macFiles)
@@ -386,7 +399,7 @@ describe('manual download fallback', () => {
 
   it('rebuilds absolute metadata URLs against the trusted feed base', async () => {
     Object.defineProperty(process, 'resourcesPath', { value: '/res', configurable: true })
-    readFileSyncMock.mockReturnValue('url: https://cdn.example.com/mac\n')
+    readFileSyncMock.mockReturnValue('provider: generic\nurl: https://cdn.example.com/mac\n')
     const restoreArch = setArch('arm64')
     try {
       const actions = await failTwiceIntoManual([
@@ -403,25 +416,21 @@ describe('manual download fallback', () => {
     }
   })
 
-  it('rejects a non-HTTPS baked feed URL', async () => {
+  it('disables the updater for a non-HTTPS baked feed URL', async () => {
     Object.defineProperty(process, 'resourcesPath', { value: '/res', configurable: true })
-    readFileSyncMock.mockReturnValue('url: http://cdn.example.com/mac\n')
-    const actions = await failTwiceIntoManual(macFiles)
-    actions.onOpenDownload()
-    expect(openExternal).toHaveBeenCalledWith(
-      'https://github.com/AtomInnoLab/WisWork/releases/latest',
-    )
+    readFileSyncMock.mockReturnValue('provider: generic\nurl: http://cdn.example.com/mac\n')
+    const { initAutoUpdater } = await loadUpdater()
+    initAutoUpdater(() => null)
+    expect(updaterState.listeners.size).toBe(0)
   })
 
-  it('falls back to the generic download page when the feed base cannot be read', async () => {
-    // readFileSyncMock throws by default (no app-update.yml)
-    const actions = await failTwiceIntoManual([
-      { url: 'https://attacker.example/WisWork-0.2.0-arm64.dmg' },
-    ])
-    actions.onOpenDownload()
-    expect(openExternal).toHaveBeenCalledWith(
-      'https://github.com/AtomInnoLab/WisWork/releases/latest',
-    )
+  it('disables the updater when packaged provider configuration is missing', async () => {
+    readFileSyncMock.mockImplementation(() => {
+      throw new Error('no app-update.yml')
+    })
+    const { initAutoUpdater } = await loadUpdater()
+    initAutoUpdater(() => null)
+    expect(updaterState.listeners.size).toBe(0)
   })
 })
 
