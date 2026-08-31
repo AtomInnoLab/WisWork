@@ -104,11 +104,11 @@ export function selectPlatformAsset(manifest, platform) {
   ) {
     throw new Error('manifest asset URL is not approved')
   }
-  if (
-    !asset.archive ||
-    asset.archive.format !== 'tar.gz' ||
-    asset.archive.executable !== 'tectonic'
-  ) {
+  const validArchive =
+    asset.archive &&
+    ((asset.archive.format === 'tar.gz' && asset.archive.executable === 'tectonic') ||
+      (asset.archive.format === 'zip' && asset.archive.executable === 'tectonic.exe'))
+  if (!validArchive) {
     throw new Error('manifest archive is invalid')
   }
   return Object.freeze({ ...asset, url: url.href })
@@ -367,12 +367,18 @@ async function extractVerifiedTectonicLocked(asset, archivePath, cachePath, vers
   }
   await mkdir(staging, { recursive: false })
   try {
-    const listing = await execute('tar', ['-tzf', archivePath])
+    const listArguments =
+      asset.archive.format === 'zip' ? ['-tf', archivePath] : ['-tzf', archivePath]
+    const extractArguments =
+      asset.archive.format === 'zip'
+        ? ['-xf', archivePath, '-C', staging]
+        : ['-xzf', archivePath, '-C', staging]
+    const listing = await execute('tar', listArguments)
     const entries = listing.stdout.split(/\r?\n/).filter(Boolean)
     if (entries.length !== 1 || entries[0] !== asset.archive.executable) {
       throw new Error('Tectonic archive layout is invalid')
     }
-    await execute('tar', ['-xzf', archivePath, '-C', staging])
+    await execute('tar', extractArguments)
     const extractedEntries = await readdir(staging)
     if (extractedEntries.length !== 1 || extractedEntries[0] !== asset.archive.executable) {
       throw new Error('Tectonic archive extracted unexpected files')
@@ -430,7 +436,8 @@ export async function main(argv = process.argv.slice(2)) {
   const options = parseArguments(argv)
   const manifest = JSON.parse(await readFile(options.manifestPath, 'utf8'))
   const asset = selectPlatformAsset(manifest, options.platform)
-  const targetPath = resolve(options.cachePath, `${asset.id}.tar.gz`)
+  const archiveExtension = asset.archive.format === 'zip' ? 'zip' : 'tar.gz'
+  const targetPath = resolve(options.cachePath, `${asset.id}.${archiveExtension}`)
   assertWithin(options.cachePath, targetPath)
   const result = await fetchVerifiedAsset(asset, targetPath, {
     onRetry: (attempt) =>
