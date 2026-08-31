@@ -36,6 +36,8 @@ describe('Slides capability truth', () => {
     '当前工具不能调整标题栏的位置，所以我暂未修改。',
     'The available editor does not support changing the font color of existing text.',
     'I cannot move or resize the title with the available tools.',
+    'The color of existing text cannot be changed with this editor.',
+    'The title cannot be moved with the available tools.',
   ])('corrects a tool-free false denial: %s', (text) => {
     expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
   })
@@ -71,6 +73,32 @@ describe('Slides capability truth', () => {
         mutated: true,
       }),
     ).toBeUndefined()
+  })
+
+  it.each([
+    'I can change font color. I cannot locate the requested chart.',
+    'Font color is supported; however, I cannot find a chart to update.',
+  ])('does not combine unrelated clauses into a false denial: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBeUndefined()
+  })
+
+  it.each([
+    'Embedded fonts are unavailable. The title position cannot be changed.',
+    'Embedded font packaging is not supported; I cannot move the title.',
+    'image_search failed. The title position cannot be changed.',
+    'image_search failed, so the title cannot be moved.',
+  ])('still catches a supported denial beside an unrelated limitation: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it.each([
+    'This target is locked and read-only, so the title cannot be moved.',
+    'The title is a layout decoration and cannot be moved.',
+    'The title is nested in a read-only group, so its position cannot be changed.',
+    'set_element_transform returned target_stale, so the title cannot be moved safely.',
+    'set_element_transform 返回 target_stale，因此不能移动这个标题。',
+  ])('allows a target-local fail-closed explanation: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBeUndefined()
   })
 
   it('publishes an executable capability map and multi-page edit contract', () => {

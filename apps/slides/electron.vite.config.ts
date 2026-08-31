@@ -10,7 +10,6 @@ const here = dirname(fileURLToPath(import.meta.url))
 const workspaceAlias = {
   // Subpath before the bare name: string aliases are prefix replacements
   '@wiswork/agent-core': resolve(here, '../../packages/agent-core/src/index.ts'),
-  '@wiswork/presentation-ops': resolve(here, '../../packages/presentation-ops/src/index.ts'),
   '@wiswork/pptx-engine/table-grid': resolve(here, '../../packages/pptx-engine/src/table-grid.ts'),
   '@wiswork/pptx-engine/background-promote': resolve(
     here,
@@ -37,7 +36,6 @@ export default defineConfig({
           '@wiswork/auth',
           '@wiswork/pptx-engine',
           '@wiswork/pptx-render',
-          '@wiswork/presentation-ops',
           '@wiswork/ai-search',
           '@wiswork/file-parse',
           '@wiswork/electron-utils',

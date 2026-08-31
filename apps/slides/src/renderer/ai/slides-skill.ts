@@ -165,15 +165,51 @@ const SLIDES_CAPABILITY_CORRECTION =
 
 const DENIAL_ASSERTION =
   /(?:无法|不能|不支持|不可用|没有(?:办法|能力)|只能|\bcannot\b|\bcan't\b|\bunable to\b|\bdoes not support\b|\bnot supported\b|\bunavailable\b|\bonly (?:can|allows?)\b)/i
-const SUPPORTED_TEXT_STYLE =
-  /(?:字体|文字|文本|标题|重点文字).{0,16}(?:颜色|色彩|字号|大小|字体|加粗|粗体|斜体|下划线|样式|格式)|(?:font|text|title).{0,24}(?:colou?r|size|family|style|format|bold|italic|underline|alignment)/i
-const SUPPORTED_GEOMETRY =
-  /(?:(?:标题(?:栏)?|元素|文本框|形状|图片).{0,16}(?:位置|尺寸|大小|移动|调整|对齐|旋转|坐标|布局)|(?:移动|调整|对齐|旋转).{0,16}(?:标题(?:栏)?|元素|文本框|形状|图片))|(?:(?:title|element|text box|shape|image).{0,24}(?:position|size|geometry|alignment|rotation)|(?:move|resize|position|align|rotate).{0,24}(?:title|element|text box|shape|image))/i
+const TEXT_TARGET = /(?:字体|文字|文本|标题|重点文字|\bfont\b|\btext\b|\btitle\b)/i
+const TEXT_STYLE =
+  /(?:颜色|色彩|字号|字体|加粗|粗体|斜体|下划线|样式|格式|\bcolou?r\b|\bsize\b|\bfamily\b|\bstyle\b|\bformat\b|\bbold\b|\bitalic\b|\bunderline\b|\balign(?:ment)?\b)/i
+const GEOMETRY_TARGET =
+  /(?:标题(?:栏)?|元素|文本框|形状|图片|\btitle\b|\belement\b|\btext box\b|\bshape\b|\bimage\b)/i
+const GEOMETRY_CHANGE =
+  /(?:位置|尺寸|大小|移动|调整|对齐|旋转|坐标|布局|\bposition\b|\bsize\b|\bgeometry\b|\balign(?:ment|ed)?\b|\brotat(?:e|ed|ion)\b|\bmov(?:e|ed|ing)\b|\bresiz(?:e|ed|ing)\b)/i
 const EXPLICIT_TOOL_FAILURE =
-  /(?:已尝试|已提交|调用).{0,32}(?:失败|未能应用)|(?:读取|工具|操作).{0,20}失败|(?:set_element_(?:style|transform)|execute_slide_script|相关工具|the (?:style|transform|script) tool).{0,40}(?:returned|returns|返回|报错).{0,20}(?:unsupported|fail-closed|不支持)|\b(?:tool|operation|request)\b.{0,32}\b(?:failed|error|fail-closed)\b|\b(?:failed|error|fail-closed)\b.{0,32}\b(?:tool|operation|request|set_element_|execute_slide_script)\b/i
+  /(?:PowerPoint|幻灯片|PPT).{0,24}(?:读取失败|操作失败|未能应用)|(?:set_element_(?:style|transform)|execute_slide_script|相关编辑工具|the (?:style|transform|script) tool).{0,48}(?:unsupported|fail-closed|target_stale|proposal_stale|office_state_uncertain|不支持|失败|报错)|(?:unsupported|fail-closed|target_stale|proposal_stale|office_state_uncertain|不支持|失败|报错).{0,48}(?:set_element_(?:style|transform)|execute_slide_script|相关编辑工具|the (?:style|transform|script) tool)/i
 const REAL_UNSUPPORTED_FAMILY =
   /(?:嵌入字体|字体打包|平滑切换|变体过渡|embedded fonts?|font packaging|morph transitions?)/i
 const QUALIFIED_UNCERTAINTY = /(?:不能保证|cannot guarantee|can't guarantee)/i
+const TARGET_FAIL_CLOSED =
+  /(?:锁定|只读|版式装饰|嵌套(?:元素|目标|组)|\blocked\b|\bread-only\b|\blayout decoration\b|\bnested (?:target|element|group)\b)/i
+
+const MAX_REVIEW_TEXT_CHARS = 4096
+const MAX_REVIEW_CLAUSES = 64
+const MAX_REVIEW_CLAUSE_CHARS = 512
+
+function boundedClauses(text: string): string[] {
+  return (
+    text
+      .slice(0, MAX_REVIEW_TEXT_CHARS)
+      .match(/[^.。！？!?;；\r\n]+[.。！？!?;；]?/g)
+      ?.slice(0, MAX_REVIEW_CLAUSES)
+      .map((clause) => clause.trim().slice(0, MAX_REVIEW_CLAUSE_CHARS))
+      .filter(Boolean) ?? []
+  )
+}
+
+function namesSupportedCapability(clause: string): boolean {
+  return (
+    (TEXT_TARGET.test(clause) && TEXT_STYLE.test(clause)) ||
+    (GEOMETRY_TARGET.test(clause) && GEOMETRY_CHANGE.test(clause))
+  )
+}
+
+function isLocallyJustified(clause: string): boolean {
+  return (
+    REAL_UNSUPPORTED_FAMILY.test(clause) ||
+    EXPLICIT_TOOL_FAILURE.test(clause) ||
+    TARGET_FAIL_CLOSED.test(clause) ||
+    QUALIFIED_UNCERTAINTY.test(clause)
+  )
+}
 
 /**
  * Rejects only a narrow, tool-free false denial of an editing family that
@@ -185,12 +221,12 @@ export function reviewSlidesFinalResponse({
   mutated,
 }: FinalResponseReviewContext): string | undefined {
   if (mutated || !text.trim()) return undefined
-  if (/[?？]\s*$/.test(text.trim())) return undefined
-  if (REAL_UNSUPPORTED_FAMILY.test(text)) return undefined
-  if (EXPLICIT_TOOL_FAILURE.test(text) || QUALIFIED_UNCERTAINTY.test(text)) return undefined
-  if (!DENIAL_ASSERTION.test(text)) return undefined
-  if (!SUPPORTED_TEXT_STYLE.test(text) && !SUPPORTED_GEOMETRY.test(text)) return undefined
-  return SLIDES_CAPABILITY_CORRECTION
+  for (const clause of boundedClauses(text)) {
+    if (/[?？]\s*$/.test(clause)) continue
+    if (!DENIAL_ASSERTION.test(clause) || !namesSupportedCapability(clause)) continue
+    if (!isLocallyJustified(clause)) return SLIDES_CAPABILITY_CORRECTION
+  }
+  return undefined
 }
 
 /** Paragraph schema (shared by set_element_text / add_text_box / add_shape) */
