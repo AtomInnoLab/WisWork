@@ -28,6 +28,7 @@ import {
   backgroundToolTransactionId,
   type BackgroundFamilyTransactionRequest,
 } from './presentation-background-transactions'
+import type { SlidesAcceptanceAuthority } from './task-acceptance'
 
 /**
  * Slides capability as an AgentSkill: deck outline context + three tools (read structure /
@@ -41,6 +42,8 @@ export interface DeckAccess {
   getSlides(): RenderSlide[]
   getCurrent(): number
   getSelectedIds(): string[]
+  /** Read-only, revision-bound durable facts used to compile and verify a frozen task contract. */
+  inspectAcceptanceAuthority?(): Promise<SlidesAcceptanceAuthority>
   /** Immutable durable scope for the active queued run, if any. */
   getSelectionScope?(): SelectionScope | undefined
   applySlide(slideIndex: number, updated: RenderSlide): void

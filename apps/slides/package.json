@@ -32,6 +32,7 @@
     "@wiswork/i18n": "*",
     "@wiswork/pptx-engine": "*",
     "@wiswork/presentation-ops": "*",
+    "@wiswork/presentation-verification": "*",
     "@wiswork/pptx-render": "*",
     "@wiswork/project-store": "*",
     "@wiswork/ui": "*",
