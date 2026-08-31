@@ -172,6 +172,20 @@ const TURN_LIMIT_NOTE =
  */
 export const COMPLETED_VIA_TOOLS_TEXT = '(completed tool actions; no text reply)'
 
+/** Locale-neutral authoritative terminal text; UIs may localize from the adjacent facts. */
+export function renderPresentationCompletionText(facts: PresentationCompletionFacts): string {
+  return [
+    `presentation:${facts.status}`,
+    `slides=${facts.affectedSlides.join(',')}`,
+    `passed=${facts.passedCount}`,
+    `failed=${facts.failedCount}`,
+    `unavailable=${facts.unavailableCount}`,
+    `corrections=${facts.correctionPasses}`,
+    `rollback=${facts.rollbackAvailable}`,
+    ...(facts.safeCode ? [`code=${facts.safeCode}`] : []),
+  ].join(';')
+}
+
 const SUMMARIZE_SYSTEM =
   'You are a conversation compressor. Compress this editing session between the user and the AI assistant into a concise summary so later turns can continue with context. ' +
   "Keep: the user's goals and key instructions, completed changes (which files/pages/elements were modified), important facts and data, and outstanding items. " +
@@ -323,6 +337,8 @@ export class AgentLoop<TSnapshot = unknown> {
   private readonly turnInvocationIds = new Map<string, string>()
   /** per-run abort: aborted on cancel(); long tools (e.g. generate_deck) use it to break internal loops */
   private abortController: AbortController | null = null
+  /** Cancel stops model/tool work, but must not erase post-dispatch truth reconciliation. */
+  private reconciliationController: AbortController | null = null
 
   constructor(options: AgentLoopOptions<TSnapshot>) {
     this.options = options
@@ -391,6 +407,7 @@ export class AgentLoop<TSnapshot = unknown> {
     this.lastToolBatchSignature = ''
     this.identicalToolBatches = 0
     this.abortController = new AbortController()
+    this.reconciliationController = new AbortController()
     this.invocationRun += 1
     try {
       const context = this.options.skill.buildContext?.() ?? ''
@@ -710,12 +727,14 @@ export class AgentLoop<TSnapshot = unknown> {
   reset(): void {
     this.generation++
     this.abortController?.abort()
+    this.reconciliationController?.abort()
     this.handle?.cancel()
     this.handle = null
     this.running = false
     this.cancelled = false
     this.history = []
     this.runUserMsg = null
+    this.reconciliationController = null
   }
 
   /** Runs at run boundaries only (restore / before a new user message): a long run's tail is all assistant/tool messages, and cutting mid-run would empty the request. */
@@ -823,8 +842,7 @@ export class AgentLoop<TSnapshot = unknown> {
     // host reconciles authoritative state into a contract-bound receipt.
     if (
       (toolCalls.length === 0 || this.cancelled || this.finalizing) &&
-      this.presentationContract &&
-      this.mutationSeen
+      this.presentationContract
     ) {
       const handled = await this.finishPresentationRun()
       if (handled) return
@@ -1057,9 +1075,7 @@ export class AgentLoop<TSnapshot = unknown> {
         mutated: this.mutationSeen,
         cancelled: this.cancelled,
         correctionPasses: this.presentationCorrectionPasses,
-        // Reconciliation must still run after user cancellation; the aborted
-        // execution signal is only meaningful while mutation work is active.
-        signal: this.cancelled ? undefined : this.abortController?.signal,
+        signal: this.reconciliationController?.signal,
       })
     } catch {
       this.failPresentationRun('presentation_completion_unavailable')
@@ -1111,12 +1127,16 @@ export class AgentLoop<TSnapshot = unknown> {
       if (receipt.correctionPasses !== this.presentationCorrectionPasses)
         throw new TypeError('presentation correction count mismatch')
       const facts = renderPresentationCompletionFacts(receipt, contract)
-      this.history.push({ role: 'assistant', text: this.turnText || COMPLETED_VIA_TOOLS_TEXT })
+      const text = renderPresentationCompletionText(facts)
+      this.history.push({ role: 'assistant', text })
       this.running = false
       this.runUserMsg = null
       this.abortController = null
+      this.reconciliationController = null
+      // Replace any streamed model claim in the live bubble with receipt truth.
+      this.options.events?.onText?.(text)
       this.options.events?.onDone?.({
-        text: this.turnText,
+        text,
         cancelled: this.cancelled,
         turnLimit: this.finalizing,
         presentation: facts,
@@ -1129,12 +1149,13 @@ export class AgentLoop<TSnapshot = unknown> {
   }
 
   private failPresentationRun(error: string): void {
-    // After dispatch, preserve paired provider history and mutation truth. Do
-    // not roll back the run or allow free-form prose to become terminal success.
-    this.history.push({ role: 'assistant', text: this.turnText || COMPLETED_VIA_TOOLS_TEXT })
+    // Preserve paired provider history and any mutation truth. Do not roll back
+    // the run or allow free-form prose to become terminal success.
+    this.history.push({ role: 'assistant', text: `presentation:error;code=${error}` })
     this.running = false
     this.runUserMsg = null
     this.abortController = null
+    this.reconciliationController = null
     try {
       this.options.events?.onError?.(error)
     } catch {

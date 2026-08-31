@@ -23,7 +23,12 @@ export type {
   PresentationTaskHooks,
   PresentationTaskPreparation,
 } from './skill'
-export { AgentLoop, COMPLETED_VIA_TOOLS_TEXT, sanitizeAgentPayload } from './loop'
+export {
+  AgentLoop,
+  COMPLETED_VIA_TOOLS_TEXT,
+  renderPresentationCompletionText,
+  sanitizeAgentPayload,
+} from './loop'
 export type {
   AgentLoopEvents,
   AgentLoopOptions,

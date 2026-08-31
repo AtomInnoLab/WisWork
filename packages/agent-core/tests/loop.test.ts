@@ -90,6 +90,31 @@ const receipt = (status: 'verified' | 'applied_unverified' = 'verified') => ({
   ...(status === 'applied_unverified' ? { safeCode: 'screenshot_unavailable' as const } : {}),
 })
 
+const unchangedReceipt = () => ({
+  version: 1 as const,
+  taskId: 'task-1',
+  status: 'unchanged' as const,
+  mutationReceiptIds: [],
+  passedCheckIds: ['check-1'],
+  failedCheckIds: [],
+  unavailableCheckIds: [],
+  correctionPasses: 0,
+  affectedSlides: [2],
+})
+
+const failedReceipt = () => ({
+  version: 1 as const,
+  taskId: 'task-1',
+  status: 'failed' as const,
+  mutationReceiptIds: [],
+  passedCheckIds: [],
+  failedCheckIds: ['check-1'],
+  unavailableCheckIds: [],
+  correctionPasses: 0,
+  affectedSlides: [2],
+  safeCode: 'mutation_failed' as const,
+})
+
 describe('AgentLoop', () => {
   describe('presentation task orchestration', () => {
     it('lets a simple presentation task bypass clarification and planning UI', async () => {
@@ -190,6 +215,7 @@ describe('AgentLoop', () => {
         },
       ])
       const onDone = vi.fn()
+      const onText = vi.fn()
       const loop = new AgentLoop({
         transport,
         skill: {
@@ -199,7 +225,7 @@ describe('AgentLoop', () => {
             complete: () => ({ kind: 'receipt', receipt: receipt() }),
           },
         },
-        events: { onDone },
+        events: { onDone, onText },
       })
 
       loop.run('edit slide 2')
@@ -208,7 +234,82 @@ describe('AgentLoop', () => {
 
       expect(onDone).toHaveBeenCalledWith(
         expect.objectContaining({
+          text: 'presentation:verified;slides=2;passed=1;failed=0;unavailable=0;corrections=0;rollback=false',
           presentation: expect.objectContaining({ status: 'verified', affectedSlides: [2] }),
+        }),
+      )
+      expect(loop.messages.at(-1)).toEqual({
+        role: 'assistant',
+        text: 'presentation:verified;slides=2;passed=1;failed=0;unavailable=0;corrections=0;rollback=false',
+      })
+    })
+
+    it('reconciles a tool-free model success claim into authoritative unchanged truth', async () => {
+      const complete = vi.fn(() => ({ kind: 'receipt' as const, receipt: unchangedReceipt() }))
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onDelta('Everything was successfully changed!')
+          cb.onDone()
+        },
+      ])
+      const onDone = vi.fn()
+      const onText = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
+        },
+        events: { onDone, onText },
+      })
+
+      loop.run('make title blue')
+      await flush()
+
+      expect(complete).toHaveBeenCalledWith(expect.objectContaining({ mutated: false }))
+      expect(onDone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'presentation:unchanged;slides=2;passed=1;failed=0;unavailable=0;corrections=0;rollback=false',
+          presentation: expect.objectContaining({ status: 'unchanged' }),
+        }),
+      )
+      expect(JSON.stringify(loop.messages)).not.toContain('successfully changed')
+      expect(onText).toHaveBeenLastCalledWith(
+        'presentation:unchanged;slides=2;passed=1;failed=0;unavailable=0;corrections=0;rollback=false',
+      )
+    })
+
+    it('reconciles an all-mutated-false tool round into authoritative failed truth', async () => {
+      const complete = vi.fn(() => ({ kind: 'receipt' as const, receipt: failedReceipt() }))
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+          cb.onDone()
+        },
+        (cb) => {
+          cb.onDelta('The edit succeeded')
+          cb.onDone()
+        },
+      ])
+      const onDone = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(() => ({ output: 'not applied', summary: 'failed', mutated: false })),
+          presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
+        },
+        events: { onDone },
+      })
+
+      loop.run('edit')
+      await flush()
+      await flush()
+
+      expect(complete).toHaveBeenCalledWith(expect.objectContaining({ mutated: false }))
+      expect(onDone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'presentation:failed;slides=2;passed=0;failed=1;unavailable=0;corrections=0;rollback=false;code=mutation_failed',
+          presentation: expect.objectContaining({ status: 'failed' }),
         }),
       )
     })
@@ -338,8 +439,8 @@ describe('AgentLoop', () => {
       ])
     })
 
-    it('cancels before dispatch without asking the host for mutation truth', async () => {
-      const complete = vi.fn()
+    it('cancels before dispatch with zero-mutation receipt truth', async () => {
+      const complete = vi.fn(() => ({ kind: 'receipt' as const, receipt: unchangedReceipt() }))
       const transport = scriptedTransport([() => {}])
       const onDone = vi.fn()
       const loop = new AgentLoop({
@@ -356,8 +457,15 @@ describe('AgentLoop', () => {
       loop.cancel()
       await flush()
 
-      expect(complete).not.toHaveBeenCalled()
-      expect(onDone).toHaveBeenCalledWith({ text: '', cancelled: true, turnLimit: false })
+      expect(complete).toHaveBeenCalledWith(
+        expect.objectContaining({ mutated: false, cancelled: true }),
+      )
+      expect(onDone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cancelled: true,
+          presentation: expect.objectContaining({ status: 'unchanged' }),
+        }),
+      )
       expect(loop.messages.map((message) => message.role)).toEqual(['user', 'assistant'])
     })
 
@@ -404,6 +512,56 @@ describe('AgentLoop', () => {
         'tool',
         'assistant',
       ])
+    })
+
+    it('does not abort an async completion reconciliation when cancel races after dispatch', async () => {
+      let settle!: () => void
+      let reconciliationAborted = false
+      const complete = vi.fn(
+        ({ signal }: { signal?: AbortSignal }) =>
+          new Promise<{ kind: 'receipt'; receipt: ReturnType<typeof receipt> }>((resolve) => {
+            settle = () => resolve({ kind: 'receipt', receipt: receipt('applied_unverified') })
+            signal?.addEventListener('abort', () => {
+              reconciliationAborted = true
+            })
+          }),
+      )
+      const callbacks: AgentStreamCallbacks[] = []
+      const transport: AgentTransport = {
+        stream: (_request, cb) => {
+          callbacks.push(cb)
+          return { cancel: () => queueMicrotask(() => cb.onDone()) }
+        },
+      }
+      const onDone = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
+        },
+        events: { onDone },
+      })
+
+      loop.run('edit')
+      await flush()
+      callbacks[0]!.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+      callbacks[0]!.onDone()
+      await flush()
+      callbacks[1]!.onDelta('done')
+      callbacks[1]!.onDone()
+      await flush()
+      loop.cancel()
+      settle()
+      await flush()
+
+      expect(complete.mock.calls[0]![0].signal?.aborted).toBe(false)
+      expect(reconciliationAborted).toBe(false)
+      expect(onDone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          presentation: expect.objectContaining({ status: 'applied_unverified' }),
+        }),
+      )
     })
   })
 
