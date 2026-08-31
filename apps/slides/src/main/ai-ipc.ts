@@ -223,8 +223,9 @@ export function registerSlidesOnlyAiIpc(): void {
         'expectedRevision',
         'leaseToken',
         'textChecks',
+        'sourceTargets',
       ],
-      4_096,
+      16_384,
     )
     const pages = (input: unknown) => {
       if (
@@ -258,6 +259,22 @@ export function registerSlidesOnlyAiIpc(): void {
               return { checkId, targetToken, expectedText }
             })
           })()
+    const sourceTargets =
+      request.sourceTargets === undefined
+        ? undefined
+        : (() => {
+            if (!Array.isArray(request.sourceTargets) || request.sourceTargets.length > 50)
+              throw new AiIpcError('invalid_payload')
+            return request.sourceTargets.map((raw) => {
+              const target = validateSlidesAiObject(raw, ['slide', 'sourceId'], 256)
+              if (!Number.isSafeInteger(target.slide) || (target.slide as number) < 1)
+                throw new AiIpcError('invalid_payload')
+              return {
+                slide: target.slide as number,
+                sourceId: validateSlidesAiString(target.sourceId, 128),
+              }
+            })
+          })()
     if (!/^sha256:[0-9a-f]{64}$/.test(expectedRevision)) throw new AiIpcError('invalid_payload')
     const session = sessions.get(event.sender.id)!
     if (
@@ -275,6 +292,7 @@ export function registerSlidesOnlyAiIpc(): void {
       expectedRevision,
       leaseToken,
       ...(textChecks ? { textChecks } : {}),
+      ...(sourceTargets ? { sourceTargets } : {}),
     })
     return (session.mutationGeneration ?? 0) === generation ? snapshot : null
   })

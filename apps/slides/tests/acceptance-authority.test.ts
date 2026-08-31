@@ -50,6 +50,7 @@ describe('PC authoritative acceptance inspection', () => {
       expectedSessionToken: 'session-production',
       expectedRevision: revision,
       leaseToken: lease!.leaseToken,
+      sourceTargets: [{ slide: 1, sourceId: element.id }],
     }
     const snapshot = await inspectSlidesAcceptanceAuthority(session, request)
     expect(snapshot).toMatchObject({
@@ -57,6 +58,7 @@ describe('PC authoritative acceptance inspection', () => {
       sessionToken: 'session-production',
     })
     expect(snapshot!.revision).toMatch(/^sha256:[0-9a-f]{64}$/)
+    expect(snapshot!.sourceTargetTokens?.[`1:${element.id}`]).toMatch(/^target:[0-9a-f]{64}$/)
     expect(snapshot!.slides[0]!.elements).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

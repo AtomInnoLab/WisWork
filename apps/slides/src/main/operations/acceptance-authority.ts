@@ -142,6 +142,12 @@ export async function inspectSlidesAcceptanceAuthority(
     ]),
   )
   const textMatches: NonNullable<SlidesAcceptanceAuthoritySnapshot['textMatches']> = {}
+  const requestedSources = new Map(
+    (request.sourceTargets ?? []).map(({ slide, sourceId }) => [`${slide}:${sourceId}`, false]),
+  )
+  if (requestedSources.size !== (request.sourceTargets ?? []).length || requestedSources.size > 50)
+    throw new TypeError('Acceptance source target request is invalid')
+  const sourceTargetTokens: Record<string, string> = {}
   const slides = []
   let inspectedElements = 0
   for (const page of requested) {
@@ -154,6 +160,11 @@ export async function inspectSlidesAcceptanceAuthority(
       const fact = await elementFact(slide.durableId, element, false, lease.leaseToken, textChecks)
       if (fact) {
         elements.push(fact.fact)
+        const sourceKey = `${page}:${element.id}`
+        if (requestedSources.has(sourceKey)) {
+          requestedSources.set(sourceKey, true)
+          sourceTargetTokens[sourceKey] = fact.fact.targetToken
+        }
         if (fact.textMatch) textMatches[fact.textMatch.checkId] = fact.textMatch
       }
     }
@@ -186,6 +197,7 @@ export async function inspectSlidesAcceptanceAuthority(
     revision,
     leaseToken: lease.leaseToken,
     ...(Object.keys(textMatches).length ? { textMatches } : {}),
+    ...(Object.keys(sourceTargetTokens).length ? { sourceTargetTokens } : {}),
     slides,
   }
 }

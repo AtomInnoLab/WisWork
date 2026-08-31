@@ -11,6 +11,7 @@ import {
   type VisualReviewResult,
 } from '@wiswork/presentation-verification'
 import type { SlidesDeterministicResult } from './task-acceptance'
+import { AgentLoop, type AgentImage, type AgentTransport } from '@wiswork/agent-core'
 
 export type SlidesTaskReviewAuthority = {
   documentToken: string
@@ -51,6 +52,51 @@ export interface SlidesTaskReviewAdapter {
     signal?: AbortSignal,
   ): Promise<{ mutationReceiptId: string; rollbackId?: string; correctedCheckIds: string[] }>
   isCurrent(authority: SlidesTaskReviewAuthority): boolean
+}
+
+/** Strict, read-only reviewer. Images are ephemeral and are never copied into facts or receipts. */
+export function reviewSlidesRendering(input: {
+  facts: PresentationRenderingFacts
+  images: AgentImage[]
+  transport: AgentTransport
+  signal?: AbortSignal
+}): Promise<VisualReviewResult> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (result: VisualReviewResult | Error) => {
+      if (settled) return
+      settled = true
+      input.signal?.removeEventListener('abort', abort)
+      if (result instanceof Error) reject(result)
+      else resolve(result)
+    }
+    const loop = new AgentLoop({
+      transport: input.transport,
+      maxTurns: 1,
+      skill: {
+        id: 'slides-task-review',
+        systemPrompt:
+          'You are a read-only presentation acceptance reviewer. Return ONLY strict JSON: {"status":"pass|needs_fix|cannot_verify","failedCheckIds":[],"observations":[],"fixIntents":[]}. Use only check ids and safe schema values supplied in the facts. Never invent targets or request tools.',
+        tools: [],
+        executeTool: () => ({ output: 'read_only', summary: 'read only', isError: true }),
+      },
+      events: {
+        onDone: ({ text, cancelled }) => {
+          if (cancelled) return finish(new Error('cancelled'))
+          try {
+            const json = text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)
+            finish(parseVisualReviewResult(JSON.parse(json)))
+          } catch (error) {
+            finish(error instanceof Error ? error : new Error('review_invalid'))
+          }
+        },
+        onError: (error) => finish(new Error(error)),
+      },
+    })
+    const abort = () => loop.cancel()
+    input.signal?.addEventListener('abort', abort, { once: true })
+    loop.run(JSON.stringify(input.facts), input.images)
+  })
 }
 
 const unavailable = (

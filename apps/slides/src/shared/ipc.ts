@@ -1432,6 +1432,8 @@ export interface SlidesAcceptanceAuthoritySnapshot {
   revision: string
   leaseToken?: string
   textMatches?: Record<string, { targetToken: string; matches: boolean; proof: string }>
+  /** Request-bound runtime ids resolved to opaque durable acceptance tokens. */
+  sourceTargetTokens?: Record<string, string>
   slides: Array<{
     number: number
     slideToken: string
@@ -1482,6 +1484,7 @@ export interface SlidesAcceptanceAuthorityRequest {
   expectedSessionToken: string
   expectedRevision: string
   leaseToken: string
+  sourceTargets?: Array<{ slide: number; sourceId: string }>
   textChecks?: Array<{ checkId: string; targetToken: string; expectedText: string }>
 }
 

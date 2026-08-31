@@ -37,6 +37,8 @@ import {
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
 import { Markdown } from '@wiswork/ui'
 import type { PresentationQualityReceipt } from '@wiswork/presentation-ops'
+import { verifyAndBrandSlidesAcceptanceAuthority, verifySlidesAcceptance } from './task-acceptance'
+import { reviewSlidesRendering } from './task-review'
 import { WisWorkMark } from '../components/icons'
 import sendEnterOn from '../assets/send-enter-on.png'
 import sendEnterOff from '../assets/send-enter-off.png'
@@ -850,6 +852,8 @@ export function AiPanel({
     ): Promise<LlmResult> =>
       runLlmAttempt(settingsRef.current, system, user, timeoutMs, signal, maxTokens)
 
+    const taskImages = new Map<string, AgentImage>()
+
     const access: DeckAccess = {
       getSlides: () => slidesRef.current,
       getCurrent: () => currentRef.current,
@@ -865,6 +869,86 @@ export function AiPanel({
         const snapshot = await window.slidesApi.inspectAcceptanceAuthority(request)
         if (!snapshot) throw new Error('Authoritative acceptance inspection is unavailable')
         return snapshot
+      },
+      taskReviewAdapter: {
+        refresh: async (signal) => {
+          signal?.throwIfAborted()
+          const refreshed = await window.slidesApi.getRenderSlides()
+          if (!refreshed) throw new Error('authoritative_refresh_unavailable')
+          applyDeckRef.current(refreshed, currentRef.current)
+          const lease = await window.slidesApi.getAcceptanceAuthorityLease()
+          if (!lease) throw new Error('authoritative_lease_unavailable')
+          return lease
+        },
+        verifyDeterministic: async (contract, authority) => {
+          const textChecks = contract.checks.flatMap((check) =>
+            check.kind === 'element_property' &&
+            check.property === 'text' &&
+            check.roleOrTarget.kind === 'target' &&
+            typeof check.expected === 'string'
+              ? [
+                  {
+                    checkId: check.id,
+                    targetToken: check.roleOrTarget.targetToken,
+                    expectedText: check.expected,
+                  },
+                ]
+              : [],
+          )
+          const snapshot = await window.slidesApi.inspectAcceptanceAuthority({
+            affectedSlides: contract.affectedSlides,
+            referenceSlides: contract.referenceSlides,
+            expectedDocumentToken: authority.documentToken,
+            expectedSessionToken: authority.sessionToken,
+            expectedRevision: authority.revision,
+            leaseToken: authority.leaseToken,
+            ...(textChecks.length ? { textChecks } : {}),
+          })
+          if (!snapshot) throw new Error('acceptance_inspection_unavailable')
+          const verified = await verifyAndBrandSlidesAcceptanceAuthority(
+            contract,
+            snapshot,
+            (request) => window.slidesApi.verifyAcceptanceTextProof(request),
+          )
+          return verifySlidesAcceptance(contract, verified, { mode: 'prewrite' })
+        },
+        capture: async ({ slide, role, authority, signal }) => {
+          signal?.throwIfAborted()
+          const image = await captureSlideShot(slide - 1)
+          if (!image) return null
+          const bytes = Math.ceil((image.base64.length * 3) / 4)
+          const mediaToken = `media-${crypto.randomUUID().replaceAll('-', '')}`
+          taskImages.set(mediaToken, image)
+          return { slide, role, mediaToken, bytes, ...authority }
+        },
+        review: async (facts, signal) => {
+          const images = facts.screenshots.map(({ mediaToken }) => taskImages.get(mediaToken))
+          if (images.some((image) => !image)) throw new Error('screenshot_unavailable')
+          try {
+            return await reviewSlidesRendering({
+              facts,
+              images: images as AgentImage[],
+              transport: createElectronTransport(() => settingsRef.current),
+              signal,
+            })
+          } finally {
+            for (const { mediaToken } of facts.screenshots) taskImages.delete(mediaToken)
+          }
+        },
+        correct: async () => {
+          throw new Error('unsupported_correction')
+        },
+        isCurrent: (authority) =>
+          authority.sessionToken.length > 0 && activeRunTokenRef.current === launchTokenRef.current,
+      },
+      onTaskReviewComplete: (receipt) => {
+        if (isQcEnabled())
+          qcPagesRef.current = [
+            ...new Set([
+              ...qcPagesRef.current,
+              ...receipt.affectedSlides.map((slide) => slide - 1),
+            ]),
+          ]
       },
       applySlide: (i, updated) => applySlideRef.current(i, updated),
       applyDeck: (all, goTo) => applyDeckRef.current(all, goTo),
