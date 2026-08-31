@@ -38,6 +38,7 @@ import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/loca
 import { Markdown } from '@wiswork/ui'
 import type { PresentationQualityReceipt } from '@wiswork/presentation-ops'
 import { presentationVerificationFlags } from '@wiswork/presentation-verification'
+import { translatePresentationVerification } from '@wiswork/i18n'
 import { verifyAndBrandSlidesAcceptanceAuthority, verifySlidesAcceptance } from './task-acceptance'
 import { reviewSlidesRendering } from './task-review'
 import { WisWorkMark } from '../components/icons'
@@ -371,7 +372,7 @@ export function AiPanel({
   onQualityReceipt,
   currentFilePath,
 }: AiPanelProps) {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [selectionScopeEnabled, setSelectionScopeEnabled] = useState(false)
@@ -860,6 +861,8 @@ export function AiPanel({
     >()
 
     const access: DeckAccess = {
+      presentationTelemetry: (event) =>
+        window.dispatchEvent(new CustomEvent('wiswork:presentation-telemetry', { detail: event })),
       getSlides: () => slidesRef.current,
       getCurrent: () => currentRef.current,
       getSelectedIds: () => selectedRef.current,
@@ -1279,6 +1282,21 @@ export function AiPanel({
         createFilesSkill(availableAttachments, (path) => readAttachmentPathsRef.current.add(path)),
       ]),
       events: {
+        onPresentationClarify: () =>
+          setChat((previous) => [
+            ...previous,
+            { role: 'assistant', text: translatePresentationVerification(lang, 'clarify') },
+          ]),
+        onPresentationPlan: () =>
+          setChat((previous) => [
+            ...previous,
+            { role: 'assistant', text: translatePresentationVerification(lang, 'plan') },
+          ]),
+        onPresentationCorrection: () =>
+          setChat((previous) => [
+            ...previous,
+            { role: 'assistant', text: translatePresentationVerification(lang, 'correction') },
+          ]),
         onText: (text) => patchLastAssistant({ text }),
         onToolStart: (call) => {
           // Live "running" chip: replaced in place by onToolExecuted
@@ -1332,11 +1350,16 @@ export function AiPanel({
             },
           ])
         },
-        onDone: ({ text, cancelled, turnLimit }) => {
+        onDone: ({ text, cancelled, turnLimit, presentation }) => {
           if (activeQueueRunRef.current) qcPagesRef.current = []
-          const finalText = turnLimit
-            ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
-            : text || (cancelled ? tGlobal('aiStoppedNote') : '')
+          const localizedStatus = presentation
+            ? translatePresentationVerification(lang, presentation.status)
+            : ''
+          const finalText =
+            localizedStatus ||
+            (turnLimit
+              ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
+              : text || (cancelled ? translatePresentationVerification(lang, 'cancelled') : ''))
           const ranTools = runToolsRef.current.length > 0
           setChat((prev) => {
             const next = [...prev]

@@ -4,6 +4,10 @@ import type {
 } from '@wiswork/presentation-verification'
 import { parsePresentationCompletionReceipt } from '@wiswork/presentation-verification'
 import type { PresentationVerificationFlags } from '@wiswork/presentation-verification'
+import {
+  presentationCompletionTelemetry,
+  type PresentationTelemetryEvent,
+} from '@wiswork/presentation-verification'
 import type { AgentToolCall, PresentationTaskHooks } from '@wiswork/agent-core'
 import { runSlidesTaskReview, type SlidesTaskReviewAdapter } from './task-review'
 import {
@@ -108,7 +112,14 @@ export function compileCanonicalSlidesCalls(input: {
     },
     input.authority,
   )
-  if (compiled.status === 'compiled') return compiled
+  if (compiled.status === 'compiled')
+    return {
+      ...compiled,
+      plannedMutationTargets: [...new Set(compiled.plannedMutationTargets)],
+      ...(input.calls.length > 1 || affected.size > 1
+        ? { plan: ['presentation_apply_bounded_edits', 'presentation_verify_postconditions'] }
+        : {}),
+    }
   if (compiled.status === 'unchanged') return { kind: 'bypass' }
   return { kind: 'clarify', question: compiled.code }
 }
@@ -124,6 +135,7 @@ export function createSlidesTaskController(deps: {
   executeOriginal?: () => unknown
   afterTaskReview?: (receipt: PresentationCompletionReceipt) => void | Promise<void>
   flags?: PresentationVerificationFlags
+  telemetry?: (event: PresentationTelemetryEvent) => void
 }): SlidesTaskController {
   type RunState = {
     generation: number
@@ -161,6 +173,7 @@ export function createSlidesTaskController(deps: {
       }
     },
     complete: async ({ contract, mutated, cancelled, signal }) => {
+      const startedAt = Date.now()
       const state = runs.get(contract.taskId)
       const applied = [...(state?.mutations ?? [])].filter(({ status }) => status === 'applied')
       let receipt: PresentationCompletionReceipt
@@ -202,23 +215,46 @@ export function createSlidesTaskController(deps: {
           contract,
         )
       } else {
-        const rollbackId = [...applied].reverse().find((item) => item.rollbackId)?.rollbackId
-        receipt = await runSlidesTaskReview({
-          contract,
-          initialMutationReceiptIds: applied.map(({ transactionId }) => transactionId),
-          plannedMutationTargets: state.enrollment.plannedMutationTargets,
-          ...(rollbackId ? { rollbackId } : {}),
-          adapter: deps.reviewAdapter,
-          isCurrent: () => state.generation === generation && activeTaskId === contract.taskId,
-          signal,
-          flags: deps.flags,
-        })
+        const covered = new Set(applied.flatMap(({ mutatedTargetTokens }) => mutatedTargetTokens))
+        if (
+          covered.size !== state.enrollment.plannedMutationTargets.length ||
+          state.enrollment.plannedMutationTargets.some((target) => !covered.has(target))
+        ) {
+          receipt = parsePresentationCompletionReceipt(
+            {
+              version: 1,
+              taskId: contract.taskId,
+              status: 'applied_unverified',
+              mutationReceiptIds: applied.map(({ transactionId }) => transactionId),
+              passedCheckIds: [],
+              failedCheckIds: [],
+              unavailableCheckIds: contract.checks.map(({ id }) => id),
+              correctionPasses: 0,
+              affectedSlides: contract.affectedSlides,
+              safeCode: 'office_state_uncertain',
+            },
+            contract,
+          )
+        } else {
+          const rollbackId = [...applied].reverse().find((item) => item.rollbackId)?.rollbackId
+          receipt = await runSlidesTaskReview({
+            contract,
+            initialMutationReceiptIds: applied.map(({ transactionId }) => transactionId),
+            plannedMutationTargets: state.enrollment.plannedMutationTargets,
+            ...(rollbackId ? { rollbackId } : {}),
+            adapter: deps.reviewAdapter,
+            isCurrent: () => state.generation === generation && activeTaskId === contract.taskId,
+            signal,
+            flags: deps.flags,
+          })
+        }
       }
       if (state && state.generation === generation && activeTaskId === contract.taskId) {
         await deps.afterTaskReview?.(receipt)
         activeTaskId = undefined
       }
       runs.delete(contract.taskId)
+      deps.telemetry?.(presentationCompletionTelemetry('pc', receipt, Date.now() - startedAt))
       return { kind: 'receipt', receipt }
     },
   }
@@ -231,10 +267,9 @@ export function createSlidesTaskController(deps: {
       if (!state || state.generation !== generation) return
       if (
         receipt.status === 'applied' &&
-        (receipt.mutatedTargetTokens.length !== state.enrollment.plannedMutationTargets.length ||
-          receipt.mutatedTargetTokens.some(
-            (target) => !state.enrollment.plannedMutationTargets.includes(target),
-          ))
+        receipt.mutatedTargetTokens.some(
+          (target) => !state.enrollment.plannedMutationTargets.includes(target),
+        )
       ) {
         state.mutations.push({ ...receipt, status: 'uncertain' })
         return

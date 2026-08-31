@@ -8,6 +8,7 @@
   "dependencies": {
     "@wiswork/agent-core": "*",
     "@wiswork/agent-harness": "*",
+    "@wiswork/i18n": "*",
     "@wiswork/ai-provider": "*",
     "@wiswork/ui": "*",
     "fast-xml-parser": "5.10.1",

@@ -555,12 +555,14 @@ describe('AgentLoop', () => {
           cb.onDone()
         },
       ])
+      const onPresentationCorrection = vi.fn()
       const loop = new AgentLoop({
         transport,
         skill: {
           ...makeSkill(),
           presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
         },
+        events: { onPresentationCorrection },
       })
       loop.run('edit')
       await flush()
@@ -569,6 +571,7 @@ describe('AgentLoop', () => {
       await flush()
       expect(complete).toHaveBeenCalledTimes(2)
       expect(transport.requests).toHaveLength(4)
+      expect(onPresentationCorrection).toHaveBeenCalledWith({ pass: 1, maximum: 2 })
       expect(loop.messages.map((message) => message.role)).toEqual([
         'user',
         'assistant',

@@ -22,6 +22,7 @@ import {
   type OfficePresentationTimeline,
   type ProposalPresentationEvent,
 } from './presentation-state.js'
+import type { PresentationVerificationStringKey } from '@wiswork/i18n'
 import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
 
 export type AgentSessionStatus = 'idle' | 'working' | 'done' | 'cancelled' | 'error'
@@ -194,6 +195,7 @@ export function createOfficeAgentSession(dependencies: {
   skill: AgentSkill
   proposals: ProposalController | StructuredProposalController
   diagnostics?: Pick<OfficeDiagnostics, 'startTrace' | 'setTool' | 'record' | 'clear'>
+  presentationText?: (key: PresentationVerificationStringKey) => string
 }): OfficeAgentSession {
   const { proposals } = dependencies
   const presentation = dependencies.skill.presentation as
@@ -406,6 +408,24 @@ export function createOfficeAgentSession(dependencies: {
     transport: dependencies.transport,
     skill: sessionSkill,
     events: {
+      onPresentationClarify: () =>
+        append({
+          id: eventId(),
+          kind: 'system',
+          text: dependencies.presentationText?.('clarify') ?? 'clarify',
+        }),
+      onPresentationPlan: () =>
+        append({
+          id: eventId(),
+          kind: 'system',
+          text: dependencies.presentationText?.('plan') ?? 'plan',
+        }),
+      onPresentationCorrection: () =>
+        append({
+          id: eventId(),
+          kind: 'system',
+          text: dependencies.presentationText?.('correction') ?? 'correction',
+        }),
       onText: (assistantText) => {
         if (!activeAssistantId) {
           activeAssistantId = eventId()
@@ -497,6 +517,20 @@ export function createOfficeAgentSession(dependencies: {
           activity: '',
           status: result.cancelled ? 'cancelled' : 'done',
         })
+        if (result.presentation)
+          append({
+            id: eventId(),
+            kind: 'system',
+            text:
+              dependencies.presentationText?.(result.presentation.status) ??
+              result.presentation.status,
+          })
+        else if (result.cancelled)
+          append({
+            id: eventId(),
+            kind: 'system',
+            text: dependencies.presentationText?.('cancelled') ?? 'cancelled',
+          })
       },
       onError: (error) => {
         const safeError = safeRunError(error)

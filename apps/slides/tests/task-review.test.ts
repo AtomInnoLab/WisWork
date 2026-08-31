@@ -432,7 +432,11 @@ describe('PC task-specific rendered verification', () => {
         adapter: deterministicOnly,
         flags: { visualReview: false, autoCorrection: false },
       }),
-    ).resolves.toMatchObject({ status: 'verified', correctionPasses: 0 })
+    ).resolves.toMatchObject({
+      status: 'applied_unverified',
+      safeCode: 'visual_disabled',
+      correctionPasses: 0,
+    })
     expect(deterministicOnly.capture).not.toHaveBeenCalled()
     expect(deterministicOnly.review).not.toHaveBeenCalled()
 

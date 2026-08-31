@@ -1,5 +1,6 @@
 import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
 import type { PresentationVerificationFlags } from '@wiswork/presentation-verification'
+import type { PresentationTelemetryEvent } from '@wiswork/presentation-verification'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
 import { exactObject, integerField, optionalField, stringField } from '../../agent/tool-schema.js'
 import { parseDeclarativeProgram } from '../shared/declarative-program.js'
@@ -145,6 +146,19 @@ const declarativeProgramSchema = {
               text: { type: 'string', maxLength: 12_000 },
             },
             ['op', 'slide_index', 'shape_id', 'text'],
+          ),
+          exactOperation(
+            {
+              op: { type: 'string', enum: ['set_shape_text_style'] },
+              slide_index: operationSlideIndex,
+              shape_id: operationShapeId,
+              color: { type: 'string', pattern: '^#[0-9A-Fa-f]{6}$' },
+              fontFamily: { type: 'string', minLength: 1, maxLength: 128 },
+              fontSize: { type: 'number', minimum: 1, maximum: 400 },
+              bold: { type: 'boolean' },
+              italic: { type: 'boolean' },
+            },
+            ['op', 'slide_index', 'shape_id'],
           ),
           exactOperation(
             {
@@ -366,7 +380,7 @@ const tools = [
   {
     name: 'execute_office_js',
     description:
-      'Execute a confirmation-gated bounded declarative PowerPoint program. Pass program directly as an object with version 1 and an operations array; do not stringify it and do not send JavaScript. Use snake_case fields. Supported operations are set_shape_text (slide_index, shape_id, text), set_shape_geometry (slide_index, shape_id, left, top, width, height), add_text_box (slide_index, name, text, left, top, width, height), delete_shape (slide_index, shape_id), and duplicate_slide (slide_index; it must be the only operation).',
+      'Execute a confirmation-gated bounded declarative PowerPoint program. Pass program directly as an object with version 1 and an operations array; do not stringify it and do not send JavaScript. Use snake_case fields except the bounded text-style properties. Supported operations are set_shape_text, set_shape_text_style (color/fontFamily/fontSize/bold/italic), set_shape_geometry, add_text_box, delete_shape, and duplicate_slide.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -949,6 +963,11 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
     'top',
     'width',
     'height',
+    'color',
+    'fontFamily',
+    'fontSize',
+    'bold',
+    'italic',
   ])
   const operation = root
   if (
@@ -988,6 +1007,59 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
       top: operation.top as number,
       width: operation.width as number,
       height: operation.height as number,
+    }
+  }
+  if (operation.op === 'set_shape_text_style') {
+    const allowed = [
+      'op',
+      'slide_index',
+      'shape_id',
+      'color',
+      'fontFamily',
+      'fontSize',
+      'bold',
+      'italic',
+    ]
+    if (
+      Object.keys(operation).some((key) => !allowed.includes(key)) ||
+      typeof operation.shape_id !== 'string' ||
+      !operation.shape_id ||
+      (Object.hasOwn(operation, 'color') &&
+        (typeof operation.color !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(operation.color))) ||
+      (Object.hasOwn(operation, 'fontFamily') &&
+        (typeof operation.fontFamily !== 'string' ||
+          !operation.fontFamily ||
+          operation.fontFamily.length > 128)) ||
+      (Object.hasOwn(operation, 'fontSize') &&
+        (typeof operation.fontSize !== 'number' ||
+          !Number.isFinite(operation.fontSize) ||
+          operation.fontSize < 1 ||
+          operation.fontSize > 400)) ||
+      (Object.hasOwn(operation, 'bold') && typeof operation.bold !== 'boolean') ||
+      (Object.hasOwn(operation, 'italic') && typeof operation.italic !== 'boolean')
+    )
+      throw new Error('invalid_tool_input')
+    const style = {
+      ...(typeof operation.color === 'string' && /^#[0-9A-Fa-f]{6}$/.test(operation.color)
+        ? { color: operation.color.toUpperCase() }
+        : {}),
+      ...(typeof operation.fontFamily === 'string' && operation.fontFamily.length <= 128
+        ? { fontFamily: operation.fontFamily }
+        : {}),
+      ...(typeof operation.fontSize === 'number' &&
+      operation.fontSize >= 1 &&
+      operation.fontSize <= 400
+        ? { fontSize: operation.fontSize }
+        : {}),
+      ...(typeof operation.bold === 'boolean' ? { bold: operation.bold } : {}),
+      ...(typeof operation.italic === 'boolean' ? { italic: operation.italic } : {}),
+    }
+    if (!Object.keys(style).length) throw new Error('invalid_tool_input')
+    return {
+      op: 'set_shape_text_style',
+      slide_index: operation.slide_index as number,
+      shape_id: operation.shape_id,
+      ...style,
     }
   }
   if (operation.op === 'add_text_box') {
@@ -1058,6 +1130,7 @@ export function createPowerPointSkill(options: {
   verificationAuthority?: OfficePowerPointVerificationAuthority
   visualReviewer?: OfficePowerPointVisualReviewer
   presentationFlags?: PresentationVerificationFlags
+  presentationTelemetry?: (event: PresentationTelemetryEvent) => void
 }): AgentSkill {
   const masterXmlEditingSupported = options.platform?.toLowerCase() !== 'mac'
   const nativeMasterEditingSupported = options.nativeMasterEditingSupported !== false
@@ -1068,6 +1141,7 @@ export function createPowerPointSkill(options: {
           platform: options.platform,
           reviewer: options.visualReviewer,
           flags: options.presentationFlags,
+          telemetry: options.presentationTelemetry,
         })
       : undefined
   options.proposals.subscribeAudit?.((event) => {
@@ -1462,6 +1536,49 @@ export function createPowerPointSkill(options: {
                       confirmSignal,
                     )
                     return current.text === operation.text
+                  }, confirmSignal)
+                } else if (operation.op === 'set_shape_text_style') {
+                  if (!options.adapter.readShapeTextStyle) throw new Error('office_api_unsupported')
+                  const expectedStyle = program.operations
+                    .filter(
+                      (
+                        later,
+                      ): later is Extract<
+                        PowerPointDeclarativeOperation,
+                        { op: 'set_shape_text_style' }
+                      > =>
+                        later.op === 'set_shape_text_style' &&
+                        later.slide_index === operation.slide_index &&
+                        later.shape_id === operation.shape_id,
+                    )
+                    .reduce(
+                      (value, later) => ({
+                        ...value,
+                        ...(later.color !== undefined ? { color: later.color } : {}),
+                        ...(later.fontFamily !== undefined ? { fontFamily: later.fontFamily } : {}),
+                        ...(later.fontSize !== undefined ? { fontSize: later.fontSize } : {}),
+                        ...(later.bold !== undefined ? { bold: later.bold } : {}),
+                        ...(later.italic !== undefined ? { italic: later.italic } : {}),
+                      }),
+                      {} as Extract<PowerPointDeclarativeOperation, { op: 'set_shape_text_style' }>,
+                    )
+                  await verifyPowerPointReadback(async () => {
+                    const current = await options.adapter.readShapeTextStyle!(
+                      operation.slide_index,
+                      operation.shape_id,
+                      confirmSignal,
+                    )
+                    return (
+                      (expectedStyle.color === undefined ||
+                        current.color?.toUpperCase() === expectedStyle.color.toUpperCase()) &&
+                      (expectedStyle.fontFamily === undefined ||
+                        current.fontFamily === expectedStyle.fontFamily) &&
+                      (expectedStyle.fontSize === undefined ||
+                        current.fontSize === expectedStyle.fontSize) &&
+                      (expectedStyle.bold === undefined || current.bold === expectedStyle.bold) &&
+                      (expectedStyle.italic === undefined ||
+                        current.italic === expectedStyle.italic)
+                    )
                   }, confirmSignal)
                 } else if (operation.op !== 'duplicate_slide') {
                   if (operation.op === 'add_text_box') {

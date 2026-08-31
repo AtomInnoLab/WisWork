@@ -39,6 +39,7 @@ import {
 import type { SlidesAcceptanceAuthority } from './task-acceptance'
 import { compileCanonicalSlidesCalls, createSlidesTaskController } from './task-controller'
 import type { SlidesTaskReviewAdapter } from './task-review'
+import type { PresentationTelemetryEvent } from '@wiswork/presentation-verification'
 import type { PresentationCompletionReceipt } from '@wiswork/presentation-verification'
 
 /**
@@ -61,6 +62,7 @@ export interface DeckAccess {
   ): Promise<SlidesAcceptanceAuthority>
   taskReviewAdapter?: SlidesTaskReviewAdapter
   onTaskReviewComplete?(receipt: PresentationCompletionReceipt): void | Promise<void>
+  presentationTelemetry?(event: PresentationTelemetryEvent): void
   beginTaskCorrectionHistory?(): Promise<boolean>
   finishTaskCorrectionHistory?(): Promise<string | undefined>
   /** Immutable durable scope for the active queued run, if any. */
@@ -1428,7 +1430,7 @@ export function createSlidesSkill(
     planning: true,
     verifiedCompletion: true,
     visualReview: true,
-    autoCorrection: true,
+    autoCorrection: false,
   },
 ): AgentSkill {
   // The HTML pipeline was already used in this conversation → later calls without an explicit mode default to append.
@@ -1572,6 +1574,7 @@ export function createSlidesSkill(
           },
           afterTaskReview: access.onTaskReviewComplete,
           flags: presentationFlags,
+          telemetry: access.presentationTelemetry,
         })
       : undefined
   const executionAccess: DeckAccess = controller

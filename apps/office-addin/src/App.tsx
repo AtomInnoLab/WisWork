@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Markdown } from '@wiswork/ui'
+import { normalizeLang, translatePresentationVerification } from '@wiswork/i18n'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
 import {
   officeCapabilityFlags,
@@ -33,6 +34,12 @@ import {
   type OfficeRelaySnapshot,
   type OfficeRelayStatus,
 } from './relay/session.js'
+import type { PresentationVerificationStringKey } from '@wiswork/i18n'
+
+export const officePresentationText = (
+  locale: string | null | undefined,
+  key: PresentationVerificationStringKey,
+) => translatePresentationVerification(normalizeLang(locale), key)
 import {
   createBrowserOfficeRuntime,
   createOfficeDocumentClient,
@@ -979,6 +986,10 @@ export function ConfiguredApp(
               const runtime = createOfficeHostRuntime(activeHost, {
                 enableHostSkills: import.meta.env.VITE_WISWORK_OFFICE_HOST_SKILLS !== '0',
                 presentationVerification: presentationFlags,
+                presentationTelemetry: (event) =>
+                  window.dispatchEvent(
+                    new CustomEvent('wiswork:presentation-telemetry', { detail: event }),
+                  ),
                 enableConversions: capabilityFlags.conversions,
                 enableSkillPackages: capabilityFlags.skillPackages,
                 enableImportMedia: capabilityFlags.importMedia,
@@ -990,6 +1001,8 @@ export function ConfiguredApp(
                 skill: runtime.skill,
                 proposals: runtime.proposals,
                 diagnostics,
+                presentationText: (key) =>
+                  officePresentationText(globalThis.Office?.context?.displayLanguage, key),
               })
               created = { runtime, session, ui: createOfficeWorkspaceUi(runtime, diagnostics) }
             }

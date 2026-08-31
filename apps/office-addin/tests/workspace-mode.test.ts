@@ -4,7 +4,13 @@ import {
   officePresentationVerificationFlags,
   officeWorkspaceMode,
 } from '../build-config.js'
-import { AgentWorkspace, LegacyAgentWorkspace, workspaceComponentForMode } from '../src/App.js'
+import {
+  AgentWorkspace,
+  LegacyAgentWorkspace,
+  officePresentationText,
+  workspaceComponentForMode,
+} from '../src/App.js'
+import { LANGS, htmlLang, presentationVerificationStrings } from '@wiswork/i18n'
 
 describe('Office workspace rollback flag', () => {
   it('defaults to the new workspace and accepts only the exact independent legacy flag', () => {
@@ -28,6 +34,20 @@ describe('Office workspace rollback flag', () => {
 })
 
 describe('Office presentation verification rollout flags', () => {
+  it('uses the production locale adapter for every presentation state in all locales', () => {
+    for (const lang of LANGS)
+      for (const key of Object.keys(presentationVerificationStrings.zh))
+        expect(
+          officePresentationText(
+            htmlLang(lang),
+            key as keyof typeof presentationVerificationStrings.zh,
+          ),
+        ).toBe(
+          presentationVerificationStrings[lang][
+            key as keyof typeof presentationVerificationStrings.zh
+          ],
+        )
+  })
   it('uses safe defaults and independent exact rollback switches', () => {
     expect(officePresentationVerificationFlags({})).toEqual({
       planning: true,

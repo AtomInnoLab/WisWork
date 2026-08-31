@@ -53,6 +53,7 @@ export interface AgentLoopEvents<TSnapshot> {
   onError?(error: string): void
   onPresentationClarify?(event: { question: string }): void
   onPresentationPlan?(event: { steps: string[]; requiresConfirmation: boolean }): void
+  onPresentationCorrection?(event: { pass: number; maximum: number }): void
   /** Host audit sink for a proved mutation whose UI session was reset during reconciliation. */
   onAbandonedPresentationCompletion?(event: {
     documentToken: string
@@ -1199,6 +1200,10 @@ export class AgentLoop<TSnapshot = unknown> {
         return true
       }
       this.presentationCorrectionTurns++
+      this.options.events?.onPresentationCorrection?.({
+        pass: this.presentationCorrectionTurns,
+        maximum: contract.maxCorrectionPasses,
+      })
       this.presentationCorrectionPending = true
       this.history.push({
         role: 'assistant',

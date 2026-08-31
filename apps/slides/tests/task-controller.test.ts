@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentToolCall } from '../src/shared/ipc'
 import {
+  compileCanonicalSlidesCalls,
   createSlidesTaskController,
   type SlidesTaskEnrollment,
 } from '../src/renderer/ai/task-controller'
+import { PRESENTATION_CONSISTENCY_GOLDEN } from '@wiswork/presentation-verification'
 import type { SlidesTaskReviewAdapter } from '../src/renderer/ai/task-review'
 import { createSlidesSkill, type DeckAccess } from '../src/renderer/ai/slides-skill'
 
@@ -67,6 +69,122 @@ function enrollment(): SlidesTaskEnrollment {
 }
 
 describe('Slides verified task controller', () => {
+  it('executes the shared pages 6-8 golden through production compiler, controller and render reviewer', async () => {
+    const calls = PRESENTATION_CONSISTENCY_GOLDEN.operations.map((operation, index) => ({
+      id: `golden-${index}`,
+      name: operation.property === 'color' ? 'set_element_style' : 'set_element_transform',
+      input: {
+        slideIndex: operation.slide - 1,
+        sourceId: operation.targetToken.split(':')[1],
+        ...(operation.property === 'color'
+          ? { color: operation.value }
+          : {
+              [operation.property === 'width'
+                ? 'w'
+                : operation.property === 'height'
+                  ? 'h'
+                  : operation.property]: operation.value,
+            }),
+      },
+    })) as AgentToolCall[]
+    const sourceTargetTokens = Object.fromEntries(
+      PRESENTATION_CONSISTENCY_GOLDEN.pages.flatMap((page) =>
+        page.shapes.map((shape) => [`${page.slide}:${shape.role}`, shape.targetToken]),
+      ),
+    )
+    const authority = {
+      documentToken: PRESENTATION_CONSISTENCY_GOLDEN.documentToken,
+      sessionToken: PRESENTATION_CONSISTENCY_GOLDEN.sessionToken,
+      revision: PRESENTATION_CONSISTENCY_GOLDEN.baseRevision,
+      slides: PRESENTATION_CONSISTENCY_GOLDEN.pages.map((page) => ({
+        number: page.slide,
+        slideToken: `slide-${page.slide}`,
+        elements: page.shapes.map((shape) => ({
+          targetToken: shape.targetToken,
+          role: shape.role as 'title' | 'body' | 'emphasis',
+          locked: false,
+          properties: { color: shape.color, ...(shape.x === undefined ? {} : { x: shape.x }) },
+        })),
+      })),
+    }
+    const compiled = compileCanonicalSlidesCalls({
+      calls,
+      authority,
+      sourceTargetTokens,
+      taskId: 'golden-pc',
+    })
+    if ('kind' in compiled) throw new Error('golden did not compile')
+    expect(compiled.plan).toEqual([
+      'presentation_apply_bounded_edits',
+      'presentation_verify_postconditions',
+    ])
+    const outside = JSON.stringify(authority.slides[4])
+    const renderReview = adapter({
+      refresh: vi.fn().mockImplementation(async (lineage) => ({
+        documentToken: authority.documentToken,
+        sessionToken: authority.sessionToken,
+        revision: `sha256:${'2'.repeat(64)}`,
+        leaseToken: 'golden-lease',
+        ...lineage,
+      })),
+      verifyDeterministic: vi
+        .fn()
+        .mockImplementation(async (contract: typeof compiled.contract) =>
+          contract.checks.map(({ id }) => ({ checkId: id, status: 'pass' as const })),
+        ),
+      capture: vi.fn().mockImplementation(async ({ slide, role, authority }) => ({
+        slide,
+        role,
+        mediaToken: `golden-${slide}`,
+        bytes: 100,
+        revision: authority.revision,
+        leaseToken: authority.leaseToken,
+        sessionToken: authority.sessionToken,
+      })),
+      review: vi.fn().mockResolvedValue({
+        status: 'pass',
+        failedCheckIds: [],
+        observations: [],
+        fixIntents: [],
+      }),
+    })
+    const telemetry = vi.fn()
+    const controller = createSlidesTaskController({
+      enroll: async () => compiled,
+      reviewAdapter: renderReview,
+      telemetry,
+    })
+    const ready = await controller.hooks.enroll!(calls, undefined)
+    if (ready.kind !== 'ready') throw new Error('not ready')
+    for (const [index, target] of [...new Set(compiled.plannedMutationTargets)].entries())
+      controller.recordMutation({
+        transactionId: `golden-tx-${index}`,
+        status: 'applied',
+        mutatedTargetTokens: [target],
+      })
+    await expect(
+      controller.hooks.complete({
+        contract: ready.contract,
+        mutated: true,
+        cancelled: false,
+        correctionPasses: 0,
+      }),
+    ).resolves.toMatchObject({
+      kind: 'receipt',
+      receipt: { status: 'verified', passedCheckIds: { length: 17 } },
+    })
+    expect(renderReview.capture).toHaveBeenCalled()
+    expect(telemetry).toHaveBeenCalledWith({
+      host: 'pc',
+      phase: 'complete',
+      outcome: 'success',
+      code: 'verified',
+      count: 3,
+      durationMs: expect.any(Number),
+    })
+    expect(JSON.stringify(telemetry.mock.calls)).not.toMatch(/slide-|golden-|title|body|emphasis/)
+    expect(JSON.stringify(authority.slides[4])).toBe(outside)
+  })
   it('mounts set_element_style through enrollment, one canonical transaction, screenshot review, and receipt', async () => {
     const execute = vi.fn(async (request: { transactionId: string }) => ({
       receipt: {

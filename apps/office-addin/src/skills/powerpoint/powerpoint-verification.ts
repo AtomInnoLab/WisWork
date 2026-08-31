@@ -14,6 +14,8 @@ import {
   type PresentationCompletionReceipt,
   type SupportedProperty,
   type PresentationVerificationFlags,
+  type PresentationTelemetryEvent,
+  presentationCompletionTelemetry,
   type VisualReviewResult,
 } from '@wiswork/presentation-verification'
 import type { PowerPointAdapter } from './browser-powerpoint-adapter.js'
@@ -129,13 +131,28 @@ export function createBrowserPowerPointVerificationAuthority(
     acquire: lease,
     current: lease,
     async readShape(slideIndex, shapeId, signal) {
-      const [shapes, text] = await Promise.all([
+      const [shapes, text, style] = await Promise.all([
         adapter.listSlideShapes(slideIndex, signal),
         adapter.readSlideText(slideIndex, shapeId, signal).catch(() => undefined),
+        adapter.readShapeTextStyle?.(slideIndex, shapeId, signal).catch(() => undefined),
       ])
       const shape = shapes.shapes.find((item) => item.id === shapeId)
       if (!shape) throw new Error('office_read_failed')
-      return { slideId: shapes.slideId, shapeId, ...(text ? { text: text.text } : {}), ...shape }
+      return {
+        slideId: shapes.slideId,
+        shapeId,
+        ...(text ? { text: text.text } : {}),
+        ...(style
+          ? {
+              color: style.color,
+              fontFamily: style.fontFamily,
+              fontSize: style.fontSize,
+              bold: style.bold,
+              italic: style.italic,
+            }
+          : {}),
+        ...shape,
+      }
     },
     async readSlide(slideIndex, signal) {
       const state = await adapter.listSlideShapes(slideIndex, signal)
@@ -204,6 +221,31 @@ function callOperations(call: AgentToolCall): Array<{
     const slide = (op.slide_index as number) + 1
     if (op.op === 'set_shape_text' && typeof op.text === 'string')
       result.push({ slide, target: op.shape_id, property: 'text', expected: op.text, opIndex })
+    if (op.op === 'set_shape_text_style') {
+      const style = [
+        ['color', 'color'],
+        ['fontFamily', 'font_family'],
+        ['fontSize', 'font_size'],
+        ['bold', 'bold'],
+        ['italic', 'italic'],
+      ] as const
+      for (const [key, property] of style)
+        if (
+          typeof op[key] ===
+          (key === 'bold' || key === 'italic'
+            ? 'boolean'
+            : key === 'fontSize'
+              ? 'number'
+              : 'string')
+        )
+          result.push({
+            slide,
+            target: op.shape_id,
+            property,
+            expected: op[key] as string | number | boolean,
+            opIndex,
+          })
+    }
     if (op.op === 'set_shape_geometry')
       for (const key of geometry)
         if (typeof op[key] === 'number')
@@ -270,6 +312,7 @@ export function createOfficePowerPointVerification(options: {
   delay?: (milliseconds: number) => Promise<void>
   reviewer?: OfficePowerPointVisualReviewer
   flags?: PresentationVerificationFlags
+  telemetry?: (event: PresentationTelemetryEvent) => void
 }): OfficePowerPointVerificationHooks {
   let reviewer = options.reviewer
   let enrolled:
@@ -294,7 +337,7 @@ export function createOfficePowerPointVerification(options: {
     planning: true,
     verifiedCompletion: true,
     visualReview: true,
-    autoCorrection: true,
+    autoCorrection: false,
   }
 
   const enroll = async (
@@ -307,7 +350,10 @@ export function createOfficePowerPointVerification(options: {
       (call.name === 'execute_office_js' &&
         program(call.input).length > 0 &&
         program(call.input).every(
-          (op) => op.op === 'set_shape_text' || op.op === 'set_shape_geometry',
+          (op) =>
+            op.op === 'set_shape_text' ||
+            op.op === 'set_shape_geometry' ||
+            op.op === 'set_shape_text_style',
         ))
     const mutationTools = new Set([
       'edit_slide_text',
@@ -489,7 +535,7 @@ export function createOfficePowerPointVerification(options: {
       contract,
       requiresConfirmation: false,
       ...(flags.planning && calls.length > 1
-        ? { plan: ['Apply approved PowerPoint edits', 'Verify exact post-write properties'] }
+        ? { plan: ['presentation_apply_bounded_edits', 'presentation_verify_postconditions'] }
         : {}),
     }
   }
@@ -511,7 +557,7 @@ export function createOfficePowerPointVerification(options: {
     },
   })
 
-  return {
+  const hooks: OfficePowerPointVerificationHooks = {
     prepare: () => ({ kind: 'bypass' }),
     enroll: (calls, currentContract, signal) => enroll(calls, currentContract, signal),
     recordProposal(value) {
@@ -692,6 +738,16 @@ export function createOfficePowerPointVerification(options: {
         : failed.length
           ? 'needs_user'
           : 'verified'
+      if (status === 'verified' && !flags.visualReview)
+        return receipt(contract, {
+          status: 'applied_unverified',
+          mutationReceiptIds: confirmed.map((item) => item.id),
+          passedCheckIds: [],
+          failedCheckIds: [],
+          unavailableCheckIds: allIds,
+          correctionPasses: context.correctionPasses,
+          safeCode: 'visual_disabled',
+        })
       if (status === 'verified' && reviewer && flags.visualReview) {
         const reviewAbort = new AbortController()
         activeReviewAbort = reviewAbort
@@ -793,7 +849,18 @@ export function createOfficePowerPointVerification(options: {
               return (
                 check?.kind === 'element_property' &&
                 check.roleOrTarget.kind === 'target' &&
-                ['text', 'x', 'y', 'width', 'height'].includes(intent.property) &&
+                [
+                  'text',
+                  'color',
+                  'font_family',
+                  'font_size',
+                  'bold',
+                  'italic',
+                  'x',
+                  'y',
+                  'width',
+                  'height',
+                ].includes(intent.property) &&
                 intent.property === check.property &&
                 JSON.stringify(intent.roleOrTarget) === JSON.stringify(check.roleOrTarget) &&
                 intent.value === check.expected
@@ -855,4 +922,15 @@ export function createOfficePowerPointVerification(options: {
       })
     },
   }
+  const complete = hooks.complete.bind(hooks)
+  hooks.complete = async (context) => {
+    const startedAt = Date.now()
+    const result = await complete(context)
+    if (result.kind === 'receipt')
+      options.telemetry?.(
+        presentationCompletionTelemetry('office', result.receipt, Date.now() - startedAt),
+      )
+    return result
+  }
+  return hooks
 }

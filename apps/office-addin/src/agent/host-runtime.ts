@@ -1,5 +1,8 @@
 import type { AgentSkill } from '@wiswork/agent-core'
-import type { PresentationVerificationFlags } from '@wiswork/presentation-verification'
+import type {
+  PresentationTelemetryEvent,
+  PresentationVerificationFlags,
+} from '@wiswork/presentation-verification'
 import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
 import {
   createOfficeDocumentClient,
@@ -80,6 +83,7 @@ export function createOfficeHostRuntime(
     platform?: string
     diagnostics?: Pick<OfficeDiagnostics, 'setTool' | 'record'>
     presentationVerification?: PresentationVerificationFlags
+    presentationTelemetry?: (event: PresentationTelemetryEvent) => void
   } = {},
 ): OfficeHostRuntime {
   if (host === 'unknown') throw new Error('office_host_unsupported')
@@ -123,6 +127,7 @@ export function createOfficeHostRuntime(
           ? createBrowserPowerPointVerificationAuthority(powerPointAdapter!)
           : undefined,
         presentationFlags,
+        presentationTelemetry: options.presentationTelemetry,
       }),
   }[host]()
   const extensions =

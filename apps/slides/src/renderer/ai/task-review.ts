@@ -131,7 +131,8 @@ const unavailable = (
     | 'verification_invalid'
     | 'stale_authority'
     | 'cancelled'
-    | 'cancelled_after_apply' = 'screenshot_unavailable',
+    | 'cancelled_after_apply'
+    | 'visual_disabled' = 'screenshot_unavailable',
 ): PresentationCompletionReceipt =>
   parsePresentationCompletionReceipt(
     {
@@ -301,15 +302,17 @@ export async function runSlidesTaskReview(input: {
             },
             contract,
           )
+        if (!failed.length)
+          return unavailable(contract, receipts, correctionPasses, rollbackId, 'visual_disabled')
         return accountedReceipt({
           contract,
-          status: failed.length ? 'needs_user' : 'verified',
+          status: 'needs_user',
           results: deterministic,
           visualFailed: [],
           receipts,
           correctionPasses,
           ...(rollbackId ? { rollbackId } : {}),
-          ...(failed.length ? { safeCode: 'unsupported_check' as const } : {}),
+          safeCode: 'unsupported_check',
         })
       }
       const pages = [

@@ -7,6 +7,7 @@ import {
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import { createPowerPointSkill } from '../src/skills/powerpoint/powerpoint-skill.js'
 import type { PowerPointAdapter } from '../src/skills/powerpoint/browser-powerpoint-adapter.js'
+import { PRESENTATION_CONSISTENCY_GOLDEN } from '@wiswork/presentation-verification'
 
 const authority = (overrides = {}) => ({
   acquire: vi.fn().mockResolvedValue({
@@ -132,6 +133,7 @@ describe('Office PowerPoint presentation verification', () => {
       authority: source,
       reviewer,
       taskId: () => 'task-visual',
+      flags: { planning: true, verifiedCompletion: true, visualReview: true, autoCorrection: true },
     })
     const enrolled = await subject.enroll([call], undefined)
     if (enrolled.kind !== 'ready') throw new Error('not ready')
@@ -167,6 +169,62 @@ describe('Office PowerPoint presentation verification', () => {
     const request = run.reviewer.review.mock.calls[0]![0]
     expect(request.isolation).toEqual({ tools: [], maxTurns: 1 })
     expect(JSON.stringify(request.facts)).not.toContain('Final')
+  })
+
+  it('never reports an applied write verified when visual review is disabled', async () => {
+    const run = await visualSubject(async () => ({
+      status: 'pass',
+      failedCheckIds: [],
+      observations: [],
+      fixIntents: [],
+    }))
+    let applied = false
+    const subject = createOfficePowerPointVerification({
+      authority: authority({
+        readShape: vi.fn().mockImplementation(async () => ({
+          slideId: 'slide-1',
+          shapeId: 'shape-1',
+          text: applied ? 'Final' : 'Before',
+          left: 10,
+          top: 20,
+          width: 100,
+          height: 30,
+        })),
+      }),
+      reviewer: run.reviewer,
+      taskId: () => 'task-visual-disabled',
+      flags: {
+        planning: true,
+        verifiedCompletion: true,
+        visualReview: false,
+        autoCorrection: false,
+      },
+    })
+    const call = { ...textCall, id: 'visual-disabled', input: { ...textCall.input, text: 'Final' } }
+    const enrolled = await subject.enroll([call], undefined)
+    if (enrolled.kind !== 'ready') throw new Error('not ready')
+    applied = true
+    const proposal = {
+      id: 'visual-disabled-proposal',
+      toolName: call.name,
+      fingerprint: 'state',
+      targets: ['slide-1/shape-1'],
+      verificationBinding: canonicalPowerPointVerificationBinding(call, ['slide-1/shape-1']),
+    }
+    subject.recordProposal(proposal)
+    subject.recordSettlement({ id: proposal.id, status: 'confirmed' })
+    await expect(
+      subject.complete({
+        contract: enrolled.contract,
+        mutated: true,
+        cancelled: false,
+        correctionPasses: 0,
+      }),
+    ).resolves.toMatchObject({
+      kind: 'receipt',
+      receipt: { status: 'applied_unverified', safeCode: 'visual_disabled' },
+    })
+    expect(run.reviewer.review).not.toHaveBeenCalled()
   })
 
   it('requests one bounded safe correction, stops at two, and rejects unsafe fixes', async () => {
@@ -492,6 +550,192 @@ describe('Office PowerPoint presentation verification', () => {
       kind: 'receipt',
       receipt: { status: 'verified', mutationReceiptIds: [expect.any(String)] },
     })
+  })
+
+  it('verifies a real confirmation-gated declarative text color through durable authority', async () => {
+    let color = '#000000'
+    const adapter = productionAdapter({ text: 'Title', left: 10 })
+    adapter.executeDeclarative = vi.fn().mockImplementation(async (operations) => {
+      color = operations[0].color
+      return { createdShapeIds: [] }
+    })
+    adapter.readShapeTextStyle = vi.fn().mockImplementation(async () => ({ color }))
+    const verificationAuthority = authority({
+      readShape: vi.fn().mockImplementation(async () => ({
+        slideId: 'slide-1',
+        shapeId: 'shape-1',
+        text: 'Title',
+        color,
+        left: 10,
+        top: 20,
+        width: 100,
+        height: 30,
+      })),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter, proposals, verificationAuthority })
+    const call = {
+      id: 'style-color',
+      name: 'execute_office_js',
+      input: {
+        program: {
+          version: 1,
+          operations: [
+            { op: 'set_shape_text_style', slide_index: 0, shape_id: 'shape-1', color: '#2457A7' },
+          ],
+        },
+      },
+    }
+    const enrolled = await skill.presentation!.enroll!([call], undefined)
+    if (enrolled.kind !== 'ready') throw new Error('not ready')
+    await skill.executeTool!(call)
+    await proposals.confirm(proposals.pending()!.id)
+    await expect(
+      skill.presentation!.complete({
+        contract: enrolled.contract,
+        mutated: true,
+        cancelled: false,
+        correctionPasses: 0,
+      }),
+    ).resolves.toMatchObject({
+      kind: 'receipt',
+      receipt: { status: 'verified', passedCheckIds: [expect.stringContaining('color')] },
+    })
+    expect(color).toBe('#2457A7')
+  })
+
+  it('executes the shared pages 6-8 consistency golden through skill, proposal, authority and screenshots', async () => {
+    const state = new Map(
+      PRESENTATION_CONSISTENCY_GOLDEN.pages.flatMap((page) =>
+        page.shapes.map((shape) => [`${page.slide}:${shape.role}`, { ...shape }] as const),
+      ),
+    )
+    const outside = JSON.stringify(state.get('5:title'))
+    const adapter = productionAdapter({ text: 'x', left: 10 })
+    adapter.snapshotSlide = vi.fn().mockImplementation(async (index) => ({
+      slideId: `slide-${index + 1}`,
+      fingerprint: `slide-${index + 1}:stable`,
+    }))
+    adapter.listSlideShapes = vi.fn().mockImplementation(async (index) => ({
+      slideId: `slide-${index + 1}`,
+      slideIndex: index,
+      shapes: ['title', 'body', 'emphasis'].map((id) => {
+        const value = state.get(`${index + 1}:${id}`)!
+        return {
+          id,
+          name: id,
+          type: 'TextBox',
+          left: value.x ?? 0,
+          top: value.y ?? 0,
+          width: value.width ?? 100,
+          height: value.height ?? 30,
+        }
+      }),
+    }))
+    adapter.executeDeclarative = vi.fn().mockImplementation(async (operations) => {
+      for (const operation of operations) {
+        const value = state.get(`${operation.slide_index + 1}:${operation.shape_id}`)!
+        if (operation.op === 'set_shape_text_style')
+          Object.assign(value, { color: operation.color })
+        if (operation.op === 'set_shape_geometry')
+          Object.assign(value, {
+            x: operation.left,
+            y: operation.top,
+            width: operation.width,
+            height: operation.height,
+          })
+      }
+      return { createdShapeIds: [] }
+    })
+    adapter.readShapeTextStyle = vi.fn().mockImplementation(async (index, shapeId) => ({
+      color: state.get(`${index + 1}:${shapeId}`)?.color,
+    }))
+    const verificationAuthority = authority({
+      acquire: vi.fn().mockResolvedValue({
+        documentToken: PRESENTATION_CONSISTENCY_GOLDEN.documentToken,
+        sessionToken: PRESENTATION_CONSISTENCY_GOLDEN.sessionToken,
+        revision: PRESENTATION_CONSISTENCY_GOLDEN.baseRevision,
+      }),
+      current: vi.fn().mockResolvedValue({
+        documentToken: PRESENTATION_CONSISTENCY_GOLDEN.documentToken,
+        sessionToken: PRESENTATION_CONSISTENCY_GOLDEN.sessionToken,
+        revision: `sha256:${'2'.repeat(64)}`,
+      }),
+      readShape: vi.fn().mockImplementation(async (index, shapeId) => ({
+        slideId: `slide-${index + 1}`,
+        shapeId,
+        ...state.get(`${index + 1}:${shapeId}`),
+        left: state.get(`${index + 1}:${shapeId}`)?.x,
+        top: state.get(`${index + 1}:${shapeId}`)?.y,
+      })),
+    })
+    const proposals = createStructuredProposalController()
+    const reviewer = {
+      review: vi.fn().mockResolvedValue({
+        status: 'pass',
+        failedCheckIds: [],
+        observations: [],
+        fixIntents: [],
+      }),
+    }
+    const telemetry = vi.fn()
+    const skill = createPowerPointSkill({
+      adapter,
+      proposals,
+      verificationAuthority,
+      visualReviewer: reviewer,
+      presentationTelemetry: telemetry,
+    })
+    const operations = PRESENTATION_CONSISTENCY_GOLDEN.operations
+      .filter((operation) => operation.property === 'color' || operation.property === 'x')
+      .map((operation) =>
+        operation.property === 'color'
+          ? {
+              op: 'set_shape_text_style',
+              slide_index: operation.slide - 1,
+              shape_id: operation.targetToken.split(':')[1],
+              color: operation.value,
+            }
+          : {
+              op: 'set_shape_geometry',
+              slide_index: operation.slide - 1,
+              shape_id: 'title',
+              left: operation.value,
+              top: 48,
+              width: 816,
+              height: 54,
+            },
+      )
+    const call = {
+      id: 'golden-pages-6-8',
+      name: 'execute_office_js',
+      input: { program: { version: 1, operations } },
+    }
+    const enrolled = await skill.presentation!.enroll!([call], undefined)
+    if (enrolled.kind !== 'ready') throw new Error('not ready')
+    await skill.executeTool!(call)
+    await proposals.confirm(proposals.pending()!.id)
+    const completed = await skill.presentation!.complete({
+      contract: enrolled.contract,
+      mutated: true,
+      cancelled: false,
+      correctionPasses: 0,
+    })
+    expect(completed).toMatchObject({
+      kind: 'receipt',
+      receipt: { status: 'verified', passedCheckIds: { length: 17 } },
+    })
+    expect(reviewer.review).toHaveBeenCalledOnce()
+    expect(telemetry).toHaveBeenCalledWith({
+      host: 'office',
+      phase: 'complete',
+      outcome: 'success',
+      code: 'verified',
+      count: 3,
+      durationMs: expect.any(Number),
+    })
+    expect(JSON.stringify(telemetry.mock.calls)).not.toMatch(/slide-|golden-|title|body|emphasis/)
+    expect(JSON.stringify(state.get('5:title'))).toBe(outside)
   })
 
   it.each(['text', 'declarative'] as const)(

@@ -9,18 +9,20 @@ import {
   presentationVerificationFlags,
   renderPresentationCompletionFacts,
   PRESENTATION_GOLDEN_CASES,
-  assertPresentationGoldenParity,
+  PRESENTATION_CONSISTENCY_GOLDEN,
   parsePresentationTelemetryEvent,
 } from '../src/index'
 
 describe('cross-host golden contract', () => {
-  it('requires identical terminal semantics from both production adapters', () => {
-    const reports = PRESENTATION_GOLDEN_CASES.flatMap(({ id, expected }) => [
-      { host: 'pc' as const, caseId: id, status: expected },
-      { host: 'office' as const, caseId: id, status: expected },
-    ])
-    expect(() => assertPresentationGoldenParity(reports)).not.toThrow()
-    expect(() => assertPresentationGoldenParity(reports.slice(1))).toThrow(/one report per host/)
+  it('contains executable authority, page, operation and check-accounting facts', () => {
+    expect(PRESENTATION_GOLDEN_CASES).toHaveLength(12)
+    expect(PRESENTATION_CONSISTENCY_GOLDEN.pages).toHaveLength(8)
+    expect(PRESENTATION_CONSISTENCY_GOLDEN.operations).toHaveLength(
+      PRESENTATION_CONSISTENCY_GOLDEN.expectedCheckCount,
+    )
+    expect(
+      PRESENTATION_CONSISTENCY_GOLDEN.operations.every(({ slide }) => slide >= 6 && slide <= 8),
+    ).toBe(true)
   })
 
   it('only accepts privacy-safe telemetry dimensions', () => {
@@ -28,6 +30,7 @@ describe('cross-host golden contract', () => {
       parsePresentationTelemetryEvent({
         host: 'pc',
         phase: 'complete',
+        outcome: 'success',
         code: 'verified',
         count: 7,
         durationMs: 24,
@@ -46,6 +49,7 @@ describe('cross-host golden contract', () => {
         parsePresentationTelemetryEvent({
           host: 'office',
           phase: 'visual',
+          outcome: 'failed',
           code: 'pass',
           count: 1,
           durationMs: 1,

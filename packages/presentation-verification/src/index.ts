@@ -159,6 +159,7 @@ export type SafeCompletionCode =
   | 'unsupported_check'
   | 'cancelled'
   | 'mutation_failed'
+  | 'visual_disabled'
 
 export type PresentationRenderingFacts = {
   contractDigest: string
@@ -758,6 +759,7 @@ export const parsePresentationCompletionReceipt = (
           'unsupported_check',
           'cancelled',
           'mutation_failed',
+          'visual_disabled',
         ] as const,
         'receipt.safeCode',
       )
@@ -802,7 +804,8 @@ export const parsePresentationCompletionReceipt = (
     safeCode !== 'review_unavailable' &&
     safeCode !== 'verification_invalid' &&
     safeCode !== 'stale_authority' &&
-    safeCode !== 'cancelled_after_apply'
+    safeCode !== 'cancelled_after_apply' &&
+    safeCode !== 'visual_disabled'
   )
     fail('applied_unverified receipt has an incoherent status safeCode')
   if (status === 'failed' && (mutationReceiptIds.length !== 0 || unprovedCount === 0))
@@ -886,83 +889,96 @@ export type PresentationGoldenCase = Readonly<{
     | 'stale_authority'
     | 'scope_expansion'
     | 'privacy'
-  expected: PresentationCompletionReceipt['status']
   slideCount: number
 }>
 
-/** Adapter-neutral outcomes exercised through both production host adapters. */
+/** Scenario inputs only. Host outcomes must be derived by executing production adapters. */
 export const PRESENTATION_GOLDEN_CASES: readonly PresentationGoldenCase[] = [
   {
-    id: 'consistent-7-slides',
+    id: 'consistent-pages-6-8',
     scenario: 'multi_slide_consistency',
-    expected: 'verified',
-    slideCount: 7,
+    slideCount: 8,
   },
-  { id: 'already-correct', scenario: 'already_correct', expected: 'unchanged', slideCount: 1 },
+  { id: 'already-correct', scenario: 'already_correct', slideCount: 1 },
   {
     id: 'ambiguous-emphasis',
     scenario: 'ambiguous_emphasis',
-    expected: 'needs_user',
     slideCount: 6,
   },
   {
     id: 'capture-missing',
     scenario: 'screenshot_unavailable',
-    expected: 'applied_unverified',
     slideCount: 1,
   },
   {
     id: 'one-safe-correction',
     scenario: 'visual_safe_correction',
-    expected: 'verified',
     slideCount: 1,
   },
-  { id: 'unsafe-fix', scenario: 'unsafe_fix', expected: 'needs_user', slideCount: 1 },
-  { id: 'cancel-before-write', scenario: 'cancel_pre', expected: 'unchanged', slideCount: 1 },
+  { id: 'unsafe-fix', scenario: 'unsafe_fix', slideCount: 1 },
+  { id: 'cancel-before-write', scenario: 'cancel_pre', slideCount: 1 },
   {
     id: 'cancel-after-write',
     scenario: 'cancel_post',
-    expected: 'applied_unverified',
     slideCount: 1,
   },
   {
     id: 'session-replaced',
     scenario: 'session_replacement',
-    expected: 'applied_unverified',
     slideCount: 1,
   },
   {
     id: 'authority-stale',
     scenario: 'stale_authority',
-    expected: 'applied_unverified',
     slideCount: 1,
   },
-  { id: 'scope-expanded', scenario: 'scope_expansion', expected: 'needs_user', slideCount: 1 },
-  { id: 'private-content', scenario: 'privacy', expected: 'verified', slideCount: 1 },
+  { id: 'scope-expanded', scenario: 'scope_expansion', slideCount: 1 },
+  { id: 'private-content', scenario: 'privacy', slideCount: 1 },
 ]
 
-export function assertPresentationGoldenParity(
-  reports: ReadonlyArray<
-    Readonly<{
-      host: 'pc' | 'office'
-      caseId: string
-      status: PresentationCompletionReceipt['status']
-    }>
-  >,
-): void {
-  for (const fixture of PRESENTATION_GOLDEN_CASES) {
-    const actual = reports.filter(({ caseId }) => caseId === fixture.id)
-    if (actual.length !== 2 || new Set(actual.map(({ host }) => host)).size !== 2)
-      fail(`golden case ${fixture.id} requires one report per host`)
-    if (actual.some(({ status }) => status !== fixture.expected))
-      fail(`golden case ${fixture.id} has divergent terminal semantics`)
-  }
-}
+export const PRESENTATION_CONSISTENCY_GOLDEN = Object.freeze({
+  documentToken: 'golden-document',
+  sessionToken: 'golden-session',
+  baseRevision: `sha256:${'1'.repeat(64)}`,
+  reference: { slide: 6, title: { x: 72, y: 48, width: 816, height: 54 } },
+  colors: { title: '#2457A7', body: '#172033', emphasis: '#18A0A6' },
+  pages: Array.from({ length: 8 }, (_, index) => ({
+    slide: index + 1,
+    shapes: ['title', 'body', 'emphasis'].map((role) => ({
+      targetToken: `slide-${index + 1}:${role}`,
+      role,
+      color: '#000000',
+      ...(role === 'title' ? { x: index + 1 === 6 ? 72 : 80, y: 48, width: 816, height: 54 } : {}),
+    })),
+  })),
+  operations: [6, 7, 8].flatMap((slide) => [
+    { slide, targetToken: `slide-${slide}:title`, property: 'color', value: '#2457A7' },
+    { slide, targetToken: `slide-${slide}:body`, property: 'color', value: '#172033' },
+    { slide, targetToken: `slide-${slide}:emphasis`, property: 'color', value: '#18A0A6' },
+    ...(slide === 6
+      ? []
+      : [
+          { slide, targetToken: `slide-${slide}:title`, property: 'x', value: 72 },
+          { slide, targetToken: `slide-${slide}:title`, property: 'y', value: 48 },
+          { slide, targetToken: `slide-${slide}:title`, property: 'width', value: 816 },
+          { slide, targetToken: `slide-${slide}:title`, property: 'height', value: 54 },
+        ]),
+  ]),
+  expectedCheckCount: 17,
+})
 
 export type PresentationTelemetryEvent = Readonly<{
   host: 'pc' | 'office'
   phase: 'plan' | 'dispatch' | 'deterministic' | 'visual' | 'correction' | 'complete'
-  code: string
+  outcome: 'success' | 'unchanged' | 'needs_user' | 'unverified' | 'failed' | 'cancelled'
+  code:
+    | 'ready'
+    | 'verified'
+    | 'unchanged'
+    | 'needs_user'
+    | 'applied_unverified'
+    | 'failed'
+    | SafeCompletionCode
   count: number
   durationMs: number
 }>
@@ -970,12 +986,13 @@ export type PresentationTelemetryEvent = Readonly<{
 /** Exact allow-list: prompts, content, identifiers, receipts, fingerprints and images cannot pass. */
 export function parsePresentationTelemetryEvent(value: unknown): PresentationTelemetryEvent {
   const record = readObject(value, 'telemetry event')
-  const allowed = new Set(['host', 'phase', 'code', 'count', 'durationMs'])
+  const allowed = new Set(['host', 'phase', 'outcome', 'code', 'count', 'durationMs'])
   if (Object.keys(record).some((key) => !allowed.has(key)))
     fail('telemetry event contains private fields')
   const host = record.host
   const phase = record.phase
   const code = record.code
+  const outcome = record.outcome
   const count = record.count
   const durationMs = record.durationMs
   if (host !== 'pc' && host !== 'office') fail('invalid telemetry host')
@@ -985,7 +1002,28 @@ export function parsePresentationTelemetryEvent(value: unknown): PresentationTel
     )
   )
     fail('invalid telemetry phase')
-  if (typeof code !== 'string' || !/^[a-z0-9_]{1,48}$/.test(code)) fail('invalid telemetry code')
+  const outcomes = ['success', 'unchanged', 'needs_user', 'unverified', 'failed', 'cancelled']
+  if (!outcomes.includes(String(outcome))) fail('invalid telemetry outcome')
+  const codes = [
+    'ready',
+    'verified',
+    'unchanged',
+    'needs_user',
+    'applied_unverified',
+    'failed',
+    'screenshot_unavailable',
+    'review_unavailable',
+    'verification_invalid',
+    'cancelled_after_apply',
+    'office_state_uncertain',
+    'stale_authority',
+    'confirmation_required',
+    'unsupported_check',
+    'cancelled',
+    'mutation_failed',
+    'visual_disabled',
+  ]
+  if (!codes.includes(String(code))) fail('invalid telemetry code')
   if (!Number.isSafeInteger(count) || (count as number) < 0 || (count as number) > 1000)
     fail('invalid telemetry count')
   if (
@@ -997,8 +1035,30 @@ export function parsePresentationTelemetryEvent(value: unknown): PresentationTel
   return {
     host,
     phase: phase as PresentationTelemetryEvent['phase'],
-    code,
+    outcome: outcome as PresentationTelemetryEvent['outcome'],
+    code: code as PresentationTelemetryEvent['code'],
     count: count as number,
     durationMs: durationMs as number,
   }
+}
+
+export function presentationCompletionTelemetry(
+  host: PresentationTelemetryEvent['host'],
+  facts: Pick<PresentationCompletionFacts, 'status' | 'affectedSlides' | 'safeCode'>,
+  durationMs: number,
+): PresentationTelemetryEvent {
+  const outcome =
+    facts.status === 'verified'
+      ? 'success'
+      : facts.status === 'applied_unverified'
+        ? 'unverified'
+        : facts.status
+  return parsePresentationTelemetryEvent({
+    host,
+    phase: 'complete',
+    outcome,
+    code: facts.safeCode ?? facts.status,
+    count: facts.affectedSlides.length,
+    durationMs: Math.max(0, Math.round(durationMs)),
+  })
 }
