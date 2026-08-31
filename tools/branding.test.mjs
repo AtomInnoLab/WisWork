@@ -14,6 +14,7 @@ function json(path) {
 }
 
 afterEach(() => {
+  delete process.env.WISWORK_UPDATE_PROVIDER
   delete process.env.WISWORK_UPDATE_URL
   delete process.env.WISWORK_UNSIGNED_MAC_BUILD
   delete process.env.WISWORK_TECTONIC_SOURCE
@@ -57,11 +58,16 @@ test('all distributable apps use WisWork names and AtomInnoLab bundle identifier
 })
 
 test('shell packaging uses WisWork update URL and exact product metadata', () => {
+  process.env.WISWORK_UPDATE_PROVIDER = 'generic'
   process.env.WISWORK_UPDATE_URL = 'https://updates.example/wiswork/'
   const config = require('../apps/shell/electron-builder.cjs')
   assert.equal(config.appId, 'com.atominnolab.wiswork')
   assert.equal(config.productName, 'WisWork')
-  assert.equal(config.artifactName, 'WisWork-${version}-${arch}.${ext}')
+  assert.equal(
+    config.mac.artifactName,
+    process.arch === 'x64' ? 'WisWork-${version}.${ext}' : 'WisWork-${version}-arm64.${ext}',
+  )
+  assert.equal(config.win.artifactName, 'WisWork-${version}-${arch}.${ext}')
   assert.equal(config.publish[0].url, 'https://updates.example/wiswork')
   assert.equal(config.mac.identity, undefined)
   assert.equal(config.mac.notarize, true)
