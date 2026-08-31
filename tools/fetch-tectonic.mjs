@@ -28,6 +28,32 @@ export const INITIAL_HOSTS = Object.freeze(['github.com'])
 export const REDIRECT_HOSTS = Object.freeze(['release-assets.githubusercontent.com'])
 const execFileAsync = promisify(execFile)
 
+class TectonicFetchError extends Error {
+  constructor(stage, cause) {
+    super(`Tectonic ${stage} failed`, { cause })
+    this.stage = stage
+  }
+}
+
+async function runAtStage(stage, task) {
+  try {
+    return await task()
+  } catch (error) {
+    throw new TectonicFetchError(stage, error)
+  }
+}
+
+export function diagnosticForFailure(error) {
+  const cause = error instanceof TectonicFetchError ? error.cause : error
+  const systemCode =
+    typeof cause?.code === 'string' && /^[A-Z0-9_]{1,32}$/.test(cause.code) ? cause.code : 'UNKNOWN'
+  return {
+    code: 'TECTONIC_FETCH_FAILED',
+    stage: error instanceof TectonicFetchError ? error.stage : 'prepare',
+    systemCode,
+  }
+}
+
 export function parseArguments(argv) {
   let platform
   let manifestPath = DEFAULT_MANIFEST_PATH
@@ -433,23 +459,26 @@ function parseVersion(stdout) {
 
 export async function main(argv = process.argv.slice(2)) {
   const options = parseArguments(argv)
-  const manifest = JSON.parse(await readFile(options.manifestPath, 'utf8'))
-  const asset = selectPlatformAsset(manifest, options.platform)
+  const manifest = await runAtStage('manifest', async () =>
+    JSON.parse(await readFile(options.manifestPath, 'utf8')),
+  )
+  const asset = await runAtStage('manifest', async () =>
+    selectPlatformAsset(manifest, options.platform),
+  )
   const archiveExtension = asset.archive.format === 'zip' ? '.zip' : '.tar.gz'
   const targetPath = resolve(options.cachePath, `${asset.id}${archiveExtension}`)
   assertWithin(options.cachePath, targetPath)
-  const result = await fetchVerifiedAsset(asset, targetPath, {
-    onRetry: (attempt) =>
-      process.stderr.write(`${JSON.stringify({ code: 'TECTONIC_FETCH_RETRY', attempt })}\n`),
-  })
-  const executablePath = await extractVerifiedTectonic(
-    asset,
-    result.path,
-    options.cachePath,
-    manifest.tectonic.version,
+  const result = await runAtStage('download', () =>
+    fetchVerifiedAsset(asset, targetPath, {
+      onRetry: (attempt) =>
+        process.stderr.write(`${JSON.stringify({ code: 'TECTONIC_FETCH_RETRY', attempt })}\n`),
+    }),
+  )
+  const executablePath = await runAtStage('extract', () =>
+    extractVerifiedTectonic(asset, result.path, options.cachePath, manifest.tectonic.version),
   )
   const publishedPath = options.outputPath
-    ? await publishExecutable(executablePath, options.outputPath)
+    ? await runAtStage('publish', () => publishExecutable(executablePath, options.outputPath))
     : executablePath
   process.stdout.write(
     `${JSON.stringify({ assetId: asset.id, bytes: result.bytes, executable: publishedPath })}\n`,
@@ -457,8 +486,8 @@ export async function main(argv = process.argv.slice(2)) {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  main().catch(() => {
-    process.stderr.write(`${JSON.stringify({ code: 'TECTONIC_FETCH_FAILED' })}\n`)
+  main().catch((error) => {
+    process.stderr.write(`${JSON.stringify(diagnosticForFailure(error))}\n`)
     process.exitCode = 1
   })
 }
