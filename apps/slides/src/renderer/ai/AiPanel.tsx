@@ -537,6 +537,51 @@ export function AiPanel({
   settingsRef.current = settings
   const imagesRef = useRef(images)
   imagesRef.current = images
+
+  // Playwright drives the production renderer in the Electron E2E suite. Keep
+  // this deliberately renderer-local (no preload/IPC protocol surface) and
+  // expose it only when Chromium is under automation.
+  useEffect(() => {
+    if (!navigator.webdriver) return
+    const target = window as typeof window & {
+      __wisworkSlidesRenderAcceptance?: (slides: number[]) => Promise<{
+        documentToken: string
+        sessionToken: string
+        revision: string
+        leaseToken: string
+        pngs: string[]
+      }>
+    }
+    target.__wisworkSlidesRenderAcceptance = async (requested) => {
+      const before = await window.slidesApi.getRenderSlides()
+      if (!before) throw new Error('authoritative_refresh_unavailable')
+      const selected = requested.map((number) => {
+        if (!Number.isSafeInteger(number) || number < 1 || number > before.slides.length)
+          throw new Error('slide_out_of_range')
+        return before.slides[number - 1]!
+      })
+      const pngs = await renderSlidesToPngBase64(selected, imagesRef.current, 1)
+      const after = await window.slidesApi.getRenderSlides()
+      if (
+        !after ||
+        after.documentToken !== before.documentToken ||
+        after.sessionToken !== before.sessionToken ||
+        after.revision !== before.revision ||
+        after.leaseToken !== before.leaseToken
+      )
+        throw new Error('stale_authority')
+      return {
+        documentToken: before.documentToken,
+        sessionToken: before.sessionToken,
+        revision: before.revision,
+        leaseToken: before.leaseToken,
+        pngs,
+      }
+    }
+    return () => {
+      delete target.__wisworkSlidesRenderAcceptance
+    }
+  }, [])
   const attachmentsRef = useRef(attachments)
   attachmentsRef.current = attachments
   /** attachments consumed by the most recent send — retry resends the same set */
