@@ -195,6 +195,7 @@ export async function fetchVerifiedAsset(asset, targetPath, options = {}) {
 
 async function fetchVerifiedAssetOnce(asset, targetPath, options) {
   const fetchImplementation = options.fetchImplementation ?? globalThis.fetch
+  const openImplementation = options.openImplementation ?? open
   const temporaryPath = `${targetPath}.${randomBytes(6).toString('hex')}.part`
   const controller = new AbortController()
   const timeout = setTimeout(
@@ -220,7 +221,8 @@ async function fetchVerifiedAssetOnce(asset, targetPath, options) {
     if (actual.size !== asset.bytes || digest !== asset.sha256) {
       throw new Error('downloaded asset failed integrity verification')
     }
-    const file = await open(temporaryPath, 'r')
+    // Windows FlushFileBuffers requires GENERIC_WRITE access.
+    const file = await openImplementation(temporaryPath, process.platform === 'win32' ? 'r+' : 'r')
     try {
       await file.sync()
     } finally {
