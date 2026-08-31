@@ -8,6 +8,7 @@ import type { InMemoryVfs } from '../shared/vfs.js'
 import type { PowerPointAdapter } from './browser-powerpoint-adapter.js'
 import {
   createOfficePowerPointVerification,
+  powerPointProposalFingerprint,
   type OfficePowerPointVerificationAuthority,
 } from './powerpoint-verification.js'
 import {
@@ -512,12 +513,7 @@ function base64Bytes(value: string): number {
 }
 
 function fingerprint(value: string): string {
-  let result = 0x811c9dc5
-  for (let index = 0; index < value.length; index += 1) {
-    result ^= value.charCodeAt(index)
-    result = Math.imul(result, 0x01000193)
-  }
-  return `${value.length}:${(result >>> 0).toString(16).padStart(8, '0')}`
+  return powerPointProposalFingerprint(value)
 }
 
 function parseMasterProgram(value: unknown): PowerPointMasterOperation[] {

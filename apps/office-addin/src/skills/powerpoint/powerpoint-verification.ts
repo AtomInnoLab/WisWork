@@ -48,6 +48,7 @@ export interface OfficePowerPointVerificationAuthority {
     slideIndex: number,
     signal?: AbortSignal,
   ): Promise<{ slideId: string; backgroundColor?: string }>
+  authorizeProposal(call: AgentToolCall, signal?: AbortSignal): Promise<{ fingerprint: string }>
 }
 
 export type SafeProposalRecord = {
@@ -76,6 +77,15 @@ export interface OfficePowerPointVerificationHooks extends PresentationTaskHooks
 async function sha256(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
   return `sha256:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')}`
+}
+
+export function powerPointProposalFingerprint(value: string): string {
+  let result = 0x811c9dc5
+  for (let index = 0; index < value.length; index += 1) {
+    result ^= value.charCodeAt(index)
+    result = Math.imul(result, 0x01000193)
+  }
+  return `${value.length}:${(result >>> 0).toString(16).padStart(8, '0')}`
 }
 
 export function createBrowserPowerPointVerificationAuthority(
@@ -112,15 +122,35 @@ export function createBrowserPowerPointVerificationAuthority(
       const state = await adapter.listSlideShapes(slideIndex, signal)
       return { slideId: state.slideId }
     },
+    async authorizeProposal(call, signal) {
+      const input = call.input as Record<string, unknown>
+      if (call.name === 'edit_slide_text') {
+        const current = await adapter.readSlideText(
+          input.slide_index as number,
+          input.shape_id as string,
+          signal,
+        )
+        return {
+          fingerprint: powerPointProposalFingerprint(
+            JSON.stringify([current.slideId, current.shapeId, current.text, current.paragraphs]),
+          ),
+        }
+      }
+      const slideIndexes = [
+        ...new Set(program(input).map((operation) => operation.slide_index as number)),
+      ]
+      const snapshots = await Promise.all(
+        slideIndexes.map((slideIndex) => adapter.snapshotSlide(slideIndex, signal)),
+      )
+      return {
+        fingerprint: powerPointProposalFingerprint(
+          snapshots.map((snapshot) => snapshot.fingerprint).join('|'),
+        ),
+      }
+    },
   }
 }
 
-const elevated = new Set([
-  'edit_slide_master',
-  'edit_slide_master_xml',
-  'edit_slide_chart',
-  'edit_slide_xml',
-])
 const geometry = ['left', 'top', 'width', 'height'] as const
 function program(input: unknown): Array<Record<string, unknown>> {
   if (!input || typeof input !== 'object') return []
@@ -230,7 +260,7 @@ export function createOfficePowerPointVerification(options: {
         contract: PresentationAcceptanceContract
         targets: Set<string>
         locations: Map<string, { slideId: string; shapeId?: string }>
-        plannedTools: string[]
+        plannedProposals: Array<{ toolName: string; fingerprint: string }>
         skipCallIds: Set<string>
       }
     | undefined
@@ -239,17 +269,39 @@ export function createOfficePowerPointVerification(options: {
   const delay = options.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
 
   const enroll = async (calls: readonly AgentToolCall[]): Promise<PresentationTaskPreparation> => {
-    const operations = calls.flatMap((call) =>
+    const fullySupported = (call: AgentToolCall) =>
+      call.name === 'edit_slide_text' ||
+      (call.name === 'execute_office_js' &&
+        program(call.input).length > 0 &&
+        program(call.input).every(
+          (op) => op.op === 'set_shape_text' || op.op === 'set_shape_geometry',
+        ))
+    const mutationTools = new Set([
+      'edit_slide_text',
+      'execute_office_js',
+      'duplicate_slide',
+      'edit_slide_master',
+      'edit_slide_master_xml',
+      'edit_slide_chart',
+      'edit_slide_xml',
+    ])
+    if (calls.some((call) => mutationTools.has(call.name) && !fullySupported(call)))
+      return { kind: 'bypass' }
+    const rawOperations = calls.flatMap((call) =>
       callOperations(call).map((operation) => ({
         ...operation,
         callId: call.invocationId ?? call.id,
         sourceCallId: call.id,
       })),
     )
-    const requiresConfirmation = calls.some((call) => elevated.has(call.name))
-    // Unsupported elevated writes retain their existing proposal/confirmation path. Task 6
-    // adds visual verification; Task 5 must not synthesize a malformed deterministic contract.
-    if (operations.length === 0) return { kind: 'bypass' }
+    if (rawOperations.length === 0) return { kind: 'bypass' }
+    const collapsed = new Map<string, (typeof rawOperations)[number]>()
+    for (const operation of rawOperations)
+      collapsed.set(
+        `${operation.slide}:${operation.target ?? 'background'}:${operation.property}`,
+        operation,
+      )
+    const operations = [...collapsed.values()]
     const lease = await options.authority.acquire()
     const targets = new Set<string>()
     const locations = new Map<string, { slideId: string; shapeId?: string }>()
@@ -282,6 +334,18 @@ export function createOfficePowerPointVerification(options: {
         expected: operation.expected,
       })
     }
+    for (const call of calls) {
+      if (callMatches.has(call.id)) continue
+      const matches: boolean[] = []
+      for (const operation of callOperations(call)) {
+        if (!operation.target) continue
+        const state = await options.authority.readShape(operation.slide - 1, operation.target)
+        matches.push(
+          equal(operation.property, actualProperty(state, operation.property), operation.expected),
+        )
+      }
+      if (matches.length) callMatches.set(call.id, matches)
+    }
     if (checks.length === 0)
       checks.push({
         id: 'elevated-unavailable',
@@ -300,27 +364,27 @@ export function createOfficePowerPointVerification(options: {
       ],
       referenceSlides: [],
       checks,
-      maxCorrectionPasses: requiresConfirmation ? 0 : 2,
+      maxCorrectionPasses: 2,
     })
-    const fullySupported = (call: AgentToolCall) =>
-      call.name === 'edit_slide_text' ||
-      (call.name === 'execute_office_js' &&
-        program(call.input).length > 0 &&
-        program(call.input).every(
-          (op) => op.op === 'set_shape_text' || op.op === 'set_shape_geometry',
-        ))
     const skipCallIds = new Set(
       calls
         .filter((call) => fullySupported(call) && callMatches.get(call.id)?.every(Boolean))
         .map((call) => call.id),
     )
+    const plannedCalls = calls.filter(
+      (call) => callOperations(call).length && !skipCallIds.has(call.id),
+    )
+    const plannedProposals = await Promise.all(
+      plannedCalls.map(async (call) => ({
+        toolName: call.name,
+        fingerprint: (await options.authority.authorizeProposal(call)).fingerprint,
+      })),
+    )
     enrolled = {
       contract,
       targets,
       locations,
-      plannedTools: calls
-        .filter((call) => callOperations(call).length && !skipCallIds.has(call.id))
-        .map((call) => call.name),
+      plannedProposals,
       skipCallIds,
     }
     proposals = []
@@ -328,7 +392,7 @@ export function createOfficePowerPointVerification(options: {
     return {
       kind: 'ready',
       contract,
-      requiresConfirmation,
+      requiresConfirmation: false,
       ...(calls.length > 1
         ? { plan: ['Apply approved PowerPoint edits', 'Verify exact post-write properties'] }
         : {}),
@@ -429,17 +493,22 @@ export function createOfficePowerPointVerification(options: {
           safeCode: 'stale_authority',
         })
       const actualTargets = new Set(confirmed.flatMap((item) => item.targets))
-      const proposalTools = confirmed.map((item) => item.toolName).sort()
       const enrollment = enrolled
-      const proposalToolsValid =
+      const actualBindings = confirmed
+        .map((item) => `${item.toolName ?? ''}:${item.fingerprint}`)
+        .sort()
+      const plannedBindings = (enrollment?.plannedProposals ?? [])
+        .map((item) => `${item.toolName}:${item.fingerprint}`)
+        .sort()
+      const proposalBindingsValid =
         enrollment !== undefined &&
-        proposalTools.every(Boolean) &&
-        JSON.stringify(proposalTools) === JSON.stringify([...enrollment.plannedTools].sort())
+        actualBindings.every((binding) => !binding.startsWith(':')) &&
+        JSON.stringify(actualBindings) === JSON.stringify(plannedBindings)
       const targetCoverageValid =
         enrollment !== undefined &&
         actualTargets.size === enrollment.targets.size &&
         [...actualTargets].every((target) => enrollment.targets.has(target))
-      if (!proposalToolsValid || !targetCoverageValid)
+      if (!proposalBindingsValid || !targetCoverageValid)
         return receipt(contract, {
           status: 'applied_unverified',
           mutationReceiptIds: confirmed.map((item) => item.id),
