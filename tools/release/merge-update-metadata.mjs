@@ -202,11 +202,9 @@ export async function writeReleaseMetadata(options) {
   ])
   const merged = mergeMetadata({ windows, macArm64, macX64, version: options.version })
 
-  const validatedByUrl = new Map()
-  for (const record of [...windows.files, ...macArm64.files, ...macX64.files]) {
-    validatedByUrl.set(record.url, await validateRecord(record, options.artifactsDir))
-  }
-  const outputRecords = merged.outputRecords.map((record) => validatedByUrl.get(record.url))
+  const outputRecords = await Promise.all(
+    merged.outputRecords.map((record) => validateRecord(record, options.artifactsDir)),
+  )
   const outputUrls = new Set(outputRecords.map((record) => record.url))
   const additionalRecords = []
   for (const url of options.additionalArtifacts ?? []) {
