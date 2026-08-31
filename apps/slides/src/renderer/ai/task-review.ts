@@ -24,8 +24,9 @@ export type SlidesTaskScreenshot = {
   role: 'affected' | 'reference'
   mediaToken: string
   bytes: number
-  /** Capture-side authority proof. Omission means the adapter binds it to its input lease. */
-  revision?: string
+  revision: string
+  leaseToken: string
+  sessionToken: string
 }
 
 export interface SlidesTaskReviewAdapter {
@@ -57,20 +58,33 @@ const unavailable = (
   receipts: string[],
   correctionPasses: number,
   rollbackId?: string,
+  code:
+    | 'screenshot_unavailable'
+    | 'review_unavailable'
+    | 'verification_invalid'
+    | 'stale_authority'
+    | 'cancelled'
+    | 'cancelled_after_apply' = 'screenshot_unavailable',
 ): PresentationCompletionReceipt =>
   parsePresentationCompletionReceipt(
     {
       version: 1,
       taskId: contract.taskId,
-      status: receipts.length ? 'applied_unverified' : 'failed',
+      status: receipts.length
+        ? 'applied_unverified'
+        : code === 'cancelled'
+          ? 'unchanged'
+          : 'failed',
       mutationReceiptIds: receipts,
-      passedCheckIds: [],
-      failedCheckIds: receipts.length ? [] : contract.checks.map(({ id }) => id),
+      passedCheckIds:
+        code === 'cancelled' && !receipts.length ? contract.checks.map(({ id }) => id) : [],
+      failedCheckIds:
+        receipts.length || code === 'cancelled' ? [] : contract.checks.map(({ id }) => id),
       unavailableCheckIds: receipts.length ? contract.checks.map(({ id }) => id) : [],
       correctionPasses,
       affectedSlides: contract.affectedSlides,
       ...(rollbackId && receipts.length ? { rollbackId } : {}),
-      safeCode: receipts.length ? 'screenshot_unavailable' : 'stale_authority',
+      safeCode: code,
     },
     contract,
   )
@@ -157,7 +171,7 @@ export async function runSlidesTaskReview(input: {
         authority.sessionToken !== contract.sessionToken ||
         !input.adapter.isCurrent(authority)
       )
-        return unavailable(contract, receipts, correctionPasses, rollbackId)
+        return unavailable(contract, receipts, correctionPasses, rollbackId, 'stale_authority')
       const deterministic = await input.adapter.verifyDeterministic(
         contract,
         authority,
@@ -170,7 +184,7 @@ export async function runSlidesTaskReview(input: {
         new Set(deterministicCheckIds).size !== deterministicCheckIds.length ||
         deterministicCheckIds.some((checkId, index) => checkId !== expectedCheckIds[index])
       )
-        return unavailable(contract, receipts, correctionPasses, rollbackId)
+        return unavailable(contract, receipts, correctionPasses, rollbackId, 'verification_invalid')
       if (!input.adapter.isCurrent(authority))
         return unavailable(contract, receipts, correctionPasses, rollbackId)
 
@@ -186,7 +200,9 @@ export async function runSlidesTaskReview(input: {
           !shot ||
           shot.slide !== page.slide ||
           shot.role !== page.role ||
-          (shot.revision !== undefined && shot.revision !== authority.revision) ||
+          shot.revision !== authority.revision ||
+          shot.leaseToken !== authority.leaseToken ||
+          shot.sessionToken !== authority.sessionToken ||
           !input.adapter.isCurrent(authority)
         )
           return unavailable(contract, receipts, correctionPasses, rollbackId)
@@ -197,27 +213,56 @@ export async function runSlidesTaskReview(input: {
         facts = parsePresentationRenderingFacts({
           contractDigest,
           revision: authority.revision,
-          screenshots: screenshots.map(({ revision: _revision, ...shot }) => shot),
+          screenshots: screenshots.map(
+            ({
+              revision: _revision,
+              leaseToken: _leaseToken,
+              sessionToken: _sessionToken,
+              ...shot
+            }) => shot,
+          ),
           deterministicResults: deterministic,
         })
       } catch {
         return unavailable(contract, receipts, correctionPasses, rollbackId)
       }
-      const visual = parseVisualReviewResult(await input.adapter.review(facts, input.signal))
+      let visual: VisualReviewResult
+      try {
+        const rawReview = await input.adapter.review(facts, input.signal)
+        visual = parseVisualReviewResult(rawReview)
+      } catch {
+        return unavailable(contract, receipts, correctionPasses, rollbackId, 'review_unavailable')
+      }
       if (!input.adapter.isCurrent(authority))
         return unavailable(contract, receipts, correctionPasses, rollbackId)
       if (visual.status === 'cannot_verify')
-        return unavailable(contract, receipts, correctionPasses, rollbackId)
+        return unavailable(contract, receipts, correctionPasses, rollbackId, 'review_unavailable')
       if (visual.status === 'pass' && deterministic.every(({ status }) => status === 'pass'))
-        return accountedReceipt({
-          contract,
-          status: 'verified',
-          results: deterministic,
-          visualFailed: [],
-          receipts,
-          correctionPasses,
-          ...(rollbackId ? { rollbackId } : {}),
-        })
+        if (receipts.length === 0)
+          return parsePresentationCompletionReceipt(
+            {
+              version: 1,
+              taskId: contract.taskId,
+              status: 'unchanged',
+              mutationReceiptIds: [],
+              passedCheckIds: contract.checks.map(({ id }) => id),
+              failedCheckIds: [],
+              unavailableCheckIds: [],
+              correctionPasses: 0,
+              affectedSlides: contract.affectedSlides,
+            },
+            contract,
+          )
+        else
+          return accountedReceipt({
+            contract,
+            status: 'verified',
+            results: deterministic,
+            visualFailed: [],
+            receipts,
+            correctionPasses,
+            ...(rollbackId ? { rollbackId } : {}),
+          })
       if (visual.status !== 'needs_fix' || !fixesAreFrozen(contract, visual))
         return accountedReceipt({
           contract,
@@ -255,6 +300,13 @@ export async function runSlidesTaskReview(input: {
       // Never reuse pre-correction screenshots or authority. The next iteration refreshes both.
     }
   } catch {
-    return unavailable(contract, receipts, correctionPasses, rollbackId)
+    const cancelled = input.signal?.aborted === true
+    return unavailable(
+      contract,
+      receipts,
+      correctionPasses,
+      rollbackId,
+      cancelled ? (receipts.length ? 'cancelled_after_apply' : 'cancelled') : 'review_unavailable',
+    )
   }
 }

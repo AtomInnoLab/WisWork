@@ -72,6 +72,9 @@ function adapter(reviews: VisualReviewResult[] = [review('pass')]): SlidesTaskRe
       role,
       mediaToken: `${authority.leaseToken}-${slide}`,
       bytes: 100,
+      revision: authority.revision,
+      leaseToken: authority.leaseToken,
+      sessionToken: authority.sessionToken,
     })),
     review: vi.fn(async () => reviews[Math.min(pass++, reviews.length - 1)]!),
     correct: vi.fn(async () => ({
@@ -109,6 +112,8 @@ describe('PC task-specific rendered verification', () => {
       mediaToken: 'shot',
       bytes: 100,
       revision: digest,
+      leaseToken: 'lease-0',
+      sessionToken: 'session-1',
     })
     const result = await runSlidesTaskReview({
       contract: contract(),
@@ -171,7 +176,15 @@ describe('PC task-specific rendered verification', () => {
     const a = adapter([review('needs_fix')])
     vi.mocked(a.capture).mockImplementation(async ({ slide, role, authority }) =>
       authority.leaseToken === 'lease-0'
-        ? { slide, role, mediaToken: `shot-${slide}`, bytes: 100 }
+        ? {
+            slide,
+            role,
+            mediaToken: `shot-${slide}`,
+            bytes: 100,
+            revision: authority.revision,
+            leaseToken: authority.leaseToken,
+            sessionToken: authority.sessionToken,
+          }
         : null,
     )
     const result = await runSlidesTaskReview({
@@ -245,7 +258,7 @@ describe('PC task-specific rendered verification', () => {
     })
     expect(result).toMatchObject({
       status: 'applied_unverified',
-      safeCode: 'screenshot_unavailable',
+      safeCode: 'stale_authority',
     })
     expect(a.capture).not.toHaveBeenCalled()
   })
@@ -273,11 +286,14 @@ describe('PC task-specific rendered verification', () => {
     expect(a.review).not.toHaveBeenCalled()
 
     const b = adapter()
-    vi.mocked(b.capture).mockImplementation(async ({ slide, role }) => ({
+    vi.mocked(b.capture).mockImplementation(async ({ slide, role, authority }) => ({
       slide,
       role,
       mediaToken: `shot-${slide}`,
       bytes: 2 * 1024 * 1024,
+      revision: authority.revision,
+      leaseToken: authority.leaseToken,
+      sessionToken: authority.sessionToken,
     }))
     const oversized = await runSlidesTaskReview({
       contract: contract(),
@@ -286,5 +302,64 @@ describe('PC task-specific rendered verification', () => {
     })
     expect(oversized).toMatchObject({ status: 'applied_unverified' })
     expect(b.review).not.toHaveBeenCalled()
+  })
+
+  it('returns unchanged rather than verified when no mutation occurred', async () => {
+    const a = adapter()
+    const result = await runSlidesTaskReview({
+      contract: contract(),
+      initialMutationReceiptIds: [],
+      adapter: a,
+    })
+    expect(result).toMatchObject({ status: 'unchanged', mutationReceiptIds: [] })
+  })
+
+  it('requires exact lease and session proof on every screenshot', async () => {
+    const a = adapter()
+    vi.mocked(a.capture).mockImplementation(async ({ slide, role, authority }) => ({
+      slide,
+      role,
+      mediaToken: `shot-${slide}`,
+      bytes: 100,
+      revision: authority.revision,
+      leaseToken: 'wrong-lease',
+      sessionToken: authority.sessionToken,
+    }))
+    const result = await runSlidesTaskReview({
+      contract: contract(),
+      initialMutationReceiptIds: ['edit-1'],
+      adapter: a,
+    })
+    expect(result).toMatchObject({
+      status: 'applied_unverified',
+      safeCode: 'screenshot_unavailable',
+    })
+    expect(a.review).not.toHaveBeenCalled()
+  })
+
+  it('distinguishes cancellation before and after dispatch', async () => {
+    const before = adapter()
+    const beforeSignal = new AbortController()
+    beforeSignal.abort()
+    await expect(
+      runSlidesTaskReview({
+        contract: contract(),
+        initialMutationReceiptIds: [],
+        adapter: before,
+        signal: beforeSignal.signal,
+      }),
+    ).resolves.toMatchObject({ status: 'unchanged', safeCode: 'cancelled' })
+
+    const after = adapter()
+    const afterSignal = new AbortController()
+    afterSignal.abort()
+    await expect(
+      runSlidesTaskReview({
+        contract: contract(),
+        initialMutationReceiptIds: ['edit-1'],
+        adapter: after,
+        signal: afterSignal.signal,
+      }),
+    ).resolves.toMatchObject({ status: 'applied_unverified', safeCode: 'cancelled_after_apply' })
   })
 })

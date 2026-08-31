@@ -117,6 +117,74 @@ const failedReceipt = () => ({
 
 describe('AgentLoop', () => {
   describe('presentation task orchestration', () => {
+    it('enrolls exact tool calls before the first dispatch and closes through a receipt', async () => {
+      let dispatched = false
+      const enroll = vi.fn(async (calls: readonly AgentToolCall[]) => {
+        expect(dispatched).toBe(false)
+        expect(calls).toHaveLength(1)
+        return { kind: 'ready' as const, contract }
+      })
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'call-1', name: 'do_thing', input: { slideIndex: 1 } })
+          cb.onDone()
+        },
+        (cb) => cb.onDone(),
+      ])
+      const done = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(() => {
+            dispatched = true
+            return { output: 'ok', summary: 'done', mutated: true }
+          }),
+          presentation: {
+            prepare: () => ({ kind: 'bypass' }),
+            enroll,
+            complete: () => ({ kind: 'receipt', receipt: receipt() }),
+          },
+        },
+        events: { onDone: done },
+      })
+      loop.run('edit')
+      await flush()
+      await flush()
+      expect(enroll).toHaveBeenCalledOnce()
+      expect(dispatched).toBe(true)
+      expect(done).toHaveBeenCalledWith(
+        expect.objectContaining({ presentation: expect.objectContaining({ status: 'verified' }) }),
+      )
+    })
+
+    it('dispatches zero tools when authoritative enrollment fails', async () => {
+      const execute = vi.fn(() => ({ output: 'ok', summary: 'done', mutated: true }))
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'call-1', name: 'do_thing', input: { slideIndex: 1 } })
+          cb.onDone()
+        },
+      ])
+      const error = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(execute),
+          presentation: {
+            prepare: () => ({ kind: 'bypass' }),
+            enroll: async () => {
+              throw new Error('stale')
+            },
+            complete: () => ({ kind: 'receipt', receipt: receipt() }),
+          },
+        },
+        events: { onError: error },
+      })
+      loop.run('edit')
+      await flush()
+      expect(execute).not.toHaveBeenCalled()
+      expect(error).toHaveBeenCalledWith('presentation_enrollment_unavailable')
+    })
     it('lets a simple presentation task bypass clarification and planning UI', async () => {
       const transport = scriptedTransport([
         (cb) => {

@@ -123,6 +123,9 @@ export type PresentationCompletionReceipt = {
 
 export type SafeCompletionCode =
   | 'screenshot_unavailable'
+  | 'review_unavailable'
+  | 'verification_invalid'
+  | 'cancelled_after_apply'
   | 'office_state_uncertain'
   | 'stale_authority'
   | 'confirmation_required'
@@ -719,6 +722,9 @@ export const parsePresentationCompletionReceipt = (
         record.safeCode,
         [
           'screenshot_unavailable',
+          'review_unavailable',
+          'verification_invalid',
+          'cancelled_after_apply',
           'office_state_uncertain',
           'stale_authority',
           'confirmation_required',
@@ -765,7 +771,11 @@ export const parsePresentationCompletionReceipt = (
   if (
     status === 'applied_unverified' &&
     safeCode !== 'screenshot_unavailable' &&
-    safeCode !== 'unsupported_check'
+    safeCode !== 'unsupported_check' &&
+    safeCode !== 'review_unavailable' &&
+    safeCode !== 'verification_invalid' &&
+    safeCode !== 'stale_authority' &&
+    safeCode !== 'cancelled_after_apply'
   )
     fail('applied_unverified receipt has an incoherent status safeCode')
   if (status === 'failed' && (mutationReceiptIds.length !== 0 || unprovedCount === 0))

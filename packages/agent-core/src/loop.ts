@@ -1,4 +1,4 @@
-import type { AgentSkill } from './skill'
+import type { AgentSkill, PresentationTaskPreparation } from './skill'
 import {
   parsePresentationAcceptanceContract,
   parsePresentationCompletionReceipt,
@@ -196,6 +196,7 @@ const SUMMARIZE_SYSTEM =
 const COMPACT_SUMMARY_PREFIX = '[Summary of earlier conversation'
 const COMPACT_SUMMARY_HEADER = '[Summary of earlier conversation (auto-compacted)]'
 const COMPACT_SUMMARY_ACK = 'Understood, continuing from the progress so far.'
+const PRESENTATION_ENROLLMENT_MAX_BYTES = 64 * 1024
 
 /** Approximate UTF-8 byte count (ASCII 1 byte, CJK etc. 3; surrogate pairs count as 6 — slight overestimate is harmless) */
 function utf8Size(s: string): number {
@@ -514,12 +515,13 @@ export class AgentLoop<TSnapshot = unknown> {
     const requiresConfirmation = prepared.requiresConfirmation === true
     if (steps.length) this.options.events?.onPresentationPlan?.({ steps, requiresConfirmation })
     if (requiresConfirmation) {
-      let confirmed = false
-      try {
-        confirmed = (await hooks.confirm?.(contract, this.abortController?.signal)) === true
-      } catch {
-        confirmed = false
-      }
+      const confirmed = await (async () => {
+        try {
+          return (await hooks.confirm?.(contract, this.abortController?.signal)) === true
+        } catch {
+          return false
+        }
+      })()
       if (generation !== this.generation || !this.running) return false
       if (!confirmed || this.cancelled) {
         this.running = false
@@ -915,6 +917,65 @@ export class AgentLoop<TSnapshot = unknown> {
 
     this.history.push({ role: 'assistant', text: this.turnText, toolCalls })
     const generation = this.generation
+    if (skill.presentation?.enroll) {
+      let enrollment: PresentationTaskPreparation
+      try {
+        const serializedCalls = sanitizeAgentPayload(
+          JSON.stringify(
+            toolCalls.map(({ id, name, input, invocationId }) => ({
+              id,
+              name,
+              input,
+              ...(invocationId ? { invocationId } : {}),
+            })),
+          ),
+        )
+        if (
+          new TextEncoder().encode(serializedCalls).byteLength > PRESENTATION_ENROLLMENT_MAX_BYTES
+        )
+          throw new TypeError('presentation enrollment is too large')
+        const enrollmentCalls = JSON.parse(serializedCalls) as AgentToolCall[]
+        enrollment = await skill.presentation.enroll(
+          enrollmentCalls,
+          this.presentationContract ?? undefined,
+          this.abortController?.signal,
+        )
+      } catch {
+        this.failPresentationRun('presentation_enrollment_unavailable')
+        return
+      }
+      if (generation !== this.generation || !this.running) return
+      if (enrollment.kind === 'clarify') {
+        const question = this.boundedPresentationText(
+          enrollment.question,
+          PRESENTATION_QUESTION_MAX_CHARS,
+        )
+        this.running = false
+        this.runUserMsg = null
+        this.options.events?.onPresentationClarify?.({
+          question: question ?? 'presentation_scope_required',
+        })
+        this.options.events?.onDone?.({ text: question ?? '', cancelled: false, turnLimit: false })
+        return
+      }
+      if (enrollment.kind === 'ready') {
+        let enrolled: PresentationAcceptanceContract
+        try {
+          enrolled = parsePresentationAcceptanceContract(enrollment.contract)
+        } catch {
+          this.failPresentationRun('presentation_enrollment_invalid')
+          return
+        }
+        if (
+          this.presentationContract &&
+          JSON.stringify(this.presentationContract) !== JSON.stringify(enrolled)
+        ) {
+          this.failPresentationRun('presentation_scope_expansion')
+          return
+        }
+        this.presentationContract = enrolled
+      }
+    }
     const results: AgentToolResult[] = []
     let stopToolBatch = false
     for (const call of toolCalls) {

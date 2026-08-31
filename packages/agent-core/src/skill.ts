@@ -24,6 +24,15 @@ export interface PresentationTaskHooks {
     instruction: string,
     signal?: AbortSignal,
   ): PresentationTaskPreparation | Promise<PresentationTaskPreparation>
+  /**
+   * Host-owned pre-dispatch enrollment. It receives the bounded tool calls selected for
+   * this batch and must freeze exact authoritative targets before any call executes.
+   */
+  enroll?(
+    calls: readonly AgentToolCall[],
+    currentContract: PresentationAcceptanceContract | undefined,
+    signal?: AbortSignal,
+  ): PresentationTaskPreparation | Promise<PresentationTaskPreparation>
   /** Required when prepare marks an existing host confirmation boundary. */
   confirm?(
     contract: PresentationAcceptanceContract,
