@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createOfficePowerPointVerification } from '../src/skills/powerpoint/powerpoint-verification.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
+import { createPowerPointSkill } from '../src/skills/powerpoint/powerpoint-skill.js'
+import type { PowerPointAdapter } from '../src/skills/powerpoint/browser-powerpoint-adapter.js'
 
 const authority = (overrides = {}) => ({
   acquire: vi.fn().mockResolvedValue({
@@ -33,7 +35,142 @@ const textCall = {
   input: { slide_index: 0, shape_id: 'shape-1', text: 'After' },
 }
 
+function productionAdapter(state: { text: string; left: number }): PowerPointAdapter {
+  return {
+    inspectSlideMasters: vi.fn().mockResolvedValue({ masters: [] }),
+    executeMasterOperations: vi.fn(),
+    screenshotSlide: vi.fn(),
+    listSlideShapes: vi.fn().mockImplementation(() =>
+      Promise.resolve({
+        slideId: 'slide-1',
+        slideIndex: 0,
+        shapes: [
+          {
+            id: 'shape-1',
+            name: 'Title',
+            type: 'TextBox',
+            left: state.left,
+            top: 20,
+            width: 100,
+            height: 30,
+          },
+        ],
+      }),
+    ),
+    readSlideText: vi.fn().mockImplementation(() =>
+      Promise.resolve({
+        slideId: 'slide-1',
+        shapeId: 'shape-1',
+        text: state.text,
+        paragraphs: [state.text],
+      }),
+    ),
+    verifySlides: vi.fn().mockResolvedValue({ slideWidth: 960, slideHeight: 540, slides: [] }),
+    snapshotSlide: vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve({ slideId: 'slide-1', fingerprint: `slide-1:${state.text}:${state.left}` }),
+      ),
+    editSlideText: vi.fn().mockImplementation(async (_slide, _shape, text) => {
+      state.text = text
+    }),
+    duplicateSlide: vi.fn(),
+    exportSlidePackage: vi.fn(),
+    replaceSlidePackage: vi.fn(),
+    executeDeclarative: vi.fn().mockImplementation(async (operations) => {
+      for (const operation of operations) {
+        if (operation.op === 'set_shape_text') state.text = operation.text
+        if (operation.op === 'set_shape_geometry') state.left = operation.left
+      }
+      return { createdShapeIds: [] }
+    }),
+  }
+}
+
 describe('Office PowerPoint presentation verification', () => {
+  it('normalizes real mixed declarative proposal targets and closes from actual confirmation receipts', async () => {
+    const state = { text: 'Before', left: 5 }
+    const adapter = productionAdapter(state)
+    const proposals = createStructuredProposalController()
+    const verificationAuthority = authority({
+      readShape: vi.fn().mockImplementation(() =>
+        Promise.resolve({
+          slideId: 'slide-1',
+          shapeId: 'shape-1',
+          text: state.text,
+          left: state.left,
+          top: 20,
+          width: 100,
+          height: 30,
+        }),
+      ),
+    })
+    const skill = createPowerPointSkill({ adapter, proposals, verificationAuthority })
+    const call = {
+      id: 'mixed',
+      name: 'execute_office_js',
+      input: {
+        program: {
+          version: 1,
+          operations: [
+            { op: 'set_shape_text', slide_index: 0, shape_id: 'shape-1', text: 'After' },
+            {
+              op: 'set_shape_geometry',
+              slide_index: 0,
+              shape_id: 'shape-1',
+              left: 10,
+              top: 20,
+              width: 100,
+              height: 30,
+            },
+          ],
+        },
+      },
+    }
+    const enrolled = await skill.presentation!.enroll!([call], undefined)
+    if (enrolled.kind !== 'ready') throw new Error('not ready')
+    await skill.executeTool(call)
+    expect(proposals.pending()?.impact.targets).toEqual(['slide-1/shape-1', 'slide-1/shape-1'])
+    await proposals.confirm(proposals.pending()!.id)
+    await expect(
+      skill.presentation!.complete({
+        contract: enrolled.contract,
+        mutated: true,
+        cancelled: false,
+        correctionPasses: 0,
+      }),
+    ).resolves.toMatchObject({
+      kind: 'receipt',
+      receipt: { status: 'verified', mutationReceiptIds: [expect.any(String)] },
+    })
+  })
+
+  it('skips a real supported no-op before creating a proposal or dispatching a mutation', async () => {
+    const state = { text: 'After', left: 10 }
+    const adapter = productionAdapter(state)
+    const proposals = createStructuredProposalController()
+    const verificationAuthority = authority({
+      readShape: vi.fn().mockResolvedValue({
+        slideId: 'slide-1',
+        shapeId: 'shape-1',
+        text: 'After',
+        left: 10,
+        top: 20,
+        width: 100,
+        height: 30,
+      }),
+    })
+    const skill = createPowerPointSkill({ adapter, proposals, verificationAuthority })
+    const enrolled = await skill.presentation!.enroll!([textCall], undefined)
+    if (enrolled.kind !== 'ready') throw new Error('not ready')
+    await expect(skill.executeTool(textCall)).resolves.toMatchObject({
+      mutated: false,
+      output: '{"status":"unchanged"}',
+    })
+    expect(proposals.pending()).toBeUndefined()
+    expect(adapter.editSlideText).not.toHaveBeenCalled()
+  })
+
   it('receives privacy-safe proposal lineage after post-dispatch confirmation', async () => {
     const controller = createStructuredProposalController()
     const events: unknown[] = []
@@ -117,6 +254,7 @@ describe('Office PowerPoint presentation verification', () => {
     if (enrolled.kind !== 'ready') throw new Error('not ready')
     subject.recordProposal({
       id: 'proposal-1',
+      toolName: 'edit_slide_text',
       fingerprint: 'proposal-hash',
       targets: ['slide-1/shape-1'],
     })
@@ -133,7 +271,7 @@ describe('Office PowerPoint presentation verification', () => {
       receipt: {
         status: 'verified',
         mutationReceiptIds: ['proposal-1'],
-        passedCheckIds: ['c1-text', 'c2-x', 'c2-y', 'c2-width', 'c2-height'],
+        passedCheckIds: ['c1-op0-text', 'c2-op0-x', 'c2-op0-y', 'c2-op0-width', 'c2-op0-height'],
       },
     })
     expect(source.readShape).toHaveBeenCalledTimes(10)
@@ -147,7 +285,12 @@ describe('Office PowerPoint presentation verification', () => {
     })
     const enrolled = await subject.enroll([textCall], undefined)
     if (enrolled.kind !== 'ready') throw new Error('not ready')
-    subject.recordProposal({ id: 'proposal-2', fingerprint: 'hash', targets: ['other-target'] })
+    subject.recordProposal({
+      id: 'proposal-2',
+      toolName: 'edit_slide_text',
+      fingerprint: 'hash',
+      targets: ['other-target'],
+    })
     subject.recordSettlement({ id: 'proposal-2', status: 'confirmed' })
     await expect(
       subject.complete({
@@ -184,7 +327,12 @@ describe('Office PowerPoint presentation verification', () => {
     })
     const enrolled = await subject.enroll([textCall], undefined)
     if (enrolled.kind !== 'ready') throw new Error('not ready')
-    subject.recordProposal({ id: 'proposal-x', fingerprint: 'hash', ...proposalOverride })
+    subject.recordProposal({
+      id: 'proposal-x',
+      toolName: 'edit_slide_text',
+      fingerprint: 'hash',
+      ...proposalOverride,
+    })
     subject.recordSettlement({ id: 'proposal-x', status: 'confirmed' })
     await expect(
       subject.complete({
@@ -222,7 +370,12 @@ describe('Office PowerPoint presentation verification', () => {
       })
       const enrolled = await subject.enroll([textCall], undefined)
       if (enrolled.kind !== 'ready') throw new Error('not ready')
-      subject.recordProposal({ id: 'p', fingerprint: 'hash', targets: ['slide-1/shape-1'] })
+      subject.recordProposal({
+        id: 'p',
+        toolName: 'edit_slide_text',
+        fingerprint: 'hash',
+        targets: ['slide-1/shape-1'],
+      })
       if (settlement) subject.recordSettlement(settlement)
       await expect(
         subject.complete({
@@ -238,37 +391,22 @@ describe('Office PowerPoint presentation verification', () => {
     }
   })
 
-  it('classifies style, solid background, master/chart/XML and Mac gates without autocorrection', async () => {
-    const subject = createOfficePowerPointVerification({
-      authority: authority(),
-      taskId: () => 'task-3',
-      platform: 'Mac',
-    })
-    const enrolled = await subject.enroll(
-      [
-        {
-          id: 'style',
-          name: 'set_shape_style',
-          input: { slide_index: 0, shape_id: 'shape-1', color: '#112233' },
-        },
-        { id: 'bg', name: 'set_slide_background', input: { slide_index: 0, color: '#FFFFFF' } },
-        { id: 'master', name: 'edit_slide_master', input: { program: {} } },
-        { id: 'xml', name: 'edit_slide_master_xml', input: { program: {} } },
-        { id: 'chart', name: 'edit_slide_chart', input: { slide_index: 0, program: {} } },
-      ],
-      undefined,
-    )
-    expect(enrolled).toMatchObject({
-      kind: 'ready',
-      requiresConfirmation: true,
-      contract: { maxCorrectionPasses: 0 },
-    })
-    if (enrolled.kind !== 'ready') throw new Error('not ready')
-    expect(enrolled.contract.checks).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: 'style-color', property: 'color' }),
-        expect.objectContaining({ id: 'bg-background', property: 'background_color' }),
-      ]),
-    )
-  })
+  it.each([
+    ['edit_slide_master', { program: {} }],
+    ['edit_slide_master_xml', { program: {} }],
+    ['edit_slide_chart', { slide_index: 0, program: {} }],
+    ['edit_slide_xml', { slide_index: 0, program: {} }],
+  ])(
+    'leaves unsupported elevated tool %s on its existing confirmation path',
+    async (name, input) => {
+      const subject = createOfficePowerPointVerification({
+        authority: authority(),
+        taskId: () => 'task-3',
+        platform: 'Mac',
+      })
+      await expect(subject.enroll([{ id: 'elevated', name, input }], undefined)).resolves.toEqual({
+        kind: 'bypass',
+      })
+    },
+  )
 })

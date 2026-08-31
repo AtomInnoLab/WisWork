@@ -450,6 +450,7 @@ export class AgentLoop<TSnapshot = unknown> {
       return
     }
     if (
+      this.options.skill.presentation &&
       !(await this.preparePresentationRun(userMsg.role === 'user' ? userMsg.text : '', generation))
     )
       return

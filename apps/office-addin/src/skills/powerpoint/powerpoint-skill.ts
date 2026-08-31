@@ -1163,6 +1163,12 @@ export function createPowerPointSkill(options: {
         )
       try {
         assertNotCancelled(signal)
+        if (presentation?.shouldSkip(call))
+          return {
+            output: JSON.stringify({ status: 'unchanged' }),
+            mutated: false,
+            summary: 'PowerPoint state already matched',
+          }
         if (call.name === 'edit_slide_master_xml' && !masterXmlEditingSupported)
           return failure(call.name, 'office_api_unsupported')
         if (
@@ -1368,6 +1374,9 @@ export function createPowerPointSkill(options: {
           const snapshots = await Promise.all(
             slideIndexes.map((index) => options.adapter.snapshotSlide(index, signal)),
           )
+          const slideIds = new Map(
+            slideIndexes.map((slideIndex, index) => [slideIndex, snapshots[index]!.slideId]),
+          )
           const beforeTexts = await Promise.all(
             program.operations.flatMap((operation) =>
               operation.op === 'set_shape_text'
@@ -1384,11 +1393,10 @@ export function createPowerPointSkill(options: {
             preview: { version: 1, operations: program.operations },
             impact: {
               host: 'powerpoint',
-              targets: program.operations.map((operation) =>
-                operation.op === 'set_shape_text'
-                  ? `${operation.slide_index}/${operation.shape_id}`
-                  : `${operation.slide_index}`,
-              ),
+              targets: program.operations.map((operation) => {
+                const slideId = slideIds.get(operation.slide_index)!
+                return 'shape_id' in operation ? `${slideId}/${operation.shape_id}` : slideId
+              }),
               count: program.operations.length,
             },
             fingerprint: fingerprint(combined),

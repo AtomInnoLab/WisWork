@@ -55,7 +55,7 @@ export interface StructuredProposalController {
 }
 
 export type StructuredProposalAuditEvent =
-  | { kind: 'proposed'; id: string; fingerprint: string; targets: string[] }
+  | { kind: 'proposed'; id: string; toolName?: string; fingerprint: string; targets: string[] }
   | { kind: 'settled'; id: string; status: ProposalDecision['status']; error?: string }
 
 export interface OfficeProposal {
@@ -215,6 +215,7 @@ export function createStructuredProposalController(
         listener({
           kind: 'proposed',
           id: publicValue.id,
+          ...(publicValue.toolName ? { toolName: publicValue.toolName } : {}),
           fingerprint: publicValue.fingerprint,
           targets: [...publicValue.impact.targets],
         }),

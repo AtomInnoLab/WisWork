@@ -50,7 +50,12 @@ export interface OfficePowerPointVerificationAuthority {
   ): Promise<{ slideId: string; backgroundColor?: string }>
 }
 
-export type SafeProposalRecord = { id: string; fingerprint: string; targets: string[] }
+export type SafeProposalRecord = {
+  id: string
+  toolName?: string
+  fingerprint: string
+  targets: string[]
+}
 export type SafeProposalSettlement = {
   id: string
   status: 'confirmed' | 'rejected' | 'cancelled' | 'failed'
@@ -65,6 +70,7 @@ export interface OfficePowerPointVerificationHooks extends PresentationTaskHooks
   ): PresentationTaskPreparation | Promise<PresentationTaskPreparation>
   recordProposal(proposal: SafeProposalRecord): void
   recordSettlement(settlement: SafeProposalSettlement): void
+  shouldSkip(call: AgentToolCall): boolean
 }
 
 async function sha256(value: string): Promise<string> {
@@ -116,16 +122,6 @@ const elevated = new Set([
   'edit_slide_xml',
 ])
 const geometry = ['left', 'top', 'width', 'height'] as const
-const propertyMap: Record<string, SupportedProperty> = {
-  color: 'color',
-  fill_color: 'fill_color',
-  stroke_color: 'stroke_color',
-  font_size: 'font_size',
-  font_family: 'font_family',
-  bold: 'bold',
-  italic: 'italic',
-}
-
 function program(input: unknown): Array<Record<string, unknown>> {
   if (!input || typeof input !== 'object') return []
   let value = (input as Record<string, unknown>).program
@@ -153,6 +149,7 @@ function callOperations(call: AgentToolCall): Array<{
   target?: string
   property: SupportedProperty
   expected: string | number | boolean
+  opIndex: number
 }> {
   const input = call.input as Record<string, unknown>
   if (
@@ -167,37 +164,7 @@ function callOperations(call: AgentToolCall): Array<{
         target: input.shape_id,
         property: 'text',
         expected: input.text,
-      },
-    ]
-  if (
-    call.name === 'set_shape_style' &&
-    Number.isSafeInteger(input.slide_index) &&
-    typeof input.shape_id === 'string'
-  )
-    return Object.entries(propertyMap).flatMap(([key, property]) =>
-      typeof input[key] === 'string' ||
-      typeof input[key] === 'number' ||
-      typeof input[key] === 'boolean'
-        ? [
-            {
-              slide: (input.slide_index as number) + 1,
-              target: input.shape_id as string,
-              property,
-              expected: input[key] as string | number | boolean,
-            },
-          ]
-        : [],
-    )
-  if (
-    call.name === 'set_slide_background' &&
-    Number.isSafeInteger(input.slide_index) &&
-    typeof input.color === 'string'
-  )
-    return [
-      {
-        slide: (input.slide_index as number) + 1,
-        property: 'background_color',
-        expected: input.color,
+        opIndex: 0,
       },
     ]
   if (call.name !== 'execute_office_js') return []
@@ -206,12 +173,13 @@ function callOperations(call: AgentToolCall): Array<{
     target?: string
     property: SupportedProperty
     expected: string | number | boolean
+    opIndex: number
   }> = []
-  for (const op of program(input)) {
+  for (const [opIndex, op] of program(input).entries()) {
     if (!Number.isSafeInteger(op.slide_index) || typeof op.shape_id !== 'string') continue
     const slide = (op.slide_index as number) + 1
     if (op.op === 'set_shape_text' && typeof op.text === 'string')
-      result.push({ slide, target: op.shape_id, property: 'text', expected: op.text })
+      result.push({ slide, target: op.shape_id, property: 'text', expected: op.text, opIndex })
     if (op.op === 'set_shape_geometry')
       for (const key of geometry)
         if (typeof op[key] === 'number')
@@ -220,6 +188,7 @@ function callOperations(call: AgentToolCall): Array<{
             target: op.shape_id,
             property: ({ left: 'x', top: 'y', width: 'width', height: 'height' } as const)[key],
             expected: op[key] as number,
+            opIndex,
           })
   }
   return result
@@ -261,31 +230,43 @@ export function createOfficePowerPointVerification(options: {
         contract: PresentationAcceptanceContract
         targets: Set<string>
         locations: Map<string, { slideId: string; shapeId?: string }>
-        elevated: boolean
+        plannedTools: string[]
+        skipCallIds: Set<string>
       }
     | undefined
-  let proposal: SafeProposalRecord | undefined
-  let settlement: SafeProposalSettlement | undefined
+  let proposals: SafeProposalRecord[] = []
+  let settlements: SafeProposalSettlement[] = []
   const delay = options.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
 
   const enroll = async (calls: readonly AgentToolCall[]): Promise<PresentationTaskPreparation> => {
     const operations = calls.flatMap((call) =>
-      callOperations(call).map((operation) => ({ ...operation, callId: call.id })),
+      callOperations(call).map((operation) => ({
+        ...operation,
+        callId: call.invocationId ?? call.id,
+        sourceCallId: call.id,
+      })),
     )
     const requiresConfirmation = calls.some((call) => elevated.has(call.name))
-    if (operations.length === 0 && !requiresConfirmation) return { kind: 'bypass' }
+    // Unsupported elevated writes retain their existing proposal/confirmation path. Task 6
+    // adds visual verification; Task 5 must not synthesize a malformed deterministic contract.
+    if (operations.length === 0) return { kind: 'bypass' }
     const lease = await options.authority.acquire()
     const targets = new Set<string>()
     const locations = new Map<string, { slideId: string; shapeId?: string }>()
     const checks: PresentationAcceptanceCheck[] = []
+    const callMatches = new Map<string, boolean[]>()
     for (const [index, operation] of operations.entries()) {
       let targetToken: string | undefined
       if (operation.target) {
         const state = await options.authority.readShape(operation.slide - 1, operation.target)
         targets.add(`${state.slideId}/${state.shapeId}`)
-        targets.add(`${operation.slide - 1}/${state.shapeId}`)
         targetToken = `target-${index}`
         locations.set(targetToken, { slideId: state.slideId, shapeId: state.shapeId })
+        const values = callMatches.get(operation.sourceCallId) ?? []
+        values.push(
+          equal(operation.property, actualProperty(state, operation.property), operation.expected),
+        )
+        callMatches.set(operation.sourceCallId, values)
       } else {
         const state = await options.authority.readSlide(operation.slide - 1)
         targets.add(`${state.slideId}/background`)
@@ -293,7 +274,7 @@ export function createOfficePowerPointVerification(options: {
         locations.set(targetToken, { slideId: state.slideId })
       }
       checks.push({
-        id: `${operation.callId || `check-${index}`}-${operation.property === 'background_color' ? 'background' : operation.property}`,
+        id: `${operation.callId || `check-${index}`}-op${operation.opIndex}-${operation.property}`,
         kind: 'element_property',
         slide: operation.slide,
         roleOrTarget: { kind: 'target', targetToken },
@@ -321,9 +302,29 @@ export function createOfficePowerPointVerification(options: {
       checks,
       maxCorrectionPasses: requiresConfirmation ? 0 : 2,
     })
-    enrolled = { contract, targets, locations, elevated: requiresConfirmation }
-    proposal = undefined
-    settlement = undefined
+    const fullySupported = (call: AgentToolCall) =>
+      call.name === 'edit_slide_text' ||
+      (call.name === 'execute_office_js' &&
+        program(call.input).length > 0 &&
+        program(call.input).every(
+          (op) => op.op === 'set_shape_text' || op.op === 'set_shape_geometry',
+        ))
+    const skipCallIds = new Set(
+      calls
+        .filter((call) => fullySupported(call) && callMatches.get(call.id)?.every(Boolean))
+        .map((call) => call.id),
+    )
+    enrolled = {
+      contract,
+      targets,
+      locations,
+      plannedTools: calls
+        .filter((call) => callOperations(call).length && !skipCallIds.has(call.id))
+        .map((call) => call.name),
+      skipCallIds,
+    }
+    proposals = []
+    settlements = []
     return {
       kind: 'ready',
       contract,
@@ -355,10 +356,13 @@ export function createOfficePowerPointVerification(options: {
     prepare: () => ({ kind: 'bypass' }),
     enroll: (calls) => enroll(calls),
     recordProposal(value) {
-      proposal = { ...value, targets: [...value.targets] }
+      if (proposals.length < 50) proposals.push({ ...value, targets: [...value.targets] })
     },
     recordSettlement(value) {
-      settlement = { ...value }
+      if (settlements.length < 50) settlements.push({ ...value })
+    },
+    shouldSkip(call) {
+      return enrolled?.skipCallIds.has(call.id) ?? false
     },
     abandon() {
       /* reconciliation deliberately retains safe state */
@@ -366,31 +370,37 @@ export function createOfficePowerPointVerification(options: {
     async complete(context): Promise<PresentationTaskCompletion> {
       const contract = context.contract
       const allIds = contract.checks.map((check) => check.id)
+      const confirmed = proposals.filter((item) =>
+        settlements.some(
+          (settlement) => settlement.id === item.id && settlement.status === 'confirmed',
+        ),
+      )
+      const failedSettlement = settlements.find((item) => item.status === 'failed')
+      const rejected = settlements.some((item) => item.status === 'rejected')
       if (!context.mutated) {
-        if (settlement?.status === 'failed')
+        if (failedSettlement)
           return receipt(contract, {
             status: 'failed',
             mutationReceiptIds: [],
             passedCheckIds: [],
             failedCheckIds: allIds,
             unavailableCheckIds: [],
-            safeCode: settlement.error === 'proposal_stale' ? 'stale_authority' : 'mutation_failed',
+            safeCode:
+              failedSettlement.error === 'proposal_stale' ? 'stale_authority' : 'mutation_failed',
           })
         return receipt(contract, {
-          status: settlement?.status === 'rejected' ? 'needs_user' : 'unchanged',
+          status: rejected ? 'needs_user' : 'unchanged',
           mutationReceiptIds: [],
           passedCheckIds: [],
           failedCheckIds: [],
           unavailableCheckIds: allIds,
-          ...(settlement?.status === 'rejected'
-            ? { safeCode: 'confirmation_required' as const }
-            : {}),
+          ...(rejected ? { safeCode: 'confirmation_required' as const } : {}),
         })
       }
-      if (!proposal || settlement?.status !== 'confirmed' || settlement.id !== proposal.id)
+      if (confirmed.length === 0 || confirmed.length !== proposals.length)
         return receipt(contract, {
           status: 'applied_unverified',
-          mutationReceiptIds: proposal ? [proposal.id] : [],
+          mutationReceiptIds: confirmed.map((item) => item.id),
           passedCheckIds: [],
           failedCheckIds: [],
           unavailableCheckIds: allIds,
@@ -399,20 +409,11 @@ export function createOfficePowerPointVerification(options: {
       if (context.cancelled)
         return receipt(contract, {
           status: 'applied_unverified',
-          mutationReceiptIds: [proposal.id],
+          mutationReceiptIds: confirmed.map((item) => item.id),
           passedCheckIds: [],
           failedCheckIds: [],
           unavailableCheckIds: allIds,
           safeCode: 'cancelled_after_apply',
-        })
-      if (enrolled?.elevated)
-        return receipt(contract, {
-          status: 'applied_unverified',
-          mutationReceiptIds: [proposal.id],
-          passedCheckIds: [],
-          failedCheckIds: [],
-          unavailableCheckIds: allIds,
-          safeCode: 'unsupported_check',
         })
       const current = await options.authority.current(context.signal)
       if (
@@ -421,16 +422,27 @@ export function createOfficePowerPointVerification(options: {
       )
         return receipt(contract, {
           status: 'applied_unverified',
-          mutationReceiptIds: [proposal.id],
+          mutationReceiptIds: confirmed.map((item) => item.id),
           passedCheckIds: [],
           failedCheckIds: [],
           unavailableCheckIds: allIds,
           safeCode: 'stale_authority',
         })
-      if ([...proposal.targets].some((target) => !enrolled?.targets.has(target)))
+      const actualTargets = new Set(confirmed.flatMap((item) => item.targets))
+      const proposalTools = confirmed.map((item) => item.toolName).sort()
+      const enrollment = enrolled
+      const proposalToolsValid =
+        enrollment !== undefined &&
+        proposalTools.every(Boolean) &&
+        JSON.stringify(proposalTools) === JSON.stringify([...enrollment.plannedTools].sort())
+      const targetCoverageValid =
+        enrollment !== undefined &&
+        actualTargets.size === enrollment.targets.size &&
+        [...actualTargets].every((target) => enrollment.targets.has(target))
+      if (!proposalToolsValid || !targetCoverageValid)
         return receipt(contract, {
           status: 'applied_unverified',
-          mutationReceiptIds: [proposal.id],
+          mutationReceiptIds: confirmed.map((item) => item.id),
           passedCheckIds: [],
           failedCheckIds: allIds,
           unavailableCheckIds: [],
@@ -484,7 +496,7 @@ export function createOfficePowerPointVerification(options: {
           : 'verified'
       return receipt(contract, {
         status,
-        mutationReceiptIds: [proposal.id],
+        mutationReceiptIds: confirmed.map((item) => item.id),
         passedCheckIds: passed,
         failedCheckIds: failed,
         unavailableCheckIds: unavailable,
