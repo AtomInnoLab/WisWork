@@ -48,7 +48,6 @@ export interface OfficePowerPointVerificationAuthority {
     slideIndex: number,
     signal?: AbortSignal,
   ): Promise<{ slideId: string; backgroundColor?: string }>
-  authorizeProposal(call: AgentToolCall, signal?: AbortSignal): Promise<{ fingerprint: string }>
 }
 
 export type SafeProposalRecord = {
@@ -56,6 +55,7 @@ export type SafeProposalRecord = {
   toolName?: string
   fingerprint: string
   targets: string[]
+  verificationBinding?: { callId: string; fingerprint: string; targets: string[] }
 }
 export type SafeProposalSettlement = {
   id: string
@@ -121,32 +121,6 @@ export function createBrowserPowerPointVerificationAuthority(
     async readSlide(slideIndex, signal) {
       const state = await adapter.listSlideShapes(slideIndex, signal)
       return { slideId: state.slideId }
-    },
-    async authorizeProposal(call, signal) {
-      const input = call.input as Record<string, unknown>
-      if (call.name === 'edit_slide_text') {
-        const current = await adapter.readSlideText(
-          input.slide_index as number,
-          input.shape_id as string,
-          signal,
-        )
-        return {
-          fingerprint: powerPointProposalFingerprint(
-            JSON.stringify([current.slideId, current.shapeId, current.text, current.paragraphs]),
-          ),
-        }
-      }
-      const slideIndexes = [
-        ...new Set(program(input).map((operation) => operation.slide_index as number)),
-      ]
-      const snapshots = await Promise.all(
-        slideIndexes.map((slideIndex) => adapter.snapshotSlide(slideIndex, signal)),
-      )
-      return {
-        fingerprint: powerPointProposalFingerprint(
-          snapshots.map((snapshot) => snapshot.fingerprint).join('|'),
-        ),
-      }
     },
   }
 }
@@ -224,6 +198,26 @@ function callOperations(call: AgentToolCall): Array<{
   return result
 }
 
+export function canonicalPowerPointVerificationBinding(
+  call: AgentToolCall,
+  normalizedTargets: readonly string[],
+): { callId: string; fingerprint: string; targets: string[] } {
+  const callId = call.invocationId ?? call.id
+  const targets = [...normalizedTargets].sort()
+  return {
+    callId,
+    fingerprint: powerPointProposalFingerprint(
+      JSON.stringify({
+        callId,
+        toolName: call.name,
+        operations: callOperations(call),
+        targets,
+      }),
+    ),
+    targets,
+  }
+}
+
 const equal = (property: SupportedProperty, actual: unknown, expected: unknown) =>
   typeof expected === 'number' && typeof actual === 'number'
     ? Math.abs(actual - expected) <= (['x', 'y', 'width', 'height'].includes(property) ? 0.01 : 0)
@@ -260,7 +254,12 @@ export function createOfficePowerPointVerification(options: {
         contract: PresentationAcceptanceContract
         targets: Set<string>
         locations: Map<string, { slideId: string; shapeId?: string }>
-        plannedProposals: Array<{ toolName: string; fingerprint: string }>
+        plannedProposals: Array<{
+          callId: string
+          toolName: string
+          fingerprint: string
+          targets: string[]
+        }>
         skipCallIds: Set<string>
       }
     | undefined
@@ -307,10 +306,12 @@ export function createOfficePowerPointVerification(options: {
     const locations = new Map<string, { slideId: string; shapeId?: string }>()
     const checks: PresentationAcceptanceCheck[] = []
     const callMatches = new Map<string, boolean[]>()
+    const shapeStates = new Map<string, OfficePowerPointShapeState>()
     for (const [index, operation] of operations.entries()) {
       let targetToken: string | undefined
       if (operation.target) {
         const state = await options.authority.readShape(operation.slide - 1, operation.target)
+        shapeStates.set(`${operation.slide}:${operation.target}`, state)
         targets.add(`${state.slideId}/${state.shapeId}`)
         targetToken = `target-${index}`
         locations.set(targetToken, { slideId: state.slideId, shapeId: state.shapeId })
@@ -334,17 +335,29 @@ export function createOfficePowerPointVerification(options: {
         expected: operation.expected,
       })
     }
+    const targetsByCall = new Map<string, string[]>()
+    const targetOperations = new Set<string>()
     for (const call of calls) {
-      if (callMatches.has(call.id)) continue
       const matches: boolean[] = []
       for (const operation of callOperations(call)) {
         if (!operation.target) continue
-        const state = await options.authority.readShape(operation.slide - 1, operation.target)
+        const key = `${operation.slide}:${operation.target}`
+        const state =
+          shapeStates.get(key) ??
+          (await options.authority.readShape(operation.slide - 1, operation.target))
+        shapeStates.set(key, state)
+        const targetOperation = `${call.id}:${operation.opIndex}`
+        if (!targetOperations.has(targetOperation)) {
+          targetOperations.add(targetOperation)
+          const callTargets = targetsByCall.get(call.id) ?? []
+          callTargets.push(`${state.slideId}/${state.shapeId}`)
+          targetsByCall.set(call.id, callTargets)
+        }
         matches.push(
           equal(operation.property, actualProperty(state, operation.property), operation.expected),
         )
       }
-      if (matches.length) callMatches.set(call.id, matches)
+      if (!callMatches.has(call.id) && matches.length) callMatches.set(call.id, matches)
     }
     if (checks.length === 0)
       checks.push({
@@ -374,12 +387,10 @@ export function createOfficePowerPointVerification(options: {
     const plannedCalls = calls.filter(
       (call) => callOperations(call).length && !skipCallIds.has(call.id),
     )
-    const plannedProposals = await Promise.all(
-      plannedCalls.map(async (call) => ({
-        toolName: call.name,
-        fingerprint: (await options.authority.authorizeProposal(call)).fingerprint,
-      })),
-    )
+    const plannedProposals = plannedCalls.map((call) => ({
+      toolName: call.name,
+      ...canonicalPowerPointVerificationBinding(call, targetsByCall.get(call.id) ?? []),
+    }))
     enrolled = {
       contract,
       targets,
@@ -420,7 +431,19 @@ export function createOfficePowerPointVerification(options: {
     prepare: () => ({ kind: 'bypass' }),
     enroll: (calls) => enroll(calls),
     recordProposal(value) {
-      if (proposals.length < 50) proposals.push({ ...value, targets: [...value.targets] })
+      if (proposals.length < 50)
+        proposals.push({
+          ...value,
+          targets: [...value.targets],
+          ...(value.verificationBinding
+            ? {
+                verificationBinding: {
+                  ...value.verificationBinding,
+                  targets: [...value.verificationBinding.targets],
+                },
+              }
+            : {}),
+        })
     },
     recordSettlement(value) {
       if (settlements.length < 50) settlements.push({ ...value })
@@ -495,14 +518,33 @@ export function createOfficePowerPointVerification(options: {
       const actualTargets = new Set(confirmed.flatMap((item) => item.targets))
       const enrollment = enrolled
       const actualBindings = confirmed
-        .map((item) => `${item.toolName ?? ''}:${item.fingerprint}`)
+        .map((item) =>
+          JSON.stringify({
+            callId: item.verificationBinding?.callId ?? '',
+            toolName: item.toolName ?? '',
+            fingerprint: item.verificationBinding?.fingerprint ?? '',
+            targets: [...(item.verificationBinding?.targets ?? [])].sort(),
+          }),
+        )
         .sort()
       const plannedBindings = (enrollment?.plannedProposals ?? [])
-        .map((item) => `${item.toolName}:${item.fingerprint}`)
+        .map((item) =>
+          JSON.stringify({
+            callId: item.callId,
+            toolName: item.toolName,
+            fingerprint: item.fingerprint,
+            targets: [...item.targets].sort(),
+          }),
+        )
         .sort()
+      const eachProposalTargetsBound = confirmed.every(
+        (item) =>
+          JSON.stringify([...item.targets].sort()) ===
+          JSON.stringify([...(item.verificationBinding?.targets ?? [])].sort()),
+      )
       const proposalBindingsValid =
         enrollment !== undefined &&
-        actualBindings.every((binding) => !binding.startsWith(':')) &&
+        eachProposalTargetsBound &&
         JSON.stringify(actualBindings) === JSON.stringify(plannedBindings)
       const targetCoverageValid =
         enrollment !== undefined &&

@@ -25,6 +25,11 @@ export interface StructuredProposal {
 }
 
 export interface StructuredProposalRequest extends Omit<StructuredProposal, 'id'> {
+  verificationBinding?: {
+    callId: string
+    fingerprint: string
+    targets: string[]
+  }
   validate(signal?: AbortSignal): boolean | Promise<boolean>
   execute(signal?: AbortSignal): void | Promise<void>
   verify?(signal?: AbortSignal): void | Promise<void>
@@ -55,7 +60,14 @@ export interface StructuredProposalController {
 }
 
 export type StructuredProposalAuditEvent =
-  | { kind: 'proposed'; id: string; toolName?: string; fingerprint: string; targets: string[] }
+  | {
+      kind: 'proposed'
+      id: string
+      toolName?: string
+      fingerprint: string
+      targets: string[]
+      verificationBinding?: { callId: string; fingerprint: string; targets: string[] }
+    }
   | { kind: 'settled'; id: string; status: ProposalDecision['status']; error?: string }
 
 export interface OfficeProposal {
@@ -185,7 +197,14 @@ export function createStructuredProposalController(
         !Number.isSafeInteger(request.impact.count) ||
         request.impact.count < 0 ||
         request.impact.targets.length > 256 ||
-        request.impact.targets.some((target) => !target || target.length > 512)
+        request.impact.targets.some((target) => !target || target.length > 512) ||
+        (request.verificationBinding !== undefined &&
+          (!request.verificationBinding.callId ||
+            request.verificationBinding.callId.length > 128 ||
+            !request.verificationBinding.fingerprint ||
+            request.verificationBinding.fingerprint.length > 128 ||
+            request.verificationBinding.targets.length > 256 ||
+            request.verificationBinding.targets.some((target) => !target || target.length > 512)))
       )
         invalidProposal()
       const publicValue = snapshot({
@@ -218,6 +237,14 @@ export function createStructuredProposalController(
           ...(publicValue.toolName ? { toolName: publicValue.toolName } : {}),
           fingerprint: publicValue.fingerprint,
           targets: [...publicValue.impact.targets],
+          ...(request.verificationBinding
+            ? {
+                verificationBinding: {
+                  ...request.verificationBinding,
+                  targets: [...request.verificationBinding.targets],
+                },
+              }
+            : {}),
         }),
       )
       publish()

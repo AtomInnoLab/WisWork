@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  canonicalPowerPointVerificationBinding,
   createOfficePowerPointVerification,
-  powerPointProposalFingerprint,
 } from '../src/skills/powerpoint/powerpoint-verification.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import { createPowerPointSkill } from '../src/skills/powerpoint/powerpoint-skill.js'
@@ -29,11 +29,6 @@ const authority = (overrides = {}) => ({
     height: 30,
   }),
   readSlide: vi.fn().mockResolvedValue({ slideId: 'slide-1', backgroundColor: '#FFFFFF' }),
-  authorizeProposal: vi
-    .fn()
-    .mockImplementation((call) =>
-      Promise.resolve({ fingerprint: call.name === 'edit_slide_text' ? 'hash' : 'proposal-hash' }),
-    ),
   ...overrides,
 })
 
@@ -42,6 +37,8 @@ const textCall = {
   name: 'edit_slide_text',
   input: { slide_index: 0, shape_id: 'shape-1', text: 'After' },
 }
+const verificationBinding = (call: typeof textCall, targets = ['slide-1/shape-1']) =>
+  canonicalPowerPointVerificationBinding(call, targets)
 
 function productionAdapter(state: { text: string; left: number }): PowerPointAdapter {
   return {
@@ -112,9 +109,6 @@ describe('Office PowerPoint presentation verification', () => {
           height: 30,
         }),
       ),
-      authorizeProposal: vi.fn().mockResolvedValue({
-        fingerprint: powerPointProposalFingerprint('slide-1:Before:5'),
-      }),
     })
     const skill = createPowerPointSkill({ adapter, proposals, verificationAuthority })
     const call = {
@@ -153,6 +147,155 @@ describe('Office PowerPoint presentation verification', () => {
     ).resolves.toMatchObject({
       kind: 'receipt',
       receipt: { status: 'verified', mutationReceiptIds: [expect.any(String)] },
+    })
+  })
+
+  it.each(['text', 'declarative'] as const)(
+    'verifies two real sequential %s proposals from evolving authoritative state',
+    async (kind) => {
+      const state = { text: 'Start', left: 5 }
+      const adapter = productionAdapter(state)
+      const proposals = createStructuredProposalController()
+      const verificationAuthority = authority({
+        readShape: vi.fn().mockImplementation(() =>
+          Promise.resolve({
+            slideId: 'slide-1',
+            shapeId: 'shape-1',
+            text: state.text,
+            left: state.left,
+            top: 20,
+            width: 100,
+            height: 30,
+          }),
+        ),
+      })
+      const skill = createPowerPointSkill({ adapter, proposals, verificationAuthority })
+      const calls =
+        kind === 'text'
+          ? [
+              { ...textCall, id: 'first-write', input: { ...textCall.input, text: 'Middle' } },
+              { ...textCall, id: 'second-write', input: { ...textCall.input, text: 'Final' } },
+            ]
+          : [
+              {
+                id: 'first-program',
+                name: 'execute_office_js',
+                input: {
+                  program: {
+                    version: 1,
+                    operations: [
+                      {
+                        op: 'set_shape_geometry',
+                        slide_index: 0,
+                        shape_id: 'shape-1',
+                        left: 8,
+                        top: 20,
+                        width: 100,
+                        height: 30,
+                      },
+                    ],
+                  },
+                },
+              },
+              {
+                id: 'second-program',
+                name: 'execute_office_js',
+                input: {
+                  program: {
+                    version: 1,
+                    operations: [
+                      {
+                        op: 'set_shape_geometry',
+                        slide_index: 0,
+                        shape_id: 'shape-1',
+                        left: 12,
+                        top: 20,
+                        width: 100,
+                        height: 30,
+                      },
+                    ],
+                  },
+                },
+              },
+            ]
+      const enrolled = await skill.presentation!.enroll!(calls, undefined)
+      if (enrolled.kind !== 'ready') throw new Error('not ready')
+      for (const call of calls) {
+        await skill.executeTool(call)
+        await proposals.confirm(proposals.pending()!.id)
+      }
+      await expect(
+        skill.presentation!.complete({
+          contract: enrolled.contract,
+          mutated: true,
+          cancelled: false,
+          correctionPasses: 0,
+        }),
+      ).resolves.toMatchObject({
+        kind: 'receipt',
+        receipt: {
+          status: 'verified',
+          mutationReceiptIds: [expect.any(String), expect.any(String)],
+        },
+      })
+      expect(kind === 'text' ? state.text : state.left).toBe(kind === 'text' ? 'Final' : 12)
+    },
+  )
+
+  it('rejects an A/B fingerprint-target exchange even when global multisets match', async () => {
+    const calls = [
+      { ...textCall, id: 'call-a', input: { ...textCall.input, shape_id: 'shape-a', text: 'A' } },
+      { ...textCall, id: 'call-b', input: { ...textCall.input, shape_id: 'shape-b', text: 'B' } },
+    ]
+    let applied = false
+    const source = authority({
+      readShape: vi.fn().mockImplementation((_slide, shapeId) =>
+        Promise.resolve({
+          slideId: 'slide-1',
+          shapeId,
+          text: applied ? (shapeId === 'shape-a' ? 'A' : 'B') : 'Before',
+          left: 10,
+          top: 20,
+          width: 100,
+          height: 30,
+        }),
+      ),
+    })
+    const subject = createOfficePowerPointVerification({
+      authority: source,
+      taskId: () => 'task-swap',
+    })
+    const enrolled = await subject.enroll(calls, undefined)
+    if (enrolled.kind !== 'ready') throw new Error('not ready')
+    applied = true
+    const bindingA = canonicalPowerPointVerificationBinding(calls[0]!, ['slide-1/shape-a'])
+    const bindingB = canonicalPowerPointVerificationBinding(calls[1]!, ['slide-1/shape-b'])
+    subject.recordProposal({
+      id: 'a',
+      toolName: 'edit_slide_text',
+      fingerprint: 'state-a',
+      targets: bindingA.targets,
+      verificationBinding: { ...bindingA, fingerprint: bindingB.fingerprint },
+    })
+    subject.recordProposal({
+      id: 'b',
+      toolName: 'edit_slide_text',
+      fingerprint: 'state-b',
+      targets: bindingB.targets,
+      verificationBinding: { ...bindingB, fingerprint: bindingA.fingerprint },
+    })
+    subject.recordSettlement({ id: 'a', status: 'confirmed' })
+    subject.recordSettlement({ id: 'b', status: 'confirmed' })
+    await expect(
+      subject.complete({
+        contract: enrolled.contract,
+        mutated: true,
+        cancelled: false,
+        correctionPasses: 0,
+      }),
+    ).resolves.toMatchObject({
+      kind: 'receipt',
+      receipt: { status: 'applied_unverified', safeCode: 'verification_invalid' },
     })
   })
 
@@ -313,6 +456,7 @@ describe('Office PowerPoint presentation verification', () => {
       toolName: 'edit_slide_text',
       fingerprint: 'different',
       targets: ['slide-1/shape-1'],
+      verificationBinding: { ...verificationBinding(textCall), fingerprint: 'different' },
     })
     subject.recordSettlement({ id: 'replacement', status: 'confirmed' })
     await expect(
@@ -414,6 +558,7 @@ describe('Office PowerPoint presentation verification', () => {
       toolName: 'edit_slide_text',
       fingerprint: 'hash',
       targets: ['slide-1/shape-1'],
+      verificationBinding: verificationBinding(textCall),
     })
     subject.recordSettlement({ id: 'proposal-1', status: 'confirmed' })
     await expect(
@@ -447,6 +592,7 @@ describe('Office PowerPoint presentation verification', () => {
       toolName: 'edit_slide_text',
       fingerprint: 'hash',
       targets: ['other-target'],
+      verificationBinding: verificationBinding(textCall, ['other-target']),
     })
     subject.recordSettlement({ id: 'proposal-2', status: 'confirmed' })
     await expect(
@@ -489,6 +635,7 @@ describe('Office PowerPoint presentation verification', () => {
       toolName: 'edit_slide_text',
       fingerprint: 'hash',
       ...proposalOverride,
+      verificationBinding: verificationBinding(textCall, proposalOverride.targets),
     })
     subject.recordSettlement({ id: 'proposal-x', status: 'confirmed' })
     await expect(
@@ -532,6 +679,7 @@ describe('Office PowerPoint presentation verification', () => {
         toolName: 'edit_slide_text',
         fingerprint: 'hash',
         targets: ['slide-1/shape-1'],
+        verificationBinding: verificationBinding(textCall),
       })
       if (settlement) subject.recordSettlement(settlement)
       await expect(

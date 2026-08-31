@@ -8,6 +8,7 @@ import type { InMemoryVfs } from '../shared/vfs.js'
 import type { PowerPointAdapter } from './browser-powerpoint-adapter.js'
 import {
   createOfficePowerPointVerification,
+  canonicalPowerPointVerificationBinding,
   powerPointProposalFingerprint,
   type OfficePowerPointVerificationAuthority,
 } from './powerpoint-verification.js'
@@ -1250,6 +1251,9 @@ export function createPowerPointSkill(options: {
               targets: [`${before.slideId}/${input.shape_id}`],
               count: 1,
             },
+            verificationBinding: canonicalPowerPointVerificationBinding(call, [
+              `${before.slideId}/${input.shape_id}`,
+            ]),
             fingerprint: stableTextFingerprint,
             before: before.text,
             after: input.text,
@@ -1381,6 +1385,10 @@ export function createPowerPointSkill(options: {
             ),
           )
           const combined = snapshots.map((item) => item.fingerprint).join('|')
+          const normalizedTargets = program.operations.map((operation) => {
+            const slideId = slideIds.get(operation.slide_index)!
+            return 'shape_id' in operation ? `${slideId}/${operation.shape_id}` : slideId
+          })
           let declarativeResult: { createdShapeIds: string[]; insertedSlideId?: string } | undefined
           const proposal = options.proposals.propose({
             operation: call.name,
@@ -1389,12 +1397,10 @@ export function createPowerPointSkill(options: {
             preview: { version: 1, operations: program.operations },
             impact: {
               host: 'powerpoint',
-              targets: program.operations.map((operation) => {
-                const slideId = slideIds.get(operation.slide_index)!
-                return 'shape_id' in operation ? `${slideId}/${operation.shape_id}` : slideId
-              }),
+              targets: normalizedTargets,
               count: program.operations.length,
             },
+            verificationBinding: canonicalPowerPointVerificationBinding(call, normalizedTargets),
             fingerprint: fingerprint(combined),
             code: input.code,
             before: {
