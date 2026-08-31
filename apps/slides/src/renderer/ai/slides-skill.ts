@@ -173,26 +173,49 @@ const GEOMETRY_TARGET =
 const GEOMETRY_CHANGE =
   /(?:位置|尺寸|大小|移动|调整|对齐|旋转|坐标|布局|\bposition\b|\bsize\b|\bgeometry\b|\balign(?:ment|ed)?\b|\brotat(?:e|ed|ion)\b|\bmov(?:e|ed|ing)\b|\bresiz(?:e|ed|ing)\b)/i
 const EXPLICIT_TOOL_FAILURE =
-  /(?:PowerPoint|幻灯片|PPT).{0,24}(?:读取失败|操作失败|未能应用)|(?:set_element_(?:style|transform)|execute_slide_script|相关编辑工具|the (?:style|transform|script) tool).{0,48}(?:unsupported|fail-closed|target_stale|proposal_stale|office_state_uncertain|不支持|失败|报错)|(?:unsupported|fail-closed|target_stale|proposal_stale|office_state_uncertain|不支持|失败|报错).{0,48}(?:set_element_(?:style|transform)|execute_slide_script|相关编辑工具|the (?:style|transform|script) tool)/i
+  /(?:PowerPoint|幻灯片|PPT).{0,24}(?:读取失败|操作失败|未能应用)|(?:set_element_(?:style|transform)|execute_slide_script|相关编辑工具|(?:style|format|transform|geometry) (?:tool|operation)).{0,48}(?:unsupported|fail-closed|target_stale|proposal_stale|office_state_uncertain|failed|error|不支持|失败|报错)|(?:unsupported|fail-closed|target_stale|proposal_stale|office_state_uncertain|failed|error|不支持|失败|报错).{0,48}(?:set_element_(?:style|transform)|execute_slide_script|相关编辑工具|(?:style|format|transform|geometry) (?:tool|operation))/i
 const REAL_UNSUPPORTED_FAMILY =
   /(?:嵌入字体|字体打包|平滑切换|变体过渡|embedded fonts?|font packaging|morph transitions?)/i
 const QUALIFIED_UNCERTAINTY = /(?:不能保证|cannot guarantee|can't guarantee)/i
 const TARGET_FAIL_CLOSED =
-  /(?:锁定|只读|版式装饰|嵌套(?:元素|目标|组)|\blocked\b|\bread-only\b|\blayout decoration\b|\bnested (?:target|element|group)\b)/i
+  /(?:(?:标题(?:栏)?|元素|文本框|形状|图片|目标).{0,24}(?:锁定|只读|版式装饰|嵌套(?:元素|目标|组))|(?:锁定|只读|版式装饰|嵌套(?:元素|目标|组))(?:的|\s)*(?:标题(?:栏)?|元素|文本框|形状|图片|目标))|(?:(?:\btitle\b|\belement\b|\btext box\b|\bshape\b|\bimage\b|\btarget\b).{0,24}(?:\blocked\b|\bread-only\b|\blayout decoration\b|\bnested (?:target|element|group)\b)|(?:\blocked\b|\bread-only\b|\blayout decoration\b|\bnested\b)(?:\s+(?:and\s+)?(?:read-only\s+)?)?(?:\btitle\b|\belement\b|\btext box\b|\bshape\b|\bimage\b|\btarget\b))/i
 
 const MAX_REVIEW_TEXT_CHARS = 4096
 const MAX_REVIEW_CLAUSES = 64
 const MAX_REVIEW_CLAUSE_CHARS = 512
+const PROTECTED_PERIOD = '\u0000'
+
+function protectCommonPeriods(text: string): string {
+  return text
+    .replace(/https?:\/\/[^\s。！？!?;；]+/gi, (url) =>
+      url.replaceAll('.', (match, offset: number) =>
+        offset === url.length - 1 ? match : PROTECTED_PERIOD,
+      ),
+    )
+    .replace(/\b(?:e\.g\.|i\.e\.)/gi, (abbreviation) =>
+      abbreviation.replaceAll('.', PROTECTED_PERIOD),
+    )
+    .replace(/(?<=\d)\.(?=\d)/g, PROTECTED_PERIOD)
+}
+
+function boundClause(clause: string): string {
+  if (clause.length <= MAX_REVIEW_CLAUSE_CHARS) return clause
+  const half = MAX_REVIEW_CLAUSE_CHARS / 2
+  return `${clause.slice(0, half)}${clause.slice(-half)}`
+}
 
 function boundedClauses(text: string): string[] {
-  return (
-    text
-      .slice(0, MAX_REVIEW_TEXT_CHARS)
-      .match(/[^.。！？!?;；\r\n]+[.。！？!?;；]?/g)
-      ?.slice(0, MAX_REVIEW_CLAUSES)
-      .map((clause) => clause.trim().slice(0, MAX_REVIEW_CLAUSE_CHARS))
-      .filter(Boolean) ?? []
-  )
+  const clauses =
+    protectCommonPeriods(text.slice(0, MAX_REVIEW_TEXT_CHARS)).match(
+      /[^.。！？!?;；\r\n]+[.。！？!?;；]?/g,
+    ) ?? []
+  const selected =
+    clauses.length <= MAX_REVIEW_CLAUSES
+      ? clauses
+      : [...clauses.slice(0, MAX_REVIEW_CLAUSES / 2), ...clauses.slice(-MAX_REVIEW_CLAUSES / 2)]
+  return selected
+    .map((clause) => boundClause(clause.trim()).replaceAll(PROTECTED_PERIOD, '.'))
+    .filter(Boolean)
 }
 
 function namesSupportedCapability(clause: string): boolean {

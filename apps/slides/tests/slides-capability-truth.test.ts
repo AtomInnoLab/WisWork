@@ -97,7 +97,49 @@ describe('Slides capability truth', () => {
     'The title is nested in a read-only group, so its position cannot be changed.',
     'set_element_transform returned target_stale, so the title cannot be moved safely.',
     'set_element_transform 返回 target_stale，因此不能移动这个标题。',
+    'set_element_transform failed, so the title cannot be moved safely.',
+    'The geometry tool returned an error, so the title cannot be moved safely.',
+    'The format operation failed, so existing text color cannot be changed safely.',
   ])('allows a target-local fail-closed explanation: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBeUndefined()
+  })
+
+  it.each([
+    'image_search failed, so the title cannot be moved.',
+    'The chart operation returned an error; the title cannot be moved.',
+    'The chart is locked and read-only, so the title cannot be moved.',
+  ])('does not let an unrelated failure justify a supported denial: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it.each([
+    'The editor cannot change, e.g. the title position.',
+    'The editor cannot change, i.e. resize, the title element.',
+    'In v1.2 the editor cannot change the title position.',
+    'At https://example.com/v1.2 the editor cannot change the title position.',
+  ])('keeps common dotted tokens inside the denial clause: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it('checks both ends when more than 64 bounded clauses are present', () => {
+    const text = [
+      ...Array.from({ length: 65 }, (_, index) => `Status sentence ${index + 1}.`),
+      'The title cannot be moved with the available tools.',
+    ].join(' ')
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it('keeps both ends of a long bounded clause', () => {
+    const text = `${'Context '.repeat(70)}The title cannot be moved with the available tools.`
+    expect(text.length).toBeGreaterThan(512)
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it.each([
+    'The locked title cannot be moved.',
+    'The title is read-only and cannot be resized.',
+    '锁定的标题不能移动。',
+  ])('allows a constraint bound to the supported target: %s', (text) => {
     expect(reviewSlidesFinalResponse({ text, mutated: false })).toBeUndefined()
   })
 
