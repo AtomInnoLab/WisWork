@@ -853,6 +853,7 @@ export function AiPanel({
       runLlmAttempt(settingsRef.current, system, user, timeoutMs, signal, maxTokens)
 
     const taskImages = new Map<string, AgentImage>()
+    let taskRenderBundle: Awaited<ReturnType<typeof window.slidesApi.getRenderSlides>> = null
 
     const access: DeckAccess = {
       getSlides: () => slidesRef.current,
@@ -875,12 +876,14 @@ export function AiPanel({
           signal?.throwIfAborted()
           const refreshed = await window.slidesApi.getRenderSlides()
           if (!refreshed) throw new Error('authoritative_refresh_unavailable')
-          applyDeckRef.current(refreshed, currentRef.current)
-          const lease = await window.slidesApi.getAcceptanceAuthorityLease()
-          if (!lease) throw new Error('authoritative_lease_unavailable')
+          taskRenderBundle = refreshed
+          applyDeckRef.current(refreshed.slides, currentRef.current)
           const historyId = await finishHistoryBatch(false)
           return {
-            ...lease,
+            documentToken: refreshed.documentToken,
+            sessionToken: refreshed.sessionToken,
+            revision: refreshed.revision,
+            leaseToken: refreshed.leaseToken,
             ...lineage,
             ...(typeof historyId === 'number' ? { rollbackId: `history-${historyId}` } : {}),
           }
@@ -931,7 +934,17 @@ export function AiPanel({
         },
         capture: async ({ slide, role, authority, signal }) => {
           signal?.throwIfAborted()
-          const image = await captureSlideShot(slide - 1)
+          const rendered = taskRenderBundle?.slides[slide - 1]
+          if (
+            !rendered ||
+            taskRenderBundle?.documentToken !== authority.documentToken ||
+            taskRenderBundle.sessionToken !== authority.sessionToken ||
+            taskRenderBundle.revision !== authority.revision ||
+            taskRenderBundle.leaseToken !== authority.leaseToken
+          )
+            return null
+          const [png] = await renderSlidesToPngBase64([rendered], imagesRef.current, 1)
+          const image: AgentImage | null = png ? { base64: png, mime: 'image/png' } : null
           if (!image) return null
           const after = await window.slidesApi.inspectAcceptanceAuthority({
             affectedSlides: [slide],
@@ -975,7 +988,10 @@ export function AiPanel({
         },
         isCurrent: (authority) =>
           authority.sessionToken.length > 0 && activeRunTokenRef.current === launchTokenRef.current,
-        cleanup: () => taskImages.clear(),
+        cleanup: () => {
+          taskImages.clear()
+          taskRenderBundle = null
+        },
       },
       onTaskReviewComplete: (receipt) => {
         const historyId = receipt.rollbackId?.match(/^history-([1-9][0-9]*)$/)?.[1]
@@ -1007,7 +1023,7 @@ export function AiPanel({
         const refresh = async () => {
           const refreshed = await window.slidesApi.getRenderSlides()
           if (!refreshed) return false
-          applyDeckRef.current(refreshed, currentRef.current)
+          applyDeckRef.current(refreshed.slides, currentRef.current)
           return true
         }
         const execution = await ('backgrounds' in request
@@ -1354,6 +1370,28 @@ export function AiPanel({
           // side effects outside the updater (StrictMode double-invokes updaters, duplicating history writes)
           if (finalText && !cancelled) {
             persistMessage('assistant', finalText, runToolsRef.current)
+          }
+        },
+        onAbandonedPresentationCompletion: async (event) => {
+          const key = 'slides-pending-presentation-completions'
+          const digest = async (value: string) => {
+            const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+            return [...new Uint8Array(bytes)]
+              .map((byte) => byte.toString(16).padStart(2, '0'))
+              .join('')
+          }
+          const safeEvent = {
+            documentDigest: await digest(event.documentToken),
+            sessionDigest: await digest(event.sessionToken),
+            receipt: event.receipt,
+            facts: event.facts,
+          }
+          try {
+            const existing = JSON.parse(localStorage.getItem(key) ?? '[]')
+            const bounded = Array.isArray(existing) ? existing.slice(-49) : []
+            localStorage.setItem(key, JSON.stringify([...bounded, safeEvent]))
+          } catch {
+            localStorage.setItem(key, JSON.stringify([safeEvent]))
           }
         },
         onError: (error) => {

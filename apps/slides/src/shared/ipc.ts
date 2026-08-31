@@ -1073,7 +1073,9 @@ export interface SlidesApi {
   /** Batch position update (align/distribute); all items share one undo step */
   batchEditTransform: (op: BatchEditTransformOp) => Promise<RenderSlide | null>
   /** Read-only: RenderSlide for every page of the current session (E2E driver/debug use) */
-  getRenderSlides: () => Promise<RenderSlide[] | null>
+  getRenderSlides: () => Promise<
+    ({ slides: RenderSlide[] } & SlidesAcceptanceAuthorityLease) | null
+  >
   /** Read-only durable identity map for structured QC; never enrolls or mutates legacy elements. */
   getQualityIdentityMap: (slideIndex: number) => Promise<{
     slideId: string

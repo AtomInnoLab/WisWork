@@ -186,6 +186,48 @@ describe('AgentLoop', () => {
       )
     })
 
+    it('audits a deferred completion after reset without updating the new session', async () => {
+      let resolveCompletion!: (value: ReturnType<typeof receipt>) => void
+      const abandoned = vi.fn()
+      const done = vi.fn()
+      const loop = new AgentLoop({
+        transport: scriptedTransport([
+          (cb) => {
+            cb.onToolCall({ id: 'call-1', name: 'do_thing', input: { slideIndex: 1 } })
+            cb.onDone()
+          },
+          (cb) => cb.onDone(),
+        ]),
+        skill: {
+          ...makeSkill(() => ({ output: 'ok', summary: 'done', mutated: true })),
+          presentation: {
+            prepare: () => ({ kind: 'bypass' }),
+            enroll: () => ({ kind: 'ready', contract }),
+            complete: () =>
+              new Promise((resolve) => {
+                resolveCompletion = (value) => resolve({ kind: 'receipt', receipt: value })
+              }),
+          },
+        },
+        events: { onDone: done, onAbandonedPresentationCompletion: abandoned },
+      })
+      loop.run('edit')
+      await flush()
+      await flush()
+      loop.reset()
+      resolveCompletion(receipt())
+      await flush()
+      expect(abandoned).toHaveBeenCalledWith(
+        expect.objectContaining({
+          documentToken: contract.documentToken,
+          sessionToken: contract.sessionToken,
+          receipt: expect.objectContaining({ status: 'verified' }),
+        }),
+      )
+      expect(done).not.toHaveBeenCalled()
+      expect(loop.messages).toEqual([])
+    })
+
     it('dispatches zero tools when authoritative enrollment fails', async () => {
       const execute = vi.fn(() => ({ output: 'ok', summary: 'done', mutated: true }))
       const transport = scriptedTransport([

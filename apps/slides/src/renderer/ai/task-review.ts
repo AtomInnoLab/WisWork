@@ -9,6 +9,7 @@ import {
   type PresentationRenderingFacts,
   type SafeFixIntent,
   type VisualReviewResult,
+  PRESENTATION_VERIFICATION_LIMITS,
 } from '@wiswork/presentation-verification'
 import type { SlidesDeterministicResult } from './task-acceptance'
 import { AgentLoop, type AgentImage, type AgentTransport } from '@wiswork/agent-core'
@@ -57,7 +58,12 @@ export interface SlidesTaskReviewAdapter {
     intents: SafeFixIntent[],
     authority: SlidesTaskReviewAuthority,
     signal?: AbortSignal,
-  ): Promise<{ mutationReceiptId: string; rollbackId?: string; correctedCheckIds: string[] }>
+  ): Promise<{
+    mutationReceiptId: string
+    applied?: boolean
+    rollbackId?: string
+    correctedCheckIds: string[]
+  }>
   isCurrent(authority: SlidesTaskReviewAuthority): boolean
   cleanup?(): void
 }
@@ -352,7 +358,29 @@ export async function runSlidesTaskReview(input: {
           ...(rollbackId ? { rollbackId } : {}),
           safeCode: 'confirmation_required',
         })
+      if (receipts.length >= PRESENTATION_VERIFICATION_LIMITS.maxReceiptIds)
+        return accountedReceipt({
+          contract,
+          status: 'needs_user',
+          results: deterministic,
+          visualFailed: visual.failedCheckIds,
+          receipts,
+          correctionPasses,
+          ...(rollbackId ? { rollbackId } : {}),
+          safeCode: 'confirmation_required',
+        })
       const correction = await input.adapter.correct(visual.fixIntents, authority, input.signal)
+      if (correction.applied === false)
+        return accountedReceipt({
+          contract,
+          status: 'needs_user',
+          results: deterministic,
+          visualFailed: visual.failedCheckIds,
+          receipts,
+          correctionPasses,
+          ...(rollbackId ? { rollbackId } : {}),
+          safeCode: 'confirmation_required',
+        })
       receipts.push(correction.mutationReceiptId)
       correctionPasses += 1
       if (!rollbackId && correction.rollbackId) rollbackId = correction.rollbackId

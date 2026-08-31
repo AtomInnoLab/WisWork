@@ -95,7 +95,7 @@ export function AudienceView() {
     const tryLoad = (attempt: number) => {
       void window.slidesApi.getRenderSlides().then((r) => {
         if (stop) return
-        if (r && r.length > 0) setSlides(r)
+        if (r && r.slides.length > 0) setSlides(r.slides)
         else if (attempt < 20) window.setTimeout(() => tryLoad(attempt + 1), 250)
       })
     }

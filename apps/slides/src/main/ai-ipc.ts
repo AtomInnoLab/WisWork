@@ -27,6 +27,7 @@ import {
   type PresentationElementType,
 } from '@wiswork/presentation-ops'
 import { EMU_PER_PX_96 } from '@wiswork/pptx-render'
+import { PRESENTATION_VERIFICATION_LIMITS } from '@wiswork/presentation-verification'
 import { tm } from './i18n-main'
 import {
   acquirePresentationMutationLease,
@@ -285,7 +286,10 @@ export function registerSlidesOnlyAiIpc(): void {
       request.mutationReceiptIds === undefined
         ? undefined
         : (() => {
-            if (!Array.isArray(request.mutationReceiptIds) || request.mutationReceiptIds.length > 3)
+            if (
+              !Array.isArray(request.mutationReceiptIds) ||
+              request.mutationReceiptIds.length > PRESENTATION_VERIFICATION_LIMITS.maxReceiptIds
+            )
               throw new AiIpcError('invalid_payload')
             return request.mutationReceiptIds.map((id) => validateSlidesAiString(id, 128))
           })()

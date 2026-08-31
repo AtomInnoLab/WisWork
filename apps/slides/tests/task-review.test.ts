@@ -196,6 +196,18 @@ describe('PC task-specific rendered verification', () => {
     expect(a.correct).toHaveBeenCalledTimes(2)
   })
 
+  it('supports a practical multi-receipt lineage plus two corrections up to the global bound', async () => {
+    const a = adapter([review('needs_fix'), review('needs_fix'), review('pass')])
+    const initialMutationReceiptIds = Array.from({ length: 48 }, (_, index) => `edit-${index + 1}`)
+    const result = await runSlidesTaskReview({
+      contract: contract(),
+      initialMutationReceiptIds,
+      adapter: a,
+    })
+    expect(result).toMatchObject({ status: 'verified', correctionPasses: 2 })
+    expect(result.mutationReceiptIds).toHaveLength(50)
+  })
+
   it('does not reexecute after screenshot rejection following an applied fix', async () => {
     const a = adapter([review('needs_fix')])
     vi.mocked(a.capture).mockImplementation(async ({ slide, role, authority }) =>
@@ -296,6 +308,25 @@ describe('PC task-specific rendered verification', () => {
       adapter: a,
     })
     expect(result.rollbackId).toBe('undo-original')
+  })
+
+  it('does not count or append an unchanged correction receipt', async () => {
+    const a = adapter([review('needs_fix')])
+    vi.mocked(a.correct).mockResolvedValueOnce({
+      mutationReceiptId: 'noop-fix',
+      applied: false,
+      correctedCheckIds: ['color'],
+    })
+    const result = await runSlidesTaskReview({
+      contract: contract(),
+      initialMutationReceiptIds: ['edit-1'],
+      adapter: a,
+    })
+    expect(result).toMatchObject({
+      status: 'needs_user',
+      mutationReceiptIds: ['edit-1'],
+      correctionPasses: 0,
+    })
   })
 
   it('enforces the eight screenshot and 2 MiB visual bounds', async () => {

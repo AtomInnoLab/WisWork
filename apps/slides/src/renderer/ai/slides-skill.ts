@@ -1539,6 +1539,7 @@ export function createSlidesSkill(access: DeckAccess): AgentSkill {
               throw new Error('correction_scope_mismatch')
             return {
               mutationReceiptId: execution.receipt.transactionId,
+              applied: execution.receipt.status === 'applied',
               ...(correctionRollbackId ? { rollbackId: correctionRollbackId } : {}),
               correctedCheckIds: [intent.checkId],
             }

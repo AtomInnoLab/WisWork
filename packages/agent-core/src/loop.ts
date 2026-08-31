@@ -53,6 +53,13 @@ export interface AgentLoopEvents<TSnapshot> {
   onError?(error: string): void
   onPresentationClarify?(event: { question: string }): void
   onPresentationPlan?(event: { steps: string[]; requiresConfirmation: boolean }): void
+  /** Host audit sink for a proved mutation whose UI session was reset during reconciliation. */
+  onAbandonedPresentationCompletion?(event: {
+    documentToken: string
+    sessionToken: string
+    receipt: import('@wiswork/presentation-verification').PresentationCompletionReceipt
+    facts: PresentationCompletionFacts
+  }): void
 }
 
 /** Context compaction config (budget tracked in UTF-8 bytes rather than message count) */
@@ -729,7 +736,7 @@ export class AgentLoop<TSnapshot = unknown> {
   reset(): void {
     this.generation++
     this.abortController?.abort()
-    this.reconciliationController?.abort()
+    if (!this.mutationSeen) this.reconciliationController?.abort()
     this.handle?.cancel()
     this.handle = null
     this.running = false
@@ -1129,6 +1136,7 @@ export class AgentLoop<TSnapshot = unknown> {
     const hooks = this.options.skill.presentation
     if (!contract || !hooks) return false
     const generation = this.generation
+    const modelCorrectionPasses = this.presentationCorrectionPasses
     let completion: Awaited<ReturnType<typeof hooks.complete>>
     try {
       completion = await hooks.complete({
@@ -1143,7 +1151,23 @@ export class AgentLoop<TSnapshot = unknown> {
       this.failPresentationRun('presentation_completion_unavailable')
       return true
     }
-    if (generation !== this.generation || !this.running) return true
+    if (generation !== this.generation || !this.running) {
+      if (completion?.kind === 'receipt') {
+        try {
+          const receipt = parsePresentationCompletionReceipt(completion.receipt, contract)
+          if (receipt.correctionPasses < modelCorrectionPasses) throw new TypeError()
+          this.options.events?.onAbandonedPresentationCompletion?.({
+            documentToken: contract.documentToken,
+            sessionToken: contract.sessionToken,
+            receipt,
+            facts: renderPresentationCompletionFacts(receipt, contract),
+          })
+        } catch {
+          // An invalid abandoned receipt is never persisted or surfaced.
+        }
+      }
+      return true
+    }
     let completionKind: 'receipt' | 'correct'
     let completionValue: unknown
     try {
