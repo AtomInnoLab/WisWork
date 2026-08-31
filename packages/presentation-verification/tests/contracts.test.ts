@@ -337,7 +337,13 @@ describe('safe visual and completion data', () => {
       contractDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       revision: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
       screenshots: [
-        { slide: 6, role: 'reference', mediaToken: 'media-1', bytes: 1024 },
+        {
+          slide: 6,
+          role: 'affected',
+          roles: ['affected', 'reference'],
+          mediaToken: 'media-1',
+          bytes: 1024,
+        },
         { slide: 7, role: 'affected', mediaToken: 'media-2', bytes: 2048 },
       ],
       deterministicResults: [
@@ -346,6 +352,7 @@ describe('safe visual and completion data', () => {
       ],
     })
     expect(facts.screenshots).toHaveLength(2)
+    expect(facts.screenshots[0]?.roles).toEqual(['affected', 'reference'])
 
     expect(() =>
       parsePresentationRenderingFacts({

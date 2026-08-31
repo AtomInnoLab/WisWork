@@ -167,6 +167,7 @@ export type PresentationRenderingFacts = {
   screenshots: Array<{
     slide: number
     role: 'affected' | 'reference'
+    roles?: Array<'affected' | 'reference'>
     mediaToken: string
     bytes: number
   }>
@@ -618,7 +619,7 @@ export const parsePresentationRenderingFacts = (value: unknown): PresentationRen
   ).map((item, index) => {
     const name = `renderingFacts.screenshots[${index}]`
     const screenshot = readObject(item, name)
-    exactKeys(screenshot, ['slide', 'role', 'mediaToken', 'bytes'], name)
+    exactKeys(screenshot, ['slide', 'role', 'roles', 'mediaToken', 'bytes'], name)
     const bytes = readInteger(
       screenshot.bytes,
       `${name}.bytes`,
@@ -626,9 +627,22 @@ export const parsePresentationRenderingFacts = (value: unknown): PresentationRen
       PRESENTATION_VERIFICATION_LIMITS.maxVisualRequestBytes,
     )
     totalBytes += bytes
+    const role = readEnum(screenshot.role, ['affected', 'reference'] as const, `${name}.role`)
+    const roles =
+      screenshot.roles === undefined
+        ? undefined
+        : readArray(screenshot.roles, `${name}.roles`, 2).map((value, roleIndex) =>
+            readEnum(value, ['affected', 'reference'] as const, `${name}.roles[${roleIndex}]`),
+          )
+    if (
+      roles &&
+      (roles.length < 1 || new Set(roles).size !== roles.length || !roles.includes(role))
+    )
+      fail(`${name}.roles must be unique and include role`)
     return {
       slide: readInteger(screenshot.slide, `${name}.slide`, 1, 100_000),
-      role: readEnum(screenshot.role, ['affected', 'reference'] as const, `${name}.role`),
+      role,
+      ...(roles ? { roles } : {}),
       mediaToken: readIdentifier(screenshot.mediaToken, `${name}.mediaToken`),
       bytes,
     }

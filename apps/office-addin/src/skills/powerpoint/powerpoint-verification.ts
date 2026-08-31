@@ -511,6 +511,9 @@ export function createOfficePowerPointVerification(options: {
           )
         : [],
     )
+    const referenceSlides = [...new Set(explicitReferences)]
+    if (new Set([...affectedSlides, ...referenceSlides]).size > 8)
+      return { kind: 'clarify', question: 'presentation_scope_required' }
     const contract = parsePresentationAcceptanceContract({
       version: 1,
       taskId: options.taskId?.() ?? `task-${Date.now()}`,
@@ -518,10 +521,7 @@ export function createOfficePowerPointVerification(options: {
       sessionToken: lease.sessionToken,
       baseRevision: lease.revision,
       affectedSlides,
-      referenceSlides: [...new Set(explicitReferences)].slice(
-        0,
-        Math.max(0, 8 - new Set(affectedSlides).size),
-      ),
+      referenceSlides,
       checks,
       maxCorrectionPasses: 2,
     })
@@ -802,20 +802,31 @@ export function createOfficePowerPointVerification(options: {
             beforeCapture.sessionToken !== contract.sessionToken
           )
             throw new Error('stale_authority')
-          const pagesBySlide = new Map<number, { slide: number; role: 'affected' | 'reference' }>()
+          const pagesBySlide = new Map<
+            number,
+            {
+              slide: number
+              role: 'affected' | 'reference'
+              roles: Array<'affected' | 'reference'>
+            }
+          >()
           for (const slide of contract.affectedSlides)
-            pagesBySlide.set(slide, { slide, role: 'affected' })
-          for (const slide of contract.referenceSlides)
-            if (!pagesBySlide.has(slide)) pagesBySlide.set(slide, { slide, role: 'reference' })
+            pagesBySlide.set(slide, { slide, role: 'affected', roles: ['affected'] })
+          for (const slide of contract.referenceSlides) {
+            const existing = pagesBySlide.get(slide)
+            if (existing) existing.roles.push('reference')
+            else pagesBySlide.set(slide, { slide, role: 'reference', roles: ['reference'] })
+          }
           const pages = [...pagesBySlide.values()]
           if (pages.length > 8) throw new Error('screenshot_unavailable')
           const images = await Promise.all(
-            pages.map(async ({ slide, role }) => {
+            pages.map(async ({ slide, role, roles }) => {
               const image = await options.authority.captureScreenshot(slide - 1, reviewAbort.signal)
               if (image.mime !== 'image/png') throw new Error('screenshot_unavailable')
               return {
                 slide,
                 role,
+                roles,
                 mediaToken: `shot-${powerPointProposalFingerprint(image.base64).replace(':', '-')}`,
                 bytes: Math.floor((image.base64.length * 3) / 4),
                 base64: image.base64,
@@ -833,9 +844,10 @@ export function createOfficePowerPointVerification(options: {
           const facts = parsePresentationRenderingFacts({
             contractDigest: await digestPresentationAcceptanceContract(contract),
             revision: afterCapture.revision,
-            screenshots: images.map(({ slide, role, mediaToken, bytes }) => ({
+            screenshots: images.map(({ slide, role, roles, mediaToken, bytes }) => ({
               slide,
               role,
+              roles,
               mediaToken,
               bytes: Math.max(1, bytes),
             })),

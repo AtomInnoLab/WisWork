@@ -756,6 +756,11 @@ describe('Office PowerPoint presentation verification', () => {
         ({ slide }: { slide: number }) => slide === 6,
       ),
     ).toHaveLength(1)
+    expect(
+      reviewer.review.mock.calls[0]![0].facts.screenshots.find(
+        ({ slide }: { slide: number }) => slide === 6,
+      )?.roles,
+    ).toEqual(['affected', 'reference'])
     expect(telemetry).toHaveBeenCalledWith({
       host: 'office',
       phase: 'complete',
@@ -773,6 +778,71 @@ describe('Office PowerPoint presentation verification', () => {
     ])
     expect(JSON.stringify(telemetry.mock.calls)).not.toMatch(/slide-|golden-|title|body|emphasis/)
     expect(JSON.stringify([...state].filter(([key]) => /^[1-5]:/.test(key)))).toBe(outside)
+  })
+
+  it('rejects more than eight unique affected/reference slides before proposal dispatch', async () => {
+    const proposals = createStructuredProposalController()
+    const adapter = productionAdapter({ text: 'Before', left: 5 })
+    const skill = createPowerPointSkill({ adapter, proposals, verificationAuthority: authority() })
+    const call = {
+      id: 'overbound-reference-scope',
+      name: 'execute_office_js',
+      input: {
+        program: {
+          version: 1,
+          operations: Array.from({ length: 8 }, (_, slide_index) => ({
+            op: 'set_shape_geometry',
+            slide_index,
+            shape_id: 'shape-1',
+            left: 10,
+            top: 20,
+            width: 100,
+            height: 30,
+            reference_slide_index: 8,
+          })),
+        },
+      },
+    }
+    await expect(skill.presentation!.enroll!([call], undefined)).resolves.toEqual({
+      kind: 'clarify',
+      question: 'presentation_scope_required',
+    })
+    expect(proposals.pending()).toBeUndefined()
+    expect(adapter.executeDeclarative).not.toHaveBeenCalled()
+  })
+
+  it('allows exactly eight unique affected/reference slides without truncating the contract', async () => {
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({
+      adapter: productionAdapter({ text: 'Before', left: 5 }),
+      proposals,
+      verificationAuthority: authority(),
+    })
+    const call = {
+      id: 'exact-eight-reference-scope',
+      name: 'execute_office_js',
+      input: {
+        program: {
+          version: 1,
+          operations: Array.from({ length: 7 }, (_, slide_index) => ({
+            op: 'set_shape_geometry',
+            slide_index,
+            shape_id: 'shape-1',
+            left: 10,
+            top: 20,
+            width: 100,
+            height: 30,
+            reference_slide_index: 7,
+          })),
+        },
+      },
+    }
+    const enrolled = await skill.presentation!.enroll!([call], undefined)
+    expect(enrolled).toMatchObject({
+      kind: 'ready',
+      contract: { affectedSlides: [1, 2, 3, 4, 5, 6, 7], referenceSlides: [8] },
+    })
+    expect(proposals.pending()).toBeUndefined()
   })
 
   it.each(['text', 'declarative'] as const)(
