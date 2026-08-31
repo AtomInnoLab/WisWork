@@ -23,6 +23,8 @@ export interface LazyWorkbookState {
   /// let a stale callback validate itself after a document switch.
   readonly expectedWorkbookId: string
   readonly generation: number
+  /** Monotonic user-command revision used to invalidate long-running read-only scans. */
+  scanRevision?: number
   readonly loadedRanges: Map<string, IRange>
   readonly loadingKeys: Map<string, string>
   readonly retryTimers: Map<string, ReturnType<typeof setTimeout>>

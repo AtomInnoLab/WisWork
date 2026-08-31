@@ -83,6 +83,8 @@ describe('readSheetRangeMapped bounded batching', () => {
     expect(result?.screen.cells.map((cell) => cell.formula)).toEqual(['=0', '=90', '=180', '=270'])
     expect(result?.screen.merges).toHaveLength(1)
     expect(result?.byteCount).toBeGreaterThan(0)
+    expect(result?.requestBatchCount).toBe(4)
+    expect(result?.requestedCellCount).toBe(60_000)
     expect(result?.truncated).toBeNull()
   })
 
@@ -94,6 +96,30 @@ describe('readSheetRangeMapped bounded batching', () => {
       sheetMeta,
     )
     expect(readWorkbookRange).toHaveBeenCalledTimes(1)
+  })
+
+  it('honors caller remaining internal batch and requested-cell budgets before I/O', async () => {
+    await expect(
+      readSheetRangeMapped(
+        state(),
+        's1',
+        { startRow: 0, endRow: 299, startColumn: 0, endColumn: 199 },
+        sheetMeta,
+        { maxBatches: 3 },
+      ),
+    ).rejects.toThrow('batch')
+    expect(readWorkbookRange).not.toHaveBeenCalled()
+
+    await expect(
+      readSheetRangeMapped(
+        state(),
+        's1',
+        { startRow: 0, endRow: 299, startColumn: 0, endColumn: 199 },
+        sheetMeta,
+        { maxCells: 59_999 },
+      ),
+    ).rejects.toThrow('cell')
+    expect(readWorkbookRange).not.toHaveBeenCalled()
   })
 
   it('fails closed when one row is wider than the batch cap', async () => {

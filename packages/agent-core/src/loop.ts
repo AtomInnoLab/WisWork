@@ -88,6 +88,12 @@ const MAX_IDENTICAL_TOOL_BATCHES = 4
 const MAX_TOOL_CONTENT_IMAGES = 4
 const MAX_TOOL_IMAGE_BYTES = 4 * 1024 * 1024
 const TOOL_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+/** Review policies need denial language, not an unbounded copy of model output. */
+const FINAL_RESPONSE_REVIEW_MAX_CHARS = 4_096
+const FINAL_RESPONSE_REVIEW_TRUNCATION = '\n[response truncated for review]\n'
+/** Static corrective guidance should remain much smaller than a normal prompt. */
+const FINAL_RESPONSE_CORRECTION_MAX_CHARS = 2_000
+const FINAL_RESPONSE_CORRECTION_MAX_BYTES = 4_000
 
 function isToolExecutionSuspension(
   outcome: ToolExecutionOutcome,
@@ -173,6 +179,33 @@ function utf8Size(s: string): number {
   return n
 }
 
+/** Keep both the opening claim and closing rationale where denials commonly appear. */
+function boundedFinalResponseForReview(text: string): string {
+  if (text.length <= FINAL_RESPONSE_REVIEW_MAX_CHARS) return text
+  const available = FINAL_RESPONSE_REVIEW_MAX_CHARS - FINAL_RESPONSE_REVIEW_TRUNCATION.length
+  const head = Math.floor(available / 2)
+  const tail = available - head
+  return `${text.slice(0, head)}${FINAL_RESPONSE_REVIEW_TRUNCATION}${text.slice(-tail)}`
+}
+
+function safeFinalResponseCorrection(value: unknown): string | undefined {
+  if (
+    typeof value !== 'string' ||
+    !value.trim() ||
+    value.length > FINAL_RESPONSE_CORRECTION_MAX_CHARS ||
+    utf8Size(value) > FINAL_RESPONSE_CORRECTION_MAX_BYTES
+  )
+    return undefined
+  const sanitized = sanitizeAgentPayload(value).trim()
+  if (
+    !sanitized ||
+    sanitized.length > FINAL_RESPONSE_CORRECTION_MAX_CHARS ||
+    utf8Size(sanitized) > FINAL_RESPONSE_CORRECTION_MAX_BYTES
+  )
+    return undefined
+  return sanitized
+}
+
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
   if (value && typeof value === 'object')
@@ -253,6 +286,8 @@ export class AgentLoop<TSnapshot = unknown> {
   private turns = 0
   /** Finalizing turn after hitting the turn limit: no tools, let the model answer from what it has read */
   private finalizing = false
+  /** one terminal-response correction is permitted per run */
+  private completionReviewRetried = false
   private mutationSeen = false
   private inputParseFails = 0
   private lastToolBatchSignature = ''
@@ -328,6 +363,7 @@ export class AgentLoop<TSnapshot = unknown> {
     this.cancelled = false
     this.turns = 0
     this.finalizing = false
+    this.completionReviewRetried = false
     this.mutationSeen = false
     this.inputParseFails = 0
     this.lastToolBatchSignature = ''
@@ -685,6 +721,44 @@ export class AgentLoop<TSnapshot = unknown> {
         this.running = false
         this.rollbackFailedRun()
         events?.onError?.('tool_loop_detected')
+        return
+      }
+    }
+
+    // A skill may reject one normal tool-free terminal response. Preserve the
+    // rejected assistant prose in model history, pair it with a synthetic user
+    // correction, and continue the same run without settling the UI turn.
+    if (
+      toolCalls.length === 0 &&
+      !this.cancelled &&
+      !this.finalizing &&
+      !this.completionReviewRetried &&
+      skill.reviewFinalResponse
+    ) {
+      const generation = this.generation
+      let correction: unknown
+      try {
+        correction = skill.reviewFinalResponse({
+          text: boundedFinalResponseForReview(this.turnText),
+          mutated: this.mutationSeen,
+        })
+      } catch {
+        // Completion policies are advisory. A broken policy must not strand or
+        // fail an otherwise valid run.
+      }
+      if (generation !== this.generation || !this.running) return
+      const safeCorrection = safeFinalResponseCorrection(correction)
+      if (safeCorrection && !this.cancelled) {
+        this.completionReviewRetried = true
+        this.history.push({
+          role: 'assistant',
+          text: this.turnText || COMPLETED_VIA_TOOLS_TEXT,
+        })
+        this.history.push({ role: 'user', text: safeCorrection })
+        // The rejected prose was already streamed into the current bubble. A
+        // corrective tool turn may emit no text, so clear it explicitly now.
+        events?.onText?.('')
+        this.startTurn()
         return
       }
     }

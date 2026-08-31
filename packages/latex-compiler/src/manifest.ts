@@ -147,7 +147,7 @@ export function parseTectonicManifest(value: unknown): TectonicManifest {
     } else if (archive.format === 'zip' && archive.executable === 'tectonic.exe') {
       parsedArchive = Object.freeze({ format: 'zip', executable: 'tectonic.exe' })
     } else {
-      manifestError('Tectonic archive must be tar.gz/tectonic or zip/tectonic.exe')
+      manifestError('Tectonic archive layout is invalid')
     }
     return Object.freeze({
       id: assetId,

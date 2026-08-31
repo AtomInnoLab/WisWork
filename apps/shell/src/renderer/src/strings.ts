@@ -75,6 +75,7 @@ export const strings = {
     projects: '项目',
     newProject: '新建项目',
     projectName: '项目名称',
+    projectOperationFailed: '项目操作失败，请重试。',
     deleteProject: '删除项目…',
     deleteProjectConfirm: '删除该项目？\n项目下的文件将回归"默认项目"，不会丢失。',
     projMoreActions: '{name} 更多操作',
@@ -204,6 +205,7 @@ export const strings = {
     projects: 'Projects',
     newProject: 'New project',
     projectName: 'Project name',
+    projectOperationFailed: 'Project operation failed. Try again.',
     deleteProject: 'Delete project…',
     deleteProjectConfirm:
       "Delete this project?\nIts files will return to the Default project and won't be lost.",
@@ -340,6 +342,7 @@ export const strings = {
     projects: 'プロジェクト',
     newProject: '新規プロジェクト',
     projectName: 'プロジェクト名',
+    projectOperationFailed: 'プロジェクトの操作に失敗しました。もう一度お試しください。',
     deleteProject: 'プロジェクトを削除…',
     deleteProjectConfirm:
       'このプロジェクトを削除しますか？\nプロジェクト内のファイルは「既定のプロジェクト」に戻り、失われることはありません。',
@@ -481,6 +484,7 @@ export const strings = {
     projects: '프로젝트',
     newProject: '새 프로젝트',
     projectName: '프로젝트 이름',
+    projectOperationFailed: '프로젝트 작업에 실패했습니다. 다시 시도해 주세요.',
     deleteProject: '프로젝트 삭제…',
     deleteProjectConfirm:
       '이 프로젝트를 삭제하시겠습니까?\n프로젝트의 파일은 "기본 프로젝트"로 돌아가며 사라지지 않습니다.',
@@ -621,6 +625,7 @@ export const strings = {
     projects: 'Projets',
     newProject: 'Nouveau projet',
     projectName: 'Nom du projet',
+    projectOperationFailed: 'L’opération sur le projet a échoué. Réessayez.',
     deleteProject: 'Supprimer le projet…',
     deleteProjectConfirm:
       'Supprimer ce projet ?\nSes fichiers retourneront dans le projet par défaut et ne seront pas perdus.',
@@ -766,6 +771,7 @@ export const strings = {
     projects: 'Projekte',
     newProject: 'Neues Projekt',
     projectName: 'Projektname',
+    projectOperationFailed: 'Der Projektvorgang ist fehlgeschlagen. Versuchen Sie es erneut.',
     deleteProject: 'Projekt löschen…',
     deleteProjectConfirm:
       'Dieses Projekt löschen?\nSeine Dateien kehren in das Standardprojekt zurück und gehen nicht verloren.',
@@ -910,6 +916,7 @@ export const strings = {
     projects: 'Proyectos',
     newProject: 'Nuevo proyecto',
     projectName: 'Nombre del proyecto',
+    projectOperationFailed: 'La operación del proyecto falló. Inténtalo de nuevo.',
     deleteProject: 'Eliminar proyecto…',
     deleteProjectConfirm:
       '¿Eliminar este proyecto?\nSus archivos volverán al proyecto predeterminado y no se perderán.',
@@ -1052,6 +1059,7 @@ export const strings = {
     projects: 'โปรเจ็กต์',
     newProject: 'โปรเจ็กต์ใหม่',
     projectName: 'ชื่อโปรเจ็กต์',
+    projectOperationFailed: 'การดำเนินการกับโปรเจ็กต์ล้มเหลว โปรดลองอีกครั้ง',
     deleteProject: 'ลบโปรเจ็กต์…',
     deleteProjectConfirm:
       'ลบโปรเจ็กต์นี้หรือไม่\nไฟล์ในโปรเจ็กต์จะกลับไปยัง "โปรเจ็กต์เริ่มต้น" และจะไม่สูญหาย',
@@ -1191,6 +1199,7 @@ export const strings = {
     projects: 'Proyek',
     newProject: 'Proyek baru',
     projectName: 'Nama proyek',
+    projectOperationFailed: 'Operasi proyek gagal. Coba lagi.',
     deleteProject: 'Hapus proyek…',
     deleteProjectConfirm:
       'Hapus proyek ini?\nFile di dalamnya akan kembali ke Proyek Default dan tidak akan hilang.',
@@ -1332,6 +1341,7 @@ export const strings = {
     projects: 'Проекты',
     newProject: 'Создать проект',
     projectName: 'Название проекта',
+    projectOperationFailed: 'Не удалось выполнить операцию с проектом. Повторите попытку.',
     deleteProject: 'Удалить проект…',
     deleteProjectConfirm:
       'Удалить этот проект?\nЕго файлы вернутся в проект по умолчанию и не будут потеряны.',
@@ -1472,6 +1482,7 @@ export const strings = {
     projects: 'المشاريع',
     newProject: 'مشروع جديد',
     projectName: 'اسم المشروع',
+    projectOperationFailed: 'فشلت عملية المشروع. حاول مرة أخرى.',
     deleteProject: 'حذف المشروع…',
     deleteProjectConfirm:
       'هل تريد حذف هذا المشروع؟\nستعود ملفاته إلى "المشروع الافتراضي" ولن تُفقد.',
@@ -1605,6 +1616,7 @@ export const strings = {
     projects: 'Projetos',
     newProject: 'Novo projeto',
     projectName: 'Nome do projeto',
+    projectOperationFailed: 'A operação do projeto falhou. Tente novamente.',
     deleteProject: 'Excluir projeto…',
     deleteProjectConfirm:
       'Excluir este projeto?\nSeus arquivos voltarão ao projeto padrão e não serão perdidos.',
@@ -1737,6 +1749,7 @@ export const strings = {
     projects: 'Progetti',
     newProject: 'Nuovo progetto',
     projectName: 'Nome del progetto',
+    projectOperationFailed: 'L’operazione sul progetto non è riuscita. Riprova.',
     deleteProject: 'Elimina progetto…',
     deleteProjectConfirm:
       'Eliminare questo progetto?\nI suoi file torneranno nel progetto predefinito e non andranno persi.',
@@ -1868,6 +1881,7 @@ export const strings = {
     projects: 'Projekty',
     newProject: 'Nowy projekt',
     projectName: 'Nazwa projektu',
+    projectOperationFailed: 'Operacja na projekcie nie powiodła się. Spróbuj ponownie.',
     deleteProject: 'Usuń projekt…',
     deleteProjectConfirm:
       'Usunąć ten projekt?\nJego pliki wrócą do projektu domyślnego i nie zostaną utracone.',
@@ -2000,6 +2014,7 @@ export const strings = {
     projects: 'Projecten',
     newProject: 'Nieuw project',
     projectName: 'Projectnaam',
+    projectOperationFailed: 'De projectbewerking is mislukt. Probeer het opnieuw.',
     deleteProject: 'Project verwijderen…',
     deleteProjectConfirm:
       'Dit project verwijderen?\nDe bestanden gaan terug naar het standaardproject en gaan niet verloren.',
@@ -2131,6 +2146,7 @@ export const strings = {
     projects: 'Projek',
     newProject: 'Projek baharu',
     projectName: 'Nama projek',
+    projectOperationFailed: 'Operasi projek gagal. Cuba lagi.',
     deleteProject: 'Padam projek…',
     deleteProjectConfirm:
       'Padam projek ini?\nFail di dalamnya akan kembali ke Projek Lalai dan tidak akan hilang.',
@@ -2261,6 +2277,7 @@ export const strings = {
     projects: 'פרויקטים',
     newProject: 'פרויקט חדש',
     projectName: 'שם הפרויקט',
+    projectOperationFailed: 'פעולת הפרויקט נכשלה. נסו שוב.',
     deleteProject: 'מחיקת פרויקט…',
     deleteProjectConfirm:
       'למחוק את הפרויקט הזה?\nהקבצים שבו יחזרו ל"פרויקט ברירת המחדל" ולא יאבדו.',
@@ -2389,6 +2406,7 @@ export const strings = {
     projects: 'प्रोजेक्ट',
     newProject: 'नया प्रोजेक्ट',
     projectName: 'प्रोजेक्ट का नाम',
+    projectOperationFailed: 'प्रोजेक्ट कार्रवाई विफल रही। फिर से कोशिश करें।',
     deleteProject: 'प्रोजेक्ट हटाएँ…',
     deleteProjectConfirm:
       'यह प्रोजेक्ट हटाएँ?\nइसकी फ़ाइलें "डिफ़ॉल्ट प्रोजेक्ट" में वापस चली जाएँगी और खोएँगी नहीं।',
@@ -2520,6 +2538,7 @@ export const strings = {
     projects: '專案',
     newProject: '新增專案',
     projectName: '專案名稱',
+    projectOperationFailed: '專案操作失敗，請再試一次。',
     deleteProject: '刪除專案…',
     deleteProjectConfirm: '刪除此專案？\n專案內的檔案會回到「預設專案」，不會遺失。',
     projMoreActions: '{name} 更多動作',

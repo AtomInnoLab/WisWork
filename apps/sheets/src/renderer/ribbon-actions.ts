@@ -11,7 +11,7 @@ import {
   type ICellData,
   type IStyleData,
 } from '@univerjs/core'
-import { columnLabel } from '../domain/cell-address'
+import { columnLabel, formatAddress } from '../domain/cell-address'
 import { transposeChartSeries, type ChartSeriesVisualState } from '../domain/chart-visual'
 import { applyFlashFillTemplate, inferFlashFillTemplate } from '../domain/flash-fill'
 import type {
@@ -34,6 +34,7 @@ import {
   type DataToolsContext,
 } from './data-tools-actions'
 import { dedupeRows } from './dedupe'
+import { runStreamedErrorCheck } from './error-checking'
 import {
   isSheetRemoved,
   journalSize,
@@ -157,6 +158,62 @@ export function handleRibbonCommand(ctx: RibbonCommandContext, command: string):
   if (!runtime) return
   if (command === 'undo' || command === 'redo') {
     void runtime.univerAPI[command]()
+    return
+  }
+  if (command === 'error-checking') {
+    const lazy = ctx.lazyWorkbookRef.current
+    if (lazy) {
+      void runStreamedErrorCheck({
+        runtime,
+        lazyWorkbookRef: ctx.lazyWorkbookRef,
+        setMessage: ctx.setMessage,
+        refreshSelectionEcho: () => ctx.refreshSelectionFormatRef.current(),
+      })
+      return
+    }
+    const workbook = runtime.univerAPI.getActiveWorkbook()
+    const worksheet = workbook?.getActiveSheet()
+    if (!workbook || !worksheet) return
+    const errors: Array<{ row: number; column: number; value: string }> = []
+    worksheet
+      .getSheet()
+      .getCellMatrix()
+      .forValue((row, column, cell) => {
+        const value = cell?.v
+        if (
+          typeof cell?.f === 'string' &&
+          typeof value === 'string' &&
+          /^#(?:NULL!|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|N\/A|GETTING_DATA|SPILL!|CALC!|FIELD!|BLOCKED!|UNKNOWN!|CONNECT!|BUSY!|PYTHON!)$/.test(
+            value,
+          )
+        )
+          errors.push({ row, column, value })
+        return undefined
+      })
+    errors.sort((a, b) => a.row - b.row || a.column - b.column)
+    if (!errors.length) {
+      ctx.setMessage(`${t('appErrorChecking')}: 0`)
+      return
+    }
+    const active = workbook.getActiveRange()
+    const next =
+      errors.find(
+        (item) =>
+          item.row > (active?.getRow() ?? -1) ||
+          (item.row === (active?.getRow() ?? -1) && item.column > (active?.getColumn() ?? -1)),
+      ) ?? errors[0]!
+    worksheet.getRange(next.row, next.column, 1, 1).activate()
+    void runtime.univerAPI.executeCommand('sheet.command.scroll-to-cell', {
+      range: {
+        startRow: next.row,
+        endRow: next.row,
+        startColumn: next.column,
+        endColumn: next.column,
+      },
+    })
+    ctx.setMessage(
+      `${t('appErrorChecking')}: ${errors.length} · ${formatAddress(next.row, next.column)} · ${next.value}`,
+    )
     return
   }
   if (command.startsWith('error:')) {

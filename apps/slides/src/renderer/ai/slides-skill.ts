@@ -1,4 +1,4 @@
-import type { AgentSkill, ToolDisplay } from '@wiswork/agent-core'
+import type { AgentSkill, FinalResponseReviewContext, ToolDisplay } from '@wiswork/agent-core'
 import type {
   GroupRenderNode,
   PictureRenderNode,
@@ -147,12 +147,231 @@ const AGENT_SYSTEM_PROMPT = `You are the AI assistant inside WisWork Slides. Hel
 ## Workflow
 - Start with get_deck_context, and use read_slide when exact text, colors, or element details matter.
 - For a new presentation, use ask_clarification when requirements are ambiguous, then plan_deck. Build every page with add_slide and the local add_text_box, add_shape, add_chart, add_table, add_smartart, and insert_web_image tools. Empty decks are valid and may be built directly with these tools.
+- Supported editing capability map:
+  - Change existing text font, size, color, emphasis, or alignment with set_element_style; for coordinated edits use execute_slide_script and setStyle.
+  - Move, resize, rotate, or align titles and other elements with set_element_transform; for coordinated edits use execute_slide_script and setBox/moveBy/resizeBy.
+  - For a multi-page request, inspect and edit each target page (one tool call per target slideIndex), then verify the affected pages. Do not infer that changing one page changes the others.
+- An edit request must not finish with inspection or advice only. Apply the requested supported edits and verify them before responding.
+- Claim a capability limitation only after the relevant tool explicitly returns unsupported or fail-closed. Do not infer limitations from a read result or from unfamiliarity with a tool.
 - Use execute_slide_script for coordinated edits to existing elements. Use the individual set_element_* tools for focused changes.
 - Use set_speaker_notes to add, replace, or clear presenter notes without changing canvas content.
 - Use web_search for current facts and image_search for real imagery. Never invent precise figures; declare figure provenance through dataSource.
 - Keep layouts readable, consistent, within canvas bounds, and free of accidental overlaps. Verify the deck outline after substantial edits.
 - Read all text attachments before using their content. Prefer user-provided material over generic filler.
 - If a requested capability is unavailable, report that limitation clearly and continue with the supported local tools when possible.`
+
+const SLIDES_CAPABILITY_CORRECTION =
+  '[System correction] This requested edit is supported. Use the available Slides editing tools to apply it, verify the result, and only then report completion. Do not stop at inspection or advice.'
+
+const DENIAL_ASSERTION =
+  /(?:无法|不能|不支持|不可用|没有(?:办法|能力)|只能|\bcannot\b|\bcan't\b|\bunable to\b|\bdoes not support\b|\bnot supported\b|\bunavailable\b|\bonly (?:can|allows?)\b)/i
+const TEXT_TARGET = /(?:字体|文字|文本|标题|重点文字|\bfont\b|\btext\b|\btitle\b)/i
+const TEXT_STYLE =
+  /(?:颜色|色彩|字号|字体|加粗|粗体|斜体|下划线|样式|格式|\bcolou?r\b|\bsize\b|\bfamily\b|\bstyle\b|\bformat\b|\bbold\b|\bitalic\b|\bunderline\b|\balign(?:ment)?\b)/i
+const GEOMETRY_TARGET =
+  /(?:标题(?:栏)?|元素|文本框|形状|图片|\btitle\b|\belement\b|\btext box\b|\bshape\b|\bimage\b)/i
+const GEOMETRY_CHANGE =
+  /(?:位置|尺寸|大小|移动|调整|对齐|旋转|坐标|布局|\bposition\b|\bsize\b|\bgeometry\b|\balign(?:ment|ed)?\b|\brotat(?:e|ed|ion)\b|\bmov(?:e|ed|ing)\b|\bresiz(?:e|ed|ing)\b)/i
+const HOST_READ_FAILURE =
+  /(?:(?:PowerPoint|幻灯片|PPT).{0,32}(?:read failed|read error|读取失败|操作失败|未能应用)|(?:read failed|read error|读取失败).{0,32}(?:PowerPoint|幻灯片|PPT))/i
+const FAILURE_STATUS =
+  /(?:unsupported|fail(?:ed)?[- ]closed|target_stale|proposal_stale|office_state_uncertain|failed|error|不支持|失败|报错)/i
+const STYLE_TOOL = /(?:set_element_style|(?:style|format) (?:tool|operation)|样式编辑工具)/i
+const GEOMETRY_TOOL =
+  /(?:set_element_transform|(?:transform|geometry) (?:tool|operation)|几何编辑工具)/i
+const SCRIPT_TOOL = /(?:execute_slide_script|脚本编辑工具)/i
+const REAL_UNSUPPORTED_FAMILY =
+  /(?:嵌入字体|字体打包|平滑切换|变体过渡|embedded fonts?|font packaging|morph transitions?)/i
+const QUALIFIED_UNCERTAINTY = /(?:不能保证|cannot guarantee|can't guarantee)/i
+const TARGET_CONSTRAINT =
+  /(?:锁定|只读|版式装饰|嵌套(?:元素|目标|组)|\blocked\b|\bread-only\b|\blayout decoration\b|\bnested (?:target|element|group)\b)/gi
+const CONCRETE_TARGET =
+  /(?:标题(?:栏)?|元素|文本框|形状|图片|图表|目标|对象|字体|文字|文本|\btitle\b|\belement\b|\btext box\b|\bshape\b|\bimage\b|\bchart\b|\btarget\b|\bobject\b|\bfont\b|\btext\b)/gi
+const DENIAL_ANCHOR = new RegExp(DENIAL_ASSERTION.source, 'gi')
+
+const MAX_REVIEW_TEXT_CHARS = 4096
+const MAX_REVIEW_CLAUSES = 64
+const MAX_REVIEW_CLAUSE_CHARS = 512
+const PROTECTED_PERIOD = '\u0000'
+
+function protectCommonPeriods(text: string): string {
+  return text
+    .replace(/https?:\/\/[^\s。！？!?;；]+/gi, (url) =>
+      url.replaceAll('.', (match, offset: number) =>
+        offset === url.length - 1 ? match : PROTECTED_PERIOD,
+      ),
+    )
+    .replace(/\b(?:e\.g\.|i\.e\.)/gi, (abbreviation) =>
+      abbreviation.replaceAll('.', PROTECTED_PERIOD),
+    )
+    .replace(/(?<=\d)\.(?=\d)/g, PROTECTED_PERIOD)
+}
+
+function boundClause(clause: string): string {
+  if (clause.length <= MAX_REVIEW_CLAUSE_CHARS) return clause
+  const half = MAX_REVIEW_CLAUSE_CHARS / 2
+  return `${clause.slice(0, half)}${clause.slice(-half)}`
+}
+
+function boundedClauses(text: string): string[] {
+  const clauses =
+    protectCommonPeriods(text.slice(0, MAX_REVIEW_TEXT_CHARS)).match(
+      /[^.。！？!?;；\r\n]+[.。！？!?;；]?/g,
+    ) ?? []
+  const selected =
+    clauses.length <= MAX_REVIEW_CLAUSES
+      ? clauses
+      : [...clauses.slice(0, MAX_REVIEW_CLAUSES / 2), ...clauses.slice(-MAX_REVIEW_CLAUSES / 2)]
+  return selected
+    .map((clause) => boundClause(clause.trim()).replaceAll(PROTECTED_PERIOD, '.'))
+    .filter(Boolean)
+}
+
+type CapabilityFamily = 'text-style' | 'geometry'
+
+function supportedCapabilityFamilies(clause: string): CapabilityFamily[] {
+  const families: CapabilityFamily[] = []
+  if (TEXT_TARGET.test(clause) && TEXT_STYLE.test(clause)) families.push('text-style')
+  if (GEOMETRY_TARGET.test(clause) && GEOMETRY_CHANGE.test(clause)) families.push('geometry')
+  return families
+}
+
+function hasRelatedToolFailure(clause: string, family: CapabilityFamily): boolean {
+  if (!FAILURE_STATUS.test(clause)) return false
+  if (SCRIPT_TOOL.test(clause)) return true
+  return family === 'text-style' ? STYLE_TOOL.test(clause) : GEOMETRY_TOOL.test(clause)
+}
+
+type TargetKind = 'title' | 'element' | 'text-box' | 'shape' | 'image' | 'chart' | 'target' | 'text'
+
+function targetKind(token: string): TargetKind {
+  const normalized = token.toLowerCase()
+  if (/标题|title/.test(normalized)) return 'title'
+  if (/文本框|text box/.test(normalized)) return 'text-box'
+  if (/形状|shape/.test(normalized)) return 'shape'
+  if (/图片|image/.test(normalized)) return 'image'
+  if (/图表|chart/.test(normalized)) return 'chart'
+  if (/目标|对象|target|object/.test(normalized)) return 'target'
+  if (/字体|文字|文本|font|text/.test(normalized)) return 'text'
+  return 'element'
+}
+
+interface TargetMention {
+  kind: TargetKind
+  index: number
+  identity?: string
+  coreference: boolean
+}
+
+function targetMention(clause: string, match: RegExpMatchArray): TargetMention {
+  const index = match.index ?? 0
+  const before = clause.slice(Math.max(0, index - 24), index)
+  const after = clause.slice(index + match[0].length, index + match[0].length + 40)
+  const chineseOrdinal = before.match(/第([一二三四五六七八九十百\d]+)个?\s*$/)
+  const englishOrdinal = before.match(/\b(first|second|third|fourth|fifth|\d+(?:st|nd|rd|th))\s+$/i)
+  const explicitId = after.match(/^\s+id\s*[:=#]\s*([A-Za-z0-9_-]+)/i)
+  const shortSuffix = after.match(/^\s+([A-Z]|\d+)\b/)
+  const bareId = after.match(/^\s+([A-Za-z0-9]+(?:[-_][A-Za-z0-9_-]+))(?=\s|[,.;:!?，。；！？]|$)/)
+  const identity = explicitId?.[1]
+    ? `id:${explicitId[1].toLowerCase()}`
+    : bareId?.[1]
+      ? `id:${bareId[1].toLowerCase()}`
+      : shortSuffix?.[1]
+        ? `label:${shortSuffix[1].toLowerCase()}`
+        : chineseOrdinal?.[1]
+          ? `ordinal:${chineseOrdinal[1]}`
+          : englishOrdinal?.[1]
+            ? `ordinal:${englishOrdinal[1].toLowerCase()}`
+            : undefined
+  return {
+    kind: targetKind(match[0]),
+    index,
+    ...(identity ? { identity } : {}),
+    coreference: /(?:该|此|同一)\s*$/.test(before) || /\b(?:this|that|same)\s+$/i.test(before),
+  }
+}
+
+function targetMentions(clause: string): TargetMention[] {
+  return [...clause.matchAll(CONCRETE_TARGET)].map((match) => targetMention(clause, match))
+}
+
+function nearestTarget(clause: string, index: number): TargetMention | undefined {
+  const targets = targetMentions(clause)
+  let nearest: TargetMention | undefined
+  let distance = Number.POSITIVE_INFINITY
+  for (const target of targets) {
+    const nextDistance = Math.abs(target.index - index)
+    if (nextDistance < distance) {
+      nearest = target
+      distance = nextDistance
+    }
+  }
+  return nearest
+}
+
+function constrainedTarget(clause: string, index: number): TargetMention | undefined {
+  const targets = targetMentions(clause)
+  const immediateFollowing = targets.find((target) => {
+    return target.index >= index && /^[\s的]{0,5}$/.test(clause.slice(index, target.index))
+  })
+  if (immediateFollowing) return immediateFollowing
+  return targets.filter((target) => target.index < index).at(-1) ?? targets[0]
+}
+
+function sameTarget(constrained: TargetMention, denied: TargetMention): boolean {
+  const compatibleKind =
+    constrained.kind === denied.kind || constrained.kind === 'target' || denied.kind === 'target'
+  if (!compatibleKind) return false
+  if (constrained.identity && denied.identity) return constrained.identity === denied.identity
+  if (constrained.identity) return denied.coreference
+  if (denied.identity) return constrained.coreference
+  if (constrained.coreference || denied.coreference) return true
+  return true
+}
+
+function hasSameTargetConstraint(clause: string): boolean {
+  const deniedTargets = [...clause.matchAll(DENIAL_ANCHOR)]
+    .map((match) => nearestTarget(clause, match.index ?? 0))
+    .filter((target): target is TargetMention => Boolean(target))
+  if (deniedTargets.length === 0) return false
+  const constrainedTargets = [...clause.matchAll(TARGET_CONSTRAINT)]
+    .map((match) => constrainedTarget(clause, (match.index ?? 0) + match[0].length))
+    .filter((target): target is TargetMention => Boolean(target))
+  return constrainedTargets.some((constrained) =>
+    deniedTargets.some((denied) => sameTarget(constrained, denied)),
+  )
+}
+
+function isLocallyJustified(clause: string, family: CapabilityFamily): boolean {
+  return (
+    HOST_READ_FAILURE.test(clause) ||
+    REAL_UNSUPPORTED_FAMILY.test(clause) ||
+    hasRelatedToolFailure(clause, family) ||
+    hasSameTargetConstraint(clause) ||
+    QUALIFIED_UNCERTAINTY.test(clause)
+  )
+}
+
+/**
+ * Rejects only a narrow, tool-free false denial of an editing family that
+ * Slides already exposes. The correction is constant and cannot echo deck or
+ * response content into a later model turn.
+ */
+export function reviewSlidesFinalResponse({
+  text,
+  mutated,
+}: FinalResponseReviewContext): string | undefined {
+  if (mutated || !text.trim()) return undefined
+  for (const clause of boundedClauses(text)) {
+    if (/[?？]\s*$/.test(clause)) continue
+    if (!DENIAL_ASSERTION.test(clause)) continue
+    const families = supportedCapabilityFamilies(clause)
+    if (families.some((family) => !isLocallyJustified(clause, family))) {
+      return SLIDES_CAPABILITY_CORRECTION
+    }
+  }
+  return undefined
+}
 
 /** Paragraph schema (shared by set_element_text / add_text_box / add_shape) */
 const PARAGRAPHS_DEF = {
@@ -1210,6 +1429,7 @@ export function createSlidesSkill(access: DeckAccess): AgentSkill {
       access.getSelectionScope?.()
         ? `<selection scope>\n${selectionScopeSummary(access.getSelectionScope()!)}. This scope is immutable and enforced by the host.\n</selection scope>`
         : `<deck outline>\n${buildDeckOutline(access.getSlides(), access.getCurrent(), access.getSelectedIds())}\n</deck outline>`,
+    reviewFinalResponse: reviewSlidesFinalResponse,
     executeTool: (call, signal) => executeTool(access, call, state, signal),
   }
 }
