@@ -16,6 +16,7 @@ import {
   type PresentationVerificationFlags,
   type PresentationTelemetryEvent,
   presentationCompletionTelemetry,
+  emitPresentationTelemetry,
   type VisualReviewResult,
 } from '@wiswork/presentation-verification'
 import type { PowerPointAdapter } from './browser-powerpoint-adapter.js'
@@ -496,16 +497,23 @@ export function createOfficePowerPointVerification(options: {
         slide: 1,
         rules: ['legible'],
       })
+    const affectedSlides = [
+      ...new Set(operations.map((item) => item.slide).concat(checks.length ? [] : [1])),
+    ]
+    const geometrySlides = new Set(
+      operations
+        .filter(({ property }) => ['x', 'y', 'width', 'height'].includes(property))
+        .map(({ slide }) => slide),
+    )
+    const referenceSlide = affectedSlides.find((slide) => !geometrySlides.has(slide))
     const contract = parsePresentationAcceptanceContract({
       version: 1,
       taskId: options.taskId?.() ?? `task-${Date.now()}`,
       documentToken: lease.documentToken,
       sessionToken: lease.sessionToken,
       baseRevision: lease.revision,
-      affectedSlides: [
-        ...new Set(operations.map((item) => item.slide).concat(checks.length ? [] : [1])),
-      ],
-      referenceSlides: [],
+      affectedSlides,
+      referenceSlides: referenceSlide && geometrySlides.size ? [referenceSlide] : [],
       checks,
       maxCorrectionPasses: 2,
     })
@@ -530,6 +538,14 @@ export function createOfficePowerPointVerification(options: {
     }
     proposals = []
     settlements = []
+    emitPresentationTelemetry(options.telemetry, {
+      host: 'office',
+      phase: 'plan',
+      outcome: 'success',
+      code: 'ready',
+      count: contract.affectedSlides.length,
+      durationMs: 0,
+    })
     return {
       kind: 'ready',
       contract,
@@ -577,6 +593,15 @@ export function createOfficePowerPointVerification(options: {
     },
     recordSettlement(value) {
       if (settlements.length < 50) settlements.push({ ...value })
+      if (value.status === 'confirmed')
+        emitPresentationTelemetry(options.telemetry, {
+          host: 'office',
+          phase: 'dispatch',
+          outcome: 'success',
+          code: 'ready',
+          count: 1,
+          durationMs: 0,
+        })
     },
     shouldSkip(call) {
       return enrolled?.skipCallIds.has(call.id) ?? false
@@ -738,6 +763,15 @@ export function createOfficePowerPointVerification(options: {
         : failed.length
           ? 'needs_user'
           : 'verified'
+      emitPresentationTelemetry(options.telemetry, {
+        host: 'office',
+        phase: 'deterministic',
+        outcome:
+          status === 'verified' ? 'success' : status === 'needs_user' ? 'needs_user' : 'unverified',
+        code: status,
+        count: contract.checks.length,
+        durationMs: 0,
+      })
       if (status === 'verified' && !flags.visualReview)
         return receipt(contract, {
           status: 'applied_unverified',
@@ -760,17 +794,18 @@ export function createOfficePowerPointVerification(options: {
             beforeCapture.sessionToken !== contract.sessionToken
           )
             throw new Error('stale_authority')
-          const slides = [...new Set([...contract.affectedSlides, ...contract.referenceSlides])]
-          if (slides.length > 8) throw new Error('screenshot_unavailable')
+          const pages = [
+            ...contract.affectedSlides.map((slide) => ({ slide, role: 'affected' as const })),
+            ...contract.referenceSlides.map((slide) => ({ slide, role: 'reference' as const })),
+          ]
+          if (pages.length > 8) throw new Error('screenshot_unavailable')
           const images = await Promise.all(
-            slides.map(async (slide) => {
+            pages.map(async ({ slide, role }) => {
               const image = await options.authority.captureScreenshot(slide - 1, reviewAbort.signal)
               if (image.mime !== 'image/png') throw new Error('screenshot_unavailable')
               return {
                 slide,
-                role: contract.affectedSlides.includes(slide)
-                  ? ('affected' as const)
-                  : ('reference' as const),
+                role,
                 mediaToken: `shot-${powerPointProposalFingerprint(image.base64).replace(':', '-')}`,
                 bytes: Math.floor((image.base64.length * 3) / 4),
                 base64: image.base64,
@@ -814,6 +849,24 @@ export function createOfficePowerPointVerification(options: {
                 signal: reviewAbort.signal,
               }),
             )
+            emitPresentationTelemetry(options.telemetry, {
+              host: 'office',
+              phase: 'visual',
+              outcome:
+                review.status === 'pass'
+                  ? 'success'
+                  : review.status === 'needs_fix'
+                    ? 'needs_user'
+                    : 'unverified',
+              code:
+                review.status === 'pass'
+                  ? 'verified'
+                  : review.status === 'needs_fix'
+                    ? 'needs_user'
+                    : 'review_unavailable',
+              count: review.failedCheckIds.length,
+              durationMs: 0,
+            })
           } catch (error) {
             throw new Error('verification_invalid', { cause: error })
           }
@@ -870,12 +923,21 @@ export function createOfficePowerPointVerification(options: {
               safe &&
               flags.autoCorrection &&
               context.correctionPasses < contract.maxCorrectionPasses
-            )
+            ) {
+              emitPresentationTelemetry(options.telemetry, {
+                host: 'office',
+                phase: 'correction',
+                outcome: 'success',
+                code: 'ready',
+                count: review.fixIntents.length,
+                durationMs: 0,
+              })
               return {
                 kind: 'correct',
                 instruction:
                   'Apply only the failed approved PowerPoint acceptance checks using their already approved values; do not expand targets or use package, master, chart, table, or XML tools.',
               }
+            }
             return receipt(contract, {
               status: 'needs_user',
               mutationReceiptIds: confirmed.map((item) => item.id),
@@ -927,7 +989,8 @@ export function createOfficePowerPointVerification(options: {
     const startedAt = Date.now()
     const result = await complete(context)
     if (result.kind === 'receipt')
-      options.telemetry?.(
+      emitPresentationTelemetry(
+        options.telemetry,
         presentationCompletionTelemetry('office', result.receipt, Date.now() - startedAt),
       )
     return result

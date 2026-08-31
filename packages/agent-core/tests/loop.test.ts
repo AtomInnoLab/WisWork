@@ -259,6 +259,41 @@ describe('AgentLoop', () => {
       expect(execute).not.toHaveBeenCalled()
       expect(error).toHaveBeenCalledWith('presentation_enrollment_unavailable')
     })
+    it('emits a bounded enrollment plan once before dispatch', async () => {
+      const onPresentationPlan = vi.fn()
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'call-1', name: 'do_thing', input: { slideIndex: 1 } })
+          cb.onDone()
+        },
+        (cb) => cb.onDone(),
+      ])
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: {
+            prepare: () => ({ kind: 'bypass' }),
+            enroll: () => ({
+              kind: 'ready',
+              contract,
+              plan: ['apply', 'verify'],
+              requiresConfirmation: true,
+            }),
+            complete: () => ({ kind: 'receipt', receipt: receipt() }),
+          },
+        },
+        events: { onPresentationPlan },
+      })
+      loop.run('edit')
+      await flush()
+      await flush()
+      expect(onPresentationPlan).toHaveBeenCalledOnce()
+      expect(onPresentationPlan).toHaveBeenCalledWith({
+        steps: ['apply', 'verify'],
+        requiresConfirmation: true,
+      })
+    })
     it('lets a simple presentation task bypass clarification and planning UI', async () => {
       const transport = scriptedTransport([
         (cb) => {
@@ -384,6 +419,34 @@ describe('AgentLoop', () => {
         role: 'assistant',
         text: 'presentation:verified;slides=2;passed=1;failed=0;unavailable=0;corrections=0;rollback=false',
       })
+    })
+    it('uses host-localized receipt text as the single authoritative terminal text', async () => {
+      const onText = vi.fn()
+      const onDone = vi.fn()
+      const loop = new AgentLoop({
+        transport: scriptedTransport([
+          (cb) => {
+            cb.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+            cb.onDone()
+          },
+          (cb) => cb.onDone(),
+        ]),
+        skill: {
+          ...makeSkill(),
+          presentation: {
+            prepare: () => ({ kind: 'ready', contract }),
+            complete: () => ({ kind: 'receipt', receipt: receipt() }),
+          },
+        },
+        events: { onText, onDone, onPresentationReceipt: () => '已验证' },
+      })
+      loop.run('edit')
+      await flush()
+      await flush()
+      expect(onText).toHaveBeenLastCalledWith('已验证')
+      expect(onText).not.toHaveBeenCalledWith(expect.stringContaining('presentation:'))
+      expect(onDone).toHaveBeenCalledWith(expect.objectContaining({ text: '已验证' }))
+      expect(loop.messages.at(-1)).toMatchObject({ role: 'assistant', text: '已验证' })
     })
 
     it('reconciles a tool-free model success claim into authoritative unchanged truth', async () => {

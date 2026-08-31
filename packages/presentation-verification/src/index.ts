@@ -1062,3 +1062,15 @@ export function presentationCompletionTelemetry(
     durationMs: Math.max(0, Math.round(durationMs)),
   })
 }
+
+export function emitPresentationTelemetry(
+  sink: ((event: PresentationTelemetryEvent) => void) | undefined,
+  event: unknown,
+): void {
+  if (!sink) return
+  try {
+    sink(parsePresentationTelemetryEvent(event))
+  } catch {
+    // Diagnostics are observational and never alter mutation or receipt truth.
+  }
+}

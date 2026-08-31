@@ -11,6 +11,7 @@ import {
   PRESENTATION_GOLDEN_CASES,
   PRESENTATION_CONSISTENCY_GOLDEN,
   parsePresentationTelemetryEvent,
+  emitPresentationTelemetry,
 } from '../src/index'
 
 describe('cross-host golden contract', () => {
@@ -56,6 +57,23 @@ describe('cross-host golden contract', () => {
           [privateKey]: 'secret',
         }),
       ).toThrow(/private fields/)
+  })
+  it('keeps diagnostics fail-open when a validated sink throws', () => {
+    expect(() =>
+      emitPresentationTelemetry(
+        () => {
+          throw new Error('sink down')
+        },
+        {
+          host: 'pc',
+          phase: 'complete',
+          outcome: 'success',
+          code: 'verified',
+          count: 1,
+          durationMs: 1,
+        },
+      ),
+    ).not.toThrow()
   })
 })
 

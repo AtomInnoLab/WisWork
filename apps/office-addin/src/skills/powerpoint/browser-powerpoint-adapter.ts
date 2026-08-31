@@ -710,6 +710,9 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         const textRange = textFrame?.textRange as RuntimeRecord | undefined
         if (textFrame?.hasText === true && textRange && typeof textRange.load === 'function')
           (textRange.load as (properties: string) => void)('text')
+        const font = textRange?.font as RuntimeRecord | undefined
+        if (textFrame?.hasText === true && font && typeof font.load === 'function')
+          (font.load as (properties: string) => void)('color,name,size,bold,italic')
       }
       await sync(context, signal)
       const slideId = string(slide.id)
@@ -720,6 +723,17 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           return {
             ...shapeInfo(shape),
             text: textFrame?.hasText === true ? string(textRange?.text, MAX_POWERPOINT_TEXT) : '',
+            ...(textFrame?.hasText === true && textRange?.font
+              ? {
+                  textStyle: {
+                    color: string((textRange.font as RuntimeRecord).color),
+                    fontFamily: string((textRange.font as RuntimeRecord).name),
+                    fontSize: finite((textRange.font as RuntimeRecord).size),
+                    bold: (textRange.font as RuntimeRecord).bold === true,
+                    italic: (textRange.font as RuntimeRecord).italic === true,
+                  },
+                }
+              : {}),
           }
         })
         .sort((first, second) => first.id.localeCompare(second.id))

@@ -1287,10 +1287,22 @@ export function AiPanel({
             ...previous,
             { role: 'assistant', text: translatePresentationVerification(lang, 'clarify') },
           ]),
-        onPresentationPlan: () =>
+        onPresentationPlan: ({ steps, requiresConfirmation }) =>
           setChat((previous) => [
             ...previous,
-            { role: 'assistant', text: translatePresentationVerification(lang, 'plan') },
+            {
+              role: 'assistant',
+              text: [
+                translatePresentationVerification(lang, 'plan'),
+                ...steps.map(
+                  (step) =>
+                    `• ${translatePresentationVerification(lang, step === 'presentation_verify_postconditions' ? 'verified' : 'plan')}`,
+                ),
+                ...(requiresConfirmation
+                  ? [translatePresentationVerification(lang, 'needs_user')]
+                  : []),
+              ].join('\n'),
+            },
           ]),
         onPresentationCorrection: () =>
           setChat((previous) => [
@@ -1350,13 +1362,16 @@ export function AiPanel({
             },
           ])
         },
-        onDone: ({ text, cancelled, turnLimit, presentation }) => {
+        onPresentationReceipt: ({ facts }) => translatePresentationVerification(lang, facts.status),
+        onDone: ({ text, cancelled, turnLimit, presentation, clarification }) => {
           if (activeQueueRunRef.current) qcPagesRef.current = []
           const localizedStatus = presentation
             ? translatePresentationVerification(lang, presentation.status)
             : ''
           const finalText =
-            localizedStatus ||
+            (clarification
+              ? translatePresentationVerification(lang, 'clarify')
+              : localizedStatus) ||
             (turnLimit
               ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
               : text || (cancelled ? translatePresentationVerification(lang, 'cancelled') : ''))

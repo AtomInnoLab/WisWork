@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   canonicalPowerPointVerificationBinding,
+  createBrowserPowerPointVerificationAuthority,
   createOfficePowerPointVerification,
   type OfficePowerPointVisualReviewer,
 } from '../src/skills/powerpoint/powerpoint-verification.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import { createPowerPointSkill } from '../src/skills/powerpoint/powerpoint-skill.js'
-import type { PowerPointAdapter } from '../src/skills/powerpoint/browser-powerpoint-adapter.js'
+import {
+  BrowserPowerPointAdapter,
+  type PowerPointAdapter,
+} from '../src/skills/powerpoint/browser-powerpoint-adapter.js'
 import { PRESENTATION_CONSISTENCY_GOLDEN } from '@wiswork/presentation-verification'
 
 const authority = (overrides = {}) => ({
@@ -605,70 +609,85 @@ describe('Office PowerPoint presentation verification', () => {
   })
 
   it('executes the shared pages 6-8 consistency golden through skill, proposal, authority and screenshots', async () => {
-    const state = new Map(
+    const state = new Map<string, Record<string, string | number>>(
       PRESENTATION_CONSISTENCY_GOLDEN.pages.flatMap((page) =>
-        page.shapes.map((shape) => [`${page.slide}:${shape.role}`, { ...shape }] as const),
+        page.shapes.map((shape) => [`${page.slide}:${shape.role}`, { ...shape }]),
       ),
     )
-    const outside = JSON.stringify(state.get('5:title'))
-    const adapter = productionAdapter({ text: 'x', left: 10 })
-    adapter.snapshotSlide = vi.fn().mockImplementation(async (index) => ({
-      slideId: `slide-${index + 1}`,
-      fingerprint: `slide-${index + 1}:stable`,
-    }))
-    adapter.listSlideShapes = vi.fn().mockImplementation(async (index) => ({
-      slideId: `slide-${index + 1}`,
-      slideIndex: index,
-      shapes: ['title', 'body', 'emphasis'].map((id) => {
-        const value = state.get(`${index + 1}:${id}`)!
-        return {
-          id,
-          name: id,
+    const outside = JSON.stringify([...state].filter(([key]) => /^[1-5]:/.test(key)))
+    const slidesItems = PRESENTATION_CONSISTENCY_GOLDEN.pages.map((page) => {
+      const items = page.shapes.map((entry) => {
+        const value = state.get(`${page.slide}:${entry.role}`)!
+        const font = { load: vi.fn(), name: 'Arial', size: 18, bold: false, italic: false }
+        Object.defineProperty(font, 'color', {
+          get: () => value.color,
+          set: (next) => {
+            value.color = next
+          },
+          enumerable: true,
+        })
+        const textRange = { text: entry.role, load: vi.fn(), font }
+        const shape = {
+          id: entry.role,
+          name: entry.role,
           type: 'TextBox',
-          left: value.x ?? 0,
-          top: value.y ?? 0,
-          width: value.width ?? 100,
-          height: value.height ?? 30,
+          load: vi.fn(),
+          textFrame: { hasText: true, load: vi.fn(), textRange },
         }
-      }),
-    }))
-    adapter.executeDeclarative = vi.fn().mockImplementation(async (operations) => {
-      for (const operation of operations) {
-        const value = state.get(`${operation.slide_index + 1}:${operation.shape_id}`)!
-        if (operation.op === 'set_shape_text_style')
-          Object.assign(value, { color: operation.color })
-        if (operation.op === 'set_shape_geometry')
-          Object.assign(value, {
-            x: operation.left,
-            y: operation.top,
-            width: operation.width,
-            height: operation.height,
+        for (const [field, source] of [
+          ['left', 'x'],
+          ['top', 'y'],
+          ['width', 'width'],
+          ['height', 'height'],
+        ] as const)
+          Object.defineProperty(shape, field, {
+            get: () => value[source] ?? (field === 'width' ? 100 : field === 'height' ? 30 : 0),
+            set: (next) => {
+              value[source] = next
+            },
+            enumerable: true,
           })
+        return shape
+      })
+      const shapes = {
+        items,
+        load: vi.fn(),
+        getItem: vi.fn((id: string) => items.find((item) => item.id === id)),
       }
-      return { createdShapeIds: [] }
+      return {
+        id: `slide-${page.slide}`,
+        load: vi.fn(),
+        shapes,
+        getImageAsBase64: vi.fn(() => ({ value: 'iVBORw0KGgoAAAA=' })),
+      }
     })
-    adapter.readShapeTextStyle = vi.fn().mockImplementation(async (index, shapeId) => ({
-      color: state.get(`${index + 1}:${shapeId}`)?.color,
-    }))
-    const verificationAuthority = authority({
-      acquire: vi.fn().mockResolvedValue({
-        documentToken: PRESENTATION_CONSISTENCY_GOLDEN.documentToken,
-        sessionToken: PRESENTATION_CONSISTENCY_GOLDEN.sessionToken,
-        revision: PRESENTATION_CONSISTENCY_GOLDEN.baseRevision,
-      }),
-      current: vi.fn().mockResolvedValue({
-        documentToken: PRESENTATION_CONSISTENCY_GOLDEN.documentToken,
-        sessionToken: PRESENTATION_CONSISTENCY_GOLDEN.sessionToken,
-        revision: `sha256:${'2'.repeat(64)}`,
-      }),
-      readShape: vi.fn().mockImplementation(async (index, shapeId) => ({
-        slideId: `slide-${index + 1}`,
-        shapeId,
-        ...state.get(`${index + 1}:${shapeId}`),
-        left: state.get(`${index + 1}:${shapeId}`)?.x,
-        top: state.get(`${index + 1}:${shapeId}`)?.y,
-      })),
+    const slides = {
+      items: slidesItems,
+      load: vi.fn(),
+      getCount: vi.fn(() => ({ value: 8 })),
+      getItemAt: vi.fn((index: number) => slidesItems[index]),
+    }
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          document: { url: 'https://example/golden.pptx' },
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({
+            presentation: {
+              slides,
+              pageSetup: { slideWidth: 960, slideHeight: 540, load: vi.fn() },
+            },
+            sync: vi.fn().mockResolvedValue(undefined),
+          }),
+      },
     })
+    const adapter = new BrowserPowerPointAdapter()
+    const verificationAuthority = createBrowserPowerPointVerificationAuthority(adapter)
     const proposals = createStructuredProposalController()
     const reviewer = {
       review: vi.fn().mockResolvedValue({
@@ -726,6 +745,12 @@ describe('Office PowerPoint presentation verification', () => {
       receipt: { status: 'verified', passedCheckIds: { length: 17 } },
     })
     expect(reviewer.review).toHaveBeenCalledOnce()
+    expect(reviewer.review.mock.calls[0]![0].facts.screenshots).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ slide: 6, role: 'affected' }),
+        expect.objectContaining({ slide: 6, role: 'reference' }),
+      ]),
+    )
     expect(telemetry).toHaveBeenCalledWith({
       host: 'office',
       phase: 'complete',
@@ -734,8 +759,15 @@ describe('Office PowerPoint presentation verification', () => {
       count: 3,
       durationMs: expect.any(Number),
     })
+    expect(telemetry.mock.calls.map(([event]) => event.phase)).toEqual([
+      'plan',
+      'dispatch',
+      'deterministic',
+      'visual',
+      'complete',
+    ])
     expect(JSON.stringify(telemetry.mock.calls)).not.toMatch(/slide-|golden-|title|body|emphasis/)
-    expect(JSON.stringify(state.get('5:title'))).toBe(outside)
+    expect(JSON.stringify([...state].filter(([key]) => /^[1-5]:/.test(key)))).toBe(outside)
   })
 
   it.each(['text', 'declarative'] as const)(

@@ -5,6 +5,7 @@ import type {
 import { parsePresentationCompletionReceipt } from '@wiswork/presentation-verification'
 import type { PresentationVerificationFlags } from '@wiswork/presentation-verification'
 import {
+  emitPresentationTelemetry,
   presentationCompletionTelemetry,
   type PresentationTelemetryEvent,
 } from '@wiswork/presentation-verification'
@@ -166,6 +167,14 @@ export function createSlidesTaskController(deps: {
         runs.delete(oldest)
       }
       if (runGeneration === generation) activeTaskId = result.contract.taskId
+      emitPresentationTelemetry(deps.telemetry, {
+        host: 'pc',
+        phase: 'plan',
+        outcome: 'success',
+        code: 'ready',
+        count: result.contract.affectedSlides.length,
+        durationMs: 0,
+      })
       return {
         kind: 'ready',
         contract: result.contract,
@@ -246,6 +255,7 @@ export function createSlidesTaskController(deps: {
             isCurrent: () => state.generation === generation && activeTaskId === contract.taskId,
             signal,
             flags: deps.flags,
+            telemetry: deps.telemetry,
           })
         }
       }
@@ -254,7 +264,10 @@ export function createSlidesTaskController(deps: {
         activeTaskId = undefined
       }
       runs.delete(contract.taskId)
-      deps.telemetry?.(presentationCompletionTelemetry('pc', receipt, Date.now() - startedAt))
+      emitPresentationTelemetry(
+        deps.telemetry,
+        presentationCompletionTelemetry('pc', receipt, Date.now() - startedAt),
+      )
       return { kind: 'receipt', receipt }
     },
   }
@@ -275,6 +288,24 @@ export function createSlidesTaskController(deps: {
         return
       }
       state.mutations.push(receipt)
+      emitPresentationTelemetry(deps.telemetry, {
+        host: 'pc',
+        phase: 'dispatch',
+        outcome:
+          receipt.status === 'applied'
+            ? 'success'
+            : receipt.status === 'unchanged'
+              ? 'unchanged'
+              : 'failed',
+        code:
+          receipt.status === 'applied'
+            ? 'ready'
+            : receipt.status === 'unchanged'
+              ? 'unchanged'
+              : 'failed',
+        count: receipt.mutatedTargetTokens.length,
+        durationMs: 0,
+      })
     },
     reset,
   }

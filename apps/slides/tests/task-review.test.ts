@@ -171,10 +171,12 @@ describe('PC task-specific rendered verification', () => {
 
   it('applies one canonical fix and re-verifies', async () => {
     const a = adapter([review('needs_fix'), review('pass')])
+    const telemetry = vi.fn()
     const result = await runSlidesTaskReview({
       contract: contract(),
       initialMutationReceiptIds: ['edit-1'],
       adapter: a,
+      telemetry,
     })
     expect(result).toMatchObject({
       status: 'verified',
@@ -183,6 +185,26 @@ describe('PC task-specific rendered verification', () => {
     })
     expect(a.correct).toHaveBeenCalledTimes(1)
     expect(a.refresh).toHaveBeenCalledTimes(2)
+    expect(telemetry.mock.calls.map(([event]) => event.phase)).toEqual([
+      'deterministic',
+      'visual',
+      'correction',
+      'deterministic',
+      'visual',
+    ])
+  })
+
+  it('keeps receipt truth when the production telemetry sink throws', async () => {
+    await expect(
+      runSlidesTaskReview({
+        contract: contract(),
+        initialMutationReceiptIds: ['edit-1'],
+        adapter: adapter(),
+        telemetry: () => {
+          throw new Error('diagnostics unavailable')
+        },
+      }),
+    ).resolves.toMatchObject({ status: 'verified' })
   })
 
   it('stops after the contract maximum of two corrections', async () => {

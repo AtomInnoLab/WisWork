@@ -39,6 +39,7 @@ export interface AgentRunResult {
   truncated?: boolean
   /** Authoritative, receipt-derived facts for presentation mutation runs. */
   presentation?: PresentationCompletionFacts
+  clarification?: true
 }
 
 export interface AgentLoopEvents<TSnapshot> {
@@ -54,6 +55,10 @@ export interface AgentLoopEvents<TSnapshot> {
   onPresentationClarify?(event: { question: string }): void
   onPresentationPlan?(event: { steps: string[]; requiresConfirmation: boolean }): void
   onPresentationCorrection?(event: { pass: number; maximum: number }): void
+  onPresentationReceipt?(event: {
+    receipt: import('@wiswork/presentation-verification').PresentationCompletionReceipt
+    facts: PresentationCompletionFacts
+  }): string | undefined
   /** Host audit sink for a proved mutation whose UI session was reset during reconciliation. */
   onAbandonedPresentationCompletion?(event: {
     documentToken: string
@@ -328,6 +333,7 @@ export class AgentLoop<TSnapshot = unknown> {
   private mutationSeen = false
   private presentationContract: PresentationAcceptanceContract | null = null
   private presentationCorrectionPasses = 0
+  private presentationPlanEmitted = false
   private presentationCorrectionTurns = 0
   private presentationCorrectionPending = false
   private inputParseFails = 0
@@ -410,6 +416,7 @@ export class AgentLoop<TSnapshot = unknown> {
     this.mutationSeen = false
     this.presentationContract = null
     this.presentationCorrectionPasses = 0
+    this.presentationPlanEmitted = false
     this.presentationCorrectionTurns = 0
     this.presentationCorrectionPending = false
     this.inputParseFails = 0
@@ -507,7 +514,12 @@ export class AgentLoop<TSnapshot = unknown> {
       this.running = false
       this.abortController = null
       this.options.events?.onPresentationClarify?.({ question })
-      this.options.events?.onDone?.({ text: question, cancelled: false, turnLimit: false })
+      this.options.events?.onDone?.({
+        text: '',
+        cancelled: false,
+        turnLimit: false,
+        clarification: true,
+      })
       return false
     }
     let contract: PresentationAcceptanceContract
@@ -522,7 +534,10 @@ export class AgentLoop<TSnapshot = unknown> {
       .map((step) => this.boundedPresentationText(step, PRESENTATION_PLAN_STEP_MAX_CHARS))
       .filter((step): step is string => !!step)
     const requiresConfirmation = prepared.requiresConfirmation === true
-    if (steps.length) this.options.events?.onPresentationPlan?.({ steps, requiresConfirmation })
+    if (steps.length && !this.presentationPlanEmitted) {
+      this.presentationPlanEmitted = true
+      this.options.events?.onPresentationPlan?.({ steps, requiresConfirmation })
+    }
     if (requiresConfirmation) {
       const confirmed = await (async () => {
         try {
@@ -965,7 +980,12 @@ export class AgentLoop<TSnapshot = unknown> {
         this.options.events?.onPresentationClarify?.({
           question: question ?? 'presentation_scope_required',
         })
-        this.options.events?.onDone?.({ text: question ?? '', cancelled: false, turnLimit: false })
+        this.options.events?.onDone?.({
+          text: '',
+          cancelled: false,
+          turnLimit: false,
+          clarification: true,
+        })
         return
       }
       if (enrollment.kind === 'ready') {
@@ -984,6 +1004,17 @@ export class AgentLoop<TSnapshot = unknown> {
           return
         }
         this.presentationContract = enrolled
+        const steps = (enrollment.plan ?? [])
+          .slice(0, PRESENTATION_PLAN_MAX_STEPS)
+          .map((step) => this.boundedPresentationText(step, PRESENTATION_PLAN_STEP_MAX_CHARS))
+          .filter((step): step is string => !!step)
+        if (steps.length && !this.presentationPlanEmitted) {
+          this.presentationPlanEmitted = true
+          this.options.events?.onPresentationPlan?.({
+            steps,
+            requiresConfirmation: enrollment.requiresConfirmation === true,
+          })
+        }
       }
     }
     const results: AgentToolResult[] = []
@@ -1220,7 +1251,11 @@ export class AgentLoop<TSnapshot = unknown> {
       if (receipt.correctionPasses < this.presentationCorrectionPasses)
         throw new TypeError('presentation correction count mismatch')
       const facts = renderPresentationCompletionFacts(receipt, contract)
-      const text = renderPresentationCompletionText(facts)
+      const localized = this.options.events?.onPresentationReceipt?.({ receipt, facts })
+      const text = localized
+        ? (this.boundedPresentationText(localized, FINAL_RESPONSE_CORRECTION_MAX_CHARS) ??
+          renderPresentationCompletionText(facts))
+        : renderPresentationCompletionText(facts)
       this.history.push({ role: 'assistant', text })
       this.running = false
       this.runUserMsg = null

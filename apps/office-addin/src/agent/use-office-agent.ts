@@ -414,11 +414,20 @@ export function createOfficeAgentSession(dependencies: {
           kind: 'system',
           text: dependencies.presentationText?.('clarify') ?? 'clarify',
         }),
-      onPresentationPlan: () =>
+      onPresentationPlan: ({ steps, requiresConfirmation }) =>
         append({
           id: eventId(),
           kind: 'system',
-          text: dependencies.presentationText?.('plan') ?? 'plan',
+          text: [
+            dependencies.presentationText?.('plan') ?? 'plan',
+            ...steps.map(
+              (step) =>
+                `• ${dependencies.presentationText?.(step === 'presentation_verify_postconditions' ? 'verified' : 'plan') ?? 'plan'}`,
+            ),
+            ...(requiresConfirmation
+              ? [dependencies.presentationText?.('needs_user') ?? 'needs_user']
+              : []),
+          ].join('\n'),
         }),
       onPresentationCorrection: () =>
         append({
@@ -426,6 +435,7 @@ export function createOfficeAgentSession(dependencies: {
           kind: 'system',
           text: dependencies.presentationText?.('correction') ?? 'correction',
         }),
+      onPresentationReceipt: ({ facts }) => dependencies.presentationText?.(facts.status),
       onText: (assistantText) => {
         if (!activeAssistantId) {
           activeAssistantId = eventId()
@@ -517,15 +527,7 @@ export function createOfficeAgentSession(dependencies: {
           activity: '',
           status: result.cancelled ? 'cancelled' : 'done',
         })
-        if (result.presentation)
-          append({
-            id: eventId(),
-            kind: 'system',
-            text:
-              dependencies.presentationText?.(result.presentation.status) ??
-              result.presentation.status,
-          })
-        else if (result.cancelled)
+        if (!result.presentation && result.cancelled)
           append({
             id: eventId(),
             kind: 'system',

@@ -11,6 +11,8 @@ import {
   type VisualReviewResult,
   PRESENTATION_VERIFICATION_LIMITS,
   type PresentationVerificationFlags,
+  type PresentationTelemetryEvent,
+  emitPresentationTelemetry,
 } from '@wiswork/presentation-verification'
 import type { SlidesDeterministicResult } from './task-acceptance'
 import { AgentLoop, type AgentImage, type AgentTransport } from '@wiswork/agent-core'
@@ -227,6 +229,7 @@ export async function runSlidesTaskReview(input: {
   adapter: SlidesTaskReviewAdapter
   signal?: AbortSignal
   flags?: Pick<PresentationVerificationFlags, 'visualReview' | 'autoCorrection'>
+  telemetry?: (event: PresentationTelemetryEvent) => void
 }): Promise<PresentationCompletionReceipt> {
   const contract = parsePresentationAcceptanceContract(input.contract)
   const contractDigest = await digestPresentationAcceptanceContract(contract)
@@ -274,6 +277,14 @@ export async function runSlidesTaskReview(input: {
           ),
         input.signal,
       )
+      emitPresentationTelemetry(input.telemetry, {
+        host: 'pc',
+        phase: 'deterministic',
+        outcome: 'success',
+        code: 'ready',
+        count: deterministic.length,
+        durationMs: 0,
+      })
       const expectedCheckIds = contract.checks.map(({ id }) => id).sort()
       const deterministicCheckIds = deterministic.map(({ checkId }) => checkId).sort()
       if (
@@ -357,6 +368,24 @@ export async function runSlidesTaskReview(input: {
       try {
         const rawReview = await input.adapter.review(facts, input.signal)
         visual = parseVisualReviewResult(rawReview)
+        emitPresentationTelemetry(input.telemetry, {
+          host: 'pc',
+          phase: 'visual',
+          outcome:
+            visual.status === 'pass'
+              ? 'success'
+              : visual.status === 'needs_fix'
+                ? 'needs_user'
+                : 'unverified',
+          code:
+            visual.status === 'pass'
+              ? 'verified'
+              : visual.status === 'needs_fix'
+                ? 'needs_user'
+                : 'review_unavailable',
+          count: visual.failedCheckIds.length,
+          durationMs: 0,
+        })
       } catch {
         return unavailable(contract, receipts, correctionPasses, rollbackId, 'review_unavailable')
       }
@@ -447,6 +476,14 @@ export async function runSlidesTaskReview(input: {
           safeCode: 'confirmation_required',
         })
       receipts.push(correction.mutationReceiptId)
+      emitPresentationTelemetry(input.telemetry, {
+        host: 'pc',
+        phase: 'correction',
+        outcome: 'success',
+        code: 'ready',
+        count: correction.correctedCheckIds.length,
+        durationMs: 0,
+      })
       correctionPasses += 1
       if (!rollbackId && correction.rollbackId) rollbackId = correction.rollbackId
       const expectedCorrected = [...new Set(visual.fixIntents.map(({ checkId }) => checkId))].sort()
