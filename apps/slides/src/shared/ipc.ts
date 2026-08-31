@@ -999,6 +999,7 @@ export type MenuCommand =
   | 'paste'
 
 export interface SlidesApi {
+  getAcceptanceAuthorityLease: () => Promise<SlidesAcceptanceAuthorityLease | null>
   inspectAcceptanceAuthority: (
     request: SlidesAcceptanceAuthorityRequest,
   ) => Promise<SlidesAcceptanceAuthoritySnapshot | null>
@@ -1464,6 +1465,16 @@ export interface SlidesAcceptanceAuthorityRequest {
   expectedDocumentToken: string
   expectedSessionToken: string
   expectedRevision: string
+  leaseToken: string
+  textChecks?: Array<{ checkId: string; targetToken: string; expectedDigest: string }>
+}
+
+export interface SlidesAcceptanceAuthorityLease {
+  documentToken: string
+  sessionToken: string
+  revision: string
+  slideCount: number
+  leaseToken: string
 }
 
 export interface PresentationTargetRequest {

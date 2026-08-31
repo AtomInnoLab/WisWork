@@ -1,11 +1,15 @@
 import { fingerprintPresentation, type SlideElement } from '@wiswork/pptx-engine'
 import { fingerprintSemanticValue } from '@wiswork/presentation-ops'
 import { EMU_PER_PX_96 } from '@wiswork/pptx-render'
+import { randomUUID } from 'node:crypto'
 import type {
+  SlidesAcceptanceAuthorityLease,
   SlidesAcceptanceAuthorityRequest,
   SlidesAcceptanceAuthoritySnapshot,
 } from '../../shared/ipc'
 import type { Session } from '../session-state'
+import { digestSlidesAcceptanceText } from '../../shared/acceptance-text'
+export { digestSlidesAcceptanceText } from '../../shared/acceptance-text'
 
 const roleOf = (element: SlideElement): 'title' | 'body' | 'emphasis' | undefined => {
   if (element.placeholder === 'title' || element.placeholder === 'ctrTitle') return 'title'
@@ -17,10 +21,34 @@ const roleOf = (element: SlideElement): 'title' | 'body' | 'emphasis' | undefine
 const uniform = <T>(values: T[]): T | undefined =>
   values.length > 0 && values.every((value) => value === values[0]) ? values[0] : undefined
 
-async function elementFact(slideId: string, element: SlideElement, locked: boolean) {
+const leases = new WeakMap<Session, SlidesAcceptanceAuthorityLease>()
+
+export async function inspectSlidesAcceptanceLease(
+  session: Session,
+): Promise<SlidesAcceptanceAuthorityLease | null> {
+  if (!session.documentInstanceId || !session.sessionInstanceId) return null
+  const lease = {
+    documentToken: session.documentInstanceId,
+    sessionToken: session.sessionInstanceId,
+    revision: await fingerprintPresentation(session.opened),
+    slideCount: session.opened.deck.slides.length,
+    leaseToken: `lease:${randomUUID().replaceAll('-', '')}`,
+  }
+  leases.set(session, lease)
+  return lease
+}
+
+async function elementFact(
+  slideId: string,
+  element: SlideElement,
+  locked: boolean,
+  leaseToken: string,
+  textChecks: ReadonlyMap<string, { checkId: string }>,
+) {
   if (!element.creationId) return undefined
   const role = roleOf(element)
   const targetDigest = await fingerprintSemanticValue({ slideId, elementId: element.creationId })
+  const targetToken = `target:${targetDigest.slice('sha256:'.length)}`
   const properties: Record<string, string | number | boolean | null> = {
     x: element.transform.offset.x / EMU_PER_PX_96,
     y: element.transform.offset.y / EMU_PER_PX_96,
@@ -42,6 +70,18 @@ async function elementFact(slideId: string, element: SlideElement, locked: boole
     )
     const bold = uniform(runs.map((run) => run.bold ?? false))
     const italic = uniform(runs.map((run) => run.italic ?? false))
+    const textCheck = textChecks.get(targetToken)
+    if (textCheck) {
+      const text = element.text.paragraphs
+        .map((paragraph) => paragraph.runs.map((run) => run.text).join(''))
+        .join('\n')
+      properties.text = await digestSlidesAcceptanceText(
+        leaseToken,
+        textCheck.checkId,
+        targetToken,
+        text,
+      )
+    }
     if (color !== undefined && runs.every((run) => run.color !== undefined))
       properties.color = color
     if (fontSize !== undefined && runs.every((run) => run.fontSize !== undefined))
@@ -52,7 +92,7 @@ async function elementFact(slideId: string, element: SlideElement, locked: boole
     if (italic !== undefined) properties.italic = italic
   }
   return {
-    targetToken: `target:${targetDigest.slice('sha256:'.length)}`,
+    targetToken,
     ...(role ? { role } : {}),
     locked,
     properties,
@@ -77,12 +117,21 @@ export async function inspectSlidesAcceptanceAuthority(
   )
     throw new TypeError('Acceptance inspection page is invalid')
   const revision = await fingerprintPresentation(session.opened)
+  const lease = leases.get(session)
   if (
+    !lease ||
+    request.leaseToken !== lease.leaseToken ||
     request.expectedDocumentToken !== session.documentInstanceId ||
     request.expectedSessionToken !== session.sessionInstanceId ||
-    request.expectedRevision !== revision
+    request.expectedRevision !== revision ||
+    lease.documentToken !== session.documentInstanceId ||
+    lease.sessionToken !== session.sessionInstanceId ||
+    lease.revision !== revision
   )
     return null
+  const textChecks = new Map(
+    (request.textChecks ?? []).map((check) => [check.targetToken, { checkId: check.checkId }]),
+  )
   const slides = []
   let inspectedElements = 0
   for (const page of requested) {
@@ -92,13 +141,19 @@ export async function inspectSlidesAcceptanceAuthority(
     for (const element of slide.elements) {
       if (++inspectedElements > 2_000)
         throw new TypeError('Acceptance inspection element bound exceeded')
-      const fact = await elementFact(slide.durableId, element, false)
+      const fact = await elementFact(slide.durableId, element, false, lease.leaseToken, textChecks)
       if (fact) elements.push(fact)
     }
     for (const decoration of slide.decorations ?? []) {
       if (++inspectedElements > 2_000)
         throw new TypeError('Acceptance inspection element bound exceeded')
-      const fact = await elementFact(slide.durableId, decoration, true)
+      const fact = await elementFact(
+        slide.durableId,
+        decoration,
+        true,
+        lease.leaseToken,
+        textChecks,
+      )
       if (fact) elements.push(fact)
     }
     const slideDigest = await fingerprintSemanticValue({ slideId: slide.durableId })

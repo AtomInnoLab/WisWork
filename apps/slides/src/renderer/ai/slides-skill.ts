@@ -12,6 +12,7 @@ import type {
   AgentToolDef,
   EditParagraph,
   SlidesAcceptanceAuthorityRequest,
+  SlidesAcceptanceAuthorityLease,
 } from '../../shared/ipc'
 import { auditSlideLayout, formatAudit } from './layout-audit'
 import { runLayoutScript, type LayoutScriptElement, type SlideStylePatch } from './layout-script'
@@ -48,6 +49,7 @@ export interface DeckAccess {
   getSlides(): RenderSlide[]
   getCurrent(): number
   getSelectedIds(): string[]
+  getAcceptanceAuthorityLease?(): Promise<SlidesAcceptanceAuthorityLease>
   /** Read-only, revision-bound durable facts used to compile and verify a frozen task contract. */
   inspectAcceptanceAuthority?(
     request: SlidesAcceptanceAuthorityRequest,

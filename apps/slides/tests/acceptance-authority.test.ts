@@ -2,7 +2,11 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { fingerprintPresentation, openPptx } from '@wiswork/pptx-engine'
-import { inspectSlidesAcceptanceAuthority } from '../src/main/operations/acceptance-authority'
+import {
+  digestSlidesAcceptanceText,
+  inspectSlidesAcceptanceAuthority,
+  inspectSlidesAcceptanceLease,
+} from '../src/main/operations/acceptance-authority'
 import type { Session } from '../src/main/session-state'
 
 describe('PC authoritative acceptance inspection', () => {
@@ -30,6 +34,14 @@ describe('PC authoritative acceptance inspection', () => {
       dirty: element.dirty,
       generation: session.mutationGeneration,
     })
+    const lease = await inspectSlidesAcceptanceLease(session)
+    expect(Object.keys(lease!)).toEqual([
+      'documentToken',
+      'sessionToken',
+      'revision',
+      'slideCount',
+      'leaseToken',
+    ])
     const revision = await fingerprintPresentation(opened)
     const request = {
       affectedSlides: [1],
@@ -37,6 +49,7 @@ describe('PC authoritative acceptance inspection', () => {
       expectedDocumentToken: 'document-production',
       expectedSessionToken: 'session-production',
       expectedRevision: revision,
+      leaseToken: lease!.leaseToken,
     }
     const snapshot = await inspectSlidesAcceptanceAuthority(session, request)
     expect(snapshot).toMatchObject({
@@ -67,6 +80,8 @@ describe('PC authoritative acceptance inspection', () => {
         expectedRevision: `sha256:${'f'.repeat(64)}`,
       }),
     ).toBeNull()
+    session.sessionInstanceId = 'session-replaced'
+    expect(await inspectSlidesAcceptanceAuthority(session, request)).toBeNull()
     expect(
       JSON.stringify({
         creationId: element.creationId,
@@ -93,12 +108,14 @@ describe('PC authoritative acceptance inspection', () => {
       sessionInstanceId: 'session-large',
     } as Session
     const revision = await fingerprintPresentation(opened)
+    const lease = await inspectSlidesAcceptanceLease(session)
     const snapshot = await inspectSlidesAcceptanceAuthority(session, {
       affectedSlides: [1, 60],
       referenceSlides: [30],
       expectedDocumentToken: 'doc-large',
       expectedSessionToken: 'session-large',
       expectedRevision: revision,
+      leaseToken: lease!.leaseToken,
     })
     expect(snapshot!.slides.map((slide) => slide.number)).toEqual([1, 30, 60])
     await expect(
@@ -108,7 +125,52 @@ describe('PC authoritative acceptance inspection', () => {
         expectedDocumentToken: 'doc-large',
         expectedSessionToken: 'session-large',
         expectedRevision: revision,
+        leaseToken: lease!.leaseToken,
       }),
     ).rejects.toThrow(/bounded/)
+  })
+
+  it('returns contract-bound text digests without exposing raw text', async () => {
+    const bytes = await readFile(
+      join(__dirname, '../../../packages/pptx-engine/tests/fixtures/01_standard_business.pptx'),
+    )
+    const opened = await openPptx(bytes)
+    const element = opened.deck.slides[0]!.elements[0]!
+    element.creationId = '{00000000-0000-4000-8000-000000000444}'
+    element.placeholder = 'title'
+    const session = {
+      opened,
+      documentInstanceId: 'doc-text',
+      sessionInstanceId: 'session-text',
+    } as Session
+    const lease = await inspectSlidesAcceptanceLease(session)
+    const base = {
+      affectedSlides: [1],
+      referenceSlides: [],
+      expectedDocumentToken: lease!.documentToken,
+      expectedSessionToken: lease!.sessionToken,
+      expectedRevision: lease!.revision,
+      leaseToken: lease!.leaseToken,
+    }
+    const structural = await inspectSlidesAcceptanceAuthority(session, base)
+    const targetToken = structural!.slides[0]!.elements.find(
+      (fact) => fact.role === 'title',
+    )!.targetToken
+    const expectedDigest = await digestSlidesAcceptanceText(
+      lease!.leaseToken,
+      'check-text',
+      targetToken,
+      'Q3 Business Review',
+    )
+    const verified = await inspectSlidesAcceptanceAuthority(session, {
+      ...base,
+      textChecks: [{ checkId: 'check-text', targetToken, expectedDigest }],
+    })
+    const fact = verified!.slides[0]!.elements.find((item) => item.targetToken === targetToken)!
+    expect(fact.properties.text).toBe(expectedDigest)
+    expect(JSON.stringify(verified)).not.toContain('Q3 Business Review')
+    expect(fact.properties.text).not.toBe(
+      await digestSlidesAcceptanceText(lease!.leaseToken, 'check-text', targetToken, 'changed'),
+    )
   })
 })

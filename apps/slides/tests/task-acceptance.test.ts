@@ -7,6 +7,7 @@ import {
   type SlidesAcceptanceAuthority,
   type SlidesAcceptanceIntent,
 } from '../src/renderer/ai/task-acceptance'
+import { digestSlidesAcceptanceText } from '../src/shared/acceptance-text'
 
 const revision = (digit: string) => `sha256:${digit.repeat(64)}`
 
@@ -422,6 +423,48 @@ describe('PC Slides deterministic verifier', () => {
         plannedMutationTargets: compiled.plannedMutationTargets,
       })[0],
     ).toMatchObject({ status: 'fail', code: 'scope_mismatch' })
+  })
+
+  it('verifies bound text digests without receiving raw authority text', async () => {
+    const current = authority()
+    delete current.slides[0]!.elements[0]!.properties.text
+    const compiled = compileSlidesAcceptance(
+      {
+        taskId: 'text-digest',
+        affectedSlides: [6],
+        maxCorrectionPasses: 0,
+        changes: [
+          { kind: 'set_property', slides: [6], role: 'title', property: 'text', value: 'Expected' },
+        ],
+      },
+      current,
+    )
+    if (compiled.status !== 'compiled') throw new Error('expected compiled')
+    const check = compiled.contract.checks[0]!
+    const digest = await digestSlidesAcceptanceText(
+      'lease:abc',
+      check.id,
+      'slide-6:title',
+      'Expected',
+    )
+    current.slides[0]!.elements[0]!.properties.text = digest
+    const proof = {
+      mode: 'postwrite' as const,
+      mutatedTargetTokens: ['slide-6:title'],
+      plannedMutationTargets: compiled.plannedMutationTargets,
+      expectedTextDigests: { [check.id]: digest },
+    }
+    expect(verifySlidesAcceptance(compiled.contract, current, proof)[0].status).toBe('pass')
+    proof.expectedTextDigests[check.id] = await digestSlidesAcceptanceText(
+      'lease:abc',
+      check.id,
+      'slide-6:title',
+      'Changed',
+    )
+    expect(verifySlidesAcceptance(compiled.contract, current, proof)[0]).toMatchObject({
+      status: 'fail',
+      code: 'value_mismatch',
+    })
   })
 })
 

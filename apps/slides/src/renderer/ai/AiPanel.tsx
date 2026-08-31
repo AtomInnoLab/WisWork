@@ -855,6 +855,11 @@ export function AiPanel({
       getCurrent: () => currentRef.current,
       getSelectedIds: () => selectedRef.current,
       getSelectionScope: () => activeSelectionScopeRef.current,
+      getAcceptanceAuthorityLease: async () => {
+        const lease = await window.slidesApi.getAcceptanceAuthorityLease()
+        if (!lease) throw new Error('Authoritative acceptance lease is unavailable')
+        return lease
+      },
       inspectAcceptanceAuthority: async (request) => {
         const snapshot = await window.slidesApi.inspectAcceptanceAuthority(request)
         if (!snapshot) throw new Error('Authoritative acceptance inspection is unavailable')

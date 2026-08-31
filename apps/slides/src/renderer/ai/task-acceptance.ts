@@ -561,10 +561,28 @@ export function verifySlidesAcceptance(
   rawAuthority: SlidesAcceptanceAuthority,
   proof:
     | { mode: 'prewrite' }
-    | { mode: 'postwrite'; mutatedTargetTokens: string[]; plannedMutationTargets: string[] },
+    | {
+        mode: 'postwrite'
+        mutatedTargetTokens: string[]
+        plannedMutationTargets: string[]
+        expectedTextDigests?: Record<string, string>
+      },
 ): SlidesDeterministicResult[] {
   const contract = parsePresentationAcceptanceContract(rawContract)
   const authority = parseSlidesAcceptanceAuthority(rawAuthority)
+  const expectedTextDigests = new Map<string, string>()
+  if (proof.mode === 'postwrite' && proof.expectedTextDigests !== undefined) {
+    const record = strictObject(
+      proof.expectedTextDigests,
+      contract.checks.map((check) => check.id),
+      'expectedTextDigests',
+    )
+    for (const [checkId, digest] of Object.entries(record)) {
+      if (typeof digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(digest))
+        throw new TypeError('expectedTextDigests is invalid')
+      expectedTextDigests.set(checkId, digest)
+    }
+  }
   const stale =
     authority.documentToken !== contract.documentToken ||
     authority.sessionToken !== contract.sessionToken ||
@@ -644,6 +662,18 @@ export function verifySlidesAcceptance(
     }
     if (actual == null)
       return { checkId: check.id, status: 'unavailable', code: 'unsupported_check' }
+    if (
+      check.property === 'text' &&
+      typeof actual === 'string' &&
+      /^sha256:[0-9a-f]{64}$/.test(actual)
+    ) {
+      const expectedDigest = expectedTextDigests.get(check.id)
+      if (!expectedDigest)
+        return { checkId: check.id, status: 'unavailable', code: 'unsupported_check' }
+      return actual === expectedDigest
+        ? { checkId: check.id, status: 'pass' }
+        : { checkId: check.id, status: 'fail', code: 'value_mismatch' }
+    }
     return valuesMatch(check.property, actual, check.expected)
       ? { checkId: check.id, status: 'pass' }
       : { checkId: check.id, status: 'fail', code: 'value_mismatch' }
