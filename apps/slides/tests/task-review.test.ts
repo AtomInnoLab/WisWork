@@ -104,7 +104,12 @@ describe('PC task-specific rendered verification', () => {
     })
     expect(a.capture).toHaveBeenCalledTimes(2)
     expect(a.refresh).toHaveBeenCalledWith(
-      { taskId: 'task-1', baseRevision: digest, mutationReceiptIds: ['edit-1'] },
+      {
+        taskId: 'task-1',
+        baseRevision: digest,
+        mutationReceiptIds: ['edit-1'],
+        isCurrent: expect.any(Function),
+      },
       undefined,
     )
     expect(a.verifyDeterministic).toHaveBeenCalledWith(

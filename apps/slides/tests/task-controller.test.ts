@@ -370,4 +370,61 @@ describe('Slides verified task controller', () => {
     })
     expect(afterTaskReview).toHaveBeenCalledOnce()
   })
+
+  it('skips every refresh side effect when an old run is abandoned before review starts', async () => {
+    const newerContract = { ...contract, taskId: 'task-2' }
+    let enrollmentCount = 0
+    const baseAdapter = adapter()
+    const refresh = vi.fn(baseAdapter.refresh)
+    const afterTaskReview = vi.fn()
+    const controller = createSlidesTaskController({
+      enroll: async () => ({
+        contract: enrollmentCount++ === 0 ? contract : newerContract,
+        plannedMutationTargets: ['target-1'],
+      }),
+      reviewAdapter: { ...baseAdapter, refresh },
+      afterTaskReview,
+    })
+    await controller.hooks.enroll?.([call], undefined)
+    controller.recordMutation({
+      transactionId: 'tx-old',
+      status: 'applied',
+      mutatedTargetTokens: ['target-1'],
+    })
+    controller.reset()
+    await controller.hooks.enroll?.([call], undefined)
+    controller.recordMutation({
+      transactionId: 'tx-new',
+      status: 'applied',
+      mutatedTargetTokens: ['target-1'],
+    })
+
+    await expect(
+      controller.hooks.complete({
+        contract,
+        mutated: true,
+        cancelled: true,
+        correctionPasses: 0,
+      }),
+    ).resolves.toMatchObject({
+      kind: 'receipt',
+      receipt: { status: 'applied_unverified', safeCode: 'cancelled_after_apply' },
+    })
+    expect(refresh).not.toHaveBeenCalled()
+    expect(afterTaskReview).not.toHaveBeenCalled()
+
+    await expect(
+      controller.hooks.complete({
+        contract: newerContract,
+        mutated: true,
+        cancelled: false,
+        correctionPasses: 0,
+      }),
+    ).resolves.toMatchObject({
+      kind: 'receipt',
+      receipt: { status: 'verified', mutationReceiptIds: ['tx-new'] },
+    })
+    expect(refresh).toHaveBeenCalledOnce()
+    expect(afterTaskReview).toHaveBeenCalledOnce()
+  })
 })

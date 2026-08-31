@@ -207,6 +207,7 @@ export function createSlidesTaskController(deps: {
           plannedMutationTargets: state.enrollment.plannedMutationTargets,
           ...(rollbackId ? { rollbackId } : {}),
           adapter: deps.reviewAdapter,
+          isCurrent: () => state.generation === generation && activeTaskId === contract.taskId,
           signal,
         })
       }

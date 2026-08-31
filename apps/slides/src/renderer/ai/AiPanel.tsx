@@ -877,10 +877,14 @@ export function AiPanel({
       taskReviewAdapter: {
         refresh: async (lineage, signal) => {
           signal?.throwIfAborted()
+          if (!lineage.isCurrent()) throw new Error('stale_task')
           const refreshed = await window.slidesApi.getRenderSlides()
           if (!refreshed) throw new Error('authoritative_refresh_unavailable')
+          if (!lineage.isCurrent()) throw new Error('stale_task')
           taskRenderBundles.set(lineage.taskId, refreshed)
+          if (!lineage.isCurrent()) throw new Error('stale_task')
           applyDeckRef.current(refreshed.slides, currentRef.current)
+          if (!lineage.isCurrent()) throw new Error('stale_task')
           const historyId = await finishHistoryBatch(false)
           return {
             documentToken: refreshed.documentToken,
@@ -971,7 +975,15 @@ export function AiPanel({
           const bytes = Math.ceil((image.base64.length * 3) / 4)
           const mediaToken = `media-${crypto.randomUUID().replaceAll('-', '')}`
           taskImages.set(mediaToken, { taskId: authority.taskId ?? '', image })
-          return { slide, role, mediaToken, bytes, ...authority }
+          return {
+            slide,
+            role,
+            mediaToken,
+            bytes,
+            revision: authority.revision,
+            leaseToken: authority.leaseToken,
+            sessionToken: authority.sessionToken,
+          }
         },
         review: async (facts, signal) => {
           const images = facts.screenshots.map(

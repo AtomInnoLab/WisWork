@@ -38,7 +38,12 @@ export type SlidesTaskScreenshot = {
 export interface SlidesTaskReviewAdapter {
   /** Refreshes the renderer, then returns a new main-process authority lease. */
   refresh(
-    input: { taskId: string; baseRevision: string; mutationReceiptIds: string[] },
+    input: {
+      taskId: string
+      baseRevision: string
+      mutationReceiptIds: string[]
+      isCurrent(): boolean
+    },
     signal?: AbortSignal,
   ): Promise<SlidesTaskReviewAuthority>
   verifyDeterministic(
@@ -215,6 +220,7 @@ export async function runSlidesTaskReview(input: {
   contract: PresentationAcceptanceContract
   initialMutationReceiptIds: string[]
   plannedMutationTargets?: string[]
+  isCurrent?: () => boolean
   rollbackId?: string
   adapter: SlidesTaskReviewAdapter
   signal?: AbortSignal
@@ -227,11 +233,20 @@ export async function runSlidesTaskReview(input: {
   try {
     for (;;) {
       input.signal?.throwIfAborted()
+      if (input.isCurrent && !input.isCurrent())
+        return unavailable(
+          contract,
+          receipts,
+          correctionPasses,
+          rollbackId,
+          receipts.length ? 'cancelled_after_apply' : 'cancelled',
+        )
       const authority = await input.adapter.refresh(
         {
           taskId: contract.taskId,
           baseRevision: contract.baseRevision,
           mutationReceiptIds: receipts,
+          isCurrent: input.isCurrent ?? (() => true),
         },
         input.signal,
       )
