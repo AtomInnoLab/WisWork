@@ -9,6 +9,7 @@ import {
   type AgentToolCall,
   type AgentTransport,
   type FinalResponseReviewContext,
+  type PresentationTaskHooks,
   type ToolExecution,
   type ToolExecutionOutcome,
   suspendToolExecution,
@@ -55,7 +56,357 @@ function makeSkill(execute?: (call: AgentToolCall) => ToolExecutionOutcome): Age
 
 const flush = () => new Promise((r) => setTimeout(r, 0))
 
+const contract = {
+  version: 1 as const,
+  taskId: 'task-1',
+  documentToken: 'doc-1',
+  sessionToken: 'session-1',
+  baseRevision: `sha256:${'a'.repeat(64)}`,
+  affectedSlides: [2],
+  referenceSlides: [],
+  checks: [
+    {
+      id: 'check-1',
+      kind: 'element_property' as const,
+      slide: 2,
+      roleOrTarget: { kind: 'role' as const, role: 'title' as const },
+      property: 'color' as const,
+      expected: '#112233',
+    },
+  ],
+  maxCorrectionPasses: 2 as const,
+}
+
+const receipt = (status: 'verified' | 'applied_unverified' = 'verified') => ({
+  version: 1 as const,
+  taskId: 'task-1',
+  status,
+  mutationReceiptIds: ['mutation-1'],
+  passedCheckIds: status === 'verified' ? ['check-1'] : [],
+  failedCheckIds: [],
+  unavailableCheckIds: status === 'applied_unverified' ? ['check-1'] : [],
+  correctionPasses: 0,
+  affectedSlides: [2],
+  ...(status === 'applied_unverified' ? { safeCode: 'screenshot_unavailable' as const } : {}),
+})
+
 describe('AgentLoop', () => {
+  describe('presentation task orchestration', () => {
+    it('lets a simple presentation task bypass clarification and planning UI', async () => {
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onDelta('No edit needed')
+          cb.onDone()
+        },
+      ])
+      const hooks: PresentationTaskHooks = {
+        prepare: vi.fn(() => ({ kind: 'bypass' as const })),
+        complete: vi.fn(),
+      }
+      const onPresentationClarify = vi.fn()
+      const onPresentationPlan = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: { ...makeSkill(), presentation: hooks },
+        events: { onPresentationClarify, onPresentationPlan },
+      })
+
+      loop.run('make title blue')
+      await flush()
+
+      expect(onPresentationClarify).not.toHaveBeenCalled()
+      expect(onPresentationPlan).not.toHaveBeenCalled()
+      expect(transport.requests).toHaveLength(1)
+    })
+
+    it('asks one bounded clarification and does not dispatch tools or the provider', async () => {
+      const transport = scriptedTransport([])
+      const executeTool = vi.fn()
+      const onPresentationClarify = vi.fn()
+      const onDone = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(executeTool),
+          presentation: {
+            prepare: () => ({ kind: 'clarify', question: 'Which slide is the reference?' }),
+            complete: vi.fn(),
+          },
+        },
+        events: { onPresentationClarify, onDone },
+      })
+
+      loop.run('make these consistent')
+      await flush()
+
+      expect(onPresentationClarify).toHaveBeenCalledOnce()
+      expect(transport.requests).toHaveLength(0)
+      expect(executeTool).not.toHaveBeenCalled()
+      expect(onDone).toHaveBeenCalledWith(expect.objectContaining({ cancelled: false }))
+    })
+
+    it('emits a host-authored plan and rejects confirmation before any dispatch', async () => {
+      const transport = scriptedTransport([])
+      const executeTool = vi.fn()
+      const onPresentationPlan = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(executeTool),
+          presentation: {
+            prepare: () => ({
+              kind: 'ready',
+              plan: ['Update slides 2–3', 'Verify rendered output'],
+              requiresConfirmation: true,
+              contract,
+            }),
+            confirm: vi.fn(() => false),
+            complete: vi.fn(),
+          },
+        },
+        events: { onPresentationPlan },
+      })
+
+      loop.run('update and verify slides 2–3')
+      await flush()
+
+      expect(onPresentationPlan).toHaveBeenCalledWith({
+        steps: ['Update slides 2–3', 'Verify rendered output'],
+        requiresConfirmation: true,
+      })
+      expect(transport.requests).toHaveLength(0)
+      expect(executeTool).not.toHaveBeenCalled()
+    })
+
+    it('uses a valid contract-bound receipt as terminal response facts', async () => {
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+          cb.onDone()
+        },
+        (cb) => {
+          cb.onDelta('Anything the model says')
+          cb.onDone()
+        },
+      ])
+      const onDone = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: {
+            prepare: () => ({ kind: 'ready', contract }),
+            complete: () => ({ kind: 'receipt', receipt: receipt() }),
+          },
+        },
+        events: { onDone },
+      })
+
+      loop.run('edit slide 2')
+      await flush()
+      await flush()
+
+      expect(onDone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          presentation: expect.objectContaining({ status: 'verified', affectedSlides: [2] }),
+        }),
+      )
+    })
+
+    it('never retries applied-unverified and does not accept terminal success without a valid receipt', async () => {
+      const complete = vi.fn(() => ({
+        kind: 'receipt' as const,
+        receipt: receipt('applied_unverified'),
+      }))
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+          cb.onDone()
+        },
+        (cb) => {
+          cb.onDelta('done')
+          cb.onDone()
+        },
+      ])
+      const onDone = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
+        },
+        events: { onDone },
+      })
+
+      loop.run('edit slide 2')
+      await flush()
+      await flush()
+
+      expect(complete).toHaveBeenCalledOnce()
+      expect(transport.requests).toHaveLength(2)
+      expect(onDone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          presentation: expect.objectContaining({ status: 'applied_unverified' }),
+        }),
+      )
+
+      const invalidDone = vi.fn()
+      const invalidLoop = new AgentLoop({
+        transport: scriptedTransport([
+          (cb) => {
+            cb.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+            cb.onDone()
+          },
+          (cb) => {
+            cb.onDelta('verified')
+            cb.onDone()
+          },
+        ]),
+        skill: {
+          ...makeSkill(),
+          presentation: {
+            prepare: () => ({ kind: 'ready', contract }),
+            complete: () => ({
+              kind: 'receipt',
+              receipt: { ...receipt(), mutationReceiptIds: [] },
+            }),
+          },
+        },
+        events: { onDone: invalidDone },
+      })
+      invalidLoop.run('edit')
+      await flush()
+      await flush()
+      expect(invalidDone).not.toHaveBeenCalledWith(
+        expect.objectContaining({ presentation: expect.objectContaining({ status: 'verified' }) }),
+      )
+    })
+
+    it('runs at most contract-bounded corrective turns and cancellation preserves dispatch truth', async () => {
+      const complete = vi
+        .fn()
+        .mockReturnValueOnce({ kind: 'correct', instruction: 'Correct check-1 only' })
+        .mockReturnValueOnce({
+          kind: 'receipt',
+          receipt: {
+            ...receipt(),
+            correctionPasses: 1,
+            mutationReceiptIds: ['mutation-1', 'mutation-2'],
+          },
+        })
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+          cb.onDone()
+        },
+        (cb) => {
+          cb.onDelta('premature')
+          cb.onDone()
+        },
+        (cb) => {
+          cb.onToolCall({ id: 'fix', name: 'do_thing', input: {} })
+          cb.onDone()
+        },
+        (cb) => {
+          cb.onDelta('fixed')
+          cb.onDone()
+        },
+      ])
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
+        },
+      })
+      loop.run('edit')
+      await flush()
+      await flush()
+      await flush()
+      await flush()
+      expect(complete).toHaveBeenCalledTimes(2)
+      expect(transport.requests).toHaveLength(4)
+      expect(loop.messages.map((message) => message.role)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+        'assistant',
+        'user',
+        'assistant',
+        'tool',
+        'assistant',
+      ])
+    })
+
+    it('cancels before dispatch without asking the host for mutation truth', async () => {
+      const complete = vi.fn()
+      const transport = scriptedTransport([() => {}])
+      const onDone = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
+        },
+        events: { onDone },
+      })
+
+      loop.run('edit')
+      await flush()
+      loop.cancel()
+      await flush()
+
+      expect(complete).not.toHaveBeenCalled()
+      expect(onDone).toHaveBeenCalledWith({ text: '', cancelled: true, turnLimit: false })
+      expect(loop.messages.map((message) => message.role)).toEqual(['user', 'assistant'])
+    })
+
+    it('reconciles a cancellation after dispatch and reports the applied receipt truth', async () => {
+      const complete = vi.fn(() => ({
+        kind: 'receipt' as const,
+        receipt: receipt('applied_unverified'),
+      }))
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+          cb.onDone()
+        },
+        () => {},
+      ])
+      const onDone = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
+        },
+        events: { onDone },
+      })
+
+      loop.run('edit')
+      await flush()
+      await flush()
+      loop.cancel()
+      await flush()
+
+      expect(complete).toHaveBeenCalledWith(
+        expect.objectContaining({ mutated: true, cancelled: true }),
+      )
+      expect(onDone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cancelled: true,
+          presentation: expect.objectContaining({ status: 'applied_unverified' }),
+        }),
+      )
+      expect(loop.messages.map((message) => message.role)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+        'assistant',
+      ])
+    })
+  })
+
   it('reviews one normal tool-free completion and retries without finishing the UI turn', async () => {
     const transport = scriptedTransport([
       (cb) => {
