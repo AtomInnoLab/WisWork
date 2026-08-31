@@ -318,6 +318,26 @@ const readTarget = (value: unknown, name: string): TargetRef => {
 const readProperty = (value: unknown, name: string): SupportedProperty =>
   readEnum(value, properties, name)
 
+const readPropertyValue = (
+  value: unknown,
+  property: SupportedProperty,
+  name: string,
+): SafeScalar => {
+  const parsed = readSafeScalar(value, name)
+  if (
+    (property.endsWith('color') || property === 'color') &&
+    (typeof parsed !== 'string' || !colorPattern.test(parsed))
+  )
+    fail(`${name} must be a color`)
+  if (['font_size', 'x', 'y', 'width', 'height'].includes(property) && typeof parsed !== 'number')
+    fail(`${name} must be numeric`)
+  if (['bold', 'italic'].includes(property) && typeof parsed !== 'boolean')
+    fail(`${name} must be boolean`)
+  if (['text', 'font_family'].includes(property) && typeof parsed !== 'string')
+    fail(`${name} must be a string`)
+  return parsed
+}
+
 const readCheck = (value: unknown, index: number): PresentationAcceptanceCheck => {
   const name = `checks[${index}]`
   const record = readObject(value, name)
@@ -331,21 +351,7 @@ const readCheck = (value: unknown, index: number): PresentationAcceptanceCheck =
   if (kind === 'element_property') {
     exactKeys(record, ['id', 'kind', 'slide', 'roleOrTarget', 'property', 'expected'], name)
     const property = readProperty(record.property, `${name}.property`)
-    const expected = readSafeScalar(record.expected, `${name}.expected`)
-    if (
-      (property.endsWith('color') || property === 'color') &&
-      (typeof expected !== 'string' || !colorPattern.test(expected))
-    )
-      fail(`${name}.expected must be a color`)
-    if (
-      ['font_size', 'x', 'y', 'width', 'height'].includes(property) &&
-      typeof expected !== 'number'
-    )
-      fail(`${name}.expected must be numeric`)
-    if (['bold', 'italic'].includes(property) && typeof expected !== 'boolean')
-      fail(`${name}.expected must be boolean`)
-    if (['text', 'font_family'].includes(property) && typeof expected !== 'string')
-      fail(`${name}.expected must be a string`)
+    const expected = readPropertyValue(record.expected, property, `${name}.expected`)
     return {
       id,
       kind,
@@ -546,12 +552,13 @@ export const parseVisualReviewResult = (value: unknown): VisualReviewResult => {
     const intent = readObject(item, name)
     exactKeys(intent, ['checkId', 'kind', 'roleOrTarget', 'property', 'value'], name)
     if (intent.kind !== 'set_property') fail(`${name}.kind is unknown`)
+    const property = readProperty(intent.property, `${name}.property`)
     return {
       checkId: readIdentifier(intent.checkId, `${name}.checkId`),
       kind: 'set_property' as const,
       roleOrTarget: readTarget(intent.roleOrTarget, `${name}.roleOrTarget`),
-      property: readProperty(intent.property, `${name}.property`),
-      value: readSafeScalar(intent.value, `${name}.value`),
+      property,
+      value: readPropertyValue(intent.value, property, `${name}.value`),
     }
   })
   if (status === 'pass' && (failedCheckIds.length !== 0 || fixIntents.length !== 0))
@@ -565,7 +572,70 @@ export const parseVisualReviewResult = (value: unknown): VisualReviewResult => {
   return { status, failedCheckIds, observations, fixIntents }
 }
 
+const serializeStrictJson = (value: unknown, seen: Set<object> = new Set()): string => {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean')
+    return JSON.stringify(value)
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) fail('serialized visual request contains a non-finite number')
+    return JSON.stringify(value)
+  }
+  if (typeof value !== 'object') fail('serialized visual request contains an unsupported value')
+  if (seen.has(value)) fail('serialized visual request contains a cycle')
+  seen.add(value)
+  try {
+    if (Array.isArray(value)) {
+      if (Object.getPrototypeOf(value) !== Array.prototype)
+        fail('serialized visual request contains a non-standard array')
+      const length = Object.getOwnPropertyDescriptor(value, 'length')
+      if (length === undefined || !Number.isSafeInteger(length.value))
+        fail('serialized visual request contains an invalid array')
+      const descriptors: PropertyDescriptor[] = []
+      for (const key of Reflect.ownKeys(value)) {
+        if (key === 'length') continue
+        if (typeof key !== 'string') fail('serialized visual request contains a symbol field')
+        if (unsafeKeys.has(key)) fail('serialized visual request contains an unsafe key')
+        if (!arrayIndexPattern.test(key) || Number(key) >= length.value)
+          fail('serialized visual request contains an extra array field')
+        const descriptor = Object.getOwnPropertyDescriptor(value, key)
+        if (
+          descriptor === undefined ||
+          descriptor.get !== undefined ||
+          descriptor.set !== undefined
+        )
+          fail('serialized visual request contains an accessor field')
+        if (!descriptor.enumerable) fail('serialized visual request contains a hidden field')
+        descriptors[Number(key)] = descriptor
+      }
+      const items = Array.from({ length: length.value }, (_, index) => {
+        const descriptor = descriptors[index]
+        if (descriptor === undefined) fail('serialized visual request contains an array hole')
+        return serializeStrictJson(descriptor.value, seen)
+      })
+      return `[${items.join(',')}]`
+    }
+    const prototype = Object.getPrototypeOf(value)
+    if (prototype !== Object.prototype && prototype !== null)
+      fail('serialized visual request contains a non-plain object')
+    const fields: string[] = []
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key !== 'string') fail('serialized visual request contains a symbol field')
+      if (unsafeKeys.has(key)) fail('serialized visual request contains an unsafe key')
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      if (descriptor === undefined || descriptor.get !== undefined || descriptor.set !== undefined)
+        fail('serialized visual request contains an accessor field')
+      if (!descriptor.enumerable) fail('serialized visual request contains a hidden field')
+      fields.push(`${JSON.stringify(key)}:${serializeStrictJson(descriptor.value, seen)}`)
+    }
+    return `{${fields.join(',')}}`
+  } finally {
+    seen.delete(value)
+  }
+}
+
 export const parsePresentationRenderingFacts = (value: unknown): PresentationRenderingFacts => {
+  const serializedBytes = new TextEncoder().encode(serializeStrictJson(value)).byteLength
+  if (serializedBytes > PRESENTATION_VERIFICATION_LIMITS.maxVisualRequestBytes)
+    fail('serialized visual request size is out of bounds')
   const record = readObject(value, 'renderingFacts')
   exactKeys(
     record,
@@ -595,7 +665,7 @@ export const parsePresentationRenderingFacts = (value: unknown): PresentationRen
       bytes,
     }
   })
-  if (totalBytes > PRESENTATION_VERIFICATION_LIMITS.maxVisualRequestBytes)
+  if (serializedBytes + totalBytes > PRESENTATION_VERIFICATION_LIMITS.maxVisualRequestBytes)
     fail('renderingFacts serialized visual request is out of bounds')
   const deterministicResults = readArray(
     record.deterministicResults,
@@ -646,7 +716,9 @@ export const parsePresentationRenderingFacts = (value: unknown): PresentationRen
 
 export const parsePresentationCompletionReceipt = (
   value: unknown,
+  contractValue: unknown,
 ): PresentationCompletionReceipt => {
+  const contract = parsePresentationAcceptanceContract(contractValue)
   const record = readObject(value, 'receipt')
   exactKeys(
     record,
@@ -694,15 +766,12 @@ export const parsePresentationCompletionReceipt = (
   const allChecks = [...passedCheckIds, ...failedCheckIds, ...unavailableCheckIds]
   if (new Set(allChecks).size !== allChecks.length)
     fail('receipt check accounting must be disjoint')
-  if (status === 'verified' && (failedCheckIds.length !== 0 || unavailableCheckIds.length !== 0))
-    fail('verified receipt cannot contain unproved checks')
+  const expectedCheckIds = new Set(contract.checks.map((check) => check.id))
   if (
-    status === 'applied_unverified' &&
-    (mutationReceiptIds.length === 0 || unavailableCheckIds.length === 0)
+    allChecks.length !== expectedCheckIds.size ||
+    allChecks.some((checkId) => !expectedCheckIds.has(checkId))
   )
-    fail('applied_unverified receipt requires applied mutation and unavailable checks')
-  if (status === 'unchanged' && mutationReceiptIds.length !== 0)
-    fail('unchanged receipt cannot contain mutation receipts')
+    fail('receipt check accounting must exactly match the contract')
   const rollbackId = Object.hasOwn(record, 'rollbackId')
     ? readIdentifier(record.rollbackId, 'receipt.rollbackId')
     : undefined
@@ -721,25 +790,53 @@ export const parsePresentationCompletionReceipt = (
         'receipt.safeCode',
       )
     : undefined
+  const taskId = readIdentifier(record.taskId, 'receipt.taskId')
+  if (taskId !== contract.taskId) fail('receipt taskId does not match the contract')
+  const affectedSlides = readSlides(
+    record.affectedSlides,
+    'receipt.affectedSlides',
+    PRESENTATION_VERIFICATION_LIMITS.maxAffectedSlides,
+  )
+  const affectedSet = new Set(affectedSlides)
+  if (
+    affectedSet.size !== contract.affectedSlides.length ||
+    contract.affectedSlides.some((slide) => !affectedSet.has(slide))
+  )
+    fail('receipt affected slides do not match the contract')
+  const correctionPasses = readInteger(
+    record.correctionPasses,
+    'receipt.correctionPasses',
+    0,
+    contract.maxCorrectionPasses,
+  )
+  const unprovedCount = failedCheckIds.length + unavailableCheckIds.length
+  if (correctionPasses > 0 && mutationReceiptIds.length === 0)
+    fail('receipt correction passes require mutation evidence')
+  if (rollbackId !== undefined && mutationReceiptIds.length === 0)
+    fail('receipt rollback requires mutation evidence')
+  if (status === 'verified' && (unprovedCount !== 0 || mutationReceiptIds.length === 0))
+    fail('verified receipt requires every check passed and mutation evidence')
+  if (status === 'applied_unverified' && (mutationReceiptIds.length === 0 || unprovedCount === 0))
+    fail('applied_unverified receipt requires mutation evidence and unproved checks')
+  if (status === 'failed' && (mutationReceiptIds.length !== 0 || unprovedCount === 0))
+    fail('failed receipt requires no mutation evidence and at least one unproved check')
+  if (
+    status === 'unchanged' &&
+    (mutationReceiptIds.length !== 0 || unprovedCount !== 0 || correctionPasses !== 0)
+  )
+    fail('unchanged receipt requires all checks passed without mutations or corrections')
+  if (status === 'needs_user' && (unprovedCount === 0 || safeCode !== 'confirmation_required'))
+    fail('needs_user receipt requires unproved checks and confirmation evidence')
   return {
     version: 1,
-    taskId: readIdentifier(record.taskId, 'receipt.taskId'),
+    taskId,
     status,
     mutationReceiptIds,
     passedCheckIds,
     failedCheckIds,
     unavailableCheckIds,
-    correctionPasses: readInteger(
-      record.correctionPasses,
-      'receipt.correctionPasses',
-      0,
-      PRESENTATION_VERIFICATION_LIMITS.maxCorrectionPasses,
-    ),
-    affectedSlides: readSlides(
-      record.affectedSlides,
-      'receipt.affectedSlides',
-      PRESENTATION_VERIFICATION_LIMITS.maxAffectedSlides,
-    ),
+    correctionPasses,
+    affectedSlides,
     ...(rollbackId === undefined ? {} : { rollbackId }),
     ...(safeCode === undefined ? {} : { safeCode }),
   }
@@ -756,8 +853,11 @@ export type PresentationCompletionFacts = {
   safeCode?: SafeCompletionCode
 }
 
-export const renderPresentationCompletionFacts = (value: unknown): PresentationCompletionFacts => {
-  const receipt = parsePresentationCompletionReceipt(value)
+export const renderPresentationCompletionFacts = (
+  value: unknown,
+  contract: unknown,
+): PresentationCompletionFacts => {
+  const receipt = parsePresentationCompletionReceipt(value, contract)
   return {
     status: receipt.status,
     affectedSlides: [...receipt.affectedSlides],

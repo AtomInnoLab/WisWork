@@ -59,6 +59,18 @@ const receipt = () => ({
   safeCode: 'screenshot_unavailable',
 })
 
+const verifiedReceipt = () => ({
+  version: 1,
+  taskId: 'task-1',
+  status: 'verified',
+  mutationReceiptIds: ['mutation-1'],
+  passedCheckIds: ['check-title-color', 'check-title-position', 'check-render'],
+  failedCheckIds: [],
+  unavailableCheckIds: [],
+  correctionPasses: 0,
+  affectedSlides: [6, 7, 8],
+})
+
 describe('presentation acceptance contracts', () => {
   it('parses a bounded contract and returns detached data', () => {
     const input = contract()
@@ -204,6 +216,30 @@ describe('safe visual and completion data', () => {
     ).toThrow(/unknown/i)
   })
 
+  it.each([
+    ['numeric geometry', 'x', '12'],
+    ['boolean styling', 'bold', 1],
+    ['canonical color', 'fill_color', 'red'],
+    ['string text', 'text', false],
+  ])('validates fix intent values as strictly as %s checks', (_label, property, value) => {
+    expect(() =>
+      parseVisualReviewResult({
+        status: 'needs_fix',
+        failedCheckIds: ['check-render'],
+        observations: [],
+        fixIntents: [
+          {
+            checkId: 'check-render',
+            kind: 'set_property',
+            roleOrTarget: { kind: 'role', role: 'body' },
+            property,
+            value,
+          },
+        ],
+      }),
+    ).toThrow(/value/i)
+  })
+
   it('parses only bounded, non-content rendering facts', () => {
     const facts = parsePresentationRenderingFacts({
       contractDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -238,9 +274,44 @@ describe('safe visual and completion data', () => {
     ).toThrow()
   })
 
+  it('enforces the visual limit against actual serialized envelope bytes', () => {
+    expect(() =>
+      parsePresentationRenderingFacts({
+        contractDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        revision: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        screenshots: [{ slide: 7, role: 'affected', mediaToken: 'media-1', bytes: 1 }],
+        deterministicResults: [],
+        padding: 'x'.repeat(PRESENTATION_VERIFICATION_LIMITS.maxVisualRequestBytes),
+      }),
+    ).toThrow(/serialized visual request.*bounds/i)
+  })
+
+  it('counts the envelope in addition to declared screenshot payload bytes', () => {
+    expect(() =>
+      parsePresentationRenderingFacts({
+        contractDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        revision: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        screenshots: [
+          {
+            slide: 7,
+            role: 'affected',
+            mediaToken: 'media-1',
+            bytes: PRESENTATION_VERIFICATION_LIMITS.maxVisualRequestBytes,
+          },
+        ],
+        deterministicResults: [],
+      }),
+    ).toThrow(/serialized visual request.*bounds/i)
+  })
+
   it('parses receipts and derives deterministic, privacy-safe response facts', () => {
-    const parsed = parsePresentationCompletionReceipt(receipt())
-    expect(renderPresentationCompletionFacts(parsed)).toEqual({
+    const appliedContract = {
+      ...contract(),
+      affectedSlides: [6, 7],
+      checks: [contract().checks[0], contract().checks[2]],
+    }
+    const parsed = parsePresentationCompletionReceipt(receipt(), appliedContract)
+    expect(renderPresentationCompletionFacts(parsed, appliedContract)).toEqual({
       status: 'applied_unverified',
       affectedSlides: [6, 7],
       passedCount: 1,
@@ -252,6 +323,133 @@ describe('safe visual and completion data', () => {
     })
   })
 
+  it('binds receipt identity, affected slides, correction limit, and exact check accounting', () => {
+    expect(() =>
+      parsePresentationCompletionReceipt({ ...verifiedReceipt(), taskId: 'task-2' }, contract()),
+    ).toThrow(/task/i)
+    expect(() =>
+      parsePresentationCompletionReceipt(
+        { ...verifiedReceipt(), affectedSlides: [6, 7] },
+        contract(),
+      ),
+    ).toThrow(/affected/i)
+    expect(() =>
+      parsePresentationCompletionReceipt(
+        { ...verifiedReceipt(), passedCheckIds: ['check-title-color', 'check-render'] },
+        contract(),
+      ),
+    ).toThrow(/account/i)
+    expect(() =>
+      parsePresentationCompletionReceipt(
+        { ...verifiedReceipt(), passedCheckIds: [...verifiedReceipt().passedCheckIds, 'unknown'] },
+        contract(),
+      ),
+    ).toThrow(/account/i)
+    expect(() =>
+      parsePresentationCompletionReceipt(
+        { ...verifiedReceipt(), correctionPasses: 1 },
+        { ...contract(), maxCorrectionPasses: 0 },
+      ),
+    ).toThrow(/correction/i)
+  })
+
+  it.each([
+    ['verified without mutation', { ...verifiedReceipt(), mutationReceiptIds: [] }],
+    [
+      'verified with failed check',
+      {
+        ...verifiedReceipt(),
+        passedCheckIds: ['check-title-color', 'check-title-position'],
+        failedCheckIds: ['check-render'],
+      },
+    ],
+    [
+      'failed with mutation',
+      { ...verifiedReceipt(), status: 'failed', mutationReceiptIds: ['m-1'] },
+    ],
+    [
+      'unchanged with unavailable check',
+      {
+        ...verifiedReceipt(),
+        status: 'unchanged',
+        mutationReceiptIds: [],
+        passedCheckIds: ['check-title-color', 'check-title-position'],
+        unavailableCheckIds: ['check-render'],
+      },
+    ],
+    [
+      'unchanged after correction',
+      { ...verifiedReceipt(), status: 'unchanged', mutationReceiptIds: [], correctionPasses: 1 },
+    ],
+    [
+      'applied unverified without unproved checks',
+      { ...verifiedReceipt(), status: 'applied_unverified' },
+    ],
+    [
+      'needs user without confirmation evidence',
+      {
+        ...verifiedReceipt(),
+        status: 'needs_user',
+        mutationReceiptIds: [],
+        passedCheckIds: ['check-title-color', 'check-title-position'],
+        unavailableCheckIds: ['check-render'],
+      },
+    ],
+  ])('rejects incoherent contract-bound status: %s', (_label, input) => {
+    expect(() => parsePresentationCompletionReceipt(input, contract())).toThrow()
+  })
+
+  it('accepts coherent verified, unchanged, failed, applied-unverified, and needs-user receipts', () => {
+    expect(parsePresentationCompletionReceipt(verifiedReceipt(), contract()).status).toBe(
+      'verified',
+    )
+    expect(
+      parsePresentationCompletionReceipt(
+        { ...verifiedReceipt(), status: 'unchanged', mutationReceiptIds: [] },
+        contract(),
+      ).status,
+    ).toBe('unchanged')
+    expect(
+      parsePresentationCompletionReceipt(
+        {
+          ...verifiedReceipt(),
+          status: 'failed',
+          mutationReceiptIds: [],
+          passedCheckIds: ['check-title-color'],
+          failedCheckIds: ['check-title-position', 'check-render'],
+          safeCode: 'mutation_failed',
+        },
+        contract(),
+      ).status,
+    ).toBe('failed')
+    expect(
+      parsePresentationCompletionReceipt(
+        {
+          ...verifiedReceipt(),
+          status: 'applied_unverified',
+          passedCheckIds: ['check-title-color'],
+          unavailableCheckIds: ['check-title-position', 'check-render'],
+          safeCode: 'screenshot_unavailable',
+        },
+        contract(),
+      ).status,
+    ).toBe('applied_unverified')
+    expect(
+      parsePresentationCompletionReceipt(
+        {
+          ...verifiedReceipt(),
+          status: 'needs_user',
+          mutationReceiptIds: [],
+          passedCheckIds: ['check-title-color'],
+          failedCheckIds: ['check-title-position'],
+          unavailableCheckIds: ['check-render'],
+          safeCode: 'confirmation_required',
+        },
+        contract(),
+      ).status,
+    ).toBe('needs_user')
+  })
+
   it.each([
     ['raw content', { ...receipt(), message: 'secret text' }],
     ['over-correction', { ...receipt(), correctionPasses: 3 }],
@@ -260,6 +458,6 @@ describe('safe visual and completion data', () => {
     ['unchanged mutation', { ...receipt(), status: 'unchanged' }],
     ['free-form safe code', { ...receipt(), safeCode: 'slide-content-goes-here' }],
   ])('rejects unsafe receipt: %s', (_label, input) => {
-    expect(() => parsePresentationCompletionReceipt(input)).toThrow()
+    expect(() => parsePresentationCompletionReceipt(input, contract())).toThrow()
   })
 })
