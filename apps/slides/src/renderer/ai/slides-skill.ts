@@ -186,7 +186,7 @@ const QUALIFIED_UNCERTAINTY = /(?:不能保证|cannot guarantee|can't guarantee)
 const TARGET_CONSTRAINT =
   /(?:锁定|只读|版式装饰|嵌套(?:元素|目标|组)|\blocked\b|\bread-only\b|\blayout decoration\b|\bnested (?:target|element|group)\b)/gi
 const CONCRETE_TARGET =
-  /(?:标题(?:栏)?|元素|文本框|形状|图片|图表|目标|字体|文字|文本|\btitle\b|\belement\b|\btext box\b|\bshape\b|\bimage\b|\bchart\b|\btarget\b|\bfont\b|\btext\b)/gi
+  /(?:标题(?:栏)?|元素|文本框|形状|图片|图表|目标|对象|字体|文字|文本|\btitle\b|\belement\b|\btext box\b|\bshape\b|\bimage\b|\bchart\b|\btarget\b|\bobject\b|\bfont\b|\btext\b)/gi
 const DENIAL_ANCHOR = new RegExp(DENIAL_ASSERTION.source, 'gi')
 
 const MAX_REVIEW_TEXT_CHARS = 4096
@@ -251,49 +251,87 @@ function targetKind(token: string): TargetKind {
   if (/形状|shape/.test(normalized)) return 'shape'
   if (/图片|image/.test(normalized)) return 'image'
   if (/图表|chart/.test(normalized)) return 'chart'
-  if (/目标|target/.test(normalized)) return 'target'
+  if (/目标|对象|target|object/.test(normalized)) return 'target'
   if (/字体|文字|文本|font|text/.test(normalized)) return 'text'
   return 'element'
 }
 
-function nearestTarget(clause: string, index: number): TargetKind | undefined {
-  const targets = [...clause.matchAll(CONCRETE_TARGET)]
-  let nearest: RegExpMatchArray | undefined
+interface TargetMention {
+  kind: TargetKind
+  index: number
+  identity?: string
+  coreference: boolean
+}
+
+function targetMention(clause: string, match: RegExpMatchArray): TargetMention {
+  const index = match.index ?? 0
+  const before = clause.slice(Math.max(0, index - 24), index)
+  const after = clause.slice(index + match[0].length, index + match[0].length + 40)
+  const chineseOrdinal = before.match(/第([一二三四五六七八九十百\d]+)个?\s*$/)
+  const englishOrdinal = before.match(/\b(first|second|third|fourth|fifth|\d+(?:st|nd|rd|th))\s+$/i)
+  const explicitId = after.match(/^\s+id\s*[:=#]\s*([A-Za-z0-9_-]+)/i)
+  const shortSuffix = after.match(/^\s+([A-Z]|\d+)\b/)
+  const identity = chineseOrdinal?.[1]
+    ? `ordinal:${chineseOrdinal[1]}`
+    : englishOrdinal?.[1]
+      ? `ordinal:${englishOrdinal[1].toLowerCase()}`
+      : explicitId?.[1]
+        ? `id:${explicitId[1].toLowerCase()}`
+        : shortSuffix?.[1]
+          ? `label:${shortSuffix[1].toLowerCase()}`
+          : undefined
+  return {
+    kind: targetKind(match[0]),
+    index,
+    ...(identity ? { identity } : {}),
+    coreference: /(?:该|此|同一)\s*$/.test(before) || /\b(?:this|that|same)\s+$/i.test(before),
+  }
+}
+
+function targetMentions(clause: string): TargetMention[] {
+  return [...clause.matchAll(CONCRETE_TARGET)].map((match) => targetMention(clause, match))
+}
+
+function nearestTarget(clause: string, index: number): TargetMention | undefined {
+  const targets = targetMentions(clause)
+  let nearest: TargetMention | undefined
   let distance = Number.POSITIVE_INFINITY
   for (const target of targets) {
-    const targetIndex = target.index ?? 0
-    const nextDistance = Math.abs(targetIndex - index)
+    const nextDistance = Math.abs(target.index - index)
     if (nextDistance < distance) {
       nearest = target
       distance = nextDistance
     }
   }
-  return nearest ? targetKind(nearest[0]) : undefined
+  return nearest
 }
 
-function constrainedTarget(clause: string, index: number): TargetKind | undefined {
-  const targets = [...clause.matchAll(CONCRETE_TARGET)]
+function constrainedTarget(clause: string, index: number): TargetMention | undefined {
+  const targets = targetMentions(clause)
   const immediateFollowing = targets.find((target) => {
-    const targetIndex = target.index ?? 0
-    return targetIndex >= index && /^[\s的]{0,5}$/.test(clause.slice(index, targetIndex))
+    return target.index >= index && /^[\s的]{0,5}$/.test(clause.slice(index, target.index))
   })
-  if (immediateFollowing) return targetKind(immediateFollowing[0])
-  const preceding = targets.filter((target) => (target.index ?? 0) < index).at(-1)
-  if (preceding) return targetKind(preceding[0])
-  return targets[0] ? targetKind(targets[0][0]) : undefined
+  if (immediateFollowing) return immediateFollowing
+  return targets.filter((target) => target.index < index).at(-1) ?? targets[0]
+}
+
+function sameTarget(constrained: TargetMention, denied: TargetMention): boolean {
+  if (constrained.coreference || denied.coreference) return true
+  if (constrained.kind !== denied.kind) return false
+  if (constrained.identity || denied.identity) return constrained.identity === denied.identity
+  return true
 }
 
 function hasSameTargetConstraint(clause: string): boolean {
   const deniedTargets = [...clause.matchAll(DENIAL_ANCHOR)]
     .map((match) => nearestTarget(clause, match.index ?? 0))
-    .filter((target): target is TargetKind => Boolean(target))
+    .filter((target): target is TargetMention => Boolean(target))
   if (deniedTargets.length === 0) return false
   const constrainedTargets = [...clause.matchAll(TARGET_CONSTRAINT)]
     .map((match) => constrainedTarget(clause, (match.index ?? 0) + match[0].length))
-    .filter((target): target is TargetKind => Boolean(target))
-  return constrainedTargets.some(
-    (constrained) =>
-      constrained === 'target' || deniedTargets.some((denied) => denied === constrained),
+    .filter((target): target is TargetMention => Boolean(target))
+  return constrainedTargets.some((constrained) =>
+    deniedTargets.some((denied) => sameTarget(constrained, denied)),
   )
 }
 

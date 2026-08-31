@@ -128,6 +128,25 @@ describe('Slides capability truth', () => {
   })
 
   it.each([
+    'Title A is locked and read-only, so Title B cannot be moved.',
+    '第一个标题已锁定，所以第二个标题不能移动。',
+    'Element A is read-only, so Element B cannot be resized.',
+    'Image A is locked, so Image B cannot be resized.',
+  ])('does not treat different same-kind objects as the same target: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it.each([
+    'Title A is locked and read-only, so Title A cannot be moved.',
+    'Image A is locked, so it cannot be resized.',
+    '第一个标题已锁定，所以第一个标题不能移动。',
+    '第一个标题已锁定，因此该对象不能移动。',
+    'Element id=card-a is read-only, so Element id=card-a cannot be resized.',
+  ])('allows a provably identical or safely referenced target: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBeUndefined()
+  })
+
+  it.each([
     'The editor cannot change, e.g. the title position.',
     'The editor cannot change, i.e. resize, the title element.',
     'In v1.2 the editor cannot change the title position.',
