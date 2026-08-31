@@ -147,6 +147,24 @@ describe('Slides capability truth', () => {
   })
 
   it.each([
+    'Title A is locked, so that Title B cannot be moved.',
+    'Element id=card-a is read-only, so this Element id=card-b cannot be resized.',
+    'Element card-a is locked, so Element card-b cannot be resized.',
+    'Shape shape_12 is read-only, so Shape shape_13 cannot be resized.',
+  ])('does not let coreference or same kind override conflicting identities: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it.each([
+    'Element card-a is locked, so Element card-a cannot be resized.',
+    'Shape shape_12 is read-only, so Shape shape_12 cannot be resized.',
+    'Title A is locked, so that title cannot be moved.',
+    'Element id=card-a is read-only, so this element cannot be resized.',
+  ])('allows matching bare IDs or an identity inherited by a pure reference: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBeUndefined()
+  })
+
+  it.each([
     'The editor cannot change, e.g. the title position.',
     'The editor cannot change, i.e. resize, the title element.',
     'In v1.2 the editor cannot change the title position.',

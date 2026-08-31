@@ -271,6 +271,7 @@ function targetMention(clause: string, match: RegExpMatchArray): TargetMention {
   const englishOrdinal = before.match(/\b(first|second|third|fourth|fifth|\d+(?:st|nd|rd|th))\s+$/i)
   const explicitId = after.match(/^\s+id\s*[:=#]\s*([A-Za-z0-9_-]+)/i)
   const shortSuffix = after.match(/^\s+([A-Z]|\d+)\b/)
+  const bareId = after.match(/^\s+([A-Za-z0-9]+(?:[-_][A-Za-z0-9_-]+))(?=\s|[,.;:!?，。；！？]|$)/)
   const identity = chineseOrdinal?.[1]
     ? `ordinal:${chineseOrdinal[1]}`
     : englishOrdinal?.[1]
@@ -279,7 +280,9 @@ function targetMention(clause: string, match: RegExpMatchArray): TargetMention {
         ? `id:${explicitId[1].toLowerCase()}`
         : shortSuffix?.[1]
           ? `label:${shortSuffix[1].toLowerCase()}`
-          : undefined
+          : bareId?.[1]
+            ? `id:${bareId[1].toLowerCase()}`
+            : undefined
   return {
     kind: targetKind(match[0]),
     index,
@@ -316,9 +319,13 @@ function constrainedTarget(clause: string, index: number): TargetMention | undef
 }
 
 function sameTarget(constrained: TargetMention, denied: TargetMention): boolean {
+  const compatibleKind =
+    constrained.kind === denied.kind || constrained.kind === 'target' || denied.kind === 'target'
+  if (!compatibleKind) return false
+  if (constrained.identity && denied.identity) return constrained.identity === denied.identity
+  if (constrained.identity) return denied.coreference
+  if (denied.identity) return constrained.coreference
   if (constrained.coreference || denied.coreference) return true
-  if (constrained.kind !== denied.kind) return false
-  if (constrained.identity || denied.identity) return constrained.identity === denied.identity
   return true
 }
 
