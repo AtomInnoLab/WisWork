@@ -7,6 +7,7 @@
     // Pin resolution to this repo's workspace sources (avoids stale types when node_modules links point elsewhere)
     "baseUrl": ".",
     "paths": {
+      "@wiswork/agent-core": ["../../packages/agent-core/src/index.ts"],
       "@wiswork/pptx-engine": ["../../packages/pptx-engine/src/index.ts"],
       "@wiswork/presentation-ops": ["../../packages/presentation-ops/src/index.ts"],
       "@wiswork/pptx-engine/table-grid": ["../../packages/pptx-engine/src/table-grid.ts"],

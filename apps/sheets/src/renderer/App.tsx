@@ -1526,11 +1526,15 @@ export function App(): React.JSX.Element {
     const journalDisposable = runtime.univerAPI.addEvent(
       runtime.univerAPI.Event.CommandExecuted,
       (event) => {
-        if (journalSuppression.active) return
         // The formula engine re-applies cached results with these execution
         // options; they are derived state, never user edits.
         const options = event.options as { fromFormula?: boolean } | undefined
-        if (options?.fromFormula) return
+        if (options?.fromFormula) {
+          const state = lazyWorkbookRef.current
+          if (state) state.scanRevision = (state.scanRevision ?? 0) + 1
+          return
+        }
+        if (journalSuppression.active) return
         // The copy finished (or failed); a stale source must not claim a
         // later, unrelated insert-sheet.
         if (event.id === COPY_SHEET_COMMAND) {
@@ -1571,6 +1575,7 @@ export function App(): React.JSX.Element {
           }
           return
         }
+        state.scanRevision = (state.scanRevision ?? 0) + 1
         const params = event.params as
           | {
               unitId?: string
@@ -2893,6 +2898,7 @@ export function App(): React.JSX.Element {
       file: selected,
       expectedWorkbookId: workbookSkeletonId(selected),
       generation: Date.now(),
+      scanRevision: 0,
       loadedRanges: new Map(),
       loadingKeys: new Map(),
       retryTimers: new Map(),

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { IRange } from '@univerjs/core'
+import { ICommandService, type ICellData, type IRange } from '@univerjs/core'
 import { FindModel, IFindReplaceService, type IFindMatch } from '@univerjs/find-replace'
+import { SheetReplaceCommand } from '@univerjs/sheets-find-replace'
 import { Subject } from 'rxjs'
 
 import {
@@ -388,11 +389,13 @@ function facade(
     selectionRanges = [],
     hidden = { current: false },
     mergedRanges = [],
+    rawCells = new Map<string, ICellData>(),
   }: {
     noFilterModel?: boolean
     selectionRanges?: IRange[]
     hidden?: { current: boolean }
     mergedRanges?: IRange[]
+    rawCells?: Map<string, ICellData>
   } = {},
 ) {
   const setValues = vi.fn()
@@ -455,9 +458,20 @@ function facade(
   // The internal workbook model answers filter questions even for rows that
   // never streamed into Univer's grid.
   const rowFiltered = vi.fn<(row: number) => boolean>(() => false)
+  const executeCommand = vi.fn(
+    async (_id: string, params: { replacements?: { count: number }[] }) => ({
+      success: params.replacements?.reduce((sum, item) => sum + item.count, 0) ?? 0,
+      failure: 0,
+    }),
+  )
   const workbookModel = {
     getSheetBySheetId: (sheetId: string) =>
-      sheetId === 's1' ? { getRowFiltered: rowFiltered } : null,
+      sheetId === 's1'
+        ? {
+            getRowFiltered: rowFiltered,
+            getCellRaw: (row: number, column: number) => rawCells.get(`${row}:${column}`),
+          }
+        : null,
   }
   const instanceService = { getUnit: () => (noFilterModel ? null : workbookModel) }
   const runtime2 = {
@@ -465,7 +479,11 @@ function facade(
     univer: {
       __getInjector: () => ({
         get: (identifier: unknown) =>
-          identifier === IFindReplaceService ? service : instanceService,
+          identifier === IFindReplaceService
+            ? service
+            : identifier === ICommandService
+              ? { executeCommand }
+              : instanceService,
       }),
     },
   }
@@ -484,6 +502,7 @@ function facade(
     selectionRanges,
     hidden,
     updatePrimaryCell,
+    executeCommand,
   }
 }
 
@@ -1021,7 +1040,10 @@ describe('installLazyFindBridge', () => {
 
   it('replaceAll writes only filtered in-scope inner matches', async () => {
     const selectionRanges = [{ startRow: 100, endRow: 120, startColumn: 2, endColumn: 3 }]
-    const harness = facade(state({}), { selectionRanges })
+    const harness = facade(state({}), {
+      selectionRanges,
+      rawCells: new Map([['110:2', { v: 'needle loaded' }]]),
+    })
     const inner = new FakeInnerModel([match('s1', 5, 5), match('s1', 110, 2)])
     harness.providers.add({ find: vi.fn().mockResolvedValue([inner]), terminate: vi.fn() })
     const bridge = installLazyFindBridge(harness)
@@ -1029,8 +1051,153 @@ describe('installLazyFindBridge', () => {
     const model = (await harnessLookup(harness)(query()))[0]!
     await vi.waitFor(() => expect(mockRead).toHaveBeenCalled())
     expect(await model.replaceAll('x')).toEqual({ success: 1, failure: 0 })
-    expect(harness.worksheet.getRange).toHaveBeenCalledWith(110, 2, 1, 1)
+    expect(harness.executeCommand).toHaveBeenCalledTimes(1)
+    expect(harness.executeCommand).toHaveBeenCalledWith(
+      SheetReplaceCommand.id,
+      expect.objectContaining({
+        replacements: [expect.objectContaining({ count: 1, subUnitId: 's1' })],
+      }),
+    )
+    bridge.dispose()
+  })
+
+  it('uses one native batch command for loaded rich text and preserves rich structure', async () => {
+    const selectionRanges = [{ startRow: 100, endRow: 120, startColumn: 2, endColumn: 3 }]
+    const rawCells = new Map<string, ICellData>([
+      [
+        '110:2',
+        {
+          p: {
+            body: {
+              dataStream: 'needle rich\r\n',
+              textRuns: [{ st: 0, ed: 11, ts: { bl: 1 } }],
+            },
+          },
+          s: { bg: { rgb: '#ff0000' } },
+        } as ICellData,
+      ],
+    ])
+    const harness = facade(state({}), { selectionRanges, rawCells })
+    const rich = { ...match('s1', 110, 2), replaceable: true }
+    harness.providers.add({
+      find: vi.fn().mockResolvedValue([new FakeInnerModel([rich])]),
+      terminate: vi.fn(),
+    })
+    const bridge = installLazyFindBridge(harness)
+    mockRead.mockResolvedValue(mapped([]))
+    const model = (await harnessLookup(harness)(query()))[0]!
+    await vi.waitFor(() => expect(mockRead).toHaveBeenCalled())
+
+    expect(await model.replaceAll('found')).toEqual({ success: 1, failure: 0 })
+    expect(harness.executeCommand).toHaveBeenCalledTimes(1)
+    const params = harness.executeCommand.mock.calls[0]![1] as unknown as {
+      replacements: { value: Record<number, Record<number, ICellData>> }[]
+    }
+    const replacement = params.replacements[0]!.value[110]![2]!
+    expect(replacement.p?.body?.dataStream).toBe('found rich\r\n')
+    expect(replacement.p?.body?.textRuns).toBeDefined()
+    expect(replacement.s).toBeUndefined()
+    expect(rawCells.get('110:2')?.s).toEqual({ bg: { rgb: '#ff0000' } })
+    bridge.dispose()
+  })
+
+  it.each([
+    {
+      kind: 'ordinary',
+      raw: { v: 'prefix NEEDLE suffix' } as ICellData,
+      loaded: { ...match('s1', 110, 2), replaceable: true },
+      extra: { row: 700, column: 3, value: 'prefix NEEDLE suffix' },
+      overrides: {},
+      read: (cell: ICellData) => cell.v,
+    },
+    {
+      kind: 'formula',
+      raw: { f: '=NEEDLE+NEEDLE', v: 2 } as ICellData,
+      loaded: { ...match('s1', 110, 2), replaceable: true, isFormula: true },
+      extra: { row: 700, column: 3, value: 2, formula: '=NEEDLE+NEEDLE' },
+      overrides: { findBy: 'formula' },
+      read: (cell: ICellData) => cell.f,
+    },
+    {
+      kind: 'rich text',
+      raw: { p: { body: { dataStream: 'prefix NEEDLE suffix\r\n' } } } as ICellData,
+      loaded: { ...match('s1', 110, 2), replaceable: true },
+      extra: { row: 700, column: 3, value: 'prefix NEEDLE suffix' },
+      overrides: {},
+      read: (cell: ICellData) => cell.p?.body?.dataStream,
+    },
+  ])('uses the preprocessed padded query for loaded and extra $kind replacements', async (item) => {
+    const selectionRanges = [{ startRow: 100, endRow: 800, startColumn: 2, endColumn: 3 }]
+    const harness = facade(state({}), {
+      selectionRanges,
+      rawCells: new Map([['110:2', item.raw]]),
+    })
+    harness.providers.add({
+      find: vi.fn().mockResolvedValue([new FakeInnerModel([item.loaded])]),
+      terminate: vi.fn(),
+    })
+    const bridge = installLazyFindBridge(harness)
+    mockRead.mockResolvedValue(mapped([item.extra]))
+    const model = (
+      await harnessLookup(harness)(query({ findString: '  NeEdLe  ', ...item.overrides }))
+    )[0]!
+    await vi.waitFor(() => expect(model.getMatches()).toHaveLength(2))
+
+    expect(await model.replaceAll('found')).toEqual({ success: 2, failure: 0 })
+    const params = harness.executeCommand.mock.calls[0]![1] as unknown as {
+      replacements: { value: Record<number, Record<number, ICellData>> }[]
+    }
+    expect(item.read(params.replacements[0]!.value[110]![2]!)).toContain('found')
+    expect(harness.setValues).toHaveBeenCalledWith([
+      [
+        expect.objectContaining(
+          item.overrides.findBy === 'formula'
+            ? { f: expect.stringContaining('found') }
+            : { v: expect.stringContaining('found') },
+        ),
+      ],
+    ])
+    bridge.dispose()
+  })
+
+  it('batches loaded ordinary cells once and writes each sidecar-only extra once', async () => {
+    const selectionRanges = [{ startRow: 100, endRow: 900, startColumn: 2, endColumn: 3 }]
+    const rawCells = new Map<string, ICellData>([['110:2', { v: 'needle loaded' }]])
+    const harness = facade(state({}), { selectionRanges, rawCells })
+    const inner = new FakeInnerModel([
+      match('s1', 5, 5),
+      { ...match('s1', 110, 2), replaceable: true },
+    ])
+    harness.providers.add({ find: vi.fn().mockResolvedValue([inner]), terminate: vi.fn() })
+    const bridge = installLazyFindBridge(harness)
+    mockRead.mockResolvedValue(mapped([{ row: 700, column: 3, value: 'needle extra' }]))
+    const model = (await harnessLookup(harness)(query()))[0]!
+    await vi.waitFor(() => expect(model.getMatches()).toHaveLength(2))
+
+    expect(await model.replaceAll('x')).toEqual({ success: 2, failure: 0 })
+    expect(harness.executeCommand).toHaveBeenCalledTimes(1)
+    expect(harness.setValues).toHaveBeenCalledTimes(1)
     expect(harness.worksheet.getRange).not.toHaveBeenCalledWith(5, 5, 1, 1)
+    bridge.dispose()
+  })
+
+  it('reports loaded preparation failure and still replaces sidecar-only matches', async () => {
+    const selectionRanges = [{ startRow: 100, endRow: 800, startColumn: 2, endColumn: 3 }]
+    const rawCells = new Map<string, ICellData>()
+    vi.spyOn(rawCells, 'get').mockImplementation(() => {
+      throw new Error('corrupt loaded cell')
+    })
+    const harness = facade(state({}), { selectionRanges, rawCells })
+    const inner = new FakeInnerModel([{ ...match('s1', 110, 2), replaceable: true }])
+    harness.providers.add({ find: vi.fn().mockResolvedValue([inner]), terminate: vi.fn() })
+    const bridge = installLazyFindBridge(harness)
+    mockRead.mockResolvedValue(mapped([{ row: 700, column: 3, value: 'needle extra' }]))
+    const model = (await harnessLookup(harness)(query()))[0]!
+    await vi.waitFor(() => expect(model.getMatches()).toHaveLength(2))
+
+    await expect(model.replaceAll('x')).resolves.toEqual({ success: 1, failure: 1 })
+    expect(harness.executeCommand).not.toHaveBeenCalled()
+    expect(harness.setValues).toHaveBeenCalledTimes(1)
     bridge.dispose()
   })
 

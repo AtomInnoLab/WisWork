@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useReducer, useRef, useState } from 'react'
 import appIcon from './assets/app-icon.png'
 import iconDocx from './assets/file-docx.svg'
 import iconXlsx from './assets/file-xlsx.svg'
@@ -20,6 +20,11 @@ import { fileCountKey, latexProjectCountKey, visiblePageCount } from './counts'
 import { formatAccountLoginDiagnostic, loginErrorKind } from './login-diagnostic'
 import { LoginDiagnostic } from './LoginDiagnostic'
 import { mergeOfficePairings } from './office-pairings'
+import {
+  initialProjectMutationState,
+  projectMutationReducer,
+  type ProjectMutationOperation,
+} from './project-mutation-state'
 import { useI18n } from './locale'
 import type { I18n, StringKey } from './locale'
 
@@ -216,7 +221,7 @@ interface ProjectPanelProps {
   onRefresh: () => void
 }
 
-function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPanelProps) {
+export function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPanelProps) {
   const { t } = useI18n()
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
@@ -225,6 +230,46 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
   const [projMenu, setProjMenu] = useState<{ id: string; top: number; right: number } | null>(null)
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null)
   const newInputRef = useRef<HTMLInputElement>(null)
+  const [mutation, dispatchMutation] = useReducer(
+    projectMutationReducer,
+    initialProjectMutationState,
+  )
+  const mutationRequestId = useRef(0)
+  const mutationBusy = useRef(false)
+  const mounted = useRef(true)
+
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      mutationRequestId.current += 1
+      mutationBusy.current = false
+    }
+  }, [])
+
+  const runMutation = async (
+    operation: ProjectMutationOperation,
+    request: () => Promise<unknown>,
+    onSuccess: () => void,
+  ) => {
+    if (mutationBusy.current) return
+    mutationBusy.current = true
+    const requestId = ++mutationRequestId.current
+    dispatchMutation({ type: 'start', requestId, operation })
+    try {
+      await request()
+    } catch {
+      if (mounted.current && requestId === mutationRequestId.current) {
+        dispatchMutation({ type: 'fail', requestId, operation })
+      }
+      return
+    } finally {
+      if (requestId === mutationRequestId.current) mutationBusy.current = false
+    }
+    if (!mounted.current || requestId !== mutationRequestId.current) return
+    dispatchMutation({ type: 'succeed', requestId })
+    onSuccess()
+  }
 
   useEffect(() => {
     if (creating && newInputRef.current) newInputRef.current.focus()
@@ -249,21 +294,39 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
 
   const commitCreate = async () => {
     const name = newName.trim()
-    setCreating(false)
-    setNewName('')
     if (!name) return
-    await window.aiOfficeProject?.createProject(name)
-    onRefresh()
+    await runMutation(
+      'create',
+      async () => {
+        const api = window.aiOfficeProject
+        if (!api) throw new Error('project_api_unavailable')
+        await api.createProject(name)
+      },
+      () => {
+        setCreating(false)
+        setNewName('')
+        onRefresh()
+      },
+    )
   }
 
   const commitRename = async () => {
     if (!renaming) return
     const name = renaming.value.trim()
     const id = renaming.id
-    setRenaming(null)
     if (!name) return
-    await window.aiOfficeProject?.renameProject(id, name)
-    onRefresh()
+    await runMutation(
+      'rename',
+      async () => {
+        const api = window.aiOfficeProject
+        if (!api) throw new Error('project_api_unavailable')
+        await api.renameProject(id, name)
+      },
+      () => {
+        setRenaming(null)
+        onRefresh()
+      },
+    )
   }
 
   // in-app confirm dialog (same style as the delete-files modal), not window.confirm
@@ -276,21 +339,30 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
 
   const confirmDeleteNow = async () => {
     const id = confirmDeleteId
-    setConfirmDeleteId(null)
     if (!id) return
-    await window.aiOfficeProject?.deleteProject(id)
-    if (selectedId === id) onSelect(null)
-    onRefresh()
+    await runMutation(
+      'delete',
+      async () => {
+        const api = window.aiOfficeProject
+        if (!api) throw new Error('project_api_unavailable')
+        await api.deleteProject(id)
+      },
+      () => {
+        setConfirmDeleteId(null)
+        if (selectedId === id) onSelect(null)
+        onRefresh()
+      },
+    )
   }
 
   useEffect(() => {
     if (!confirmDeleteId) return
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setConfirmDeleteId(null)
+      if (e.key === 'Escape' && mutation.operation !== 'delete') setConfirmDeleteId(null)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [confirmDeleteId])
+  }, [confirmDeleteId, mutation.operation])
 
   return (
     <div className="proj-panel">
@@ -301,6 +373,7 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
           title={t('newProject')}
           onClick={() => setCreating(true)}
           aria-label={t('newProject')}
+          disabled={mutation.activeRequestId !== null}
         >
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <path
@@ -320,6 +393,7 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
             className="proj-rename-input"
             placeholder={t('projectName')}
             value={newName}
+            disabled={mutation.operation === 'create'}
             onChange={(e) => setNewName(e.target.value)}
             onBlur={() => void commitCreate()}
             onKeyDown={(e) => {
@@ -330,6 +404,12 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
               }
             }}
           />
+        </div>
+      )}
+
+      {mutation.errorCode && (
+        <div className="proj-operation-error" role="alert">
+          {t('projectOperationFailed')} [{mutation.errorCode}]
         </div>
       )}
 
@@ -362,6 +442,7 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
                   <input
                     className="proj-rename-input inline"
                     value={renaming.value}
+                    disabled={mutation.operation === 'rename'}
                     autoFocus
                     onFocus={(e) => e.target.select()}
                     onClick={(e) => e.stopPropagation()}
@@ -389,6 +470,7 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
                     className="proj-more-btn"
                     aria-label={t('projMoreActions', { name: proj.name })}
                     aria-expanded={projMenu?.id === proj.id}
+                    disabled={mutation.activeRequestId !== null}
                     onClick={(e) => {
                       e.stopPropagation()
                       if (projMenu?.id === proj.id) {
@@ -417,6 +499,7 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
                     >
                       <button
                         role="menuitem"
+                        disabled={mutation.activeRequestId !== null}
                         onClick={(e) => {
                           e.stopPropagation()
                           setProjMenu(null)
@@ -429,6 +512,7 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
                       <button
                         role="menuitem"
                         className="danger"
+                        disabled={mutation.activeRequestId !== null}
                         onClick={(e) => {
                           e.stopPropagation()
                           doDelete(proj.id)
@@ -450,7 +534,12 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
           // locale string is "title?\nbody" — split it across the dialog
           const [confirmTitle, ...confirmBody] = t('deleteProjectConfirm').split('\n')
           return (
-            <div className="modal-overlay" onClick={() => setConfirmDeleteId(null)}>
+            <div
+              className="modal-overlay"
+              onClick={() => {
+                if (mutation.operation !== 'delete') setConfirmDeleteId(null)
+              }}
+            >
               <div
                 className="modal"
                 role="dialog"
@@ -464,11 +553,16 @@ function ProjectPanel({ projects, selectedId, onSelect, onRefresh }: ProjectPane
                   <button
                     className="btn btn-secondary"
                     autoFocus
+                    disabled={mutation.operation === 'delete'}
                     onClick={() => setConfirmDeleteId(null)}
                   >
                     {t('cancel')}
                   </button>
-                  <button className="btn btn-danger" onClick={() => void confirmDeleteNow()}>
+                  <button
+                    className="btn btn-danger"
+                    disabled={mutation.operation === 'delete'}
+                    onClick={() => void confirmDeleteNow()}
+                  >
                     {t('delete')}
                   </button>
                 </div>

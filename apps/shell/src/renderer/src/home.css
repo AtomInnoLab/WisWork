@@ -1362,6 +1362,12 @@ body.vib .home {
   color: var(--text);
 }
 
+.proj-add-btn:disabled,
+.proj-more-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
 .proj-new-row {
   padding: 0 8px 4px;
 }
@@ -1381,6 +1387,18 @@ body.vib .home {
   flex: 1;
   min-width: 0;
   width: auto;
+}
+
+.proj-operation-error {
+  margin: 2px 8px 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--danger-border);
+  border-radius: 6px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .proj-list {
