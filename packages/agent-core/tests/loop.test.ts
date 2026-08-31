@@ -225,6 +225,37 @@ describe('AgentLoop', () => {
     })
   })
 
+  it('fails open when credential sanitization expands a correction past its bounds', async () => {
+    const expandingCorrection = Array.from({ length: 180 }, () => 'x://a:b@').join(' ')
+    expect(expandingCorrection.length).toBeLessThanOrEqual(2_000)
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onDelta('final answer')
+        cb.onDone()
+      },
+    ])
+    const skill: AgentSkill = {
+      ...makeSkill(),
+      reviewFinalResponse: () => expandingCorrection,
+    }
+    const onDone = vi.fn()
+    const loop = new AgentLoop({ transport, skill, events: { onDone } })
+
+    loop.run('question')
+    await flush()
+
+    expect(transport.requests).toHaveLength(1)
+    expect(loop.messages).toEqual([
+      { role: 'user', text: 'question\n\nCTX' },
+      { role: 'assistant', text: 'final answer' },
+    ])
+    expect(onDone).toHaveBeenCalledWith({
+      text: 'final answer',
+      cancelled: false,
+      turnLimit: false,
+    })
+  })
+
   it('sanitizes a valid correction before storing it in model history', async () => {
     const secret = `sk-${'a'.repeat(20)}`
     const transport = scriptedTransport([

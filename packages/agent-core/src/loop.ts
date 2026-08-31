@@ -196,8 +196,14 @@ function safeFinalResponseCorrection(value: unknown): string | undefined {
     utf8Size(value) > FINAL_RESPONSE_CORRECTION_MAX_BYTES
   )
     return undefined
-  const sanitized = sanitizeAgentPayload(value)
-  return sanitized.trim() ? sanitized : undefined
+  const sanitized = sanitizeAgentPayload(value).trim()
+  if (
+    !sanitized ||
+    sanitized.length > FINAL_RESPONSE_CORRECTION_MAX_CHARS ||
+    utf8Size(sanitized) > FINAL_RESPONSE_CORRECTION_MAX_BYTES
+  )
+    return undefined
+  return sanitized
 }
 
 function stableJson(value: unknown): string {
