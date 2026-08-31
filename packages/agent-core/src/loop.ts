@@ -253,6 +253,8 @@ export class AgentLoop<TSnapshot = unknown> {
   private turns = 0
   /** Finalizing turn after hitting the turn limit: no tools, let the model answer from what it has read */
   private finalizing = false
+  /** one terminal-response correction is permitted per run */
+  private completionReviewRetried = false
   private mutationSeen = false
   private inputParseFails = 0
   private lastToolBatchSignature = ''
@@ -328,6 +330,7 @@ export class AgentLoop<TSnapshot = unknown> {
     this.cancelled = false
     this.turns = 0
     this.finalizing = false
+    this.completionReviewRetried = false
     this.mutationSeen = false
     this.inputParseFails = 0
     this.lastToolBatchSignature = ''
@@ -685,6 +688,41 @@ export class AgentLoop<TSnapshot = unknown> {
         this.running = false
         this.rollbackFailedRun()
         events?.onError?.('tool_loop_detected')
+        return
+      }
+    }
+
+    // A skill may reject one normal tool-free terminal response. Preserve the
+    // rejected assistant prose in model history, pair it with a synthetic user
+    // correction, and continue the same run without settling the UI turn.
+    if (
+      toolCalls.length === 0 &&
+      !this.cancelled &&
+      !this.finalizing &&
+      !this.completionReviewRetried &&
+      skill.reviewFinalResponse
+    ) {
+      const generation = this.generation
+      let correction: string | undefined
+      try {
+        correction = skill.reviewFinalResponse({
+          text: this.turnText,
+          mutated: this.mutationSeen,
+          userMessage: this.runUserMsg?.role === 'user' ? this.runUserMsg.text : '',
+        })
+      } catch {
+        // Completion policies are advisory. A broken policy must not strand or
+        // fail an otherwise valid run.
+      }
+      if (generation !== this.generation || !this.running) return
+      if (correction && !this.cancelled) {
+        this.completionReviewRetried = true
+        this.history.push({
+          role: 'assistant',
+          text: this.turnText || COMPLETED_VIA_TOOLS_TEXT,
+        })
+        this.history.push({ role: 'user', text: sanitizeAgentPayload(correction) })
+        this.startTurn()
         return
       }
     }

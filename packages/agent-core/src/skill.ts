@@ -1,6 +1,19 @@
 import type { AgentToolCall, AgentToolDef, ToolExecutionOutcome } from './types'
 
 /**
+ * Deliberately small set of run facts available to a terminal-response policy.
+ * The hook never receives tool results, snapshots, or the full conversation.
+ */
+export interface FinalResponseReviewContext {
+  /** text from the normal tool-free terminal turn */
+  readonly text: string
+  /** whether any tool reported a successful mutation during this run */
+  readonly mutated: boolean
+  /** original formatted and sanitized user message for this run */
+  readonly userMessage: string
+}
+
+/**
  * A skill packages one capability domain for the agent loop: its system
  * prompt section, its tools, per-turn context, and the tool executor.
  * AI Docs ships a docx skill; Excel / PPT skills plug in the same way.
@@ -15,6 +28,11 @@ export interface AgentSkill {
    * skeleton + selection). Return '' when there is nothing to attach.
    */
   buildContext?(): string
+  /**
+   * Optionally reject one normal tool-free terminal response by returning a
+   * static corrective user message. Exceptions fail open in AgentLoop.
+   */
+  reviewFinalResponse?(context: FinalResponseReviewContext): string | undefined
   /**
    * signal: aborted when the user hits stop. Long-running tools (e.g.
    * generate_deck with internal LLM calls) should check signal.aborted in
@@ -38,6 +56,9 @@ export function composeSkills(id: string, intro: string, skills: AgentSkill[]): 
       owner.set(tool.name, skill)
     }
   }
+  const reviewers = skills.flatMap((skill) =>
+    skill.reviewFinalResponse ? [skill.reviewFinalResponse.bind(skill)] : [],
+  )
   return {
     id,
     systemPrompt: [intro, ...skills.map((s) => s.systemPrompt)].filter(Boolean).join('\n\n'),
@@ -47,6 +68,17 @@ export function composeSkills(id: string, intro: string, skills: AgentSkill[]): 
         .map((s) => s.buildContext?.() ?? '')
         .filter(Boolean)
         .join('\n\n'),
+    ...(reviewers.length
+      ? {
+          reviewFinalResponse: (context: FinalResponseReviewContext) => {
+            for (const review of reviewers) {
+              const correction = review(context)
+              if (correction) return correction
+            }
+            return undefined
+          },
+        }
+      : {}),
     executeTool: (call, signal) => {
       const skill = owner.get(call.name)
       if (!skill) {

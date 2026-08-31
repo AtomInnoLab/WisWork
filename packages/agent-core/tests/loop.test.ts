@@ -55,6 +55,179 @@ function makeSkill(execute?: (call: AgentToolCall) => ToolExecutionOutcome): Age
 const flush = () => new Promise((r) => setTimeout(r, 0))
 
 describe('AgentLoop', () => {
+  it('reviews one normal tool-free completion and retries without finishing the UI turn', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onDelta('I cannot make that supported edit.')
+        cb.onDone()
+      },
+      (cb) => {
+        cb.onDelta('Corrected response')
+        cb.onDone()
+      },
+    ])
+    const reviewFinalResponse = vi.fn(() => '[System] Use the supported editing tools now.')
+    const skill: AgentSkill = { ...makeSkill(), reviewFinalResponse }
+    const onDone = vi.fn()
+    const onTurnEnd = vi.fn()
+    const loop = new AgentLoop({ transport, skill, events: { onDone, onTurnEnd } })
+
+    loop.run('make the edit')
+    await flush()
+    await flush()
+
+    expect(reviewFinalResponse).toHaveBeenCalledTimes(1)
+    expect(reviewFinalResponse).toHaveBeenCalledWith({
+      text: 'I cannot make that supported edit.',
+      mutated: false,
+      userMessage: 'make the edit\n\nCTX',
+    })
+    expect(transport.requests).toHaveLength(2)
+    expect(onDone).toHaveBeenCalledTimes(1)
+    expect(onDone).toHaveBeenCalledWith({
+      text: 'Corrected response',
+      cancelled: false,
+      turnLimit: false,
+    })
+    expect(onTurnEnd).not.toHaveBeenCalled()
+    expect(loop.messages).toEqual([
+      { role: 'user', text: 'make the edit\n\nCTX' },
+      { role: 'assistant', text: 'I cannot make that supported edit.' },
+      { role: 'user', text: '[System] Use the supported editing tools now.' },
+      { role: 'assistant', text: 'Corrected response' },
+    ])
+  })
+
+  it('allows at most one completion-review retry per run', async () => {
+    const respond = (text: string) => (cb: AgentStreamCallbacks) => {
+      cb.onDelta(text)
+      cb.onDone()
+    }
+    const transport = scriptedTransport([respond('first denial'), respond('second denial')])
+    const reviewFinalResponse = vi.fn(() => 'try again')
+    const skill: AgentSkill = { ...makeSkill(), reviewFinalResponse }
+    const onDone = vi.fn()
+    const loop = new AgentLoop({ transport, skill, events: { onDone } })
+
+    loop.run('edit')
+    await flush()
+    await flush()
+
+    expect(reviewFinalResponse).toHaveBeenCalledTimes(1)
+    expect(transport.requests).toHaveLength(2)
+    expect(onDone).toHaveBeenCalledWith({
+      text: 'second denial',
+      cancelled: false,
+      turnLimit: false,
+    })
+  })
+
+  it('fails open when the completion-review hook throws', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onDelta('ordinary final response')
+        cb.onDone()
+      },
+    ])
+    const skill: AgentSkill = {
+      ...makeSkill(),
+      reviewFinalResponse: () => {
+        throw new Error('private policy failure')
+      },
+    }
+    const onDone = vi.fn()
+    const onError = vi.fn()
+    const loop = new AgentLoop({ transport, skill, events: { onDone, onError } })
+
+    loop.run('question')
+    await flush()
+
+    expect(onDone).toHaveBeenCalledWith({
+      text: 'ordinary final response',
+      cancelled: false,
+      turnLimit: false,
+    })
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('does not review a cancelled completion', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onDelta('partial')
+      },
+    ])
+    const reviewFinalResponse = vi.fn(() => 'try again')
+    const skill: AgentSkill = { ...makeSkill(), reviewFinalResponse }
+    const onDone = vi.fn()
+    const loop = new AgentLoop({ transport, skill, events: { onDone } })
+
+    loop.run('edit')
+    await flush()
+    loop.cancel()
+    await flush()
+
+    expect(reviewFinalResponse).not.toHaveBeenCalled()
+    expect(transport.requests).toHaveLength(1)
+    expect(onDone).toHaveBeenCalledWith({ text: 'partial', cancelled: true, turnLimit: false })
+  })
+
+  it('keeps provider history paired when the corrective turn is cancelled', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onDelta('denial')
+        cb.onDone()
+      },
+      (cb) => cb.onDelta('correcting'),
+    ])
+    const skill: AgentSkill = { ...makeSkill(), reviewFinalResponse: () => 'retry with tools' }
+    const onDone = vi.fn()
+    const loop = new AgentLoop({ transport, skill, events: { onDone } })
+
+    loop.run('edit')
+    await flush()
+    loop.cancel()
+    await flush()
+
+    expect(loop.messages.map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+    ])
+    expect(onDone).toHaveBeenCalledWith({
+      text: 'correcting',
+      cancelled: true,
+      turnLimit: false,
+    })
+  })
+
+  it('rolls the whole run back when the corrective request fails', async () => {
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onDelta('denial')
+        cb.onDone()
+      },
+      (cb) => cb.onError('network dropped'),
+    ])
+    const skill: AgentSkill = { ...makeSkill(), reviewFinalResponse: () => 'retry with tools' }
+    const onError = vi.fn()
+    const loop = new AgentLoop({ transport, skill, events: { onError } })
+    loop.restore([
+      { role: 'user', text: 'earlier question' },
+      { role: 'assistant', text: 'earlier answer' },
+    ])
+
+    loop.run('edit')
+    await flush()
+    await flush()
+
+    expect(onError).toHaveBeenCalledWith('network dropped')
+    expect(loop.messages).toEqual([
+      { role: 'user', text: 'earlier question' },
+      { role: 'assistant', text: 'earlier answer' },
+    ])
+  })
+
   it('assigns invocation nonces per run while deduplicating a retried transport callback', async () => {
     const seen: AgentToolCall[] = []
     const transport = scriptedTransport([
@@ -664,7 +837,13 @@ describe('AgentLoop', () => {
     }
     const transport = scriptedTransport([alwaysTool, alwaysTool, finalize])
     const onDone = vi.fn()
-    const loop = new AgentLoop({ transport, skill: makeSkill(), maxTurns: 2, events: { onDone } })
+    const reviewFinalResponse = vi.fn(() => 'try again')
+    const loop = new AgentLoop({
+      transport,
+      skill: { ...makeSkill(), reviewFinalResponse },
+      maxTurns: 2,
+      events: { onDone },
+    })
     loop.run('x')
     await flush()
     await flush()
@@ -680,6 +859,7 @@ describe('AgentLoop', () => {
       cancelled: false,
       turnLimit: true,
     })
+    expect(reviewFinalResponse).not.toHaveBeenCalled()
   })
 
   it('stops an unchanged tool-call loop without imposing a total turn limit', async () => {
@@ -1462,5 +1642,22 @@ describe('composeSkills', () => {
       executeTool: () => ({ output: '', summary: '' }),
     })
     expect(() => composeSkills('x', '', [make('a'), make('b')])).toThrow(/duplicate/)
+  })
+
+  it('forwards the first child completion review that returns a correction', () => {
+    const pass = vi.fn(() => undefined)
+    const correct = vi.fn(() => 'static correction')
+    const skipped = vi.fn(() => 'later correction')
+    const merged = composeSkills('combined', '', [
+      { ...makeSkill(), id: 'pass', tools: [], reviewFinalResponse: pass },
+      { ...makeSkill(), id: 'correct', tools: [], reviewFinalResponse: correct },
+      { ...makeSkill(), id: 'skipped', tools: [], reviewFinalResponse: skipped },
+    ])
+    const context = { text: 'answer', mutated: false, userMessage: 'request' }
+
+    expect(merged.reviewFinalResponse?.(context)).toBe('static correction')
+    expect(pass).toHaveBeenCalledWith(context)
+    expect(correct).toHaveBeenCalledWith(context)
+    expect(skipped).not.toHaveBeenCalled()
   })
 })
