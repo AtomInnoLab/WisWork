@@ -11,6 +11,7 @@ import {
   canonicalPowerPointVerificationBinding,
   powerPointProposalFingerprint,
   type OfficePowerPointVerificationAuthority,
+  type OfficePowerPointVisualReviewer,
 } from './powerpoint-verification.js'
 import {
   MAX_POWERPOINT_RESULT_BYTES,
@@ -1054,6 +1055,7 @@ export function createPowerPointSkill(options: {
   vfs?: InMemoryVfs
   nativeMasterEditingSupported?: boolean
   verificationAuthority?: OfficePowerPointVerificationAuthority
+  visualReviewer?: OfficePowerPointVisualReviewer
 }): AgentSkill {
   const masterXmlEditingSupported = options.platform?.toLowerCase() !== 'mac'
   const nativeMasterEditingSupported = options.nativeMasterEditingSupported !== false
@@ -1061,6 +1063,7 @@ export function createPowerPointSkill(options: {
     ? createOfficePowerPointVerification({
         authority: options.verificationAuthority,
         platform: options.platform,
+        reviewer: options.visualReviewer,
       })
     : undefined
   options.proposals.subscribeAudit?.((event) => {

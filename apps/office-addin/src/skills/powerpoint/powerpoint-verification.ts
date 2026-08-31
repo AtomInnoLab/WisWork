@@ -5,11 +5,15 @@ import type {
   PresentationTaskPreparation,
 } from '@wiswork/agent-core'
 import {
+  digestPresentationAcceptanceContract,
   parsePresentationAcceptanceContract,
+  parsePresentationRenderingFacts,
+  parseVisualReviewResult,
   type PresentationAcceptanceCheck,
   type PresentationAcceptanceContract,
   type PresentationCompletionReceipt,
   type SupportedProperty,
+  type VisualReviewResult,
 } from '@wiswork/presentation-verification'
 import type { PowerPointAdapter } from './browser-powerpoint-adapter.js'
 
@@ -48,6 +52,18 @@ export interface OfficePowerPointVerificationAuthority {
     slideIndex: number,
     signal?: AbortSignal,
   ): Promise<{ slideId: string; backgroundColor?: string }>
+  captureScreenshot(
+    slideIndex: number,
+    signal?: AbortSignal,
+  ): Promise<{ base64: string; mime: 'image/png' }>
+}
+
+export interface OfficePowerPointVisualReviewer {
+  review(request: {
+    facts: ReturnType<typeof parsePresentationRenderingFacts>
+    images: Array<{ mediaToken: string; base64: string; mime: 'image/png' }>
+    isolation: { tools: []; maxTurns: 1 }
+  }): Promise<VisualReviewResult>
 }
 
 export type SafeProposalRecord = {
@@ -72,6 +88,7 @@ export interface OfficePowerPointVerificationHooks extends PresentationTaskHooks
   recordProposal(proposal: SafeProposalRecord): void
   recordSettlement(settlement: SafeProposalSettlement): void
   shouldSkip(call: AgentToolCall): boolean
+  setReviewer(reviewer: OfficePowerPointVisualReviewer): void
 }
 
 async function sha256(value: string): Promise<string> {
@@ -122,6 +139,7 @@ export function createBrowserPowerPointVerificationAuthority(
       const state = await adapter.listSlideShapes(slideIndex, signal)
       return { slideId: state.slideId }
     },
+    captureScreenshot: (slideIndex, signal) => adapter.screenshotSlide(slideIndex, signal),
   }
 }
 
@@ -248,7 +266,9 @@ export function createOfficePowerPointVerification(options: {
   taskId?: () => string
   platform?: string
   delay?: (milliseconds: number) => Promise<void>
+  reviewer?: OfficePowerPointVisualReviewer
 }): OfficePowerPointVerificationHooks {
+  let reviewer = options.reviewer
   let enrolled:
     | {
         contract: PresentationAcceptanceContract
@@ -267,7 +287,11 @@ export function createOfficePowerPointVerification(options: {
   let settlements: SafeProposalSettlement[] = []
   const delay = options.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
 
-  const enroll = async (calls: readonly AgentToolCall[]): Promise<PresentationTaskPreparation> => {
+  const enroll = async (
+    calls: readonly AgentToolCall[],
+    currentContract?: PresentationAcceptanceContract,
+    signal?: AbortSignal,
+  ): Promise<PresentationTaskPreparation> => {
     const fullySupported = (call: AgentToolCall) =>
       call.name === 'edit_slide_text' ||
       (call.name === 'execute_office_js' &&
@@ -294,6 +318,49 @@ export function createOfficePowerPointVerification(options: {
       })),
     )
     if (rawOperations.length === 0) return { kind: 'bypass' }
+    if (currentContract) {
+      if (!enrolled || currentContract.taskId !== enrolled.contract.taskId)
+        return { kind: 'clarify', question: 'presentation_scope_required' }
+      const correctionTargets = new Map<string, string[]>()
+      for (const operation of rawOperations) {
+        const allowed = currentContract.checks.find((check) => {
+          if (
+            check.kind !== 'element_property' ||
+            check.roleOrTarget.kind !== 'target' ||
+            check.slide !== operation.slide ||
+            check.property !== operation.property ||
+            check.expected !== operation.expected
+          )
+            return false
+          return (
+            enrolled?.locations.get(check.roleOrTarget.targetToken)?.shapeId === operation.target
+          )
+        })
+        if (!allowed) return { kind: 'clarify', question: 'presentation_scope_required' }
+      }
+      for (const call of calls) {
+        const seen = new Set<number>()
+        for (const operation of callOperations(call)) {
+          if (!operation.target || seen.has(operation.opIndex)) continue
+          seen.add(operation.opIndex)
+          const state = await options.authority.readShape(
+            operation.slide - 1,
+            operation.target,
+            signal,
+          )
+          const targets = correctionTargets.get(call.id) ?? []
+          targets.push(`${state.slideId}/${state.shapeId}`)
+          correctionTargets.set(call.id, targets)
+        }
+      }
+      enrolled.plannedProposals.push(
+        ...calls.map((call) => ({
+          toolName: call.name,
+          ...canonicalPowerPointVerificationBinding(call, correctionTargets.get(call.id) ?? []),
+        })),
+      )
+      return { kind: 'ready', contract: currentContract, requiresConfirmation: false }
+    }
     const collapsed = new Map<string, (typeof rawOperations)[number]>()
     for (const operation of rawOperations)
       collapsed.set(
@@ -429,7 +496,7 @@ export function createOfficePowerPointVerification(options: {
 
   return {
     prepare: () => ({ kind: 'bypass' }),
-    enroll: (calls) => enroll(calls),
+    enroll: (calls, currentContract, signal) => enroll(calls, currentContract, signal),
     recordProposal(value) {
       if (proposals.length < 50)
         proposals.push({
@@ -450,6 +517,9 @@ export function createOfficePowerPointVerification(options: {
     },
     shouldSkip(call) {
       return enrolled?.skipCallIds.has(call.id) ?? false
+    },
+    setReviewer(value) {
+      reviewer = value
     },
     abandon() {
       /* reconciliation deliberately retains safe state */
@@ -605,6 +675,118 @@ export function createOfficePowerPointVerification(options: {
         : failed.length
           ? 'needs_user'
           : 'verified'
+      if (status === 'verified' && reviewer) {
+        try {
+          const beforeCapture = await options.authority.current(context.signal)
+          if (
+            beforeCapture.documentToken !== contract.documentToken ||
+            beforeCapture.sessionToken !== contract.sessionToken
+          )
+            throw new Error('stale_authority')
+          const slides = [...new Set([...contract.affectedSlides, ...contract.referenceSlides])]
+          if (slides.length > 8) throw new Error('screenshot_unavailable')
+          const images = await Promise.all(
+            slides.map(async (slide) => {
+              const image = await options.authority.captureScreenshot(slide - 1, context.signal)
+              if (image.mime !== 'image/png') throw new Error('screenshot_unavailable')
+              return {
+                slide,
+                role: contract.affectedSlides.includes(slide)
+                  ? ('affected' as const)
+                  : ('reference' as const),
+                mediaToken: `shot-${powerPointProposalFingerprint(image.base64).replace(':', '-')}`,
+                bytes: Math.floor((image.base64.length * 3) / 4),
+                base64: image.base64,
+                mime: image.mime,
+              }
+            }),
+          )
+          const afterCapture = await options.authority.current(context.signal)
+          if (
+            afterCapture.documentToken !== beforeCapture.documentToken ||
+            afterCapture.sessionToken !== beforeCapture.sessionToken ||
+            afterCapture.revision !== beforeCapture.revision
+          )
+            throw new Error('stale_authority')
+          const facts = parsePresentationRenderingFacts({
+            contractDigest: await digestPresentationAcceptanceContract(contract),
+            revision: afterCapture.revision,
+            screenshots: images.map(({ slide, role, mediaToken, bytes }) => ({
+              slide,
+              role,
+              mediaToken,
+              bytes: Math.max(1, bytes),
+            })),
+            deterministicResults: contract.checks.map((check) => ({
+              checkId: check.id,
+              status: passed.includes(check.id) ? 'pass' : 'unavailable',
+              ...(passed.includes(check.id) ? {} : { code: 'unsupported_check' as const }),
+            })),
+          })
+          const review = parseVisualReviewResult(
+            await reviewer.review({
+              facts,
+              images: images.map(({ mediaToken, base64, mime }) => ({
+                mediaToken,
+                base64,
+                mime,
+              })),
+              isolation: { tools: [], maxTurns: 1 },
+            }),
+          )
+          if (review.status === 'cannot_verify')
+            return receipt(contract, {
+              status: 'applied_unverified',
+              mutationReceiptIds: confirmed.map((item) => item.id),
+              passedCheckIds: [],
+              failedCheckIds: [],
+              unavailableCheckIds: allIds,
+              correctionPasses: context.correctionPasses,
+              safeCode: 'review_unavailable',
+            })
+          if (review.status === 'needs_fix') {
+            const safe = review.fixIntents.every((intent) => {
+              const check = contract.checks.find((item) => item.id === intent.checkId)
+              return (
+                check?.kind === 'element_property' &&
+                check.roleOrTarget.kind === 'target' &&
+                ['text', 'x', 'y', 'width', 'height'].includes(intent.property) &&
+                intent.property === check.property &&
+                JSON.stringify(intent.roleOrTarget) === JSON.stringify(check.roleOrTarget) &&
+                intent.value === check.expected
+              )
+            })
+            if (safe && context.correctionPasses < contract.maxCorrectionPasses)
+              return {
+                kind: 'correct',
+                instruction:
+                  'Apply only the failed approved PowerPoint acceptance checks using their already approved values; do not expand targets or use package, master, chart, table, or XML tools.',
+              }
+            return receipt(contract, {
+              status: 'needs_user',
+              mutationReceiptIds: confirmed.map((item) => item.id),
+              passedCheckIds: passed.filter((id) => !review.failedCheckIds.includes(id)),
+              failedCheckIds: review.failedCheckIds,
+              unavailableCheckIds: [],
+              correctionPasses: context.correctionPasses,
+              safeCode: safe ? 'verification_invalid' : 'confirmation_required',
+            })
+          }
+        } catch (error) {
+          return receipt(contract, {
+            status: 'applied_unverified',
+            mutationReceiptIds: confirmed.map((item) => item.id),
+            passedCheckIds: [],
+            failedCheckIds: [],
+            unavailableCheckIds: allIds,
+            correctionPasses: context.correctionPasses,
+            safeCode:
+              error instanceof Error && error.message === 'stale_authority'
+                ? 'stale_authority'
+                : 'screenshot_unavailable',
+          })
+        }
+      }
       return receipt(contract, {
         status,
         mutationReceiptIds: confirmed.map((item) => item.id),

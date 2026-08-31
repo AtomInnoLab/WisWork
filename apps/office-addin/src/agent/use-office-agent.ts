@@ -6,6 +6,7 @@ import {
   type ToolExecutionOutcome,
 } from '@wiswork/agent-core'
 import { createAgentHarness } from '@wiswork/agent-harness'
+import type { OfficePowerPointVisualReviewer } from '../skills/powerpoint/powerpoint-verification.js'
 import { useSyncExternalStore } from 'react'
 import type {
   OfficeProposal,
@@ -195,6 +196,68 @@ export function createOfficeAgentSession(dependencies: {
   diagnostics?: Pick<OfficeDiagnostics, 'startTrace' | 'setTool' | 'record' | 'clear'>
 }): OfficeAgentSession {
   const { proposals } = dependencies
+  const presentation = dependencies.skill.presentation as
+    | (NonNullable<AgentSkill['presentation']> & {
+        setReviewer?: (reviewer: OfficePowerPointVisualReviewer) => void
+      })
+    | undefined
+  presentation?.setReviewer?.({
+    review: (request) =>
+      new Promise((resolve) => {
+        let output = ''
+        let settled = false
+        const finish = (value: Parameters<typeof resolve>[0]) => {
+          if (settled) return
+          settled = true
+          resolve(value)
+        }
+        dependencies.transport.stream(
+          {
+            system:
+              'Review only the supplied PowerPoint screenshots against the bounded check IDs. Return strict JSON matching VisualReviewResult. Do not request tools, infer hidden text, or add targets.',
+            messages: [
+              {
+                role: 'user',
+                text: JSON.stringify({ facts: request.facts }),
+                images: request.images.map(({ base64, mime }) => ({ base64, mime })),
+              },
+            ],
+            tools: [],
+          },
+          {
+            onDelta: (text) => {
+              if (output.length < 64 * 1024) output += text
+            },
+            onToolCall: () =>
+              finish({
+                status: 'cannot_verify',
+                failedCheckIds: [],
+                observations: [{ code: 'review_unavailable', severity: 'warning' }],
+                fixIntents: [],
+              }),
+            onDone: () => {
+              try {
+                finish(JSON.parse(output))
+              } catch {
+                finish({
+                  status: 'cannot_verify',
+                  failedCheckIds: [],
+                  observations: [{ code: 'review_unavailable', severity: 'warning' }],
+                  fixIntents: [],
+                })
+              }
+            },
+            onError: () =>
+              finish({
+                status: 'cannot_verify',
+                failedCheckIds: [],
+                observations: [{ code: 'review_unavailable', severity: 'warning' }],
+                fixIntents: [],
+              }),
+          },
+        )
+      }),
+  })
   const diagnose = (
     action: (diagnostics: NonNullable<typeof dependencies.diagnostics>) => void,
   ) => {

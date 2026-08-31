@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   canonicalPowerPointVerificationBinding,
   createOfficePowerPointVerification,
+  type OfficePowerPointVisualReviewer,
 } from '../src/skills/powerpoint/powerpoint-verification.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import { createPowerPointSkill } from '../src/skills/powerpoint/powerpoint-skill.js'
@@ -29,6 +30,7 @@ const authority = (overrides = {}) => ({
     height: 30,
   }),
   readSlide: vi.fn().mockResolvedValue({ slideId: 'slide-1', backgroundColor: '#FFFFFF' }),
+  captureScreenshot: vi.fn().mockResolvedValue({ mime: 'image/png', base64: 'iVBORw0KGgoAAAA=' }),
   ...overrides,
 })
 
@@ -93,6 +95,231 @@ function productionAdapter(state: { text: string; left: number }): PowerPointAda
 }
 
 describe('Office PowerPoint presentation verification', () => {
+  async function visualSubject(review: OfficePowerPointVisualReviewer['review'], overrides = {}) {
+    const call = { ...textCall, id: 'visual-call', input: { ...textCall.input, text: 'Final' } }
+    let applied = false
+    const source = authority({
+      readShape: vi.fn().mockImplementation(() =>
+        Promise.resolve({
+          slideId: 'slide-1',
+          shapeId: 'shape-1',
+          text: applied ? 'Final' : 'Before',
+          left: 10,
+          top: 20,
+          width: 100,
+          height: 30,
+        }),
+      ),
+      ...overrides,
+    })
+    const reviewer = { review: vi.fn().mockImplementation(review) }
+    const subject = createOfficePowerPointVerification({
+      authority: source,
+      reviewer,
+      taskId: () => 'task-visual',
+    })
+    const enrolled = await subject.enroll([call], undefined)
+    if (enrolled.kind !== 'ready') throw new Error('not ready')
+    applied = true
+    const proposal = {
+      id: 'visual-proposal',
+      toolName: 'edit_slide_text',
+      fingerprint: 'state',
+      targets: ['slide-1/shape-1'],
+      verificationBinding: canonicalPowerPointVerificationBinding(call, ['slide-1/shape-1']),
+    }
+    subject.recordProposal(proposal)
+    subject.recordSettlement({ id: proposal.id, status: 'confirmed' })
+    return { subject, contract: enrolled.contract, reviewer, source }
+  }
+
+  it('binds postwrite screenshots to authority and sends only strict isolated review facts', async () => {
+    const run = await visualSubject(async () => ({
+      status: 'pass',
+      failedCheckIds: [],
+      observations: [],
+      fixIntents: [],
+    }))
+    await expect(
+      run.subject.complete({
+        contract: run.contract,
+        mutated: true,
+        cancelled: false,
+        correctionPasses: 0,
+      }),
+    ).resolves.toMatchObject({ kind: 'receipt', receipt: { status: 'verified' } })
+    expect(run.source.current).toHaveBeenCalledTimes(3)
+    const request = run.reviewer.review.mock.calls[0]![0]
+    expect(request.isolation).toEqual({ tools: [], maxTurns: 1 })
+    expect(JSON.stringify(request.facts)).not.toContain('Final')
+  })
+
+  it('requests one bounded safe correction, stops at two, and rejects unsafe fixes', async () => {
+    const makeReview: (value?: string) => OfficePowerPointVisualReviewer['review'] =
+      (value = 'Final') =>
+      async (request) => ({
+        status: 'needs_fix' as const,
+        failedCheckIds: [request.facts.deterministicResults[0].checkId],
+        observations: [],
+        fixIntents: [
+          {
+            checkId: request.facts.deterministicResults[0].checkId,
+            kind: 'set_property' as const,
+            roleOrTarget: { kind: 'target' as const, targetToken: 'target-0' },
+            property: 'text' as const,
+            value,
+          },
+        ],
+      })
+    const safe = await visualSubject(makeReview())
+    await expect(
+      safe.subject.complete({
+        contract: safe.contract,
+        mutated: true,
+        cancelled: false,
+        correctionPasses: 0,
+      }),
+    ).resolves.toMatchObject({ kind: 'correct' })
+    const capped = await visualSubject(makeReview())
+    await expect(
+      capped.subject.complete({
+        contract: capped.contract,
+        mutated: true,
+        cancelled: false,
+        correctionPasses: 2,
+      }),
+    ).resolves.toMatchObject({
+      kind: 'receipt',
+      receipt: { status: 'needs_user', correctionPasses: 2 },
+    })
+    const converges = await visualSubject(
+      vi.fn().mockImplementationOnce(makeReview()).mockResolvedValueOnce({
+        status: 'pass',
+        failedCheckIds: [],
+        observations: [],
+        fixIntents: [],
+      }),
+    )
+    await expect(
+      converges.subject.complete({
+        contract: converges.contract,
+        mutated: true,
+        cancelled: false,
+        correctionPasses: 0,
+      }),
+    ).resolves.toMatchObject({ kind: 'correct' })
+    const correctionCall = {
+      ...textCall,
+      id: 'correction-applied',
+      input: { ...textCall.input, text: 'Final' },
+    }
+    await converges.subject.enroll([correctionCall], converges.contract)
+    converges.subject.recordProposal({
+      id: 'correction-proposal',
+      toolName: 'edit_slide_text',
+      fingerprint: 'state-2',
+      targets: ['slide-1/shape-1'],
+      verificationBinding: canonicalPowerPointVerificationBinding(correctionCall, [
+        'slide-1/shape-1',
+      ]),
+    })
+    converges.subject.recordSettlement({ id: 'correction-proposal', status: 'confirmed' })
+    await expect(
+      converges.subject.complete({
+        contract: converges.contract,
+        mutated: true,
+        cancelled: false,
+        correctionPasses: 1,
+      }),
+    ).resolves.toMatchObject({
+      kind: 'receipt',
+      receipt: { status: 'verified', correctionPasses: 1 },
+    })
+    await expect(
+      safe.subject.enroll(
+        [
+          {
+            ...textCall,
+            id: 'correction-call',
+            input: { ...textCall.input, text: 'Final' },
+          },
+        ],
+        safe.contract,
+      ),
+    ).resolves.toMatchObject({ kind: 'ready', contract: safe.contract })
+    await expect(
+      safe.subject.enroll(
+        [
+          {
+            ...textCall,
+            id: 'expanded-call',
+            input: { ...textCall.input, shape_id: 'other', text: 'Final' },
+          },
+        ],
+        safe.contract,
+      ),
+    ).resolves.toMatchObject({ kind: 'clarify' })
+    const unsafe = await visualSubject(makeReview('Different'))
+    await expect(
+      unsafe.subject.complete({
+        contract: unsafe.contract,
+        mutated: true,
+        cancelled: false,
+        correctionPasses: 0,
+      }),
+    ).resolves.toMatchObject({
+      kind: 'receipt',
+      receipt: { status: 'needs_user', safeCode: 'confirmation_required' },
+    })
+  })
+
+  it.each([
+    [
+      'screenshot failure',
+      { captureScreenshot: vi.fn().mockRejectedValue(new Error('capture')) },
+      'screenshot_unavailable',
+    ],
+    [
+      'stale screenshot authority',
+      {
+        current: vi
+          .fn()
+          .mockResolvedValueOnce({
+            documentToken: 'doc-1',
+            sessionToken: 'session-1',
+            revision: `sha256:${'2'.repeat(64)}`,
+          })
+          .mockResolvedValueOnce({
+            documentToken: 'doc-1',
+            sessionToken: 'session-1',
+            revision: `sha256:${'2'.repeat(64)}`,
+          })
+          .mockResolvedValueOnce({
+            documentToken: 'doc-1',
+            sessionToken: 'session-1',
+            revision: `sha256:${'3'.repeat(64)}`,
+          }),
+      },
+      'stale_authority',
+    ],
+  ])('preserves applied truth on %s', async (_name, overrides, safeCode) => {
+    const run = await visualSubject(
+      async () => ({ status: 'pass', failedCheckIds: [], observations: [], fixIntents: [] }),
+      overrides,
+    )
+    await expect(
+      run.subject.complete({
+        contract: run.contract,
+        mutated: true,
+        cancelled: false,
+        correctionPasses: 0,
+      }),
+    ).resolves.toMatchObject({
+      kind: 'receipt',
+      receipt: { status: 'applied_unverified', safeCode, mutationReceiptIds: ['visual-proposal'] },
+    })
+  })
+
   it('normalizes real mixed declarative proposal targets and closes from actual confirmation receipts', async () => {
     const state = { text: 'Before', left: 5 }
     const adapter = productionAdapter(state)
