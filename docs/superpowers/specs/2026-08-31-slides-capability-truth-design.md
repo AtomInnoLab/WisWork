@@ -30,7 +30,7 @@ This changes model guidance only; it does not expand tool permissions.
 
 ### One-shot terminal-response review
 
-`AgentSkill` gains an optional pure `reviewFinalResponse` hook. Agent Core invokes it only for a normal, tool-free terminal turn. The hook receives bounded run facts: terminal text, whether a mutation occurred, and the original formatted user message.
+`AgentSkill` gains an optional pure `reviewFinalResponse` hook. Agent Core invokes it only for a normal, tool-free terminal turn. The hook receives only bounded terminal text and whether a mutation occurred; it receives neither the user message nor conversation/tool history. Long terminal text is reduced to a 4,096-character head-and-tail view so denial claims at either end remain detectable.
 
 When the hook returns a static correction:
 
@@ -60,6 +60,7 @@ It recognizes the concrete Chinese and English denial families while requiring b
 ## Failure handling
 
 - Hook exceptions fail open to the normal terminal response.
+- Corrections must be non-empty strings no longer than 2,000 characters and 4,000 UTF-8 bytes. Invalid or oversized values fail open, and accepted values pass through the existing secret sanitizer before entering history.
 - Cancellation and turn-limit finalization bypass review.
 - The correction retry counts as a normal model turn and remains subject to all existing loop and repeated-tool breakers.
 - One correction maximum prevents retry storms.

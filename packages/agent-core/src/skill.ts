@@ -9,8 +9,6 @@ export interface FinalResponseReviewContext {
   readonly text: string
   /** whether any tool reported a successful mutation during this run */
   readonly mutated: boolean
-  /** original formatted and sanitized user message for this run */
-  readonly userMessage: string
 }
 
 /**
