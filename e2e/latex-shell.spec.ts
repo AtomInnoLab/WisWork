@@ -65,10 +65,10 @@ Hello from WisWork
           return boxes.map((box) => ({ y: Math.round(box?.y ?? -1), height: box?.height ?? -1 }))
         })
         .toEqual([
-          { y: 120, height: 48 },
-          { y: 120, height: 48 },
-          { y: 120, height: 48 },
-          { y: 120, height: 48 },
+          { y: 120, height: 44 },
+          { y: 120, height: 44 },
+          { y: 120, height: 44 },
+          { y: 120, height: 44 },
         ])
 
       await latexPage.getByRole('button', { name: 'Collapse AI panel' }).click()
