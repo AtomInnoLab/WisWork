@@ -449,6 +449,14 @@ describe('PC Slides deterministic verifier', () => {
       taskId: 'text-digest',
       affectedSlides: [6],
     })
+    const intentB: SlidesAcceptanceIntent = {
+      ...intent,
+      changes: [
+        { kind: 'set_property', slides: [6], role: 'title', property: 'text', value: 'Different' },
+      ],
+    }
+    expect(() => compileSlidesAcceptance(intentB, verifiedNoop)).toThrow(/exact source/)
+    expect(compileSlidesAcceptance(intent, verifiedNoop).status).toBe('unchanged')
     verifiedNoop.textMatches!['check-001']!.matches = false
     const verifiedMismatch = await verifyAndBrandSlidesAcceptanceAuthority(
       intent,
@@ -469,6 +477,16 @@ describe('PC Slides deterministic verifier', () => {
       mutatedTargetTokens: ['slide-6:title'],
       plannedMutationTargets: compiled.plannedMutationTargets,
     }
+    expect(verifySlidesAcceptance(compiled.contract, verifiedPostwrite, proof)[0].status).toBe(
+      'pass',
+    )
+    const mutatedContract = structuredClone(compiled.contract)
+    const textCheck = mutatedContract.checks[0]!
+    if (textCheck.kind !== 'element_property') throw new Error('expected text check')
+    textCheck.expected = 'Different'
+    expect(() => verifySlidesAcceptance(mutatedContract, verifiedPostwrite, proof)).toThrow(
+      /exact source/,
+    )
     expect(verifySlidesAcceptance(compiled.contract, verifiedPostwrite, proof)[0].status).toBe(
       'pass',
     )
