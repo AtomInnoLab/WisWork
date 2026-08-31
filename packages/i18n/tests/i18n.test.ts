@@ -8,7 +8,37 @@ import {
   translateServiceError,
   macShortcutsToWin,
   normalizeLang,
+  presentationVerificationStrings,
+  translatePresentationVerification,
 } from '../src/index'
+
+describe('presentation verification translations', () => {
+  it('covers every user-visible state in every locale', () => {
+    const expected = [
+      'plan',
+      'clarify',
+      'verified',
+      'unchanged',
+      'applied_unverified',
+      'needs_user',
+      'failed',
+      'correction',
+      'cancelled',
+    ]
+    for (const lang of LANGS) {
+      expect(Object.keys(presentationVerificationStrings[lang]).sort()).toEqual(
+        [...expected].sort(),
+      )
+      for (const key of expected)
+        expect(
+          translatePresentationVerification(
+            lang,
+            key as keyof typeof presentationVerificationStrings.zh,
+          ).trim(),
+        ).not.toBe('')
+    }
+  })
+})
 
 describe('normalizeLang', () => {
   it('maps zh variants to zh', () => {

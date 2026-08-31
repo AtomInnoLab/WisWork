@@ -32,6 +32,17 @@ function makeAccess(slides: RenderSlide[] = []): DeckAccess {
 }
 
 describe('unsupported cloud features', () => {
+  it('removes production presentation hooks when verified completion is rolled back', () => {
+    const access = { ...makeAccess(), taskReviewAdapter: {} as DeckAccess['taskReviewAdapter'] }
+    const skill = createSlidesSkill(access, {
+      planning: true,
+      verifiedCompletion: false,
+      visualReview: true,
+      autoCorrection: false,
+    })
+    expect(skill.presentation).toBeUndefined()
+  })
+
   it('does not advertise or prompt for disabled cloud tools', () => {
     const skill = createSlidesSkill(makeAccess())
     const names = skill.tools.map((tool) => tool.name)

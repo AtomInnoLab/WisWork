@@ -10,6 +10,7 @@ import {
   type SafeFixIntent,
   type VisualReviewResult,
   PRESENTATION_VERIFICATION_LIMITS,
+  type PresentationVerificationFlags,
 } from '@wiswork/presentation-verification'
 import type { SlidesDeterministicResult } from './task-acceptance'
 import { AgentLoop, type AgentImage, type AgentTransport } from '@wiswork/agent-core'
@@ -224,6 +225,7 @@ export async function runSlidesTaskReview(input: {
   rollbackId?: string
   adapter: SlidesTaskReviewAdapter
   signal?: AbortSignal
+  flags?: Pick<PresentationVerificationFlags, 'visualReview' | 'autoCorrection'>
 }): Promise<PresentationCompletionReceipt> {
   const contract = parsePresentationAcceptanceContract(input.contract)
   const contractDigest = await digestPresentationAcceptanceContract(contract)
@@ -282,6 +284,34 @@ export async function runSlidesTaskReview(input: {
       if (!input.adapter.isCurrent(authority))
         return unavailable(contract, receipts, correctionPasses, rollbackId)
 
+      if (input.flags?.visualReview === false) {
+        const failed = deterministic.filter(({ status }) => status !== 'pass')
+        if (!failed.length && !receipts.length)
+          return parsePresentationCompletionReceipt(
+            {
+              version: 1,
+              taskId: contract.taskId,
+              status: 'unchanged',
+              mutationReceiptIds: [],
+              passedCheckIds: contract.checks.map(({ id }) => id),
+              failedCheckIds: [],
+              unavailableCheckIds: [],
+              correctionPasses: 0,
+              affectedSlides: contract.affectedSlides,
+            },
+            contract,
+          )
+        return accountedReceipt({
+          contract,
+          status: failed.length ? 'needs_user' : 'verified',
+          results: deterministic,
+          visualFailed: [],
+          receipts,
+          correctionPasses,
+          ...(rollbackId ? { rollbackId } : {}),
+          ...(failed.length ? { safeCode: 'unsupported_check' as const } : {}),
+        })
+      }
       const pages = [
         ...contract.affectedSlides.map((slide) => ({ slide, role: 'affected' as const })),
         ...contract.referenceSlides.map((slide) => ({ slide, role: 'reference' as const })),
@@ -367,6 +397,17 @@ export async function runSlidesTaskReview(input: {
           correctionPasses,
           ...(rollbackId ? { rollbackId } : {}),
           safeCode: 'unsupported_check',
+        })
+      if (input.flags?.autoCorrection === false)
+        return accountedReceipt({
+          contract,
+          status: 'needs_user',
+          results: deterministic,
+          visualFailed: visual.failedCheckIds,
+          receipts,
+          correctionPasses,
+          ...(rollbackId ? { rollbackId } : {}),
+          safeCode: 'confirmation_required',
         })
       if (correctionPasses >= contract.maxCorrectionPasses)
         return accountedReceipt({

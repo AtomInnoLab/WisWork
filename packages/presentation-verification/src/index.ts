@@ -20,6 +20,33 @@ export const PRESENTATION_VERIFICATION_LIMITS = Object.freeze({
   maxReceiptIds: 50,
 })
 
+export type PresentationVerificationFlags = Readonly<{
+  planning: boolean
+  verifiedCompletion: boolean
+  visualReview: boolean
+  autoCorrection: boolean
+}>
+
+export function presentationVerificationFlags(
+  env: Record<string, string | undefined>,
+  prefix = 'WISWORK_PRESENTATION_',
+): PresentationVerificationFlags {
+  const flag = (name: string, fallback: boolean) => {
+    const value = env[`${prefix}${name}`]
+    if (value === undefined || value === '') return fallback
+    if (value === '1') return true
+    if (value === '0') return false
+    throw new Error('invalid_presentation_verification_flags')
+  }
+  return Object.freeze({
+    planning: flag('PLANNING', true),
+    verifiedCompletion: flag('VERIFIED_COMPLETION', true),
+    visualReview: flag('VISUAL_REVIEW', true),
+    // Correction remains opt-in while golden evaluation is rolling out.
+    autoCorrection: flag('AUTO_CORRECTION', false),
+  })
+}
+
 export type SupportedRole = 'title' | 'body' | 'emphasis' | 'background'
 export type SupportedProperty =
   | 'text'
@@ -841,5 +868,137 @@ export const renderPresentationCompletionFacts = (
     correctionPasses: receipt.correctionPasses,
     rollbackAvailable: receipt.rollbackId !== undefined,
     ...(receipt.safeCode === undefined ? {} : { safeCode: receipt.safeCode }),
+  }
+}
+
+export type PresentationGoldenCase = Readonly<{
+  id: string
+  scenario:
+    | 'multi_slide_consistency'
+    | 'already_correct'
+    | 'ambiguous_emphasis'
+    | 'screenshot_unavailable'
+    | 'visual_safe_correction'
+    | 'unsafe_fix'
+    | 'cancel_pre'
+    | 'cancel_post'
+    | 'session_replacement'
+    | 'stale_authority'
+    | 'scope_expansion'
+    | 'privacy'
+  expected: PresentationCompletionReceipt['status']
+  slideCount: number
+}>
+
+/** Adapter-neutral outcomes exercised through both production host adapters. */
+export const PRESENTATION_GOLDEN_CASES: readonly PresentationGoldenCase[] = [
+  {
+    id: 'consistent-7-slides',
+    scenario: 'multi_slide_consistency',
+    expected: 'verified',
+    slideCount: 7,
+  },
+  { id: 'already-correct', scenario: 'already_correct', expected: 'unchanged', slideCount: 1 },
+  {
+    id: 'ambiguous-emphasis',
+    scenario: 'ambiguous_emphasis',
+    expected: 'needs_user',
+    slideCount: 6,
+  },
+  {
+    id: 'capture-missing',
+    scenario: 'screenshot_unavailable',
+    expected: 'applied_unverified',
+    slideCount: 1,
+  },
+  {
+    id: 'one-safe-correction',
+    scenario: 'visual_safe_correction',
+    expected: 'verified',
+    slideCount: 1,
+  },
+  { id: 'unsafe-fix', scenario: 'unsafe_fix', expected: 'needs_user', slideCount: 1 },
+  { id: 'cancel-before-write', scenario: 'cancel_pre', expected: 'unchanged', slideCount: 1 },
+  {
+    id: 'cancel-after-write',
+    scenario: 'cancel_post',
+    expected: 'applied_unverified',
+    slideCount: 1,
+  },
+  {
+    id: 'session-replaced',
+    scenario: 'session_replacement',
+    expected: 'applied_unverified',
+    slideCount: 1,
+  },
+  {
+    id: 'authority-stale',
+    scenario: 'stale_authority',
+    expected: 'applied_unverified',
+    slideCount: 1,
+  },
+  { id: 'scope-expanded', scenario: 'scope_expansion', expected: 'needs_user', slideCount: 1 },
+  { id: 'private-content', scenario: 'privacy', expected: 'verified', slideCount: 1 },
+]
+
+export function assertPresentationGoldenParity(
+  reports: ReadonlyArray<
+    Readonly<{
+      host: 'pc' | 'office'
+      caseId: string
+      status: PresentationCompletionReceipt['status']
+    }>
+  >,
+): void {
+  for (const fixture of PRESENTATION_GOLDEN_CASES) {
+    const actual = reports.filter(({ caseId }) => caseId === fixture.id)
+    if (actual.length !== 2 || new Set(actual.map(({ host }) => host)).size !== 2)
+      fail(`golden case ${fixture.id} requires one report per host`)
+    if (actual.some(({ status }) => status !== fixture.expected))
+      fail(`golden case ${fixture.id} has divergent terminal semantics`)
+  }
+}
+
+export type PresentationTelemetryEvent = Readonly<{
+  host: 'pc' | 'office'
+  phase: 'plan' | 'dispatch' | 'deterministic' | 'visual' | 'correction' | 'complete'
+  code: string
+  count: number
+  durationMs: number
+}>
+
+/** Exact allow-list: prompts, content, identifiers, receipts, fingerprints and images cannot pass. */
+export function parsePresentationTelemetryEvent(value: unknown): PresentationTelemetryEvent {
+  const record = readObject(value, 'telemetry event')
+  const allowed = new Set(['host', 'phase', 'code', 'count', 'durationMs'])
+  if (Object.keys(record).some((key) => !allowed.has(key)))
+    fail('telemetry event contains private fields')
+  const host = record.host
+  const phase = record.phase
+  const code = record.code
+  const count = record.count
+  const durationMs = record.durationMs
+  if (host !== 'pc' && host !== 'office') fail('invalid telemetry host')
+  if (
+    !['plan', 'dispatch', 'deterministic', 'visual', 'correction', 'complete'].includes(
+      String(phase),
+    )
+  )
+    fail('invalid telemetry phase')
+  if (typeof code !== 'string' || !/^[a-z0-9_]{1,48}$/.test(code)) fail('invalid telemetry code')
+  if (!Number.isSafeInteger(count) || (count as number) < 0 || (count as number) > 1000)
+    fail('invalid telemetry count')
+  if (
+    !Number.isSafeInteger(durationMs) ||
+    (durationMs as number) < 0 ||
+    (durationMs as number) > 3_600_000
+  )
+    fail('invalid telemetry duration')
+  return {
+    host,
+    phase: phase as PresentationTelemetryEvent['phase'],
+    code,
+    count: count as number,
+    durationMs: durationMs as number,
   }
 }

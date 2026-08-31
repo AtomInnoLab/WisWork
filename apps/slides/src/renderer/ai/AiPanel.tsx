@@ -37,6 +37,7 @@ import {
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
 import { Markdown } from '@wiswork/ui'
 import type { PresentationQualityReceipt } from '@wiswork/presentation-ops'
+import { presentationVerificationFlags } from '@wiswork/presentation-verification'
 import { verifyAndBrandSlidesAcceptanceAuthority, verifySlidesAcceptance } from './task-acceptance'
 import { reviewSlidesRendering } from './task-review'
 import { WisWorkMark } from '../components/icons'
@@ -1271,7 +1272,10 @@ export function AiPanel({
       transport: createElectronTransport(() => settingsRef.current),
       systemSuffix: aiLangDirective,
       skill: composeSkills('slides+files', '', [
-        createSlidesSkill(access),
+        createSlidesSkill(
+          access,
+          presentationVerificationFlags(import.meta.env, 'VITE_WISWORK_PRESENTATION_'),
+        ),
         createFilesSkill(availableAttachments, (path) => readAttachmentPathsRef.current.add(path)),
       ]),
       events: {

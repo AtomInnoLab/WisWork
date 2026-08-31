@@ -1422,7 +1422,15 @@ export function formatSlideDump(slide: RenderSlide): string {
   return `Canvas ${slide.widthPx}×${slide.heightPx}px\n${parts.join('\n---\n') || '(no elements on this page)'}${colorNote}`
 }
 
-export function createSlidesSkill(access: DeckAccess): AgentSkill {
+export function createSlidesSkill(
+  access: DeckAccess,
+  presentationFlags = {
+    planning: true,
+    verifiedCompletion: true,
+    visualReview: true,
+    autoCorrection: true,
+  },
+): AgentSkill {
   // The HTML pipeline was already used in this conversation → later calls without an explicit mode default to append.
   // Safety net for when the AI ignores the "pass all pages at once" constraint: separate calls no longer overwrite each other (P0-1).
   const state: SkillState = {}
@@ -1440,119 +1448,132 @@ export function createSlidesSkill(access: DeckAccess): AgentSkill {
     'delete_element',
   ])
   const enrolledTargets = new Map<string, Map<string, string>>()
-  const controller = access.taskReviewAdapter
-    ? createSlidesTaskController({
-        enroll: async (calls, currentContract, signal) => {
-          signal?.throwIfAborted()
-          const canonical = new Set([
-            'set_element_style',
-            'set_element_transform',
-            'set_element_fill',
-            'set_element_stroke',
-            'set_slide_background',
-          ])
-          if (!calls.length || calls.some(({ name }) => !canonical.has(name)))
-            return { kind: 'bypass' }
-          if (!access.getAcceptanceAuthorityLease || !access.inspectAcceptanceAuthority)
-            return { kind: 'bypass' }
-          const lease = await access.getAcceptanceAuthorityLease()
-          const affectedSlides = [
-            ...new Set(calls.map((call) => Number(call.input.slideIndex) + 1)),
-          ]
-          if (affectedSlides.some((slide) => !Number.isSafeInteger(slide) || slide < 1))
-            return { kind: 'clarify', question: 'presentation_scope_required' }
-          const sourceTargets = calls.flatMap((call) =>
-            typeof call.input.sourceId === 'string'
-              ? [{ slide: Number(call.input.slideIndex) + 1, sourceId: call.input.sourceId }]
-              : [],
-          )
-          const raw = (await access.inspectAcceptanceAuthority({
-            affectedSlides,
-            referenceSlides: [],
-            expectedDocumentToken: lease.documentToken,
-            expectedSessionToken: lease.sessionToken,
-            expectedRevision: lease.revision,
-            leaseToken: lease.leaseToken,
-            sourceTargets,
-          })) as SlidesAcceptanceAuthority & { sourceTargetTokens?: Record<string, string> }
-          const sourceTargetTokens = raw.sourceTargetTokens ?? {}
-          const { sourceTargetTokens: _resolved, ...authorityValue } = raw
-          const authority = authorityValue as SlidesAcceptanceAuthority
-          const taskId = `task-${crypto.randomUUID().replaceAll('-', '')}`
-          enrolledTargets.set(taskId, new Map(Object.entries(sourceTargetTokens)))
-          while (enrolledTargets.size > 8) {
-            const oldest = enrolledTargets.keys().next().value as string | undefined
-            if (!oldest) break
-            enrolledTargets.delete(oldest)
-          }
-          return compileCanonicalSlidesCalls({ calls, authority, sourceTargetTokens, taskId })
-        },
-        reviewAdapter: {
-          ...access.taskReviewAdapter,
-          correct: async (intents, authority, signal) => {
-            if (
-              !access.executePresentationOperation ||
-              !access.taskReviewAdapter?.isCurrent(authority)
+  const controller =
+    access.taskReviewAdapter && presentationFlags.verifiedCompletion
+      ? createSlidesTaskController({
+          enroll: async (calls, currentContract, signal) => {
+            signal?.throwIfAborted()
+            const canonical = new Set([
+              'set_element_style',
+              'set_element_transform',
+              'set_element_fill',
+              'set_element_stroke',
+              'set_slide_background',
+            ])
+            if (!calls.length || calls.some(({ name }) => !canonical.has(name)))
+              return { kind: 'bypass' }
+            if (!access.getAcceptanceAuthorityLease || !access.inspectAcceptanceAuthority)
+              return { kind: 'bypass' }
+            const lease = await access.getAcceptanceAuthorityLease()
+            const affectedSlides = [
+              ...new Set(calls.map((call) => Number(call.input.slideIndex) + 1)),
+            ]
+            if (affectedSlides.some((slide) => !Number.isSafeInteger(slide) || slide < 1))
+              return { kind: 'clarify', question: 'presentation_scope_required' }
+            const sourceTargets = calls.flatMap((call) =>
+              typeof call.input.sourceId === 'string'
+                ? [{ slide: Number(call.input.slideIndex) + 1, sourceId: call.input.sourceId }]
+                : [],
             )
-              throw new Error('stale_authority')
-            if (intents.length !== 1) throw new Error('unsupported_correction')
-            const intent = intents[0]!
-            if (intent.roleOrTarget.kind !== 'target') throw new Error('unsupported_correction')
-            const targetToken = intent.roleOrTarget.targetToken
-            const resolved = [...(enrolledTargets.get(authority.taskId ?? '') ?? [])].find(
-              ([, token]) => token === targetToken,
-            )
-            if (!resolved) throw new Error('unsupported_correction')
-            const [scope] = resolved
-            const separator = scope.indexOf(':')
-            const slideIndex = Number(scope.slice(0, separator)) - 1
-            const sourceId = scope.slice(separator + 1)
-            const transactionId = `slides-correction-${crypto.randomUUID().replaceAll('-', '')}`
-            const request: GeometryFamilyTransactionRequest =
-              intent.property === 'fill_color'
-                ? {
-                    transactionId,
-                    slideIndex,
-                    operations: [
-                      {
-                        kind: 'set_fill',
-                        sourceId,
-                        fill: { kind: 'solid', color: String(intent.value) },
-                      },
-                    ],
-                  }
-                : (() => {
-                    // Geometry needs the complete authoritative box and text style needs the
-                    // complete paragraph structure; acceptance facts intentionally omit both.
-                    throw new Error('unsupported_correction')
-                  })()
-            const opened = await access.beginTaskCorrectionHistory?.()
-            let execution: TextFamilyExecutionResult
-            let correctionRollbackId: string | undefined
-            try {
-              execution = await access.executePresentationOperation(request, signal)
-            } finally {
-              if (opened) correctionRollbackId = await access.finishTaskCorrectionHistory?.()
+            const raw = (await access.inspectAcceptanceAuthority({
+              affectedSlides,
+              referenceSlides: [],
+              expectedDocumentToken: lease.documentToken,
+              expectedSessionToken: lease.sessionToken,
+              expectedRevision: lease.revision,
+              leaseToken: lease.leaseToken,
+              sourceTargets,
+            })) as SlidesAcceptanceAuthority & { sourceTargetTokens?: Record<string, string> }
+            const sourceTargetTokens = raw.sourceTargetTokens ?? {}
+            const { sourceTargetTokens: _resolved, ...authorityValue } = raw
+            const authority = authorityValue as SlidesAcceptanceAuthority
+            const taskId = `task-${crypto.randomUUID().replaceAll('-', '')}`
+            enrolledTargets.set(taskId, new Map(Object.entries(sourceTargetTokens)))
+            while (enrolledTargets.size > 8) {
+              const oldest = enrolledTargets.keys().next().value as string | undefined
+              if (!oldest) break
+              enrolledTargets.delete(oldest)
             }
-            if (execution.receipt.status !== 'applied' && execution.receipt.status !== 'unchanged')
-              throw new Error('correction_not_applied')
-            if (
-              execution.receipt.status === 'applied' &&
-              (execution.receipt.mutatedTargets?.length !== 1 ||
-                execution.receipt.mutatedTargets[0] !== targetToken)
-            )
-              throw new Error('correction_scope_mismatch')
-            return {
-              mutationReceiptId: execution.receipt.transactionId,
-              applied: execution.receipt.status === 'applied',
-              ...(correctionRollbackId ? { rollbackId: correctionRollbackId } : {}),
-              correctedCheckIds: [intent.checkId],
-            }
+            const compiled = compileCanonicalSlidesCalls({
+              calls,
+              authority,
+              sourceTargetTokens,
+              taskId,
+            })
+            if (!('kind' in compiled) && !presentationFlags.planning)
+              return { ...compiled, plan: undefined }
+            return compiled
           },
-        },
-        afterTaskReview: access.onTaskReviewComplete,
-      })
-    : undefined
+          reviewAdapter: {
+            ...access.taskReviewAdapter,
+            correct: async (intents, authority, signal) => {
+              if (
+                !access.executePresentationOperation ||
+                !access.taskReviewAdapter?.isCurrent(authority)
+              )
+                throw new Error('stale_authority')
+              if (intents.length !== 1) throw new Error('unsupported_correction')
+              const intent = intents[0]!
+              if (intent.roleOrTarget.kind !== 'target') throw new Error('unsupported_correction')
+              const targetToken = intent.roleOrTarget.targetToken
+              const resolved = [...(enrolledTargets.get(authority.taskId ?? '') ?? [])].find(
+                ([, token]) => token === targetToken,
+              )
+              if (!resolved) throw new Error('unsupported_correction')
+              const [scope] = resolved
+              const separator = scope.indexOf(':')
+              const slideIndex = Number(scope.slice(0, separator)) - 1
+              const sourceId = scope.slice(separator + 1)
+              const transactionId = `slides-correction-${crypto.randomUUID().replaceAll('-', '')}`
+              const request: GeometryFamilyTransactionRequest =
+                intent.property === 'fill_color'
+                  ? {
+                      transactionId,
+                      slideIndex,
+                      operations: [
+                        {
+                          kind: 'set_fill',
+                          sourceId,
+                          fill: { kind: 'solid', color: String(intent.value) },
+                        },
+                      ],
+                    }
+                  : (() => {
+                      // Geometry needs the complete authoritative box and text style needs the
+                      // complete paragraph structure; acceptance facts intentionally omit both.
+                      throw new Error('unsupported_correction')
+                    })()
+              const opened = await access.beginTaskCorrectionHistory?.()
+              let execution: TextFamilyExecutionResult
+              let correctionRollbackId: string | undefined
+              try {
+                execution = await access.executePresentationOperation(request, signal)
+              } finally {
+                if (opened) correctionRollbackId = await access.finishTaskCorrectionHistory?.()
+              }
+              if (
+                execution.receipt.status !== 'applied' &&
+                execution.receipt.status !== 'unchanged'
+              )
+                throw new Error('correction_not_applied')
+              if (
+                execution.receipt.status === 'applied' &&
+                (execution.receipt.mutatedTargets?.length !== 1 ||
+                  execution.receipt.mutatedTargets[0] !== targetToken)
+              )
+                throw new Error('correction_scope_mismatch')
+              return {
+                mutationReceiptId: execution.receipt.transactionId,
+                applied: execution.receipt.status === 'applied',
+                ...(correctionRollbackId ? { rollbackId: correctionRollbackId } : {}),
+                correctedCheckIds: [intent.checkId],
+              }
+            },
+          },
+          afterTaskReview: access.onTaskReviewComplete,
+          flags: presentationFlags,
+        })
+      : undefined
   const executionAccess: DeckAccess = controller
     ? {
         ...access,

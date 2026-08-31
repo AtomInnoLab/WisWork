@@ -1,3 +1,5 @@
+import { presentationVerificationFlags } from '@wiswork/presentation-verification'
+
 export const PREFERRED_OFFICE_BRIDGE_PORT = 43_127
 export const OFFICE_RELAY_CONNECT_ORIGIN = 'wss://office.8-216-134-194.sslip.io'
 export const DEFAULT_OFFICE_BRIDGE_PORTS = Object.freeze([
@@ -20,6 +22,8 @@ export interface OfficeCapabilityFlags {
   skillPackages: boolean
   importMedia: boolean
 }
+export const officePresentationVerificationFlags = (env: BuildEnv) =>
+  presentationVerificationFlags(env, 'VITE_WISWORK_PRESENTATION_')
 
 function exactFlag(value: string | undefined, defaultValue: boolean): boolean {
   if (value === undefined || value === '') return defaultValue

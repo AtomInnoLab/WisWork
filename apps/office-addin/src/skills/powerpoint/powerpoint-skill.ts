@@ -1,4 +1,5 @@
 import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
+import type { PresentationVerificationFlags } from '@wiswork/presentation-verification'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
 import { exactObject, integerField, optionalField, stringField } from '../../agent/tool-schema.js'
 import { parseDeclarativeProgram } from '../shared/declarative-program.js'
@@ -1056,16 +1057,19 @@ export function createPowerPointSkill(options: {
   nativeMasterEditingSupported?: boolean
   verificationAuthority?: OfficePowerPointVerificationAuthority
   visualReviewer?: OfficePowerPointVisualReviewer
+  presentationFlags?: PresentationVerificationFlags
 }): AgentSkill {
   const masterXmlEditingSupported = options.platform?.toLowerCase() !== 'mac'
   const nativeMasterEditingSupported = options.nativeMasterEditingSupported !== false
-  const presentation = options.verificationAuthority
-    ? createOfficePowerPointVerification({
-        authority: options.verificationAuthority,
-        platform: options.platform,
-        reviewer: options.visualReviewer,
-      })
-    : undefined
+  const presentation =
+    options.verificationAuthority && options.presentationFlags?.verifiedCompletion !== false
+      ? createOfficePowerPointVerification({
+          authority: options.verificationAuthority,
+          platform: options.platform,
+          reviewer: options.visualReviewer,
+          flags: options.presentationFlags,
+        })
+      : undefined
   options.proposals.subscribeAudit?.((event) => {
     if (!presentation) return
     if (event.kind === 'proposed') presentation.recordProposal(event)

@@ -1,4 +1,5 @@
 import type { AgentSkill } from '@wiswork/agent-core'
+import type { PresentationVerificationFlags } from '@wiswork/presentation-verification'
 import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
 import {
   createOfficeDocumentClient,
@@ -78,6 +79,7 @@ export function createOfficeHostRuntime(
     enableImportMedia?: boolean
     platform?: string
     diagnostics?: Pick<OfficeDiagnostics, 'setTool' | 'record'>
+    presentationVerification?: PresentationVerificationFlags
   } = {},
 ): OfficeHostRuntime {
   if (host === 'unknown') throw new Error('office_host_unsupported')
@@ -101,6 +103,12 @@ export function createOfficeHostRuntime(
     enableConversions: options.enableConversions,
   })
   const powerPointAdapter = host === 'powerpoint' ? new BrowserPowerPointAdapter() : undefined
+  const presentationFlags = options.presentationVerification ?? {
+    planning: true,
+    verifiedCompletion: true,
+    visualReview: true,
+    autoCorrection: false,
+  }
   const hostSkill = {
     word: () => createWordSkill({ adapter: new BrowserWordAdapter(), vfs, proposals }),
     excel: () => createExcelSkill({ adapter: new BrowserExcelAdapter(), proposals }),
@@ -111,7 +119,10 @@ export function createOfficeHostRuntime(
         vfs,
         nativeMasterEditingSupported: supportsNativePowerPointMasterEditing(),
         platform: options.platform ?? currentOfficePlatform(),
-        verificationAuthority: createBrowserPowerPointVerificationAuthority(powerPointAdapter!),
+        verificationAuthority: presentationFlags.verifiedCompletion
+          ? createBrowserPowerPointVerificationAuthority(powerPointAdapter!)
+          : undefined,
+        presentationFlags,
       }),
   }[host]()
   const extensions =

@@ -3,6 +3,7 @@ import { Markdown } from '@wiswork/ui'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
 import {
   officeCapabilityFlags,
+  officePresentationVerificationFlags,
   officeRemoteDiagnosticsEnabled,
   officeWorkspaceMode,
 } from '../build-config.js'
@@ -924,6 +925,7 @@ export function ConfiguredApp(
   >()
   const workspaceMode = useMemo(() => officeWorkspaceMode(import.meta.env), [])
   const capabilityFlags = useMemo(() => officeCapabilityFlags(import.meta.env), [])
+  const presentationFlags = useMemo(() => officePresentationVerificationFlags(import.meta.env), [])
   const [host, setHost] = useState<OfficeHost>('unknown')
   const [hostSupported, setHostSupported] = useState(false)
   const [status, setStatus] = useState('Connecting to Office…')
@@ -976,6 +978,7 @@ export function ConfiguredApp(
               })
               const runtime = createOfficeHostRuntime(activeHost, {
                 enableHostSkills: import.meta.env.VITE_WISWORK_OFFICE_HOST_SKILLS !== '0',
+                presentationVerification: presentationFlags,
                 enableConversions: capabilityFlags.conversions,
                 enableSkillPackages: capabilityFlags.skillPackages,
                 enableImportMedia: capabilityFlags.importMedia,
@@ -1010,7 +1013,14 @@ export function ConfiguredApp(
       created?.runtime.dispose()
       bridge.disconnect()
     }
-  }, [bridge, capabilityFlags, document, remoteDiagnosticsEnabled, workspaceFactory])
+  }, [
+    bridge,
+    capabilityFlags,
+    document,
+    presentationFlags,
+    remoteDiagnosticsEnabled,
+    workspaceFactory,
+  ])
 
   useEffect(() => {
     if (bridgeState.status !== 'connected' && workspace) {

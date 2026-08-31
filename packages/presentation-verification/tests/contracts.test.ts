@@ -6,8 +6,54 @@ import {
   parsePresentationCompletionReceipt,
   parsePresentationRenderingFacts,
   parseVisualReviewResult,
+  presentationVerificationFlags,
   renderPresentationCompletionFacts,
+  PRESENTATION_GOLDEN_CASES,
+  assertPresentationGoldenParity,
+  parsePresentationTelemetryEvent,
 } from '../src/index'
+
+describe('cross-host golden contract', () => {
+  it('requires identical terminal semantics from both production adapters', () => {
+    const reports = PRESENTATION_GOLDEN_CASES.flatMap(({ id, expected }) => [
+      { host: 'pc' as const, caseId: id, status: expected },
+      { host: 'office' as const, caseId: id, status: expected },
+    ])
+    expect(() => assertPresentationGoldenParity(reports)).not.toThrow()
+    expect(() => assertPresentationGoldenParity(reports.slice(1))).toThrow(/one report per host/)
+  })
+
+  it('only accepts privacy-safe telemetry dimensions', () => {
+    expect(
+      parsePresentationTelemetryEvent({
+        host: 'pc',
+        phase: 'complete',
+        code: 'verified',
+        count: 7,
+        durationMs: 24,
+      }),
+    ).toMatchObject({ code: 'verified' })
+    for (const privateKey of [
+      'prompt',
+      'text',
+      'slideId',
+      'session',
+      'receipt',
+      'fingerprint',
+      'screenshot',
+    ])
+      expect(() =>
+        parsePresentationTelemetryEvent({
+          host: 'office',
+          phase: 'visual',
+          code: 'pass',
+          count: 1,
+          durationMs: 1,
+          [privateKey]: 'secret',
+        }),
+      ).toThrow(/private fields/)
+  })
+})
 
 const contract = () => ({
   version: 1,
@@ -72,6 +118,30 @@ const verifiedReceipt = () => ({
 })
 
 describe('presentation acceptance contracts', () => {
+  it('uses safe rollout defaults and independent rollback switches', () => {
+    expect(presentationVerificationFlags({})).toEqual({
+      planning: true,
+      verifiedCompletion: true,
+      visualReview: true,
+      autoCorrection: false,
+    })
+    expect(
+      presentationVerificationFlags({
+        WISWORK_PRESENTATION_PLANNING: '0',
+        WISWORK_PRESENTATION_VERIFIED_COMPLETION: '0',
+        WISWORK_PRESENTATION_VISUAL_REVIEW: '0',
+        WISWORK_PRESENTATION_AUTO_CORRECTION: '1',
+      }),
+    ).toEqual({
+      planning: false,
+      verifiedCompletion: false,
+      visualReview: false,
+      autoCorrection: true,
+    })
+    expect(() =>
+      presentationVerificationFlags({ WISWORK_PRESENTATION_VISUAL_REVIEW: 'false' }),
+    ).toThrow('invalid_presentation_verification_flags')
+  })
   it('parses a bounded contract and returns detached data', () => {
     const input = contract()
     const parsed = parsePresentationAcceptanceContract(input)

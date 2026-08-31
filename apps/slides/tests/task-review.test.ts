@@ -422,4 +422,29 @@ describe('PC task-specific rendered verification', () => {
       }),
     ).resolves.toMatchObject({ status: 'applied_unverified', safeCode: 'cancelled_after_apply' })
   })
+
+  it('rolls visual review and auto-correction back independently', async () => {
+    const deterministicOnly = adapter([review('needs_fix')])
+    await expect(
+      runSlidesTaskReview({
+        contract: contract(),
+        initialMutationReceiptIds: ['edit-1'],
+        adapter: deterministicOnly,
+        flags: { visualReview: false, autoCorrection: false },
+      }),
+    ).resolves.toMatchObject({ status: 'verified', correctionPasses: 0 })
+    expect(deterministicOnly.capture).not.toHaveBeenCalled()
+    expect(deterministicOnly.review).not.toHaveBeenCalled()
+
+    const noCorrection = adapter([review('needs_fix')])
+    await expect(
+      runSlidesTaskReview({
+        contract: contract(),
+        initialMutationReceiptIds: ['edit-1'],
+        adapter: noCorrection,
+        flags: { visualReview: true, autoCorrection: false },
+      }),
+    ).resolves.toMatchObject({ status: 'needs_user', correctionPasses: 0 })
+    expect(noCorrection.correct).not.toHaveBeenCalled()
+  })
 })

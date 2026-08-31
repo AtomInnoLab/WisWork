@@ -39,6 +39,21 @@ const textCall = {
   name: 'edit_slide_text',
   input: { slide_index: 0, shape_id: 'shape-1', text: 'After' },
 }
+
+it('removes the production verification hook when verified completion is rolled back', () => {
+  const skill = createPowerPointSkill({
+    adapter: productionAdapter({ text: 'Before', left: 5 }),
+    proposals: createStructuredProposalController(),
+    verificationAuthority: authority(),
+    presentationFlags: {
+      planning: true,
+      verifiedCompletion: false,
+      visualReview: true,
+      autoCorrection: false,
+    },
+  })
+  expect(skill.presentation).toBeUndefined()
+})
 const verificationBinding = (call: typeof textCall, targets = ['slide-1/shape-1']) =>
   canonicalPowerPointVerificationBinding(call, targets)
 

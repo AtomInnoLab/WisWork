@@ -13,6 +13,7 @@ import {
   type PresentationAcceptanceContract,
   type PresentationCompletionReceipt,
   type SupportedProperty,
+  type PresentationVerificationFlags,
   type VisualReviewResult,
 } from '@wiswork/presentation-verification'
 import type { PowerPointAdapter } from './browser-powerpoint-adapter.js'
@@ -268,6 +269,7 @@ export function createOfficePowerPointVerification(options: {
   platform?: string
   delay?: (milliseconds: number) => Promise<void>
   reviewer?: OfficePowerPointVisualReviewer
+  flags?: PresentationVerificationFlags
 }): OfficePowerPointVerificationHooks {
   let reviewer = options.reviewer
   let enrolled:
@@ -288,6 +290,12 @@ export function createOfficePowerPointVerification(options: {
   let settlements: SafeProposalSettlement[] = []
   let activeReviewAbort: AbortController | undefined
   const delay = options.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
+  const flags = options.flags ?? {
+    planning: true,
+    verifiedCompletion: true,
+    visualReview: true,
+    autoCorrection: true,
+  }
 
   const enroll = async (
     calls: readonly AgentToolCall[],
@@ -480,7 +488,7 @@ export function createOfficePowerPointVerification(options: {
       kind: 'ready',
       contract,
       requiresConfirmation: false,
-      ...(calls.length > 1
+      ...(flags.planning && calls.length > 1
         ? { plan: ['Apply approved PowerPoint edits', 'Verify exact post-write properties'] }
         : {}),
     }
@@ -684,7 +692,7 @@ export function createOfficePowerPointVerification(options: {
         : failed.length
           ? 'needs_user'
           : 'verified'
-      if (status === 'verified' && reviewer) {
+      if (status === 'verified' && reviewer && flags.visualReview) {
         const reviewAbort = new AbortController()
         activeReviewAbort = reviewAbort
         const abortReview = () => reviewAbort.abort()
@@ -791,7 +799,11 @@ export function createOfficePowerPointVerification(options: {
                 intent.value === check.expected
               )
             })
-            if (safe && context.correctionPasses < contract.maxCorrectionPasses)
+            if (
+              safe &&
+              flags.autoCorrection &&
+              context.correctionPasses < contract.maxCorrectionPasses
+            )
               return {
                 kind: 'correct',
                 instruction:
@@ -804,7 +816,8 @@ export function createOfficePowerPointVerification(options: {
               failedCheckIds: review.failedCheckIds,
               unavailableCheckIds: [],
               correctionPasses: context.correctionPasses,
-              safeCode: safe ? 'verification_invalid' : 'confirmation_required',
+              safeCode:
+                safe && flags.autoCorrection ? 'verification_invalid' : 'confirmation_required',
             })
           }
         } catch (error) {

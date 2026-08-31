@@ -3,6 +3,7 @@ import type {
   PresentationCompletionReceipt,
 } from '@wiswork/presentation-verification'
 import { parsePresentationCompletionReceipt } from '@wiswork/presentation-verification'
+import type { PresentationVerificationFlags } from '@wiswork/presentation-verification'
 import type { AgentToolCall, PresentationTaskHooks } from '@wiswork/agent-core'
 import { runSlidesTaskReview, type SlidesTaskReviewAdapter } from './task-review'
 import {
@@ -122,6 +123,7 @@ export function createSlidesTaskController(deps: {
   /** Test seam only: proves that reconciliation never replays the original batch. */
   executeOriginal?: () => unknown
   afterTaskReview?: (receipt: PresentationCompletionReceipt) => void | Promise<void>
+  flags?: PresentationVerificationFlags
 }): SlidesTaskController {
   type RunState = {
     generation: number
@@ -209,6 +211,7 @@ export function createSlidesTaskController(deps: {
           adapter: deps.reviewAdapter,
           isCurrent: () => state.generation === generation && activeTaskId === contract.taskId,
           signal,
+          flags: deps.flags,
         })
       }
       if (state && state.generation === generation && activeTaskId === contract.taskId) {
