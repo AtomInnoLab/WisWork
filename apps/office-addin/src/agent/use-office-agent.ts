@@ -206,12 +206,26 @@ export function createOfficeAgentSession(dependencies: {
       new Promise((resolve) => {
         let output = ''
         let settled = false
-        const finish = (value: Parameters<typeof resolve>[0]) => {
+        const reviewHandle: { current?: { cancel(): void } } = {}
+        const unavailable = {
+          status: 'cannot_verify' as const,
+          failedCheckIds: [],
+          observations: [{ code: 'review_unavailable' as const, severity: 'warning' as const }],
+          fixIntents: [],
+        }
+        const finish = (value: Parameters<typeof resolve>[0], cancel = false) => {
           if (settled) return
           settled = true
+          clearTimeout(timer)
+          request.signal?.removeEventListener('abort', abort)
+          if (cancel) reviewHandle.current?.cancel()
           resolve(value)
         }
-        dependencies.transport.stream(
+        const abort = () => finish(unavailable, true)
+        const timer = setTimeout(() => finish(unavailable, true), 15_000)
+        request.signal?.addEventListener('abort', abort, { once: true })
+        if (request.signal?.aborted) abort()
+        reviewHandle.current = dependencies.transport.stream(
           {
             system:
               'Review only the supplied PowerPoint screenshots against the bounded check IDs. Return strict JSON matching VisualReviewResult. Do not request tools, infer hidden text, or add targets.',
@@ -228,34 +242,18 @@ export function createOfficeAgentSession(dependencies: {
             onDelta: (text) => {
               if (output.length < 64 * 1024) output += text
             },
-            onToolCall: () =>
-              finish({
-                status: 'cannot_verify',
-                failedCheckIds: [],
-                observations: [{ code: 'review_unavailable', severity: 'warning' }],
-                fixIntents: [],
-              }),
+            onToolCall: () => finish(unavailable, true),
             onDone: () => {
               try {
                 finish(JSON.parse(output))
               } catch {
-                finish({
-                  status: 'cannot_verify',
-                  failedCheckIds: [],
-                  observations: [{ code: 'review_unavailable', severity: 'warning' }],
-                  fixIntents: [],
-                })
+                finish(unavailable)
               }
             },
-            onError: () =>
-              finish({
-                status: 'cannot_verify',
-                failedCheckIds: [],
-                observations: [{ code: 'review_unavailable', severity: 'warning' }],
-                fixIntents: [],
-              }),
+            onError: () => finish(unavailable),
           },
         )
+        if (settled) reviewHandle.current.cancel()
       }),
   })
   const diagnose = (

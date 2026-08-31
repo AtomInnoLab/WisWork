@@ -274,6 +274,108 @@ describe('Office PowerPoint presentation verification', () => {
   })
 
   it.each([
+    {
+      id: 'delete',
+      name: 'execute_office_js',
+      input: {
+        program: {
+          version: 1,
+          operations: [{ op: 'delete_shape', slide_index: 0, shape_id: 'shape-1' }],
+        },
+      },
+    },
+    { id: 'duplicate', name: 'duplicate_slide', input: { slide_index: 0 } },
+    { id: 'master', name: 'edit_slide_master', input: { program: {} } },
+    { id: 'chart', name: 'edit_slide_chart', input: { slide_index: 0, program: {} } },
+    { id: 'xml', name: 'edit_slide_xml', input: { slide_index: 0, program: {} } },
+  ])('rejects unsupported correction tool $name before dispatch', async (unsafeCall) => {
+    const run = await visualSubject(async () => ({
+      status: 'pass',
+      failedCheckIds: [],
+      observations: [],
+      fixIntents: [],
+    }))
+    await expect(run.subject.enroll([unsafeCall], run.contract)).resolves.toMatchObject({
+      kind: 'clarify',
+    })
+  })
+
+  it('rejects a mixed supported and unsupported correction batch atomically', async () => {
+    const run = await visualSubject(async () => ({
+      status: 'pass',
+      failedCheckIds: [],
+      observations: [],
+      fixIntents: [],
+    }))
+    await expect(
+      run.subject.enroll(
+        [
+          { ...textCall, id: 'safe-correction', input: { ...textCall.input, text: 'Final' } },
+          { id: 'unsafe-correction', name: 'duplicate_slide', input: { slide_index: 0 } },
+        ],
+        run.contract,
+      ),
+    ).resolves.toMatchObject({ kind: 'clarify' })
+  })
+
+  it.each([
+    {
+      status: 'needs_fix',
+      failedCheckIds: ['unknown'],
+      observations: [],
+      fixIntents: [
+        {
+          checkId: 'unknown',
+          kind: 'set_property',
+          roleOrTarget: { kind: 'target', targetToken: 'target-0' },
+          property: 'text',
+          value: 'Final',
+        },
+      ],
+    },
+    {
+      status: 'needs_fix',
+      failedCheckIds: ['visual-call-op0-text'],
+      observations: [],
+      fixIntents: [
+        {
+          checkId: 'visual-call-op0-text',
+          kind: 'set_property',
+          roleOrTarget: { kind: 'target', targetToken: 'target-0' },
+          property: 'text',
+          value: 'Final',
+        },
+        {
+          checkId: 'other',
+          kind: 'set_property',
+          roleOrTarget: { kind: 'target', targetToken: 'target-0' },
+          property: 'text',
+          value: 'Final',
+        },
+      ],
+    },
+    {
+      status: 'cannot_verify',
+      failedCheckIds: ['visual-call-op0-text', 'visual-call-op0-text'],
+      observations: [],
+      fixIntents: [],
+    },
+  ])('fails closed on invalid reviewer check accounting', async (review) => {
+    const run = await visualSubject(async () => review as never)
+    await expect(
+      run.subject.complete({
+        contract: run.contract,
+        mutated: true,
+        cancelled: false,
+        correctionPasses: 0,
+      }),
+    ).resolves.toMatchObject({
+      kind: 'receipt',
+      receipt: { status: 'applied_unverified', safeCode: 'verification_invalid' },
+    })
+  })
+
+  it.each([
     [
       'screenshot failure',
       { captureScreenshot: vi.fn().mockRejectedValue(new Error('capture')) },

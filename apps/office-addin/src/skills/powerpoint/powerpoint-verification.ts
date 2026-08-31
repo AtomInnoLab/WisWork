@@ -63,6 +63,7 @@ export interface OfficePowerPointVisualReviewer {
     facts: ReturnType<typeof parsePresentationRenderingFacts>
     images: Array<{ mediaToken: string; base64: string; mime: 'image/png' }>
     isolation: { tools: []; maxTurns: 1 }
+    signal?: AbortSignal
   }): Promise<VisualReviewResult>
 }
 
@@ -285,6 +286,7 @@ export function createOfficePowerPointVerification(options: {
     | undefined
   let proposals: SafeProposalRecord[] = []
   let settlements: SafeProposalSettlement[] = []
+  let activeReviewAbort: AbortController | undefined
   const delay = options.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
 
   const enroll = async (
@@ -308,8 +310,12 @@ export function createOfficePowerPointVerification(options: {
       'edit_slide_chart',
       'edit_slide_xml',
     ])
-    if (calls.some((call) => mutationTools.has(call.name) && !fullySupported(call)))
-      return { kind: 'bypass' }
+    const hasUnsupportedMutation = calls.some(
+      (call) => mutationTools.has(call.name) && !fullySupported(call),
+    )
+    if (currentContract && hasUnsupportedMutation)
+      return { kind: 'clarify', question: 'presentation_scope_required' }
+    if (hasUnsupportedMutation) return { kind: 'bypass' }
     const rawOperations = calls.flatMap((call) =>
       callOperations(call).map((operation) => ({
         ...operation,
@@ -317,7 +323,10 @@ export function createOfficePowerPointVerification(options: {
         sourceCallId: call.id,
       })),
     )
-    if (rawOperations.length === 0) return { kind: 'bypass' }
+    if (rawOperations.length === 0)
+      return currentContract
+        ? { kind: 'clarify', question: 'presentation_scope_required' }
+        : { kind: 'bypass' }
     if (currentContract) {
       if (!enrolled || currentContract.taskId !== enrolled.contract.taskId)
         return { kind: 'clarify', question: 'presentation_scope_required' }
@@ -522,7 +531,7 @@ export function createOfficePowerPointVerification(options: {
       reviewer = value
     },
     abandon() {
-      /* reconciliation deliberately retains safe state */
+      activeReviewAbort?.abort()
     },
     async complete(context): Promise<PresentationTaskCompletion> {
       const contract = context.contract
@@ -676,8 +685,12 @@ export function createOfficePowerPointVerification(options: {
           ? 'needs_user'
           : 'verified'
       if (status === 'verified' && reviewer) {
+        const reviewAbort = new AbortController()
+        activeReviewAbort = reviewAbort
+        const abortReview = () => reviewAbort.abort()
+        context.signal?.addEventListener('abort', abortReview, { once: true })
         try {
-          const beforeCapture = await options.authority.current(context.signal)
+          const beforeCapture = await options.authority.current(reviewAbort.signal)
           if (
             beforeCapture.documentToken !== contract.documentToken ||
             beforeCapture.sessionToken !== contract.sessionToken
@@ -687,7 +700,7 @@ export function createOfficePowerPointVerification(options: {
           if (slides.length > 8) throw new Error('screenshot_unavailable')
           const images = await Promise.all(
             slides.map(async (slide) => {
-              const image = await options.authority.captureScreenshot(slide - 1, context.signal)
+              const image = await options.authority.captureScreenshot(slide - 1, reviewAbort.signal)
               if (image.mime !== 'image/png') throw new Error('screenshot_unavailable')
               return {
                 slide,
@@ -701,7 +714,7 @@ export function createOfficePowerPointVerification(options: {
               }
             }),
           )
-          const afterCapture = await options.authority.current(context.signal)
+          const afterCapture = await options.authority.current(reviewAbort.signal)
           if (
             afterCapture.documentToken !== beforeCapture.documentToken ||
             afterCapture.sessionToken !== beforeCapture.sessionToken ||
@@ -723,17 +736,39 @@ export function createOfficePowerPointVerification(options: {
               ...(passed.includes(check.id) ? {} : { code: 'unsupported_check' as const }),
             })),
           })
-          const review = parseVisualReviewResult(
-            await reviewer.review({
-              facts,
-              images: images.map(({ mediaToken, base64, mime }) => ({
-                mediaToken,
-                base64,
-                mime,
-              })),
-              isolation: { tools: [], maxTurns: 1 },
-            }),
-          )
+          let review: VisualReviewResult
+          try {
+            review = parseVisualReviewResult(
+              await reviewer.review({
+                facts,
+                images: images.map(({ mediaToken, base64, mime }) => ({
+                  mediaToken,
+                  base64,
+                  mime,
+                })),
+                isolation: { tools: [], maxTurns: 1 },
+                signal: reviewAbort.signal,
+              }),
+            )
+          } catch (error) {
+            throw new Error('verification_invalid', { cause: error })
+          }
+          const failedIds = new Set(review.failedCheckIds)
+          const fixIds = new Set(review.fixIntents.map((intent) => intent.checkId))
+          const reviewBindingValid =
+            review.failedCheckIds.every((id) => allIds.includes(id)) &&
+            (review.status !== 'needs_fix' ||
+              (failedIds.size === fixIds.size && [...failedIds].every((id) => fixIds.has(id))))
+          if (!reviewBindingValid)
+            return receipt(contract, {
+              status: 'applied_unverified',
+              mutationReceiptIds: confirmed.map((item) => item.id),
+              passedCheckIds: [],
+              failedCheckIds: [],
+              unavailableCheckIds: allIds,
+              correctionPasses: context.correctionPasses,
+              safeCode: 'verification_invalid',
+            })
           if (review.status === 'cannot_verify')
             return receipt(contract, {
               status: 'applied_unverified',
@@ -783,8 +818,13 @@ export function createOfficePowerPointVerification(options: {
             safeCode:
               error instanceof Error && error.message === 'stale_authority'
                 ? 'stale_authority'
-                : 'screenshot_unavailable',
+                : error instanceof Error && error.message === 'verification_invalid'
+                  ? 'verification_invalid'
+                  : 'screenshot_unavailable',
           })
+        } finally {
+          context.signal?.removeEventListener('abort', abortReview)
+          if (activeReviewAbort === reviewAbort) activeReviewAbort = undefined
         }
       }
       return receipt(contract, {
