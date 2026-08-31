@@ -50,6 +50,11 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
   },
   renderer: {
+    define: {
+      __WISWORK_SLIDES_ACCEPTANCE_E2E__: JSON.stringify(
+        process.env.WISWORK_SLIDES_ACCEPTANCE_E2E === '1',
+      ),
+    },
     resolve: { alias: workspaceAlias },
     plugins: [react()],
     server: {

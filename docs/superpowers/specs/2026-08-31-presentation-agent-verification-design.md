@@ -67,8 +67,23 @@ The shared package exposes strict bounded types and parsers. No model-provided e
 
 ```ts
 type PresentationAcceptanceCheck =
-  | { id: string; kind: 'element_property'; slide: number; roleOrTarget: TargetRef; property: SupportedProperty; expected: SafeScalar }
-  | { id: string; kind: 'reference_match'; slide: number; referenceSlide: number; role: SupportedRole; properties: SupportedProperty[]; tolerance: number }
+  | {
+      id: string
+      kind: 'element_property'
+      slide: number
+      roleOrTarget: TargetRef
+      property: SupportedProperty
+      expected: SafeScalar
+    }
+  | {
+      id: string
+      kind: 'reference_match'
+      slide: number
+      referenceSlide: number
+      role: SupportedRole
+      properties: SupportedProperty[]
+      tolerance: number
+    }
   | { id: string; kind: 'render_quality'; slide: number; rules: RenderRule[] }
 
 type PresentationAcceptanceContract = {

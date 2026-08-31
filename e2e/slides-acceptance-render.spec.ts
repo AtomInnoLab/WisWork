@@ -62,6 +62,11 @@ test('production Slides renderer captures authority-bound affected and reference
             status?: string
             passedCheckIds?: string[]
             mutationReceiptIds?: string[]
+            documentToken: string
+            sessionToken: string
+            revision: string
+            leaseToken: string
+            pngs: string[]
           }>
         }
       ).__wisworkSlidesRunAcceptanceAgent
@@ -88,28 +93,12 @@ test('production Slides renderer captures authority-bound affected and reference
     ])
     const saved = await editor.evaluate(() => window.slidesApi.save())
     expect(saved.ok).toBe(true)
-    const result = await editor.evaluate(async () => {
-      const render = (
-        window as typeof window & {
-          __wisworkSlidesRenderAcceptance?: (slides: number[]) => Promise<{
-            documentToken: string
-            sessionToken: string
-            revision: string
-            leaseToken: string
-            pngs: string[]
-          }>
-        }
-      ).__wisworkSlidesRenderAcceptance
-      if (!render) throw new Error('acceptance render harness unavailable')
-      return render([6, 7, 8, 6])
-    })
-
-    expect(result.documentToken).toBeTruthy()
-    expect(result.sessionToken).toBeTruthy()
-    expect(result.leaseToken).toBeTruthy()
-    expect(result.revision).toMatch(/^sha256:[a-f0-9]{64}$/)
-    expect(result.pngs).toHaveLength(4)
-    for (const encoded of result.pngs) {
+    expect(execution.documentToken).toBeTruthy()
+    expect(execution.sessionToken).toBeTruthy()
+    expect(execution.leaseToken).toBeTruthy()
+    expect(execution.revision).toMatch(/^sha256:[a-f0-9]{64}$/)
+    expect(execution.pngs).toHaveLength(4)
+    for (const encoded of execution.pngs) {
       const png = Buffer.from(encoded, 'base64')
       expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
       expect(png.byteLength).toBeGreaterThan(1_000)

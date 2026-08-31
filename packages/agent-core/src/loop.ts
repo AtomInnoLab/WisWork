@@ -1173,12 +1173,13 @@ export class AgentLoop<TSnapshot = unknown> {
     const modelCorrectionPasses = this.presentationCorrectionPasses
     let completion: Awaited<ReturnType<typeof hooks.complete>>
     try {
+      const reconciliationSignal = this.reconciliationController?.signal
       completion = await hooks.complete({
         contract,
         mutated: this.mutationSeen,
         cancelled: this.cancelled,
         correctionPasses: this.presentationCorrectionPasses,
-        signal: this.reconciliationController?.signal,
+        ...(reconciliationSignal ? { signal: reconciliationSignal } : {}),
       })
     } catch {
       if (generation !== this.generation || !this.running) return true

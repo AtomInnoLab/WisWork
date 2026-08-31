@@ -5,6 +5,7 @@ import { defineConfig } from 'vitest/config'
 const here = dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
+  define: { __WISWORK_SLIDES_ACCEPTANCE_E2E__: 'false' },
   // Pin resolution to this repo's workspace sources (matches tsconfig paths)
   resolve: {
     alias: {

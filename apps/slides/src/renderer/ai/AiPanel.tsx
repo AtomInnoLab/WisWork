@@ -43,6 +43,8 @@ import { verifyAndBrandSlidesAcceptanceAuthority, verifySlidesAcceptance } from 
 import { reviewSlidesRendering } from './task-review'
 import { WisWorkMark } from '../components/icons'
 import sendEnterOn from '../assets/send-enter-on.png'
+
+declare const __WISWORK_SLIDES_ACCEPTANCE_E2E__: boolean
 import sendEnterOff from '../assets/send-enter-off.png'
 import sendStop from '../assets/send-stop.png'
 import attachIcon from '../assets/attach-icon.png'
@@ -538,177 +540,6 @@ export function AiPanel({
   const imagesRef = useRef(images)
   imagesRef.current = images
 
-  // Playwright drives the production renderer in the Electron E2E suite. Keep
-  // this deliberately renderer-local (no preload/IPC protocol surface) and
-  // expose it only when Chromium is under automation.
-  useEffect(() => {
-    if (!navigator.webdriver) return
-    const target = window as typeof window & {
-      __wisworkSlidesRenderAcceptance?: (slides: number[]) => Promise<{
-        documentToken: string
-        sessionToken: string
-        revision: string
-        leaseToken: string
-        pngs: string[]
-      }>
-      __wisworkSlidesExecuteAcceptanceGolden?: () => Promise<{
-        receipts: Array<{
-          transactionId: string
-          status: string
-          mutatedTargets?: readonly string[]
-        }>
-        checks: Array<{ id: string; pass: boolean }>
-        savedPath?: string
-      }>
-    }
-    target.__wisworkSlidesRenderAcceptance = async (requested) => {
-      const before = await window.slidesApi.getRenderSlides()
-      if (!before) throw new Error('authoritative_refresh_unavailable')
-      const selected = requested.map((number) => {
-        if (!Number.isSafeInteger(number) || number < 1 || number > before.slides.length)
-          throw new Error('slide_out_of_range')
-        return before.slides[number - 1]!
-      })
-      const pngs = await renderSlidesToPngBase64(selected, imagesRef.current, 1)
-      const after = await window.slidesApi.getRenderSlides()
-      if (
-        !after ||
-        after.documentToken !== before.documentToken ||
-        after.sessionToken !== before.sessionToken ||
-        after.revision !== before.revision ||
-        after.leaseToken !== before.leaseToken
-      )
-        throw new Error('stale_authority')
-      return {
-        documentToken: before.documentToken,
-        sessionToken: before.sessionToken,
-        revision: before.revision,
-        leaseToken: before.leaseToken,
-        pngs,
-      }
-    }
-    target.__wisworkSlidesExecuteAcceptanceGolden = async () => {
-      const receipts: Array<{
-        transactionId: string
-        status: string
-        mutatedTargets?: readonly string[]
-      }> = []
-      const findSource = (slide: RenderSlide, label: string) => {
-        const node = slide.nodes.find((candidate) => JSON.stringify(candidate).includes(label))
-        if (!node) throw new Error(`missing fixture target: ${label}`)
-        return node.sourceId
-      }
-      const execute = async (
-        slideIndex: number,
-        sourceId: string,
-        transactionId: string,
-        operation:
-          | {
-              kind: 'set_text'
-              paragraphs: Array<{ runs: Array<{ text: string; color: string }> }>
-            }
-          | {
-              kind: 'set_geometry'
-              geometry: { x: number; y: number; width: number; height: number; rotation: number }
-            },
-      ) => {
-        const prepared = await window.slidesApi.preparePresentationTarget({
-          transactionId,
-          slideIndex,
-          sourceId,
-        })
-        if (prepared.status !== 'prepared') throw new Error(`prepare failed: ${prepared.status}`)
-        const receipt = await window.slidesApi.executePresentationTransaction({
-          transactionId,
-          expectedDeckRevision: prepared.expectedDeckRevision,
-          mode: 'atomic',
-          operations: [{ ...operation, clientId: transactionId, target: prepared.target }],
-        })
-        receipts.push(receipt)
-        if (receipt.status !== 'applied' && receipt.status !== 'unchanged')
-          throw new Error(`transaction failed: ${receipt.status}`)
-      }
-      for (const slideNumber of [6, 7, 8]) {
-        for (const [role, color] of [
-          ['title', '#2457A7'],
-          ['body', '#172033'],
-          ['emphasis', '#18A0A6'],
-        ] as const) {
-          const bundle = await window.slidesApi.getRenderSlides()
-          if (!bundle) throw new Error('authoritative_refresh_unavailable')
-          const label = `${role}-${slideNumber}`
-          await execute(
-            slideNumber - 1,
-            findSource(bundle.slides[slideNumber - 1]!, label),
-            `golden-${slideNumber}-${role}`,
-            {
-              kind: 'set_text',
-              paragraphs: [{ runs: [{ text: label, color }] }],
-            },
-          )
-        }
-        if (slideNumber > 6) {
-          const bundle = await window.slidesApi.getRenderSlides()
-          if (!bundle) throw new Error('authoritative_refresh_unavailable')
-          await execute(
-            slideNumber - 1,
-            findSource(bundle.slides[slideNumber - 1]!, `title-${slideNumber}`),
-            `golden-${slideNumber}-geometry`,
-            {
-              kind: 'set_geometry',
-              geometry: { x: 72, y: 48, width: 816, height: 54, rotation: 0 },
-            },
-          )
-        }
-      }
-      const after = await window.slidesApi.getRenderSlides()
-      if (!after) throw new Error('authoritative_refresh_unavailable')
-      const referenceTitle = after.slides[5]!.nodes.find((candidate) =>
-        JSON.stringify(candidate).includes('title-6'),
-      )
-      if (!referenceTitle) throw new Error('missing fixture reference')
-      const checks = [6, 7, 8].flatMap((slideNumber) => {
-        const slide = after.slides[slideNumber - 1]!
-        const title = slide.nodes.find((candidate) =>
-          JSON.stringify(candidate).includes(`title-${slideNumber}`),
-        )
-        const colorChecks = [
-          ['title', '#2457A7'],
-          ['body', '#172033'],
-          ['emphasis', '#18A0A6'],
-        ].map(([role, color]) => {
-          const node = slide.nodes.find((candidate) =>
-            JSON.stringify(candidate).includes(`${role}-${slideNumber}`),
-          )
-          return {
-            id: `${slideNumber}-${role}-color`,
-            pass: Boolean(node && JSON.stringify(node).includes(color!)),
-          }
-        })
-        return slideNumber === 6
-          ? colorChecks
-          : [
-              ...colorChecks,
-              ...(['x', 'y', 'width', 'height'] as const).map((property) => ({
-                id: `${slideNumber}-title-${property}`,
-                pass:
-                  property === 'width'
-                    ? title?.box.w === referenceTitle.box.w
-                    : property === 'height'
-                      ? title?.box.h === referenceTitle.box.h
-                      : title?.box[property] === referenceTitle.box[property],
-              })),
-            ]
-      })
-      const saved = await window.slidesApi.save()
-      if (!saved.ok) throw new Error(saved.error ?? 'save_failed')
-      return { receipts, checks, ...(saved.path ? { savedPath: saved.path } : {}) }
-    }
-    return () => {
-      delete target.__wisworkSlidesRenderAcceptance
-      delete target.__wisworkSlidesExecuteAcceptanceGolden
-    }
-  }, [])
   const attachmentsRef = useRef(attachments)
   attachmentsRef.current = attachments
   /** attachments consumed by the most recent send — retry resends the same set */
@@ -1450,13 +1281,18 @@ export function AiPanel({
           .map((a) => a.name),
     }
     accessRef.current = access
-    if (navigator.webdriver) {
+    if (__WISWORK_SLIDES_ACCEPTANCE_E2E__) {
       const automationWindow = window as typeof window & {
         __wisworkSlidesRunAcceptanceAgent?: () => Promise<{
           text: string
           status?: string
           passedCheckIds?: string[]
           mutationReceiptIds?: string[]
+          documentToken: string
+          sessionToken: string
+          revision: string
+          leaseToken: string
+          pngs: string[]
         }>
       }
       automationWindow.__wisworkSlidesRunAcceptanceAgent = async () => {
@@ -1568,16 +1404,39 @@ export function AiPanel({
               onDone: ({ text }) => {
                 harness.dispose()
                 setChat((previous) => [...previous, { role: 'assistant', text }])
-                resolve({
-                  text,
-                  ...(receipt
-                    ? {
-                        status: receipt.status,
-                        passedCheckIds: receipt.passedCheckIds,
-                        mutationReceiptIds: receipt.mutationReceiptIds,
-                      }
-                    : {}),
-                })
+                void (async () => {
+                  const before = await window.slidesApi.getRenderSlides()
+                  if (!before) throw new Error('authoritative_refresh_unavailable')
+                  const pngs = await renderSlidesToPngBase64(
+                    [6, 7, 8, 6].map((slide) => before.slides[slide - 1]!),
+                    imagesRef.current,
+                    1,
+                  )
+                  const after = await window.slidesApi.getRenderSlides()
+                  if (
+                    !after ||
+                    after.documentToken !== before.documentToken ||
+                    after.sessionToken !== before.sessionToken ||
+                    after.revision !== before.revision ||
+                    after.leaseToken !== before.leaseToken
+                  )
+                    throw new Error('stale_authority')
+                  resolve({
+                    text,
+                    documentToken: before.documentToken,
+                    sessionToken: before.sessionToken,
+                    revision: before.revision,
+                    leaseToken: before.leaseToken,
+                    pngs,
+                    ...(receipt
+                      ? {
+                          status: receipt.status,
+                          passedCheckIds: receipt.passedCheckIds,
+                          mutationReceiptIds: receipt.mutationReceiptIds,
+                        }
+                      : {}),
+                  })
+                })().catch(reject)
               },
               onError: (error) => {
                 harness.dispose()
@@ -2406,6 +2265,10 @@ export function AiPanel({
       qcAbortRef.current?.abort()
       dismissClarify()
       loopRef.current?.stop()
+      if (__WISWORK_SLIDES_ACCEPTANCE_E2E__)
+        delete (
+          window as typeof window & { __wisworkSlidesRunAcceptanceAgent?: () => Promise<unknown> }
+        ).__wisworkSlidesRunAcceptanceAgent
     }
   }, [])
 
