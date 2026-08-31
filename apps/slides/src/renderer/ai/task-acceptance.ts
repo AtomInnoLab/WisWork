@@ -21,6 +21,7 @@ export type SlidesAcceptanceAuthority = {
   revision: string
   /** Pre-edit revision proved by the mutation receipt; omitted for compile-time inspection. */
   baseRevision?: string
+  textMatches?: Record<string, { targetToken: string; matches: boolean; proof: string }>
   slides: Array<{
     number: number
     slideToken: string
@@ -291,7 +292,7 @@ export function parseSlidesAcceptanceIntent(value: unknown): SlidesAcceptanceInt
 export function parseSlidesAcceptanceAuthority(value: unknown): SlidesAcceptanceAuthority {
   const root = strictObject(
     value,
-    ['documentToken', 'sessionToken', 'revision', 'baseRevision', 'slides'],
+    ['documentToken', 'sessionToken', 'revision', 'baseRevision', 'textMatches', 'slides'],
     'authority',
   )
   const slides = strictArray(root.slides, 100, 'authority.slides').map((item, index) => {
@@ -353,11 +354,36 @@ export function parseSlidesAcceptanceAuthority(value: unknown): SlidesAcceptance
   const slideNumbersSeen = slides.map((slide) => slide.number)
   if (new Set(slideNumbersSeen).size !== slideNumbersSeen.length)
     throw new TypeError('slide numbers must be unique')
+  let textMatches: SlidesAcceptanceAuthority['textMatches']
+  if (root.textMatches !== undefined) {
+    const record = strictObject(
+      root.textMatches,
+      Object.keys(root.textMatches as object),
+      'textMatches',
+    )
+    textMatches = {}
+    for (const [checkId, raw] of Object.entries(record)) {
+      identifier(checkId, 'text check id')
+      const match = strictObject(raw, ['targetToken', 'matches', 'proof'], 'text match')
+      if (
+        typeof match.matches !== 'boolean' ||
+        typeof match.proof !== 'string' ||
+        !/^sha256:[0-9a-f]{64}$/.test(match.proof)
+      )
+        throw new TypeError('text match is invalid')
+      textMatches[checkId] = {
+        targetToken: identifier(match.targetToken, 'text match target'),
+        matches: match.matches,
+        proof: match.proof,
+      }
+    }
+  }
   return {
     documentToken: identifier(root.documentToken, 'documentToken'),
     sessionToken: identifier(root.sessionToken, 'sessionToken'),
     revision,
     ...(root.baseRevision === undefined ? {} : { baseRevision: String(root.baseRevision) }),
+    ...(textMatches ? { textMatches } : {}),
     slides,
   }
 }
@@ -464,10 +490,14 @@ export function compileSlidesAcceptance(
           }
         const expected = normalizeValue(change.property, change.value)
         const actual = target.properties[change.property]
+        const checkId = `check-${String(checks.length + 1).padStart(3, '0')}`
+        const textMatch = change.property === 'text' ? authority.textMatches?.[checkId] : undefined
         const needsChange =
-          actual == null ||
-          !deterministicProperties.has(change.property) ||
-          normalizeValue(change.property, actual) !== expected
+          change.property === 'text'
+            ? !textMatch || textMatch.targetToken !== target.targetToken || !textMatch.matches
+            : actual == null ||
+              !deterministicProperties.has(change.property) ||
+              normalizeValue(change.property, actual) !== expected
         changed ||= needsChange
         if (needsChange) plannedMutationTargets.add(target.targetToken)
         addCheck({
@@ -565,24 +595,10 @@ export function verifySlidesAcceptance(
         mode: 'postwrite'
         mutatedTargetTokens: string[]
         plannedMutationTargets: string[]
-        expectedTextDigests?: Record<string, string>
       },
 ): SlidesDeterministicResult[] {
   const contract = parsePresentationAcceptanceContract(rawContract)
   const authority = parseSlidesAcceptanceAuthority(rawAuthority)
-  const expectedTextDigests = new Map<string, string>()
-  if (proof.mode === 'postwrite' && proof.expectedTextDigests !== undefined) {
-    const record = strictObject(
-      proof.expectedTextDigests,
-      contract.checks.map((check) => check.id),
-      'expectedTextDigests',
-    )
-    for (const [checkId, digest] of Object.entries(record)) {
-      if (typeof digest !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(digest))
-        throw new TypeError('expectedTextDigests is invalid')
-      expectedTextDigests.set(checkId, digest)
-    }
-  }
   const stale =
     authority.documentToken !== contract.documentToken ||
     authority.sessionToken !== contract.sessionToken ||
@@ -660,20 +676,20 @@ export function verifySlidesAcceptance(
       if (!target) return { checkId: check.id, status: 'fail', code: 'target_missing' }
       actual = target.properties[check.property]
     }
-    if (actual == null)
-      return { checkId: check.id, status: 'unavailable', code: 'unsupported_check' }
-    if (
-      check.property === 'text' &&
-      typeof actual === 'string' &&
-      /^sha256:[0-9a-f]{64}$/.test(actual)
-    ) {
-      const expectedDigest = expectedTextDigests.get(check.id)
-      if (!expectedDigest)
+    if (check.property === 'text') {
+      const textMatch = authority.textMatches?.[check.id]
+      if (
+        !textMatch ||
+        check.roleOrTarget.kind !== 'target' ||
+        textMatch.targetToken !== check.roleOrTarget.targetToken
+      )
         return { checkId: check.id, status: 'unavailable', code: 'unsupported_check' }
-      return actual === expectedDigest
+      return textMatch.matches
         ? { checkId: check.id, status: 'pass' }
         : { checkId: check.id, status: 'fail', code: 'value_mismatch' }
     }
+    if (actual == null)
+      return { checkId: check.id, status: 'unavailable', code: 'unsupported_check' }
     return valuesMatch(check.property, actual, check.expected)
       ? { checkId: check.id, status: 'pass' }
       : { checkId: check.id, status: 'fail', code: 'value_mismatch' }

@@ -7,7 +7,6 @@ import {
   type SlidesAcceptanceAuthority,
   type SlidesAcceptanceIntent,
 } from '../src/renderer/ai/task-acceptance'
-import { digestSlidesAcceptanceText } from '../src/shared/acceptance-text'
 
 const revision = (digit: string) => `sha256:${digit.repeat(64)}`
 
@@ -225,6 +224,9 @@ describe('PC Slides acceptance compiler', () => {
 describe('PC Slides deterministic verifier', () => {
   it('passes supported text/color/geometry/fill/stroke/background checks without mutation', () => {
     const current = authority()
+    current.textMatches = {
+      'check-001': { targetToken: 'slide-6:title', matches: true, proof: revision('d') },
+    }
     const before = structuredClone(current)
     const intent: SlidesAcceptanceIntent = {
       taskId: 'all-supported',
@@ -260,6 +262,7 @@ describe('PC Slides deterministic verifier', () => {
     expect(compiled.status).toBe('unchanged')
     // Force verification coverage from a non-no-op contract by changing compile snapshot only.
     current.slides[0]!.elements[0]!.properties.text = 'before'
+    current.textMatches['check-001']!.matches = false
     current.slides[0]!.elements[0]!.properties.fill_color = '#101010'
     current.slides[0]!.elements[0]!.properties.stroke_color = '#101010'
     current.slides[0]!.elements[0]!.properties.x = 99
@@ -267,6 +270,9 @@ describe('PC Slides deterministic verifier', () => {
     const planned = compileSlidesAcceptance(intent, current)
     if (planned.status !== 'compiled') throw new Error('expected compiled')
     const verificationAuthority = authority()
+    verificationAuthority.textMatches = {
+      'check-001': { targetToken: 'slide-6:title', matches: true, proof: revision('d') },
+    }
     const verificationBefore = structuredClone(verificationAuthority)
     const result = verifySlidesAcceptance(planned.contract, verificationAuthority, {
       mode: 'postwrite',
@@ -425,42 +431,38 @@ describe('PC Slides deterministic verifier', () => {
     ).toMatchObject({ status: 'fail', code: 'scope_mismatch' })
   })
 
-  it('verifies bound text digests without receiving raw authority text', async () => {
+  it('uses authority-bound text match facts for no-op, planning and postwrite verification', () => {
     const current = authority()
     delete current.slides[0]!.elements[0]!.properties.text
-    const compiled = compileSlidesAcceptance(
-      {
-        taskId: 'text-digest',
-        affectedSlides: [6],
-        maxCorrectionPasses: 0,
-        changes: [
-          { kind: 'set_property', slides: [6], role: 'title', property: 'text', value: 'Expected' },
-        ],
-      },
-      current,
-    )
+    current.textMatches = {
+      'check-001': { targetToken: 'slide-6:title', matches: true, proof: revision('d') },
+    }
+    const intent: SlidesAcceptanceIntent = {
+      taskId: 'text-digest',
+      affectedSlides: [6],
+      maxCorrectionPasses: 0,
+      changes: [
+        { kind: 'set_property', slides: [6], role: 'title', property: 'text', value: 'Expected' },
+      ],
+    }
+    expect(compileSlidesAcceptance(intent, current)).toEqual({
+      status: 'unchanged',
+      taskId: 'text-digest',
+      affectedSlides: [6],
+    })
+    current.textMatches['check-001']!.matches = false
+    const compiled = compileSlidesAcceptance(intent, current)
     if (compiled.status !== 'compiled') throw new Error('expected compiled')
-    const check = compiled.contract.checks[0]!
-    const digest = await digestSlidesAcceptanceText(
-      'lease:abc',
-      check.id,
-      'slide-6:title',
-      'Expected',
-    )
-    current.slides[0]!.elements[0]!.properties.text = digest
+    expect(compiled.plannedMutationTargets).toEqual(['slide-6:title'])
+    current.textMatches['check-001']!.matches = true
     const proof = {
       mode: 'postwrite' as const,
       mutatedTargetTokens: ['slide-6:title'],
       plannedMutationTargets: compiled.plannedMutationTargets,
-      expectedTextDigests: { [check.id]: digest },
     }
     expect(verifySlidesAcceptance(compiled.contract, current, proof)[0].status).toBe('pass')
-    proof.expectedTextDigests[check.id] = await digestSlidesAcceptanceText(
-      'lease:abc',
-      check.id,
-      'slide-6:title',
-      'Changed',
-    )
+    ;(proof as Record<string, unknown>).expectedTextDigests = { 'check-001': revision('e') }
+    current.textMatches['check-001']!.matches = false
     expect(verifySlidesAcceptance(compiled.contract, current, proof)[0]).toMatchObject({
       status: 'fail',
       code: 'value_mismatch',

@@ -3,7 +3,6 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { fingerprintPresentation, openPptx } from '@wiswork/pptx-engine'
 import {
-  digestSlidesAcceptanceText,
   inspectSlidesAcceptanceAuthority,
   inspectSlidesAcceptanceLease,
 } from '../src/main/operations/acceptance-authority'
@@ -156,21 +155,19 @@ describe('PC authoritative acceptance inspection', () => {
     const targetToken = structural!.slides[0]!.elements.find(
       (fact) => fact.role === 'title',
     )!.targetToken
-    const expectedDigest = await digestSlidesAcceptanceText(
-      lease!.leaseToken,
-      'check-text',
-      targetToken,
-      'Q3 Business Review',
-    )
     const verified = await inspectSlidesAcceptanceAuthority(session, {
       ...base,
-      textChecks: [{ checkId: 'check-text', targetToken, expectedDigest }],
+      textChecks: [{ checkId: 'check-text', targetToken, expectedText: 'Q3 Business Review' }],
     })
     const fact = verified!.slides[0]!.elements.find((item) => item.targetToken === targetToken)!
-    expect(fact.properties.text).toBe(expectedDigest)
+    expect(verified!.textMatches?.['check-text']).toMatchObject({ targetToken, matches: true })
+    expect(verified!.textMatches?.['check-text']?.proof).toMatch(/^sha256:[0-9a-f]{64}$/)
     expect(JSON.stringify(verified)).not.toContain('Q3 Business Review')
-    expect(fact.properties.text).not.toBe(
-      await digestSlidesAcceptanceText(lease!.leaseToken, 'check-text', targetToken, 'changed'),
-    )
+    expect(fact.properties.text).toBeUndefined()
+    const changed = await inspectSlidesAcceptanceAuthority(session, {
+      ...base,
+      textChecks: [{ checkId: 'check-text', targetToken, expectedText: 'changed' }],
+    })
+    expect(changed!.textMatches?.['check-text']?.matches).toBe(false)
   })
 })

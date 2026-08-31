@@ -8,8 +8,6 @@ import type {
   SlidesAcceptanceAuthoritySnapshot,
 } from '../../shared/ipc'
 import type { Session } from '../session-state'
-import { digestSlidesAcceptanceText } from '../../shared/acceptance-text'
-export { digestSlidesAcceptanceText } from '../../shared/acceptance-text'
 
 const roleOf = (element: SlideElement): 'title' | 'body' | 'emphasis' | undefined => {
   if (element.placeholder === 'title' || element.placeholder === 'ctrTitle') return 'title'
@@ -22,6 +20,9 @@ const uniform = <T>(values: T[]): T | undefined =>
   values.length > 0 && values.every((value) => value === values[0]) ? values[0] : undefined
 
 const leases = new WeakMap<Session, SlidesAcceptanceAuthorityLease>()
+const textProofSecret = randomUUID()
+const normalizeText = (text: string): string =>
+  text.replaceAll('\r\n', '\n').replaceAll('\r', '\n').normalize('NFC')
 
 export async function inspectSlidesAcceptanceLease(
   session: Session,
@@ -43,7 +44,7 @@ async function elementFact(
   element: SlideElement,
   locked: boolean,
   leaseToken: string,
-  textChecks: ReadonlyMap<string, { checkId: string }>,
+  textChecks: ReadonlyMap<string, { checkId: string; expectedText: string }>,
 ) {
   if (!element.creationId) return undefined
   const role = roleOf(element)
@@ -55,6 +56,8 @@ async function elementFact(
     width: element.transform.offset.cx / EMU_PER_PX_96,
     height: element.transform.offset.cy / EMU_PER_PX_96,
   }
+  let textMatch:
+    { checkId: string; targetToken: string; matches: boolean; proof: string } | undefined
   if ('fill' in element && element.fill?.type === 'solid')
     properties.fill_color = element.fill.color
   if ('stroke' in element && element.stroke?.fill.type === 'solid')
@@ -75,12 +78,16 @@ async function elementFact(
       const text = element.text.paragraphs
         .map((paragraph) => paragraph.runs.map((run) => run.text).join(''))
         .join('\n')
-      properties.text = await digestSlidesAcceptanceText(
+      const matches = normalizeText(text) === normalizeText(textCheck.expectedText)
+      const proof = await fingerprintSemanticValue({
+        secret: textProofSecret,
         leaseToken,
-        textCheck.checkId,
+        checkId: textCheck.checkId,
         targetToken,
-        text,
-      )
+        expectedText: normalizeText(textCheck.expectedText),
+        matches,
+      })
+      textMatch = { checkId: textCheck.checkId, targetToken, matches, proof }
     }
     if (color !== undefined && runs.every((run) => run.color !== undefined))
       properties.color = color
@@ -92,10 +99,8 @@ async function elementFact(
     if (italic !== undefined) properties.italic = italic
   }
   return {
-    targetToken,
-    ...(role ? { role } : {}),
-    locked,
-    properties,
+    fact: { targetToken, ...(role ? { role } : {}), locked, properties },
+    ...(textMatch ? { textMatch } : {}),
   }
 }
 
@@ -130,8 +135,12 @@ export async function inspectSlidesAcceptanceAuthority(
   )
     return null
   const textChecks = new Map(
-    (request.textChecks ?? []).map((check) => [check.targetToken, { checkId: check.checkId }]),
+    (request.textChecks ?? []).map((check) => [
+      check.targetToken,
+      { checkId: check.checkId, expectedText: check.expectedText },
+    ]),
   )
+  const textMatches: NonNullable<SlidesAcceptanceAuthoritySnapshot['textMatches']> = {}
   const slides = []
   let inspectedElements = 0
   for (const page of requested) {
@@ -142,7 +151,10 @@ export async function inspectSlidesAcceptanceAuthority(
       if (++inspectedElements > 2_000)
         throw new TypeError('Acceptance inspection element bound exceeded')
       const fact = await elementFact(slide.durableId, element, false, lease.leaseToken, textChecks)
-      if (fact) elements.push(fact)
+      if (fact) {
+        elements.push(fact.fact)
+        if (fact.textMatch) textMatches[fact.textMatch.checkId] = fact.textMatch
+      }
     }
     for (const decoration of slide.decorations ?? []) {
       if (++inspectedElements > 2_000)
@@ -154,7 +166,10 @@ export async function inspectSlidesAcceptanceAuthority(
         lease.leaseToken,
         textChecks,
       )
-      if (fact) elements.push(fact)
+      if (fact) {
+        elements.push(fact.fact)
+        if (fact.textMatch) textMatches[fact.textMatch.checkId] = fact.textMatch
+      }
     }
     const slideDigest = await fingerprintSemanticValue({ slideId: slide.durableId })
     slides.push({
@@ -168,6 +183,7 @@ export async function inspectSlidesAcceptanceAuthority(
     documentToken: session.documentInstanceId,
     sessionToken: session.sessionInstanceId,
     revision,
+    ...(Object.keys(textMatches).length ? { textMatches } : {}),
     slides,
   }
 }

@@ -1429,6 +1429,7 @@ export interface SlidesAcceptanceAuthoritySnapshot {
   documentToken: string
   sessionToken: string
   revision: string
+  textMatches?: Record<string, { targetToken: string; matches: boolean; proof: string }>
   slides: Array<{
     number: number
     slideToken: string
@@ -1466,7 +1467,7 @@ export interface SlidesAcceptanceAuthorityRequest {
   expectedSessionToken: string
   expectedRevision: string
   leaseToken: string
-  textChecks?: Array<{ checkId: string; targetToken: string; expectedDigest: string }>
+  textChecks?: Array<{ checkId: string; targetToken: string; expectedText: string }>
 }
 
 export interface SlidesAcceptanceAuthorityLease {

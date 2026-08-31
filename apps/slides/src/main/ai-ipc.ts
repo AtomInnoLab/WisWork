@@ -248,15 +248,13 @@ export function registerSlidesOnlyAiIpc(): void {
             return request.textChecks.map((raw) => {
               const check = validateSlidesAiObject(
                 raw,
-                ['checkId', 'targetToken', 'expectedDigest'],
+                ['checkId', 'targetToken', 'expectedText'],
                 512,
               )
               const checkId = validateSlidesAiString(check.checkId, 128)
               const targetToken = validateSlidesAiString(check.targetToken, 128)
-              const expectedDigest = validateSlidesAiString(check.expectedDigest, 71)
-              if (!/^sha256:[0-9a-f]{64}$/.test(expectedDigest))
-                throw new AiIpcError('invalid_payload')
-              return { checkId, targetToken, expectedDigest }
+              const expectedText = validateSlidesAiString(check.expectedText, 256)
+              return { checkId, targetToken, expectedText }
             })
           })()
     if (!/^sha256:[0-9a-f]{64}$/.test(expectedRevision)) throw new AiIpcError('invalid_payload')
