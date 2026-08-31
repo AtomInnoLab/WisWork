@@ -999,6 +999,7 @@ export type MenuCommand =
   | 'paste'
 
 export interface SlidesApi {
+  inspectAcceptanceAuthority: () => Promise<SlidesAcceptanceAuthoritySnapshot | null>
   /** Capture a bounded renderer selection as authoritative durable targets. */
   captureAgentSelection: (request: { slideIndex: number; sourceIds: string[] }) => Promise<
     | {
@@ -1419,6 +1420,40 @@ export interface SlidesApi {
   onShowInk: (handler: (ev: ShowInkEvent) => void) => () => void
   /** Presenter: subscribe to navigation actions sent back by the audience window */
   onAudienceNav: (handler: (action: AudienceNavAction) => void) => () => void
+}
+
+export interface SlidesAcceptanceAuthoritySnapshot {
+  documentToken: string
+  sessionToken: string
+  revision: string
+  slides: Array<{
+    number: number
+    slideToken: string
+    backgroundColor?: string
+    elements: Array<{
+      targetToken: string
+      role?: 'title' | 'body' | 'emphasis'
+      locked: boolean
+      properties: Partial<
+        Record<
+          | 'text'
+          | 'color'
+          | 'font_size'
+          | 'font_family'
+          | 'bold'
+          | 'italic'
+          | 'x'
+          | 'y'
+          | 'width'
+          | 'height'
+          | 'fill_color'
+          | 'stroke_color'
+          | 'background_color',
+          string | number | boolean | null
+        >
+      >
+    }>
+  }>
 }
 
 export interface PresentationTargetRequest {

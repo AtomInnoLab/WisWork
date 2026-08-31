@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   compileSlidesAcceptance,
+  parseSlidesAcceptanceAuthority,
+  parseSlidesAcceptanceIntent,
   verifySlidesAcceptance,
   type SlidesAcceptanceAuthority,
   type SlidesAcceptanceIntent,
@@ -89,7 +91,7 @@ describe('PC Slides acceptance compiler', () => {
       affectedSlides: [6, 7, 8],
       referenceSlides: [6],
     })
-    expect(result.contract.checks).toHaveLength(17)
+    expect(result.contract.checks).toHaveLength(11)
     expect(result.contract.checks).toContainEqual({
       id: 'check-001',
       kind: 'element_property',
@@ -100,11 +102,12 @@ describe('PC Slides acceptance compiler', () => {
     })
     expect(result.contract.checks).toContainEqual({
       id: 'check-010',
-      kind: 'element_property',
+      kind: 'reference_match',
       slide: 7,
-      roleOrTarget: { kind: 'target', targetToken: 'slide-7:title' },
-      property: 'x',
-      expected: 100,
+      referenceSlide: 6,
+      role: 'title',
+      properties: ['x', 'y', 'width', 'height'],
+      tolerance: 0.5,
     })
   })
 
@@ -207,7 +210,10 @@ describe('PC Slides deterministic verifier', () => {
     if (planned.status !== 'compiled') throw new Error('expected compiled')
     const verificationAuthority = authority()
     const verificationBefore = structuredClone(verificationAuthority)
-    const result = verifySlidesAcceptance(planned.contract, verificationAuthority)
+    const result = verifySlidesAcceptance(planned.contract, verificationAuthority, {
+      mode: 'postwrite',
+      mutatedTargetTokens: ['slide-6:title', 'slide-6'],
+    })
     expect(result.every((entry) => entry.status === 'pass')).toBe(true)
     expect(verificationAuthority).toEqual(verificationBefore)
     expect(current).not.toEqual(before)
@@ -219,7 +225,7 @@ describe('PC Slides deterministic verifier', () => {
     const stale = authority()
     stale.revision = revision('b')
     expect(
-      verifySlidesAcceptance(compiled.contract, stale).every(
+      verifySlidesAcceptance(compiled.contract, stale, { mode: 'prewrite' }).every(
         (r) => r.status === 'fail' && r.code === 'stale_revision',
       ),
     ).toBe(true)
@@ -228,7 +234,7 @@ describe('PC Slides deterministic verifier', () => {
     postWrite.baseRevision = revision('a')
     postWrite.revision = revision('c')
     postWrite.slides[0]!.elements[0]!.properties.color = '#2457A7'
-    expect(verifySlidesAcceptance(compiled.contract, postWrite)[0]).toEqual({
+    expect(verifySlidesAcceptance(compiled.contract, postWrite, { mode: 'prewrite' })[0]).toEqual({
       checkId: 'check-001',
       status: 'pass',
     })
@@ -240,8 +246,12 @@ describe('PC Slides deterministic verifier', () => {
       backgroundColor: '#FFFFFF',
       elements: [],
     })
-    expanded.mutatedTargetTokens = ['slide-9:intruder']
-    expect(verifySlidesAcceptance(compiled.contract, expanded)[0]).toMatchObject({
+    expect(
+      verifySlidesAcceptance(compiled.contract, expanded, {
+        mode: 'postwrite',
+        mutatedTargetTokens: ['slide-9:intruder'],
+      })[0],
+    ).toMatchObject({
       status: 'fail',
       code: 'scope_mismatch',
     })
@@ -250,10 +260,97 @@ describe('PC Slides deterministic verifier', () => {
     const firstCheck = unsupported.checks[0]!
     if (firstCheck.kind !== 'element_property') throw new Error('expected element check')
     unsupported.checks[0] = { ...firstCheck, property: 'font_family' }
-    expect(verifySlidesAcceptance(unsupported, authority())[0]).toEqual({
+    expect(verifySlidesAcceptance(unsupported, authority(), { mode: 'prewrite' })[0]).toEqual({
       checkId: 'check-001',
       status: 'unavailable',
       code: 'unsupported_check',
     })
+  })
+
+  it('uses exact reference tolerance and never passes missing facts', () => {
+    const current = authority()
+    const compiled = compileSlidesAcceptance(
+      {
+        taskId: 'tolerance',
+        affectedSlides: [7],
+        maxCorrectionPasses: 0,
+        changes: [
+          {
+            kind: 'match_reference',
+            slides: [7],
+            referenceSlide: 6,
+            role: 'title',
+            properties: ['x'],
+            tolerance: 0.1,
+          },
+        ],
+      },
+      current,
+    )
+    if (compiled.status !== 'compiled') throw new Error('expected compiled')
+    current.slides[1]!.elements[0]!.properties.x = 100.4
+    expect(verifySlidesAcceptance(compiled.contract, current, { mode: 'prewrite' })[0]).toEqual({
+      checkId: 'check-001',
+      status: 'fail',
+      code: 'value_mismatch',
+    })
+    delete current.slides[0]!.elements[0]!.properties.x
+    delete current.slides[1]!.elements[0]!.properties.x
+    expect(verifySlidesAcceptance(compiled.contract, current, { mode: 'prewrite' })[0]).toEqual({
+      checkId: 'check-001',
+      status: 'unavailable',
+      code: 'unsupported_check',
+    })
+  })
+
+  it('keeps equal missing facts verifiable and requires exact post-write target proof', () => {
+    const current = authority()
+    current.slides[0]!.elements[1]!.properties.bold = null
+    const compiled = compileSlidesAcceptance(
+      {
+        taskId: 'missing',
+        affectedSlides: [6],
+        maxCorrectionPasses: 0,
+        changes: [
+          { kind: 'set_property', slides: [6], role: 'body', property: 'bold', value: false },
+        ],
+      },
+      current,
+    )
+    expect(compiled.status).toBe('compiled')
+    if (compiled.status !== 'compiled') throw new Error('expected compiled')
+    expect(verifySlidesAcceptance(compiled.contract, current, { mode: 'prewrite' })[0].status).toBe(
+      'unavailable',
+    )
+    for (const targets of [[], ['slide-6:body', 'extra']])
+      expect(
+        verifySlidesAcceptance(compiled.contract, current, {
+          mode: 'postwrite',
+          mutatedTargetTokens: targets,
+        })[0],
+      ).toMatchObject({ status: 'fail', code: 'scope_mismatch' })
+  })
+})
+
+describe('PC Slides runtime input parsers', () => {
+  it('rejects prototypes, accessors, symbols, unknown fields and bounds before iteration', () => {
+    expect(parseSlidesAcceptanceIntent(goldenIntent)).toEqual(goldenIntent)
+    expect(parseSlidesAcceptanceAuthority(authority())).toEqual(authority())
+    expect(() =>
+      parseSlidesAcceptanceIntent(Object.assign(Object.create({}), goldenIntent)),
+    ).toThrow()
+    const accessor = { ...goldenIntent }
+    Object.defineProperty(accessor, 'changes', { enumerable: true, get: () => [] })
+    expect(() => parseSlidesAcceptanceIntent(accessor)).toThrow()
+    expect(() => parseSlidesAcceptanceIntent({ ...goldenIntent, unexpected: true })).toThrow()
+    expect(() =>
+      parseSlidesAcceptanceIntent({
+        ...goldenIntent,
+        changes: Array(51).fill(goldenIntent.changes[0]),
+      }),
+    ).toThrow()
+    expect(() =>
+      parseSlidesAcceptanceAuthority({ ...authority(), [Symbol('unsafe')]: true }),
+    ).toThrow()
   })
 })

@@ -48,6 +48,7 @@ import {
 } from './operations/desktop-host'
 import { PresentationTransactionExecutor } from './operations/executor'
 import { PreparedTargetLedger } from './operations/prepared-target-ledger'
+import { inspectSlidesAcceptanceAuthority } from './operations/acceptance-authority'
 
 // ---- AI settings + streaming proxy (the main process does the networking to avoid renderer CORS; implementation shared via @wiswork/ai-provider) ----
 
@@ -184,6 +185,20 @@ export function registerSlidesOnlyAiIpc(): void {
     NonNullable<ReturnType<typeof sessions.get>>,
     PreparedTargetLedger
   >()
+
+  ipcMain.handle('slides:acceptance-authority-inspect', async (event) => {
+    assertAiIpcSender(event)
+    const session = sessions.get(event.sender.id)!
+    if (
+      sessionHasActivePresentationTransaction(session) ||
+      sessionHasActivePresentationMutation(session) ||
+      sessionHasActivePresentationPersistence(session)
+    )
+      return null
+    const generation = session.mutationGeneration ?? 0
+    const snapshot = await inspectSlidesAcceptanceAuthority(session)
+    return (session.mutationGeneration ?? 0) === generation ? snapshot : null
+  })
 
   const elementType = (element: SlideElement): PresentationElementType | undefined => {
     if (element.type === 'picture') return 'image'
