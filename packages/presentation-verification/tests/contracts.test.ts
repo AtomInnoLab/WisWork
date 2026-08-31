@@ -274,7 +274,7 @@ describe('safe visual and completion data', () => {
     ).toThrow()
   })
 
-  it('enforces the visual limit against actual serialized envelope bytes', () => {
+  it('rejects unknown fields before measuring the bounded envelope', () => {
     expect(() =>
       parsePresentationRenderingFacts({
         contractDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -283,7 +283,46 @@ describe('safe visual and completion data', () => {
         deterministicResults: [],
         padding: 'x'.repeat(PRESENTATION_VERIFICATION_LIMITS.maxVisualRequestBytes),
       }),
-    ).toThrow(/serialized visual request.*bounds/i)
+    ).toThrow(/unknown field padding/i)
+  })
+
+  it('rejects hostile rendering shapes promptly without unbounded traversal or accessor reads', () => {
+    const hugeSparse: unknown[] = []
+    hugeSparse.length = 0xffff_ffff
+    expect(() =>
+      parsePresentationRenderingFacts({
+        contractDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        revision: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        screenshots: hugeSparse,
+        deterministicResults: [],
+      }),
+    ).toThrow(/screenshots length.*bounds/i)
+
+    let reads = 0
+    const deepUnknown: Record<string, unknown> = {}
+    let cursor = deepUnknown
+    for (let index = 0; index < 10_000; index += 1) {
+      const next: Record<string, unknown> = {}
+      cursor.next = next
+      cursor = next
+    }
+    Object.defineProperty(cursor, 'secret', {
+      enumerable: true,
+      get: () => {
+        reads += 1
+        return 'raw content'
+      },
+    })
+    expect(() =>
+      parsePresentationRenderingFacts({
+        contractDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        revision: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        screenshots: [],
+        deterministicResults: [],
+        unknown: deepUnknown,
+      }),
+    ).toThrow(/unknown field unknown/i)
+    expect(reads).toBe(0)
   })
 
   it('counts the envelope in addition to declared screenshot payload bytes', () => {
@@ -448,6 +487,127 @@ describe('safe visual and completion data', () => {
         contract(),
       ).status,
     ).toBe('needs_user')
+  })
+
+  it.each([
+    ['verified failure code', { ...verifiedReceipt(), safeCode: 'mutation_failed' }],
+    [
+      'applied with only failed checks',
+      {
+        ...verifiedReceipt(),
+        status: 'applied_unverified',
+        passedCheckIds: ['check-title-color', 'check-title-position'],
+        failedCheckIds: ['check-render'],
+        safeCode: 'unsupported_check',
+      },
+    ],
+    [
+      'applied uncertain office state',
+      {
+        ...verifiedReceipt(),
+        status: 'applied_unverified',
+        passedCheckIds: ['check-title-color'],
+        unavailableCheckIds: ['check-title-position', 'check-render'],
+        safeCode: 'office_state_uncertain',
+      },
+    ],
+    [
+      'applied mutation failure code',
+      {
+        ...verifiedReceipt(),
+        status: 'applied_unverified',
+        passedCheckIds: ['check-title-color'],
+        unavailableCheckIds: ['check-title-position', 'check-render'],
+        safeCode: 'mutation_failed',
+      },
+    ],
+    [
+      'needs user screenshot code',
+      {
+        ...verifiedReceipt(),
+        status: 'needs_user',
+        mutationReceiptIds: [],
+        passedCheckIds: ['check-title-color'],
+        unavailableCheckIds: ['check-title-position', 'check-render'],
+        safeCode: 'screenshot_unavailable',
+      },
+    ],
+    [
+      'failed screenshot code',
+      {
+        ...verifiedReceipt(),
+        status: 'failed',
+        mutationReceiptIds: [],
+        passedCheckIds: ['check-title-color'],
+        failedCheckIds: ['check-title-position', 'check-render'],
+        safeCode: 'screenshot_unavailable',
+      },
+    ],
+    [
+      'unchanged failure code',
+      {
+        ...verifiedReceipt(),
+        status: 'unchanged',
+        mutationReceiptIds: [],
+        safeCode: 'mutation_failed',
+      },
+    ],
+  ])('rejects status/safe-code contradiction: %s', (_label, input) => {
+    expect(() => parsePresentationCompletionReceipt(input, contract())).toThrow(
+      /status|code|applied/i,
+    )
+  })
+
+  it.each([
+    ['verified', verifiedReceipt()],
+    [
+      'applied screenshot unavailable',
+      {
+        ...verifiedReceipt(),
+        status: 'applied_unverified',
+        passedCheckIds: ['check-title-color'],
+        unavailableCheckIds: ['check-title-position', 'check-render'],
+        safeCode: 'screenshot_unavailable',
+      },
+    ],
+    [
+      'applied unsupported check',
+      {
+        ...verifiedReceipt(),
+        status: 'applied_unverified',
+        passedCheckIds: ['check-title-color'],
+        unavailableCheckIds: ['check-title-position', 'check-render'],
+        safeCode: 'unsupported_check',
+      },
+    ],
+    [
+      'needs user unsupported',
+      {
+        ...verifiedReceipt(),
+        status: 'needs_user',
+        mutationReceiptIds: [],
+        passedCheckIds: ['check-title-color'],
+        unavailableCheckIds: ['check-title-position', 'check-render'],
+        safeCode: 'unsupported_check',
+      },
+    ],
+    [
+      'failed uncertain office state',
+      {
+        ...verifiedReceipt(),
+        status: 'failed',
+        mutationReceiptIds: [],
+        passedCheckIds: ['check-title-color'],
+        unavailableCheckIds: ['check-title-position', 'check-render'],
+        safeCode: 'office_state_uncertain',
+      },
+    ],
+    [
+      'unchanged cancelled',
+      { ...verifiedReceipt(), status: 'unchanged', mutationReceiptIds: [], safeCode: 'cancelled' },
+    ],
+  ])('accepts coherent status/safe-code pair: %s', (_label, input) => {
+    expect(parsePresentationCompletionReceipt(input, contract()).status).toBe(input.status)
   })
 
   it.each([

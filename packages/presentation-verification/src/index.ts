@@ -572,70 +572,7 @@ export const parseVisualReviewResult = (value: unknown): VisualReviewResult => {
   return { status, failedCheckIds, observations, fixIntents }
 }
 
-const serializeStrictJson = (value: unknown, seen: Set<object> = new Set()): string => {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean')
-    return JSON.stringify(value)
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) fail('serialized visual request contains a non-finite number')
-    return JSON.stringify(value)
-  }
-  if (typeof value !== 'object') fail('serialized visual request contains an unsupported value')
-  if (seen.has(value)) fail('serialized visual request contains a cycle')
-  seen.add(value)
-  try {
-    if (Array.isArray(value)) {
-      if (Object.getPrototypeOf(value) !== Array.prototype)
-        fail('serialized visual request contains a non-standard array')
-      const length = Object.getOwnPropertyDescriptor(value, 'length')
-      if (length === undefined || !Number.isSafeInteger(length.value))
-        fail('serialized visual request contains an invalid array')
-      const descriptors: PropertyDescriptor[] = []
-      for (const key of Reflect.ownKeys(value)) {
-        if (key === 'length') continue
-        if (typeof key !== 'string') fail('serialized visual request contains a symbol field')
-        if (unsafeKeys.has(key)) fail('serialized visual request contains an unsafe key')
-        if (!arrayIndexPattern.test(key) || Number(key) >= length.value)
-          fail('serialized visual request contains an extra array field')
-        const descriptor = Object.getOwnPropertyDescriptor(value, key)
-        if (
-          descriptor === undefined ||
-          descriptor.get !== undefined ||
-          descriptor.set !== undefined
-        )
-          fail('serialized visual request contains an accessor field')
-        if (!descriptor.enumerable) fail('serialized visual request contains a hidden field')
-        descriptors[Number(key)] = descriptor
-      }
-      const items = Array.from({ length: length.value }, (_, index) => {
-        const descriptor = descriptors[index]
-        if (descriptor === undefined) fail('serialized visual request contains an array hole')
-        return serializeStrictJson(descriptor.value, seen)
-      })
-      return `[${items.join(',')}]`
-    }
-    const prototype = Object.getPrototypeOf(value)
-    if (prototype !== Object.prototype && prototype !== null)
-      fail('serialized visual request contains a non-plain object')
-    const fields: string[] = []
-    for (const key of Reflect.ownKeys(value)) {
-      if (typeof key !== 'string') fail('serialized visual request contains a symbol field')
-      if (unsafeKeys.has(key)) fail('serialized visual request contains an unsafe key')
-      const descriptor = Object.getOwnPropertyDescriptor(value, key)
-      if (descriptor === undefined || descriptor.get !== undefined || descriptor.set !== undefined)
-        fail('serialized visual request contains an accessor field')
-      if (!descriptor.enumerable) fail('serialized visual request contains a hidden field')
-      fields.push(`${JSON.stringify(key)}:${serializeStrictJson(descriptor.value, seen)}`)
-    }
-    return `{${fields.join(',')}}`
-  } finally {
-    seen.delete(value)
-  }
-}
-
 export const parsePresentationRenderingFacts = (value: unknown): PresentationRenderingFacts => {
-  const serializedBytes = new TextEncoder().encode(serializeStrictJson(value)).byteLength
-  if (serializedBytes > PRESENTATION_VERIFICATION_LIMITS.maxVisualRequestBytes)
-    fail('serialized visual request size is out of bounds')
   const record = readObject(value, 'renderingFacts')
   exactKeys(
     record,
@@ -665,8 +602,6 @@ export const parsePresentationRenderingFacts = (value: unknown): PresentationRen
       bytes,
     }
   })
-  if (serializedBytes + totalBytes > PRESENTATION_VERIFICATION_LIMITS.maxVisualRequestBytes)
-    fail('renderingFacts serialized visual request is out of bounds')
   const deterministicResults = readArray(
     record.deterministicResults,
     'renderingFacts.deterministicResults',
@@ -706,12 +641,16 @@ export const parsePresentationRenderingFacts = (value: unknown): PresentationRen
     deterministicResults.length
   )
     fail('deterministic result check ids must be unique')
-  return {
+  const facts: PresentationRenderingFacts = {
     contractDigest: readDigest(record.contractDigest, 'renderingFacts.contractDigest'),
     revision: readDigest(record.revision, 'renderingFacts.revision'),
     screenshots,
     deterministicResults,
   }
+  const serializedBytes = new TextEncoder().encode(JSON.stringify(facts)).byteLength
+  if (serializedBytes + totalBytes > PRESENTATION_VERIFICATION_LIMITS.maxVisualRequestBytes)
+    fail('renderingFacts serialized visual request is out of bounds')
+  return facts
 }
 
 export const parsePresentationCompletionReceipt = (
@@ -816,17 +755,42 @@ export const parsePresentationCompletionReceipt = (
     fail('receipt rollback requires mutation evidence')
   if (status === 'verified' && (unprovedCount !== 0 || mutationReceiptIds.length === 0))
     fail('verified receipt requires every check passed and mutation evidence')
-  if (status === 'applied_unverified' && (mutationReceiptIds.length === 0 || unprovedCount === 0))
-    fail('applied_unverified receipt requires mutation evidence and unproved checks')
+  if (status === 'verified' && safeCode !== undefined)
+    fail('verified receipt must not contain a safeCode')
+  if (
+    status === 'applied_unverified' &&
+    (mutationReceiptIds.length === 0 || unavailableCheckIds.length === 0)
+  )
+    fail('applied_unverified receipt requires mutation evidence and unavailable checks')
+  if (
+    status === 'applied_unverified' &&
+    safeCode !== 'screenshot_unavailable' &&
+    safeCode !== 'unsupported_check'
+  )
+    fail('applied_unverified receipt has an incoherent status safeCode')
   if (status === 'failed' && (mutationReceiptIds.length !== 0 || unprovedCount === 0))
     fail('failed receipt requires no mutation evidence and at least one unproved check')
+  if (
+    status === 'failed' &&
+    safeCode !== 'mutation_failed' &&
+    safeCode !== 'cancelled' &&
+    safeCode !== 'stale_authority' &&
+    safeCode !== 'office_state_uncertain'
+  )
+    fail('failed receipt has an incoherent status safeCode')
   if (
     status === 'unchanged' &&
     (mutationReceiptIds.length !== 0 || unprovedCount !== 0 || correctionPasses !== 0)
   )
     fail('unchanged receipt requires all checks passed without mutations or corrections')
-  if (status === 'needs_user' && (unprovedCount === 0 || safeCode !== 'confirmation_required'))
-    fail('needs_user receipt requires unproved checks and confirmation evidence')
+  if (status === 'unchanged' && safeCode !== undefined && safeCode !== 'cancelled')
+    fail('unchanged receipt has an incoherent status safeCode')
+  if (
+    status === 'needs_user' &&
+    (unprovedCount === 0 ||
+      (safeCode !== 'confirmation_required' && safeCode !== 'unsupported_check'))
+  )
+    fail('needs_user receipt has an incoherent status safeCode or no unproved checks')
   return {
     version: 1,
     taskId,
