@@ -1,0 +1,370 @@
+name: Desktop Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag in vX.Y.Z form
+        required: true
+        type: string
+
+concurrency:
+  group: desktop-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      provider: ${{ steps.release.outputs.provider }}
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - name: Checkout requested tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Validate release tag and create draft
+        id: release
+        env:
+          TAG: ${{ inputs.tag }}
+          WISWORK_UPDATE_PROVIDER: ${{ secrets.WISWORK_UPDATE_PROVIDER }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          VERSION="${TAG#v}"
+          test "$(node -p "require('./apps/shell/package.json').version")" = "$VERSION"
+          test "$(git rev-parse "$TAG^{commit}")" = "$(git rev-parse HEAD)"
+          test "$WISWORK_UPDATE_PROVIDER" = github
+          COMMIT="$(git rev-parse HEAD)"
+          gh release create "$TAG" --draft --title "$TAG" --generate-notes --verify-tag
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "provider=$WISWORK_UPDATE_PROVIDER"
+            echo "commit=$COMMIT"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: macos-arm64
+            runner: macos-14
+            tectonic_platform: darwin-arm64
+            cargo_target: aarch64-apple-darwin
+            file_arch: arm64
+            electron_args: --mac dmg zip --arm64
+          - id: macos-x64
+            runner: macos-15-intel
+            tectonic_platform: darwin-x64
+            cargo_target: x86_64-apple-darwin
+            file_arch: x86_64
+            electron_args: --mac dmg zip --x64
+          - id: windows-x64
+            runner: windows-latest
+            tectonic_platform: win32-x64
+            cargo_target: x86_64-pc-windows-msvc
+            electron_args: --win nsis --x64
+    steps:
+      - name: Checkout validated commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
+        with:
+          toolchain: stable
+          targets: ${{ matrix.cargo_target }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate notices
+        run: npm run notices
+
+      - name: Build application modules
+        run: npm run build:all
+
+      - name: Build macOS XLSX sidecar
+        if: startsWith(matrix.id, 'macos-')
+        run: |
+          set -euo pipefail
+          cargo build --release --target "${{ matrix.cargo_target }}" \
+            --manifest-path apps/sheets/native/xlsx-engine/Cargo.toml \
+            --config apps/sheets/native/xlsx-engine/.cargo/config.toml
+          cp "apps/sheets/native/xlsx-engine/target/${{ matrix.cargo_target }}/release/xlsx-sidecar" \
+            apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar
+          chmod +x apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar
+          file apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar | grep -q "${{ matrix.file_arch }}"
+
+      - name: Build Windows XLSX sidecar
+        if: matrix.id == 'windows-x64'
+        shell: pwsh
+        run: |
+          cargo build --release --manifest-path apps/sheets/native/xlsx-engine/Cargo.toml --config apps/sheets/native/xlsx-engine/.cargo/config.toml
+          $sidecar = 'apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar.exe'
+          if (-not (Test-Path -LiteralPath $sidecar -PathType Leaf)) { throw "Missing XLSX sidecar: $sidecar" }
+
+      - name: Fetch and verify arm64 macOS Tectonic
+        if: matrix.id == 'macos-arm64'
+        run: |
+          set -euo pipefail
+          TECTONIC="$GITHUB_WORKSPACE/apps/latex/native/tectonic-ci"
+          node tools/fetch-tectonic.mjs --platform darwin-arm64 --output "$TECTONIC"
+          file "$TECTONIC" | grep -q arm64
+          "$TECTONIC" --version
+
+      - name: Fetch and verify x64 macOS Tectonic
+        if: matrix.id == 'macos-x64'
+        run: |
+          set -euo pipefail
+          TECTONIC="$GITHUB_WORKSPACE/apps/latex/native/tectonic-ci"
+          node tools/fetch-tectonic.mjs --platform darwin-x64 --output "$TECTONIC"
+          file "$TECTONIC" | grep -q x86_64
+          "$TECTONIC" --version
+
+      - name: Fetch and verify Windows Tectonic
+        if: matrix.id == 'windows-x64'
+        shell: pwsh
+        run: |
+          $tectonic = Join-Path $env:GITHUB_WORKSPACE 'apps/latex/native/tectonic-ci.exe'
+          node tools/fetch-tectonic.mjs --platform win32-x64 --output $tectonic
+          & $tectonic --version
+
+      - name: Import macOS signing certificate
+        if: startsWith(matrix.id, 'macos-')
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_P12_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          CERTIFICATE_PATH="$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security default-keychain -s "$KEYCHAIN_PATH"
+
+      - name: Package signed and notarized macOS application
+        if: startsWith(matrix.id, 'macos-')
+        working-directory: apps/shell
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WISWORK_TECTONIC_SOURCE: ${{ github.workspace }}/apps/latex/native/tectonic-ci
+          WISWORK_UPDATE_PROVIDER: github
+        run: npx electron-builder --config electron-builder.cjs ${{ matrix.electron_args }} --publish never
+
+      - name: Verify signed macOS artifacts
+        if: startsWith(matrix.id, 'macos-')
+        working-directory: apps/shell
+        run: |
+          set -euo pipefail
+          APP=$(find release -type d -path '*WisWork.app' -print -quit)
+          test -n "$APP"
+          codesign --verify --deep --strict "$APP"
+          spctl --assess --type execute --verbose "$APP"
+          xcrun stapler validate "$APP"
+          DMGS=(release/*.dmg)
+          test "${#DMGS[@]}" -eq 1
+          for DMG in "${DMGS[@]}"; do
+            xcrun stapler validate "$DMG"
+          done
+          SIDECAR="$APP/Contents/Resources/native/xlsx-sidecar"
+          TECTONIC="$APP/Contents/Resources/native/tectonic"
+          file "$SIDECAR" | grep -q "${{ matrix.file_arch }}"
+          file "$TECTONIC" | grep -q "${{ matrix.file_arch }}"
+          "$TECTONIC" --version
+          test -f release/latest-mac.yml
+          test -n "$(find release -maxdepth 1 -name '*.dmg' -print -quit)"
+          test -n "$(find release -maxdepth 1 -name '*.zip' -print -quit)"
+
+      - name: Package Windows application
+        if: matrix.id == 'windows-x64'
+        working-directory: apps/shell
+        shell: pwsh
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          WISWORK_TECTONIC_SOURCE: ${{ github.workspace }}/apps/latex/native/tectonic-ci.exe
+          WISWORK_UPDATE_PROVIDER: github
+        run: npx electron-builder --config electron-builder.cjs ${{ matrix.electron_args }} --publish never
+
+      - name: Verify Windows artifacts
+        if: matrix.id == 'windows-x64'
+        working-directory: apps/shell
+        shell: pwsh
+        run: |
+          $native = 'release/win-unpacked/resources/native'
+          $nativeXlsx = "$native/xlsx-sidecar.exe"
+          $nativeTectonic = "$native/tectonic.exe"
+          $installer = Get-ChildItem release -Filter 'WisWork-*.exe' -File | Select-Object -First 1
+          if (-not (Test-Path -LiteralPath $nativeXlsx -PathType Leaf)) { throw "Missing XLSX sidecar: $nativeXlsx" }
+          if (-not (Test-Path -LiteralPath $nativeTectonic -PathType Leaf)) { throw "Missing Tectonic sidecar: $nativeTectonic" }
+          if ($null -eq $installer) { throw 'Missing NSIS installer' }
+          if (-not (Test-Path -LiteralPath 'release/latest.yml' -PathType Leaf)) { throw 'Missing latest.yml' }
+          & $nativeTectonic --version
+
+      - name: Remove temporary macOS keychain
+        if: always() && startsWith(matrix.id, 'macos-')
+        run: |
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          security delete-keychain "$RUNNER_TEMP/build.keychain-db"
+
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.id }}
+          path: |
+            apps/shell/release/*.exe
+            apps/shell/release/*.dmg
+            apps/shell/release/*.zip
+            apps/shell/release/latest-mac.yml
+            apps/shell/release/latest.yml
+          if-no-files-found: error
+          retention-days: 7
+
+  verify-release:
+    needs: [prepare, build]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout validated commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download platform artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: .artifacts/release
+          pattern: '{macos-arm64,macos-x64,windows-x64}'
+          merge-multiple: false
+
+      - name: Verify update metadata and collect release files
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mkdir -p .artifacts/release/files
+          declare -A seen
+          copy_one() {
+            local label="$1"
+            shift
+            if (( $# != 1 )); then
+              echo "Expected one $label artifact, found $#" >&2
+              exit 1
+            fi
+            local source="$1"
+            local name="$(basename "$source")"
+            if [[ -v "seen[$name]" ]]; then
+              echo "duplicate release artifact basename: $name" >&2
+              exit 1
+            fi
+            seen[$name]=1
+            cp "$source" ".artifacts/release/files/$name"
+            ARTIFACT_NAME="$name"
+          }
+          copy_one 'Windows NSIS installer' .artifacts/release/windows-x64/WisWork-*.exe
+          WINDOWS_INSTALLER="$ARTIFACT_NAME"
+          copy_one 'macOS arm64 ZIP' .artifacts/release/macos-arm64/WisWork-*-arm64.zip
+          ARM64_ZIP="$ARTIFACT_NAME"
+          copy_one 'macOS x64 ZIP' .artifacts/release/macos-x64/WisWork-*.zip
+          X64_ZIP="$ARTIFACT_NAME"
+          copy_one 'macOS arm64 DMG' .artifacts/release/macos-arm64/WisWork-*-arm64.dmg
+          ARM64_DMG="$ARTIFACT_NAME"
+          copy_one 'macOS x64 DMG' .artifacts/release/macos-x64/WisWork-*.dmg
+          X64_DMG="$ARTIFACT_NAME"
+          node tools/release/merge-update-metadata.mjs \
+            --windows .artifacts/release/windows-x64/latest.yml \
+            --mac-arm64 .artifacts/release/macos-arm64/latest-mac.yml \
+            --mac-x64 .artifacts/release/macos-x64/latest-mac.yml \
+            --artifacts-dir .artifacts/release/files \
+            --output-dir .artifacts/publish \
+            --version "$VERSION" \
+            --additional-artifact "$ARM64_DMG" \
+            --additional-artifact "$X64_DMG"
+          cp .artifacts/release/files/* .artifacts/publish/
+
+      - name: Upload verified publish artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verified-desktop-release
+          path: .artifacts/publish
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [prepare, verify-release]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout validated commit for immutable tag verification
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+
+      - name: Download verified publish artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: verified-desktop-release
+          path: .artifacts/publish
+
+      - name: Publish verified release
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "refs/tags/$TAG"
+          REMOTE_COMMIT="$(git rev-parse FETCH_HEAD^{commit})"
+          if [ "$REMOTE_COMMIT" != "${{ needs.prepare.outputs.commit }}" ]; then
+            echo "expected immutable tag commit ${{ needs.prepare.outputs.commit }}, got $REMOTE_COMMIT" >&2
+            exit 1
+          fi
+          gh release upload "$TAG" .artifacts/publish/* --clobber
+          gh release edit "$TAG" --draft=false
