@@ -36,6 +36,7 @@ export type ProposalDecision =
   | { status: 'failed'; error: string }
 
 interface ProposalDecisionLifecycle {
+  id: string
   promise: Promise<ProposalDecision>
   resolve(value: ProposalDecision): void
   settled: boolean
@@ -50,7 +51,12 @@ export interface StructuredProposalController {
   reject(): void
   newTurn(): void
   logout(): void
+  subscribeAudit?(listener: (event: StructuredProposalAuditEvent) => void): () => void
 }
+
+export type StructuredProposalAuditEvent =
+  | { kind: 'proposed'; id: string; fingerprint: string; targets: string[] }
+  | { kind: 'settled'; id: string; status: ProposalDecision['status']; error?: string }
 
 export interface OfficeProposal {
   id: string
@@ -136,12 +142,14 @@ export function createStructuredProposalController(
     | undefined
   let confirming: AbortController | undefined
   const listeners = new Set<() => void>()
+  const auditListeners = new Set<(event: StructuredProposalAuditEvent) => void>()
   const snapshot = (value: StructuredProposal) => deepFreeze(boundedCopy(value))
   const publish = () => listeners.forEach((listener) => listener())
   const settle = (decision: ProposalDecisionLifecycle, value: ProposalDecision) => {
     if (decision.settled) return
     decision.settled = true
     decision.resolve(value)
+    auditListeners.forEach((listener) => listener({ kind: 'settled', id: decision.id, ...value }))
   }
   const invalidate = (status: 'rejected' | 'cancelled') => {
     if (current) settle(current.decision, { status })
@@ -201,8 +209,16 @@ export function createStructuredProposalController(
       current = {
         snapshot: publicValue,
         request: { ...request },
-        decision: { promise, resolve, settled: false },
+        decision: { id: publicValue.id, promise, resolve, settled: false },
       }
+      auditListeners.forEach((listener) =>
+        listener({
+          kind: 'proposed',
+          id: publicValue.id,
+          fingerprint: publicValue.fingerprint,
+          targets: [...publicValue.impact.targets],
+        }),
+      )
       publish()
       return snapshot(publicValue)
     },
@@ -248,6 +264,10 @@ export function createStructuredProposalController(
     reject: () => invalidate('rejected'),
     newTurn: () => invalidate('cancelled'),
     logout: () => invalidate('cancelled'),
+    subscribeAudit(listener) {
+      auditListeners.add(listener)
+      return () => auditListeners.delete(listener)
+    },
   }
 }
 

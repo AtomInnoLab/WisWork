@@ -7,6 +7,10 @@ import { readBoundedImage } from '../shared/import-media.js'
 import type { InMemoryVfs } from '../shared/vfs.js'
 import type { PowerPointAdapter } from './browser-powerpoint-adapter.js'
 import {
+  createOfficePowerPointVerification,
+  type OfficePowerPointVerificationAuthority,
+} from './powerpoint-verification.js'
+import {
   MAX_POWERPOINT_RESULT_BYTES,
   type PowerPointDeclarativeOperation,
   type PowerPointMasterOperation,
@@ -1052,9 +1056,21 @@ export function createPowerPointSkill(options: {
   platform?: string
   vfs?: InMemoryVfs
   nativeMasterEditingSupported?: boolean
+  verificationAuthority?: OfficePowerPointVerificationAuthority
 }): AgentSkill {
   const masterXmlEditingSupported = options.platform?.toLowerCase() !== 'mac'
   const nativeMasterEditingSupported = options.nativeMasterEditingSupported !== false
+  const presentation = options.verificationAuthority
+    ? createOfficePowerPointVerification({
+        authority: options.verificationAuthority,
+        platform: options.platform,
+      })
+    : undefined
+  options.proposals.subscribeAudit?.((event) => {
+    if (!presentation) return
+    if (event.kind === 'proposed') presentation.recordProposal(event)
+    else presentation.recordSettlement(event)
+  })
   async function proposePackageEdit(
     toolName: string,
     kind: PackageEditKind,
@@ -1137,6 +1153,7 @@ export function createPowerPointSkill(options: {
         (nativeMasterEditingSupported ||
           !['inspect_slide_masters', 'edit_slide_master'].includes(tool.name)),
     ),
+    ...(presentation ? { presentation } : {}),
     async executeTool(call, signal) {
       if (call.inputError || call.truncated)
         return failure(
