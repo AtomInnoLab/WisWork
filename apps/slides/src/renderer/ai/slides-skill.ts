@@ -272,16 +272,16 @@ function targetMention(clause: string, match: RegExpMatchArray): TargetMention {
   const explicitId = after.match(/^\s+id\s*[:=#]\s*([A-Za-z0-9_-]+)/i)
   const shortSuffix = after.match(/^\s+([A-Z]|\d+)\b/)
   const bareId = after.match(/^\s+([A-Za-z0-9]+(?:[-_][A-Za-z0-9_-]+))(?=\s|[,.;:!?，。；！？]|$)/)
-  const identity = chineseOrdinal?.[1]
-    ? `ordinal:${chineseOrdinal[1]}`
-    : englishOrdinal?.[1]
-      ? `ordinal:${englishOrdinal[1].toLowerCase()}`
-      : explicitId?.[1]
-        ? `id:${explicitId[1].toLowerCase()}`
-        : shortSuffix?.[1]
-          ? `label:${shortSuffix[1].toLowerCase()}`
-          : bareId?.[1]
-            ? `id:${bareId[1].toLowerCase()}`
+  const identity = explicitId?.[1]
+    ? `id:${explicitId[1].toLowerCase()}`
+    : bareId?.[1]
+      ? `id:${bareId[1].toLowerCase()}`
+      : shortSuffix?.[1]
+        ? `label:${shortSuffix[1].toLowerCase()}`
+        : chineseOrdinal?.[1]
+          ? `ordinal:${chineseOrdinal[1]}`
+          : englishOrdinal?.[1]
+            ? `ordinal:${englishOrdinal[1].toLowerCase()}`
             : undefined
   return {
     kind: targetKind(match[0]),

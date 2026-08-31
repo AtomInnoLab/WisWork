@@ -165,6 +165,22 @@ describe('Slides capability truth', () => {
   })
 
   it.each([
+    'Element A-card is locked, so Element A-other cannot be resized.',
+    'Shape 1-main is read-only, so Shape 1-alt cannot be resized.',
+    'First Title A is locked, so First Title B cannot be moved.',
+  ])('uses the most specific identity when components overlap: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it.each([
+    'Element A-card is locked, so Element A-card cannot be resized.',
+    'Shape 1-main is read-only, so Shape 1-main cannot be resized.',
+    'First Title A is locked, so First Title A cannot be moved.',
+  ])('allows the same most-specific composite identity: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBeUndefined()
+  })
+
+  it.each([
     'The editor cannot change, e.g. the title position.',
     'The editor cannot change, i.e. resize, the title element.',
     'In v1.2 the editor cannot change the title position.',
