@@ -166,7 +166,10 @@ jobs:
         run: |
           $tectonic = Join-Path $env:GITHUB_WORKSPACE 'apps/latex/native/tectonic-ci.exe'
           node tools/fetch-tectonic.mjs --platform win32-x64 --output $tectonic
+          if ($LASTEXITCODE -ne 0) { throw 'Verified Windows Tectonic fetch failed.' }
+          if (-not (Test-Path -LiteralPath $tectonic -PathType Leaf)) { throw 'Verified Windows Tectonic was not produced.' }
           & $tectonic --version
+          if ($LASTEXITCODE -ne 0) { throw 'Verified Windows Tectonic could not run.' }
 
       - name: Import macOS signing certificate
         if: startsWith(matrix.id, 'macos-')
