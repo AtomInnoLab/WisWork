@@ -26,8 +26,8 @@ export interface TectonicPlatformAsset {
   readonly bytes: number
   readonly sha256: string
   readonly archive: {
-    readonly format: 'tar.gz'
-    readonly executable: string
+    readonly format: 'tar.gz' | 'zip'
+    readonly executable: 'tectonic' | 'tectonic.exe'
   }
 }
 
@@ -136,17 +136,23 @@ export function parseTectonicManifest(value: unknown): TectonicManifest {
     platforms.add(platform)
     const archive = record(item.archive, `manifest.tectonic.assets[${index}].archive`)
     exactKeys(archive, ['format', 'executable'], 'Tectonic archive')
-    if (archive.format !== 'tar.gz') manifestError('Tectonic archive format must be tar.gz')
+    const archiveFormat = string(archive.format, 'archive.format')
+    const archiveExecutable = id(archive.executable, 'archive.executable')
+    let parsedArchive: TectonicPlatformAsset['archive']
+    if (archiveFormat === 'tar.gz' && archiveExecutable === 'tectonic') {
+      parsedArchive = Object.freeze({ format: 'tar.gz', executable: 'tectonic' })
+    } else if (archiveFormat === 'zip' && archiveExecutable === 'tectonic.exe') {
+      parsedArchive = Object.freeze({ format: 'zip', executable: 'tectonic.exe' })
+    } else {
+      manifestError('Tectonic archive layout is invalid')
+    }
     return Object.freeze({
       id: assetId,
       platform,
       url: pinnedUrl(item.url, `manifest.tectonic.assets[${index}].url`, ['github.com']),
       bytes: bytes(item.bytes, `manifest.tectonic.assets[${index}].bytes`),
       sha256: digest(item.sha256, `manifest.tectonic.assets[${index}].sha256`),
-      archive: Object.freeze({
-        format: 'tar.gz' as const,
-        executable: id(archive.executable, 'archive.executable'),
-      }),
+      archive: parsedArchive,
     })
   })
   const bundleValue = record(root.bundle, 'manifest.bundle')

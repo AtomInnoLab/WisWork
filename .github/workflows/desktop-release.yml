@@ -222,6 +222,12 @@ jobs:
           file "$SIDECAR" | grep -q "${{ matrix.file_arch }}"
           file "$TECTONIC" | grep -q "${{ matrix.file_arch }}"
           "$TECTONIC" --version
+          ZIPS=(release/*.zip)
+          test "${#ZIPS[@]}" -eq 1
+          node ../../tools/release/generate-update-metadata.mjs \
+            --artifact "${ZIPS[0]}" \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --output release/latest-mac.yml
           test -f release/latest-mac.yml
           test -n "$(find release -maxdepth 1 -name '*.dmg' -print -quit)"
           test -n "$(find release -maxdepth 1 -name '*.zip' -print -quit)"
@@ -248,8 +254,11 @@ jobs:
           if (-not (Test-Path -LiteralPath $nativeXlsx -PathType Leaf)) { throw "Missing XLSX sidecar: $nativeXlsx" }
           if (-not (Test-Path -LiteralPath $nativeTectonic -PathType Leaf)) { throw "Missing Tectonic sidecar: $nativeTectonic" }
           if ($null -eq $installer) { throw 'Missing NSIS installer' }
-          if (-not (Test-Path -LiteralPath 'release/latest.yml' -PathType Leaf)) { throw 'Missing latest.yml' }
           & $nativeTectonic --version
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged Tectonic could not run.' }
+          node ../../tools/release/generate-update-metadata.mjs --artifact $installer.FullName --version '${{ needs.prepare.outputs.version }}' --output release/latest.yml
+          if ($LASTEXITCODE -ne 0) { throw 'Windows update metadata generation failed.' }
+          if (-not (Test-Path -LiteralPath 'release/latest.yml' -PathType Leaf)) { throw 'Missing latest.yml' }
 
       - name: Remove temporary macOS keychain
         if: always() && startsWith(matrix.id, 'macos-')
