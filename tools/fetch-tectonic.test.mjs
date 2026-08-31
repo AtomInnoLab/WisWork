@@ -10,6 +10,7 @@ import {
   parseArguments,
   publishExecutable,
   selectPlatformAsset,
+  syncDirectory,
 } from './fetch-tectonic.mjs'
 
 const asset = {
@@ -37,6 +38,18 @@ test('publishExecutable copies only a regular verified executable to the explici
   await writeFile(source, 'verified-binary')
   await publishExecutable(source, output)
   assert.equal(await readFile(output, 'utf8'), 'verified-binary')
+})
+
+test('syncDirectory skips unsupported Windows directory handles', async () => {
+  let opened = false
+  await syncDirectory('C:\\runner\\cache', {
+    platform: 'win32',
+    openImplementation: async () => {
+      opened = true
+      throw new Error('Windows directories cannot be opened for fsync')
+    },
+  })
+  assert.equal(opened, false)
 })
 
 test('extractVerifiedTectonic validates one executable and its exact version', async (context) => {

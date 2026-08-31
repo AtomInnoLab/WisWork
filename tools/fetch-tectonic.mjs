@@ -213,8 +213,10 @@ async function fetchVerifiedAssetOnce(asset, targetPath, options) {
   }
 }
 
-async function syncDirectory(path) {
-  const directory = await open(path, 'r')
+export async function syncDirectory(path, options = {}) {
+  if ((options.platform ?? process.platform) === 'win32') return
+  const openImplementation = options.openImplementation ?? open
+  const directory = await openImplementation(path, 'r')
   try {
     await directory.sync()
   } finally {
