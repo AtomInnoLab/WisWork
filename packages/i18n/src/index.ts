@@ -164,6 +164,8 @@ export function defineStrings<D extends Record<string, string>>(dicts: LangDicts
 export const presentationVerificationStrings = defineStrings({
   zh: {
     plan: '编辑计划',
+    apply_bounded_edits: '应用限定范围的编辑',
+    verify_postconditions: '验证编辑结果',
     clarify: '需要补充信息',
     verified: '已验证',
     unchanged: '无需更改',
@@ -175,6 +177,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   en: {
     plan: 'Edit plan',
+    apply_bounded_edits: 'Apply bounded edits',
+    verify_postconditions: 'Verify edit results',
     clarify: 'More information needed',
     verified: 'Verified',
     unchanged: 'No changes needed',
@@ -186,6 +190,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   ja: {
     plan: '編集計画',
+    apply_bounded_edits: '範囲を限定して編集を適用',
+    verify_postconditions: '編集結果を検証',
     clarify: '追加情報が必要です',
     verified: '検証済み',
     unchanged: '変更は不要です',
@@ -197,6 +203,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   ko: {
     plan: '편집 계획',
+    apply_bounded_edits: '제한된 편집 적용',
+    verify_postconditions: '편집 결과 확인',
     clarify: '추가 정보 필요',
     verified: '검증됨',
     unchanged: '변경 필요 없음',
@@ -208,6 +216,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   fr: {
     plan: 'Plan de modification',
+    apply_bounded_edits: 'Appliquer les modifications limitées',
+    verify_postconditions: 'Vérifier les résultats',
     clarify: 'Informations requises',
     verified: 'Vérifié',
     unchanged: 'Aucune modification requise',
@@ -219,6 +229,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   de: {
     plan: 'Bearbeitungsplan',
+    apply_bounded_edits: 'Begrenzte Änderungen anwenden',
+    verify_postconditions: 'Ergebnisse überprüfen',
     clarify: 'Weitere Angaben erforderlich',
     verified: 'Überprüft',
     unchanged: 'Keine Änderungen nötig',
@@ -230,6 +242,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   es: {
     plan: 'Plan de edición',
+    apply_bounded_edits: 'Aplicar ediciones limitadas',
+    verify_postconditions: 'Verificar los resultados',
     clarify: 'Se necesita más información',
     verified: 'Verificado',
     unchanged: 'No se requieren cambios',
@@ -241,6 +255,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   th: {
     plan: 'แผนการแก้ไข',
+    apply_bounded_edits: 'ใช้การแก้ไขในขอบเขต',
+    verify_postconditions: 'ตรวจสอบผลการแก้ไข',
     clarify: 'ต้องการข้อมูลเพิ่มเติม',
     verified: 'ตรวจสอบแล้ว',
     unchanged: 'ไม่ต้องแก้ไข',
@@ -252,6 +268,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   id: {
     plan: 'Rencana edit',
+    apply_bounded_edits: 'Terapkan edit terbatas',
+    verify_postconditions: 'Verifikasi hasil edit',
     clarify: 'Perlu informasi tambahan',
     verified: 'Terverifikasi',
     unchanged: 'Tidak perlu perubahan',
@@ -263,6 +281,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   ru: {
     plan: 'План изменений',
+    apply_bounded_edits: 'Применить ограниченные изменения',
+    verify_postconditions: 'Проверить результаты',
     clarify: 'Нужны дополнительные сведения',
     verified: 'Проверено',
     unchanged: 'Изменения не нужны',
@@ -274,6 +294,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   ar: {
     plan: 'خطة التعديل',
+    apply_bounded_edits: 'تطبيق تعديلات محدودة',
+    verify_postconditions: 'التحقق من النتائج',
     clarify: 'مطلوب مزيد من المعلومات',
     verified: 'تم التحقق',
     unchanged: 'لا حاجة إلى تغييرات',
@@ -285,6 +307,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   pt: {
     plan: 'Plano de edição',
+    apply_bounded_edits: 'Aplicar edições limitadas',
+    verify_postconditions: 'Verificar resultados',
     clarify: 'Mais informações necessárias',
     verified: 'Verificado',
     unchanged: 'Nenhuma alteração necessária',
@@ -296,6 +320,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   it: {
     plan: 'Piano di modifica',
+    apply_bounded_edits: 'Applica modifiche limitate',
+    verify_postconditions: 'Verifica i risultati',
     clarify: 'Servono altre informazioni',
     verified: 'Verificato',
     unchanged: 'Nessuna modifica necessaria',
@@ -307,6 +333,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   pl: {
     plan: 'Plan edycji',
+    apply_bounded_edits: 'Zastosuj ograniczone zmiany',
+    verify_postconditions: 'Zweryfikuj wyniki',
     clarify: 'Potrzebne są dodatkowe informacje',
     verified: 'Zweryfikowano',
     unchanged: 'Zmiany nie są potrzebne',
@@ -318,6 +346,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   nl: {
     plan: 'Bewerkingsplan',
+    apply_bounded_edits: 'Beperkte bewerkingen toepassen',
+    verify_postconditions: 'Resultaten verifiëren',
     clarify: 'Meer informatie nodig',
     verified: 'Geverifieerd',
     unchanged: 'Geen wijzigingen nodig',
@@ -329,6 +359,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   ms: {
     plan: 'Pelan suntingan',
+    apply_bounded_edits: 'Gunakan suntingan terhad',
+    verify_postconditions: 'Sahkan hasil suntingan',
     clarify: 'Maklumat lanjut diperlukan',
     verified: 'Disahkan',
     unchanged: 'Tiada perubahan diperlukan',
@@ -340,6 +372,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   he: {
     plan: 'תוכנית עריכה',
+    apply_bounded_edits: 'החלת עריכות מוגבלות',
+    verify_postconditions: 'אימות תוצאות העריכה',
     clarify: 'נדרש מידע נוסף',
     verified: 'אומת',
     unchanged: 'אין צורך בשינויים',
@@ -351,6 +385,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   hi: {
     plan: 'संपादन योजना',
+    apply_bounded_edits: 'सीमित संपादन लागू करें',
+    verify_postconditions: 'संपादन परिणाम सत्यापित करें',
     clarify: 'अधिक जानकारी चाहिए',
     verified: 'सत्यापित',
     unchanged: 'बदलाव आवश्यक नहीं',
@@ -362,6 +398,8 @@ export const presentationVerificationStrings = defineStrings({
   },
   'zh-TW': {
     plan: '編輯計畫',
+    apply_bounded_edits: '套用限定範圍的編輯',
+    verify_postconditions: '驗證編輯結果',
     clarify: '需要補充資訊',
     verified: '已驗證',
     unchanged: '無需變更',

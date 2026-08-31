@@ -63,6 +63,7 @@ export interface DeckAccess {
   taskReviewAdapter?: SlidesTaskReviewAdapter
   onTaskReviewComplete?(receipt: PresentationCompletionReceipt): void | Promise<void>
   presentationTelemetry?(event: PresentationTelemetryEvent): void
+  onHostCorrection?(pass: number): void | Promise<void>
   beginTaskCorrectionHistory?(): Promise<boolean>
   finishTaskCorrectionHistory?(): Promise<string | undefined>
   /** Immutable durable scope for the active queued run, if any. */
@@ -1572,6 +1573,7 @@ export function createSlidesSkill(
               }
             },
           },
+          onHostCorrection: access.onHostCorrection,
           afterTaskReview: access.onTaskReviewComplete,
           flags: presentationFlags,
           telemetry: access.presentationTelemetry,

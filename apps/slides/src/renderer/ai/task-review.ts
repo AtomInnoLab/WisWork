@@ -230,6 +230,7 @@ export async function runSlidesTaskReview(input: {
   signal?: AbortSignal
   flags?: Pick<PresentationVerificationFlags, 'visualReview' | 'autoCorrection'>
   telemetry?: (event: PresentationTelemetryEvent) => void
+  onHostCorrection?: (pass: number) => void | Promise<void>
 }): Promise<PresentationCompletionReceipt> {
   const contract = parsePresentationAcceptanceContract(input.contract)
   const contractDigest = await digestPresentationAcceptanceContract(contract)
@@ -463,6 +464,8 @@ export async function runSlidesTaskReview(input: {
           ...(rollbackId ? { rollbackId } : {}),
           safeCode: 'confirmation_required',
         })
+      await input.onHostCorrection?.(correctionPasses + 1)
+      input.signal?.throwIfAborted()
       const correction = await input.adapter.correct(visual.fixIntents, authority, input.signal)
       if (correction.applied === false)
         return accountedReceipt({

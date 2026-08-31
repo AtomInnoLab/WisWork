@@ -16,6 +16,8 @@ describe('presentation verification translations', () => {
   it('covers every user-visible state in every locale', () => {
     const expected = [
       'plan',
+      'apply_bounded_edits',
+      'verify_postconditions',
       'clarify',
       'verified',
       'unchanged',

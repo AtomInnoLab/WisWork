@@ -1035,6 +1035,13 @@ export function AiPanel({
     const access: DeckAccess = {
       presentationTelemetry: (event) =>
         window.dispatchEvent(new CustomEvent('wiswork:presentation-telemetry', { detail: event })),
+      onHostCorrection: () => {
+        if (activeRunTokenRef.current !== launchTokenRef.current) return
+        setChat((previous) => [
+          ...previous,
+          { role: 'assistant', text: translatePresentationVerification(lang, 'correction') },
+        ])
+      },
       getSlides: () => slidesRef.current,
       getCurrent: () => currentRef.current,
       getSelectedIds: () => selectedRef.current,
@@ -1468,7 +1475,12 @@ export function AiPanel({
                 translatePresentationVerification(lang, 'plan'),
                 ...steps.map(
                   (step) =>
-                    `• ${translatePresentationVerification(lang, step === 'presentation_verify_postconditions' ? 'verified' : 'plan')}`,
+                    `• ${translatePresentationVerification(
+                      lang,
+                      step === 'presentation_verify_postconditions'
+                        ? 'verify_postconditions'
+                        : 'apply_bounded_edits',
+                    )}`,
                 ),
                 ...(requiresConfirmation
                   ? [translatePresentationVerification(lang, 'needs_user')]

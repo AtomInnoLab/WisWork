@@ -422,7 +422,13 @@ export function createOfficeAgentSession(dependencies: {
             dependencies.presentationText?.('plan') ?? 'plan',
             ...steps.map(
               (step) =>
-                `• ${dependencies.presentationText?.(step === 'presentation_verify_postconditions' ? 'verified' : 'plan') ?? 'plan'}`,
+                `• ${
+                  dependencies.presentationText?.(
+                    step === 'presentation_verify_postconditions'
+                      ? 'verify_postconditions'
+                      : 'apply_bounded_edits',
+                  ) ?? step
+                }`,
             ),
             ...(requiresConfirmation
               ? [dependencies.presentationText?.('needs_user') ?? 'needs_user']

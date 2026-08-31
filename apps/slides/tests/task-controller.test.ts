@@ -387,6 +387,59 @@ describe('Slides verified task controller', () => {
     expect(correct).not.toHaveBeenCalled()
   })
 
+  it('notifies the host immediately before an actual bounded correction', async () => {
+    const order: string[] = []
+    const review = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: 'needs_fix',
+        failedCheckIds: ['check-001'],
+        observations: [],
+        fixIntents: [
+          {
+            checkId: 'check-001',
+            kind: 'set_property',
+            roleOrTarget: { kind: 'target', targetToken: 'target-1' },
+            property: 'color',
+            value: '#123456',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        status: 'pass',
+        failedCheckIds: [],
+        observations: [],
+        fixIntents: [],
+      })
+    const controller = createSlidesTaskController({
+      enroll: async () => enrollment(),
+      reviewAdapter: adapter({
+        review,
+        correct: async () => {
+          order.push('correct')
+          return { mutationReceiptId: 'correction-1', correctedCheckIds: ['check-001'] }
+        },
+      }),
+      flags: { planning: true, verifiedCompletion: true, visualReview: true, autoCorrection: true },
+      onHostCorrection: () => {
+        order.push('host')
+      },
+    })
+    await controller.hooks.enroll?.([call], undefined)
+    controller.recordMutation({
+      transactionId: 'tx-1',
+      status: 'applied',
+      mutatedTargetTokens: ['target-1'],
+    })
+    await controller.hooks.complete({
+      contract,
+      mutated: true,
+      cancelled: false,
+      correctionPasses: 0,
+    })
+    expect(order).toEqual(['host', 'correct'])
+  })
+
   it('reconciles cancellation/session replacement and preserves task-review-before-QC ordering', async () => {
     const order: string[] = []
     const controller = createSlidesTaskController({

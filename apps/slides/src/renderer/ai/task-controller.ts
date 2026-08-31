@@ -137,6 +137,7 @@ export function createSlidesTaskController(deps: {
   afterTaskReview?: (receipt: PresentationCompletionReceipt) => void | Promise<void>
   flags?: PresentationVerificationFlags
   telemetry?: (event: PresentationTelemetryEvent) => void
+  onHostCorrection?: (pass: number) => void | Promise<void>
 }): SlidesTaskController {
   type RunState = {
     generation: number
@@ -256,6 +257,7 @@ export function createSlidesTaskController(deps: {
             signal,
             flags: deps.flags,
             telemetry: deps.telemetry,
+            onHostCorrection: deps.onHostCorrection,
           })
         }
       }

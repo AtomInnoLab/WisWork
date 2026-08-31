@@ -540,6 +540,7 @@ describe('Office PowerPoint presentation verification', () => {
     }
     const enrolled = await skill.presentation!.enroll!([call], undefined)
     if (enrolled.kind !== 'ready') throw new Error('not ready')
+    expect(enrolled.contract.referenceSlides).toEqual([])
     await skill.executeTool(call)
     expect(proposals.pending()?.impact.targets).toEqual(['slide-1/shape-1', 'slide-1/shape-1'])
     await proposals.confirm(proposals.pending()!.id)
@@ -723,6 +724,7 @@ describe('Office PowerPoint presentation verification', () => {
               top: 48,
               width: 816,
               height: 54,
+              reference_slide_index: 5,
             },
       )
     const call = {
@@ -732,6 +734,7 @@ describe('Office PowerPoint presentation verification', () => {
     }
     const enrolled = await skill.presentation!.enroll!([call], undefined)
     if (enrolled.kind !== 'ready') throw new Error('not ready')
+    expect(enrolled.contract.referenceSlides).toEqual([6])
     await skill.executeTool!(call)
     await proposals.confirm(proposals.pending()!.id)
     const completed = await skill.presentation!.complete({
@@ -746,11 +749,13 @@ describe('Office PowerPoint presentation verification', () => {
     })
     expect(reviewer.review).toHaveBeenCalledOnce()
     expect(reviewer.review.mock.calls[0]![0].facts.screenshots).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ slide: 6, role: 'affected' }),
-        expect.objectContaining({ slide: 6, role: 'reference' }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ slide: 6, role: 'affected' })]),
     )
+    expect(
+      reviewer.review.mock.calls[0]![0].facts.screenshots.filter(
+        ({ slide }: { slide: number }) => slide === 6,
+      ),
+    ).toHaveLength(1)
     expect(telemetry).toHaveBeenCalledWith({
       host: 'office',
       phase: 'complete',

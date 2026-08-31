@@ -193,6 +193,7 @@ export type PowerPointDeclarativeOperation =
       top: number
       width: number
       height: number
+      reference_slide_index?: number
     }
   | {
       op: 'add_text_box'

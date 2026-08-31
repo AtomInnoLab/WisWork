@@ -500,12 +500,17 @@ export function createOfficePowerPointVerification(options: {
     const affectedSlides = [
       ...new Set(operations.map((item) => item.slide).concat(checks.length ? [] : [1])),
     ]
-    const geometrySlides = new Set(
-      operations
-        .filter(({ property }) => ['x', 'y', 'width', 'height'].includes(property))
-        .map(({ slide }) => slide),
+    const explicitReferences = calls.flatMap((call) =>
+      call.name === 'execute_office_js'
+        ? program(call.input as Record<string, unknown>).flatMap((operation) =>
+            operation.op === 'set_shape_geometry' &&
+            Number.isSafeInteger(operation.reference_slide_index) &&
+            (operation.reference_slide_index as number) >= 0
+              ? [(operation.reference_slide_index as number) + 1]
+              : [],
+          )
+        : [],
     )
-    const referenceSlide = affectedSlides.find((slide) => !geometrySlides.has(slide))
     const contract = parsePresentationAcceptanceContract({
       version: 1,
       taskId: options.taskId?.() ?? `task-${Date.now()}`,
@@ -513,7 +518,10 @@ export function createOfficePowerPointVerification(options: {
       sessionToken: lease.sessionToken,
       baseRevision: lease.revision,
       affectedSlides,
-      referenceSlides: referenceSlide && geometrySlides.size ? [referenceSlide] : [],
+      referenceSlides: [...new Set(explicitReferences)].slice(
+        0,
+        Math.max(0, 8 - new Set(affectedSlides).size),
+      ),
       checks,
       maxCorrectionPasses: 2,
     })
@@ -794,10 +802,12 @@ export function createOfficePowerPointVerification(options: {
             beforeCapture.sessionToken !== contract.sessionToken
           )
             throw new Error('stale_authority')
-          const pages = [
-            ...contract.affectedSlides.map((slide) => ({ slide, role: 'affected' as const })),
-            ...contract.referenceSlides.map((slide) => ({ slide, role: 'reference' as const })),
-          ]
+          const pagesBySlide = new Map<number, { slide: number; role: 'affected' | 'reference' }>()
+          for (const slide of contract.affectedSlides)
+            pagesBySlide.set(slide, { slide, role: 'affected' })
+          for (const slide of contract.referenceSlides)
+            if (!pagesBySlide.has(slide)) pagesBySlide.set(slide, { slide, role: 'reference' })
+          const pages = [...pagesBySlide.values()]
           if (pages.length > 8) throw new Error('screenshot_unavailable')
           const images = await Promise.all(
             pages.map(async ({ slide, role }) => {

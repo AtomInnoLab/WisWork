@@ -165,6 +165,7 @@ const declarativeProgramSchema = {
               op: { type: 'string', enum: ['set_shape_geometry'] },
               slide_index: operationSlideIndex,
               shape_id: operationShapeId,
+              reference_slide_index: operationSlideIndex,
               ...geometryProperties,
             },
             ['op', 'slide_index', 'shape_id', 'left', 'top', 'width', 'height'],
@@ -968,6 +969,7 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
     'fontSize',
     'bold',
     'italic',
+    'reference_slide_index',
   ])
   const operation = root
   if (
@@ -991,11 +993,28 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
   if (operation.op === 'set_shape_geometry') {
     if (
       Object.keys(operation).some(
-        (key) => !['op', 'slide_index', 'shape_id', 'left', 'top', 'width', 'height'].includes(key),
+        (key) =>
+          ![
+            'op',
+            'slide_index',
+            'shape_id',
+            'left',
+            'top',
+            'width',
+            'height',
+            'reference_slide_index',
+          ].includes(key),
       ) ||
       typeof operation.shape_id !== 'string' ||
       !operation.shape_id ||
       operation.shape_id.length > 256
+    )
+      throw new Error('invalid_tool_input')
+    if (
+      operation.reference_slide_index !== undefined &&
+      (!Number.isInteger(operation.reference_slide_index) ||
+        (operation.reference_slide_index as number) < 0 ||
+        (operation.reference_slide_index as number) > MAX_SLIDE_INDEX)
     )
       throw new Error('invalid_tool_input')
     finiteGeometry()
@@ -1007,6 +1026,9 @@ function parsePowerPointOperation(value: unknown): PowerPointDeclarativeOperatio
       top: operation.top as number,
       width: operation.width as number,
       height: operation.height as number,
+      ...(Number.isInteger(operation.reference_slide_index)
+        ? { reference_slide_index: operation.reference_slide_index as number }
+        : {}),
     }
   }
   if (operation.op === 'set_shape_text_style') {
