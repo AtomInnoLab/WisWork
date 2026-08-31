@@ -172,13 +172,22 @@ const GEOMETRY_TARGET =
   /(?:标题(?:栏)?|元素|文本框|形状|图片|\btitle\b|\belement\b|\btext box\b|\bshape\b|\bimage\b)/i
 const GEOMETRY_CHANGE =
   /(?:位置|尺寸|大小|移动|调整|对齐|旋转|坐标|布局|\bposition\b|\bsize\b|\bgeometry\b|\balign(?:ment|ed)?\b|\brotat(?:e|ed|ion)\b|\bmov(?:e|ed|ing)\b|\bresiz(?:e|ed|ing)\b)/i
-const EXPLICIT_TOOL_FAILURE =
-  /(?:PowerPoint|幻灯片|PPT).{0,24}(?:读取失败|操作失败|未能应用)|(?:set_element_(?:style|transform)|execute_slide_script|相关编辑工具|(?:style|format|transform|geometry) (?:tool|operation)).{0,48}(?:unsupported|fail-closed|target_stale|proposal_stale|office_state_uncertain|failed|error|不支持|失败|报错)|(?:unsupported|fail-closed|target_stale|proposal_stale|office_state_uncertain|failed|error|不支持|失败|报错).{0,48}(?:set_element_(?:style|transform)|execute_slide_script|相关编辑工具|(?:style|format|transform|geometry) (?:tool|operation))/i
+const HOST_READ_FAILURE =
+  /(?:(?:PowerPoint|幻灯片|PPT).{0,32}(?:read failed|read error|读取失败|操作失败|未能应用)|(?:read failed|read error|读取失败).{0,32}(?:PowerPoint|幻灯片|PPT))/i
+const FAILURE_STATUS =
+  /(?:unsupported|fail(?:ed)?[- ]closed|target_stale|proposal_stale|office_state_uncertain|failed|error|不支持|失败|报错)/i
+const STYLE_TOOL = /(?:set_element_style|(?:style|format) (?:tool|operation)|样式编辑工具)/i
+const GEOMETRY_TOOL =
+  /(?:set_element_transform|(?:transform|geometry) (?:tool|operation)|几何编辑工具)/i
+const SCRIPT_TOOL = /(?:execute_slide_script|脚本编辑工具)/i
 const REAL_UNSUPPORTED_FAMILY =
   /(?:嵌入字体|字体打包|平滑切换|变体过渡|embedded fonts?|font packaging|morph transitions?)/i
 const QUALIFIED_UNCERTAINTY = /(?:不能保证|cannot guarantee|can't guarantee)/i
-const TARGET_FAIL_CLOSED =
-  /(?:(?:标题(?:栏)?|元素|文本框|形状|图片|目标).{0,24}(?:锁定|只读|版式装饰|嵌套(?:元素|目标|组))|(?:锁定|只读|版式装饰|嵌套(?:元素|目标|组))(?:的|\s)*(?:标题(?:栏)?|元素|文本框|形状|图片|目标))|(?:(?:\btitle\b|\belement\b|\btext box\b|\bshape\b|\bimage\b|\btarget\b).{0,24}(?:\blocked\b|\bread-only\b|\blayout decoration\b|\bnested (?:target|element|group)\b)|(?:\blocked\b|\bread-only\b|\blayout decoration\b|\bnested\b)(?:\s+(?:and\s+)?(?:read-only\s+)?)?(?:\btitle\b|\belement\b|\btext box\b|\bshape\b|\bimage\b|\btarget\b))/i
+const TARGET_CONSTRAINT =
+  /(?:锁定|只读|版式装饰|嵌套(?:元素|目标|组)|\blocked\b|\bread-only\b|\blayout decoration\b|\bnested (?:target|element|group)\b)/gi
+const CONCRETE_TARGET =
+  /(?:标题(?:栏)?|元素|文本框|形状|图片|图表|目标|字体|文字|文本|\btitle\b|\belement\b|\btext box\b|\bshape\b|\bimage\b|\bchart\b|\btarget\b|\bfont\b|\btext\b)/gi
+const DENIAL_ANCHOR = new RegExp(DENIAL_ASSERTION.source, 'gi')
 
 const MAX_REVIEW_TEXT_CHARS = 4096
 const MAX_REVIEW_CLAUSES = 64
@@ -218,18 +227,82 @@ function boundedClauses(text: string): string[] {
     .filter(Boolean)
 }
 
-function namesSupportedCapability(clause: string): boolean {
-  return (
-    (TEXT_TARGET.test(clause) && TEXT_STYLE.test(clause)) ||
-    (GEOMETRY_TARGET.test(clause) && GEOMETRY_CHANGE.test(clause))
+type CapabilityFamily = 'text-style' | 'geometry'
+
+function supportedCapabilityFamilies(clause: string): CapabilityFamily[] {
+  const families: CapabilityFamily[] = []
+  if (TEXT_TARGET.test(clause) && TEXT_STYLE.test(clause)) families.push('text-style')
+  if (GEOMETRY_TARGET.test(clause) && GEOMETRY_CHANGE.test(clause)) families.push('geometry')
+  return families
+}
+
+function hasRelatedToolFailure(clause: string, family: CapabilityFamily): boolean {
+  if (!FAILURE_STATUS.test(clause)) return false
+  if (SCRIPT_TOOL.test(clause)) return true
+  return family === 'text-style' ? STYLE_TOOL.test(clause) : GEOMETRY_TOOL.test(clause)
+}
+
+type TargetKind = 'title' | 'element' | 'text-box' | 'shape' | 'image' | 'chart' | 'target' | 'text'
+
+function targetKind(token: string): TargetKind {
+  const normalized = token.toLowerCase()
+  if (/标题|title/.test(normalized)) return 'title'
+  if (/文本框|text box/.test(normalized)) return 'text-box'
+  if (/形状|shape/.test(normalized)) return 'shape'
+  if (/图片|image/.test(normalized)) return 'image'
+  if (/图表|chart/.test(normalized)) return 'chart'
+  if (/目标|target/.test(normalized)) return 'target'
+  if (/字体|文字|文本|font|text/.test(normalized)) return 'text'
+  return 'element'
+}
+
+function nearestTarget(clause: string, index: number): TargetKind | undefined {
+  const targets = [...clause.matchAll(CONCRETE_TARGET)]
+  let nearest: RegExpMatchArray | undefined
+  let distance = Number.POSITIVE_INFINITY
+  for (const target of targets) {
+    const targetIndex = target.index ?? 0
+    const nextDistance = Math.abs(targetIndex - index)
+    if (nextDistance < distance) {
+      nearest = target
+      distance = nextDistance
+    }
+  }
+  return nearest ? targetKind(nearest[0]) : undefined
+}
+
+function constrainedTarget(clause: string, index: number): TargetKind | undefined {
+  const targets = [...clause.matchAll(CONCRETE_TARGET)]
+  const immediateFollowing = targets.find((target) => {
+    const targetIndex = target.index ?? 0
+    return targetIndex >= index && /^[\s的]{0,5}$/.test(clause.slice(index, targetIndex))
+  })
+  if (immediateFollowing) return targetKind(immediateFollowing[0])
+  const preceding = targets.filter((target) => (target.index ?? 0) < index).at(-1)
+  if (preceding) return targetKind(preceding[0])
+  return targets[0] ? targetKind(targets[0][0]) : undefined
+}
+
+function hasSameTargetConstraint(clause: string): boolean {
+  const deniedTargets = [...clause.matchAll(DENIAL_ANCHOR)]
+    .map((match) => nearestTarget(clause, match.index ?? 0))
+    .filter((target): target is TargetKind => Boolean(target))
+  if (deniedTargets.length === 0) return false
+  const constrainedTargets = [...clause.matchAll(TARGET_CONSTRAINT)]
+    .map((match) => constrainedTarget(clause, (match.index ?? 0) + match[0].length))
+    .filter((target): target is TargetKind => Boolean(target))
+  return constrainedTargets.some(
+    (constrained) =>
+      constrained === 'target' || deniedTargets.some((denied) => denied === constrained),
   )
 }
 
-function isLocallyJustified(clause: string): boolean {
+function isLocallyJustified(clause: string, family: CapabilityFamily): boolean {
   return (
+    HOST_READ_FAILURE.test(clause) ||
     REAL_UNSUPPORTED_FAMILY.test(clause) ||
-    EXPLICIT_TOOL_FAILURE.test(clause) ||
-    TARGET_FAIL_CLOSED.test(clause) ||
+    hasRelatedToolFailure(clause, family) ||
+    hasSameTargetConstraint(clause) ||
     QUALIFIED_UNCERTAINTY.test(clause)
   )
 }
@@ -246,8 +319,11 @@ export function reviewSlidesFinalResponse({
   if (mutated || !text.trim()) return undefined
   for (const clause of boundedClauses(text)) {
     if (/[?？]\s*$/.test(clause)) continue
-    if (!DENIAL_ASSERTION.test(clause) || !namesSupportedCapability(clause)) continue
-    if (!isLocallyJustified(clause)) return SLIDES_CAPABILITY_CORRECTION
+    if (!DENIAL_ASSERTION.test(clause)) continue
+    const families = supportedCapabilityFamilies(clause)
+    if (families.some((family) => !isLocallyJustified(clause, family))) {
+      return SLIDES_CAPABILITY_CORRECTION
+    }
   }
   return undefined
 }

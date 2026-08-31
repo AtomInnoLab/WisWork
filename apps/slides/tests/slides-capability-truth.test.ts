@@ -108,8 +108,23 @@ describe('Slides capability truth', () => {
     'image_search failed, so the title cannot be moved.',
     'The chart operation returned an error; the title cannot be moved.',
     'The chart is locked and read-only, so the title cannot be moved.',
+    'The geometry tool failed, so existing text color cannot be changed.',
+    'The format operation failed, so the title cannot be moved.',
+    'The image is locked and read-only, so the title cannot be moved.',
+    'The title is read-only, so the image cannot be resized.',
   ])('does not let an unrelated failure justify a supported denial: %s', (text) => {
     expect(reviewSlidesFinalResponse({ text, mutated: false })).toBe(CORRECTION)
+  })
+
+  it.each([
+    'The format tool failed, so existing text color cannot be changed safely.',
+    'The geometry operation returned an error, so the image cannot be resized safely.',
+    'The image is locked and read-only, so the image cannot be resized.',
+    'The title is read-only, so the title cannot be moved.',
+    'PowerPoint read failed, so existing text color cannot be changed safely.',
+    'PPT 读取失败，因此不能移动这个标题。',
+  ])('keeps a same-family or same-target failure honest: %s', (text) => {
+    expect(reviewSlidesFinalResponse({ text, mutated: false })).toBeUndefined()
   })
 
   it.each([
