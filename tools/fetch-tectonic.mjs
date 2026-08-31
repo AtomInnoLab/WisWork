@@ -104,11 +104,10 @@ export function selectPlatformAsset(manifest, platform) {
   ) {
     throw new Error('manifest asset URL is not approved')
   }
-  if (
-    !asset.archive ||
-    asset.archive.format !== 'tar.gz' ||
-    asset.archive.executable !== 'tectonic'
-  ) {
+  const supportedArchive =
+    (asset.archive?.format === 'tar.gz' && asset.archive.executable === 'tectonic') ||
+    (asset.archive?.format === 'zip' && asset.archive.executable === 'tectonic.exe')
+  if (!supportedArchive) {
     throw new Error('manifest archive is invalid')
   }
   return Object.freeze({ ...asset, url: url.href })
@@ -213,8 +212,9 @@ async function fetchVerifiedAssetOnce(asset, targetPath, options) {
   }
 }
 
-async function syncDirectory(path) {
-  const directory = await open(path, 'r')
+async function syncDirectory(path, openImplementation = open) {
+  if (process.platform === 'win32') return
+  const directory = await openImplementation(path, 'r')
   try {
     await directory.sync()
   } finally {
@@ -345,6 +345,7 @@ async function recoverStaleLock(path, recoveryPath, expectedToken) {
 async function extractVerifiedTectonicLocked(asset, archivePath, cachePath, version, options = {}) {
   const execute = options.execFileImplementation ?? execFileAsync
   const renameImplementation = options.renameImplementation ?? rename
+  const syncCacheDirectory = () => syncDirectory(cachePath, options.openImplementation)
   const targetDirectory = resolve(cachePath, asset.id)
   assertWithin(cachePath, targetDirectory)
   const targetExecutable = join(targetDirectory, asset.archive.executable)
@@ -360,19 +361,23 @@ async function extractVerifiedTectonicLocked(asset, archivePath, cachePath, vers
   )
   if (!targetExists && backupExists) {
     await rename(backup, targetDirectory)
-    await syncDirectory(cachePath)
+    await syncCacheDirectory()
   } else if (targetExists && backupExists) {
     await rm(backup, { recursive: true, force: true })
-    await syncDirectory(cachePath)
+    await syncCacheDirectory()
   }
   await mkdir(staging, { recursive: false })
   try {
-    const listing = await execute('tar', ['-tzf', archivePath])
+    const archiveArgs =
+      asset.archive.format === 'zip'
+        ? { list: ['-tf', archivePath], extract: ['-xf', archivePath, '-C', staging] }
+        : { list: ['-tzf', archivePath], extract: ['-xzf', archivePath, '-C', staging] }
+    const listing = await execute('tar', archiveArgs.list)
     const entries = listing.stdout.split(/\r?\n/).filter(Boolean)
     if (entries.length !== 1 || entries[0] !== asset.archive.executable) {
       throw new Error('Tectonic archive layout is invalid')
     }
-    await execute('tar', ['-xzf', archivePath, '-C', staging])
+    await execute('tar', archiveArgs.extract)
     const extractedEntries = await readdir(staging)
     if (extractedEntries.length !== 1 || extractedEntries[0] !== asset.archive.executable) {
       throw new Error('Tectonic archive extracted unexpected files')
@@ -394,17 +399,17 @@ async function extractVerifiedTectonicLocked(asset, archivePath, cachePath, vers
     }
     try {
       await renameImplementation(staging, targetDirectory)
-      await syncDirectory(cachePath)
+      await syncCacheDirectory()
     } catch (error) {
       if (hadTarget) {
         await rm(targetDirectory, { recursive: true, force: true })
         await rename(backup, targetDirectory)
-        await syncDirectory(cachePath)
+        await syncCacheDirectory()
       }
       throw error
     }
     await rm(backup, { recursive: true, force: true })
-    await syncDirectory(cachePath)
+    await syncCacheDirectory()
     return targetExecutable
   } catch (error) {
     await rm(staging, { recursive: true, force: true })
@@ -430,7 +435,8 @@ export async function main(argv = process.argv.slice(2)) {
   const options = parseArguments(argv)
   const manifest = JSON.parse(await readFile(options.manifestPath, 'utf8'))
   const asset = selectPlatformAsset(manifest, options.platform)
-  const targetPath = resolve(options.cachePath, `${asset.id}.tar.gz`)
+  const archiveExtension = asset.archive.format === 'zip' ? '.zip' : '.tar.gz'
+  const targetPath = resolve(options.cachePath, `${asset.id}${archiveExtension}`)
   assertWithin(options.cachePath, targetPath)
   const result = await fetchVerifiedAsset(asset, targetPath, {
     onRetry: (attempt) =>

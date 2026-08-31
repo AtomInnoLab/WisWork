@@ -17,6 +17,11 @@ const asset = {
   archive: { format: 'tar.gz', executable: 'tectonic' },
 }
 
+const windowsAsset = {
+  id: 'tectonic-test-win32-x64',
+  archive: { format: 'zip', executable: 'tectonic.exe' },
+}
+
 test('CLI accepts an explicit output path for the verified executable', () => {
   const parsed = parseArguments(['--platform', 'darwin-arm64', '--output', '/tmp/wiswork-tectonic'])
   assert.equal(parsed.platform, 'darwin-arm64')
@@ -56,6 +61,58 @@ test('extractVerifiedTectonic validates one executable and its exact version', a
     execFileImplementation: execute,
   })
   assert.equal(await readFile(executable, 'utf8'), 'binary')
+})
+
+test('extractVerifiedTectonic validates one Windows ZIP executable', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'fetch-tectonic-win-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const archive = join(root, 'tectonic.zip')
+  await writeFile(archive, 'fixture')
+  const execute = async (file, args) => {
+    if (file === 'tar' && args[0] === '-tf') return { stdout: 'tectonic.exe\n', stderr: '' }
+    if (file === 'tar' && args[0] === '-xf') {
+      await writeFile(join(args[3], 'tectonic.exe'), 'windows-binary')
+      return { stdout: '', stderr: '' }
+    }
+    if (file.endsWith('tectonic.exe') && args[0] === '--version') {
+      return { stdout: 'tectonic 0.16.9\n', stderr: '' }
+    }
+    throw new Error('unexpected command')
+  }
+  const executable = await extractVerifiedTectonic(windowsAsset, archive, root, '0.16.9', {
+    execFileImplementation: execute,
+  })
+  assert.equal(await readFile(executable, 'utf8'), 'windows-binary')
+})
+
+test('extractVerifiedTectonic skips directory fsync for Windows ZIP extraction', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'fetch-tectonic-win-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+  context.after(() => Object.defineProperty(process, 'platform', platformDescriptor))
+  Object.defineProperty(process, 'platform', { ...platformDescriptor, value: 'win32' })
+  const archive = join(root, 'tectonic.zip')
+  await writeFile(archive, 'fixture')
+  const execute = async (file, args) => {
+    if (file === 'tar' && args[0] === '-tf') return { stdout: 'tectonic.exe\n', stderr: '' }
+    if (file === 'tar' && args[0] === '-xf') {
+      await writeFile(join(args[3], 'tectonic.exe'), 'windows-binary')
+      return { stdout: '', stderr: '' }
+    }
+    if (file.endsWith('tectonic.exe') && args[0] === '--version') {
+      return { stdout: 'tectonic 0.16.9\n', stderr: '' }
+    }
+    throw new Error('unexpected command')
+  }
+
+  const executable = await extractVerifiedTectonic(windowsAsset, archive, root, '0.16.9', {
+    execFileImplementation: execute,
+    openImplementation: async () => {
+      throw new Error('Windows cannot fsync directories')
+    },
+  })
+
+  assert.equal(await readFile(executable, 'utf8'), 'windows-binary')
 })
 
 test('extractVerifiedTectonic replaces a poisoned version-spoofing cache', async (context) => {
@@ -117,6 +174,47 @@ test('selectPlatformAsset rejects path traversal IDs', () => {
       ),
     /invalid/i,
   )
+})
+
+test('selectPlatformAsset accepts only the prescribed Windows ZIP archive', () => {
+  const manifest = {
+    schemaVersion: 1,
+    tectonic: {
+      version: '0.16.9',
+      assets: [
+        {
+          ...windowsAsset,
+          platform: 'win32-x64',
+          url: 'https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.16.9/fixed.zip',
+          bytes: 1,
+          sha256: 'a'.repeat(64),
+        },
+      ],
+    },
+  }
+
+  assert.equal(selectPlatformAsset(manifest, 'win32-x64').archive.format, 'zip')
+
+  for (const archive of [
+    { format: 'tar', executable: 'tectonic.exe' },
+    { format: 'zip64', executable: 'tectonic.exe' },
+    { format: 'zip', executable: 'tectonic' },
+  ]) {
+    assert.throws(
+      () =>
+        selectPlatformAsset(
+          {
+            ...manifest,
+            tectonic: {
+              ...manifest.tectonic,
+              assets: [{ ...manifest.tectonic.assets[0], archive }],
+            },
+          },
+          'win32-x64',
+        ),
+      /archive is invalid/i,
+    )
+  }
 })
 
 test('fetchVerifiedAsset stops oversized responses', async (context) => {
