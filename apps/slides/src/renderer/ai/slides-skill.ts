@@ -1439,7 +1439,7 @@ export function createSlidesSkill(access: DeckAccess): AgentSkill {
     'set_speaker_notes',
     'delete_element',
   ])
-  const enrolledTargets = new Map<string, string>()
+  const enrolledTargets = new Map<string, Map<string, string>>()
   const controller = access.taskReviewAdapter
     ? createSlidesTaskController({
         enroll: async (calls, currentContract, signal) => {
@@ -1478,10 +1478,13 @@ export function createSlidesSkill(access: DeckAccess): AgentSkill {
           const sourceTargetTokens = raw.sourceTargetTokens ?? {}
           const { sourceTargetTokens: _resolved, ...authorityValue } = raw
           const authority = authorityValue as SlidesAcceptanceAuthority
-          enrolledTargets.clear()
-          for (const [key, value] of Object.entries(sourceTargetTokens))
-            enrolledTargets.set(key, value)
           const taskId = `task-${crypto.randomUUID().replaceAll('-', '')}`
+          enrolledTargets.set(taskId, new Map(Object.entries(sourceTargetTokens)))
+          while (enrolledTargets.size > 8) {
+            const oldest = enrolledTargets.keys().next().value as string | undefined
+            if (!oldest) break
+            enrolledTargets.delete(oldest)
+          }
           return compileCanonicalSlidesCalls({ calls, authority, sourceTargetTokens, taskId })
         },
         reviewAdapter: {
@@ -1496,7 +1499,9 @@ export function createSlidesSkill(access: DeckAccess): AgentSkill {
             const intent = intents[0]!
             if (intent.roleOrTarget.kind !== 'target') throw new Error('unsupported_correction')
             const targetToken = intent.roleOrTarget.targetToken
-            const resolved = [...enrolledTargets].find(([, token]) => token === targetToken)
+            const resolved = [...(enrolledTargets.get(authority.taskId ?? '') ?? [])].find(
+              ([, token]) => token === targetToken,
+            )
             if (!resolved) throw new Error('unsupported_correction')
             const [scope] = resolved
             const separator = scope.indexOf(':')

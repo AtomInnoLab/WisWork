@@ -123,21 +123,35 @@ export function createSlidesTaskController(deps: {
   executeOriginal?: () => unknown
   afterTaskReview?: (receipt: PresentationCompletionReceipt) => void | Promise<void>
 }): SlidesTaskController {
-  let enrollment: SlidesTaskEnrollment | undefined
-  const mutations: SlidesRecordedMutation[] = []
+  type RunState = {
+    generation: number
+    enrollment: SlidesTaskEnrollment
+    mutations: SlidesRecordedMutation[]
+  }
+  let generation = 0
+  let activeTaskId: string | undefined
+  const runs = new Map<string, RunState>()
 
   const reset = () => {
-    enrollment = undefined
-    mutations.length = 0
+    generation += 1
+    activeTaskId = undefined
   }
 
   const hooks: PresentationTaskHooks = {
+    abandon: reset,
     prepare: () => ({ kind: 'bypass' }),
     enroll: async (calls, currentContract, signal) => {
+      const runGeneration = ++generation
       const result = await deps.enroll(calls, currentContract, signal)
       if ('kind' in result) return result
-      enrollment = result
-      mutations.length = 0
+      const state: RunState = { generation: runGeneration, enrollment: result, mutations: [] }
+      runs.set(result.contract.taskId, state)
+      while (runs.size > 8) {
+        const oldest = runs.keys().next().value as string | undefined
+        if (!oldest) break
+        runs.delete(oldest)
+      }
+      if (runGeneration === generation) activeTaskId = result.contract.taskId
       return {
         kind: 'ready',
         contract: result.contract,
@@ -145,9 +159,10 @@ export function createSlidesTaskController(deps: {
       }
     },
     complete: async ({ contract, mutated, cancelled, signal }) => {
-      const applied = mutations.filter(({ status }) => status === 'applied')
+      const state = runs.get(contract.taskId)
+      const applied = [...(state?.mutations ?? [])].filter(({ status }) => status === 'applied')
       let receipt: PresentationCompletionReceipt
-      if (!enrollment || enrollment.contract.taskId !== contract.taskId) {
+      if (!state) {
         receipt = parsePresentationCompletionReceipt(
           {
             version: 1,
@@ -189,14 +204,17 @@ export function createSlidesTaskController(deps: {
         receipt = await runSlidesTaskReview({
           contract,
           initialMutationReceiptIds: applied.map(({ transactionId }) => transactionId),
-          plannedMutationTargets: enrollment.plannedMutationTargets,
+          plannedMutationTargets: state.enrollment.plannedMutationTargets,
           ...(rollbackId ? { rollbackId } : {}),
           adapter: deps.reviewAdapter,
           signal,
         })
       }
-      await deps.afterTaskReview?.(receipt)
-      reset()
+      if (state && state.generation === generation && activeTaskId === contract.taskId) {
+        await deps.afterTaskReview?.(receipt)
+        activeTaskId = undefined
+      }
+      runs.delete(contract.taskId)
       return { kind: 'receipt', receipt }
     },
   }
@@ -204,18 +222,20 @@ export function createSlidesTaskController(deps: {
   return {
     hooks,
     recordMutation(receipt) {
-      if (!enrollment) return
+      if (!activeTaskId) return
+      const state = runs.get(activeTaskId)
+      if (!state || state.generation !== generation) return
       if (
         receipt.status === 'applied' &&
-        (receipt.mutatedTargetTokens.length !== enrollment.plannedMutationTargets.length ||
+        (receipt.mutatedTargetTokens.length !== state.enrollment.plannedMutationTargets.length ||
           receipt.mutatedTargetTokens.some(
-            (target) => !enrollment!.plannedMutationTargets.includes(target),
+            (target) => !state.enrollment.plannedMutationTargets.includes(target),
           ))
       ) {
-        mutations.push({ ...receipt, status: 'uncertain' })
+        state.mutations.push({ ...receipt, status: 'uncertain' })
         return
       }
-      mutations.push(receipt)
+      state.mutations.push(receipt)
     },
     reset,
   }

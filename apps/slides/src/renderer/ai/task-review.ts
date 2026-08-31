@@ -22,6 +22,7 @@ export type SlidesTaskReviewAuthority = {
   baseRevision?: string
   mutationReceiptIds?: string[]
   rollbackId?: string
+  taskId?: string
 }
 
 export type SlidesTaskScreenshot = {
@@ -37,7 +38,7 @@ export type SlidesTaskScreenshot = {
 export interface SlidesTaskReviewAdapter {
   /** Refreshes the renderer, then returns a new main-process authority lease. */
   refresh(
-    input: { baseRevision: string; mutationReceiptIds: string[] },
+    input: { taskId: string; baseRevision: string; mutationReceiptIds: string[] },
     signal?: AbortSignal,
   ): Promise<SlidesTaskReviewAuthority>
   verifyDeterministic(
@@ -65,7 +66,7 @@ export interface SlidesTaskReviewAdapter {
     correctedCheckIds: string[]
   }>
   isCurrent(authority: SlidesTaskReviewAuthority): boolean
-  cleanup?(): void
+  cleanup?(taskId: string): void
 }
 
 /** Strict, read-only reviewer. Images are ephemeral and are never copied into facts or receipts. */
@@ -227,7 +228,11 @@ export async function runSlidesTaskReview(input: {
     for (;;) {
       input.signal?.throwIfAborted()
       const authority = await input.adapter.refresh(
-        { baseRevision: contract.baseRevision, mutationReceiptIds: receipts },
+        {
+          taskId: contract.taskId,
+          baseRevision: contract.baseRevision,
+          mutationReceiptIds: receipts,
+        },
         input.signal,
       )
       if (!rollbackId && authority.rollbackId) rollbackId = authority.rollbackId
@@ -235,6 +240,7 @@ export async function runSlidesTaskReview(input: {
         authority.documentToken !== contract.documentToken ||
         authority.sessionToken !== contract.sessionToken ||
         authority.baseRevision !== contract.baseRevision ||
+        authority.taskId !== contract.taskId ||
         JSON.stringify(authority.mutationReceiptIds) !== JSON.stringify(receipts) ||
         !input.adapter.isCurrent(authority)
       )
@@ -404,6 +410,6 @@ export async function runSlidesTaskReview(input: {
       cancelled ? (receipts.length ? 'cancelled_after_apply' : 'cancelled') : 'review_unavailable',
     )
   } finally {
-    input.adapter.cleanup?.()
+    input.adapter.cleanup?.(contract.taskId)
   }
 }

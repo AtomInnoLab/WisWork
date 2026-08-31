@@ -852,8 +852,11 @@ export function AiPanel({
     ): Promise<LlmResult> =>
       runLlmAttempt(settingsRef.current, system, user, timeoutMs, signal, maxTokens)
 
-    const taskImages = new Map<string, AgentImage>()
-    let taskRenderBundle: Awaited<ReturnType<typeof window.slidesApi.getRenderSlides>> = null
+    const taskImages = new Map<string, { taskId: string; image: AgentImage }>()
+    const taskRenderBundles = new Map<
+      string,
+      NonNullable<Awaited<ReturnType<typeof window.slidesApi.getRenderSlides>>>
+    >()
 
     const access: DeckAccess = {
       getSlides: () => slidesRef.current,
@@ -876,7 +879,7 @@ export function AiPanel({
           signal?.throwIfAborted()
           const refreshed = await window.slidesApi.getRenderSlides()
           if (!refreshed) throw new Error('authoritative_refresh_unavailable')
-          taskRenderBundle = refreshed
+          taskRenderBundles.set(lineage.taskId, refreshed)
           applyDeckRef.current(refreshed.slides, currentRef.current)
           const historyId = await finishHistoryBatch(false)
           return {
@@ -934,6 +937,7 @@ export function AiPanel({
         },
         capture: async ({ slide, role, authority, signal }) => {
           signal?.throwIfAborted()
+          const taskRenderBundle = taskRenderBundles.get(authority.taskId ?? '')
           const rendered = taskRenderBundle?.slides[slide - 1]
           if (
             !rendered ||
@@ -966,11 +970,13 @@ export function AiPanel({
             return null
           const bytes = Math.ceil((image.base64.length * 3) / 4)
           const mediaToken = `media-${crypto.randomUUID().replaceAll('-', '')}`
-          taskImages.set(mediaToken, image)
+          taskImages.set(mediaToken, { taskId: authority.taskId ?? '', image })
           return { slide, role, mediaToken, bytes, ...authority }
         },
         review: async (facts, signal) => {
-          const images = facts.screenshots.map(({ mediaToken }) => taskImages.get(mediaToken))
+          const images = facts.screenshots.map(
+            ({ mediaToken }) => taskImages.get(mediaToken)?.image,
+          )
           if (images.some((image) => !image)) throw new Error('screenshot_unavailable')
           try {
             return await reviewSlidesRendering({
@@ -988,9 +994,10 @@ export function AiPanel({
         },
         isCurrent: (authority) =>
           authority.sessionToken.length > 0 && activeRunTokenRef.current === launchTokenRef.current,
-        cleanup: () => {
-          taskImages.clear()
-          taskRenderBundle = null
+        cleanup: (taskId) => {
+          for (const [mediaToken, stored] of taskImages)
+            if (stored.taskId === taskId) taskImages.delete(mediaToken)
+          taskRenderBundles.delete(taskId)
         },
       },
       onTaskReviewComplete: (receipt) => {

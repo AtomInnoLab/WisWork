@@ -734,6 +734,7 @@ export class AgentLoop<TSnapshot = unknown> {
 
   /** drop the conversation (e.g. when a different document is opened) */
   reset(): void {
+    this.options.skill.presentation?.abandon?.()
     this.generation++
     this.abortController?.abort()
     if (!this.mutationSeen) this.reconciliationController?.abort()

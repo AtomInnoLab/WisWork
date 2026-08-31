@@ -19,6 +19,8 @@ export type PresentationTaskCompletion =
   | { kind: 'correct'; instruction: string }
 
 export interface PresentationTaskHooks {
+  /** Invalidates current host UI lifecycle while allowing receipt reconciliation to finish. */
+  abandon?(): void
   /** Host-owned intent compiler. Model output is never accepted as a contract. */
   prepare(
     instruction: string,

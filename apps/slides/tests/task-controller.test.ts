@@ -306,4 +306,68 @@ describe('Slides verified task controller', () => {
     })
     expect(order).toEqual(['task-review', 'generic-qc'])
   })
+
+  it('isolates a deferred abandoned run from the newly enrolled run lifecycle', async () => {
+    const newerContract = { ...contract, taskId: 'task-2' }
+    let enrollmentCount = 0
+    let resolveOldReview!: (value: Awaited<ReturnType<SlidesTaskReviewAdapter['review']>>) => void
+    let reviewCount = 0
+    const reviewAdapter = adapter({
+      review: async () => {
+        reviewCount += 1
+        if (reviewCount === 1)
+          return new Promise((resolve) => {
+            resolveOldReview = resolve
+          })
+        return { status: 'pass', failedCheckIds: [], observations: [], fixIntents: [] }
+      },
+    })
+    const afterTaskReview = vi.fn()
+    const controller = createSlidesTaskController({
+      enroll: async () => ({
+        contract: enrollmentCount++ === 0 ? contract : newerContract,
+        plannedMutationTargets: ['target-1'],
+      }),
+      reviewAdapter,
+      afterTaskReview,
+    })
+
+    await controller.hooks.enroll?.([call], undefined)
+    controller.recordMutation({
+      transactionId: 'tx-old',
+      status: 'applied',
+      mutatedTargetTokens: ['target-1'],
+    })
+    const oldCompletion = controller.hooks.complete({
+      contract,
+      mutated: true,
+      cancelled: false,
+      correctionPasses: 0,
+    })
+    await vi.waitFor(() => expect(resolveOldReview).toBeTypeOf('function'))
+
+    controller.reset()
+    await controller.hooks.enroll?.([call], undefined)
+    controller.recordMutation({
+      transactionId: 'tx-new',
+      status: 'applied',
+      mutatedTargetTokens: ['target-1'],
+    })
+    resolveOldReview({ status: 'pass', failedCheckIds: [], observations: [], fixIntents: [] })
+    await expect(oldCompletion).resolves.toMatchObject({ kind: 'receipt' })
+    expect(afterTaskReview).not.toHaveBeenCalled()
+
+    await expect(
+      controller.hooks.complete({
+        contract: newerContract,
+        mutated: true,
+        cancelled: false,
+        correctionPasses: 0,
+      }),
+    ).resolves.toMatchObject({
+      kind: 'receipt',
+      receipt: { status: 'verified', mutationReceiptIds: ['tx-new'] },
+    })
+    expect(afterTaskReview).toHaveBeenCalledOnce()
+  })
 })

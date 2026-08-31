@@ -189,6 +189,7 @@ describe('AgentLoop', () => {
     it('audits a deferred completion after reset without updating the new session', async () => {
       let resolveCompletion!: (value: ReturnType<typeof receipt>) => void
       const abandoned = vi.fn()
+      const abandonHostLifecycle = vi.fn()
       const done = vi.fn()
       const loop = new AgentLoop({
         transport: scriptedTransport([
@@ -201,6 +202,7 @@ describe('AgentLoop', () => {
         skill: {
           ...makeSkill(() => ({ output: 'ok', summary: 'done', mutated: true })),
           presentation: {
+            abandon: abandonHostLifecycle,
             prepare: () => ({ kind: 'bypass' }),
             enroll: () => ({ kind: 'ready', contract }),
             complete: () =>
@@ -215,6 +217,7 @@ describe('AgentLoop', () => {
       await flush()
       await flush()
       loop.reset()
+      expect(abandonHostLifecycle).toHaveBeenCalledOnce()
       resolveCompletion(receipt())
       await flush()
       expect(abandoned).toHaveBeenCalledWith(
