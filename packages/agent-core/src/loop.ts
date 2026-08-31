@@ -1078,6 +1078,7 @@ export class AgentLoop<TSnapshot = unknown> {
         signal: this.reconciliationController?.signal,
       })
     } catch {
+      if (generation !== this.generation || !this.running) return true
       this.failPresentationRun('presentation_completion_unavailable')
       return true
     }
@@ -1156,6 +1157,11 @@ export class AgentLoop<TSnapshot = unknown> {
     this.runUserMsg = null
     this.abortController = null
     this.reconciliationController = null
+    try {
+      this.options.events?.onText?.(`presentation:error;code=${error}`)
+    } catch {
+      // A UI callback cannot suppress the authoritative failure event.
+    }
     try {
       this.options.events?.onError?.(error)
     } catch {

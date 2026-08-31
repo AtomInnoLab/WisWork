@@ -563,6 +563,91 @@ describe('AgentLoop', () => {
         }),
       )
     })
+
+    it('ignores a pending completion rejection after reset without polluting state or events', async () => {
+      let rejectCompletion!: (error: Error) => void
+      const complete = vi.fn(
+        () =>
+          new Promise<never>((_resolve, reject) => {
+            rejectCompletion = reject
+          }),
+      )
+      const callbacks: AgentStreamCallbacks[] = []
+      const transport: AgentTransport = {
+        stream: (_request, cb) => {
+          callbacks.push(cb)
+          return { cancel: () => queueMicrotask(() => cb.onDone()) }
+        },
+      }
+      const onDone = vi.fn()
+      const onError = vi.fn()
+      const onText = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
+        },
+        events: { onDone, onError, onText },
+      })
+
+      loop.run('edit')
+      await flush()
+      callbacks[0]!.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+      callbacks[0]!.onDone()
+      await flush()
+      callbacks[1]!.onDelta('success')
+      callbacks[1]!.onDone()
+      await flush()
+      expect(complete).toHaveBeenCalledOnce()
+
+      loop.reset()
+      onText.mockClear()
+      rejectCompletion(new Error('late reconciliation failure'))
+      await flush()
+
+      expect(loop.busy).toBe(false)
+      expect(loop.messages).toEqual([])
+      expect(onDone).not.toHaveBeenCalled()
+      expect(onError).not.toHaveBeenCalled()
+      expect(onText).not.toHaveBeenCalled()
+    })
+
+    it('replaces streamed model success with authoritative error text before reporting failure', async () => {
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onDelta('Successfully changed everything')
+          cb.onDone()
+        },
+      ])
+      const calls: string[] = []
+      const onText = vi.fn((text: string) => calls.push(`text:${text}`))
+      const onError = vi.fn((error: string) => calls.push(`error:${error}`))
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: {
+            prepare: () => ({ kind: 'ready', contract }),
+            complete: () => ({ kind: 'receipt', receipt: { invalid: true } as never }),
+          },
+        },
+        events: { onText, onError },
+      })
+
+      loop.run('edit')
+      await flush()
+
+      expect(calls).toEqual([
+        'text:Successfully changed everything',
+        'text:presentation:error;code=presentation_receipt_invalid',
+        'error:presentation_receipt_invalid',
+      ])
+      expect(loop.messages.at(-1)).toEqual({
+        role: 'assistant',
+        text: 'presentation:error;code=presentation_receipt_invalid',
+      })
+    })
   })
 
   it('reviews one normal tool-free completion and retries without finishing the UI turn', async () => {
