@@ -2,14 +2,9 @@ name: Desktop Release
 
 on:
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing release tag in vX.Y.Z form
-        required: true
-        type: string
 
 concurrency:
-  group: desktop-release-${{ inputs.tag }}
+  group: desktop-release-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -26,10 +21,10 @@ jobs:
       provider: ${{ steps.release.outputs.provider }}
       commit: ${{ steps.release.outputs.commit }}
     steps:
-      - name: Checkout requested tag
+      - name: Checkout dispatch commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Setup Node
@@ -37,21 +32,36 @@ jobs:
         with:
           node-version: 22
 
-      - name: Validate release tag and create draft
+      - name: Derive release version and create draft
         id: release
         env:
-          TAG: ${{ inputs.tag }}
           WISWORK_UPDATE_PROVIDER: ${{ secrets.WISWORK_UPDATE_PROVIDER }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          VERSION="${TAG#v}"
-          test "$(node -p "require('./apps/shell/package.json').version")" = "$VERSION"
-          test "$(git rev-parse "$TAG^{commit}")" = "$(git rev-parse HEAD)"
-          test "$WISWORK_UPDATE_PROVIDER" = github
+          VERSION="$(node -p "require('./apps/shell/package.json').version")"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          TAG="v$VERSION"
           COMMIT="$(git rev-parse HEAD)"
-          gh release create "$TAG" --draft --title "$TAG" --generate-notes --verify-tag
+          test "$WISWORK_UPDATE_PROVIDER" = github
+
+          if git ls-remote --exit-code --refs origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            git fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
+            EXISTING_COMMIT="$(git rev-parse "$TAG^{commit}")"
+            if [ "$EXISTING_COMMIT" != "$COMMIT" ]; then
+              echo "release tag $TAG already points to $EXISTING_COMMIT, not $COMMIT" >&2
+              exit 1
+            fi
+            if gh release view "$TAG" --json isDraft --jq .isDraft >/dev/null 2>&1; then
+              test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true
+            else
+              gh release create "$TAG" --draft --title "$TAG" --generate-notes --target "$COMMIT"
+            fi
+          else
+            git tag "$TAG" "$COMMIT"
+            git push origin "refs/tags/$TAG"
+            gh release create "$TAG" --draft --title "$TAG" --generate-notes --target "$COMMIT"
+          fi
           {
             echo "tag=$TAG"
             echo "version=$VERSION"
