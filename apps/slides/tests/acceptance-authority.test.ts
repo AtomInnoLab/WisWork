@@ -5,6 +5,7 @@ import { fingerprintPresentation, openPptx } from '@wiswork/pptx-engine'
 import {
   inspectSlidesAcceptanceAuthority,
   inspectSlidesAcceptanceLease,
+  verifySlidesAcceptanceTextProof,
 } from '../src/main/operations/acceptance-authority'
 import type { Session } from '../src/main/session-state'
 
@@ -162,6 +163,28 @@ describe('PC authoritative acceptance inspection', () => {
     const fact = verified!.slides[0]!.elements.find((item) => item.targetToken === targetToken)!
     expect(verified!.textMatches?.['check-text']).toMatchObject({ targetToken, matches: true })
     expect(verified!.textMatches?.['check-text']?.proof).toMatch(/^sha256:[0-9a-f]{64}$/)
+    expect(
+      await verifySlidesAcceptanceTextProof(session, {
+        ...base,
+        checkId: 'check-text',
+        slide: 1,
+        targetToken,
+        expectedText: 'Q3 Business Review',
+        matches: true,
+        proof: verified!.textMatches!['check-text']!.proof,
+      }),
+    ).toBe(true)
+    expect(
+      await verifySlidesAcceptanceTextProof(session, {
+        ...base,
+        checkId: 'check-text',
+        slide: 1,
+        targetToken,
+        expectedText: 'Q3 Business Review',
+        matches: true,
+        proof: `sha256:${'f'.repeat(64)}`,
+      }),
+    ).toBe(false)
     expect(JSON.stringify(verified)).not.toContain('Q3 Business Review')
     expect(fact.properties.text).toBeUndefined()
     const changed = await inspectSlidesAcceptanceAuthority(session, {
@@ -169,5 +192,17 @@ describe('PC authoritative acceptance inspection', () => {
       textChecks: [{ checkId: 'check-text', targetToken, expectedText: 'changed' }],
     })
     expect(changed!.textMatches?.['check-text']?.matches).toBe(false)
+    session.sessionInstanceId = 'replaced-text-session'
+    expect(
+      await verifySlidesAcceptanceTextProof(session, {
+        ...base,
+        checkId: 'check-text',
+        slide: 1,
+        targetToken,
+        expectedText: 'changed',
+        matches: false,
+        proof: changed!.textMatches!['check-text']!.proof,
+      }),
+    ).toBe(false)
   })
 })

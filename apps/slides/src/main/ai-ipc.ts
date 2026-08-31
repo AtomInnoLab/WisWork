@@ -51,6 +51,7 @@ import { PreparedTargetLedger } from './operations/prepared-target-ledger'
 import {
   inspectSlidesAcceptanceAuthority,
   inspectSlidesAcceptanceLease,
+  verifySlidesAcceptanceTextProof,
 } from './operations/acceptance-authority'
 
 // ---- AI settings + streaming proxy (the main process does the networking to avoid renderer CORS; implementation shared via @wiswork/ai-provider) ----
@@ -276,6 +277,54 @@ export function registerSlidesOnlyAiIpc(): void {
       ...(textChecks ? { textChecks } : {}),
     })
     return (session.mutationGeneration ?? 0) === generation ? snapshot : null
+  })
+
+  ipcMain.handle('slides:acceptance-text-proof-verify', async (event, value: unknown) => {
+    assertAiIpcSender(event)
+    const request = validateSlidesAiObject(
+      value,
+      [
+        'expectedDocumentToken',
+        'expectedSessionToken',
+        'expectedRevision',
+        'leaseToken',
+        'slide',
+        'checkId',
+        'targetToken',
+        'expectedText',
+        'matches',
+        'proof',
+      ],
+      2_048,
+    )
+    if (
+      !Number.isSafeInteger(request.slide) ||
+      (request.slide as number) < 1 ||
+      (request.slide as number) > 10_000 ||
+      typeof request.matches !== 'boolean'
+    )
+      throw new AiIpcError('invalid_payload')
+    const proof = validateSlidesAiString(request.proof, 71)
+    if (!/^sha256:[0-9a-f]{64}$/.test(proof)) throw new AiIpcError('invalid_payload')
+    const session = sessions.get(event.sender.id)!
+    if (
+      sessionHasActivePresentationTransaction(session) ||
+      sessionHasActivePresentationMutation(session) ||
+      sessionHasActivePresentationPersistence(session)
+    )
+      return false
+    return verifySlidesAcceptanceTextProof(session, {
+      expectedDocumentToken: validateSlidesAiString(request.expectedDocumentToken, 128),
+      expectedSessionToken: validateSlidesAiString(request.expectedSessionToken, 128),
+      expectedRevision: validateSlidesAiString(request.expectedRevision, 71),
+      leaseToken: validateSlidesAiString(request.leaseToken, 128),
+      slide: request.slide as number,
+      checkId: validateSlidesAiString(request.checkId, 128),
+      targetToken: validateSlidesAiString(request.targetToken, 128),
+      expectedText: validateSlidesAiString(request.expectedText, 256),
+      matches: request.matches,
+      proof,
+    })
   })
 
   const elementType = (element: SlideElement): PresentationElementType | undefined => {

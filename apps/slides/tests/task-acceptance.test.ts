@@ -4,6 +4,7 @@ import {
   parseSlidesAcceptanceAuthority,
   parseSlidesAcceptanceIntent,
   verifySlidesAcceptance,
+  verifyAndBrandSlidesAcceptanceAuthority,
   type SlidesAcceptanceAuthority,
   type SlidesAcceptanceIntent,
 } from '../src/renderer/ai/task-acceptance'
@@ -224,16 +225,12 @@ describe('PC Slides acceptance compiler', () => {
 describe('PC Slides deterministic verifier', () => {
   it('passes supported text/color/geometry/fill/stroke/background checks without mutation', () => {
     const current = authority()
-    current.textMatches = {
-      'check-001': { targetToken: 'slide-6:title', matches: true, proof: revision('d') },
-    }
     const before = structuredClone(current)
     const intent: SlidesAcceptanceIntent = {
       taskId: 'all-supported',
       affectedSlides: [6],
       maxCorrectionPasses: 0,
       changes: [
-        { kind: 'set_property', slides: [6], role: 'title', property: 'text', value: 'Title 6' },
         {
           kind: 'set_property',
           slides: [6],
@@ -261,8 +258,6 @@ describe('PC Slides deterministic verifier', () => {
     const compiled = compileSlidesAcceptance(intent, current)
     expect(compiled.status).toBe('unchanged')
     // Force verification coverage from a non-no-op contract by changing compile snapshot only.
-    current.slides[0]!.elements[0]!.properties.text = 'before'
-    current.textMatches['check-001']!.matches = false
     current.slides[0]!.elements[0]!.properties.fill_color = '#101010'
     current.slides[0]!.elements[0]!.properties.stroke_color = '#101010'
     current.slides[0]!.elements[0]!.properties.x = 99
@@ -270,9 +265,6 @@ describe('PC Slides deterministic verifier', () => {
     const planned = compileSlidesAcceptance(intent, current)
     if (planned.status !== 'compiled') throw new Error('expected compiled')
     const verificationAuthority = authority()
-    verificationAuthority.textMatches = {
-      'check-001': { targetToken: 'slide-6:title', matches: true, proof: revision('d') },
-    }
     const verificationBefore = structuredClone(verificationAuthority)
     const result = verifySlidesAcceptance(planned.contract, verificationAuthority, {
       mode: 'postwrite',
@@ -431,9 +423,10 @@ describe('PC Slides deterministic verifier', () => {
     ).toMatchObject({ status: 'fail', code: 'scope_mismatch' })
   })
 
-  it('uses authority-bound text match facts for no-op, planning and postwrite verification', () => {
+  it('rejects forged text matches and accepts only verified branded proofs', async () => {
     const current = authority()
     delete current.slides[0]!.elements[0]!.properties.text
+    current.leaseToken = 'lease:test'
     current.textMatches = {
       'check-001': { targetToken: 'slide-6:title', matches: true, proof: revision('d') },
     }
@@ -445,25 +438,58 @@ describe('PC Slides deterministic verifier', () => {
         { kind: 'set_property', slides: [6], role: 'title', property: 'text', value: 'Expected' },
       ],
     }
-    expect(compileSlidesAcceptance(intent, current)).toEqual({
+    expect(() => compileSlidesAcceptance(intent, current)).toThrow(/verified authority/)
+    const verifiedNoop = await verifyAndBrandSlidesAcceptanceAuthority(
+      intent,
+      current,
+      async (request) => request.proof === revision('d'),
+    )
+    expect(compileSlidesAcceptance(intent, verifiedNoop)).toEqual({
       status: 'unchanged',
       taskId: 'text-digest',
       affectedSlides: [6],
     })
-    current.textMatches['check-001']!.matches = false
-    const compiled = compileSlidesAcceptance(intent, current)
+    verifiedNoop.textMatches!['check-001']!.matches = false
+    const verifiedMismatch = await verifyAndBrandSlidesAcceptanceAuthority(
+      intent,
+      verifiedNoop,
+      async () => true,
+    )
+    const compiled = compileSlidesAcceptance(intent, verifiedMismatch)
     if (compiled.status !== 'compiled') throw new Error('expected compiled')
     expect(compiled.plannedMutationTargets).toEqual(['slide-6:title'])
-    current.textMatches['check-001']!.matches = true
+    verifiedMismatch.textMatches!['check-001']!.matches = true
+    const verifiedPostwrite = await verifyAndBrandSlidesAcceptanceAuthority(
+      compiled.contract,
+      verifiedMismatch,
+      async () => true,
+    )
     const proof = {
       mode: 'postwrite' as const,
       mutatedTargetTokens: ['slide-6:title'],
       plannedMutationTargets: compiled.plannedMutationTargets,
     }
-    expect(verifySlidesAcceptance(compiled.contract, current, proof)[0].status).toBe('pass')
+    expect(verifySlidesAcceptance(compiled.contract, verifiedPostwrite, proof)[0].status).toBe(
+      'pass',
+    )
     ;(proof as Record<string, unknown>).expectedTextDigests = { 'check-001': revision('e') }
-    current.textMatches['check-001']!.matches = false
-    expect(verifySlidesAcceptance(compiled.contract, current, proof)[0]).toMatchObject({
+    verifiedPostwrite.textMatches!['check-001']!.matches = false
+    expect(() => verifySlidesAcceptance(compiled.contract, verifiedPostwrite, proof)).toThrow(
+      /verified authority/,
+    )
+    await expect(
+      verifyAndBrandSlidesAcceptanceAuthority(
+        compiled.contract,
+        verifiedPostwrite,
+        async () => false,
+      ),
+    ).rejects.toThrow(/proof/)
+    const verifiedFailure = await verifyAndBrandSlidesAcceptanceAuthority(
+      compiled.contract,
+      verifiedPostwrite,
+      async () => true,
+    )
+    expect(verifySlidesAcceptance(compiled.contract, verifiedFailure, proof)[0]).toMatchObject({
       status: 'fail',
       code: 'value_mismatch',
     })

@@ -6,6 +6,7 @@ import type {
   SlidesAcceptanceAuthorityLease,
   SlidesAcceptanceAuthorityRequest,
   SlidesAcceptanceAuthoritySnapshot,
+  SlidesAcceptanceTextProofRequest,
 } from '../../shared/ipc'
 import type { Session } from '../session-state'
 
@@ -183,7 +184,36 @@ export async function inspectSlidesAcceptanceAuthority(
     documentToken: session.documentInstanceId,
     sessionToken: session.sessionInstanceId,
     revision,
+    leaseToken: lease.leaseToken,
     ...(Object.keys(textMatches).length ? { textMatches } : {}),
     slides,
   }
+}
+
+export async function verifySlidesAcceptanceTextProof(
+  session: Session,
+  request: SlidesAcceptanceTextProofRequest,
+): Promise<boolean> {
+  const snapshot = await inspectSlidesAcceptanceAuthority(session, {
+    affectedSlides: [request.slide],
+    referenceSlides: [],
+    expectedDocumentToken: request.expectedDocumentToken,
+    expectedSessionToken: request.expectedSessionToken,
+    expectedRevision: request.expectedRevision,
+    leaseToken: request.leaseToken,
+    textChecks: [
+      {
+        checkId: request.checkId,
+        targetToken: request.targetToken,
+        expectedText: request.expectedText,
+      },
+    ],
+  })
+  const result = snapshot?.textMatches?.[request.checkId]
+  return (
+    !!result &&
+    result.targetToken === request.targetToken &&
+    result.matches === request.matches &&
+    result.proof === request.proof
+  )
 }

@@ -81,6 +81,8 @@ import type {
 import type { PresentationTransaction } from '@wiswork/presentation-ops'
 
 const api: SlidesApi = {
+  verifyAcceptanceTextProof: (request) =>
+    ipcRenderer.invoke('slides:acceptance-text-proof-verify', request),
   getAcceptanceAuthorityLease: () => ipcRenderer.invoke('slides:acceptance-authority-lease'),
   inspectAcceptanceAuthority: (request) =>
     ipcRenderer.invoke('slides:acceptance-authority-inspect', request),

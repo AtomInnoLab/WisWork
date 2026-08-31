@@ -13,6 +13,7 @@ import type {
   EditParagraph,
   SlidesAcceptanceAuthorityRequest,
   SlidesAcceptanceAuthorityLease,
+  SlidesAcceptanceTextProofRequest,
 } from '../../shared/ipc'
 import { auditSlideLayout, formatAudit } from './layout-audit'
 import { runLayoutScript, type LayoutScriptElement, type SlideStylePatch } from './layout-script'
@@ -50,6 +51,7 @@ export interface DeckAccess {
   getCurrent(): number
   getSelectedIds(): string[]
   getAcceptanceAuthorityLease?(): Promise<SlidesAcceptanceAuthorityLease>
+  verifyAcceptanceTextProof?(request: SlidesAcceptanceTextProofRequest): Promise<boolean>
   /** Read-only, revision-bound durable facts used to compile and verify a frozen task contract. */
   inspectAcceptanceAuthority?(
     request: SlidesAcceptanceAuthorityRequest,

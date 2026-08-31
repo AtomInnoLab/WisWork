@@ -999,6 +999,7 @@ export type MenuCommand =
   | 'paste'
 
 export interface SlidesApi {
+  verifyAcceptanceTextProof: (request: SlidesAcceptanceTextProofRequest) => Promise<boolean>
   getAcceptanceAuthorityLease: () => Promise<SlidesAcceptanceAuthorityLease | null>
   inspectAcceptanceAuthority: (
     request: SlidesAcceptanceAuthorityRequest,
@@ -1429,6 +1430,7 @@ export interface SlidesAcceptanceAuthoritySnapshot {
   documentToken: string
   sessionToken: string
   revision: string
+  leaseToken?: string
   textMatches?: Record<string, { targetToken: string; matches: boolean; proof: string }>
   slides: Array<{
     number: number
@@ -1458,6 +1460,19 @@ export interface SlidesAcceptanceAuthoritySnapshot {
       >
     }>
   }>
+}
+
+export interface SlidesAcceptanceTextProofRequest {
+  expectedDocumentToken: string
+  expectedSessionToken: string
+  expectedRevision: string
+  leaseToken: string
+  slide: number
+  checkId: string
+  targetToken: string
+  expectedText: string
+  matches: boolean
+  proof: string
 }
 
 export interface SlidesAcceptanceAuthorityRequest {

@@ -860,6 +860,7 @@ export function AiPanel({
         if (!lease) throw new Error('Authoritative acceptance lease is unavailable')
         return lease
       },
+      verifyAcceptanceTextProof: (request) => window.slidesApi.verifyAcceptanceTextProof(request),
       inspectAcceptanceAuthority: async (request) => {
         const snapshot = await window.slidesApi.inspectAcceptanceAuthority(request)
         if (!snapshot) throw new Error('Authoritative acceptance inspection is unavailable')

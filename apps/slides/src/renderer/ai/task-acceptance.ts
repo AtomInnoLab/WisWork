@@ -6,6 +6,7 @@ import {
   type SupportedProperty,
   type SupportedRole,
 } from '@wiswork/presentation-verification'
+import type { SlidesAcceptanceTextProofRequest } from '../../shared/ipc'
 
 export type SlidesAcceptanceElement = {
   /** Opaque durable creation identity, never the renderer's runtime source id. */
@@ -19,6 +20,7 @@ export type SlidesAcceptanceAuthority = {
   documentToken: string
   sessionToken: string
   revision: string
+  leaseToken?: string
   /** Pre-edit revision proved by the mutation receipt; omitted for compile-time inspection. */
   baseRevision?: string
   textMatches?: Record<string, { targetToken: string; matches: boolean; proof: string }>
@@ -101,6 +103,9 @@ const deterministicProperties = new Set<SupportedProperty>([
   'stroke_color',
   'background_color',
 ])
+const verifiedTextAuthorities = new WeakMap<object, string>()
+const textMatchSignature = (authority: SlidesAcceptanceAuthority): string =>
+  JSON.stringify(authority.textMatches ?? {})
 const geometryProperties = new Set<SupportedProperty>(['x', 'y', 'width', 'height'])
 const roles = new Set(['title', 'body', 'emphasis'])
 const properties = new Set([
@@ -292,7 +297,15 @@ export function parseSlidesAcceptanceIntent(value: unknown): SlidesAcceptanceInt
 export function parseSlidesAcceptanceAuthority(value: unknown): SlidesAcceptanceAuthority {
   const root = strictObject(
     value,
-    ['documentToken', 'sessionToken', 'revision', 'baseRevision', 'textMatches', 'slides'],
+    [
+      'documentToken',
+      'sessionToken',
+      'revision',
+      'baseRevision',
+      'leaseToken',
+      'textMatches',
+      'slides',
+    ],
     'authority',
   )
   const slides = strictArray(root.slides, 100, 'authority.slides').map((item, index) => {
@@ -382,10 +395,95 @@ export function parseSlidesAcceptanceAuthority(value: unknown): SlidesAcceptance
     documentToken: identifier(root.documentToken, 'documentToken'),
     sessionToken: identifier(root.sessionToken, 'sessionToken'),
     revision,
+    ...(root.leaseToken === undefined
+      ? {}
+      : { leaseToken: identifier(root.leaseToken, 'leaseToken') }),
     ...(root.baseRevision === undefined ? {} : { baseRevision: String(root.baseRevision) }),
     ...(textMatches ? { textMatches } : {}),
     slides,
   }
+}
+
+type TextProofVerifier = (request: SlidesAcceptanceTextProofRequest) => Promise<boolean>
+
+export async function verifyAndBrandSlidesAcceptanceAuthority(
+  source: SlidesAcceptanceIntent | PresentationAcceptanceContract,
+  rawAuthority: SlidesAcceptanceAuthority,
+  verifyProof: TextProofVerifier,
+): Promise<SlidesAcceptanceAuthority> {
+  const authority = parseSlidesAcceptanceAuthority(rawAuthority)
+  if (!authority.leaseToken && Object.keys(authority.textMatches ?? {}).length)
+    throw new TypeError('Text authority lease is missing')
+  const expected = new Map<string, { slide: number; targetToken: string; expectedText: string }>()
+  if ('version' in source) {
+    const contract = parsePresentationAcceptanceContract(source)
+    for (const check of contract.checks)
+      if (
+        check.kind === 'element_property' &&
+        check.property === 'text' &&
+        check.roleOrTarget.kind === 'target' &&
+        typeof check.expected === 'string'
+      )
+        expected.set(check.id, {
+          slide: check.slide,
+          targetToken: check.roleOrTarget.targetToken,
+          expectedText: check.expected,
+        })
+  } else {
+    const intent = parseSlidesAcceptanceIntent(source)
+    let checkNumber = 0
+    for (const change of intent.changes) {
+      for (const slide of change.slides) {
+        checkNumber += 1
+        if (change.kind !== 'set_property' || change.property !== 'text') continue
+        const candidates = targetResolution(authority, slide, change)
+        if (candidates.length === 1 && typeof change.value === 'string')
+          expected.set(`check-${String(checkNumber).padStart(3, '0')}`, {
+            slide,
+            targetToken: candidates[0]!.targetToken,
+            expectedText: change.value,
+          })
+      }
+    }
+  }
+  for (const [checkId, match] of Object.entries(authority.textMatches ?? {})) {
+    const check = expected.get(checkId)
+    if (!check || check.targetToken !== match.targetToken)
+      throw new TypeError('Text proof is not contract-bound')
+    const valid = await verifyProof({
+      expectedDocumentToken: authority.documentToken,
+      expectedSessionToken: authority.sessionToken,
+      expectedRevision: authority.revision,
+      leaseToken: authority.leaseToken!,
+      slide: check.slide,
+      checkId,
+      targetToken: match.targetToken,
+      expectedText: check.expectedText,
+      matches: match.matches,
+      proof: match.proof,
+    })
+    if (!valid) throw new TypeError('Text authority proof verification failed')
+  }
+  if ([...expected.keys()].some((checkId) => !authority.textMatches?.[checkId]))
+    throw new TypeError('Text authority proof is missing')
+  verifiedTextAuthorities.set(authority, textMatchSignature(authority))
+  return authority
+}
+
+function requireVerifiedTextAuthority(
+  source: SlidesAcceptanceIntent | PresentationAcceptanceContract,
+  authority: SlidesAcceptanceAuthority,
+): void {
+  const hasText =
+    'version' in source
+      ? source.checks.some(
+          (check) => check.kind === 'element_property' && check.property === 'text',
+        )
+      : source.changes.some(
+          (change) => change.kind === 'set_property' && change.property === 'text',
+        )
+  if (hasText && verifiedTextAuthorities.get(authority) !== textMatchSignature(authority))
+    throw new TypeError('Text checks require verified authority')
 }
 
 const normalizeValue = (property: SupportedProperty, value: SafeScalar): SafeScalar =>
@@ -417,6 +515,7 @@ export function compileSlidesAcceptance(
   rawIntent: SlidesAcceptanceIntent,
   rawAuthority: SlidesAcceptanceAuthority,
 ): SlidesAcceptanceCompileResult {
+  requireVerifiedTextAuthority(rawIntent, rawAuthority)
   const intent = parseSlidesAcceptanceIntent(rawIntent)
   const authority = parseSlidesAcceptanceAuthority(rawAuthority)
   const affected = new Set(intent.affectedSlides)
@@ -597,6 +696,7 @@ export function verifySlidesAcceptance(
         plannedMutationTargets: string[]
       },
 ): SlidesDeterministicResult[] {
+  requireVerifiedTextAuthority(rawContract, rawAuthority)
   const contract = parsePresentationAcceptanceContract(rawContract)
   const authority = parseSlidesAcceptanceAuthority(rawAuthority)
   const stale =
