@@ -57,22 +57,23 @@ test('production Slides renderer captures authority-bound affected and reference
     const execution = await editor.evaluate(async () => {
       const execute = (
         window as typeof window & {
-          __wisworkSlidesExecuteAcceptanceGolden?: () => Promise<{
-            receipts: Array<{
-              transactionId: string
-              status: string
-              mutatedTargets?: string[]
-            }>
-            checks: Array<{ id: string; pass: boolean }>
-            savedPath?: string
+          __wisworkSlidesRunAcceptanceAgent?: () => Promise<{
+            text: string
+            status?: string
+            passedCheckIds?: string[]
+            mutationReceiptIds?: string[]
           }>
         }
-      ).__wisworkSlidesExecuteAcceptanceGolden
+      ).__wisworkSlidesRunAcceptanceAgent
       if (!execute) throw new Error('acceptance execution harness unavailable')
       return execute()
     })
-    expect(execution.receipts).toHaveLength(11)
-    expect(execution.receipts.map(({ transactionId }) => transactionId)).toEqual([
+    expect(execution.status).toBe('verified')
+    expect(execution.text).toContain('Verified')
+    await editor.locator('.ai-rail').click()
+    await expect(editor.getByText('Verified', { exact: true })).toBeVisible()
+    expect(execution.passedCheckIds).toHaveLength(17)
+    expect(execution.mutationReceiptIds).toEqual([
       'golden-6-title',
       'golden-6-body',
       'golden-6-emphasis',
@@ -85,12 +86,8 @@ test('production Slides renderer captures authority-bound affected and reference
       'golden-8-emphasis',
       'golden-8-geometry',
     ])
-    expect(execution.receipts.every(({ status }) => status === 'applied')).toBe(true)
-    expect(execution.receipts.every(({ mutatedTargets }) => mutatedTargets?.length === 1)).toBe(
-      true,
-    )
-    expect(execution.checks).toHaveLength(17)
-    expect(execution.checks.every(({ pass }) => pass)).toBe(true)
+    const saved = await editor.evaluate(() => window.slidesApi.save())
+    expect(saved.ok).toBe(true)
     const result = await editor.evaluate(async () => {
       const render = (
         window as typeof window & {

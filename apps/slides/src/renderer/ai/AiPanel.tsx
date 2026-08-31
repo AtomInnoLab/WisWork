@@ -5,7 +5,7 @@ import {
   type AgentImage,
   type ToolDisplay,
 } from '@wiswork/agent-core'
-import type { AgentHarness } from '@wiswork/agent-harness'
+import { createAgentHarness, type AgentHarness } from '@wiswork/agent-harness'
 import type { RenderSlide } from '@wiswork/pptx-render'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
@@ -1450,6 +1450,146 @@ export function AiPanel({
           .map((a) => a.name),
     }
     accessRef.current = access
+    if (navigator.webdriver) {
+      const automationWindow = window as typeof window & {
+        __wisworkSlidesRunAcceptanceAgent?: () => Promise<{
+          text: string
+          status?: string
+          passedCheckIds?: string[]
+          mutationReceiptIds?: string[]
+        }>
+      }
+      automationWindow.__wisworkSlidesRunAcceptanceAgent = async () => {
+        const initial = slidesRef.current
+        const source = (slideNumber: number, role: string) => {
+          const node = initial[slideNumber - 1]?.nodes.find((candidate) =>
+            JSON.stringify(candidate).includes(`${role}-${slideNumber}`),
+          )
+          if (!node) throw new Error(`missing fixture target: ${role}-${slideNumber}`)
+          return node.sourceId
+        }
+        const calls = [6, 7, 8].flatMap((slideNumber) => [
+          ...(
+            [
+              ['title', '#2457A7'],
+              ['body', '#172033'],
+              ['emphasis', '#18A0A6'],
+            ] as const
+          ).map(([role, color]) => ({
+            id: `golden-${slideNumber}-${role}`,
+            name: 'set_element_style',
+            input: { slideIndex: slideNumber - 1, sourceId: source(slideNumber, role), color },
+          })),
+          ...(slideNumber === 6
+            ? []
+            : [
+                {
+                  id: `golden-${slideNumber}-geometry`,
+                  name: 'set_element_transform',
+                  input: {
+                    slideIndex: slideNumber - 1,
+                    sourceId: source(slideNumber, 'title'),
+                    x: 96,
+                    y: 64,
+                    w: 1088,
+                    h: 72,
+                  },
+                },
+              ]),
+        ])
+        let mainTurn = 0
+        const transport = {
+          stream: (
+            _request: unknown,
+            callbacks: Parameters<ReturnType<typeof createElectronTransport>['stream']>[1],
+          ) => {
+            queueMicrotask(() => {
+              if (mainTurn++ === 0) for (const call of calls) callbacks.onToolCall(call)
+              else callbacks.onDelta('done')
+              callbacks.onDone()
+            })
+            return { cancel() {} }
+          },
+        }
+        const reviewerTransport = {
+          stream: (
+            _request: unknown,
+            callbacks: Parameters<ReturnType<typeof createElectronTransport>['stream']>[1],
+          ) => {
+            queueMicrotask(() => {
+              callbacks.onDelta(
+                JSON.stringify({
+                  status: 'pass',
+                  failedCheckIds: [],
+                  observations: [],
+                  fixIntents: [],
+                }),
+              )
+              callbacks.onDone()
+            })
+            return { cancel() {} }
+          },
+        }
+        const automatedAccess: DeckAccess = {
+          ...access,
+          taskReviewAdapter: access.taskReviewAdapter && {
+            ...access.taskReviewAdapter,
+            review: async (facts, signal) => {
+              const reviewImages = facts.screenshots.map(
+                ({ mediaToken }) => taskImages.get(mediaToken)?.image,
+              )
+              if (reviewImages.some((image) => !image)) throw new Error('screenshot_unavailable')
+              return reviewSlidesRendering({
+                facts,
+                images: reviewImages as AgentImage[],
+                transport: reviewerTransport,
+                signal,
+              })
+            },
+          },
+        }
+        return new Promise((resolve, reject) => {
+          let receipt:
+            import('@wiswork/presentation-verification').PresentationCompletionReceipt | undefined
+          const harness = createAgentHarness({
+            transport,
+            maxTurns: 3,
+            skill: createSlidesSkill(automatedAccess, {
+              planning: true,
+              verifiedCompletion: true,
+              visualReview: true,
+              autoCorrection: false,
+            }),
+            events: {
+              onPresentationReceipt: ({ receipt: value }) => {
+                receipt = value
+                return translatePresentationVerification(lang, value.status)
+              },
+              onDone: ({ text }) => {
+                harness.dispose()
+                setChat((previous) => [...previous, { role: 'assistant', text }])
+                resolve({
+                  text,
+                  ...(receipt
+                    ? {
+                        status: receipt.status,
+                        passedCheckIds: receipt.passedCheckIds,
+                        mutationReceiptIds: receipt.mutationReceiptIds,
+                      }
+                    : {}),
+                })
+              },
+              onError: (error) => {
+                harness.dispose()
+                reject(new Error(error))
+              },
+            },
+          })
+          if (!harness.run('Apply the bounded presentation consistency edits.'))
+            reject(new Error('agent_run_rejected'))
+        })
+      }
+    }
     loopRef.current = createAgentController({
       transport: createElectronTransport(() => settingsRef.current),
       systemSuffix: aiLangDirective,
