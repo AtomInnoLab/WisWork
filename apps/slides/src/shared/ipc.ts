@@ -999,7 +999,9 @@ export type MenuCommand =
   | 'paste'
 
 export interface SlidesApi {
-  inspectAcceptanceAuthority: () => Promise<SlidesAcceptanceAuthoritySnapshot | null>
+  inspectAcceptanceAuthority: (
+    request: SlidesAcceptanceAuthorityRequest,
+  ) => Promise<SlidesAcceptanceAuthoritySnapshot | null>
   /** Capture a bounded renderer selection as authoritative durable targets. */
   captureAgentSelection: (request: { slideIndex: number; sourceIds: string[] }) => Promise<
     | {
@@ -1454,6 +1456,14 @@ export interface SlidesAcceptanceAuthoritySnapshot {
       >
     }>
   }>
+}
+
+export interface SlidesAcceptanceAuthorityRequest {
+  affectedSlides: number[]
+  referenceSlides: number[]
+  expectedDocumentToken: string
+  expectedSessionToken: string
+  expectedRevision: string
 }
 
 export interface PresentationTargetRequest {

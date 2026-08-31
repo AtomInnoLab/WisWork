@@ -1,12 +1,16 @@
 import { fingerprintPresentation, type SlideElement } from '@wiswork/pptx-engine'
 import { fingerprintSemanticValue } from '@wiswork/presentation-ops'
 import { EMU_PER_PX_96 } from '@wiswork/pptx-render'
-import type { SlidesAcceptanceAuthoritySnapshot } from '../../shared/ipc'
+import type {
+  SlidesAcceptanceAuthorityRequest,
+  SlidesAcceptanceAuthoritySnapshot,
+} from '../../shared/ipc'
 import type { Session } from '../session-state'
 
-const roleOf = (element: SlideElement): 'title' | 'body' | undefined => {
+const roleOf = (element: SlideElement): 'title' | 'body' | 'emphasis' | undefined => {
   if (element.placeholder === 'title' || element.placeholder === 'ctrTitle') return 'title'
-  if (element.placeholder === 'body' || element.placeholder === 'subTitle') return 'body'
+  if (element.placeholder === 'subTitle') return 'emphasis'
+  if (element.placeholder === 'body') return 'body'
   return undefined
 }
 
@@ -29,9 +33,6 @@ async function elementFact(slideId: string, element: SlideElement, locked: boole
     properties.stroke_color = element.stroke.fill.color
   if ((element.type === 'text' || element.type === 'shape') && element.text) {
     const runs = element.text.paragraphs.flatMap((paragraph) => paragraph.runs)
-    properties.text = element.text.paragraphs
-      .map((paragraph) => paragraph.runs.map((run) => run.text).join(''))
-      .join('\n')
     const color = uniform(runs.map((run) => run.color).filter((value): value is string => !!value))
     const fontSize = uniform(
       runs.map((run) => run.fontSize).filter((value): value is number => value !== undefined),
@@ -61,23 +62,48 @@ async function elementFact(slideId: string, element: SlideElement, locked: boole
 /** Pure authoritative inspection. It does not mint identities or enroll transaction targets. */
 export async function inspectSlidesAcceptanceAuthority(
   session: Session,
+  request: SlidesAcceptanceAuthorityRequest,
 ): Promise<SlidesAcceptanceAuthoritySnapshot | null> {
   if (!session.documentInstanceId || !session.sessionInstanceId) return null
+  if (request.affectedSlides.length > 50 || request.referenceSlides.length > 50)
+    throw new TypeError('Acceptance inspection request is not bounded')
+  const requested = [...new Set([...request.affectedSlides, ...request.referenceSlides])].sort(
+    (a, b) => a - b,
+  )
+  if (
+    requested.some(
+      (page) => !Number.isSafeInteger(page) || page < 1 || page > session.opened.deck.slides.length,
+    )
+  )
+    throw new TypeError('Acceptance inspection page is invalid')
+  const revision = await fingerprintPresentation(session.opened)
+  if (
+    request.expectedDocumentToken !== session.documentInstanceId ||
+    request.expectedSessionToken !== session.sessionInstanceId ||
+    request.expectedRevision !== revision
+  )
+    return null
   const slides = []
-  for (let index = 0; index < session.opened.deck.slides.length; index += 1) {
+  let inspectedElements = 0
+  for (const page of requested) {
+    const index = page - 1
     const slide = session.opened.deck.slides[index]!
     const elements = []
     for (const element of slide.elements) {
+      if (++inspectedElements > 2_000)
+        throw new TypeError('Acceptance inspection element bound exceeded')
       const fact = await elementFact(slide.durableId, element, false)
       if (fact) elements.push(fact)
     }
     for (const decoration of slide.decorations ?? []) {
+      if (++inspectedElements > 2_000)
+        throw new TypeError('Acceptance inspection element bound exceeded')
       const fact = await elementFact(slide.durableId, decoration, true)
       if (fact) elements.push(fact)
     }
     const slideDigest = await fingerprintSemanticValue({ slideId: slide.durableId })
     slides.push({
-      number: index + 1,
+      number: page,
       slideToken: `slide:${slideDigest.slice('sha256:'.length)}`,
       ...(slide.background?.type === 'solid' ? { backgroundColor: slide.background.color } : {}),
       elements,
@@ -86,7 +112,7 @@ export async function inspectSlidesAcceptanceAuthority(
   return {
     documentToken: session.documentInstanceId,
     sessionToken: session.sessionInstanceId,
-    revision: await fingerprintPresentation(session.opened),
+    revision,
     slides,
   }
 }

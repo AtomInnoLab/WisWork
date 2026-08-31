@@ -86,6 +86,13 @@ function validateSlidesAiObject(
     throw new AiIpcError('invalid_payload')
   }
   const object = value as Record<string, unknown>
+  if (Object.getPrototypeOf(object) !== Object.prototype) throw new AiIpcError('invalid_payload')
+  for (const key of Reflect.ownKeys(object)) {
+    const descriptor =
+      typeof key === 'string' ? Object.getOwnPropertyDescriptor(object, key) : undefined
+    if (!descriptor?.enumerable || descriptor.get || descriptor.set)
+      throw new AiIpcError('invalid_payload')
+  }
   if (Object.keys(object).some((key) => !allowed.includes(key))) {
     throw new AiIpcError('invalid_payload')
   }
@@ -186,8 +193,33 @@ export function registerSlidesOnlyAiIpc(): void {
     PreparedTargetLedger
   >()
 
-  ipcMain.handle('slides:acceptance-authority-inspect', async (event) => {
+  ipcMain.handle('slides:acceptance-authority-inspect', async (event, value: unknown) => {
     assertAiIpcSender(event)
+    const request = validateSlidesAiObject(
+      value,
+      [
+        'affectedSlides',
+        'referenceSlides',
+        'expectedDocumentToken',
+        'expectedSessionToken',
+        'expectedRevision',
+      ],
+      4_096,
+    )
+    const pages = (input: unknown) => {
+      if (
+        !Array.isArray(input) ||
+        input.length > 50 ||
+        input.some((page) => !Number.isSafeInteger(page) || page < 1 || page > 10_000) ||
+        new Set(input).size !== input.length
+      )
+        throw new AiIpcError('invalid_payload')
+      return input as number[]
+    }
+    const expectedDocumentToken = validateSlidesAiString(request.expectedDocumentToken, 128)
+    const expectedSessionToken = validateSlidesAiString(request.expectedSessionToken, 128)
+    const expectedRevision = validateSlidesAiString(request.expectedRevision, 71)
+    if (!/^sha256:[0-9a-f]{64}$/.test(expectedRevision)) throw new AiIpcError('invalid_payload')
     const session = sessions.get(event.sender.id)!
     if (
       sessionHasActivePresentationTransaction(session) ||
@@ -196,7 +228,13 @@ export function registerSlidesOnlyAiIpc(): void {
     )
       return null
     const generation = session.mutationGeneration ?? 0
-    const snapshot = await inspectSlidesAcceptanceAuthority(session)
+    const snapshot = await inspectSlidesAcceptanceAuthority(session, {
+      affectedSlides: pages(request.affectedSlides),
+      referenceSlides: pages(request.referenceSlides),
+      expectedDocumentToken,
+      expectedSessionToken,
+      expectedRevision,
+    })
     return (session.mutationGeneration ?? 0) === generation ? snapshot : null
   })
 

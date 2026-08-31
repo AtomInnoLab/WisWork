@@ -36,7 +36,6 @@ type PropertyChange = {
   targetToken?: string
   property: SupportedProperty
   value: SafeScalar
-  tolerance?: number
 }
 
 export type SlidesAcceptanceIntent = {
@@ -58,7 +57,11 @@ export type SlidesAcceptanceIntent = {
 }
 
 export type SlidesAcceptanceCompileResult =
-  | { status: 'compiled'; contract: PresentationAcceptanceContract }
+  | {
+      status: 'compiled'
+      contract: PresentationAcceptanceContract
+      plannedMutationTargets: string[]
+    }
   | { status: 'unchanged'; taskId: string; affectedSlides: number[] }
   | {
       status: 'needs_clarification'
@@ -247,6 +250,7 @@ export function parseSlidesAcceptanceIntent(value: unknown): SlidesAcceptanceInt
       (base.role === undefined) === (base.targetToken === undefined)
     )
       throw new TypeError(`change ${index} is invalid`)
+    if (base.tolerance !== undefined) throw new TypeError(`change ${index} is invalid`)
     if (base.role !== undefined && !roles.has(String(base.role)))
       throw new TypeError(`change ${index} is invalid`)
     if (base.targetToken !== undefined) identifier(base.targetToken, `change ${index}.targetToken`)
@@ -290,7 +294,7 @@ export function parseSlidesAcceptanceAuthority(value: unknown): SlidesAcceptance
     ['documentToken', 'sessionToken', 'revision', 'baseRevision', 'slides'],
     'authority',
   )
-  const slides = strictArray(root.slides, 50, 'authority.slides').map((item, index) => {
+  const slides = strictArray(root.slides, 100, 'authority.slides').map((item, index) => {
     const slide = strictObject(
       item,
       ['number', 'slideToken', 'backgroundColor', 'elements'],
@@ -412,6 +416,7 @@ export function compileSlidesAcceptance(
 
   const checks: PresentationAcceptanceCheck[] = []
   const referenceSlides = new Set<number>()
+  const plannedMutationTargets = new Set<string>()
   let changed = false
   const addCheck = (check: CheckWithoutId) =>
     checks.push({
@@ -425,7 +430,10 @@ export function compileSlidesAcceptance(
         const current = slideAt(authority, slide)
         if (!current) return { status: 'needs_clarification', code: 'target_missing', slide }
         const expected = normalizeValue('background_color', change.color)
-        changed ||= normalizeValue('background_color', current.backgroundColor ?? null) !== expected
+        const needsChange =
+          normalizeValue('background_color', current.backgroundColor ?? null) !== expected
+        changed ||= needsChange
+        if (needsChange) plannedMutationTargets.add(current.slideToken)
         addCheck({
           kind: 'element_property',
           slide,
@@ -456,10 +464,12 @@ export function compileSlidesAcceptance(
           }
         const expected = normalizeValue(change.property, change.value)
         const actual = target.properties[change.property]
-        changed ||=
+        const needsChange =
           actual == null ||
           !deterministicProperties.has(change.property) ||
           normalizeValue(change.property, actual) !== expected
+        changed ||= needsChange
+        if (needsChange) plannedMutationTargets.add(target.targetToken)
         addCheck({
           kind: 'element_property',
           slide,
@@ -490,7 +500,7 @@ export function compileSlidesAcceptance(
           targetToken: target.targetToken,
         }
       const reference = roleResolution(authority, referenceSlide, change.role)[0]!
-      changed ||= change.properties.some((property) => {
+      const needsChange = change.properties.some((property) => {
         const actual = target.properties[property]
         const expected = reference.properties[property]
         return (
@@ -500,6 +510,8 @@ export function compileSlidesAcceptance(
           !valuesMatch(property, actual, expected, change.tolerance)
         )
       })
+      changed ||= needsChange
+      if (needsChange) plannedMutationTargets.add(target.targetToken)
       addCheck({
         kind: 'reference_match',
         slide,
@@ -529,6 +541,7 @@ export function compileSlidesAcceptance(
       checks,
       maxCorrectionPasses: intent.maxCorrectionPasses,
     }),
+    plannedMutationTargets: [...plannedMutationTargets],
   }
 }
 
@@ -546,7 +559,9 @@ function valuesMatch(
 export function verifySlidesAcceptance(
   rawContract: PresentationAcceptanceContract,
   rawAuthority: SlidesAcceptanceAuthority,
-  proof: { mode: 'prewrite' } | { mode: 'postwrite'; mutatedTargetTokens: string[] },
+  proof:
+    | { mode: 'prewrite' }
+    | { mode: 'postwrite'; mutatedTargetTokens: string[]; plannedMutationTargets: string[] },
 ): SlidesDeterministicResult[] {
   const contract = parsePresentationAcceptanceContract(rawContract)
   const authority = parseSlidesAcceptanceAuthority(rawAuthority)
@@ -575,13 +590,18 @@ export function verifySlidesAcceptance(
     ),
   )
   if (proof.mode === 'postwrite') {
+    const plannedTargets = proof.plannedMutationTargets.map((target) =>
+      identifier(target, 'plannedMutationTarget'),
+    )
     const proved = new Set(
       proof.mutatedTargetTokens.map((target) => identifier(target, 'mutatedTargetToken')),
     )
     if (
       proved.size !== proof.mutatedTargetTokens.length ||
-      proved.size !== requiredTargets.size ||
-      [...proved].some((target) => !requiredTargets.has(target))
+      new Set(plannedTargets).size !== plannedTargets.length ||
+      plannedTargets.some((target) => !requiredTargets.has(target)) ||
+      proved.size !== plannedTargets.length ||
+      [...proved].some((target) => !plannedTargets.includes(target))
     )
       return contract.checks.map(({ id }) => ({
         checkId: id,

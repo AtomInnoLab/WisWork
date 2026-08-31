@@ -92,6 +92,7 @@ describe('PC Slides acceptance compiler', () => {
       referenceSlides: [6],
     })
     expect(result.contract.checks).toHaveLength(11)
+    expect(result.plannedMutationTargets).toHaveLength(9)
     expect(result.contract.checks).toContainEqual({
       id: 'check-001',
       kind: 'element_property',
@@ -161,6 +162,63 @@ describe('PC Slides acceptance compiler', () => {
       ),
     ).toThrow(/outside frozen affected scope/)
   })
+
+  it('rejects set_property tolerance', () => {
+    expect(() =>
+      compileSlidesAcceptance(
+        {
+          taskId: 'bad-tolerance',
+          affectedSlides: [6],
+          maxCorrectionPasses: 0,
+          changes: [
+            {
+              kind: 'set_property',
+              slides: [6],
+              role: 'title',
+              property: 'x',
+              value: 100,
+              tolerance: 0.1,
+            },
+          ],
+        } as unknown as SlidesAcceptanceIntent,
+        authority(),
+      ),
+    ).toThrow(/invalid/)
+  })
+
+  it('clarifies structurally ambiguous emphasis targets', () => {
+    const current = authority()
+    current.slides[0]!.elements.push({
+      targetToken: 'slide-6:emphasis-2',
+      role: 'emphasis',
+      locked: false,
+      properties: { color: '#444444' },
+    })
+    expect(
+      compileSlidesAcceptance(
+        {
+          taskId: 'ambiguous-emphasis',
+          affectedSlides: [6],
+          maxCorrectionPasses: 0,
+          changes: [
+            {
+              kind: 'set_property',
+              slides: [6],
+              role: 'emphasis',
+              property: 'color',
+              value: '#FFFFFF',
+            },
+          ],
+        },
+        current,
+      ),
+    ).toEqual({
+      status: 'needs_clarification',
+      code: 'ambiguous_target',
+      slide: 6,
+      role: 'emphasis',
+    })
+  })
 })
 
 describe('PC Slides deterministic verifier', () => {
@@ -193,7 +251,6 @@ describe('PC Slides deterministic verifier', () => {
           role: 'title',
           property: 'x',
           value: 100,
-          tolerance: 0.1,
         },
         { kind: 'set_background', slides: [6], color: '#FFFFFF' },
       ],
@@ -213,6 +270,7 @@ describe('PC Slides deterministic verifier', () => {
     const result = verifySlidesAcceptance(planned.contract, verificationAuthority, {
       mode: 'postwrite',
       mutatedTargetTokens: ['slide-6:title', 'slide-6'],
+      plannedMutationTargets: planned.plannedMutationTargets,
     })
     expect(result.every((entry) => entry.status === 'pass')).toBe(true)
     expect(verificationAuthority).toEqual(verificationBefore)
@@ -250,6 +308,7 @@ describe('PC Slides deterministic verifier', () => {
       verifySlidesAcceptance(compiled.contract, expanded, {
         mode: 'postwrite',
         mutatedTargetTokens: ['slide-9:intruder'],
+        plannedMutationTargets: compiled.plannedMutationTargets,
       })[0],
     ).toMatchObject({
       status: 'fail',
@@ -327,8 +386,42 @@ describe('PC Slides deterministic verifier', () => {
         verifySlidesAcceptance(compiled.contract, current, {
           mode: 'postwrite',
           mutatedTargetTokens: targets,
+          plannedMutationTargets: compiled.plannedMutationTargets,
         })[0],
       ).toMatchObject({ status: 'fail', code: 'scope_mismatch' })
+  })
+
+  it('does not require checked no-op targets to mutate and rejects extra writes', () => {
+    const current = authority()
+    const compiled = compileSlidesAcceptance(
+      {
+        taskId: 'mixed',
+        affectedSlides: [6],
+        maxCorrectionPasses: 0,
+        changes: [
+          { kind: 'set_property', slides: [6], role: 'title', property: 'x', value: 100 },
+          { kind: 'set_property', slides: [6], role: 'body', property: 'color', value: '#ABCDEF' },
+        ],
+      },
+      current,
+    )
+    if (compiled.status !== 'compiled') throw new Error('expected compiled')
+    expect(compiled.plannedMutationTargets).toEqual(['slide-6:body'])
+    current.slides[0]!.elements[1]!.properties.color = '#ABCDEF'
+    expect(
+      verifySlidesAcceptance(compiled.contract, current, {
+        mode: 'postwrite',
+        mutatedTargetTokens: ['slide-6:body'],
+        plannedMutationTargets: compiled.plannedMutationTargets,
+      }).every((result) => result.status === 'pass'),
+    ).toBe(true)
+    expect(
+      verifySlidesAcceptance(compiled.contract, current, {
+        mode: 'postwrite',
+        mutatedTargetTokens: ['slide-6:body', 'slide-6:title'],
+        plannedMutationTargets: compiled.plannedMutationTargets,
+      })[0],
+    ).toMatchObject({ status: 'fail', code: 'scope_mismatch' })
   })
 })
 

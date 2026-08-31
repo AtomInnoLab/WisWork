@@ -6,7 +6,13 @@ import type {
   RenderSlide,
   ShapeRenderNode,
 } from '@wiswork/pptx-render'
-import type { AddSmartArtOp, AgentToolCall, AgentToolDef, EditParagraph } from '../../shared/ipc'
+import type {
+  AddSmartArtOp,
+  AgentToolCall,
+  AgentToolDef,
+  EditParagraph,
+  SlidesAcceptanceAuthorityRequest,
+} from '../../shared/ipc'
 import { auditSlideLayout, formatAudit } from './layout-audit'
 import { runLayoutScript, type LayoutScriptElement, type SlideStylePatch } from './layout-script'
 import { t } from '../i18n/locale'
@@ -43,7 +49,9 @@ export interface DeckAccess {
   getCurrent(): number
   getSelectedIds(): string[]
   /** Read-only, revision-bound durable facts used to compile and verify a frozen task contract. */
-  inspectAcceptanceAuthority?(): Promise<SlidesAcceptanceAuthority>
+  inspectAcceptanceAuthority?(
+    request: SlidesAcceptanceAuthorityRequest,
+  ): Promise<SlidesAcceptanceAuthority>
   /** Immutable durable scope for the active queued run, if any. */
   getSelectionScope?(): SelectionScope | undefined
   applySlide(slideIndex: number, updated: RenderSlide): void
