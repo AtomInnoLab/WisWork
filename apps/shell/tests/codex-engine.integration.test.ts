@@ -75,4 +75,59 @@ describe('real 0.147 production engine bridge', () => {
     },
     20_000,
   )
+
+  realIt(
+    'settles cancellation without waiting for a provider terminal notification',
+    async () => {
+      const upstream = vi.fn(
+        async () =>
+          new Response(new ReadableStream({ start() {} }), {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+          }),
+      )
+      const engine = await createProductionCodexBootstrap({ fetchWithAuth: upstream }).start({
+        executablePath: executable!,
+        onCrash: vi.fn(),
+      })
+      const events: unknown[] = []
+      const session = {
+        identity: {
+          ownerId: 'owner',
+          host: 'docs',
+          documentId: 'cancel-doc',
+          sessionId: 'cancel-session',
+          generation: 1,
+        },
+        credentials: { sessionId: 'cancel-session', secret: 'cancel-secret' },
+        callTool: vi.fn(),
+        cancelAll: vi.fn(() => 0),
+        close: vi.fn(),
+      } as any
+      engine.registerDocument!({
+        ownerId: 'owner',
+        documentId: 'cancel-doc',
+        host: 'docs',
+        generation: 1,
+        session,
+        onEvent: (event) => events.push(event),
+      })
+      try {
+        const running = engine.startTurn({
+          documentId: 'cancel-doc',
+          host: 'docs',
+          generation: 1,
+          text: 'wait',
+        })
+        await vi.waitFor(() => expect(upstream).toHaveBeenCalled(), { timeout: 10_000 })
+        await engine.cancelTurn('cancel-doc')
+        await expect(running).resolves.toBeUndefined()
+        expect(session.cancelAll).toHaveBeenCalled()
+        expect(events).toContainEqual({ type: 'terminal', status: 'cancelled' })
+      } finally {
+        await engine.close()
+      }
+    },
+    20_000,
+  )
 })

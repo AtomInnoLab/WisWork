@@ -156,6 +156,27 @@ describe('document-scoped tool session', () => {
     expect(f.session.mutationAuthority.claimNext()).toBeUndefined()
   })
 
+  it('cancels all queued and claimed mutations for a revoked turn', async () => {
+    const f = fixture()
+    const queued = f.session.callTool(f.session.credentials, {
+      id: 'queued-all',
+      name: writeTool.name,
+      input: {},
+    }) as any
+    const claimed = f.session.mutationAuthority.claimNext()!
+    const second = f.session.callTool(f.session.credentials, {
+      id: 'second-all',
+      name: writeTool.name,
+      input: {},
+    }) as any
+    expect(f.session.cancelAll(f.session.credentials)).toBe(2)
+    await expect(queued.result).resolves.toMatchObject({ output: 'tool_cancelled', isError: true })
+    await expect(second.result).resolves.toMatchObject({ output: 'tool_cancelled', isError: true })
+    expect(() =>
+      f.session.mutationAuthority.settle(claimed.claim, { output: 'late', summary: 'late' }),
+    ).toThrow('mutation_claim_consumed')
+  })
+
   it('rejects cross-session, unknown, oversized, cancelled and closed calls', async () => {
     const a = fixture(),
       b = fixture()

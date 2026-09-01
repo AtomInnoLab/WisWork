@@ -50,6 +50,7 @@ const MAX_POLICY_BYTES = 65_536
 const MAX_PATH_BYTES = 4_096
 const MAX_DELTA_BYTES = 1_000_000
 const PINNED_VERSION = CODEX_CLI_VERSION.slice('codex-cli '.length)
+const PINNED_TURN_COMPLETION_STATUSES = new Set(['completed', 'interrupted', 'failed'])
 
 export interface CodexAppServerClientOptions {
   readonly rpc: JsonRpcClient
@@ -296,10 +297,13 @@ export class CodexAppServerClient {
       )
     }
     if (notification.method === 'turn/started' || notification.method === 'turn/completed') {
+      const turn = isRecord(notification.params) ? notification.params.turn : undefined
       return (
         isRecord(notification.params) &&
         boundedString(notification.params.threadId, MAX_IDENTIFIER_BYTES) &&
-        hasNonemptyId(notification.params.turn, 'id')
+        hasNonemptyId(turn, 'id') &&
+        (notification.method !== 'turn/completed' ||
+          (isRecord(turn) && PINNED_TURN_COMPLETION_STATUSES.has(turn.status as string)))
       )
     }
     return true

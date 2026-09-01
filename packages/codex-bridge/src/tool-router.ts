@@ -243,6 +243,7 @@ export interface DocumentToolSession {
   ): ToolExecutionOutcome | Promise<ToolExecution>
   issueCarrier(credentials: ToolSessionCredentials, turn: CarrierRequest): DocumentCarrierHandle
   cancel(credentials: ToolSessionCredentials, callId: string): boolean
+  cancelAll(credentials: ToolSessionCredentials): number
   close(): void
 }
 export class ToolRouterError extends Error {
@@ -818,6 +819,13 @@ export function createDocumentToolSession(
       controller?.abort()
       mutation?.controller.abort()
       return controller !== undefined || mutation !== undefined
+    },
+    cancelAll(candidate) {
+      authenticate(candidate)
+      const count = pending.size + pendingMutations.size
+      for (const controller of pending.values()) controller.abort()
+      for (const mutation of pendingMutations.values()) mutation.controller.abort()
+      return count
     },
     close,
   }

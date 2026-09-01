@@ -83,10 +83,19 @@ export async function startDynamicMcpGateway(
   }
   const documents = new Map<string, DynamicGatewayDocument>()
   const grants = new Map<string, TurnGrant>()
+  const revokeGrant = (capability: string): void => {
+    const grant = grants.get(capability)
+    grants.delete(capability)
+    if (grant) {
+      try {
+        grant.document.session.cancelAll(grant.document.session.credentials)
+      } catch {}
+    }
+  }
   const sweepExpired = (): void => {
     const now = Date.now()
     for (const [capability, grant] of grants) {
-      if (grant.expiresAt <= now) grants.delete(capability)
+      if (grant.expiresAt <= now) revokeGrant(capability)
     }
   }
   let closed = false
@@ -139,6 +148,8 @@ export async function startDynamicMcpGateway(
       ]
     },
     async callTool(_candidate, call) {
+      let started:
+        Readonly<{ document: DynamicGatewayDocument; callId: string; toolName: string }> | undefined
       try {
         diagnostic('gateway_tool_call_received')
         if (call.name !== 'wiswork_call') throw new Error('denied')
@@ -172,6 +183,11 @@ export async function startDynamicMcpGateway(
           callId: documentCall.id,
           toolName: documentCall.name,
         })
+        started = {
+          document: grant.document,
+          callId: documentCall.id,
+          toolName: documentCall.name,
+        }
         const outcome = grant.document.session.callTool(
           grant.document.session.credentials,
           documentCall,
@@ -189,8 +205,17 @@ export async function startDynamicMcpGateway(
           isError: execution.isError === true,
         })
         diagnostic('gateway_tool_call_completed')
+        started = undefined
         return execution
       } catch {
+        if (started) {
+          emitTool(started.document, {
+            type: 'tool-complete',
+            callId: started.callId,
+            toolName: started.toolName,
+            isError: true,
+          })
+        }
         diagnostic('gateway_tool_call_denied')
         throw new TrustedMcpTransportDenied('turn_capability_denied')
       }
@@ -199,6 +224,7 @@ export async function startDynamicMcpGateway(
       throw new Error('unsupported')
     },
     cancel: () => false,
+    cancelAll: () => 0,
     close: () => undefined,
   }
   const transport = await startTrustedMcpTransport(proxySession, { diagnostics })
@@ -211,7 +237,7 @@ export async function startDynamicMcpGateway(
       documents.set(document.documentId, document)
       return () => {
         if (documents.get(document.documentId) === document) documents.delete(document.documentId)
-        for (const [token, grant] of grants) if (grant.document === document) grants.delete(token)
+        for (const [token, grant] of grants) if (grant.document === document) revokeGrant(token)
       }
     },
     beginTurn(input: {
@@ -249,12 +275,12 @@ export async function startDynamicMcpGateway(
       grant.bound = true
     },
     revokeTurn(capability: string) {
-      grants.delete(capability)
+      revokeGrant(capability)
     },
     async close() {
       if (closed) return
       closed = true
-      grants.clear()
+      for (const capability of [...grants.keys()]) revokeGrant(capability)
       documents.clear()
       await transport.close()
     },

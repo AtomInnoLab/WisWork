@@ -210,4 +210,46 @@ describe('fixed dynamic MCP gateway', () => {
       await gateway.close()
     }
   })
+
+  it('balances tool events exactly once when document execution fails', async () => {
+    const events: unknown[] = []
+    const gateway = await startDynamicMcpGateway()
+    gateway.register({
+      ownerId: 'owner',
+      documentId: 'doc',
+      generation: 1,
+      onToolEvent: (event) => events.push(event),
+      session: {
+        credentials: { sessionId: 's', secret: 'k' },
+        callTool: () => {
+          throw new Error('private')
+        },
+        cancelAll: () => 0,
+      } as any,
+    })
+    const grant = gateway.beginTurn({ documentId: 'doc', generation: 1, threadId: 'thread' })
+    try {
+      const response = await rpc(gateway.url, gateway.secret, 91, 'tools/call', {
+        name: 'wiswork_call',
+        arguments: {
+          capability: grant.capability,
+          callId: 'failed-call',
+          toolName: 'read_blocks',
+          input: {},
+        },
+      })
+      expect(response.status).toBe(403)
+      expect(events).toEqual([
+        { type: 'tool-start', callId: 'failed-call', toolName: 'read_blocks' },
+        {
+          type: 'tool-complete',
+          callId: 'failed-call',
+          toolName: 'read_blocks',
+          isError: true,
+        },
+      ])
+    } finally {
+      await gateway.close()
+    }
+  })
 })

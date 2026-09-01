@@ -189,7 +189,7 @@ describe('Codex app-server client', () => {
     ])
     unsubscribe()
     fixture.fromServer.write(
-      '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"t","turn":{"id":"u"}}}\n',
+      '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"t","turn":{"id":"u","status":"completed"}}}\n',
     )
     expect(seen).toHaveLength(1)
     await fixture.client.shutdown()
@@ -212,6 +212,21 @@ describe('Codex app-server client', () => {
       code: 'app_server_protocol_error',
     })
   })
+
+  it.each([undefined, 'future_status'])(
+    'fails closed on invalid completed status %s',
+    async (status) => {
+      const fixture = createClient()
+      await initialize(fixture)
+      const turn = { id: 'turn-1', ...(status === undefined ? {} : { status }) }
+      fixture.fromServer.write(
+        `${JSON.stringify({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'thread-1', turn } })}\n`,
+      )
+      await expect(fixture.client.startThread()).rejects.toMatchObject({
+        code: 'app_server_protocol_error',
+      })
+    },
+  )
 
   it.each([
     'item/commandExecution/outputDelta',

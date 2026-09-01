@@ -99,6 +99,8 @@ describe('Shell Codex runtime lifecycle', () => {
     await expect(f.runtime.startTurn(f.owner, 'doc', 'second')).rejects.toThrow(
       'enhanced_turn_in_progress',
     )
+    await f.runtime.cancelTurn(f.owner, 'doc')
+    expect(f.engine.cancelTurn).toHaveBeenCalledWith('doc')
     settle()
     await first
     await expect(f.runtime.startTurn(f.owner, 'doc', 'third')).resolves.toBeUndefined()

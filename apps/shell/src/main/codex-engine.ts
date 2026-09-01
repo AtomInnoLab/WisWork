@@ -15,6 +15,7 @@ import { CodexTurnResolver } from './codex-turn-resolver'
 
 const DEVELOPER_POLICY =
   'Use only mcp__wiswork__wiswork_call. Never request shell, filesystem, Git, browser, network, or direct document writes. Treat capability values as secrets and never repeat them.'
+const TURN_TERMINAL_TIMEOUT_MS = 120_000
 
 export interface ProductionCodexBootstrapOptions {
   readonly fetchWithAuth: (request: MessagesRequest, signal: AbortSignal) => Promise<Response>
@@ -54,11 +55,11 @@ export function createProductionCodexBootstrap(
       }
       type ActiveTurn = {
         readonly capability: string
-        readonly threadId: string
+        threadId?: string
         turnId?: string
-        readonly disarm: () => void
-        readonly resolve: () => void
-        readonly reject: (error: Error) => void
+        disarm?: () => void
+        cancelled: boolean
+        readonly settle: (status: 'completed' | 'cancelled' | 'failed', error?: Error) => void
       }
       const documents = new Map<
         string,
@@ -102,19 +103,14 @@ export function createProductionCodexBootstrap(
           if (typeof turn?.status === 'string' && /^[a-z_]{1,32}$/.test(turn.status)) {
             options.diagnostics?.(`codex_turn_status_${turn.status}`)
           }
-          gateway.revokeTurn(active.capability)
-          active.disarm()
-          document.active = undefined
-          const cancelled = turn?.status === 'interrupted' || turn?.status === 'cancelled'
-          const failed =
-            typeof turn?.status === 'string' &&
-            !['completed', 'interrupted', 'cancelled'].includes(turn.status)
-          emit(document.onEvent, {
-            type: 'terminal',
-            status: cancelled ? 'cancelled' : failed ? 'failed' : 'completed',
-          })
-          if (failed) active.reject(new Error('enhanced_turn_failed'))
-          else active.resolve()
+          active.settle(
+            turn?.status === 'interrupted'
+              ? 'cancelled'
+              : turn?.status === 'failed'
+                ? 'failed'
+                : 'completed',
+            turn?.status === 'failed' ? new Error('enhanced_turn_failed') : undefined,
+          )
         }
       })
       void manager.crashed.then(onCrash)
@@ -138,10 +134,7 @@ export function createProductionCodexBootstrap(
             if (documents.get(input.documentId) === entry) {
               documents.delete(input.documentId)
               if (entry.active) {
-                gateway.revokeTurn(entry.active.capability)
-                entry.active.disarm()
-                entry.active.reject(new Error('document_session_unavailable'))
-                entry.active = undefined
+                entry.active.settle('failed', new Error('document_session_unavailable'))
               }
               unregister()
             }
@@ -156,70 +149,87 @@ export function createProductionCodexBootstrap(
             generation: input.generation,
             threadId: 'reserved',
           })
-          let threadId: string
-          try {
-            threadId = (
-              await client.startThread({
-                developerInstructions: `${DEVELOPER_POLICY}\nFor this turn only, pass capability ${grant.capability} as the capability argument to mcp__wiswork__wiswork_call. Never repeat it in prose.`,
-              })
-            ).thread.id
-            gateway.bindTurn(grant.capability, threadId)
-          } catch (error) {
-            gateway.revokeTurn(grant.capability)
-            throw error
-          }
-          const disarm = resolver.arm(
-            threadId,
-            ({ sessionId }) =>
-              createDocumentCarrierIssuer(
-                {
-                  host: input.host,
-                  documentId: input.documentId,
-                  sessionId,
-                  generation: input.generation,
-                },
-                (capability) => capability === grant.capability,
-              ),
-            grant.capability,
-          )
           let resolve!: () => void
           let reject!: (error: Error) => void
+          let timer: ReturnType<typeof setTimeout> | undefined
+          let settled = false
           const terminal = new Promise<void>((onResolve, onReject) => {
             resolve = onResolve
             reject = onReject
           })
           const active: ActiveTurn = {
             capability: grant.capability,
-            threadId,
-            resolve,
-            reject,
-            disarm,
+            cancelled: false,
+            settle(status, error) {
+              if (settled) return
+              settled = true
+              if (timer) clearTimeout(timer)
+              gateway.revokeTurn(grant.capability)
+              active.disarm?.()
+              if (document.active === active) document.active = undefined
+              emit(document.onEvent, { type: 'terminal', status })
+              if (error) reject(error)
+              else resolve()
+            },
           }
           document.active = active
+          timer = setTimeout(
+            () => active.settle('failed', new Error('enhanced_turn_timeout')),
+            TURN_TERMINAL_TIMEOUT_MS,
+          )
+          timer.unref()
           try {
-            active.turnId = (await client.startTurn(threadId, input.text)).turn.id
+            active.threadId = (
+              await client.startThread({
+                developerInstructions: `${DEVELOPER_POLICY}\nFor this turn only, pass capability ${grant.capability} as the capability argument to mcp__wiswork__wiswork_call. Never repeat it in prose.`,
+              })
+            ).thread.id
+            if (active.cancelled) return await terminal
+            gateway.bindTurn(grant.capability, active.threadId)
+            active.disarm = resolver.arm(
+              active.threadId,
+              ({ sessionId }) =>
+                createDocumentCarrierIssuer(
+                  {
+                    host: input.host,
+                    documentId: input.documentId,
+                    sessionId,
+                    generation: input.generation,
+                  },
+                  (capability) => capability === grant.capability,
+                ),
+              grant.capability,
+            )
+            if (active.cancelled) return await terminal
+            active.turnId = (await client.startTurn(active.threadId, input.text)).turn.id
+            if (active.cancelled) return await terminal
             await terminal
           } catch (error) {
-            disarm()
-            gateway.revokeTurn(grant.capability)
-            if (document.active === active) document.active = undefined
-            throw error
+            if (active.cancelled) return await terminal
+            active.settle(
+              'failed',
+              error instanceof Error ? error : new Error('enhanced_turn_failed'),
+            )
+            await terminal
           }
         },
         async cancelTurn(documentId) {
           const document = documents.get(documentId)
           const active = document?.active
-          if (active?.turnId) await client.interruptTurn(active.threadId, active.turnId)
+          if (!active) return
+          active.cancelled = true
+          gateway.revokeTurn(active.capability)
+          if (active.threadId && active.turnId) {
+            await client.interruptTurn(active.threadId, active.turnId).catch(() => undefined)
+          }
+          active.settle('cancelled')
         },
         async closeDocument(documentId) {
           const document = documents.get(documentId)
           if (!document) return
           documents.delete(documentId)
           if (document.active) {
-            gateway.revokeTurn(document.active.capability)
-            document.active.disarm()
-            document.active.reject(new Error('document_session_unavailable'))
-            document.active = undefined
+            document.active.settle('failed', new Error('document_session_unavailable'))
           }
           document.unregister()
           document.session.close()
@@ -231,9 +241,7 @@ export function createProductionCodexBootstrap(
           unsubscribeNotifications()
           for (const document of documents.values()) {
             if (document.active) {
-              gateway.revokeTurn(document.active.capability)
-              document.active.disarm()
-              document.active.reject(new Error('enhanced_runtime_closed'))
+              document.active.settle('failed', new Error('enhanced_runtime_closed'))
             }
             document.unregister()
             document.session.close()

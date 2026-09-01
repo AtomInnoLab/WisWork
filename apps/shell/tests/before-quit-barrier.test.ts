@@ -32,4 +32,25 @@ describe('before-quit cleanup barrier', () => {
     expect(quit).not.toHaveBeenCalled()
     vi.useRealTimers()
   })
+
+  it('continues awaiting cleanup after the warning deadline and then quits once', async () => {
+    vi.useFakeTimers()
+    let release!: () => void
+    const quit = vi.fn()
+    const handle = createBeforeQuitBarrier({
+      cleanup: () => new Promise<void>((resolve) => (release = resolve)),
+      quit,
+      deadlineMs: 10,
+    })
+    const preventDefault = vi.fn()
+    handle({ preventDefault })
+    await vi.advanceTimersByTimeAsync(10)
+    expect(quit).not.toHaveBeenCalled()
+    handle({ preventDefault })
+    release()
+    await vi.runAllTimersAsync()
+    expect(preventDefault).toHaveBeenCalledTimes(2)
+    expect(quit).toHaveBeenCalledOnce()
+    vi.useRealTimers()
+  })
 })
