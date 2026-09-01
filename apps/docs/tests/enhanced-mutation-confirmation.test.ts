@@ -16,7 +16,7 @@ const proposal = (overrides: Partial<EnhancedMutationProposal> = {}): EnhancedMu
   ...overrides,
 })
 
-function setup() {
+function setup(locale: Parameters<typeof EnhancedMutationConfirmation>[0]['locale'] = 'en') {
   let listener: ((value: EnhancedMutationProposal) => void) | undefined
   const unsubscribe = vi.fn()
   const api = {
@@ -30,7 +30,7 @@ function setup() {
   const node = document.createElement('div')
   document.body.append(node)
   const root = createRoot(node)
-  act(() => root.render(createElement(EnhancedMutationConfirmation, { api })))
+  act(() => root.render(createElement(EnhancedMutationConfirmation, { api, locale })))
   return {
     api,
     node,
@@ -107,8 +107,8 @@ describe('Enhanced mutation confirmation', () => {
   })
 
   it('renders the informed summary and consent controls in Chinese', () => {
-    document.documentElement.lang = 'zh-CN'
-    const view = setup()
+    document.documentElement.lang = 'en-US'
+    const view = setup('zh')
     view.emit(
       proposal({
         summary: { operation: 'format', target: 'cells', scope: 'selection', count: 12 },
@@ -120,5 +120,14 @@ describe('Enhanced mutation confirmation', () => {
     expect(view.node.textContent).toContain('当前选区')
     expect(view.node.textContent).toContain('12')
     expect(view.node.textContent).toContain('拒绝')
+  })
+
+  it('uses the explicit locale rather than inferring document.lang', () => {
+    document.documentElement.lang = 'en-US'
+    const view = setup('ja')
+    view.emit(proposal())
+    expect(view.node.textContent).toContain('文書の変更を確認')
+    expect(view.node.textContent).toContain('置換')
+    expect(view.node.textContent).not.toContain('Confirm document change')
   })
 })

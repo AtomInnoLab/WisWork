@@ -5,7 +5,11 @@ import { resolve as resolvePath } from 'node:path'
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx'
 
-export async function orchestrateSlidesAcceptanceE2E(runStep, report = console.error) {
+export async function orchestrateSlidesAcceptanceE2E(
+  runStep,
+  report = console.error,
+  playwrightFilters = [],
+) {
   let primaryCode = 0
   let cleanupCode = 0
   const primary = [
@@ -16,7 +20,11 @@ export async function orchestrateSlidesAcceptanceE2E(runStep, report = console.e
       { WISWORK_SLIDES_ACCEPTANCE_E2E: '1' },
     ],
     ['e2e-artifact', process.execPath, ['tools/check-slides-e2e-artifact.mjs', 'present']],
-    ['playwright', npx, ['playwright', 'test', '--config', 'e2e/playwright.config.ts']],
+    [
+      'playwright',
+      npx,
+      ['playwright', 'test', '--config', 'e2e/playwright.config.ts', ...playwrightFilters],
+    ],
   ]
   const cleanup = [
     ['default-build', npm, ['run', 'build', '-w', '@wiswork/slides']],
@@ -60,5 +68,9 @@ function spawnStep({ command, args, extraEnv }) {
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolvePath(process.argv[1])) {
-  process.exitCode = await orchestrateSlidesAcceptanceE2E(spawnStep)
+  process.exitCode = await orchestrateSlidesAcceptanceE2E(
+    spawnStep,
+    console.error,
+    process.argv.slice(2),
+  )
 }

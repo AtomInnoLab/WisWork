@@ -50,7 +50,7 @@ async function bootstrap(): Promise<void> {
   ReactDOM.createRoot(root!).render(
     <LocaleProvider initial={lang}>
       <App />
-      <EnhancedMutationConfirmation api={window.codexRuntime} />
+      <EnhancedMutationConfirmation api={window.codexRuntime} locale={lang} />
     </LocaleProvider>,
   )
 }

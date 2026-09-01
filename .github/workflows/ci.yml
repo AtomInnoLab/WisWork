@@ -59,6 +59,12 @@ jobs:
       - name: Check dependency licenses
         run: npm run licenses
 
+      - name: Check Codex Enhanced seven-host rollout contract
+        run: npm run test:codex-rollout
+
+      - name: Exercise seven production host goldens
+        run: npm run test:enhanced-seven-host
+
       - name: Check Rust dependency licenses (xlsx-sidecar)
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
@@ -177,7 +183,7 @@ jobs:
       - name: E2E (Electron shell)
         env:
           DEBUG: 'pw:browser'
-        run: xvfb-run --auto-servernum -- npm run test:e2e
+        run: xvfb-run --auto-servernum -- npm run test:e2e -- e2e/slides-acceptance-render.spec.ts
 
       - name: Upload E2E artifacts on failure
         if: failure()

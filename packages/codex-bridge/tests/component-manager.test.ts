@@ -13,6 +13,7 @@ import {
   platformTrustCommands,
   validateCodexArchiveEntry,
   validateZipEntryMode,
+  type ComponentPhaseEvent,
   type CodexComponentManifest,
 } from '../src/component-manager.js'
 
@@ -426,6 +427,7 @@ describe('optional Enhanced mode component manager', () => {
     const fetchImplementation = vi.fn(async () => responseFor(archiveBytes))
     const probeVersion = vi.fn(async () => 'codex-app-server 0.147.0')
     const verifyPlatformTrust = vi.fn(async () => undefined)
+    const phases = vi.fn()
     const manager = new EnhancedModeComponentManager({
       cacheRoot,
       manifest,
@@ -434,6 +436,7 @@ describe('optional Enhanced mode component manager', () => {
       fetchImplementation,
       probeVersion,
       verifyPlatformTrust,
+      onPhase: phases,
     })
 
     await expect(manager.status()).resolves.toMatchObject({ state: 'missing', supported: true })
@@ -451,6 +454,16 @@ describe('optional Enhanced mode component manager', () => {
     await expect(manager.status()).resolves.toMatchObject({ state: 'ready', supported: true })
     await expect(manager.resolveExecutable()).resolves.toBe(installed.executablePath)
     expect((await lstat(installed.executablePath)).isSymbolicLink()).toBe(false)
+    expect(phases.mock.calls.map(([event]) => event)).toEqual([
+      { phase: 'download', outcome: 'started' },
+      { phase: 'download', outcome: 'succeeded' },
+      { phase: 'digest', outcome: 'started' },
+      { phase: 'digest', outcome: 'succeeded' },
+      { phase: 'signature', outcome: 'started' },
+      { phase: 'signature', outcome: 'succeeded' },
+      { phase: 'promote', outcome: 'started' },
+      { phase: 'promote', outcome: 'succeeded' },
+    ])
   })
 
   it('coalesces concurrent installs and garbage-collects only old version directories', async () => {
@@ -458,6 +471,7 @@ describe('optional Enhanced mode component manager', () => {
     const { archive, manifest } = await createFixtureArchive()
     const archiveBytes = await readFile(archive)
     const fetchImplementation = vi.fn(async () => responseFor(archiveBytes))
+    const phases = vi.fn()
     const manager = new EnhancedModeComponentManager({
       cacheRoot,
       manifest,
@@ -466,6 +480,7 @@ describe('optional Enhanced mode component manager', () => {
       fetchImplementation,
       probeVersion: async () => 'codex-app-server 0.147.0',
       verifyPlatformTrust: async () => undefined,
+      onPhase: phases,
     })
     await mkdir(join(cacheRoot, '0.146.0', 'darwin-arm64'), { recursive: true })
     await writeFile(join(cacheRoot, 'unowned-file'), 'keep')
@@ -473,8 +488,42 @@ describe('optional Enhanced mode component manager', () => {
     const [first, second] = await Promise.all([manager.install(), manager.install()])
     expect(first).toEqual(second)
     expect(fetchImplementation).toHaveBeenCalledTimes(1)
+    expect(
+      phases.mock.calls.map(([event]) => event).filter(({ phase }) => phase === 'update'),
+    ).toEqual([
+      { phase: 'update', outcome: 'started' },
+      { phase: 'update', outcome: 'succeeded' },
+    ])
     await expect(lstat(join(cacheRoot, '0.146.0'))).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(readFile(join(cacheRoot, 'unowned-file'), 'utf8')).resolves.toBe('keep')
+  })
+
+  it('reports a failed update only when an older compatible cache version exists', async () => {
+    const cacheRoot = join(await temporaryRoot(), 'cache')
+    const { manifest } = await createFixtureArchive()
+    await mkdir(join(cacheRoot, '0.146.0', 'darwin-arm64'), { recursive: true })
+    const phases = vi.fn((_event: ComponentPhaseEvent) => {
+      throw new Error('sink unavailable')
+    })
+    const manager = new EnhancedModeComponentManager({
+      cacheRoot,
+      manifest,
+      platform: 'darwin',
+      arch: 'arm64',
+      fetchImplementation: vi.fn(async () => {
+        throw new Error('offline')
+      }),
+      probeVersion: async () => 'codex-app-server 0.147.0',
+      verifyPlatformTrust: async () => undefined,
+      onPhase: phases,
+    })
+    await expect(manager.install()).rejects.toMatchObject({ code: 'enhanced_mode_download_failed' })
+    expect(
+      phases.mock.calls.map(([event]) => event).filter(({ phase }) => phase === 'update'),
+    ).toEqual([
+      { phase: 'update', outcome: 'started' },
+      { phase: 'update', outcome: 'failed' },
+    ])
   })
 
   it('falls back from the pinned WisWork mirror to the same pinned official bytes', async () => {
@@ -895,6 +944,7 @@ describe('optional Enhanced mode component manager', () => {
     const { archive, manifest } = await createFixtureArchive()
     const bytes = await readFile(archive)
     const probeVersion = vi.fn(async () => 'codex-app-server 0.147.0')
+    const phases = vi.fn()
     const manager = new EnhancedModeComponentManager({
       cacheRoot,
       manifest,
@@ -905,12 +955,20 @@ describe('optional Enhanced mode component manager', () => {
       verifyPlatformTrust: async () => {
         throw new Error('private signature detail')
       },
+      onPhase: phases,
     })
 
     await expect(manager.install()).rejects.toMatchObject({
       code: 'enhanced_mode_platform_trust_failed',
     })
     expect(probeVersion).not.toHaveBeenCalled()
+    expect(phases.mock.calls.map(([event]) => event).at(-1)).toEqual({
+      phase: 'signature',
+      outcome: 'failed',
+    })
+    expect(phases.mock.calls.flat()).not.toContainEqual(
+      expect.objectContaining({ phase: 'promote' }),
+    )
     await expect(manager.status()).resolves.toMatchObject({ state: 'missing' })
   })
 })

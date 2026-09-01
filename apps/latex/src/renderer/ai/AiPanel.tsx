@@ -12,6 +12,7 @@ import { ProposalWorkflow, validateUndoProposal } from './proposal-workflow.js'
 import { ProposalReview } from './ProposalReview.js'
 import { createLatexTransport } from './transport.js'
 import { createLatexRuntimeLoop, type LatexRuntimeLoop } from './runtime-loop.js'
+import { useLatexLocale } from '../i18n/locale.js'
 import {
   normalizeAgentContext,
   serializeAgentPrompt,
@@ -213,6 +214,7 @@ export function AiPanel({
   sensitiveContextBlocked?: boolean
   onRemoveContext?: (key: AgentContextKey) => void
 }) {
+  useLatexLocale()
   const [input, setInput] = useState('')
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)

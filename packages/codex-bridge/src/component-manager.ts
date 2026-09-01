@@ -114,6 +114,12 @@ export type ComponentPlatformTrustVerifier = (
 ) => Promise<void>
 
 export type ComponentCapacityCheck = (cacheRoot: string, requiredBytes: number) => Promise<void>
+export type ComponentInstallPhase =
+  'download' | 'digest' | 'signature' | 'promote' | 'update' | 'remove'
+export type ComponentPhaseEvent = Readonly<{
+  phase: ComponentInstallPhase
+  outcome: 'started' | 'succeeded' | 'failed'
+}>
 
 export interface EnhancedModeComponentManagerOptions {
   readonly cacheRoot: string
@@ -128,6 +134,7 @@ export interface EnhancedModeComponentManagerOptions {
   readonly probeTimeoutMs?: number
   readonly lockTimeoutMs?: number
   readonly lockStaleMs?: number
+  readonly onPhase?: (event: ComponentPhaseEvent) => void
 }
 
 export class EnhancedModeComponentError extends Error {
@@ -684,6 +691,7 @@ async function downloadVerifiedArchive(
   fetchImplementation: typeof fetch,
   timeoutMs: number,
   externalSignal?: AbortSignal,
+  onPhase?: (event: ComponentPhaseEvent) => void,
 ): Promise<void> {
   const abort = combinedAbortSignal(externalSignal, timeoutMs)
   try {
@@ -691,7 +699,9 @@ async function downloadVerifiedArchive(
     let lastError: unknown
     for (const url of [asset.primaryUrl, asset.fallbackUrl]) {
       await rm(destination, { force: true })
+      let currentPhase: Extract<ComponentInstallPhase, 'download' | 'digest'> = 'download'
       try {
+        onPhase?.({ phase: 'download', outcome: 'started' })
         const response = await fetchPinned(url, fetchImplementation, abort.signal)
         if (abort.signal.aborted) fail('enhanced_mode_cancelled')
         let received = 0
@@ -708,6 +718,9 @@ async function downloadVerifiedArchive(
           createWriteStream(destination, { flags: 'wx', mode: 0o600 }),
           { signal: abort.signal },
         )
+        onPhase?.({ phase: 'download', outcome: 'succeeded' })
+        currentPhase = 'digest'
+        onPhase?.({ phase: 'digest', outcome: 'started' })
         const info = await lstat(destination)
         if (
           !info.isFile() ||
@@ -716,8 +729,13 @@ async function downloadVerifiedArchive(
           (await sha256File(destination)) !== asset.sha256
         )
           fail('enhanced_mode_integrity_failed')
+        onPhase?.({ phase: 'digest', outcome: 'succeeded' })
         return
       } catch (error) {
+        onPhase?.({
+          phase: currentPhase,
+          outcome: 'failed',
+        })
         if (abort.signal.aborted) fail('enhanced_mode_cancelled')
         lastError = error
       }
@@ -1073,6 +1091,7 @@ export class EnhancedModeComponentManager {
   readonly #probeTimeoutMs: number
   readonly #lockTimeoutMs: number
   readonly #lockStaleMs: number
+  readonly #onPhase?: (event: ComponentPhaseEvent) => void
   #installPromise: Promise<InstalledEnhancedModeComponent> | undefined
   #removePromise: Promise<void> | undefined
 
@@ -1095,6 +1114,7 @@ export class EnhancedModeComponentManager {
       options.lockStaleMs,
       this.#downloadTimeoutMs + Math.max(5 * 60_000, this.#probeTimeoutMs * 2),
     )
+    this.#onPhase = options.onPhase
   }
 
   async status(): Promise<EnhancedModeComponentStatus> {
@@ -1180,6 +1200,8 @@ export class EnhancedModeComponentManager {
     const stagingPath = safeOwnedChild(this.#cacheRoot, `.staging.${token}`)
     let published = false
     let verified = false
+    const updating = await this.#hasOlderVersion()
+    if (updating) this.#phase({ phase: 'update', outcome: 'started' })
     try {
       if (await pathExists(this.#installPath(asset))) {
         try {
@@ -1205,18 +1227,22 @@ export class EnhancedModeComponentManager {
         this.#fetch,
         this.#downloadTimeoutMs,
         signal,
+        (event) => this.#phase(event),
       )
       await extractVerifiedArchive(archivePath, stagingPath, asset)
       const executablePath = safeOwnedChild(stagingPath, asset.layout.entrypoint)
       const executablePaths = asset.layout.files
         .filter((file) => file.install && file.mode === 'executable')
         .map((file) => safeOwnedChild(stagingPath, file.path))
+      this.#phase({ phase: 'signature', outcome: 'started' })
       await this.#verifyPlatformTrust(executablePaths, asset.trust, {
         signal,
         timeoutMs: this.#probeTimeoutMs,
-      }).catch(() =>
-        fail(signal?.aborted ? 'enhanced_mode_cancelled' : 'enhanced_mode_platform_trust_failed'),
-      )
+      }).catch(() => {
+        this.#phase({ phase: 'signature', outcome: 'failed' })
+        fail(signal?.aborted ? 'enhanced_mode_cancelled' : 'enhanced_mode_platform_trust_failed')
+      })
+      this.#phase({ phase: 'signature', outcome: 'succeeded' })
       const output = await this.#probeVersion(executablePath, {
         signal,
         timeoutMs: this.#probeTimeoutMs,
@@ -1227,7 +1253,12 @@ export class EnhancedModeComponentManager {
       const installPath = this.#installPath(asset)
       await ensureOwnedDirectory(safeOwnedChild(this.#cacheRoot, PINNED_VERSION))
       if (signal?.aborted) fail('enhanced_mode_cancelled')
-      await rename(stagingPath, installPath)
+      this.#phase({ phase: 'promote', outcome: 'started' })
+      await rename(stagingPath, installPath).catch((error) => {
+        this.#phase({ phase: 'promote', outcome: 'failed' })
+        throw error
+      })
+      this.#phase({ phase: 'promote', outcome: 'succeeded' })
       published = true
       await this.#garbageCollectOldVersions()
       const installed = await this.#verifyInstalled(asset, signal)
@@ -1242,7 +1273,14 @@ export class EnhancedModeComponentManager {
           cleanupFailed = true
         })
       }
-      await release()
+      await release().catch(() => {
+        cleanupFailed = true
+      })
+      if (updating)
+        this.#phase({
+          phase: 'update',
+          outcome: verified && !cleanupFailed ? 'succeeded' : 'failed',
+        })
       if (cleanupFailed) fail('enhanced_mode_cache_unsafe')
     }
   }
@@ -1259,10 +1297,23 @@ export class EnhancedModeComponentManager {
       signal,
     )
     try {
-      await this.#removeOwnedInstall(asset)
+      this.#phase({ phase: 'remove', outcome: 'started' })
+      await this.#removeOwnedInstall(asset).then(
+        () => this.#phase({ phase: 'remove', outcome: 'succeeded' }),
+        (error) => {
+          this.#phase({ phase: 'remove', outcome: 'failed' })
+          throw error
+        },
+      )
     } finally {
       await release()
     }
+  }
+
+  #phase(event: ComponentPhaseEvent): void {
+    try {
+      this.#onPhase?.(Object.freeze(event))
+    } catch {}
   }
 
   async #verifyInstalled(
@@ -1395,6 +1446,21 @@ export class EnhancedModeComponentManager {
         await rm(candidate, { recursive: true, force: true })
       }
     }
+  }
+
+  async #hasOlderVersion(): Promise<boolean> {
+    const target = PINNED_VERSION.split('.').map(Number)
+    const entries = await readdir(this.#cacheRoot, { withFileTypes: true })
+    return entries.some((entry) => {
+      if (!entry.isDirectory() || entry.isSymbolicLink() || !/^\d+\.\d+\.\d+$/.test(entry.name))
+        return false
+      const candidate = entry.name.split('.').map(Number)
+      for (let index = 0; index < target.length; index += 1) {
+        if (candidate[index]! < target[index]!) return true
+        if (candidate[index]! > target[index]!) return false
+      }
+      return false
+    })
   }
 
   #asset(): CodexComponentAssetManifest | undefined {

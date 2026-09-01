@@ -7,6 +7,7 @@ import type {
 } from '@wiswork/agent-core'
 import type { AgentHarnessSnapshot } from '@wiswork/agent-harness'
 import type { AgentRuntimeMode, EnhancedHost } from './contracts'
+import type { EnhancedTelemetry } from './telemetry'
 
 export interface AgentRuntimeSession {
   readonly mode: AgentRuntimeMode
@@ -28,6 +29,7 @@ export interface AgentRuntimeSessionOptions<TSnapshot = unknown> extends Omit<
   readonly document: Readonly<{ id: string; generation: number }>
   readonly skill: AgentSkill
   readonly events?: AgentLoopEvents<TSnapshot>
+  readonly telemetry?: EnhancedTelemetry
 }
 
 export interface AgentRuntime {

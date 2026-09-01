@@ -17,8 +17,15 @@ export type {
 } from './enhanced'
 export type { AgentRuntime, AgentRuntimeSession, AgentRuntimeSessionOptions } from './session'
 export { createEnhancedRendererClient, createPcHostRegistration } from './renderer'
+export { runEnhancedGolden } from './production-golden'
+export type {
+  EnhancedGoldenDependencies,
+  EnhancedGoldenResult,
+  OfficeEnhancedGoldenDependencies,
+} from './production-golden'
 export type { EnhancedRendererBridge } from './renderer'
 export * from './pc-host'
+export * from './telemetry'
 export type {
   AgentRuntimeMode,
   EnhancedCapability,

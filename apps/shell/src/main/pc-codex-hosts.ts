@@ -8,6 +8,8 @@ import {
   type PcHostRegistration,
   type PcHostToolResult,
   type PcHostProposalSummary,
+  parseEnhancedTelemetryEvent,
+  type EnhancedTelemetry,
 } from '@wiswork/agent-runtime'
 import { createDocumentToolManifest, createDocumentToolSession } from '@wiswork/codex-bridge'
 import type { ShellCodexRuntime, CodexOwner } from './codex-runtime'
@@ -221,6 +223,7 @@ export function registerPcCodexHosts(options: {
   readonly runtime: ShellCodexRuntime
   readonly policy: EnhancedRolloutPolicy
   readonly hostForOwner: (owner: PcOwner) => PcEnhancedHost | null
+  readonly telemetry?: EnhancedTelemetry
 }) {
   const records = new Map<PcOwner, HostRecord>()
   const byDocument = new Map<string, HostRecord>()
@@ -346,6 +349,13 @@ export function registerPcCodexHosts(options: {
       documentId: record?.documentId ?? null,
     }
   })
+  options.ipcMain.handle(PC_HOST_CODEX_CHANNELS.telemetry, (event, value) => {
+    const host = trusted(event.sender)
+    const parsed = parseEnhancedTelemetryEvent(value)
+    if (parsed.kind !== 'host' || parsed.host !== host)
+      throw new Error('enhanced_untrusted_request')
+    options.telemetry?.host(parsed.host, parsed.phase, parsed.outcome)
+  })
 
   options.ipcMain.handle(PC_HOST_CODEX_CHANNELS.register, async (event, value) => {
     const host = trusted(event.sender)
@@ -406,6 +416,8 @@ export function registerPcCodexHosts(options: {
         },
       },
     })
+    // Assigned after the session is built because its callbacks close over the final record.
+    // eslint-disable-next-line prefer-const
     let record!: HostRecord
     const session = createDocumentToolSession({
       identity: {

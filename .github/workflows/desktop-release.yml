@@ -119,6 +119,22 @@ jobs:
       - name: Verify Codex component release policy
         run: npm run test:codex-release
 
+      - name: Gate Codex Enhanced rollout and seven production hosts
+        run: |
+          npm run test:codex-rollout
+          npm run test:enhanced-seven-host
+
+      - name: Gate component lifecycle, crash, restart and kill switches
+        run: >-
+          npx vitest run
+          packages/codex-bridge/tests/component-manager.test.ts
+          packages/codex-bridge/tests/process-manager.test.ts
+          apps/shell/tests/codex-runtime.test.ts
+          apps/shell/tests/enhanced-mode-component.test.ts
+          apps/shell/tests/pc-codex-hosts.test.ts
+          apps/shell/tests/office-codex-proxy.test.ts
+          apps/office-addin/tests/elevated-office-program.test.ts
+
       - name: Verify pinned macOS Codex app-server component
         if: startsWith(matrix.id, 'macos-')
         run: npx tsx tools/install-enhanced-component.ts --cache "$RUNNER_TEMP/wiswork-codex-component"
@@ -127,6 +143,10 @@ jobs:
         if: matrix.id == 'windows-x64'
         shell: pwsh
         run: npx tsx tools/install-enhanced-component.ts --cache (Join-Path $env:RUNNER_TEMP 'wiswork-codex-component')
+
+      - name: Exercise native component update, restart, crash recovery, kill switches and removal
+        shell: bash
+        run: npx tsx tools/run-codex-native-lifecycle.ts --cache "$RUNNER_TEMP/wiswork-codex-lifecycle"
 
       - name: Exercise pinned macOS Codex model-driven read gate
         if: startsWith(matrix.id, 'macos-')

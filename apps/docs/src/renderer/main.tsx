@@ -33,7 +33,7 @@ async function bootstrap(): Promise<void> {
   createRoot(document.getElementById('root')!).render(
     <LocaleProvider initial={lang}>
       <App />
-      <EnhancedMutationConfirmation api={window.codexRuntime} />
+      <EnhancedMutationConfirmation api={window.codexRuntime} locale={lang} />
     </LocaleProvider>,
   )
 }

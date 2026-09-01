@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  translateEnhancedMutationConfirmation,
+  type EnhancedMutationConfirmationKey,
+  type Lang,
+} from '@wiswork/i18n'
 
 const MAX_ID = 160
 const MAX_TOOL = 96
@@ -84,82 +89,26 @@ export function isEnhancedMutationProposal(value: unknown): value is EnhancedMut
   return hasValidEnvelope(value) && isEnhancedMutationSummary(value.summary)
 }
 
-const EN = {
-  title: 'Confirm document change',
-  operation: 'Operation',
-  target: 'Target',
-  scope: 'Scope',
-  count: 'Items affected',
-  warning:
-    'Review this request carefully. WisWork will apply it as one bounded transaction only after you confirm.',
-  reject: 'Reject',
-  confirm: 'Confirm change',
-  operations: {
-    insert: 'Insert',
-    replace: 'Replace',
-    delete: 'Delete',
-    format: 'Format',
-    restructure: 'Restructure',
-    compile: 'Compile',
-  },
-  targets: {
-    document: 'Document',
-    selection: 'Selection',
-    blocks: 'Blocks',
-    cells: 'Cells',
-    sheet: 'Sheet',
-    slides: 'Slides',
-    elements: 'Elements',
-    'project-files': 'Project files',
-  },
-  scopes: {
-    single: 'Single item',
-    selection: 'Current selection',
-    'bounded-set': 'Bounded set',
-    'whole-document': 'Whole document',
-  },
-} as const
+export type EnhancedMutationConfirmationTranslator = (
+  key: EnhancedMutationConfirmationKey,
+) => string
 
-const ZH = {
-  title: '确认文档更改',
-  operation: '操作类型',
-  target: '目标',
-  scope: '影响范围',
-  count: '影响数量',
-  warning: '请仔细检查本次操作。只有在你确认后，WisWork 才会将其作为一个受限事务执行。',
-  reject: '拒绝',
-  confirm: '确认更改',
-  operations: {
-    insert: '插入',
-    replace: '替换',
-    delete: '删除',
-    format: '格式调整',
-    restructure: '结构调整',
-    compile: '编译',
-  },
-  targets: {
-    document: '文档',
-    selection: '选区',
-    blocks: '内容块',
-    cells: '单元格',
-    sheet: '工作表',
-    slides: '幻灯片',
-    elements: '页面元素',
-    'project-files': '项目文件',
-  },
-  scopes: {
-    single: '单个对象',
-    selection: '当前选区',
-    'bounded-set': '受限集合',
-    'whole-document': '整个文档',
-  },
-} as const
+export interface EnhancedMutationConfirmationProps {
+  readonly api?: EnhancedMutationProposalApi
+  /** The host must supply its resolved UI locale; document content language is not authority. */
+  readonly locale: Lang
+  readonly translate?: EnhancedMutationConfirmationTranslator
+}
 
 /**
  * Renderer-only consent surface. It never receives tool arguments and never executes a writer;
  * confirmation merely asks the privileged owner to claim its exact pending proposal.
  */
-export function EnhancedMutationConfirmation({ api }: { api?: EnhancedMutationProposalApi }) {
+export function EnhancedMutationConfirmation({
+  api,
+  locale,
+  translate,
+}: EnhancedMutationConfirmationProps) {
   const [pending, setPending] = useState<EnhancedMutationProposal | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const pendingRef = useRef<EnhancedMutationProposal | null>(null)
@@ -233,7 +182,9 @@ export function EnhancedMutationConfirmation({ api }: { api?: EnhancedMutationPr
   }, [consume, pending])
 
   if (!pending) return null
-  const text = document.documentElement.lang.toLowerCase().startsWith('zh') ? ZH : EN
+  const text =
+    translate ??
+    ((key: EnhancedMutationConfirmationKey) => translateEnhancedMutationConfirmation(locale, key))
   return (
     <div className="enhanced-confirm-backdrop" role="presentation">
       <section
@@ -243,28 +194,28 @@ export function EnhancedMutationConfirmation({ api }: { api?: EnhancedMutationPr
         aria-labelledby="enhanced-confirm-title"
         aria-describedby="enhanced-confirm-summary"
       >
-        <h2 id="enhanced-confirm-title">{text.title}</h2>
+        <h2 id="enhanced-confirm-title">{text('title')}</h2>
         <dl id="enhanced-confirm-summary" className="enhanced-confirm-summary">
           <div>
-            <dt>{text.operation}</dt>
-            <dd>{text.operations[pending.summary.operation]}</dd>
+            <dt>{text('operation')}</dt>
+            <dd>{text(`operation.${pending.summary.operation}`)}</dd>
           </div>
           <div>
-            <dt>{text.target}</dt>
-            <dd>{text.targets[pending.summary.target]}</dd>
+            <dt>{text('target')}</dt>
+            <dd>{text(`target.${pending.summary.target}`)}</dd>
           </div>
           <div>
-            <dt>{text.scope}</dt>
-            <dd>{text.scopes[pending.summary.scope]}</dd>
+            <dt>{text('scope')}</dt>
+            <dd>{text(`scope.${pending.summary.scope}`)}</dd>
           </div>
           {pending.summary.count !== undefined && (
             <div>
-              <dt>{text.count}</dt>
+              <dt>{text('count')}</dt>
               <dd>{pending.summary.count}</dd>
             </div>
           )}
         </dl>
-        <p className="enhanced-confirm-warning">{text.warning}</p>
+        <p className="enhanced-confirm-warning">{text('warning')}</p>
         <div className="enhanced-confirm-actions">
           <button
             type="button"
@@ -272,7 +223,7 @@ export function EnhancedMutationConfirmation({ api }: { api?: EnhancedMutationPr
             disabled={submitting}
             onClick={() => void consume('cancel')}
           >
-            {text.reject}
+            {text('reject')}
           </button>
           <button
             type="button"
@@ -280,7 +231,7 @@ export function EnhancedMutationConfirmation({ api }: { api?: EnhancedMutationPr
             disabled={submitting}
             onClick={() => void consume('confirm')}
           >
-            {text.confirm}
+            {text('confirm')}
           </button>
         </div>
       </section>

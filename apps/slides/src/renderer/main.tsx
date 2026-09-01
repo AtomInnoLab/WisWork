@@ -53,7 +53,7 @@ async function bootstrap(): Promise<void> {
         ) : (
           <>
             <App />
-            <EnhancedMutationConfirmation api={window.codexRuntime} />
+            <EnhancedMutationConfirmation api={window.codexRuntime} locale={lang} />
           </>
         )}
       </LocaleProvider>

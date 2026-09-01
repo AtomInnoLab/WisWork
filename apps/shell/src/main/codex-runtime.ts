@@ -1,6 +1,11 @@
 import { isAbsolute } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import type { AgentRuntimeMode, EnhancedHost, EnhancedRolloutPolicy } from '@wiswork/agent-runtime'
+import type {
+  AgentRuntimeMode,
+  EnhancedHost,
+  EnhancedRolloutPolicy,
+  EnhancedTelemetry,
+} from '@wiswork/agent-runtime'
 import type { CodexRuntimePublicState } from '../shared/codex-api'
 import type { DocumentToolSession } from '@wiswork/codex-bridge'
 import type { AgentToolCall } from '@wiswork/agent-core'
@@ -64,6 +69,7 @@ export interface ShellCodexRuntimeOptions {
   readonly resolveExecutable: () => Promise<string>
   readonly bootstrap: CodexRuntimeBootstrap
   readonly diagnostics?: (code: string) => void
+  readonly telemetry?: EnhancedTelemetry
 }
 
 interface DocumentRecord {
@@ -173,7 +179,9 @@ export class ShellCodexRuntime {
       }
       this.#engine = engine
       this.#state = 'ready'
+      this.#options.telemetry?.component('launch', 'succeeded')
     } catch (error) {
+      this.#options.telemetry?.component('launch', 'failed')
       this.#state = this.#closed ? 'unavailable' : 'failed_safe'
       this.#diagnostic(
         error instanceof ShellCodexRuntimeError ? error.code : 'enhanced_start_failed',
@@ -265,6 +273,7 @@ export class ShellCodexRuntime {
     const engine = this.#engine
     if (!engine) throw new ShellCodexRuntimeError('enhanced_runtime_unavailable')
     document.busy = true
+    this.#options.telemetry?.host(document.host, 'dispatch', 'succeeded')
     const epoch = this.#epoch
     try {
       await engine.startTurn({
@@ -273,6 +282,7 @@ export class ShellCodexRuntime {
         generation: document.generation,
         text,
       })
+      this.#options.telemetry?.host(document.host, 'complete', 'succeeded')
       if (
         this.#epoch !== epoch ||
         this.#engine !== engine ||
@@ -281,6 +291,7 @@ export class ShellCodexRuntime {
         throw new ShellCodexRuntimeError('enhanced_turn_stale')
       }
     } catch {
+      this.#options.telemetry?.host(document.host, 'complete', 'failed')
       // Never replay or cross-dispatch the same request through Standard.
       throw new ShellCodexRuntimeError('enhanced_turn_failed')
     } finally {

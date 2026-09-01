@@ -1,4 +1,5 @@
 import type { EnhancedHost } from './contracts'
+import { createEnhancedTelemetry } from './telemetry'
 import { isToolExecutionSuspension, type AgentSkill } from '@wiswork/agent-core'
 import type { PcHostRegistration, PcHostToolRequest, PcHostToolResult } from './pc-host'
 import type {
@@ -19,6 +20,7 @@ export interface EnhancedRendererBridge {
   unregister(documentId: string, generation: number): Promise<void>
   onToolCall(listener: (request: PcHostToolRequest) => void): () => void
   toolResult(input: PcHostToolResult): Promise<void>
+  telemetry?(event: import('./telemetry').EnhancedTelemetryEvent): Promise<void>
 }
 
 const READ_TOOLS: Readonly<Record<EnhancedHost, ReadonlySet<string>>> = Object.freeze({
@@ -141,6 +143,13 @@ export function createEnhancedRendererClient(
   let closed = false
   const sessions = new Set<EnhancedRuntimeClientSession>()
   return Object.freeze({
+    ...(bridge.telemetry
+      ? {
+          telemetry: createEnhancedTelemetry(
+            (event) => void bridge.telemetry?.(event).catch(() => undefined),
+          ),
+        }
+      : {}),
     open(input: {
       host: EnhancedHost
       documentId: string

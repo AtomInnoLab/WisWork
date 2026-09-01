@@ -12,6 +12,7 @@ import type {
   PresentationCompletionReceipt,
 } from '@wiswork/presentation-verification'
 import type { AgentRuntime, AgentRuntimeSession, AgentRuntimeSessionOptions } from './session'
+import type { EnhancedTelemetry } from './telemetry'
 
 export type EnhancedSessionEvent =
   | { readonly type: 'text'; readonly text: string }
@@ -36,6 +37,7 @@ export interface EnhancedRuntimeClientSession {
 }
 
 export interface EnhancedRuntimeClient {
+  readonly telemetry?: EnhancedTelemetry
   open(input: {
     readonly host: AgentRuntimeSessionOptions['host']
     readonly documentId: string
@@ -51,6 +53,8 @@ class EnhancedSession<TSnapshot> implements AgentRuntimeSession {
   readonly #listeners = new Set<() => void>()
   readonly #remote: EnhancedRuntimeClientSession
   readonly #events: AgentRuntimeSessionOptions<TSnapshot>['events']
+  readonly #telemetry: AgentRuntimeSessionOptions<TSnapshot>['telemetry']
+  readonly #host: AgentRuntimeSessionOptions<TSnapshot>['host']
   #snapshot: AgentHarnessSnapshot = { status: 'idle', busy: false, generation: 0 }
   #messages: AgentMessage[] = []
   #disposed = false
@@ -62,6 +66,8 @@ class EnhancedSession<TSnapshot> implements AgentRuntimeSession {
   ) {
     this.#remote = remote
     this.#events = options.events
+    this.#telemetry = options.telemetry
+    this.#host = options.host
     this.#unsubscribe = remote.subscribe((event) => this.#event(event))
   }
   get snapshot() {
@@ -79,6 +85,7 @@ class EnhancedSession<TSnapshot> implements AgentRuntimeSession {
     const generation = this.#snapshot.generation + 1
     this.#messages.push({ role: 'user', text: instruction, ...(images?.length ? { images } : {}) })
     this.#publish({ status: 'running', busy: true, generation })
+    this.#telemetry?.host(this.#host, 'dispatch', 'succeeded')
     void this.#remote
       .start({ text: instruction, ...(images?.length ? { images } : {}) })
       .catch(() => {
@@ -133,10 +140,12 @@ class EnhancedSession<TSnapshot> implements AgentRuntimeSession {
       return
     }
     if (event.type === 'clarify') {
+      this.#telemetry?.host(this.#host, 'pending', 'blocked')
       this.#events?.onPresentationClarify?.({ question: event.question })
       return
     }
     if (event.type === 'plan') {
+      this.#telemetry?.host(this.#host, 'plan', 'succeeded')
       this.#events?.onPresentationPlan?.({
         steps: event.steps,
         requiresConfirmation: event.requiresConfirmation,
@@ -144,19 +153,37 @@ class EnhancedSession<TSnapshot> implements AgentRuntimeSession {
       return
     }
     if (event.type === 'correction') {
+      this.#telemetry?.host(this.#host, 'correction', 'succeeded')
       this.#events?.onPresentationCorrection?.({ pass: event.pass, maximum: event.maximum })
       return
     }
     if (event.type === 'receipt') {
+      this.#telemetry?.host(
+        this.#host,
+        'verify',
+        event.event.facts.status === 'verified'
+          ? 'verified'
+          : event.event.facts.status === 'applied_unverified'
+            ? 'applied_unverified'
+            : event.event.facts.status === 'unchanged'
+              ? 'unchanged'
+              : 'failed',
+      )
       this.#events?.onPresentationReceipt?.(event.event)
       return
     }
     if (event.type === 'error') {
+      this.#telemetry?.host(this.#host, 'complete', 'failed')
       this.#events?.onError?.(event.code)
       this.#publish({ status: 'error', busy: false, generation, error: event.code })
       return
     }
     this.#messages.push({ role: 'assistant', text: event.result.text })
+    this.#telemetry?.host(
+      this.#host,
+      'complete',
+      event.result.cancelled ? 'cancelled' : 'succeeded',
+    )
     this.#events?.onDone?.(event.result)
     this.#publish({
       status: event.result.cancelled ? 'cancelled' : 'done',
@@ -193,7 +220,12 @@ export class EnhancedAgentRuntime implements AgentRuntime {
         skill: options.skill,
         ...(options.captureSnapshot ? { captureSnapshot: options.captureSnapshot } : {}),
       }),
-      options,
+      {
+        ...options,
+        ...((options.telemetry ?? this.client.telemetry)
+          ? { telemetry: options.telemetry ?? this.client.telemetry }
+          : {}),
+      },
     )
     this.#sessions.set(options.document.id, session)
     return session

@@ -39,6 +39,7 @@ import { EnhancedModeComponentManager } from '@wiswork/codex-bridge'
 import type { MessagesRequest } from '@wiswork/codex-bridge'
 import { WISWORK_MESSAGES_URL, WISWORK_REQUEST_LOCATION } from '@wiswork/ai-provider'
 import { createI18n, isLang, normalizeLang, setUiLang, type Lang } from '@wiswork/i18n'
+import { createEnhancedTelemetry } from '@wiswork/agent-runtime'
 import {
   appMenuLabels,
   contextMenuLabels,
@@ -2614,9 +2615,21 @@ app.whenReady().then(async () => {
   })
   // Runtime selection is immutable for this process. Settings changes below only affect next boot.
   activeAgentRuntime = readRequestedAgentRuntime(APP_SETTINGS_PATH())
+  const enhancedTelemetry = createEnhancedTelemetry((event) =>
+    console.info('[enhanced-aggregate]', event),
+  )
   const enhancedModeComponent = new EnhancedModeComponentManager({
     cacheRoot: join(app.getPath('userData'), 'components', 'enhanced-mode'),
     manifest: codexComponentManifest,
+    onPhase: ({ phase, outcome }) => {
+      const mapped =
+        phase === 'digest' || phase === 'signature'
+          ? 'verify'
+          : phase === 'promote'
+            ? 'install'
+            : phase
+      enhancedTelemetry.component(mapped, outcome)
+    },
   })
   const enhancedAsset = codexComponentManifest.component.assets.find(
     (asset) => asset.platform === process.platform && asset.arch === process.arch,
@@ -2659,6 +2672,7 @@ app.whenReady().then(async () => {
       diagnostics: (code) => console.warn('[enhanced-runtime]', code),
     }),
     diagnostics: (code) => console.warn('[enhanced-runtime]', code),
+    telemetry: enhancedTelemetry,
   })
   pcCodexHosts = registerPcCodexHosts({
     ipcMain,
@@ -2668,6 +2682,7 @@ app.whenReady().then(async () => {
       const id = (owner as { id?: unknown }).id
       return typeof id === 'number' ? (tabManager?.enhancedHostForWebContents(id) ?? null) : null
     },
+    telemetry: enhancedTelemetry,
   })
   registerCodexRuntimeIpc({
     ipcMain,
@@ -2682,6 +2697,7 @@ app.whenReady().then(async () => {
     runtime: codexRuntime,
     rollout: enhancedPolicy,
     policyAuthority: officePolicyAuthority,
+    telemetry: enhancedTelemetry,
   })
   enhancedModeComponentController = registerEnhancedModeComponentIpc({
     ipcMain,

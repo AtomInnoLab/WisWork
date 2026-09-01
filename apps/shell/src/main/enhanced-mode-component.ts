@@ -124,7 +124,8 @@ export function registerEnhancedModeComponentIpc(
     const promise = run(controller.signal)
     active.add(promise)
     try {
-      return await promise
+      const value = await promise
+      return value
     } catch {
       publicFail(
         controller.signal.aborted ? 'enhanced_mode_cancelled' : 'enhanced_mode_operation_failed',

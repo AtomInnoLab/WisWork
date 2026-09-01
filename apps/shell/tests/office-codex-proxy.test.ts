@@ -36,10 +36,12 @@ describe('Office Codex proxy', () => {
       },
     }
     const authority = createShellEnhancedPolicyAuthority(() => 0)
+    const telemetry = { component: vi.fn(), host: vi.fn() }
     const proxy = createOfficeCodexProxy({
       runtime: runtime as any,
       rollout,
       policyAuthority: authority,
+      telemetry,
     })
     const response = await proxy({
       body: {
@@ -63,6 +65,14 @@ describe('Office Codex proxy', () => {
     expect(executeTool).toHaveBeenCalledWith(
       expect.objectContaining({ generation: 3, toolName: 'get_document_text' }),
     )
+    expect(telemetry.host.mock.calls).toEqual([
+      ['office-word', 'plan', 'started'],
+      ['office-word', 'plan', 'succeeded'],
+      ['office-word', 'dispatch', 'started'],
+      ['office-word', 'dispatch', 'succeeded'],
+      ['office-word', 'verify', 'verified'],
+      ['office-word', 'complete', 'succeeded'],
+    ])
   })
 
   it('filters unknown/shared tools and raw Office independently from the semantic allowlist', async () => {

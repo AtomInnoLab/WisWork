@@ -49,13 +49,15 @@ describe('Agent runtime facade', () => {
       onDone = vi.fn(),
       onPlan = vi.fn()
     const runtime = new EnhancedAgentRuntime(client)
-    const session = runtime.createSession(
-      options({ stream: vi.fn() } as never, {
+    const telemetry = { host: vi.fn(), component: vi.fn() }
+    const session = runtime.createSession({
+      ...options({ stream: vi.fn() } as never, {
         onText,
         onDone,
         onPresentationPlan: onPlan,
       }),
-    )
+      telemetry,
+    })
     expect(session.run('edit')).toBe(true)
     emit({ type: 'plan', steps: ['read', 'write'], requiresConfirmation: true })
     emit({ type: 'text', text: 'done' })
@@ -65,6 +67,9 @@ describe('Agent runtime facade', () => {
     expect(onDone).toHaveBeenCalledOnce()
     expect(session.snapshot.status).toBe('done')
     expect(client.open).toHaveBeenCalledOnce()
+    expect(telemetry.host).toHaveBeenCalledWith('docs', 'dispatch', 'succeeded')
+    expect(telemetry.host).toHaveBeenCalledWith('docs', 'plan', 'succeeded')
+    expect(telemetry.host).toHaveBeenCalledWith('docs', 'complete', 'succeeded')
   })
 
   it('isolates replacement generations and fails Enhanced without replay', async () => {

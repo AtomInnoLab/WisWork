@@ -1,4 +1,9 @@
 import type { EnhancedModeStatus } from '../../shared/enhanced-mode-api'
+import {
+  normalizeLang,
+  translateEnhancedMode,
+  translatePresentationVerification,
+} from '@wiswork/i18n'
 
 export type EnhancedModeViewAction = 'none' | 'install' | 'enable' | 'disable'
 
@@ -12,33 +17,26 @@ export interface EnhancedModeView {
 }
 
 export function enhancedModeView(status: EnhancedModeStatus, language: string): EnhancedModeView {
-  const chinese = language === 'zh' || language === 'zh-TW'
-  const label = chinese ? '增强模式' : 'Enhanced mode'
-  const restartDetail = chinese ? '重启 WisWork 后生效' : 'Restart WisWork to apply'
+  const lang = normalizeLang(language)
+  const copy = (key: Parameters<typeof translateEnhancedMode>[1]) =>
+    translateEnhancedMode(lang, key)
+  const label = copy('label')
+  const restartDetail = copy('restart_required')
   if (status.lifecycleState === 'blocked_by_policy' || status.lifecycleState === 'failed_safe') {
     return {
       label,
       detail:
         status.lifecycleState === 'blocked_by_policy'
-          ? chinese
-            ? '当前策略未开放增强模式'
-            : 'Enhanced mode is disabled by policy'
-          : chinese
-            ? '增强模式启动失败，请切换到标准模式或重启后重试'
-            : 'Enhanced mode failed safely; switch to Standard or restart to retry',
+          ? copy('blocked_by_policy')
+          : copy('failed_safe'),
       action: status.requestedAgentRuntime === 'enhanced' ? 'disable' : 'none',
-      actionLabel:
-        status.requestedAgentRuntime === 'enhanced'
-          ? chinese
-            ? '切换到标准模式'
-            : 'Switch to Standard mode'
-          : '',
+      actionLabel: status.requestedAgentRuntime === 'enhanced' ? copy('switch_standard') : '',
     }
   }
   if (!status.supported || status.component === 'unsupported') {
     return {
       label,
-      detail: chinese ? '此设备暂不支持' : 'Not supported on this device',
+      detail: copy('unavailable'),
       action: 'none',
       actionLabel: '',
     }
@@ -48,42 +46,43 @@ export function enhancedModeView(status: EnhancedModeStatus, language: string): 
       label,
       detail:
         status.requestedAgentRuntime === 'enhanced'
-          ? chinese
-            ? '使用前需要安装'
-            : 'Install required before use'
-          : chinese
-            ? '需要下载可选组件'
-            : 'Optional download required',
+          ? copy('install_required')
+          : copy('optional_download'),
       action: 'install',
-      actionLabel: chinese ? '下载' : 'Download',
+      actionLabel: copy('download'),
     }
   }
   if (status.component === 'invalid') {
     return {
       label,
-      detail: chinese ? '验证失败' : 'Verification failed',
+      detail:
+        lang === 'en'
+          ? 'Verification failed'
+          : lang === 'zh' || lang === 'zh-TW'
+            ? '验证失败'
+            : translatePresentationVerification(lang, 'failed'),
       action: 'install',
-      actionLabel: chinese ? '重新下载' : 'Download again',
+      actionLabel: copy('download_again'),
     }
   }
   if (status.requestedAgentRuntime === 'enhanced') {
     return {
       label,
-      detail: status.restartRequired ? restartDetail : chinese ? '增强模式' : 'Enhanced mode',
+      detail: status.restartRequired ? restartDetail : copy('enhanced'),
       action: 'disable',
-      actionLabel: chinese ? '切换到标准模式' : 'Switch to Standard mode',
+      actionLabel: copy('switch_standard'),
     }
   }
   return {
     label,
-    detail: status.restartRequired ? restartDetail : chinese ? '标准模式' : 'Standard mode',
+    detail: status.restartRequired ? restartDetail : copy('standard'),
     action: 'enable',
-    actionLabel: chinese ? '启用（重启后生效）' : 'Enable after restart',
+    actionLabel: copy('enable_after_restart'),
     ...(status.restartRequired
       ? {}
       : {
           secondaryAction: 'remove' as const,
-          secondaryActionLabel: chinese ? '移除可选组件' : 'Remove optional component',
+          secondaryActionLabel: copy('remove'),
         }),
   }
 }

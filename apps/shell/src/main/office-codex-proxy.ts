@@ -10,7 +10,7 @@ import {
   type ToolMutability,
 } from '@wiswork/codex-bridge'
 import type { MessagesProxyResponse, OfficeEnhancedSessionStatement } from '@wiswork/office-bridge'
-import type { EnhancedRolloutPolicy } from '@wiswork/agent-runtime'
+import type { EnhancedRolloutPolicy, EnhancedTelemetry } from '@wiswork/agent-runtime'
 import type { ShellCodexRuntime } from './codex-runtime'
 import type { OfficeRelayToolCall, OfficeRelayToolResult } from './office-relay-client'
 
@@ -131,6 +131,7 @@ export function createOfficeCodexProxy(options: {
   runtime: ShellCodexRuntime
   rollout: EnhancedRolloutPolicy
   policyAuthority: PolicyAuthority
+  telemetry?: EnhancedTelemetry
 }) {
   return async (request: {
     body: unknown
@@ -142,9 +143,21 @@ export function createOfficeCodexProxy(options: {
     executeTool(call: OfficeRelayToolCall): Promise<OfficeRelayToolResult>
   }): Promise<MessagesProxyResponse> => {
     const host = hostName(request.host)
+    const telemetry = (
+      phase: 'plan' | 'dispatch' | 'verify' | 'complete' | 'pending',
+      outcome: 'started' | 'succeeded' | 'failed' | 'verified' | 'applied_unverified',
+    ) => {
+      try {
+        options.telemetry?.host(host, phase, outcome)
+      } catch {
+        // Aggregate telemetry must never own an Office turn.
+      }
+    }
     if (request.statement.host !== host || request.statement.expires_at <= Date.now())
       throw new Error('enhanced_session_stale')
+    telemetry('plan', 'started')
     const parsed = parseRequest(request.body, request.statement.raw_office)
+    telemetry('plan', 'succeeded')
     const capabilities = [
       'semantic-read',
       'transaction-proposal',
@@ -172,13 +185,24 @@ export function createOfficeCodexProxy(options: {
     ): Promise<ToolExecution> => {
       if (signal?.aborted)
         return { output: 'tool_cancelled', isError: true, summary: 'Tool cancelled' }
-      const result = await request.executeTool({
-        turnId,
-        callId: call.id,
-        generation: request.statement.session_generation,
-        toolName: call.name,
-        input: call.input,
-      })
+      const mutation = parsed.policy[call.name] === 'mutate'
+      if (mutation) telemetry('pending', 'started')
+      telemetry('dispatch', 'started')
+      let result: OfficeRelayToolResult
+      try {
+        result = await request.executeTool({
+          turnId,
+          callId: call.id,
+          generation: request.statement.session_generation,
+          toolName: call.name,
+          input: call.input,
+        })
+      } catch (error) {
+        telemetry('dispatch', 'failed')
+        throw error
+      }
+      telemetry('dispatch', result.isError ? 'failed' : 'succeeded')
+      telemetry('verify', result.isError ? 'failed' : mutation ? 'applied_unverified' : 'verified')
       return {
         output: result.output,
         isError: result.isError,
@@ -234,6 +258,7 @@ export function createOfficeCodexProxy(options: {
               `data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: event.text } })}\n\n`,
             )
           if (event.type === 'terminal') {
+            telemetry('complete', event.status === 'completed' ? 'succeeded' : 'failed')
             terminal = true
             wake?.()
             wake = undefined

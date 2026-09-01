@@ -47,6 +47,7 @@
     "@wiswork/ai-provider": "^0.1.0",
     "@wiswork/pdf-viewer": "*",
     "@wiswork/project-store": "^0.1.0",
+    "@wiswork/i18n": "*",
     "@wiswork/ui": "^0.1.0",
     "codemirror-lang-latex": "^0.4.2",
     "pdfjs-dist": "^5.4.54",

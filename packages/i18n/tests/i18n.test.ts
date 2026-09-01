@@ -9,8 +9,12 @@ import {
   macShortcutsToWin,
   normalizeLang,
   RAW_OFFICE_CONFIRMATION,
+  enhancedModeStrings,
+  translateEnhancedMode,
   presentationVerificationStrings,
   translatePresentationVerification,
+  enhancedMutationConfirmationStrings,
+  translateEnhancedMutationConfirmation,
 } from '../src/index'
 
 describe('presentation verification translations', () => {
@@ -103,6 +107,81 @@ describe('raw Office confirmation localization', () => {
     expect(Object.values(RAW_OFFICE_CONFIRMATION).every((value) => value.trim().length > 20)).toBe(
       true,
     )
+  })
+})
+
+describe('Enhanced mutation confirmation localization', () => {
+  it('covers every visible label and bounded enum value in all 19 locales', () => {
+    const expected = [
+      'title',
+      'operation',
+      'target',
+      'scope',
+      'count',
+      'warning',
+      'reject',
+      'confirm',
+      'operation.insert',
+      'operation.replace',
+      'operation.delete',
+      'operation.format',
+      'operation.restructure',
+      'operation.compile',
+      'target.document',
+      'target.selection',
+      'target.blocks',
+      'target.cells',
+      'target.sheet',
+      'target.slides',
+      'target.elements',
+      'target.project-files',
+      'scope.single',
+      'scope.selection',
+      'scope.bounded-set',
+      'scope.whole-document',
+    ] as const
+    expect(Object.keys(enhancedMutationConfirmationStrings)).toEqual([...LANGS])
+    for (const lang of LANGS) {
+      expect(Object.keys(enhancedMutationConfirmationStrings[lang]).sort()).toEqual(
+        [...expected].sort(),
+      )
+      for (const key of expected) {
+        const translated = translateEnhancedMutationConfirmation(lang, key).trim()
+        expect(translated).not.toBe('')
+        expect(translated).not.toBe(key)
+      }
+    }
+  })
+})
+
+describe('Codex Enhanced lifecycle localization', () => {
+  it('covers every visible lifecycle state in all 19 locales', () => {
+    const expected = [
+      'label',
+      'download',
+      'download_again',
+      'restart_required',
+      'unavailable',
+      'blocked_by_policy',
+      'failed_safe',
+      'install_required',
+      'optional_download',
+      'switch_standard',
+      'enable_after_restart',
+      'remove',
+      'standard',
+      'enhanced',
+      'rollback',
+    ]
+    expect(Object.keys(enhancedModeStrings)).toEqual([...LANGS])
+    for (const lang of LANGS) {
+      expect(Object.keys(enhancedModeStrings[lang]).sort()).toEqual([...expected].sort())
+      for (const key of expected) {
+        expect(
+          translateEnhancedMode(lang, key as keyof typeof enhancedModeStrings.zh).trim(),
+        ).not.toBe('')
+      }
+    }
   })
 })
 

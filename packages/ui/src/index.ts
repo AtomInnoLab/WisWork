@@ -14,6 +14,8 @@ export {
   type EnhancedMutationScope,
   type EnhancedMutationSummary,
   type EnhancedMutationTarget,
+  type EnhancedMutationConfirmationProps,
+  type EnhancedMutationConfirmationTranslator,
 } from './EnhancedMutationConfirmation'
 export {
   WORDART_PRESETS,

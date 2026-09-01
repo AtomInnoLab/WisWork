@@ -36,12 +36,25 @@ describe('PC Codex host registrar', () => {
       bootstrap: { start: async () => engine },
     })
     await runtime.initialize()
+    const telemetry = { host: vi.fn(), component: vi.fn() }
     const registrar = registerPcCodexHosts({
       ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
       runtime,
       policy,
       hostForOwner: (candidate) => (candidate === owner ? 'docs' : null),
+      telemetry,
     })
+    await handlers.get(PC_HOST_CODEX_CHANNELS.telemetry)!(
+      { sender: owner },
+      { kind: 'host', host: 'docs', phase: 'plan', outcome: 'succeeded' },
+    )
+    expect(telemetry.host).toHaveBeenCalledWith('docs', 'plan', 'succeeded')
+    expect(() =>
+      handlers.get(PC_HOST_CODEX_CHANNELS.telemetry)!(
+        { sender: owner },
+        { kind: 'host', host: 'slides', phase: 'plan', outcome: 'succeeded' },
+      ),
+    ).toThrow('enhanced_untrusted_request')
     await handlers.get(PC_HOST_CODEX_CHANNELS.register)!(
       { sender: owner },
       {

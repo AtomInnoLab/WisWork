@@ -1,6 +1,7 @@
 import type { AgentToolCall, AgentToolDef, ToolExecution } from '@wiswork/agent-core'
 import type { EnhancedHost } from './contracts'
 import type { EnhancedSessionEvent } from './enhanced'
+import type { EnhancedTelemetryEvent } from './telemetry'
 
 export const PC_HOST_CODEX_CHANNELS = Object.freeze({
   status: 'codex:pc-host:status',
@@ -12,6 +13,7 @@ export const PC_HOST_CODEX_CHANNELS = Object.freeze({
   event: 'codex:pc-host:event',
   toolCall: 'codex:pc-host:tool-call',
   proposal: 'codex:pc-host:proposal',
+  telemetry: 'codex:pc-host:telemetry',
 })
 
 export type PcEnhancedHost = Extract<EnhancedHost, 'latex' | 'slides' | 'docs' | 'sheets'>
@@ -76,6 +78,7 @@ export interface PcHostCodexApi {
   toolResult(input: PcHostToolResult): Promise<void>
   confirmProposal(documentId: string, generation: number, proposalId: string): Promise<void>
   cancelProposal(documentId: string, generation: number, proposalId: string): Promise<void>
+  telemetry(event: EnhancedTelemetryEvent): Promise<void>
   onEvent(listener: (event: EnhancedSessionEvent) => void): () => void
   onToolCall(listener: (request: PcHostToolRequest) => void): () => void
   onProposal(listener: (request: PcHostProposalRequest) => void): () => void
@@ -120,6 +123,7 @@ export function createPcHostCodexApi(ipc: PcHostIpcRenderer): PcHostCodexApi {
       ipc
         .invoke(PC_HOST_CODEX_CHANNELS.cancelProposal, documentId, generation, proposalId)
         .then(() => undefined),
+    telemetry: (event) => ipc.invoke(PC_HOST_CODEX_CHANNELS.telemetry, event).then(() => undefined),
     onEvent: (listener: (event: EnhancedSessionEvent) => void) =>
       listen(PC_HOST_CODEX_CHANNELS.event, listener),
     onToolCall: (listener: (request: PcHostToolRequest) => void) =>
