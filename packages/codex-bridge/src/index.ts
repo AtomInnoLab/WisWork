@@ -1,6 +1,7 @@
 import type {
   MessagesRequest,
-  DocumentCarrierAuthorization,
+  DocumentCarrierHandle,
+  DocumentCarrierIssuer,
   PreparedResponsesTurn,
   ProtocolLimits,
   ResponsesRequest,
@@ -21,7 +22,23 @@ export class ProtocolCompatibilityError extends Error {
 }
 
 type UnknownRecord = Record<string, unknown>
-const carrierAuthorizations = new WeakSet<object>()
+
+interface CarrierLedgerEntry {
+  readonly issuer: object
+  readonly host: string
+  readonly documentId: string
+  readonly sessionId: string
+  readonly generation: number
+  readonly turnId: string
+  readonly sourceNonce: string
+  readonly method: string
+  readonly toolName: string
+  readonly schemaDigest: string
+  state: 'issued' | 'consumed'
+  remainingCalls: number
+}
+
+const carrierLedger = new WeakMap<object, CarrierLedgerEntry>()
 const CARRIER_HOSTS = new Set([
   'latex',
   'slides',
@@ -36,79 +53,117 @@ function fail(code: string): never {
   throw new ProtocolCompatibilityError(code)
 }
 
-export function createDocumentCarrierAuthorization(value: unknown): DocumentCarrierAuthorization {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    fail('invalid_carrier_authorization')
-  }
-  let descriptors: PropertyDescriptorMap
+function exactDataValues(
+  value: unknown,
+  keys: readonly string[],
+  code: string,
+): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) fail(code)
   try {
     if (
       Object.getPrototypeOf(value) !== Object.prototype ||
       Object.getOwnPropertySymbols(value).length !== 0
     )
-      fail('invalid_carrier_authorization')
-    descriptors = Object.getOwnPropertyDescriptors(value)
-  } catch {
-    fail('invalid_carrier_authorization')
+      fail(code)
+    const descriptors = Object.getOwnPropertyDescriptors(value)
+    if (
+      Object.keys(descriptors).length !== keys.length ||
+      keys.some((key) => !('value' in (descriptors[key] ?? {})))
+    )
+      fail(code)
+    return Object.fromEntries(keys.map((key) => [key, descriptors[key]!.value]))
+  } catch (error) {
+    if (error instanceof ProtocolCompatibilityError) throw error
+    fail(code)
   }
-  const keys = [
-    'host',
-    'documentId',
-    'sessionId',
-    'generation',
-    'capabilityToken',
-    'method',
-    'toolName',
-    'schemaDigest',
-    'callBudget',
-  ] as const
-  if (
-    Object.keys(descriptors).length !== keys.length ||
-    keys.some((key) => !('value' in (descriptors[key] ?? {})))
+}
+
+export function createDocumentCarrierIssuer(
+  contextValue: unknown,
+  validateCapability: (capability: unknown, context: Readonly<Record<string, unknown>>) => boolean,
+): DocumentCarrierIssuer {
+  if (typeof validateCapability !== 'function') fail('invalid_carrier_issuer')
+  const context = exactDataValues(
+    contextValue,
+    ['host', 'documentId', 'sessionId', 'generation'],
+    'invalid_carrier_issuer',
   )
-    fail('invalid_carrier_authorization')
-  const read = (key: (typeof keys)[number]): unknown => descriptors[key]!.value
-  const host = read('host')
-  const documentId = read('documentId')
-  const sessionId = read('sessionId')
-  const generation = read('generation')
-  const capabilityToken = read('capabilityToken')
-  const method = read('method')
-  const toolName = read('toolName')
-  const schemaDigest = read('schemaDigest')
-  const callBudget = read('callBudget')
   const boundedId = (input: unknown): input is string =>
     typeof input === 'string' && input.length > 0 && utf8Length(input) <= 256
   if (
-    typeof host !== 'string' ||
-    !CARRIER_HOSTS.has(host) ||
-    !boundedId(documentId) ||
-    !boundedId(sessionId) ||
-    !Number.isSafeInteger(generation) ||
-    (generation as number) < 0 ||
-    typeof capabilityToken !== 'string' ||
-    !/^[A-Za-z0-9_-]{43}$/.test(capabilityToken) ||
-    typeof toolName !== 'string' ||
-    !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(toolName) ||
-    method !== `mcp__wiswork__${toolName}` ||
-    typeof schemaDigest !== 'string' ||
-    !/^[a-f0-9]{64}$/.test(schemaDigest) ||
-    callBudget !== 1
+    typeof context.host !== 'string' ||
+    !CARRIER_HOSTS.has(context.host) ||
+    !boundedId(context.documentId) ||
+    !boundedId(context.sessionId) ||
+    !Number.isSafeInteger(context.generation) ||
+    (context.generation as number) < 0
   )
-    fail('invalid_carrier_authorization')
-  const authorization = Object.freeze({
-    host,
-    documentId,
-    sessionId,
-    generation: generation as number,
-    capabilityToken,
-    method,
-    toolName,
-    schemaDigest,
-    callBudget,
-  }) as DocumentCarrierAuthorization
-  carrierAuthorizations.add(authorization)
-  return authorization
+    fail('invalid_carrier_issuer')
+
+  const issuerIdentity = Object.freeze(Object.create(null)) as object
+  const issueForTurn = (turnValue: unknown): DocumentCarrierHandle => {
+    const turn = exactDataValues(
+      turnValue,
+      ['turnId', 'sourceNonce', 'capability', 'method', 'toolName', 'schemaDigest'],
+      'invalid_carrier_authorization',
+    )
+    if (
+      !boundedId(turn.turnId) ||
+      typeof turn.sourceNonce !== 'string' ||
+      !/^[A-Za-z0-9_-]{43}$/.test(turn.sourceNonce) ||
+      typeof turn.toolName !== 'string' ||
+      !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(turn.toolName) ||
+      turn.method !== `mcp__wiswork__${turn.toolName}` ||
+      typeof turn.schemaDigest !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(turn.schemaDigest)
+    )
+      fail('invalid_carrier_authorization')
+    const validationContext = Object.freeze({
+      host: context.host,
+      documentId: context.documentId,
+      sessionId: context.sessionId,
+      generation: context.generation,
+      turnId: turn.turnId,
+      sourceNonce: turn.sourceNonce,
+      method: turn.method,
+      toolName: turn.toolName,
+      schemaDigest: turn.schemaDigest,
+    })
+    let approved: boolean
+    try {
+      approved = validateCapability(turn.capability, validationContext) === true
+    } catch {
+      approved = false
+    }
+    if (!approved) fail('carrier_capability_rejected')
+    const handle = Object.freeze(Object.create(null)) as DocumentCarrierHandle
+    carrierLedger.set(handle as object, {
+      issuer: issuerIdentity,
+      ...(validationContext as Omit<CarrierLedgerEntry, 'issuer' | 'state' | 'remainingCalls'>),
+      state: 'issued',
+      remainingCalls: 1,
+    })
+    return handle
+  }
+  const prepareTurn = (
+    input: unknown,
+    limitOverrides: Partial<ProtocolLimits>,
+    handle: DocumentCarrierHandle,
+  ): PreparedResponsesTurn => {
+    if (typeof handle !== 'object' || handle === null) fail('invalid_carrier_authorization')
+    const entry = carrierLedger.get(handle as object)
+    if (!entry) fail('invalid_carrier_authorization')
+    if (entry.issuer !== issuerIdentity) fail('carrier_authorization_issuer_mismatch')
+    if (entry.state !== 'issued') fail('carrier_authorization_consumed')
+    entry.state = 'consumed'
+    const prepared = convertResponsesRequest(input, limitOverrides, entry)
+    return Object.freeze({
+      messagesRequest: prepared.request,
+      messagesStreamToResponses: (chunks: AsyncIterable<string | Uint8Array>) =>
+        convertMessagesStream(chunks, prepared.context, prepared.limits),
+    })
+  }
+  return Object.freeze({ issueForTurn, prepareTurn })
 }
 
 export const CODEX_0147_EXEC_GRAMMAR =
@@ -412,7 +467,7 @@ function boundedJsonSize(value: unknown, limit: number, code: string): void {
 function extractAllowedExecMethods(
   metadata: Record<string, unknown> | undefined,
   limits: ProtocolLimits,
-  carrierAuthorization?: DocumentCarrierAuthorization,
+  carrierEntry?: CarrierLedgerEntry,
 ): string[] {
   if (metadata === undefined) return []
   if (!isRecord(metadata) || !Object.keys(metadata).every((key) => CLIENT_METADATA_KEYS.has(key))) {
@@ -438,7 +493,10 @@ function extractAllowedExecMethods(
   if (!isRecord(parsed) || !Object.keys(parsed).every((key) => TURN_METADATA_KEYS.has(key))) {
     fail('unsupported_client_metadata')
   }
-  if (carrierAuthorization !== undefined && parsed.session_id !== carrierAuthorization.sessionId) {
+  if (
+    carrierEntry !== undefined &&
+    (parsed.session_id !== carrierEntry.sessionId || parsed.turn_id !== carrierEntry.turnId)
+  ) {
     fail('carrier_authorization_mismatch')
   }
   const jsonKeyCount = (key: string): number => {
@@ -718,13 +776,13 @@ function convertMessageContent(
 interface PrivateStreamContext {
   usedCallIds: readonly string[]
   allowedExecMethods: readonly string[]
-  carrierAuthorization?: DocumentCarrierAuthorization
+  carrierEntry?: CarrierLedgerEntry
 }
 
 function convertResponsesRequest(
   input: unknown,
   limitOverrides: Partial<ProtocolLimits> = {},
-  carrierAuthorization?: DocumentCarrierAuthorization,
+  carrierEntry?: CarrierLedgerEntry,
 ): { request: MessagesRequest; context: PrivateStreamContext; limits: ProtocolLimits } {
   const limits = resolveLimits(limitOverrides)
   inspectJsonGraph(input, limits)
@@ -749,22 +807,17 @@ function convertResponsesRequest(
   if (sourceItems.length === 0) fail('invalid_conversation')
   if (sourceItems.length > limits.maxRequestItems) fail('request_item_limit_exceeded')
 
-  if (
-    carrierAuthorization !== undefined &&
-    !carrierAuthorizations.has(carrierAuthorization as object)
-  )
-    fail('invalid_carrier_authorization')
   const advertisedExecMethods = extractAllowedExecMethods(
     request.client_metadata,
     limits,
-    carrierAuthorization,
+    carrierEntry,
   )
   if (
-    carrierAuthorization !== undefined &&
-    (advertisedExecMethods.length !== 1 || advertisedExecMethods[0] !== carrierAuthorization.method)
+    carrierEntry !== undefined &&
+    (advertisedExecMethods.length !== 1 || advertisedExecMethods[0] !== carrierEntry.method)
   )
     fail('carrier_authorization_mismatch')
-  const allowedExecMethods = carrierAuthorization === undefined ? [] : [carrierAuthorization.method]
+  const allowedExecMethods = carrierEntry === undefined ? [] : [carrierEntry.method]
   const upstreamTools: NonNullable<MessagesRequest['tools']> = []
 
   const developerInstructions: string[] = []
@@ -914,7 +967,7 @@ function convertResponsesRequest(
     context: {
       usedCallIds: Object.freeze([...usedCallIds]),
       allowedExecMethods: Object.freeze([...allowedExecMethods]),
-      ...(carrierAuthorization === undefined ? {} : { carrierAuthorization }),
+      ...(carrierEntry === undefined ? {} : { carrierEntry }),
     },
     limits,
   }
@@ -923,12 +976,10 @@ function convertResponsesRequest(
 export function prepareResponsesTurn(
   input: unknown,
   limitOverrides: Partial<ProtocolLimits> = {},
-  carrierAuthorization?: DocumentCarrierAuthorization,
 ): PreparedResponsesTurn {
-  const prepared = convertResponsesRequest(input, limitOverrides, carrierAuthorization)
+  const prepared = convertResponsesRequest(input, limitOverrides)
   return Object.freeze({
     messagesRequest: prepared.request,
-    ...(carrierAuthorization === undefined ? {} : { carrierAuthorization }),
     messagesStreamToResponses: (chunks: AsyncIterable<string | Uint8Array>) =>
       convertMessagesStream(chunks, prepared.context, prepared.limits),
   })
@@ -1143,7 +1194,10 @@ async function* convertMessagesStream(
       if (callId === '') fail('invalid_messages_event')
       if (strict.usedCalls.has(callId)) fail('duplicate_call_id')
       if (name !== 'exec' || context.allowedExecMethods.length === 0) fail('unadvertised_tool_call')
-      if (strict.toolCalls >= 1) fail('tool_call_limit_exceeded')
+      if (!context.carrierEntry || context.carrierEntry.remainingCalls <= 0) {
+        fail('tool_call_limit_exceeded')
+      }
+      context.carrierEntry.remainingCalls -= 1
       strict.toolCalls += 1
       strict.usedCalls.add(callId)
       strict.active = { kind: 'tool', itemId, callId, name, arguments: '' }

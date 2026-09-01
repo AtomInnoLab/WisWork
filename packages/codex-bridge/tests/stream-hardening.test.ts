@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { prepareResponsesTurn, ProtocolCompatibilityError } from '../src/index.js'
 import captured from './fixtures/codex-0147-request.json'
-import { carrierAuthorization } from './fixtures/carrier-authorization.js'
+import { prepareCarrierTurn } from './fixtures/carrier-authorization.js'
 
 const noToolTurn = () => prepareResponsesTurn({ model: 'gpt-5.6-sol', input: 'Hello' })
 
@@ -48,11 +48,9 @@ async function expectStreamCode(
 ): Promise<void> {
   let caught: unknown
   try {
-    const turn = prepareResponsesTurn(
-      custom ? structuredClone(captured) : { model: 'gpt-5.6-sol', input: 'Hello' },
-      limits,
-      custom ? carrierAuthorization : undefined,
-    )
+    const turn = custom
+      ? prepareCarrierTurn(structuredClone(captured), limits)
+      : prepareResponsesTurn({ model: 'gpt-5.6-sol', input: 'Hello' }, limits)
     await collect(turn.messagesStreamToResponses(chunks(...values)))
   } catch (error) {
     caught = error

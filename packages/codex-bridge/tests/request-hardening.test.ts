@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import captured from './fixtures/codex-0147-request.json'
 import { prepareResponsesTurn, ProtocolCompatibilityError } from '../src/index.js'
-import { carrierAuthorization } from './fixtures/carrier-authorization.js'
+import { prepareCarrierTurn } from './fixtures/carrier-authorization.js'
 
 const cloneCaptured = (): Record<string, unknown> =>
   structuredClone(captured) as Record<string, unknown>
@@ -38,7 +38,7 @@ describe('strict Responses request conversion', () => {
     )
   })
   it('accepts the captured Codex 0.147 envelope and returns stream context', () => {
-    const converted = prepareResponsesTurn(cloneCaptured(), {}, carrierAuthorization)
+    const converted = prepareCarrierTurn(cloneCaptured())
     expect(converted.messagesRequest).toMatchObject({
       model: 'openai/gpt-5.6-sol',
       system: 'System',
@@ -174,7 +174,7 @@ describe('strict Responses request conversion', () => {
     const request = cloneCaptured()
     mutate(request)
     try {
-      prepareResponsesTurn(request, {}, carrierAuthorization)
+      prepareCarrierTurn(request)
       throw new Error('expected compatibility failure')
     } catch (error) {
       expect(error).toBeInstanceOf(ProtocolCompatibilityError)

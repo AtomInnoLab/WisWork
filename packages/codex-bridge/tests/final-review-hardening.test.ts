@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import * as bridge from '../src/index.js'
 import captured from './fixtures/codex-0147-request.json'
-import { carrierAuthorization } from './fixtures/carrier-authorization.js'
+import { prepareCarrierTurn } from './fixtures/carrier-authorization.js'
 
 const clone = (): Record<string, any> => structuredClone(captured)
 const prepareResponsesTurn = (input: unknown, limits: Record<string, number> = {}) =>
-  (bridge as any).prepareResponsesTurn(input, limits, carrierAuthorization)
+  prepareCarrierTurn(input, limits)
 
 async function* chunks(...values: string[]): AsyncGenerator<string> {
   yield* values
@@ -34,11 +34,7 @@ describe('final pinned bridge contract', () => {
     expect('messagesSseToResponses' in bridge).toBe(false)
     const turn = prepareResponsesTurn(clone())
     expect(Object.isFrozen(turn)).toBe(true)
-    expect(Object.keys(turn).sort()).toEqual([
-      'carrierAuthorization',
-      'messagesRequest',
-      'messagesStreamToResponses',
-    ])
+    expect(Object.keys(turn).sort()).toEqual(['messagesRequest', 'messagesStreamToResponses'])
     expect(turn.messagesStreamToResponses).toHaveLength(1)
   })
 
@@ -52,7 +48,7 @@ describe('final pinned bridge contract', () => {
   it('accepts the faithful MCP turn metadata shape', () => {
     const turn = prepareResponsesTurn(clone())
     expect(turn.messagesRequest.tools).toHaveLength(1)
-    expect(turn.messagesRequest.tools[0].name).toBe('exec')
+    expect(turn.messagesRequest.tools![0].name).toBe('exec')
   })
 
   it('rejects malformed workspace metadata', () => {

@@ -81,23 +81,40 @@ export interface MessagesRequest {
 
 export interface PreparedResponsesTurn {
   readonly messagesRequest: MessagesRequest
-  readonly carrierAuthorization?: DocumentCarrierAuthorization
   readonly messagesStreamToResponses: (
     chunks: AsyncIterable<string | Uint8Array>,
   ) => AsyncGenerator<string>
 }
 
-export interface DocumentCarrierAuthorization {
+declare const documentCarrierHandleBrand: unique symbol
+export interface DocumentCarrierHandle {
+  readonly [documentCarrierHandleBrand]: true
+}
+
+export interface DocumentCarrierIssuerContext {
   readonly host:
     'latex' | 'slides' | 'docs' | 'sheets' | 'office-word' | 'office-excel' | 'office-powerpoint'
   readonly documentId: string
   readonly sessionId: string
   readonly generation: number
-  readonly capabilityToken: string
+}
+
+export interface DocumentCarrierTurnContext {
+  readonly turnId: string
+  readonly sourceNonce: string
+  readonly capability: unknown
   readonly method: string
   readonly toolName: string
   readonly schemaDigest: string
-  readonly callBudget: 1
+}
+
+export interface DocumentCarrierIssuer {
+  readonly issueForTurn: (context: unknown) => DocumentCarrierHandle
+  readonly prepareTurn: (
+    input: unknown,
+    limitOverrides: Partial<ProtocolLimits>,
+    handle: DocumentCarrierHandle,
+  ) => PreparedResponsesTurn
 }
 
 export interface ProtocolLimits {
