@@ -8,8 +8,12 @@ export { WisWorkAgentMark } from './WisWorkAgentMark'
 export {
   EnhancedMutationConfirmation,
   isEnhancedMutationProposal,
+  type EnhancedMutationOperation,
   type EnhancedMutationProposal,
   type EnhancedMutationProposalApi,
+  type EnhancedMutationScope,
+  type EnhancedMutationSummary,
+  type EnhancedMutationTarget,
 } from './EnhancedMutationConfirmation'
 export {
   WORDART_PRESETS,

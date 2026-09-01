@@ -98,14 +98,27 @@
   overflow-wrap: anywhere;
 }
 
-.enhanced-confirm-tool {
-  margin: 0 0 6px;
+.enhanced-confirm-summary {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.enhanced-confirm-summary > div {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.8fr) minmax(0, 1.5fr);
+  gap: 12px;
+}
+
+.enhanced-confirm-summary dt {
   color: var(--text-secondary, var(--color-text-secondary));
-  font:
-    600 12px/1.4 ui-monospace,
-    SFMono-Regular,
-    Consolas,
-    monospace;
+  font-size: 13px;
+}
+
+.enhanced-confirm-summary dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .enhanced-confirm-warning {

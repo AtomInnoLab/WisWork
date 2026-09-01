@@ -11,7 +11,7 @@ const proposal = (overrides: Partial<EnhancedMutationProposal> = {}): EnhancedMu
   documentId: 'docs:document-1',
   generation: 4,
   toolName: 'replace_blocks',
-  summary: 'Replace 2 document blocks',
+  summary: { operation: 'replace', target: 'blocks', scope: 'bounded-set', count: 2 },
   expiresAt: Date.now() + 60_000,
   ...overrides,
 })
@@ -42,6 +42,7 @@ function setup() {
 
 afterEach(() => {
   document.body.replaceChildren()
+  document.documentElement.lang = 'en'
   vi.useRealTimers()
 })
 
@@ -49,7 +50,10 @@ describe('Enhanced mutation confirmation', () => {
   it('keeps a proposal pending until one explicit confirmation', async () => {
     const view = setup()
     view.emit(proposal())
-    expect(view.node.textContent).toContain('Replace 2 document blocks')
+    expect(view.node.textContent).toContain('Replace')
+    expect(view.node.textContent).toContain('Blocks')
+    expect(view.node.textContent).toContain('Bounded set')
+    expect(view.node.textContent).toContain('2')
     expect(view.api.confirmProposal).not.toHaveBeenCalled()
 
     const confirm = view.node.querySelector<HTMLButtonElement>('[data-action="confirm"]')!
@@ -86,18 +90,35 @@ describe('Enhanced mutation confirmation', () => {
     expect(view.unsubscribe).toHaveBeenCalledOnce()
   })
 
-  it('bounds displayed data and ignores malformed, replayed, and stale replacement events', async () => {
+  it('cancels malformed or generic summaries and ignores replayed events', async () => {
     const view = setup()
-    view.emit(proposal({ summary: 'x'.repeat(2_000) }))
-    expect(view.node.textContent?.length).toBeLessThan(1_000)
+    view.emit(proposal({ summary: 'Review the proposed document change' as never }))
+    expect(view.node.querySelector('[role="alertdialog"]')).toBeNull()
+    expect(view.api.cancelProposal).toHaveBeenCalledWith('docs:document-1', 4, 'opaque-proposal-1')
 
-    const first = proposal()
+    const first = proposal({ proposalId: 'opaque-proposal-2' })
     view.emit(first)
     view.emit(first)
-    expect(view.node.textContent).toContain('Replace 2 document blocks')
+    expect(view.node.textContent).toContain('Replace')
 
-    view.emit(proposal({ proposalId: '', documentId: '../secret' }))
-    expect(view.node.textContent).toContain('Replace 2 document blocks')
+    view.emit(proposal({ proposalId: '', documentId: '../secret', summary: undefined as never }))
+    expect(view.node.textContent).toContain('Replace')
     expect(view.api.confirmProposal).not.toHaveBeenCalled()
+  })
+
+  it('renders the informed summary and consent controls in Chinese', () => {
+    document.documentElement.lang = 'zh-CN'
+    const view = setup()
+    view.emit(
+      proposal({
+        summary: { operation: 'format', target: 'cells', scope: 'selection', count: 12 },
+      }),
+    )
+    expect(view.node.textContent).toContain('确认文档更改')
+    expect(view.node.textContent).toContain('格式调整')
+    expect(view.node.textContent).toContain('单元格')
+    expect(view.node.textContent).toContain('当前选区')
+    expect(view.node.textContent).toContain('12')
+    expect(view.node.textContent).toContain('拒绝')
   })
 })
