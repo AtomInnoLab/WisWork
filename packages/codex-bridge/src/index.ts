@@ -1,5 +1,6 @@
 import type {
   MessagesRequest,
+  DocumentCarrierAuthorization,
   PreparedResponsesTurn,
   ProtocolLimits,
   ResponsesRequest,
@@ -20,9 +21,94 @@ export class ProtocolCompatibilityError extends Error {
 }
 
 type UnknownRecord = Record<string, unknown>
+const carrierAuthorizations = new WeakSet<object>()
+const CARRIER_HOSTS = new Set([
+  'latex',
+  'slides',
+  'docs',
+  'sheets',
+  'office-word',
+  'office-excel',
+  'office-powerpoint',
+])
 
 function fail(code: string): never {
   throw new ProtocolCompatibilityError(code)
+}
+
+export function createDocumentCarrierAuthorization(value: unknown): DocumentCarrierAuthorization {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    fail('invalid_carrier_authorization')
+  }
+  let descriptors: PropertyDescriptorMap
+  try {
+    if (
+      Object.getPrototypeOf(value) !== Object.prototype ||
+      Object.getOwnPropertySymbols(value).length !== 0
+    )
+      fail('invalid_carrier_authorization')
+    descriptors = Object.getOwnPropertyDescriptors(value)
+  } catch {
+    fail('invalid_carrier_authorization')
+  }
+  const keys = [
+    'host',
+    'documentId',
+    'sessionId',
+    'generation',
+    'capabilityToken',
+    'method',
+    'toolName',
+    'schemaDigest',
+    'callBudget',
+  ] as const
+  if (
+    Object.keys(descriptors).length !== keys.length ||
+    keys.some((key) => !('value' in (descriptors[key] ?? {})))
+  )
+    fail('invalid_carrier_authorization')
+  const read = (key: (typeof keys)[number]): unknown => descriptors[key]!.value
+  const host = read('host')
+  const documentId = read('documentId')
+  const sessionId = read('sessionId')
+  const generation = read('generation')
+  const capabilityToken = read('capabilityToken')
+  const method = read('method')
+  const toolName = read('toolName')
+  const schemaDigest = read('schemaDigest')
+  const callBudget = read('callBudget')
+  const boundedId = (input: unknown): input is string =>
+    typeof input === 'string' && input.length > 0 && utf8Length(input) <= 256
+  if (
+    typeof host !== 'string' ||
+    !CARRIER_HOSTS.has(host) ||
+    !boundedId(documentId) ||
+    !boundedId(sessionId) ||
+    !Number.isSafeInteger(generation) ||
+    (generation as number) < 0 ||
+    typeof capabilityToken !== 'string' ||
+    !/^[A-Za-z0-9_-]{43}$/.test(capabilityToken) ||
+    typeof toolName !== 'string' ||
+    !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(toolName) ||
+    method !== `mcp__wiswork__${toolName}` ||
+    typeof schemaDigest !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(schemaDigest) ||
+    callBudget !== 1
+  )
+    fail('invalid_carrier_authorization')
+  const authorization = Object.freeze({
+    host,
+    documentId,
+    sessionId,
+    generation: generation as number,
+    capabilityToken,
+    method,
+    toolName,
+    schemaDigest,
+    callBudget,
+  }) as DocumentCarrierAuthorization
+  carrierAuthorizations.add(authorization)
+  return authorization
 }
 
 export const CODEX_0147_EXEC_GRAMMAR =
@@ -52,9 +138,30 @@ export const DEFAULT_PROTOCOL_LIMITS: Readonly<ProtocolLimits> = Object.freeze({
 })
 
 function resolveLimits(overrides: Partial<ProtocolLimits> = {}): ProtocolLimits {
-  if (!Object.keys(overrides).every((key) => key in DEFAULT_PROTOCOL_LIMITS))
+  let descriptors: PropertyDescriptorMap
+  try {
+    if (
+      typeof overrides !== 'object' ||
+      overrides === null ||
+      (Object.getPrototypeOf(overrides) !== Object.prototype &&
+        Object.getPrototypeOf(overrides) !== null) ||
+      Object.getOwnPropertySymbols(overrides).length !== 0
+    )
+      fail('invalid_protocol_limits')
+    descriptors = Object.getOwnPropertyDescriptors(overrides)
+  } catch {
     fail('invalid_protocol_limits')
-  const limits = { ...DEFAULT_PROTOCOL_LIMITS, ...overrides }
+  }
+  if (
+    !Object.keys(descriptors).every(
+      (key) => key in DEFAULT_PROTOCOL_LIMITS && 'value' in descriptors[key]!,
+    )
+  )
+    fail('invalid_protocol_limits')
+  const limits = { ...DEFAULT_PROTOCOL_LIMITS } as ProtocolLimits
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    ;(limits as unknown as Record<string, unknown>)[key] = descriptor.value
+  }
   for (const value of Object.values(limits)) {
     if (!Number.isSafeInteger(value) || value <= 0) fail('invalid_protocol_limits')
   }
@@ -62,7 +169,20 @@ function resolveLimits(overrides: Partial<ProtocolLimits> = {}): ProtocolLimits 
 }
 
 function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  try {
+    const prototype = Object.getPrototypeOf(value)
+    if (
+      (prototype !== Object.prototype && prototype !== null) ||
+      Object.getOwnPropertySymbols(value).length !== 0
+    )
+      return false
+    return Object.values(Object.getOwnPropertyDescriptors(value)).every(
+      (descriptor) => 'value' in descriptor,
+    )
+  } catch {
+    return false
+  }
 }
 
 function hasOnlyKeys(value: UnknownRecord, allowed: readonly string[]): boolean {
@@ -96,16 +216,51 @@ function inspectJsonGraph(value: unknown, limits: ProtocolLimits): void {
     } else if (typeof item === 'object') {
       if (seen.has(item)) fail('invalid_request')
       seen.add(item)
-      if (!Array.isArray(item)) {
+      let entries: Array<readonly [string, unknown]>
+      const array = Array.isArray(item)
+      try {
         const prototype = Object.getPrototypeOf(item)
-        if (prototype !== Object.prototype && prototype !== null) fail('invalid_request')
+        if (
+          prototype !== (array ? Array.prototype : Object.prototype) &&
+          !(prototype === null && !array)
+        )
+          fail('invalid_request')
+        if (Object.getOwnPropertySymbols(item).length !== 0) fail('invalid_request')
+        const descriptors = Object.getOwnPropertyDescriptors(item)
+        if (array) {
+          const length = descriptors.length
+          if (
+            !length ||
+            !('value' in length) ||
+            !Number.isSafeInteger(length.value) ||
+            (length.value as number) < 0
+          )
+            fail('invalid_request')
+          const arrayLength = length.value as number
+          if (arrayLength > limits.maxRequestNodes) fail('request_nodes_limit_exceeded')
+          const allowed = new Set([
+            'length',
+            ...Array.from({ length: arrayLength }, (_, index) => String(index)),
+          ])
+          if (Object.keys(descriptors).some((key) => !allowed.has(key))) fail('invalid_request')
+          entries = Array.from({ length: arrayLength }, (_, index) => {
+            const descriptor = descriptors[String(index)]
+            if (!descriptor || !('value' in descriptor)) fail('invalid_request')
+            return [String(index), descriptor.value] as const
+          })
+        } else {
+          entries = Object.entries(descriptors).map(([key, descriptor]) => {
+            if (!('value' in descriptor)) fail('invalid_request')
+            return [key, descriptor.value] as const
+          })
+        }
+      } catch (error) {
+        if (error instanceof ProtocolCompatibilityError) throw error
+        fail('invalid_request')
       }
-      const entries = Array.isArray(item)
-        ? item.map((child, index) => [String(index), child] as const)
-        : Object.entries(item)
       bytes += 2 + Math.max(0, entries.length - 1)
       for (const [key, child] of entries) {
-        if (!Array.isArray(item)) {
+        if (!array) {
           if (utf8Length(key) > limits.maxStringLength) fail('request_string_limit_exceeded')
           bytes += utf8Length(JSON.stringify(key)) + 1
         }
@@ -257,6 +412,7 @@ function boundedJsonSize(value: unknown, limit: number, code: string): void {
 function extractAllowedExecMethods(
   metadata: Record<string, unknown> | undefined,
   limits: ProtocolLimits,
+  carrierAuthorization?: DocumentCarrierAuthorization,
 ): string[] {
   if (metadata === undefined) return []
   if (!isRecord(metadata) || !Object.keys(metadata).every((key) => CLIENT_METADATA_KEYS.has(key))) {
@@ -281,6 +437,9 @@ function extractAllowedExecMethods(
   inspectJsonGraph(parsed, limits)
   if (!isRecord(parsed) || !Object.keys(parsed).every((key) => TURN_METADATA_KEYS.has(key))) {
     fail('unsupported_client_metadata')
+  }
+  if (carrierAuthorization !== undefined && parsed.session_id !== carrierAuthorization.sessionId) {
+    fail('carrier_authorization_mismatch')
   }
   const jsonKeyCount = (key: string): number => {
     const quoted = JSON.stringify(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -559,11 +718,13 @@ function convertMessageContent(
 interface PrivateStreamContext {
   usedCallIds: readonly string[]
   allowedExecMethods: readonly string[]
+  carrierAuthorization?: DocumentCarrierAuthorization
 }
 
 function convertResponsesRequest(
   input: unknown,
   limitOverrides: Partial<ProtocolLimits> = {},
+  carrierAuthorization?: DocumentCarrierAuthorization,
 ): { request: MessagesRequest; context: PrivateStreamContext; limits: ProtocolLimits } {
   const limits = resolveLimits(limitOverrides)
   inspectJsonGraph(input, limits)
@@ -588,7 +749,22 @@ function convertResponsesRequest(
   if (sourceItems.length === 0) fail('invalid_conversation')
   if (sourceItems.length > limits.maxRequestItems) fail('request_item_limit_exceeded')
 
-  const allowedExecMethods = extractAllowedExecMethods(request.client_metadata, limits)
+  if (
+    carrierAuthorization !== undefined &&
+    !carrierAuthorizations.has(carrierAuthorization as object)
+  )
+    fail('invalid_carrier_authorization')
+  const advertisedExecMethods = extractAllowedExecMethods(
+    request.client_metadata,
+    limits,
+    carrierAuthorization,
+  )
+  if (
+    carrierAuthorization !== undefined &&
+    (advertisedExecMethods.length !== 1 || advertisedExecMethods[0] !== carrierAuthorization.method)
+  )
+    fail('carrier_authorization_mismatch')
+  const allowedExecMethods = carrierAuthorization === undefined ? [] : [carrierAuthorization.method]
   const upstreamTools: NonNullable<MessagesRequest['tools']> = []
 
   const developerInstructions: string[] = []
@@ -738,6 +914,7 @@ function convertResponsesRequest(
     context: {
       usedCallIds: Object.freeze([...usedCallIds]),
       allowedExecMethods: Object.freeze([...allowedExecMethods]),
+      ...(carrierAuthorization === undefined ? {} : { carrierAuthorization }),
     },
     limits,
   }
@@ -746,10 +923,12 @@ function convertResponsesRequest(
 export function prepareResponsesTurn(
   input: unknown,
   limitOverrides: Partial<ProtocolLimits> = {},
+  carrierAuthorization?: DocumentCarrierAuthorization,
 ): PreparedResponsesTurn {
-  const prepared = convertResponsesRequest(input, limitOverrides)
+  const prepared = convertResponsesRequest(input, limitOverrides, carrierAuthorization)
   return Object.freeze({
     messagesRequest: prepared.request,
+    ...(carrierAuthorization === undefined ? {} : { carrierAuthorization }),
     messagesStreamToResponses: (chunks: AsyncIterable<string | Uint8Array>) =>
       convertMessagesStream(chunks, prepared.context, prepared.limits),
   })
@@ -993,9 +1172,9 @@ async function* convertMessagesStream(
       if (strict.active.kind === 'text' && data.delta.type === 'text_delta') {
         if (!hasOnlyKeys(data.delta, ['type', 'text'])) fail('invalid_messages_event')
         const deltaText = requireString(data.delta.text, 'invalid_messages_event')
-        strict.active.text += deltaText
-        if (utf8Length(strict.active.text) > limits.maxAccumulatedText)
+        if (utf8Length(strict.active.text) + utf8Length(deltaText) > limits.maxAccumulatedText)
           fail('output_text_limit_exceeded')
+        strict.active.text += deltaText
         return [
           sse('response.output_text.delta', {
             item_id: strict.active.itemId,
@@ -1008,10 +1187,13 @@ async function* convertMessagesStream(
       if (strict.active.kind === 'tool' && data.delta.type === 'input_json_delta') {
         if (!hasOnlyKeys(data.delta, ['type', 'partial_json'])) fail('invalid_messages_event')
         const argumentDelta = requireString(data.delta.partial_json, 'invalid_messages_event')
-        strict.active.arguments += argumentDelta
-        if (utf8Length(strict.active.arguments) > limits.maxToolArguments) {
+        if (
+          utf8Length(strict.active.arguments) + utf8Length(argumentDelta) >
+          limits.maxToolArguments
+        ) {
           fail('tool_arguments_limit_exceeded')
         }
+        strict.active.arguments += argumentDelta
         return []
       }
       fail('unsupported_content_delta')
@@ -1151,6 +1333,10 @@ async function* convertMessagesStream(
   }
 
   for await (const chunk of chunks) {
+    const incomingBytes = typeof chunk === 'string' ? utf8Length(chunk) : chunk.byteLength
+    if (byteLength(buffer) + incomingBytes > limits.maxSseBufferBytes) {
+      fail('sse_buffer_limit_exceeded')
+    }
     try {
       buffer += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true })
     } catch {

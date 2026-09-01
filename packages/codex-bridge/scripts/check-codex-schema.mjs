@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
-import { isAbsolute, join } from 'node:path'
+import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { isAbsolute, join, relative, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
@@ -49,6 +49,29 @@ function sha256(buffer) {
   return createHash('sha256').update(buffer).digest('hex')
 }
 
+async function treeDigest(root) {
+  const files = []
+  const walk = async (directory) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) await walk(path)
+      else if (entry.isFile()) files.push(path)
+      else throw new Error('codex_generated_tree_invalid')
+    }
+  }
+  await walk(root)
+  files.sort()
+  const digest = createHash('sha256')
+  for (const path of files) {
+    const normalized = relative(root, path).split(sep).join('/')
+    digest.update(normalized)
+    digest.update('\0')
+    digest.update(sha256(await readFile(path)))
+    digest.update('\n')
+  }
+  return { fileCount: files.length, sha256: digest.digest('hex') }
+}
+
 function notificationMethods(schema) {
   if (!Array.isArray(schema.oneOf)) throw new Error('codex_schema_invalid')
   const methods = schema.oneOf.map((entry) => entry?.properties?.method?.enum?.[0])
@@ -90,6 +113,16 @@ async function main() {
       'schema',
     )
     run(executable, ['app-server', 'generate-ts', '--out', typeOutput], temporaryRoot, env, 'types')
+    const schemaTree = await treeDigest(output)
+    const generatedTypeTree = await treeDigest(typeOutput)
+    if (
+      schemaTree.fileCount !== manifest.schemaTree.fileCount ||
+      schemaTree.sha256 !== manifest.schemaTree.sha256 ||
+      generatedTypeTree.fileCount !== manifest.generatedTypeTree.fileCount ||
+      generatedTypeTree.sha256 !== manifest.generatedTypeTree.sha256
+    ) {
+      throw new Error('codex_generated_tree_drift')
+    }
     for (const [relativePath, expected] of Object.entries(manifest.sha256)) {
       const actual = sha256(await readFile(join(output, relativePath)))
       if (actual !== expected) throw new Error('codex_schema_drift')

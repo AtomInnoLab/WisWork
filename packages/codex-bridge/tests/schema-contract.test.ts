@@ -11,6 +11,14 @@ import {
 describe('pinned Codex app-server fixture contract', () => {
   it('binds the checked-in protocol subset to the reviewed 0.147.0 schema digests', async () => {
     expect(CODEX_CLI_VERSION).toBe('codex-cli 0.147.0')
+    expect(manifest.schemaTree).toEqual({
+      fileCount: 285,
+      sha256: '0d2ddf85138073d0ea0a6828804349b65f18bf88f8b2ff7aef62c9262b39390f',
+    })
+    expect(manifest.generatedTypeTree).toEqual({
+      fileCount: 642,
+      sha256: '3d23b8e14f3afaab404da59bbf8f7541720eebf75e7549940bdbf9808f09d152',
+    })
     expect(CODEX_SCHEMA_SHA256).toEqual({
       protocol: manifest.sha256['codex_app_server_protocol.schemas.json'],
       protocolV2: manifest.sha256['codex_app_server_protocol.v2.schemas.json'],

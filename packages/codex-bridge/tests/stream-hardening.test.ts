@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { prepareResponsesTurn, ProtocolCompatibilityError } from '../src/index.js'
 import captured from './fixtures/codex-0147-request.json'
+import { carrierAuthorization } from './fixtures/carrier-authorization.js'
 
 const noToolTurn = () => prepareResponsesTurn({ model: 'gpt-5.6-sol', input: 'Hello' })
 
@@ -50,6 +51,7 @@ async function expectStreamCode(
     const turn = prepareResponsesTurn(
       custom ? structuredClone(captured) : { model: 'gpt-5.6-sol', input: 'Hello' },
       limits,
+      custom ? carrierAuthorization : undefined,
     )
     await collect(turn.messagesStreamToResponses(chunks(...values)))
   } catch (error) {
@@ -231,5 +233,12 @@ describe('bounded Anthropic SSE state machine', () => {
       'unsafe_custom_tool_input',
       true,
     )
+  })
+
+  it('rejects a giant single transport chunk before buffering it', async () => {
+    await expectStreamCode(['x'.repeat(1_000_000)], 'sse_buffer_limit_exceeded', false, {
+      maxSseFrameBytes: 64,
+      maxSseBufferBytes: 64,
+    })
   })
 })

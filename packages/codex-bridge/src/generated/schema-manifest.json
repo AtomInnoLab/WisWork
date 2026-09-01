@@ -2,6 +2,14 @@
   "source": "codex-cli 0.147.0 stable app-server schemas",
   "version": "codex-cli 0.147.0",
   "generator": "app-server generate-json-schema",
+  "schemaTree": {
+    "fileCount": 285,
+    "sha256": "0d2ddf85138073d0ea0a6828804349b65f18bf88f8b2ff7aef62c9262b39390f"
+  },
+  "generatedTypeTree": {
+    "fileCount": 642,
+    "sha256": "3d23b8e14f3afaab404da59bbf8f7541720eebf75e7549940bdbf9808f09d152"
+  },
   "bindingsSha256": "5c8822f3897a47496c7c682ea80eaec5765c3f8429cf2ad336bca9079b840c4c",
   "sha256": {
     "codex_app_server_protocol.schemas.json": "f72b2caa3cbfa4298de9e85c62dda6dfbaf2266ffeb916fed30615ca69ff8c74",

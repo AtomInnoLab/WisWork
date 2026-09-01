@@ -1,14 +1,34 @@
 import { describe, expect, it } from 'vitest'
 import {
   CODEX_0147_EXEC_GRAMMAR,
+  createDocumentCarrierAuthorization,
   prepareResponsesTurn,
   ProtocolCompatibilityError,
 } from '../src/index.js'
 
-const responsesToMessages = (input: unknown) => prepareResponsesTurn(input).messagesRequest
+const authorization = createDocumentCarrierAuthorization({
+  host: 'slides',
+  documentId: 'document-1',
+  sessionId: 'session-1',
+  generation: 1,
+  capabilityToken: 'A'.repeat(43),
+  method: 'mcp__wiswork__read_document',
+  toolName: 'read_document',
+  schemaDigest: 'a'.repeat(64),
+  callBudget: 1,
+})
+const responsesToMessages = (input: unknown) =>
+  prepareResponsesTurn(
+    input,
+    {},
+    typeof input === 'object' && input !== null && 'client_metadata' in input
+      ? authorization
+      : undefined,
+  ).messagesRequest
 
 const metadata = {
   'x-codex-turn-metadata': JSON.stringify({
+    session_id: 'session-1',
     thread_id: 'thread_1',
     code_mode_tool_names: {
       mcp__wiswork__read_document: {

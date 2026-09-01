@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { prepareResponsesTurn } from '../src/index.js'
 import captured from './fixtures/codex-0147-request.json'
+import { carrierAuthorization } from './fixtures/carrier-authorization.js'
 
 const noToolTurn = () => prepareResponsesTurn({ model: 'gpt-5.6-sol', input: 'Hello' })
-const customToolTurn = () => prepareResponsesTurn(structuredClone(captured))
+const customToolTurn = () =>
+  prepareResponsesTurn(structuredClone(captured), {}, carrierAuthorization)
 
 function convert(
   source: AsyncIterable<string | Uint8Array>,

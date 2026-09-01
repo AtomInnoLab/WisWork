@@ -3,6 +3,8 @@ import type { Readable, Writable } from 'node:stream'
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_LINE_BYTES = 1_000_000
 const DEFAULT_MAX_BUFFER_BYTES = 2_000_000
+const DEFAULT_MAX_PENDING_REQUESTS = 64
+const DEFAULT_MAX_QUEUED_WRITE_BYTES = 2_000_000
 
 export interface JsonRpcNotification<TMethod extends string = string, TParams = unknown> {
   readonly method: TMethod
@@ -20,6 +22,8 @@ export interface JsonRpcClientOptions {
   readonly requestTimeoutMs?: number
   readonly maxLineBytes?: number
   readonly maxBufferBytes?: number
+  readonly maxPendingRequests?: number
+  readonly maxQueuedWriteBytes?: number
   readonly diagnostics?: (diagnostic: JsonRpcDiagnostic) => void
 }
 
@@ -62,17 +66,75 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
   return actual.length === expected.length && actual.every((key, index) => key === expected[index])
 }
 
+function validateDataGraph(value: unknown): void {
+  const pending = [value]
+  const seen = new WeakSet<object>()
+  let nodes = 0
+  while (pending.length > 0) {
+    const current = pending.pop()
+    nodes += 1
+    if (nodes > 100_000) throw new JsonRpcError('rpc_invalid_request')
+    if (current === null || ['string', 'boolean'].includes(typeof current)) continue
+    if (typeof current === 'number' && Number.isFinite(current)) continue
+    if (typeof current !== 'object') throw new JsonRpcError('rpc_invalid_request')
+    if (seen.has(current)) throw new JsonRpcError('rpc_invalid_request')
+    seen.add(current)
+    try {
+      const array = Array.isArray(current)
+      const prototype = Object.getPrototypeOf(current)
+      if (
+        prototype !== (array ? Array.prototype : Object.prototype) &&
+        !(prototype === null && !array)
+      )
+        throw new Error()
+      if (Object.getOwnPropertySymbols(current).length !== 0) throw new Error()
+      const descriptors = Object.getOwnPropertyDescriptors(current)
+      if (array) {
+        const length = descriptors.length
+        if (
+          !length ||
+          !('value' in length) ||
+          !Number.isSafeInteger(length.value) ||
+          (length.value as number) < 0 ||
+          (length.value as number) > 100_000
+        )
+          throw new Error()
+        const allowed = new Set([
+          'length',
+          ...Array.from({ length: length.value as number }, (_, index) => String(index)),
+        ])
+        if (
+          Object.keys(descriptors).some((key) => !allowed.has(key)) ||
+          [...allowed].some((key) => key !== 'length' && !(key in descriptors))
+        )
+          throw new Error()
+      }
+      for (const [key, descriptor] of Object.entries(descriptors)) {
+        if (array && key === 'length') continue
+        if (!('value' in descriptor)) throw new Error()
+        pending.push(descriptor.value)
+      }
+    } catch (error) {
+      if (error instanceof JsonRpcError) throw error
+      throw new JsonRpcError('rpc_invalid_request')
+    }
+  }
+}
+
 export class JsonRpcClient<TNotification extends JsonRpcNotification = JsonRpcNotification> {
   readonly #input: Readable
   readonly #output: Writable
   readonly #requestTimeoutMs: number
   readonly #maxLineBytes: number
   readonly #maxBufferBytes: number
+  readonly #maxPendingRequests: number
+  readonly #maxQueuedWriteBytes: number
   readonly #diagnostics?: (diagnostic: JsonRpcDiagnostic) => void
   readonly #pending = new Map<number, PendingRequest>()
   readonly #subscribers = new Set<(notification: TNotification) => void>()
   #buffer = Buffer.alloc(0)
   #nextId = 1
+  #queuedWriteBytes = 0
   #closedError: JsonRpcError | undefined
   #closePromise: Promise<void> | undefined
 
@@ -95,6 +157,16 @@ export class JsonRpcClient<TNotification extends JsonRpcNotification = JsonRpcNo
       DEFAULT_MAX_BUFFER_BYTES,
       'invalid_rpc_buffer_limit',
     )
+    this.#maxPendingRequests = positiveInteger(
+      options.maxPendingRequests,
+      DEFAULT_MAX_PENDING_REQUESTS,
+      'invalid_rpc_pending_limit',
+    )
+    this.#maxQueuedWriteBytes = positiveInteger(
+      options.maxQueuedWriteBytes,
+      DEFAULT_MAX_QUEUED_WRITE_BYTES,
+      'invalid_rpc_write_queue_limit',
+    )
     this.#diagnostics = options.diagnostics
     this.#input.on('data', this.#onData)
     this.#input.once('end', this.#onInputEnd)
@@ -115,6 +187,9 @@ export class JsonRpcClient<TNotification extends JsonRpcNotification = JsonRpcNo
     if (options.signal?.aborted) {
       return Promise.reject(new JsonRpcError('rpc_request_aborted'))
     }
+    if (this.#pending.size >= this.#maxPendingRequests) {
+      return Promise.reject(new JsonRpcError('rpc_pending_limit_exceeded'))
+    }
     const timeoutMs = positiveInteger(
       options.timeoutMs,
       this.#requestTimeoutMs,
@@ -126,6 +201,9 @@ export class JsonRpcClient<TNotification extends JsonRpcNotification = JsonRpcNo
       encoded = this.#encode({ jsonrpc: '2.0', id, method, params })
     } catch (error) {
       return Promise.reject(error)
+    }
+    if (this.#queuedWriteBytes + Buffer.byteLength(encoded, 'utf8') > this.#maxQueuedWriteBytes) {
+      return Promise.reject(new JsonRpcError('rpc_write_queue_limit_exceeded'))
     }
     this.#nextId += 1
     return new Promise<TResult>((resolve, reject) => {
@@ -155,6 +233,9 @@ export class JsonRpcClient<TNotification extends JsonRpcNotification = JsonRpcNo
     if (this.#closedError) throw this.#closedError
     if (typeof method !== 'string' || method === '') throw new JsonRpcError('rpc_invalid_request')
     const encoded = this.#encode({ jsonrpc: '2.0', method, params })
+    if (this.#queuedWriteBytes + Buffer.byteLength(encoded, 'utf8') > this.#maxQueuedWriteBytes) {
+      throw new JsonRpcError('rpc_write_queue_limit_exceeded')
+    }
     if (!this.#writeEncoded(encoded)) {
       throw this.#closedError ?? new JsonRpcError('rpc_transport_closed')
     }
@@ -188,6 +269,7 @@ export class JsonRpcClient<TNotification extends JsonRpcNotification = JsonRpcNo
   #encode(message: Record<string, unknown>): string {
     let encoded: string
     try {
+      validateDataGraph(message)
       encoded = JSON.stringify(message)
     } catch {
       throw new JsonRpcError('rpc_invalid_request')
@@ -201,7 +283,11 @@ export class JsonRpcClient<TNotification extends JsonRpcNotification = JsonRpcNo
   #writeEncoded(encoded: string): boolean {
     if (this.#closedError) return false
     try {
-      this.#output.write(encoded)
+      const bytes = Buffer.byteLength(encoded, 'utf8')
+      this.#queuedWriteBytes += bytes
+      this.#output.write(encoded, () => {
+        this.#queuedWriteBytes = Math.max(0, this.#queuedWriteBytes - bytes)
+      })
       return true
     } catch {
       this.#terminate(new JsonRpcError('rpc_transport_closed'), true)
@@ -212,6 +298,15 @@ export class JsonRpcClient<TNotification extends JsonRpcNotification = JsonRpcNo
   readonly #onData = (chunk: Buffer | string): void => {
     if (this.#closedError) return
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'utf8')
+    if (this.#buffer.byteLength + bytes.byteLength > this.#maxBufferBytes) {
+      this.#protocolFailure(
+        this.#buffer.indexOf(0x0a) < 0 &&
+          this.#buffer.byteLength + bytes.byteLength > this.#maxLineBytes
+          ? 'rpc_line_limit_exceeded'
+          : 'rpc_buffer_limit_exceeded',
+      )
+      return
+    }
     this.#buffer = Buffer.concat([this.#buffer, bytes])
     const newline = this.#buffer.indexOf(0x0a)
     if (newline < 0 && this.#buffer.byteLength > this.#maxLineBytes) {

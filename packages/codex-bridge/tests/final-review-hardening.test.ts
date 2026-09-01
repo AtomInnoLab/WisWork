@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import * as bridge from '../src/index.js'
 import captured from './fixtures/codex-0147-request.json'
+import { carrierAuthorization } from './fixtures/carrier-authorization.js'
 
 const clone = (): Record<string, any> => structuredClone(captured)
+const prepareResponsesTurn = (input: unknown, limits: Record<string, number> = {}) =>
+  (bridge as any).prepareResponsesTurn(input, limits, carrierAuthorization)
 
 async function* chunks(...values: string[]): AsyncGenerator<string> {
   yield* values
@@ -22,30 +25,32 @@ describe('final pinned bridge contract', () => {
   it.each(['exec_command', 'apply_patch'])('rejects top-level function tool %s', (name) => {
     const body = clone()
     body.tools = [{ type: 'function', name, parameters: {} }]
-    expect(() => (bridge as any).prepareResponsesTurn(body)).toThrowError(
-      'unsupported_top_level_tools',
-    )
+    expect(() => prepareResponsesTurn(body)).toThrowError('unsupported_top_level_tools')
   })
 
   it('exposes only a frozen bound-turn API', () => {
     expect('responsesToMessages' in bridge).toBe(false)
     expect('responsesToMessagesWithContext' in bridge).toBe(false)
     expect('messagesSseToResponses' in bridge).toBe(false)
-    const turn = (bridge as any).prepareResponsesTurn(clone())
+    const turn = prepareResponsesTurn(clone())
     expect(Object.isFrozen(turn)).toBe(true)
-    expect(Object.keys(turn).sort()).toEqual(['messagesRequest', 'messagesStreamToResponses'])
+    expect(Object.keys(turn).sort()).toEqual([
+      'carrierAuthorization',
+      'messagesRequest',
+      'messagesStreamToResponses',
+    ])
     expect(turn.messagesStreamToResponses).toHaveLength(1)
   })
 
   it('binds request limits to the stream converter', async () => {
-    const turn = (bridge as any).prepareResponsesTurn(clone(), { maxSseFrames: 2 })
+    const turn = prepareResponsesTurn(clone(), { maxSseFrames: 2 })
     await expect(
       consume(turn.messagesStreamToResponses(chunks(start, delta, stop))),
     ).rejects.toThrow('sse_frame_count_limit_exceeded')
   })
 
   it('accepts the faithful MCP turn metadata shape', () => {
-    const turn = (bridge as any).prepareResponsesTurn(clone())
+    const turn = prepareResponsesTurn(clone())
     expect(turn.messagesRequest.tools).toHaveLength(1)
     expect(turn.messagesRequest.tools[0].name).toBe('exec')
   })
@@ -55,9 +60,7 @@ describe('final pinned bridge contract', () => {
     const packed = JSON.parse(body.client_metadata['x-codex-turn-metadata'])
     packed.workspaces['/workspace'].associated_remote_urls.extra = 7
     body.client_metadata['x-codex-turn-metadata'] = JSON.stringify(packed)
-    expect(() => (bridge as any).prepareResponsesTurn(body)).toThrowError(
-      'unsupported_client_metadata',
-    )
+    expect(() => prepareResponsesTurn(body)).toThrowError('unsupported_client_metadata')
   })
 
   it('fails a deeply nested request with a fixed compatibility error, not RangeError', () => {
@@ -68,25 +71,23 @@ describe('final pinned bridge contract', () => {
       cursor.deep = child
       cursor = child
     }
-    expect(() => (bridge as any).prepareResponsesTurn(body)).toThrowError(
-      'request_nesting_limit_exceeded',
-    )
+    expect(() => prepareResponsesTurn(body)).toThrowError('request_nesting_limit_exceeded')
   })
 
   it('enforces aggregate request bytes and nodes', () => {
-    expect(() =>
-      (bridge as any).prepareResponsesTurn(clone(), { maxRequestBytes: 32 }),
-    ).toThrowError('request_bytes_limit_exceeded')
-    expect(() =>
-      (bridge as any).prepareResponsesTurn(clone(), { maxRequestNodes: 3 }),
-    ).toThrowError('request_nodes_limit_exceeded')
+    expect(() => prepareResponsesTurn(clone(), { maxRequestBytes: 32 })).toThrowError(
+      'request_bytes_limit_exceeded',
+    )
+    expect(() => prepareResponsesTurn(clone(), { maxRequestNodes: 3 })).toThrowError(
+      'request_nodes_limit_exceeded',
+    )
   })
 
   it.each([
     '// @exec: {"yield_time_ms":1000}\ntext(await tools.mcp__wiswork__wiswork_read_document({"id":"1"}))',
     '// @exec: {"yield_time_ms":1000,"max_output_tokens":100}\nawait tools.mcp__wiswork__wiswork_read_document({})',
   ])('accepts one bounded exec pragma', async (code) => {
-    const turn = (bridge as any).prepareResponsesTurn(clone())
+    const turn = prepareResponsesTurn(clone())
     const toolStart =
       'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"exec","input":{}}}\n\n'
     const toolDelta = `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n`
@@ -101,7 +102,7 @@ describe('final pinned bridge contract', () => {
   it('accepts a grammar-valid pragma with leading horizontal whitespace', async () => {
     const code =
       ' \t// @exec: {"yield_time_ms":1000}\nawait tools.mcp__wiswork__wiswork_read_document({})'
-    const turn = (bridge as any).prepareResponsesTurn(clone())
+    const turn = prepareResponsesTurn(clone())
     const toolStart =
       'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"exec","input":{}}}\n\n'
     const toolDelta = `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n`
@@ -117,7 +118,7 @@ describe('final pinned bridge contract', () => {
     const standardStart =
       'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"openai/gpt-5.6-sol","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}\n\n'
     const ping = 'event: ping\ndata: {"type":"ping"}\n\n'
-    const turn = (bridge as any).prepareResponsesTurn(clone())
+    const turn = prepareResponsesTurn(clone())
     await expect(
       consume(turn.messagesStreamToResponses(chunks(ping, standardStart, ping, delta, ping, stop))),
     ).resolves.toBeUndefined()
@@ -129,7 +130,7 @@ describe('final pinned bridge contract', () => {
       `event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index, content_block: { type: 'tool_use', id, name: 'exec', input: {} } })}\n\n` +
       `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n` +
       `event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index })}\n\n`
-    const turn = (bridge as any).prepareResponsesTurn(clone())
+    const turn = prepareResponsesTurn(clone())
     await expect(
       consume(turn.messagesStreamToResponses(chunks(start, call(0, 'c1'), call(1, 'c2')))),
     ).rejects.toThrow('tool_call_limit_exceeded')
@@ -142,9 +143,7 @@ describe('final pinned bridge contract', () => {
       { type: 'custom_tool_call', call_id: 'c1', name: 'exec', input: code },
       { type: 'custom_tool_call', call_id: 'c2', name: 'exec', input: code },
     )
-    expect(() => (bridge as any).prepareResponsesTurn(body)).toThrowError(
-      'tool_call_limit_exceeded',
-    )
+    expect(() => prepareResponsesTurn(body)).toThrowError('tool_call_limit_exceeded')
   })
 
   it.each([
@@ -157,7 +156,7 @@ describe('final pinned bridge contract', () => {
     const body = clone()
     body.input.push({ type: 'custom_tool_call', call_id: 'c', name: 'exec', input: code })
     try {
-      ;(bridge as any).prepareResponsesTurn(body)
+      prepareResponsesTurn(body)
       throw new Error('expected failure')
     } catch (error) {
       expect(error).toBeInstanceOf(bridge.ProtocolCompatibilityError)
@@ -174,7 +173,7 @@ describe('final pinned bridge contract', () => {
       input: 'await tools.mcp__wiswork__wiswork_read_document({})',
       extra: 'secret',
     })
-    expect(() => (bridge as any).prepareResponsesTurn(call)).toThrowError('unsupported_input_item')
+    expect(() => prepareResponsesTurn(call)).toThrowError('unsupported_input_item')
 
     const result = clone()
     result.input.push(
@@ -186,9 +185,7 @@ describe('final pinned bridge contract', () => {
       },
       { type: 'custom_tool_call_output', call_id: 'c', output: 'ok', extra: 'secret' },
     )
-    expect(() => (bridge as any).prepareResponsesTurn(result)).toThrowError(
-      'unsupported_input_item',
-    )
+    expect(() => prepareResponsesTurn(result)).toThrowError('unsupported_input_item')
   })
 
   it.each([
@@ -221,7 +218,7 @@ describe('final pinned bridge contract', () => {
       start + delta + 'event: message_stop\ndata: {"type":"message_stop","extra":1}\n\n',
     ],
   ])('rejects exact-shape SSE violation: %s', async (_label, frame) => {
-    const turn = (bridge as any).prepareResponsesTurn(clone())
+    const turn = prepareResponsesTurn(clone())
     await expect(consume(turn.messagesStreamToResponses(chunks(frame)))).rejects.toThrow(
       'invalid_messages_event',
     )

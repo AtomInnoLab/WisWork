@@ -1,4 +1,4 @@
-import { PassThrough } from 'node:stream'
+import { PassThrough, Writable } from 'node:stream'
 import { describe, expect, it, vi } from 'vitest'
 import { JsonRpcClient, JsonRpcError } from '../src/json-rpc.js'
 
@@ -163,6 +163,14 @@ describe('JSONL JSON-RPC client', () => {
     })
     expect(cyclic.writes).toHaveLength(0)
     await cyclic.client.close()
+
+    const accessor = createTransport()
+    const accessorParams = Object.defineProperty({}, 'secret', { get: () => 'private' })
+    await expect(accessor.client.request('test', accessorParams)).rejects.toMatchObject({
+      code: 'rpc_invalid_request',
+    })
+    expect(accessor.writes).toHaveLength(0)
+    await accessor.client.close()
   })
 
   it('rejects every pending request on input crash and close is idempotent', async () => {
@@ -175,6 +183,43 @@ describe('JSONL JSON-RPC client', () => {
     await expect(second).rejects.toMatchObject({ code: 'rpc_transport_closed' })
     await expect(client.close()).resolves.toBeUndefined()
     await expect(client.close()).resolves.toBeUndefined()
+  })
+
+  it('bounds pending concurrency and queued backpressure', async () => {
+    const pending = createTransport({ maxPendingRequests: 1 })
+    const first = pending.client.request('first', {})
+    await expect(pending.client.request('second', {})).rejects.toMatchObject({
+      code: 'rpc_pending_limit_exceeded',
+    })
+    pending.fromServer.write('{"jsonrpc":"2.0","id":1,"result":{}}\n')
+    await first
+    await pending.client.close()
+
+    const fromServer = new PassThrough()
+    const blocked = new Writable({
+      write(_chunk, _encoding, _callback) {
+        // Intentionally retain the callback to simulate a blocked child stdin.
+      },
+    })
+    const client = new JsonRpcClient({
+      input: fromServer,
+      output: blocked,
+      maxQueuedWriteBytes: 80,
+    })
+    const queued = client.request('first', {})
+    await expect(client.request('second', {})).rejects.toMatchObject({
+      code: 'rpc_write_queue_limit_exceeded',
+    })
+    fromServer.destroy()
+    await expect(queued).rejects.toMatchObject({ code: 'rpc_transport_closed' })
+    await client.close()
+  })
+
+  it('rejects one giant inbound chunk against the budget', async () => {
+    const fixture = createTransport({ maxLineBytes: 64, maxBufferBytes: 64 })
+    const pending = fixture.client.request('test', {})
+    fixture.fromServer.write(Buffer.alloc(1_000_000, 0x78))
+    await expect(pending).rejects.toMatchObject({ code: 'rpc_line_limit_exceeded' })
   })
 
   it('contains late stream errors after a protocol-driven close', async () => {

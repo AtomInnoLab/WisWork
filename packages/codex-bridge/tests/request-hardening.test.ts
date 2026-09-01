@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import captured from './fixtures/codex-0147-request.json'
 import { prepareResponsesTurn, ProtocolCompatibilityError } from '../src/index.js'
+import { carrierAuthorization } from './fixtures/carrier-authorization.js'
 
 const cloneCaptured = (): Record<string, unknown> =>
   structuredClone(captured) as Record<string, unknown>
@@ -12,8 +13,32 @@ function expectCode(request: unknown, code: string): void {
 }
 
 describe('strict Responses request conversion', () => {
+  it.each([
+    Object.defineProperty({}, 'model', { get: () => 'gpt-5.6-sol' }),
+    Object.assign({ model: 'gpt-5.6-sol', input: 'hello' }, { [Symbol('secret')]: true }),
+    { model: 'gpt-5.6-sol', input: Object.defineProperty([], '0', { get: () => 'secret' }) },
+    new Proxy(
+      { model: 'gpt-5.6-sol', input: 'hello' },
+      {
+        ownKeys: () => {
+          throw new Error('secret proxy')
+        },
+      },
+    ),
+  ])('rejects accessor, symbol, exotic array, and hostile proxy request graphs', (value) => {
+    expect(() => prepareResponsesTurn(value)).toThrowError(
+      expect.objectContaining<Partial<ProtocolCompatibilityError>>({ message: 'invalid_request' }),
+    )
+  })
+
+  it('strictly parses limit overrides without invoking accessors', () => {
+    const limits = Object.defineProperty({}, 'maxRequestBytes', { get: () => 1 })
+    expect(() => prepareResponsesTurn({ model: 'gpt-5.6-sol', input: 'hello' }, limits)).toThrow(
+      'invalid_protocol_limits',
+    )
+  })
   it('accepts the captured Codex 0.147 envelope and returns stream context', () => {
-    const converted = prepareResponsesTurn(cloneCaptured())
+    const converted = prepareResponsesTurn(cloneCaptured(), {}, carrierAuthorization)
     expect(converted.messagesRequest).toMatchObject({
       model: 'openai/gpt-5.6-sol',
       system: 'System',
@@ -149,7 +174,7 @@ describe('strict Responses request conversion', () => {
     const request = cloneCaptured()
     mutate(request)
     try {
-      prepareResponsesTurn(request)
+      prepareResponsesTurn(request, {}, carrierAuthorization)
       throw new Error('expected compatibility failure')
     } catch (error) {
       expect(error).toBeInstanceOf(ProtocolCompatibilityError)

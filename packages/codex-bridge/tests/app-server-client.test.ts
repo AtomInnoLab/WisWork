@@ -32,12 +32,26 @@ async function initialize(fixture: ReturnType<typeof createClient>): Promise<voi
   fixture.fromServer.write(
     '{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex-cli/0.147.0","codexHome":"/isolated/home","platformFamily":"unix","platformOs":"linux"}}\n',
   )
-  await pending
+  const initialized = await pending
+  expect(initialized).not.toHaveProperty('codexHome')
   expect(fixture.writes[1]).toEqual({
     jsonrpc: '2.0',
     method: 'initialized',
     params: {},
   })
+}
+
+const threadStartResult = {
+  thread: { id: 'thread-1' },
+  model: 'gpt-5.6-sol',
+  modelProvider: 'wiswork',
+  serviceTier: null,
+  cwd: '/isolated/empty',
+  instructionSources: [],
+  approvalPolicy: 'never',
+  approvalsReviewer: 'auto_review',
+  sandbox: { type: 'readOnly' },
+  reasoningEffort: 'medium',
 }
 
 describe('Codex app-server client', () => {
@@ -81,6 +95,14 @@ describe('Codex app-server client', () => {
     )
     await expect(pending).rejects.toMatchObject({ code: 'app_server_protocol_error' })
   })
+  it('rejects unknown response fields without retaining them', async () => {
+    const fixture = createClient()
+    const pending = fixture.client.initialize()
+    fixture.fromServer.write(
+      '{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex-cli/0.147.0","codexHome":"/isolated/home","platformFamily":"unix","platformOs":"linux","secret":"private"}}\n',
+    )
+    await expect(pending).rejects.toMatchObject({ code: 'app_server_protocol_error' })
+  })
   it('initializes exactly once before any lifecycle method', async () => {
     const fixture = createClient()
     await expect(fixture.client.startThread()).rejects.toMatchObject({
@@ -114,7 +136,7 @@ describe('Codex app-server client', () => {
       },
     })
     fixture.fromServer.write(
-      '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread-1"},"model":"gpt-5.6-sol"}}\n',
+      `${JSON.stringify({ jsonrpc: '2.0', id: 2, result: threadStartResult })}\n`,
     )
     await expect(pending).resolves.toMatchObject({ thread: { id: 'thread-1' } })
     await fixture.client.shutdown()
@@ -196,15 +218,18 @@ describe('Codex app-server client', () => {
     'item/fileChange/outputDelta',
     'process/outputDelta',
     'turn/plan/updated',
-  ])('fails closed on disabled capability notification %s', async (method) => {
+  ])('strictly ignores generated disabled capability notification %s', async (method) => {
     const fixture = createClient()
     await initialize(fixture)
     fixture.fromServer.write(
       `${JSON.stringify({ jsonrpc: '2.0', method, params: { private: 'secret' } })}\n`,
     )
-    await expect(fixture.client.startThread()).rejects.toMatchObject({
-      code: 'app_server_protocol_error',
-    })
+    const pending = fixture.client.startThread()
+    fixture.fromServer.write(
+      `${JSON.stringify({ jsonrpc: '2.0', id: 2, result: threadStartResult })}\n`,
+    )
+    await expect(pending).resolves.toMatchObject({ thread: { id: 'thread-1' } })
+    await fixture.client.shutdown()
   })
 
   it('shutdown is idempotent and prevents new requests', async () => {
