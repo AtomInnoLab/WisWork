@@ -54,6 +54,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify Codex component release policy
+        run: npm run test:codex-release
+
       - name: Generate notices
         run: npm run notices
 
@@ -86,6 +89,10 @@ jobs:
           WISWORK_UNSIGNED_MAC_BUILD: '1'
           WISWORK_TECTONIC_SOURCE: ${{ github.workspace }}/apps/latex/native/tectonic-ci
         run: npx electron-builder --config electron-builder.cjs --mac dmg zip --arm64 --publish never
+
+      - name: Verify package excludes optional Codex components
+        working-directory: apps/shell
+        run: node ../../tools/optional-runtime-policy.mjs --mode post-package --artifact-dir release
 
       - name: Verify packaged sidecar and checksums
         working-directory: apps/shell

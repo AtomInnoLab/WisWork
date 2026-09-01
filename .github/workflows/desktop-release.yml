@@ -116,6 +116,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify Codex component release policy
+        run: npm run test:codex-release
+
+      - name: Verify pinned macOS Codex app-server component
+        if: startsWith(matrix.id, 'macos-')
+        run: npx tsx tools/install-enhanced-component.ts --cache "$RUNNER_TEMP/wiswork-codex-component"
+
+      - name: Verify pinned Windows Codex app-server component
+        if: matrix.id == 'windows-x64'
+        shell: pwsh
+        run: npx tsx tools/install-enhanced-component.ts --cache (Join-Path $env:RUNNER_TEMP 'wiswork-codex-component')
+
       - name: Generate notices
         run: npm run notices
 
@@ -202,6 +214,11 @@ jobs:
           WISWORK_UPDATE_PROVIDER: github
         run: npx electron-builder --config electron-builder.cjs ${{ matrix.electron_args }} --publish never
 
+      - name: Verify macOS package excludes optional Codex components
+        if: startsWith(matrix.id, 'macos-')
+        working-directory: apps/shell
+        run: node ../../tools/optional-runtime-policy.mjs --mode post-package --artifact-dir release
+
       - name: Verify signed macOS artifacts
         if: startsWith(matrix.id, 'macos-')
         working-directory: apps/shell
@@ -235,6 +252,12 @@ jobs:
           WISWORK_TECTONIC_SOURCE: ${{ github.workspace }}/apps/latex/native/tectonic-ci.exe
           WISWORK_UPDATE_PROVIDER: github
         run: npx electron-builder --config electron-builder.cjs ${{ matrix.electron_args }} --publish never
+
+      - name: Verify Windows package excludes optional Codex components
+        if: matrix.id == 'windows-x64'
+        working-directory: apps/shell
+        shell: pwsh
+        run: node ../../tools/optional-runtime-policy.mjs --mode post-package --artifact-dir release
 
       - name: Verify Windows artifacts
         if: matrix.id == 'windows-x64'

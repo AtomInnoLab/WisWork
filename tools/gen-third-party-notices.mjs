@@ -261,6 +261,26 @@ function tectonicMetadata() {
   return { version, spdx, sourceUrl, licenseText }
 }
 
+function codexComponentMetadata() {
+  const manifest = JSON.parse(readFileSync(join(ROOT, 'tools/codex/manifest.json'), 'utf8'))
+  const component = manifest?.component
+  if (
+    component?.version !== '0.147.0' ||
+    component?.license?.spdx !== 'Apache-2.0' ||
+    component?.assets?.length !== 3
+  ) {
+    throw new Error('Enhanced mode component license metadata is invalid')
+  }
+  return {
+    version: component.version,
+    sourceUrl: component.license.sourceUrl,
+    noticeText: readFileSync(join(ROOT, 'tools/codex/NOTICE'), 'utf8').trim(),
+    apacheText: readFileSync(join(ROOT, 'LICENSE'), 'utf8').trim(),
+    v8Text: readFileSync(join(ROOT, 'tools/codex/LICENSE-V8'), 'utf8').trim(),
+    rustyV8Text: readFileSync(join(ROOT, 'tools/codex/LICENSE-RUSTY-V8'), 'utf8').trim(),
+  }
+}
+
 const seed = importedNames()
 const { resolved, missing } = closure(seed)
 resolved.sort(([a], [b]) => a.localeCompare(b))
@@ -313,6 +333,15 @@ out += hr('3. Native executables')
 out += sub(`Tectonic ${tectonic.version} — ${tectonic.spdx}`)
 out += `Pinned upstream license source: ${tectonic.sourceUrl}\n\n${tectonic.licenseText}\n`
 
+const codexComponent = codexComponentMetadata()
+out += hr('4. Optional Enhanced mode component — legal attribution')
+out += sub(`OpenAI Codex app-server ${codexComponent.version} — Apache-2.0`)
+out += `Downloaded only after explicit user action; not included in the base installer.\n`
+out += `Pinned upstream license source: ${codexComponent.sourceUrl}\n\n`
+out += `NOTICE:\n${codexComponent.noticeText}\n\n${codexComponent.apacheText}\n`
+out += sub('V8 — BSD-3-Clause') + codexComponent.v8Text + '\n'
+out += sub('rusty_v8 — MIT') + codexComponent.rustyV8Text + '\n'
+
 /** Bundled fonts (for docs rendering; all metric-compatible replacements for Microsoft fonts) */
 const FONTS = [
   [
@@ -337,7 +366,7 @@ const FONTS = [
   ],
 ]
 
-out += hr('4. Bundled fonts')
+out += hr('5. Bundled fonts')
 for (const [name, spdx, copyright] of FONTS) out += sub(`${name} — ${spdx}`) + copyright + '\n'
 out += sub('SIL Open Font License 1.1 — full text')
 out +=

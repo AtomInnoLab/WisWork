@@ -11,6 +11,7 @@ export * from './types.js'
 export * from './security.js'
 export * from './json-rpc.js'
 export * from './app-server-client.js'
+export * from './component-manager.js'
 export * from './process-manager.js'
 export * from './generated/index.js'
 
