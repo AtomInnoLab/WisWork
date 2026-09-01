@@ -137,8 +137,7 @@ export class ShellCodexRuntime {
       runtime_instance: this.#runtimeInstance,
       component_version: '0.147.0',
       host,
-      // Task 12 activates this independent gate only after its parser/executor is installed.
-      raw_office: false,
+      raw_office: this.#options.policy.rawOfficeEnabled,
       expires_at: now + 15 * 60_000,
       policy_generation: this.#epoch,
       session_generation: this.#officeGeneration,

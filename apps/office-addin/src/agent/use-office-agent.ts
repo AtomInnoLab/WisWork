@@ -101,6 +101,12 @@ const confirmationErrors: Readonly<Record<string, SafeSessionError>> = Object.fr
     message: 'The change may be partially applied. Inspect the document before trying again.',
     retryable: false,
   },
+  office_applied_unverified: {
+    code: 'office_applied_unverified',
+    message:
+      'The change may have been applied, but verification was unavailable. Inspect the document before continuing.',
+    retryable: false,
+  },
 })
 
 const runErrors: Readonly<Record<string, SafeSessionError>> = Object.freeze({
@@ -346,6 +352,14 @@ export function createOfficeAgentSession(dependencies: {
         output: JSON.stringify({ proposalId, status: 'applied' }),
         mutated: true,
         summary: 'Applied approved change',
+      }
+    }
+    if (decision.status === 'applied_unverified') {
+      return {
+        output: JSON.stringify({ proposalId, status: 'applied_unverified' }),
+        mutated: true,
+        summary: 'Applied; verification unavailable',
+        stopToolBatch: true,
       }
     }
     if (decision.status === 'failed') {

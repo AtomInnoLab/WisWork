@@ -111,6 +111,7 @@ const CATALOG = Object.freeze({
     screenshot_document: ['read', 'bounded-render-facts'],
     write_document: ['mutate', 'transaction-proposal'],
     execute_office_js: ['mutate', 'raw-office-proposal'],
+    propose_raw_office_edit: ['mutate', 'raw-office-proposal'],
   }),
   'office-excel': Object.freeze({
     get_cell_ranges: ['read', 'semantic-read'],
@@ -126,6 +127,7 @@ const CATALOG = Object.freeze({
     resize_range: ['mutate', 'transaction-proposal'],
     modify_object: ['mutate', 'transaction-proposal'],
     eval_officejs: ['mutate', 'raw-office-proposal'],
+    propose_raw_office_edit: ['mutate', 'raw-office-proposal'],
   }),
   'office-powerpoint': Object.freeze({
     inspect_slide_masters: ['read', 'semantic-read'],
@@ -140,6 +142,7 @@ const CATALOG = Object.freeze({
     edit_slide_master_xml: ['mutate', 'transaction-proposal'],
     duplicate_slide: ['mutate', 'transaction-proposal'],
     execute_office_js: ['mutate', 'raw-office-proposal'],
+    propose_raw_office_edit: ['mutate', 'raw-office-proposal'],
   }),
 }) as unknown as Readonly<
   Record<EnhancedHost, Readonly<Record<string, readonly [ToolMutability, RequiredCapability]>>>

@@ -50,6 +50,7 @@ const MUTATION_TOOLS = new Set([
   'edit_slide_master',
   'edit_slide_master_xml',
   'duplicate_slide',
+  'propose_raw_office_edit',
 ])
 
 interface PolicyAuthority {
@@ -113,7 +114,8 @@ function parseRequest(
       : MUTATION_TOOLS.has(name)
         ? 'mutate'
         : undefined
-    const raw = name === 'execute_office_js' || name === 'eval_officejs'
+    const raw =
+      name === 'execute_office_js' || name === 'eval_officejs' || name === 'propose_raw_office_edit'
     if (!mutability || (raw && !rawOffice)) continue
     tools.push({
       name,

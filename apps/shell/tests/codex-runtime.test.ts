@@ -166,6 +166,19 @@ describe('Shell Codex runtime lifecycle', () => {
     ).toThrow('enhanced_document_unavailable')
   })
 
+  it('sets the signed raw Office flag only from the independent trusted policy', async () => {
+    const hosts = Object.fromEntries(ENHANCED_HOSTS.map((host) => [host, true])) as Record<
+      (typeof ENHANCED_HOSTS)[number],
+      boolean
+    >
+    const f = fixture('enhanced', { globalEnabled: true, rawOfficeEnabled: true, hosts })
+    await f.runtime.initialize()
+    expect(f.runtime.createOfficeSessionStatement('office-word')).toMatchObject({
+      host: 'office-word',
+      raw_office: true,
+    })
+  })
+
   it('rejects late initialization and closes a stale engine after shutdown', async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => (release = resolve))

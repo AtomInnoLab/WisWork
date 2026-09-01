@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { parseOfficeEnhancedSessionStatement, selectOfficeAgentRuntime } from '../src/index'
+import {
+  parseOfficeEnhancedSessionStatement,
+  rawOfficeCapabilities,
+  selectOfficeAgentRuntime,
+} from '../src/index'
 
 const statement = {
   version: 1,
@@ -15,6 +19,15 @@ const statement = {
 } as const
 
 describe('Office Enhanced session statement', () => {
+  it('derives host-specific raw sub-capabilities without advertising Excel OOXML', () => {
+    expect(rawOfficeCapabilities({ ...statement, raw_office: true })).toEqual({
+      rawJs: true,
+      rawOoxml: true,
+    })
+    expect(rawOfficeCapabilities({ ...statement, host: 'office-excel', raw_office: true })).toEqual(
+      { rawJs: true, rawOoxml: false },
+    )
+  })
   it('strictly parses a bounded non-callable statement', () => {
     expect(parseOfficeEnhancedSessionStatement(statement)).toEqual(statement)
     expect(JSON.stringify(statement)).not.toMatch(/token|secret|path|process|credential/i)

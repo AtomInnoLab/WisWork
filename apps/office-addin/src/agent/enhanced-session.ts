@@ -12,6 +12,17 @@ export interface OfficeEnhancedStatement {
   readonly session_generation: number
 }
 
+export function rawOfficeCapabilities(statement: OfficeEnhancedStatement): Readonly<{
+  rawJs: boolean
+  rawOoxml: boolean
+}> {
+  return Object.freeze({
+    rawJs: statement.raw_office,
+    // Excel has no reviewed package mutation transaction in Office.js.
+    rawOoxml: statement.raw_office && statement.host !== 'office-excel',
+  })
+}
+
 const exact = (value: Record<string, unknown>, keys: readonly string[]) =>
   Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key))
 

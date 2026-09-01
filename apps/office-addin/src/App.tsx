@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Markdown } from '@wiswork/ui'
-import { normalizeLang, translatePresentationVerification } from '@wiswork/i18n'
+import {
+  normalizeLang,
+  translatePresentationVerification,
+  translateRawOfficeConfirmation,
+} from '@wiswork/i18n'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
 import {
   officeCapabilityFlags,
@@ -35,6 +39,7 @@ import {
   type OfficeRelayStatus,
 } from './relay/session.js'
 import type { PresentationVerificationStringKey } from '@wiswork/i18n'
+import { rawOfficeCapabilities } from './agent/enhanced-session.js'
 
 export const officePresentationText = (
   locale: string | null | undefined,
@@ -939,6 +944,7 @@ export function ConfiguredApp(
   const [busy, setBusy] = useState(true)
   const [pairingForgetError, setPairingForgetError] = useState(false)
   const [pairingForgetBusy, setPairingForgetBusy] = useState(false)
+  const rawDocumentId = useRef(`document_${crypto.randomUUID().replaceAll('-', '')}`)
 
   const forgetPairing = async () => {
     if (!('forget' in bridge)) {
@@ -1042,6 +1048,41 @@ export function ConfiguredApp(
       workspace.runtime.clearSession()
     }
   }, [bridgeState.status, workspace])
+
+  useEffect(() => {
+    const enhanced = bridgeState.enhanced
+    if (!workspace || host === 'unknown') return
+    if (bridgeState.status !== 'connected' || !enhanced?.raw_office) {
+      workspace.runtime.disableElevatedOffice()
+      return
+    }
+    workspace.runtime.enableElevatedOffice(
+      () => {
+        const snapshot = bridge.snapshot()
+        const current = snapshot.enhanced
+        const raw = current ? rawOfficeCapabilities(current) : { rawJs: false, rawOoxml: false }
+        const valid =
+          snapshot.status === 'connected' &&
+          current?.raw_office === true &&
+          current.host === `office-${host}` &&
+          current.expires_at > Date.now()
+        return {
+          activeMode: valid ? ('enhanced' as const) : ('standard' as const),
+          signedIn: valid,
+          paired: valid,
+          hostEnabled: valid,
+          rawOfficeEnabled: valid,
+          rawOfficeJsEnabled: valid && raw.rawJs,
+          rawOfficeOoxmlEnabled: valid && raw.rawOoxml,
+          documentId: rawDocumentId.current,
+          sessionId: current?.runtime_instance ?? 'revoked_session_0000',
+          generation: current?.session_generation ?? -1,
+          revision: `revision_${String(current?.session_generation ?? 0).padStart(8, '0')}`,
+        }
+      },
+      translateRawOfficeConfirmation(normalizeLang(globalThis.Office?.context?.displayLanguage)),
+    )
+  }, [bridge, bridgeState.enhanced, bridgeState.status, host, workspace])
 
   if (busy) return <StatusScreen title="Starting WisWork Agent" detail={status} busy />
   if (!hostSupported) {

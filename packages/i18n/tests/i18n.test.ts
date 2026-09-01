@@ -8,6 +8,7 @@ import {
   translateServiceError,
   macShortcutsToWin,
   normalizeLang,
+  RAW_OFFICE_CONFIRMATION,
   presentationVerificationStrings,
   translatePresentationVerification,
 } from '../src/index'
@@ -92,6 +93,15 @@ describe('normalizeLang', () => {
     expect(normalizeLang('')).toBe('en')
     expect(normalizeLang(undefined)).toBe('en')
     expect(normalizeLang(null)).toBe('en')
+  })
+})
+
+describe('raw Office confirmation localization', () => {
+  it('has non-empty confirmation copy for every supported locale', () => {
+    expect(Object.keys(RAW_OFFICE_CONFIRMATION).sort()).toEqual([...LANGS].sort())
+    expect(Object.values(RAW_OFFICE_CONFIRMATION).every((value) => value.trim().length > 20)).toBe(
+      true,
+    )
   })
 })
 

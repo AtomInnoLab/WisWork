@@ -37,6 +37,7 @@ export interface StructuredProposalRequest extends Omit<StructuredProposal, 'id'
 
 export type ProposalDecision =
   | { status: 'confirmed' }
+  | { status: 'applied_unverified'; historyId?: string }
   | { status: 'rejected' | 'cancelled' }
   | { status: 'failed'; error: string }
 
@@ -102,6 +103,7 @@ const PROPOSAL_ERROR_CODES = new Set([
   'office_recovery_failed',
   'office_concurrent_change',
   'office_state_uncertain',
+  'office_applied_unverified',
 ])
 
 function stableProposalError(error: unknown): string {
@@ -283,8 +285,12 @@ export function createStructuredProposalController(
             durationMs: Math.max(0, Date.now() - phaseStartedAt),
           }),
         )
-        settle(proposal.decision, { status: 'failed', error: code })
-        throw error
+        if (code === 'office_applied_unverified') {
+          settle(proposal.decision, { status: 'applied_unverified' })
+        } else {
+          settle(proposal.decision, { status: 'failed', error: code })
+          throw error
+        }
       } finally {
         if (confirming === controller) confirming = undefined
       }

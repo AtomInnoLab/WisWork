@@ -100,4 +100,38 @@ describe('Office Codex proxy', () => {
       /* drain */
     }
   })
+
+  it('exposes only the distinct raw proposal tool when both signed statement and trusted policy allow it', async () => {
+    const runtime = {
+      async runOfficeTurn(input: any) {
+        expect(
+          input.toolSession.listTools(input.toolSession.credentials).map((tool: any) => tool.name),
+        ).toEqual(['propose_raw_office_edit'])
+        input.onEvent({ type: 'terminal', status: 'completed' })
+      },
+    }
+    const proxy = createOfficeCodexProxy({
+      runtime: runtime as any,
+      rollout: { ...rollout, rawOfficeEnabled: true },
+      policyAuthority: createShellEnhancedPolicyAuthority(() => 0),
+    })
+    const response = await proxy({
+      body: {
+        system: 'rules',
+        messages: [],
+        tools: [
+          { name: 'propose_raw_office_edit', description: 'raw', input_schema: { type: 'object' } },
+        ],
+      },
+      signal: new AbortController().signal,
+      host: 'Word',
+      sessionId: 'session_12345678',
+      requestId: 'request_12345678',
+      statement: { ...statement, raw_office: true },
+      executeTool: vi.fn(),
+    })
+    for await (const _chunk of response.body as AsyncIterable<Uint8Array>) {
+      /* drain */
+    }
+  })
 })

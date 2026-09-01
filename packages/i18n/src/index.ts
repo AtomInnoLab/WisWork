@@ -61,6 +61,33 @@ export function normalizeLang(raw: string | null | undefined): Lang {
   return 'en'
 }
 
+/** Elevated raw Office confirmation heading. The exact program remains visible in the proposal. */
+export const RAW_OFFICE_CONFIRMATION: Readonly<Record<Lang, string>> = Object.freeze({
+  zh: '高权限 Office 编辑：请逐项核对后确认',
+  en: 'Elevated Office edit: review every change before confirming',
+  ja: '高権限の Office 編集：すべての変更を確認してください',
+  ko: '고급 Office 편집: 확인 전에 모든 변경 사항을 검토하세요',
+  fr: 'Modification Office avancée : vérifiez chaque changement avant de confirmer',
+  de: 'Erweiterte Office-Bearbeitung: Prüfen Sie jede Änderung vor der Bestätigung',
+  es: 'Edición avanzada de Office: revisa cada cambio antes de confirmar',
+  th: 'การแก้ไข Office ขั้นสูง: ตรวจสอบทุกการเปลี่ยนแปลงก่อนยืนยัน',
+  id: 'Pengeditan Office tingkat lanjut: tinjau setiap perubahan sebelum mengonfirmasi',
+  ru: 'Расширенное редактирование Office: проверьте каждое изменение перед подтверждением',
+  ar: 'تحرير Office بصلاحيات مرتفعة: راجع كل تغيير قبل التأكيد',
+  pt: 'Edição avançada do Office: revise cada alteração antes de confirmar',
+  it: 'Modifica Office avanzata: controlla ogni modifica prima di confermare',
+  pl: 'Zaawansowana edycja Office: sprawdź każdą zmianę przed potwierdzeniem',
+  nl: 'Office-bewerking met verhoogde rechten: controleer elke wijziging vóór bevestiging',
+  ms: 'Suntingan Office lanjutan: semak setiap perubahan sebelum mengesahkan',
+  he: 'עריכת Office בהרשאה מוגברת: יש לבדוק כל שינוי לפני האישור',
+  hi: 'उन्नत Office संपादन: पुष्टि से पहले हर बदलाव की समीक्षा करें',
+  'zh-TW': '高權限 Office 編輯：請逐項檢查後確認',
+})
+
+export function translateRawOfficeConfirmation(lang: Lang): string {
+  return RAW_OFFICE_CONFIRMATION[lang]
+}
+
 const HTML_LANGS: Record<Lang, string> = {
   zh: 'zh-CN',
   en: 'en-US',

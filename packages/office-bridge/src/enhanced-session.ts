@@ -12,6 +12,16 @@ export interface OfficeEnhancedSessionStatement {
   readonly session_generation: number
 }
 
+export function rawOfficeCapabilities(statement: OfficeEnhancedSessionStatement): Readonly<{
+  rawJs: boolean
+  rawOoxml: boolean
+}> {
+  return Object.freeze({
+    rawJs: statement.raw_office,
+    rawOoxml: statement.raw_office && statement.host !== 'office-excel',
+  })
+}
+
 export interface OfficeRuntimeSelectionContext {
   readonly host: OfficeEnhancedHost
   readonly now: number
