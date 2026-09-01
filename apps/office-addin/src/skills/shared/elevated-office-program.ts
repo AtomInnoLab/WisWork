@@ -602,6 +602,7 @@ export function createElevatedOfficeSkill(options: {
       if (call.name !== 'propose_raw_office_edit') return safeFailure('unknown_tool')
       if (options.automaticCorrection) return safeFailure('raw_office_confirmation_required')
       if (signal?.aborted) return safeFailure('cancelled')
+      if (options.proposals.isQuarantined()) return safeFailure('office_state_uncertain')
       const initial = options.adapter.captureAuthority()
       if (!permitted(initial)) return safeFailure('raw_office_denied')
       let program: ElevatedOfficeProgram
@@ -678,10 +679,36 @@ export function createElevatedOfficeSkill(options: {
             outcome = await waitForSettlement(ELEVATED_OFFICE_LIMITS.reconciliationMs)
           }
           if (outcome.kind === 'timeout') {
+            const lease = options.proposals.quarantine({
+              sessionId: initial.sessionId,
+              generation: initial.generation,
+            })
             executionPending = true
-            // `settled` owns both fulfillment and rejection so the bounded background operation
-            // cannot produce an unhandled rejection after this turn is closed.
-            void settled
+            // Keep all document writes fail-closed while the irrevocable Office callback is still
+            // live. This reconciler owns both settlement branches and can only release its exact
+            // session/generation lease after authoritative proof or rollback.
+            void (async () => {
+              try {
+                await settled
+                const current = options.adapter.captureAuthority()
+                if (
+                  current.documentId !== initial.documentId ||
+                  current.sessionId !== initial.sessionId ||
+                  current.generation !== initial.generation
+                )
+                  return
+                const readback = await options.adapter.readback(program, snapshot)
+                if (readback.verified) {
+                  options.proposals.resolveQuarantine(lease, { stable: true })
+                  return
+                }
+                await options.adapter.rollback(snapshot)
+                const restored = await options.adapter.validateSnapshot(program, snapshot)
+                options.proposals.resolveQuarantine(lease, { stable: restored })
+              } catch {
+                options.proposals.resolveQuarantine(lease, { stable: false })
+              }
+            })()
             return
           }
           if (outcome.kind === 'error') {

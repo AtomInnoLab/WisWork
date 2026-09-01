@@ -98,7 +98,8 @@ const confirmationErrors: Readonly<Record<string, SafeSessionError>> = Object.fr
   },
   office_state_uncertain: {
     code: 'office_state_uncertain',
-    message: 'The change may be partially applied. Inspect the document before trying again.',
+    message:
+      'The change may be partially applied. Wait for reconciliation; if editing stays blocked, reconnect before trying again.',
     retryable: false,
   },
   office_applied_unverified: {

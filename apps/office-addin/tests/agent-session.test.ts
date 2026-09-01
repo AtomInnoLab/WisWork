@@ -764,6 +764,9 @@ describe('Office agent session', () => {
       reject: vi.fn(),
       newTurn: vi.fn(),
       logout: vi.fn(),
+      isQuarantined: vi.fn(() => false),
+      quarantine: vi.fn(),
+      resolveQuarantine: vi.fn(),
     }
     const session = createOfficeAgentSession({
       transport: harness.transport,
@@ -861,7 +864,7 @@ describe('Office agent session', () => {
     ],
     [
       'office_state_uncertain',
-      'The change may be partially applied. Inspect the document before trying again.',
+      'The change may be partially applied. Wait for reconciliation; if editing stays blocked, reconnect before trying again.',
     ],
     [
       'office_recovery_failed:word_body_shape',

@@ -410,8 +410,64 @@ describe('elevated raw Office program', () => {
       await vi.advanceTimersByTimeAsync(20_000)
       await expect(confirmation).resolves.toBeUndefined()
       await expect(settled).resolves.toMatchObject({ status: 'applied_unverified' })
+      const blocked = await skill.executeTool({
+        id: 'call_BBBBBBBBBBBBBBBB',
+        name: 'propose_raw_office_edit',
+        input: {
+          program: {
+            version: 1,
+            kind: 'office_js_ast',
+            operations: [{ call: 'body.insertText', args: { location: 'end', text: 'y' } }],
+          },
+        },
+      })
+      expect(blocked).toMatchObject({ isError: true, output: 'office_state_uncertain' })
+      expect(adapter.snapshot).toHaveBeenCalledTimes(1)
+      expect(adapter.execute).toHaveBeenCalledTimes(1)
       release()
       await vi.runAllTimersAsync()
+      await vi.waitFor(() => expect(proposals.isQuarantined()).toBe(false))
+      expect(adapter.rollback).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the document quarantined when late reconciliation cannot prove stability', async () => {
+    vi.useFakeTimers()
+    try {
+      const { skill, proposals, adapter } = fixture()
+      let release!: () => void
+      vi.mocked(adapter.execute).mockImplementation(
+        (_program, _snapshot, _signal, lifecycle) =>
+          new Promise<void>((resolve) => {
+            lifecycle?.markStarted()
+            release = resolve
+          }),
+      )
+      vi.mocked(adapter.readback).mockResolvedValue({ verified: false })
+      vi.mocked(adapter.rollback).mockRejectedValue(new Error('office_state_uncertain'))
+      await skill.executeTool({
+        id: 'call_AAAAAAAAAAAAAAAA',
+        name: 'propose_raw_office_edit',
+        input: {
+          program: {
+            version: 1,
+            kind: 'office_js_ast',
+            operations: [{ call: 'body.insertText', args: { location: 'end', text: 'x' } }],
+          },
+        },
+      })
+      const id = proposals.pending()!.id
+      const confirmation = proposals.confirm(id)
+      await vi.advanceTimersByTimeAsync(20_000)
+      await confirmation
+      release()
+      await vi.runAllTimersAsync()
+
+      await vi.waitFor(() => expect(adapter.rollback).toHaveBeenCalledTimes(1))
+      expect(proposals.isQuarantined()).toBe(true)
+      expect(adapter.validateSnapshot).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
     }

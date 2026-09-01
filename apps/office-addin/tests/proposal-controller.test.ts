@@ -20,6 +20,41 @@ function document(selection = 'before') {
 }
 
 describe('proposal controller', () => {
+  it('quarantines writes until the matching generation proves stable', () => {
+    const controller = createStructuredProposalController()
+    const request = {
+      operation: 'edit',
+      title: 'Edit document',
+      preview: {},
+      impact: { host: 'word', targets: ['document'], count: 1 },
+      fingerprint: 'v1',
+      validate: async () => true,
+      execute: async () => undefined,
+    }
+    const lease = controller.quarantine({ sessionId: 'session-a', generation: 1 })
+
+    expect(controller.isQuarantined()).toBe(true)
+    expect(() => controller.propose(request)).toThrow('office_state_uncertain')
+    controller.newTurn()
+    expect(() => controller.propose(request)).toThrow('office_state_uncertain')
+    controller.resolveQuarantine(lease, { stable: true })
+    expect(controller.isQuarantined()).toBe(false)
+    expect(controller.propose(request)).toBeDefined()
+  })
+
+  it('does not let an old reconciliation clear a replacement session quarantine', () => {
+    const controller = createStructuredProposalController()
+    const oldLease = controller.quarantine({ sessionId: 'session-a', generation: 1 })
+    controller.logout()
+    expect(controller.isQuarantined()).toBe(false)
+
+    const currentLease = controller.quarantine({ sessionId: 'session-b', generation: 2 })
+    controller.resolveQuarantine(oldLease, { stable: true })
+    expect(controller.isQuarantined()).toBe(true)
+    controller.resolveQuarantine(currentLease, { stable: false })
+    expect(controller.isQuarantined()).toBe(true)
+  })
+
   it('publishes proposal lifecycle changes and exposes the eventual user decision', async () => {
     const controller = createStructuredProposalController()
     const snapshots: Array<string | undefined> = []
