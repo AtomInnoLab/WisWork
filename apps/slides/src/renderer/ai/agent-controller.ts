@@ -129,6 +129,7 @@ export const createAgentController = <TSnapshot>(
   let activation = 0
   let generation = 0
   let closeEnhanced: (() => void) | null = null
+  let enhancedActive = false
   const documentId = `${runtime?.host ?? 'standard'}:${crypto.randomUUID()}`
   const createSelected = async (token: number) => {
     if (!runtime) return
@@ -141,6 +142,7 @@ export const createAgentController = <TSnapshot>(
     const selected = createSlidesEnhancedHarness(options, runtime.api, documentId, generation)
     inner = selected.harness
     closeEnhanced = selected.close
+    enhancedActive = true
   }
   const controller: LifecycleAgentController<TSnapshot> = {
     get snapshot() {
@@ -159,10 +161,11 @@ export const createAgentController = <TSnapshot>(
       inner?.stop()
     },
     reset() {
-      if (runtime && (inner as unknown as { mode?: string } | null)?.mode === 'enhanced') {
+      if (runtime && enhancedActive) {
         const previous = generation
         closeEnhanced?.()
         closeEnhanced = null
+        enhancedActive = false
         inner = null
         generation += 1
         const token = ++activation
@@ -197,6 +200,7 @@ export const createAgentController = <TSnapshot>(
       if (closeEnhanced) closeEnhanced()
       else inner?.dispose()
       closeEnhanced = null
+      enhancedActive = false
       inner = null
       activation++
     },

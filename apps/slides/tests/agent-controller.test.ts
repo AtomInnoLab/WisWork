@@ -36,6 +36,49 @@ const skill = {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('Slides interactive agent controller', () => {
+  it('replaces an Enhanced deck registration and rejects callbacks from the old generation', async () => {
+    let documentId: string | null = null
+    const toolListeners: Array<(request: any) => void> = []
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => undefined),
+      startTurn: vi.fn(async () => undefined),
+      cancelTurn: vi.fn(async () => undefined),
+      toolResult: vi.fn(async () => undefined),
+      onEvent: vi.fn(() => () => undefined),
+      onToolCall: vi.fn((listener) => {
+        toolListeners.push(listener)
+        return () => undefined
+      }),
+    }
+    const executeTool = vi.fn(async () => ({ output: 'ok', summary: 'edited', mutated: true }))
+    const controller = createAgentController(
+      { transport: manualTransport(), skill: { ...skill, executeTool } },
+      { host: 'slides', api },
+    )
+    controller.activate()
+    await flush()
+    expect(api.register).toHaveBeenCalledWith(expect.objectContaining({ generation: 0 }))
+    const oldListener = toolListeners[0]!
+    controller.reset()
+    await flush()
+    await flush()
+    expect(api.unregister).toHaveBeenCalledWith(expect.any(String), 0)
+    expect(api.register).toHaveBeenLastCalledWith(expect.objectContaining({ generation: 1 }))
+    oldListener({
+      documentId,
+      generation: 0,
+      call: { id: 'stale', name: 'execute_slide_script', input: {} },
+    })
+    await flush()
+    expect(executeTool).not.toHaveBeenCalled()
+    expect(api.toolResult).not.toHaveBeenCalled()
+    controller.dispose()
+  })
+
   it('keeps Enhanced slide mutations inside the renderer presentation lifecycle', async () => {
     let documentId: string | null = null
     let onToolCall: ((request: any) => void) | undefined
