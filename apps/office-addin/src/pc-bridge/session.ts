@@ -1,5 +1,9 @@
 import type { OfficeHost } from '../office-document.js'
 import { officeBridgeEndpoints } from '../../build-config.js'
+import {
+  parseOfficeEnhancedStatement,
+  type OfficeEnhancedStatement,
+} from '../agent/enhanced-session.js'
 
 export const PC_BRIDGE_ENDPOINTS = officeBridgeEndpoints(import.meta.env)
 const PAIRINGS_PATH = '/v1/office/pairings'
@@ -16,6 +20,7 @@ export type PcBridgeStatus =
 export interface PcBridgeSnapshot {
   status: PcBridgeStatus
   verificationCode?: string
+  enhanced?: OfficeEnhancedStatement
 }
 export interface PcBridgeSession {
   snapshot(): PcBridgeSnapshot
@@ -332,10 +337,24 @@ export function createPcBridgeSession(dependencies: Dependencies = {}): PcBridge
               finish(epoch, operation, 'offline')
               return
             }
+            let enhanced: OfficeEnhancedStatement | undefined
+            if (result.enhanced !== undefined) {
+              try {
+                enhanced = parseOfficeEnhancedStatement(result.enhanced)
+              } catch {
+                finish(epoch, operation, 'offline')
+                return
+              }
+              if (enhanced.host !== `office-${host}` || enhanced.expires_at <= now()) {
+                finish(epoch, operation, 'offline')
+                return
+              }
+            }
             capability = result.capability
             controller = undefined
             clearTimeout(timer)
-            publish('connected')
+            state = { status: 'connected', ...(enhanced ? { enhanced } : {}) }
+            listeners.forEach((listener) => listener())
             return
           }
           if (

@@ -9,6 +9,10 @@ import {
   type OfficeBindingStore,
   type OfficeStoredBinding,
 } from './binding-store.js'
+import {
+  parseOfficeEnhancedStatement,
+  type OfficeEnhancedStatement,
+} from '../agent/enhanced-session.js'
 
 export const OFFICE_RELAY_URL = 'wss://office.8-216-134-194.sslip.io/office-relay'
 const MESSAGES_PATH = '/v1/office/messages'
@@ -60,6 +64,7 @@ export interface OfficeRelaySnapshot {
   verificationCode?: string
   capabilities?: readonly string[]
   remembered?: false
+  enhanced?: OfficeEnhancedStatement
 }
 
 export interface OfficeRelaySession {
@@ -75,7 +80,20 @@ export interface OfficeRelaySession {
     signal?: AbortSignal,
   ): Promise<Response>
   sendDiagnostic(event: OfficeDiagnosticEvent): Promise<void>
+  setToolHandler?(handler: OfficeRelayToolHandler | undefined): void
 }
+
+export interface OfficeRelayToolCall {
+  readonly turnId: string
+  readonly callId: string
+  readonly generation: number
+  readonly toolName: string
+  readonly input: Record<string, unknown>
+  readonly signal: AbortSignal
+}
+export type OfficeRelayToolHandler = (
+  call: OfficeRelayToolCall,
+) => Promise<{ output: string; isError?: boolean }>
 
 export type OfficeRelayCapability =
   'agent.v1' | 'web-search.v1' | 'web-fetch.v1' | 'image-search.v1'
@@ -253,6 +271,10 @@ export function createOfficeRelaySession(
   let capability: string | undefined
   let negotiatedCapabilities: OfficeRelayCapability[] = []
   let request: ActiveRequest | undefined
+  let toolHandler: OfficeRelayToolHandler | undefined
+  let activeTool: { requestId: string; callId: string; controller: AbortController } | undefined
+  let enhancedStatement: OfficeEnhancedStatement | undefined
+  let runtimeGeneration = -1
   let generation = 0
   let settleConnect: (() => void) | undefined
   let pairingTimer: ReturnType<typeof setTimeout> | undefined
@@ -281,6 +303,10 @@ export function createOfficeRelaySession(
   const finishRequest = (error?: string) => {
     const active = request
     if (!active) return
+    if (activeTool?.requestId === active.id) {
+      activeTool.controller.abort()
+      activeTool = undefined
+    }
     rememberTerminalRequest(active.id)
     request = undefined
     clearTimeout(active.timer)
@@ -297,6 +323,10 @@ export function createOfficeRelaySession(
   const revoke = (status: OfficeRelayStatus = 'offline', close = true, settle = true) => {
     generation += 1
     finishRequest('relay_disconnected')
+    activeTool?.controller.abort()
+    activeTool = undefined
+    enhancedStatement = undefined
+    runtimeGeneration = -1
     pairingId = undefined
     sessionId = undefined
     capability = undefined
@@ -998,6 +1028,137 @@ export function createOfficeRelaySession(
       })
       return
     }
+    if (frame.type === 'relay.session_state') {
+      if (
+        state.status !== 'connected' ||
+        !sessionId ||
+        frameBytes > MAX_CONTROL_FRAME_BYTES ||
+        !exactKeys(frame, ['version', 'type', 'session_id', 'generation', 'enhanced']) ||
+        frame.session_id !== sessionId ||
+        !Number.isSafeInteger(frame.generation) ||
+        Number(frame.generation) <= runtimeGeneration
+      )
+        return protocolFailure()
+      let parsed: OfficeEnhancedStatement | undefined
+      if (frame.enhanced !== null) {
+        try {
+          parsed = parseOfficeEnhancedStatement(frame.enhanced)
+        } catch {
+          return protocolFailure()
+        }
+        if (
+          !host ||
+          parsed.host !== `office-${host}` ||
+          parsed.expires_at <= Date.now() ||
+          parsed.session_generation !== frame.generation
+        )
+          return protocolFailure()
+      } else if (frame.generation !== 0) return protocolFailure()
+      runtimeGeneration = Number(frame.generation)
+      enhancedStatement = parsed
+      publish({ ...state, ...(parsed ? { enhanced: parsed } : {}) })
+      return
+    }
+    if (frame.type === 'relay.tool_call') {
+      if (
+        state.status !== 'connected' ||
+        !sessionId ||
+        !capability ||
+        !request ||
+        activeTool ||
+        !enhancedStatement ||
+        !toolHandler ||
+        frameBytes > MAX_REQUEST_BYTES + MAX_CONTROL_FRAME_BYTES ||
+        !exactKeys(frame, [
+          'version',
+          'type',
+          'session_id',
+          'request_id',
+          'turn_id',
+          'call_id',
+          'generation',
+          'tool_name',
+          'input',
+        ]) ||
+        frame.session_id !== sessionId ||
+        frame.request_id !== request.id ||
+        !opaque(frame.turn_id) ||
+        !opaque(frame.call_id) ||
+        frame.generation !== enhancedStatement.session_generation ||
+        typeof frame.tool_name !== 'string' ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(frame.tool_name) ||
+        !frame.input ||
+        typeof frame.input !== 'object' ||
+        Array.isArray(frame.input)
+      )
+        return protocolFailure()
+      const controller = new AbortController()
+      activeTool = {
+        requestId: frame.request_id as string,
+        callId: frame.call_id as string,
+        controller,
+      }
+      void toolHandler({
+        turnId: frame.turn_id as string,
+        callId: frame.call_id as string,
+        generation: frame.generation as number,
+        toolName: frame.tool_name,
+        input: frame.input as Record<string, unknown>,
+        signal: controller.signal,
+      })
+        .then((result) => {
+          if (
+            !activeTool ||
+            activeTool.controller !== controller ||
+            controller.signal.aborted ||
+            !sessionId ||
+            !capability
+          )
+            return
+          if (
+            typeof result.output !== 'string' ||
+            encoder.encode(result.output).byteLength > MAX_RESPONSE_BYTES
+          )
+            throw new Error('tool_result_too_large')
+          send({
+            version: 2,
+            type: 'office.tool_result',
+            session_id: sessionId,
+            capability,
+            request_id: frame.request_id,
+            turn_id: frame.turn_id,
+            call_id: frame.call_id,
+            generation: frame.generation,
+            output: result.output,
+            is_error: result.isError === true,
+          })
+          activeTool = undefined
+        })
+        .catch(() => {
+          if (
+            !activeTool ||
+            activeTool.controller !== controller ||
+            controller.signal.aborted ||
+            !sessionId ||
+            !capability
+          )
+            return
+          send({
+            version: 2,
+            type: 'office.tool_result',
+            session_id: sessionId,
+            capability,
+            request_id: frame.request_id,
+            turn_id: frame.turn_id,
+            call_id: frame.call_id,
+            generation: frame.generation,
+            output: 'tool_execution_failed',
+            is_error: true,
+          })
+          activeTool = undefined
+        })
+      return
+    }
     if (
       frame.type === 'office.rejected' ||
       frame.type === 'office.expired' ||
@@ -1390,6 +1551,13 @@ export function createOfficeRelaySession(
         reject(new Error('diagnostic_unavailable'))
       }
       return result
+    },
+    setToolHandler(handler) {
+      toolHandler = handler
+      if (!handler) {
+        activeTool?.controller.abort()
+        activeTool = undefined
+      }
     },
   }
   return api

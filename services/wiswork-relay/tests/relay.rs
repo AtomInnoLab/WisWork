@@ -330,6 +330,35 @@ async fn approved_v2_session(
     (office, pc, office_ready, pc_ready)
 }
 
+#[tokio::test]
+async fn enhanced_state_and_tool_subframes_remain_bound_to_one_active_agent_request() {
+    let url = server().await;
+    let (mut office, mut pc, office_ready, pc_ready) = approved_v2_session(&url).await;
+    let sid = office_ready["session_id"].clone();
+    let office_cap = office_ready["capability"].clone();
+    let pc_cap = pc_ready["capability"].clone();
+    let enhanced = json!({"version":1,"runtime_mode":"enhanced","runtime_instance":"runtime_0123456789abcdef","component_version":"0.147.0","host":"office-word","raw_office":false,"expires_at":4_000_000_000_000u64,"policy_generation":2,"session_generation":7});
+    send(&mut pc, json!({"version":2,"type":"pc.session_state","session_id":sid,"capability":pc_cap,"generation":7,"enhanced":enhanced})).await;
+    let state = recv(&mut office).await;
+    assert_eq!(state["type"], "relay.session_state");
+    assert_eq!(state["enhanced"], enhanced);
+
+    send(&mut office, json!({"version":2,"type":"office.request","session_id":sid,"capability":office_cap,"request_id":"request_12345678","capability_name":"agent.v1","body":{"messages":[]}})).await;
+    assert_eq!(recv(&mut pc).await["type"], "relay.request");
+    send(&mut pc, json!({"version":2,"type":"pc.start","session_id":sid,"capability":pc_cap,"request_id":"request_12345678","status":200,"content_type":"text/event-stream"})).await;
+    assert_eq!(recv(&mut office).await["type"], "relay.start");
+    send(&mut pc, json!({"version":2,"type":"pc.tool_call","session_id":sid,"capability":pc_cap,"request_id":"request_12345678","turn_id":"turn_12345678","call_id":"call_12345678","generation":7,"tool_name":"read_document","input":{}})).await;
+    let call = recv(&mut office).await;
+    assert_eq!(call["type"], "relay.tool_call");
+    assert_eq!(call["call_id"], "call_12345678");
+    send(&mut office, json!({"version":2,"type":"office.tool_result","session_id":sid,"capability":office_cap,"request_id":"request_12345678","turn_id":"turn_12345678","call_id":"call_12345678","generation":7,"output":"{\"title\":\"Doc\"}","is_error":false})).await;
+    let result = recv(&mut pc).await;
+    assert_eq!(result["type"], "relay.tool_result");
+    assert_eq!(result["output"], "{\"title\":\"Doc\"}");
+    send(&mut pc, json!({"version":2,"type":"pc.done","session_id":sid,"capability":pc_cap,"request_id":"request_12345678"})).await;
+    assert_eq!(recv(&mut office).await["type"], "relay.done");
+}
+
 async fn begin_enrollment(url: &str, signing_key: &SigningKey) -> (TestSocket, TestSocket, Value) {
     let public_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().to_encoded_point(false));
     let mut office = socket(url, ORIGIN).await;

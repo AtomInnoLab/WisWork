@@ -77,6 +77,51 @@ function proposalsHarness() {
 }
 
 describe('Office agent session', () => {
+  it('routes paired Enhanced calls through the same host skill and revokes the handler on dispose', async () => {
+    let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
+    const setToolHandler = vi.fn((next) => {
+      handler = next
+    })
+    const executeTool = vi.fn(async () => ({ output: '{"title":"Doc"}', summary: 'read' }))
+    const session = createOfficeAgentSession({
+      transport: transportHarness().transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'read_document', description: 'read', inputSchema: { type: 'object' } }],
+        executeTool,
+      },
+      proposals: proposalsHarness().controller,
+      remoteTools: { setToolHandler },
+    })
+    expect(
+      await handler!({
+        turnId: 'turn_12345678',
+        callId: 'call_12345678',
+        generation: 1,
+        toolName: 'read_document',
+        input: {},
+        signal: new AbortController().signal,
+      }),
+    ).toEqual({ output: '{"title":"Doc"}' })
+    expect(executeTool).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'read_document' }),
+      expect.any(AbortSignal),
+    )
+    expect(
+      await handler!({
+        turnId: 'turn_12345678',
+        callId: 'call_unknown12',
+        generation: 1,
+        toolName: 'shell',
+        input: {},
+        signal: new AbortController().signal,
+      }),
+    ).toEqual({ output: 'unknown_tool', isError: true })
+    session.dispose()
+    expect(setToolHandler).toHaveBeenLastCalledWith(undefined)
+  })
+
   it('preserves bounded local diagnostics when Relay authentication is lost', () => {
     const diagnostics = {
       startTrace: vi.fn(() => 'trace'),

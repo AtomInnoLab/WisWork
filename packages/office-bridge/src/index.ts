@@ -1,8 +1,15 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import {
+  parseOfficeEnhancedSessionStatement,
+  type OfficeEnhancedSessionStatement,
+} from './enhanced-session.js'
+
+export * from './enhanced-session.js'
 
 export interface MessagesProxyRequest {
   body: unknown
   signal: AbortSignal
+  enhanced?: Readonly<OfficeEnhancedSessionStatement>
 }
 
 export interface MessagesProxyResponse {
@@ -41,11 +48,13 @@ interface Pairing {
   expiresAt: number
   status: 'pending' | 'approved' | 'rejected'
   verificationCode: string
+  enhanced?: Readonly<OfficeEnhancedSessionStatement>
 }
 
 interface Capability {
   hash: Buffer
   expiresAt: number
+  enhanced?: Readonly<OfficeEnhancedSessionStatement>
 }
 
 export interface PendingPairing {
@@ -58,7 +67,7 @@ export interface PendingPairing {
 export interface OfficeBridge {
   handle(request: Request): Promise<Response>
   listPending(): PendingPairing[]
-  approve(pairingId: string, hasValidSession: boolean): boolean
+  approve(pairingId: string, hasValidSession: boolean, enhanced?: unknown): boolean
   reject(pairingId: string): boolean
   revokeAll(): void
   setSessionAvailable(available: boolean): void
@@ -373,18 +382,28 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
       return jsonResponse(429, { error: 'capability_capacity' }, options.allowedOrigin)
     }
     const capability = opaqueValue()
-    capabilities.push({ hash: digest(capability), expiresAt: now() + capabilityTtlMs })
+    capabilities.push({
+      hash: digest(capability),
+      expiresAt: now() + capabilityTtlMs,
+      ...(entry.enhanced ? { enhanced: entry.enhanced } : {}),
+    })
     pairings.delete(id)
     return jsonResponse(
       200,
-      { status: 'approved', capability, expires_in: Math.ceil(capabilityTtlMs / 1000) },
+      {
+        status: 'approved',
+        capability,
+        expires_in: Math.ceil(capabilityTtlMs / 1000),
+        ...(entry.enhanced ? { enhanced: entry.enhanced } : {}),
+      },
       options.allowedOrigin,
     )
   }
 
   const proxyMessages = async (request: Request): Promise<Response> => {
     const secret = authorization(request, 'Bridge')
-    if (!secret || !findCapability(secret)) {
+    const grant = secret ? findCapability(secret) : undefined
+    if (!grant) {
       return jsonResponse(401, { error: 'invalid_capability' }, options.allowedOrigin)
     }
     if (request.headers.get('content-type')?.split(';', 1)[0] !== 'application/json') {
@@ -445,7 +464,11 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
       )
     }
     try {
-      const proxyPromise = options.proxy({ body, signal: controller.signal })
+      const proxyPromise = options.proxy({
+        body,
+        signal: controller.signal,
+        ...(grant.enhanced ? { enhanced: grant.enhanced } : {}),
+      })
       void proxyPromise.then(
         (lateResponse) => {
           if (finished && isAsyncIterable(lateResponse.body)) {
@@ -544,10 +567,25 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
           verificationCode: entry.verificationCode,
         }))
     },
-    approve(pairingId, hasValidSession) {
+    approve(pairingId, hasValidSession, enhanced) {
       const entry = pairings.get(pairingId)
       if (!hasValidSession || !entry || entry.status !== 'pending' || entry.expiresAt <= now()) {
         return false
+      }
+      if (enhanced !== undefined) {
+        let parsed: Readonly<OfficeEnhancedSessionStatement>
+        try {
+          parsed = parseOfficeEnhancedSessionStatement(enhanced)
+        } catch {
+          return false
+        }
+        const expectedHost = {
+          Word: 'office-word',
+          Excel: 'office-excel',
+          PowerPoint: 'office-powerpoint',
+        }[entry.hostLabel]
+        if (parsed.host !== expectedHost || parsed.expires_at <= now()) return false
+        entry.enhanced = parsed
       }
       entry.status = 'approved'
       return true

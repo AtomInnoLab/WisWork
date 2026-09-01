@@ -196,6 +196,20 @@ export function createOfficeAgentSession(dependencies: {
   proposals: ProposalController | StructuredProposalController
   diagnostics?: Pick<OfficeDiagnostics, 'startTrace' | 'setTool' | 'record' | 'clear'>
   presentationText?: (key: PresentationVerificationStringKey) => string
+  remoteTools?: {
+    setToolHandler?(
+      handler:
+        | ((call: {
+            turnId: string
+            callId: string
+            generation: number
+            toolName: string
+            input: Record<string, unknown>
+            signal: AbortSignal
+          }) => Promise<{ output: string; isError?: boolean }>)
+        | undefined,
+    ): void
+  }
 }): OfficeAgentSession {
   const { proposals } = dependencies
   const presentation = dependencies.skill.presentation as
@@ -388,6 +402,28 @@ export function createOfficeAgentSession(dependencies: {
       return suspendToolExecution(finalProposalExecution(proposal.id, outcome, call.name))
     },
   }
+  dependencies.remoteTools?.setToolHandler?.(async (call) => {
+    const definition = sessionSkill.tools.find((tool) => tool.name === call.toolName)
+    if (!definition) return { output: 'unknown_tool', isError: true }
+    try {
+      const outcome = await sessionSkill.executeTool(
+        {
+          id: call.callId,
+          invocationId: `${call.turnId}:${call.callId}`,
+          name: call.toolName,
+          input: call.input,
+        },
+        call.signal,
+      )
+      const settled =
+        'kind' in outcome && outcome.kind === 'tool-execution-suspension'
+          ? await outcome.result
+          : outcome
+      return { output: settled.output, ...(settled.isError ? { isError: true } : {}) }
+    } catch {
+      return { output: 'tool_execution_failed', isError: true }
+    }
+  })
   const clearConversation = () => {
     activeAssistantId = undefined
     state = {
@@ -737,6 +773,7 @@ export function createOfficeAgentSession(dependencies: {
     dispose() {
       if (disposed) return
       disposed = true
+      dependencies.remoteTools?.setToolHandler?.(undefined)
       sessionEpoch += 1
       unsubscribeProposals()
       harness.dispose()

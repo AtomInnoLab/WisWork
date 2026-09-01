@@ -1,4 +1,8 @@
-import type { MessagesProxy } from '@wiswork/office-bridge'
+import type {
+  MessagesProxy,
+  MessagesProxyResponse,
+  OfficeEnhancedSessionStatement,
+} from '@wiswork/office-bridge'
 import WebSocket from 'ws'
 import type { OfficePairingRequest, OfficeRelayStatus } from '../shared/home-api'
 import type { OfficeRelayBinding } from './office-relay-binding-store'
@@ -75,6 +79,18 @@ export interface OfficeRelayClient {
   revoke(reason?: string): void
 }
 
+export interface OfficeRelayToolCall {
+  readonly turnId: string
+  readonly callId: string
+  readonly generation: number
+  readonly toolName: string
+  readonly input: Record<string, unknown>
+}
+export interface OfficeRelayToolResult {
+  readonly output: string
+  readonly isError: boolean
+}
+
 export function connectAuthenticatedRelaySocket(url: string, accessToken: string): RelaySocket {
   return new WebSocket(url, { headers: { Authorization: `Bearer ${accessToken}` } }) as RelaySocket
 }
@@ -110,6 +126,18 @@ export function createOfficeRelayClient(options: {
   getValidAccountStatus(): Promise<{ loggedIn: boolean; userId?: string }>
   getAccessToken(): Promise<string | null>
   proxy: MessagesProxy
+  enhancedProxy?: (request: {
+    body: unknown
+    signal: AbortSignal
+    host: OfficePairingRequest['hostLabel']
+    sessionId: string
+    requestId: string
+    statement: Readonly<OfficeEnhancedSessionStatement>
+    executeTool(call: OfficeRelayToolCall): Promise<OfficeRelayToolResult>
+  }) => Promise<MessagesProxyResponse>
+  enhancedStatement?: (
+    host: OfficePairingRequest['hostLabel'],
+  ) => Readonly<OfficeEnhancedSessionStatement> | undefined
   retrievalProxy?: OfficeRetrievalProxy
   negotiateCapabilities?: boolean
   persistentPairing?: boolean | (() => boolean)
@@ -137,9 +165,21 @@ export function createOfficeRelayClient(options: {
   const offeredCapabilities = options.retrievalProxy ? [...V2_CAPABILITIES] : ['agent.v1']
   let pending: (OfficePairingRequest & { capabilities?: string[]; features?: string[] }) | null =
     null
-  let session: { sessionId: string; capability: string; capabilities: string[] } | null = null
+  let session: {
+    sessionId: string
+    capability: string
+    capabilities: string[]
+    host: OfficePairingRequest['hostLabel']
+    enhanced?: Readonly<OfficeEnhancedSessionStatement>
+  } | null = null
   let active: { requestId: string; controller: AbortController; remoteCancelled: boolean } | null =
     null
+  let pendingTool: {
+    requestId: string
+    call: OfficeRelayToolCall
+    resolve(value: OfficeRelayToolResult): void
+    reject(error: Error): void
+  } | null = null
   let claimedCode: string | null = null
   let claimedAccountId: string | null = null
   let negotiationPending = false
@@ -195,6 +235,8 @@ export function createOfficeRelayClient(options: {
     if (!active) return
     active.remoteCancelled ||= remoteCancelled
     active.controller.abort()
+    pendingTool?.reject(new Error('tool_cancelled'))
+    pendingTool = null
   }
   const clear = (reason: string, close: boolean) => {
     generation += 1
@@ -257,9 +299,51 @@ export function createOfficeRelayClient(options: {
         (capabilityName !== 'agent.v1' && !options.retrievalProxy)
       )
         return clear('protocol_violation', true)
+      const executeTool = (call: OfficeRelayToolCall): Promise<OfficeRelayToolResult> => {
+        if (!session || pendingTool || active?.requestId !== frame.request_id)
+          return Promise.reject(new Error('tool_unavailable'))
+        if (
+          !validId(call.turnId) ||
+          !validId(call.callId) ||
+          !Number.isSafeInteger(call.generation) ||
+          call.generation !== session.enhanced?.session_generation ||
+          !/^[A-Za-z0-9_-]{1,128}$/.test(call.toolName) ||
+          !jsonObject(call.input)
+        )
+          return Promise.reject(new Error('invalid_tool_call'))
+        return new Promise((resolve, reject) => {
+          pendingTool = { requestId: frame.request_id as string, call, resolve, reject }
+          send({
+            version: 2,
+            type: 'pc.tool_call',
+            session_id: session!.sessionId,
+            capability: session!.capability,
+            request_id: frame.request_id,
+            turn_id: call.turnId,
+            call_id: call.callId,
+            generation: call.generation,
+            tool_name: call.toolName,
+            input: call.input,
+          })
+        })
+      }
       const response =
         capabilityName === 'agent.v1'
-          ? await options.proxy({ body: frame.body, signal: controller.signal })
+          ? session.enhanced
+            ? options.enhancedProxy
+              ? await options.enhancedProxy({
+                  body: frame.body,
+                  signal: controller.signal,
+                  host: session.host,
+                  sessionId: session.sessionId,
+                  requestId: frame.request_id as string,
+                  statement: session.enhanced,
+                  executeTool,
+                })
+              : (() => {
+                  throw new Error('enhanced_proxy_unavailable')
+                })()
+            : await options.proxy({ body: frame.body, signal: controller.signal })
           : {
               status: 200,
               contentType: 'application/json',
@@ -590,12 +674,26 @@ export function createOfficeRelayClient(options: {
       const approvedPending = pending
       const approvedAccountId = claimedAccountId
       const finalizeApproval = () => {
+        const host = resumed ? resumeBinding!.host : approvedPending!.hostLabel
+        const enhanced = protocolVersion === 2 ? options.enhancedStatement?.(host) : undefined
         session = {
           sessionId: typed.session_id as string,
           capability: typed.capability as string,
           capabilities: resumed
             ? [...resumeBinding!.capabilities]
             : (approvedPending?.capabilities ?? ['agent.v1']),
+          host,
+          ...(enhanced ? { enhanced } : {}),
+        }
+        if (protocolVersion === 2) {
+          send({
+            version: 2,
+            type: 'pc.session_state',
+            session_id: session.sessionId,
+            capability: session.capability,
+            generation: enhanced?.session_generation ?? 0,
+            enhanced: enhanced ?? null,
+          })
         }
         acceptedApprovalSignature = frameSignature(typed)
         pending = null
@@ -645,6 +743,38 @@ export function createOfficeRelayClient(options: {
       if (!exact(frame, requestKeys) || !jsonObject(typed.body))
         return clear('protocol_violation', true)
       void runRequest(typed, owner)
+      return
+    }
+    if (typed.type === 'relay.tool_result') {
+      const tool = pendingTool
+      if (
+        !session ||
+        !active ||
+        !tool ||
+        !exact(frame, [
+          'version',
+          'type',
+          'session_id',
+          'request_id',
+          'turn_id',
+          'call_id',
+          'generation',
+          'output',
+          'is_error',
+        ]) ||
+        typed.session_id !== session.sessionId ||
+        typed.request_id !== active.requestId ||
+        typed.request_id !== tool.requestId ||
+        typed.turn_id !== tool.call.turnId ||
+        typed.call_id !== tool.call.callId ||
+        typed.generation !== tool.call.generation ||
+        typeof typed.output !== 'string' ||
+        Buffer.byteLength(typed.output) > MAX_RESPONSE_BYTES ||
+        typeof typed.is_error !== 'boolean'
+      )
+        return clear('protocol_violation', true)
+      pendingTool = null
+      tool.resolve({ output: typed.output, isError: typed.is_error })
       return
     }
     if (typed.type === 'relay.cancel') {

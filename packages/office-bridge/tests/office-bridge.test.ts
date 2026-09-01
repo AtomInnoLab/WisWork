@@ -119,6 +119,62 @@ describe('loopback and browser boundary', () => {
 })
 
 describe('pairing lifecycle', () => {
+  it('binds a non-callable Enhanced statement to the approved host and capability', async () => {
+    const proxy = vi.fn(async () => ({ status: 200, body: new Uint8Array() }))
+    const bridge = createOfficeBridge({ allowedOrigin: origin, proxy })
+    const pairing = await createPairing(bridge)
+    const enhanced = {
+      version: 1,
+      runtime_mode: 'enhanced',
+      runtime_instance: 'runtime_0123456789abcdef',
+      component_version: '0.147.0',
+      host: 'office-word',
+      raw_office: false,
+      expires_at: Date.now() + 60_000,
+      policy_generation: 8,
+      session_generation: 2,
+    } as const
+    expect(bridge.approve(pairing.pairing_id, true, enhanced)).toBe(true)
+    const approved = await bridge.handle(
+      request(`/v1/office/pairings/${pairing.pairing_id}`, {
+        headers: { origin, authorization: `Pairing ${pairing.polling_secret}` },
+      }),
+    )
+    const body = (await approved.json()) as Record<string, unknown>
+    expect(body.enhanced).toEqual(enhanced)
+
+    await bridge.handle(
+      request('/v1/office/messages', {
+        method: 'POST',
+        headers: {
+          origin,
+          authorization: `Bridge ${String(body.capability)}`,
+          'content-type': 'application/json',
+        },
+        body: '{}',
+      }),
+    )
+    expect(proxy).toHaveBeenCalledWith(expect.objectContaining({ enhanced }))
+  })
+
+  it('rejects a statement for a different Office host', async () => {
+    const bridge = createOfficeBridge({ allowedOrigin: origin, proxy: vi.fn() })
+    const pairing = await createPairing(bridge)
+    expect(
+      bridge.approve(pairing.pairing_id, true, {
+        version: 1,
+        runtime_mode: 'enhanced',
+        runtime_instance: 'runtime_0123456789abcdef',
+        component_version: '0.147.0',
+        host: 'office-excel',
+        raw_office: false,
+        expires_at: Date.now() + 60_000,
+        policy_generation: 8,
+        session_generation: 2,
+      }),
+    ).toBe(false)
+  })
+
   it('reports PC signed-out and issues a human-verifiable six-digit code', async () => {
     const signedOut = createOfficeBridge({
       allowedOrigin: origin,

@@ -167,6 +167,8 @@ import { registerLatexProtocolScheme } from './latex-protocol-scheme'
 import { ShellCodexRuntime } from './codex-runtime'
 import { registerCodexRuntimeIpc } from './codex-ipc'
 import { createProductionCodexBootstrap } from './codex-engine'
+import { createOfficeCodexProxy } from './office-codex-proxy'
+import { createShellEnhancedPolicyAuthority } from './enhanced-policy-authority'
 import { migrateLegacyUserData } from './user-data-migration'
 import { createAuthDeepLinkQueue } from './auth-deep-link-queue'
 import { createBeforeQuitBarrier } from './before-quit-barrier'
@@ -2661,6 +2663,14 @@ app.whenReady().then(async () => {
     documentIdForOwner: () => null,
   })
   void codexRuntime.initialize().catch(() => undefined)
+  const officePolicyAuthority = createShellEnhancedPolicyAuthority(
+    () => codexRuntime?.policyGeneration ?? -1,
+  )
+  const officeCodexProxy = createOfficeCodexProxy({
+    runtime: codexRuntime,
+    rollout: enhancedPolicy,
+    policyAuthority: officePolicyAuthority,
+  })
   enhancedModeComponentController = registerEnhancedModeComponentIpc({
     ipcMain,
     component: enhancedModeComponent,
@@ -2760,6 +2770,15 @@ app.whenReady().then(async () => {
           getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
           getAccessToken: () => requireAuthRuntime().client.getAccessToken(),
           proxy: officeMessagesProxy,
+          enhancedProxy: officeCodexProxy,
+          enhancedStatement: (host) => {
+            const enhancedHost = {
+              Word: 'office-word',
+              Excel: 'office-excel',
+              PowerPoint: 'office-powerpoint',
+            }[host] as 'office-word' | 'office-excel' | 'office-powerpoint'
+            return codexRuntime?.createOfficeSessionStatement(enhancedHost)
+          },
           retrievalProxy,
           negotiateCapabilities: true,
           persistentPairing: () => officeRelayPersistenceAvailable,

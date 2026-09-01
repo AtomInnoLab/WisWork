@@ -40,6 +40,26 @@ function fixture(
 }
 
 describe('Shell Codex runtime lifecycle', () => {
+  it('issues restart-bound host-scoped Office statements only while Enhanced is ready', async () => {
+    const f = fixture()
+    expect(f.runtime.createOfficeSessionStatement('office-word', 1_000)).toBeUndefined()
+    await f.runtime.initialize()
+    const first = f.runtime.createOfficeSessionStatement('office-word', 1_000)!
+    const second = f.runtime.createOfficeSessionStatement('office-word', 1_000)!
+    expect(first).toMatchObject({
+      runtime_mode: 'enhanced',
+      component_version: '0.147.0',
+      host: 'office-word',
+      raw_office: false,
+      expires_at: 901_000,
+      session_generation: 1,
+    })
+    expect(second.runtime_instance).toBe(first.runtime_instance)
+    expect(second.session_generation).toBe(2)
+    await f.runtime.logout()
+    expect(f.runtime.createOfficeSessionStatement('office-word', 1_000)).toBeUndefined()
+  })
+
   it('keeps Standard as an inert default and never starts Enhanced', async () => {
     const f = fixture('standard')
     await f.runtime.initialize()

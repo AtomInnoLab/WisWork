@@ -1,7 +1,9 @@
 import { isAbsolute } from 'node:path'
+import { randomBytes } from 'node:crypto'
 import type { AgentRuntimeMode, EnhancedHost, EnhancedRolloutPolicy } from '@wiswork/agent-runtime'
 import type { CodexRuntimePublicState } from '../shared/codex-api'
 import type { DocumentToolSession } from '@wiswork/codex-bridge'
+import type { OfficeEnhancedSessionStatement } from '@wiswork/office-bridge'
 
 const MAX_DOCUMENT_ID_BYTES = 256
 const MAX_TURN_TEXT_BYTES = 1_000_000
@@ -82,6 +84,8 @@ export class ShellCodexRuntime {
   #initialization: Promise<void> | undefined
   #closed = false
   #epoch = 0
+  readonly #runtimeInstance = `runtime_${randomBytes(18).toString('base64url')}`
+  #officeGeneration = 0
 
   constructor(options: ShellCodexRuntimeOptions) {
     this.#options = options
@@ -97,6 +101,37 @@ export class ShellCodexRuntime {
     return this.configuredAgentRuntime === 'enhanced' && this.#state === 'ready'
       ? 'enhanced'
       : 'standard'
+  }
+
+  get policyGeneration(): number {
+    return this.#epoch
+  }
+
+  createOfficeSessionStatement(
+    host: 'office-word' | 'office-excel' | 'office-powerpoint',
+    now = Date.now(),
+  ): Readonly<OfficeEnhancedSessionStatement> | undefined {
+    if (
+      this.#closed ||
+      this.#state !== 'ready' ||
+      this.configuredAgentRuntime !== 'enhanced' ||
+      !this.#options.policy.globalEnabled ||
+      !this.#options.policy.hosts[host]
+    )
+      return undefined
+    this.#officeGeneration += 1
+    return Object.freeze({
+      version: 1,
+      runtime_mode: 'enhanced',
+      runtime_instance: this.#runtimeInstance,
+      component_version: '0.147.0',
+      host,
+      // Task 12 activates this independent gate only after its parser/executor is installed.
+      raw_office: false,
+      expires_at: now + 15 * 60_000,
+      policy_generation: this.#epoch,
+      session_generation: this.#officeGeneration,
+    })
   }
 
   initialize(): Promise<void> {
@@ -145,6 +180,7 @@ export class ShellCodexRuntime {
     readonly host: EnhancedHost
     readonly generation: number
     readonly toolSession?: DocumentToolSession
+    readonly onEvent?: (event: CodexRuntimeEngineEvent) => void
   }): { close: () => Promise<void> } {
     if (
       this.#state !== 'ready' ||
@@ -170,6 +206,7 @@ export class ShellCodexRuntime {
           host: input.host,
           generation: input.generation,
           session: input.toolSession,
+          onEvent: input.onEvent,
         })
       : undefined
     this.#documents.set(input.documentId, { ...input, busy: false, unregisterEngine })
@@ -179,6 +216,30 @@ export class ShellCodexRuntime {
   ownsDocument(owner: CodexOwner, documentId: string): boolean {
     const document = this.#documents.get(documentId)
     return document?.owner === owner && !owner.isDestroyed()
+  }
+
+  async runOfficeTurn(input: {
+    readonly documentId: string
+    readonly host: 'office-word' | 'office-excel' | 'office-powerpoint'
+    readonly generation: number
+    readonly text: string
+    readonly toolSession: DocumentToolSession
+    readonly signal: AbortSignal
+    readonly onEvent: (event: CodexRuntimeEngineEvent) => void
+  }): Promise<void> {
+    let destroyed = false
+    const owner: CodexOwner = { isDestroyed: () => destroyed }
+    const registration = this.registerDocument({ ...input, owner })
+    const abort = () => void this.cancelTurn(owner, input.documentId).catch(() => undefined)
+    input.signal.addEventListener('abort', abort, { once: true })
+    if (input.signal.aborted) abort()
+    try {
+      await this.startTurn(owner, input.documentId, input.text)
+    } finally {
+      destroyed = true
+      input.signal.removeEventListener('abort', abort)
+      await registration.close()
+    }
   }
 
   async startTurn(owner: CodexOwner, documentId: string, text: string): Promise<void> {

@@ -54,6 +54,125 @@ function setup(loggedIn = true) {
 }
 
 describe('Office relay PC client', () => {
+  it('publishes Enhanced session state and routes exact tool subframes inside agent.v1', async () => {
+    const socket = new FakeSocket()
+    const enhanced = {
+      version: 1,
+      runtime_mode: 'enhanced',
+      runtime_instance: 'runtime_0123456789abcdef',
+      component_version: '0.147.0',
+      host: 'office-word',
+      raw_office: false,
+      expires_at: Date.now() + 60_000,
+      policy_generation: 2,
+      session_generation: 7,
+    } as const
+    const enhancedProxy = vi.fn(async ({ executeTool }) => ({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: (async function* () {
+        const result = await executeTool({
+          turnId: 'turn_12345678',
+          callId: 'call_12345678',
+          generation: 7,
+          toolName: 'read_document',
+          input: {},
+        })
+        yield new TextEncoder().encode(result.output)
+      })(),
+    }))
+    const client = createOfficeRelayClient({
+      endpoint: 'wss://office.8-216-134-194.sslip.io/office-relay',
+      connect: () => socket,
+      getValidAccountStatus: async () => ({ loggedIn: true }),
+      getAccessToken: async () => 'token',
+      proxy: async () => {
+        throw new Error('standard_must_not_run')
+      },
+      enhancedProxy,
+      enhancedStatement: () => enhanced,
+      negotiateCapabilities: true,
+      onPending() {},
+    })
+    const claiming = client.claim('123456')
+    await vi.waitFor(() => expect(socket.listeners.has('open')).toBe(true))
+    socket.open()
+    await claiming
+    socket.message({
+      version: 2,
+      type: 'pc.negotiated',
+      pairing_version: 2,
+      capabilities: ['agent.v1'],
+    })
+    socket.message({
+      version: 2,
+      type: 'pc.claimed',
+      pairing_id: 'pairing_12345678',
+      host: 'Word',
+      origin: 'https://office.8-216-134-194.sslip.io',
+      verification_code: '123456',
+      expires_in: 120,
+      capabilities: ['agent.v1'],
+    })
+    await client.approve('pairing_12345678')
+    socket.message({
+      version: 2,
+      type: 'pc.approved',
+      session_id: 'session_12345678',
+      capability: 'secret-capability',
+      expires_in: 1800,
+      capabilities: ['agent.v1'],
+    })
+    await vi.waitFor(() =>
+      expect(socket.sent.map(JSON.parse).some((value) => value.type === 'pc.session_state')).toBe(
+        true,
+      ),
+    )
+    expect(socket.sent.map(JSON.parse).find((value) => value.type === 'pc.session_state')).toEqual({
+      version: 2,
+      type: 'pc.session_state',
+      session_id: 'session_12345678',
+      capability: 'secret-capability',
+      generation: 7,
+      enhanced,
+    })
+    socket.message({
+      version: 2,
+      type: 'relay.request',
+      session_id: 'session_12345678',
+      request_id: 'request_12345678',
+      capability_name: 'agent.v1',
+      body: { messages: [] },
+    })
+    await vi.waitFor(() =>
+      expect(socket.sent.map(JSON.parse).some((value) => value.type === 'pc.tool_call')).toBe(true),
+    )
+    expect(
+      socket.sent.map(JSON.parse).find((value) => value.type === 'pc.tool_call'),
+    ).toMatchObject({
+      request_id: 'request_12345678',
+      turn_id: 'turn_12345678',
+      call_id: 'call_12345678',
+      generation: 7,
+      tool_name: 'read_document',
+    })
+    socket.message({
+      version: 2,
+      type: 'relay.tool_result',
+      session_id: 'session_12345678',
+      request_id: 'request_12345678',
+      turn_id: 'turn_12345678',
+      call_id: 'call_12345678',
+      generation: 7,
+      output: '{"title":"Doc"}',
+      is_error: false,
+    })
+    await vi.waitFor(() =>
+      expect(socket.sent.map(JSON.parse).some((value) => value.type === 'pc.done')).toBe(true),
+    )
+    expect(enhancedProxy).toHaveBeenCalledOnce()
+  })
+
   it.each(['account', 'token'] as const)(
     'does not connect when revoked while awaiting %s validation',
     async (phase) => {

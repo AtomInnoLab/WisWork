@@ -1000,6 +1000,7 @@ export function ConfiguredApp(
                 transport: createPcBridgeAgentTransport(bridge),
                 skill: runtime.skill,
                 proposals: runtime.proposals,
+                ...('setToolHandler' in bridge ? { remoteTools: bridge } : {}),
                 diagnostics,
                 presentationText: (key) =>
                   officePresentationText(globalThis.Office?.context?.displayLanguage, key),
