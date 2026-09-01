@@ -15,6 +15,26 @@ export function enhancedModeView(status: EnhancedModeStatus, language: string): 
   const chinese = language === 'zh' || language === 'zh-TW'
   const label = chinese ? '增强模式' : 'Enhanced mode'
   const restartDetail = chinese ? '重启 WisWork 后生效' : 'Restart WisWork to apply'
+  if (status.lifecycleState === 'blocked_by_policy' || status.lifecycleState === 'failed_safe') {
+    return {
+      label,
+      detail:
+        status.lifecycleState === 'blocked_by_policy'
+          ? chinese
+            ? '当前策略未开放增强模式'
+            : 'Enhanced mode is disabled by policy'
+          : chinese
+            ? '增强模式启动失败，请切换到标准模式或重启后重试'
+            : 'Enhanced mode failed safely; switch to Standard or restart to retry',
+      action: status.requestedAgentRuntime === 'enhanced' ? 'disable' : 'none',
+      actionLabel:
+        status.requestedAgentRuntime === 'enhanced'
+          ? chinese
+            ? '切换到标准模式'
+            : 'Switch to Standard mode'
+          : '',
+    }
+  }
   if (!status.supported || status.component === 'unsupported') {
     return {
       label,

@@ -2615,8 +2615,8 @@ app.whenReady().then(async () => {
   const enhancedAsset = codexComponentManifest.component.assets.find(
     (asset) => asset.platform === process.platform && asset.arch === process.arch,
   )
-  const enhancedPolicyAllowed = () => process.env.WISWORK_ENHANCED_DISABLED !== '1'
-  const enhancedHosts = {
+  // Release-reviewed rollout baseline. Renderer/user environment values never grant authority.
+  const enhancedHosts = Object.freeze({
     latex: true,
     slides: true,
     docs: true,
@@ -2624,14 +2624,16 @@ app.whenReady().then(async () => {
     'office-word': true,
     'office-excel': true,
     'office-powerpoint': true,
-  } as const
+  } as const)
+  const enhancedPolicy = Object.freeze({
+    globalEnabled: true,
+    hosts: enhancedHosts,
+    rawOfficeEnabled: true,
+  })
+  const enhancedPolicyAllowed = () => enhancedPolicy.globalEnabled
   codexRuntime = new ShellCodexRuntime({
     activeAgentRuntime,
-    policy: {
-      globalEnabled: enhancedPolicyAllowed(),
-      hosts: enhancedHosts,
-      rawOfficeEnabled: process.env.WISWORK_RAW_OFFICE_DISABLED !== '1',
-    },
+    policy: enhancedPolicy,
     isSignedIn: async () => (await requireAuthRuntime().client.getValidAccountStatus()).loggedIn,
     resolveExecutable: () => enhancedModeComponent.resolveExecutable(),
     bootstrap: createProductionCodexBootstrap({

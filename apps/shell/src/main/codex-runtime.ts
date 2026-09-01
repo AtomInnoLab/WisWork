@@ -18,6 +18,7 @@ export interface CodexRuntimeEngine {
     readonly host: EnhancedHost
     readonly generation: number
     readonly session: DocumentToolSession
+    readonly onEvent?: (event: CodexRuntimeEngineEvent) => void
   }): () => void
   startTurn(input: {
     readonly documentId: string
@@ -29,6 +30,12 @@ export interface CodexRuntimeEngine {
   closeDocument(documentId: string): Promise<void>
   close(): Promise<void>
 }
+
+export type CodexRuntimeEngineEvent =
+  | Readonly<{ type: 'text'; text: string }>
+  | Readonly<{ type: 'tool-start'; callId: string; toolName: string }>
+  | Readonly<{ type: 'tool-complete'; callId: string; toolName: string; isError: boolean }>
+  | Readonly<{ type: 'terminal'; status: 'completed' | 'cancelled' | 'failed' }>
 
 export interface CodexRuntimeBootstrap {
   start(input: {

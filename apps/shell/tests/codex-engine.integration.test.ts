@@ -25,7 +25,10 @@ describe('real 0.147 production engine bridge', () => {
     'binds real turn metadata to fake WisUsage and cleans up',
     async () => {
       const diagnostics: string[] = []
-      const upstream = vi.fn(async (_request: MessagesRequest) => finalResponse())
+      const upstream = vi.fn(async (request: MessagesRequest) => {
+        expect(request.tools?.map((tool) => tool.name)).toEqual(['exec'])
+        return finalResponse()
+      })
       const engine = await createProductionCodexBootstrap({
         fetchWithAuth: upstream,
         diagnostics: (code) => diagnostics.push(code),
@@ -42,23 +45,33 @@ describe('real 0.147 production engine bridge', () => {
         callTool: vi.fn(async () => ({ output: 'read', summary: 'read' })),
         close: vi.fn(),
       } as any
+      const events: unknown[] = []
       engine.registerDocument!({
         ownerId: 'owner',
         documentId: 'doc',
         host: 'docs',
         generation: 1,
         session,
+        onEvent: (event) => events.push(event),
       })
       try {
-        await engine.startTurn({ documentId: 'doc', host: 'docs', generation: 1, text: 'read' })
-        await vi.waitFor(
-          () => expect(upstream, JSON.stringify(diagnostics)).toHaveBeenCalledOnce(),
-          { timeout: 10_000 },
-        )
+        await engine
+          .startTurn({ documentId: 'doc', host: 'docs', generation: 1, text: 'read' })
+          .catch((error) => {
+            throw new Error(`engine_failed:${diagnostics.join(',')}`, { cause: error })
+          })
+        expect(upstream).toHaveBeenCalledOnce()
       } finally {
         await engine.close()
       }
       expect(session.close).toHaveBeenCalled()
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: 'text', text: 'done' }),
+          expect.objectContaining({ type: 'terminal', status: 'completed' }),
+        ]),
+      )
+      expect(diagnostics).toContain('gateway_tools_list')
     },
     20_000,
   )

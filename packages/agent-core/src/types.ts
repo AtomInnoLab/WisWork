@@ -97,8 +97,13 @@ export interface ToolExecutionSuspension extends ToolExecution {
 export type ToolExecutionOutcome = ToolExecution | ToolExecutionSuspension
 
 const toolExecutionSuspensions = new WeakSet<object>()
+const suspensionOwners = new WeakMap<object, object>()
+const legacySuspensionOwner = Object.freeze({})
 
-function mintToolExecutionSuspension(result: Promise<ToolExecution>): ToolExecutionSuspension {
+function mintToolExecutionSuspension(
+  owner: object,
+  result: Promise<ToolExecution>,
+): ToolExecutionSuspension {
   const suspension: ToolExecutionSuspension = {
     kind: 'tool-execution-suspension',
     result,
@@ -106,6 +111,7 @@ function mintToolExecutionSuspension(result: Promise<ToolExecution>): ToolExecut
     summary: 'Awaiting tool execution',
   }
   toolExecutionSuspensions.add(suspension)
+  suspensionOwners.set(suspension, owner)
   return Object.freeze(suspension)
 }
 
@@ -114,15 +120,28 @@ export function suspendToolExecution(result: Promise<ToolExecution>): ToolExecut
   // The placeholder ToolExecution fields preserve source compatibility for
   // direct skill consumers. AgentLoop detects `kind` and never publishes this
   // placeholder to model history or execution events.
-  return mintToolExecutionSuspension(result)
+  return mintToolExecutionSuspension(legacySuspensionOwner, result)
 }
 
 /** @internal AgentLoop is the only production caller. */
 export function mintLoopToolExecutionSuspension(
-  _owner: object,
+  owner: object,
   result: Promise<ToolExecution>,
 ): ToolExecutionSuspension {
-  return mintToolExecutionSuspension(result)
+  return mintToolExecutionSuspension(owner, result)
+}
+
+/** Owner-specific authority for transports that must not trust the public compatibility helper. */
+export function createToolExecutionSuspensionAuthority(): Readonly<{
+  suspend(result: Promise<ToolExecution>): ToolExecutionSuspension
+  owns(value: ToolExecutionOutcome): value is ToolExecutionSuspension
+}> {
+  const owner = Object.freeze({})
+  return Object.freeze({
+    suspend: (result) => mintToolExecutionSuspension(owner, result),
+    owns: (value): value is ToolExecutionSuspension =>
+      typeof value === 'object' && value !== null && suspensionOwners.get(value) === owner,
+  })
 }
 
 /** Accept only suspension objects created by suspendToolExecution in this Agent Core instance. */

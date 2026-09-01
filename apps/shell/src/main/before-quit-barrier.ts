@@ -25,15 +25,16 @@ export function createBeforeQuitBarrier(options: {
     })
     void Promise.race([options.cleanup().then(() => 'clean' as const), deadline])
       .then((result) => {
-        if (result === 'deadline') options.diagnostics?.('enhanced_quit_cleanup_deadline')
-      })
-      .catch(() => options.diagnostics?.('enhanced_quit_cleanup_failed'))
-      .finally(() => {
+        if (result === 'deadline') {
+          options.diagnostics?.('enhanced_quit_cleanup_deadline')
+          return
+        }
         complete = true
         if (!quitSent) {
           quitSent = true
           options.quit()
         }
       })
+      .catch(() => options.diagnostics?.('enhanced_quit_cleanup_failed'))
   }
 }

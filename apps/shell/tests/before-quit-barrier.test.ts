@@ -16,7 +16,7 @@ describe('before-quit cleanup barrier', () => {
     await vi.waitFor(() => expect(quit).toHaveBeenCalledOnce())
   })
 
-  it('fails safe at the cleanup deadline and reports a bounded diagnostic', async () => {
+  it('fails safe at the cleanup deadline by keeping the app alive', async () => {
     vi.useFakeTimers()
     const quit = vi.fn()
     const diagnostics = vi.fn()
@@ -29,7 +29,7 @@ describe('before-quit cleanup barrier', () => {
     handle({ preventDefault: vi.fn() })
     await vi.advanceTimersByTimeAsync(10)
     expect(diagnostics).toHaveBeenCalledWith('enhanced_quit_cleanup_deadline')
-    expect(quit).toHaveBeenCalledOnce()
+    expect(quit).not.toHaveBeenCalled()
     vi.useRealTimers()
   })
 })

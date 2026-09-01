@@ -197,6 +197,7 @@ export interface DocumentToolRegistration {
     signal?: AbortSignal,
   ) => ToolExecution | Promise<ToolExecution>
   readonly suspendMutation: (result: Promise<ToolExecution>) => ToolExecutionSuspension
+  readonly ownsSuspension: (value: ToolExecutionOutcome) => boolean
   readonly carrier?: Readonly<{ issuer: DocumentCarrierIssuer; capability: unknown }>
   readonly maxCallMs?: number
   readonly maxTotalCalls?: number
@@ -543,6 +544,7 @@ export function createDocumentToolSession(
           'isOpen',
           'executeRead',
           'suspendMutation',
+          'ownsSuspension',
           'carrier',
           'maxCallMs',
           'maxTotalCalls',
@@ -551,7 +553,8 @@ export function createDocumentToolSession(
     ) ||
     typeof registration.isOpen !== 'function' ||
     typeof registration.executeRead !== 'function' ||
-    typeof registration.suspendMutation !== 'function'
+    typeof registration.suspendMutation !== 'function' ||
+    typeof registration.ownsSuspension !== 'function'
   )
     throw new ToolRouterError('invalid_tool_session')
   const manifest = manifestLedger.get(registration.manifest as object)
@@ -705,7 +708,12 @@ export function createDocumentToolSession(
       pendingMutations.set(call.id, mutation)
       mutationQueue.push(mutation)
       if (controller.signal.aborted) finish(stable('tool_cancelled', 'Tool cancelled'))
-      return registration.suspendMutation(promise)
+      const suspension = registration.suspendMutation(promise)
+      if (!registration.ownsSuspension(suspension)) {
+        finish(stable('tool_authority_denied', 'Tool authority denied'))
+        return stable('tool_authority_denied', 'Tool authority denied')
+      }
+      return suspension
     }
     if (pending.size > 0 || pendingMutations.size > 0) return stable('tool_call_in_progress')
     const controller = new AbortController()

@@ -173,4 +173,41 @@ describe('fixed dynamic MCP gateway', () => {
       await gateway.close()
     }
   })
+
+  it('revokes a turn capability explicitly and bounds outstanding grants', async () => {
+    const execute = vi.fn(async () => ({ output: 'ok', summary: 'ok' }))
+    const gateway = await startDynamicMcpGateway()
+    gateway.register({
+      ownerId: 'owner',
+      documentId: 'doc',
+      generation: 1,
+      session: {
+        credentials: { sessionId: 's', secret: 'k' },
+        callTool: execute,
+      } as any,
+    })
+    try {
+      const grant = gateway.beginTurn({ documentId: 'doc', generation: 1, threadId: 'thread' })
+      gateway.revokeTurn(grant.capability)
+      const denied = await rpc(gateway.url, gateway.secret, 90, 'tools/call', {
+        name: 'wiswork_call',
+        arguments: {
+          capability: grant.capability,
+          callId: 'call',
+          toolName: 'read_blocks',
+          input: {},
+        },
+      })
+      expect(denied.status).toBe(403)
+      expect(execute).not.toHaveBeenCalled()
+      for (let index = 0; index < 64; index += 1) {
+        gateway.beginTurn({ documentId: 'doc', generation: 1, threadId: `thread-${index}` })
+      }
+      expect(() =>
+        gateway.beginTurn({ documentId: 'doc', generation: 1, threadId: 'overflow' }),
+      ).toThrow('turn_capability_limit')
+    } finally {
+      await gateway.close()
+    }
+  })
 })

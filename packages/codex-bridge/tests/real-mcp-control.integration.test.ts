@@ -1,5 +1,5 @@
 import { isAbsolute } from 'node:path'
-import { suspendToolExecution } from '@wiswork/agent-core'
+import { createToolExecutionSuspensionAuthority } from '@wiswork/agent-core'
 import { describe, expect, it, vi } from 'vitest'
 import { startDocumentMcpServer } from '../src/mcp-server.js'
 import { CodexProcessManager } from '../src/process-manager.js'
@@ -13,6 +13,7 @@ describe('real 0.147 MCP transport control', () => {
     'initializes the strict document MCP server and lists its tool',
     async () => {
       const diagnostics: string[] = []
+      const suspensionAuthority = createToolExecutionSuspensionAuthority()
       const server = await startDocumentMcpServer({ diagnostics: (code) => diagnostics.push(code) })
       const grant = Object.freeze({})
       const session = server.register({
@@ -47,7 +48,8 @@ describe('real 0.147 MCP transport control', () => {
         }),
         isOpen: () => true,
         executeRead: async () => ({ output: 'ok', summary: 'ok' }),
-        suspendMutation: suspendToolExecution,
+        suspendMutation: suspensionAuthority.suspend,
+        ownsSuspension: suspensionAuthority.owns,
       })
       const manager = new CodexProcessManager({
         executablePath: executable!,

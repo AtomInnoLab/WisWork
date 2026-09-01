@@ -45,11 +45,11 @@ export function registerCodexRuntimeIpc(options: {
   options.ipcMain.handle(CODEX_RUNTIME_CHANNELS.status, (event, ...args) => {
     if (args.length !== 0) throw new Error('enhanced_invalid_request')
     const documentId = options.documentIdForOwner(event.sender)
+    const registered = documentId !== null && options.runtime.ownsDocument(event.sender, documentId)
     return {
-      activeAgentRuntime: options.runtime.activeAgentRuntime,
-      state: options.runtime.state,
-      documentId:
-        documentId && options.runtime.ownsDocument(event.sender, documentId) ? documentId : null,
+      activeAgentRuntime: registered ? options.runtime.activeAgentRuntime : 'standard',
+      state: registered ? options.runtime.state : 'unavailable',
+      documentId: registered ? documentId : null,
     }
   })
   options.ipcMain.handle(CODEX_RUNTIME_CHANNELS.startTurn, async (event, ...args) => {

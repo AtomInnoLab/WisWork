@@ -11,7 +11,8 @@ interface ResolvedMetadataIds {
 interface ArmedTurn {
   readonly issuerFor: (ids: ResolvedMetadataIds) => DocumentCarrierIssuer
   readonly capability: unknown
-  consumed: boolean
+  turnId?: string
+  sessionId?: string
 }
 
 function metadataIds(value: unknown): ResolvedMetadataIds {
@@ -64,7 +65,7 @@ export class CodexTurnResolver {
   constructor(private readonly diagnostics?: (code: string) => void) {}
   arm(threadId: string, issuerFor: ArmedTurn['issuerFor'], capability: unknown): () => void {
     if (!threadId || this.#turns.has(threadId)) throw new Error('turn_already_armed')
-    const entry = { issuerFor, capability, consumed: false }
+    const entry = { issuerFor, capability }
     this.#turns.set(threadId, entry)
     return () => {
       if (this.#turns.get(threadId) === entry) this.#turns.delete(threadId)
@@ -87,13 +88,18 @@ export class CodexTurnResolver {
         : 'resolver_method_missing',
     )
     const entry = this.#turns.get(threadId)
-    if (!entry || entry.consumed) {
+    if (
+      !entry ||
+      (entry.turnId !== undefined && entry.turnId !== turnId) ||
+      (entry.sessionId !== undefined && entry.sessionId !== ids.sessionId)
+    ) {
       this.diagnostics?.('resolver_authority_unbound')
       throw new Error('turn_unbound')
     }
-    // Consume before converter/schema/catalog work so hostile retries cannot race authority.
-    entry.consumed = true
-    this.#turns.delete(threadId)
+    // A Codex turn can make several sequential provider requests around one MCP call. Bind the
+    // first request's immutable ids; each request still receives a fresh one-use carrier handle.
+    entry.turnId = turnId
+    entry.sessionId = ids.sessionId
     let handle
     const issuer = entry.issuerFor(ids)
     try {

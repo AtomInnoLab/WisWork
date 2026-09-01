@@ -86,6 +86,24 @@ describe('Shell Codex runtime lifecycle', () => {
     expect(f.engine.startTurn).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps a document busy until the engine reports terminal settlement', async () => {
+    const f = fixture()
+    let settle!: () => void
+    f.engine.startTurn.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (settle = resolve)),
+    )
+    await f.runtime.initialize()
+    f.runtime.registerDocument({ owner: f.owner, documentId: 'doc', host: 'docs', generation: 0 })
+    const first = f.runtime.startTurn(f.owner, 'doc', 'first')
+    await vi.waitFor(() => expect(f.engine.startTurn).toHaveBeenCalledOnce())
+    await expect(f.runtime.startTurn(f.owner, 'doc', 'second')).rejects.toThrow(
+      'enhanced_turn_in_progress',
+    )
+    settle()
+    await first
+    await expect(f.runtime.startTurn(f.owner, 'doc', 'third')).resolves.toBeUndefined()
+  })
+
   it('tears down document, crash, logout and quit state without restarting', async () => {
     const f = fixture()
     await f.runtime.initialize()

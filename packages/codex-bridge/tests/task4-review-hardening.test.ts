@@ -1,4 +1,7 @@
-import { isToolExecutionSuspension, suspendToolExecution } from '@wiswork/agent-core'
+import {
+  createToolExecutionSuspensionAuthority,
+  isToolExecutionSuspension,
+} from '@wiswork/agent-core'
 import type { EnhancedCapability } from '@wiswork/agent-runtime'
 import { describe, expect, it, vi } from 'vitest'
 import {
@@ -37,6 +40,7 @@ function policyGrant(
 }
 
 function registration(overrides: Partial<DocumentToolRegistration> = {}): DocumentToolRegistration {
+  const suspensionAuthority = createToolExecutionSuspensionAuthority()
   const manifest = createDocumentToolManifest({
     ...policyGrant(),
     tools: [read, mutate],
@@ -53,7 +57,8 @@ function registration(overrides: Partial<DocumentToolRegistration> = {}): Docume
     manifest,
     isOpen: () => true,
     executeRead: vi.fn(async () => ({ output: 'text', summary: 'read' })),
-    suspendMutation: suspendToolExecution,
+    suspendMutation: suspensionAuthority.suspend,
+    ownsSuspension: suspensionAuthority.owns,
     ...overrides,
   }
 }

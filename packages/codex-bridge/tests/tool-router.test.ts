@@ -1,6 +1,6 @@
 import {
+  createToolExecutionSuspensionAuthority,
   isToolExecutionSuspension,
-  suspendToolExecution,
   type ToolExecution,
 } from '@wiswork/agent-core'
 import { describe, expect, it, vi } from 'vitest'
@@ -50,6 +50,7 @@ function policyGrant() {
 }
 
 function fixture(overrides: Partial<DocumentToolRegistration> = {}) {
+  const suspensionAuthority = createToolExecutionSuspensionAuthority()
   const executeRead = vi.fn(async (): Promise<ToolExecution> => ({
     output: 'text',
     summary: 'read',
@@ -71,7 +72,8 @@ function fixture(overrides: Partial<DocumentToolRegistration> = {}) {
     manifest,
     isOpen: () => open,
     executeRead,
-    suspendMutation: suspendToolExecution,
+    suspendMutation: suspensionAuthority.suspend,
+    ownsSuspension: suspensionAuthority.owns,
     ...overrides,
   }
   const session = createDocumentToolSession(registration)
@@ -119,6 +121,23 @@ describe('document-scoped tool session', () => {
       mutated: true,
     })
     expect(f.executeRead).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a mutation suspension minted by a different owner', async () => {
+    const owner = createToolExecutionSuspensionAuthority()
+    const attacker = createToolExecutionSuspensionAuthority()
+    const f = fixture({
+      suspendMutation: attacker.suspend,
+      ownsSuspension: owner.owns,
+    })
+    const outcome = await f.session.callTool(f.session.credentials, {
+      id: 'foreign',
+      name: 'replace_blocks',
+      input: {},
+    })
+    expect(isToolExecutionSuspension(outcome as any)).toBe(false)
+    expect(outcome).toMatchObject({ output: 'tool_authority_denied', isError: true })
+    expect(f.session.mutationAuthority.claimNext()).toBeUndefined()
   })
 
   it('cancels queued mutations by call id before an authority can claim them', async () => {

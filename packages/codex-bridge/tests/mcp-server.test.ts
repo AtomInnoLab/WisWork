@@ -1,5 +1,5 @@
 import { request } from 'node:http'
-import { suspendToolExecution } from '@wiswork/agent-core'
+import { createToolExecutionSuspensionAuthority } from '@wiswork/agent-core'
 import { describe, expect, it, vi } from 'vitest'
 import { startDocumentMcpServer } from '../src/mcp-server.js'
 import { createDocumentToolManifest } from '../src/tool-router.js'
@@ -34,17 +34,27 @@ const policyGrant = () => {
     },
   }
 }
-const registration = () => ({
-  identity: { ownerId: 'o', host: 'docs' as const, documentId: 'd', sessionId: 's', generation: 1 },
-  manifest: createDocumentToolManifest({
-    ...policyGrant(),
-    tools: [tool],
-    policy: { get_document_context: 'read' },
-  }),
-  isOpen: () => true,
-  executeRead: async () => ({ output: 'document', summary: 'read' }),
-  suspendMutation: suspendToolExecution,
-})
+const registration = () => {
+  const suspensionAuthority = createToolExecutionSuspensionAuthority()
+  return {
+    identity: {
+      ownerId: 'o',
+      host: 'docs' as const,
+      documentId: 'd',
+      sessionId: 's',
+      generation: 1,
+    },
+    manifest: createDocumentToolManifest({
+      ...policyGrant(),
+      tools: [tool],
+      policy: { get_document_context: 'read' },
+    }),
+    isOpen: () => true,
+    executeRead: async () => ({ output: 'document', summary: 'read' }),
+    suspendMutation: suspensionAuthority.suspend,
+    ownsSuspension: suspensionAuthority.owns,
+  }
+}
 function post(url: string, secret: string, value: unknown, authorization = `Bearer ${secret}`) {
   const data = JSON.stringify(value)
   return new Promise<{ status: number; json: any }>((resolve, reject) => {
