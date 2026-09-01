@@ -77,6 +77,37 @@ describe('PC Codex host registrar', () => {
     )
     await expect(read).resolves.toMatchObject({ output: 'ok' })
 
+    const readWithoutSnapshotAuthority = registered.session.callTool(
+      registered.session.credentials,
+      {
+        id: 'r2',
+        name: 'read_blocks',
+        input: {},
+      },
+    ) as Promise<unknown>
+    expect(() =>
+      handlers.get(PC_HOST_CODEX_CHANNELS.toolResult)!(
+        { sender: owner },
+        {
+          documentId: 'doc-1',
+          generation: 3,
+          callId: 'r2',
+          execution: { output: 'ok', summary: 'read' },
+          snapshotBefore: '123e4567-e89b-42d3-a456-426614174000',
+        },
+      ),
+    ).toThrow('enhanced_untrusted_request')
+    await handlers.get(PC_HOST_CODEX_CHANNELS.toolResult)!(
+      { sender: owner },
+      {
+        documentId: 'doc-1',
+        generation: 3,
+        callId: 'r2',
+        execution: { output: 'ok', summary: 'read' },
+      },
+    )
+    await expect(readWithoutSnapshotAuthority).resolves.toMatchObject({ output: 'ok' })
+
     const suspended = registered.session.callTool(registered.session.credentials, {
       id: 'm1',
       name: 'replace_blocks',
@@ -101,7 +132,7 @@ describe('PC Codex host registrar', () => {
       }),
     ])
     expect(JSON.stringify(sent.at(-1)?.[1])).not.toContain('not-for-ui')
-    expect(sent.filter(([channel]) => channel === PC_HOST_CODEX_CHANNELS.toolCall)).toHaveLength(1)
+    expect(sent.filter(([channel]) => channel === PC_HOST_CODEX_CHANNELS.toolCall)).toHaveLength(2)
     expect(() =>
       handlers.get(PC_HOST_CODEX_CHANNELS.confirmProposal)!(
         { sender: owner },
@@ -124,10 +155,20 @@ describe('PC Codex host registrar', () => {
         generation: 3,
         callId: 'm1',
         execution: { output: 'applied', summary: 'replace', mutated: true },
+        snapshotBefore: '123e4567-e89b-42d3-a456-426614174000',
       },
     )
     await confirmation
     await expect(suspended.result).resolves.toMatchObject({ output: 'applied', mutated: true })
+    expect(sent).toContainEqual([
+      PC_HOST_CODEX_CHANNELS.event,
+      expect.objectContaining({
+        type: 'tool-executed',
+        event: expect.objectContaining({
+          snapshotBefore: '123e4567-e89b-42d3-a456-426614174000',
+        }),
+      }),
+    ])
     expect(() =>
       handlers.get(PC_HOST_CODEX_CHANNELS.confirmProposal)!(
         { sender: owner },
@@ -180,7 +221,7 @@ describe('PC Codex host registrar', () => {
       isError: true,
       mutated: false,
     })
-    expect(sent.filter(([channel]) => channel === PC_HOST_CODEX_CHANNELS.toolCall)).toHaveLength(2)
+    expect(sent.filter(([channel]) => channel === PC_HOST_CODEX_CHANNELS.toolCall)).toHaveLength(3)
     await registrar.closeOwner(owner)
     expect(engine.closeDocument).toHaveBeenCalledWith('doc-1')
   })

@@ -50,6 +50,7 @@ type HostRecord = {
 }
 
 const ID = /^[A-Za-z0-9._:@/-]{1,256}$/
+const SNAPSHOT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const PC_HOSTS = new Set<PcEnhancedHost>(['latex', 'slides', 'docs', 'sheets'])
 const proposalSummary = (
   host: PcEnhancedHost,
@@ -460,10 +461,20 @@ export function registerPcCodexHosts(options: {
   )
   options.ipcMain.handle(PC_HOST_CODEX_CHANNELS.toolResult, (event, value) => {
     trusted(event.sender)
-    if (!exactObject(value, ['documentId', 'generation', 'callId', 'execution']))
+    const hasSnapshot = value !== null && typeof value === 'object' && 'snapshotBefore' in value
+    if (
+      !exactObject(
+        value,
+        hasSnapshot
+          ? ['documentId', 'generation', 'callId', 'execution', 'snapshotBefore']
+          : ['documentId', 'generation', 'callId', 'execution'],
+      )
+    )
       throw new Error('enhanced_invalid_request')
     const result = value as unknown as PcHostToolResult
     const execution = detachedExecution(result.execution)
+    if (result.snapshotBefore !== undefined && !SNAPSHOT_ID.test(result.snapshotBefore))
+      throw new Error('enhanced_invalid_request')
     const record = records.get(event.sender)
     const pending = record?.pending.get(result.callId)
     if (
@@ -473,10 +484,16 @@ export function registerPcCodexHosts(options: {
       !pending
     )
       throw new Error('enhanced_untrusted_request')
+    if (result.snapshotBefore !== undefined && !pending.claim)
+      throw new Error('enhanced_untrusted_request')
     record.pending.delete(result.callId)
     send(record, PC_HOST_CODEX_CHANNELS.event, {
       type: 'tool-executed',
-      event: { call: pending.call, execution },
+      event: {
+        call: pending.call,
+        execution,
+        ...(result.snapshotBefore ? { snapshotBefore: result.snapshotBefore } : {}),
+      },
     })
     if (pending.claim) record.session.mutationAuthority.settle(pending.claim as never, execution)
     pending.resolve(execution)

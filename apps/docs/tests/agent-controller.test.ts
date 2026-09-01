@@ -76,6 +76,75 @@ describe('Docs agent controller', () => {
     expect(transport.callbacks).toHaveLength(0)
     controller.dispose()
   })
+  it('captures the Docs undo snapshot before a confirmed Enhanced mutation', async () => {
+    const transport = manualTransport()
+    let documentId: string | null = null
+    let onToolCall: ((request: any) => void) | undefined
+    let onEvent: ((event: any) => void) | undefined
+    const remembered = vi.fn()
+    const order: string[] = []
+    const enhancedSkill = {
+      id: 'docs-host',
+      systemPrompt: 'system',
+      tools: [{ name: 'replace_blocks', description: 'replace', inputSchema: { type: 'object' } }],
+      executeTool: vi.fn(() => {
+        order.push('execute')
+        return { output: 'ok', summary: 'edited', mutated: true }
+      }),
+    }
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => undefined),
+      startTurn: vi.fn(async () => undefined),
+      cancelTurn: vi.fn(async () => undefined),
+      onEvent: vi.fn((listener: any) => {
+        onEvent = listener
+        return () => undefined
+      }),
+      onToolCall: vi.fn((listener: any) => {
+        onToolCall = listener
+        return () => undefined
+      }),
+      toolResult: vi.fn(async (result: any) =>
+        onEvent?.({
+          type: 'tool-executed',
+          event: {
+            call: { id: result.callId, name: 'replace_blocks', input: {} },
+            execution: result.execution,
+            snapshotBefore: result.snapshotBefore,
+          },
+        }),
+      ),
+    }
+    const controller = createAgentController(
+      {
+        transport,
+        skill: enhancedSkill,
+        captureSnapshot: () => {
+          order.push('snapshot')
+          return { type: 'doc-before' }
+        },
+        events: { onToolExecuted: ({ snapshotBefore }) => remembered(snapshotBefore) },
+      },
+      { host: 'docs', api },
+    )
+    controller.activate()
+    await flush()
+    controller.run('replace')
+    await flush()
+    onToolCall?.({
+      documentId,
+      generation: 0,
+      call: { id: 'm1', name: 'replace_blocks', input: {} },
+    })
+    await flush()
+    expect(order).toEqual(['snapshot', 'execute'])
+    expect(remembered).toHaveBeenCalledWith({ type: 'doc-before' })
+    controller.dispose()
+  })
   it('keeps an untitled session on first save but isolates different documents', () => {
     expect(shouldResetAgentSession(null, '/saved.docx')).toBe(false)
     expect(shouldResetAgentSession('/a.docx', '/b.docx')).toBe(true)

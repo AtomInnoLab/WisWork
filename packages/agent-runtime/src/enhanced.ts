@@ -41,6 +41,7 @@ export interface EnhancedRuntimeClient {
     readonly documentId: string
     readonly generation: number
     readonly skill: AgentSkill
+    readonly captureSnapshot?: () => unknown
   }): EnhancedRuntimeClientSession
   close(): void | Promise<void>
 }
@@ -190,6 +191,7 @@ export class EnhancedAgentRuntime implements AgentRuntime {
         documentId: options.document.id,
         generation: options.document.generation,
         skill: options.skill,
+        captureSnapshot: options.captureSnapshot,
       }),
       options,
     )

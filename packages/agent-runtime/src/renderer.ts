@@ -141,14 +141,37 @@ export function createEnhancedRendererClient(
   let closed = false
   const sessions = new Set<EnhancedRuntimeClientSession>()
   return Object.freeze({
-    open(input: { host: EnhancedHost; documentId: string; generation: number; skill: AgentSkill }) {
+    open(input: {
+      host: EnhancedHost
+      documentId: string
+      generation: number
+      skill: AgentSkill
+      captureSnapshot?: () => unknown
+    }) {
       if (closed) throw new Error('enhanced_runtime_closed')
       let ended = false
       const listeners = new Set<(event: EnhancedSessionEvent) => void>()
-      const registration = bridge.register(createPcHostRegistration(input))
+      const hostRegistration = createPcHostRegistration(input)
+      const mutatingTools = new Set(hostRegistration.mutatingTools)
+      const snapshots = new Map<string, Readonly<{ id: string; value: unknown }>>()
+      const registration = bridge.register(hostRegistration)
       const unsubscribe = bridge.subscribe(input.documentId, (event) => {
         if (ended) return
-        for (const listener of [...listeners]) listener(event)
+        let restored = event
+        if (event.type === 'tool-executed') {
+          const snapshot = snapshots.get(event.event.call.id)
+          if (snapshot) {
+            if (snapshot.id !== event.event.snapshotBefore) return
+            snapshots.delete(event.event.call.id)
+            restored = {
+              ...event,
+              event: { ...event.event, snapshotBefore: snapshot.value },
+            }
+          } else if (event.event.snapshotBefore !== undefined) {
+            return
+          }
+        }
+        for (const listener of [...listeners]) listener(restored)
       })
       const unsubscribeTools = bridge.onToolCall((request) => {
         if (
@@ -157,6 +180,43 @@ export function createEnhancedRendererClient(
           request.generation !== input.generation
         )
           return
+        let snapshot: Readonly<{ id: string; value: unknown }> | undefined
+        if (
+          mutatingTools.has(request.call.name) &&
+          (input.host === 'docs' || input.host === 'sheets')
+        ) {
+          if (!input.captureSnapshot) {
+            void bridge.toolResult({
+              documentId: input.documentId,
+              generation: input.generation,
+              callId: request.call.id,
+              execution: {
+                output: 'snapshot_unavailable',
+                summary: 'Tool failed',
+                isError: true,
+                mutated: false,
+              },
+            })
+            return
+          }
+          try {
+            snapshot = Object.freeze({ id: crypto.randomUUID(), value: input.captureSnapshot() })
+            snapshots.set(request.call.id, snapshot)
+          } catch {
+            void bridge.toolResult({
+              documentId: input.documentId,
+              generation: input.generation,
+              callId: request.call.id,
+              execution: {
+                output: 'snapshot_failed',
+                summary: 'Tool failed',
+                isError: true,
+                mutated: false,
+              },
+            })
+            return
+          }
+        }
         void Promise.resolve(input.skill.executeTool(request.call))
           .then(async (outcome) => {
             const execution = isToolExecutionSuspension(outcome) ? await outcome.result : outcome
@@ -165,16 +225,18 @@ export function createEnhancedRendererClient(
               generation: input.generation,
               callId: request.call.id,
               execution,
+              ...(snapshot ? { snapshotBefore: snapshot.id } : {}),
             })
           })
-          .catch(() =>
-            bridge.toolResult({
+          .catch(() => {
+            snapshots.delete(request.call.id)
+            return bridge.toolResult({
               documentId: input.documentId,
               generation: input.generation,
               callId: request.call.id,
               execution: { output: 'tool_execution_failed', summary: 'Tool failed', isError: true },
-            }),
-          )
+            })
+          })
       })
       const session: EnhancedRuntimeClientSession = Object.freeze({
         async start(turn: {
@@ -207,6 +269,7 @@ export function createEnhancedRendererClient(
           ended = true
           unsubscribe()
           unsubscribeTools()
+          snapshots.clear()
           listeners.clear()
           sessions.delete(session)
           await registration.catch(() => undefined)

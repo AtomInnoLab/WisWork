@@ -36,6 +36,8 @@ export interface PcHostToolResult {
   readonly generation: number
   readonly callId: string
   readonly execution: ToolExecution
+  /** Opaque renderer-local snapshot binding; never contains document state. */
+  readonly snapshotBefore?: string
 }
 
 export interface PcHostProposalRequest {
