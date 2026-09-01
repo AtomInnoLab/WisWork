@@ -4,7 +4,7 @@ import { createPcBridgeSession } from '../src/pc-bridge/session.js'
 const endpoint = 'http://127.0.0.1:43127'
 
 describe('PC bridge session', () => {
-  it('captures an exact host-bound Enhanced statement in the connected snapshot', async () => {
+  it('rejects Enhanced authority from the unauthenticated loopback rollback transport', async () => {
     const enhanced = {
       version: 1,
       runtime_mode: 'enhanced',
@@ -36,7 +36,7 @@ describe('PC bridge session', () => {
       )
     const session = createPcBridgeSession({ endpoint, fetch, now: () => 1_000 })
     await session.connect('word')
-    expect(session.snapshot()).toEqual({ status: 'connected', enhanced })
+    expect(session.snapshot()).toEqual({ status: 'offline' })
   })
 
   it('fails closed for a cross-host or malformed Enhanced statement', async () => {

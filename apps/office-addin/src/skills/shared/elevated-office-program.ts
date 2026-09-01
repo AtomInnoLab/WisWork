@@ -674,19 +674,11 @@ export function createElevatedOfficeSkill(options: {
               if (timer) clearTimeout(timer)
             }
           }
-          let outcome = await waitForSettlement(ELEVATED_OFFICE_LIMITS.executionMs)
-          if (outcome.kind === 'timeout') {
-            outcome = await waitForSettlement(ELEVATED_OFFICE_LIMITS.reconciliationMs)
-          }
-          if (outcome.kind === 'timeout') {
+          const quarantineUntilReconciled = () => {
             const lease = options.proposals.quarantine({
               sessionId: initial.sessionId,
               generation: initial.generation,
             })
-            executionPending = true
-            // Keep all document writes fail-closed while the irrevocable Office callback is still
-            // live. This reconciler owns both settlement branches and can only release its exact
-            // session/generation lease after authoritative proof or rollback.
             void (async () => {
               try {
                 await settled
@@ -709,10 +701,19 @@ export function createElevatedOfficeSkill(options: {
                 options.proposals.resolveQuarantine(lease, { stable: false })
               }
             })()
+          }
+          let outcome = await waitForSettlement(ELEVATED_OFFICE_LIMITS.executionMs)
+          if (outcome.kind === 'timeout') {
+            outcome = await waitForSettlement(ELEVATED_OFFICE_LIMITS.reconciliationMs)
+          }
+          if (outcome.kind === 'timeout') {
+            quarantineUntilReconciled()
+            executionPending = true
             return
           }
           if (outcome.kind === 'error') {
             if (writeState === 'not_started') throw outcome.error
+            quarantineUntilReconciled()
             throw new Error('office_applied_unverified')
           }
         },

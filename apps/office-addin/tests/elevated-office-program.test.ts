@@ -433,6 +433,49 @@ describe('elevated raw Office program', () => {
     }
   })
 
+  it('quarantines a post-dispatch rejection before another proposal can run', async () => {
+    const { skill, proposals, adapter } = fixture()
+    vi.mocked(adapter.readback).mockResolvedValue({ verified: false })
+    vi.mocked(adapter.rollback).mockRejectedValue(new Error('rollback_unavailable'))
+    vi.mocked(adapter.execute).mockImplementation(
+      async (_program, _snapshot, _signal, lifecycle) => {
+        lifecycle?.markStarted()
+        throw new Error('office_callback_failed')
+      },
+    )
+    await skill.executeTool({
+      id: 'call_AAAAAAAAAAAAAAAA',
+      name: 'propose_raw_office_edit',
+      input: {
+        program: {
+          version: 1,
+          kind: 'office_js_ast',
+          operations: [{ call: 'body.insertText', args: { location: 'end', text: 'x' } }],
+        },
+      },
+    })
+    const id = proposals.pending()!.id
+    const settled = proposals.waitForDecision(id)
+    await proposals.confirm(id)
+    await expect(settled).resolves.toMatchObject({ status: 'applied_unverified' })
+    expect(proposals.isQuarantined()).toBe(true)
+
+    const blocked = await skill.executeTool({
+      id: 'call_BBBBBBBBBBBBBBBB',
+      name: 'propose_raw_office_edit',
+      input: {
+        program: {
+          version: 1,
+          kind: 'office_js_ast',
+          operations: [{ call: 'body.insertText', args: { location: 'end', text: 'y' } }],
+        },
+      },
+    })
+    expect(blocked).toMatchObject({ isError: true, output: 'office_state_uncertain' })
+    expect(adapter.snapshot).toHaveBeenCalledTimes(1)
+    expect(adapter.execute).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps the document quarantined when late reconciliation cannot prove stability', async () => {
     vi.useFakeTimers()
     try {
