@@ -54,6 +54,9 @@ function proposalsHarness() {
     logout: vi.fn(() => {
       clear({ status: 'cancelled' })
     }),
+    destroyDocumentContext: vi.fn(() => {
+      clear({ status: 'cancelled' })
+    }),
   }
   return {
     controller,
@@ -481,6 +484,69 @@ describe('Office agent session', () => {
     },
   )
 
+  it('renders and returns a quarantined pending write without claiming it was applied', async () => {
+    const harness = transportHarness()
+    const proposals = createStructuredProposalController()
+    const presentationText = vi.fn((key: string) =>
+      key === 'write_pending_quarantined' ? 'localized pending write quarantine' : key,
+    )
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'word',
+        systemPrompt: 'test',
+        tools: [{ name: 'raw_write', description: 'write', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(() => {
+          const proposal = proposals.propose({
+            operation: 'raw_write',
+            title: 'Confirm raw write',
+            preview: {},
+            impact: { host: 'word', targets: ['document'], count: 1 },
+            fingerprint: 'v1',
+            validate: async () => true,
+            execute: async () => undefined,
+            verify: async () => {
+              throw new Error('office_write_pending')
+            },
+          })
+          return {
+            output: JSON.stringify({ proposalId: proposal.id }),
+            mutated: false,
+            summary: 'Awaiting confirmation',
+          }
+        }),
+      },
+      proposals,
+      presentationText: presentationText as never,
+    })
+
+    session.send('write')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({ id: 'raw-1', name: 'raw_write', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(session.snapshot().proposal).toBeDefined())
+    await session.confirm(session.snapshot().proposal!.id)
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+
+    expect(session.snapshot().timeline).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'proposal',
+          state: 'uncertain',
+          error: 'localized pending write quarantine',
+        }),
+      ]),
+    )
+    const resumed = harness.stream.mock.calls[1]?.[0] as {
+      messages: Array<{ results?: Array<{ output: string }> }>
+    }
+    expect(JSON.parse(resumed.messages.at(-1)!.results![0]!.output)).toMatchObject({
+      status: 'write_pending',
+      safeCode: 'office_write_pending',
+      instruction: expect.not.stringMatching(/was applied/i),
+    })
+  })
+
   it('rejects an in-loop proposal immediately and resumes without executing the write', async () => {
     const harness = transportHarness()
     const proposals = createStructuredProposalController()
@@ -764,6 +830,7 @@ describe('Office agent session', () => {
       reject: vi.fn(),
       newTurn: vi.fn(),
       logout: vi.fn(),
+      destroyDocumentContext: vi.fn(),
       isQuarantined: vi.fn(() => false),
       quarantine: vi.fn(),
       resolveQuarantine: vi.fn(),
@@ -864,7 +931,7 @@ describe('Office agent session', () => {
     ],
     [
       'office_state_uncertain',
-      'The change may be partially applied. Wait for reconciliation; if editing stays blocked, reconnect before trying again.',
+      'The change may be partially applied. Wait for reconciliation; if editing stays blocked, reload the document before trying again.',
     ],
     [
       'office_recovery_failed:word_body_shape',

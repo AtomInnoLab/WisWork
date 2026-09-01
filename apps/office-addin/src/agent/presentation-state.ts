@@ -27,7 +27,7 @@ export interface ToolPresentationEvent extends PresentationEventBase {
 export interface ProposalPresentationEvent extends PresentationEventBase {
   readonly kind: 'proposal'
   readonly proposal: PresentationProposal
-  readonly state: 'pending' | 'applying' | 'applied' | 'rejected' | 'error'
+  readonly state: 'pending' | 'applying' | 'applied' | 'uncertain' | 'rejected' | 'error'
   readonly error?: string
 }
 

@@ -197,6 +197,7 @@ export const presentationVerificationStrings = defineStrings({
     verified: '已验证',
     unchanged: '无需更改',
     applied_unverified: '已应用，但未能验证',
+    write_pending_quarantined: '写入可能仍在进行；已冻结后续编辑，等待收敛或重新加载',
     needs_user: '需要你确认',
     failed: '编辑失败',
     correction: '正在纠偏',
@@ -210,6 +211,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: 'Verified',
     unchanged: 'No changes needed',
     applied_unverified: 'Applied, but not verified',
+    write_pending_quarantined:
+      'The write may still be running. Further edits are frozen; wait for reconciliation or reload.',
     needs_user: 'Your confirmation is needed',
     failed: 'Edit failed',
     correction: 'Correcting',
@@ -223,6 +226,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: '検証済み',
     unchanged: '変更は不要です',
     applied_unverified: '適用済み（未検証）',
+    write_pending_quarantined:
+      '書き込みが続いている可能性があります。以降の編集を停止しました。収束を待つか再読み込みしてください。',
     needs_user: '確認が必要です',
     failed: '編集に失敗しました',
     correction: '修正中',
@@ -236,6 +241,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: '검증됨',
     unchanged: '변경 필요 없음',
     applied_unverified: '적용됨(검증되지 않음)',
+    write_pending_quarantined:
+      '쓰기가 아직 진행 중일 수 있습니다. 추가 편집이 중지되었습니다. 조정을 기다리거나 다시 로드하세요.',
     needs_user: '확인이 필요함',
     failed: '편집 실패',
     correction: '수정 중',
@@ -249,6 +256,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: 'Vérifié',
     unchanged: 'Aucune modification requise',
     applied_unverified: 'Appliqué, non vérifié',
+    write_pending_quarantined:
+      'L’écriture est peut-être toujours en cours. Les modifications suivantes sont bloquées ; attendez la réconciliation ou rechargez.',
     needs_user: 'Votre confirmation est requise',
     failed: 'Échec de la modification',
     correction: 'Correction en cours',
@@ -262,6 +271,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: 'Überprüft',
     unchanged: 'Keine Änderungen nötig',
     applied_unverified: 'Angewendet, nicht überprüft',
+    write_pending_quarantined:
+      'Der Schreibvorgang läuft möglicherweise noch. Weitere Änderungen sind gesperrt; warten Sie auf den Abgleich oder laden Sie neu.',
     needs_user: 'Bestätigung erforderlich',
     failed: 'Bearbeitung fehlgeschlagen',
     correction: 'Korrektur läuft',
@@ -275,6 +286,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: 'Verificado',
     unchanged: 'No se requieren cambios',
     applied_unverified: 'Aplicado, sin verificar',
+    write_pending_quarantined:
+      'La escritura puede seguir en curso. Se bloquearon más ediciones; espera la conciliación o vuelve a cargar.',
     needs_user: 'Se necesita tu confirmación',
     failed: 'Error de edición',
     correction: 'Corrigiendo',
@@ -288,6 +301,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: 'ตรวจสอบแล้ว',
     unchanged: 'ไม่ต้องแก้ไข',
     applied_unverified: 'ใช้แล้วแต่ยังไม่ตรวจสอบ',
+    write_pending_quarantined:
+      'การเขียนอาจยังดำเนินอยู่ ระบบหยุดการแก้ไขเพิ่มเติมแล้ว โปรดรอการตรวจสอบหรือโหลดใหม่',
     needs_user: 'ต้องการการยืนยันจากคุณ',
     failed: 'แก้ไขไม่สำเร็จ',
     correction: 'กำลังแก้ไข',
@@ -301,6 +316,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: 'Terverifikasi',
     unchanged: 'Tidak perlu perubahan',
     applied_unverified: 'Diterapkan, belum diverifikasi',
+    write_pending_quarantined:
+      'Penulisan mungkin masih berlangsung. Pengeditan lanjutan dibekukan; tunggu rekonsiliasi atau muat ulang.',
     needs_user: 'Konfirmasi Anda diperlukan',
     failed: 'Edit gagal',
     correction: 'Memperbaiki',
@@ -314,6 +331,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: 'Проверено',
     unchanged: 'Изменения не нужны',
     applied_unverified: 'Применено, но не проверено',
+    write_pending_quarantined:
+      'Запись может ещё выполняться. Дальнейшие изменения заблокированы; дождитесь сверки или перезагрузите документ.',
     needs_user: 'Требуется подтверждение',
     failed: 'Ошибка редактирования',
     correction: 'Исправление',
@@ -327,6 +346,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: 'تم التحقق',
     unchanged: 'لا حاجة إلى تغييرات',
     applied_unverified: 'تم التطبيق دون تحقق',
+    write_pending_quarantined:
+      'قد لا تزال الكتابة جارية. تم تجميد التعديلات اللاحقة؛ انتظر التسوية أو أعد التحميل.',
     needs_user: 'يلزم تأكيدك',
     failed: 'فشل التعديل',
     correction: 'جارٍ التصحيح',
@@ -340,6 +361,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: 'Verificado',
     unchanged: 'Nenhuma alteração necessária',
     applied_unverified: 'Aplicado, não verificado',
+    write_pending_quarantined:
+      'A gravação pode ainda estar em andamento. Novas edições foram bloqueadas; aguarde a reconciliação ou recarregue.',
     needs_user: 'Sua confirmação é necessária',
     failed: 'Falha na edição',
     correction: 'Corrigindo',
@@ -353,6 +376,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: 'Verificato',
     unchanged: 'Nessuna modifica necessaria',
     applied_unverified: 'Applicato, non verificato',
+    write_pending_quarantined:
+      'La scrittura potrebbe essere ancora in corso. Le modifiche successive sono bloccate; attendi la riconciliazione o ricarica.',
     needs_user: 'È necessaria la tua conferma',
     failed: 'Modifica non riuscita',
     correction: 'Correzione in corso',
@@ -366,6 +391,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: 'Zweryfikowano',
     unchanged: 'Zmiany nie są potrzebne',
     applied_unverified: 'Zastosowano, bez weryfikacji',
+    write_pending_quarantined:
+      'Zapis może nadal trwać. Dalsze edycje są zablokowane; poczekaj na uzgodnienie lub przeładuj.',
     needs_user: 'Wymagane potwierdzenie',
     failed: 'Edycja nie powiodła się',
     correction: 'Korygowanie',
@@ -379,6 +406,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: 'Geverifieerd',
     unchanged: 'Geen wijzigingen nodig',
     applied_unverified: 'Toegepast, niet geverifieerd',
+    write_pending_quarantined:
+      'De schrijfbewerking loopt mogelijk nog. Verdere bewerkingen zijn geblokkeerd; wacht op afstemming of laad opnieuw.',
     needs_user: 'Uw bevestiging is nodig',
     failed: 'Bewerken mislukt',
     correction: 'Corrigeren',
@@ -392,6 +421,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: 'Disahkan',
     unchanged: 'Tiada perubahan diperlukan',
     applied_unverified: 'Digunakan, belum disahkan',
+    write_pending_quarantined:
+      'Penulisan mungkin masih berjalan. Suntingan seterusnya dibekukan; tunggu penyelarasan atau muat semula.',
     needs_user: 'Pengesahan anda diperlukan',
     failed: 'Suntingan gagal',
     correction: 'Membetulkan',
@@ -405,6 +436,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: 'אומת',
     unchanged: 'אין צורך בשינויים',
     applied_unverified: 'הוחל, אך לא אומת',
+    write_pending_quarantined:
+      'ייתכן שהכתיבה עדיין מתבצעת. עריכות נוספות הוקפאו; יש להמתין להתאמה או לטעון מחדש.',
     needs_user: 'נדרש אישור ממך',
     failed: 'העריכה נכשלה',
     correction: 'מתבצע תיקון',
@@ -418,6 +451,8 @@ export const presentationVerificationStrings = defineStrings({
     verified: 'सत्यापित',
     unchanged: 'बदलाव आवश्यक नहीं',
     applied_unverified: 'लागू हुआ, सत्यापित नहीं',
+    write_pending_quarantined:
+      'लिखना अभी जारी हो सकता है। आगे के संपादन रोक दिए गए हैं; समन्वय की प्रतीक्षा करें या पुनः लोड करें।',
     needs_user: 'आपकी पुष्टि आवश्यक है',
     failed: 'संपादन विफल',
     correction: 'सुधार जारी',
@@ -431,6 +466,7 @@ export const presentationVerificationStrings = defineStrings({
     verified: '已驗證',
     unchanged: '無需變更',
     applied_unverified: '已套用，但未能驗證',
+    write_pending_quarantined: '寫入可能仍在進行；已凍結後續編輯，請等待收斂或重新載入',
     needs_user: '需要你的確認',
     failed: '編輯失敗',
     correction: '正在修正',

@@ -46,6 +46,11 @@ describe('proposal controller', () => {
     const controller = createStructuredProposalController()
     const oldLease = controller.quarantine({ sessionId: 'session-a', generation: 1 })
     controller.logout()
+    expect(controller.isQuarantined()).toBe(true)
+    controller.resolveQuarantine(oldLease, { stable: false })
+    expect(controller.isQuarantined()).toBe(true)
+
+    controller.destroyDocumentContext()
     expect(controller.isQuarantined()).toBe(false)
 
     const currentLease = controller.quarantine({ sessionId: 'session-b', generation: 2 })

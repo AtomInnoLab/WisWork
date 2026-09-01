@@ -37,7 +37,11 @@ export interface StructuredProposalRequest extends Omit<StructuredProposal, 'id'
 
 export type ProposalDecision =
   | { status: 'confirmed' }
-  | { status: 'applied_unverified'; historyId?: string }
+  | {
+      status: 'applied_unverified'
+      historyId?: string
+      safeCode?: 'office_write_pending'
+    }
   | { status: 'rejected' | 'cancelled' }
   | { status: 'failed'; error: string }
 
@@ -57,6 +61,7 @@ export interface StructuredProposalController {
   reject(): void
   newTurn(): void
   logout(): void
+  destroyDocumentContext(): void
   isQuarantined(): boolean
   quarantine(scope: ProposalQuarantineScope): ProposalQuarantineLease
   resolveQuarantine(lease: ProposalQuarantineLease, result: { stable: boolean }): void
@@ -103,6 +108,7 @@ export interface ProposalController {
   reject(): void
   newTurn(): void
   logout(): void
+  destroyDocumentContext(): void
 }
 
 function invalidProposal(): never {
@@ -119,6 +125,7 @@ const PROPOSAL_ERROR_CODES = new Set([
   'office_concurrent_change',
   'office_state_uncertain',
   'office_applied_unverified',
+  'office_write_pending',
 ])
 
 function stableProposalError(error: unknown): string {
@@ -312,8 +319,11 @@ export function createStructuredProposalController(
             durationMs: Math.max(0, Date.now() - phaseStartedAt),
           }),
         )
-        if (code === 'office_applied_unverified') {
-          settle(proposal.decision, { status: 'applied_unverified' })
+        if (code === 'office_applied_unverified' || code === 'office_write_pending') {
+          settle(proposal.decision, {
+            status: 'applied_unverified',
+            ...(code === 'office_write_pending' ? { safeCode: code } : {}),
+          })
         } else {
           settle(proposal.decision, { status: 'failed', error: code })
           throw error
@@ -325,6 +335,9 @@ export function createStructuredProposalController(
     reject: () => invalidate('rejected'),
     newTurn: () => invalidate('cancelled'),
     logout: () => {
+      invalidate('cancelled')
+    },
+    destroyDocumentContext: () => {
       invalidate('cancelled')
       quarantine = undefined
     },
@@ -441,5 +454,6 @@ export function createProposalController(
     reject: structured.reject,
     newTurn: structured.newTurn,
     logout: structured.logout,
+    destroyDocumentContext: structured.destroyDocumentContext,
   }
 }

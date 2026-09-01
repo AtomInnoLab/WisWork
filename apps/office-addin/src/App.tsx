@@ -372,9 +372,11 @@ function ProposalReview(props: {
               ? 'Applying approved change'
               : event.state === 'applied'
                 ? 'Change applied'
-                : event.state === 'rejected'
-                  ? 'Change rejected'
-                  : 'Change failed'}
+                : event.state === 'uncertain'
+                  ? 'Write status uncertain'
+                  : event.state === 'rejected'
+                    ? 'Change rejected'
+                    : 'Change failed'}
         </span>
         <h2>{presentation.title}</h2>
       </div>

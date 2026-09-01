@@ -297,6 +297,7 @@ function lifecycle(
     clearSession,
     dispose() {
       clearSession()
+      proposals.destroyDocumentContext()
       disposed = true
     },
   }

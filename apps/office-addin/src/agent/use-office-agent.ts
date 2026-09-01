@@ -99,7 +99,7 @@ const confirmationErrors: Readonly<Record<string, SafeSessionError>> = Object.fr
   office_state_uncertain: {
     code: 'office_state_uncertain',
     message:
-      'The change may be partially applied. Wait for reconciliation; if editing stays blocked, reconnect before trying again.',
+      'The change may be partially applied. Wait for reconciliation; if editing stays blocked, reload the document before trying again.',
     retryable: false,
   },
   office_applied_unverified: {
@@ -356,10 +356,24 @@ export function createOfficeAgentSession(dependencies: {
       }
     }
     if (decision.status === 'applied_unverified') {
+      const writePending = decision.safeCode === 'office_write_pending'
       return {
-        output: JSON.stringify({ proposalId, status: 'applied_unverified' }),
+        output: JSON.stringify({
+          proposalId,
+          status: writePending ? 'write_pending' : 'applied_unverified',
+          ...(writePending
+            ? {
+                safeCode: 'office_write_pending',
+                instruction:
+                  'The write outcome is unresolved. Do not claim success and do not attempt another edit.',
+              }
+            : {}),
+        }),
         mutated: true,
-        summary: 'Applied; verification unavailable',
+        summary: writePending
+          ? (dependencies.presentationText?.('write_pending_quarantined') ??
+            'Write may still be running; further edits are frozen pending reconciliation or reload.')
+          : 'Applied; verification unavailable',
         stopToolBatch: true,
       }
     }
@@ -718,14 +732,33 @@ export function createOfficeAgentSession(dependencies: {
         retryable: false,
       })
       try {
+        const decision = proposals.waitForDecision(id)
         await proposals.confirm(id)
         if (epoch !== sessionEpoch) return
-        if (event)
+        const outcome = await decision
+        const writePending =
+          outcome.status === 'applied_unverified' && outcome.safeCode === 'office_write_pending'
+        if (event && writePending)
+          replace(event.id, (item) =>
+            item.kind === 'proposal'
+              ? {
+                  ...item,
+                  state: 'uncertain',
+                  error:
+                    dependencies.presentationText?.('write_pending_quarantined') ??
+                    'Write may still be running; further edits are frozen pending reconciliation or reload.',
+                }
+              : item,
+          )
+        else if (event)
           replace(event.id, (item) =>
             item.kind === 'proposal' ? { ...item, state: 'applied' } : item,
           )
         publish({
-          activity: 'Document updated',
+          activity: writePending
+            ? (dependencies.presentationText?.('write_pending_quarantined') ??
+              'Write may still be running; further edits are frozen pending reconciliation or reload.')
+            : 'Document updated',
           error: undefined,
           errorMessage: undefined,
           retryable: false,

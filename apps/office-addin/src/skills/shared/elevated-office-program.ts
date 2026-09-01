@@ -726,7 +726,7 @@ export function createElevatedOfficeSkill(options: {
             } catch {
               /* authoritative read was attempted; a pending dispatch remains uncertain */
             }
-            throw new Error('office_applied_unverified')
+            throw new Error('office_write_pending')
           }
           let result: { verified: boolean; output?: unknown }
           try {

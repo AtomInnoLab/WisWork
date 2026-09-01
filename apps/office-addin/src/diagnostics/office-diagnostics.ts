@@ -24,6 +24,7 @@ const ERROR_CODES = new Set([
   'office_state_uncertain',
   'office_verify_failed',
   'office_write_failed',
+  'office_write_pending',
   'proposal_missing',
   'proposal_stale',
   'provider_unavailable',

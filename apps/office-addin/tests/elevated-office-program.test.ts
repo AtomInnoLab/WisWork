@@ -462,12 +462,33 @@ describe('elevated raw Office program', () => {
       const confirmation = proposals.confirm(id)
       await vi.advanceTimersByTimeAsync(20_000)
       await confirmation
+      proposals.logout()
+      const blocked = await skill.executeTool({
+        id: 'call_BBBBBBBBBBBBBBBB',
+        name: 'propose_raw_office_edit',
+        input: {
+          program: {
+            version: 1,
+            kind: 'office_js_ast',
+            operations: [{ call: 'body.insertText', args: { location: 'end', text: 'y' } }],
+          },
+        },
+      })
+      expect(blocked).toMatchObject({ isError: true, output: 'office_state_uncertain' })
+      expect(adapter.snapshot).toHaveBeenCalledTimes(1)
+      vi.mocked(adapter.captureAuthority).mockReturnValue({
+        ...authority(),
+        sessionId: 'ses_BBBBBBBBBBBBBBBB',
+        generation: 2,
+      })
       release()
       await vi.runAllTimersAsync()
 
-      await vi.waitFor(() => expect(adapter.rollback).toHaveBeenCalledTimes(1))
       expect(proposals.isQuarantined()).toBe(true)
       expect(adapter.validateSnapshot).toHaveBeenCalledTimes(1)
+      expect(adapter.rollback).not.toHaveBeenCalled()
+      proposals.destroyDocumentContext()
+      expect(proposals.isQuarantined()).toBe(false)
     } finally {
       vi.useRealTimers()
     }

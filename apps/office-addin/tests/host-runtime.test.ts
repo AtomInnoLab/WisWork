@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createOfficeHostRuntime } from '../src/agent/host-runtime.js'
+import type { StructuredProposalController } from '../src/agent/proposal-controller.js'
 import type { ElevatedOfficeAdapter } from '../src/skills/shared/elevated-office-program.js'
 
 const inventories = {
@@ -112,6 +113,19 @@ describe('host runtime composition', () => {
     expect(runtime.vfs.list('/home/skills')).toEqual([])
     expect(runtime.skills.list()).toEqual([])
     expect(runtime.proposals.pending()).toBeUndefined()
+  })
+
+  it('inherits quarantine across session clearing and releases it only on document disposal', () => {
+    const runtime = createOfficeHostRuntime('word')
+    const proposals = runtime.proposals as StructuredProposalController
+    proposals.quarantine({ sessionId: 'session-a', generation: 1 })
+
+    runtime.clearSession()
+    expect(proposals.isQuarantined()).toBe(true)
+    runtime.disableElevatedOffice()
+    expect(proposals.isQuarantined()).toBe(true)
+    runtime.dispose()
+    expect(proposals.isQuarantined()).toBe(false)
   })
 
   it('ignores an upload that settles after the runtime is disposed', async () => {

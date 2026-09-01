@@ -23,6 +23,7 @@ describe('presentation verification translations', () => {
       'verified',
       'unchanged',
       'applied_unverified',
+      'write_pending_quarantined',
       'needs_user',
       'failed',
       'correction',
