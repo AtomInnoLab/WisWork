@@ -1,5 +1,5 @@
 import { isToolExecutionSuspension } from '@wiswork/agent-core'
-import { createEnhancedPolicyIssuer } from '@wiswork/agent-runtime'
+import { createEnhancedPolicyIssuer } from '../../agent-runtime/src/contracts'
 import { describe, expect, it, vi } from 'vitest'
 import {
   createDocumentToolManifest,

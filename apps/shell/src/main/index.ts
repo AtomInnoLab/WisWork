@@ -35,6 +35,7 @@ import {
   extractCallbackUrl,
 } from '@wiswork/auth'
 import { createOfficeBridge, type OfficeBridge } from '@wiswork/office-bridge'
+import { EnhancedModeComponentManager } from '@wiswork/codex-bridge'
 import { createI18n, isLang, normalizeLang, setUiLang, type Lang } from '@wiswork/i18n'
 import {
   appMenuLabels,
@@ -46,7 +47,12 @@ import {
   showSaveDialogWithMemory,
   windowMenuTemplate,
 } from '@wiswork/electron-utils'
-import { readAppSettings, writeAppSetting } from './app-settings'
+import {
+  readAppSettings,
+  readRequestedAgentRuntime,
+  writeAppSetting,
+  writeRequestedAgentRuntime,
+} from './app-settings'
 import { ProjectStore } from '@wiswork/project-store'
 import { parseTectonicManifest } from '@wiswork/latex-compiler'
 import {
@@ -158,6 +164,11 @@ import {
 import { registerLatexProtocolScheme } from './latex-protocol-scheme'
 import { migrateLegacyUserData } from './user-data-migration'
 import { createAuthDeepLinkQueue } from './auth-deep-link-queue'
+import codexComponentManifest from '../../../../tools/codex/manifest.json'
+import {
+  registerEnhancedModeComponentIpc,
+  type EnhancedModeComponentController,
+} from './enhanced-mode-component'
 import { createThemeController, registerThemeIpc } from './theme-controller'
 import { applyUpdateChannel, initAutoUpdater } from './updater'
 import { isUpdateChannel, type UpdateChannel } from '../shared/update-api'
@@ -295,6 +306,8 @@ configureLatexRuntime({
 registerLatexProtocolScheme(protocol)
 
 let authRuntime: ReturnType<typeof initializeElectronAuthRuntime> | null = null
+let enhancedModeComponentController: EnhancedModeComponentController | null = null
+let activeAgentRuntime: 'standard' | 'enhanced' = 'standard'
 let officeBridge: OfficeBridge | null = null
 let officeBridgeServer: OfficeBridgeHttpServer | null = null
 let officeBridgeDiagnostic = 'disabled'
@@ -2584,6 +2597,21 @@ app.whenReady().then(async () => {
     safeStorage,
     openExternal: (url) => shell.openExternal(url),
   })
+  // Runtime selection is immutable for this process. Settings changes below only affect next boot.
+  activeAgentRuntime = readRequestedAgentRuntime(APP_SETTINGS_PATH())
+  const enhancedModeComponent = new EnhancedModeComponentManager({
+    cacheRoot: join(app.getPath('userData'), 'components', 'enhanced-mode'),
+    manifest: codexComponentManifest,
+  })
+  enhancedModeComponentController = registerEnhancedModeComponentIpc({
+    ipcMain,
+    component: enhancedModeComponent,
+    isTrustedSender: (owner) => owner === shellWindow?.webContents,
+    readSavedMode: () => readRequestedAgentRuntime(APP_SETTINGS_PATH()),
+    writeSavedMode: (mode) => writeRequestedAgentRuntime(APP_SETTINGS_PATH(), mode),
+    currentMode: () => activeAgentRuntime,
+    runtimeInUse: () => activeAgentRuntime === 'enhanced',
+  })
   const asOfficePairing = (pairing: {
     pairingId: string
     hostLabel: string
@@ -2900,6 +2928,7 @@ app.on('before-quit', () => {
   // No close prompt may fall through to "Save" during shutdown
   markSheetsShuttingDown()
   stopSheetsSidecar()
+  void enhancedModeComponentController?.close()
   officeBridge?.revokeAll()
   officeBridge?.shutdown()
   officeRelayActivationFence.lock()

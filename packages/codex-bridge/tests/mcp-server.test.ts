@@ -1,6 +1,6 @@
 import { request } from 'node:http'
 import { describe, expect, it, vi } from 'vitest'
-import { createEnhancedPolicyIssuer } from '@wiswork/agent-runtime'
+import { createEnhancedPolicyIssuer } from '../../agent-runtime/src/contracts'
 import { startDocumentMcpServer } from '../src/mcp-server.js'
 import { createDocumentToolManifest } from '../src/tool-router.js'
 

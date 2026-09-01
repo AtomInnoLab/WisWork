@@ -1,5 +1,5 @@
 import { isToolExecutionSuspension, type ToolExecution } from '@wiswork/agent-core'
-import { createEnhancedPolicyIssuer } from '@wiswork/agent-runtime'
+import { createEnhancedPolicyIssuer } from '../../agent-runtime/src/contracts'
 import { describe, expect, it, vi } from 'vitest'
 import { createDocumentCarrierIssuer } from '../src/index.js'
 import {
@@ -108,6 +108,22 @@ describe('document-scoped tool session', () => {
       mutated: true,
     })
     expect(f.executeRead).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancels queued mutations by call id before an authority can claim them', async () => {
+    const f = fixture()
+    const outcome = f.session.callTool(f.session.credentials, {
+      id: 'queued-write',
+      name: writeTool.name,
+      input: {},
+    })
+    expect(isToolExecutionSuspension(outcome as any)).toBe(true)
+    expect(f.session.cancel(f.session.credentials, 'queued-write')).toBe(true)
+    await expect((outcome as any).result).resolves.toMatchObject({
+      output: 'tool_cancelled',
+      isError: true,
+    })
+    expect(f.session.mutationAuthority.claimNext()).toBeUndefined()
   })
 
   it('rejects cross-session, unknown, oversized, cancelled and closed calls', async () => {

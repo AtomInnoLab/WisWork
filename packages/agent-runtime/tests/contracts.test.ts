@@ -7,6 +7,7 @@ import {
   shouldStartEnhancedRuntime,
   createEnhancedPolicyIssuer,
 } from '../src/contracts'
+import * as publicRuntime from '../src/index'
 
 describe('runtime selection', () => {
   it('defaults exclusively to Standard', () => {
@@ -47,6 +48,9 @@ describe('runtime selection', () => {
 })
 
 describe('closed enhanced policy issuer', () => {
+  it('does not expose the issuer from the package public root', () => {
+    expect('createEnhancedPolicyIssuer' in publicRuntime).toBe(false)
+  })
   it('issues opaque one-use grants bound to generation, host and capabilities', () => {
     let generation = 7
     const issuer = createEnhancedPolicyIssuer(() => generation)

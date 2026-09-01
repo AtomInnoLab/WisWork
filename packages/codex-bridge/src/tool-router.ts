@@ -782,8 +782,10 @@ export function createDocumentToolSession(
     cancel(candidate, callId) {
       authenticate(candidate)
       const controller = pending.get(callId)
+      const mutation = pendingMutations.get(callId)
       controller?.abort()
-      return controller !== undefined
+      mutation?.controller.abort()
+      return controller !== undefined || mutation !== undefined
     },
     close,
   }
