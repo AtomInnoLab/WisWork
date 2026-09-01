@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import {
   existsSync,
   mkdirSync,
@@ -151,4 +152,69 @@ test('root verification runs the positive optional-runtime contracts', () => {
     assert.match(scripts.typecheck, new RegExp(`typecheck -w ${workspace.replace('/', '\\/')}`))
   }
   assert.equal(scripts['test:runtime-removal'], undefined)
+})
+
+test('post-package inventory rejects renamed component bytes by hash', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'wiswork-runtime-policy-hash-'))
+  try {
+    const artifact = join(fixture, 'release/unpacked/resources/renamed-helper.exe')
+    mkdirSync(join(fixture, 'release/unpacked/resources'), { recursive: true })
+    const bytes = Buffer.from('small-known-component-fixture')
+    writeFileSync(artifact, bytes)
+    const digest = createHash('sha256').update(bytes).digest('hex')
+    assert.throws(
+      () =>
+        assertOptionalRuntimePackagingPolicy({
+          root: fixture,
+          mode: 'post-package',
+          artifactDirectories: [join(fixture, 'release')],
+          knownHashes: new Set([digest]),
+        }),
+      /known optional Codex component bytes/,
+    )
+  } finally {
+    rmSync(fixture, { recursive: true, force: true })
+  }
+})
+
+test('source inventory rejects executable magic outside the native input allowlist', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'wiswork-runtime-policy-magic-'))
+  try {
+    const out = join(fixture, 'apps/shell/out')
+    mkdirSync(out, { recursive: true })
+    writeFileSync(join(out, 'renamed-helper.bin'), Buffer.from([0x4d, 0x5a, 0, 0]))
+    assert.throws(
+      () =>
+        assertOptionalRuntimePackagingPolicy({
+          root: fixture,
+          packagingConfig: { files: ['out/**'] },
+          knownHashes: new Set(),
+        }),
+      /executable package input is not allowlisted/,
+    )
+    rmSync(join(out, 'renamed-helper.bin'))
+    const disguised = join(fixture, 'apps/shell/malware/tectonic')
+    mkdirSync(join(fixture, 'apps/shell/malware'), { recursive: true })
+    writeFileSync(disguised, Buffer.from([0x7f, 0x45, 0x4c, 0x46]))
+    assert.throws(() =>
+      assertOptionalRuntimePackagingPolicy({
+        root: fixture,
+        packagingConfig: { extraResources: [{ from: 'malware/tectonic' }] },
+        knownHashes: new Set(),
+      }),
+    )
+    rmSync(disguised)
+    const tectonic = join(fixture, 'apps/latex/native/tectonic')
+    mkdirSync(join(fixture, 'apps/latex/native'), { recursive: true })
+    writeFileSync(tectonic, Buffer.from([0x7f, 0x45, 0x4c, 0x46]))
+    assert.doesNotThrow(() =>
+      assertOptionalRuntimePackagingPolicy({
+        root: fixture,
+        packagingConfig: { extraResources: [{ from: '../latex/native/tectonic' }] },
+        knownHashes: new Set(),
+      }),
+    )
+  } finally {
+    rmSync(fixture, { recursive: true, force: true })
+  }
 })

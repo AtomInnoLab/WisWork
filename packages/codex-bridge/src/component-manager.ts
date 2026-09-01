@@ -12,6 +12,7 @@ import {
   rename,
   rmdir,
   rm,
+  statfs,
 } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { Readable, Transform } from 'node:stream'
@@ -26,6 +27,7 @@ const MAX_VERSION_OUTPUT = 65_536
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 10 * 60_000
 const DEFAULT_PROBE_TIMEOUT_MS = 5_000
 const DEFAULT_LOCK_TIMEOUT_MS = 30_000
+const CAPACITY_MARGIN_BYTES = 64 * 1024 * 1024
 const PRIMARY_DOWNLOAD_HOST = 'downloads.wiswork.com'
 const FALLBACK_DOWNLOAD_HOST = 'github.com'
 const MANIFEST_SOURCE_PREFIX = 'https://github.com/openai/codex/releases/download/rust-v0.147.0/'
@@ -111,6 +113,8 @@ export type ComponentPlatformTrustVerifier = (
   options: ComponentProbeOptions,
 ) => Promise<void>
 
+export type ComponentCapacityCheck = (cacheRoot: string, requiredBytes: number) => Promise<void>
+
 export interface EnhancedModeComponentManagerOptions {
   readonly cacheRoot: string
   readonly manifest: CodexComponentManifest | unknown
@@ -119,6 +123,7 @@ export interface EnhancedModeComponentManagerOptions {
   readonly fetchImplementation?: typeof fetch
   readonly probeVersion?: ComponentVersionProbe
   readonly verifyPlatformTrust?: ComponentPlatformTrustVerifier
+  readonly checkAvailableCapacity?: ComponentCapacityCheck
   readonly downloadTimeoutMs?: number
   readonly probeTimeoutMs?: number
   readonly lockTimeoutMs?: number
@@ -162,6 +167,32 @@ function safeRelativePath(value: unknown): value is string {
   return segments.every(
     (segment) => segment !== '' && segment !== '.' && segment !== '..' && segment.length <= 128,
   )
+}
+
+const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i
+
+function canonicalTargetPath(
+  path: string,
+  platform: string,
+  errorCode = 'enhanced_mode_manifest_invalid',
+): string {
+  if (!safeRelativePath(path)) fail(errorCode)
+  if (platform !== 'win32') return path
+  const canonical: string[] = []
+  for (const segment of path.split('/')) {
+    const trimmed = segment.replace(/[ .]+$/u, '')
+    const deviceBase = trimmed.split('.')[0]!.replace(/[ .]+$/u, '')
+    if (
+      trimmed !== segment ||
+      trimmed === '' ||
+      /[<>:"|?*\u0000-\u001f]/u.test(trimmed) ||
+      WINDOWS_RESERVED_NAME.test(deviceBase)
+    ) {
+      fail(errorCode)
+    }
+    canonical.push(trimmed.toLowerCase())
+  }
+  return canonical.join('/')
 }
 
 function parseManifestFile(value: unknown): CodexComponentFileManifest {
@@ -226,6 +257,12 @@ function parseManifestAsset(value: unknown): CodexComponentAssetManifest {
   if (value.target !== expectedTarget || (value.platform === 'win32' && value.arch !== 'x64')) {
     fail('enhanced_mode_manifest_invalid')
   }
+  const officialBasename =
+    value.target === 'aarch64-apple-darwin'
+      ? 'codex-app-server-package-aarch64-apple-darwin.tar.gz'
+      : value.target === 'x86_64-apple-darwin'
+        ? 'codex-app-server-package-x86_64-apple-darwin.tar.gz'
+        : 'codex-app-server-package-x86_64-pc-windows-msvc.tar.gz'
   const trust = value.trust as UnknownRecord
   if (value.platform === 'darwin') {
     if (
@@ -268,7 +305,8 @@ function parseManifestAsset(value: unknown): CodexComponentAssetManifest {
     fallbackUrl.hash !== '' ||
     !fallbackUrl.href.startsWith(MANIFEST_SOURCE_PREFIX) ||
     fallbackUrl.pathname.toLowerCase().split('/').includes('latest') ||
-    primaryUrl.pathname.split('/').at(-1) !== fallbackUrl.pathname.split('/').at(-1)
+    primaryUrl.pathname.split('/').at(-1) !== officialBasename ||
+    fallbackUrl.pathname.split('/').at(-1) !== officialBasename
   ) {
     fail('enhanced_mode_manifest_invalid')
   }
@@ -286,6 +324,12 @@ function parseManifestAsset(value: unknown): CodexComponentAssetManifest {
     typeof maxExtractedBytes !== 'number' ||
     files.reduce((sum, file) => sum + file.bytes, 0) > maxExtractedBytes
   ) {
+    fail('enhanced_mode_manifest_invalid')
+  }
+  const canonicalEntries = [...directories, ...files.map((file) => file.path)].map((path) =>
+    canonicalTargetPath(path, value.platform as string),
+  )
+  if (new Set(canonicalEntries).size !== canonicalEntries.length) {
     fail('enhanced_mode_manifest_invalid')
   }
   if (
@@ -362,18 +406,24 @@ export function validateCodexArchiveEntry(
   type: string,
   size: number,
   seen: Set<string>,
+  platform = 'darwin',
 ): string {
   const normalized = normalizeArchivePath(path)
+  let canonical: string
+  try {
+    canonical = canonicalTargetPath(normalized, platform, 'enhanced_mode_archive_unsafe')
+  } catch {
+    fail('enhanced_mode_archive_unsafe')
+  }
   if (
-    !safeRelativePath(normalized) ||
     (type !== 'File' && type !== 'Directory') ||
     !Number.isSafeInteger(size) ||
     size < 0 ||
-    seen.has(normalized)
+    seen.has(canonical)
   ) {
     fail('enhanced_mode_archive_unsafe')
   }
-  seen.add(normalized)
+  seen.add(canonical)
   return normalized
 }
 
@@ -390,6 +440,19 @@ async function sha256File(path: string): Promise<string> {
   const hash = createHash('sha256')
   for await (const chunk of createReadStream(path)) hash.update(chunk)
   return hash.digest('hex')
+}
+
+async function defaultCheckAvailableCapacity(
+  cacheRoot: string,
+  requiredBytes: number,
+): Promise<void> {
+  try {
+    const stats = await statfs(cacheRoot, { bigint: true })
+    if (stats.bavail * stats.bsize < BigInt(requiredBytes)) fail('enhanced_mode_capacity_failed')
+  } catch (error) {
+    if (error instanceof EnhancedModeComponentError) throw error
+    fail('enhanced_mode_capacity_failed')
+  }
 }
 
 async function defaultProbeVersion(
@@ -700,7 +763,13 @@ async function extractVerifiedArchive(
         filter(path, entry) {
           try {
             const readEntry = entry as ReadEntry
-            const normalized = validateCodexArchiveEntry(path, readEntry.type, readEntry.size, seen)
+            const normalized = validateCodexArchiveEntry(
+              path,
+              readEntry.type,
+              readEntry.size,
+              seen,
+              asset.platform,
+            )
             if (readEntry.type === 'Directory') {
               if (!allowedDirectories.has(normalized) || readEntry.size !== 0)
                 fail('enhanced_mode_archive_unsafe')
@@ -808,20 +877,23 @@ async function extractVerifiedZip(
     const externalAttributes = bytes.readUInt32LE(offset + 38)
     const localOffset = bytes.readUInt32LE(offset + 42)
     if (
-      (flags & 1) !== 0 ||
+      (flags & ~0x800) !== 0 ||
       (method !== 0 && method !== 8) ||
-      ((externalAttributes >>> 16) & 0xf000) === 0xa000
+      extraLength !== 0 ||
+      commentLength !== 0
     )
       fail('enhanced_mode_archive_unsafe')
     const nameEnd = offset + 46 + nameLength
     if (nameEnd + extraLength + commentLength > end) fail('enhanced_mode_archive_unsafe')
     const name = bytes.subarray(offset + 46, nameEnd).toString('utf8')
     const isDirectory = name.endsWith('/')
+    validateZipEntryMode(bytes.readUInt16LE(offset + 4), externalAttributes, isDirectory)
     const normalized = validateCodexArchiveEntry(
       name,
       isDirectory ? 'Directory' : 'File',
       size,
       seen,
+      asset.platform,
     )
     if (
       localOffset !== expectedLocalOffset ||
@@ -837,6 +909,7 @@ async function extractVerifiedZip(
       bytes.readUInt16LE(localOffset + 8) !== method ||
       bytes.readUInt32LE(localOffset + 18) !== compressedSize ||
       bytes.readUInt32LE(localOffset + 22) !== size ||
+      localExtraLength !== 0 ||
       bytes.subarray(localOffset + 30, localOffset + 30 + localNameLength).toString('utf8') !==
         name ||
       dataStart + compressedSize > centralOffset
@@ -868,6 +941,18 @@ async function extractVerifiedZip(
     offset = nameEnd + extraLength + commentLength
   }
   if (offset !== end || expectedLocalOffset !== centralOffset) fail('enhanced_mode_archive_unsafe')
+}
+
+export function validateZipEntryMode(
+  versionMadeBy: number,
+  externalAttributes: number,
+  isDirectory: boolean,
+): void {
+  const creator = versionMadeBy >>> 8
+  const unixType = (externalAttributes >>> 16) & 0xf000
+  if (creator !== 3 || unixType !== (isDirectory ? 0x4000 : 0x8000)) {
+    fail('enhanced_mode_archive_unsafe')
+  }
 }
 
 async function writeFileSafe(path: string, contents: Buffer): Promise<void> {
@@ -983,6 +1068,7 @@ export class EnhancedModeComponentManager {
   readonly #fetch: typeof fetch
   readonly #probeVersion: ComponentVersionProbe
   readonly #verifyPlatformTrust: ComponentPlatformTrustVerifier
+  readonly #checkAvailableCapacity: ComponentCapacityCheck
   readonly #downloadTimeoutMs: number
   readonly #probeTimeoutMs: number
   readonly #lockTimeoutMs: number
@@ -1001,6 +1087,7 @@ export class EnhancedModeComponentManager {
     this.#fetch = options.fetchImplementation ?? globalThis.fetch
     this.#probeVersion = options.probeVersion ?? defaultProbeVersion
     this.#verifyPlatformTrust = options.verifyPlatformTrust ?? defaultVerifyPlatformTrust
+    this.#checkAvailableCapacity = options.checkAvailableCapacity ?? defaultCheckAvailableCapacity
     this.#downloadTimeoutMs = this.#duration(options.downloadTimeoutMs, DEFAULT_DOWNLOAD_TIMEOUT_MS)
     this.#probeTimeoutMs = this.#duration(options.probeTimeoutMs, DEFAULT_PROBE_TIMEOUT_MS)
     this.#lockTimeoutMs = this.#duration(options.lockTimeoutMs, DEFAULT_LOCK_TIMEOUT_MS)
@@ -1108,6 +1195,10 @@ export class EnhancedModeComponentManager {
           await this.#removeOwnedInstall(asset)
         }
       }
+      const requiredCapacity = asset.bytes + asset.archive.maxExtractedBytes + CAPACITY_MARGIN_BYTES
+      await this.#checkAvailableCapacity(this.#cacheRoot, requiredCapacity).catch(() =>
+        fail('enhanced_mode_capacity_failed'),
+      )
       await downloadVerifiedArchive(
         asset,
         archivePath,

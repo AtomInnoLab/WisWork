@@ -1,11 +1,23 @@
 import { createRequire } from 'node:module'
-import { existsSync, lstatSync, opendirSync, readlinkSync, realpathSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import {
+  closeSync,
+  existsSync,
+  lstatSync,
+  openSync,
+  opendirSync,
+  readFileSync,
+  readlinkSync,
+  readSync,
+  realpathSync,
+} from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
 const MAX_INVENTORY_ENTRIES = 20_000
 const MAX_INVENTORY_DEPTH = 16
+const MAX_INVENTORY_BYTES = 20 * 1024 * 1024 * 1024
 const prohibitedArtifact =
   /(?:codex|app-server).*(?:\.tar\.gz|\.zip|\.exe|\.app|\.dll|\.dylib|\.node|\.so|\.wasm)$|^(?:codex|codex-app-server|app-server)$/i
 
@@ -20,7 +32,51 @@ function contained(root, path) {
   return child === '' || (!child.startsWith('..') && !isAbsolute(child))
 }
 
-function inventory(path, state, { allowMissing, allowSymlinks, inventoryRoot }, depth = 0) {
+function executableMagic(path) {
+  const handle = openSync(path, 'r')
+  const prefix = Buffer.alloc(4)
+  try {
+    const count = readSync(handle, prefix, 0, prefix.length, 0)
+    if (count < 2) return false
+    if (prefix[0] === 0x4d && prefix[1] === 0x5a) return true
+    if (count < 4) return false
+    const magic = prefix.readUInt32BE(0)
+    return (
+      magic === 0x7f454c46 ||
+      magic === 0xfeedface ||
+      magic === 0xfeedfacf ||
+      magic === 0xcefaedfe ||
+      magic === 0xcffaedfe ||
+      magic === 0xcafebabe ||
+      magic === 0xbebafeca
+    )
+  } finally {
+    closeSync(handle)
+  }
+}
+
+function sha256File(path) {
+  const hash = createHash('sha256')
+  const handle = openSync(path, 'r')
+  const chunk = Buffer.allocUnsafe(1024 * 1024)
+  try {
+    for (;;) {
+      const count = readSync(handle, chunk, 0, chunk.length, null)
+      if (count === 0) break
+      hash.update(chunk.subarray(0, count))
+    }
+  } finally {
+    closeSync(handle)
+  }
+  return hash.digest('hex')
+}
+
+function inventory(
+  path,
+  state,
+  { allowMissing, allowSymlinks, inventoryRoot, allowExecutableMagic },
+  depth = 0,
+) {
   if (!existsSync(path)) {
     if (allowMissing) return
     throw new Error(`expected package artifact is missing: ${path}`)
@@ -37,11 +93,25 @@ function inventory(path, state, { allowMissing, allowSymlinks, inventoryRoot }, 
     return inventory(
       target,
       state,
-      { allowMissing: false, allowSymlinks, inventoryRoot },
+      { allowMissing: false, allowSymlinks, inventoryRoot, allowExecutableMagic },
       depth + 1,
     )
   }
-  if (!info.isDirectory()) return
+  if (!info.isDirectory()) {
+    if (!info.isFile()) throw new Error(`package inventory contains special file: ${path}`)
+    state.bytes += info.size
+    if (state.bytes > MAX_INVENTORY_BYTES) throw new Error('package inventory exceeds byte limit')
+    if (executableMagic(path) && !allowExecutableMagic) {
+      throw new Error(`executable package input is not allowlisted: ${path}`)
+    }
+    if (state.knownHashes.has(sha256File(path))) {
+      throw new Error(`known optional Codex component bytes must not be bundled: ${path}`)
+    }
+    return
+  }
+  if (/\.app$/i.test(basename(path)) || /(?:^|-)unpacked$/i.test(basename(path))) {
+    state.sawUnpackedRoot = true
+  }
   const real = realpathSync(path)
   if (state.visited.has(real)) return
   state.visited.add(real)
@@ -57,13 +127,39 @@ function inventory(path, state, { allowMissing, allowSymlinks, inventoryRoot }, 
       inventory(
         join(path, entry.name),
         state,
-        { allowMissing: false, allowSymlinks, inventoryRoot },
+        { allowMissing: false, allowSymlinks, inventoryRoot, allowExecutableMagic },
         depth + 1,
       )
     }
   } finally {
     directory.closeSync()
   }
+}
+
+export function optionalRuntimeKnownHashes(root) {
+  const path = join(root, 'tools/codex/manifest.json')
+  if (!existsSync(path)) return new Set()
+  const manifest = JSON.parse(readFileSync(path, 'utf8'))
+  const hashes = new Set()
+  for (const asset of manifest?.component?.assets ?? []) {
+    if (typeof asset.sha256 === 'string') hashes.add(asset.sha256)
+    for (const file of asset?.layout?.files ?? []) {
+      if (file?.install === true && typeof file.sha256 === 'string') hashes.add(file.sha256)
+    }
+  }
+  return hashes
+}
+
+function executableInputAllowed(source, shellRoot) {
+  const candidate = resolve(shellRoot, source)
+  return new Set([
+    resolve(shellRoot, '../sheets/native/xlsx-engine/target/release/xlsx-sidecar'),
+    resolve(shellRoot, '../sheets/native/xlsx-engine/target/release/xlsx-sidecar.exe'),
+    resolve(shellRoot, '../latex/native/tectonic'),
+    resolve(shellRoot, '../latex/native/tectonic.exe'),
+    resolve(shellRoot, '../latex/native/tectonic-ci'),
+    resolve(shellRoot, '../latex/native/tectonic-ci.exe'),
+  ]).has(candidate)
 }
 
 function configuredEntries(config) {
@@ -100,21 +196,44 @@ export function assertOptionalRuntimePackagingPolicy({
   packagingConfig,
   packageInputs,
   artifactDirectories,
+  knownHashes,
 } = {}) {
   if (typeof root !== 'string') throw new TypeError('root is required')
   if (mode !== 'source' && mode !== 'post-package') throw new TypeError('invalid policy mode')
-  const state = { entries: 0, visited: new Set() }
+  const resolvedKnownHashes = knownHashes ?? optionalRuntimeKnownHashes(root)
+  if (
+    !(resolvedKnownHashes instanceof Set) ||
+    [...resolvedKnownHashes].some(
+      (hash) => typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash),
+    )
+  ) {
+    throw new TypeError('knownHashes must be a Set of SHA-256 digests')
+  }
+  const state = {
+    bytes: 0,
+    entries: 0,
+    visited: new Set(),
+    knownHashes: resolvedKnownHashes,
+    sawUnpackedRoot: false,
+  }
   if (mode === 'post-package') {
     if (!Array.isArray(artifactDirectories) || artifactDirectories.length === 0) {
       throw new Error('post-package mode requires artifact directories')
     }
+    // ASAR/DMG/ZIP/NSIS files are treated as opaque, bounded regular files and hashed as a whole.
+    // Their inputs are independently constrained by source mode; release jobs must also provide
+    // electron-builder's unpacked output in the same artifact directory for recursive inspection.
     for (const directory of artifactDirectories) {
       const absolute = resolve(directory)
       inventory(absolute, state, {
         allowMissing: false,
         allowSymlinks: true,
         inventoryRoot: absolute,
+        allowExecutableMagic: true,
       })
+    }
+    if (!state.sawUnpackedRoot) {
+      throw new Error('post-package inventory requires an unpacked application artifact')
     }
     return
   }
@@ -143,6 +262,7 @@ export function assertOptionalRuntimePackagingPolicy({
       allowMissing: true,
       allowSymlinks: false,
       inventoryRoot: existsSync(absolute) ? realpathSync(absolute) : absolute,
+      allowExecutableMagic: executableInputAllowed(source, shellRoot),
     })
   }
 }

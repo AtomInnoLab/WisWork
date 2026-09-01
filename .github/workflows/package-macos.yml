@@ -15,6 +15,11 @@ on:
       - 'packages/latex-project/**'
       - 'packages/latex-compiler/**'
       - 'packages/pdf-viewer/**'
+      - 'packages/codex-bridge/**'
+      - 'tools/codex/**'
+      - 'tools/install-enhanced-component.ts'
+      - 'tools/codex-release.test.mjs'
+      - 'tools/optional-runtime-policy.mjs'
       - 'tools/fetch-tectonic.mjs'
       - 'tools/tectonic/**'
       - 'package-lock.json'
@@ -56,6 +61,18 @@ jobs:
 
       - name: Verify Codex component release policy
         run: npm run test:codex-release
+
+      - name: Verify pinned macOS Codex app-server component
+        run: npx tsx tools/install-enhanced-component.ts --cache "$RUNNER_TEMP/wiswork-codex-component"
+
+      - name: Read back pinned macOS component signing identity
+        run: |
+          set -euo pipefail
+          COMPONENT="$RUNNER_TEMP/wiswork-codex-component/0.147.0/darwin-arm64/bin/codex-app-server"
+          test -x "$COMPONENT"
+          DETAILS=$(codesign -dv --verbose=4 "$COMPONENT" 2>&1)
+          printf '%s\n' "$DETAILS" | grep '^TeamIdentifier=2DC432GLL2$'
+          spctl --assess --type execute --verbose=4 "$COMPONENT"
 
       - name: Generate notices
         run: npm run notices

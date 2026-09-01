@@ -3,6 +3,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
+import { optionalRuntimeKnownHashes } from './optional-runtime-policy.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (path) => readFileSync(join(root, path), 'utf8')
@@ -58,6 +59,15 @@ test('manifest pins only the three official 0.147.0 app-server package assets', 
       [asset.layout.entrypoint],
     )
   }
+  assert.deepEqual(
+    [...optionalRuntimeKnownHashes(root)].sort(),
+    manifest.component.assets
+      .flatMap((asset) => [
+        asset.sha256,
+        ...asset.layout.files.filter((file) => file.install).map((file) => file.sha256),
+      ])
+      .sort(),
+  )
 })
 
 test('reviewed repository assets contain no downloaded component binary or archive', () => {
@@ -80,8 +90,16 @@ test('every desktop builder invocation immediately runs the shared post-package 
         /run: node \.\.\/\.\.\/tools\/optional-runtime-policy\.mjs --mode post-package --artifact-dir release/g,
       ),
     ].length
+    const componentGateCount = [
+      ...workflow.matchAll(/run: npx tsx tools\/install-enhanced-component\.ts --cache/g),
+    ].length
     assert.ok(builderCount > 0)
     assert.equal(checkerCount, builderCount, `${path} must gate every builder invocation`)
+    assert.equal(
+      componentGateCount,
+      builderCount,
+      `${path} must verify the real component per build`,
+    )
     for (const match of workflow.matchAll(/run: npx electron-builder[^\n]*/g)) {
       const tail = workflow.slice(match.index + match[0].length)
       assert.ok(tail.indexOf('optional-runtime-policy.mjs --mode post-package') >= 0)
@@ -90,7 +108,11 @@ test('every desktop builder invocation immediately runs the shared post-package 
           tail.indexOf('uses: actions/upload-artifact'),
       )
     }
+    assert.match(workflow, /grep '\^TeamIdentifier=2DC432GLL2\$'/)
   }
+  const desktop = read('.github/workflows/desktop-release.yml')
+  assert.match(desktop, /Get-AuthenticodeSignature/)
+  assert.match(desktop, /SignerCertificate\.Subject -ne 'CN=OpenAI, L\.L\.C\.'/)
 })
 
 test('license and notice generators cover the optional app-server', () => {

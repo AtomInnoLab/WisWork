@@ -12,6 +12,7 @@ import {
   parseCodexComponentManifest,
   platformTrustCommands,
   validateCodexArchiveEntry,
+  validateZipEntryMode,
   type CodexComponentManifest,
 } from '../src/component-manager.js'
 
@@ -140,7 +141,7 @@ function responseFor(bytes: Buffer): Response {
 }
 
 function storedZip(
-  entries: readonly { name: string; contents: Buffer; directory?: boolean }[],
+  entries: readonly { name: string; contents: Buffer; directory?: boolean; unixMode?: number }[],
 ): Buffer {
   const locals: Buffer[] = []
   const centrals: Buffer[] = []
@@ -163,7 +164,10 @@ function storedZip(
     central.writeUInt32LE(contents.length, 20)
     central.writeUInt32LE(contents.length, 24)
     central.writeUInt16LE(name.length, 28)
-    central.writeUInt32LE(entry.directory ? 0x41ed0000 : 0x81a40000, 38)
+    central.writeUInt32LE(
+      ((entry.unixMode ?? (entry.directory ? 0o40755 : 0o100644)) << 16) >>> 0,
+      38,
+    )
     central.writeUInt32LE(localOffset, 42)
     name.copy(central, 46)
     centrals.push(central)
@@ -317,6 +321,54 @@ describe('optional Enhanced mode component manager', () => {
     ).toThrowError('enhanced_mode_manifest_invalid')
   })
 
+  it('rejects platform basename substitution and Windows canonical path collisions', async () => {
+    const { manifest } = await createFixtureArchive()
+    expect(() =>
+      parseCodexComponentManifest({
+        ...manifest,
+        component: {
+          ...manifest.component,
+          assets: manifest.component.assets.map((asset, index) =>
+            index === 0
+              ? {
+                  ...asset,
+                  primaryUrl: asset.primaryUrl.replace('.tar.gz', '-renamed.tar.gz'),
+                  fallbackUrl: asset.fallbackUrl.replace('.tar.gz', '-renamed.tar.gz'),
+                }
+              : asset,
+          ),
+        },
+      }),
+    ).toThrowError('enhanced_mode_manifest_invalid')
+    const windows = manifest.component.assets[2]!
+    expect(() =>
+      parseCodexComponentManifest({
+        ...manifest,
+        component: {
+          ...manifest.component,
+          assets: manifest.component.assets.map((asset, index) =>
+            index === 2
+              ? {
+                  ...windows,
+                  archive: {
+                    ...windows.archive,
+                    maxExtractedBytes: windows.archive.maxExtractedBytes + 1,
+                  },
+                  layout: {
+                    ...windows.layout,
+                    files: [
+                      ...windows.layout.files,
+                      { ...windows.layout.files[0]!, path: 'BIN/CODEX', bytes: 1 },
+                    ],
+                  },
+                }
+              : asset,
+          ),
+        },
+      }),
+    ).toThrowError('enhanced_mode_manifest_invalid')
+  })
+
   it('rejects traversal, absolute, link, device, and duplicate archive entries', () => {
     const seen = new Set<string>()
     expect(() => validateCodexArchiveEntry('../bin/codex', 'File', 1, seen)).toThrow(
@@ -334,10 +386,35 @@ describe('optional Enhanced mode component manager', () => {
     expect(() => validateCodexArchiveEntry('bin/device', 'CharacterDevice', 0, seen)).toThrow(
       'enhanced_mode_archive_unsafe',
     )
+    for (const type of ['Link', 'BlockDevice', 'FIFO', 'Socket']) {
+      expect(() => validateCodexArchiveEntry(`bin/${type}`, type, 0, new Set())).toThrow(
+        'enhanced_mode_archive_unsafe',
+      )
+    }
     validateCodexArchiveEntry('bin/codex', 'File', 1, seen)
     expect(() => validateCodexArchiveEntry('bin/codex', 'File', 1, seen)).toThrow(
       'enhanced_mode_archive_unsafe',
     )
+    expect(() => validateCodexArchiveEntry('CON.txt', 'File', 1, new Set(), 'win32')).toThrow(
+      'enhanced_mode_archive_unsafe',
+    )
+    expect(() => validateCodexArchiveEntry('bin/agent. ', 'File', 1, new Set(), 'win32')).toThrow(
+      'enhanced_mode_archive_unsafe',
+    )
+  })
+
+  it('rejects non-regular Unix ZIP entry metadata', () => {
+    for (const mode of [0o120777, 0o060600, 0o020600, 0o010600, 0o140600, 0]) {
+      const archive = storedZip([{ name: 'bin/codex', contents: Buffer.from('x'), unixMode: mode }])
+      const central = archive.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]))
+      expect(() =>
+        validateZipEntryMode(
+          archive.readUInt16LE(central + 4),
+          archive.readUInt32LE(central + 38),
+          false,
+        ),
+      ).toThrowError('enhanced_mode_archive_unsafe')
+    }
   })
 
   it('streams, verifies, atomically installs, probes, and resolves the pinned component', async () => {
@@ -455,6 +532,36 @@ describe('optional Enhanced mode component manager', () => {
     expect(calls).toHaveLength(2)
     expect(calls).not.toContain('https://evil.example/component')
     await expect(manager.status()).resolves.toMatchObject({ state: 'missing' })
+  })
+
+  it('fails before download when app-private capacity is insufficient and leaves no partials', async () => {
+    const cacheRoot = join(await temporaryRoot(), 'cache')
+    const { manifest } = await createFixtureArchive()
+    const fetchImplementation = vi.fn()
+    const checkAvailableCapacity = vi.fn(async () => {
+      throw new Error('insufficient fixture capacity')
+    })
+    const manager = new EnhancedModeComponentManager({
+      cacheRoot,
+      manifest,
+      platform: 'darwin',
+      arch: 'arm64',
+      fetchImplementation: fetchImplementation as unknown as typeof fetch,
+      checkAvailableCapacity,
+      probeVersion: async () => 'codex-app-server 0.147.0',
+      verifyPlatformTrust: async () => undefined,
+    })
+    await expect(manager.install()).rejects.toMatchObject({ code: 'enhanced_mode_capacity_failed' })
+    expect(fetchImplementation).not.toHaveBeenCalled()
+    const asset = manifest.component.assets[0]!
+    expect(checkAvailableCapacity).toHaveBeenCalledWith(
+      cacheRoot,
+      asset.bytes + asset.archive.maxExtractedBytes + 64 * 1024 * 1024,
+    )
+    const entries = await import('node:fs/promises').then(({ readdir }) => readdir(cacheRoot))
+    expect(entries.filter((name) => name.includes('.part') || name.includes('.staging'))).toEqual(
+      [],
+    )
   })
 
   it('extracts a bounded ZIP fixture and retains only the declared app-server entrypoint', async () => {

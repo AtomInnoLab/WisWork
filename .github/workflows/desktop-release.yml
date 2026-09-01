@@ -128,6 +128,26 @@ jobs:
         shell: pwsh
         run: npx tsx tools/install-enhanced-component.ts --cache (Join-Path $env:RUNNER_TEMP 'wiswork-codex-component')
 
+      - name: Read back pinned macOS component signing identity
+        if: startsWith(matrix.id, 'macos-')
+        run: |
+          set -euo pipefail
+          COMPONENTS=("$RUNNER_TEMP"/wiswork-codex-component/0.147.0/darwin-*/bin/codex-app-server)
+          test "${#COMPONENTS[@]}" -eq 1
+          DETAILS=$(codesign -dv --verbose=4 "${COMPONENTS[0]}" 2>&1)
+          printf '%s\n' "$DETAILS" | grep '^TeamIdentifier=2DC432GLL2$'
+          spctl --assess --type execute --verbose=4 "${COMPONENTS[0]}"
+
+      - name: Read back pinned Windows component signing identity
+        if: matrix.id == 'windows-x64'
+        shell: pwsh
+        run: |
+          $component = Join-Path $env:RUNNER_TEMP 'wiswork-codex-component/0.147.0/win32-x64/bin/codex-app-server.exe'
+          if (-not (Test-Path -LiteralPath $component -PathType Leaf)) { throw 'Missing verified app-server component' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $component
+          $signature | Select-Object Status, @{Name='Subject';Expression={$_.SignerCertificate.Subject}}, @{Name='Thumbprint';Expression={$_.SignerCertificate.Thumbprint}} | Format-List
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -ne 'CN=OpenAI, L.L.C.') { throw 'Pinned app-server publisher mismatch' }
+
       - name: Generate notices
         run: npm run notices
 
