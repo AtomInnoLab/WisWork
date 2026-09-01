@@ -28,7 +28,17 @@ export interface PcBridgeSession {
   connect(host: OfficeHost): Promise<void>
   disconnect(): void
   authenticatedFetch(path: typeof MESSAGES_PATH, init: RequestInit): Promise<Response>
+  setToolHandler(handler: PcBridgeToolHandler | undefined): void
+  handleToolFrame(event: Record<string, unknown>, signal: AbortSignal): Promise<void>
 }
+type PcBridgeToolHandler = (call: {
+  turnId: string
+  callId: string
+  generation: number
+  toolName: string
+  input: Record<string, unknown>
+  signal: AbortSignal
+}) => Promise<{ output: string; isError?: boolean }>
 interface Dependencies {
   endpoint?: string
   endpoints?: readonly string[]
@@ -227,6 +237,7 @@ export function createPcBridgeSession(dependencies: Dependencies = {}): PcBridge
   let controller: AbortController | undefined
   let generation = 0
   let activeEndpoint: string | undefined
+  let toolHandler: PcBridgeToolHandler | undefined
   const publish = (status: PcBridgeStatus) => {
     state = { status }
     listeners.forEach((listener) => listener())
@@ -405,6 +416,47 @@ export function createPcBridgeSession(dependencies: Dependencies = {}): PcBridge
       } catch (error) {
         throw new Error('bridge_offline', { cause: error })
       }
+    },
+    setToolHandler(handler) {
+      toolHandler = handler
+    },
+    async handleToolFrame(event, signal) {
+      if (!toolHandler || !capability || !activeEndpoint || !state.enhanced)
+        throw new Error('bridge_disconnected')
+      const requestId = event.request_id,
+        turnId = event.turn_id,
+        callId = event.call_id,
+        toolName = event.tool_name
+      if (
+        ![requestId, turnId, callId, toolName].every(validOpaque) ||
+        event.generation !== state.enhanced.session_generation ||
+        !event.input ||
+        typeof event.input !== 'object' ||
+        Array.isArray(event.input)
+      )
+        throw new Error('invalid_tool_frame')
+      const result = await toolHandler({
+        turnId: turnId as string,
+        callId: callId as string,
+        generation: event.generation as number,
+        toolName: toolName as string,
+        input: event.input as Record<string, unknown>,
+        signal,
+      })
+      const response = await fetcher(`${activeEndpoint}/v1/office/tools/results`, {
+        method: 'POST',
+        signal,
+        headers: { authorization: `Bridge ${capability}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          request_id: requestId,
+          turn_id: turnId,
+          call_id: callId,
+          generation: event.generation,
+          output: result.output,
+          is_error: result.isError === true,
+        }),
+      })
+      if (response.status !== 204) throw new Error('tool_result_rejected')
     },
   }
 }

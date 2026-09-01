@@ -2891,7 +2891,34 @@ app.whenReady().then(async () => {
     const initializedOfficeBridge = createOfficeBridge({
       allowedOrigin: officeOriginFromEnv(process.env),
       sessionAvailable: initialAccount.loggedIn,
-      proxy: officeMessagesProxy,
+      proxy: (request) => {
+        if (!request.enhanced) return officeMessagesProxy(request)
+        if (!request.executeTool || !request.sessionId || !request.requestId)
+          throw new Error('enhanced_tool_channel_unavailable')
+        const host = (
+          {
+            'office-word': 'Word',
+            'office-excel': 'Excel',
+            'office-powerpoint': 'PowerPoint',
+          } as const
+        )[request.enhanced.host]
+        return officeCodexProxy({
+          body: request.body,
+          signal: request.signal,
+          host,
+          sessionId: request.sessionId,
+          requestId: request.requestId,
+          statement: request.enhanced,
+          executeTool: (call) =>
+            request.executeTool!({
+              turnId: call.turnId,
+              callId: call.callId,
+              generation: call.generation,
+              toolName: call.toolName,
+              input: call.input,
+            }),
+        })
+      },
     })
     officeBridge = initializedOfficeBridge
     try {
@@ -2920,7 +2947,19 @@ app.whenReady().then(async () => {
         if (officeRelay?.listPending().some((entry) => entry.pairingId === id)) {
           return accountValid && (await officeRelay.approve(id))
         }
-        return officeBridge?.approve(id, accountValid) ?? false
+        const pending = officeBridge?.listPending().find((entry) => entry.pairingId === id)
+        const host = pending
+          ? (
+              {
+                Word: 'office-word',
+                Excel: 'office-excel',
+                PowerPoint: 'office-powerpoint',
+              } as const
+            )[pending.hostLabel as 'Word' | 'Excel' | 'PowerPoint']
+          : undefined
+        const statement =
+          accountValid && host ? codexRuntime?.createOfficeSessionStatement(host) : undefined
+        return officeBridge?.approve(id, accountValid, statement) ?? false
       },
       reject(id) {
         return officeRelay?.reject(id) || officeBridge?.reject(id) || false

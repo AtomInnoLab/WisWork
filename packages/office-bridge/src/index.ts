@@ -10,6 +10,20 @@ export interface MessagesProxyRequest {
   body: unknown
   signal: AbortSignal
   enhanced?: Readonly<OfficeEnhancedSessionStatement>
+  sessionId?: string
+  requestId?: string
+  executeTool?: (call: OfficeLoopbackToolCall) => Promise<OfficeLoopbackToolResult>
+}
+export interface OfficeLoopbackToolCall {
+  turnId: string
+  callId: string
+  generation: number
+  toolName: string
+  input: unknown
+}
+export interface OfficeLoopbackToolResult {
+  output: string
+  isError: boolean
 }
 
 export interface MessagesProxyResponse {
@@ -52,9 +66,16 @@ interface Pairing {
 }
 
 interface Capability {
+  id: string
   hash: Buffer
   expiresAt: number
   enhanced?: Readonly<OfficeEnhancedSessionStatement>
+}
+interface PendingToolResult extends OfficeLoopbackToolCall {
+  capabilityId: string
+  requestId: string
+  resolve(value: OfficeLoopbackToolResult): void
+  reject(error: Error): void
 }
 
 export interface PendingPairing {
@@ -228,6 +249,7 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
   const activePairingControllers = new Set<AbortController>()
   let activeMessages = 0
   const activeOperations = new Set<ActiveOperation>()
+  const pendingTools = new Map<string, PendingToolResult>()
   let stopped = false
   let sessionAvailable = options.sessionAvailable ?? true
 
@@ -247,7 +269,9 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
         ? 'GET'
         : pairingPoll
           ? 'GET'
-          : path === '/v1/office/pairings' || path === '/v1/office/messages'
+          : path === '/v1/office/pairings' ||
+              path === '/v1/office/messages' ||
+              path === '/v1/office/tools/results'
             ? 'POST'
             : null
     const requestedMethod = request.headers.get('access-control-request-method')?.toUpperCase()
@@ -383,6 +407,7 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
     }
     const capability = opaqueValue()
     capabilities.push({
+      id: opaqueValue(),
       hash: digest(capability),
       expiresAt: now() + capabilityTtlMs,
       ...(entry.enhanced ? { enhanced: entry.enhanced } : {}),
@@ -417,6 +442,15 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
     let iterator: AsyncIterator<Uint8Array> | undefined
     let streamController: ReadableStreamDefaultController<Uint8Array> | undefined
     let finished = false
+    const requestId = opaqueValue()
+    const controls: Uint8Array[] = []
+    let wakeControl: (() => void) | undefined
+    const controlReady = () =>
+      controls.length
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => {
+            wakeControl = resolve
+          })
     let rejectInterrupted!: (error: Error) => void
     const interrupted = new Promise<never>((_, reject) => (rejectInterrupted = reject))
     void interrupted.catch(() => undefined)
@@ -429,6 +463,12 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
       activeOperations.delete(operation)
       activeMessages -= 1
       if (abort) controller.abort()
+      for (const [key, pending] of pendingTools)
+        if (pending.requestId === requestId) {
+          pendingTools.delete(key)
+          pending.reject(new Error('tool_cancelled'))
+        }
+      wakeControl?.()
       rejectInterrupted(new Error('operation_interrupted'))
       if (iterator?.return) void iterator.return().catch(() => undefined)
       if (errorStream && streamController) {
@@ -468,6 +508,41 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
         body,
         signal: controller.signal,
         ...(grant.enhanced ? { enhanced: grant.enhanced } : {}),
+        ...(grant.enhanced ? { sessionId: grant.id, requestId } : {}),
+        ...(grant.enhanced
+          ? {
+              executeTool: (call: OfficeLoopbackToolCall) => {
+                const valid = (value: string) =>
+                  value.length >= 8 && value.length <= 128 && /^[A-Za-z0-9_-]+$/.test(value)
+                if (
+                  finished ||
+                  controller.signal.aborted ||
+                  call.generation !== grant.enhanced!.session_generation ||
+                  !valid(call.turnId) ||
+                  !valid(call.callId) ||
+                  !valid(call.toolName) ||
+                  pendingTools.has(call.callId)
+                )
+                  return Promise.reject(new Error('invalid_tool_call'))
+                return new Promise<OfficeLoopbackToolResult>((resolve, reject) => {
+                  pendingTools.set(call.callId, {
+                    ...call,
+                    capabilityId: grant.id,
+                    requestId,
+                    resolve,
+                    reject,
+                  })
+                  controls.push(
+                    new TextEncoder().encode(
+                      `data: ${JSON.stringify({ type: 'wiswork_tool_call', request_id: requestId, turn_id: call.turnId, call_id: call.callId, generation: call.generation, tool_name: call.toolName, input: call.input })}\n\n`,
+                    ),
+                  )
+                  wakeControl?.()
+                  wakeControl = undefined
+                })
+              },
+            }
+          : {}),
       })
       void proxyPromise.then(
         (lateResponse) => {
@@ -483,13 +558,25 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
       if (upstream.status < 200 || upstream.status >= 300) throw new Error('upstream_status')
       iterator = bodyIterator(upstream.body)
       let streamedBytes = 0
+      let upstreamNext: Promise<IteratorResult<Uint8Array>> | undefined
       const stream = new ReadableStream<Uint8Array>({
         start(readableController) {
           streamController = readableController
         },
         async pull(readableController) {
           try {
-            const result = await Promise.race([iterator!.next(), interrupted])
+            const next = (upstreamNext ??= iterator!.next())
+            const winner = await Promise.race([
+              next.then((result) => ({ kind: 'upstream' as const, result })),
+              controlReady().then(() => ({ kind: 'control' as const })),
+              interrupted,
+            ])
+            if (winner.kind === 'control' && controls.length) {
+              readableController.enqueue(controls.shift()!)
+              return
+            }
+            const result = winner.kind === 'upstream' ? winner.result : await next
+            upstreamNext = undefined
             if (result.done) {
               finish(false)
               readableController.close()
@@ -523,6 +610,39 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
     }
   }
 
+  const acceptToolResult = async (request: Request): Promise<Response> => {
+    const secret = authorization(request, 'Bridge')
+    const grant = secret ? findCapability(secret) : undefined
+    if (!grant?.enhanced)
+      return jsonResponse(401, { error: 'invalid_capability' }, options.allowedOrigin)
+    let body: unknown
+    try {
+      body = await readBoundedJson(request, maxBodyBytes)
+    } catch {
+      return jsonResponse(400, { error: 'invalid_request' }, options.allowedOrigin)
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body))
+      return jsonResponse(400, { error: 'invalid_request' }, options.allowedOrigin)
+    const value = body as Record<string, unknown>
+    const pending = typeof value.call_id === 'string' ? pendingTools.get(value.call_id) : undefined
+    if (
+      !pending ||
+      pending.capabilityId !== grant.id ||
+      pending.requestId !== value.request_id ||
+      pending.turnId !== value.turn_id ||
+      pending.generation !== value.generation ||
+      typeof value.output !== 'string' ||
+      typeof value.is_error !== 'boolean' ||
+      value.output.length > maxBodyBytes
+    )
+      return jsonResponse(409, { error: 'stale_tool_result' }, options.allowedOrigin)
+    pendingTools.delete(pending.callId)
+    pending.resolve({ output: value.output, isError: value.is_error })
+    const headers = new Headers()
+    addCors(headers, options.allowedOrigin)
+    return new Response(null, { status: 204, headers })
+  }
+
   return {
     async handle(request) {
       if (stopped) return jsonResponse(503, { error: 'bridge_unavailable' })
@@ -546,10 +666,13 @@ export function createOfficeBridge(options: OfficeBridgeOptions): OfficeBridge {
       if (request.method === 'POST' && path === '/v1/office/messages') {
         return proxyMessages(request)
       }
+      if (request.method === 'POST' && path === '/v1/office/tools/results')
+        return acceptToolResult(request)
       if (
         path === '/v1/office/health' ||
         path === '/v1/office/pairings' ||
         path === '/v1/office/messages' ||
+        path === '/v1/office/tools/results' ||
         pairingMatch
       ) {
         return jsonResponse(405, { error: 'method_not_allowed' }, options.allowedOrigin)

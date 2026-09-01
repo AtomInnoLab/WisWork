@@ -42,6 +42,7 @@ function proposalsHarness() {
     waitForDecision: () => decision,
     propose: vi.fn(),
     confirm: vi.fn(async () => {
+      if (!pending) throw new Error('no_pending_proposal')
       clear({ status: 'confirmed' })
     }),
     reject: vi.fn(() => {
@@ -77,6 +78,43 @@ function proposalsHarness() {
 }
 
 describe('Office agent session', () => {
+  it('invalidates a suspended remote proposal when cancelled before confirmation', async () => {
+    let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
+    const proposals = proposalsHarness()
+    createOfficeAgentSession({
+      transport: transportHarness().transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'write_document', description: 'write', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(async () => {
+          proposals.setPending()
+          return { output: '{"proposalId":"p1"}', summary: 'proposed', mutated: false }
+        }),
+      },
+      proposals: proposals.controller,
+      remoteTools: {
+        setToolHandler: (next) => {
+          handler = next
+        },
+      },
+    })
+    const abort = new AbortController()
+    const result = handler!({
+      turnId: 'turn_12345678',
+      callId: 'call_12345678',
+      generation: 1,
+      toolName: 'write_document',
+      input: {},
+      signal: abort.signal,
+    })
+    await vi.waitFor(() => expect(proposals.controller.pending()).toBeDefined())
+    abort.abort()
+    await expect(result).resolves.toEqual({ output: 'tool_execution_failed', isError: true })
+    expect(proposals.controller.pending()).toBeUndefined()
+    await expect(proposals.controller.confirm()).rejects.toThrow('no_pending_proposal')
+  })
+
   it('routes paired Enhanced calls through the same host skill and revokes the handler on dispose', async () => {
     let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
     const setToolHandler = vi.fn((next) => {

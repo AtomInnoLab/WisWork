@@ -405,6 +405,8 @@ export function createOfficeAgentSession(dependencies: {
   dependencies.remoteTools?.setToolHandler?.(async (call) => {
     const definition = sessionSkill.tools.find((tool) => tool.name === call.toolName)
     if (!definition) return { output: 'unknown_tool', isError: true }
+    const invalidateRemoteProposal = () => proposals.newTurn()
+    call.signal.addEventListener('abort', invalidateRemoteProposal, { once: true })
     try {
       const outcome = await sessionSkill.executeTool(
         {
@@ -417,11 +419,26 @@ export function createOfficeAgentSession(dependencies: {
       )
       const settled =
         'kind' in outcome && outcome.kind === 'tool-execution-suspension'
-          ? await outcome.result
+          ? await Promise.race([
+              outcome.result,
+              new Promise<never>((_, reject) => {
+                if (call.signal.aborted) reject(new DOMException('Aborted', 'AbortError'))
+                else
+                  call.signal.addEventListener(
+                    'abort',
+                    () => reject(new DOMException('Aborted', 'AbortError')),
+                    { once: true },
+                  )
+              }),
+            ])
           : outcome
+      call.signal.removeEventListener('abort', invalidateRemoteProposal)
       return { output: settled.output, ...(settled.isError ? { isError: true } : {}) }
     } catch {
+      if (call.signal.aborted) proposals.newTurn()
       return { output: 'tool_execution_failed', isError: true }
+    } finally {
+      call.signal.removeEventListener('abort', invalidateRemoteProposal)
     }
   })
   const clearConversation = () => {

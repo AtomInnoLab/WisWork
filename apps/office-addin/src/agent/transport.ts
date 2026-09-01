@@ -142,6 +142,7 @@ async function consumeStream(
   response: Response,
   callbacks: AgentStreamCallbacks,
   signal: AbortSignal,
+  handleControl?: (event: Record<string, unknown>, signal: AbortSignal) => Promise<void>,
 ): Promise<void> {
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined)
@@ -172,6 +173,11 @@ async function consumeStream(
       event = JSON.parse(payload) as typeof event
     } catch {
       throw new TransportError('transport_invalid_stream')
+    }
+    if (event.type === 'wiswork_tool_call') {
+      if (!handleControl) throw new TransportError('transport_invalid_stream')
+      await handleControl(event as Record<string, unknown>, signal)
+      continue
     }
     if (event.type === 'error' || event.error) throw new TransportError('transport_stream_error')
     const index = event.index ?? 0
@@ -230,11 +236,18 @@ async function consumeStream(
 /** PC-backed transport: provider credentials remain in WisWork PC. */
 export function createPcBridgeAgentTransport(bridge: {
   authenticatedFetch(path: '/v1/office/messages', init: RequestInit): Promise<Response>
+  handleToolFrame?(event: Record<string, unknown>, signal: AbortSignal): Promise<void>
 }): AgentTransport {
-  return createTransport((init) => bridge.authenticatedFetch('/v1/office/messages', init))
+  return createTransport(
+    (init) => bridge.authenticatedFetch('/v1/office/messages', init),
+    bridge.handleToolFrame?.bind(bridge),
+  )
 }
 
-function createTransport(fetchMessages: (init: RequestInit) => Promise<Response>): AgentTransport {
+function createTransport(
+  fetchMessages: (init: RequestInit) => Promise<Response>,
+  handleControl?: (event: Record<string, unknown>, signal: AbortSignal) => Promise<void>,
+): AgentTransport {
   return {
     stream(request: AgentStreamRequest, callbacks: AgentStreamCallbacks) {
       const controller = new AbortController()
@@ -268,7 +281,9 @@ function createTransport(fetchMessages: (init: RequestInit) => Promise<Response>
             signal: controller.signal,
             headers: { 'content-type': 'application/json' },
             body,
-          }).then((response) => consumeStream(response, callbacks, controller.signal))
+          }).then((response) =>
+            consumeStream(response, callbacks, controller.signal, handleControl),
+          )
           const expired = new Promise<never>((_resolve, reject) => {
             timeout = setTimeout(() => {
               reject(new TransportError('transport_timeout'))
