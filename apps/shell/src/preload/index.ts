@@ -344,6 +344,8 @@ const enhancedModeApi: EnhancedModeApi = {
   status: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.status) as Promise<EnhancedModeStatus>,
   install: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.install) as Promise<EnhancedModeStatus>,
   remove: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.remove) as Promise<EnhancedModeStatus>,
+  update: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.update) as Promise<EnhancedModeStatus>,
+  cancel: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.cancel) as Promise<EnhancedModeStatus>,
   setMode(mode) {
     if (mode !== 'standard' && mode !== 'enhanced')
       return Promise.reject(new Error('Invalid mode.'))

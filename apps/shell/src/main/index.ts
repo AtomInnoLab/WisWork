@@ -164,6 +164,7 @@ import {
 import { registerLatexProtocolScheme } from './latex-protocol-scheme'
 import { migrateLegacyUserData } from './user-data-migration'
 import { createAuthDeepLinkQueue } from './auth-deep-link-queue'
+import { createBeforeQuitBarrier } from './before-quit-barrier'
 import codexComponentManifest from '../../../../tools/codex/manifest.json'
 import {
   registerEnhancedModeComponentIpc,
@@ -1838,6 +1839,7 @@ function registerHomeIpc(): void {
   })
   ipcMain.handle(HOME_CHANNELS.accountLogout, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
+    await enhancedModeComponentController?.revoke()
     officeBridge?.setSessionAvailable(false)
     officeRelayActivationFence.lock()
     try {
@@ -2598,11 +2600,15 @@ app.whenReady().then(async () => {
     openExternal: (url) => shell.openExternal(url),
   })
   // Runtime selection is immutable for this process. Settings changes below only affect next boot.
-  activeAgentRuntime = readRequestedAgentRuntime(APP_SETTINGS_PATH())
+  activeAgentRuntime = 'standard'
   const enhancedModeComponent = new EnhancedModeComponentManager({
     cacheRoot: join(app.getPath('userData'), 'components', 'enhanced-mode'),
     manifest: codexComponentManifest,
   })
+  const enhancedAsset = codexComponentManifest.component.assets.find(
+    (asset) => asset.platform === process.platform && asset.arch === process.arch,
+  )
+  const enhancedPolicyAllowed = () => process.env.WISWORK_ENHANCED_DISABLED !== '1'
   enhancedModeComponentController = registerEnhancedModeComponentIpc({
     ipcMain,
     component: enhancedModeComponent,
@@ -2611,6 +2617,26 @@ app.whenReady().then(async () => {
     writeSavedMode: (mode) => writeRequestedAgentRuntime(APP_SETTINGS_PATH(), mode),
     currentMode: () => activeAgentRuntime,
     runtimeInUse: () => activeAgentRuntime === 'enhanced',
+    authorizeEnhanced: async () =>
+      (await requireAuthRuntime().client.getValidAccountStatus()).loggedIn === true,
+    policyAllowed: enhancedPolicyAllowed,
+    // Task 6 supplies the host session adapter. Until then a saved request is visible but not active.
+    enhancedRuntimeAvailable: () => false,
+    ...(enhancedAsset
+      ? {
+          metadata: {
+            platform: `${enhancedAsset.platform}-${enhancedAsset.arch}`,
+            bytes: enhancedAsset.bytes,
+            publisher:
+              enhancedAsset.trust.policy === 'windows'
+                ? (enhancedAsset.trust.publisher ?? 'OpenAI')
+                : (enhancedAsset.trust.teamIdentifier ?? 'OpenAI'),
+            license: codexComponentManifest.component.license.spdx,
+            primaryUrl: enhancedAsset.primaryUrl,
+            fallbackUrl: enhancedAsset.fallbackUrl,
+          },
+        }
+      : {}),
   })
   const asOfficePairing = (pairing: {
     pairingId: string
@@ -2924,14 +2950,21 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
-  // No close prompt may fall through to "Save" during shutdown
-  markSheetsShuttingDown()
-  stopSheetsSidecar()
-  void enhancedModeComponentController?.close()
-  officeBridge?.revokeAll()
-  officeBridge?.shutdown()
-  officeRelayActivationFence.lock()
-  shutdownOfficeRelaySession(officeRelayLifecycle, officeRelay)
-  void officeBridgeServer?.stop()
+const beforeQuitBarrier = createBeforeQuitBarrier({
+  cleanup: async () => {
+    // No close prompt may fall through to "Save" during shutdown.
+    markSheetsShuttingDown()
+    stopSheetsSidecar()
+    officeBridge?.revokeAll()
+    officeBridge?.shutdown()
+    officeRelayActivationFence.lock()
+    shutdownOfficeRelaySession(officeRelayLifecycle, officeRelay)
+    await Promise.allSettled([
+      enhancedModeComponentController?.close() ?? Promise.resolve(),
+      officeBridgeServer?.stop() ?? Promise.resolve(),
+    ])
+  },
+  quit: () => app.quit(),
+  diagnostics: (code) => console.warn('[enhanced-mode]', code),
 })
+app.on('before-quit', beforeQuitBarrier)

@@ -125,4 +125,32 @@ describe('Shell Codex runtime lifecycle', () => {
       }),
     ).toThrow('enhanced_document_unavailable')
   })
+
+  it('rejects late initialization and closes a stale engine after shutdown', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const engine = {
+      startTurn: vi.fn(async () => undefined),
+      cancelTurn: vi.fn(async () => undefined),
+      closeDocument: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    }
+    const bootstrap = { start: vi.fn(async () => (await gate, engine)) }
+    const runtime = new ShellCodexRuntime({
+      activeAgentRuntime: 'enhanced',
+      policy: policy(),
+      isSignedIn: async () => true,
+      resolveExecutable: async () => '/private/codex',
+      bootstrap,
+    })
+    const initializing = runtime.initialize()
+    await vi.waitFor(() => expect(bootstrap.start).toHaveBeenCalledOnce())
+    const closing = runtime.shutdown()
+    release()
+    await expect(initializing).rejects.toThrow('enhanced_runtime_closed')
+    await closing
+    expect(engine.close).toHaveBeenCalledOnce()
+    expect(runtime.activeAgentRuntime).toBe('standard')
+    expect(runtime.state).toBe('unavailable')
+  })
 })

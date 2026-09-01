@@ -6,7 +6,12 @@ export const CODEX_RUNTIME_CHANNELS = {
   cancelTurn: 'codex:runtime:cancel-turn',
 } as const
 
-export type CodexRuntimePublicState = 'standard' | 'starting' | 'ready' | 'failed_safe'
+export type CodexRuntimePublicState =
+  | 'standard'
+  | 'starting'
+  | 'ready'
+  | 'unavailable'
+  | 'failed_safe'
 
 export interface CodexRuntimeStatus {
   readonly activeAgentRuntime: AgentRuntimeMode

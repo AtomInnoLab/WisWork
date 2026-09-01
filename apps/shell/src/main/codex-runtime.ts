@@ -58,22 +58,29 @@ function boundedText(value: unknown, maximum: number): value is string {
 }
 
 export class ShellCodexRuntime {
-  readonly activeAgentRuntime: AgentRuntimeMode
+  readonly configuredAgentRuntime: AgentRuntimeMode
   readonly #options: ShellCodexRuntimeOptions
   readonly #documents = new Map<string, DocumentRecord>()
   #state: CodexRuntimePublicState
   #engine: CodexRuntimeEngine | undefined
   #initialization: Promise<void> | undefined
   #closed = false
+  #epoch = 0
 
   constructor(options: ShellCodexRuntimeOptions) {
     this.#options = options
-    this.activeAgentRuntime = options.activeAgentRuntime
+    this.configuredAgentRuntime = options.activeAgentRuntime
     this.#state = options.activeAgentRuntime === 'standard' ? 'standard' : 'starting'
   }
 
   get state(): CodexRuntimePublicState {
     return this.#state
+  }
+
+  get activeAgentRuntime(): AgentRuntimeMode {
+    return this.configuredAgentRuntime === 'enhanced' && this.#state === 'ready'
+      ? 'enhanced'
+      : 'standard'
   }
 
   initialize(): Promise<void> {
@@ -83,27 +90,30 @@ export class ShellCodexRuntime {
   }
 
   async #initialize(): Promise<void> {
-    if (this.activeAgentRuntime === 'standard') return
+    if (this.configuredAgentRuntime === 'standard') return
     if (this.#closed) throw new ShellCodexRuntimeError('enhanced_runtime_closed')
+    const epoch = this.#epoch
     try {
       if (!this.#options.policy.globalEnabled) {
         throw new ShellCodexRuntimeError('enhanced_runtime_blocked_by_policy')
       }
       if (!(await this.#options.isSignedIn())) throw new ShellCodexRuntimeError('auth_required')
+      this.#assertEpoch(epoch)
       const executablePath = await this.#options.resolveExecutable()
+      this.#assertEpoch(epoch)
       if (!isAbsolute(executablePath)) throw new ShellCodexRuntimeError('component_unverified')
-      this.#engine = await this.#options.bootstrap.start({
+      const engine = await this.#options.bootstrap.start({
         executablePath,
         onCrash: () => void this.#crash(),
       })
-      if (this.#closed) {
-        await this.#engine.close()
-        this.#engine = undefined
+      if (this.#closed || this.#epoch !== epoch) {
+        await engine.close()
         throw new ShellCodexRuntimeError('enhanced_runtime_closed')
       }
+      this.#engine = engine
       this.#state = 'ready'
     } catch (error) {
-      this.#state = 'failed_safe'
+      this.#state = this.#closed ? 'unavailable' : 'failed_safe'
       this.#diagnostic(
         error instanceof ShellCodexRuntimeError ? error.code : 'enhanced_start_failed',
       )
@@ -154,6 +164,7 @@ export class ShellCodexRuntime {
     const engine = this.#engine
     if (!engine) throw new ShellCodexRuntimeError('enhanced_runtime_unavailable')
     document.busy = true
+    const epoch = this.#epoch
     try {
       await engine.startTurn({
         documentId,
@@ -161,6 +172,13 @@ export class ShellCodexRuntime {
         generation: document.generation,
         text,
       })
+      if (
+        this.#epoch !== epoch ||
+        this.#engine !== engine ||
+        this.#documents.get(documentId) !== document
+      ) {
+        throw new ShellCodexRuntimeError('enhanced_turn_stale')
+      }
     } catch {
       // Never replay or cross-dispatch the same request through Standard.
       throw new ShellCodexRuntimeError('enhanced_turn_failed')
@@ -190,11 +208,12 @@ export class ShellCodexRuntime {
   async shutdown(): Promise<void> {
     if (this.#closed) return
     this.#closed = true
+    this.#epoch += 1
     for (const documentId of [...this.#documents.keys()]) await this.closeDocument(documentId)
     const engine = this.#engine
     this.#engine = undefined
     await engine?.close().catch(() => undefined)
-    if (this.activeAgentRuntime === 'enhanced') this.#state = 'failed_safe'
+    if (this.configuredAgentRuntime === 'enhanced') this.#state = 'unavailable'
   }
 
   #owned(owner: CodexOwner, documentId: string): DocumentRecord {
@@ -207,6 +226,7 @@ export class ShellCodexRuntime {
 
   async #crash(): Promise<void> {
     if (this.#closed) return
+    this.#epoch += 1
     this.#state = 'failed_safe'
     const documentIds = [...this.#documents.keys()]
     this.#documents.clear()
@@ -217,6 +237,12 @@ export class ShellCodexRuntime {
     }
     await engine?.close().catch(() => undefined)
     this.#diagnostic('enhanced_runtime_crashed')
+  }
+
+  #assertEpoch(epoch: number): void {
+    if (this.#closed || this.#epoch !== epoch) {
+      throw new ShellCodexRuntimeError('enhanced_runtime_closed')
+    }
   }
 
   #diagnostic(code: string): void {

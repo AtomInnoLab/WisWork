@@ -36,10 +36,22 @@ export interface RegisterEnhancedModeComponentIpcOptions {
   readonly writeSavedMode: (mode: ProductAgentMode) => void
   readonly currentMode: () => ProductAgentMode
   readonly runtimeInUse: () => boolean
+  readonly authorizeEnhanced: () => Promise<boolean>
+  readonly policyAllowed: () => boolean
+  readonly enhancedRuntimeAvailable: () => boolean
+  readonly metadata?: Readonly<{
+    platform: string
+    bytes: number
+    publisher: string
+    license: string
+    primaryUrl: string
+    fallbackUrl: string
+  }>
 }
 
 export interface EnhancedModeComponentController {
   close(): Promise<void>
+  revoke(): Promise<void>
 }
 
 export class EnhancedModePublicError extends Error {
@@ -79,6 +91,19 @@ export function registerEnhancedModeComponentIpc(
     }
     const requestedAgentRuntime = productMode(options.readSavedMode())
     const activeAgentRuntime = options.currentMode()
+    const lifecycleState = !options.policyAllowed()
+      ? 'blocked_by_policy'
+      : !component.supported || component.state === 'unsupported'
+        ? 'unsupported_platform'
+        : component.state === 'missing'
+          ? 'not_installed'
+          : component.state === 'invalid'
+            ? 'failed_safe'
+            : requestedAgentRuntime === 'enhanced' && !options.enhancedRuntimeAvailable()
+              ? 'failed_safe'
+              : requestedAgentRuntime !== activeAgentRuntime
+                ? 'installed_restart_required'
+                : 'ready'
     return {
       requestedAgentRuntime,
       activeAgentRuntime,
@@ -86,6 +111,8 @@ export function registerEnhancedModeComponentIpc(
       supported: component.supported,
       version: component.version,
       restartRequired: requestedAgentRuntime !== activeAgentRuntime,
+      lifecycleState,
+      ...options.metadata,
     }
   }
   const operation = async <T>(owner: ComponentOwner, run: (signal: AbortSignal) => Promise<T>) => {
@@ -116,7 +143,25 @@ export function registerEnhancedModeComponentIpc(
   })
   options.ipcMain.handle(ENHANCED_MODE_CHANNELS.install, async (event, ...args) => {
     if (args.length !== 0) publicFail('enhanced_mode_invalid_request')
+    trusted(event.sender)
+    if (!options.policyAllowed()) publicFail('enhanced_mode_blocked_by_policy')
+    if (!(await options.authorizeEnhanced())) publicFail('auth_required')
     await operation(event.sender, (signal) => options.component.install({ signal }))
+    return status()
+  })
+  options.ipcMain.handle(ENHANCED_MODE_CHANNELS.update, async (event, ...args) => {
+    if (args.length !== 0) publicFail('enhanced_mode_invalid_request')
+    trusted(event.sender)
+    if (!options.policyAllowed()) publicFail('enhanced_mode_blocked_by_policy')
+    if (!(await options.authorizeEnhanced())) publicFail('auth_required')
+    await operation(event.sender, (signal) => options.component.install({ signal }))
+    return status()
+  })
+  options.ipcMain.handle(ENHANCED_MODE_CHANNELS.cancel, async (event, ...args) => {
+    trusted(event.sender)
+    if (args.length !== 0) publicFail('enhanced_mode_invalid_request')
+    for (const controller of controllers) controller.abort()
+    await Promise.allSettled([...active])
     return status()
   })
   options.ipcMain.handle(ENHANCED_MODE_CHANNELS.remove, async (event, ...args) => {
@@ -133,6 +178,8 @@ export function registerEnhancedModeComponentIpc(
     }
     const mode = args[0] as ProductAgentMode
     if (mode === 'enhanced') {
+      if (!options.policyAllowed()) publicFail('enhanced_mode_blocked_by_policy')
+      if (!(await options.authorizeEnhanced())) publicFail('auth_required')
       try {
         await operation(event.sender, (signal) => options.component.resolveExecutable({ signal }))
       } catch (error) {
@@ -147,6 +194,11 @@ export function registerEnhancedModeComponentIpc(
   })
 
   return {
+    async revoke() {
+      for (const controller of controllers) controller.abort()
+      await Promise.allSettled([...active])
+      options.writeSavedMode('standard')
+    },
     async close() {
       if (closed) return
       closed = true

@@ -616,6 +616,15 @@ body.vib .home {
   font-size: 10px;
 }
 
+.enhanced-mode-diagnostics {
+  display: grid;
+  gap: 2px;
+  padding: 4px 12px 8px 36px;
+  color: var(--text-muted);
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+
 /* language row in the account menu (hover opens the flyout) */
 .account-menu-item.lang-row {
   display: flex;

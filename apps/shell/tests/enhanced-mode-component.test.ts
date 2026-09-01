@@ -19,7 +19,9 @@ class FakeSender extends EventEmitter {
   }
 }
 
-function fixture(options: { runtimeInUse?: boolean } = {}) {
+function fixture(
+  options: { runtimeInUse?: boolean; signedIn?: boolean; policyAllowed?: boolean } = {},
+) {
   const handlers = new Map<string, (event: { sender: FakeSender }, ...args: unknown[]) => unknown>()
   const component = {
     status: vi.fn(async () => ({
@@ -49,6 +51,9 @@ function fixture(options: { runtimeInUse?: boolean } = {}) {
     writeSavedMode: writeMode,
     currentMode: () => (options.runtimeInUse === true ? 'enhanced' : 'standard'),
     runtimeInUse: () => options.runtimeInUse === true,
+    authorizeEnhanced: async () => options.signedIn !== false,
+    policyAllowed: () => options.policyAllowed !== false,
+    enhancedRuntimeAvailable: () => true,
   })
   return {
     handlers,
@@ -74,6 +79,7 @@ describe('Enhanced mode optional component IPC', () => {
       supported: true,
       version: '0.147.0',
       restartRequired: false,
+      lifecycleState: 'not_installed',
     })
     expect(f.component.install).not.toHaveBeenCalled()
     expect(f.writeMode).not.toHaveBeenCalled()
@@ -170,5 +176,27 @@ describe('Enhanced mode optional component IPC', () => {
     await expect(
       f.handlers.get(ENHANCED_MODE_CHANNELS.setMode)!({ sender: f.sender }, 'codex'),
     ).rejects.toThrow('enhanced_mode_invalid_request')
+  })
+
+  it('requires sign-in and policy before download or Enhanced persistence', async () => {
+    const signedOut = fixture({ signedIn: false })
+    await expect(
+      signedOut.handlers.get(ENHANCED_MODE_CHANNELS.install)!({ sender: signedOut.sender }),
+    ).rejects.toThrow('auth_required')
+    await expect(
+      signedOut.handlers.get(ENHANCED_MODE_CHANNELS.setMode)!(
+        { sender: signedOut.sender },
+        'enhanced',
+      ),
+    ).rejects.toThrow('auth_required')
+    expect(signedOut.writeMode).not.toHaveBeenCalled()
+
+    const blocked = fixture({ policyAllowed: false })
+    await expect(
+      blocked.handlers.get(ENHANCED_MODE_CHANNELS.install)!({ sender: blocked.sender }),
+    ).rejects.toThrow('enhanced_mode_blocked_by_policy')
+    await expect(
+      blocked.handlers.get(ENHANCED_MODE_CHANNELS.status)!({ sender: blocked.sender }),
+    ).resolves.toMatchObject({ lifecycleState: 'blocked_by_policy' })
   })
 })

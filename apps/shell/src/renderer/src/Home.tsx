@@ -992,6 +992,30 @@ function AccountEntry() {
                   {enhancedView.secondaryActionLabel}
                 </button>
               )}
+              {enhancedBusy && (
+                <button
+                  className="account-menu-item enhanced-mode-remove"
+                  role="menuitem"
+                  onClick={() => void window.aiOfficeEnhancedMode?.cancel().then(setEnhancedStatus)}
+                >
+                  {lang === 'zh' || lang === 'zh-TW' ? '取消下载' : 'Cancel download'}
+                </button>
+              )}
+              {enhancedStatus && enhancedStatus.platform && (
+                <div className="enhanced-mode-diagnostics">
+                  <span>
+                    {enhancedStatus.version} · {enhancedStatus.platform}
+                    {enhancedStatus.bytes
+                      ? ` · ${Math.ceil(enhancedStatus.bytes / 1_048_576)} MB`
+                      : ''}
+                  </span>
+                  <span>
+                    {enhancedStatus.publisher} · {enhancedStatus.license}
+                  </span>
+                  <span title={enhancedStatus.primaryUrl}>WisWork CDN</span>
+                  <span title={enhancedStatus.fallbackUrl}>OpenAI GitHub Release</span>
+                </div>
+              )}
             </>
           )}
           {appVersion && (
