@@ -25,7 +25,7 @@ beforeAll(async () => {
 describe('configured Office build output', () => {
   it('emits only configured origins in the deployment manifest', async () => {
     const manifest = await readFile(resolve(dist, 'manifest.xml'), 'utf8')
-    expect(manifest).toContain('<Version>0.3.3.0</Version>')
+    expect(manifest).toContain('<Version>0.3.4.0</Version>')
     expect(manifest).toContain('https://office.example/taskpane.html?v=0.3.3')
     expect(manifest).not.toContain('auth.example')
     expect(manifest).not.toContain('localhost')
