@@ -69,6 +69,58 @@ function enrollment(): SlidesTaskEnrollment {
 }
 
 describe('Slides verified task controller', () => {
+  it('deduplicates repeated source targets before authoritative enrollment inspection', async () => {
+    const inspect = vi.fn(async (request: { sourceTargets?: unknown[] }) => {
+      expect(request.sourceTargets).toEqual([{ slide: 1, sourceId: 'runtime-1' }])
+      return {
+        documentToken: 'doc-1',
+        sessionToken: 'session-1',
+        revision: contract.baseRevision,
+        leaseToken: 'lease-1',
+        sourceTargetTokens: { '1:runtime-1': 'target-1' },
+        slides: [
+          {
+            number: 1,
+            slideToken: 'slide-1',
+            elements: [
+              {
+                targetToken: 'target-1',
+                locked: false,
+                properties: { color: '#000000', x: 10, y: 10, width: 200, height: 80 },
+              },
+            ],
+          },
+        ],
+      }
+    })
+    const skill = createSlidesSkill({
+      getAcceptanceAuthorityLease: async () => ({
+        documentToken: 'doc-1',
+        sessionToken: 'session-1',
+        revision: contract.baseRevision,
+        slideCount: 1,
+        leaseToken: 'lease-1',
+      }),
+      inspectAcceptanceAuthority: inspect,
+      taskReviewAdapter: adapter(),
+    } as unknown as DeckAccess)
+
+    await expect(
+      skill.presentation!.enroll!(
+        [
+          call,
+          {
+            id: 'call-2',
+            name: 'set_element_transform',
+            input: { slideIndex: 0, sourceId: 'runtime-1', x: 20 },
+          },
+        ],
+        undefined,
+      ),
+    ).resolves.toMatchObject({ kind: 'ready' })
+    expect(inspect).toHaveBeenCalledOnce()
+  })
+
   it('executes the shared pages 6-8 golden through production compiler, controller and render reviewer', async () => {
     const calls = PRESENTATION_CONSISTENCY_GOLDEN.operations.map((operation, index) => ({
       id: `golden-${index}`,

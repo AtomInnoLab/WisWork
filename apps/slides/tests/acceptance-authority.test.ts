@@ -10,6 +10,23 @@ import {
 import type { Session } from '../src/main/session-state'
 
 describe('PC authoritative acceptance inspection', () => {
+  it('mints opaque session identities when the first authoritative lease is requested', async () => {
+    const bytes = await readFile(
+      join(__dirname, '../../../packages/pptx-engine/tests/fixtures/01_standard_business.pptx'),
+    )
+    const session = { opened: await openPptx(bytes) } as Session
+
+    const lease = await inspectSlidesAcceptanceLease(session)
+
+    expect(lease).toMatchObject({
+      documentToken: expect.any(String),
+      sessionToken: expect.any(String),
+      leaseToken: expect.stringMatching(/^lease:[0-9a-f]{32}$/),
+    })
+    expect(session.documentInstanceId).toBe(lease!.documentToken)
+    expect(session.sessionInstanceId).toBe(lease!.sessionToken)
+  })
+
   it('publishes revision-bound durable identities and locked decoration facts without mutation', async () => {
     const bytes = await readFile(
       join(__dirname, '../../../packages/pptx-engine/tests/fixtures/01_standard_business.pptx'),

@@ -46,6 +46,72 @@ function options(
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('createAgentHarness', () => {
+  it('forwards presentation lifecycle events and receipt localization', async () => {
+    const transport = manualTransport()
+    const onPresentationPlan = vi.fn()
+    const onPresentationReceipt = vi.fn(() => 'Localized receipt')
+    const harness = createAgentHarness({
+      ...options(transport, { onPresentationPlan, onPresentationReceipt }),
+      skill: {
+        ...skill,
+        presentation: {
+          prepare: () => ({
+            kind: 'ready',
+            contract: {
+              version: 1,
+              taskId: 'task-1',
+              documentToken: 'doc-1',
+              sessionToken: 'session-1',
+              baseRevision: `sha256:${'a'.repeat(64)}`,
+              affectedSlides: [2],
+              referenceSlides: [],
+              checks: [
+                {
+                  id: 'check-1',
+                  kind: 'element_property',
+                  slide: 2,
+                  roleOrTarget: { kind: 'role', role: 'title' },
+                  property: 'color',
+                  expected: '#112233',
+                },
+              ],
+              maxCorrectionPasses: 2,
+            },
+            plan: ['Edit'],
+            requiresConfirmation: false,
+          }),
+          complete: () => ({
+            kind: 'receipt',
+            receipt: {
+              version: 1,
+              taskId: 'task-1',
+              status: 'unchanged',
+              mutationReceiptIds: [],
+              passedCheckIds: ['check-1'],
+              failedCheckIds: [],
+              unavailableCheckIds: [],
+              correctionPasses: 0,
+              affectedSlides: [2],
+            },
+          }),
+        },
+      },
+    })
+
+    expect(harness.run('first')).toBe(true)
+    await flush()
+    transport.callbacks[0]!.onDone()
+    await flush()
+    await flush()
+
+    expect(onPresentationPlan).toHaveBeenCalledWith({
+      steps: ['Edit'],
+      requiresConfirmation: false,
+    })
+    expect(onPresentationReceipt).toHaveBeenCalledOnce()
+    expect(harness.messages.at(-1)).toEqual({ role: 'assistant', text: 'Localized receipt' })
+  })
+
   it('publishes running and done state and rejects empty or concurrent runs', async () => {
     const transport = manualTransport()
     const harness = createAgentHarness(options(transport))

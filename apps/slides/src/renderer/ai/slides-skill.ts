@@ -1473,11 +1473,18 @@ export function createSlidesSkill(
             ]
             if (affectedSlides.some((slide) => !Number.isSafeInteger(slide) || slide < 1))
               return { kind: 'clarify', question: 'presentation_scope_required' }
-            const sourceTargets = calls.flatMap((call) =>
-              typeof call.input.sourceId === 'string'
-                ? [{ slide: Number(call.input.slideIndex) + 1, sourceId: call.input.sourceId }]
-                : [],
-            )
+            const sourceTargets = [
+              ...new Map(
+                calls.flatMap((call) => {
+                  if (typeof call.input.sourceId !== 'string') return []
+                  const target = {
+                    slide: Number(call.input.slideIndex) + 1,
+                    sourceId: call.input.sourceId,
+                  }
+                  return [[`${target.slide}:${target.sourceId}`, target] as const]
+                }),
+              ).values(),
+            ]
             const raw = (await access.inspectAcceptanceAuthority({
               affectedSlides,
               referenceSlides: [],

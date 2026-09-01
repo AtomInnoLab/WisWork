@@ -8,7 +8,7 @@ import type {
   SlidesAcceptanceAuthoritySnapshot,
   SlidesAcceptanceTextProofRequest,
 } from '../../shared/ipc'
-import type { Session } from '../session-state'
+import { ensureSessionInstanceIds, type Session } from '../session-state'
 
 const roleOf = (element: SlideElement): 'title' | 'body' | 'emphasis' | undefined => {
   if (element.placeholder === 'title' || element.placeholder === 'ctrTitle') return 'title'
@@ -28,10 +28,10 @@ const normalizeText = (text: string): string =>
 export async function inspectSlidesAcceptanceLease(
   session: Session,
 ): Promise<SlidesAcceptanceAuthorityLease | null> {
-  if (!session.documentInstanceId || !session.sessionInstanceId) return null
+  const identity = ensureSessionInstanceIds(session)
   const lease = {
-    documentToken: session.documentInstanceId,
-    sessionToken: session.sessionInstanceId,
+    documentToken: identity.documentInstanceId,
+    sessionToken: identity.sessionInstanceId,
     revision: await fingerprintPresentation(session.opened),
     slideCount: session.opened.deck.slides.length,
     leaseToken: `lease:${randomUUID().replaceAll('-', '')}`,

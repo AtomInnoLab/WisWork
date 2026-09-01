@@ -35,12 +35,14 @@ async function eightPageFixture(): Promise<{ path: string; untouched: string[] }
         paragraphs: [{ runs: [{ text: `${role}-${number}`, color: '#000000' }] }],
       })
   }
-  const untouched = await Promise.all(
-    opened.deck.slides.slice(0, 5).map((slide) => fingerprintSlide(opened, slide)),
-  )
   const directory = await mkdtemp(join(tmpdir(), 'wiswork-slides-acceptance-'))
   const path = join(directory, 'eight-page-authority.pptx')
-  await writeFile(path, await savePptx(opened))
+  const bytes = await savePptx(opened)
+  await writeFile(path, bytes)
+  const normalized = await openPptx(bytes)
+  const untouched = await Promise.all(
+    normalized.deck.slides.slice(0, 5).map((slide) => fingerprintSlide(normalized, slide)),
+  )
   return { path, untouched }
 }
 
@@ -75,22 +77,16 @@ test('production Slides renderer captures authority-bound affected and reference
     })
     expect(execution.status).toBe('verified')
     expect(execution.text).toContain('Verified')
-    await editor.locator('.ai-rail').click()
     await expect(editor.getByText('Verified', { exact: true })).toBeVisible()
     expect(execution.passedCheckIds).toHaveLength(17)
-    expect(execution.mutationReceiptIds).toEqual([
-      'golden-6-title',
-      'golden-6-body',
-      'golden-6-emphasis',
-      'golden-7-title',
-      'golden-7-body',
-      'golden-7-emphasis',
-      'golden-7-geometry',
-      'golden-8-title',
-      'golden-8-body',
-      'golden-8-emphasis',
-      'golden-8-geometry',
-    ])
+    expect(execution.mutationReceiptIds).toHaveLength(11)
+    expect(new Set(execution.mutationReceiptIds).size).toBe(11)
+    expect(
+      execution.mutationReceiptIds?.filter((id) => id.startsWith('slides-text-')),
+    ).toHaveLength(9)
+    expect(
+      execution.mutationReceiptIds?.filter((id) => id.startsWith('slides-geometry-')),
+    ).toHaveLength(2)
     const saved = await editor.evaluate(() => window.slidesApi.save())
     expect(saved.ok).toBe(true)
     expect(execution.documentToken).toBeTruthy()

@@ -1384,18 +1384,40 @@ export function AiPanel({
             },
           },
         }
+        let enrollmentFailure: string | undefined
+        let enrollmentKind: string | undefined
+        const automatedSkill = createSlidesSkill(automatedAccess, {
+          planning: true,
+          verifiedCompletion: true,
+          visualReview: true,
+          autoCorrection: false,
+        })
+        const automatedEnroll = automatedSkill.presentation?.enroll
+        if (!automatedSkill.presentation || !automatedEnroll)
+          throw new Error('acceptance enrollment harness unavailable')
+        const diagnosticSkill = {
+          ...automatedSkill,
+          presentation: {
+            ...automatedSkill.presentation,
+            enroll: async (...args: Parameters<typeof automatedEnroll>) => {
+              try {
+                const enrolled = await automatedEnroll(...args)
+                enrollmentKind = enrolled.kind
+                return enrolled
+              } catch (error) {
+                enrollmentFailure = error instanceof Error ? error.message : 'unknown_error'
+                throw error
+              }
+            },
+          },
+        }
         return new Promise((resolve, reject) => {
           let receipt:
             import('@wiswork/presentation-verification').PresentationCompletionReceipt | undefined
           const harness = createAgentHarness({
             transport,
             maxTurns: 3,
-            skill: createSlidesSkill(automatedAccess, {
-              planning: true,
-              verifiedCompletion: true,
-              visualReview: true,
-              autoCorrection: false,
-            }),
+            skill: diagnosticSkill,
             events: {
               onPresentationReceipt: ({ receipt: value }) => {
                 receipt = value
@@ -1405,6 +1427,10 @@ export function AiPanel({
                 harness.dispose()
                 setChat((previous) => [...previous, { role: 'assistant', text }])
                 void (async () => {
+                  if (!receipt)
+                    throw new Error(
+                      `missing_presentation_receipt:${enrollmentKind ?? 'not_enrolled'}`,
+                    )
                   const before = await window.slidesApi.getRenderSlides()
                   if (!before) throw new Error('authoritative_refresh_unavailable')
                   const pngs = await renderSlidesToPngBase64(
@@ -1412,7 +1438,14 @@ export function AiPanel({
                     imagesRef.current,
                     1,
                   )
-                  const after = await window.slidesApi.getRenderSlides()
+                  const after = await window.slidesApi.inspectAcceptanceAuthority({
+                    affectedSlides: [6, 7, 8],
+                    referenceSlides: [6],
+                    expectedDocumentToken: before.documentToken,
+                    expectedSessionToken: before.sessionToken,
+                    expectedRevision: before.revision,
+                    leaseToken: before.leaseToken,
+                  })
                   if (
                     !after ||
                     after.documentToken !== before.documentToken ||
@@ -1440,7 +1473,7 @@ export function AiPanel({
               },
               onError: (error) => {
                 harness.dispose()
-                reject(new Error(error))
+                reject(new Error(enrollmentFailure ? `${error}:${enrollmentFailure}` : error))
               },
             },
           })
