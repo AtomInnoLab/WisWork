@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import {
-  deploymentConfig,
-  officePresentationVerificationFlags,
-  officeWorkspaceMode,
-} from '../build-config.js'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { deploymentConfig, officeWorkspaceMode } from '../build-config.js'
+import { officePresentationVerificationFlags } from '../src/agent/presentation-flags.js'
 import {
   AgentWorkspace,
   LegacyAgentWorkspace,
@@ -34,6 +33,11 @@ describe('Office workspace rollback flag', () => {
 })
 
 describe('Office presentation verification rollout flags', () => {
+  it('keeps the Node-evaluated Vite build config free of workspace runtime imports', () => {
+    const source = readFileSync(resolve(import.meta.dirname, '../build-config.ts'), 'utf8')
+    expect(source).not.toMatch(/from\s+['"]@wiswork\//)
+  })
+
   it('uses the production locale adapter for every presentation state in all locales', () => {
     for (const lang of LANGS)
       for (const key of Object.keys(presentationVerificationStrings.zh))

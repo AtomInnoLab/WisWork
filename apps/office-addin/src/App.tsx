@@ -4,10 +4,10 @@ import { normalizeLang, translatePresentationVerification } from '@wiswork/i18n'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
 import {
   officeCapabilityFlags,
-  officePresentationVerificationFlags,
   officeRemoteDiagnosticsEnabled,
   officeWorkspaceMode,
 } from '../build-config.js'
+import { officePresentationVerificationFlags } from './agent/presentation-flags.js'
 import {
   createOfficeDiagnostics,
   officeDiagnosticEnvironment,
