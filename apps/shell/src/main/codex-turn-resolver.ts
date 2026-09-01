@@ -83,7 +83,8 @@ export class CodexTurnResolver {
     this.diagnostics?.(`resolver_namespaced_count_${Math.min(ids.namespacedMethods.length, 9)}`)
     this.diagnostics?.(`resolver_advertised_count_${Math.min(ids.advertisedMethods.length, 9)}`)
     this.diagnostics?.(
-      ids.namespacedMethods.includes('mcp__wiswork__wiswork_call')
+      ids.namespacedMethods.includes('mcp__wiswork__wiswork_read') &&
+        ids.namespacedMethods.includes('mcp__wiswork__wiswork_propose')
         ? 'resolver_method_exact'
         : 'resolver_method_missing',
     )
@@ -107,8 +108,10 @@ export class CodexTurnResolver {
         turnId,
         sourceNonce: randomBytes(32).toString('base64url'),
         capability: entry.capability,
-        method: 'mcp__wiswork__wiswork_call',
-        toolName: 'wiswork_call',
+        tools: [
+          { method: 'mcp__wiswork__wiswork_read', toolName: 'wiswork_read' },
+          { method: 'mcp__wiswork__wiswork_propose', toolName: 'wiswork_propose' },
+        ],
         schemaDigest: '0'.repeat(64),
       })
     } catch (error) {

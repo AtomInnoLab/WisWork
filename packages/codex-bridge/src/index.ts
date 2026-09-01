@@ -36,8 +36,7 @@ interface CarrierLedgerEntry {
   readonly generation: number
   readonly turnId: string
   readonly sourceNonce: string
-  readonly method: string
-  readonly toolName: string
+  readonly methods: readonly string[]
   readonly schemaDigest: string
   state: 'issued' | 'consumed'
   remainingCalls: number
@@ -107,18 +106,36 @@ export function createDocumentCarrierIssuer(
 
   const issuerIdentity = Object.freeze(Object.create(null)) as object
   const issueForTurn = (turnValue: unknown): DocumentCarrierHandle => {
+    const multi = isRecord(turnValue) && Object.hasOwn(turnValue, 'tools')
     const turn = exactDataValues(
       turnValue,
-      ['turnId', 'sourceNonce', 'capability', 'method', 'toolName', 'schemaDigest'],
+      multi
+        ? ['turnId', 'sourceNonce', 'capability', 'tools', 'schemaDigest']
+        : ['turnId', 'sourceNonce', 'capability', 'method', 'toolName', 'schemaDigest'],
       'invalid_carrier_authorization',
     )
+    const tools = multi
+      ? Array.isArray(turn.tools)
+        ? turn.tools
+        : []
+      : [{ method: turn.method, toolName: turn.toolName }]
+    const methods = tools.map((tool) => {
+      const value = exactDataValues(tool, ['method', 'toolName'], 'invalid_carrier_authorization')
+      if (
+        typeof value.toolName !== 'string' ||
+        !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(value.toolName) ||
+        value.method !== `mcp__wiswork__${value.toolName}`
+      )
+        fail('invalid_carrier_authorization')
+      return value.method as string
+    })
     if (
       !boundedId(turn.turnId) ||
       typeof turn.sourceNonce !== 'string' ||
       !/^[A-Za-z0-9_-]{43}$/.test(turn.sourceNonce) ||
-      typeof turn.toolName !== 'string' ||
-      !/^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(turn.toolName) ||
-      turn.method !== `mcp__wiswork__${turn.toolName}` ||
+      methods.length < 1 ||
+      methods.length > 2 ||
+      new Set(methods).size !== methods.length ||
       typeof turn.schemaDigest !== 'string' ||
       !/^[a-f0-9]{64}$/.test(turn.schemaDigest)
     )
@@ -130,8 +147,7 @@ export function createDocumentCarrierIssuer(
       generation: context.generation,
       turnId: turn.turnId,
       sourceNonce: turn.sourceNonce,
-      method: turn.method,
-      toolName: turn.toolName,
+      methods: Object.freeze(methods),
       schemaDigest: turn.schemaDigest,
     })
     let approved: boolean
@@ -819,10 +835,11 @@ function convertResponsesRequest(
   )
   if (
     carrierEntry !== undefined &&
-    (advertisedExecMethods.length !== 1 || advertisedExecMethods[0] !== carrierEntry.method)
+    (advertisedExecMethods.length !== carrierEntry.methods.length ||
+      carrierEntry.methods.some((method) => !advertisedExecMethods.includes(method)))
   )
     fail('carrier_authorization_mismatch')
-  const allowedExecMethods = carrierEntry === undefined ? [] : [carrierEntry.method]
+  const allowedExecMethods = carrierEntry === undefined ? [] : [...carrierEntry.methods]
   const upstreamTools: NonNullable<MessagesRequest['tools']> = []
 
   const developerInstructions: string[] = []

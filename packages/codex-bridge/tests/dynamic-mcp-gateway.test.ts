@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { suspendToolExecution } from '@wiswork/agent-core'
 import { startDynamicMcpGateway } from '../src/dynamic-mcp-gateway.js'
 
 const initialized = new Map<string, Promise<void>>()
@@ -47,14 +48,17 @@ describe('fixed dynamic MCP gateway', () => {
     try {
       const listed = await rpc(gateway.url, gateway.secret, 1, 'tools/list', {})
       const body = await listed.json()
-      expect(body.result.tools.map((tool: { name: string }) => tool.name)).toEqual(['wiswork_call'])
+      expect(body.result.tools.map((tool: { name: string }) => tool.name)).toEqual([
+        'wiswork_read',
+        'wiswork_propose',
+      ])
       expect(body.result.tools[0].annotations).toEqual({
         readOnlyHint: true,
         destructiveHint: false,
       })
       expect(JSON.stringify(body)).not.toMatch(/doc-|session_|owner/i)
       const denied = await rpc(gateway.url, gateway.secret, 2, 'tools/call', {
-        name: 'wiswork_call',
+        name: 'wiswork_read',
         arguments: { capability: 'A'.repeat(43), callId: 'x', toolName: 'read_blocks', input: {} },
       })
       expect(denied.status).toBe(403)
@@ -68,6 +72,9 @@ describe('fixed dynamic MCP gateway', () => {
     const session = {
       identity: { ownerId: 'owner', documentId: 'doc', generation: 7 },
       credentials: { sessionId: 's', secret: 'k' },
+      listTools: () => [
+        { name: 'read_blocks', annotations: { readOnlyHint: true, destructiveHint: false } },
+      ],
       callTool: (_credentials: unknown, call: unknown) => execute(call),
     } as any
     const gateway = await startDynamicMcpGateway()
@@ -87,7 +94,7 @@ describe('fixed dynamic MCP gateway', () => {
       expect(
         (
           await rpc(gateway.url, gateway.secret, 1, 'tools/call', {
-            name: 'wiswork_call',
+            name: 'wiswork_read',
             arguments: args,
           })
         ).status,
@@ -96,7 +103,7 @@ describe('fixed dynamic MCP gateway', () => {
       expect(
         (
           await rpc(gateway.url, gateway.secret, 2, 'tools/call', {
-            name: 'wiswork_call',
+            name: 'wiswork_read',
             arguments: args,
           })
         ).status,
@@ -105,7 +112,7 @@ describe('fixed dynamic MCP gateway', () => {
       expect(
         (
           await rpc(gateway.url, gateway.secret, 3, 'tools/call', {
-            name: 'wiswork_call',
+            name: 'wiswork_read',
             arguments: { ...args, callId: 'call-2' },
           })
         ).status,
@@ -128,6 +135,9 @@ describe('fixed dynamic MCP gateway', () => {
       generation: 1,
       session: {
         credentials: { sessionId: `s-${index}`, secret: `k-${index}` },
+        listTools: () => [
+          { name: 'read_blocks', annotations: { readOnlyHint: true, destructiveHint: false } },
+        ],
         callTool: (_credentials: unknown, call: unknown) => execute(call),
       } as any,
     }))
@@ -141,7 +151,7 @@ describe('fixed dynamic MCP gateway', () => {
         }),
       )
       const first = await rpc(gateway.url, gateway.secret, 1, 'tools/call', {
-        name: 'wiswork_call',
+        name: 'wiswork_read',
         arguments: {
           capability: grants[0]!.capability,
           callId: 'a',
@@ -150,7 +160,7 @@ describe('fixed dynamic MCP gateway', () => {
         },
       })
       const second = await rpc(gateway.url, gateway.secret, 2, 'tools/call', {
-        name: 'wiswork_call',
+        name: 'wiswork_read',
         arguments: {
           capability: grants[1]!.capability,
           callId: 'b',
@@ -162,7 +172,7 @@ describe('fixed dynamic MCP gateway', () => {
       expect(calls[0]).toHaveBeenCalledWith(expect.objectContaining({ id: 'a' }))
       expect(calls[1]).toHaveBeenCalledWith(expect.objectContaining({ id: 'b' }))
       const replay = await rpc(gateway.url, gateway.secret, 3, 'tools/call', {
-        name: 'wiswork_call',
+        name: 'wiswork_read',
         arguments: {
           capability: grants[0]!.capability,
           callId: 'a',
@@ -187,6 +197,9 @@ describe('fixed dynamic MCP gateway', () => {
       generation: 1,
       session: {
         credentials: { sessionId: 'session', secret: 'secret' },
+        listTools: () => [
+          { name: 'read_blocks', annotations: { readOnlyHint: true, destructiveHint: false } },
+        ],
         callTool: (_credentials: unknown, call: unknown) => execute(call),
       } as any,
     })
@@ -198,7 +211,7 @@ describe('fixed dynamic MCP gateway', () => {
       })
       for (let index = 0; index < 9; index += 1) {
         const response = await rpc(gateway.url, gateway.secret, index + 1, 'tools/call', {
-          name: 'wiswork_call',
+          name: 'wiswork_read',
           arguments: {
             capability: grant.capability,
             callId: `call-${index}`,
@@ -215,6 +228,68 @@ describe('fixed dynamic MCP gateway', () => {
     }
   })
 
+  it('completes a mutation proposal without awaiting or executing the suspended writer', async () => {
+    const onProposal = vi.fn()
+    const writer = vi.fn()
+    const never = new Promise<never>(() => undefined)
+    const gateway = await startDynamicMcpGateway()
+    const close = gateway.register({
+      ownerId: 'owner',
+      documentId: 'doc-proposal',
+      generation: 1,
+      onProposal,
+      session: {
+        credentials: { sessionId: 'session', secret: 'secret' },
+        listTools: () => [
+          {
+            name: 'replace_text',
+            annotations: { readOnlyHint: false, destructiveHint: true },
+          },
+        ],
+        callTool: () => suspendToolExecution(never),
+        cancelAll: writer,
+      } as any,
+    })
+    try {
+      const grant = gateway.beginTurn({
+        documentId: 'doc-proposal',
+        generation: 1,
+        threadId: 'thread',
+      })
+      const response = await rpc(gateway.url, gateway.secret, 50, 'tools/call', {
+        name: 'wiswork_propose',
+        arguments: {
+          capability: grant.capability,
+          callId: 'proposal-call',
+          toolName: 'replace_text',
+          input: { text: 'pending' },
+        },
+      })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual(
+        expect.objectContaining({
+          result: expect.objectContaining({
+            content: [
+              expect.objectContaining({
+                type: 'text',
+                text: expect.stringContaining('proposalId'),
+              }),
+            ],
+            isError: false,
+          }),
+        }),
+      )
+      expect(onProposal).toHaveBeenCalledOnce()
+      expect(onProposal).toHaveBeenCalledWith(
+        expect.objectContaining({ call: expect.objectContaining({ name: 'replace_text' }) }),
+      )
+      expect(writer).not.toHaveBeenCalled()
+    } finally {
+      close()
+      await gateway.close()
+    }
+  })
+
   it('revokes a turn capability explicitly and bounds outstanding grants', async () => {
     const execute = vi.fn(async () => ({ output: 'ok', summary: 'ok' }))
     const gateway = await startDynamicMcpGateway()
@@ -224,6 +299,9 @@ describe('fixed dynamic MCP gateway', () => {
       generation: 1,
       session: {
         credentials: { sessionId: 's', secret: 'k' },
+        listTools: () => [
+          { name: 'read_blocks', annotations: { readOnlyHint: true, destructiveHint: false } },
+        ],
         callTool: execute,
       } as any,
     })
@@ -231,7 +309,7 @@ describe('fixed dynamic MCP gateway', () => {
       const grant = gateway.beginTurn({ documentId: 'doc', generation: 1, threadId: 'thread' })
       gateway.revokeTurn(grant.capability)
       const denied = await rpc(gateway.url, gateway.secret, 90, 'tools/call', {
-        name: 'wiswork_call',
+        name: 'wiswork_read',
         arguments: {
           capability: grant.capability,
           callId: 'call',
@@ -262,6 +340,9 @@ describe('fixed dynamic MCP gateway', () => {
       onToolEvent: (event) => events.push(event),
       session: {
         credentials: { sessionId: 's', secret: 'k' },
+        listTools: () => [
+          { name: 'read_blocks', annotations: { readOnlyHint: true, destructiveHint: false } },
+        ],
         callTool: () => {
           throw new Error('private')
         },
@@ -271,7 +352,7 @@ describe('fixed dynamic MCP gateway', () => {
     const grant = gateway.beginTurn({ documentId: 'doc', generation: 1, threadId: 'thread' })
     try {
       const response = await rpc(gateway.url, gateway.secret, 91, 'tools/call', {
-        name: 'wiswork_call',
+        name: 'wiswork_read',
         arguments: {
           capability: grant.capability,
           callId: 'failed-call',

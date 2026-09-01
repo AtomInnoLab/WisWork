@@ -14,8 +14,10 @@ describe('Shell-private Codex turn resolver', () => {
     expect(issueForTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         turnId: 'turn-a',
-        method: 'mcp__wiswork__wiswork_call',
-        toolName: 'wiswork_call',
+        tools: [
+          { method: 'mcp__wiswork__wiswork_read', toolName: 'wiswork_read' },
+          { method: 'mcp__wiswork__wiswork_propose', toolName: 'wiswork_propose' },
+        ],
       }),
     )
     expect(resolver.prepare(input)).toBeTruthy()

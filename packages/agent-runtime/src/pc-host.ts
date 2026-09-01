@@ -7,8 +7,11 @@ export const PC_HOST_CODEX_CHANNELS = Object.freeze({
   register: 'codex:pc-host:register',
   unregister: 'codex:pc-host:unregister',
   toolResult: 'codex:pc-host:tool-result',
+  confirmProposal: 'codex:pc-host:confirm-proposal',
+  cancelProposal: 'codex:pc-host:cancel-proposal',
   event: 'codex:pc-host:event',
   toolCall: 'codex:pc-host:tool-call',
+  proposal: 'codex:pc-host:proposal',
 })
 
 export type PcEnhancedHost = Extract<EnhancedHost, 'latex' | 'slides' | 'docs' | 'sheets'>
@@ -35,6 +38,15 @@ export interface PcHostToolResult {
   readonly execution: ToolExecution
 }
 
+export interface PcHostProposalRequest {
+  readonly proposalId: string
+  readonly documentId: string
+  readonly generation: number
+  readonly toolName: string
+  readonly summary: string
+  readonly expiresAt: number
+}
+
 export interface PcHostCodexApi {
   status(): Promise<{
     readonly activeAgentRuntime: 'standard' | 'enhanced'
@@ -45,8 +57,11 @@ export interface PcHostCodexApi {
   startTurn(input: { readonly documentId: string; readonly text: string }): Promise<void>
   cancelTurn(documentId: string): Promise<void>
   toolResult(input: PcHostToolResult): Promise<void>
+  confirmProposal(documentId: string, generation: number, proposalId: string): Promise<void>
+  cancelProposal(documentId: string, generation: number, proposalId: string): Promise<void>
   onEvent(listener: (event: EnhancedSessionEvent) => void): () => void
   onToolCall(listener: (request: PcHostToolRequest) => void): () => void
+  onProposal(listener: (request: PcHostProposalRequest) => void): () => void
 }
 
 export interface PcHostIpcRenderer {
@@ -80,10 +95,20 @@ export function createPcHostCodexApi(ipc: PcHostIpcRenderer): PcHostCodexApi {
       ipc.invoke('codex:runtime:cancel-turn', documentId).then(() => undefined),
     toolResult: (input: PcHostToolResult) =>
       ipc.invoke(PC_HOST_CODEX_CHANNELS.toolResult, input).then(() => undefined),
+    confirmProposal: (documentId, generation, proposalId) =>
+      ipc
+        .invoke(PC_HOST_CODEX_CHANNELS.confirmProposal, documentId, generation, proposalId)
+        .then(() => undefined),
+    cancelProposal: (documentId, generation, proposalId) =>
+      ipc
+        .invoke(PC_HOST_CODEX_CHANNELS.cancelProposal, documentId, generation, proposalId)
+        .then(() => undefined),
     onEvent: (listener: (event: EnhancedSessionEvent) => void) =>
       listen(PC_HOST_CODEX_CHANNELS.event, listener),
     onToolCall: (listener: (request: PcHostToolRequest) => void) =>
       listen(PC_HOST_CODEX_CHANNELS.toolCall, listener),
+    onProposal: (listener: (request: PcHostProposalRequest) => void) =>
+      listen(PC_HOST_CODEX_CHANNELS.proposal, listener),
   }
   return Object.freeze(api)
 }

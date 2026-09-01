@@ -64,7 +64,7 @@ describe('real 0.147 production engine bridge', () => {
         const match = request.system?.match(/pass capability ([A-Za-z0-9_-]{43})/)
         expect(match?.[1]).toBeTruthy()
         return toolResponse(
-          `text(await tools.mcp__wiswork__wiswork_call(${JSON.stringify({ capability: match![1], callId: 'read-1', toolName: 'read_blocks', input: {} })}))`,
+          `text(await tools.mcp__wiswork__wiswork_read(${JSON.stringify({ capability: match![1], callId: 'read-1', toolName: 'read_blocks', input: {} })}))`,
         )
       })
       const engine = await createProductionCodexBootstrap({
@@ -80,6 +80,12 @@ describe('real 0.147 production engine bridge', () => {
           generation: 1,
         },
         credentials: { sessionId: 'session', secret: 'secret' },
+        listTools: () => [
+          {
+            name: 'read_blocks',
+            annotations: { readOnlyHint: true, destructiveHint: false },
+          },
+        ],
         callTool: vi.fn(async () => ({ output: '{"paragraphs":1}', summary: 'read blocks' })),
         cancelAll: vi.fn(() => 0),
         close: vi.fn(),
@@ -154,6 +160,9 @@ describe('real 0.147 production engine bridge', () => {
           generation: 1,
         },
         credentials: { sessionId: 'session', secret: 'secret' },
+        listTools: () => [
+          { name: 'read_blocks', annotations: { readOnlyHint: true, destructiveHint: false } },
+        ],
         callTool: vi.fn(async () => ({ output: 'read', summary: 'read' })),
         close: vi.fn(),
       } as any
@@ -212,6 +221,9 @@ describe('real 0.147 production engine bridge', () => {
           generation: 1,
         },
         credentials: { sessionId: 'cancel-session', secret: 'cancel-secret' },
+        listTools: () => [
+          { name: 'read_blocks', annotations: { readOnlyHint: true, destructiveHint: false } },
+        ],
         callTool: vi.fn(),
         cancelAll: vi.fn(() => 0),
         close: vi.fn(),

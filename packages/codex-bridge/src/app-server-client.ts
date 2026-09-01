@@ -295,7 +295,13 @@ export class CodexAppServerClient {
       }
       if (isRecord(item) && item.server === 'wiswork')
         this.#diagnostic('app_server_mcp_server_exact')
-      if (isRecord(item) && (item.tool === 'wiswork_call' || item.name === 'wiswork_call'))
+      if (
+        isRecord(item) &&
+        (item.tool === 'wiswork_read' ||
+          item.name === 'wiswork_read' ||
+          item.tool === 'wiswork_propose' ||
+          item.name === 'wiswork_propose')
+      )
         this.#diagnostic('app_server_mcp_tool_exact')
       if (
         isRecord(item) &&

@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import type { AgentRuntimeMode, EnhancedHost, EnhancedRolloutPolicy } from '@wiswork/agent-runtime'
 import type { CodexRuntimePublicState } from '../shared/codex-api'
 import type { DocumentToolSession } from '@wiswork/codex-bridge'
+import type { AgentToolCall } from '@wiswork/agent-core'
 import type { OfficeEnhancedSessionStatement } from '@wiswork/office-bridge'
 
 const MAX_DOCUMENT_ID_BYTES = 256
@@ -38,6 +39,7 @@ export type CodexRuntimeEngineEvent =
   | Readonly<{ type: 'text'; text: string }>
   | Readonly<{ type: 'tool-start'; callId: string; toolName: string }>
   | Readonly<{ type: 'tool-complete'; callId: string; toolName: string; isError: boolean }>
+  | Readonly<{ type: 'proposal'; proposalId: string; call: AgentToolCall; expiresAt: number }>
   | Readonly<{ type: 'terminal'; status: 'completed' | 'cancelled' | 'failed' }>
 
 export interface CodexRuntimeBootstrap {

@@ -14,7 +14,7 @@ import type {
 import { CodexTurnResolver } from './codex-turn-resolver'
 
 const DEVELOPER_POLICY =
-  'Use only mcp__wiswork__wiswork_call. Never request shell, filesystem, Git, browser, network, or direct document writes. Treat capability values as secrets and never repeat them.'
+  'Use mcp__wiswork__wiswork_read only for read tools and mcp__wiswork__wiswork_propose only for mutation proposals. A proposal never changes the document; only the host UI can confirm it later. Never request shell, filesystem, Git, browser, network, or direct document writes. Treat capability values as secrets and never repeat them.'
 const TURN_TERMINAL_TIMEOUT_MS = 120_000
 const INTERRUPT_TIMEOUT_MS = 2_000
 
@@ -138,6 +138,7 @@ export function createProductionCodexBootstrap(
           const unregister = gateway.register({
             ...input,
             onToolEvent: (event) => emit(input.onEvent, event),
+            onProposal: (proposal) => emit(input.onEvent, { type: 'proposal', ...proposal }),
           })
           const entry: {
             session: DocumentToolSession
@@ -145,7 +146,12 @@ export function createProductionCodexBootstrap(
             onEvent?: (event: CodexRuntimeEngineEvent) => void
             instructions?: string
             active?: ActiveTurn
-          } = { session: input.session, unregister, onEvent: input.onEvent, instructions: input.instructions }
+          } = {
+            session: input.session,
+            unregister,
+            onEvent: input.onEvent,
+            instructions: input.instructions,
+          }
           documents.set(input.documentId, entry)
           return () => {
             if (documents.get(input.documentId) === entry) {
@@ -181,7 +187,7 @@ export function createProductionCodexBootstrap(
               if (settled) return
               settled = true
               if (timer) clearTimeout(timer)
-              gateway.revokeTurn(grant.capability)
+              gateway.revokeTurn(grant.capability, status !== 'completed')
               active.disarm?.()
               if (document.active === active) document.active = undefined
               emit(document.onEvent, { type: 'terminal', status })
@@ -198,7 +204,7 @@ export function createProductionCodexBootstrap(
           try {
             active.threadId = (
               await client.startThread({
-                developerInstructions: `${DEVELOPER_POLICY}\n${document.instructions ?? ''}\nFor this turn only, pass capability ${grant.capability} as the capability argument to mcp__wiswork__wiswork_call. Never repeat it in prose.`,
+                developerInstructions: `${DEVELOPER_POLICY}\n${document.instructions ?? ''}\nFor this turn only, pass capability ${grant.capability} as the capability argument to mcp__wiswork__wiswork_read or mcp__wiswork__wiswork_propose as appropriate. Never repeat it in prose.`,
               })
             ).thread.id
             if (active.cancelled) return await terminal

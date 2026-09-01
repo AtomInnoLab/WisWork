@@ -10,12 +10,20 @@ import { startTrustedMcpTransport, TrustedMcpTransportDenied } from './mcp-serve
 const MAX_CALLS = 8
 const DEFAULT_TTL_MS = 10 * 60_000
 const MAX_ACTIVE_GRANTS = 64
+const MAX_PROPOSAL_TTL_MS = 30_000
 
 export interface DynamicGatewayDocument {
   readonly ownerId: string
   readonly documentId: string
   readonly generation: number
   readonly session: DocumentToolSession
+  readonly onProposal?: (
+    proposal: Readonly<{
+      proposalId: string
+      call: AgentToolCall
+      expiresAt: number
+    }>,
+  ) => void
   readonly onToolEvent?: (
     event:
       | Readonly<{ type: 'tool-start'; callId: string; toolName: string }>
@@ -34,7 +42,7 @@ export interface DynamicMcpGateway {
     readonly ttlMs?: number
   }): { readonly capability: string }
   bindTurn(capability: string, threadId: string): void
-  revokeTurn(capability: string): void
+  revokeTurn(capability: string, cancelPending?: boolean): void
   close(): Promise<void>
 }
 
@@ -83,10 +91,10 @@ export async function startDynamicMcpGateway(
   }
   const documents = new Map<string, DynamicGatewayDocument>()
   const grants = new Map<string, TurnGrant>()
-  const revokeGrant = (capability: string): void => {
+  const revokeGrant = (capability: string, cancelPending = true): void => {
     const grant = grants.get(capability)
     grants.delete(capability)
-    if (grant) {
+    if (grant && cancelPending) {
       try {
         grant.document.session.cancelAll(grant.document.session.credentials)
       } catch {}
@@ -130,10 +138,24 @@ export async function startDynamicMcpGateway(
       diagnostic('gateway_tools_list')
       return [
         {
-          name: 'wiswork_call',
-          description: 'Execute one authorized WisWork document tool call.',
-          // This carrier cannot mutate a document: mutation-capable tools only return a
-          // proposal. A separate AgentLoop owner confirmation may later commit a transaction.
+          name: 'wiswork_read',
+          description: 'Execute one authorized read-only WisWork document tool.',
+          annotations: { readOnlyHint: true, destructiveHint: false },
+          inputSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['capability', 'callId', 'toolName', 'input'],
+            properties: {
+              capability: { type: 'string' },
+              callId: { type: 'string' },
+              toolName: { type: 'string' },
+              input: { type: 'object' },
+            },
+          },
+        },
+        {
+          name: 'wiswork_propose',
+          description: 'Create an opaque pending WisWork proposal without changing the document.',
           annotations: { readOnlyHint: true, destructiveHint: false },
           inputSchema: {
             type: 'object',
@@ -154,7 +176,8 @@ export async function startDynamicMcpGateway(
         Readonly<{ document: DynamicGatewayDocument; callId: string; toolName: string }> | undefined
       try {
         diagnostic('gateway_tool_call_received')
-        if (call.name !== 'wiswork_call') throw new Error('denied')
+        if (call.name !== 'wiswork_read' && call.name !== 'wiswork_propose')
+          throw new Error('denied')
         const args = exactRecord(call.input, ['capability', 'callId', 'toolName', 'input'])
         if (
           typeof args.capability !== 'string' ||
@@ -180,6 +203,13 @@ export async function startDynamicMcpGateway(
           name: args.toolName,
           input: args.input as Record<string, unknown>,
         }
+        const definition = grant.document.session
+          .listTools(grant.document.session.credentials)
+          .find((tool) => tool.name === documentCall.name)
+        const isRead =
+          definition?.annotations?.readOnlyHint === true &&
+          definition.annotations.destructiveHint !== true
+        if ((call.name === 'wiswork_read') !== isRead) throw new Error('denied')
         emitTool(grant.document, {
           type: 'tool-start',
           callId: documentCall.id,
@@ -194,6 +224,32 @@ export async function startDynamicMcpGateway(
           grant.document.session.credentials,
           documentCall,
         )
+        if (call.name === 'wiswork_propose') {
+          if (outcome instanceof Promise) throw new Error('denied')
+          if (!isToolExecutionSuspension(outcome)) throw new Error('denied')
+          const proposalId = randomBytes(32).toString('base64url')
+          if (!grant.document.onProposal) throw new Error('denied')
+          grant.document.onProposal({
+            proposalId,
+            call: documentCall,
+            expiresAt: Math.min(grant.expiresAt, Date.now() + MAX_PROPOSAL_TTL_MS),
+          })
+          const execution: ToolExecution = {
+            output: JSON.stringify({ proposalId, status: 'pending_confirmation' }),
+            summary: 'Proposal pending confirmation',
+            mutated: false,
+          }
+          emitTool(grant.document, {
+            type: 'tool-complete',
+            callId: documentCall.id,
+            toolName: documentCall.name,
+            isError: false,
+          })
+          diagnostic('gateway_proposal_created')
+          diagnostic('gateway_tool_call_completed')
+          started = undefined
+          return execution
+        }
         const execution: ToolExecution =
           outcome instanceof Promise
             ? await outcome
@@ -276,8 +332,8 @@ export async function startDynamicMcpGateway(
       grant.threadId = threadId
       grant.bound = true
     },
-    revokeTurn(capability: string) {
-      revokeGrant(capability)
+    revokeTurn(capability: string, cancelPending = true) {
+      revokeGrant(capability, cancelPending)
     },
     async close() {
       if (closed) return
