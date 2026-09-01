@@ -37,11 +37,12 @@
     "test:slides-artifact:default": "node tools/check-slides-e2e-artifact.mjs absent",
     "test:branding": "node --test tools/branding.test.mjs",
     "test:runtime-policy": "node --test tools/optional-runtime-policy.test.mjs",
+    "test:runtime-package": "node tools/optional-runtime-policy.mjs --mode post-package --artifact-dir apps/shell/release",
     "notices": "node tools/gen-third-party-notices.mjs",
     "licenses": "node tools/check-licenses.mjs",
-    "dist:mac": "npm run notices && npm run build:all && npm run native:build:universal -w @wiswork/sheets && npm run dist:mac -w @wiswork/shell",
-    "dist:win": "npm run notices && npm run build:all && npm run dist:win -w @wiswork/shell",
-    "dist:linux": "npm run notices && npm run build:all && npm run dist:linux -w @wiswork/shell"
+    "dist:mac": "npm run notices && npm run build:all && npm run native:build:universal -w @wiswork/sheets && npm run dist:mac -w @wiswork/shell && npm run test:runtime-package",
+    "dist:win": "npm run notices && npm run build:all && npm run dist:win -w @wiswork/shell && npm run test:runtime-package",
+    "dist:linux": "npm run notices && npm run build:all && npm run dist:linux -w @wiswork/shell && npm run test:runtime-package"
   },
   "dependencies": {
     "ws": "^8.21.1"

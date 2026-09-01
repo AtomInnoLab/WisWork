@@ -15,6 +15,7 @@
 const { execFileSync } = require('node:child_process')
 const { existsSync } = require('node:fs')
 const { join } = require('node:path')
+const { createPackageInputs } = require('./packaging-inputs.cjs')
 
 const updateProvider = process.env.WISWORK_UPDATE_PROVIDER
 const updateUrl = process.env.WISWORK_UPDATE_URL
@@ -43,6 +44,7 @@ function updatePublishConfig() {
 // must omit this variable so signing and notarization remain fail-closed.
 const unsignedMacBuild = process.env.WISWORK_UNSIGNED_MAC_BUILD === '1'
 const tectonicSource = process.env.WISWORK_TECTONIC_SOURCE
+const packageInputs = createPackageInputs({ tectonicSource })
 const macArtifactName =
   process.arch === 'x64' ? 'WisWork-${version}.${ext}' : 'WisWork-${version}-arm64.${ext}'
 // WISWORK_MAC_X64=1 — opt into packaging the Intel (x64) dmg/zip alongside
@@ -59,15 +61,17 @@ const includeMacX64 = process.env.WISWORK_MAC_X64 === '1'
 // script was replaced by the lazy `install-electron` bin), and electron-builder
 // exits 0 on a missing extraResources source, so without this check the
 // installer would silently ship without the Chromium license.
-for (const rel of [
-  '../../node_modules/electron/dist/LICENSES.chromium.html',
-  '../../node_modules/@embedpdf/pdfium/dist/pdfium.wasm',
-  '../pdf/node_modules/harfbuzzjs/hb-subset.wasm',
-]) {
-  if (!existsSync(join(__dirname, rel))) {
-    throw new Error(
-      `electron-builder extraResources source missing: ${rel} (npm hoisting changed?)`,
-    )
+function assertStaticResourcesPresent() {
+  for (const rel of [
+    '../../node_modules/electron/dist/LICENSES.chromium.html',
+    '../../node_modules/@embedpdf/pdfium/dist/pdfium.wasm',
+    '../pdf/node_modules/harfbuzzjs/hb-subset.wasm',
+  ]) {
+    if (!existsSync(join(__dirname, rel))) {
+      throw new Error(
+        `electron-builder extraResources source missing: ${rel} (npm hoisting changed?)`,
+      )
+    }
   }
 }
 
@@ -133,55 +137,8 @@ const config = {
   directories: {
     output: 'release',
   },
-  files: ['out/**'],
-  extraResources: [
-    {
-      from: 'build/THIRD-PARTY-NOTICES.txt',
-      to: 'THIRD-PARTY-NOTICES.txt',
-    },
-    {
-      from: '../../node_modules/electron/dist/LICENSES.chromium.html',
-      to: 'LICENSES.chromium.html',
-    },
-    {
-      from: '../docs/out',
-      to: 'modules/docs',
-    },
-    {
-      from: '../sheets/out',
-      to: 'modules/sheets',
-    },
-    {
-      from: '../slides/out',
-      to: 'modules/slides',
-    },
-    {
-      from: '../pdf/out',
-      to: 'modules/pdf',
-    },
-    {
-      from: '../markdown/out',
-      to: 'modules/markdown',
-    },
-    // PDF text editing engines: the bundled main resolves these under
-    // Resources/wasm when node_modules is absent (apps/pdf/src/main/wasm-path.ts)
-    {
-      from: '../../node_modules/@embedpdf/pdfium/dist/pdfium.wasm',
-      to: 'wasm/pdfium.wasm',
-    },
-    {
-      from: '../pdf/node_modules/harfbuzzjs/hb-subset.wasm',
-      to: 'wasm/hb-subset.wasm',
-    },
-    {
-      from: '../latex/out',
-      to: 'modules/latex',
-    },
-    {
-      from: '../../tools/tectonic/manifest.json',
-      to: 'native/tectonic-manifest.json',
-    },
-  ],
+  files: packageInputs.files,
+  extraResources: packageInputs.extraResources,
   // `mimeType` is read only by the Linux target, where it becomes the
   // desktop entry's MimeType= list; associations without it are dropped
   // there. macOS and Windows ignore the field and key off `ext`.
@@ -256,16 +213,7 @@ const config = {
     entitlements: 'build/entitlements.mac.plist',
     entitlementsInherit: 'build/entitlements.mac.plist',
     ...(unsignedMacBuild ? { identity: null, notarize: false } : { notarize: true }),
-    extraResources: [
-      {
-        from: '../sheets/native/xlsx-engine/target/release/xlsx-sidecar',
-        to: 'native/xlsx-sidecar',
-      },
-      {
-        from: tectonicSource ?? '../latex/native/tectonic',
-        to: 'native/tectonic',
-      },
-    ],
+    extraResources: packageInputs.macExtraResources,
   },
   win: {
     artifactName: 'WisWork-${version}-${arch}.${ext}',
@@ -275,18 +223,9 @@ const config = {
         arch: ['x64'],
       },
     ],
-    extraResources: [
-      // Windows packaging intentionally uses the native MSVC sidecar built by
-      // cargo build --release, not a MinGW cross target.
-      {
-        from: '../sheets/native/xlsx-engine/target/release/xlsx-sidecar.exe',
-        to: 'native/xlsx-sidecar.exe',
-      },
-      {
-        from: tectonicSource ?? '../latex/native/tectonic.exe',
-        to: 'native/tectonic.exe',
-      },
-    ],
+    // Windows packaging intentionally uses the native MSVC sidecar built by
+    // cargo build --release, not a MinGW cross target.
+    extraResources: packageInputs.winExtraResources,
   },
   // Unlike win (which cross-compiles the sidecar to an explicit target
   // triple), linux takes it from cargo's host-native target/release/ — the
@@ -326,16 +265,7 @@ const config = {
     // match the "wiswork" WM_CLASS the window actually reports — and X11
     // compares case-sensitively, so the taskbar shows an unlinked window.
     syncDesktopName: true,
-    extraResources: [
-      {
-        from: '../sheets/native/xlsx-engine/target/release/xlsx-sidecar',
-        to: 'native/xlsx-sidecar',
-      },
-      {
-        from: tectonicSource ?? '../latex/native/tectonic',
-        to: 'native/tectonic',
-      },
-    ],
+    extraResources: packageInputs.linuxExtraResources,
   },
   // Pin package and artifact names so the npm scope does not leak into Linux
   // package metadata and successive WisWork releases remain upgrade-compatible.
@@ -364,6 +294,7 @@ const config = {
     allowToChangeInstallationDirectory: true,
   },
   beforePack: async (context) => {
+    assertStaticResourcesPresent()
     assertModuleTreesPresent()
     if (context.electronPlatformName === 'darwin' && includeMacX64) assertUniversalSidecar()
   },
