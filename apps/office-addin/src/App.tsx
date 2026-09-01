@@ -1139,7 +1139,8 @@ export function ConfiguredApp(
     return <StatusScreen title="Starting WisWork Agent" detail="Loading tools…" busy />
   const disconnect = () => {
     workspace.session.logout()
-    workspace.runtime.dispose()
+    workspace.runtime.disableElevatedOffice()
+    workspace.runtime.clearSession()
     void forgetPairing()
   }
   const WorkspaceComponent = workspaceComponentForMode(workspaceMode)

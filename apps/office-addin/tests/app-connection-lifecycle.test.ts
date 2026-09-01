@@ -111,7 +111,11 @@ describe('configured Office connection lifecycle', () => {
       authenticationLost: vi.fn(),
       dispose: vi.fn(),
     }
-    const runtime = { dispose: vi.fn(), clearSession: vi.fn() }
+    const runtime = {
+      dispose: vi.fn(),
+      clearSession: vi.fn(),
+      disableElevatedOffice: vi.fn(),
+    }
     const ui = {
       attachments: () => [],
       skills: () => [],
@@ -151,6 +155,10 @@ describe('configured Office connection lifecycle', () => {
     expect(container.textContent).toContain('Couldn’t forget this Office pairing')
     expect(container.textContent).toContain('Try forgetting again')
     expect(snapshot).toEqual({ status: 'offline' })
+    expect(agentSession.logout).toHaveBeenCalledOnce()
+    expect(runtime.disableElevatedOffice).toHaveBeenCalled()
+    expect(runtime.clearSession).toHaveBeenCalled()
+    expect(runtime.dispose).not.toHaveBeenCalled()
 
     const retry = Array.from(container.querySelectorAll('button')).find(
       (button) => button.textContent === 'Try forgetting again',
@@ -164,6 +172,7 @@ describe('configured Office connection lifecycle', () => {
     expect(container.textContent).not.toContain('Couldn’t forget this Office pairing')
     expect(container.textContent).toContain('Connect to WisWork PC')
     act(() => root.unmount())
+    expect(runtime.dispose).toHaveBeenCalledOnce()
   })
 })
 
