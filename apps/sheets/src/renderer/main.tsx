@@ -1,6 +1,6 @@
 import ReactDOM from 'react-dom/client'
 import { htmlLang, type Lang } from '@wiswork/i18n'
-import { installScreenTips } from '@wiswork/ui'
+import { EnhancedMutationConfirmation, installScreenTips } from '@wiswork/ui'
 
 import '@wiswork/ui/tokens.css'
 import '@wiswork/ui/screentip.css'
@@ -50,6 +50,7 @@ async function bootstrap(): Promise<void> {
   ReactDOM.createRoot(root!).render(
     <LocaleProvider initial={lang}>
       <App />
+      <EnhancedMutationConfirmation api={window.codexRuntime} />
     </LocaleProvider>,
   )
 }

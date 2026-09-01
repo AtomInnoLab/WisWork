@@ -8,7 +8,7 @@ import type { UiTheme } from '../shared/ipc'
 import '@wiswork/ui/tokens.css'
 import '@wiswork/ui/screentip.css'
 import './styles.css'
-import { installScreenTips } from '@wiswork/ui'
+import { EnhancedMutationConfirmation, installScreenTips } from '@wiswork/ui'
 
 installScreenTips()
 
@@ -48,7 +48,14 @@ async function bootstrap(): Promise<void> {
   createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
       <LocaleProvider initial={lang}>
-        {mode === 'audience' ? <AudienceView /> : <App />}
+        {mode === 'audience' ? (
+          <AudienceView />
+        ) : (
+          <>
+            <App />
+            <EnhancedMutationConfirmation api={window.codexRuntime} />
+          </>
+        )}
       </LocaleProvider>
     </React.StrictMode>,
   )

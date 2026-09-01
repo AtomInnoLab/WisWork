@@ -4,6 +4,7 @@ import { App } from './App.js'
 import { LatexLocaleProvider } from './i18n/locale.js'
 import type { UiTheme } from '../shared/ipc.js'
 import '@wiswork/ui/tokens.css'
+import { EnhancedMutationConfirmation } from '@wiswork/ui'
 import './styles.css'
 
 function applyTheme(theme: UiTheme): void {
@@ -21,6 +22,7 @@ void (async () => {
     <StrictMode>
       <LatexLocaleProvider>
         <App />
+        <EnhancedMutationConfirmation api={window.codexRuntime} />
       </LatexLocaleProvider>
     </StrictMode>,
   )

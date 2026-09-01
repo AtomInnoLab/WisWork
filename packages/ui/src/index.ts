@@ -6,6 +6,12 @@ export { Markdown } from './Markdown'
 export { WisWorkAppMark } from './WisWorkAppMark'
 export { WisWorkAgentMark } from './WisWorkAgentMark'
 export {
+  EnhancedMutationConfirmation,
+  isEnhancedMutationProposal,
+  type EnhancedMutationProposal,
+  type EnhancedMutationProposalApi,
+} from './EnhancedMutationConfirmation'
+export {
   WORDART_PRESETS,
   wordArtSolidColor,
   wordArtStrokePx,
