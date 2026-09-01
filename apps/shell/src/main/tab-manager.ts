@@ -129,7 +129,9 @@ export class TabManager {
 
   enhancedHostForWebContents(senderId: number): 'latex' | 'slides' | 'docs' | 'sheets' | null {
     const kind = this.tabs.find((tab) => tab.view?.webContents.id === senderId)?.kind
-    return kind === 'latex' || kind === 'slides' || kind === 'docs' || kind === 'sheets' ? kind : null
+    return kind === 'latex' || kind === 'slides' || kind === 'docs' || kind === 'sheets'
+      ? kind
+      : null
   }
 
   list(): TabSummary[] {

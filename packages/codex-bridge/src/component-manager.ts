@@ -189,10 +189,12 @@ function canonicalTargetPath(
   for (const segment of path.split('/')) {
     const trimmed = segment.replace(/[ .]+$/u, '')
     const deviceBase = trimmed.split('.')[0]!.replace(/[ .]+$/u, '')
+    const hasControlCharacter = [...trimmed].some((character) => character.charCodeAt(0) <= 0x1f)
     if (
       trimmed !== segment ||
       trimmed === '' ||
-      /[<>:"|?*\u0000-\u001f]/u.test(trimmed) ||
+      /[<>:"|?*]/u.test(trimmed) ||
+      hasControlCharacter ||
       WINDOWS_RESERVED_NAME.test(deviceBase)
     ) {
       fail(errorCode)

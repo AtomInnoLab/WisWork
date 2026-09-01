@@ -7,11 +7,7 @@ export const CODEX_RUNTIME_CHANNELS = {
 } as const
 
 export type CodexRuntimePublicState =
-  | 'standard'
-  | 'starting'
-  | 'ready'
-  | 'unavailable'
-  | 'failed_safe'
+  'standard' | 'starting' | 'ready' | 'unavailable' | 'failed_safe'
 
 export interface CodexRuntimeStatus {
   readonly activeAgentRuntime: AgentRuntimeMode

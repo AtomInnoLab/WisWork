@@ -216,12 +216,12 @@ export function createProductionCodexBootstrap(
           })
           let resolve!: () => void
           let reject!: (error: Error) => void
-          let timer: ReturnType<typeof setTimeout> | undefined
           let settled = false
           const terminal = new Promise<void>((onResolve, onReject) => {
             resolve = onResolve
             reject = onReject
           })
+          const timerRef: { current?: ReturnType<typeof setTimeout> } = {}
           const active: ActiveTurn = {
             capability: grant.capability,
             cancelled: false,
@@ -236,7 +236,7 @@ export function createProductionCodexBootstrap(
             settle(status, error) {
               if (settled) return
               settled = true
-              if (timer) clearTimeout(timer)
+              if (timerRef.current) clearTimeout(timerRef.current)
               gateway.revokeTurn(grant.capability, status !== 'completed')
               active.disarm?.()
               if (document.active === active) document.active = undefined
@@ -245,12 +245,12 @@ export function createProductionCodexBootstrap(
               else resolve()
             },
           }
-          document.active = active
-          timer = setTimeout(
+          timerRef.current = setTimeout(
             () => active.settle('failed', new Error('enhanced_turn_timeout')),
             TURN_TERMINAL_TIMEOUT_MS,
           )
-          timer.unref()
+          timerRef.current.unref()
+          document.active = active
           try {
             active.threadId = (
               await client.startThread({

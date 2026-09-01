@@ -150,7 +150,12 @@ describe('Slides interactive agent controller', () => {
     const captureSnapshot = vi.fn(() => 'deck-before')
     const done = vi.fn()
     const controller = createAgentController(
-      { transport: manualTransport(), skill: enhancedSkill, captureSnapshot, events: { onDone: done } },
+      {
+        transport: manualTransport(),
+        skill: enhancedSkill,
+        captureSnapshot,
+        events: { onDone: done },
+      },
       { host: 'slides', api },
     )
     controller.activate()
