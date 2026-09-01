@@ -1,3 +1,13 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 
-export default defineConfig({ test: { include: ['tests/**/*.test.ts'], environment: 'node' } })
+export default defineConfig({
+  resolve: {
+    alias: {
+      '@wiswork/agent-runtime': fileURLToPath(
+        new URL('../agent-runtime/src/index.ts', import.meta.url),
+      ),
+    },
+  },
+  test: { include: ['tests/**/*.test.ts'], environment: 'node' },
+})

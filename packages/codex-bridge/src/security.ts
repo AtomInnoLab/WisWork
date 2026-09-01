@@ -5,6 +5,12 @@ import {
   type EnhancedCapability,
   type SafeRuntimeError,
 } from './types'
+import {
+  ENHANCED_HOSTS,
+  parseEnhancedRolloutPolicy,
+  type EnhancedHost,
+  type EnhancedRolloutPolicy,
+} from '@wiswork/agent-runtime'
 
 const MAX_CAPABILITIES = 32
 const MAX_TOKEN_LENGTH = 64
@@ -38,10 +44,42 @@ function strictArray(value: unknown, maximumLength: number): unknown[] {
     const descriptor = descriptors[String(index)]
     if (!descriptor || !('value' in descriptor)) throw new TypeError('invalid_runtime_input')
   }
-  if (Object.keys(descriptors).some((key) => key !== 'length' && !/^\d+$/.test(key))) {
+  const allowedKeys = new Set([
+    'length',
+    ...Array.from({ length: value.length }, (_, index) => String(index)),
+  ])
+  if (Object.keys(descriptors).some((key) => !allowedKeys.has(key))) {
     throw new TypeError('invalid_runtime_input')
   }
   return Array.from({ length: value.length }, (_, index) => descriptors[String(index)].value)
+}
+
+export type EnhancedCapabilityAuthorization = Readonly<{
+  host: EnhancedHost
+  policy: EnhancedRolloutPolicy
+  declaration: CapabilityDeclaration
+}>
+
+export function parseEnhancedCapabilityAuthorization(
+  value: unknown,
+): EnhancedCapabilityAuthorization {
+  const record = strictRecord(value, ['host', 'policy', 'declaration'])
+  if (
+    typeof record.host !== 'string' ||
+    record.host.length > MAX_TOKEN_LENGTH ||
+    !ENHANCED_HOSTS.includes(record.host as EnhancedHost)
+  )
+    throw new TypeError('invalid_enhanced_host')
+  const host = record.host as EnhancedHost
+  const policy = parseEnhancedRolloutPolicy(record.policy)
+  const declaration = parseCapabilityDeclaration(record.declaration)
+  if (!policy.globalEnabled || !policy.hosts[host]) throw new TypeError('capability_not_authorized')
+  if (
+    declaration.capabilities.includes('raw-office-proposal') &&
+    (!host.startsWith('office-') || !policy.rawOfficeEnabled)
+  )
+    throw new TypeError('capability_not_authorized')
+  return { host, policy, declaration }
 }
 
 export function parseCapabilityDeclaration(value: unknown): CapabilityDeclaration {

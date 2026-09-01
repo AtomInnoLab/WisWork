@@ -1,45 +1,61 @@
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { basename, extname, join } from 'node:path'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { assertOptionalRuntimePackagingPolicy } from './optional-runtime-policy.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const runtimePackages = ['packages/agent-runtime', 'packages/codex-bridge']
-const binaryExtensions = new Set(['', '.app', '.dll', '.dylib', '.exe', '.node', '.so', '.wasm'])
-const excludedDirectories = new Set([
-  '.git',
-  '.worktrees',
-  'build',
-  'dist',
-  'node_modules',
-  'out',
-  'release',
-])
-
-function filesBelow(relative) {
-  const absolute = join(root, relative)
-  if (!existsSync(absolute)) return []
-  return readdirSync(absolute, { withFileTypes: true }).flatMap((entry) => {
-    if (entry.isDirectory()) {
-      return excludedDirectories.has(entry.name) ? [] : filesBelow(join(relative, entry.name))
-    }
-    return entry.isFile() ? [join(absolute, entry.name)] : []
-  })
-}
 
 test('the reviewed optional runtime source packages are present', () => {
   assert.deepEqual(
-    runtimePackages.filter((path) => !existsSync(join(root, path))),
+    runtimePackages.filter((path) => !existsSync(join(root, path, 'package.json'))),
     [],
   )
 })
 
-test('the base repository does not bundle a Codex executable', () => {
-  const bundled = filesBelow('.')
-    .filter((path) => binaryExtensions.has(extname(path).toLowerCase()))
-    .filter((path) => /(?:codex|app-server)/i.test(basename(path)))
-  assert.deepEqual(bundled, [])
+test('the packaging configuration and current output inventory do not bundle Codex', () => {
+  assert.doesNotThrow(() => assertOptionalRuntimePackagingPolicy({ root }))
+})
+
+test('the policy rejects injected binaries, archives, and extraResources without broad scans', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'wiswork-runtime-policy-'))
+  try {
+    mkdirSync(join(fixture, 'apps/shell/out'), { recursive: true })
+    mkdirSync(join(fixture, 'apps/shell/release'), { recursive: true })
+    writeFileSync(
+      join(fixture, 'apps/shell/electron-builder.cjs'),
+      "module.exports={files:['out/**']}\n",
+    )
+    for (const name of ['codex', 'codex.exe', 'codex-app-server.zip', 'codex.tar.gz']) {
+      writeFileSync(join(fixture, 'apps/shell/out', name), 'fixture')
+      assert.throws(() =>
+        assertOptionalRuntimePackagingPolicy({
+          root: fixture,
+          packagingConfig: { files: ['out/**'] },
+        }),
+      )
+      rmSync(join(fixture, 'apps/shell/out', name))
+    }
+    assert.throws(() =>
+      assertOptionalRuntimePackagingPolicy({
+        root: fixture,
+        packagingConfig: { extraResources: [{ from: 'components/codex-app-server.tar.gz' }] },
+      }),
+    )
+    writeFileSync(join(fixture, 'apps/shell/release/codex-app-server.zip'), 'fixture')
+    assert.throws(() => assertOptionalRuntimePackagingPolicy({ root: fixture }))
+    rmSync(join(fixture, 'apps/shell/release/codex-app-server.zip'))
+    writeFileSync(
+      join(fixture, 'apps/shell/electron-builder.cjs'),
+      "module.exports={extraResources:[{from:'components/codex'}]}\n",
+    )
+    assert.throws(() => assertOptionalRuntimePackagingPolicy({ root: fixture }))
+  } finally {
+    rmSync(fixture, { recursive: true, force: true })
+  }
 })
 
 test('root verification runs the positive optional-runtime contracts', () => {

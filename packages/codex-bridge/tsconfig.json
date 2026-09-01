@@ -1,4 +1,8 @@
 {
   "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": { "@wiswork/agent-runtime": ["../agent-runtime/src/index.ts"] }
+  },
   "include": ["src", "tests", "vitest.config.ts"]
 }
