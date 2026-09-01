@@ -238,6 +238,12 @@ describe('fixed dynamic MCP gateway', () => {
       documentId: 'doc-proposal',
       generation: 1,
       onProposal,
+      summarizeProposal: () => ({
+        operation: 'replace',
+        target: 'blocks',
+        scope: 'bounded-set',
+        count: 1,
+      }),
       session: {
         credentials: { sessionId: 'session', secret: 'secret' },
         listTools: () => [
@@ -281,11 +287,46 @@ describe('fixed dynamic MCP gateway', () => {
       )
       expect(onProposal).toHaveBeenCalledOnce()
       expect(onProposal).toHaveBeenCalledWith(
-        expect.objectContaining({ call: expect.objectContaining({ name: 'replace_text' }) }),
+        expect.objectContaining({
+          call: expect.objectContaining({ name: 'replace_text' }),
+          summary: { operation: 'replace', target: 'blocks', scope: 'bounded-set', count: 1 },
+          settled: never,
+        }),
       )
       expect(writer).not.toHaveBeenCalled()
     } finally {
       close()
+      await gateway.close()
+    }
+  })
+
+  it('fails closed before suspending a mutation that has no safe host summary', async () => {
+    const callTool = vi.fn()
+    const gateway = await startDynamicMcpGateway()
+    gateway.register({
+      ownerId: 'owner',
+      documentId: 'doc-summary',
+      generation: 1,
+      session: {
+        credentials: { sessionId: 's', secret: 'k' },
+        listTools: () => [{ name: 'replace_text', annotations: { destructiveHint: true } }],
+        callTool,
+      } as any,
+    })
+    try {
+      const grant = gateway.beginTurn({ documentId: 'doc-summary', generation: 1, threadId: 't' })
+      const response = await rpc(gateway.url, gateway.secret, 51, 'tools/call', {
+        name: 'wiswork_propose',
+        arguments: {
+          capability: grant.capability,
+          callId: 'c',
+          toolName: 'replace_text',
+          input: {},
+        },
+      })
+      expect(response.status).toBe(403)
+      expect(callTool).not.toHaveBeenCalled()
+    } finally {
       await gateway.close()
     }
   })

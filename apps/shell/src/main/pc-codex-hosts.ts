@@ -7,6 +7,7 @@ import {
   type PcEnhancedHost,
   type PcHostRegistration,
   type PcHostToolResult,
+  type PcHostProposalSummary,
 } from '@wiswork/agent-runtime'
 import { createDocumentToolManifest, createDocumentToolSession } from '@wiswork/codex-bridge'
 import type { ShellCodexRuntime, CodexOwner } from './codex-runtime'
@@ -33,6 +34,7 @@ type PendingProposal = {
   readonly proposalId: string
   readonly call: AgentToolCall
   readonly expiresAt: number
+  timer?: ReturnType<typeof setTimeout>
 }
 type HostRecord = {
   readonly owner: PcOwner
@@ -49,6 +51,114 @@ type HostRecord = {
 
 const ID = /^[A-Za-z0-9._:@/-]{1,256}$/
 const PC_HOSTS = new Set<PcEnhancedHost>(['latex', 'slides', 'docs', 'sheets'])
+const proposalSummary = (
+  host: PcEnhancedHost,
+  call: AgentToolCall,
+): PcHostProposalSummary | undefined => {
+  const boundedCount = (value: unknown): number | undefined =>
+    Array.isArray(value) && value.length >= 1 && value.length <= 10_000 ? value.length : undefined
+  const count = boundedCount(call.input.operations) ?? boundedCount(call.input.files)
+  if (host === 'latex') {
+    if (call.name === 'compile_project')
+      return { operation: 'compile', target: 'project-files', scope: 'whole-document' }
+    if (call.name === 'propose_project_edits' && count)
+      return {
+        operation: 'replace',
+        target: 'project-files',
+        scope: count === 1 ? 'single' : 'bounded-set',
+        count,
+      }
+    return undefined
+  }
+  if (host === 'docs') {
+    const summaries: Record<string, PcHostProposalSummary> = {
+      insert_content: { operation: 'insert', target: 'blocks', scope: 'selection' },
+      replace_blocks: { operation: 'replace', target: 'blocks', scope: 'bounded-set' },
+      apply_commands: { operation: 'format', target: 'selection', scope: 'selection' },
+      insert_image: { operation: 'insert', target: 'document', scope: 'single', count: 1 },
+      insert_chart: { operation: 'insert', target: 'document', scope: 'single', count: 1 },
+      edit_chart: { operation: 'replace', target: 'document', scope: 'single', count: 1 },
+    }
+    return summaries[call.name]
+  }
+  if (host === 'sheets') {
+    if (call.name !== 'propose_operations' || !count) return undefined
+    const operationNames = (call.input.operations as unknown[]).map((operation) =>
+      operation && typeof operation === 'object' && !Array.isArray(operation)
+        ? (operation as Record<string, unknown>).op
+        : undefined,
+    )
+    if (operationNames.some((name) => typeof name !== 'string')) return undefined
+    const names = operationNames as string[]
+    const operation = names.every((name) => /^(add|insert)_/.test(name))
+      ? 'insert'
+      : names.every((name) => /^(clear|delete)_/.test(name))
+        ? 'delete'
+        : names.every((name) =>
+              /^(format|set_.*(?:height|width|hidden|freeze|page_setup))/.test(name),
+            )
+          ? 'format'
+          : names.every((name) =>
+                /^(move|sort|merge|unmerge|duplicate|protect|refresh)_/.test(name),
+              )
+            ? 'restructure'
+            : 'replace'
+    const target = names.every((name) => name.includes('sheet')) ? 'sheet' : 'cells'
+    return {
+      operation,
+      target,
+      scope: count === 1 ? 'single' : 'bounded-set',
+      count,
+    }
+  }
+  const insert = new Set([
+    'add_slide',
+    'add_text_box',
+    'add_shape',
+    'add_chart',
+    'add_smartart',
+    'add_table',
+  ])
+  const remove = new Set(['delete_slide', 'delete_element'])
+  const format = new Set([
+    'set_element_style',
+    'set_element_fill',
+    'set_element_stroke',
+    'set_slide_background',
+    'edit_table_style',
+  ])
+  const restructure = new Set([
+    'set_element_transform',
+    'edit_table_structure',
+    'ungroup_element',
+    'execute_slide_script',
+  ])
+  const replace = new Set([
+    'set_element_text',
+    'crop_image',
+    'set_picture_opacity',
+    'replace_image',
+    'edit_table_cell',
+    'edit_chart',
+    'set_speaker_notes',
+    'save_style_template',
+  ])
+  const operation = insert.has(call.name)
+    ? 'insert'
+    : remove.has(call.name)
+      ? 'delete'
+      : format.has(call.name)
+        ? 'format'
+        : restructure.has(call.name)
+          ? 'restructure'
+          : replace.has(call.name)
+            ? 'replace'
+            : undefined
+  if (!operation) return undefined
+  const target =
+    call.name.includes('slide') || call.name === 'set_speaker_notes' ? 'slides' : 'elements'
+  return { operation, target, scope: 'single', count: 1 }
+}
 const exactObject = (
   value: unknown,
   keys: readonly string[],
@@ -153,6 +263,7 @@ export function registerPcCodexHosts(options: {
     for (const pending of record.pending.values()) pending.reject()
     record.pending.clear()
     for (const proposal of record.proposals.values()) {
+      if (proposal.timer) clearTimeout(proposal.timer)
       const claimed = record.session.mutationAuthority.claimNext()
       if (claimed && claimed.request.call.id === proposal.call.id)
         record.session.mutationAuthority.reject(claimed.claim, 'mutation_cancelled')
@@ -173,13 +284,39 @@ export function registerPcCodexHosts(options: {
     }
     if (event.type === 'proposal') {
       if (record.proposals.has(event.proposalId) || record.pending.has(event.call.id)) return
-      record.proposals.set(event.proposalId, event)
+      const proposal: PendingProposal = { ...event }
+      proposal.timer = setTimeout(
+        () => {
+          if (!record.proposals.delete(proposal.proposalId)) return
+          const claimed = record.session.mutationAuthority.claimNext()
+          if (claimed && claimed.request.call.id === proposal.call.id) {
+            record.session.mutationAuthority.reject(claimed.claim, 'mutation_expired')
+            send(record, PC_HOST_CODEX_CHANNELS.event, {
+              type: 'tool-executed',
+              event: {
+                call: proposal.call,
+                execution: {
+                  output: 'mutation_expired',
+                  summary: 'Mutation rejected',
+                  isError: true,
+                  mutated: false,
+                },
+              },
+            })
+          } else if (claimed) {
+            record.session.mutationAuthority.reject(claimed.claim, 'mutation_binding_mismatch')
+          }
+        },
+        Math.max(0, event.expiresAt - Date.now()),
+      )
+      proposal.timer.unref()
+      record.proposals.set(event.proposalId, proposal)
       send(record, PC_HOST_CODEX_CHANNELS.proposal, {
         proposalId: event.proposalId,
         documentId: record.documentId,
         generation: record.generation,
         toolName: event.call.name,
-        summary: 'Review the proposed document change',
+        summary: event.summary,
         expiresAt: event.expiresAt,
       })
       return
@@ -292,6 +429,7 @@ export function registerPcCodexHosts(options: {
       generation: input.generation,
       toolSession: session,
       instructions: input.systemPrompt,
+      summarizeProposal: (call) => proposalSummary(host, call),
       onEvent: (engineEvent) => handleEngineEvent(record, engineEvent),
     })
     record = {
@@ -368,6 +506,12 @@ export function registerPcCodexHosts(options: {
       throw new Error('enhanced_untrusted_request')
     if (proposal.expiresAt <= Date.now()) {
       record.proposals.delete(proposalId)
+      if (proposal.timer) clearTimeout(proposal.timer)
+      const claimed = record.session.mutationAuthority.claimNext()
+      if (claimed && claimed.request.call.id === proposal.call.id)
+        record.session.mutationAuthority.reject(claimed.claim, 'mutation_expired')
+      else if (claimed)
+        record.session.mutationAuthority.reject(claimed.claim, 'mutation_binding_mismatch')
       throw new Error('enhanced_proposal_expired')
     }
     return { record, proposal }
@@ -377,6 +521,7 @@ export function registerPcCodexHosts(options: {
     (event, documentId, generation, proposalId) => {
       const { record, proposal } = proposalRecord(event.sender, documentId, generation, proposalId)
       record.proposals.delete(proposal.proposalId)
+      if (proposal.timer) clearTimeout(proposal.timer)
       const claimed = record.session.mutationAuthority.claimNext()
       if (
         !claimed ||
@@ -404,6 +549,7 @@ export function registerPcCodexHosts(options: {
     (event, documentId, generation, proposalId) => {
       const { record, proposal } = proposalRecord(event.sender, documentId, generation, proposalId)
       record.proposals.delete(proposal.proposalId)
+      if (proposal.timer) clearTimeout(proposal.timer)
       const claimed = record.session.mutationAuthority.claimNext()
       if (!claimed || claimed.request.call.id !== proposal.call.id) {
         if (claimed)
@@ -411,6 +557,18 @@ export function registerPcCodexHosts(options: {
         throw new Error('enhanced_untrusted_request')
       }
       record.session.mutationAuthority.reject(claimed.claim, 'mutation_cancelled')
+      send(record, PC_HOST_CODEX_CHANNELS.event, {
+        type: 'tool-executed',
+        event: {
+          call: proposal.call,
+          execution: {
+            output: 'mutation_cancelled',
+            summary: 'Mutation rejected',
+            isError: true,
+            mutated: false,
+          },
+        },
+      })
     },
   )
   return Object.freeze({

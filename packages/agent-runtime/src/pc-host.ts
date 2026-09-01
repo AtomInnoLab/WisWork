@@ -43,8 +43,23 @@ export interface PcHostProposalRequest {
   readonly documentId: string
   readonly generation: number
   readonly toolName: string
-  readonly summary: string
+  readonly summary: PcHostProposalSummary
   readonly expiresAt: number
+}
+
+export interface PcHostProposalSummary {
+  readonly operation: 'insert' | 'replace' | 'delete' | 'format' | 'restructure' | 'compile'
+  readonly target:
+    | 'document'
+    | 'selection'
+    | 'blocks'
+    | 'cells'
+    | 'sheet'
+    | 'slides'
+    | 'elements'
+    | 'project-files'
+  readonly scope: 'single' | 'selection' | 'bounded-set' | 'whole-document'
+  readonly count?: number
 }
 
 export interface PcHostCodexApi {

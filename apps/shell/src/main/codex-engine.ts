@@ -74,7 +74,14 @@ export function createProductionCodexBootstrap(
         turnId?: string
         disarm?: () => void
         cancelled: boolean
+        readonly pendingProposals: Set<string>
+        deferredTerminal?: { status: 'completed' | 'cancelled' | 'failed'; error?: Error }
+        proposalFailure?: 'cancelled' | 'failed'
         readonly settle: (status: 'completed' | 'cancelled' | 'failed', error?: Error) => void
+        readonly requestSettle: (
+          status: 'completed' | 'cancelled' | 'failed',
+          error?: Error,
+        ) => void
       }
       const documents = new Map<
         string,
@@ -119,7 +126,7 @@ export function createProductionCodexBootstrap(
           if (typeof turn?.status === 'string' && /^[a-z_]{1,32}$/.test(turn.status)) {
             options.diagnostics?.(`codex_turn_status_${turn.status}`)
           }
-          active.settle(
+          active.requestSettle(
             turn?.status === 'interrupted'
               ? 'cancelled'
               : turn?.status === 'failed'
@@ -138,7 +145,42 @@ export function createProductionCodexBootstrap(
           const unregister = gateway.register({
             ...input,
             onToolEvent: (event) => emit(input.onEvent, event),
-            onProposal: (proposal) => emit(input.onEvent, { type: 'proposal', ...proposal }),
+            onProposal: (proposal) => {
+              const active = documents.get(input.documentId)?.active
+              if (!active) return
+              active.pendingProposals.add(proposal.proposalId)
+              void proposal.settled.then(
+                (execution) => {
+                  if (execution.isError) {
+                    if (execution.output === 'mutation_cancelled') {
+                      active.proposalFailure ??= 'cancelled'
+                    } else {
+                      active.proposalFailure = 'failed'
+                    }
+                  }
+                  active.pendingProposals.delete(proposal.proposalId)
+                  const deferred = active.deferredTerminal
+                  if (deferred && active.pendingProposals.size === 0) {
+                    active.deferredTerminal = undefined
+                    const failure = active.proposalFailure
+                    active.settle(
+                      failure ?? deferred.status,
+                      failure === 'failed' ? new Error('enhanced_proposal_failed') : deferred.error,
+                    )
+                  }
+                },
+                () => {
+                  active.proposalFailure = 'failed'
+                  active.pendingProposals.delete(proposal.proposalId)
+                  if (active.deferredTerminal && active.pendingProposals.size === 0) {
+                    active.deferredTerminal = undefined
+                    active.settle('failed', new Error('enhanced_proposal_failed'))
+                  }
+                },
+              )
+              const { settled: _settled, ...publicProposal } = proposal
+              emit(input.onEvent, { type: 'proposal', ...publicProposal })
+            },
           })
           const entry: {
             session: DocumentToolSession
@@ -183,6 +225,14 @@ export function createProductionCodexBootstrap(
           const active: ActiveTurn = {
             capability: grant.capability,
             cancelled: false,
+            pendingProposals: new Set(),
+            requestSettle(status, error) {
+              if (active.pendingProposals.size > 0 && status === 'completed') {
+                active.deferredTerminal = { status, error }
+                return
+              }
+              active.settle(status, error)
+            },
             settle(status, error) {
               if (settled) return
               settled = true

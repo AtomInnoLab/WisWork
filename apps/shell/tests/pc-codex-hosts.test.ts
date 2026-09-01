@@ -56,6 +56,10 @@ describe('PC Codex host registrar', () => {
         mutatingTools: ['replace_blocks'],
       },
     )
+    expect(
+      registered.summarizeProposal({ id: 'x', name: 'replace_blocks', input: { text: 'secret' } }),
+    ).toEqual({ operation: 'replace', target: 'blocks', scope: 'bounded-set' })
+    expect(registered.summarizeProposal({ id: 'x', name: 'unknown', input: {} })).toBeUndefined()
     const read = registered.session.callTool(registered.session.credentials, {
       id: 'r1',
       name: 'read_blocks',
@@ -84,6 +88,7 @@ describe('PC Codex host registrar', () => {
       proposalId: 'P'.repeat(43),
       call: { id: 'm1', name: 'replace_blocks', input: { secret: 'not-for-ui' } },
       expiresAt: Date.now() + 60_000,
+      summary: { operation: 'replace', target: 'blocks', scope: 'bounded-set', count: 1 },
     })
     expect(sent.at(-1)).toEqual([
       PC_HOST_CODEX_CHANNELS.proposal,
@@ -92,6 +97,7 @@ describe('PC Codex host registrar', () => {
         documentId: 'doc-1',
         generation: 3,
         toolName: 'replace_blocks',
+        summary: { operation: 'replace', target: 'blocks', scope: 'bounded-set', count: 1 },
       }),
     ])
     expect(JSON.stringify(sent.at(-1)?.[1])).not.toContain('not-for-ui')
@@ -140,6 +146,7 @@ describe('PC Codex host registrar', () => {
       proposalId: 'Q'.repeat(43),
       call: { id: 'm2', name: 'replace_blocks', input: {} },
       expiresAt: Date.now() + 60_000,
+      summary: { operation: 'replace', target: 'blocks', scope: 'bounded-set', count: 1 },
     })
     await handlers.get(PC_HOST_CODEX_CHANNELS.cancelProposal)!(
       { sender: owner },
@@ -148,6 +155,31 @@ describe('PC Codex host registrar', () => {
       'Q'.repeat(43),
     )
     await expect(cancelled.result).resolves.toMatchObject({ isError: true, mutated: false })
+    const expired = registered.session.callTool(registered.session.credentials, {
+      id: 'm3',
+      name: 'replace_blocks',
+      input: {},
+    }) as any
+    registered.onEvent({
+      type: 'proposal',
+      proposalId: 'R'.repeat(43),
+      call: { id: 'm3', name: 'replace_blocks', input: {} },
+      expiresAt: Date.now() - 1,
+      summary: { operation: 'replace', target: 'blocks', scope: 'bounded-set' },
+    })
+    expect(() =>
+      handlers.get(PC_HOST_CODEX_CHANNELS.confirmProposal)!(
+        { sender: owner },
+        'doc-1',
+        3,
+        'R'.repeat(43),
+      ),
+    ).toThrow('enhanced_proposal_expired')
+    await expect(expired.result).resolves.toMatchObject({
+      output: 'mutation_expired',
+      isError: true,
+      mutated: false,
+    })
     expect(sent.filter(([channel]) => channel === PC_HOST_CODEX_CHANNELS.toolCall)).toHaveLength(2)
     await registrar.closeOwner(owner)
     expect(engine.closeDocument).toHaveBeenCalledWith('doc-1')

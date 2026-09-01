@@ -5,6 +5,7 @@ import {
   type ToolExecution,
 } from '@wiswork/agent-core'
 import type { DocumentToolSession } from './tool-router.js'
+import type { PcHostProposalSummary } from '@wiswork/agent-runtime'
 import { startTrustedMcpTransport, TrustedMcpTransportDenied } from './mcp-server.js'
 
 const MAX_CALLS = 8
@@ -17,11 +18,14 @@ export interface DynamicGatewayDocument {
   readonly documentId: string
   readonly generation: number
   readonly session: DocumentToolSession
+  readonly summarizeProposal?: (call: AgentToolCall) => PcHostProposalSummary | undefined
   readonly onProposal?: (
     proposal: Readonly<{
       proposalId: string
       call: AgentToolCall
       expiresAt: number
+      summary: PcHostProposalSummary
+      settled: Promise<ToolExecution>
     }>,
   ) => void
   readonly onToolEvent?: (
@@ -220,6 +224,11 @@ export async function startDynamicMcpGateway(
           callId: documentCall.id,
           toolName: documentCall.name,
         }
+        const proposalSummary =
+          call.name === 'wiswork_propose'
+            ? grant.document.summarizeProposal?.(documentCall)
+            : undefined
+        if (call.name === 'wiswork_propose' && !proposalSummary) throw new Error('denied')
         const outcome = grant.document.session.callTool(
           grant.document.session.credentials,
           documentCall,
@@ -233,6 +242,8 @@ export async function startDynamicMcpGateway(
             proposalId,
             call: documentCall,
             expiresAt: Math.min(grant.expiresAt, Date.now() + MAX_PROPOSAL_TTL_MS),
+            summary: proposalSummary!,
+            settled: outcome.result,
           })
           const execution: ToolExecution = {
             output: JSON.stringify({ proposalId, status: 'pending_confirmation' }),

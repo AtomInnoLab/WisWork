@@ -4,6 +4,7 @@ import type { AgentRuntimeMode, EnhancedHost, EnhancedRolloutPolicy } from '@wis
 import type { CodexRuntimePublicState } from '../shared/codex-api'
 import type { DocumentToolSession } from '@wiswork/codex-bridge'
 import type { AgentToolCall } from '@wiswork/agent-core'
+import type { PcHostProposalSummary } from '@wiswork/agent-runtime'
 import type { OfficeEnhancedSessionStatement } from '@wiswork/office-bridge'
 
 const MAX_DOCUMENT_ID_BYTES = 256
@@ -22,6 +23,7 @@ export interface CodexRuntimeEngine {
     readonly generation: number
     readonly session: DocumentToolSession
     readonly instructions?: string
+    readonly summarizeProposal?: (call: AgentToolCall) => PcHostProposalSummary | undefined
     readonly onEvent?: (event: CodexRuntimeEngineEvent) => void
   }): () => void
   startTurn(input: {
@@ -39,7 +41,13 @@ export type CodexRuntimeEngineEvent =
   | Readonly<{ type: 'text'; text: string }>
   | Readonly<{ type: 'tool-start'; callId: string; toolName: string }>
   | Readonly<{ type: 'tool-complete'; callId: string; toolName: string; isError: boolean }>
-  | Readonly<{ type: 'proposal'; proposalId: string; call: AgentToolCall; expiresAt: number }>
+  | Readonly<{
+      type: 'proposal'
+      proposalId: string
+      call: AgentToolCall
+      expiresAt: number
+      summary: PcHostProposalSummary
+    }>
   | Readonly<{ type: 'terminal'; status: 'completed' | 'cancelled' | 'failed' }>
 
 export interface CodexRuntimeBootstrap {
@@ -184,6 +192,7 @@ export class ShellCodexRuntime {
     readonly generation: number
     readonly toolSession?: DocumentToolSession
     readonly instructions?: string
+    readonly summarizeProposal?: (call: AgentToolCall) => PcHostProposalSummary | undefined
     readonly onEvent?: (event: CodexRuntimeEngineEvent) => void
   }): { close: () => Promise<void> } {
     if (
@@ -211,6 +220,7 @@ export class ShellCodexRuntime {
           generation: input.generation,
           session: input.toolSession,
           instructions: input.instructions,
+          summarizeProposal: input.summarizeProposal,
           onEvent: input.onEvent,
         })
       : undefined

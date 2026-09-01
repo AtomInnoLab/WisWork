@@ -2,6 +2,7 @@ import { isAbsolute } from 'node:path'
 import { realpathSync } from 'node:fs'
 import type { MessagesRequest } from '@wiswork/codex-bridge'
 import { describe, expect, it, vi } from 'vitest'
+import { suspendToolExecution } from '@wiswork/agent-core'
 import {
   createProductionCodexBootstrap,
   startBestEffortCodexInterrupt,
@@ -53,6 +54,74 @@ function toolResponse(code: string): Response {
 }
 
 describe('real 0.147 production engine bridge', () => {
+  realIt(
+    'holds the real provider terminal until a pending host proposal settles',
+    async () => {
+      let providerCalls = 0
+      let settle!: (value: any) => void
+      const writer = new Promise<any>((resolve) => {
+        settle = resolve
+      })
+      const upstream = vi.fn(async (request: MessagesRequest) => {
+        providerCalls += 1
+        if (providerCalls > 1) return finalResponse()
+        const capability = request.system?.match(/pass capability ([A-Za-z0-9_-]{43})/)?.[1]
+        return toolResponse(
+          `text(await tools.mcp__wiswork__wiswork_propose(${JSON.stringify({ capability, callId: 'mutation-1', toolName: 'replace_blocks', input: {} })}))`,
+        )
+      })
+      const engine = await createProductionCodexBootstrap({ fetchWithAuth: upstream }).start({
+        executablePath: executable!,
+        onCrash: vi.fn(),
+      })
+      const events: any[] = []
+      const session = {
+        identity: {
+          ownerId: 'owner',
+          host: 'docs',
+          documentId: 'hold-doc',
+          sessionId: 'session',
+          generation: 1,
+        },
+        credentials: { sessionId: 'session', secret: 'secret' },
+        listTools: () => [{ name: 'replace_blocks', annotations: { destructiveHint: true } }],
+        callTool: () => suspendToolExecution(writer),
+        cancelAll: vi.fn(() => 0),
+        close: vi.fn(),
+      } as any
+      engine.registerDocument!({
+        ownerId: 'owner',
+        documentId: 'hold-doc',
+        host: 'docs',
+        generation: 1,
+        session,
+        summarizeProposal: () => ({ operation: 'replace', target: 'blocks', scope: 'bounded-set' }),
+        onEvent: (event) => events.push(event),
+      })
+      try {
+        let finished = false
+        const running = engine
+          .startTurn({ documentId: 'hold-doc', host: 'docs', generation: 1, text: 'replace' })
+          .then(() => {
+            finished = true
+          })
+        await vi.waitFor(
+          () => expect(events.some((event) => event.type === 'proposal')).toBe(true),
+          { timeout: 30_000 },
+        )
+        await vi.waitFor(() => expect(providerCalls).toBeGreaterThan(1), { timeout: 30_000 })
+        expect(finished).toBe(false)
+        expect(events.some((event) => event.type === 'terminal')).toBe(false)
+        settle({ output: 'applied', summary: 'replace', mutated: true })
+        await running
+        expect(events.at(-1)).toEqual({ type: 'terminal', status: 'completed' })
+      } finally {
+        await engine.close()
+      }
+    },
+    65_000,
+  )
+
   realIt(
     'drives one bounded Docs read through the real model/tool loop',
     async () => {
