@@ -8,6 +8,7 @@ import type {
 import {
   createEnhancedRendererClient,
   EnhancedAgentRuntime,
+  isPcHostCodexUnavailable,
   type PcEnhancedHost,
   type PcHostCodexApi,
 } from '@wiswork/agent-runtime'
@@ -93,9 +94,10 @@ export const createAgentController = <TSnapshot>(
       if (!terminal && !inner) {
         if (!runtime) inner = createAgentHarness(options)
         else
-          void createSelected(++activation).catch(() =>
-            options.events?.onError?.('enhanced_document_unavailable'),
-          )
+          void createSelected(++activation).catch((error) => {
+            if (isPcHostCodexUnavailable(error) && !terminal) inner = createAgentHarness(options)
+            else options.events?.onError?.('enhanced_document_unavailable')
+          })
       }
     },
     deactivate() {

@@ -55,6 +55,12 @@ export interface PcHostIpcRenderer {
   removeListener(channel: string, listener: (event: unknown, value: unknown) => void): void
 }
 
+/** Electron's stable missing-handler failure for standalone editor processes. */
+export function isPcHostCodexUnavailable(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /No handler registered for ['"]codex:pc-host:status['"]/.test(message)
+}
+
 /** Preload-only bounded bridge; it exposes no generic IPC primitive. */
 export function createPcHostCodexApi(ipc: PcHostIpcRenderer): PcHostCodexApi {
   const listen = <T>(channel: string, handler: (value: T) => void) => {

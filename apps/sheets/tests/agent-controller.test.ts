@@ -44,6 +44,22 @@ const skill = {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('Sheets agent controller', () => {
+  it('uses Standard when standalone Sheets has no Codex IPC handler', async () => {
+    const transport = manualTransport()
+    const api: any = {
+      status: vi.fn(async () => {
+        throw new Error("No handler registered for 'codex:pc-host:status'")
+      }),
+    }
+    const controller = createAgentController({ transport, skill }, { host: 'sheets', api })
+    controller.activate()
+    await flush()
+    expect(controller.run('standard sheets')).toBe(true)
+    await flush()
+    expect(transport.callbacks).toHaveLength(1)
+    controller.dispose()
+  })
+
   it('selects Enhanced without dispatching the Standard transport', async () => {
     const transport = manualTransport()
     let documentId: string | null = null

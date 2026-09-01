@@ -2,6 +2,7 @@ import { AgentLoop, type AgentLoopOptions, type AgentMessage } from '@wiswork/ag
 import {
   createEnhancedRendererClient,
   EnhancedAgentRuntime,
+  isPcHostCodexUnavailable,
   type AgentRuntimeSession,
   type PcHostCodexApi,
 } from '@wiswork/agent-runtime'
@@ -43,7 +44,13 @@ export function createLatexRuntimeLoop(
           })
         if (restored) target.restore(restored)
       })
-      .catch(() => options.events?.onError?.('enhanced_document_unavailable'))
+      .catch((error) => {
+        if (disposed) return
+        if (isPcHostCodexUnavailable(error)) {
+          target = new AgentLoop(options)
+          if (restored) target.restore(restored)
+        } else options.events?.onError?.('enhanced_document_unavailable')
+      })
   return {
     get busy() {
       return target ? ('busy' in target ? target.busy : target.snapshot.busy) : true

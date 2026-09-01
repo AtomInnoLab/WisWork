@@ -112,6 +112,28 @@ const PC_ALLOWED_TOOLS: Readonly<
   ]),
 })
 
+export function createPcHostRegistration(input: {
+  readonly host: EnhancedHost
+  readonly documentId: string
+  readonly generation: number
+  readonly skill: AgentSkill
+}): PcHostRegistration {
+  if (!(input.host in PC_ALLOWED_TOOLS)) throw new Error('enhanced_host_unavailable')
+  const tools = input.skill.tools.filter((tool) =>
+    PC_ALLOWED_TOOLS[input.host as keyof typeof PC_ALLOWED_TOOLS].has(tool.name),
+  )
+  return {
+    host: input.host as never,
+    documentId: input.documentId,
+    generation: input.generation,
+    systemPrompt: input.skill.systemPrompt,
+    tools,
+    mutatingTools: tools
+      .filter((tool) => !READ_TOOLS[input.host].has(tool.name))
+      .map((tool) => tool.name),
+  }
+}
+
 /** Renderer-only adapter. It holds no component path, process token, or document authority. */
 export function createEnhancedRendererClient(
   bridge: EnhancedRendererBridge,
@@ -123,22 +145,7 @@ export function createEnhancedRendererClient(
       if (closed) throw new Error('enhanced_runtime_closed')
       let ended = false
       const listeners = new Set<(event: EnhancedSessionEvent) => void>()
-      const tools = input.skill.tools.filter(
-        (tool) =>
-          input.host in PC_ALLOWED_TOOLS &&
-          PC_ALLOWED_TOOLS[input.host as keyof typeof PC_ALLOWED_TOOLS].has(tool.name),
-      )
-      const mutatingTools = tools
-        .filter((tool) => !READ_TOOLS[input.host].has(tool.name))
-        .map((tool) => tool.name)
-      const registration = bridge.register({
-        host: input.host as never,
-        documentId: input.documentId,
-        generation: input.generation,
-        systemPrompt: input.skill.systemPrompt,
-        tools,
-        mutatingTools,
-      })
+      const registration = bridge.register(createPcHostRegistration(input))
       const unsubscribe = bridge.subscribe(input.documentId, (event) => {
         if (ended) return
         for (const listener of [...listeners]) listener(event)

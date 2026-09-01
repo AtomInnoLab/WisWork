@@ -16,7 +16,7 @@ export type {
   EnhancedSessionEvent,
 } from './enhanced'
 export type { AgentRuntime, AgentRuntimeSession, AgentRuntimeSessionOptions } from './session'
-export { createEnhancedRendererClient } from './renderer'
+export { createEnhancedRendererClient, createPcHostRegistration } from './renderer'
 export type { EnhancedRendererBridge } from './renderer'
 export * from './pc-host'
 export type {
