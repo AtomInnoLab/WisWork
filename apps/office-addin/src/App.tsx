@@ -1053,10 +1053,10 @@ export function ConfiguredApp(
     const enhanced = bridgeState.enhanced
     if (!workspace || host === 'unknown') return
     if (bridgeState.status !== 'connected' || !enhanced?.raw_office) {
-      workspace.runtime.disableElevatedOffice()
+      workspace.runtime.disableElevatedOffice?.()
       return
     }
-    workspace.runtime.enableElevatedOffice(
+    workspace.runtime.enableElevatedOffice?.(
       () => {
         const snapshot = bridge.snapshot()
         const current = snapshot.enhanced

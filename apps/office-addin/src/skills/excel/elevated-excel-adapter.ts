@@ -19,6 +19,7 @@ export interface ExcelElevatedAuthority {
     program: ElevatedOfficeProgram,
     snapshot: ElevatedOfficeSnapshot,
     signal?: AbortSignal,
+    lifecycle?: Readonly<{ markStarted(): void; markApplied(): void }>,
   ): Promise<void>
   readback(
     program: ElevatedOfficeProgram,
@@ -81,11 +82,13 @@ export function createBrowserExcelElevatedAdapter(options: {
       const target = `sheet:${captured.input.sheetId}!${captured.input.range}`
       return (await options.adapter.fingerprint([target], signal)) === captured.fingerprint
     },
-    async execute(_program, snapshot, signal) {
+    async execute(_program, snapshot, signal, lifecycle) {
       const captured = excelState(snapshot)
+      lifecycle?.markStarted()
       if (captured.tool === 'set_cell_range')
         await options.adapter.setCellRange(captured.input, signal)
       else await options.adapter.clearCellRange(captured.input, signal)
+      lifecycle?.markApplied()
     },
     async readback(_program, snapshot, signal) {
       const captured = excelState(snapshot)

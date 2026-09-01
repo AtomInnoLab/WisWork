@@ -27,8 +27,10 @@ function fixture(host: 'word' | 'excel' | 'powerpoint' = 'word') {
     captureAuthority: vi.fn(authority),
     snapshot: vi.fn(async () => ({ id: 'history_AAAAAAAAAAAAAAAA', state })),
     validateSnapshot: vi.fn(async () => true),
-    execute: vi.fn(async () => {
+    execute: vi.fn(async (_program, _snapshot, _signal, lifecycle) => {
+      lifecycle?.markStarted()
       state = 'after'
+      lifecycle?.markApplied()
     }),
     readback: vi.fn(async () => ({ verified: state === 'after', output: { state } })),
     rollback: vi.fn(async () => {
@@ -67,7 +69,12 @@ describe('elevated raw Office program', () => {
       parseElevatedOfficeProgram('powerpoint', {
         version: 1,
         kind: 'ooxml_patch',
-        patches: [{ part: 'ppt/slides/slide1.xml', xml: '<a><b><c/></b></a>' }],
+        patches: [
+          {
+            part: 'ppt/slides/slide1.xml',
+            xml: '<p:sld xmlns:p="p"><p:cSld><p:spTree/></p:cSld></p:sld>',
+          },
+        ],
       }),
     ).not.toThrow()
     expect(() =>
@@ -91,6 +98,21 @@ describe('elevated raw Office program', () => {
         ],
       }),
     ).toThrow('raw_office_program_invalid')
+    for (const xml of [
+      '<p:sld xmlns:p="p" xmlns:a="a"><a:hlinkClick r:id="rId1"/></p:sld>',
+      '<p:sld xmlns:p="p" xmlns:a="a"><a:fld>secret</a:fld></p:sld>',
+      '<p:sld xmlns:p="p" xmlns:a="a"><a:instrText>LINK</a:instrText></p:sld>',
+      '<p:sld xmlns:p="p" xmlns:a="a"><a:r action="ppaction://hlinkshowjump"/></p:sld>',
+      '<p:sld xmlns:p="p" xmlns:a="a"><a:blip r:embed="rId1"/></p:sld>',
+    ]) {
+      expect(() =>
+        parseElevatedOfficeProgram('powerpoint', {
+          version: 1,
+          kind: 'ooxml_patch',
+          patches: [{ part: 'ppt/slides/slide1.xml', xml }],
+        }),
+      ).toThrow('raw_office_program_invalid')
+    }
     expect(() =>
       parseElevatedOfficeProgram('word', {
         version: 1,
@@ -105,6 +127,56 @@ describe('elevated raw Office program', () => {
         patches: [{ part: 'xl/worksheets/sheet1.xml', xml: '<worksheet/>' }],
       }),
     ).toThrow('raw_office_program_invalid')
+  })
+
+  it('enforces adapter-exact program cardinality and denies Word/Excel OOXML', () => {
+    expect(() =>
+      parseElevatedOfficeProgram('excel', {
+        version: 1,
+        kind: 'office_js_ast',
+        operations: [
+          { call: 'range.clear', args: { sheetId: 1, range: 'A1', clearType: 'contents' } },
+          { call: 'range.clear', args: { sheetId: 1, range: 'A2', clearType: 'contents' } },
+        ],
+      }),
+    ).toThrow('raw_office_program_invalid')
+    for (const host of ['word', 'excel'] as const)
+      expect(() =>
+        parseElevatedOfficeProgram(host, {
+          version: 1,
+          kind: 'ooxml_patch',
+          patches: [
+            {
+              part: host === 'word' ? 'word/document.xml' : 'xl/worksheets/sheet1.xml',
+              xml: '<x/>',
+            },
+          ],
+        }),
+      ).toThrow('raw_office_program_invalid')
+    expect(() =>
+      parseElevatedOfficeProgram('powerpoint', {
+        version: 1,
+        kind: 'ooxml_patch',
+        patches: [
+          { part: 'ppt/slides/slide1.xml', xml: '<p:sld xmlns:p="p"/>' },
+          { part: 'ppt/slides/slide2.xml', xml: '<p:sld xmlns:p="p"/>' },
+        ],
+      }),
+    ).toThrow('raw_office_program_invalid')
+  })
+
+  it('rejects Excel formula-like literals after BOM, Unicode whitespace, or controls', () => {
+    for (const value of ['=WEBSERVICE("x")', '\uFEFF+1', '\u200B-1', '\u0009@SUM(A1)']) {
+      expect(() =>
+        parseElevatedOfficeProgram('excel', {
+          version: 1,
+          kind: 'office_js_ast',
+          operations: [
+            { call: 'range.setValues', args: { sheetId: 1, range: 'A1', values: [[value]] } },
+          ],
+        }),
+      ).toThrow('raw_office_program_invalid')
+    }
   })
 
   it.each(['word', 'excel', 'powerpoint'] as const)(
@@ -306,5 +378,42 @@ describe('elevated raw Office program', () => {
     await confirmation
     await expect(settled).resolves.toMatchObject({ status: 'confirmed' })
     expect(adapter.readback).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns applied_unverified when a timed-out dispatched write may still settle later', async () => {
+    vi.useFakeTimers()
+    try {
+      const { skill, proposals, adapter } = fixture()
+      let release!: () => void
+      vi.mocked(adapter.execute).mockImplementation(
+        (_program, _snapshot, _signal, lifecycle) =>
+          new Promise<void>((resolve) => {
+            lifecycle?.markStarted()
+            release = resolve
+          }),
+      )
+      vi.mocked(adapter.readback).mockResolvedValue({ verified: false })
+      await skill.executeTool({
+        id: 'call_AAAAAAAAAAAAAAAA',
+        name: 'propose_raw_office_edit',
+        input: {
+          program: {
+            version: 1,
+            kind: 'office_js_ast',
+            operations: [{ call: 'body.insertText', args: { location: 'end', text: 'x' } }],
+          },
+        },
+      })
+      const id = proposals.pending()!.id
+      const settled = proposals.waitForDecision(id)
+      const confirmation = proposals.confirm(id)
+      await vi.advanceTimersByTimeAsync(20_000)
+      await expect(confirmation).resolves.toBeUndefined()
+      await expect(settled).resolves.toMatchObject({ status: 'applied_unverified' })
+      release()
+      await vi.runAllTimersAsync()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

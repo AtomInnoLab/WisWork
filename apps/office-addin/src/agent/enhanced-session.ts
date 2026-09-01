@@ -18,8 +18,8 @@ export function rawOfficeCapabilities(statement: OfficeEnhancedStatement): Reado
 }> {
   return Object.freeze({
     rawJs: statement.raw_office,
-    // Excel has no reviewed package mutation transaction in Office.js.
-    rawOoxml: statement.raw_office && statement.host !== 'office-excel',
+    // Only PowerPoint has a reviewed bounded package transaction in this release.
+    rawOoxml: statement.raw_office && statement.host === 'office-powerpoint',
   })
 }
 

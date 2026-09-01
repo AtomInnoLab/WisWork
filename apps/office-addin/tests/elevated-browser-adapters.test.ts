@@ -120,4 +120,74 @@ describe('production elevated Office adapters', () => {
     await elevated.rollback(snapshot)
     expect(adapter.replaceSlidePackage).toHaveBeenCalledWith(0, 'UEs=', false, undefined, undefined)
   })
+
+  it('PowerPoint proves a new text box by its generated shape id, text, and geometry', async () => {
+    const adapter = {
+      exportSlidePackage: vi.fn(async () => ({
+        slideId: 'slide-1',
+        fingerprint: 'ppt-fp',
+        base64: 'UEs=',
+      })),
+      snapshotSlide: vi.fn(async () => ({ slideId: 'slide-1', fingerprint: 'ppt-fp' })),
+      executeDeclarative: vi.fn(async () => ({ createdShapeIds: ['created-1'] })),
+      readSlideText: vi.fn(async () => ({
+        slideId: 'slide-1',
+        shapeId: 'created-1',
+        text: 'hello',
+        paragraphs: ['hello'],
+      })),
+      listSlideShapes: vi.fn(async () => ({
+        slideId: 'slide-1',
+        slideIndex: 0,
+        shapes: [
+          {
+            id: 'created-1',
+            name: 'WisWork Raw Text',
+            type: 'TextBox',
+            left: 1,
+            top: 2,
+            width: 3,
+            height: 4,
+          },
+        ],
+      })),
+      readShapeTextStyle: vi.fn(async () => ({
+        color: '#112233',
+        fontFamily: 'Aptos',
+        fontSize: 18,
+        bold: false,
+        italic: false,
+      })),
+      replaceSlidePackage: vi.fn(),
+    } as any
+    const elevated = createBrowserPowerPointElevatedAdapter({ adapter, authority })
+    const program = {
+      version: 1 as const,
+      kind: 'office_js_ast' as const,
+      operations: [
+        {
+          call: 'slide.addTextBox',
+          args: {
+            slideIndex: 0,
+            text: 'hello',
+            left: 1,
+            top: 2,
+            width: 3,
+            height: 4,
+            style: {
+              color: '#112233',
+              fontFamily: 'Aptos',
+              fontSize: 18,
+              bold: false,
+              italic: false,
+            },
+          },
+        },
+      ],
+    }
+    const snapshot = await elevated.snapshot(program)
+    await elevated.execute(program, snapshot)
+    expect(await elevated.readback(program, snapshot)).toMatchObject({ verified: true })
+    expect(adapter.readSlideText).toHaveBeenCalledWith(0, 'created-1', undefined)
+  })
 })

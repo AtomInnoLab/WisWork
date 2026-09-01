@@ -27,6 +27,7 @@ export interface PowerPointElevatedAuthority {
     program: ElevatedOfficeProgram,
     snapshot: ElevatedOfficeSnapshot,
     signal?: AbortSignal,
+    lifecycle?: Readonly<{ markStarted(): void; markApplied(): void }>,
   ): Promise<void>
   readback(
     program: ElevatedOfficeProgram,
@@ -41,7 +42,11 @@ export const createPowerPointElevatedAdapter = (
 ): ElevatedOfficeAdapter => Object.freeze({ host: 'powerpoint', ...authority })
 
 type SlideState = { slideIndex: number; slideId: string; fingerprint: string; base64: string }
-type PowerPointState = { slides: SlideState[]; packageEdit?: PackageEditResult }
+type PowerPointState = {
+  slides: SlideState[]
+  packageEdit?: PackageEditResult
+  createdShapeIds?: string[]
+}
 const pptState = (snapshot: ElevatedOfficeSnapshot) => snapshot.state as PowerPointState
 const slideIndexes = (program: ElevatedOfficeProgram) => [
   ...new Set(
@@ -69,6 +74,13 @@ function pptOperations(program: ElevatedOfficeProgram): PowerPointDeclarativeOpe
         top: args.top as number,
         width: args.width as number,
         height: args.height as number,
+        ...(args.style as {
+          color: string
+          fontFamily: string
+          fontSize: number
+          bold: boolean
+          italic: boolean
+        }),
       }
     if (call === 'slide.addTextBox')
       return {
@@ -114,9 +126,12 @@ export function createBrowserPowerPointElevatedAdapter(options: {
       }
       return true
     },
-    async execute(program, snapshot, signal) {
+    async execute(program, snapshot, signal, lifecycle) {
+      lifecycle?.markStarted()
       if (program.kind === 'office_js_ast') {
-        await options.adapter.executeDeclarative(pptOperations(program), signal)
+        const result = await options.adapter.executeDeclarative(pptOperations(program), signal)
+        pptState(snapshot).createdShapeIds = result.createdShapeIds
+        lifecycle?.markApplied()
         return
       }
       if (program.patches.length !== 1) throw new Error('office_api_unsupported')
@@ -131,6 +146,7 @@ export function createBrowserPowerPointElevatedAdapter(options: {
       )
       pptState(snapshot).packageEdit = edit
       await options.adapter.replaceSlidePackage(slideIndex, edit.base64, false, edit, signal)
+      lifecycle?.markApplied()
     },
     async readback(program, snapshot, signal) {
       if (program.kind === 'ooxml_patch') {
@@ -141,6 +157,7 @@ export function createBrowserPowerPointElevatedAdapter(options: {
           verified: await verifyPowerPointPackageInputs(current.base64, edit.afterHashes, signal),
         }
       }
+      let createdIndex = 0
       for (const operation of program.operations) {
         if (operation.call === 'shape.setText') {
           const current = await options.adapter.readSlideText(
@@ -149,6 +166,36 @@ export function createBrowserPowerPointElevatedAdapter(options: {
             signal,
           )
           if (current.text !== operation.args.text) return { verified: false }
+        } else if (operation.call === 'slide.addTextBox') {
+          const shapeId = pptState(snapshot).createdShapeIds?.[createdIndex++]
+          if (!shapeId) return { verified: false }
+          if (!options.adapter.readShapeTextStyle) return { verified: false }
+          const [text, shapes, style] = await Promise.all([
+            options.adapter.readSlideText(operation.args.slideIndex as number, shapeId, signal),
+            options.adapter.listSlideShapes(operation.args.slideIndex as number, signal),
+            options.adapter.readShapeTextStyle(
+              operation.args.slideIndex as number,
+              shapeId,
+              signal,
+            ),
+          ])
+          const shape = shapes.shapes.find((candidate) => candidate.id === shapeId)
+          const expectedStyle = operation.args.style as Record<string, unknown>
+          if (
+            text.text !== operation.args.text ||
+            !shape ||
+            ['left', 'top', 'width', 'height'].some(
+              (key) =>
+                Math.abs(Number(shape[key as keyof typeof shape]) - Number(operation.args[key])) >
+                0.01,
+            ) ||
+            style.color?.toUpperCase() !== String(expectedStyle.color).toUpperCase() ||
+            style.fontFamily !== expectedStyle.fontFamily ||
+            Math.abs(Number(style.fontSize) - Number(expectedStyle.fontSize)) > 0.01 ||
+            style.bold !== expectedStyle.bold ||
+            style.italic !== expectedStyle.italic
+          )
+            return { verified: false }
         } else if (operation.call === 'shape.setGeometry' || operation.call === 'shape.delete') {
           const current = await options.adapter.listSlideShapes(
             operation.args.slideIndex as number,

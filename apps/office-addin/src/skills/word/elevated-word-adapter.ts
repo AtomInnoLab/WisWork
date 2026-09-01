@@ -20,6 +20,7 @@ export interface WordElevatedAuthority {
     program: ElevatedOfficeProgram,
     snapshot: ElevatedOfficeSnapshot,
     signal?: AbortSignal,
+    lifecycle?: Readonly<{ markStarted(): void; markApplied(): void }>,
   ): Promise<void>
   readback(
     program: ElevatedOfficeProgram,
@@ -81,23 +82,17 @@ export function createBrowserWordElevatedAdapter(options: {
     async validateSnapshot(_program, snapshot, signal) {
       return (await options.adapter.fingerprint(signal)) === wordState(snapshot).fingerprint
     },
-    async execute(program, _snapshot, signal) {
+    async execute(program, _snapshot, signal, lifecycle) {
+      lifecycle?.markStarted()
       if (program.kind === 'office_js_ast')
         await options.adapter.executeOperations(wordOperations(program), signal)
-      else {
-        if (program.patches.length !== 1 || program.patches[0].part !== 'word/document.xml')
-          throw new Error('office_api_unsupported')
-        await replaceBodyOoxml(program.patches[0].xml, signal)
-      }
+      else throw new Error('office_api_unsupported')
+      lifecycle?.markApplied()
     },
     async readback(program, snapshot, signal) {
       if (program.kind === 'office_js_ast')
         return { verified: await options.adapter.verifyOperations(wordOperations(program), signal) }
-      const current = await options.adapter.getOoxml({}, signal)
-      return {
-        verified: current.xml === program.patches[0].xml,
-        output: { changed: current.xml !== wordState(snapshot).xml },
-      }
+      throw new Error('office_api_unsupported')
     },
     async rollback(snapshot, signal) {
       const xml = wordState(snapshot).xml

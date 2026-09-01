@@ -408,10 +408,12 @@ describe('proposal controller', () => {
           }),
         execute,
       })
+      const decision = controller.waitForDecision(proposal.id)
       const confirmation = controller.confirm(proposal.id)
       controller[invalidate]()
       finishValidation(true)
-      await expect(confirmation).rejects.toThrow('proposal_stale')
+      await expect(confirmation).resolves.toBeUndefined()
+      await expect(decision).resolves.toEqual({ status: 'cancelled' })
       expect(execute).not.toHaveBeenCalled()
     },
   )

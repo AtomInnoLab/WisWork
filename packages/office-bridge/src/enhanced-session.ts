@@ -18,7 +18,7 @@ export function rawOfficeCapabilities(statement: OfficeEnhancedSessionStatement)
 }> {
   return Object.freeze({
     rawJs: statement.raw_office,
-    rawOoxml: statement.raw_office && statement.host !== 'office-excel',
+    rawOoxml: statement.raw_office && statement.host === 'office-powerpoint',
   })
 }
 

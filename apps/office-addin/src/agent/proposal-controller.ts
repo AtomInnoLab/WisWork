@@ -277,6 +277,10 @@ export function createStructuredProposalController(
         settle(proposal.decision, { status: 'confirmed' })
       } catch (error) {
         const code = stableProposalError(error)
+        if (phase === 'validate' && controller.signal.aborted) {
+          settle(proposal.decision, { status: 'cancelled' })
+          return
+        }
         diagnose(() =>
           diagnostics?.record({
             phase: code.startsWith('office_recovery_failed') ? 'recovery' : phase,

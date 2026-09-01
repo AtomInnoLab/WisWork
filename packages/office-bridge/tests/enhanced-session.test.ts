@@ -22,11 +22,14 @@ describe('Office Enhanced session statement', () => {
   it('derives host-specific raw sub-capabilities without advertising Excel OOXML', () => {
     expect(rawOfficeCapabilities({ ...statement, raw_office: true })).toEqual({
       rawJs: true,
-      rawOoxml: true,
+      rawOoxml: false,
     })
     expect(rawOfficeCapabilities({ ...statement, host: 'office-excel', raw_office: true })).toEqual(
       { rawJs: true, rawOoxml: false },
     )
+    expect(
+      rawOfficeCapabilities({ ...statement, host: 'office-powerpoint', raw_office: true }),
+    ).toEqual({ rawJs: true, rawOoxml: true })
   })
   it('strictly parses a bounded non-callable statement', () => {
     expect(parseOfficeEnhancedSessionStatement(statement)).toEqual(statement)

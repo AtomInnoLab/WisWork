@@ -2,7 +2,7 @@ import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
 import { selectionFingerprint } from '../../agent/proposal-controller.js'
 import { readUntilConverged } from './office-write-transaction.js'
-import { XMLValidator } from 'fast-xml-parser'
+import { XMLParser, XMLValidator } from 'fast-xml-parser'
 
 export type ElevatedOfficeHost = 'word' | 'excel' | 'powerpoint'
 export const ELEVATED_OFFICE_LIMITS = Object.freeze({
@@ -17,6 +17,7 @@ export const ELEVATED_OFFICE_LIMITS = Object.freeze({
   xmlDepth: 32,
   outputBytes: 128 * 1024,
   executionMs: 15_000,
+  reconciliationMs: 2_000,
 })
 
 export interface ElevatedOfficeAuthority {
@@ -63,6 +64,7 @@ export interface ElevatedOfficeAdapter {
     program: ElevatedOfficeProgram,
     snapshot: ElevatedOfficeSnapshot,
     signal?: AbortSignal,
+    lifecycle?: Readonly<{ markStarted(): void; markApplied(): void }>,
   ): Promise<void>
   readback(
     program: ElevatedOfficeProgram,
@@ -78,8 +80,8 @@ const JS_CALLS: Readonly<Record<ElevatedOfficeHost, ReadonlySet<string>>> = Obje
   powerpoint: new Set(['shape.setText', 'shape.setGeometry', 'slide.addTextBox', 'shape.delete']),
 })
 const PARTS: Readonly<Record<ElevatedOfficeHost, RegExp>> = Object.freeze({
-  word: /^word\/(?:document|styles|numbering)\.xml$/,
-  excel: /^xl\/(?:worksheets\/sheet[1-9]\d*|styles|sharedStrings)\.xml$/,
+  word: /$a/,
+  excel: /$a/,
   powerpoint: /^ppt\/slides\/slide[1-9]\d*\.xml$/,
 })
 const OPAQUE = /^[A-Za-z0-9_.:-]{1,128}$/
@@ -133,6 +135,24 @@ function text(value: unknown, maximum = 12_000): value is string {
   return typeof value === 'string' && value.length <= maximum && !forbiddenText.test(value)
 }
 
+function formulaLikeExcelLiteral(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0
+    if (
+      code <= 0x20 ||
+      (code >= 0x7f && code <= 0x9f) ||
+      [
+        0xa0, 0x1680, 0x200b, 0x200c, 0x200d, 0x2028, 0x2029, 0x202f, 0x205f, 0x2060, 0x3000,
+        0xfeff,
+      ].includes(code) ||
+      (code >= 0x2000 && code <= 0x200a)
+    )
+      continue
+    return ['=', '+', '-', '@'].includes(character)
+  }
+  return false
+}
+
 function validateOperation(
   host: ElevatedOfficeHost,
   call: string,
@@ -171,6 +191,14 @@ function validateOperation(
       )
         invalid()
       boundedData(args.values)
+      for (const row of args.values)
+        if (
+          !Array.isArray(row) ||
+          row.length < 1 ||
+          row.length > 256 ||
+          row.some((cell) => typeof cell === 'string' && formulaLikeExcelLiteral(cell))
+        )
+          invalid()
     } else if (call === 'range.clear') {
       if (
         !exact(args, ['sheetId', 'range', 'clearType']) ||
@@ -201,14 +229,29 @@ function validateOperation(
         invalid()
     } else if (call === 'slide.addTextBox') {
       if (
-        !exact(args, ['slideIndex', 'text', 'left', 'top', 'width', 'height']) ||
+        !exact(args, ['slideIndex', 'text', 'left', 'top', 'width', 'height', 'style']) ||
         !text(args.text) ||
         ![args.left, args.top, args.width, args.height].every(
           (item) =>
             typeof item === 'number' && Number.isFinite(item) && Math.abs(item) <= 1_000_000,
         ) ||
         Number(args.width) <= 0 ||
-        Number(args.height) <= 0
+        Number(args.height) <= 0 ||
+        !args.style ||
+        typeof args.style !== 'object' ||
+        Array.isArray(args.style) ||
+        !exact(args.style as Record<string, unknown>, [
+          'color',
+          'fontFamily',
+          'fontSize',
+          'bold',
+          'italic',
+        ]) ||
+        !/^#[0-9A-F]{6}$/i.test(String((args.style as Record<string, unknown>).color)) ||
+        !text((args.style as Record<string, unknown>).fontFamily, 128) ||
+        !integer((args.style as Record<string, unknown>).fontSize, 1, 400) ||
+        typeof (args.style as Record<string, unknown>).bold !== 'boolean' ||
+        typeof (args.style as Record<string, unknown>).italic !== 'boolean'
       )
         invalid()
     } else if (call === 'shape.delete') {
@@ -217,15 +260,118 @@ function validateOperation(
   }
 }
 
+const SLIDE_TAGS = new Set([
+  'p:sld',
+  'p:cSld',
+  'p:spTree',
+  'p:nvGrpSpPr',
+  'p:cNvPr',
+  'p:cNvGrpSpPr',
+  'p:nvPr',
+  'p:grpSpPr',
+  'p:sp',
+  'p:nvSpPr',
+  'p:cNvSpPr',
+  'p:spPr',
+  'p:txBody',
+  'a:xfrm',
+  'a:off',
+  'a:ext',
+  'a:chOff',
+  'a:chExt',
+  'a:prstGeom',
+  'a:avLst',
+  'a:bodyPr',
+  'a:lstStyle',
+  'a:p',
+  'a:pPr',
+  'a:r',
+  'a:rPr',
+  'a:t',
+  'a:endParaRPr',
+  'a:solidFill',
+  'a:srgbClr',
+  'a:schemeClr',
+  'a:alpha',
+  'a:ln',
+  'a:noFill',
+])
+const SLIDE_ATTRIBUTES = new Set([
+  'id',
+  'name',
+  'x',
+  'y',
+  'cx',
+  'cy',
+  'prst',
+  'val',
+  'lang',
+  'dirty',
+  'marL',
+  'indent',
+  'algn',
+  'anchor',
+  'vert',
+  'sz',
+  'b',
+  'i',
+  'typeface',
+  'rot',
+  'useBgFill',
+])
+const slideParser = new XMLParser({
+  preserveOrder: true,
+  ignoreAttributes: false,
+  attributeNamePrefix: '@_',
+  processEntities: false,
+  parseTagValue: false,
+  parseAttributeValue: false,
+})
+
+function validateSlideTree(value: unknown): void {
+  if (Array.isArray(value)) {
+    value.forEach(validateSlideTree)
+    return
+  }
+  if (!value || typeof value !== 'object') return
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (key === '#text') continue
+    if (key === ':@') {
+      for (const [rawName, rawValue] of Object.entries(child as Record<string, unknown>)) {
+        const name = rawName.replace(/^@_/, '')
+        if (name.startsWith('xmlns:')) {
+          if (
+            typeof rawValue !== 'string' ||
+            !/^(?:p|a|http:\/\/schemas\.(?:openxmlformats\.org|microsoft\.com)\/)/.test(rawValue)
+          )
+            invalid()
+          continue
+        }
+        if (name.startsWith('r:') || !SLIDE_ATTRIBUTES.has(name) || typeof rawValue !== 'string')
+          invalid()
+        if (/(?:https?:|file:|ftp:|javascript:|ppaction:|mailto:)/i.test(rawValue)) invalid()
+      }
+      continue
+    }
+    if (!SLIDE_TAGS.has(key)) invalid()
+    validateSlideTree(child)
+  }
+}
+
 function validateXml(xml: string): void {
-  if (!xml || bytes(xml) > ELEVATED_OFFICE_LIMITS.xmlBytes || forbiddenText.test(xml)) invalid()
+  if (!xml || bytes(xml) > ELEVATED_OFFICE_LIMITS.xmlBytes) invalid()
   if (
     XMLValidator.validate(xml) !== true ||
-    /<!DOCTYPE|<!ENTITY|\bTargetMode\s*=\s*["']External["']|\b(?:Target|src|href)\s*=\s*["'](?:https?:|file:|ftp:)/i.test(
+    /<!DOCTYPE|<!ENTITY|\b(?:hlinkClick|hlinkMouseOver|fld|instrText)\b|\baction\s*=|\br:(?:id|embed|link)\s*=|\bTargetMode\s*=\s*["']External["']|\b(?:Target|src|href)\s*=\s*["'](?:https?:|file:|ftp:)/i.test(
       xml,
     )
   )
     invalid()
+  try {
+    validateSlideTree(slideParser.parse(xml))
+  } catch {
+    invalid()
+  }
   const tags = xml.match(/<\/?[A-Za-z_][^>]*>/g) ?? []
   if (tags.length > ELEVATED_OFFICE_LIMITS.xmlNodes) invalid()
   let depth = 0
@@ -264,7 +410,8 @@ export function parseElevatedOfficeProgram(
       !exact(value, ['version', 'kind', 'operations']) ||
       !Array.isArray(value.operations) ||
       value.operations.length < 1 ||
-      value.operations.length > ELEVATED_OFFICE_LIMITS.operations
+      value.operations.length > ELEVATED_OFFICE_LIMITS.operations ||
+      (host === 'excel' && value.operations.length !== 1)
     )
       invalid()
     const operations = value.operations.map((candidate) => {
@@ -286,12 +433,12 @@ export function parseElevatedOfficeProgram(
     return frozen({ version: 1, kind: 'office_js_ast', operations })
   }
   if (value.kind === 'ooxml_patch') {
-    if (host === 'excel') invalid()
+    if (host !== 'powerpoint') invalid()
     if (
       !exact(value, ['version', 'kind', 'patches']) ||
       !Array.isArray(value.patches) ||
       value.patches.length < 1 ||
-      value.patches.length > ELEVATED_OFFICE_LIMITS.targets
+      value.patches.length !== 1
     )
       invalid()
     const seen = new Set<string>()
@@ -369,6 +516,61 @@ function safeFailure(code: string): ToolExecution {
   }
 }
 
+function elevatedProgramSchema(host: ElevatedOfficeHost): Record<string, unknown> {
+  const ast = {
+    type: 'object',
+    properties: {
+      version: { type: 'integer', enum: [1] },
+      kind: { type: 'string', enum: ['office_js_ast'] },
+      operations: {
+        type: 'array',
+        minItems: 1,
+        maxItems: host === 'excel' ? 1 : ELEVATED_OFFICE_LIMITS.operations,
+        items: {
+          type: 'object',
+          properties: {
+            call: { type: 'string', enum: [...JS_CALLS[host]] },
+            args: { type: 'object' },
+          },
+          required: ['call', 'args'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['version', 'kind', 'operations'],
+    additionalProperties: false,
+  }
+  if (host !== 'powerpoint') return ast
+  return {
+    anyOf: [
+      ast,
+      {
+        type: 'object',
+        properties: {
+          version: { type: 'integer', enum: [1] },
+          kind: { type: 'string', enum: ['ooxml_patch'] },
+          patches: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 1,
+            items: {
+              type: 'object',
+              properties: {
+                part: { type: 'string', pattern: '^ppt/slides/slide[1-9]\\d*\\.xml$' },
+                xml: { type: 'string', maxLength: ELEVATED_OFFICE_LIMITS.xmlBytes },
+              },
+              required: ['part', 'xml'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['version', 'kind', 'patches'],
+        additionalProperties: false,
+      },
+    ],
+  }
+}
+
 export function createElevatedOfficeSkill(options: {
   host: ElevatedOfficeHost
   adapter: ElevatedOfficeAdapter
@@ -385,10 +587,12 @@ export function createElevatedOfficeSkill(options: {
       {
         name: 'propose_raw_office_edit',
         description:
-          'Propose one bounded closed Office.js AST or OOXML package patch for elevated confirmation.',
+          options.host === 'powerpoint'
+            ? 'Propose one bounded closed Office.js AST or one slide OOXML package patch for elevated confirmation.'
+            : 'Propose one bounded closed Office.js AST for elevated confirmation. OOXML is unavailable in this host.',
         inputSchema: {
           type: 'object',
-          properties: { program: { type: 'object' } },
+          properties: { program: elevatedProgramSchema(options.host) },
           required: ['program'],
           additionalProperties: false,
         },
@@ -413,7 +617,8 @@ export function createElevatedOfficeSkill(options: {
       const digest = selectionFingerprint(canonical)
       const targets = [...new Set(programTargets(options.host, program))]
       let snapshot: ElevatedOfficeSnapshot
-      let applied = false
+      let writeState: 'not_started' | 'started' | 'applied' = 'not_started'
+      let executionPending = false
       try {
         snapshot = await options.adapter.snapshot(program, signal)
       } catch {
@@ -437,26 +642,65 @@ export function createElevatedOfficeSkill(options: {
             confirmationSignal?.aborted
           )
             throw new Error('proposal_stale')
-          let timeout: ReturnType<typeof setTimeout> | undefined
-          try {
-            await Promise.race([
-              options.adapter.execute(program, snapshot, confirmationSignal),
-              new Promise<never>((_resolve, reject) => {
-                timeout = setTimeout(
-                  () => reject(new Error('office_state_uncertain')),
-                  ELEVATED_OFFICE_LIMITS.executionMs,
-                )
-              }),
-            ])
-          } finally {
-            if (timeout) clearTimeout(timeout)
+          const lifecycle = Object.freeze({
+            markStarted: () => {
+              if (writeState === 'not_started') writeState = 'started'
+            },
+            markApplied: () => {
+              writeState = 'applied'
+            },
+          })
+          const execution = Promise.resolve().then(() =>
+            options.adapter.execute(program, snapshot, confirmationSignal, lifecycle),
+          )
+          const settled = execution.then(
+            () => {
+              lifecycle.markApplied()
+              return { kind: 'applied' as const }
+            },
+            (error: unknown) => ({ kind: 'error' as const, error }),
+          )
+          const waitForSettlement = async (milliseconds: number) => {
+            let timer: ReturnType<typeof setTimeout> | undefined
+            try {
+              return await Promise.race([
+                settled,
+                new Promise<{ kind: 'timeout' }>((resolve) => {
+                  timer = setTimeout(() => resolve({ kind: 'timeout' }), milliseconds)
+                }),
+              ])
+            } finally {
+              if (timer) clearTimeout(timer)
+            }
           }
-          applied = true
+          let outcome = await waitForSettlement(ELEVATED_OFFICE_LIMITS.executionMs)
+          if (outcome.kind === 'timeout') {
+            outcome = await waitForSettlement(ELEVATED_OFFICE_LIMITS.reconciliationMs)
+          }
+          if (outcome.kind === 'timeout') {
+            executionPending = true
+            // `settled` owns both fulfillment and rejection so the bounded background operation
+            // cannot produce an unhandled rejection after this turn is closed.
+            void settled
+            return
+          }
+          if (outcome.kind === 'error') {
+            if (writeState === 'not_started') throw outcome.error
+            throw new Error('office_applied_unverified')
+          }
         },
         verify: async (confirmationSignal) => {
-          if (!applied) throw new Error('office_write_failed')
+          if (writeState === 'not_started') throw new Error('office_write_failed')
           if (!sameAuthority(initial, options.adapter.captureAuthority()))
             throw new Error('office_applied_unverified')
+          if (executionPending) {
+            try {
+              await options.adapter.readback(program, snapshot)
+            } catch {
+              /* authoritative read was attempted; a pending dispatch remains uncertain */
+            }
+            throw new Error('office_applied_unverified')
+          }
           let result: { verified: boolean; output?: unknown }
           try {
             result = await readUntilConverged({
