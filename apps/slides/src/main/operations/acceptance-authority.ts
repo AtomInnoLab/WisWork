@@ -1,6 +1,6 @@
 import { fingerprintPresentation, type SlideElement } from '@wiswork/pptx-engine'
 import { fingerprintSemanticValue } from '@wiswork/presentation-ops'
-import { EMU_PER_PX_96 } from '@wiswork/pptx-render'
+import { EMU_PER_PX_96 } from '@wiswork/pptx-render/coords'
 import { randomUUID } from 'node:crypto'
 import type {
   SlidesAcceptanceAuthorityLease,
@@ -8,7 +8,8 @@ import type {
   SlidesAcceptanceAuthoritySnapshot,
   SlidesAcceptanceTextProofRequest,
 } from '../../shared/ipc'
-import { ensureSessionInstanceIds, type Session } from '../session-state'
+import { ensureSessionInstanceIds } from '../session-identity'
+import type { Session } from '../session-state'
 
 const roleOf = (element: SlideElement): 'title' | 'body' | 'emphasis' | undefined => {
   if (element.placeholder === 'title' || element.placeholder === 'ctrTitle') return 'title'

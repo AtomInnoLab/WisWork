@@ -7,11 +7,11 @@
 import { BrowserWindow, webContents } from 'electron'
 import type { WebContents } from 'electron'
 import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
 import { materializeSlide, type OpenedPptx, type Slide } from '@wiswork/pptx-engine'
 import { buildRenderSlide, type FontMetricsProvider, type RenderSlide } from '@wiswork/pptx-render'
 import { createSystemFontMetrics } from './fonts'
 import { tiffToPng } from './tiff-decode'
+export { ensureSessionInstanceIds } from './session-identity'
 
 export interface RuntimePaths {
   preloadPath: string
@@ -67,18 +67,6 @@ export interface Session {
   historyNotifyScheduled?: boolean
 }
 export const sessions = new Map<number, Session>()
-
-export function ensureSessionInstanceIds(session: Session): {
-  sessionInstanceId: string
-  documentInstanceId: string
-} {
-  session.sessionInstanceId ??= randomUUID()
-  session.documentInstanceId ??= randomUUID()
-  return {
-    sessionInstanceId: session.sessionInstanceId,
-    documentInstanceId: session.documentInstanceId,
-  }
-}
 
 export function sessionHasActivePresentationTransaction(session: Session | undefined): boolean {
   return (session?.presentationTransactionDepth ?? 0) > 0
