@@ -18,7 +18,7 @@ import type {
   ToolExecutionOutcome,
   ToolExecutionSuspension,
 } from './types'
-import { isToolExecutionSuspension } from './types'
+import { isToolExecutionSuspension, mintLoopToolExecutionSuspension } from './types'
 
 export interface ToolExecutedEvent<TSnapshot> {
   call: AgentToolCall
@@ -317,6 +317,11 @@ export class AgentLoop<TSnapshot = unknown> {
   private turns = 0
   /** Finalizing turn after hitting the turn limit: no tools, let the model answer from what it has read */
   private finalizing = false
+
+  /** Mint a suspension bound to this loop instance; transports cannot self-authorize one. */
+  suspendToolExecution(result: Promise<ToolExecution>): ToolExecutionSuspension {
+    return mintLoopToolExecutionSuspension(this, result)
+  }
   /** one terminal-response correction is permitted per run */
   private completionReviewRetried = false
   private mutationSeen = false

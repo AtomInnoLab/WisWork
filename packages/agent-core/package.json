@@ -9,8 +9,7 @@
     "@wiswork/presentation-verification": "*"
   },
   "exports": {
-    ".": "./src/index.ts",
-    "./internal": "./src/internal.ts"
+    ".": "./src/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

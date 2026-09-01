@@ -4,14 +4,14 @@ import type {
   AgentToolDef,
   ToolExecution,
   ToolExecutionOutcome,
+  ToolExecutionSuspension,
 } from '@wiswork/agent-core'
-import { createInternalToolSuspensionIssuer } from '@wiswork/agent-core/internal'
-import type {
-  EnhancedHost,
-  EnhancedPolicyHandle,
-  EnhancedPolicySnapshot,
+import type { EnhancedHost, EnhancedPolicySnapshot } from '@wiswork/agent-runtime'
+import {
+  ENHANCED_HOSTS,
+  parseEnhancedCapabilities,
+  parseEnhancedRolloutPolicy,
 } from '@wiswork/agent-runtime'
-import { consumeEnhancedPolicyHandle } from '@wiswork/agent-runtime'
 import type { DocumentCarrierHandle, DocumentCarrierIssuer } from './types.js'
 
 const SECRET_BYTES = 32
@@ -153,7 +153,8 @@ export interface DocumentToolIdentity {
   readonly generation: number
 }
 export interface DocumentToolManifestInput {
-  readonly policyHandle: EnhancedPolicyHandle
+  readonly policyGrant: unknown
+  readonly consumePolicyGrant: (grant: unknown) => EnhancedPolicySnapshot
   readonly tools: readonly AgentToolDef[]
   readonly policy: Readonly<Record<string, ToolMutability>>
 }
@@ -169,7 +170,6 @@ interface ManifestEntry {
   readonly digest: string
 }
 const manifestLedger = new WeakMap<object, ManifestEntry>()
-const suspensionIssuer = createInternalToolSuspensionIssuer()
 
 interface PendingMutation {
   readonly callId: string
@@ -196,6 +196,7 @@ export interface DocumentToolRegistration {
     call: AgentToolCall,
     signal?: AbortSignal,
   ) => ToolExecution | Promise<ToolExecution>
+  readonly suspendMutation: (result: Promise<ToolExecution>) => ToolExecutionSuspension
   readonly carrier?: Readonly<{ issuer: DocumentCarrierIssuer; capability: unknown }>
   readonly maxCallMs?: number
   readonly maxTotalCalls?: number
@@ -341,7 +342,28 @@ export function createDocumentToolManifest(input: DocumentToolManifestInput): Do
   if (suppliedTools.length < 1) throw new ToolRouterError('invalid_tool_manifest')
   let authorization: EnhancedPolicySnapshot
   try {
-    authorization = consumeEnhancedPolicyHandle(input.policyHandle)
+    if (typeof input.consumePolicyGrant !== 'function') throw new Error('invalid_enhanced_policy')
+    const snapshot = input.consumePolicyGrant(input.policyGrant)
+    if (!plainRecord(snapshot)) throw new Error('invalid_enhanced_policy')
+    const generation = snapshot.generation
+    const host = snapshot.host
+    if (!Number.isSafeInteger(generation) || generation < 0 || !ENHANCED_HOSTS.includes(host))
+      throw new Error('invalid_enhanced_policy')
+    const policy = parseEnhancedRolloutPolicy(snapshot.policy)
+    const capabilities = parseEnhancedCapabilities(snapshot.capabilities)
+    if (
+      !policy.globalEnabled ||
+      !policy.hosts[host] ||
+      (capabilities.includes('raw-office-proposal') &&
+        (!host.startsWith('office-') || !policy.rawOfficeEnabled))
+    )
+      throw new Error('enhanced_policy_denied')
+    authorization = Object.freeze({
+      generation,
+      host,
+      policy,
+      capabilities: Object.freeze(capabilities),
+    })
   } catch (error) {
     throw new ToolRouterError(error instanceof Error ? error.message : 'invalid_enhanced_policy')
   }
@@ -520,6 +542,7 @@ export function createDocumentToolSession(
           'manifest',
           'isOpen',
           'executeRead',
+          'suspendMutation',
           'carrier',
           'maxCallMs',
           'maxTotalCalls',
@@ -527,7 +550,8 @@ export function createDocumentToolSession(
         ].includes(key),
     ) ||
     typeof registration.isOpen !== 'function' ||
-    typeof registration.executeRead !== 'function'
+    typeof registration.executeRead !== 'function' ||
+    typeof registration.suspendMutation !== 'function'
   )
     throw new ToolRouterError('invalid_tool_session')
   const manifest = manifestLedger.get(registration.manifest as object)
@@ -681,7 +705,7 @@ export function createDocumentToolSession(
       pendingMutations.set(call.id, mutation)
       mutationQueue.push(mutation)
       if (controller.signal.aborted) finish(stable('tool_cancelled', 'Tool cancelled'))
-      return suspensionIssuer.suspend(promise)
+      return registration.suspendMutation(promise)
     }
     if (pending.size > 0 || pendingMutations.size > 0) return stable('tool_call_in_progress')
     const controller = new AbortController()

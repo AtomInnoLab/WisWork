@@ -1,5 +1,5 @@
-import { isToolExecutionSuspension } from '@wiswork/agent-core'
-import { createEnhancedPolicyIssuer } from '../../agent-runtime/src/contracts'
+import { isToolExecutionSuspension, suspendToolExecution } from '@wiswork/agent-core'
+import type { EnhancedCapability } from '@wiswork/agent-runtime'
 import { describe, expect, it, vi } from 'vitest'
 import {
   createDocumentToolManifest,
@@ -22,14 +22,23 @@ const policy = {
 }
 const read = { name: 'get_document_context', description: 'Read.', inputSchema: { type: 'object' } }
 const mutate = { name: 'replace_blocks', description: 'Replace.', inputSchema: { type: 'object' } }
-function policyHandle(capabilities = ['semantic-read', 'transaction-proposal']) {
-  const issuer = createEnhancedPolicyIssuer(() => 1)
-  return issuer.issue({ generation: 1, host: 'docs', policy, capabilities })
+function policyGrant(
+  capabilities: EnhancedCapability[] = ['semantic-read', 'transaction-proposal'],
+) {
+  const grant = Object.freeze({})
+  const snapshot = { generation: 1, host: 'docs' as const, policy, capabilities }
+  return {
+    policyGrant: grant,
+    consumePolicyGrant: (candidate: unknown) => {
+      if (candidate !== grant) throw new Error('invalid_enhanced_policy_handle')
+      return snapshot
+    },
+  }
 }
 
 function registration(overrides: Partial<DocumentToolRegistration> = {}): DocumentToolRegistration {
   const manifest = createDocumentToolManifest({
-    policyHandle: policyHandle(),
+    ...policyGrant(),
     tools: [read, mutate],
     policy: { get_document_context: 'read', replace_blocks: 'mutate' },
   })
@@ -44,6 +53,7 @@ function registration(overrides: Partial<DocumentToolRegistration> = {}): Docume
     manifest,
     isOpen: () => true,
     executeRead: vi.fn(async () => ({ output: 'text', summary: 'read' })),
+    suspendMutation: suspendToolExecution,
     ...overrides,
   }
 }
@@ -52,39 +62,31 @@ describe('Task 4 review hardening', () => {
   it('rejects aliases and capabilities not compiled for the exact host', () => {
     expect(() =>
       createDocumentToolManifest({
-        policyHandle: policyHandle(['semantic-read']),
+        ...policyGrant(['semantic-read']),
         tools: [{ ...read, name: 'read_document' }],
         policy: { read_document: 'read' },
       }),
     ).toThrow('tool_not_compiled_for_host')
     expect(() =>
       createDocumentToolManifest({
-        policyHandle: policyHandle(['semantic-read']),
+        ...policyGrant(['semantic-read']),
         tools: [mutate],
         policy: { replace_blocks: 'mutate' },
       }),
     ).toThrow('tool_capability_denied')
   })
 
-  it('accepts only opaque one-use policy handles', () => {
-    const issuer = createEnhancedPolicyIssuer(() => 1)
-    const handle = issuer.issue({
-      generation: 1,
-      host: 'docs',
-      policy,
-      capabilities: ['semantic-read'],
-    })
+  it('accepts only strict Shell-authorized policy snapshots', () => {
     const input = {
-      policyHandle: handle,
+      ...policyGrant(['semantic-read']),
       tools: [read],
       policy: { get_document_context: 'read' as const },
     }
     expect(() => createDocumentToolManifest(input)).not.toThrow()
-    expect(() => createDocumentToolManifest(input)).toThrow('enhanced_policy_consumed')
     expect(() =>
       createDocumentToolManifest({
         ...input,
-        policyHandle: {} as any,
+        policyGrant: {} as any,
       }),
     ).toThrow('invalid_enhanced_policy_handle')
   })
@@ -186,7 +188,7 @@ describe('Task 4 review hardening', () => {
     }))
     expect(() =>
       createDocumentToolManifest({
-        policyHandle: policyHandle(),
+        ...policyGrant(),
         tools,
         policy: Object.fromEntries(
           tools.map((tool) => [

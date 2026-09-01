@@ -202,6 +202,8 @@ describe('pinned Codex app-server process manager', () => {
       '-c',
       'features.unified_exec=false',
       '-c',
+      'features.code_mode=true',
+      '-c',
       'tools.update_plan.enabled=false',
       '-c',
       'features.multi_agent=false',

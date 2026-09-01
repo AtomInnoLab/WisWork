@@ -1,6 +1,7 @@
 import { isAbsolute } from 'node:path'
 import type { AgentRuntimeMode, EnhancedHost, EnhancedRolloutPolicy } from '@wiswork/agent-runtime'
 import type { CodexRuntimePublicState } from '../shared/codex-api'
+import type { DocumentToolSession } from '@wiswork/codex-bridge'
 
 const MAX_DOCUMENT_ID_BYTES = 256
 const MAX_TURN_TEXT_BYTES = 1_000_000
@@ -11,6 +12,13 @@ export interface CodexOwner {
 }
 
 export interface CodexRuntimeEngine {
+  registerDocument?(input: {
+    readonly ownerId: string
+    readonly documentId: string
+    readonly host: EnhancedHost
+    readonly generation: number
+    readonly session: DocumentToolSession
+  }): () => void
   startTurn(input: {
     readonly documentId: string
     readonly host: EnhancedHost
@@ -44,6 +52,7 @@ interface DocumentRecord {
   readonly host: EnhancedHost
   readonly generation: number
   busy: boolean
+  readonly unregisterEngine?: () => void
 }
 
 export class ShellCodexRuntimeError extends Error {
@@ -128,6 +137,7 @@ export class ShellCodexRuntime {
     readonly documentId: string
     readonly host: EnhancedHost
     readonly generation: number
+    readonly toolSession?: DocumentToolSession
   }): { close: () => Promise<void> } {
     if (
       this.#state !== 'ready' ||
@@ -146,7 +156,16 @@ export class ShellCodexRuntime {
     if (this.#documents.size >= MAX_DOCUMENTS) {
       throw new ShellCodexRuntimeError('enhanced_document_limit')
     }
-    this.#documents.set(input.documentId, { ...input, busy: false })
+    const unregisterEngine = input.toolSession
+      ? this.#engine.registerDocument?.({
+          ownerId: String((input.owner as { id?: unknown }).id ?? 'renderer'),
+          documentId: input.documentId,
+          host: input.host,
+          generation: input.generation,
+          session: input.toolSession,
+        })
+      : undefined
+    this.#documents.set(input.documentId, { ...input, busy: false, unregisterEngine })
     return { close: () => this.closeDocument(input.documentId) }
   }
 
@@ -197,6 +216,7 @@ export class ShellCodexRuntime {
     const document = this.#documents.get(documentId)
     if (!document) return
     this.#documents.delete(documentId)
+    document.unregisterEngine?.()
     if (document.busy) await this.#engine?.cancelTurn(documentId).catch(() => undefined)
     await this.#engine?.closeDocument(documentId).catch(() => undefined)
   }

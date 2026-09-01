@@ -36,6 +36,12 @@ export interface DocumentMcpServerOptions {
   readonly maxActiveSessions?: number
   readonly diagnostics?: (code: string) => void
 }
+export interface TrustedMcpTransport {
+  readonly url: string
+  readonly secret: string
+  close(): Promise<void>
+}
+export class TrustedMcpTransportDenied extends Error {}
 
 function record(value: unknown): value is Record<string, unknown> {
   return (
@@ -89,6 +95,26 @@ async function body(request: IncomingMessage, maximum: number): Promise<Buffer |
 
 export async function startDocumentMcpServer(
   options: DocumentMcpServerOptions = {},
+): Promise<DocumentMcpServer> {
+  return startDocumentMcpServerInternal(options)
+}
+
+/** Module-private trusted transport reuse. Intentionally not exported from the package root. */
+export async function startTrustedMcpTransport(
+  session: DocumentToolSession,
+  options: DocumentMcpServerOptions = {},
+): Promise<TrustedMcpTransport> {
+  const server = await startDocumentMcpServerInternal(options, session)
+  return Object.freeze({
+    url: `${server.baseUrl}/mcp/${session.credentials.sessionId}`,
+    secret: session.credentials.secret,
+    close: () => server.close(),
+  })
+}
+
+async function startDocumentMcpServerInternal(
+  options: DocumentMcpServerOptions,
+  trustedSession?: DocumentToolSession,
 ): Promise<DocumentMcpServer> {
   const maxBodyBytes = options.maxBodyBytes ?? MAX_BODY
   const maxRpcCalls = options.maxRpcCalls ?? MAX_RPC_CALLS
@@ -236,6 +262,7 @@ export async function startDocumentMcpServer(
         if (entry!.state !== 'ready') return rpcError(response, id, -32600, 'not_initialized')
         if (!only(params, ['cursor', '_meta']))
           return rpcError(response, id, -32602, 'invalid_params')
+        diagnostic('mcp_tools_list')
         return send(response, 200, {
           jsonrpc: '2.0',
           id,
@@ -259,7 +286,17 @@ export async function startDocumentMcpServer(
           name: params.name,
           input: (params.arguments ?? {}) as Record<string, unknown>,
         }
-        const outcome = await session.callTool(credentials, call, controller.signal)
+        let outcome
+        try {
+          outcome = await session.callTool(credentials, call, controller.signal)
+        } catch (error) {
+          if (error instanceof TrustedMcpTransportDenied) {
+            request.off('aborted', abort)
+            response.off('close', abort)
+            return send(response, 403, { error: 'turn_capability_denied' })
+          }
+          throw error
+        }
         const execution = isToolExecutionSuspension(outcome) ? await outcome.result : outcome
         request.off('aborted', abort)
         response.off('close', abort)
@@ -295,6 +332,13 @@ export async function startDocumentMcpServer(
     server.listen(0, HOST, resolve)
   })
   const baseUrl = `http://${HOST}:${(server.address() as AddressInfo).port}`
+  if (trustedSession) {
+    sessions.set(trustedSession.credentials.sessionId, {
+      session: trustedSession,
+      state: 'new',
+      ids: new Set(),
+    })
+  }
   const api: DocumentMcpServer = {
     baseUrl,
     register(registration: DocumentToolRegistration) {

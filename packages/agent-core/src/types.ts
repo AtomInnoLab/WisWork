@@ -98,9 +98,7 @@ export type ToolExecutionOutcome = ToolExecution | ToolExecutionSuspension
 
 const toolExecutionSuspensions = new WeakSet<object>()
 
-export function mintToolExecutionSuspension(
-  result: Promise<ToolExecution>,
-): ToolExecutionSuspension {
+function mintToolExecutionSuspension(result: Promise<ToolExecution>): ToolExecutionSuspension {
   const suspension: ToolExecutionSuspension = {
     kind: 'tool-execution-suspension',
     result,
@@ -116,6 +114,14 @@ export function suspendToolExecution(result: Promise<ToolExecution>): ToolExecut
   // The placeholder ToolExecution fields preserve source compatibility for
   // direct skill consumers. AgentLoop detects `kind` and never publishes this
   // placeholder to model history or execution events.
+  return mintToolExecutionSuspension(result)
+}
+
+/** @internal AgentLoop is the only production caller. */
+export function mintLoopToolExecutionSuspension(
+  _owner: object,
+  result: Promise<ToolExecution>,
+): ToolExecutionSuspension {
   return mintToolExecutionSuspension(result)
 }
 

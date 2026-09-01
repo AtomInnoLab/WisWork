@@ -178,6 +178,7 @@ function serverArguments(baseUrl: string, mcpUrl?: string): readonly string[] {
     'model_providers.wiswork.wire_api="responses"',
     'features.shell_tool=false',
     'features.unified_exec=false',
+    'features.code_mode=true',
     'tools.update_plan.enabled=false',
     'features.multi_agent=false',
     ...(mcpUrl === undefined

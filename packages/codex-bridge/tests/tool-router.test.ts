@@ -1,5 +1,8 @@
-import { isToolExecutionSuspension, type ToolExecution } from '@wiswork/agent-core'
-import { createEnhancedPolicyIssuer } from '../../agent-runtime/src/contracts'
+import {
+  isToolExecutionSuspension,
+  suspendToolExecution,
+  type ToolExecution,
+} from '@wiswork/agent-core'
 import { describe, expect, it, vi } from 'vitest'
 import { createDocumentCarrierIssuer } from '../src/index.js'
 import {
@@ -29,14 +32,21 @@ const readTool = {
   inputSchema: { type: 'object' },
 }
 const writeTool = { name: 'replace_blocks', description: 'Write.', inputSchema: { type: 'object' } }
-function policyHandle() {
-  const issuer = createEnhancedPolicyIssuer(() => 4)
-  return issuer.issue({
+function policyGrant() {
+  const grant = Object.freeze({})
+  const snapshot = {
     generation: 4,
     host: 'docs',
     policy: rollout,
     capabilities: ['semantic-read', 'transaction-proposal'],
-  })
+  } as const
+  return {
+    policyGrant: grant,
+    consumePolicyGrant: (candidate: unknown) => {
+      if (candidate !== grant) throw new Error('invalid_enhanced_policy_handle')
+      return snapshot
+    },
+  }
 }
 
 function fixture(overrides: Partial<DocumentToolRegistration> = {}) {
@@ -46,7 +56,7 @@ function fixture(overrides: Partial<DocumentToolRegistration> = {}) {
   }))
   let open = true
   const manifest = createDocumentToolManifest({
-    policyHandle: policyHandle(),
+    ...policyGrant(),
     tools: [readTool, writeTool],
     policy: { get_document_context: 'read', replace_blocks: 'mutate' },
   })
@@ -61,6 +71,7 @@ function fixture(overrides: Partial<DocumentToolRegistration> = {}) {
     manifest,
     isOpen: () => open,
     executeRead,
+    suspendMutation: suspendToolExecution,
     ...overrides,
   }
   const session = createDocumentToolSession(registration)

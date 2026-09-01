@@ -36,6 +36,8 @@ import {
 } from '@wiswork/auth'
 import { createOfficeBridge, type OfficeBridge } from '@wiswork/office-bridge'
 import { EnhancedModeComponentManager } from '@wiswork/codex-bridge'
+import type { MessagesRequest } from '@wiswork/codex-bridge'
+import { WISWORK_MESSAGES_URL, WISWORK_REQUEST_LOCATION } from '@wiswork/ai-provider'
 import { createI18n, isLang, normalizeLang, setUiLang, type Lang } from '@wiswork/i18n'
 import {
   appMenuLabels,
@@ -162,6 +164,9 @@ import {
   releaseLatexCloseTabs,
 } from './latex-final-close'
 import { registerLatexProtocolScheme } from './latex-protocol-scheme'
+import { ShellCodexRuntime } from './codex-runtime'
+import { registerCodexRuntimeIpc } from './codex-ipc'
+import { createProductionCodexBootstrap } from './codex-engine'
 import { migrateLegacyUserData } from './user-data-migration'
 import { createAuthDeepLinkQueue } from './auth-deep-link-queue'
 import { createBeforeQuitBarrier } from './before-quit-barrier'
@@ -308,6 +313,7 @@ registerLatexProtocolScheme(protocol)
 
 let authRuntime: ReturnType<typeof initializeElectronAuthRuntime> | null = null
 let enhancedModeComponentController: EnhancedModeComponentController | null = null
+let codexRuntime: ShellCodexRuntime | null = null
 let activeAgentRuntime: 'standard' | 'enhanced' = 'standard'
 let officeBridge: OfficeBridge | null = null
 let officeBridgeServer: OfficeBridgeHttpServer | null = null
@@ -1840,6 +1846,7 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.accountLogout, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
     await enhancedModeComponentController?.revoke()
+    await codexRuntime?.logout()
     officeBridge?.setSessionAvailable(false)
     officeRelayActivationFence.lock()
     try {
@@ -2600,7 +2607,7 @@ app.whenReady().then(async () => {
     openExternal: (url) => shell.openExternal(url),
   })
   // Runtime selection is immutable for this process. Settings changes below only affect next boot.
-  activeAgentRuntime = 'standard'
+  activeAgentRuntime = readRequestedAgentRuntime(APP_SETTINGS_PATH())
   const enhancedModeComponent = new EnhancedModeComponentManager({
     cacheRoot: join(app.getPath('userData'), 'components', 'enhanced-mode'),
     manifest: codexComponentManifest,
@@ -2609,6 +2616,49 @@ app.whenReady().then(async () => {
     (asset) => asset.platform === process.platform && asset.arch === process.arch,
   )
   const enhancedPolicyAllowed = () => process.env.WISWORK_ENHANCED_DISABLED !== '1'
+  const enhancedHosts = {
+    latex: true,
+    slides: true,
+    docs: true,
+    sheets: true,
+    'office-word': true,
+    'office-excel': true,
+    'office-powerpoint': true,
+  } as const
+  codexRuntime = new ShellCodexRuntime({
+    activeAgentRuntime,
+    policy: {
+      globalEnabled: enhancedPolicyAllowed(),
+      hosts: enhancedHosts,
+      rawOfficeEnabled: process.env.WISWORK_RAW_OFFICE_DISABLED !== '1',
+    },
+    isSignedIn: async () => (await requireAuthRuntime().client.getValidAccountStatus()).loggedIn,
+    resolveExecutable: () => enhancedModeComponent.resolveExecutable(),
+    bootstrap: createProductionCodexBootstrap({
+      fetchWithAuth: (request: MessagesRequest, signal: AbortSignal) =>
+        requireAuthRuntime().client.fetchWithAuth((accessToken) =>
+          fetch(WISWORK_MESSAGES_URL, {
+            method: 'POST',
+            signal,
+            headers: {
+              authorization: `Bearer ${accessToken}`,
+              'content-type': 'application/json',
+              'x-req-location': WISWORK_REQUEST_LOCATION,
+            },
+            body: JSON.stringify(request),
+          }),
+        ),
+      diagnostics: (code) => console.warn('[enhanced-runtime]', code),
+    }),
+    diagnostics: (code) => console.warn('[enhanced-runtime]', code),
+  })
+  registerCodexRuntimeIpc({
+    ipcMain,
+    runtime: codexRuntime,
+    // Host registrations are installed by each editor adapter; an unregistered sender is unavailable.
+    documentIdForOwner: () => null,
+  })
+  void codexRuntime.initialize().catch(() => undefined)
   enhancedModeComponentController = registerEnhancedModeComponentIpc({
     ipcMain,
     component: enhancedModeComponent,
@@ -2621,7 +2671,7 @@ app.whenReady().then(async () => {
       (await requireAuthRuntime().client.getValidAccountStatus()).loggedIn === true,
     policyAllowed: enhancedPolicyAllowed,
     // Task 6 supplies the host session adapter. Until then a saved request is visible but not active.
-    enhancedRuntimeAvailable: () => false,
+    enhancedRuntimeAvailable: () => codexRuntime?.state === 'ready',
     ...(enhancedAsset
       ? {
           metadata: {
@@ -2961,6 +3011,7 @@ const beforeQuitBarrier = createBeforeQuitBarrier({
     shutdownOfficeRelaySession(officeRelayLifecycle, officeRelay)
     await Promise.allSettled([
       enhancedModeComponentController?.close() ?? Promise.resolve(),
+      codexRuntime?.shutdown() ?? Promise.resolve(),
       officeBridgeServer?.stop() ?? Promise.resolve(),
     ])
   },

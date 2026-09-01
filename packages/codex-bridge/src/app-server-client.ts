@@ -164,15 +164,20 @@ export class CodexAppServerClient {
     }
   }
 
-  async startThread(): Promise<CodexThreadStartResult> {
+  async startThread(
+    options: { readonly developerInstructions?: string } = {},
+  ): Promise<CodexThreadStartResult> {
     this.#assertReady()
+    const developerInstructions = options.developerInstructions ?? this.#developerInstructions
+    if (!boundedString(developerInstructions, MAX_POLICY_BYTES))
+      throw new CodexAppServerError('app_server_invalid_argument')
     const params: ThreadStartParams = {
       model: 'gpt-5.6-sol',
       modelProvider: 'wiswork',
       cwd: this.#cwd,
       approvalPolicy: 'never',
       sandbox: 'read-only',
-      developerInstructions: this.#developerInstructions,
+      developerInstructions,
       ephemeral: true,
     }
     const response = await this.#rpc.request<unknown>('thread/start', params)

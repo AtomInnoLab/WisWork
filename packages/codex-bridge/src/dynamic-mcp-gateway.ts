@@ -1,16 +1,13 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { createServer } from 'node:http'
-import type { AddressInfo } from 'node:net'
+import { randomBytes } from 'node:crypto'
 import {
   isToolExecutionSuspension,
   type AgentToolCall,
   type ToolExecution,
 } from '@wiswork/agent-core'
 import type { DocumentToolSession } from './tool-router.js'
+import { startTrustedMcpTransport, TrustedMcpTransportDenied } from './mcp-server.js'
 
-const HOST = '127.0.0.1'
-const MAX_BODY = 1_000_000
-const MAX_CALLS = 16
+const MAX_CALLS = 1
 const DEFAULT_TTL_MS = 10 * 60_000
 
 export interface DynamicGatewayDocument {
@@ -30,16 +27,18 @@ export interface DynamicMcpGateway {
     readonly threadId: string
     readonly ttlMs?: number
   }): { readonly capability: string }
+  bindTurn(capability: string, threadId: string): void
   close(): Promise<void>
 }
 
 interface TurnGrant {
   readonly document: DynamicGatewayDocument
-  readonly threadId: string
+  threadId: string
   readonly expiresAt: number
   readonly calls: Set<string>
   remaining: number
   turnId?: string
+  bound: boolean
 }
 
 function exactRecord(value: unknown, keys: readonly string[]): Record<string, unknown> {
@@ -59,95 +58,64 @@ function exactRecord(value: unknown, keys: readonly string[]): Record<string, un
   return Object.fromEntries(keys.map((key) => [key, descriptors[key]!.value]))
 }
 
-function authorized(header: string | undefined, expected: Buffer): boolean {
-  if (!header?.startsWith('Bearer ')) return false
-  const raw = header.slice(7)
-  if (!/^[A-Za-z0-9_-]{43}$/.test(raw)) return false
-  const value = Buffer.from(raw, 'base64url')
-  return value.length === expected.length && timingSafeEqual(value, expected)
-}
-
-export async function startDynamicMcpGateway(): Promise<DynamicMcpGateway> {
-  const secretBytes = randomBytes(32)
-  const secret = secretBytes.toString('base64url')
+export async function startDynamicMcpGateway(
+  diagnostics?: (code: string) => void,
+): Promise<DynamicMcpGateway> {
   const documents = new Map<string, DynamicGatewayDocument>()
   const grants = new Map<string, TurnGrant>()
   let closed = false
-  const server = createServer((request, response) => {
-    void (async () => {
-      const send = (status: number, value: unknown) => {
-        const body = Buffer.from(JSON.stringify(value))
-        response.writeHead(status, {
-          'content-type': 'application/json',
-          'content-length': body.length,
-        })
-        response.end(body)
-      }
-      if (closed) return send(503, { error: 'gateway_closed' })
-      if (!authorized(request.headers.authorization, secretBytes)) {
-        request.resume()
-        return send(401, { error: 'unauthorized' })
-      }
-      const chunks: Buffer[] = []
-      let bytes = 0
-      for await (const chunk of request) {
-        const part = Buffer.from(chunk)
-        bytes += part.length
-        if (bytes > MAX_BODY) return send(413, { error: 'body_limit' })
-        chunks.push(part)
-      }
-      let rpc: Record<string, unknown>
-      try {
-        const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
-        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
-          throw new Error()
-        const descriptors = Object.getOwnPropertyDescriptors(parsed)
-        const keys = Object.keys(descriptors)
-        if (
-          Object.getPrototypeOf(parsed) !== Object.prototype ||
-          Object.getOwnPropertySymbols(parsed).length ||
-          keys.some((key) => !['jsonrpc', 'id', 'method', 'params'].includes(key)) ||
-          !['jsonrpc', 'method', 'params'].every((key) => 'value' in (descriptors[key] ?? {}))
-        )
-          throw new Error()
-        rpc = Object.fromEntries(keys.map((key) => [key, descriptors[key]!.value]))
-        if (rpc.jsonrpc !== '2.0' || typeof rpc.method !== 'string') throw new Error()
-      } catch {
-        return send(400, { error: 'invalid_request' })
-      }
-      const ok = (result: unknown) => send(200, { jsonrpc: '2.0', id: rpc.id, result })
-      if (rpc.method === 'initialize')
-        return ok({
-          protocolVersion: '2025-06-18',
-          capabilities: { tools: {} },
-          serverInfo: { name: 'wiswork', version: '1' },
-        })
-      if (rpc.method === 'notifications/initialized') return send(202, {})
-      if (rpc.method === 'tools/list')
-        return ok({
-          tools: [
-            {
-              name: 'wiswork_call',
-              description: 'Execute one authorized WisWork document tool call.',
-              inputSchema: {
-                type: 'object',
-                additionalProperties: false,
-                required: ['capability', 'callId', 'toolName', 'input'],
-                properties: {
-                  capability: { type: 'string' },
-                  callId: { type: 'string' },
-                  toolName: { type: 'string' },
-                  input: { type: 'object' },
-                },
-              },
+  const credentials = Object.freeze({
+    sessionId: randomBytes(32).toString('base64url'),
+    secret: randomBytes(32).toString('base64url'),
+  })
+  const proxySession: DocumentToolSession = {
+    identity: Object.freeze({
+      ownerId: 'shell',
+      host: 'docs',
+      documentId: 'dynamic',
+      sessionId: credentials.sessionId,
+      generation: 0,
+    }),
+    credentials,
+    catalogDigest: '0'.repeat(64),
+    mutationAuthority: {
+      claimNext: () => undefined,
+      settle: () => {
+        throw new Error('unsupported')
+      },
+      reject: () => {
+        throw new Error('unsupported')
+      },
+    },
+    authorize(candidate) {
+      if (candidate.sessionId !== credentials.sessionId || candidate.secret !== credentials.secret)
+        throw new Error('tool_unauthorized')
+    },
+    listTools() {
+      diagnostics?.('gateway_tools_list')
+      return [
+        {
+          name: 'wiswork_call',
+          description: 'Execute one authorized WisWork document tool call.',
+          annotations: { readOnlyHint: false, destructiveHint: true },
+          inputSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['capability', 'callId', 'toolName', 'input'],
+            properties: {
+              capability: { type: 'string' },
+              callId: { type: 'string' },
+              toolName: { type: 'string' },
+              input: { type: 'object' },
             },
-          ],
-        })
-      if (rpc.method !== 'tools/call') return send(404, { error: 'method_not_found' })
+          },
+        },
+      ]
+    },
+    async callTool(_candidate, call) {
       try {
-        const params = exactRecord(rpc.params, ['name', 'arguments'])
-        if (params.name !== 'wiswork_call') throw new Error('denied')
-        const args = exactRecord(params.arguments, ['capability', 'callId', 'toolName', 'input'])
+        if (call.name !== 'wiswork_call') throw new Error('denied')
+        const args = exactRecord(call.input, ['capability', 'callId', 'toolName', 'input'])
         if (
           typeof args.capability !== 'string' ||
           typeof args.callId !== 'string' ||
@@ -158,6 +126,7 @@ export async function startDynamicMcpGateway(): Promise<DynamicMcpGateway> {
         // Capability is consumed/budgeted before any document or host lookup.
         if (
           !grant ||
+          !grant.bound ||
           Date.now() > grant.expiresAt ||
           grant.remaining <= 0 ||
           grant.calls.has(args.callId)
@@ -165,35 +134,36 @@ export async function startDynamicMcpGateway(): Promise<DynamicMcpGateway> {
           throw new Error('denied')
         grant.remaining -= 1
         grant.calls.add(args.callId)
-        const call: AgentToolCall = {
+        const documentCall: AgentToolCall = {
           id: args.callId,
           name: args.toolName,
           input: args.input as Record<string, unknown>,
         }
-        const outcome = grant.document.session.callTool(grant.document.session.credentials, call)
+        const outcome = grant.document.session.callTool(
+          grant.document.session.credentials,
+          documentCall,
+        )
         const execution: ToolExecution =
           outcome instanceof Promise
             ? await outcome
             : isToolExecutionSuspension(outcome)
               ? await outcome.result
               : outcome
-        return ok({
-          content: [{ type: 'text', text: execution.output }],
-          isError: execution.isError === true,
-        })
+        return execution
       } catch {
-        return send(403, { error: 'turn_capability_denied' })
+        throw new TrustedMcpTransportDenied('turn_capability_denied')
       }
-    })().catch(() => response.destroy())
-  })
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, HOST, resolve)
-  })
-  const url = `http://${HOST}:${(server.address() as AddressInfo).port}/mcp`
+    },
+    issueCarrier() {
+      throw new Error('unsupported')
+    },
+    cancel: () => false,
+    close: () => undefined,
+  }
+  const transport = await startTrustedMcpTransport(proxySession, { diagnostics })
   return Object.freeze({
-    url,
-    secret,
+    url: transport.url,
+    secret: transport.secret,
     register(document: DynamicGatewayDocument) {
       if (closed || documents.has(document.documentId))
         throw new Error('document_session_unavailable')
@@ -222,15 +192,23 @@ export async function startDynamicMcpGateway(): Promise<DynamicMcpGateway> {
         expiresAt: Date.now() + ttl,
         calls: new Set(),
         remaining: MAX_CALLS,
+        bound: input.threadId !== 'reserved',
       })
       return Object.freeze({ capability })
+    },
+    bindTurn(capability: string, threadId: string) {
+      const grant = grants.get(capability)
+      if (!grant || grant.bound || !threadId || Buffer.byteLength(threadId) > 256)
+        throw new Error('invalid_turn_capability')
+      grant.threadId = threadId
+      grant.bound = true
     },
     async close() {
       if (closed) return
       closed = true
       grants.clear()
       documents.clear()
-      await new Promise<void>((resolve) => server.close(() => resolve()))
+      await transport.close()
     },
   })
 }

@@ -1,6 +1,6 @@
 import { request } from 'node:http'
+import { suspendToolExecution } from '@wiswork/agent-core'
 import { describe, expect, it, vi } from 'vitest'
-import { createEnhancedPolicyIssuer } from '../../agent-runtime/src/contracts'
 import { startDocumentMcpServer } from '../src/mcp-server.js'
 import { createDocumentToolManifest } from '../src/tool-router.js'
 
@@ -18,24 +18,32 @@ const rollout = {
   },
 }
 const tool = { name: 'get_document_context', description: 'Read.', inputSchema: { type: 'object' } }
-const policyHandle = () => {
-  const issuer = createEnhancedPolicyIssuer(() => 1)
-  return issuer.issue({
+const policyGrant = () => {
+  const grant = Object.freeze({})
+  const snapshot = {
     generation: 1,
     host: 'docs',
     policy: rollout,
     capabilities: ['semantic-read'],
-  })
+  } as const
+  return {
+    policyGrant: grant,
+    consumePolicyGrant: (candidate: unknown) => {
+      if (candidate !== grant) throw new Error('invalid_enhanced_policy_handle')
+      return snapshot
+    },
+  }
 }
 const registration = () => ({
   identity: { ownerId: 'o', host: 'docs' as const, documentId: 'd', sessionId: 's', generation: 1 },
   manifest: createDocumentToolManifest({
-    policyHandle: policyHandle(),
+    ...policyGrant(),
     tools: [tool],
     policy: { get_document_context: 'read' },
   }),
   isOpen: () => true,
   executeRead: async () => ({ output: 'document', summary: 'read' }),
+  suspendMutation: suspendToolExecution,
 })
 function post(url: string, secret: string, value: unknown, authorization = `Bearer ${secret}`) {
   const data = JSON.stringify(value)

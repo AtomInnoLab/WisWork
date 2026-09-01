@@ -2,18 +2,27 @@ export {
   COMPONENT_STATUSES,
   ENHANCED_CAPABILITIES,
   ENHANCED_HOSTS,
-  consumeEnhancedPolicyHandle,
   parseEnhancedComponentStatus,
+  parseEnhancedCapabilities,
   parseEnhancedRolloutPolicy,
   parseRuntimeSelection,
   shouldStartEnhancedRuntime,
 } from './contracts'
+export { StandardAgentRuntime } from './standard'
+export { EnhancedAgentRuntime } from './enhanced'
+export type {
+  EnhancedRuntimeClient,
+  EnhancedRuntimeClientSession,
+  EnhancedSessionEvent,
+} from './enhanced'
+export type { AgentRuntime, AgentRuntimeSession, AgentRuntimeSessionOptions } from './session'
+export { createEnhancedRendererClient } from './renderer'
+export type { EnhancedRendererBridge } from './renderer'
 export type {
   AgentRuntimeMode,
   EnhancedCapability,
   EnhancedComponentStatus,
   EnhancedHost,
-  EnhancedPolicyHandle,
   EnhancedPolicySnapshot,
   EnhancedRolloutPolicy,
   RuntimeSelection,
