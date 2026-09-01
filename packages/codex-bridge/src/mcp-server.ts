@@ -144,6 +144,8 @@ async function startDocumentMcpServerInternal(
   }
   const server = createServer((request, response) => {
     void (async () => {
+      diagnostic('mcp_request_received')
+      diagnostic(request.method === 'POST' ? 'mcp_http_post' : 'mcp_http_other')
       if (closed) return send(response, 503, { error: 'mcp_closed' })
       const match = request.url?.match(/^\/mcp\/([A-Za-z0-9_-]{43})$/)
       const auth = request.headers.authorization
@@ -157,14 +159,17 @@ async function startDocumentMcpServerInternal(
         if (!session || !credentials) throw new ToolRouterError('tool_unauthorized')
         session.authorize(credentials)
       } catch {
+        diagnostic('mcp_request_unauthorized')
         request.resume()
         return send(response, 401, { error: 'unauthorized' })
       }
       if (request.method !== 'POST') {
+        diagnostic('mcp_http_405')
         request.resume()
         return send(response, 405, { error: 'method_not_allowed' })
       }
       if (request.headers['content-type']?.toLowerCase() !== 'application/json') {
+        diagnostic('mcp_request_unsupported_media_type')
         request.resume()
         return send(response, 415, { error: 'unsupported_media_type' })
       }
@@ -202,6 +207,7 @@ async function startDocumentMcpServerInternal(
         entry!.ids.add(idKey)
       }
       if (message.method === 'notifications/initialized') {
+        diagnostic('mcp_initialized_notification')
         if (
           entry!.state !== 'initialized' ||
           id !== undefined ||
@@ -227,6 +233,7 @@ async function startDocumentMcpServerInternal(
       }
       if (id === undefined) return rpcError(response, null, -32600, 'invalid_request')
       if (message.method === 'initialize') {
+        diagnostic('mcp_initialize_request')
         const capabilities = params.capabilities
         const clientInfo = params.clientInfo
         if (
@@ -259,6 +266,7 @@ async function startDocumentMcpServerInternal(
         })
       }
       if (message.method === 'tools/list') {
+        diagnostic('mcp_tools_list_request')
         if (entry!.state !== 'ready') return rpcError(response, id, -32600, 'not_initialized')
         if (!only(params, ['cursor', '_meta']))
           return rpcError(response, id, -32602, 'invalid_params')
@@ -270,13 +278,17 @@ async function startDocumentMcpServerInternal(
         })
       }
       if (message.method === 'tools/call') {
+        diagnostic('mcp_tools_call_received')
         if (entry!.state !== 'ready') return rpcError(response, id, -32600, 'not_initialized')
         if (
           !only(params, ['name', 'arguments', '_meta']) ||
           typeof params.name !== 'string' ||
           !record(params.arguments ?? {})
         )
-          return rpcError(response, id, -32602, 'invalid_params')
+          return (
+            diagnostic('mcp_tools_call_invalid_params'),
+            rpcError(response, id, -32602, 'invalid_params')
+          )
         const controller = new AbortController()
         const abort = (): void => controller.abort()
         request.once('aborted', abort)

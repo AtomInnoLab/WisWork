@@ -37,8 +37,21 @@ export type ResponsesInputItem =
         | { type: 'input_image'; image_url: string }
       >
     }
-  | { type: 'custom_tool_call'; call_id: string; name: 'exec'; input: string }
-  | { type: 'custom_tool_call_output'; call_id: string; output: string }
+  | {
+      type: 'custom_tool_call'
+      id?: string
+      call_id: string
+      name: 'exec'
+      input: string
+      status?: 'completed'
+    }
+  | {
+      type: 'custom_tool_call_output'
+      id?: string
+      call_id: string
+      output: string | Array<{ type: 'input_text'; text: string }>
+      status?: 'completed'
+    }
   | {
       type: 'additional_tools'
       role: 'developer'

@@ -56,7 +56,11 @@ test('manifest pins only the three official 0.147.0 app-server package assets', 
     assert.match(asset.layout.entrypoint, /^bin\/codex-app-server(?:\.exe)?$/)
     assert.deepEqual(
       asset.layout.files.filter((file) => file.install).map((file) => file.path),
-      [asset.layout.entrypoint],
+      [
+        asset.layout.entrypoint,
+        asset.platform === 'win32' ? 'bin/codex-code-mode-host.exe' : 'bin/codex-code-mode-host',
+        'codex-package.json',
+      ],
     )
   }
   assert.deepEqual(

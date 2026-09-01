@@ -1,6 +1,6 @@
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { EventEmitter } from 'node:events'
 import type { Readable, Writable } from 'node:stream'
@@ -158,9 +158,18 @@ function minimalEnvironment(
   directories: OwnedCodexDirectories,
   token?: string,
   mcpToken?: string,
+  executablePath?: string,
 ): NodeJS.ProcessEnv {
   return {
     ...platformEssentials(),
+    ...(executablePath === undefined
+      ? {}
+      : {
+          CODEX_CODE_MODE_HOST_PATH: join(
+            dirname(executablePath),
+            process.platform === 'win32' ? 'codex-code-mode-host.exe' : 'codex-code-mode-host',
+          ),
+        }),
     CODEX_HOME: directories.codexHome,
     ...(token === undefined ? {} : { WISWORK_CODEX_TOKEN: token }),
     ...(mcpToken === undefined ? {} : { WISWORK_MCP_TOKEN: mcpToken }),
@@ -179,6 +188,7 @@ function serverArguments(baseUrl: string, mcpUrl?: string): readonly string[] {
     'features.shell_tool=false',
     'features.unified_exec=false',
     'features.code_mode=true',
+    'features.code_mode_host=true',
     'tools.update_plan.enabled=false',
     'features.multi_agent=false',
     ...(mcpUrl === undefined
@@ -302,7 +312,12 @@ export class CodexProcessManager {
         serverArguments(this.#baseUrl, this.#mcp?.url),
         {
           cwd: this.#directories.cwd,
-          env: minimalEnvironment(this.#directories, this.#secret, this.#mcp?.secret),
+          env: minimalEnvironment(
+            this.#directories,
+            this.#secret,
+            this.#mcp?.secret,
+            this.#executablePath,
+          ),
           stdio: 'pipe',
           windowsHide: true,
         },
@@ -321,6 +336,7 @@ export class CodexProcessManager {
         rpc,
         cwd: this.#directories.cwd,
         developerInstructions: this.#developerInstructions,
+        diagnostics: (code) => this.#emitDiagnostic(code),
       })
       this.#state = 'running'
       return this.#client
@@ -523,6 +539,13 @@ export class CodexProcessManager {
   }
 
   readonly #onServerExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+    this.#emitDiagnostic(
+      signal !== null
+        ? 'codex_process_exit_signal'
+        : code === 0
+          ? 'codex_process_exit_0'
+          : 'codex_process_exit_nonzero',
+    )
     this.#resolveExit?.({ code, signal })
     this.#resolveExit = undefined
     if (this.#state === 'stopping' || this.#state === 'stopped') return

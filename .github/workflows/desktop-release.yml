@@ -128,6 +128,22 @@ jobs:
         shell: pwsh
         run: npx tsx tools/install-enhanced-component.ts --cache (Join-Path $env:RUNNER_TEMP 'wiswork-codex-component')
 
+      - name: Exercise pinned macOS Codex model-driven read gate
+        if: startsWith(matrix.id, 'macos-')
+        run: |
+          set -euo pipefail
+          COMPONENTS=("$RUNNER_TEMP"/wiswork-codex-component/0.147.0/darwin-*/bin/codex-app-server)
+          test "${#COMPONENTS[@]}" -eq 1
+          WISWORK_CODEX_INTEGRATION_EXECUTABLE="${COMPONENTS[0]}" \
+            npx vitest run apps/shell/tests/codex-engine.integration.test.ts -t 'drives one bounded'
+
+      - name: Exercise pinned Windows Codex model-driven read gate
+        if: matrix.id == 'windows-x64'
+        shell: pwsh
+        run: |
+          $env:WISWORK_CODEX_INTEGRATION_EXECUTABLE = Join-Path $env:RUNNER_TEMP 'wiswork-codex-component/0.147.0/win32-x64/bin/codex-app-server.exe'
+          npx vitest run apps/shell/tests/codex-engine.integration.test.ts -t 'drives one bounded'
+
       - name: Read back pinned macOS component signing identity
         if: startsWith(matrix.id, 'macos-')
         run: |

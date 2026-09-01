@@ -258,6 +258,8 @@ describe('optional Enhanced mode component manager', () => {
     for (const asset of parsed.component.assets) {
       expect(asset.layout.files.filter((file) => file.install).map((file) => file.path)).toEqual([
         asset.layout.entrypoint,
+        asset.platform === 'win32' ? 'bin/codex-code-mode-host.exe' : 'bin/codex-code-mode-host',
+        'codex-package.json',
       ])
     }
   })

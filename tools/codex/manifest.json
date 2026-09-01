@@ -47,14 +47,14 @@
               "bytes": 49991616,
               "sha256": "861a07e9d413bd66d5a7b0de3be6f65d4d58e75b2ba3f8c7232f2ba41ab1fd82",
               "mode": "executable",
-              "install": false
+              "install": true
             },
             {
               "path": "codex-package.json",
               "bytes": 222,
               "sha256": "42863b3ecc5f3f87fc578f4aebcb8bb9d76ed9bdad62dbc9877a515e86076c5e",
               "mode": "data",
-              "install": false
+              "install": true
             },
             {
               "path": "codex-path/rg",
@@ -113,14 +113,14 @@
               "bytes": 52496608,
               "sha256": "3454c7d1b9f0ec6df4da61cc1bfaf15bb01e15e35e2da48ba0f0e44840dc1e7d",
               "mode": "executable",
-              "install": false
+              "install": true
             },
             {
               "path": "codex-package.json",
               "bytes": 221,
               "sha256": "20bca4d88925b826c3601afe7909412fc33cf815d2406cea994ab3dddb489b78",
               "mode": "data",
-              "install": false
+              "install": true
             },
             {
               "path": "codex-path/rg",
@@ -172,14 +172,14 @@
               "bytes": 57450288,
               "sha256": "37c23a542037e1bcfd0fa7eb4a150c697229d7ff31bf675c519d5bff7226b191",
               "mode": "executable",
-              "install": false
+              "install": true
             },
             {
               "path": "codex-package.json",
               "bytes": 237,
               "sha256": "90f75ac3f356281935567105ce486bd42fc23f25812d1629f2a048255a1b6496",
               "mode": "data",
-              "install": false
+              "install": true
             },
             {
               "path": "codex-path/rg.exe",

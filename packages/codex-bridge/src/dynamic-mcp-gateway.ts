@@ -7,7 +7,7 @@ import {
 import type { DocumentToolSession } from './tool-router.js'
 import { startTrustedMcpTransport, TrustedMcpTransportDenied } from './mcp-server.js'
 
-const MAX_CALLS = 1
+const MAX_CALLS = 8
 const DEFAULT_TTL_MS = 10 * 60_000
 const MAX_ACTIVE_GRANTS = 64
 
@@ -132,7 +132,9 @@ export async function startDynamicMcpGateway(
         {
           name: 'wiswork_call',
           description: 'Execute one authorized WisWork document tool call.',
-          annotations: { readOnlyHint: false, destructiveHint: true },
+          // This carrier cannot mutate a document: mutation-capable tools only return a
+          // proposal. A separate AgentLoop owner confirmation may later commit a transaction.
+          annotations: { readOnlyHint: true, destructiveHint: false },
           inputSchema: {
             type: 'object',
             additionalProperties: false,

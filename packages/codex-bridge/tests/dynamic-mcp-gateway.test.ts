@@ -48,6 +48,10 @@ describe('fixed dynamic MCP gateway', () => {
       const listed = await rpc(gateway.url, gateway.secret, 1, 'tools/list', {})
       const body = await listed.json()
       expect(body.result.tools.map((tool: { name: string }) => tool.name)).toEqual(['wiswork_call'])
+      expect(body.result.tools[0].annotations).toEqual({
+        readOnlyHint: true,
+        destructiveHint: false,
+      })
       expect(JSON.stringify(body)).not.toMatch(/doc-|session_|owner/i)
       const denied = await rpc(gateway.url, gateway.secret, 2, 'tools/call', {
         name: 'wiswork_call',
@@ -112,7 +116,7 @@ describe('fixed dynamic MCP gateway', () => {
     }
   })
 
-  it('keeps concurrent document grants isolated and allows only one carrier call per turn', async () => {
+  it('keeps concurrent document grants isolated and rejects replayed call IDs', async () => {
     const gateway = await startDynamicMcpGateway()
     const calls = [
       vi.fn(async (_call: unknown) => ({ output: 'a', summary: 'a' })),
@@ -161,7 +165,7 @@ describe('fixed dynamic MCP gateway', () => {
         name: 'wiswork_call',
         arguments: {
           capability: grants[0]!.capability,
-          callId: 'cross',
+          callId: 'a',
           toolName: 'read_blocks',
           input: {},
         },
@@ -170,6 +174,43 @@ describe('fixed dynamic MCP gateway', () => {
       expect(calls[1]).toHaveBeenCalledTimes(1)
     } finally {
       closes.forEach((close) => close())
+      await gateway.close()
+    }
+  })
+
+  it('allows eight read-to-proposal calls per turn and denies the ninth', async () => {
+    const execute = vi.fn(async (_call: unknown) => ({ output: 'ok', summary: 'ok' }))
+    const gateway = await startDynamicMcpGateway()
+    const close = gateway.register({
+      ownerId: 'owner',
+      documentId: 'doc-budget',
+      generation: 1,
+      session: {
+        credentials: { sessionId: 'session', secret: 'secret' },
+        callTool: (_credentials: unknown, call: unknown) => execute(call),
+      } as any,
+    })
+    try {
+      const grant = gateway.beginTurn({
+        documentId: 'doc-budget',
+        generation: 1,
+        threadId: 'thread',
+      })
+      for (let index = 0; index < 9; index += 1) {
+        const response = await rpc(gateway.url, gateway.secret, index + 1, 'tools/call', {
+          name: 'wiswork_call',
+          arguments: {
+            capability: grant.capability,
+            callId: `call-${index}`,
+            toolName: 'read_blocks',
+            input: {},
+          },
+        })
+        expect(response.status).toBe(index < 8 ? 200 : 403)
+      }
+      expect(execute).toHaveBeenCalledTimes(8)
+    } finally {
+      close()
       await gateway.close()
     }
   })

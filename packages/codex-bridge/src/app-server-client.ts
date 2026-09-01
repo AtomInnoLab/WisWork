@@ -56,6 +56,7 @@ export interface CodexAppServerClientOptions {
   readonly rpc: JsonRpcClient
   readonly cwd: string
   readonly developerInstructions: string
+  readonly diagnostics?: (code: string) => void
 }
 
 export class CodexAppServerError extends Error {
@@ -107,6 +108,7 @@ export class CodexAppServerClient {
   readonly #cwd: string
   readonly #developerInstructions: string
   readonly #notificationSubscribers = new Set<(notification: CodexAppServerNotification) => void>()
+  readonly #diagnostics?: (code: string) => void
   readonly #unsubscribeRpc: () => void
   #state: 'new' | 'initializing' | 'ready' | 'closed' | 'failed' = 'new'
   #failureCode: string | undefined
@@ -124,6 +126,7 @@ export class CodexAppServerClient {
     this.#rpc = options.rpc
     this.#cwd = options.cwd
     this.#developerInstructions = options.developerInstructions
+    this.#diagnostics = options.diagnostics
     this.#unsubscribeRpc = this.#rpc.subscribe((notification) =>
       this.#handleNotification(notification),
     )
@@ -264,14 +267,95 @@ export class CodexAppServerClient {
 
   #handleNotification(notification: JsonRpcNotification): void {
     if (!KNOWN_NOTIFICATIONS.has(notification.method)) {
+      this.#diagnostic('app_server_notification_unknown')
       void this.shutdown('app_server_protocol_error')
       return
     }
+    this.#diagnostic(`app_server_${notification.method.replaceAll('/', '_')}`)
+    if (notification.method === 'warning') {
+      const message = isRecord(notification.params) ? notification.params.message : undefined
+      if (typeof message === 'string') {
+        const normalized = message.toLowerCase()
+        if (normalized.includes('code mode')) this.#diagnostic('app_server_warning_code_mode')
+        if (normalized.includes('host')) this.#diagnostic('app_server_warning_host')
+        if (normalized.includes('sandbox')) this.#diagnostic('app_server_warning_sandbox')
+        if (normalized.includes('install')) this.#diagnostic('app_server_warning_install')
+        if (normalized.includes('bwrap')) this.#diagnostic('app_server_warning_bwrap')
+      }
+    }
+    if (notification.method === 'item/started' || notification.method === 'item/completed') {
+      const item = isRecord(notification.params) ? notification.params.item : undefined
+      const itemType = isRecord(item) ? item.type : undefined
+      if (typeof itemType === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(itemType)) {
+        this.#diagnostic(`app_server_item_type_${itemType}`)
+      }
+      const itemStatus = isRecord(item) ? item.status : undefined
+      if (typeof itemStatus === 'string' && /^[a-z][a-zA-Z]{0,31}$/.test(itemStatus)) {
+        this.#diagnostic(`app_server_item_status_${itemStatus}`)
+      }
+      if (isRecord(item) && item.server === 'wiswork')
+        this.#diagnostic('app_server_mcp_server_exact')
+      if (isRecord(item) && (item.tool === 'wiswork_call' || item.name === 'wiswork_call'))
+        this.#diagnostic('app_server_mcp_tool_exact')
+      if (
+        isRecord(item) &&
+        [item.callId, item.call_id, item.id].some(
+          (value) => typeof value === 'string' && value.length > 0 && value.length <= 256,
+        )
+      )
+        this.#diagnostic('app_server_mcp_call_id_present')
+      if (isRecord(item) && item.error !== undefined && item.error !== null)
+        this.#diagnostic('app_server_mcp_error_present')
+      const errorCode =
+        isRecord(item) && isRecord(item.error)
+          ? item.error.code
+          : isRecord(item) && typeof item.error === 'string'
+            ? item.error
+            : undefined
+      if (typeof errorCode === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(errorCode))
+        this.#diagnostic(`app_server_mcp_error_${errorCode}`)
+      if (
+        typeof errorCode === 'number' &&
+        Number.isSafeInteger(errorCode) &&
+        errorCode >= -32_768 &&
+        errorCode <= 32_767
+      )
+        this.#diagnostic(`app_server_mcp_error_code_${errorCode}`)
+      const errorMessage =
+        isRecord(item) && isRecord(item.error) && typeof item.error.message === 'string'
+          ? item.error.message.toLowerCase()
+          : isRecord(item) && typeof item.error === 'string'
+            ? item.error.toLowerCase()
+            : ''
+      for (const [needle, code] of [
+        ['method not found', 'method_not_found'],
+        ['invalid params', 'invalid_params'],
+        ['transport', 'transport'],
+        ['timed out', 'timeout'],
+        ['cancelled', 'cancelled'],
+        ['connection closed', 'connection_closed'],
+        ['tool error', 'tool_error'],
+        ['code mode', 'code_mode'],
+      ] as const) {
+        if (errorMessage.includes(needle)) this.#diagnostic(`app_server_mcp_error_${code}`)
+      }
+    }
+    if (notification.method === 'thread/status/changed') {
+      const status = isRecord(notification.params) ? notification.params.status : undefined
+      const statusType = isRecord(status) ? status.type : undefined
+      if (typeof statusType === 'string' && /^[a-z][a-zA-Z]{0,31}$/.test(statusType)) {
+        this.#diagnostic(`app_server_thread_status_${statusType}`)
+      }
+    }
     if (!FORWARDED_NOTIFICATIONS.has(notification.method)) {
-      if (!isRecord(notification.params)) void this.shutdown('app_server_protocol_error')
+      if (!isRecord(notification.params)) {
+        this.#diagnostic('app_server_notification_invalid')
+        void this.shutdown('app_server_protocol_error')
+      }
       return
     }
     if (!this.#isValidImportantNotification(notification)) {
+      this.#diagnostic('app_server_notification_invalid')
       void this.shutdown('app_server_protocol_error')
       return
     }
@@ -282,6 +366,12 @@ export class CodexAppServerClient {
         // Notification consumers cannot break transport or other consumers.
       }
     }
+  }
+
+  #diagnostic(code: string): void {
+    try {
+      this.#diagnostics?.(code)
+    } catch {}
   }
 
   #isValidImportantNotification(notification: JsonRpcNotification): boolean {

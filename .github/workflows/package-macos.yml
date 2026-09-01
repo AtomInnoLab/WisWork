@@ -65,6 +65,11 @@ jobs:
       - name: Verify pinned macOS Codex app-server component
         run: npx tsx tools/install-enhanced-component.ts --cache "$RUNNER_TEMP/wiswork-codex-component"
 
+      - name: Exercise pinned Codex model-driven read gate
+        run: |
+          WISWORK_CODEX_INTEGRATION_EXECUTABLE="$RUNNER_TEMP/wiswork-codex-component/0.147.0/darwin-arm64/bin/codex-app-server" \
+            npx vitest run apps/shell/tests/codex-engine.integration.test.ts -t 'drives one bounded'
+
       - name: Read back pinned macOS component signing identity
         run: |
           set -euo pipefail

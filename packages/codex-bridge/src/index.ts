@@ -924,8 +924,13 @@ function convertResponsesRequest(
       if (used.has(id)) fail('duplicate_call_id')
       used.add(id)
       usedCallIds.push(id)
-      if (!hasOnlyKeys(rawItem, ['type', 'call_id', 'name', 'input']))
+      if (!hasOnlyKeys(rawItem, ['type', 'id', 'call_id', 'name', 'input', 'status']))
         fail('unsupported_input_item')
+      if (rawItem.id !== undefined) {
+        const itemId = requireString(rawItem.id, 'invalid_tool_call')
+        if (itemId === '' || utf8Length(itemId) > limits.maxStringLength) fail('invalid_tool_call')
+      }
+      if (rawItem.status !== undefined && rawItem.status !== 'completed') fail('invalid_tool_call')
       if (rawItem.name !== 'exec' || !exposesExec) fail('unadvertised_tool_call')
       const code = requireString(rawItem.input, 'invalid_custom_tool_input')
       parseSafeExecCode(code, allowedExecMethods, limits)
@@ -935,13 +940,41 @@ function convertResponsesRequest(
       continue
     }
     if (isResult) {
-      if (!hasOnlyKeys(rawItem, ['type', 'call_id', 'output'])) fail('unsupported_input_item')
+      if (!hasOnlyKeys(rawItem, ['type', 'id', 'call_id', 'output', 'status']))
+        fail('unsupported_input_item')
+      if (rawItem.id !== undefined) {
+        if (rawItem.id === null) fail('tool_result_id_null')
+        const itemId = requireString(rawItem.id, 'invalid_tool_result')
+        if (itemId === '' || utf8Length(itemId) > limits.maxStringLength)
+          fail('tool_result_id_invalid')
+      }
+      if (rawItem.status !== undefined && rawItem.status !== 'completed')
+        fail(rawItem.status === null ? 'tool_result_status_null' : 'tool_result_status_invalid')
       if (!pending || resultIndex >= pending.length) fail('invalid_tool_result_batch')
       const id = requireString(rawItem.call_id, 'invalid_tool_result')
       if (id === '') fail('invalid_tool_result')
       const expected = pending[resultIndex]!
       if (id !== expected.id) fail('invalid_tool_result_batch')
-      const output = requireString(rawItem.output, 'invalid_tool_result')
+      if (isRecord(rawItem.output)) fail('tool_result_output_object')
+      let output: string
+      if (Array.isArray(rawItem.output)) {
+        if (rawItem.output.length === 0) fail('invalid_tool_result')
+        contentCount.parts += rawItem.output.length
+        if (contentCount.parts > limits.maxContentParts) fail('request_content_limit_exceeded')
+        output = rawItem.output
+          .map((part) => {
+            if (
+              !isRecord(part) ||
+              !hasOnlyKeys(part, ['type', 'text']) ||
+              part.type !== 'input_text'
+            )
+              fail('invalid_tool_result')
+            return requireString(part.text, 'invalid_tool_result')
+          })
+          .join('\n')
+      } else {
+        output = requireString(rawItem.output, 'invalid_tool_result')
+      }
       append('user', [{ type: 'tool_result', tool_use_id: id, content: output }])
       resultIndex += 1
       continue
