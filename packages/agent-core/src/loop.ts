@@ -18,7 +18,11 @@ import type {
   ToolExecutionOutcome,
   ToolExecutionSuspension,
 } from './types'
-import { isToolExecutionSuspension, mintLoopToolExecutionSuspension } from './types'
+import {
+  isToolExecutionSuspension,
+  isToolExecutionSuspensionOwnedBy,
+  mintLoopToolExecutionSuspension,
+} from './types'
 
 export interface ToolExecutedEvent<TSnapshot> {
   call: AgentToolCall
@@ -321,6 +325,9 @@ export class AgentLoop<TSnapshot = unknown> {
   /** Mint a suspension bound to this loop instance; transports cannot self-authorize one. */
   suspendToolExecution(result: Promise<ToolExecution>): ToolExecutionSuspension {
     return mintLoopToolExecutionSuspension(this, result)
+  }
+  ownsToolExecutionSuspension(value: ToolExecutionOutcome): value is ToolExecutionSuspension {
+    return isToolExecutionSuspensionOwnedBy(this, value)
   }
   /** one terminal-response correction is permitted per run */
   private completionReviewRetried = false

@@ -25,6 +25,7 @@
     "@vitejs/plugin-react": "^5.0.4",
     "@wiswork/agent-core": "*",
     "@wiswork/agent-harness": "*",
+    "@wiswork/agent-runtime": "*",
     "@wiswork/ai-provider": "*",
     "@wiswork/ai-search": "*",
     "@wiswork/auth": "*",

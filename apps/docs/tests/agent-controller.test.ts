@@ -35,6 +35,31 @@ const skill = {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('Docs agent controller', () => {
+  it('selects Enhanced once at activation and never starts the Standard transport', async () => {
+    const transport = manualTransport()
+    let documentId: string | null = null
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => undefined),
+      startTurn: vi.fn(async () => undefined),
+      cancelTurn: vi.fn(async () => undefined),
+      toolResult: vi.fn(async () => undefined),
+      onEvent: vi.fn(() => () => undefined),
+      onToolCall: vi.fn(() => () => undefined),
+    }
+    const controller = createAgentController({ transport, skill }, { host: 'docs', api })
+    controller.activate()
+    await flush()
+    expect(controller.run('enhanced docs')).toBe(true)
+    await flush()
+    expect(api.register).toHaveBeenCalledOnce()
+    expect(api.startTurn).toHaveBeenCalledOnce()
+    expect(transport.callbacks).toHaveLength(0)
+    controller.dispose()
+  })
   it('keeps an untitled session on first save but isolates different documents', () => {
     expect(shouldResetAgentSession(null, '/saved.docx')).toBe(false)
     expect(shouldResetAgentSession('/a.docx', '/b.docx')).toBe(true)

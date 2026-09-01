@@ -166,6 +166,7 @@ import {
 import { registerLatexProtocolScheme } from './latex-protocol-scheme'
 import { ShellCodexRuntime } from './codex-runtime'
 import { registerCodexRuntimeIpc } from './codex-ipc'
+import { registerPcCodexHosts } from './pc-codex-hosts'
 import { createProductionCodexBootstrap } from './codex-engine'
 import { createOfficeCodexProxy } from './office-codex-proxy'
 import { createShellEnhancedPolicyAuthority } from './enhanced-policy-authority'
@@ -316,6 +317,7 @@ registerLatexProtocolScheme(protocol)
 let authRuntime: ReturnType<typeof initializeElectronAuthRuntime> | null = null
 let enhancedModeComponentController: EnhancedModeComponentController | null = null
 let codexRuntime: ShellCodexRuntime | null = null
+let pcCodexHosts: ReturnType<typeof registerPcCodexHosts> | null = null
 let activeAgentRuntime: 'standard' | 'enhanced' = 'standard'
 let officeBridge: OfficeBridge | null = null
 let officeBridgeServer: OfficeBridgeHttpServer | null = null
@@ -1361,6 +1363,7 @@ function createShellWindow(): void {
           : kind === 'markdown'
             ? tm('untitledMarkdown')
             : tm('untitledSheet'),
+    (owner) => void pcCodexHosts?.closeOwner(owner),
   )
   tabManager = manager
 
@@ -1848,6 +1851,7 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.accountLogout, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
     await enhancedModeComponentController?.revoke()
+    await pcCodexHosts?.close()
     await codexRuntime?.logout()
     officeBridge?.setSessionAvailable(false)
     officeRelayActivationFence.lock()
@@ -2656,11 +2660,19 @@ app.whenReady().then(async () => {
     }),
     diagnostics: (code) => console.warn('[enhanced-runtime]', code),
   })
+  pcCodexHosts = registerPcCodexHosts({
+    ipcMain,
+    runtime: codexRuntime,
+    policy: enhancedPolicy,
+    hostForOwner: (owner) => {
+      const id = (owner as { id?: unknown }).id
+      return typeof id === 'number' ? (tabManager?.enhancedHostForWebContents(id) ?? null) : null
+    },
+  })
   registerCodexRuntimeIpc({
     ipcMain,
     runtime: codexRuntime,
-    // Host registrations are installed by each editor adapter; an unregistered sender is unavailable.
-    documentIdForOwner: () => null,
+    documentIdForOwner: (owner) => pcCodexHosts?.documentIdForOwner(owner) ?? null,
   })
   void codexRuntime.initialize().catch(() => undefined)
   const officePolicyAuthority = createShellEnhancedPolicyAuthority(
@@ -3072,6 +3084,7 @@ const beforeQuitBarrier = createBeforeQuitBarrier({
     const cleanupResults = await Promise.allSettled([
       Promise.resolve().then(() => enhancedModeComponentController?.close()),
       Promise.resolve().then(() => codexRuntime?.shutdown()),
+      Promise.resolve().then(() => pcCodexHosts?.close()),
       Promise.resolve().then(() => officeBridgeServer?.stop()),
     ])
     if (cleanupResults.some((result) => result.status === 'rejected')) {

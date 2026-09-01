@@ -28,6 +28,9 @@ export interface AgentHarness<_TSnapshot> {
   suspendToolExecution(
     result: Promise<import('@wiswork/agent-core').ToolExecution>,
   ): import('@wiswork/agent-core').ToolExecutionSuspension
+  ownsToolExecutionSuspension(
+    value: import('@wiswork/agent-core').ToolExecutionOutcome,
+  ): value is import('@wiswork/agent-core').ToolExecutionSuspension
 }
 
 export function createAgentHarness<TSnapshot>(
@@ -194,6 +197,9 @@ export function createAgentHarness<TSnapshot>(
     },
     suspendToolExecution(result) {
       return loop.suspendToolExecution(result)
+    },
+    ownsToolExecutionSuspension(value) {
+      return loop.ownsToolExecutionSuspension(value)
     },
   }
 }

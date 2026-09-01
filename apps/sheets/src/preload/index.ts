@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import { createPcHostCodexApi } from '@wiswork/agent-runtime'
 
 import type { AiChatResponse, AiSettings, AiStreamChunk } from '@wiswork/ai-provider'
 import type { AccountStatus } from '@wiswork/auth'
@@ -440,6 +441,7 @@ const projectApi: ProjectApi = {
   getTimeline: (args) => ipcRenderer.invoke('project:timeline', args),
 }
 contextBridge.exposeInMainWorld('projectApi', projectApi)
+contextBridge.exposeInMainWorld('codexRuntime', createPcHostCodexApi(ipcRenderer))
 
 function parseWorkbookFile(input: unknown): WorkbookFile {
   if (!isRecord(input)) throw new Error('Invalid workbook response.')

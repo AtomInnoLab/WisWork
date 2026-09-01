@@ -11,7 +11,7 @@ export class StandardAgentRuntime implements AgentRuntime {
     const harness = createAgentHarness({
       transport: options.transport,
       skill: options.skill,
-      events: options.events,
+      ...(options.events === undefined ? {} : { events: options.events }),
       ...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
       ...(options.maxHistory === undefined ? {} : { maxHistory: options.maxHistory }),
       ...(options.compaction === undefined ? {} : { compaction: options.compaction }),

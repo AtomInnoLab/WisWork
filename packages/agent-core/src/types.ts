@@ -144,6 +144,14 @@ export function createToolExecutionSuspensionAuthority(): Readonly<{
   })
 }
 
+/** @internal Used by AgentLoop/AgentHarness to prove instance ownership. */
+export function isToolExecutionSuspensionOwnedBy(
+  owner: object,
+  value: ToolExecutionOutcome,
+): value is ToolExecutionSuspension {
+  return typeof value === 'object' && value !== null && suspensionOwners.get(value) === owner
+}
+
 /** Accept only suspension objects created by suspendToolExecution in this Agent Core instance. */
 export function isToolExecutionSuspension(
   value: ToolExecutionOutcome,

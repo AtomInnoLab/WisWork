@@ -5,6 +5,7 @@ import type {
   AgentToolCall,
   ToolExecutedEvent,
 } from '@wiswork/agent-core'
+import type { AgentSkill } from '@wiswork/agent-core'
 import type { AgentHarnessSnapshot } from '@wiswork/agent-harness'
 import type {
   PresentationCompletionFacts,
@@ -39,6 +40,7 @@ export interface EnhancedRuntimeClient {
     readonly host: AgentRuntimeSessionOptions['host']
     readonly documentId: string
     readonly generation: number
+    readonly skill: AgentSkill
   }): EnhancedRuntimeClientSession
   close(): void | Promise<void>
 }
@@ -187,6 +189,7 @@ export class EnhancedAgentRuntime implements AgentRuntime {
         host: options.host,
         documentId: options.document.id,
         generation: options.document.generation,
+        skill: options.skill,
       }),
       options,
     )

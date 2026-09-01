@@ -10,6 +10,7 @@ import type {
   UiTheme,
 } from '../shared/ipc'
 import type { ProjectApi } from '@wiswork/project-store'
+import { createPcHostCodexApi } from '@wiswork/agent-runtime'
 
 const api: DesktopApi = {
   getLanguage: () => ipcRenderer.invoke('app:get-language'),
@@ -145,3 +146,4 @@ const projectApi: ProjectApi = {
 
 contextBridge.exposeInMainWorld('desktop', api)
 contextBridge.exposeInMainWorld('projectApi', projectApi)
+contextBridge.exposeInMainWorld('codexRuntime', createPcHostCodexApi(ipcRenderer))

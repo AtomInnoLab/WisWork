@@ -20,6 +20,7 @@ export interface CodexRuntimeEngine {
     readonly host: EnhancedHost
     readonly generation: number
     readonly session: DocumentToolSession
+    readonly instructions?: string
     readonly onEvent?: (event: CodexRuntimeEngineEvent) => void
   }): () => void
   startTurn(input: {
@@ -180,6 +181,7 @@ export class ShellCodexRuntime {
     readonly host: EnhancedHost
     readonly generation: number
     readonly toolSession?: DocumentToolSession
+    readonly instructions?: string
     readonly onEvent?: (event: CodexRuntimeEngineEvent) => void
   }): { close: () => Promise<void> } {
     if (
@@ -206,6 +208,7 @@ export class ShellCodexRuntime {
           host: input.host,
           generation: input.generation,
           session: input.toolSession,
+          instructions: input.instructions,
           onEvent: input.onEvent,
         })
       : undefined

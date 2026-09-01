@@ -44,6 +44,30 @@ const skill = {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('Sheets agent controller', () => {
+  it('selects Enhanced without dispatching the Standard transport', async () => {
+    const transport = manualTransport()
+    let documentId: string | null = null
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => undefined),
+      startTurn: vi.fn(async () => undefined),
+      cancelTurn: vi.fn(async () => undefined),
+      toolResult: vi.fn(async () => undefined),
+      onEvent: vi.fn(() => () => undefined),
+      onToolCall: vi.fn(() => () => undefined),
+    }
+    const controller = createAgentController({ transport, skill }, { host: 'sheets', api })
+    controller.activate()
+    await flush()
+    expect(controller.run('enhanced sheets')).toBe(true)
+    await flush()
+    expect(api.startTurn).toHaveBeenCalledOnce()
+    expect(transport.callbacks).toHaveLength(0)
+    controller.dispose()
+  })
   it('atomically rejects every side effect from a stale session chat load', () => {
     const coordinator = createSheetsChatLoadCoordinator()
     const effects: string[] = []

@@ -82,6 +82,7 @@ export function createProductionCodexBootstrap(
           session: DocumentToolSession
           unregister: () => void
           onEvent?: (event: CodexRuntimeEngineEvent) => void
+          instructions?: string
           active?: ActiveTurn
         }
       >()
@@ -142,8 +143,9 @@ export function createProductionCodexBootstrap(
             session: DocumentToolSession
             unregister: () => void
             onEvent?: (event: CodexRuntimeEngineEvent) => void
+            instructions?: string
             active?: ActiveTurn
-          } = { session: input.session, unregister, onEvent: input.onEvent }
+          } = { session: input.session, unregister, onEvent: input.onEvent, instructions: input.instructions }
           documents.set(input.documentId, entry)
           return () => {
             if (documents.get(input.documentId) === entry) {
@@ -196,7 +198,7 @@ export function createProductionCodexBootstrap(
           try {
             active.threadId = (
               await client.startThread({
-                developerInstructions: `${DEVELOPER_POLICY}\nFor this turn only, pass capability ${grant.capability} as the capability argument to mcp__wiswork__wiswork_call. Never repeat it in prose.`,
+                developerInstructions: `${DEVELOPER_POLICY}\n${document.instructions ?? ''}\nFor this turn only, pass capability ${grant.capability} as the capability argument to mcp__wiswork__wiswork_call. Never repeat it in prose.`,
               })
             ).thread.id
             if (active.cancelled) return await terminal
