@@ -1,5 +1,18 @@
 import type { AgentToolCall } from '@wiswork/agent-core'
 import type { EnhancedRendererBridge } from '../src/renderer'
+import { writeFileSync } from 'node:fs'
+
+export function writeEnhancedGoldenReport(report: {
+  readonly host: string
+  readonly verification: string
+  readonly rollback: string
+}): void {
+  const path = process.env.WISWORK_ENHANCED_GOLDEN_REPORT
+  if (!path) return
+  const encoded = JSON.stringify(report)
+  if (Buffer.byteLength(encoded, 'utf8') > 512) throw new Error('enhanced_golden_report_too_large')
+  writeFileSync(path, encoded, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+}
 
 export function createHostGoldenBridge(input: {
   readonly documentId: string

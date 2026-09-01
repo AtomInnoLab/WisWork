@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { runEnhancedGolden } from '../../../packages/agent-runtime/src/production-golden'
-import { createHostGoldenBridge } from '../../../packages/agent-runtime/tests/host-golden-bridge'
+import {
+  createHostGoldenBridge,
+  writeEnhancedGoldenReport,
+} from '../../../packages/agent-runtime/tests/host-golden-bridge'
 import { InMemoryWorkbookAdapter } from '../src/domain/in-memory-workbook'
 import type { WorkbookSnapshot } from '../src/domain/workbook.types'
 import { createWorkbookSkill } from '../src/renderer/ai/workbook-skill'
@@ -73,13 +76,10 @@ describe('Sheets production Enhanced golden', () => {
     expect(result.verification).toEqual({ status: 'verified' })
     expect(result.rollback).toEqual({ status: 'restored' })
     expect(adapter.getSnapshot().sheets[0]?.cells.A1?.value).toBe('before')
-    console.log(
-      'ENHANCED_GOLDEN_REPORT',
-      JSON.stringify({
-        host: 'sheets',
-        verification: result.verification.status,
-        rollback: result.rollback.status,
-      }),
-    )
+    writeEnhancedGoldenReport({
+      host: 'sheets',
+      verification: result.verification.status,
+      rollback: result.rollback.status,
+    })
   })
 })

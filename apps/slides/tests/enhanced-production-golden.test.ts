@@ -1,11 +1,30 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { RenderSlide, ShapeRenderNode } from '@wiswork/pptx-render'
 import { runEnhancedGolden } from '../../../packages/agent-runtime/src/production-golden'
-import { createHostGoldenBridge } from '../../../packages/agent-runtime/tests/host-golden-bridge'
+import {
+  createHostGoldenBridge,
+  writeEnhancedGoldenReport,
+} from '../../../packages/agent-runtime/tests/host-golden-bridge'
 import { createSlidesSkill, type DeckAccess } from '../src/renderer/ai/slides-skill'
 import { executePreparedTextFamilyTransaction } from '../src/renderer/ai/presentation-text-transactions'
 
 const revision = (character: string) => `sha256:${character.repeat(64)}`
+type PresentationRequest = Parameters<NonNullable<DeckAccess['executePresentationOperation']>>[0]
+type TextHostApi = Parameters<typeof executePreparedTextFamilyTransaction>[0]
+
+function executeTextFamilyOnly(
+  hostApi: TextHostApi,
+  request: PresentationRequest,
+  signal?: AbortSignal,
+) {
+  if (
+    !('operation' in request) ||
+    (request.operation.kind !== 'set_text' && request.operation.kind !== 'set_speaker_notes')
+  ) {
+    return Promise.reject(new Error('slides_golden_unknown_transaction_family'))
+  }
+  return executePreparedTextFamilyTransaction(hostApi, request, signal)
+}
 
 describe('Slides production Enhanced golden', () => {
   it('runs the production slide transaction and proves receipt/readback/rollback', async () => {
@@ -95,7 +114,7 @@ describe('Slides production Enhanced golden', () => {
     const executePresentationOperation: NonNullable<DeckAccess['executePresentationOperation']> = (
       request,
       signal,
-    ) => executePreparedTextFamilyTransaction(hostApi, request, signal)
+    ) => executeTextFamilyOnly(hostApi, request, signal)
     const skill = createSlidesSkill({
       getSlides: () => [slide()],
       getCurrent: () => 0,
@@ -129,13 +148,19 @@ describe('Slides production Enhanced golden', () => {
       rollback: { status: 'restored' },
     })
     expect(text).toBe('Before')
-    console.log(
-      'ENHANCED_GOLDEN_REPORT',
-      JSON.stringify({
-        host: 'slides',
-        verification: result.verification.status,
-        rollback: result.rollback.status,
-      }),
-    )
+    writeEnhancedGoldenReport({
+      host: 'slides',
+      verification: result.verification.status,
+      rollback: result.rollback.status,
+    })
+  })
+
+  it('fails closed when the golden is given a non-text transaction family', async () => {
+    await expect(
+      executeTextFamilyOnly(
+        {} as TextHostApi,
+        { operations: [] } as unknown as PresentationRequest,
+      ),
+    ).rejects.toThrow('slides_golden_unknown_transaction_family')
   })
 })

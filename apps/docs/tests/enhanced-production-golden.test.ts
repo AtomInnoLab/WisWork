@@ -2,7 +2,10 @@
 import { Editor } from '@tiptap/core'
 import { afterEach, describe, expect, it } from 'vitest'
 import { runEnhancedGolden } from '../../../packages/agent-runtime/src/production-golden'
-import { createHostGoldenBridge } from '../../../packages/agent-runtime/tests/host-golden-bridge'
+import {
+  createHostGoldenBridge,
+  writeEnhancedGoldenReport,
+} from '../../../packages/agent-runtime/tests/host-golden-bridge'
 import { createDocsSkill } from '../src/renderer/ai/docs-skill'
 import { editorExtensions } from '../src/renderer/editor/extensions'
 
@@ -55,13 +58,10 @@ describe('Docs production Enhanced golden', () => {
     expect(result.verification).toEqual({ status: 'verified' })
     expect(result.rollback).toEqual({ status: 'restored' })
     expect(editor.getText()).toBe('before')
-    console.log(
-      'ENHANCED_GOLDEN_REPORT',
-      JSON.stringify({
-        host: 'docs',
-        verification: result.verification.status,
-        rollback: result.rollback.status,
-      }),
-    )
+    writeEnhancedGoldenReport({
+      host: 'docs',
+      verification: result.verification.status,
+      rollback: result.rollback.status,
+    })
   })
 })

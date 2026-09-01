@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { ToolExecution } from '@wiswork/agent-core'
 import { runEnhancedGolden } from '../../../packages/agent-runtime/src/production-golden'
-import { createHostGoldenBridge } from '../../../packages/agent-runtime/tests/host-golden-bridge'
+import {
+  createHostGoldenBridge,
+  writeEnhancedGoldenReport,
+} from '../../../packages/agent-runtime/tests/host-golden-bridge'
 import { createLatexSkill } from '../src/renderer/ai/latex-skill'
 import { ProposalWorkflow, validateUndoProposal } from '../src/renderer/ai/proposal-workflow'
 import { loadProposalForReview } from '../src/renderer/ai/proposal-review'
@@ -108,13 +111,10 @@ describe('LaTeX production Enhanced golden', () => {
     expect(result.verification).toEqual({ status: 'verified' })
     expect(result.rollback).toEqual({ status: 'restored' })
     expect(source).toBe('before')
-    console.log(
-      'ENHANCED_GOLDEN_REPORT',
-      JSON.stringify({
-        host: 'latex',
-        verification: result.verification.status,
-        rollback: result.rollback.status,
-      }),
-    )
+    writeEnhancedGoldenReport({
+      host: 'latex',
+      verification: result.verification.status,
+      rollback: result.rollback.status,
+    })
   })
 })

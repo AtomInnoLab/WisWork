@@ -5,6 +5,7 @@ import { createBrowserPowerPointElevatedAdapter } from '../src/skills/powerpoint
 import { createElevatedOfficeSkill } from '../src/skills/shared/elevated-office-program.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import { runEnhancedGolden } from '../../../packages/agent-runtime/src/production-golden.js'
+import { writeEnhancedGoldenReport } from '../../../packages/agent-runtime/tests/host-golden-bridge.js'
 
 const authority = () => ({
   activeMode: 'enhanced' as const,
@@ -53,14 +54,11 @@ async function runBrowserGolden(
       return { status: 'restored' as const }
     },
   })
-  console.log(
-    'ENHANCED_GOLDEN_REPORT',
-    JSON.stringify({
-      host: `office-${host}`,
-      verification: (result.verification as { verified: boolean }).verified ? 'verified' : 'failed',
-      rollback: result.rollback.status,
-    }),
-  )
+  writeEnhancedGoldenReport({
+    host: `office-${host}`,
+    verification: (result.verification as { verified: boolean }).verified ? 'verified' : 'failed',
+    rollback: result.rollback.status,
+  })
   return result
 }
 
