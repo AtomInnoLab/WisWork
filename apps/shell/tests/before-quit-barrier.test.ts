@@ -53,4 +53,29 @@ describe('before-quit cleanup barrier', () => {
     expect(quit).toHaveBeenCalledOnce()
     vi.useRealTimers()
   })
+
+  it.each(['throw', 'reject'] as const)('allows retry after cleanup %s', async (failure) => {
+    const quit = vi.fn()
+    const diagnostics = vi.fn()
+    let attempts = 0
+    const handle = createBeforeQuitBarrier({
+      cleanup: () => {
+        attempts += 1
+        if (attempts === 1) {
+          if (failure === 'throw') throw new Error('private')
+          return Promise.reject(new Error('private'))
+        }
+        return Promise.resolve()
+      },
+      quit,
+      diagnostics,
+    })
+    const event = { preventDefault: vi.fn() }
+    handle(event)
+    await vi.waitFor(() => expect(diagnostics).toHaveBeenCalledWith('enhanced_quit_cleanup_failed'))
+    handle(event)
+    await vi.waitFor(() => expect(quit).toHaveBeenCalledOnce())
+    expect(attempts).toBe(2)
+    expect(event.preventDefault).toHaveBeenCalledTimes(2)
+  })
 })

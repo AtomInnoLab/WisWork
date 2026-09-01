@@ -1,10 +1,26 @@
 import { isAbsolute } from 'node:path'
 import type { MessagesRequest } from '@wiswork/codex-bridge'
 import { describe, expect, it, vi } from 'vitest'
-import { createProductionCodexBootstrap } from '../src/main/codex-engine'
+import {
+  createProductionCodexBootstrap,
+  startBestEffortCodexInterrupt,
+} from '../src/main/codex-engine'
 
 const executable = process.env.WISWORK_CODEX_INTEGRATION_EXECUTABLE
 const realIt = executable && isAbsolute(executable) ? it : it.skip
+
+it('detaches an unresponsive interrupt and bounds its lifetime', async () => {
+  vi.useFakeTimers()
+  const interrupt = vi.fn(() => new Promise<never>(() => undefined))
+  startBestEffortCodexInterrupt(interrupt)
+  await Promise.resolve()
+  expect(interrupt).toHaveBeenCalledOnce()
+  await vi.advanceTimersByTimeAsync(1_999)
+  expect(vi.getTimerCount()).toBe(1)
+  await vi.advanceTimersByTimeAsync(1)
+  expect(vi.getTimerCount()).toBe(0)
+  vi.useRealTimers()
+})
 
 function finalResponse(): Response {
   return new Response(

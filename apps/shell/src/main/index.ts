@@ -3011,11 +3011,14 @@ const beforeQuitBarrier = createBeforeQuitBarrier({
     officeBridge?.shutdown()
     officeRelayActivationFence.lock()
     shutdownOfficeRelaySession(officeRelayLifecycle, officeRelay)
-    await Promise.allSettled([
-      enhancedModeComponentController?.close() ?? Promise.resolve(),
-      codexRuntime?.shutdown() ?? Promise.resolve(),
-      officeBridgeServer?.stop() ?? Promise.resolve(),
+    const cleanupResults = await Promise.allSettled([
+      Promise.resolve().then(() => enhancedModeComponentController?.close()),
+      Promise.resolve().then(() => codexRuntime?.shutdown()),
+      Promise.resolve().then(() => officeBridgeServer?.stop()),
     ])
+    if (cleanupResults.some((result) => result.status === 'rejected')) {
+      throw new Error('quit_cleanup_failed')
+    }
   },
   quit: () => app.quit(),
   diagnostics: (code) => console.warn('[enhanced-mode]', code),

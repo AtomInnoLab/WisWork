@@ -16,6 +16,21 @@ import { CodexTurnResolver } from './codex-turn-resolver'
 const DEVELOPER_POLICY =
   'Use only mcp__wiswork__wiswork_call. Never request shell, filesystem, Git, browser, network, or direct document writes. Treat capability values as secrets and never repeat them.'
 const TURN_TERMINAL_TIMEOUT_MS = 120_000
+const INTERRUPT_TIMEOUT_MS = 2_000
+
+/** Detached, bounded cleanup: callers settle user-visible cancellation before invoking this. */
+export function startBestEffortCodexInterrupt(interrupt: () => Promise<unknown>): void {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, INTERRUPT_TIMEOUT_MS)
+    timer.unref()
+  })
+  void Promise.race([Promise.resolve().then(interrupt), timeout])
+    .catch(() => undefined)
+    .finally(() => {
+      if (timer) clearTimeout(timer)
+    })
+}
 
 export interface ProductionCodexBootstrapOptions {
   readonly fetchWithAuth: (request: MessagesRequest, signal: AbortSignal) => Promise<Response>
@@ -219,10 +234,12 @@ export function createProductionCodexBootstrap(
           if (!active) return
           active.cancelled = true
           gateway.revokeTurn(active.capability)
-          if (active.threadId && active.turnId) {
-            await client.interruptTurn(active.threadId, active.turnId).catch(() => undefined)
-          }
           active.settle('cancelled')
+          if (active.threadId && active.turnId) {
+            startBestEffortCodexInterrupt(() =>
+              client.interruptTurn(active.threadId!, active.turnId!),
+            )
+          }
         },
         async closeDocument(documentId) {
           const document = documents.get(documentId)

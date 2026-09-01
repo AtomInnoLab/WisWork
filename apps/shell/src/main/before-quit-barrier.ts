@@ -29,6 +29,7 @@ export function createBeforeQuitBarrier(options: {
       cleanup = options.cleanup()
     } catch {
       clearTimeout(deadlineTimer)
+      started = false
       options.diagnostics?.('enhanced_quit_cleanup_failed')
       return
     }
@@ -43,6 +44,7 @@ export function createBeforeQuitBarrier(options: {
       })
       .catch(() => {
         clearTimeout(deadlineTimer)
+        started = false
         options.diagnostics?.('enhanced_quit_cleanup_failed')
       })
   }
