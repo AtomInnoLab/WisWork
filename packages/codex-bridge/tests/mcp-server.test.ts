@@ -1,21 +1,40 @@
 import { request } from 'node:http'
-import type { AgentSkill } from '@wiswork/agent-core'
 import { describe, expect, it, vi } from 'vitest'
 import { startDocumentMcpServer } from '../src/mcp-server.js'
+import { createDocumentToolManifest } from '../src/tool-router.js'
 
-const skill: AgentSkill = {
-  id: 'docs',
-  systemPrompt: '',
-  tools: [{ name: 'read_document', description: 'Read.', inputSchema: { type: 'object' } }],
-  executeTool: async () => ({ output: 'document', summary: 'read' }),
+const rollout = {
+  globalEnabled: true,
+  rawOfficeEnabled: false,
+  hosts: {
+    latex: true,
+    slides: true,
+    docs: true,
+    sheets: true,
+    'office-word': true,
+    'office-excel': true,
+    'office-powerpoint': true,
+  },
 }
+const tool = { name: 'get_document_context', description: 'Read.', inputSchema: { type: 'object' } }
 const registration = () => ({
   identity: { ownerId: 'o', host: 'docs' as const, documentId: 'd', sessionId: 's', generation: 1 },
-  skill,
-  policy: { read_document: 'read' as const },
+  manifest: createDocumentToolManifest({
+    authorization: {
+      host: 'docs',
+      policy: rollout,
+      declaration: { capabilities: ['semantic-read'] },
+    },
+    tools: [tool],
+    policy: { get_document_context: 'read' },
+  }),
   isOpen: () => true,
+  executeRead: async () => ({ output: 'document', summary: 'read' }),
+  prepareMutation: async () => {
+    throw new Error('unreachable')
+  },
 })
-function post(url: string, secret: string, value: unknown) {
+function post(url: string, secret: string, value: unknown, authorization = `Bearer ${secret}`) {
   const data = JSON.stringify(value)
   return new Promise<{ status: number; json: any }>((resolve, reject) => {
     const req = request(
@@ -23,7 +42,7 @@ function post(url: string, secret: string, value: unknown) {
       {
         method: 'POST',
         headers: {
-          authorization: `Bearer ${secret}`,
+          authorization,
           'content-type': 'application/json',
           'content-length': String(Buffer.byteLength(data)),
         },
@@ -31,20 +50,36 @@ function post(url: string, secret: string, value: unknown) {
       (response) => {
         const chunks: Buffer[] = []
         response.on('data', (c) => chunks.push(Buffer.from(c)))
-        response.on('end', () =>
-          resolve({
-            status: response.statusCode ?? 0,
-            json: JSON.parse(Buffer.concat(chunks).toString()),
-          }),
-        )
+        response.on('end', () => {
+          const text = Buffer.concat(chunks).toString()
+          resolve({ status: response.statusCode ?? 0, json: text ? JSON.parse(text) : undefined })
+        })
       },
     )
     req.on('error', reject)
     req.end(data)
   })
 }
+async function initialize(url: string, secret: string) {
+  const result = await post(url, secret, {
+    jsonrpc: '2.0',
+    id: 'init',
+    method: 'initialize',
+    params: {
+      protocolVersion: '2025-06-18',
+      capabilities: { elicitation: { form: {}, url: {} } },
+      clientInfo: { name: 'codex-mcp-client', title: 'Codex', version: '0.147.0' },
+    },
+  })
+  expect(result.json.result.protocolVersion).toBe('2025-06-18')
+  expect(
+    (await post(url, secret, { jsonrpc: '2.0', method: 'notifications/initialized', params: {} }))
+      .status,
+  ).toBe(202)
+}
+
 describe('document MCP server', () => {
-  it('isolates sessions, lists bounded tools and calls reads', async () => {
+  it('authenticates first, enforces exact state order and isolates sessions', async () => {
     const server = await startDocumentMcpServer()
     const a = server.register(registration())
     const b = server.register(registration())
@@ -53,29 +88,75 @@ describe('document MCP server', () => {
         (await post(a.url, b.secret, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }))
           .status,
       ).toBe(401)
+      expect(
+        (await post(a.url, a.secret, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }))
+          .json.error.message,
+      ).toBe('not_initialized')
+      await initialize(a.url, a.secret)
+      expect(
+        (
+          await post(a.url, a.secret, {
+            jsonrpc: '2.0',
+            id: 'again',
+            method: 'initialize',
+            params: {},
+          })
+        ).json.error,
+      ).toBeDefined()
+      expect(
+        (
+          await post(a.url, a.secret, {
+            jsonrpc: '2.0',
+            method: 'notifications/initialized',
+            params: {},
+          })
+        ).json.error,
+      ).toBeDefined()
       const listed = await post(a.url, a.secret, {
         jsonrpc: '2.0',
-        id: 1,
+        id: 2,
         method: 'tools/list',
         params: {},
       })
-      expect(listed.json.result.tools[0].name).toBe('read_document')
+      expect(listed.json.result.tools[0].name).toBe(tool.name)
       const called = await post(a.url, a.secret, {
         jsonrpc: '2.0',
-        id: 2,
+        id: 3,
         method: 'tools/call',
-        params: { name: 'read_document', arguments: {} },
+        params: { name: tool.name, arguments: {} },
       })
       expect(called.json.result.content[0].text).toBe('document')
+      expect(
+        (
+          await post(a.url, a.secret, {
+            jsonrpc: '2.0',
+            id: 3,
+            method: 'tools/call',
+            params: { name: tool.name, arguments: {} },
+          })
+        ).json.error.message,
+      ).toBe('request_id_consumed')
     } finally {
       await server.close()
     }
   })
-  it('rejects unknown methods and redacts diagnostics', async () => {
+
+  it('requires canonical bearer and redacts unknown method input', async () => {
     const diagnostics = vi.fn()
     const server = await startDocumentMcpServer({ diagnostics })
     const session = server.register(registration())
     try {
+      expect(
+        (
+          await post(
+            session.url,
+            session.secret,
+            { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+            `Bearer ${session.secret}=`,
+          )
+        ).status,
+      ).toBe(401)
+      await initialize(session.url, session.secret)
       const result = await post(session.url, session.secret, {
         jsonrpc: '2.0',
         id: 'x',
@@ -84,6 +165,40 @@ describe('document MCP server', () => {
       })
       expect(result.json.error.message).toBe('method_not_found')
       expect(JSON.stringify(result)).not.toContain('sensitive')
+    } finally {
+      await server.close()
+      await server.close()
+    }
+  })
+
+  it('closes instead of evicting consumed RPC ids at the total-call bound', async () => {
+    const server = await startDocumentMcpServer({ maxRpcCalls: 2 })
+    const session = server.register(registration())
+    try {
+      await initialize(session.url, session.secret)
+      await post(session.url, session.secret, {
+        jsonrpc: '2.0',
+        id: 'last',
+        method: 'tools/list',
+        params: {},
+      })
+      const limited = await post(session.url, session.secret, {
+        jsonrpc: '2.0',
+        id: 'over',
+        method: 'tools/list',
+        params: {},
+      })
+      expect(limited.json.error.message).toBe('session_call_limit')
+      expect(
+        (
+          await post(session.url, session.secret, {
+            jsonrpc: '2.0',
+            id: 'init',
+            method: 'initialize',
+            params: {},
+          })
+        ).status,
+      ).toBe(401)
     } finally {
       await server.close()
     }

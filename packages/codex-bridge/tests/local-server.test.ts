@@ -63,6 +63,7 @@ describe('local responses bridge', () => {
       expect(fetchWithAuth).not.toHaveBeenCalled()
       expect(prepareTurn).not.toHaveBeenCalled()
       expect(result.body).not.toContain('A'.repeat(10))
+      expect((await post(new URL(bridge.responsesUrl), `${bridge.secret}=`, '{}')).status).toBe(401)
     } finally {
       await bridge.close()
     }

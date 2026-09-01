@@ -14,7 +14,7 @@ export type {
   ToolExecutionOutcome,
   ToolExecutionSuspension,
 } from './types'
-export { suspendToolExecution } from './types'
+export { isToolExecutionSuspension, suspendToolExecution } from './types'
 export { composeSkills } from './skill'
 export type {
   AgentSkill,

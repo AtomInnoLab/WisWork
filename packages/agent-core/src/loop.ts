@@ -18,6 +18,7 @@ import type {
   ToolExecutionOutcome,
   ToolExecutionSuspension,
 } from './types'
+import { isToolExecutionSuspension } from './types'
 
 export interface ToolExecutedEvent<TSnapshot> {
   call: AgentToolCall
@@ -121,18 +122,6 @@ const FINAL_RESPONSE_CORRECTION_MAX_BYTES = 4_000
 const PRESENTATION_QUESTION_MAX_CHARS = 1_000
 const PRESENTATION_PLAN_MAX_STEPS = 12
 const PRESENTATION_PLAN_STEP_MAX_CHARS = 500
-
-function isToolExecutionSuspension(
-  outcome: ToolExecutionOutcome,
-): outcome is ToolExecutionSuspension {
-  const candidate = outcome as Partial<ToolExecutionSuspension>
-  return (
-    typeof outcome === 'object' &&
-    outcome !== null &&
-    candidate.kind === 'tool-execution-suspension' &&
-    candidate.result instanceof Promise
-  )
-}
 
 function isFinalToolExecution(value: unknown): value is ToolExecution {
   if (typeof value !== 'object' || value === null) return false

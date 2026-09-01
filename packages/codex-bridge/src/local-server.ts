@@ -41,14 +41,18 @@ function downward(value: number | undefined, maximum: number, code: string): num
 }
 
 function authorized(header: string | undefined, expected: Buffer): boolean {
-  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false
+  if (typeof header !== 'string' || !/^Bearer [A-Za-z0-9_-]{43}$/.test(header)) return false
   let candidate: Buffer
   try {
     candidate = Buffer.from(header.slice(7), 'base64url')
   } catch {
     return false
   }
-  return candidate.length === expected.length && timingSafeEqual(candidate, expected)
+  return (
+    candidate.length === expected.length &&
+    candidate.toString('base64url') === header.slice(7) &&
+    timingSafeEqual(candidate, expected)
+  )
 }
 
 function sendError(response: ServerResponse, status: number, code: string): void {
@@ -215,6 +219,10 @@ export async function startResponsesBridge(
     controllers.add(controller)
     const abort = (): void => controller.abort()
     request.once('aborted', abort)
+    response.setTimeout(maxStreamIdleMs, () => {
+      abort()
+      response.destroy()
+    })
     response.once('close', () => {
       if (!response.writableEnded) abort()
     })
@@ -342,6 +350,7 @@ export async function startResponsesBridge(
   server.maxRequestsPerSocket = 100
   server.on('connection', (socket) => {
     sockets.add(socket)
+    socket.setTimeout(MAX_IDLE_MS, () => socket.destroy())
     socket.once('close', () => sockets.delete(socket))
   })
   await new Promise<void>((resolve, reject) => {

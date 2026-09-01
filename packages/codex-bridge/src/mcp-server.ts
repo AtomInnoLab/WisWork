@@ -11,6 +11,7 @@ import {
 
 const HOST = '127.0.0.1'
 const MAX_BODY = 1_000_000
+const MAX_RPC_CALLS = 1_024
 const PROTOCOL = '2025-06-18'
 type RpcId = string | number
 
@@ -27,6 +28,7 @@ export interface DocumentMcpServer {
 }
 export interface DocumentMcpServerOptions {
   readonly maxBodyBytes?: number
+  readonly maxRpcCalls?: number
   readonly diagnostics?: (code: string) => void
 }
 
@@ -84,9 +86,16 @@ export async function startDocumentMcpServer(
   options: DocumentMcpServerOptions = {},
 ): Promise<DocumentMcpServer> {
   const maxBodyBytes = options.maxBodyBytes ?? MAX_BODY
+  const maxRpcCalls = options.maxRpcCalls ?? MAX_RPC_CALLS
   if (!Number.isSafeInteger(maxBodyBytes) || maxBodyBytes <= 0 || maxBodyBytes > MAX_BODY)
     throw new TypeError('invalid_mcp_body_limit')
-  const sessions = new Map<string, DocumentToolSession>()
+  if (!Number.isSafeInteger(maxRpcCalls) || maxRpcCalls <= 0 || maxRpcCalls > MAX_RPC_CALLS)
+    throw new TypeError('invalid_mcp_call_limit')
+  const sessions = new Map<
+    string,
+    { session: DocumentToolSession; state: 'new' | 'initialized' | 'ready'; ids: Set<string> }
+  >()
+  const sockets = new Set<import('node:net').Socket>()
   let closed = false
   const diagnostic = (code: string): void => {
     try {
@@ -104,14 +113,15 @@ export async function startDocumentMcpServer(
       }
       const match = request.url?.match(/^\/mcp\/([A-Za-z0-9_-]{43})$/)
       const auth = request.headers.authorization
-      const session = match ? sessions.get(match[1]!) : undefined
+      const entry = match ? sessions.get(match[1]!) : undefined
+      const session = entry?.session
       const credentials =
         session && typeof auth === 'string' && auth.startsWith('Bearer ')
           ? { sessionId: match![1]!, secret: auth.slice(7) }
           : undefined
       try {
         if (!session || !credentials) throw new ToolRouterError('tool_unauthorized')
-        session.listTools(credentials)
+        session.authorize(credentials)
       } catch {
         request.resume()
         return send(response, 401, { error: 'unauthorized' })
@@ -143,14 +153,31 @@ export async function startDocumentMcpServer(
         return rpcError(response, null, -32600, 'invalid_request')
       const id = message.id as RpcId | undefined
       const params = (message.params ?? {}) as Record<string, unknown>
+      if (id !== undefined) {
+        const idKey = `${typeof id}:${String(id)}`
+        if (entry!.ids.has(idKey)) return rpcError(response, id, -32600, 'request_id_consumed')
+        if (entry!.ids.size >= maxRpcCalls) {
+          session.close()
+          sessions.delete(session.credentials.sessionId)
+          return rpcError(response, id, -32600, 'session_call_limit')
+        }
+        entry!.ids.add(idKey)
+      }
       if (message.method === 'notifications/initialized') {
-        if (id !== undefined || !only(params, []) || Object.keys(params).length !== 0)
+        if (
+          entry!.state !== 'initialized' ||
+          id !== undefined ||
+          !only(params, []) ||
+          Object.keys(params).length !== 0
+        )
           return rpcError(response, id ?? null, -32600, 'invalid_request')
+        entry!.state = 'ready'
         response.writeHead(202, { 'cache-control': 'no-store', 'content-length': '0' })
         return response.end()
       }
       if (message.method === 'notifications/cancelled') {
         if (
+          entry!.state !== 'ready' ||
           id !== undefined ||
           !only(params, ['requestId', 'reason']) ||
           !validId(params.requestId)
@@ -178,9 +205,11 @@ export async function startDocumentMcpServer(
           !only(clientInfo, ['name', 'title', 'version']) ||
           clientInfo.name !== 'codex-mcp-client' ||
           clientInfo.title !== 'Codex' ||
-          clientInfo.version !== '0.147.0'
+          clientInfo.version !== '0.147.0' ||
+          entry!.state !== 'new'
         )
           return rpcError(response, id, -32602, 'invalid_params')
+        entry!.state = 'initialized'
         return send(response, 200, {
           jsonrpc: '2.0',
           id,
@@ -192,6 +221,7 @@ export async function startDocumentMcpServer(
         })
       }
       if (message.method === 'tools/list') {
+        if (entry!.state !== 'ready') return rpcError(response, id, -32600, 'not_initialized')
         if (!only(params, ['cursor', '_meta']))
           return rpcError(response, id, -32602, 'invalid_params')
         return send(response, 200, {
@@ -201,6 +231,7 @@ export async function startDocumentMcpServer(
         })
       }
       if (message.method === 'tools/call') {
+        if (entry!.state !== 'ready') return rpcError(response, id, -32600, 'not_initialized')
         if (
           !only(params, ['name', 'arguments', '_meta']) ||
           typeof params.name !== 'string' ||
@@ -237,6 +268,15 @@ export async function startDocumentMcpServer(
       else response.end()
     })
   })
+  server.headersTimeout = 10_000
+  server.requestTimeout = 30_000
+  server.keepAliveTimeout = 5_000
+  server.maxRequestsPerSocket = 100
+  server.on('connection', (socket) => {
+    sockets.add(socket)
+    socket.setTimeout(30_000, () => socket.destroy())
+    socket.once('close', () => sockets.delete(socket))
+  })
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
     server.listen(0, HOST, resolve)
@@ -247,7 +287,7 @@ export async function startDocumentMcpServer(
     register(registration: DocumentToolRegistration) {
       if (closed) throw new ToolRouterError('mcp_server_closed')
       const session = createDocumentToolSession(registration)
-      sessions.set(session.credentials.sessionId, session)
+      sessions.set(session.credentials.sessionId, { session, state: 'new', ids: new Set() })
       let ended = false
       return Object.freeze({
         url: `${baseUrl}/mcp/${session.credentials.sessionId}`,
@@ -266,8 +306,9 @@ export async function startDocumentMcpServer(
     async close() {
       if (closed) return
       closed = true
-      for (const session of sessions.values()) session.close()
+      for (const entry of sessions.values()) entry.session.close()
       sessions.clear()
+      for (const socket of sockets) socket.destroy()
       await new Promise<void>((resolve) => server.close(() => resolve()))
     },
   }

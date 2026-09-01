@@ -1,4 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@wiswork/presentation-verification": ["../presentation-verification/src/index.ts"]
+    }
+  },
   "include": ["src", "tests", "vitest.config.ts"]
 }

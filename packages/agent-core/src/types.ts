@@ -96,17 +96,28 @@ export interface ToolExecutionSuspension extends ToolExecution {
 
 export type ToolExecutionOutcome = ToolExecution | ToolExecutionSuspension
 
+const toolExecutionSuspensions = new WeakSet<object>()
+
 /** Create the only supported, bounded shape for a suspended tool execution. */
 export function suspendToolExecution(result: Promise<ToolExecution>): ToolExecutionSuspension {
   // The placeholder ToolExecution fields preserve source compatibility for
   // direct skill consumers. AgentLoop detects `kind` and never publishes this
   // placeholder to model history or execution events.
-  return {
+  const suspension: ToolExecutionSuspension = {
     kind: 'tool-execution-suspension',
     result,
     output: 'tool_execution_suspended',
     summary: 'Awaiting tool execution',
   }
+  toolExecutionSuspensions.add(suspension)
+  return Object.freeze(suspension)
+}
+
+/** Accept only suspension objects created by suspendToolExecution in this Agent Core instance. */
+export function isToolExecutionSuspension(
+  value: ToolExecutionOutcome,
+): value is ToolExecutionSuspension {
+  return typeof value === 'object' && value !== null && toolExecutionSuspensions.has(value)
 }
 
 // ---- run phase (drives the in-progress status line in chat UIs) ----
