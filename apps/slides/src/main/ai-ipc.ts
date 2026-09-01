@@ -27,6 +27,7 @@ import {
   type PresentationElementType,
 } from '@wiswork/presentation-ops'
 import { EMU_PER_PX_96 } from '@wiswork/pptx-render'
+import { PRESENTATION_VERIFICATION_LIMITS } from '@wiswork/presentation-verification'
 import { tm } from './i18n-main'
 import {
   acquirePresentationMutationLease,
@@ -48,6 +49,11 @@ import {
 } from './operations/desktop-host'
 import { PresentationTransactionExecutor } from './operations/executor'
 import { PreparedTargetLedger } from './operations/prepared-target-ledger'
+import {
+  inspectSlidesAcceptanceAuthority,
+  inspectSlidesAcceptanceLease,
+  verifySlidesAcceptanceTextProof,
+} from './operations/acceptance-authority'
 
 // ---- AI settings + streaming proxy (the main process does the networking to avoid renderer CORS; implementation shared via @wiswork/ai-provider) ----
 
@@ -85,6 +91,13 @@ function validateSlidesAiObject(
     throw new AiIpcError('invalid_payload')
   }
   const object = value as Record<string, unknown>
+  if (Object.getPrototypeOf(object) !== Object.prototype) throw new AiIpcError('invalid_payload')
+  for (const key of Reflect.ownKeys(object)) {
+    const descriptor =
+      typeof key === 'string' ? Object.getOwnPropertyDescriptor(object, key) : undefined
+    if (!descriptor?.enumerable || descriptor.get || descriptor.set)
+      throw new AiIpcError('invalid_payload')
+  }
   if (Object.keys(object).some((key) => !allowed.includes(key))) {
     throw new AiIpcError('invalid_payload')
   }
@@ -184,6 +197,202 @@ export function registerSlidesOnlyAiIpc(): void {
     NonNullable<ReturnType<typeof sessions.get>>,
     PreparedTargetLedger
   >()
+
+  ipcMain.handle('slides:acceptance-authority-lease', async (event) => {
+    assertAiIpcSender(event)
+    const session = sessions.get(event.sender.id)!
+    if (
+      sessionHasActivePresentationTransaction(session) ||
+      sessionHasActivePresentationMutation(session) ||
+      sessionHasActivePresentationPersistence(session)
+    )
+      return null
+    const generation = session.mutationGeneration ?? 0
+    const lease = await inspectSlidesAcceptanceLease(session)
+    return (session.mutationGeneration ?? 0) === generation ? lease : null
+  })
+
+  ipcMain.handle('slides:acceptance-authority-inspect', async (event, value: unknown) => {
+    assertAiIpcSender(event)
+    const request = validateSlidesAiObject(
+      value,
+      [
+        'affectedSlides',
+        'referenceSlides',
+        'expectedDocumentToken',
+        'expectedSessionToken',
+        'expectedRevision',
+        'leaseToken',
+        'textChecks',
+        'sourceTargets',
+        'baseRevision',
+        'mutationReceiptIds',
+      ],
+      16_384,
+    )
+    const pages = (input: unknown) => {
+      if (
+        !Array.isArray(input) ||
+        input.length > 50 ||
+        input.some((page) => !Number.isSafeInteger(page) || page < 1 || page > 10_000) ||
+        new Set(input).size !== input.length
+      )
+        throw new AiIpcError('invalid_payload')
+      return input as number[]
+    }
+    const expectedDocumentToken = validateSlidesAiString(request.expectedDocumentToken, 128)
+    const expectedSessionToken = validateSlidesAiString(request.expectedSessionToken, 128)
+    const expectedRevision = validateSlidesAiString(request.expectedRevision, 71)
+    const leaseToken = validateSlidesAiString(request.leaseToken, 128)
+    const textChecks =
+      request.textChecks === undefined
+        ? undefined
+        : (() => {
+            if (!Array.isArray(request.textChecks) || request.textChecks.length > 50)
+              throw new AiIpcError('invalid_payload')
+            return request.textChecks.map((raw) => {
+              const check = validateSlidesAiObject(
+                raw,
+                ['checkId', 'targetToken', 'expectedText'],
+                512,
+              )
+              const checkId = validateSlidesAiString(check.checkId, 128)
+              const targetToken = validateSlidesAiString(check.targetToken, 128)
+              const expectedText = validateSlidesAiString(check.expectedText, 256)
+              return { checkId, targetToken, expectedText }
+            })
+          })()
+    const sourceTargets =
+      request.sourceTargets === undefined
+        ? undefined
+        : (() => {
+            if (!Array.isArray(request.sourceTargets) || request.sourceTargets.length > 50)
+              throw new AiIpcError('invalid_payload')
+            return request.sourceTargets.map((raw) => {
+              const target = validateSlidesAiObject(raw, ['slide', 'sourceId'], 256)
+              if (!Number.isSafeInteger(target.slide) || (target.slide as number) < 1)
+                throw new AiIpcError('invalid_payload')
+              return {
+                slide: target.slide as number,
+                sourceId: validateSlidesAiString(target.sourceId, 128),
+              }
+            })
+          })()
+    const baseRevision =
+      request.baseRevision === undefined
+        ? undefined
+        : validateSlidesAiString(request.baseRevision, 71)
+    const mutationReceiptIds =
+      request.mutationReceiptIds === undefined
+        ? undefined
+        : (() => {
+            if (
+              !Array.isArray(request.mutationReceiptIds) ||
+              request.mutationReceiptIds.length > PRESENTATION_VERIFICATION_LIMITS.maxReceiptIds
+            )
+              throw new AiIpcError('invalid_payload')
+            return request.mutationReceiptIds.map((id) => validateSlidesAiString(id, 128))
+          })()
+    if (baseRevision !== undefined && !/^sha256:[0-9a-f]{64}$/.test(baseRevision))
+      throw new AiIpcError('invalid_payload')
+    if (mutationReceiptIds && new Set(mutationReceiptIds).size !== mutationReceiptIds.length)
+      throw new AiIpcError('invalid_payload')
+    if (!/^sha256:[0-9a-f]{64}$/.test(expectedRevision)) throw new AiIpcError('invalid_payload')
+    const session = sessions.get(event.sender.id)!
+    if (
+      sessionHasActivePresentationTransaction(session) ||
+      sessionHasActivePresentationMutation(session) ||
+      sessionHasActivePresentationPersistence(session)
+    )
+      return null
+    const generation = session.mutationGeneration ?? 0
+    let provedLineage:
+      | { baseRevision: string; resultingRevision: string; mutatedTargets: readonly string[] }
+      | undefined
+    if (baseRevision !== undefined || mutationReceiptIds !== undefined) {
+      if (!baseRevision || !mutationReceiptIds?.length) return null
+      const executor = transactionExecutors.get(session)
+      const chain = mutationReceiptIds.map((id) => executor?.appliedLineage(id))
+      if (
+        chain.some((item) => !item) ||
+        chain[0]!.baseRevision !== baseRevision ||
+        chain.some(
+          (item, index) => index > 0 && chain[index - 1]!.resultingRevision !== item!.baseRevision,
+        )
+      )
+        return null
+      provedLineage = {
+        baseRevision,
+        resultingRevision: chain.at(-1)!.resultingRevision,
+        mutatedTargets: [...new Set(chain.flatMap((item) => [...item!.mutatedTargets]))],
+      }
+    }
+    const snapshot = await inspectSlidesAcceptanceAuthority(
+      session,
+      {
+        affectedSlides: pages(request.affectedSlides),
+        referenceSlides: pages(request.referenceSlides),
+        expectedDocumentToken,
+        expectedSessionToken,
+        expectedRevision,
+        leaseToken,
+        ...(textChecks ? { textChecks } : {}),
+        ...(sourceTargets ? { sourceTargets } : {}),
+        ...(baseRevision ? { baseRevision } : {}),
+        ...(mutationReceiptIds ? { mutationReceiptIds } : {}),
+      },
+      provedLineage,
+    )
+    return (session.mutationGeneration ?? 0) === generation ? snapshot : null
+  })
+
+  ipcMain.handle('slides:acceptance-text-proof-verify', async (event, value: unknown) => {
+    assertAiIpcSender(event)
+    const request = validateSlidesAiObject(
+      value,
+      [
+        'expectedDocumentToken',
+        'expectedSessionToken',
+        'expectedRevision',
+        'leaseToken',
+        'slide',
+        'checkId',
+        'targetToken',
+        'expectedText',
+        'matches',
+        'proof',
+      ],
+      2_048,
+    )
+    if (
+      !Number.isSafeInteger(request.slide) ||
+      (request.slide as number) < 1 ||
+      (request.slide as number) > 10_000 ||
+      typeof request.matches !== 'boolean'
+    )
+      throw new AiIpcError('invalid_payload')
+    const proof = validateSlidesAiString(request.proof, 71)
+    if (!/^sha256:[0-9a-f]{64}$/.test(proof)) throw new AiIpcError('invalid_payload')
+    const session = sessions.get(event.sender.id)!
+    if (
+      sessionHasActivePresentationTransaction(session) ||
+      sessionHasActivePresentationMutation(session) ||
+      sessionHasActivePresentationPersistence(session)
+    )
+      return false
+    return verifySlidesAcceptanceTextProof(session, {
+      expectedDocumentToken: validateSlidesAiString(request.expectedDocumentToken, 128),
+      expectedSessionToken: validateSlidesAiString(request.expectedSessionToken, 128),
+      expectedRevision: validateSlidesAiString(request.expectedRevision, 71),
+      leaseToken: validateSlidesAiString(request.leaseToken, 128),
+      slide: request.slide as number,
+      checkId: validateSlidesAiString(request.checkId, 128),
+      targetToken: validateSlidesAiString(request.targetToken, 128),
+      expectedText: validateSlidesAiString(request.expectedText, 256),
+      matches: request.matches,
+      proof,
+    })
+  })
 
   const elementType = (element: SlideElement): PresentationElementType | undefined => {
     if (element.type === 'picture') return 'image'

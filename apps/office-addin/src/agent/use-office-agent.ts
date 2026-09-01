@@ -6,6 +6,7 @@ import {
   type ToolExecutionOutcome,
 } from '@wiswork/agent-core'
 import { createAgentHarness } from '@wiswork/agent-harness'
+import type { OfficePowerPointVisualReviewer } from '../skills/powerpoint/powerpoint-verification.js'
 import { useSyncExternalStore } from 'react'
 import type {
   OfficeProposal,
@@ -21,6 +22,7 @@ import {
   type OfficePresentationTimeline,
   type ProposalPresentationEvent,
 } from './presentation-state.js'
+import type { PresentationVerificationStringKey } from '@wiswork/i18n'
 import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
 
 export type AgentSessionStatus = 'idle' | 'working' | 'done' | 'cancelled' | 'error'
@@ -193,8 +195,69 @@ export function createOfficeAgentSession(dependencies: {
   skill: AgentSkill
   proposals: ProposalController | StructuredProposalController
   diagnostics?: Pick<OfficeDiagnostics, 'startTrace' | 'setTool' | 'record' | 'clear'>
+  presentationText?: (key: PresentationVerificationStringKey) => string
 }): OfficeAgentSession {
   const { proposals } = dependencies
+  const presentation = dependencies.skill.presentation as
+    | (NonNullable<AgentSkill['presentation']> & {
+        setReviewer?: (reviewer: OfficePowerPointVisualReviewer) => void
+      })
+    | undefined
+  presentation?.setReviewer?.({
+    review: (request) =>
+      new Promise((resolve) => {
+        let output = ''
+        let settled = false
+        const reviewHandle: { current?: { cancel(): void } } = {}
+        const unavailable = {
+          status: 'cannot_verify' as const,
+          failedCheckIds: [],
+          observations: [{ code: 'review_unavailable' as const, severity: 'warning' as const }],
+          fixIntents: [],
+        }
+        const finish = (value: Parameters<typeof resolve>[0], cancel = false) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          request.signal?.removeEventListener('abort', abort)
+          if (cancel) reviewHandle.current?.cancel()
+          resolve(value)
+        }
+        const abort = () => finish(unavailable, true)
+        const timer = setTimeout(() => finish(unavailable, true), 15_000)
+        request.signal?.addEventListener('abort', abort, { once: true })
+        if (request.signal?.aborted) abort()
+        reviewHandle.current = dependencies.transport.stream(
+          {
+            system:
+              'Review only the supplied PowerPoint screenshots against the bounded check IDs. Return strict JSON matching VisualReviewResult. Do not request tools, infer hidden text, or add targets.',
+            messages: [
+              {
+                role: 'user',
+                text: JSON.stringify({ facts: request.facts }),
+                images: request.images.map(({ base64, mime }) => ({ base64, mime })),
+              },
+            ],
+            tools: [],
+          },
+          {
+            onDelta: (text) => {
+              if (output.length < 64 * 1024) output += text
+            },
+            onToolCall: () => finish(unavailable, true),
+            onDone: () => {
+              try {
+                finish(JSON.parse(output))
+              } catch {
+                finish(unavailable)
+              }
+            },
+            onError: () => finish(unavailable),
+          },
+        )
+        if (settled) reviewHandle.current.cancel()
+      }),
+  })
   const diagnose = (
     action: (diagnostics: NonNullable<typeof dependencies.diagnostics>) => void,
   ) => {
@@ -345,6 +408,40 @@ export function createOfficeAgentSession(dependencies: {
     transport: dependencies.transport,
     skill: sessionSkill,
     events: {
+      onPresentationClarify: () =>
+        append({
+          id: eventId(),
+          kind: 'system',
+          text: dependencies.presentationText?.('clarify') ?? 'clarify',
+        }),
+      onPresentationPlan: ({ steps, requiresConfirmation }) =>
+        append({
+          id: eventId(),
+          kind: 'system',
+          text: [
+            dependencies.presentationText?.('plan') ?? 'plan',
+            ...steps.map(
+              (step) =>
+                `• ${
+                  dependencies.presentationText?.(
+                    step === 'presentation_verify_postconditions'
+                      ? 'verify_postconditions'
+                      : 'apply_bounded_edits',
+                  ) ?? step
+                }`,
+            ),
+            ...(requiresConfirmation
+              ? [dependencies.presentationText?.('needs_user') ?? 'needs_user']
+              : []),
+          ].join('\n'),
+        }),
+      onPresentationCorrection: () =>
+        append({
+          id: eventId(),
+          kind: 'system',
+          text: dependencies.presentationText?.('correction') ?? 'correction',
+        }),
+      onPresentationReceipt: ({ facts }) => dependencies.presentationText?.(facts.status),
       onText: (assistantText) => {
         if (!activeAssistantId) {
           activeAssistantId = eventId()
@@ -436,6 +533,12 @@ export function createOfficeAgentSession(dependencies: {
           activity: '',
           status: result.cancelled ? 'cancelled' : 'done',
         })
+        if (!result.presentation && result.cancelled)
+          append({
+            id: eventId(),
+            kind: 'system',
+            text: dependencies.presentationText?.('cancelled') ?? 'cancelled',
+          })
       },
       onError: (error) => {
         const safeError = safeRunError(error)

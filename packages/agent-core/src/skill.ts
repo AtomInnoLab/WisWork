@@ -1,4 +1,54 @@
 import type { AgentToolCall, AgentToolDef, ToolExecutionOutcome } from './types'
+import type {
+  PresentationAcceptanceContract,
+  PresentationCompletionReceipt,
+} from '@wiswork/presentation-verification'
+
+export type PresentationTaskPreparation =
+  | { kind: 'bypass' }
+  | { kind: 'clarify'; question: string }
+  | {
+      kind: 'ready'
+      contract: PresentationAcceptanceContract
+      plan?: string[]
+      requiresConfirmation?: boolean
+    }
+
+export type PresentationTaskCompletion =
+  | { kind: 'receipt'; receipt: PresentationCompletionReceipt }
+  | { kind: 'correct'; instruction: string }
+
+export interface PresentationTaskHooks {
+  /** Invalidates current host UI lifecycle while allowing receipt reconciliation to finish. */
+  abandon?(): void
+  /** Host-owned intent compiler. Model output is never accepted as a contract. */
+  prepare(
+    instruction: string,
+    signal?: AbortSignal,
+  ): PresentationTaskPreparation | Promise<PresentationTaskPreparation>
+  /**
+   * Host-owned pre-dispatch enrollment. It receives the bounded tool calls selected for
+   * this batch and must freeze exact authoritative targets before any call executes.
+   */
+  enroll?(
+    calls: readonly AgentToolCall[],
+    currentContract: PresentationAcceptanceContract | undefined,
+    signal?: AbortSignal,
+  ): PresentationTaskPreparation | Promise<PresentationTaskPreparation>
+  /** Required when prepare marks an existing host confirmation boundary. */
+  confirm?(
+    contract: PresentationAcceptanceContract,
+    signal?: AbortSignal,
+  ): boolean | Promise<boolean>
+  /** Reconcile authoritative host state and either close with a receipt or request one correction. */
+  complete(context: {
+    contract: PresentationAcceptanceContract
+    mutated: boolean
+    cancelled: boolean
+    correctionPasses: number
+    signal?: AbortSignal
+  }): PresentationTaskCompletion | Promise<PresentationTaskCompletion>
+}
 
 /**
  * Deliberately small set of run facts available to a terminal-response policy.
@@ -26,6 +76,8 @@ export interface AgentSkill {
    * skeleton + selection). Return '' when there is nothing to attach.
    */
   buildContext?(): string
+  /** Optional host-owned orchestration for presentation mutation runs. */
+  presentation?: PresentationTaskHooks
   /**
    * Optionally reject one normal tool-free terminal response by returning a
    * static corrective user message. Exceptions fail open in AgentLoop.
@@ -57,6 +109,8 @@ export function composeSkills(id: string, intro: string, skills: AgentSkill[]): 
   const reviewers = skills.flatMap((skill) =>
     skill.reviewFinalResponse ? [skill.reviewFinalResponse.bind(skill)] : [],
   )
+  const presentations = skills.flatMap((skill) => (skill.presentation ? [skill.presentation] : []))
+  if (presentations.length > 1) throw new Error('multiple presentation orchestrators')
   return {
     id,
     systemPrompt: [intro, ...skills.map((s) => s.systemPrompt)].filter(Boolean).join('\n\n'),
@@ -66,6 +120,7 @@ export function composeSkills(id: string, intro: string, skills: AgentSkill[]): 
         .map((s) => s.buildContext?.() ?? '')
         .filter(Boolean)
         .join('\n\n'),
+    ...(presentations[0] ? { presentation: presentations[0] } : {}),
     ...(reviewers.length
       ? {
           reviewFinalResponse: (context: FinalResponseReviewContext) => {

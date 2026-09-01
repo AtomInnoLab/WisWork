@@ -999,6 +999,11 @@ export type MenuCommand =
   | 'paste'
 
 export interface SlidesApi {
+  verifyAcceptanceTextProof: (request: SlidesAcceptanceTextProofRequest) => Promise<boolean>
+  getAcceptanceAuthorityLease: () => Promise<SlidesAcceptanceAuthorityLease | null>
+  inspectAcceptanceAuthority: (
+    request: SlidesAcceptanceAuthorityRequest,
+  ) => Promise<SlidesAcceptanceAuthoritySnapshot | null>
   /** Capture a bounded renderer selection as authoritative durable targets. */
   captureAgentSelection: (request: { slideIndex: number; sourceIds: string[] }) => Promise<
     | {
@@ -1068,7 +1073,9 @@ export interface SlidesApi {
   /** Batch position update (align/distribute); all items share one undo step */
   batchEditTransform: (op: BatchEditTransformOp) => Promise<RenderSlide | null>
   /** Read-only: RenderSlide for every page of the current session (E2E driver/debug use) */
-  getRenderSlides: () => Promise<RenderSlide[] | null>
+  getRenderSlides: () => Promise<
+    ({ slides: RenderSlide[] } & SlidesAcceptanceAuthorityLease) | null
+  >
   /** Read-only durable identity map for structured QC; never enrolls or mutates legacy elements. */
   getQualityIdentityMap: (slideIndex: number) => Promise<{
     slideId: string
@@ -1419,6 +1426,80 @@ export interface SlidesApi {
   onShowInk: (handler: (ev: ShowInkEvent) => void) => () => void
   /** Presenter: subscribe to navigation actions sent back by the audience window */
   onAudienceNav: (handler: (action: AudienceNavAction) => void) => () => void
+}
+
+export interface SlidesAcceptanceAuthoritySnapshot {
+  documentToken: string
+  sessionToken: string
+  revision: string
+  leaseToken?: string
+  textMatches?: Record<string, { targetToken: string; matches: boolean; proof: string }>
+  /** Request-bound runtime ids resolved to opaque durable acceptance tokens. */
+  sourceTargetTokens?: Record<string, string>
+  baseRevision?: string
+  mutatedTargetTokens?: string[]
+  slides: Array<{
+    number: number
+    slideToken: string
+    backgroundColor?: string
+    elements: Array<{
+      targetToken: string
+      role?: 'title' | 'body' | 'emphasis'
+      locked: boolean
+      properties: Partial<
+        Record<
+          | 'text'
+          | 'color'
+          | 'font_size'
+          | 'font_family'
+          | 'bold'
+          | 'italic'
+          | 'x'
+          | 'y'
+          | 'width'
+          | 'height'
+          | 'fill_color'
+          | 'stroke_color'
+          | 'background_color',
+          string | number | boolean | null
+        >
+      >
+    }>
+  }>
+}
+
+export interface SlidesAcceptanceTextProofRequest {
+  expectedDocumentToken: string
+  expectedSessionToken: string
+  expectedRevision: string
+  leaseToken: string
+  slide: number
+  checkId: string
+  targetToken: string
+  expectedText: string
+  matches: boolean
+  proof: string
+}
+
+export interface SlidesAcceptanceAuthorityRequest {
+  affectedSlides: number[]
+  referenceSlides: number[]
+  expectedDocumentToken: string
+  expectedSessionToken: string
+  expectedRevision: string
+  leaseToken: string
+  sourceTargets?: Array<{ slide: number; sourceId: string }>
+  baseRevision?: string
+  mutationReceiptIds?: string[]
+  textChecks?: Array<{ checkId: string; targetToken: string; expectedText: string }>
+}
+
+export interface SlidesAcceptanceAuthorityLease {
+  documentToken: string
+  sessionToken: string
+  revision: string
+  slideCount: number
+  leaseToken: string
 }
 
 export interface PresentationTargetRequest {

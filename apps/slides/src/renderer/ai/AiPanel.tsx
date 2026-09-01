@@ -5,7 +5,7 @@ import {
   type AgentImage,
   type ToolDisplay,
 } from '@wiswork/agent-core'
-import type { AgentHarness } from '@wiswork/agent-harness'
+import { createAgentHarness, type AgentHarness } from '@wiswork/agent-harness'
 import type { RenderSlide } from '@wiswork/pptx-render'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
@@ -37,8 +37,14 @@ import {
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
 import { Markdown } from '@wiswork/ui'
 import type { PresentationQualityReceipt } from '@wiswork/presentation-ops'
+import { presentationVerificationFlags } from '@wiswork/presentation-verification'
+import { translatePresentationVerification } from '@wiswork/i18n'
+import { verifyAndBrandSlidesAcceptanceAuthority, verifySlidesAcceptance } from './task-acceptance'
+import { reviewSlidesRendering } from './task-review'
 import { WisWorkMark } from '../components/icons'
 import sendEnterOn from '../assets/send-enter-on.png'
+
+declare const __WISWORK_SLIDES_ACCEPTANCE_E2E__: boolean
 import sendEnterOff from '../assets/send-enter-off.png'
 import sendStop from '../assets/send-stop.png'
 import attachIcon from '../assets/attach-icon.png'
@@ -368,7 +374,7 @@ export function AiPanel({
   onQualityReceipt,
   currentFilePath,
 }: AiPanelProps) {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [selectionScopeEnabled, setSelectionScopeEnabled] = useState(false)
@@ -533,6 +539,7 @@ export function AiPanel({
   settingsRef.current = settings
   const imagesRef = useRef(images)
   imagesRef.current = images
+
   const attachmentsRef = useRef(attachments)
   attachmentsRef.current = attachments
   /** attachments consumed by the most recent send — retry resends the same set */
@@ -850,18 +857,206 @@ export function AiPanel({
     ): Promise<LlmResult> =>
       runLlmAttempt(settingsRef.current, system, user, timeoutMs, signal, maxTokens)
 
+    const taskImages = new Map<string, { taskId: string; image: AgentImage }>()
+    const taskRenderBundles = new Map<
+      string,
+      NonNullable<Awaited<ReturnType<typeof window.slidesApi.getRenderSlides>>>
+    >()
+
     const access: DeckAccess = {
+      presentationTelemetry: (event) =>
+        window.dispatchEvent(new CustomEvent('wiswork:presentation-telemetry', { detail: event })),
+      onHostCorrection: () => {
+        if (activeRunTokenRef.current !== launchTokenRef.current) return
+        setChat((previous) => [
+          ...previous,
+          { role: 'assistant', text: translatePresentationVerification(lang, 'correction') },
+        ])
+      },
       getSlides: () => slidesRef.current,
       getCurrent: () => currentRef.current,
       getSelectedIds: () => selectedRef.current,
       getSelectionScope: () => activeSelectionScopeRef.current,
+      getAcceptanceAuthorityLease: async () => {
+        const lease = await window.slidesApi.getAcceptanceAuthorityLease()
+        if (!lease) throw new Error('Authoritative acceptance lease is unavailable')
+        return lease
+      },
+      verifyAcceptanceTextProof: (request) => window.slidesApi.verifyAcceptanceTextProof(request),
+      inspectAcceptanceAuthority: async (request) => {
+        const snapshot = await window.slidesApi.inspectAcceptanceAuthority(request)
+        if (!snapshot) throw new Error('Authoritative acceptance inspection is unavailable')
+        return snapshot
+      },
+      taskReviewAdapter: {
+        refresh: async (lineage, signal) => {
+          signal?.throwIfAborted()
+          if (!lineage.isCurrent()) throw new Error('stale_task')
+          const refreshed = await window.slidesApi.getRenderSlides()
+          if (!refreshed) throw new Error('authoritative_refresh_unavailable')
+          if (!lineage.isCurrent()) throw new Error('stale_task')
+          taskRenderBundles.set(lineage.taskId, refreshed)
+          if (!lineage.isCurrent()) throw new Error('stale_task')
+          applyDeckRef.current(refreshed.slides, currentRef.current)
+          if (!lineage.isCurrent()) throw new Error('stale_task')
+          const historyId = await finishHistoryBatch(false)
+          return {
+            documentToken: refreshed.documentToken,
+            sessionToken: refreshed.sessionToken,
+            revision: refreshed.revision,
+            leaseToken: refreshed.leaseToken,
+            ...lineage,
+            ...(typeof historyId === 'number' ? { rollbackId: `history-${historyId}` } : {}),
+          }
+        },
+        verifyDeterministic: async (contract, authority, plannedMutationTargets) => {
+          const textChecks = contract.checks.flatMap((check) =>
+            check.kind === 'element_property' &&
+            check.property === 'text' &&
+            check.roleOrTarget.kind === 'target' &&
+            typeof check.expected === 'string'
+              ? [
+                  {
+                    checkId: check.id,
+                    targetToken: check.roleOrTarget.targetToken,
+                    expectedText: check.expected,
+                  },
+                ]
+              : [],
+          )
+          const snapshot = await window.slidesApi.inspectAcceptanceAuthority({
+            affectedSlides: contract.affectedSlides,
+            referenceSlides: contract.referenceSlides,
+            expectedDocumentToken: authority.documentToken,
+            expectedSessionToken: authority.sessionToken,
+            expectedRevision: authority.revision,
+            leaseToken: authority.leaseToken,
+            baseRevision: authority.baseRevision,
+            mutationReceiptIds: authority.mutationReceiptIds,
+            ...(textChecks.length ? { textChecks } : {}),
+          })
+          if (!snapshot) throw new Error('acceptance_inspection_unavailable')
+          const mutatedTargetTokens = snapshot.mutatedTargetTokens ?? []
+          const {
+            mutatedTargetTokens: _targets,
+            sourceTargetTokens: _sources,
+            ...authoritySnapshot
+          } = snapshot
+          const verified = await verifyAndBrandSlidesAcceptanceAuthority(
+            contract,
+            authoritySnapshot,
+            (request) => window.slidesApi.verifyAcceptanceTextProof(request),
+          )
+          return verifySlidesAcceptance(contract, verified, {
+            mode: 'postwrite',
+            mutatedTargetTokens,
+            plannedMutationTargets,
+          })
+        },
+        capture: async ({ slide, role, authority, signal }) => {
+          signal?.throwIfAborted()
+          const taskRenderBundle = taskRenderBundles.get(authority.taskId ?? '')
+          const rendered = taskRenderBundle?.slides[slide - 1]
+          if (
+            !rendered ||
+            taskRenderBundle?.documentToken !== authority.documentToken ||
+            taskRenderBundle.sessionToken !== authority.sessionToken ||
+            taskRenderBundle.revision !== authority.revision ||
+            taskRenderBundle.leaseToken !== authority.leaseToken
+          )
+            return null
+          const [png] = await renderSlidesToPngBase64([rendered], imagesRef.current, 1)
+          const image: AgentImage | null = png ? { base64: png, mime: 'image/png' } : null
+          if (!image) return null
+          const after = await window.slidesApi.inspectAcceptanceAuthority({
+            affectedSlides: [slide],
+            referenceSlides: [],
+            expectedDocumentToken: authority.documentToken,
+            expectedSessionToken: authority.sessionToken,
+            expectedRevision: authority.revision,
+            leaseToken: authority.leaseToken,
+            baseRevision: authority.baseRevision,
+            mutationReceiptIds: authority.mutationReceiptIds,
+          })
+          if (
+            !after ||
+            after.documentToken !== authority.documentToken ||
+            after.sessionToken !== authority.sessionToken ||
+            after.revision !== authority.revision ||
+            after.leaseToken !== authority.leaseToken
+          )
+            return null
+          const bytes = Math.ceil((image.base64.length * 3) / 4)
+          const mediaToken = `media-${crypto.randomUUID().replaceAll('-', '')}`
+          taskImages.set(mediaToken, { taskId: authority.taskId ?? '', image })
+          return {
+            slide,
+            role,
+            mediaToken,
+            bytes,
+            revision: authority.revision,
+            leaseToken: authority.leaseToken,
+            sessionToken: authority.sessionToken,
+          }
+        },
+        review: async (facts, signal) => {
+          const images = facts.screenshots.map(
+            ({ mediaToken }) => taskImages.get(mediaToken)?.image,
+          )
+          if (images.some((image) => !image)) throw new Error('screenshot_unavailable')
+          try {
+            return await reviewSlidesRendering({
+              facts,
+              images: images as AgentImage[],
+              transport: createElectronTransport(() => settingsRef.current),
+              signal,
+            })
+          } finally {
+            for (const { mediaToken } of facts.screenshots) taskImages.delete(mediaToken)
+          }
+        },
+        correct: async () => {
+          throw new Error('unsupported_correction')
+        },
+        isCurrent: (authority) =>
+          authority.sessionToken.length > 0 && activeRunTokenRef.current === launchTokenRef.current,
+        cleanup: (taskId) => {
+          for (const [mediaToken, stored] of taskImages)
+            if (stored.taskId === taskId) taskImages.delete(mediaToken)
+          taskRenderBundles.delete(taskId)
+        },
+      },
+      onTaskReviewComplete: (receipt) => {
+        const historyId = receipt.rollbackId?.match(/^history-([1-9][0-9]*)$/)?.[1]
+        if (historyId) {
+          runSnapshotIdRef.current = Number(historyId)
+          patchLastAssistant({ snapshotId: Number(historyId) })
+        }
+        if (isQcEnabled())
+          qcPagesRef.current = [
+            ...new Set([
+              ...qcPagesRef.current,
+              ...receipt.affectedSlides.map((slide) => slide - 1),
+            ]),
+          ]
+      },
+      beginTaskCorrectionHistory: async () => {
+        if (historyBatchActiveRef.current) return false
+        const opened = await window.slidesApi.beginHistoryBatch()
+        if (opened) historyBatchActiveRef.current = true
+        return opened
+      },
+      finishTaskCorrectionHistory: async () => {
+        const id = await finishHistoryBatch(false)
+        return typeof id === 'number' ? `history-${id}` : undefined
+      },
       applySlide: (i, updated) => applySlideRef.current(i, updated),
       applyDeck: (all, goTo) => applyDeckRef.current(all, goTo),
       executePresentationOperation: async (request, signal) => {
         const refresh = async () => {
           const refreshed = await window.slidesApi.getRenderSlides()
           if (!refreshed) return false
-          applyDeckRef.current(refreshed, currentRef.current)
+          applyDeckRef.current(refreshed.slides, currentRef.current)
           return true
         }
         const execution = await ('backgrounds' in request
@@ -1086,14 +1281,250 @@ export function AiPanel({
           .map((a) => a.name),
     }
     accessRef.current = access
+    if (__WISWORK_SLIDES_ACCEPTANCE_E2E__) {
+      const automationWindow = window as typeof window & {
+        __wisworkSlidesRunAcceptanceAgent?: () => Promise<{
+          text: string
+          status?: string
+          passedCheckIds?: string[]
+          mutationReceiptIds?: string[]
+          documentToken: string
+          sessionToken: string
+          revision: string
+          leaseToken: string
+          pngs: string[]
+        }>
+      }
+      automationWindow.__wisworkSlidesRunAcceptanceAgent = async () => {
+        const initial = slidesRef.current
+        const source = (slideNumber: number, role: string) => {
+          const node = initial[slideNumber - 1]?.nodes.find((candidate) =>
+            JSON.stringify(candidate).includes(`${role}-${slideNumber}`),
+          )
+          if (!node) throw new Error(`missing fixture target: ${role}-${slideNumber}`)
+          return node.sourceId
+        }
+        const calls = [6, 7, 8].flatMap((slideNumber) => [
+          ...(
+            [
+              ['title', '#2457A7'],
+              ['body', '#172033'],
+              ['emphasis', '#18A0A6'],
+            ] as const
+          ).map(([role, color]) => ({
+            id: `golden-${slideNumber}-${role}`,
+            name: 'set_element_style',
+            input: { slideIndex: slideNumber - 1, sourceId: source(slideNumber, role), color },
+          })),
+          ...(slideNumber === 6
+            ? []
+            : [
+                {
+                  id: `golden-${slideNumber}-geometry`,
+                  name: 'set_element_transform',
+                  input: {
+                    slideIndex: slideNumber - 1,
+                    sourceId: source(slideNumber, 'title'),
+                    x: 96,
+                    y: 64,
+                    w: 1088,
+                    h: 72,
+                  },
+                },
+              ]),
+        ])
+        let mainTurn = 0
+        const transport = {
+          stream: (
+            _request: unknown,
+            callbacks: Parameters<ReturnType<typeof createElectronTransport>['stream']>[1],
+          ) => {
+            queueMicrotask(() => {
+              if (mainTurn++ === 0) for (const call of calls) callbacks.onToolCall(call)
+              else callbacks.onDelta('done')
+              callbacks.onDone()
+            })
+            return { cancel() {} }
+          },
+        }
+        const reviewerTransport = {
+          stream: (
+            _request: unknown,
+            callbacks: Parameters<ReturnType<typeof createElectronTransport>['stream']>[1],
+          ) => {
+            queueMicrotask(() => {
+              callbacks.onDelta(
+                JSON.stringify({
+                  status: 'pass',
+                  failedCheckIds: [],
+                  observations: [],
+                  fixIntents: [],
+                }),
+              )
+              callbacks.onDone()
+            })
+            return { cancel() {} }
+          },
+        }
+        const automatedAccess: DeckAccess = {
+          ...access,
+          taskReviewAdapter: access.taskReviewAdapter && {
+            ...access.taskReviewAdapter,
+            review: async (facts, signal) => {
+              const reviewImages = facts.screenshots.map(
+                ({ mediaToken }) => taskImages.get(mediaToken)?.image,
+              )
+              if (reviewImages.some((image) => !image)) throw new Error('screenshot_unavailable')
+              return reviewSlidesRendering({
+                facts,
+                images: reviewImages as AgentImage[],
+                transport: reviewerTransport,
+                signal,
+              })
+            },
+          },
+        }
+        let enrollmentFailure: string | undefined
+        let enrollmentKind: string | undefined
+        const automatedSkill = createSlidesSkill(automatedAccess, {
+          planning: true,
+          verifiedCompletion: true,
+          visualReview: true,
+          autoCorrection: false,
+        })
+        const automatedEnroll = automatedSkill.presentation?.enroll
+        if (!automatedSkill.presentation || !automatedEnroll)
+          throw new Error('acceptance enrollment harness unavailable')
+        const diagnosticSkill = {
+          ...automatedSkill,
+          presentation: {
+            ...automatedSkill.presentation,
+            enroll: async (...args: Parameters<typeof automatedEnroll>) => {
+              try {
+                const enrolled = await automatedEnroll(...args)
+                enrollmentKind = enrolled.kind
+                return enrolled
+              } catch (error) {
+                enrollmentFailure = error instanceof Error ? error.message : 'unknown_error'
+                throw error
+              }
+            },
+          },
+        }
+        return new Promise((resolve, reject) => {
+          let receipt:
+            import('@wiswork/presentation-verification').PresentationCompletionReceipt | undefined
+          const harness = createAgentHarness({
+            transport,
+            maxTurns: 3,
+            skill: diagnosticSkill,
+            events: {
+              onPresentationReceipt: ({ receipt: value }) => {
+                receipt = value
+                return translatePresentationVerification(lang, value.status)
+              },
+              onDone: ({ text }) => {
+                harness.dispose()
+                setChat((previous) => [...previous, { role: 'assistant', text }])
+                void (async () => {
+                  if (!receipt)
+                    throw new Error(
+                      `missing_presentation_receipt:${enrollmentKind ?? 'not_enrolled'}`,
+                    )
+                  const before = await window.slidesApi.getRenderSlides()
+                  if (!before) throw new Error('authoritative_refresh_unavailable')
+                  const pngs = await renderSlidesToPngBase64(
+                    [6, 7, 8, 6].map((slide) => before.slides[slide - 1]!),
+                    imagesRef.current,
+                    1,
+                  )
+                  const after = await window.slidesApi.inspectAcceptanceAuthority({
+                    affectedSlides: [6, 7, 8],
+                    referenceSlides: [6],
+                    expectedDocumentToken: before.documentToken,
+                    expectedSessionToken: before.sessionToken,
+                    expectedRevision: before.revision,
+                    leaseToken: before.leaseToken,
+                  })
+                  if (
+                    !after ||
+                    after.documentToken !== before.documentToken ||
+                    after.sessionToken !== before.sessionToken ||
+                    after.revision !== before.revision ||
+                    after.leaseToken !== before.leaseToken
+                  )
+                    throw new Error('stale_authority')
+                  resolve({
+                    text,
+                    documentToken: before.documentToken,
+                    sessionToken: before.sessionToken,
+                    revision: before.revision,
+                    leaseToken: before.leaseToken,
+                    pngs,
+                    ...(receipt
+                      ? {
+                          status: receipt.status,
+                          passedCheckIds: receipt.passedCheckIds,
+                          mutationReceiptIds: receipt.mutationReceiptIds,
+                        }
+                      : {}),
+                  })
+                })().catch(reject)
+              },
+              onError: (error) => {
+                harness.dispose()
+                reject(new Error(enrollmentFailure ? `${error}:${enrollmentFailure}` : error))
+              },
+            },
+          })
+          if (!harness.run('Apply the bounded presentation consistency edits.'))
+            reject(new Error('agent_run_rejected'))
+        })
+      }
+    }
     loopRef.current = createAgentController({
       transport: createElectronTransport(() => settingsRef.current),
       systemSuffix: aiLangDirective,
       skill: composeSkills('slides+files', '', [
-        createSlidesSkill(access),
+        createSlidesSkill(
+          access,
+          presentationVerificationFlags(import.meta.env, 'VITE_WISWORK_PRESENTATION_'),
+        ),
         createFilesSkill(availableAttachments, (path) => readAttachmentPathsRef.current.add(path)),
       ]),
       events: {
+        onPresentationClarify: () =>
+          setChat((previous) => [
+            ...previous,
+            { role: 'assistant', text: translatePresentationVerification(lang, 'clarify') },
+          ]),
+        onPresentationPlan: ({ steps, requiresConfirmation }) =>
+          setChat((previous) => [
+            ...previous,
+            {
+              role: 'assistant',
+              text: [
+                translatePresentationVerification(lang, 'plan'),
+                ...steps.map(
+                  (step) =>
+                    `• ${translatePresentationVerification(
+                      lang,
+                      step === 'presentation_verify_postconditions'
+                        ? 'verify_postconditions'
+                        : 'apply_bounded_edits',
+                    )}`,
+                ),
+                ...(requiresConfirmation
+                  ? [translatePresentationVerification(lang, 'needs_user')]
+                  : []),
+              ].join('\n'),
+            },
+          ]),
+        onPresentationCorrection: () =>
+          setChat((previous) => [
+            ...previous,
+            { role: 'assistant', text: translatePresentationVerification(lang, 'correction') },
+          ]),
         onText: (text) => patchLastAssistant({ text }),
         onToolStart: (call) => {
           // Live "running" chip: replaced in place by onToolExecuted
@@ -1147,11 +1578,19 @@ export function AiPanel({
             },
           ])
         },
-        onDone: ({ text, cancelled, turnLimit }) => {
+        onPresentationReceipt: ({ facts }) => translatePresentationVerification(lang, facts.status),
+        onDone: ({ text, cancelled, turnLimit, presentation, clarification }) => {
           if (activeQueueRunRef.current) qcPagesRef.current = []
-          const finalText = turnLimit
-            ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
-            : text || (cancelled ? tGlobal('aiStoppedNote') : '')
+          const localizedStatus = presentation
+            ? translatePresentationVerification(lang, presentation.status)
+            : ''
+          const finalText =
+            (clarification
+              ? translatePresentationVerification(lang, 'clarify')
+              : localizedStatus) ||
+            (turnLimit
+              ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
+              : text || (cancelled ? translatePresentationVerification(lang, 'cancelled') : ''))
           const ranTools = runToolsRef.current.length > 0
           setChat((prev) => {
             const next = [...prev]
@@ -1208,6 +1647,28 @@ export function AiPanel({
           // side effects outside the updater (StrictMode double-invokes updaters, duplicating history writes)
           if (finalText && !cancelled) {
             persistMessage('assistant', finalText, runToolsRef.current)
+          }
+        },
+        onAbandonedPresentationCompletion: async (event) => {
+          const key = 'slides-pending-presentation-completions'
+          const digest = async (value: string) => {
+            const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+            return [...new Uint8Array(bytes)]
+              .map((byte) => byte.toString(16).padStart(2, '0'))
+              .join('')
+          }
+          const safeEvent = {
+            documentDigest: await digest(event.documentToken),
+            sessionDigest: await digest(event.sessionToken),
+            receipt: event.receipt,
+            facts: event.facts,
+          }
+          try {
+            const existing = JSON.parse(localStorage.getItem(key) ?? '[]')
+            const bounded = Array.isArray(existing) ? existing.slice(-49) : []
+            localStorage.setItem(key, JSON.stringify([...bounded, safeEvent]))
+          } catch {
+            localStorage.setItem(key, JSON.stringify([safeEvent]))
           }
         },
         onError: (error) => {
@@ -1837,6 +2298,10 @@ export function AiPanel({
       qcAbortRef.current?.abort()
       dismissClarify()
       loopRef.current?.stop()
+      if (__WISWORK_SLIDES_ACCEPTANCE_E2E__)
+        delete (
+          window as typeof window & { __wisworkSlidesRunAcceptanceAgent?: () => Promise<unknown> }
+        ).__wisworkSlidesRunAcceptanceAgent
     }
   }, [])
 

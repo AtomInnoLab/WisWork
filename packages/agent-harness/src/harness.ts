@@ -96,6 +96,30 @@ export function createAgentHarness<TSnapshot>(
       if (!isCurrent(generation)) return
       publish({ status: 'error', busy: false, generation, error })
     },
+    onPresentationClarify: (event) => {
+      if (!isCurrent(generation)) return
+      invoke(() => hostEvents?.onPresentationClarify?.(event))
+    },
+    onPresentationPlan: (event) => {
+      if (!isCurrent(generation)) return
+      invoke(() => hostEvents?.onPresentationPlan?.(event))
+    },
+    onPresentationCorrection: (event) => {
+      if (!isCurrent(generation)) return
+      invoke(() => hostEvents?.onPresentationCorrection?.(event))
+    },
+    onPresentationReceipt: (event) => {
+      if (!isCurrent(generation)) return undefined
+      try {
+        return hostEvents?.onPresentationReceipt?.(event)
+      } catch {
+        return undefined
+      }
+    },
+    onAbandonedPresentationCompletion: (event) => {
+      if (!isCurrent(generation)) return
+      invoke(() => hostEvents?.onAbandonedPresentationCompletion?.(event))
+    },
   })
 
   return {

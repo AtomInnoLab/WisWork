@@ -663,6 +663,54 @@ describe('PowerPoint compatibility skill', () => {
     expect(fake.exportSlidePackage).not.toHaveBeenCalled()
   })
 
+  it('confirmation-gates bounded text style and verifies exact color readback', async () => {
+    let color = '#000000'
+    const fake = adapter({
+      executeDeclarative: vi.fn().mockImplementation(async (operations) => {
+        for (const operation of operations)
+          if (operation.op === 'set_shape_text_style' && operation.color) color = operation.color
+        return { createdShapeIds: [] }
+      }),
+      readShapeTextStyle: vi.fn().mockImplementation(async () => ({ color })),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('execute_office_js', {
+        program: {
+          version: 1,
+          operations: [
+            { op: 'set_shape_text_style', slide_index: 0, shape_id: '2', color: '#111111' },
+            { op: 'set_shape_text_style', slide_index: 0, shape_id: '2', color: '#2457A7' },
+          ],
+        },
+      }),
+    )
+    expect(color).toBe('#000000')
+    await proposals.confirm(proposals.pending()!.id)
+    expect(color).toBe('#2457A7')
+    expect(fake.readShapeTextStyle).toHaveBeenCalled()
+  })
+
+  it.each([{ color: 'red' }, { fontSize: 0 }, { fontFamily: '' }, { bold: 'yes' }])(
+    'rejects malformed declarative text style without a proposal: %j',
+    async (style) => {
+      const proposals = createStructuredProposalController()
+      const skill = createPowerPointSkill({ adapter: adapter(), proposals })
+      await expect(
+        skill.executeTool(
+          call('execute_office_js', {
+            program: {
+              version: 1,
+              operations: [{ op: 'set_shape_text_style', slide_index: 0, shape_id: '2', ...style }],
+            },
+          }),
+        ),
+      ).resolves.toMatchObject({ isError: true, mutated: false })
+      expect(proposals.pending()).toBeUndefined()
+    },
+  )
+
   it('accepts strict declarative geometry, text-box creation, and shape deletion families', async () => {
     const fake = adapter({
       exportSlidePackage: vi.fn().mockResolvedValue({

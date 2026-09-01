@@ -67,6 +67,7 @@ import {
   readHeaderFooter,
   setElementLink,
   createBlankPptx,
+  fingerprintPresentation,
   deleteElement,
   deleteSlide,
   deleteSlideComment,
@@ -148,6 +149,7 @@ import {
   type Slide,
   type TextElement,
 } from '@wiswork/pptx-engine'
+import { inspectSlidesAcceptanceLease } from './operations/acceptance-authority'
 import { buildRenderSlide, EMU_PER_PX_96, type RenderSlide } from '@wiswork/pptx-render'
 import { refineComplexWidths, shapedMetricsReady } from './shaped-metrics'
 import { applyEditParagraphs, collectParagraphFormatPatches, levelsChanged } from './edit-text'
@@ -1327,10 +1329,19 @@ export function registerSlidesIpc(): void {
   })
 
   // Read-only: RenderSlide for every page of the current session (E2E driver/debug use, no state change)
-  handle('slides:get-render-slides', (e) => {
+  handle('slides:get-render-slides', async (e) => {
     const session = sessions.get(e.sender.id)
     if (!session) return null
-    return session.opened.deck.slides.map((_, i) => rebuildSlide(session, i))
+    const generation = session.mutationGeneration ?? 0
+    const lease = await inspectSlidesAcceptanceLease(session)
+    if (!lease || (session.mutationGeneration ?? 0) !== generation) return null
+    const slides = session.opened.deck.slides.map((_, i) => rebuildSlide(session, i))
+    if (
+      (session.mutationGeneration ?? 0) !== generation ||
+      (await fingerprintPresentation(session.opened)) !== lease.revision
+    )
+      return null
+    return { slides, ...lease }
   })
 
   handle('slides:get-quality-identity-map', (e, slideIndex: number) => {

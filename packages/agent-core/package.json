@@ -5,6 +5,9 @@
   "private": true,
   "type": "module",
   "description": "Generic ReAct agent loop: pluggable skills (tools + prompt + context), pluggable LLM transport; shared by AI Docs and future apps (Excel / PPT)",
+  "dependencies": {
+    "@wiswork/presentation-verification": "*"
+  },
   "exports": {
     ".": "./src/index.ts"
   },

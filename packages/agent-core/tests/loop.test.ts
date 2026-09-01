@@ -9,6 +9,7 @@ import {
   type AgentToolCall,
   type AgentTransport,
   type FinalResponseReviewContext,
+  type PresentationTaskHooks,
   type ToolExecution,
   type ToolExecutionOutcome,
   suspendToolExecution,
@@ -55,7 +56,808 @@ function makeSkill(execute?: (call: AgentToolCall) => ToolExecutionOutcome): Age
 
 const flush = () => new Promise((r) => setTimeout(r, 0))
 
+const contract = {
+  version: 1 as const,
+  taskId: 'task-1',
+  documentToken: 'doc-1',
+  sessionToken: 'session-1',
+  baseRevision: `sha256:${'a'.repeat(64)}`,
+  affectedSlides: [2],
+  referenceSlides: [],
+  checks: [
+    {
+      id: 'check-1',
+      kind: 'element_property' as const,
+      slide: 2,
+      roleOrTarget: { kind: 'role' as const, role: 'title' as const },
+      property: 'color' as const,
+      expected: '#112233',
+    },
+  ],
+  maxCorrectionPasses: 2 as const,
+}
+
+const receipt = (status: 'verified' | 'applied_unverified' = 'verified') => ({
+  version: 1 as const,
+  taskId: 'task-1',
+  status,
+  mutationReceiptIds: ['mutation-1'],
+  passedCheckIds: status === 'verified' ? ['check-1'] : [],
+  failedCheckIds: [],
+  unavailableCheckIds: status === 'applied_unverified' ? ['check-1'] : [],
+  correctionPasses: 0,
+  affectedSlides: [2],
+  ...(status === 'applied_unverified' ? { safeCode: 'screenshot_unavailable' as const } : {}),
+})
+
+const unchangedReceipt = () => ({
+  version: 1 as const,
+  taskId: 'task-1',
+  status: 'unchanged' as const,
+  mutationReceiptIds: [],
+  passedCheckIds: ['check-1'],
+  failedCheckIds: [],
+  unavailableCheckIds: [],
+  correctionPasses: 0,
+  affectedSlides: [2],
+})
+
+const failedReceipt = () => ({
+  version: 1 as const,
+  taskId: 'task-1',
+  status: 'failed' as const,
+  mutationReceiptIds: [],
+  passedCheckIds: [],
+  failedCheckIds: ['check-1'],
+  unavailableCheckIds: [],
+  correctionPasses: 0,
+  affectedSlides: [2],
+  safeCode: 'mutation_failed' as const,
+})
+
 describe('AgentLoop', () => {
+  describe('presentation task orchestration', () => {
+    it('enrolls exact tool calls before the first dispatch and closes through a receipt', async () => {
+      let dispatched = false
+      const enroll = vi.fn(async (calls: readonly AgentToolCall[]) => {
+        expect(dispatched).toBe(false)
+        expect(calls).toHaveLength(1)
+        return { kind: 'ready' as const, contract }
+      })
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'call-1', name: 'do_thing', input: { slideIndex: 1 } })
+          cb.onDone()
+        },
+        (cb) => cb.onDone(),
+      ])
+      const done = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(() => {
+            dispatched = true
+            return { output: 'ok', summary: 'done', mutated: true }
+          }),
+          presentation: {
+            prepare: () => ({ kind: 'bypass' }),
+            enroll,
+            complete: () => ({ kind: 'receipt', receipt: receipt() }),
+          },
+        },
+        events: { onDone: done },
+      })
+      loop.run('edit')
+      await flush()
+      await flush()
+      expect(enroll).toHaveBeenCalledOnce()
+      expect(dispatched).toBe(true)
+      expect(done).toHaveBeenCalledWith(
+        expect.objectContaining({ presentation: expect.objectContaining({ status: 'verified' }) }),
+      )
+    })
+
+    it('accepts authoritative host correction passes without double-counting model turns', async () => {
+      const hostCorrected = { ...receipt(), correctionPasses: 2 }
+      const done = vi.fn()
+      const loop = new AgentLoop({
+        transport: scriptedTransport([
+          (cb) => {
+            cb.onToolCall({ id: 'call-1', name: 'do_thing', input: { slideIndex: 1 } })
+            cb.onDone()
+          },
+          (cb) => cb.onDone(),
+        ]),
+        skill: {
+          ...makeSkill(() => ({ output: 'ok', summary: 'done', mutated: true })),
+          presentation: {
+            prepare: () => ({ kind: 'bypass' }),
+            enroll: () => ({ kind: 'ready', contract }),
+            complete: () => ({ kind: 'receipt', receipt: hostCorrected }),
+          },
+        },
+        events: { onDone: done },
+      })
+      loop.run('edit')
+      await flush()
+      await flush()
+      expect(done).toHaveBeenCalledWith(
+        expect.objectContaining({ presentation: expect.objectContaining({ correctionPasses: 2 }) }),
+      )
+    })
+
+    it('audits a deferred completion after reset without updating the new session', async () => {
+      let resolveCompletion!: (value: ReturnType<typeof receipt>) => void
+      const abandoned = vi.fn()
+      const abandonHostLifecycle = vi.fn()
+      const done = vi.fn()
+      const loop = new AgentLoop({
+        transport: scriptedTransport([
+          (cb) => {
+            cb.onToolCall({ id: 'call-1', name: 'do_thing', input: { slideIndex: 1 } })
+            cb.onDone()
+          },
+          (cb) => cb.onDone(),
+        ]),
+        skill: {
+          ...makeSkill(() => ({ output: 'ok', summary: 'done', mutated: true })),
+          presentation: {
+            abandon: abandonHostLifecycle,
+            prepare: () => ({ kind: 'bypass' }),
+            enroll: () => ({ kind: 'ready', contract }),
+            complete: () =>
+              new Promise((resolve) => {
+                resolveCompletion = (value) => resolve({ kind: 'receipt', receipt: value })
+              }),
+          },
+        },
+        events: { onDone: done, onAbandonedPresentationCompletion: abandoned },
+      })
+      loop.run('edit')
+      await flush()
+      await flush()
+      loop.reset()
+      expect(abandonHostLifecycle).toHaveBeenCalledOnce()
+      resolveCompletion(receipt())
+      await flush()
+      expect(abandoned).toHaveBeenCalledWith(
+        expect.objectContaining({
+          documentToken: contract.documentToken,
+          sessionToken: contract.sessionToken,
+          receipt: expect.objectContaining({ status: 'verified' }),
+        }),
+      )
+      expect(done).not.toHaveBeenCalled()
+      expect(loop.messages).toEqual([])
+    })
+
+    it('dispatches zero tools when authoritative enrollment fails', async () => {
+      const execute = vi.fn(() => ({ output: 'ok', summary: 'done', mutated: true }))
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'call-1', name: 'do_thing', input: { slideIndex: 1 } })
+          cb.onDone()
+        },
+      ])
+      const error = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(execute),
+          presentation: {
+            prepare: () => ({ kind: 'bypass' }),
+            enroll: async () => {
+              throw new Error('stale')
+            },
+            complete: () => ({ kind: 'receipt', receipt: receipt() }),
+          },
+        },
+        events: { onError: error },
+      })
+      loop.run('edit')
+      await flush()
+      expect(execute).not.toHaveBeenCalled()
+      expect(error).toHaveBeenCalledWith('presentation_enrollment_unavailable')
+    })
+    it('emits a bounded enrollment plan once before dispatch', async () => {
+      const onPresentationPlan = vi.fn()
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'call-1', name: 'do_thing', input: { slideIndex: 1 } })
+          cb.onDone()
+        },
+        (cb) => cb.onDone(),
+      ])
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: {
+            prepare: () => ({ kind: 'bypass' }),
+            enroll: () => ({
+              kind: 'ready',
+              contract,
+              plan: ['apply', 'verify'],
+              requiresConfirmation: true,
+            }),
+            complete: () => ({ kind: 'receipt', receipt: receipt() }),
+          },
+        },
+        events: { onPresentationPlan },
+      })
+      loop.run('edit')
+      await flush()
+      await flush()
+      expect(onPresentationPlan).toHaveBeenCalledOnce()
+      expect(onPresentationPlan).toHaveBeenCalledWith({
+        steps: ['apply', 'verify'],
+        requiresConfirmation: true,
+      })
+    })
+    it('lets a simple presentation task bypass clarification and planning UI', async () => {
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onDelta('No edit needed')
+          cb.onDone()
+        },
+      ])
+      const hooks: PresentationTaskHooks = {
+        prepare: vi.fn(() => ({ kind: 'bypass' as const })),
+        complete: vi.fn(),
+      }
+      const onPresentationClarify = vi.fn()
+      const onPresentationPlan = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: { ...makeSkill(), presentation: hooks },
+        events: { onPresentationClarify, onPresentationPlan },
+      })
+
+      loop.run('make title blue')
+      await flush()
+
+      expect(onPresentationClarify).not.toHaveBeenCalled()
+      expect(onPresentationPlan).not.toHaveBeenCalled()
+      expect(transport.requests).toHaveLength(1)
+    })
+
+    it('asks one bounded clarification and does not dispatch tools or the provider', async () => {
+      const transport = scriptedTransport([])
+      const executeTool = vi.fn()
+      const onPresentationClarify = vi.fn()
+      const onDone = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(executeTool),
+          presentation: {
+            prepare: () => ({ kind: 'clarify', question: 'Which slide is the reference?' }),
+            complete: vi.fn(),
+          },
+        },
+        events: { onPresentationClarify, onDone },
+      })
+
+      loop.run('make these consistent')
+      await flush()
+
+      expect(onPresentationClarify).toHaveBeenCalledOnce()
+      expect(transport.requests).toHaveLength(0)
+      expect(executeTool).not.toHaveBeenCalled()
+      expect(onDone).toHaveBeenCalledWith(expect.objectContaining({ cancelled: false }))
+    })
+
+    it('emits a host-authored plan and rejects confirmation before any dispatch', async () => {
+      const transport = scriptedTransport([])
+      const executeTool = vi.fn()
+      const onPresentationPlan = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(executeTool),
+          presentation: {
+            prepare: () => ({
+              kind: 'ready',
+              plan: ['Update slides 2–3', 'Verify rendered output'],
+              requiresConfirmation: true,
+              contract,
+            }),
+            confirm: vi.fn(() => false),
+            complete: vi.fn(),
+          },
+        },
+        events: { onPresentationPlan },
+      })
+
+      loop.run('update and verify slides 2–3')
+      await flush()
+
+      expect(onPresentationPlan).toHaveBeenCalledWith({
+        steps: ['Update slides 2–3', 'Verify rendered output'],
+        requiresConfirmation: true,
+      })
+      expect(transport.requests).toHaveLength(0)
+      expect(executeTool).not.toHaveBeenCalled()
+    })
+
+    it('uses a valid contract-bound receipt as terminal response facts', async () => {
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+          cb.onDone()
+        },
+        (cb) => {
+          cb.onDelta('Anything the model says')
+          cb.onDone()
+        },
+      ])
+      const onDone = vi.fn()
+      const onText = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: {
+            prepare: () => ({ kind: 'ready', contract }),
+            complete: () => ({ kind: 'receipt', receipt: receipt() }),
+          },
+        },
+        events: { onDone, onText },
+      })
+
+      loop.run('edit slide 2')
+      await flush()
+      await flush()
+
+      expect(onDone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'presentation:verified;slides=2;passed=1;failed=0;unavailable=0;corrections=0;rollback=false',
+          presentation: expect.objectContaining({ status: 'verified', affectedSlides: [2] }),
+        }),
+      )
+      expect(loop.messages.at(-1)).toEqual({
+        role: 'assistant',
+        text: 'presentation:verified;slides=2;passed=1;failed=0;unavailable=0;corrections=0;rollback=false',
+      })
+    })
+    it('uses host-localized receipt text as the single authoritative terminal text', async () => {
+      const onText = vi.fn()
+      const onDone = vi.fn()
+      const loop = new AgentLoop({
+        transport: scriptedTransport([
+          (cb) => {
+            cb.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+            cb.onDone()
+          },
+          (cb) => cb.onDone(),
+        ]),
+        skill: {
+          ...makeSkill(),
+          presentation: {
+            prepare: () => ({ kind: 'ready', contract }),
+            complete: () => ({ kind: 'receipt', receipt: receipt() }),
+          },
+        },
+        events: { onText, onDone, onPresentationReceipt: () => '已验证' },
+      })
+      loop.run('edit')
+      await flush()
+      await flush()
+      expect(onText).toHaveBeenLastCalledWith('已验证')
+      expect(onText).not.toHaveBeenCalledWith(expect.stringContaining('presentation:'))
+      expect(onDone).toHaveBeenCalledWith(expect.objectContaining({ text: '已验证' }))
+      expect(loop.messages.at(-1)).toMatchObject({ role: 'assistant', text: '已验证' })
+    })
+
+    it('reconciles a tool-free model success claim into authoritative unchanged truth', async () => {
+      const complete = vi.fn(() => ({ kind: 'receipt' as const, receipt: unchangedReceipt() }))
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onDelta('Everything was successfully changed!')
+          cb.onDone()
+        },
+      ])
+      const onDone = vi.fn()
+      const onText = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
+        },
+        events: { onDone, onText },
+      })
+
+      loop.run('make title blue')
+      await flush()
+
+      expect(complete).toHaveBeenCalledWith(expect.objectContaining({ mutated: false }))
+      expect(onDone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'presentation:unchanged;slides=2;passed=1;failed=0;unavailable=0;corrections=0;rollback=false',
+          presentation: expect.objectContaining({ status: 'unchanged' }),
+        }),
+      )
+      expect(JSON.stringify(loop.messages)).not.toContain('successfully changed')
+      expect(onText).toHaveBeenLastCalledWith(
+        'presentation:unchanged;slides=2;passed=1;failed=0;unavailable=0;corrections=0;rollback=false',
+      )
+    })
+
+    it('reconciles an all-mutated-false tool round into authoritative failed truth', async () => {
+      const complete = vi.fn(() => ({ kind: 'receipt' as const, receipt: failedReceipt() }))
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+          cb.onDone()
+        },
+        (cb) => {
+          cb.onDelta('The edit succeeded')
+          cb.onDone()
+        },
+      ])
+      const onDone = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(() => ({ output: 'not applied', summary: 'failed', mutated: false })),
+          presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
+        },
+        events: { onDone },
+      })
+
+      loop.run('edit')
+      await flush()
+      await flush()
+
+      expect(complete).toHaveBeenCalledWith(expect.objectContaining({ mutated: false }))
+      expect(onDone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'presentation:failed;slides=2;passed=0;failed=1;unavailable=0;corrections=0;rollback=false;code=mutation_failed',
+          presentation: expect.objectContaining({ status: 'failed' }),
+        }),
+      )
+    })
+
+    it('never retries applied-unverified and does not accept terminal success without a valid receipt', async () => {
+      const complete = vi.fn(() => ({
+        kind: 'receipt' as const,
+        receipt: receipt('applied_unverified'),
+      }))
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+          cb.onDone()
+        },
+        (cb) => {
+          cb.onDelta('done')
+          cb.onDone()
+        },
+      ])
+      const onDone = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
+        },
+        events: { onDone },
+      })
+
+      loop.run('edit slide 2')
+      await flush()
+      await flush()
+
+      expect(complete).toHaveBeenCalledOnce()
+      expect(transport.requests).toHaveLength(2)
+      expect(onDone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          presentation: expect.objectContaining({ status: 'applied_unverified' }),
+        }),
+      )
+
+      const invalidDone = vi.fn()
+      const invalidLoop = new AgentLoop({
+        transport: scriptedTransport([
+          (cb) => {
+            cb.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+            cb.onDone()
+          },
+          (cb) => {
+            cb.onDelta('verified')
+            cb.onDone()
+          },
+        ]),
+        skill: {
+          ...makeSkill(),
+          presentation: {
+            prepare: () => ({ kind: 'ready', contract }),
+            complete: () => ({
+              kind: 'receipt',
+              receipt: { ...receipt(), mutationReceiptIds: [] },
+            }),
+          },
+        },
+        events: { onDone: invalidDone },
+      })
+      invalidLoop.run('edit')
+      await flush()
+      await flush()
+      expect(invalidDone).not.toHaveBeenCalledWith(
+        expect.objectContaining({ presentation: expect.objectContaining({ status: 'verified' }) }),
+      )
+    })
+
+    it('runs at most contract-bounded corrective turns and cancellation preserves dispatch truth', async () => {
+      const complete = vi
+        .fn()
+        .mockReturnValueOnce({ kind: 'correct', instruction: 'Correct check-1 only' })
+        .mockReturnValueOnce({
+          kind: 'receipt',
+          receipt: {
+            ...receipt(),
+            correctionPasses: 1,
+            mutationReceiptIds: ['mutation-1', 'mutation-2'],
+          },
+        })
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+          cb.onDone()
+        },
+        (cb) => {
+          cb.onDelta('premature')
+          cb.onDone()
+        },
+        (cb) => {
+          cb.onToolCall({ id: 'fix', name: 'do_thing', input: {} })
+          cb.onDone()
+        },
+        (cb) => {
+          cb.onDelta('fixed')
+          cb.onDone()
+        },
+      ])
+      const onPresentationCorrection = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
+        },
+        events: { onPresentationCorrection },
+      })
+      loop.run('edit')
+      await flush()
+      await flush()
+      await flush()
+      await flush()
+      expect(complete).toHaveBeenCalledTimes(2)
+      expect(transport.requests).toHaveLength(4)
+      expect(onPresentationCorrection).toHaveBeenCalledWith({ pass: 1, maximum: 2 })
+      expect(loop.messages.map((message) => message.role)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+        'assistant',
+        'user',
+        'assistant',
+        'tool',
+        'assistant',
+      ])
+    })
+
+    it('cancels before dispatch with zero-mutation receipt truth', async () => {
+      const complete = vi.fn(() => ({ kind: 'receipt' as const, receipt: unchangedReceipt() }))
+      const transport = scriptedTransport([() => {}])
+      const onDone = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
+        },
+        events: { onDone },
+      })
+
+      loop.run('edit')
+      await flush()
+      loop.cancel()
+      await flush()
+
+      expect(complete).toHaveBeenCalledWith(
+        expect.objectContaining({ mutated: false, cancelled: true }),
+      )
+      expect(onDone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cancelled: true,
+          presentation: expect.objectContaining({ status: 'unchanged' }),
+        }),
+      )
+      expect(loop.messages.map((message) => message.role)).toEqual(['user', 'assistant'])
+    })
+
+    it('reconciles a cancellation after dispatch and reports the applied receipt truth', async () => {
+      const complete = vi.fn(() => ({
+        kind: 'receipt' as const,
+        receipt: receipt('applied_unverified'),
+      }))
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+          cb.onDone()
+        },
+        () => {},
+      ])
+      const onDone = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
+        },
+        events: { onDone },
+      })
+
+      loop.run('edit')
+      await flush()
+      await flush()
+      loop.cancel()
+      await flush()
+
+      expect(complete).toHaveBeenCalledWith(
+        expect.objectContaining({ mutated: true, cancelled: true }),
+      )
+      expect(onDone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cancelled: true,
+          presentation: expect.objectContaining({ status: 'applied_unverified' }),
+        }),
+      )
+      expect(loop.messages.map((message) => message.role)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+        'assistant',
+      ])
+    })
+
+    it('does not abort an async completion reconciliation when cancel races after dispatch', async () => {
+      let settle!: () => void
+      let reconciliationAborted = false
+      const complete = vi.fn(
+        ({ signal }: { signal?: AbortSignal }) =>
+          new Promise<{ kind: 'receipt'; receipt: ReturnType<typeof receipt> }>((resolve) => {
+            settle = () => resolve({ kind: 'receipt', receipt: receipt('applied_unverified') })
+            signal?.addEventListener('abort', () => {
+              reconciliationAborted = true
+            })
+          }),
+      )
+      const callbacks: AgentStreamCallbacks[] = []
+      const transport: AgentTransport = {
+        stream: (_request, cb) => {
+          callbacks.push(cb)
+          return { cancel: () => queueMicrotask(() => cb.onDone()) }
+        },
+      }
+      const onDone = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
+        },
+        events: { onDone },
+      })
+
+      loop.run('edit')
+      await flush()
+      callbacks[0]!.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+      callbacks[0]!.onDone()
+      await flush()
+      callbacks[1]!.onDelta('done')
+      callbacks[1]!.onDone()
+      await flush()
+      loop.cancel()
+      settle()
+      await flush()
+
+      expect(complete.mock.calls[0]![0].signal?.aborted).toBe(false)
+      expect(reconciliationAborted).toBe(false)
+      expect(onDone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          presentation: expect.objectContaining({ status: 'applied_unverified' }),
+        }),
+      )
+    })
+
+    it('ignores a pending completion rejection after reset without polluting state or events', async () => {
+      let rejectCompletion!: (error: Error) => void
+      const complete = vi.fn(
+        () =>
+          new Promise<never>((_resolve, reject) => {
+            rejectCompletion = reject
+          }),
+      )
+      const callbacks: AgentStreamCallbacks[] = []
+      const transport: AgentTransport = {
+        stream: (_request, cb) => {
+          callbacks.push(cb)
+          return { cancel: () => queueMicrotask(() => cb.onDone()) }
+        },
+      }
+      const onDone = vi.fn()
+      const onError = vi.fn()
+      const onText = vi.fn()
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: { prepare: () => ({ kind: 'ready', contract }), complete },
+        },
+        events: { onDone, onError, onText },
+      })
+
+      loop.run('edit')
+      await flush()
+      callbacks[0]!.onToolCall({ id: 'write', name: 'do_thing', input: {} })
+      callbacks[0]!.onDone()
+      await flush()
+      callbacks[1]!.onDelta('success')
+      callbacks[1]!.onDone()
+      await flush()
+      expect(complete).toHaveBeenCalledOnce()
+
+      loop.reset()
+      onText.mockClear()
+      rejectCompletion(new Error('late reconciliation failure'))
+      await flush()
+
+      expect(loop.busy).toBe(false)
+      expect(loop.messages).toEqual([])
+      expect(onDone).not.toHaveBeenCalled()
+      expect(onError).not.toHaveBeenCalled()
+      expect(onText).not.toHaveBeenCalled()
+    })
+
+    it('replaces streamed model success with authoritative error text before reporting failure', async () => {
+      const transport = scriptedTransport([
+        (cb) => {
+          cb.onDelta('Successfully changed everything')
+          cb.onDone()
+        },
+      ])
+      const calls: string[] = []
+      const onText = vi.fn((text: string) => calls.push(`text:${text}`))
+      const onError = vi.fn((error: string) => calls.push(`error:${error}`))
+      const loop = new AgentLoop({
+        transport,
+        skill: {
+          ...makeSkill(),
+          presentation: {
+            prepare: () => ({ kind: 'ready', contract }),
+            complete: () => ({ kind: 'receipt', receipt: { invalid: true } as never }),
+          },
+        },
+        events: { onText, onError },
+      })
+
+      loop.run('edit')
+      await flush()
+
+      expect(calls).toEqual([
+        'text:Successfully changed everything',
+        'text:presentation:error;code=presentation_receipt_invalid',
+        'error:presentation_receipt_invalid',
+      ])
+      expect(loop.messages.at(-1)).toEqual({
+        role: 'assistant',
+        text: 'presentation:error;code=presentation_receipt_invalid',
+      })
+    })
+  })
+
   it('reviews one normal tool-free completion and retries without finishing the UI turn', async () => {
     const transport = scriptedTransport([
       (cb) => {

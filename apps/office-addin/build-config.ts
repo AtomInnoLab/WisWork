@@ -20,7 +20,6 @@ export interface OfficeCapabilityFlags {
   skillPackages: boolean
   importMedia: boolean
 }
-
 function exactFlag(value: string | undefined, defaultValue: boolean): boolean {
   if (value === undefined || value === '') return defaultValue
   if (value === '1') return true

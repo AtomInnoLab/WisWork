@@ -20,6 +20,7 @@ const workspaceAlias = {
     here,
     '../../packages/pptx-render/src/preset-geometry.ts',
   ),
+  '@wiswork/pptx-render/coords': resolve(here, '../../packages/pptx-render/src/coords.ts'),
   '@wiswork/pptx-engine': resolve(here, '../../packages/pptx-engine/src/index.ts'),
   '@wiswork/pptx-render': resolve(here, '../../packages/pptx-render/src/index.ts'),
 }
@@ -50,6 +51,11 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
   },
   renderer: {
+    define: {
+      __WISWORK_SLIDES_ACCEPTANCE_E2E__: JSON.stringify(
+        process.env.WISWORK_SLIDES_ACCEPTANCE_E2E === '1',
+      ),
+    },
     resolve: { alias: workspaceAlias },
     plugins: [react()],
     server: {

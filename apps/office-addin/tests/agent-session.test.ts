@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { bindAuthLoss, createOfficeAgentSession } from '../src/agent/use-office-agent.js'
 import type { ProposalDecision, StructuredProposal } from '../src/agent/proposal-controller.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
+import type { OfficePowerPointVisualReviewer } from '../src/skills/powerpoint/powerpoint-verification.js'
 
 function transportHarness() {
   let callbacks: AgentStreamCallbacks | undefined
@@ -980,5 +981,37 @@ describe('Office agent session', () => {
     expect(signedOut).toHaveBeenCalledOnce()
     disconnect()
     expect(authLoss).toBeUndefined()
+  })
+
+  it('cancels a deferred isolated visual review when reconciliation is aborted', async () => {
+    const harness = transportHarness()
+    let reviewer: OfficePowerPointVisualReviewer | undefined
+    createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'powerpoint-review',
+        systemPrompt: 'test',
+        tools: [],
+        executeTool: vi.fn(),
+        presentation: {
+          prepare: () => ({ kind: 'bypass' }),
+          complete: vi.fn(),
+          setReviewer: (value: OfficePowerPointVisualReviewer) => {
+            reviewer = value
+          },
+        } as never,
+      },
+      proposals: proposalsHarness().controller,
+    })
+    const controller = new AbortController()
+    const pending = reviewer!.review({
+      facts: {} as never,
+      images: [],
+      isolation: { tools: [], maxTurns: 1 },
+      signal: controller.signal,
+    })
+    controller.abort()
+    await expect(pending).resolves.toMatchObject({ status: 'cannot_verify' })
+    expect(harness.cancel).toHaveBeenCalledOnce()
   })
 })

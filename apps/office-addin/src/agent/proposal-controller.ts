@@ -25,6 +25,11 @@ export interface StructuredProposal {
 }
 
 export interface StructuredProposalRequest extends Omit<StructuredProposal, 'id'> {
+  verificationBinding?: {
+    callId: string
+    fingerprint: string
+    targets: string[]
+  }
   validate(signal?: AbortSignal): boolean | Promise<boolean>
   execute(signal?: AbortSignal): void | Promise<void>
   verify?(signal?: AbortSignal): void | Promise<void>
@@ -36,6 +41,7 @@ export type ProposalDecision =
   | { status: 'failed'; error: string }
 
 interface ProposalDecisionLifecycle {
+  id: string
   promise: Promise<ProposalDecision>
   resolve(value: ProposalDecision): void
   settled: boolean
@@ -50,7 +56,19 @@ export interface StructuredProposalController {
   reject(): void
   newTurn(): void
   logout(): void
+  subscribeAudit?(listener: (event: StructuredProposalAuditEvent) => void): () => void
 }
+
+export type StructuredProposalAuditEvent =
+  | {
+      kind: 'proposed'
+      id: string
+      toolName?: string
+      fingerprint: string
+      targets: string[]
+      verificationBinding?: { callId: string; fingerprint: string; targets: string[] }
+    }
+  | { kind: 'settled'; id: string; status: ProposalDecision['status']; error?: string }
 
 export interface OfficeProposal {
   id: string
@@ -136,12 +154,14 @@ export function createStructuredProposalController(
     | undefined
   let confirming: AbortController | undefined
   const listeners = new Set<() => void>()
+  const auditListeners = new Set<(event: StructuredProposalAuditEvent) => void>()
   const snapshot = (value: StructuredProposal) => deepFreeze(boundedCopy(value))
   const publish = () => listeners.forEach((listener) => listener())
   const settle = (decision: ProposalDecisionLifecycle, value: ProposalDecision) => {
     if (decision.settled) return
     decision.settled = true
     decision.resolve(value)
+    auditListeners.forEach((listener) => listener({ kind: 'settled', id: decision.id, ...value }))
   }
   const invalidate = (status: 'rejected' | 'cancelled') => {
     if (current) settle(current.decision, { status })
@@ -177,7 +197,14 @@ export function createStructuredProposalController(
         !Number.isSafeInteger(request.impact.count) ||
         request.impact.count < 0 ||
         request.impact.targets.length > 256 ||
-        request.impact.targets.some((target) => !target || target.length > 512)
+        request.impact.targets.some((target) => !target || target.length > 512) ||
+        (request.verificationBinding !== undefined &&
+          (!request.verificationBinding.callId ||
+            request.verificationBinding.callId.length > 128 ||
+            !request.verificationBinding.fingerprint ||
+            request.verificationBinding.fingerprint.length > 128 ||
+            request.verificationBinding.targets.length > 256 ||
+            request.verificationBinding.targets.some((target) => !target || target.length > 512)))
       )
         invalidProposal()
       const publicValue = snapshot({
@@ -201,8 +228,25 @@ export function createStructuredProposalController(
       current = {
         snapshot: publicValue,
         request: { ...request },
-        decision: { promise, resolve, settled: false },
+        decision: { id: publicValue.id, promise, resolve, settled: false },
       }
+      auditListeners.forEach((listener) =>
+        listener({
+          kind: 'proposed',
+          id: publicValue.id,
+          ...(publicValue.toolName ? { toolName: publicValue.toolName } : {}),
+          fingerprint: publicValue.fingerprint,
+          targets: [...publicValue.impact.targets],
+          ...(request.verificationBinding
+            ? {
+                verificationBinding: {
+                  ...request.verificationBinding,
+                  targets: [...request.verificationBinding.targets],
+                },
+              }
+            : {}),
+        }),
+      )
       publish()
       return snapshot(publicValue)
     },
@@ -248,6 +292,10 @@ export function createStructuredProposalController(
     reject: () => invalidate('rejected'),
     newTurn: () => invalidate('cancelled'),
     logout: () => invalidate('cancelled'),
+    subscribeAudit(listener) {
+      auditListeners.add(listener)
+      return () => auditListeners.delete(listener)
+    },
   }
 }
 

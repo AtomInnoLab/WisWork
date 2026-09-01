@@ -159,10 +159,31 @@ export interface PowerPointAdapter {
     operations: PowerPointDeclarativeOperation[],
     signal?: AbortSignal,
   ): Promise<{ createdShapeIds: string[]; insertedSlideId?: string }>
+  readShapeTextStyle?(
+    slideIndex: number,
+    shapeId: string,
+    signal?: AbortSignal,
+  ): Promise<{
+    color?: string
+    fontFamily?: string
+    fontSize?: number
+    bold?: boolean
+    italic?: boolean
+  }>
 }
 
 export type PowerPointDeclarativeOperation =
   | { op: 'set_shape_text'; slide_index: number; shape_id: string; text: string }
+  | {
+      op: 'set_shape_text_style'
+      slide_index: number
+      shape_id: string
+      color?: string
+      fontFamily?: string
+      fontSize?: number
+      bold?: boolean
+      italic?: boolean
+    }
   | { op: 'duplicate_slide'; slide_index: number }
   | {
       op: 'set_shape_geometry'
@@ -172,6 +193,7 @@ export type PowerPointDeclarativeOperation =
       top: number
       width: number
       height: number
+      reference_slide_index?: number
     }
   | {
       op: 'add_text_box'
@@ -308,6 +330,33 @@ function slideSemanticFingerprint(value: string): string {
 }
 
 export class BrowserPowerPointAdapter implements PowerPointAdapter {
+  async readShapeTextStyle(slideIndex: number, shapeId: string, signal?: AbortSignal) {
+    return this.run('1.4', async (context) => {
+      const presentation = context.presentation as RuntimeRecord
+      const slide = await getSlide(
+        context,
+        presentation.slides as RuntimeRecord,
+        slideIndex,
+        signal,
+      )
+      const shape = ((slide.shapes as RuntimeRecord).getItem as (id: string) => RuntimeRecord)(
+        shapeId,
+      )
+      const range = (shape.textFrame as RuntimeRecord | undefined)?.textRange as
+        RuntimeRecord | undefined
+      const font = range?.font as RuntimeRecord | undefined
+      if (!font || typeof font.load !== 'function') throw new Error('office_api_unsupported')
+      ;(font.load as (properties: string) => void)('color,name,size,bold,italic')
+      await sync(context, signal)
+      return {
+        color: string(font.color),
+        fontFamily: string(font.name),
+        fontSize: finite(font.size),
+        bold: font.bold === true,
+        italic: font.italic === true,
+      }
+    })
+  }
   private run<T>(
     minimumVersion: '1.4' | '1.8' | '1.10',
     callback: (context: RuntimeRecord) => Promise<T>,
@@ -662,6 +711,9 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         const textRange = textFrame?.textRange as RuntimeRecord | undefined
         if (textFrame?.hasText === true && textRange && typeof textRange.load === 'function')
           (textRange.load as (properties: string) => void)('text')
+        const font = textRange?.font as RuntimeRecord | undefined
+        if (textFrame?.hasText === true && font && typeof font.load === 'function')
+          (font.load as (properties: string) => void)('color,name,size,bold,italic')
       }
       await sync(context, signal)
       const slideId = string(slide.id)
@@ -672,6 +724,17 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           return {
             ...shapeInfo(shape),
             text: textFrame?.hasText === true ? string(textRange?.text, MAX_POWERPOINT_TEXT) : '',
+            ...(textFrame?.hasText === true && textRange?.font
+              ? {
+                  textStyle: {
+                    color: string((textRange.font as RuntimeRecord).color),
+                    fontFamily: string((textRange.font as RuntimeRecord).name),
+                    fontSize: finite((textRange.font as RuntimeRecord).size),
+                    bold: (textRange.font as RuntimeRecord).bold === true,
+                    italic: (textRange.font as RuntimeRecord).italic === true,
+                  },
+                }
+              : {}),
           }
         })
         .sort((first, second) => first.id.localeCompare(second.id))
@@ -1042,6 +1105,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         if (
           operation.op === 'set_shape_text' ||
           operation.op === 'set_shape_geometry' ||
+          operation.op === 'set_shape_text_style' ||
           operation.op === 'delete_shape'
         ) {
           const shapes = slide.shapes as RuntimeRecord
@@ -1061,6 +1125,19 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             queued.push(() => {
               textRange.text = operation.text
             })
+          } else if (operation.op === 'set_shape_text_style') {
+            const range = (shape.textFrame as RuntimeRecord | undefined)?.textRange as
+              RuntimeRecord | undefined
+            const font = range?.font as RuntimeRecord | undefined
+            if (!font) throw new Error('office_api_unsupported')
+            queued.push(() => {
+              if (operation.color !== undefined) font.color = operation.color
+              if (operation.fontFamily !== undefined) font.name = operation.fontFamily
+              if (operation.fontSize !== undefined) font.size = operation.fontSize
+              if (operation.bold !== undefined) font.bold = operation.bold
+              if (operation.italic !== undefined) font.italic = operation.italic
+            })
+            hasUnrecoverableMutation = true
           } else if (operation.op === 'set_shape_geometry') {
             if (typeof shape.load !== 'function') throw new Error('office_api_unsupported')
             ;(shape.load as (properties: string) => void)('left,top,width,height')

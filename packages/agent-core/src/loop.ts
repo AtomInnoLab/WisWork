@@ -1,4 +1,11 @@
-import type { AgentSkill } from './skill'
+import type { AgentSkill, PresentationTaskPreparation } from './skill'
+import {
+  parsePresentationAcceptanceContract,
+  parsePresentationCompletionReceipt,
+  renderPresentationCompletionFacts,
+  type PresentationAcceptanceContract,
+  type PresentationCompletionFacts,
+} from '@wiswork/presentation-verification'
 import type {
   AgentImage,
   AgentMessage,
@@ -30,6 +37,9 @@ export interface AgentRunResult {
   turnLimit: boolean
   /** the final turn hit the token limit (stop_reason max_tokens): text is incomplete; set only when true */
   truncated?: boolean
+  /** Authoritative, receipt-derived facts for presentation mutation runs. */
+  presentation?: PresentationCompletionFacts
+  clarification?: true
 }
 
 export interface AgentLoopEvents<TSnapshot> {
@@ -42,6 +52,20 @@ export interface AgentLoopEvents<TSnapshot> {
   onTurnEnd?(): void
   onDone?(result: AgentRunResult): void
   onError?(error: string): void
+  onPresentationClarify?(event: { question: string }): void
+  onPresentationPlan?(event: { steps: string[]; requiresConfirmation: boolean }): void
+  onPresentationCorrection?(event: { pass: number; maximum: number }): void
+  onPresentationReceipt?(event: {
+    receipt: import('@wiswork/presentation-verification').PresentationCompletionReceipt
+    facts: PresentationCompletionFacts
+  }): string | undefined
+  /** Host audit sink for a proved mutation whose UI session was reset during reconciliation. */
+  onAbandonedPresentationCompletion?(event: {
+    documentToken: string
+    sessionToken: string
+    receipt: import('@wiswork/presentation-verification').PresentationCompletionReceipt
+    facts: PresentationCompletionFacts
+  }): void
 }
 
 /** Context compaction config (budget tracked in UTF-8 bytes rather than message count) */
@@ -94,6 +118,9 @@ const FINAL_RESPONSE_REVIEW_TRUNCATION = '\n[response truncated for review]\n'
 /** Static corrective guidance should remain much smaller than a normal prompt. */
 const FINAL_RESPONSE_CORRECTION_MAX_CHARS = 2_000
 const FINAL_RESPONSE_CORRECTION_MAX_BYTES = 4_000
+const PRESENTATION_QUESTION_MAX_CHARS = 1_000
+const PRESENTATION_PLAN_MAX_STEPS = 12
+const PRESENTATION_PLAN_STEP_MAX_CHARS = 500
 
 function isToolExecutionSuspension(
   outcome: ToolExecutionOutcome,
@@ -158,6 +185,20 @@ const TURN_LIMIT_NOTE =
  */
 export const COMPLETED_VIA_TOOLS_TEXT = '(completed tool actions; no text reply)'
 
+/** Locale-neutral authoritative terminal text; UIs may localize from the adjacent facts. */
+export function renderPresentationCompletionText(facts: PresentationCompletionFacts): string {
+  return [
+    `presentation:${facts.status}`,
+    `slides=${facts.affectedSlides.join(',')}`,
+    `passed=${facts.passedCount}`,
+    `failed=${facts.failedCount}`,
+    `unavailable=${facts.unavailableCount}`,
+    `corrections=${facts.correctionPasses}`,
+    `rollback=${facts.rollbackAvailable}`,
+    ...(facts.safeCode ? [`code=${facts.safeCode}`] : []),
+  ].join(';')
+}
+
 const SUMMARIZE_SYSTEM =
   'You are a conversation compressor. Compress this editing session between the user and the AI assistant into a concise summary so later turns can continue with context. ' +
   "Keep: the user's goals and key instructions, completed changes (which files/pages/elements were modified), important facts and data, and outstanding items. " +
@@ -168,6 +209,7 @@ const SUMMARIZE_SYSTEM =
 const COMPACT_SUMMARY_PREFIX = '[Summary of earlier conversation'
 const COMPACT_SUMMARY_HEADER = '[Summary of earlier conversation (auto-compacted)]'
 const COMPACT_SUMMARY_ACK = 'Understood, continuing from the progress so far.'
+const PRESENTATION_ENROLLMENT_MAX_BYTES = 64 * 1024
 
 /** Approximate UTF-8 byte count (ASCII 1 byte, CJK etc. 3; surrogate pairs count as 6 — slight overestimate is harmless) */
 function utf8Size(s: string): number {
@@ -289,6 +331,11 @@ export class AgentLoop<TSnapshot = unknown> {
   /** one terminal-response correction is permitted per run */
   private completionReviewRetried = false
   private mutationSeen = false
+  private presentationContract: PresentationAcceptanceContract | null = null
+  private presentationCorrectionPasses = 0
+  private presentationPlanEmitted = false
+  private presentationCorrectionTurns = 0
+  private presentationCorrectionPending = false
   private inputParseFails = 0
   private lastToolBatchSignature = ''
   private identicalToolBatches = 0
@@ -305,6 +352,8 @@ export class AgentLoop<TSnapshot = unknown> {
   private readonly turnInvocationIds = new Map<string, string>()
   /** per-run abort: aborted on cancel(); long tools (e.g. generate_deck) use it to break internal loops */
   private abortController: AbortController | null = null
+  /** Cancel stops model/tool work, but must not erase post-dispatch truth reconciliation. */
+  private reconciliationController: AbortController | null = null
 
   constructor(options: AgentLoopOptions<TSnapshot>) {
     this.options = options
@@ -365,10 +414,16 @@ export class AgentLoop<TSnapshot = unknown> {
     this.finalizing = false
     this.completionReviewRetried = false
     this.mutationSeen = false
+    this.presentationContract = null
+    this.presentationCorrectionPasses = 0
+    this.presentationPlanEmitted = false
+    this.presentationCorrectionTurns = 0
+    this.presentationCorrectionPending = false
     this.inputParseFails = 0
     this.lastToolBatchSignature = ''
     this.identicalToolBatches = 0
     this.abortController = new AbortController()
+    this.reconciliationController = new AbortController()
     this.invocationRun += 1
     try {
       const context = this.options.skill.buildContext?.() ?? ''
@@ -402,6 +457,11 @@ export class AgentLoop<TSnapshot = unknown> {
       this.options.events?.onDone?.({ text: '', cancelled: true, turnLimit: false })
       return
     }
+    if (
+      this.options.skill.presentation &&
+      !(await this.preparePresentationRun(userMsg.role === 'user' ? userMsg.text : '', generation))
+    )
+      return
     // Leftover unanswered user message (a previous run failed before replying):
     // drop it so the model never sees two adjacent user turns as one combined instruction
     while (this.history.at(-1)?.role === 'user') this.history.pop()
@@ -425,6 +485,83 @@ export class AgentLoop<TSnapshot = unknown> {
         // A presentation callback must not turn a handled launch failure into an unhandled rejection.
       }
     }
+  }
+
+  private async preparePresentationRun(instruction: string, generation: number): Promise<boolean> {
+    const hooks = this.options.skill.presentation
+    if (!hooks) return true
+    let prepared: Awaited<ReturnType<typeof hooks.prepare>>
+    try {
+      prepared = await hooks.prepare(instruction, this.abortController?.signal)
+    } catch {
+      // Planning is additive and may fail open only before mutation dispatch.
+      return generation === this.generation && !this.cancelled
+    }
+    if (generation !== this.generation || !this.running) return false
+    if (this.cancelled) {
+      this.running = false
+      this.abortController = null
+      this.options.events?.onDone?.({ text: '', cancelled: true, turnLimit: false })
+      return false
+    }
+    if (prepared.kind === 'bypass') return true
+    if (prepared.kind === 'clarify') {
+      const question = this.boundedPresentationText(
+        prepared.question,
+        PRESENTATION_QUESTION_MAX_CHARS,
+      )
+      if (!question) return true
+      this.running = false
+      this.abortController = null
+      this.options.events?.onPresentationClarify?.({ question })
+      this.options.events?.onDone?.({
+        text: '',
+        cancelled: false,
+        turnLimit: false,
+        clarification: true,
+      })
+      return false
+    }
+    let contract: PresentationAcceptanceContract
+    try {
+      contract = parsePresentationAcceptanceContract(prepared.contract)
+    } catch {
+      // A host compiler failure is still pre-dispatch, so preserve legacy behavior.
+      return true
+    }
+    const steps = (prepared.plan ?? [])
+      .slice(0, PRESENTATION_PLAN_MAX_STEPS)
+      .map((step) => this.boundedPresentationText(step, PRESENTATION_PLAN_STEP_MAX_CHARS))
+      .filter((step): step is string => !!step)
+    const requiresConfirmation = prepared.requiresConfirmation === true
+    if (steps.length && !this.presentationPlanEmitted) {
+      this.presentationPlanEmitted = true
+      this.options.events?.onPresentationPlan?.({ steps, requiresConfirmation })
+    }
+    if (requiresConfirmation) {
+      const confirmed = await (async () => {
+        try {
+          return (await hooks.confirm?.(contract, this.abortController?.signal)) === true
+        } catch {
+          return false
+        }
+      })()
+      if (generation !== this.generation || !this.running) return false
+      if (!confirmed || this.cancelled) {
+        this.running = false
+        this.abortController = null
+        this.options.events?.onDone?.({ text: '', cancelled: this.cancelled, turnLimit: false })
+        return false
+      }
+    }
+    this.presentationContract = contract
+    return true
+  }
+
+  private boundedPresentationText(value: unknown, maxChars: number): string | undefined {
+    if (typeof value !== 'string' || !value.trim() || value.length > maxChars) return undefined
+    const safe = sanitizeAgentPayload(value).trim()
+    return safe && safe.length <= maxChars ? safe : undefined
   }
 
   /**
@@ -614,14 +751,17 @@ export class AgentLoop<TSnapshot = unknown> {
 
   /** drop the conversation (e.g. when a different document is opened) */
   reset(): void {
+    this.options.skill.presentation?.abandon?.()
     this.generation++
     this.abortController?.abort()
+    if (!this.mutationSeen) this.reconciliationController?.abort()
     this.handle?.cancel()
     this.handle = null
     this.running = false
     this.cancelled = false
     this.history = []
     this.runUserMsg = null
+    this.reconciliationController = null
   }
 
   /** Runs at run boundaries only (restore / before a new user message): a long run's tail is all assistant/tool messages, and cutting mid-run would empty the request. */
@@ -725,6 +865,16 @@ export class AgentLoop<TSnapshot = unknown> {
       }
     }
 
+    // Presentation mutation runs cannot cross the terminal boundary until the
+    // host reconciles authoritative state into a contract-bound receipt.
+    if (
+      (toolCalls.length === 0 || this.cancelled || this.finalizing) &&
+      this.presentationContract
+    ) {
+      const handled = await this.finishPresentationRun()
+      if (handled) return
+    }
+
     // A skill may reject one normal tool-free terminal response. Preserve the
     // rejected assistant prose in model history, pair it with a synthetic user
     // correction, and continue the same run without settling the UI turn.
@@ -792,6 +942,81 @@ export class AgentLoop<TSnapshot = unknown> {
 
     this.history.push({ role: 'assistant', text: this.turnText, toolCalls })
     const generation = this.generation
+    if (skill.presentation?.enroll) {
+      let enrollment: PresentationTaskPreparation
+      try {
+        const serializedCalls = sanitizeAgentPayload(
+          JSON.stringify(
+            toolCalls.map(({ id, name, input, invocationId }) => ({
+              id,
+              name,
+              input,
+              ...(invocationId ? { invocationId } : {}),
+            })),
+          ),
+        )
+        if (
+          new TextEncoder().encode(serializedCalls).byteLength > PRESENTATION_ENROLLMENT_MAX_BYTES
+        )
+          throw new TypeError('presentation enrollment is too large')
+        const enrollmentCalls = JSON.parse(serializedCalls) as AgentToolCall[]
+        enrollment = await skill.presentation.enroll(
+          enrollmentCalls,
+          this.presentationContract ?? undefined,
+          this.abortController?.signal,
+        )
+      } catch {
+        this.failPresentationRun('presentation_enrollment_unavailable')
+        return
+      }
+      if (generation !== this.generation || !this.running) return
+      if (enrollment.kind === 'clarify') {
+        const question = this.boundedPresentationText(
+          enrollment.question,
+          PRESENTATION_QUESTION_MAX_CHARS,
+        )
+        this.running = false
+        this.runUserMsg = null
+        this.options.events?.onPresentationClarify?.({
+          question: question ?? 'presentation_scope_required',
+        })
+        this.options.events?.onDone?.({
+          text: '',
+          cancelled: false,
+          turnLimit: false,
+          clarification: true,
+        })
+        return
+      }
+      if (enrollment.kind === 'ready') {
+        let enrolled: PresentationAcceptanceContract
+        try {
+          enrolled = parsePresentationAcceptanceContract(enrollment.contract)
+        } catch {
+          this.failPresentationRun('presentation_enrollment_invalid')
+          return
+        }
+        if (
+          this.presentationContract &&
+          JSON.stringify(this.presentationContract) !== JSON.stringify(enrolled)
+        ) {
+          this.failPresentationRun('presentation_scope_expansion')
+          return
+        }
+        this.presentationContract = enrolled
+        const steps = (enrollment.plan ?? [])
+          .slice(0, PRESENTATION_PLAN_MAX_STEPS)
+          .map((step) => this.boundedPresentationText(step, PRESENTATION_PLAN_STEP_MAX_CHARS))
+          .filter((step): step is string => !!step)
+        if (steps.length && !this.presentationPlanEmitted) {
+          this.presentationPlanEmitted = true
+          this.options.events?.onPresentationPlan?.({
+            steps,
+            requiresConfirmation: enrollment.requiresConfirmation === true,
+          })
+        }
+      }
+    }
     const results: AgentToolResult[] = []
     let stopToolBatch = false
     for (const call of toolCalls) {
@@ -885,6 +1110,10 @@ export class AgentLoop<TSnapshot = unknown> {
       }
       const firstMutation = !!execution.mutated && !this.mutationSeen
       if (execution.mutated) this.mutationSeen = true
+      if (execution.mutated && this.presentationCorrectionPending) {
+        this.presentationCorrectionPasses++
+        this.presentationCorrectionPending = false
+      }
       results.push({
         id: call.id,
         name: call.name,
@@ -903,9 +1132,13 @@ export class AgentLoop<TSnapshot = unknown> {
 
     // Cancelled while tools were executing: finish immediately, no further model request
     if (this.cancelled) {
-      this.running = false
-      this.runUserMsg = null
-      events?.onDone?.({ text: this.turnText, cancelled: true, turnLimit: false })
+      if (this.presentationContract && this.mutationSeen) {
+        await this.finishPresentationRun()
+      } else {
+        this.running = false
+        this.runUserMsg = null
+        events?.onDone?.({ text: this.turnText, cancelled: true, turnLimit: false })
+      }
       return
     }
 
@@ -929,6 +1162,139 @@ export class AgentLoop<TSnapshot = unknown> {
     this.squashStaleToolOutputs()
     events?.onTurnEnd?.()
     this.startTurn()
+  }
+
+  /** Returns true when the run was settled or redirected into a corrective turn. */
+  private async finishPresentationRun(): Promise<boolean> {
+    const contract = this.presentationContract
+    const hooks = this.options.skill.presentation
+    if (!contract || !hooks) return false
+    const generation = this.generation
+    const modelCorrectionPasses = this.presentationCorrectionPasses
+    let completion: Awaited<ReturnType<typeof hooks.complete>>
+    try {
+      const reconciliationSignal = this.reconciliationController?.signal
+      completion = await hooks.complete({
+        contract,
+        mutated: this.mutationSeen,
+        cancelled: this.cancelled,
+        correctionPasses: this.presentationCorrectionPasses,
+        ...(reconciliationSignal ? { signal: reconciliationSignal } : {}),
+      })
+    } catch {
+      if (generation !== this.generation || !this.running) return true
+      this.failPresentationRun('presentation_completion_unavailable')
+      return true
+    }
+    if (generation !== this.generation || !this.running) {
+      if (completion?.kind === 'receipt') {
+        try {
+          const receipt = parsePresentationCompletionReceipt(completion.receipt, contract)
+          if (receipt.correctionPasses < modelCorrectionPasses) throw new TypeError()
+          this.options.events?.onAbandonedPresentationCompletion?.({
+            documentToken: contract.documentToken,
+            sessionToken: contract.sessionToken,
+            receipt,
+            facts: renderPresentationCompletionFacts(receipt, contract),
+          })
+        } catch {
+          // An invalid abandoned receipt is never persisted or surfaced.
+        }
+      }
+      return true
+    }
+    let completionKind: 'receipt' | 'correct'
+    let completionValue: unknown
+    try {
+      if (completion.kind !== 'receipt' && completion.kind !== 'correct') throw new TypeError()
+      completionKind = completion.kind
+      completionValue = completion.kind === 'correct' ? completion.instruction : completion.receipt
+    } catch {
+      this.failPresentationRun('presentation_completion_invalid')
+      return true
+    }
+    if (completionKind === 'correct') {
+      let instruction: string | undefined
+      try {
+        instruction = this.boundedPresentationText(
+          completionValue,
+          FINAL_RESPONSE_CORRECTION_MAX_CHARS,
+        )
+      } catch {
+        instruction = undefined
+      }
+      if (
+        this.cancelled ||
+        !instruction ||
+        this.presentationCorrectionTurns >= contract.maxCorrectionPasses
+      ) {
+        this.failPresentationRun('presentation_receipt_required')
+        return true
+      }
+      this.presentationCorrectionTurns++
+      this.options.events?.onPresentationCorrection?.({
+        pass: this.presentationCorrectionTurns,
+        maximum: contract.maxCorrectionPasses,
+      })
+      this.presentationCorrectionPending = true
+      this.history.push({
+        role: 'assistant',
+        text: this.turnText || COMPLETED_VIA_TOOLS_TEXT,
+      })
+      this.history.push({ role: 'user', text: instruction })
+      this.options.events?.onText?.('')
+      this.startTurn()
+      return true
+    }
+    try {
+      const receipt = parsePresentationCompletionReceipt(completionValue, contract)
+      // A receipt may not under-report corrections already orchestrated here.
+      if (receipt.correctionPasses < this.presentationCorrectionPasses)
+        throw new TypeError('presentation correction count mismatch')
+      const facts = renderPresentationCompletionFacts(receipt, contract)
+      const localized = this.options.events?.onPresentationReceipt?.({ receipt, facts })
+      const text = localized
+        ? (this.boundedPresentationText(localized, FINAL_RESPONSE_CORRECTION_MAX_CHARS) ??
+          renderPresentationCompletionText(facts))
+        : renderPresentationCompletionText(facts)
+      this.history.push({ role: 'assistant', text })
+      this.running = false
+      this.runUserMsg = null
+      this.abortController = null
+      this.reconciliationController = null
+      // Replace any streamed model claim in the live bubble with receipt truth.
+      this.options.events?.onText?.(text)
+      this.options.events?.onDone?.({
+        text,
+        cancelled: this.cancelled,
+        turnLimit: this.finalizing,
+        presentation: facts,
+        ...(this.turnStopReason === 'max_tokens' && !this.cancelled ? { truncated: true } : {}),
+      })
+    } catch {
+      this.failPresentationRun('presentation_receipt_invalid')
+    }
+    return true
+  }
+
+  private failPresentationRun(error: string): void {
+    // Preserve paired provider history and any mutation truth. Do not roll back
+    // the run or allow free-form prose to become terminal success.
+    this.history.push({ role: 'assistant', text: `presentation:error;code=${error}` })
+    this.running = false
+    this.runUserMsg = null
+    this.abortController = null
+    this.reconciliationController = null
+    try {
+      this.options.events?.onText?.(`presentation:error;code=${error}`)
+    } catch {
+      // A UI callback cannot suppress the authoritative failure event.
+    }
+    try {
+      this.options.events?.onError?.(error)
+    } catch {
+      // Consumer callbacks remain outside the state machine trust boundary.
+    }
   }
 
   private async waitForSuspension(

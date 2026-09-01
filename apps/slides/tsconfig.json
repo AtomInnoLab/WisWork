@@ -14,7 +14,8 @@
       "@wiswork/pptx-engine/background-promote": [
         "../../packages/pptx-engine/src/background-promote.ts"
       ],
-      "@wiswork/pptx-render": ["../../packages/pptx-render/src/index.ts"]
+      "@wiswork/pptx-render": ["../../packages/pptx-render/src/index.ts"],
+      "@wiswork/pptx-render/coords": ["../../packages/pptx-render/src/coords.ts"]
     }
   },
   "include": ["src", "tests", "electron.vite.config.ts", "vitest.config.ts"]

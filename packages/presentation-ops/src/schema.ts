@@ -535,6 +535,7 @@ export const parsePresentationReceipt = (value: unknown): PresentationReceipt =>
           'transactionId',
           'resultingDeckRevision',
           'operationCount',
+          'mutatedTargets',
           'createdIds',
           'createdTargets',
         ],
@@ -567,6 +568,14 @@ export const parsePresentationReceipt = (value: unknown): PresentationReceipt =>
           fail('receipt.createdTargets elementIds must be unique')
         return mappings
       })
+      const mutatedTargets = optional(record, 'mutatedTargets', (item) => {
+        const values = readStrictArray(item, 'receipt.mutatedTargets', {
+          maxLength: PRESENTATION_OPS_LIMITS.maxReceiptIds,
+        })
+        const targets = values.map((target) => identifier(target, 'receipt.mutatedTarget'))
+        if (new Set(targets).size !== targets.length) fail('receipt.mutatedTargets must be unique')
+        return targets
+      })
       const operationCount = boundedInteger(
         record.operationCount,
         'receipt.operationCount',
@@ -574,9 +583,10 @@ export const parsePresentationReceipt = (value: unknown): PresentationReceipt =>
       )
       if (
         (createdIds?.length ?? 0) > operationCount ||
-        (createdTargets?.length ?? 0) > operationCount
+        (createdTargets?.length ?? 0) > operationCount ||
+        (mutatedTargets?.length ?? 0) > operationCount
       )
-        fail('receipt created targets cannot exceed operationCount')
+        fail('receipt targets cannot exceed operationCount')
       if (
         createdIds !== undefined &&
         createdTargets !== undefined &&
@@ -592,6 +602,7 @@ export const parsePresentationReceipt = (value: unknown): PresentationReceipt =>
           'receipt.resultingDeckRevision',
         ),
         operationCount,
+        ...(mutatedTargets === undefined ? {} : { mutatedTargets }),
         ...(createdIds === undefined ? {} : { createdIds }),
         ...(createdTargets === undefined ? {} : { createdTargets }),
       }
