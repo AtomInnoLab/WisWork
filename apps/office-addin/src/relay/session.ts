@@ -275,6 +275,7 @@ export function createOfficeRelaySession(
   let activeTool: { requestId: string; callId: string; controller: AbortController } | undefined
   let enhancedStatement: OfficeEnhancedStatement | undefined
   let runtimeGeneration = -1
+  let runtimeExpiryTimer: ReturnType<typeof setTimeout> | undefined
   let generation = 0
   let settleConnect: (() => void) | undefined
   let pairingTimer: ReturnType<typeof setTimeout> | undefined
@@ -327,6 +328,8 @@ export function createOfficeRelaySession(
     activeTool = undefined
     enhancedStatement = undefined
     runtimeGeneration = -1
+    if (runtimeExpiryTimer !== undefined) clearTimeout(runtimeExpiryTimer)
+    runtimeExpiryTimer = undefined
     pairingId = undefined
     sessionId = undefined
     capability = undefined
@@ -1056,6 +1059,10 @@ export function createOfficeRelaySession(
       } else if (frame.generation !== 0) return protocolFailure()
       runtimeGeneration = Number(frame.generation)
       enhancedStatement = parsed
+      if (runtimeExpiryTimer !== undefined) clearTimeout(runtimeExpiryTimer)
+      runtimeExpiryTimer = parsed
+        ? setTimeout(() => protocolFailure(), Math.max(0, parsed.expires_at - Date.now()))
+        : undefined
       publish({ ...state, ...(parsed ? { enhanced: parsed } : {}) })
       return
     }
@@ -1067,6 +1074,7 @@ export function createOfficeRelaySession(
         !request ||
         activeTool ||
         !enhancedStatement ||
+        enhancedStatement.expires_at <= Date.now() ||
         !toolHandler ||
         frameBytes > MAX_REQUEST_BYTES + MAX_CONTROL_FRAME_BYTES ||
         !exactKeys(frame, [
