@@ -98,11 +98,9 @@ export type ToolExecutionOutcome = ToolExecution | ToolExecutionSuspension
 
 const toolExecutionSuspensions = new WeakSet<object>()
 
-/** Create the only supported, bounded shape for a suspended tool execution. */
-export function suspendToolExecution(result: Promise<ToolExecution>): ToolExecutionSuspension {
-  // The placeholder ToolExecution fields preserve source compatibility for
-  // direct skill consumers. AgentLoop detects `kind` and never publishes this
-  // placeholder to model history or execution events.
+export function mintToolExecutionSuspension(
+  result: Promise<ToolExecution>,
+): ToolExecutionSuspension {
   const suspension: ToolExecutionSuspension = {
     kind: 'tool-execution-suspension',
     result,
@@ -111,6 +109,14 @@ export function suspendToolExecution(result: Promise<ToolExecution>): ToolExecut
   }
   toolExecutionSuspensions.add(suspension)
   return Object.freeze(suspension)
+}
+
+/** Create the only supported, bounded shape for a suspended tool execution. */
+export function suspendToolExecution(result: Promise<ToolExecution>): ToolExecutionSuspension {
+  // The placeholder ToolExecution fields preserve source compatibility for
+  // direct skill consumers. AgentLoop detects `kind` and never publishes this
+  // placeholder to model history or execution events.
+  return mintToolExecutionSuspension(result)
 }
 
 /** Accept only suspension objects created by suspendToolExecution in this Agent Core instance. */

@@ -5,6 +5,7 @@ import {
   parseEnhancedRolloutPolicy,
   parseRuntimeSelection,
   shouldStartEnhancedRuntime,
+  createEnhancedPolicyIssuer,
 } from '../src/contracts'
 
 describe('runtime selection', () => {
@@ -42,6 +43,61 @@ describe('runtime selection', () => {
     expect(parseEnhancedComponentStatus('not_installed')).toBe('not_installed')
     expect(() => parseEnhancedComponentStatus('x'.repeat(65))).toThrowError()
     expect(() => parseEnhancedComponentStatus('launching')).toThrowError()
+  })
+})
+
+describe('closed enhanced policy issuer', () => {
+  it('issues opaque one-use grants bound to generation, host and capabilities', () => {
+    let generation = 7
+    const issuer = createEnhancedPolicyIssuer(() => generation)
+    const policy = {
+      globalEnabled: true,
+      hosts: Object.fromEntries(ENHANCED_HOSTS.map((host) => [host, true])),
+      rawOfficeEnabled: false,
+    }
+    const handle = issuer.issue({
+      generation,
+      host: 'docs',
+      policy,
+      capabilities: ['semantic-read'],
+    })
+    expect(Object.keys(handle)).toEqual([])
+    expect(issuer.consume(handle)).toMatchObject({
+      generation: 7,
+      host: 'docs',
+      capabilities: ['semantic-read'],
+    })
+    expect(() => issuer.consume(handle)).toThrow('enhanced_policy_consumed')
+
+    const stale = issuer.issue({
+      generation,
+      host: 'docs',
+      policy,
+      capabilities: ['semantic-read'],
+    })
+    generation = 8
+    expect(() => issuer.consume(stale)).toThrow('enhanced_policy_stale')
+  })
+
+  it('rejects cross-issuer, forged and raw Office policy escalation', () => {
+    const a = createEnhancedPolicyIssuer(() => 1),
+      b = createEnhancedPolicyIssuer(() => 1)
+    const policy = {
+      globalEnabled: true,
+      hosts: Object.fromEntries(ENHANCED_HOSTS.map((host) => [host, true])),
+      rawOfficeEnabled: false,
+    }
+    const handle = a.issue({ generation: 1, host: 'docs', policy, capabilities: ['semantic-read'] })
+    expect(() => b.consume(handle)).toThrow('enhanced_policy_issuer_mismatch')
+    expect(() => a.consume({} as never)).toThrow('invalid_enhanced_policy_handle')
+    expect(() =>
+      a.issue({
+        generation: 1,
+        host: 'office-word',
+        policy,
+        capabilities: ['raw-office-proposal'],
+      }),
+    ).toThrow('enhanced_policy_denied')
   })
 })
 

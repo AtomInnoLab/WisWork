@@ -9,6 +9,13 @@ export const ENHANCED_HOSTS = [
 ] as const
 
 export type EnhancedHost = (typeof ENHANCED_HOSTS)[number]
+export const ENHANCED_CAPABILITIES = [
+  'semantic-read',
+  'transaction-proposal',
+  'bounded-render-facts',
+  'raw-office-proposal',
+] as const
+export type EnhancedCapability = (typeof ENHANCED_CAPABILITIES)[number]
 export type AgentRuntimeMode = 'standard' | 'enhanced'
 export type RuntimeSelection = Readonly<{ requested: AgentRuntimeMode; active: AgentRuntimeMode }>
 export type EnhancedRolloutPolicy = Readonly<{
@@ -100,4 +107,122 @@ export function shouldStartEnhancedRuntime(
   host: EnhancedHost,
 ): boolean {
   return selection.active === 'enhanced' && policy.globalEnabled && policy.hosts[host]
+}
+
+declare const enhancedPolicyHandleBrand: unique symbol
+export interface EnhancedPolicyHandle {
+  readonly [enhancedPolicyHandleBrand]: true
+}
+export interface EnhancedPolicySnapshot {
+  readonly generation: number
+  readonly host: EnhancedHost
+  readonly policy: EnhancedRolloutPolicy
+  readonly capabilities: readonly EnhancedCapability[]
+}
+export interface EnhancedPolicyIssuer {
+  issue(value: unknown): EnhancedPolicyHandle
+  consume(handle: EnhancedPolicyHandle): EnhancedPolicySnapshot
+}
+interface PolicyLedgerEntry extends EnhancedPolicySnapshot {
+  readonly issuer: object
+  readonly currentGeneration: () => number
+  consumed: boolean
+}
+const policyLedger = new WeakMap<object, PolicyLedgerEntry>()
+
+function strictCapabilities(value: unknown): EnhancedCapability[] {
+  if (
+    !Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Array.prototype ||
+    value.length > ENHANCED_CAPABILITIES.length ||
+    Object.getOwnPropertySymbols(value).length > 0
+  )
+    throw new TypeError('invalid_enhanced_policy')
+  const descriptors = Object.getOwnPropertyDescriptors(value)
+  const allowedKeys = new Set([
+    'length',
+    ...Array.from({ length: value.length }, (_, index) => String(index)),
+  ])
+  if (Object.keys(descriptors).some((key) => !allowedKeys.has(key)))
+    throw new TypeError('invalid_enhanced_policy')
+  const capabilities: EnhancedCapability[] = []
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = descriptors[String(index)]
+    if (
+      !descriptor ||
+      !('value' in descriptor) ||
+      !ENHANCED_CAPABILITIES.includes(descriptor.value as EnhancedCapability) ||
+      capabilities.includes(descriptor.value as EnhancedCapability)
+    )
+      throw new TypeError('invalid_enhanced_policy')
+    capabilities.push(descriptor.value as EnhancedCapability)
+  }
+  return capabilities
+}
+
+export function createEnhancedPolicyIssuer(currentGeneration: () => number): EnhancedPolicyIssuer {
+  if (typeof currentGeneration !== 'function') throw new TypeError('invalid_enhanced_policy_issuer')
+  const issuerIdentity = Object.freeze(Object.create(null)) as object
+  return Object.freeze({
+    issue(value: unknown): EnhancedPolicyHandle {
+      const record = strictRecord(value, ['generation', 'host', 'policy', 'capabilities'])
+      if (
+        !Number.isSafeInteger(record.generation) ||
+        (record.generation as number) < 0 ||
+        typeof record.host !== 'string' ||
+        !ENHANCED_HOSTS.includes(record.host as EnhancedHost)
+      )
+        throw new TypeError('invalid_enhanced_policy')
+      const generation = record.generation as number
+      if (currentGeneration() !== generation) throw new TypeError('enhanced_policy_stale')
+      const host = record.host as EnhancedHost
+      const policy = parseEnhancedRolloutPolicy(record.policy)
+      const capabilities = strictCapabilities(record.capabilities)
+      if (
+        !policy.globalEnabled ||
+        !policy.hosts[host] ||
+        (capabilities.includes('raw-office-proposal') &&
+          (!host.startsWith('office-') || !policy.rawOfficeEnabled))
+      )
+        throw new TypeError('enhanced_policy_denied')
+      const handle = Object.freeze(Object.create(null)) as EnhancedPolicyHandle
+      policyLedger.set(handle as object, {
+        issuer: issuerIdentity,
+        currentGeneration,
+        generation,
+        host,
+        policy: Object.freeze({ ...policy, hosts: Object.freeze({ ...policy.hosts }) }),
+        capabilities: Object.freeze([...capabilities]),
+        consumed: false,
+      })
+      return handle
+    },
+    consume: (handle: EnhancedPolicyHandle) => consumePolicyHandle(handle, issuerIdentity),
+  })
+}
+
+function consumePolicyHandle(
+  handle: EnhancedPolicyHandle,
+  expectedIssuer?: object,
+): EnhancedPolicySnapshot {
+  if (typeof handle !== 'object' || handle === null)
+    throw new TypeError('invalid_enhanced_policy_handle')
+  const entry = policyLedger.get(handle as object)
+  if (!entry) throw new TypeError('invalid_enhanced_policy_handle')
+  if (expectedIssuer !== undefined && entry.issuer !== expectedIssuer)
+    throw new TypeError('enhanced_policy_issuer_mismatch')
+  if (entry.consumed) throw new TypeError('enhanced_policy_consumed')
+  entry.consumed = true
+  if (entry.currentGeneration() !== entry.generation) throw new TypeError('enhanced_policy_stale')
+  return Object.freeze({
+    generation: entry.generation,
+    host: entry.host,
+    policy: entry.policy,
+    capabilities: entry.capabilities,
+  })
+}
+
+/** Consume an opaque grant without exposing its issuing authority to downstream packages. */
+export function consumeEnhancedPolicyHandle(handle: EnhancedPolicyHandle): EnhancedPolicySnapshot {
+  return consumePolicyHandle(handle)
 }

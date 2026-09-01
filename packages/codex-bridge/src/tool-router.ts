@@ -3,14 +3,15 @@ import type {
   AgentToolCall,
   AgentToolDef,
   ToolExecution,
-  ToolExecutionSuspension,
+  ToolExecutionOutcome,
 } from '@wiswork/agent-core'
-import { isToolExecutionSuspension } from '@wiswork/agent-core'
-import type { EnhancedHost } from '@wiswork/agent-runtime'
-import {
-  parseEnhancedCapabilityAuthorization,
-  type EnhancedCapabilityAuthorization,
-} from './security.js'
+import { createInternalToolSuspensionIssuer } from '@wiswork/agent-core/internal'
+import type {
+  EnhancedHost,
+  EnhancedPolicyHandle,
+  EnhancedPolicySnapshot,
+} from '@wiswork/agent-runtime'
+import { consumeEnhancedPolicyHandle } from '@wiswork/agent-runtime'
 import type { DocumentCarrierHandle, DocumentCarrierIssuer } from './types.js'
 
 const SECRET_BYTES = 32
@@ -30,6 +31,7 @@ const MAX_TOTAL_GRAPH_NODES = 100_000
 const MAX_GRAPH_DEPTH = 48
 const MAX_CALL_MS = 30_000
 const MAX_TOTAL_CALLS = 1_024
+const MAX_PENDING_MUTATIONS = 8
 const SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/
 
 export type ToolMutability = 'read' | 'mutate'
@@ -151,7 +153,7 @@ export interface DocumentToolIdentity {
   readonly generation: number
 }
 export interface DocumentToolManifestInput {
-  readonly authorization: unknown
+  readonly policyHandle: EnhancedPolicyHandle
   readonly tools: readonly AgentToolDef[]
   readonly policy: Readonly<Record<string, ToolMutability>>
 }
@@ -161,12 +163,30 @@ export interface DocumentToolManifest {
   readonly [manifestBrand]: true
 }
 interface ManifestEntry {
-  readonly authorization: EnhancedCapabilityAuthorization
+  readonly authorization: EnhancedPolicySnapshot
   readonly tools: readonly AgentToolDef[]
   readonly policy: Readonly<Record<string, ToolMutability>>
   readonly digest: string
 }
 const manifestLedger = new WeakMap<object, ManifestEntry>()
+const suspensionIssuer = createInternalToolSuspensionIssuer()
+
+interface PendingMutation {
+  readonly callId: string
+  readonly request: DetachedMutationRequest
+  readonly controller: AbortController
+  readonly resolve: (execution: ToolExecution) => void
+  readonly promise: Promise<ToolExecution>
+  timer: ReturnType<typeof setTimeout> | undefined
+  state: 'queued' | 'claimed' | 'settled'
+  finish(execution: ToolExecution): void
+}
+interface ClaimEntry {
+  readonly authority: object
+  readonly pending: PendingMutation
+  consumed: boolean
+}
+const mutationClaims = new WeakMap<object, ClaimEntry>()
 
 export interface DocumentToolRegistration {
   readonly identity: DocumentToolIdentity
@@ -176,14 +196,10 @@ export interface DocumentToolRegistration {
     call: AgentToolCall,
     signal?: AbortSignal,
   ) => ToolExecution | Promise<ToolExecution>
-  /** Prepare through the existing host proposal authority; this callback must not itself write. */
-  readonly prepareMutation: (
-    call: AgentToolCall,
-    signal?: AbortSignal,
-  ) => ToolExecutionSuspension | Promise<ToolExecutionSuspension>
   readonly carrier?: Readonly<{ issuer: DocumentCarrierIssuer; capability: unknown }>
   readonly maxCallMs?: number
   readonly maxTotalCalls?: number
+  readonly maxPendingMutations?: number
 }
 export interface ToolSessionCredentials {
   readonly sessionId: string
@@ -197,17 +213,32 @@ export interface CarrierRequest {
   readonly sourceNonce: string
   readonly toolName: string
 }
+declare const mutationClaimBrand: unique symbol
+export interface MutationClaim {
+  readonly [mutationClaimBrand]: true
+}
+export interface DetachedMutationRequest {
+  readonly identity: Readonly<DocumentToolIdentity>
+  readonly call: Readonly<AgentToolCall>
+  readonly catalogDigest: string
+}
+export interface MutationAuthority {
+  claimNext(): Readonly<{ claim: MutationClaim; request: DetachedMutationRequest }> | undefined
+  settle(claim: MutationClaim, execution: ToolExecution): void
+  reject(claim: MutationClaim, code?: string): void
+}
 export interface DocumentToolSession {
   readonly identity: Readonly<DocumentToolIdentity>
   readonly credentials: ToolSessionCredentials
   readonly catalogDigest: string
+  readonly mutationAuthority: MutationAuthority
   authorize(credentials: ToolSessionCredentials): void
   listTools(credentials: ToolSessionCredentials): McpToolDefinition[]
   callTool(
     credentials: ToolSessionCredentials,
     call: AgentToolCall,
     signal?: AbortSignal,
-  ): Promise<ToolExecution>
+  ): ToolExecutionOutcome | Promise<ToolExecution>
   issueCarrier(credentials: ToolSessionCredentials, turn: CarrierRequest): DocumentCarrierHandle
   cancel(credentials: ToolSessionCredentials, callId: string): boolean
   close(): void
@@ -297,15 +328,25 @@ function canonical(value: unknown): string {
   if (encoded === undefined) throw new ToolRouterError('invalid_tool_manifest')
   return encoded
 }
+function freezeDetached<T>(value: T): T {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value
+  for (const child of Object.values(value as Record<string, unknown>)) freezeDetached(child)
+  return Object.freeze(value)
+}
 
 export function createDocumentToolManifest(input: DocumentToolManifestInput): DocumentToolManifest {
   if (!plainRecord(input) || !plainRecord(input.policy))
     throw new ToolRouterError('invalid_tool_manifest')
   const suppliedTools = strictArrayValues(input.tools, MAX_TOOLS, 'invalid_tool_manifest')
   if (suppliedTools.length < 1) throw new ToolRouterError('invalid_tool_manifest')
-  const authorization = parseEnhancedCapabilityAuthorization(input.authorization)
+  let authorization: EnhancedPolicySnapshot
+  try {
+    authorization = consumeEnhancedPolicyHandle(input.policyHandle)
+  } catch (error) {
+    throw new ToolRouterError(error instanceof Error ? error.message : 'invalid_enhanced_policy')
+  }
   const catalog = CATALOG[authorization.host]
-  const capabilities = new Set(authorization.declaration.capabilities)
+  const capabilities = new Set(authorization.capabilities)
   const names = new Set<string>()
   let descriptions = 0
   let schemas = 0
@@ -362,7 +403,8 @@ export function createDocumentToolManifest(input: DocumentToolManifestInput): Do
       canonical({
         host: authorization.host,
         rollout: authorization.policy,
-        capabilities: [...authorization.declaration.capabilities].sort(),
+        generation: authorization.generation,
+        capabilities: [...authorization.capabilities].sort(),
         tools,
         policy,
       }),
@@ -380,7 +422,11 @@ export function createDocumentToolManifest(input: DocumentToolManifestInput): Do
   return handle
 }
 
-function validateIdentity(value: unknown, host: EnhancedHost): Readonly<DocumentToolIdentity> {
+function validateIdentity(
+  value: unknown,
+  host: EnhancedHost,
+  generation: number,
+): Readonly<DocumentToolIdentity> {
   if (
     !plainRecord(value) ||
     Object.keys(value).length !== 5 ||
@@ -388,8 +434,7 @@ function validateIdentity(value: unknown, host: EnhancedHost): Readonly<Document
     value.host !== host ||
     !boundedId(value.documentId) ||
     !boundedId(value.sessionId) ||
-    !Number.isSafeInteger(value.generation) ||
-    (value.generation as number) < 0
+    value.generation !== generation
   )
     throw new ToolRouterError('invalid_tool_identity')
   return Object.freeze({
@@ -397,7 +442,7 @@ function validateIdentity(value: unknown, host: EnhancedHost): Readonly<Document
     host,
     documentId: value.documentId,
     sessionId: value.sessionId,
-    generation: value.generation as number,
+    generation,
   })
 }
 function decodeCanonical(value: unknown): Buffer | undefined {
@@ -468,23 +513,43 @@ export function createDocumentToolSession(
 ): DocumentToolSession {
   if (
     !plainRecord(registration) ||
+    Object.keys(registration).some(
+      (key) =>
+        ![
+          'identity',
+          'manifest',
+          'isOpen',
+          'executeRead',
+          'carrier',
+          'maxCallMs',
+          'maxTotalCalls',
+          'maxPendingMutations',
+        ].includes(key),
+    ) ||
     typeof registration.isOpen !== 'function' ||
-    typeof registration.executeRead !== 'function' ||
-    typeof registration.prepareMutation !== 'function'
+    typeof registration.executeRead !== 'function'
   )
     throw new ToolRouterError('invalid_tool_session')
   const manifest = manifestLedger.get(registration.manifest as object)
   if (!manifest) throw new ToolRouterError('invalid_tool_manifest')
-  const identity = validateIdentity(registration.identity, manifest.authorization.host)
+  const identity = validateIdentity(
+    registration.identity,
+    manifest.authorization.host,
+    manifest.authorization.generation,
+  )
   const maxCallMs = registration.maxCallMs ?? MAX_CALL_MS
   const maxTotalCalls = registration.maxTotalCalls ?? MAX_TOTAL_CALLS
+  const maxPendingMutations = registration.maxPendingMutations ?? MAX_PENDING_MUTATIONS
   if (
     !Number.isSafeInteger(maxCallMs) ||
     maxCallMs <= 0 ||
     maxCallMs > MAX_CALL_MS ||
     !Number.isSafeInteger(maxTotalCalls) ||
     maxTotalCalls <= 0 ||
-    maxTotalCalls > MAX_TOTAL_CALLS
+    maxTotalCalls > MAX_TOTAL_CALLS ||
+    !Number.isSafeInteger(maxPendingMutations) ||
+    maxPendingMutations <= 0 ||
+    maxPendingMutations > MAX_PENDING_MUTATIONS
   )
     throw new ToolRouterError('invalid_tool_bounds')
   if (
@@ -497,6 +562,9 @@ export function createDocumentToolSession(
   const secretBytes = randomBytes(SECRET_BYTES)
   const credentials = Object.freeze({ sessionId, secret: secretBytes.toString('base64url') })
   const pending = new Map<string, AbortController>()
+  const pendingMutations = new Map<string, PendingMutation>()
+  const mutationQueue: PendingMutation[] = []
+  const authorityIdentity = Object.freeze(Object.create(null)) as object
   const consumed = new Set<string>()
   let closed = false
   const safeOpen = () => {
@@ -522,6 +590,7 @@ export function createDocumentToolSession(
     if (closed) return
     closed = true
     for (const controller of pending.values()) controller.abort()
+    for (const mutation of pendingMutations.values()) mutation.controller.abort()
     pending.clear()
   }
   const listTools = (candidate: ToolSessionCredentials): McpToolDefinition[] => {
@@ -535,11 +604,11 @@ export function createDocumentToolSession(
       },
     }))
   }
-  const callTool = async (
+  const callTool = (
     candidate: ToolSessionCredentials,
     call: AgentToolCall,
     outerSignal?: AbortSignal,
-  ): Promise<ToolExecution> => {
+  ): ToolExecutionOutcome | Promise<ToolExecution> => {
     authenticate(candidate)
     if (
       !plainRecord(call) ||
@@ -550,7 +619,8 @@ export function createDocumentToolSession(
       call.truncated
     )
       return stable('invalid_tool_call')
-    if (pending.has(call.id) || consumed.has(call.id)) return stable('tool_call_consumed')
+    if (pending.has(call.id) || pendingMutations.has(call.id) || consumed.has(call.id))
+      return stable('tool_call_consumed')
     if (consumed.size >= maxTotalCalls) {
       close()
       return stable('tool_session_call_limit')
@@ -563,15 +633,65 @@ export function createDocumentToolSession(
     }
     const mutability = manifest.policy[call.name]
     if (!mutability) return stable('unknown_tool')
-    if (pending.size > 0) return stable('tool_call_in_progress')
+    if (mutability === 'mutate') {
+      if (pendingMutations.size >= maxPendingMutations) return stable('mutation_queue_full')
+      const controller = new AbortController()
+      const abort = () => controller.abort()
+      outerSignal?.addEventListener('abort', abort, { once: true })
+      if (outerSignal?.aborted) abort()
+      let resolve!: (execution: ToolExecution) => void
+      const promise = new Promise<ToolExecution>((done) => (resolve = done))
+      const detachedCall = freezeDetached({
+        id: call.id,
+        name: call.name,
+        input: structuredClone(call.input),
+        ...(call.invocationId ? { invocationId: call.invocationId } : {}),
+      })
+      const request = Object.freeze({
+        identity,
+        call: detachedCall,
+        catalogDigest: manifest.digest,
+      })
+      const mutation: PendingMutation = {
+        callId: call.id,
+        request,
+        controller,
+        resolve,
+        promise,
+        timer: undefined,
+        state: 'queued',
+        finish: () => undefined,
+      }
+      const finish = (execution: ToolExecution) => {
+        if (mutation.state === 'settled') return
+        mutation.state = 'settled'
+        if (mutation.timer) clearTimeout(mutation.timer)
+        outerSignal?.removeEventListener('abort', abort)
+        pendingMutations.delete(call.id)
+        resolve(execution)
+      }
+      mutation.finish = finish
+      controller.signal.addEventListener(
+        'abort',
+        () => finish(stable('tool_cancelled', 'Tool cancelled')),
+        { once: true },
+      )
+      mutation.timer = setTimeout(() => finish(stable('tool_timeout', 'Tool timed out')), maxCallMs)
+      mutation.timer.unref()
+      pendingMutations.set(call.id, mutation)
+      mutationQueue.push(mutation)
+      if (controller.signal.aborted) finish(stable('tool_cancelled', 'Tool cancelled'))
+      return suspensionIssuer.suspend(promise)
+    }
+    if (pending.size > 0 || pendingMutations.size > 0) return stable('tool_call_in_progress')
     const controller = new AbortController()
     const abort = () => controller.abort()
     outerSignal?.addEventListener('abort', abort, { once: true })
     if (outerSignal?.aborted) abort()
     pending.set(call.id, controller)
-    try {
-      if (controller.signal.aborted) return stable('tool_cancelled', 'Tool cancelled')
-      if (mutability === 'read') {
+    return (async () => {
+      try {
+        if (controller.signal.aborted) return stable('tool_cancelled', 'Tool cancelled')
         let execution: ToolExecution
         try {
           execution = await awaitBounded(
@@ -585,37 +705,57 @@ export function createDocumentToolSession(
         return validExecution(execution) && execution.mutated !== true
           ? execution
           : stable('tool_policy_violation')
+      } finally {
+        outerSignal?.removeEventListener('abort', abort)
+        pending.delete(call.id)
       }
-      let suspension: ToolExecutionSuspension
-      try {
-        suspension = await awaitBounded(
-          Promise.resolve(registration.prepareMutation(call, controller.signal)),
-          controller.signal,
-          maxCallMs,
-        )
-      } catch (error) {
-        return stable(error instanceof ToolRouterError ? error.code : 'tool_execution_failed')
-      }
-      if (!isToolExecutionSuspension(suspension))
-        return stable('mutation_authority_required', 'Mutation authority required')
-      let execution: ToolExecution
-      try {
-        execution = await awaitBounded(suspension.result, controller.signal, maxCallMs)
-      } catch (error) {
-        return stable(error instanceof ToolRouterError ? error.code : 'tool_execution_failed')
-      }
-      return validExecution(execution)
-        ? execution
-        : stable('invalid_tool_result', 'Tool failed', true, true)
-    } finally {
-      outerSignal?.removeEventListener('abort', abort)
-      pending.delete(call.id)
-    }
+    })()
   }
+  const settleClaim = (claim: MutationClaim, execution: ToolExecution): void => {
+    const entry = mutationClaims.get(claim as object)
+    if (!entry) throw new ToolRouterError('invalid_mutation_claim')
+    if (entry.authority !== authorityIdentity)
+      throw new ToolRouterError('mutation_claim_issuer_mismatch')
+    if (entry.consumed || entry.pending.state !== 'claimed')
+      throw new ToolRouterError('mutation_claim_consumed')
+    entry.consumed = true
+    if (!validExecution(execution)) {
+      entry.pending.finish(stable('invalid_tool_result', 'Tool failed', true, true))
+      throw new ToolRouterError('invalid_tool_result')
+    }
+    entry.pending.finish(execution)
+  }
+  const mutationAuthority: MutationAuthority = Object.freeze({
+    claimNext() {
+      let mutation: PendingMutation | undefined
+      while (mutationQueue.length > 0) {
+        const candidate = mutationQueue.shift()!
+        if (candidate.state === 'queued') {
+          mutation = candidate
+          break
+        }
+      }
+      if (!mutation) return undefined
+      mutation.state = 'claimed'
+      const claim = Object.freeze(Object.create(null)) as MutationClaim
+      mutationClaims.set(claim as object, {
+        authority: authorityIdentity,
+        pending: mutation,
+        consumed: false,
+      })
+      return Object.freeze({ claim, request: mutation.request })
+    },
+    settle: settleClaim,
+    reject(claim: MutationClaim, code = 'mutation_rejected') {
+      if (!boundedId(code)) throw new ToolRouterError('invalid_mutation_rejection')
+      settleClaim(claim, stable(code, 'Mutation rejected'))
+    },
+  })
   const session: DocumentToolSession = {
     identity,
     credentials,
     catalogDigest: manifest.digest,
+    mutationAuthority,
     authorize: authenticate,
     listTools,
     callTool,

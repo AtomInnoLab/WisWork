@@ -1,5 +1,6 @@
 import { request } from 'node:http'
 import { describe, expect, it, vi } from 'vitest'
+import { createEnhancedPolicyIssuer } from '@wiswork/agent-runtime'
 import { startDocumentMcpServer } from '../src/mcp-server.js'
 import { createDocumentToolManifest } from '../src/tool-router.js'
 
@@ -17,22 +18,24 @@ const rollout = {
   },
 }
 const tool = { name: 'get_document_context', description: 'Read.', inputSchema: { type: 'object' } }
+const policyHandle = () => {
+  const issuer = createEnhancedPolicyIssuer(() => 1)
+  return issuer.issue({
+    generation: 1,
+    host: 'docs',
+    policy: rollout,
+    capabilities: ['semantic-read'],
+  })
+}
 const registration = () => ({
   identity: { ownerId: 'o', host: 'docs' as const, documentId: 'd', sessionId: 's', generation: 1 },
   manifest: createDocumentToolManifest({
-    authorization: {
-      host: 'docs',
-      policy: rollout,
-      declaration: { capabilities: ['semantic-read'] },
-    },
+    policyHandle: policyHandle(),
     tools: [tool],
     policy: { get_document_context: 'read' },
   }),
   isOpen: () => true,
   executeRead: async () => ({ output: 'document', summary: 'read' }),
-  prepareMutation: async () => {
-    throw new Error('unreachable')
-  },
 })
 function post(url: string, secret: string, value: unknown, authorization = `Bearer ${secret}`) {
   const data = JSON.stringify(value)
@@ -58,6 +61,20 @@ function post(url: string, secret: string, value: unknown, authorization = `Bear
     )
     req.on('error', reject)
     req.end(data)
+  })
+}
+function methodStatus(url: string, method: string, authorization?: string) {
+  return new Promise<number>((resolve, reject) => {
+    const req = request(
+      url,
+      { method, headers: authorization ? { authorization } : {} },
+      (response) => {
+        response.resume()
+        response.on('end', () => resolve(response.statusCode ?? 0))
+      },
+    )
+    req.on('error', reject)
+    req.end()
   })
 }
 async function initialize(url: string, secret: string) {
@@ -199,6 +216,30 @@ describe('document MCP server', () => {
           })
         ).status,
       ).toBe(401)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('authenticates path/session/bearer before method dispatch', async () => {
+    const server = await startDocumentMcpServer()
+    const session = server.register(registration())
+    try {
+      expect(await methodStatus(session.url, 'GET')).toBe(401)
+      expect(await methodStatus(`${server.baseUrl}/unknown`, 'GET', 'Bearer invalid')).toBe(401)
+      expect(await methodStatus(session.url, 'GET', `Bearer ${session.secret}`)).toBe(405)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('enforces the compiled active-session cap and releases on close', async () => {
+    const server = await startDocumentMcpServer({ maxActiveSessions: 1 })
+    const first = server.register(registration())
+    try {
+      expect(() => server.register(registration())).toThrow('mcp_session_limit')
+      first.close()
+      expect(() => server.register(registration())).not.toThrow()
     } finally {
       await server.close()
     }

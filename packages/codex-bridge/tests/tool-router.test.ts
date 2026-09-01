@@ -1,4 +1,5 @@
-import { suspendToolExecution, type ToolExecution } from '@wiswork/agent-core'
+import { isToolExecutionSuspension, type ToolExecution } from '@wiswork/agent-core'
+import { createEnhancedPolicyIssuer } from '@wiswork/agent-runtime'
 import { describe, expect, it, vi } from 'vitest'
 import { createDocumentCarrierIssuer } from '../src/index.js'
 import {
@@ -28,22 +29,24 @@ const readTool = {
   inputSchema: { type: 'object' },
 }
 const writeTool = { name: 'replace_blocks', description: 'Write.', inputSchema: { type: 'object' } }
+function policyHandle() {
+  const issuer = createEnhancedPolicyIssuer(() => 4)
+  return issuer.issue({
+    generation: 4,
+    host: 'docs',
+    policy: rollout,
+    capabilities: ['semantic-read', 'transaction-proposal'],
+  })
+}
 
 function fixture(overrides: Partial<DocumentToolRegistration> = {}) {
   const executeRead = vi.fn(async (): Promise<ToolExecution> => ({
     output: 'text',
     summary: 'read',
   }))
-  const prepareMutation = vi.fn(() =>
-    suspendToolExecution(Promise.resolve({ output: 'changed', summary: 'changed', mutated: true })),
-  )
   let open = true
   const manifest = createDocumentToolManifest({
-    authorization: {
-      host: 'docs',
-      policy: rollout,
-      declaration: { capabilities: ['semantic-read', 'transaction-proposal'] },
-    },
+    policyHandle: policyHandle(),
     tools: [readTool, writeTool],
     policy: { get_document_context: 'read', replace_blocks: 'mutate' },
   })
@@ -58,11 +61,10 @@ function fixture(overrides: Partial<DocumentToolRegistration> = {}) {
     manifest,
     isOpen: () => open,
     executeRead,
-    prepareMutation,
     ...overrides,
   }
   const session = createDocumentToolSession(registration)
-  return { session, executeRead, prepareMutation, closeHost: () => (open = false) }
+  return { session, executeRead, closeHost: () => (open = false) }
 }
 
 describe('document-scoped tool session', () => {
@@ -79,34 +81,51 @@ describe('document-scoped tool session', () => {
     ).toThrow('tool_unauthorized')
   })
 
-  it('routes reads only to executeRead and mutations only to prepareMutation', async () => {
+  it('routes reads to executeRead and queues detached mutations without a writer callback', async () => {
     const f = fixture()
     await expect(
       f.session.callTool(f.session.credentials, { id: 'r', name: readTool.name, input: {} }),
     ).resolves.toMatchObject({ output: 'text' })
-    expect(f.prepareMutation).not.toHaveBeenCalled()
-    await expect(
-      f.session.callTool(f.session.credentials, { id: 'w', name: writeTool.name, input: {} }),
-    ).resolves.toMatchObject({ output: 'changed', mutated: true })
+    const outcome = f.session.callTool(f.session.credentials, {
+      id: 'w',
+      name: writeTool.name,
+      input: {},
+    })
+    expect(isToolExecutionSuspension(outcome as any)).toBe(true)
+    const claimed = f.session.mutationAuthority.claimNext()!
+    expect(claimed.request).toMatchObject({
+      identity: { documentId: 'doc', generation: 4 },
+      call: { id: 'w', name: writeTool.name },
+      catalogDigest: f.session.catalogDigest,
+    })
+    f.session.mutationAuthority.settle(claimed.claim, {
+      output: 'changed',
+      summary: 'changed',
+      mutated: true,
+    })
+    await expect((outcome as any).result).resolves.toMatchObject({
+      output: 'changed',
+      mutated: true,
+    })
     expect(f.executeRead).toHaveBeenCalledTimes(1)
   })
 
   it('rejects cross-session, unknown, oversized, cancelled and closed calls', async () => {
     const a = fixture(),
       b = fixture()
-    await expect(
+    expect(() =>
       a.session.callTool(b.session.credentials, { id: 'x', name: readTool.name, input: {} }),
-    ).rejects.toThrow('tool_unauthorized')
-    await expect(
+    ).toThrow('tool_unauthorized')
+    expect(
       a.session.callTool(a.session.credentials, { id: 'unknown', name: 'shell', input: {} }),
-    ).resolves.toMatchObject({ output: 'unknown_tool', isError: true })
-    await expect(
+    ).toMatchObject({ output: 'unknown_tool', isError: true })
+    expect(
       a.session.callTool(a.session.credentials, {
         id: 'big',
         name: readTool.name,
         input: { text: 'x'.repeat(1_000_001) },
       }),
-    ).resolves.toMatchObject({ output: 'invalid_tool_call', isError: true })
+    ).toMatchObject({ output: 'invalid_tool_call', isError: true })
     const controller = new AbortController()
     controller.abort()
     await expect(
@@ -120,7 +139,7 @@ describe('document-scoped tool session', () => {
     expect(() => a.session.listTools(a.session.credentials)).toThrow('tool_session_closed')
   })
 
-  it('bounds execution and rejects mutation result or read mutation policy violations', async () => {
+  it('bounds read execution and rejects read mutation policy violations', async () => {
     const mutatingRead = fixture({
       executeRead: vi.fn(async () => ({ output: 'bad', summary: 'bad', mutated: true })),
     })
@@ -131,16 +150,6 @@ describe('document-scoped tool session', () => {
         input: {},
       }),
     ).resolves.toMatchObject({ output: 'tool_policy_violation' })
-    const direct = fixture({
-      prepareMutation: vi.fn(async () => ({ output: 'bad', summary: 'bad', mutated: true }) as any),
-    })
-    await expect(
-      direct.session.callTool(direct.session.credentials, {
-        id: 'w',
-        name: writeTool.name,
-        input: {},
-      }),
-    ).resolves.toMatchObject({ output: 'mutation_authority_required' })
     const slow = fixture({
       maxCallMs: 10,
       executeRead: vi.fn(async () => await new Promise<ToolExecution>(() => undefined)),

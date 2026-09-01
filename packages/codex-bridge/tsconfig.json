@@ -4,6 +4,7 @@
     "baseUrl": ".",
     "paths": {
       "@wiswork/agent-core": ["../agent-core/src/index.ts"],
+      "@wiswork/agent-core/internal": ["../agent-core/src/internal.ts"],
       "@wiswork/agent-runtime": ["../agent-runtime/src/index.ts"],
       "@wiswork/presentation-verification": ["../presentation-verification/src/index.ts"]
     }

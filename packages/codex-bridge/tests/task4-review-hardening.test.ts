@@ -1,4 +1,5 @@
-import { suspendToolExecution } from '@wiswork/agent-core'
+import { isToolExecutionSuspension } from '@wiswork/agent-core'
+import { createEnhancedPolicyIssuer } from '@wiswork/agent-runtime'
 import { describe, expect, it, vi } from 'vitest'
 import {
   createDocumentToolManifest,
@@ -21,14 +22,14 @@ const policy = {
 }
 const read = { name: 'get_document_context', description: 'Read.', inputSchema: { type: 'object' } }
 const mutate = { name: 'replace_blocks', description: 'Replace.', inputSchema: { type: 'object' } }
+function policyHandle(capabilities = ['semantic-read', 'transaction-proposal']) {
+  const issuer = createEnhancedPolicyIssuer(() => 1)
+  return issuer.issue({ generation: 1, host: 'docs', policy, capabilities })
+}
 
 function registration(overrides: Partial<DocumentToolRegistration> = {}): DocumentToolRegistration {
   const manifest = createDocumentToolManifest({
-    authorization: {
-      host: 'docs',
-      policy,
-      declaration: { capabilities: ['semantic-read', 'transaction-proposal'] },
-    },
+    policyHandle: policyHandle(),
     tools: [read, mutate],
     policy: { get_document_context: 'read', replace_blocks: 'mutate' },
   })
@@ -43,11 +44,6 @@ function registration(overrides: Partial<DocumentToolRegistration> = {}): Docume
     manifest,
     isOpen: () => true,
     executeRead: vi.fn(async () => ({ output: 'text', summary: 'read' })),
-    prepareMutation: vi.fn(() =>
-      suspendToolExecution(
-        Promise.resolve({ output: 'changed', summary: 'changed', mutated: true }),
-      ),
-    ),
     ...overrides,
   }
 }
@@ -56,52 +52,120 @@ describe('Task 4 review hardening', () => {
   it('rejects aliases and capabilities not compiled for the exact host', () => {
     expect(() =>
       createDocumentToolManifest({
-        authorization: { host: 'docs', policy, declaration: { capabilities: ['semantic-read'] } },
+        policyHandle: policyHandle(['semantic-read']),
         tools: [{ ...read, name: 'read_document' }],
         policy: { read_document: 'read' },
       }),
     ).toThrow('tool_not_compiled_for_host')
     expect(() =>
       createDocumentToolManifest({
-        authorization: { host: 'docs', policy, declaration: { capabilities: ['semantic-read'] } },
+        policyHandle: policyHandle(['semantic-read']),
         tools: [mutate],
         policy: { replace_blocks: 'mutate' },
       }),
     ).toThrow('tool_capability_denied')
   })
 
-  it('does not accept a shape-forged mutation suspension', async () => {
-    const session = createDocumentToolSession(
-      registration({
-        prepareMutation: vi.fn(
-          () =>
-            ({
-              kind: 'tool-execution-suspension',
-              result: Promise.resolve({ output: 'forged', summary: 'forged', mutated: true }),
-              output: 'tool_execution_suspended',
-              summary: 'Awaiting tool execution',
-            }) as any,
-        ),
+  it('accepts only opaque one-use policy handles', () => {
+    const issuer = createEnhancedPolicyIssuer(() => 1)
+    const handle = issuer.issue({
+      generation: 1,
+      host: 'docs',
+      policy,
+      capabilities: ['semantic-read'],
+    })
+    const input = {
+      policyHandle: handle,
+      tools: [read],
+      policy: { get_document_context: 'read' as const },
+    }
+    expect(() => createDocumentToolManifest(input)).not.toThrow()
+    expect(() => createDocumentToolManifest(input)).toThrow('enhanced_policy_consumed')
+    expect(() =>
+      createDocumentToolManifest({
+        ...input,
+        policyHandle: {} as any,
       }),
-    )
-    await expect(
-      session.callTool(session.credentials, { id: 'w', name: 'replace_blocks', input: {} }),
-    ).resolves.toMatchObject({ output: 'mutation_authority_required', isError: true })
+    ).toThrow('invalid_enhanced_policy_handle')
+  })
+
+  it('has no mutation callback injection point and requires opaque claim before settle', async () => {
+    expect(() =>
+      createDocumentToolSession({
+        ...registration(),
+        prepareMutation: () => {
+          throw new Error('write')
+        },
+      } as any),
+    ).toThrow('invalid_tool_session')
+    const first = createDocumentToolSession(registration())
+    const second = createDocumentToolSession(registration())
+    const outcome = first.callTool(first.credentials, {
+      id: 'w',
+      name: 'replace_blocks',
+      input: { text: 'new' },
+    })
+    expect(isToolExecutionSuspension(outcome as any)).toBe(true)
+    const claimed = first.mutationAuthority.claimNext()!
+    expect(claimed.request.call.input).toEqual({ text: 'new' })
+    expect(() =>
+      second.mutationAuthority.settle(claimed.claim, {
+        output: 'bad',
+        summary: 'bad',
+        mutated: true,
+      }),
+    ).toThrow('mutation_claim_issuer_mismatch')
+    expect(() =>
+      first.mutationAuthority.settle({} as never, { output: 'bad', summary: 'bad' }),
+    ).toThrow('invalid_mutation_claim')
+    first.mutationAuthority.settle(claimed.claim, {
+      output: 'changed',
+      summary: 'changed',
+      mutated: true,
+    })
+    expect(() =>
+      first.mutationAuthority.settle(claimed.claim, {
+        output: 'again',
+        summary: 'again',
+        mutated: true,
+      }),
+    ).toThrow('mutation_claim_consumed')
+    await expect((outcome as any).result).resolves.toMatchObject({ output: 'changed' })
   })
 
   it('permanently consumes call ids and closes after the bounded total-call budget', async () => {
     const session = createDocumentToolSession(registration({ maxTotalCalls: 2 }))
     const call = { id: 'same', name: 'get_document_context', input: {} }
     await session.callTool(session.credentials, call)
-    await expect(session.callTool(session.credentials, call)).resolves.toMatchObject({
+    expect(session.callTool(session.credentials, call)).toMatchObject({
       output: 'tool_call_consumed',
       isError: true,
     })
     await session.callTool(session.credentials, { ...call, id: 'second' })
-    await expect(
-      session.callTool(session.credentials, { ...call, id: 'third' }),
-    ).resolves.toMatchObject({ output: 'tool_session_call_limit', isError: true })
+    expect(session.callTool(session.credentials, { ...call, id: 'third' })).toMatchObject({
+      output: 'tool_session_call_limit',
+      isError: true,
+    })
     expect(() => session.listTools(session.credentials)).toThrow('tool_session_closed')
+  })
+
+  it('bounds the detached mutation queue and cancels unresolved work on close', async () => {
+    const session = createDocumentToolSession(registration({ maxPendingMutations: 1 }))
+    const first = session.callTool(session.credentials, {
+      id: 'first',
+      name: 'replace_blocks',
+      input: {},
+    })
+    expect(isToolExecutionSuspension(first as any)).toBe(true)
+    expect(
+      session.callTool(session.credentials, { id: 'second', name: 'replace_blocks', input: {} }),
+    ).toMatchObject({ output: 'mutation_queue_full', isError: true })
+    session.close()
+    await expect((first as any).result).resolves.toMatchObject({
+      output: 'tool_cancelled',
+      isError: true,
+    })
+    expect(session.mutationAuthority.claimNext()).toBeUndefined()
   })
 
   it('rejects aggregate catalog amplification before MCP serialization', () => {
@@ -122,11 +186,7 @@ describe('Task 4 review hardening', () => {
     }))
     expect(() =>
       createDocumentToolManifest({
-        authorization: {
-          host: 'docs',
-          policy,
-          declaration: { capabilities: ['semantic-read', 'transaction-proposal'] },
-        },
+        policyHandle: policyHandle(),
         tools,
         policy: Object.fromEntries(
           tools.map((tool) => [

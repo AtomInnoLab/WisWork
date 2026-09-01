@@ -1,23 +1,27 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { AgentToolCall } from '@wiswork/agent-core'
+import { isToolExecutionSuspension } from '@wiswork/agent-core'
 import type { DocumentCarrierHandle, DocumentCarrierTurnContext } from './types.js'
 import {
   createDocumentToolSession,
   ToolRouterError,
   type DocumentToolRegistration,
   type DocumentToolSession,
+  type MutationAuthority,
 } from './tool-router.js'
 
 const HOST = '127.0.0.1'
 const MAX_BODY = 1_000_000
 const MAX_RPC_CALLS = 1_024
+const MAX_ACTIVE_TOOL_SESSIONS = 64
 const PROTOCOL = '2025-06-18'
 type RpcId = string | number
 
 export interface DocumentMcpSession {
   readonly url: string
   readonly secret: string
+  readonly mutationAuthority: MutationAuthority
   issueCarrier(turn: Omit<DocumentCarrierTurnContext, 'capability'>): DocumentCarrierHandle
   close(): void
 }
@@ -29,6 +33,7 @@ export interface DocumentMcpServer {
 export interface DocumentMcpServerOptions {
   readonly maxBodyBytes?: number
   readonly maxRpcCalls?: number
+  readonly maxActiveSessions?: number
   readonly diagnostics?: (code: string) => void
 }
 
@@ -87,10 +92,17 @@ export async function startDocumentMcpServer(
 ): Promise<DocumentMcpServer> {
   const maxBodyBytes = options.maxBodyBytes ?? MAX_BODY
   const maxRpcCalls = options.maxRpcCalls ?? MAX_RPC_CALLS
+  const maxActiveSessions = options.maxActiveSessions ?? MAX_ACTIVE_TOOL_SESSIONS
   if (!Number.isSafeInteger(maxBodyBytes) || maxBodyBytes <= 0 || maxBodyBytes > MAX_BODY)
     throw new TypeError('invalid_mcp_body_limit')
   if (!Number.isSafeInteger(maxRpcCalls) || maxRpcCalls <= 0 || maxRpcCalls > MAX_RPC_CALLS)
     throw new TypeError('invalid_mcp_call_limit')
+  if (
+    !Number.isSafeInteger(maxActiveSessions) ||
+    maxActiveSessions <= 0 ||
+    maxActiveSessions > MAX_ACTIVE_TOOL_SESSIONS
+  )
+    throw new TypeError('invalid_mcp_session_limit')
   const sessions = new Map<
     string,
     { session: DocumentToolSession; state: 'new' | 'initialized' | 'ready'; ids: Set<string> }
@@ -107,10 +119,6 @@ export async function startDocumentMcpServer(
   const server = createServer((request, response) => {
     void (async () => {
       if (closed) return send(response, 503, { error: 'mcp_closed' })
-      if (request.method !== 'POST') {
-        request.resume()
-        return send(response, 405, { error: 'method_not_allowed' })
-      }
       const match = request.url?.match(/^\/mcp\/([A-Za-z0-9_-]{43})$/)
       const auth = request.headers.authorization
       const entry = match ? sessions.get(match[1]!) : undefined
@@ -125,6 +133,10 @@ export async function startDocumentMcpServer(
       } catch {
         request.resume()
         return send(response, 401, { error: 'unauthorized' })
+      }
+      if (request.method !== 'POST') {
+        request.resume()
+        return send(response, 405, { error: 'method_not_allowed' })
       }
       if (request.headers['content-type']?.toLowerCase() !== 'application/json') {
         request.resume()
@@ -247,7 +259,8 @@ export async function startDocumentMcpServer(
           name: params.name,
           input: (params.arguments ?? {}) as Record<string, unknown>,
         }
-        const execution = await session.callTool(credentials, call, controller.signal)
+        const outcome = await session.callTool(credentials, call, controller.signal)
+        const execution = isToolExecutionSuspension(outcome) ? await outcome.result : outcome
         request.off('aborted', abort)
         response.off('close', abort)
         if (!response.destroyed)
@@ -286,12 +299,14 @@ export async function startDocumentMcpServer(
     baseUrl,
     register(registration: DocumentToolRegistration) {
       if (closed) throw new ToolRouterError('mcp_server_closed')
+      if (sessions.size >= maxActiveSessions) throw new ToolRouterError('mcp_session_limit')
       const session = createDocumentToolSession(registration)
       sessions.set(session.credentials.sessionId, { session, state: 'new', ids: new Set() })
       let ended = false
       return Object.freeze({
         url: `${baseUrl}/mcp/${session.credentials.sessionId}`,
         secret: session.credentials.secret,
+        mutationAuthority: session.mutationAuthority,
         issueCarrier(turn: Omit<DocumentCarrierTurnContext, 'capability'>) {
           return session.issueCarrier(session.credentials, turn)
         },
