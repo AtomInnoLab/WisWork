@@ -12,6 +12,7 @@
     "schema:check": "node scripts/check-codex-schema.mjs"
   },
   "dependencies": {
+    "@wiswork/agent-core": "*",
     "@wiswork/agent-runtime": "*",
     "tar": "7.5.22"
   },

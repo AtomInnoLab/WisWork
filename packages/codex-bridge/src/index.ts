@@ -13,6 +13,9 @@ export * from './json-rpc.js'
 export * from './app-server-client.js'
 export * from './component-manager.js'
 export * from './process-manager.js'
+export * from './local-server.js'
+export * from './tool-router.js'
+export * from './mcp-server.js'
 export * from './generated/index.js'
 
 export class ProtocolCompatibilityError extends Error {
