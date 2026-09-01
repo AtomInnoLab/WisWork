@@ -20,7 +20,7 @@
     <Host Name="Presentation" />
   </Hosts>
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://localhost:3000/taskpane.html?v=0.3.3" />
+    <SourceLocation DefaultValue="https://localhost:3000/taskpane.html?v=0.3.4" />
   </DefaultSettings>
   <Permissions>ReadWriteDocument</Permissions>
 </OfficeApp>

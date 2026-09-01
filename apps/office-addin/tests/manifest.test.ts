@@ -31,7 +31,7 @@ describe('Office Add-in manifest and routes', () => {
 
     expect(manifest).toContain('<Version>0.3.4.0</Version>')
     expect(manifest).toContain(
-      '<SourceLocation DefaultValue="https://office.example/taskpane.html?v=0.3.3" />',
+      '<SourceLocation DefaultValue="https://office.example/taskpane.html?v=0.3.4" />',
     )
     expect(manifest).toContain('<IconUrl DefaultValue="https://office.example/assets/icon.png" />')
     expect(manifest).toContain('<AppDomain>https://office.example</AppDomain>')
