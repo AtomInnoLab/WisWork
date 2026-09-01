@@ -191,7 +191,7 @@ export class EnhancedAgentRuntime implements AgentRuntime {
         documentId: options.document.id,
         generation: options.document.generation,
         skill: options.skill,
-        captureSnapshot: options.captureSnapshot,
+        ...(options.captureSnapshot ? { captureSnapshot: options.captureSnapshot } : {}),
       }),
       options,
     )

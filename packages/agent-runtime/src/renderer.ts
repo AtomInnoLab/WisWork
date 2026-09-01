@@ -183,22 +183,27 @@ export function createEnhancedRendererClient(
         let snapshot: Readonly<{ id: string; value: unknown }> | undefined
         if (
           mutatingTools.has(request.call.name) &&
-          (input.host === 'docs' || input.host === 'sheets')
+          input.host === 'docs' &&
+          !input.captureSnapshot
         ) {
-          if (!input.captureSnapshot) {
-            void bridge.toolResult({
-              documentId: input.documentId,
-              generation: input.generation,
-              callId: request.call.id,
-              execution: {
-                output: 'snapshot_unavailable',
-                summary: 'Tool failed',
-                isError: true,
-                mutated: false,
-              },
-            })
-            return
-          }
+          void bridge.toolResult({
+            documentId: input.documentId,
+            generation: input.generation,
+            callId: request.call.id,
+            execution: {
+              output: 'snapshot_unavailable',
+              summary: 'Tool failed',
+              isError: true,
+              mutated: false,
+            },
+          })
+          return
+        }
+        if (
+          mutatingTools.has(request.call.name) &&
+          (input.host === 'docs' || input.host === 'sheets') &&
+          input.captureSnapshot
+        ) {
           try {
             snapshot = Object.freeze({ id: crypto.randomUUID(), value: input.captureSnapshot() })
             snapshots.set(request.call.id, snapshot)

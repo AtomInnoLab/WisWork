@@ -103,4 +103,43 @@ describe('enhanced renderer mutation snapshots', () => {
       isError: true,
     })
   })
+
+  it('lets Sheets use its operation transaction and undo when no generic snapshot is supplied', async () => {
+    let toolListener!: (request: any) => void
+    const executeTool = vi.fn(() => ({ output: 'ok', summary: 'applied', mutated: true }))
+    const toolResult = vi.fn(async () => undefined)
+    const bridge: any = {
+      register: vi.fn(async () => undefined),
+      unregister: vi.fn(async () => undefined),
+      status: vi.fn(),
+      startTurn: vi.fn(),
+      cancelTurn: vi.fn(),
+      subscribe: () => () => undefined,
+      onToolCall: (listener: any) => {
+        toolListener = listener
+        return () => undefined
+      },
+      toolResult,
+    }
+    createEnhancedRendererClient(bridge).open({
+      host: 'sheets',
+      documentId: 'sheet',
+      generation: 1,
+      skill: {
+        id: 'sheets',
+        systemPrompt: '',
+        tools: [{ name: 'propose_operations', description: '', inputSchema: {} }],
+        executeTool,
+      },
+    })
+    toolListener({
+      documentId: 'sheet',
+      generation: 1,
+      call: { id: 's1', name: 'propose_operations', input: { operations: [] } },
+    })
+    await vi.waitFor(() => expect(toolResult).toHaveBeenCalledOnce())
+    expect(executeTool).toHaveBeenCalledOnce()
+    expect((toolResult.mock.calls as any)[0][0]).not.toHaveProperty('snapshotBefore')
+    expect((toolResult.mock.calls as any)[0][0].execution).toMatchObject({ mutated: true })
+  })
 })
