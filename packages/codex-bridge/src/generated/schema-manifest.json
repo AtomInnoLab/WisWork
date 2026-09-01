@@ -1,0 +1,30 @@
+{
+  "source": "codex-cli 0.147.0 stable app-server schemas",
+  "version": "codex-cli 0.147.0",
+  "generator": "app-server generate-json-schema",
+  "bindingsSha256": "5c8822f3897a47496c7c682ea80eaec5765c3f8429cf2ad336bca9079b840c4c",
+  "sha256": {
+    "codex_app_server_protocol.schemas.json": "f72b2caa3cbfa4298de9e85c62dda6dfbaf2266ffeb916fed30615ca69ff8c74",
+    "codex_app_server_protocol.v2.schemas.json": "f3dec1e031d99a420b137b903f02196d4325eece57620c925bb7130b25f168d2",
+    "v1/InitializeParams.json": "6f0094be9a65242ec779a40794cbd4fdfa32fca1e45084a16adfb50501d33ea2",
+    "v1/InitializeResponse.json": "62ad689c2cb6379913c1d72749cfd8de5089d35760214123518eb92eef11acc9",
+    "v2/ThreadStartParams.json": "792e2f32e37cece971bd616664ea2053741acbed4e9c92e9d1766427718f2ecd",
+    "v2/ThreadStartResponse.json": "86d37438580ac2da25fa144ee9b4dda1269953cd92c9f9c94d7a2904a28a9517",
+    "v2/TurnStartParams.json": "ff2e7e0796fbe2ad99e5ec7d489cc8c8630b75f2ab8f17857711107587e3197d",
+    "v2/TurnStartResponse.json": "888a437b6c818b10fb2ec3c255cb71c82293b378d9ce47e7be9c0028ed9e8a34",
+    "v2/TurnInterruptParams.json": "6dff382dae73d1dbc58406ed045605f647e7a49660e2540fbd2c6c24d60c5f2b",
+    "v2/TurnInterruptResponse.json": "531de6be06fe979b5963f249bab82498a175e614bf65ac12fb2e849dfe60bcf1",
+    "ServerNotification.json": "558aab11da20cd0d278ec6f9067a46444f0566be7e3953f443dcc5d7cb23736f"
+  },
+  "generatedTypeSha256": {
+    "InitializeParams.ts": "bfc13b4fc9e37f629ee67b42d6e7f342ba38668ff528e738a911de5ebcfd545f",
+    "InitializeResponse.ts": "4feabcb66d4bf01869d2780beaec1838d41b30213cdf57de175298aed01f5379",
+    "v2/ThreadStartParams.ts": "3a8e4943c6a9a86de42037096cedb86ac6abef491fb7ca424752663116c24fef",
+    "v2/ThreadStartResponse.ts": "efc3d5df82b8f6f7d320fc97e2c51e8f25dc38195ae49af55f37b2ead8a05464",
+    "v2/TurnStartParams.ts": "9ca16fa1ee61f159c8211f686f834e6496e951f55cd1a8eeba310c0c204e9049",
+    "v2/TurnStartResponse.ts": "974c520197188b7399836fda0ef1b11e43df618d25295463d2e229e1efa88ffd",
+    "v2/TurnInterruptParams.ts": "643034c3d25c23c7700236d4d1ff16286565786d48148e85b0c4761fe46d3804",
+    "v2/TurnInterruptResponse.ts": "3994cb114b2c4a2e81ba3a349c3a7d1f13ce1b165776b2162b52c9a114c24bc4",
+    "ServerNotification.ts": "dea5109760272972853a3fbb4dc04084f17338f0837eba4af0da65352bb4c3c4"
+  }
+}
