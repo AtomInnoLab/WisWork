@@ -60,7 +60,7 @@ export interface CodexComponentAssetManifest {
     | {
         readonly policy: 'macos'
         readonly teamIdentifier: string
-        readonly requireNotarization: true
+        readonly requireNotarization: boolean
       }
     | { readonly policy: 'windows'; readonly publisher: string }
   readonly layout: {
@@ -292,7 +292,7 @@ function parseManifestAsset(value: unknown): CodexComponentAssetManifest {
       !hasOnlyKeys(trust, ['policy', 'teamIdentifier', 'requireNotarization']) ||
       trust.policy !== 'macos' ||
       !/^[A-Z0-9]{10}$/.test(trust.teamIdentifier as string) ||
-      trust.requireNotarization !== true
+      typeof trust.requireNotarization !== 'boolean'
     )
       fail('enhanced_mode_manifest_invalid')
   } else if (
@@ -607,14 +607,19 @@ export function platformTrustCommands(
 ): readonly { readonly file: string; readonly args: readonly string[] }[] {
   if (policy.policy === 'macos') {
     if (platform !== 'darwin') fail('enhanced_mode_platform_trust_failed')
-    return [
+    const commands = [
       { file: '/usr/bin/codesign', args: ['--verify', '--strict', '--verbose=4', executablePath] },
       { file: '/usr/bin/codesign', args: ['-dv', '--verbose=4', executablePath] },
-      {
-        file: '/usr/sbin/spctl',
-        args: ['--assess', '--type', 'execute', '--verbose=4', executablePath],
-      },
     ]
+    return policy.requireNotarization
+      ? [
+          ...commands,
+          {
+            file: '/usr/sbin/spctl',
+            args: ['--assess', '--type', 'execute', '--verbose=4', executablePath],
+          },
+        ]
+      : commands
   }
   if (platform !== 'win32') fail('enhanced_mode_platform_trust_failed')
   const escapedPath = executablePath.replaceAll("'", "''")

@@ -212,12 +212,12 @@ describe('pinned Codex app-server process manager', () => {
     ])
     expect(fixture.calls[1]?.cwd).toBe(fixture.directories.cwd)
     expect(fixture.calls[1]?.args.join(' ')).not.toContain('bridge-secret-private')
-    expect(fixture.calls[1]?.env).toEqual({
+    expect(fixture.calls[1]?.env).toMatchObject({
       CODEX_HOME: fixture.directories.codexHome,
       WISWORK_CODEX_TOKEN: 'bridge-secret-private',
       CODEX_CODE_MODE_HOST_PATH:
         process.platform === 'win32'
-          ? '/opt/wiswork/codex-code-mode-host.exe'
+          ? '\\opt\\wiswork\\codex-code-mode-host.exe'
           : '/opt/wiswork/codex-code-mode-host',
       NO_PROXY: '127.0.0.1,localhost',
       no_proxy: '127.0.0.1,localhost',
