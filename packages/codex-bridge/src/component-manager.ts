@@ -25,7 +25,9 @@ const PINNED_VERSION = '0.147.0'
 const PINNED_VERSION_OUTPUT = `codex-app-server ${PINNED_VERSION}`
 const MAX_VERSION_OUTPUT = 65_536
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 10 * 60_000
-const DEFAULT_PROBE_TIMEOUT_MS = 5_000
+// Authenticode hashes the full executable and may also trigger a cold antivirus scan.
+// Keep the operation bounded, but allow enough time for the 247 MB Windows app-server.
+const DEFAULT_PROBE_TIMEOUT_MS = 30_000
 const DEFAULT_LOCK_TIMEOUT_MS = 30_000
 const CAPACITY_MARGIN_BYTES = 64 * 1024 * 1024
 const PRIMARY_DOWNLOAD_HOST = 'office.8-216-134-194.sslip.io'

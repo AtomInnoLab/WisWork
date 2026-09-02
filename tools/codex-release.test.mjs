@@ -152,6 +152,11 @@ test('native lifecycle pairs private session creation with bounded cleanup', () 
   assert.match(processManager, /retryDelay:\s*100/)
 })
 
+test('native trust verification has a bounded cold-file hashing budget', () => {
+  const manager = read('packages/codex-bridge/src/component-manager.ts')
+  assert.match(manager, /const DEFAULT_PROBE_TIMEOUT_MS = 30_000/)
+})
+
 test('base package source policy still passes without a component cache', () => {
   const policy = read('tools/optional-runtime-policy.mjs')
   assert.match(policy, /optional Codex artifact must not be bundled/)
