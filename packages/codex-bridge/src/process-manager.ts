@@ -181,15 +181,21 @@ function minimalEnvironment(
 function executableContract(executablePath: string): {
   readonly version: string
   readonly serverPrefix: readonly string[]
+  readonly transportArguments: readonly string[]
 } {
   const name = basename(executablePath).toLowerCase()
   if (name === 'codex' || name === 'codex.exe') {
-    return { version: CODEX_CLI_VERSION, serverPrefix: ['app-server'] }
+    return {
+      version: CODEX_CLI_VERSION,
+      serverPrefix: ['app-server'],
+      transportArguments: ['--stdio'],
+    }
   }
   if (name === 'codex-app-server' || name === 'codex-app-server.exe') {
     return {
       version: `codex-app-server ${CODEX_CLI_VERSION.slice('codex-cli '.length)}`,
       serverPrefix: [],
+      transportArguments: ['--listen', 'stdio://'],
     }
   }
   throw new TypeError('codex_executable_name_invalid')
@@ -199,6 +205,7 @@ function serverArguments(
   baseUrl: string,
   mcpUrl: string | undefined,
   serverPrefix: readonly string[],
+  transportArguments: readonly string[],
 ): readonly string[] {
   const configs = [
     'model_provider="wiswork"',
@@ -222,7 +229,7 @@ function serverArguments(
   return [
     ...serverPrefix,
     '--strict-config',
-    '--stdio',
+    ...transportArguments,
     ...configs.flatMap((value) => ['-c', value]),
   ]
 }
@@ -337,7 +344,12 @@ export class CodexProcessManager {
       if (this.#state !== 'starting') throw new CodexProcessError('codex_process_start_failed')
       const child = this.#spawn(
         this.#executablePath,
-        serverArguments(this.#baseUrl, this.#mcp?.url, this.#executableContract.serverPrefix),
+        serverArguments(
+          this.#baseUrl,
+          this.#mcp?.url,
+          this.#executableContract.serverPrefix,
+          this.#executableContract.transportArguments,
+        ),
         {
           cwd: this.#directories.cwd,
           env: minimalEnvironment(
