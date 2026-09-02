@@ -62,7 +62,11 @@ export interface CodexComponentAssetManifest {
         readonly teamIdentifier: string
         readonly requireNotarization: boolean
       }
-    | { readonly policy: 'windows'; readonly publisher: string }
+    | {
+        readonly policy: 'windows'
+        readonly publisher: string
+        readonly publisherThumbprint: string
+      }
   readonly layout: {
     readonly entrypoint: string
     readonly directories: readonly string[]
@@ -296,11 +300,13 @@ function parseManifestAsset(value: unknown): CodexComponentAssetManifest {
     )
       fail('enhanced_mode_manifest_invalid')
   } else if (
-    !hasOnlyKeys(trust, ['policy', 'publisher']) ||
+    !hasOnlyKeys(trust, ['policy', 'publisher', 'publisherThumbprint']) ||
     trust.policy !== 'windows' ||
     typeof trust.publisher !== 'string' ||
     trust.publisher.length < 3 ||
-    trust.publisher.length > 128
+    trust.publisher.length > 128 ||
+    typeof trust.publisherThumbprint !== 'string' ||
+    !/^[A-F0-9]{40}$/.test(trust.publisherThumbprint)
   ) {
     fail('enhanced_mode_manifest_invalid')
   }
@@ -577,7 +583,7 @@ async function defaultVerifyPlatformTrust(
         if (process.platform !== 'win32') fail('enhanced_mode_platform_trust_failed')
         const escapedPath = executablePath.replaceAll("'", "''")
         const escapedPublisher = policy.publisher.replaceAll("'", "''")
-        const script = `$s=Get-AuthenticodeSignature -LiteralPath '${escapedPath}'; if($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -ne '${escapedPublisher}') { exit 23 }`
+        const script = `$s=Get-AuthenticodeSignature -LiteralPath '${escapedPath}'; if($s.Status -ne 'Valid' -or $null -eq $s.SignerCertificate -or $s.SignerCertificate.Thumbprint -ne '${policy.publisherThumbprint}' -or $s.SignerCertificate.Subject -notlike '*${escapedPublisher}*') { exit 23 }`
         await execFile(
           'powershell.exe',
           ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
@@ -632,7 +638,7 @@ export function platformTrustCommands(
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        `$s=Get-AuthenticodeSignature -LiteralPath '${escapedPath}'; if($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -ne '${escapedPublisher}') { exit 23 }`,
+        `$s=Get-AuthenticodeSignature -LiteralPath '${escapedPath}'; if($s.Status -ne 'Valid' -or $null -eq $s.SignerCertificate -or $s.SignerCertificate.Thumbprint -ne '${policy.publisherThumbprint}' -or $s.SignerCertificate.Subject -notlike '*${escapedPublisher}*') { exit 23 }`,
       ],
     },
   ]

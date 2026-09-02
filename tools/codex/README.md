@@ -17,8 +17,8 @@ official 0.147.0 macOS command-line assets are not standalone Gatekeeper-notariz
 `spctl` assessment is reserved for the signed/notarized WisWork application artifacts. A checksum
 match alone is not release authorization.
 
-The expected team identifier and exact Windows certificate subject are release-gate inputs, not a
-claim established by Linux fixture inspection. The macOS and Windows release jobs read the real
-vendor signature and fail closed on any mismatch. The first successful release requires a reviewer
-to calibrate these values from platform-native output; changing either value requires a reviewed
-manifest change and must never be accepted dynamically.
+The expected team identifier and exact Windows signer-certificate thumbprint/publisher are
+release-gate inputs. The Windows identity was calibrated from the reviewed, fixed-digest official
+asset and is revalidated by a platform-native Authenticode check. The macOS and Windows release jobs
+read the real vendor signature and fail closed on any mismatch. Changing any identity value requires
+a reviewed manifest change and must never be accepted dynamically.

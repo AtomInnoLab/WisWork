@@ -154,7 +154,8 @@
         },
         "trust": {
           "policy": "windows",
-          "publisher": "CN=OpenAI, L.L.C."
+          "publisher": "OpenAI OpCo, LLC",
+          "publisherThumbprint": "8B0ADFB840E141DAD3044D2B5AC819873DDE3590"
         },
         "layout": {
           "entrypoint": "bin/codex-app-server.exe",

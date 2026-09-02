@@ -66,6 +66,10 @@ test('manifest pins only the three official 0.147.0 app-server package assets', 
       assert.equal(asset.trust.policy, 'macos')
       assert.equal(asset.trust.teamIdentifier, '2DC432GLL2')
       assert.equal(asset.trust.requireNotarization, false)
+    } else {
+      assert.equal(asset.trust.policy, 'windows')
+      assert.equal(asset.trust.publisher, 'OpenAI OpCo, LLC')
+      assert.equal(asset.trust.publisherThumbprint, '8B0ADFB840E141DAD3044D2B5AC819873DDE3590')
     }
   }
   assert.deepEqual(
@@ -119,7 +123,10 @@ test('every desktop builder invocation immediately runs the shared post-package 
   const desktop = read('.github/workflows/desktop-release.yml')
   assert.equal(existsSync(join(root, '.github/workflows/package-macos.yml')), false)
   assert.match(desktop, /Get-AuthenticodeSignature/)
-  assert.match(desktop, /SignerCertificate\.Subject -ne 'CN=OpenAI, L\.L\.C\.'/)
+  assert.match(
+    desktop,
+    /SignerCertificate\.Thumbprint -ne '8B0ADFB840E141DAD3044D2B5AC819873DDE3590'/,
+  )
 })
 
 test('license and notice generators cover the optional app-server', () => {
