@@ -247,8 +247,14 @@ describe('pinned Codex app-server process manager', () => {
 
     expect(fixture.calls[0]).toMatchObject({ executable: executablePath, args: ['--version'] })
     expect(fixture.calls[1]?.executable).toBe(executablePath)
-    expect(fixture.calls[1]?.args[0]).toBe('--strict-config')
+    expect(fixture.calls[1]?.args.slice(0, 4)).toEqual([
+      '--strict-config',
+      '--listen',
+      'stdio://',
+      '-c',
+    ])
     expect(fixture.calls[1]?.args).not.toContain('app-server')
+    expect(fixture.calls[1]?.args).not.toContain('--stdio')
 
     fixture.server.exited(0)
     await fixture.manager.stop()
