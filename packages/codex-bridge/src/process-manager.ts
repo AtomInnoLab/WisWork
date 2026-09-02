@@ -140,7 +140,15 @@ async function defaultCreateDirectories(): Promise<OwnedCodexDirectories> {
 }
 
 async function defaultRemoveDirectories(directories: OwnedCodexDirectories): Promise<void> {
-  await rm(directories.root, { recursive: true, force: true })
+  // Windows can retain a transient handle to the process cwd while the code-mode helper finishes
+  // exiting. Node retries only the documented transient recursive-removal errors; a persistent
+  // descendant or permission failure still rejects and keeps the runtime in failed-safe state.
+  await rm(directories.root, {
+    recursive: true,
+    force: true,
+    maxRetries: 50,
+    retryDelay: 100,
+  })
 }
 
 const defaultSpawn: CodexSpawn = (executable, args, options) =>
