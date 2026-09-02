@@ -1,5 +1,15 @@
 import { createHash } from 'node:crypto'
-import { chmod, lstat, mkdir, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  lstat,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -26,7 +36,7 @@ afterEach(async () => {
 async function temporaryRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'wiswork-enhanced-component-test-'))
   roots.push(root)
-  return root
+  return realpath(root)
 }
 
 async function sha256(path: string): Promise<string> {
