@@ -1,5 +1,6 @@
 /**
- * Search utilities (main process) — Serper Google API with DuckDuckGo fallback.
+ * Search utilities (main process) — authenticated WisUsage web search plus
+ * legacy Serper/DuckDuckGo image search.
  * Runs in the main process to avoid renderer CORS.
  */
 
@@ -14,6 +15,153 @@ import {
 export type { ImageSearchResult, WebSearchResult } from './shared'
 
 const SERPER_KEY = () => process.env.SERPER_API_KEY ?? ''
+const WISUSAGE_SEARCH_URL = 'https://wisusage.dev.atominnolab.com/v1/xiaosu/search'
+const WISUSAGE_RESPONSE_LIMIT = 1_048_576
+const WISUSAGE_QUERY_LIMIT = 1_000
+const WISUSAGE_TEXT_LIMIT = 8_192
+const WISUSAGE_TIMEOUT_MS = 15_000
+
+export interface WisUsageSearchOptions {
+  readonly fetchWithAuth: (request: (accessToken: string) => Promise<Response>) => Promise<Response>
+  readonly fetch?: typeof fetch
+  readonly signal?: AbortSignal
+}
+
+function boundedSearchText(value: unknown, maximum: number): string {
+  if (typeof value !== 'string') return ''
+  const text = value.trim()
+  return text.length > maximum ? text.slice(0, maximum) : text
+}
+
+function publicHttpsUrl(value: unknown): string {
+  try {
+    const url = new URL(String(value))
+    if (
+      url.protocol !== 'https:' ||
+      url.username ||
+      url.password ||
+      url.port ||
+      url.hostname === 'localhost' ||
+      /^(?:127\.|10\.|192\.168\.|169\.254\.|0\.)/.test(url.hostname) ||
+      /^172\.(?:1[6-9]|2\d|3[01])\./.test(url.hostname) ||
+      url.hostname === '::1' ||
+      url.hostname.endsWith('.local')
+    )
+      throw new Error()
+    return url.href
+  } catch (error) {
+    throw new Error('search_invalid_response', { cause: error })
+  }
+}
+
+async function boundedResponseJson(response: Response): Promise<unknown> {
+  const contentLength = response.headers.get('content-length')
+  const parsedContentLength = contentLength === null ? null : Number(contentLength)
+  if (
+    !response.ok ||
+    response.redirected ||
+    response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !==
+      'application/json' ||
+    (parsedContentLength !== null &&
+      (!Number.isSafeInteger(parsedContentLength) ||
+        parsedContentLength < 0 ||
+        parsedContentLength > WISUSAGE_RESPONSE_LIMIT))
+  )
+    throw new Error('search_upstream_error')
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('search_upstream_error')
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) break
+      total += next.value.byteLength
+      if (total > WISUSAGE_RESPONSE_LIMIT) throw new Error('search_response_too_large')
+      chunks.push(next.value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  try {
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
+  } catch (error) {
+    if (error instanceof Error && error.message === 'search_response_too_large') throw error
+    throw new Error('search_invalid_response', { cause: error })
+  }
+}
+
+/** Authenticated WisUsage Xiaosu search used by both Standard and Enhanced desktop agents. */
+export async function wisUsageWebSearch(
+  query: string,
+  maxResults = 10,
+  options: WisUsageSearchOptions,
+): Promise<{ results: WebSearchResult[]; method: 'wisusage-xiaosu' }> {
+  const normalized = typeof query === 'string' ? query.trim() : ''
+  if (
+    !normalized ||
+    normalized.length > WISUSAGE_QUERY_LIMIT ||
+    !Number.isSafeInteger(maxResults) ||
+    maxResults < 1 ||
+    maxResults > 10
+  )
+    throw new Error('search_invalid_request')
+  const fetchImpl = options.fetch ?? fetch
+  const url = new URL(WISUSAGE_SEARCH_URL)
+  url.searchParams.set('q', normalized)
+  url.searchParams.set('count', '10')
+  url.searchParams.set('enableContent', 'true')
+  url.searchParams.set('mainText', 'true')
+  url.searchParams.set('contentType', 'MARKDOWN')
+  const timeout = new AbortController()
+  const timer = setTimeout(() => timeout.abort(), WISUSAGE_TIMEOUT_MS)
+  timer.unref?.()
+  const abortFromCaller = () => timeout.abort()
+  options.signal?.addEventListener('abort', abortFromCaller, { once: true })
+  if (options.signal?.aborted) timeout.abort()
+  let response: Response
+  try {
+    response = await options.fetchWithAuth((accessToken) =>
+      fetchImpl(url, {
+        method: 'GET',
+        redirect: 'error',
+        signal: timeout.signal,
+        headers: { Authorization: `Bearer ${accessToken}`, 'x-req-location': 'sg' },
+      }),
+    )
+  } catch (error) {
+    if (timeout.signal.aborted)
+      throw new Error(options.signal?.aborted ? 'search_cancelled' : 'search_timeout', {
+        cause: error,
+      })
+    throw error
+  } finally {
+    clearTimeout(timer)
+    options.signal?.removeEventListener('abort', abortFromCaller)
+  }
+  const data = asRecord(await boundedResponseJson(response))
+  const rawResults = asRecord(data.webPages).value
+  if (!Array.isArray(rawResults) || rawResults.length > 50)
+    throw new Error('search_invalid_response')
+  const results = rawResults.slice(0, maxResults).map((item) => {
+    const entry = asRecord(item)
+    const title = boundedSearchText(entry.name, 512)
+    const url = publicHttpsUrl(entry.url)
+    const snippet = boundedSearchText(
+      entry.mainText || entry.snippet || entry.content,
+      WISUSAGE_TEXT_LIMIT,
+    )
+    if (!title) throw new Error('search_invalid_response')
+    return { title, url, snippet }
+  })
+  return { results, method: 'wisusage-xiaosu' }
+}
 
 // ── Web search ──────────────────────────────────────────────────────
 

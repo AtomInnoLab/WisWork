@@ -1772,11 +1772,8 @@ async fn valid_activity_renews_idle_ttl_but_never_the_absolute_session_lifetime(
 
 #[tokio::test]
 async fn websocket_liveness_renews_an_idle_cowork_session() {
-    let url = server_with_session_ttls(Some((
-        Duration::from_millis(120),
-        Duration::from_millis(500),
-    )))
-    .await;
+    let url =
+        server_with_session_ttls(Some((Duration::from_secs(1), Duration::from_secs(3)))).await;
     let mut office = socket(&url, ORIGIN).await;
     send(
         &mut office,
@@ -1799,9 +1796,11 @@ async fn websocket_liveness_renews_an_idle_cowork_session() {
     let pc_ready = recv(&mut pc).await;
     let office_ready = recv(&mut office).await;
 
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    // Leave enough scheduling margin for loaded CI runners while still making
+    // the request after the session's original idle deadline.
+    tokio::time::sleep(Duration::from_millis(400)).await;
     pc.send(Message::Pong(Vec::new().into())).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
     send(&mut office, json!({"version":1,"type":"office.request","session_id":office_ready["session_id"],"capability":office_ready["capability"],"request_id":"after_idle_heartbeat","body":{}})).await;
     assert_eq!(recv(&mut pc).await["request_id"], "after_idle_heartbeat");
     assert_eq!(pc_ready["session_id"], office_ready["session_id"]);
