@@ -82,7 +82,7 @@ The user downloads the runtime from inside WisWork PC. There is no separate user
 The settings panel also exposes the exact verified artifact URL for diagnostics and manual
 enterprise mirroring. The release manifest uses these stable URL shapes:
 
-- Primary: `https://downloads.wiswork.com/components/codex/<version>/<artifact>`
+- Primary: `https://office.8-216-134-194.sslip.io/components/codex/<version>/<artifact>`
 - Fallback: `https://github.com/openai/codex/releases/download/rust-v<version>/<artifact>`
 
 Both sources must serve bytes matching the same release-pinned size and SHA-256 digest. Redirects

