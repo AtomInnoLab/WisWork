@@ -150,6 +150,20 @@ function fail(code: string): never {
   throw new EnhancedModeComponentError(code)
 }
 
+const MACOS_TRUST_DIAGNOSTIC_CODES = new Set([
+  'enhanced_mode_macos_codesign_failed',
+  'enhanced_mode_macos_codesign_details_failed',
+  'enhanced_mode_macos_team_identifier_mismatch',
+  'enhanced_mode_macos_notarization_failed',
+])
+
+function failPlatformTrust(error: unknown, signal?: AbortSignal): never {
+  if (error instanceof EnhancedModeComponentError && MACOS_TRUST_DIAGNOSTIC_CODES.has(error.code)) {
+    throw error
+  }
+  fail(signal?.aborted ? 'enhanced_mode_cancelled' : 'enhanced_mode_platform_trust_failed')
+}
+
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -491,9 +505,9 @@ async function defaultVerifyPlatformTrust(
   options: ComponentProbeOptions,
 ): Promise<void> {
   for (const executablePath of executablePaths) {
-    try {
-      if (policy.policy === 'macos') {
-        if (process.platform !== 'darwin') fail('enhanced_mode_platform_trust_failed')
+    if (policy.policy === 'macos') {
+      if (process.platform !== 'darwin') fail('enhanced_mode_platform_trust_failed')
+      try {
         await execFile(
           '/usr/bin/codesign',
           ['--verify', '--strict', '--verbose=4', executablePath],
@@ -505,6 +519,14 @@ async function defaultVerifyPlatformTrust(
             env: {},
           },
         )
+      } catch {
+        fail(
+          options.signal?.aborted
+            ? 'enhanced_mode_cancelled'
+            : 'enhanced_mode_macos_codesign_failed',
+        )
+      }
+      try {
         const details = await execFile(
           '/usr/bin/codesign',
           ['-dv', '--verbose=4', executablePath],
@@ -520,19 +542,38 @@ async function defaultVerifyPlatformTrust(
             `TeamIdentifier=${policy.teamIdentifier}`,
           )
         )
-          fail('enhanced_mode_platform_trust_failed')
-        await execFile(
-          '/usr/sbin/spctl',
-          ['--assess', '--type', 'execute', '--verbose=4', executablePath],
-          {
-            timeout: options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS,
-            maxBuffer: MAX_VERSION_OUTPUT,
-            windowsHide: true,
-            signal: options.signal,
-            env: {},
-          },
+          fail('enhanced_mode_macos_team_identifier_mismatch')
+      } catch (error) {
+        if (error instanceof EnhancedModeComponentError) throw error
+        fail(
+          options.signal?.aborted
+            ? 'enhanced_mode_cancelled'
+            : 'enhanced_mode_macos_codesign_details_failed',
         )
-      } else {
+      }
+      if (policy.requireNotarization) {
+        try {
+          await execFile(
+            '/usr/sbin/spctl',
+            ['--assess', '--type', 'execute', '--verbose=4', executablePath],
+            {
+              timeout: options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS,
+              maxBuffer: MAX_VERSION_OUTPUT,
+              windowsHide: true,
+              signal: options.signal,
+              env: {},
+            },
+          )
+        } catch {
+          fail(
+            options.signal?.aborted
+              ? 'enhanced_mode_cancelled'
+              : 'enhanced_mode_macos_notarization_failed',
+          )
+        }
+      }
+    } else {
+      try {
         if (process.platform !== 'win32') fail('enhanced_mode_platform_trust_failed')
         const escapedPath = executablePath.replaceAll("'", "''")
         const escapedPublisher = policy.publisher.replaceAll("'", "''")
@@ -548,11 +589,13 @@ async function defaultVerifyPlatformTrust(
             env: {},
           },
         )
+      } catch {
+        fail(
+          options.signal?.aborted
+            ? 'enhanced_mode_cancelled'
+            : 'enhanced_mode_platform_trust_failed',
+        )
       }
-    } catch {
-      fail(
-        options.signal?.aborted ? 'enhanced_mode_cancelled' : 'enhanced_mode_platform_trust_failed',
-      )
     }
   }
 }
@@ -1240,9 +1283,9 @@ export class EnhancedModeComponentManager {
       await this.#verifyPlatformTrust(executablePaths, asset.trust, {
         signal,
         timeoutMs: this.#probeTimeoutMs,
-      }).catch(() => {
+      }).catch((error: unknown) => {
         this.#phase({ phase: 'signature', outcome: 'failed' })
-        fail(signal?.aborted ? 'enhanced_mode_cancelled' : 'enhanced_mode_platform_trust_failed')
+        failPlatformTrust(error, signal)
       })
       this.#phase({ phase: 'signature', outcome: 'succeeded' })
       const output = await this.#probeVersion(executablePath, {
@@ -1402,9 +1445,7 @@ export class EnhancedModeComponentManager {
         .map((file) => safeOwnedChild(installPath, file.path)),
       asset.trust,
       { signal, timeoutMs: this.#probeTimeoutMs },
-    ).catch(() =>
-      fail(signal?.aborted ? 'enhanced_mode_cancelled' : 'enhanced_mode_platform_trust_failed'),
-    )
+    ).catch((error: unknown) => failPlatformTrust(error, signal))
     const output = await this.#probeVersion(executablePath, {
       signal,
       timeoutMs: this.#probeTimeoutMs,

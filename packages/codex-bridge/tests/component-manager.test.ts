@@ -981,4 +981,27 @@ describe('optional Enhanced mode component manager', () => {
     )
     await expect(manager.status()).resolves.toMatchObject({ state: 'missing' })
   })
+
+  it('preserves bounded macOS trust phase diagnostics without exposing command output', async () => {
+    const cacheRoot = join(await temporaryRoot(), 'cache')
+    const { archive, manifest } = await createFixtureArchive()
+    const bytes = await readFile(archive)
+    const manager = new EnhancedModeComponentManager({
+      cacheRoot,
+      manifest,
+      platform: 'darwin',
+      arch: 'arm64',
+      fetchImplementation: async () => responseFor(bytes),
+      probeVersion: async () => 'codex-app-server 0.147.0',
+      verifyPlatformTrust: async () => {
+        throw new EnhancedModeComponentError('enhanced_mode_macos_notarization_failed')
+      },
+    })
+
+    await expect(manager.install()).rejects.toMatchObject({
+      code: 'enhanced_mode_macos_notarization_failed',
+      message: 'enhanced_mode_macos_notarization_failed',
+    })
+    await expect(manager.status()).resolves.toMatchObject({ state: 'missing' })
+  })
 })
