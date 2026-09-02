@@ -290,10 +290,23 @@ export class ShellCodexRuntime {
       ) {
         throw new ShellCodexRuntimeError('enhanced_turn_stale')
       }
-    } catch {
+    } catch (error) {
       this.#options.telemetry?.host(document.host, 'complete', 'failed')
       // Never replay or cross-dispatch the same request through Standard.
-      throw new ShellCodexRuntimeError('enhanced_turn_failed')
+      throw new ShellCodexRuntimeError(
+        error instanceof Error &&
+          [
+            'enhanced_turn_timeout',
+            'enhanced_auth_required',
+            'enhanced_usage_limit',
+            'enhanced_context_limit',
+            'enhanced_request_rejected',
+            'enhanced_service_unavailable',
+            'enhanced_connection_failed',
+          ].includes(error.message)
+          ? error.message
+          : 'enhanced_turn_failed',
+      )
     } finally {
       if (this.#documents.get(documentId) === document) document.busy = false
     }

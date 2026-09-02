@@ -1,7 +1,32 @@
-import { describe, expect, it } from 'vitest'
-import { enhancedModeView } from '../src/renderer/src/enhanced-mode-view'
+import { describe, expect, it, vi } from 'vitest'
+import { enhancedModeView, selectEnhancedMode } from '../src/renderer/src/enhanced-mode-view'
 
 describe('Enhanced mode user-facing copy', () => {
+  it('treats selecting Enhanced as one install-and-select action', async () => {
+    const installed = { component: 'ready', requestedAgentRuntime: 'standard' } as const
+    const selected = { ...installed, requestedAgentRuntime: 'enhanced' as const }
+    const api = {
+      install: vi.fn(async () => installed),
+      setMode: vi.fn(async () => selected),
+    }
+    await expect(
+      selectEnhancedMode(
+        api as never,
+        {
+          requestedAgentRuntime: 'standard',
+          activeAgentRuntime: 'standard',
+          component: 'missing',
+          supported: true,
+          version: '0.147.0',
+          restartRequired: false,
+          lifecycleState: 'not_installed',
+        },
+        'enhanced',
+      ),
+    ).resolves.toBe(selected)
+    expect(api.install).toHaveBeenCalledOnce()
+    expect(api.setMode).toHaveBeenCalledWith('enhanced')
+  })
   it('uses only Standard mode and Enhanced mode product naming in English', () => {
     const missingStatus = {
       requestedAgentRuntime: 'standard',
@@ -23,6 +48,10 @@ describe('Enhanced mode user-facing copy', () => {
     const ready = enhancedModeView({ ...missingStatus, component: 'ready' }, 'en')
     expect(ready).toMatchObject({
       detail: 'Standard mode',
+      standardLabel: 'Standard mode',
+      enhancedLabel: 'Enhanced mode',
+      selectedMode: 'standard',
+      activeMode: 'standard',
       action: 'enable',
       secondaryAction: 'remove',
       secondaryActionLabel: 'Remove optional component',
@@ -50,6 +79,10 @@ describe('Enhanced mode user-facing copy', () => {
     expect(view).toMatchObject({
       label: '增强模式',
       detail: '增强模式',
+      standardLabel: '标准模式',
+      enhancedLabel: '增强模式',
+      selectedMode: 'enhanced',
+      activeMode: 'enhanced',
       action: 'disable',
       actionLabel: '切换到标准模式',
     })

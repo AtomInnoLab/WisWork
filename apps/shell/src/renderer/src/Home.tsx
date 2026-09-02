@@ -29,7 +29,7 @@ import {
 import { useI18n } from './locale'
 import type { I18n, StringKey } from './locale'
 import type { EnhancedModeApi, EnhancedModeStatus } from '../../shared/enhanced-mode-api'
-import { enhancedModeView } from './enhanced-mode-view'
+import { enhancedModeView, selectEnhancedMode } from './enhanced-mode-view'
 
 declare global {
   interface Window {
@@ -789,9 +789,19 @@ function AccountEntry() {
 
   const enhancedView = enhancedStatus ? enhancedModeView(enhancedStatus, lang) : null
   const officeCopy = officeConnectionCopy(lang, officeRelayStatus)
-  const runEnhancedAction = (remove = false) => {
+  const runEnhancedAction = (remove = false, targetMode?: 'standard' | 'enhanced') => {
     if (!enhancedStatus || !window.aiOfficeEnhancedMode || enhancedBusy) return
-    const action = remove ? 'remove' : enhancedView?.action
+    const action = remove
+      ? 'remove'
+      : targetMode === 'standard'
+        ? enhancedStatus.requestedAgentRuntime === 'enhanced'
+          ? 'disable'
+          : 'none'
+        : targetMode === 'enhanced'
+          ? enhancedStatus.requestedAgentRuntime === 'standard'
+            ? enhancedView?.action
+            : 'none'
+          : enhancedView?.action
     if (!action || action === 'none') return
     if (
       action === 'remove' &&
@@ -804,8 +814,9 @@ function AccountEntry() {
       return
     setEnhancedBusy(true)
     setEnhancedError(false)
-    const request =
-      action === 'install'
+    const request = targetMode
+      ? selectEnhancedMode(window.aiOfficeEnhancedMode, enhancedStatus, targetMode)
+      : action === 'install'
         ? window.aiOfficeEnhancedMode.install()
         : action === 'remove'
           ? window.aiOfficeEnhancedMode.remove()
@@ -986,11 +997,10 @@ function AccountEntry() {
           </div>
           {enhancedView && (
             <>
-              <button
+              <div
                 className="account-menu-item enhanced-mode-row"
-                role="menuitem"
-                disabled={enhancedBusy || enhancedView.action === 'none'}
-                onClick={() => runEnhancedAction()}
+                role="group"
+                aria-label={enhancedView.label}
               >
                 <span aria-hidden="true">✦</span>
                 <span className="enhanced-mode-copy">
@@ -1007,10 +1017,37 @@ function AccountEntry() {
                         : enhancedView.detail}
                   </span>
                 </span>
-                {enhancedView.actionLabel && (
-                  <span className="enhanced-mode-action">{enhancedView.actionLabel}</span>
-                )}
-              </button>
+              </div>
+              <div
+                className="enhanced-mode-picker"
+                role="radiogroup"
+                aria-label={enhancedView.label}
+              >
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={enhancedView.selectedMode === 'standard'}
+                  className={enhancedView.selectedMode === 'standard' ? 'selected' : ''}
+                  disabled={enhancedBusy || enhancedView.selectedMode === 'standard'}
+                  onClick={() => runEnhancedAction(false, 'standard')}
+                >
+                  {enhancedView.standardLabel}
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={enhancedView.selectedMode === 'enhanced'}
+                  className={enhancedView.selectedMode === 'enhanced' ? 'selected' : ''}
+                  disabled={
+                    enhancedBusy ||
+                    enhancedView.selectedMode === 'enhanced' ||
+                    enhancedView.action === 'none'
+                  }
+                  onClick={() => runEnhancedAction(false, 'enhanced')}
+                >
+                  {enhancedView.enhancedLabel}
+                </button>
+              </div>
               {enhancedView.secondaryAction === 'remove' && (
                 <button
                   className="account-menu-item enhanced-mode-remove"

@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { suspendToolExecution } from '@wiswork/agent-core'
 import {
   createProductionCodexBootstrap,
+  safeTurnFailure,
   startBestEffortCodexInterrupt,
 } from '../src/main/codex-engine'
 
@@ -23,6 +24,23 @@ it('detaches an unresponsive interrupt and bounds its lifetime', async () => {
   await vi.advanceTimersByTimeAsync(1)
   expect(vi.getTimerCount()).toBe(0)
   vi.useRealTimers()
+})
+
+it('maps only bounded app-server error categories to actionable public failures', () => {
+  expect(safeTurnFailure({ error: { codexErrorInfo: 'unauthorized' } })).toBe(
+    'enhanced_auth_required',
+  )
+  expect(
+    safeTurnFailure({
+      error: { codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 503 } } },
+    }),
+  ).toBe('enhanced_service_unavailable')
+  expect(
+    safeTurnFailure({
+      error: { codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } } },
+    }),
+  ).toBe('enhanced_connection_failed')
+  expect(safeTurnFailure({ error: { message: 'private detail' } })).toBe('enhanced_turn_failed')
 })
 
 function finalResponse(): Response {
