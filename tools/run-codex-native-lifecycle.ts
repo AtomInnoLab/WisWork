@@ -42,7 +42,7 @@ async function main(): Promise<void> {
   const executable = await manager.resolveExecutable()
   if (executable !== installed.executablePath) throw new Error('native_lifecycle_identity_drift')
   const version = spawnSync(executable, ['--version'], { encoding: 'utf8', timeout: 10_000 })
-  if (version.status !== 0 || !/^codex-cli 0\.147\.0\s*$/.test(version.stdout))
+  if (version.status !== 0 || !/^codex-app-server 0\.147\.0\s*$/.test(version.stdout))
     throw new Error('native_lifecycle_launch_failed')
 
   // Installed/offline launch verification must not touch either download source.

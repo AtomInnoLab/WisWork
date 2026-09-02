@@ -181,7 +181,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $component -PathType Leaf)) { throw 'Missing verified app-server component' }
           $signature = Get-AuthenticodeSignature -LiteralPath $component
           $signature | Select-Object Status, @{Name='Subject';Expression={$_.SignerCertificate.Subject}}, @{Name='Thumbprint';Expression={$_.SignerCertificate.Thumbprint}} | Format-List
-          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -ne 'CN=OpenAI, L.L.C.') { throw 'Pinned app-server publisher mismatch' }
+          if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -ne '8B0ADFB840E141DAD3044D2B5AC819873DDE3590' -or $signature.SignerCertificate.Subject -notlike '*OpenAI OpCo, LLC*') { throw 'Pinned app-server publisher mismatch' }
 
       - name: Generate notices
         run: npm run notices

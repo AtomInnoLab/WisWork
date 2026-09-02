@@ -141,7 +141,11 @@ async function createFixtureArchive(options: { symlink?: boolean; duplicate?: bo
       target: 'x86_64-pc-windows-msvc',
       primaryUrl: arm64.primaryUrl.replace('aarch64-apple-darwin', 'x86_64-pc-windows-msvc'),
       fallbackUrl: arm64.fallbackUrl.replace('aarch64-apple-darwin', 'x86_64-pc-windows-msvc'),
-      trust: { policy: 'windows', publisher: 'CN=OpenAI, L.L.C.' },
+      trust: {
+        policy: 'windows',
+        publisher: 'OpenAI OpCo, LLC',
+        publisherThumbprint: '8B0ADFB840E141DAD3044D2B5AC819873DDE3590',
+      },
     },
   )
   return { archive, manifest }
@@ -215,11 +219,15 @@ describe('optional Enhanced mode component manager', () => {
     ])
     const windows = platformTrustCommands('win32', 'C:\\private\\app-server.exe', {
       policy: 'windows',
-      publisher: 'CN=OpenAI, L.L.C.',
+      publisher: 'OpenAI OpCo, LLC',
+      publisherThumbprint: '8B0ADFB840E141DAD3044D2B5AC819873DDE3590',
     })
     expect(windows[0]?.file).toBe('powershell.exe')
     expect(windows[0]?.args.at(-1)).toContain("Status -ne 'Valid'")
-    expect(windows[0]?.args.at(-1)).toContain('CN=OpenAI, L.L.C.')
+    expect(windows[0]?.args.at(-1)).toContain(
+      "Thumbprint -ne '8B0ADFB840E141DAD3044D2B5AC819873DDE3590'",
+    )
+    expect(windows[0]?.args.at(-1)).toContain("Subject -notlike '*OpenAI OpCo, LLC*'")
     expect(() =>
       platformTrustCommands('linux', '/tmp/app-server', {
         policy: 'macos',
