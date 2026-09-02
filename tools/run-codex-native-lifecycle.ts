@@ -1,5 +1,5 @@
 import { spawn as nodeSpawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { access, mkdir, writeFile } from 'node:fs/promises'
+import { access, mkdir, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import {
   CodexProcessManager,
@@ -85,6 +85,9 @@ async function main(): Promise<void> {
         await mkdir(cwd, { mode: 0o700 })
         sessionRoots.push(root)
         return { root, codexHome, cwd }
+      },
+      removeDirectories: async (directories) => {
+        await rm(directories.root, { recursive: true, force: true })
       },
     })
 
