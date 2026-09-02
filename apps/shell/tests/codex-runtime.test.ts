@@ -106,6 +106,27 @@ describe('Shell Codex runtime lifecycle', () => {
     expect(f.engine.startTurn).toHaveBeenCalledTimes(1)
   })
 
+  it('preserves actionable bounded turn failures for the renderer', async () => {
+    const f = fixture()
+    f.engine.startTurn.mockRejectedValueOnce(new Error('enhanced_turn_timeout'))
+    await f.runtime.initialize()
+    f.runtime.registerDocument({
+      owner: f.owner,
+      documentId: 'deck',
+      host: 'slides',
+      generation: 0,
+    })
+
+    await expect(f.runtime.startTurn(f.owner, 'deck', 'Create slides')).rejects.toThrow(
+      'enhanced_turn_timeout',
+    )
+
+    f.engine.startTurn.mockRejectedValueOnce(new Error('enhanced_service_unavailable'))
+    await expect(f.runtime.startTurn(f.owner, 'deck', 'Try again')).rejects.toThrow(
+      'enhanced_service_unavailable',
+    )
+  })
+
   it('keeps a document busy until the engine reports terminal settlement', async () => {
     const f = fixture()
     let settle!: () => void

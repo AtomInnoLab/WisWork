@@ -15,6 +15,7 @@ const KNOWN_NOTIFICATIONS = new Set<string>(KNOWN_SERVER_NOTIFICATION_METHODS)
 // Only these lifecycle events cross the bridge. Every other version-known event is
 // parsed as a bounded data object and discarded; it cannot expand host capabilities.
 const FORWARDED_NOTIFICATIONS = new Set<string>([
+  'error',
   'item/agentMessage/delta',
   'turn/started',
   'turn/completed',
@@ -381,6 +382,71 @@ export class CodexAppServerClient {
   }
 
   #isValidImportantNotification(notification: JsonRpcNotification): boolean {
+    if (notification.method === 'error') {
+      if (
+        !isRecord(notification.params) ||
+        !hasExactKeys(notification.params, ['error', 'threadId', 'turnId', 'willRetry'])
+      )
+        return false
+      const error = notification.params.error
+      if (
+        !isRecord(error) ||
+        !Object.keys(error).every((key) =>
+          ['message', 'additionalDetails', 'codexErrorInfo'].includes(key),
+        ) ||
+        !boundedString(error.message, MAX_POLICY_BYTES) ||
+        (error.additionalDetails !== undefined &&
+          error.additionalDetails !== null &&
+          typeof error.additionalDetails !== 'string') ||
+        typeof notification.params.willRetry !== 'boolean' ||
+        !boundedString(notification.params.threadId, MAX_IDENTIFIER_BYTES) ||
+        !boundedString(notification.params.turnId, MAX_IDENTIFIER_BYTES)
+      )
+        return false
+      const info = error.codexErrorInfo
+      if (info === undefined || info === null) return true
+      if (typeof info === 'string') {
+        return [
+          'contextWindowExceeded',
+          'sessionBudgetExceeded',
+          'usageLimitExceeded',
+          'serverOverloaded',
+          'cyberPolicy',
+          'internalServerError',
+          'unauthorized',
+          'badRequest',
+          'threadRollbackFailed',
+          'sandboxError',
+          'other',
+        ].includes(info)
+      }
+      if (!isRecord(info) || Object.keys(info).length !== 1) return false
+      const key = Object.keys(info)[0]!
+      if (
+        ![
+          'httpConnectionFailed',
+          'responseStreamConnectionFailed',
+          'responseStreamDisconnected',
+          'responseTooManyFailedAttempts',
+          'activeTurnNotSteerable',
+        ].includes(key)
+      )
+        return false
+      const detail = info[key]
+      if (!isRecord(detail)) return false
+      if (key === 'activeTurnNotSteerable')
+        return (
+          hasExactKeys(detail, ['turnKind']) &&
+          ['review', 'compact'].includes(detail.turnKind as string)
+        )
+      return (
+        hasExactKeys(detail, ['httpStatusCode']) &&
+        (detail.httpStatusCode === null ||
+          (Number.isSafeInteger(detail.httpStatusCode) &&
+            (detail.httpStatusCode as number) >= 0 &&
+            (detail.httpStatusCode as number) <= 65_535))
+      )
+    }
     if (notification.method === 'item/agentMessage/delta') {
       return (
         isRecord(notification.params) &&

@@ -195,6 +195,36 @@ describe('Codex app-server client', () => {
     await fixture.client.shutdown()
   })
 
+  it('forwards only schema-valid bounded turn errors for safe host classification', async () => {
+    const fixture = createClient()
+    await initialize(fixture)
+    const seen: unknown[] = []
+    fixture.client.onNotification((notification) => seen.push(notification))
+    fixture.fromServer.write(
+      `${JSON.stringify({ jsonrpc: '2.0', method: 'error', params: { error: { message: 'private provider detail', codexErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 503 } } }, threadId: 'thread-1', turnId: 'turn-1', willRetry: false } })}\n`,
+    )
+    expect(seen).toEqual([
+      expect.objectContaining({
+        method: 'error',
+        params: expect.objectContaining({
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          willRetry: false,
+        }),
+      }),
+    ])
+    await fixture.client.shutdown()
+
+    const malformed = createClient()
+    await initialize(malformed)
+    malformed.fromServer.write(
+      '{"jsonrpc":"2.0","method":"error","params":{"error":{"message":"x","codexErrorInfo":{"future":{}}},"threadId":"t","turnId":"u","willRetry":false}}\n',
+    )
+    await expect(malformed.client.startThread()).rejects.toMatchObject({
+      code: 'app_server_protocol_error',
+    })
+  })
+
   it('fails closed on malformed ids and unknown notification methods', async () => {
     const malformed = createClient()
     await initialize(malformed)

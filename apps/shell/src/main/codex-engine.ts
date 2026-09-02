@@ -18,6 +18,34 @@ const DEVELOPER_POLICY =
 const TURN_IDLE_TIMEOUT_MS = 60_000
 const INTERRUPT_TIMEOUT_MS = 2_000
 
+export function safeTurnFailure(params: unknown): string {
+  const error =
+    typeof params === 'object' && params !== null
+      ? (params as { error?: { codexErrorInfo?: unknown } }).error
+      : undefined
+  const info = error?.codexErrorInfo
+  if (info === 'unauthorized') return 'enhanced_auth_required'
+  if (info === 'usageLimitExceeded' || info === 'sessionBudgetExceeded')
+    return 'enhanced_usage_limit'
+  if (info === 'contextWindowExceeded') return 'enhanced_context_limit'
+  if (info === 'badRequest' || info === 'cyberPolicy') return 'enhanced_request_rejected'
+  if (info === 'serverOverloaded' || info === 'internalServerError')
+    return 'enhanced_service_unavailable'
+  if (typeof info === 'object' && info !== null) {
+    const detail = Object.values(info as Record<string, unknown>)[0]
+    const status =
+      typeof detail === 'object' && detail !== null
+        ? (detail as { httpStatusCode?: unknown }).httpStatusCode
+        : undefined
+    if (status === 401 || status === 403) return 'enhanced_auth_required'
+    if (status === 408 || status === 429 || (typeof status === 'number' && status >= 500)) {
+      return 'enhanced_service_unavailable'
+    }
+    return 'enhanced_connection_failed'
+  }
+  return 'enhanced_turn_failed'
+}
+
 export function createTurnIdleDeadline(onExpire: () => void, timeoutMs = TURN_IDLE_TIMEOUT_MS) {
   let timer: ReturnType<typeof setTimeout> | undefined
   const touch = () => {
@@ -90,6 +118,7 @@ export function createProductionCodexBootstrap(
         disarm?: () => void
         cancelled: boolean
         readonly pendingProposals: Set<string>
+        lastFailure?: Error
         deferredTerminal?: { status: 'completed' | 'cancelled' | 'failed'; error?: Error }
         proposalFailure?: 'cancelled' | 'failed'
         readonly touch: () => void
@@ -130,6 +159,16 @@ export function createProductionCodexBootstrap(
         )
         const active = document?.active
         if (!document || !active) return
+        if (notification.method === 'error') {
+          const failure = new Error(safeTurnFailure(notification.params))
+          active.lastFailure = failure
+          const willRetry = (notification.params as { willRetry?: unknown }).willRetry
+          if (willRetry === false) {
+            active.settle('failed', failure)
+            queueMicrotask(onCrash)
+          }
+          return
+        }
         if (notification.method === 'item/agentMessage/delta') {
           if (params.turnId === active.turnId && typeof params.delta === 'string') {
             active.touch()
@@ -303,7 +342,8 @@ export function createProductionCodexBootstrap(
             if (active.cancelled) return await terminal
             active.settle(
               'failed',
-              error instanceof Error ? error : new Error('enhanced_turn_failed'),
+              active.lastFailure ??
+                (error instanceof Error ? error : new Error('enhanced_turn_failed')),
             )
             await terminal
           }

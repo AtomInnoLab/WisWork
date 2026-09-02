@@ -1,4 +1,4 @@
-import type { EnhancedModeStatus } from '../../shared/enhanced-mode-api'
+import type { EnhancedModeApi, EnhancedModeStatus } from '../../shared/enhanced-mode-api'
 import {
   normalizeLang,
   translateEnhancedMode,
@@ -10,10 +10,25 @@ export type EnhancedModeViewAction = 'none' | 'install' | 'enable' | 'disable'
 export interface EnhancedModeView {
   readonly label: string
   readonly detail: string
+  readonly standardLabel: string
+  readonly enhancedLabel: string
+  readonly selectedMode: 'standard' | 'enhanced'
+  readonly activeMode: 'standard' | 'enhanced'
   readonly action: EnhancedModeViewAction
   readonly actionLabel: string
   readonly secondaryAction?: 'remove'
   readonly secondaryActionLabel?: string
+}
+
+export async function selectEnhancedMode(
+  api: EnhancedModeApi,
+  status: EnhancedModeStatus,
+  target: 'standard' | 'enhanced',
+): Promise<EnhancedModeStatus> {
+  if (status.requestedAgentRuntime === target) return status
+  if (target === 'standard') return api.setMode('standard')
+  if (status.component === 'missing' || status.component === 'invalid') await api.install()
+  return api.setMode('enhanced')
 }
 
 export function enhancedModeView(status: EnhancedModeStatus, language: string): EnhancedModeView {
@@ -21,10 +36,17 @@ export function enhancedModeView(status: EnhancedModeStatus, language: string): 
   const copy = (key: Parameters<typeof translateEnhancedMode>[1]) =>
     translateEnhancedMode(lang, key)
   const label = copy('label')
+  const mode = {
+    standardLabel: copy('standard'),
+    enhancedLabel: label,
+    selectedMode: status.requestedAgentRuntime,
+    activeMode: status.activeAgentRuntime,
+  } as const
   const restartDetail = copy('restart_required')
   if (status.lifecycleState === 'blocked_by_policy' || status.lifecycleState === 'failed_safe') {
     return {
       label,
+      ...mode,
       detail:
         status.lifecycleState === 'blocked_by_policy'
           ? copy('blocked_by_policy')
@@ -36,6 +58,7 @@ export function enhancedModeView(status: EnhancedModeStatus, language: string): 
   if (!status.supported || status.component === 'unsupported') {
     return {
       label,
+      ...mode,
       detail: copy('unavailable'),
       action: 'none',
       actionLabel: '',
@@ -44,6 +67,7 @@ export function enhancedModeView(status: EnhancedModeStatus, language: string): 
   if (status.component === 'missing') {
     return {
       label,
+      ...mode,
       detail:
         status.requestedAgentRuntime === 'enhanced'
           ? copy('install_required')
@@ -55,6 +79,7 @@ export function enhancedModeView(status: EnhancedModeStatus, language: string): 
   if (status.component === 'invalid') {
     return {
       label,
+      ...mode,
       detail:
         lang === 'en'
           ? 'Verification failed'
@@ -68,6 +93,7 @@ export function enhancedModeView(status: EnhancedModeStatus, language: string): 
   if (status.requestedAgentRuntime === 'enhanced') {
     return {
       label,
+      ...mode,
       detail: status.restartRequired ? restartDetail : copy('enhanced'),
       action: 'disable',
       actionLabel: copy('switch_standard'),
@@ -75,6 +101,7 @@ export function enhancedModeView(status: EnhancedModeStatus, language: string): 
   }
   return {
     label,
+    ...mode,
     detail: status.restartRequired ? restartDetail : copy('standard'),
     action: 'enable',
     actionLabel: copy('enable_after_restart'),

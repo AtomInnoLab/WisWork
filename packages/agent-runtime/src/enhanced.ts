@@ -88,10 +88,21 @@ class EnhancedSession<TSnapshot> implements AgentRuntimeSession {
     this.#telemetry?.host(this.#host, 'dispatch', 'succeeded')
     void this.#remote
       .start({ text: instruction, ...(images?.length ? { images } : {}) })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (!this.#current(generation) || !this.#snapshot.busy) return
-        this.#events?.onError?.('enhanced_turn_failed')
-        this.#publish({ status: 'error', busy: false, generation, error: 'enhanced_turn_failed' })
+        const message = error instanceof Error ? error.message : ''
+        const code =
+          [
+            'enhanced_turn_timeout',
+            'enhanced_auth_required',
+            'enhanced_usage_limit',
+            'enhanced_context_limit',
+            'enhanced_request_rejected',
+            'enhanced_service_unavailable',
+            'enhanced_connection_failed',
+          ].find((candidate) => message.includes(candidate)) ?? 'enhanced_turn_failed'
+        this.#events?.onError?.(code)
+        this.#publish({ status: 'error', busy: false, generation, error: code })
       })
     return true
   }

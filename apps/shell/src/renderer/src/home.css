@@ -586,6 +586,44 @@ body.vib .home {
   align-items: center;
 }
 
+.enhanced-mode-picker {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  margin: 4px 12px 6px 34px;
+  padding: 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+}
+
+.enhanced-mode-picker button {
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.enhanced-mode-picker button.selected {
+  background: var(--surface);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.enhanced-mode-picker button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.enhanced-mode-picker button.selected:disabled {
+  opacity: 1;
+}
+
 .enhanced-mode-copy {
   display: flex;
   min-width: 0;
