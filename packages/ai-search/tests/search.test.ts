@@ -76,9 +76,7 @@ describe('wisUsageWebSearch', () => {
     )
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input))
-      expect(url.origin + url.pathname).toBe(
-        'https://wisusage.dev.atominnolab.com/v1/xiaosu/search',
-      )
+      expect(url.origin + url.pathname).toBe('https://wisusage.atominnolab.com/v1/xiaosu/search')
       expect(Object.fromEntries(url.searchParams)).toEqual({
         q: '人工智能最新进展',
         count: '10',

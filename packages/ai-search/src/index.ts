@@ -15,7 +15,7 @@ import {
 export type { ImageSearchResult, WebSearchResult } from './shared'
 
 const SERPER_KEY = () => process.env.SERPER_API_KEY ?? ''
-const WISUSAGE_SEARCH_URL = 'https://wisusage.dev.atominnolab.com/v1/xiaosu/search'
+const WISUSAGE_SEARCH_URL = 'https://wisusage.atominnolab.com/v1/xiaosu/search'
 const WISUSAGE_RESPONSE_LIMIT = 1_048_576
 const WISUSAGE_QUERY_LIMIT = 1_000
 const WISUSAGE_TEXT_LIMIT = 8_192
