@@ -154,15 +154,21 @@ function fail(code: string): never {
   throw new EnhancedModeComponentError(code)
 }
 
-const MACOS_TRUST_DIAGNOSTIC_CODES = new Set([
+const PLATFORM_TRUST_DIAGNOSTIC_CODES = new Set([
   'enhanced_mode_macos_codesign_failed',
   'enhanced_mode_macos_codesign_details_failed',
   'enhanced_mode_macos_team_identifier_mismatch',
   'enhanced_mode_macos_notarization_failed',
+  'enhanced_mode_windows_authenticode_failed',
+  'enhanced_mode_windows_thumbprint_mismatch',
+  'enhanced_mode_windows_publisher_mismatch',
 ])
 
 function failPlatformTrust(error: unknown, signal?: AbortSignal): never {
-  if (error instanceof EnhancedModeComponentError && MACOS_TRUST_DIAGNOSTIC_CODES.has(error.code)) {
+  if (
+    error instanceof EnhancedModeComponentError &&
+    PLATFORM_TRUST_DIAGNOSTIC_CODES.has(error.code)
+  ) {
     throw error
   }
   fail(signal?.aborted ? 'enhanced_mode_cancelled' : 'enhanced_mode_platform_trust_failed')
@@ -579,28 +585,23 @@ async function defaultVerifyPlatformTrust(
         }
       }
     } else {
-      try {
-        if (process.platform !== 'win32') fail('enhanced_mode_platform_trust_failed')
-        const escapedPath = executablePath.replaceAll("'", "''")
-        const escapedPublisher = policy.publisher.replaceAll("'", "''")
-        const script = `$s=Get-AuthenticodeSignature -LiteralPath '${escapedPath}'; if($s.Status -ne 'Valid' -or $null -eq $s.SignerCertificate -or $s.SignerCertificate.Thumbprint -ne '${policy.publisherThumbprint}' -or $s.SignerCertificate.Subject -notlike '*${escapedPublisher}*') { exit 23 }`
-        await execFile(
-          'powershell.exe',
-          ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
-          {
-            timeout: options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS,
-            maxBuffer: MAX_VERSION_OUTPUT,
-            windowsHide: true,
-            signal: options.signal,
-            env: {},
-          },
-        )
-      } catch {
-        fail(
-          options.signal?.aborted
-            ? 'enhanced_mode_cancelled'
-            : 'enhanced_mode_platform_trust_failed',
-        )
+      if (process.platform !== 'win32') fail('enhanced_mode_platform_trust_failed')
+      for (const [script, failureCode] of windowsTrustScripts(executablePath, policy)) {
+        try {
+          await execFile(
+            'powershell.exe',
+            ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+            {
+              timeout: options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS,
+              maxBuffer: MAX_VERSION_OUTPUT,
+              windowsHide: true,
+              signal: options.signal,
+              env: {},
+            },
+          )
+        } catch {
+          fail(options.signal?.aborted ? 'enhanced_mode_cancelled' : failureCode)
+        }
       }
     }
   }
@@ -628,19 +629,32 @@ export function platformTrustCommands(
       : commands
   }
   if (platform !== 'win32') fail('enhanced_mode_platform_trust_failed')
+  return windowsTrustScripts(executablePath, policy).map(([script]) => ({
+    file: 'powershell.exe',
+    args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+  }))
+}
+
+function windowsTrustScripts(
+  executablePath: string,
+  policy: Extract<CodexComponentAssetManifest['trust'], { readonly policy: 'windows' }>,
+): readonly (readonly [script: string, failureCode: string])[] {
   const escapedPath = executablePath.replaceAll("'", "''")
   const escapedPublisher = policy.publisher.replaceAll("'", "''")
+  const signature = `$s=Get-AuthenticodeSignature -LiteralPath '${escapedPath}';`
   return [
-    {
-      file: 'powershell.exe',
-      args: [
-        '-NoLogo',
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `$s=Get-AuthenticodeSignature -LiteralPath '${escapedPath}'; if($s.Status -ne 'Valid' -or $null -eq $s.SignerCertificate -or $s.SignerCertificate.Thumbprint -ne '${policy.publisherThumbprint}' -or $s.SignerCertificate.Subject -notlike '*${escapedPublisher}*') { exit 23 }`,
-      ],
-    },
+    [
+      `${signature} if($s.Status -ne 'Valid' -or $null -eq $s.SignerCertificate) { exit 21 }`,
+      'enhanced_mode_windows_authenticode_failed',
+    ],
+    [
+      `${signature} if($s.SignerCertificate.Thumbprint -ne '${policy.publisherThumbprint}') { exit 22 }`,
+      'enhanced_mode_windows_thumbprint_mismatch',
+    ],
+    [
+      `${signature} if($s.SignerCertificate.Subject -notlike '*${escapedPublisher}*') { exit 23 }`,
+      'enhanced_mode_windows_publisher_mismatch',
+    ],
   ]
 }
 

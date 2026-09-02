@@ -136,6 +136,13 @@ test('license and notice generators cover the optional app-server', () => {
   assert.match(generator, /not included in the base installer/)
 })
 
+test('native lifecycle pairs private session creation with bounded cleanup', () => {
+  const lifecycle = read('tools/run-codex-native-lifecycle.ts')
+  assert.match(lifecycle, /createDirectories:\s*async/)
+  assert.match(lifecycle, /removeDirectories:\s*async \(directories\)/)
+  assert.match(lifecycle, /rm\(directories\.root, \{ recursive: true, force: true \}\)/)
+})
+
 test('base package source policy still passes without a component cache', () => {
   const policy = read('tools/optional-runtime-policy.mjs')
   assert.match(policy, /optional Codex artifact must not be bundled/)

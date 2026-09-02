@@ -222,12 +222,13 @@ describe('optional Enhanced mode component manager', () => {
       publisher: 'OpenAI OpCo, LLC',
       publisherThumbprint: '8B0ADFB840E141DAD3044D2B5AC819873DDE3590',
     })
+    expect(windows).toHaveLength(3)
     expect(windows[0]?.file).toBe('powershell.exe')
     expect(windows[0]?.args.at(-1)).toContain("Status -ne 'Valid'")
-    expect(windows[0]?.args.at(-1)).toContain(
+    expect(windows[1]?.args.at(-1)).toContain(
       "Thumbprint -ne '8B0ADFB840E141DAD3044D2B5AC819873DDE3590'",
     )
-    expect(windows[0]?.args.at(-1)).toContain("Subject -notlike '*OpenAI OpCo, LLC*'")
+    expect(windows[2]?.args.at(-1)).toContain("Subject -notlike '*OpenAI OpCo, LLC*'")
     expect(() =>
       platformTrustCommands('linux', '/tmp/app-server', {
         policy: 'macos',
@@ -1024,6 +1025,29 @@ describe('optional Enhanced mode component manager', () => {
     await expect(manager.install()).rejects.toMatchObject({
       code: 'enhanced_mode_macos_notarization_failed',
       message: 'enhanced_mode_macos_notarization_failed',
+    })
+    await expect(manager.status()).resolves.toMatchObject({ state: 'missing' })
+  })
+
+  it('preserves bounded Windows trust phase diagnostics without exposing command output', async () => {
+    const cacheRoot = join(await temporaryRoot(), 'cache')
+    const { archive, manifest } = await createFixtureArchive()
+    const bytes = await readFile(archive)
+    const manager = new EnhancedModeComponentManager({
+      cacheRoot,
+      manifest,
+      platform: 'win32',
+      arch: 'x64',
+      fetchImplementation: async () => responseFor(bytes),
+      probeVersion: async () => 'codex-app-server 0.147.0',
+      verifyPlatformTrust: async () => {
+        throw new EnhancedModeComponentError('enhanced_mode_windows_thumbprint_mismatch')
+      },
+    })
+
+    await expect(manager.install()).rejects.toMatchObject({
+      code: 'enhanced_mode_windows_thumbprint_mismatch',
+      message: 'enhanced_mode_windows_thumbprint_mismatch',
     })
     await expect(manager.status()).resolves.toMatchObject({ state: 'missing' })
   })
