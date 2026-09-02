@@ -50,6 +50,8 @@ function createFixture(
     serverStdin?: Writable
     removeDirectories?: (directories: OwnedCodexDirectories) => Promise<void>
     mcp?: { url: string; secret: string }
+    executablePath?: string
+    versionOutput?: string
   } = {},
 ) {
   const version = new FakeChild()
@@ -69,7 +71,7 @@ function createFixture(
       queueMicrotask(() => child.spawned())
     if (child === version && fixtureOptions.autoVersion !== false) {
       queueMicrotask(() => {
-        child.stdout.end('codex-cli 0.147.0\n')
+        child.stdout.end(fixtureOptions.versionOutput ?? 'codex-cli 0.147.0\n')
         child.exited(0)
       })
     }
@@ -85,7 +87,7 @@ function createFixture(
   const removeDirectories = vi.fn(fixtureOptions.removeDirectories ?? (async () => undefined))
   const diagnostics = vi.fn()
   const manager = new CodexProcessManager({
-    executablePath: '/opt/wiswork/codex',
+    executablePath: fixtureOptions.executablePath ?? '/opt/wiswork/codex',
     bridge: { baseUrl: 'http://127.0.0.1:43123', secret: 'bridge-secret-private' },
     mcp: fixtureOptions.mcp,
     developerInstructions: 'Fixed host policy.',
@@ -131,6 +133,9 @@ describe('pinned Codex app-server process manager', () => {
           bridge: { baseUrl: 'https://example.com', secret: 'secret' },
         }),
     ).toThrow('invalid_codex_bridge')
+    expect(
+      () => new CodexProcessManager({ ...base, executablePath: '/opt/wiswork/helper' }),
+    ).toThrow('codex_executable_name_invalid')
     expect(
       () =>
         new CodexProcessManager({
@@ -228,6 +233,25 @@ describe('pinned Codex app-server process manager', () => {
     fixture.server.exited(0)
     await fixture.manager.stop()
     expect(client).toBeDefined()
+  })
+
+  it('starts the pinned app-server-only component without a duplicate subcommand', async () => {
+    const executablePath = `/opt/wiswork/codex-app-server${process.platform === 'win32' ? '.exe' : ''}`
+    const fixture = createFixture({
+      executablePath,
+      versionOutput: 'codex-app-server 0.147.0\n',
+    })
+    const starting = fixture.manager.start()
+    await tick()
+    await starting
+
+    expect(fixture.calls[0]).toMatchObject({ executable: executablePath, args: ['--version'] })
+    expect(fixture.calls[1]?.executable).toBe(executablePath)
+    expect(fixture.calls[1]?.args[0]).toBe('--strict-config')
+    expect(fixture.calls[1]?.args).not.toContain('app-server')
+
+    fixture.server.exited(0)
+    await fixture.manager.stop()
   })
 
   it('configures the exact Codex 0.147 HTTP MCP keys with its secret only in child env', async () => {

@@ -178,7 +178,28 @@ function minimalEnvironment(
   }
 }
 
-function serverArguments(baseUrl: string, mcpUrl?: string): readonly string[] {
+function executableContract(executablePath: string): {
+  readonly version: string
+  readonly serverPrefix: readonly string[]
+} {
+  const name = basename(executablePath).toLowerCase()
+  if (name === 'codex' || name === 'codex.exe') {
+    return { version: CODEX_CLI_VERSION, serverPrefix: ['app-server'] }
+  }
+  if (name === 'codex-app-server' || name === 'codex-app-server.exe') {
+    return {
+      version: `codex-app-server ${CODEX_CLI_VERSION.slice('codex-cli '.length)}`,
+      serverPrefix: [],
+    }
+  }
+  throw new TypeError('codex_executable_name_invalid')
+}
+
+function serverArguments(
+  baseUrl: string,
+  mcpUrl: string | undefined,
+  serverPrefix: readonly string[],
+): readonly string[] {
   const configs = [
     'model_provider="wiswork"',
     'model_providers.wiswork.name="WisWork"',
@@ -198,7 +219,12 @@ function serverArguments(baseUrl: string, mcpUrl?: string): readonly string[] {
           'mcp_servers.wiswork.bearer_token_env_var="WISWORK_MCP_TOKEN"',
         ]),
   ]
-  return ['app-server', '--strict-config', '--stdio', ...configs.flatMap((value) => ['-c', value])]
+  return [
+    ...serverPrefix,
+    '--strict-config',
+    '--stdio',
+    ...configs.flatMap((value) => ['-c', value]),
+  ]
 }
 
 interface ExitResult {
@@ -208,6 +234,7 @@ interface ExitResult {
 
 export class CodexProcessManager {
   readonly #executablePath: string
+  readonly #executableContract: ReturnType<typeof executableContract>
   readonly #baseUrl: string
   readonly #secret: string
   readonly #mcp: { readonly url: string; readonly secret: string } | undefined
@@ -249,6 +276,7 @@ export class CodexProcessManager {
       throw new TypeError('codex_temp_adapters_must_be_paired')
     }
     this.#executablePath = options.executablePath
+    this.#executableContract = executableContract(options.executablePath)
     this.#baseUrl = validateBridge(options.bridge?.baseUrl, options.bridge?.secret)
     this.#secret = options.bridge.secret
     this.#mcp = validateMcp(options.mcp)
@@ -309,7 +337,7 @@ export class CodexProcessManager {
       if (this.#state !== 'starting') throw new CodexProcessError('codex_process_start_failed')
       const child = this.#spawn(
         this.#executablePath,
-        serverArguments(this.#baseUrl, this.#mcp?.url),
+        serverArguments(this.#baseUrl, this.#mcp?.url, this.#executableContract.serverPrefix),
         {
           cwd: this.#directories.cwd,
           env: minimalEnvironment(
@@ -456,7 +484,7 @@ export class CodexProcessManager {
           return
         }
         finish(
-          version === CODEX_CLI_VERSION
+          version === this.#executableContract.version
             ? undefined
             : new CodexProcessError('codex_version_mismatch'),
         )
