@@ -43,7 +43,7 @@ test('manifest pins only the three official 0.147.0 app-server package assets', 
   for (const asset of manifest.component.assets) {
     assert.match(
       asset.primaryUrl,
-      /^https:\/\/downloads\.wiswork\.com\/components\/codex\/0\.147\.0\//,
+      /^https:\/\/office\.8-216-134-194\.sslip\.io\/components\/codex\/0\.147\.0\//,
     )
     assert.match(
       asset.fallbackUrl,

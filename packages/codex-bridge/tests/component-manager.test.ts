@@ -90,7 +90,7 @@ async function createFixtureArchive(options: { symlink?: boolean; duplicate?: bo
           arch: 'arm64',
           target: 'aarch64-apple-darwin',
           primaryUrl:
-            'https://downloads.wiswork.com/components/codex/0.147.0/codex-app-server-package-aarch64-apple-darwin.tar.gz',
+            'https://office.8-216-134-194.sslip.io/components/codex/0.147.0/codex-app-server-package-aarch64-apple-darwin.tar.gz',
           fallbackUrl:
             'https://github.com/openai/codex/releases/download/rust-v0.147.0/codex-app-server-package-aarch64-apple-darwin.tar.gz',
           bytes: archiveInfo.size,
@@ -571,7 +571,9 @@ describe('optional Enhanced mode component manager', () => {
     const archiveBytes = await readFile(archive)
     const fetchImplementation = vi.fn(async (input: string | URL | Request) => {
       const url = String(input)
-      if (url.startsWith('https://downloads.wiswork.com/')) throw new Error('mirror unavailable')
+      if (url.startsWith('https://office.8-216-134-194.sslip.io/')) {
+        throw new Error('mirror unavailable')
+      }
       return responseFor(archiveBytes)
     })
     const manager = new EnhancedModeComponentManager({
@@ -586,7 +588,7 @@ describe('optional Enhanced mode component manager', () => {
     await expect(manager.install()).resolves.toMatchObject({ platform: 'darwin', arch: 'arm64' })
     expect(fetchImplementation).toHaveBeenCalledTimes(2)
     expect(String(fetchImplementation.mock.calls[0]![0])).toMatch(
-      /^https:\/\/downloads\.wiswork\.com\//,
+      /^https:\/\/office\.8-216-134-194\.sslip\.io\//,
     )
     expect(String(fetchImplementation.mock.calls[1]![0])).toMatch(
       /^https:\/\/github\.com\/openai\/codex\/releases\//,
@@ -605,7 +607,7 @@ describe('optional Enhanced mode component manager', () => {
       fetchImplementation: (async (input: string | URL | Request) => {
         const url = String(input)
         calls.push(url)
-        if (url.startsWith('https://downloads.wiswork.com/')) {
+        if (url.startsWith('https://office.8-216-134-194.sslip.io/')) {
           return new Response(null, {
             status: 302,
             headers: { location: 'https://evil.example/component' },

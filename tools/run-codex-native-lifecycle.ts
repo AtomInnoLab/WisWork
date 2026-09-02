@@ -247,7 +247,7 @@ async function main(): Promise<void> {
     cacheRoot: fallbackRoot,
     manifest,
     fetchImplementation: (url, init) =>
-      String(url).startsWith('https://downloads.wiswork.com/')
+      String(url).startsWith('https://office.8-216-134-194.sslip.io/')
         ? Promise.resolve(new Response('corrupt-primary'))
         : fetch(url, init),
   })
