@@ -146,7 +146,7 @@ async function defaultRemoveDirectories(directories: OwnedCodexDirectories): Pro
   await rm(directories.root, {
     recursive: true,
     force: true,
-    maxRetries: 50,
+    maxRetries: 300,
     retryDelay: 100,
   })
 }

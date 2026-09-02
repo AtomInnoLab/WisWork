@@ -90,7 +90,15 @@ async function main(): Promise<void> {
         return { root, codexHome, cwd }
       },
       removeDirectories: async (directories) => {
-        await rm(directories.root, { recursive: true, force: true })
+        // Windows Defender can retain handles to the freshly verified app-server and helper after
+        // the child exits. Match the production bounded cleanup policy so the native release gate
+        // exercises the same cold-file behavior without weakening a persistent failure.
+        await rm(directories.root, {
+          recursive: true,
+          force: true,
+          maxRetries: 300,
+          retryDelay: 100,
+        })
       },
     })
 
