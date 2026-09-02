@@ -66,7 +66,10 @@ async function main(): Promise<void> {
   const sessionRoots: string[] = []
   const spawn: CodexSpawn = (command, args, options) => {
     const child = nodeSpawn(command, args, options)
-    if (args[0] === 'app-server') serverChildren.push(child)
+    // The verified optional component is the dedicated codex-app-server binary, so unlike the
+    // full codex CLI it does not receive an `app-server` argv prefix. This injected spawn is used
+    // only by CodexProcessManager; every child observed here is therefore the server instance.
+    serverChildren.push(child)
     return child
   }
   const createProcess = () =>

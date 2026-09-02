@@ -160,6 +160,10 @@ const PLATFORM_TRUST_DIAGNOSTIC_CODES = new Set([
   'enhanced_mode_macos_team_identifier_mismatch',
   'enhanced_mode_macos_notarization_failed',
   'enhanced_mode_windows_authenticode_failed',
+  'enhanced_mode_windows_signer_missing',
+  'enhanced_mode_windows_signature_hash_mismatch',
+  'enhanced_mode_windows_signature_not_trusted',
+  'enhanced_mode_windows_signature_unknown_error',
   'enhanced_mode_windows_thumbprint_mismatch',
   'enhanced_mode_windows_publisher_mismatch',
 ])
@@ -644,15 +648,31 @@ function windowsTrustScripts(
   const signature = `$s=Get-AuthenticodeSignature -LiteralPath '${escapedPath}';`
   return [
     [
-      `${signature} if($s.Status -ne 'Valid' -or $null -eq $s.SignerCertificate) { exit 21 }`,
+      `${signature} if($null -eq $s.SignerCertificate) { exit 20 }`,
+      'enhanced_mode_windows_signer_missing',
+    ],
+    [
+      `${signature} if($s.Status -eq 'HashMismatch') { exit 21 }`,
+      'enhanced_mode_windows_signature_hash_mismatch',
+    ],
+    [
+      `${signature} if($s.Status -eq 'NotTrusted') { exit 22 }`,
+      'enhanced_mode_windows_signature_not_trusted',
+    ],
+    [
+      `${signature} if($s.Status -eq 'UnknownError') { exit 23 }`,
+      'enhanced_mode_windows_signature_unknown_error',
+    ],
+    [
+      `${signature} if($s.Status -ne 'Valid') { exit 24 }`,
       'enhanced_mode_windows_authenticode_failed',
     ],
     [
-      `${signature} if($s.SignerCertificate.Thumbprint -ne '${policy.publisherThumbprint}') { exit 22 }`,
+      `${signature} if($s.SignerCertificate.Thumbprint -ne '${policy.publisherThumbprint}') { exit 25 }`,
       'enhanced_mode_windows_thumbprint_mismatch',
     ],
     [
-      `${signature} if($s.SignerCertificate.Subject -notlike '*${escapedPublisher}*') { exit 23 }`,
+      `${signature} if($s.SignerCertificate.Subject -notlike '*${escapedPublisher}*') { exit 26 }`,
       'enhanced_mode_windows_publisher_mismatch',
     ],
   ]
