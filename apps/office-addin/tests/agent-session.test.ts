@@ -42,6 +42,7 @@ function proposalsHarness() {
     waitForDecision: () => decision,
     propose: vi.fn(),
     confirm: vi.fn(async () => {
+      if (!pending) throw new Error('no_pending_proposal')
       clear({ status: 'confirmed' })
     }),
     reject: vi.fn(() => {
@@ -51,6 +52,9 @@ function proposalsHarness() {
       clear({ status: 'cancelled' })
     }),
     logout: vi.fn(() => {
+      clear({ status: 'cancelled' })
+    }),
+    destroyDocumentContext: vi.fn(() => {
       clear({ status: 'cancelled' })
     }),
   }
@@ -77,6 +81,88 @@ function proposalsHarness() {
 }
 
 describe('Office agent session', () => {
+  it('invalidates a suspended remote proposal when cancelled before confirmation', async () => {
+    let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
+    const proposals = proposalsHarness()
+    createOfficeAgentSession({
+      transport: transportHarness().transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'write_document', description: 'write', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(async () => {
+          proposals.setPending()
+          return { output: '{"proposalId":"p1"}', summary: 'proposed', mutated: false }
+        }),
+      },
+      proposals: proposals.controller,
+      remoteTools: {
+        setToolHandler: (next) => {
+          handler = next
+        },
+      },
+    })
+    const abort = new AbortController()
+    const result = handler!({
+      turnId: 'turn_12345678',
+      callId: 'call_12345678',
+      generation: 1,
+      toolName: 'write_document',
+      input: {},
+      signal: abort.signal,
+    })
+    await vi.waitFor(() => expect(proposals.controller.pending()).toBeDefined())
+    abort.abort()
+    await expect(result).resolves.toEqual({ output: 'tool_execution_failed', isError: true })
+    expect(proposals.controller.pending()).toBeUndefined()
+    await expect(proposals.controller.confirm()).rejects.toThrow('no_pending_proposal')
+  })
+
+  it('routes paired Enhanced calls through the same host skill and revokes the handler on dispose', async () => {
+    let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
+    const setToolHandler = vi.fn((next) => {
+      handler = next
+    })
+    const executeTool = vi.fn(async () => ({ output: '{"title":"Doc"}', summary: 'read' }))
+    const session = createOfficeAgentSession({
+      transport: transportHarness().transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'read_document', description: 'read', inputSchema: { type: 'object' } }],
+        executeTool,
+      },
+      proposals: proposalsHarness().controller,
+      remoteTools: { setToolHandler },
+    })
+    expect(
+      await handler!({
+        turnId: 'turn_12345678',
+        callId: 'call_12345678',
+        generation: 1,
+        toolName: 'read_document',
+        input: {},
+        signal: new AbortController().signal,
+      }),
+    ).toEqual({ output: '{"title":"Doc"}' })
+    expect(executeTool).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'read_document' }),
+      expect.any(AbortSignal),
+    )
+    expect(
+      await handler!({
+        turnId: 'turn_12345678',
+        callId: 'call_unknown12',
+        generation: 1,
+        toolName: 'shell',
+        input: {},
+        signal: new AbortController().signal,
+      }),
+    ).toEqual({ output: 'unknown_tool', isError: true })
+    session.dispose()
+    expect(setToolHandler).toHaveBeenLastCalledWith(undefined)
+  })
+
   it('preserves bounded local diagnostics when Relay authentication is lost', () => {
     const diagnostics = {
       startTrace: vi.fn(() => 'trace'),
@@ -398,6 +484,69 @@ describe('Office agent session', () => {
     },
   )
 
+  it('renders and returns a quarantined pending write without claiming it was applied', async () => {
+    const harness = transportHarness()
+    const proposals = createStructuredProposalController()
+    const presentationText = vi.fn((key: string) =>
+      key === 'write_pending_quarantined' ? 'localized pending write quarantine' : key,
+    )
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'word',
+        systemPrompt: 'test',
+        tools: [{ name: 'raw_write', description: 'write', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(() => {
+          const proposal = proposals.propose({
+            operation: 'raw_write',
+            title: 'Confirm raw write',
+            preview: {},
+            impact: { host: 'word', targets: ['document'], count: 1 },
+            fingerprint: 'v1',
+            validate: async () => true,
+            execute: async () => undefined,
+            verify: async () => {
+              throw new Error('office_write_pending')
+            },
+          })
+          return {
+            output: JSON.stringify({ proposalId: proposal.id }),
+            mutated: false,
+            summary: 'Awaiting confirmation',
+          }
+        }),
+      },
+      proposals,
+      presentationText: presentationText as never,
+    })
+
+    session.send('write')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({ id: 'raw-1', name: 'raw_write', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(session.snapshot().proposal).toBeDefined())
+    await session.confirm(session.snapshot().proposal!.id)
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+
+    expect(session.snapshot().timeline).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'proposal',
+          state: 'uncertain',
+          error: 'localized pending write quarantine',
+        }),
+      ]),
+    )
+    const resumed = harness.stream.mock.calls[1]?.[0] as {
+      messages: Array<{ results?: Array<{ output: string }> }>
+    }
+    expect(JSON.parse(resumed.messages.at(-1)!.results![0]!.output)).toMatchObject({
+      status: 'write_pending',
+      safeCode: 'office_write_pending',
+      instruction: expect.not.stringMatching(/was applied/i),
+    })
+  })
+
   it('rejects an in-loop proposal immediately and resumes without executing the write', async () => {
     const harness = transportHarness()
     const proposals = createStructuredProposalController()
@@ -681,6 +830,10 @@ describe('Office agent session', () => {
       reject: vi.fn(),
       newTurn: vi.fn(),
       logout: vi.fn(),
+      destroyDocumentContext: vi.fn(),
+      isQuarantined: vi.fn(() => false),
+      quarantine: vi.fn(),
+      resolveQuarantine: vi.fn(),
     }
     const session = createOfficeAgentSession({
       transport: harness.transport,
@@ -778,7 +931,7 @@ describe('Office agent session', () => {
     ],
     [
       'office_state_uncertain',
-      'The change may be partially applied. Inspect the document before trying again.',
+      'The change may be partially applied. Wait for reconciliation; if editing stays blocked, reload the document before trying again.',
     ],
     [
       'office_recovery_failed:word_body_shape',

@@ -80,7 +80,7 @@ export type SafeProposalRecord = {
 }
 export type SafeProposalSettlement = {
   id: string
-  status: 'confirmed' | 'rejected' | 'cancelled' | 'failed'
+  status: 'confirmed' | 'applied_unverified' | 'rejected' | 'cancelled' | 'failed'
   error?: string
 }
 

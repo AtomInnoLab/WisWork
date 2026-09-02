@@ -4,6 +4,91 @@ import { createPcBridgeSession } from '../src/pc-bridge/session.js'
 const endpoint = 'http://127.0.0.1:43127'
 
 describe('PC bridge session', () => {
+  it('rejects Enhanced authority from the unauthenticated loopback rollback transport', async () => {
+    const enhanced = {
+      version: 1,
+      runtime_mode: 'enhanced',
+      runtime_instance: 'runtime_0123456789abcdef',
+      component_version: '0.147.0',
+      host: 'office-word',
+      raw_office: false,
+      expires_at: 5_000,
+      policy_generation: 2,
+      session_generation: 4,
+    }
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            pairing_id: 'pair',
+            polling_secret: 'poll',
+            verification_code: '123456',
+            expires_in: 120,
+          }),
+          { status: 202 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ status: 'approved', capability: 'cap', expires_in: 900, enhanced }),
+        ),
+      )
+    const session = createPcBridgeSession({ endpoint, fetch, now: () => 1_000 })
+    await session.connect('word')
+    expect(session.snapshot()).toEqual({ status: 'offline' })
+  })
+
+  it('fails closed for a cross-host or malformed Enhanced statement', async () => {
+    for (const enhanced of [
+      {
+        version: 1,
+        runtime_mode: 'enhanced',
+        runtime_instance: 'runtime_0123456789abcdef',
+        component_version: '0.147.0',
+        host: 'office-excel',
+        raw_office: false,
+        expires_at: 5_000,
+        policy_generation: 2,
+        session_generation: 4,
+      },
+      {
+        version: 1,
+        runtime_mode: 'enhanced',
+        runtime_instance: 'runtime_0123456789abcdef',
+        component_version: '0.147.0',
+        host: 'office-word',
+        raw_office: false,
+        expires_at: 5_000,
+        policy_generation: 2,
+        session_generation: 4,
+        token: 'no',
+      },
+    ]) {
+      const fetch = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              pairing_id: 'pair',
+              polling_secret: 'poll',
+              verification_code: '123456',
+              expires_in: 120,
+            }),
+            { status: 202 },
+          ),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({ status: 'approved', capability: 'cap', expires_in: 900, enhanced }),
+          ),
+        )
+      const session = createPcBridgeSession({ endpoint, fetch, now: () => 1_000 })
+      await session.connect('word')
+      expect(session.snapshot()).toEqual({ status: 'offline' })
+    }
+  })
+
   it('does not resurrect an approved capability after disconnect during JSON parsing', async () => {
     let release!: (response: Response) => void
     const delayedPoll = new Promise<Response>((resolve) => (release = resolve))

@@ -42,6 +42,7 @@
     "@univerjs/themes": "^0.25.1",
     "@wiswork/agent-core": "*",
     "@wiswork/agent-harness": "*",
+    "@wiswork/agent-runtime": "*",
     "@wiswork/ai-provider": "*",
     "@wiswork/ai-search": "*",
     "@wiswork/auth": "*",

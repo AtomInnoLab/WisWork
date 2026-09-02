@@ -74,6 +74,7 @@ export class TabManager {
     private readonly applyMenuFor: (kind: TabKind) => void,
     /** localized placeholder title for a tab that has no file yet */
     private readonly untitledTitleFor?: (kind: TabKind) => string,
+    private readonly onEditorClosed?: (webContents: WebContents) => void,
   ) {
     // Layout once synchronously for macOS/Windows (bounds are already correct),
     // then once more on the next tick. On Linux/X11, `resize` fires before the
@@ -124,6 +125,13 @@ export class TabManager {
 
   ownsWebContents(senderId: number): boolean {
     return this.tabs.some((tab) => tab.view?.webContents.id === senderId)
+  }
+
+  enhancedHostForWebContents(senderId: number): 'latex' | 'slides' | 'docs' | 'sheets' | null {
+    const kind = this.tabs.find((tab) => tab.view?.webContents.id === senderId)?.kind
+    return kind === 'latex' || kind === 'slides' || kind === 'docs' || kind === 'sheets'
+      ? kind
+      : null
   }
 
   list(): TabSummary[] {
@@ -418,6 +426,7 @@ export class TabManager {
       this.onChanged()
     }
     if (removed.view) {
+      this.onEditorClosed?.(removed.view.webContents)
       removed.view.setVisible(false)
       this.shellWindow.contentView.removeChildView(removed.view)
       if (removed.kind === 'docs' || removed.kind === 'latex') {

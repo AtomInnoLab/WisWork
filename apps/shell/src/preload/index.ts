@@ -20,6 +20,11 @@ import { sanitizeOfficeRelayStatus } from './office-relay-status'
 import { HOME_CHANNELS, OFFICE_PAIRING_CHANNELS, PROJECT_CHANNELS } from '../shared/home-api'
 import type { TabsApi, TabSummary } from '../shared/tabs-api'
 import { TABS_CHANNELS } from '../shared/tabs-api'
+import {
+  ENHANCED_MODE_CHANNELS,
+  type EnhancedModeApi,
+  type EnhancedModeStatus,
+} from '../shared/enhanced-mode-api'
 
 const UI_LANGUAGES: readonly UiLanguage[] = [
   'zh',
@@ -334,3 +339,18 @@ const tabsApi: TabsApi = {
 }
 
 contextBridge.exposeInMainWorld('aiOfficeTabs', tabsApi)
+
+const enhancedModeApi: EnhancedModeApi = {
+  status: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.status) as Promise<EnhancedModeStatus>,
+  install: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.install) as Promise<EnhancedModeStatus>,
+  remove: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.remove) as Promise<EnhancedModeStatus>,
+  update: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.update) as Promise<EnhancedModeStatus>,
+  cancel: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.cancel) as Promise<EnhancedModeStatus>,
+  setMode(mode) {
+    if (mode !== 'standard' && mode !== 'enhanced')
+      return Promise.reject(new Error('Invalid mode.'))
+    return ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.setMode, mode) as Promise<EnhancedModeStatus>
+  },
+}
+
+contextBridge.exposeInMainWorld('aiOfficeEnhancedMode', enhancedModeApi)

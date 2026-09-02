@@ -35,7 +35,11 @@ import {
   extractCallbackUrl,
 } from '@wiswork/auth'
 import { createOfficeBridge, type OfficeBridge } from '@wiswork/office-bridge'
+import { EnhancedModeComponentManager } from '@wiswork/codex-bridge'
+import type { MessagesRequest } from '@wiswork/codex-bridge'
+import { WISWORK_MESSAGES_URL, WISWORK_REQUEST_LOCATION } from '@wiswork/ai-provider'
 import { createI18n, isLang, normalizeLang, setUiLang, type Lang } from '@wiswork/i18n'
+import { createEnhancedTelemetry } from '@wiswork/agent-runtime'
 import {
   appMenuLabels,
   contextMenuLabels,
@@ -46,7 +50,12 @@ import {
   showSaveDialogWithMemory,
   windowMenuTemplate,
 } from '@wiswork/electron-utils'
-import { readAppSettings, writeAppSetting } from './app-settings'
+import {
+  readAppSettings,
+  readRequestedAgentRuntime,
+  writeAppSetting,
+  writeRequestedAgentRuntime,
+} from './app-settings'
 import { ProjectStore } from '@wiswork/project-store'
 import { parseTectonicManifest } from '@wiswork/latex-compiler'
 import {
@@ -156,8 +165,20 @@ import {
   releaseLatexCloseTabs,
 } from './latex-final-close'
 import { registerLatexProtocolScheme } from './latex-protocol-scheme'
+import { ShellCodexRuntime } from './codex-runtime'
+import { registerCodexRuntimeIpc } from './codex-ipc'
+import { registerPcCodexHosts } from './pc-codex-hosts'
+import { createProductionCodexBootstrap } from './codex-engine'
+import { createOfficeCodexProxy } from './office-codex-proxy'
+import { createShellEnhancedPolicyAuthority } from './enhanced-policy-authority'
 import { migrateLegacyUserData } from './user-data-migration'
 import { createAuthDeepLinkQueue } from './auth-deep-link-queue'
+import { createBeforeQuitBarrier } from './before-quit-barrier'
+import codexComponentManifest from '../../../../tools/codex/manifest.json'
+import {
+  registerEnhancedModeComponentIpc,
+  type EnhancedModeComponentController,
+} from './enhanced-mode-component'
 import { createThemeController, registerThemeIpc } from './theme-controller'
 import { applyUpdateChannel, initAutoUpdater } from './updater'
 import { isUpdateChannel, type UpdateChannel } from '../shared/update-api'
@@ -295,6 +316,10 @@ configureLatexRuntime({
 registerLatexProtocolScheme(protocol)
 
 let authRuntime: ReturnType<typeof initializeElectronAuthRuntime> | null = null
+let enhancedModeComponentController: EnhancedModeComponentController | null = null
+let codexRuntime: ShellCodexRuntime | null = null
+let pcCodexHosts: ReturnType<typeof registerPcCodexHosts> | null = null
+let activeAgentRuntime: 'standard' | 'enhanced' = 'standard'
 let officeBridge: OfficeBridge | null = null
 let officeBridgeServer: OfficeBridgeHttpServer | null = null
 let officeBridgeDiagnostic = 'disabled'
@@ -1339,6 +1364,7 @@ function createShellWindow(): void {
           : kind === 'markdown'
             ? tm('untitledMarkdown')
             : tm('untitledSheet'),
+    (owner) => void pcCodexHosts?.closeOwner(owner),
   )
   tabManager = manager
 
@@ -1825,6 +1851,9 @@ function registerHomeIpc(): void {
   })
   ipcMain.handle(HOME_CHANNELS.accountLogout, async (event, ...args: unknown[]) => {
     assertHomeAuthIpc(event, args)
+    await enhancedModeComponentController?.revoke()
+    await pcCodexHosts?.close()
+    await codexRuntime?.logout()
     officeBridge?.setSessionAvailable(false)
     officeRelayActivationFence.lock()
     try {
@@ -2584,6 +2613,121 @@ app.whenReady().then(async () => {
     safeStorage,
     openExternal: (url) => shell.openExternal(url),
   })
+  // Runtime selection is immutable for this process. Settings changes below only affect next boot.
+  activeAgentRuntime = readRequestedAgentRuntime(APP_SETTINGS_PATH())
+  const enhancedTelemetry = createEnhancedTelemetry((event) =>
+    console.info('[enhanced-aggregate]', event),
+  )
+  const enhancedModeComponent = new EnhancedModeComponentManager({
+    cacheRoot: join(app.getPath('userData'), 'components', 'enhanced-mode'),
+    manifest: codexComponentManifest,
+    onPhase: ({ phase, outcome }) => {
+      const mapped =
+        phase === 'digest' || phase === 'signature'
+          ? 'verify'
+          : phase === 'promote'
+            ? 'install'
+            : phase
+      enhancedTelemetry.component(mapped, outcome)
+    },
+  })
+  const enhancedAsset = codexComponentManifest.component.assets.find(
+    (asset) => asset.platform === process.platform && asset.arch === process.arch,
+  )
+  // Release-reviewed rollout baseline. Renderer/user environment values never grant authority.
+  const enhancedHosts = Object.freeze({
+    latex: true,
+    slides: true,
+    docs: true,
+    sheets: true,
+    'office-word': true,
+    'office-excel': true,
+    'office-powerpoint': true,
+  } as const)
+  const enhancedPolicy = Object.freeze({
+    globalEnabled: true,
+    hosts: enhancedHosts,
+    rawOfficeEnabled: true,
+  })
+  const enhancedPolicyAllowed = () => enhancedPolicy.globalEnabled
+  codexRuntime = new ShellCodexRuntime({
+    activeAgentRuntime,
+    policy: enhancedPolicy,
+    isSignedIn: async () => (await requireAuthRuntime().client.getValidAccountStatus()).loggedIn,
+    resolveExecutable: () => enhancedModeComponent.resolveExecutable(),
+    bootstrap: createProductionCodexBootstrap({
+      fetchWithAuth: (request: MessagesRequest, signal: AbortSignal) =>
+        requireAuthRuntime().client.fetchWithAuth((accessToken) =>
+          fetch(WISWORK_MESSAGES_URL, {
+            method: 'POST',
+            signal,
+            headers: {
+              authorization: `Bearer ${accessToken}`,
+              'content-type': 'application/json',
+              'x-req-location': WISWORK_REQUEST_LOCATION,
+            },
+            body: JSON.stringify(request),
+          }),
+        ),
+      diagnostics: (code) => console.warn('[enhanced-runtime]', code),
+    }),
+    diagnostics: (code) => console.warn('[enhanced-runtime]', code),
+    telemetry: enhancedTelemetry,
+  })
+  pcCodexHosts = registerPcCodexHosts({
+    ipcMain,
+    runtime: codexRuntime,
+    policy: enhancedPolicy,
+    hostForOwner: (owner) => {
+      const id = (owner as { id?: unknown }).id
+      return typeof id === 'number' ? (tabManager?.enhancedHostForWebContents(id) ?? null) : null
+    },
+    telemetry: enhancedTelemetry,
+  })
+  registerCodexRuntimeIpc({
+    ipcMain,
+    runtime: codexRuntime,
+    documentIdForOwner: (owner) => pcCodexHosts?.documentIdForOwner(owner) ?? null,
+  })
+  void codexRuntime.initialize().catch(() => undefined)
+  const officePolicyAuthority = createShellEnhancedPolicyAuthority(
+    () => codexRuntime?.policyGeneration ?? -1,
+  )
+  const officeCodexProxy = createOfficeCodexProxy({
+    runtime: codexRuntime,
+    rollout: enhancedPolicy,
+    policyAuthority: officePolicyAuthority,
+    telemetry: enhancedTelemetry,
+  })
+  enhancedModeComponentController = registerEnhancedModeComponentIpc({
+    ipcMain,
+    component: enhancedModeComponent,
+    isTrustedSender: (owner) => owner === shellWindow?.webContents,
+    readSavedMode: () => readRequestedAgentRuntime(APP_SETTINGS_PATH()),
+    writeSavedMode: (mode) => writeRequestedAgentRuntime(APP_SETTINGS_PATH(), mode),
+    currentMode: () => activeAgentRuntime,
+    runtimeInUse: () => activeAgentRuntime === 'enhanced',
+    authorizeEnhanced: async () =>
+      (await requireAuthRuntime().client.getValidAccountStatus()).loggedIn === true,
+    policyAllowed: enhancedPolicyAllowed,
+    // Task 6 supplies the host session adapter. Until then a saved request is visible but not active.
+    enhancedRuntimeAvailable: () => codexRuntime?.state === 'ready',
+    ...(enhancedAsset
+      ? {
+          metadata: {
+            platform: `${enhancedAsset.platform}-${enhancedAsset.arch}`,
+            bytes: enhancedAsset.bytes,
+            publisher:
+              enhancedAsset.trust.policy === 'windows'
+                ? (enhancedAsset.trust.publisher ?? 'OpenAI')
+                : (enhancedAsset.trust.teamIdentifier ?? 'OpenAI'),
+            license: codexComponentManifest.component.license.spdx,
+            primaryUrl: enhancedAsset.primaryUrl,
+            fallbackUrl: enhancedAsset.fallbackUrl,
+          },
+        }
+      : {}),
+  })
   const asOfficePairing = (pairing: {
     pairingId: string
     hostLabel: string
@@ -2654,6 +2798,15 @@ app.whenReady().then(async () => {
           getValidAccountStatus: () => requireAuthRuntime().client.getValidAccountStatus(),
           getAccessToken: () => requireAuthRuntime().client.getAccessToken(),
           proxy: officeMessagesProxy,
+          enhancedProxy: officeCodexProxy,
+          enhancedStatement: (host) => {
+            const enhancedHost = {
+              Word: 'office-word',
+              Excel: 'office-excel',
+              PowerPoint: 'office-powerpoint',
+            }[host] as 'office-word' | 'office-excel' | 'office-powerpoint'
+            return codexRuntime?.createOfficeSessionStatement(enhancedHost)
+          },
           retrievalProxy,
           negotiateCapabilities: true,
           persistentPairing: () => officeRelayPersistenceAvailable,
@@ -2766,7 +2919,34 @@ app.whenReady().then(async () => {
     const initializedOfficeBridge = createOfficeBridge({
       allowedOrigin: officeOriginFromEnv(process.env),
       sessionAvailable: initialAccount.loggedIn,
-      proxy: officeMessagesProxy,
+      proxy: (request) => {
+        if (!request.enhanced) return officeMessagesProxy(request)
+        if (!request.executeTool || !request.sessionId || !request.requestId)
+          throw new Error('enhanced_tool_channel_unavailable')
+        const host = (
+          {
+            'office-word': 'Word',
+            'office-excel': 'Excel',
+            'office-powerpoint': 'PowerPoint',
+          } as const
+        )[request.enhanced.host]
+        return officeCodexProxy({
+          body: request.body,
+          signal: request.signal,
+          host,
+          sessionId: request.sessionId,
+          requestId: request.requestId,
+          statement: request.enhanced,
+          executeTool: (call) =>
+            request.executeTool!({
+              turnId: call.turnId,
+              callId: call.callId,
+              generation: call.generation,
+              toolName: call.toolName,
+              input: call.input,
+            }),
+        })
+      },
     })
     officeBridge = initializedOfficeBridge
     try {
@@ -2795,7 +2975,19 @@ app.whenReady().then(async () => {
         if (officeRelay?.listPending().some((entry) => entry.pairingId === id)) {
           return accountValid && (await officeRelay.approve(id))
         }
-        return officeBridge?.approve(id, accountValid) ?? false
+        const pending = officeBridge?.listPending().find((entry) => entry.pairingId === id)
+        const host = pending
+          ? (
+              {
+                Word: 'office-word',
+                Excel: 'office-excel',
+                PowerPoint: 'office-powerpoint',
+              } as const
+            )[pending.hostLabel as 'Word' | 'Excel' | 'PowerPoint']
+          : undefined
+        const statement =
+          accountValid && host ? codexRuntime?.createOfficeSessionStatement(host) : undefined
+        return officeBridge?.approve(id, accountValid, statement) ?? false
       },
       reject(id) {
         return officeRelay?.reject(id) || officeBridge?.reject(id) || false
@@ -2896,13 +3088,26 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
-  // No close prompt may fall through to "Save" during shutdown
-  markSheetsShuttingDown()
-  stopSheetsSidecar()
-  officeBridge?.revokeAll()
-  officeBridge?.shutdown()
-  officeRelayActivationFence.lock()
-  shutdownOfficeRelaySession(officeRelayLifecycle, officeRelay)
-  void officeBridgeServer?.stop()
+const beforeQuitBarrier = createBeforeQuitBarrier({
+  cleanup: async () => {
+    // No close prompt may fall through to "Save" during shutdown.
+    markSheetsShuttingDown()
+    stopSheetsSidecar()
+    officeBridge?.revokeAll()
+    officeBridge?.shutdown()
+    officeRelayActivationFence.lock()
+    shutdownOfficeRelaySession(officeRelayLifecycle, officeRelay)
+    const cleanupResults = await Promise.allSettled([
+      Promise.resolve().then(() => enhancedModeComponentController?.close()),
+      Promise.resolve().then(() => codexRuntime?.shutdown()),
+      Promise.resolve().then(() => pcCodexHosts?.close()),
+      Promise.resolve().then(() => officeBridgeServer?.stop()),
+    ])
+    if (cleanupResults.some((result) => result.status === 'rejected')) {
+      throw new Error('quit_cleanup_failed')
+    }
+  },
+  quit: () => app.quit(),
+  diagnostics: (code) => console.warn('[enhanced-mode]', code),
 })
+app.on('before-quit', beforeQuitBarrier)

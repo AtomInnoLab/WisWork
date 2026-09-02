@@ -204,6 +204,11 @@ export type PowerPointDeclarativeOperation =
       top: number
       width: number
       height: number
+      color?: string
+      fontFamily?: string
+      fontSize?: number
+      bold?: boolean
+      italic?: boolean
     }
   | { op: 'delete_shape'; slide_index: number; shape_id: string }
 
@@ -1175,6 +1180,24 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
               height: operation.height,
             })
             created.name = operation.name
+            if (
+              operation.color !== undefined ||
+              operation.fontFamily !== undefined ||
+              operation.fontSize !== undefined ||
+              operation.bold !== undefined ||
+              operation.italic !== undefined
+            ) {
+              const font = (
+                (created.textFrame as RuntimeRecord | undefined)?.textRange as
+                  RuntimeRecord | undefined
+              )?.font as RuntimeRecord | undefined
+              if (!font) throw new Error('office_api_unsupported')
+              if (operation.color !== undefined) font.color = operation.color
+              if (operation.fontFamily !== undefined) font.name = operation.fontFamily
+              if (operation.fontSize !== undefined) font.size = operation.fontSize
+              if (operation.bold !== undefined) font.bold = operation.bold
+              if (operation.italic !== undefined) font.italic = operation.italic
+            }
             if (typeof created.load !== 'function') throw new Error('office_api_unsupported')
             ;(created.load as (properties: string) => void)('id')
             createdShapes.push(created)

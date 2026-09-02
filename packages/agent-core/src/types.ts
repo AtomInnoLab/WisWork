@@ -96,17 +96,67 @@ export interface ToolExecutionSuspension extends ToolExecution {
 
 export type ToolExecutionOutcome = ToolExecution | ToolExecutionSuspension
 
-/** Create the only supported, bounded shape for a suspended tool execution. */
-export function suspendToolExecution(result: Promise<ToolExecution>): ToolExecutionSuspension {
-  // The placeholder ToolExecution fields preserve source compatibility for
-  // direct skill consumers. AgentLoop detects `kind` and never publishes this
-  // placeholder to model history or execution events.
-  return {
+const toolExecutionSuspensions = new WeakSet<object>()
+const suspensionOwners = new WeakMap<object, object>()
+const legacySuspensionOwner = Object.freeze({})
+
+function mintToolExecutionSuspension(
+  owner: object,
+  result: Promise<ToolExecution>,
+): ToolExecutionSuspension {
+  const suspension: ToolExecutionSuspension = {
     kind: 'tool-execution-suspension',
     result,
     output: 'tool_execution_suspended',
     summary: 'Awaiting tool execution',
   }
+  toolExecutionSuspensions.add(suspension)
+  suspensionOwners.set(suspension, owner)
+  return Object.freeze(suspension)
+}
+
+/** Create the only supported, bounded shape for a suspended tool execution. */
+export function suspendToolExecution(result: Promise<ToolExecution>): ToolExecutionSuspension {
+  // The placeholder ToolExecution fields preserve source compatibility for
+  // direct skill consumers. AgentLoop detects `kind` and never publishes this
+  // placeholder to model history or execution events.
+  return mintToolExecutionSuspension(legacySuspensionOwner, result)
+}
+
+/** @internal AgentLoop is the only production caller. */
+export function mintLoopToolExecutionSuspension(
+  owner: object,
+  result: Promise<ToolExecution>,
+): ToolExecutionSuspension {
+  return mintToolExecutionSuspension(owner, result)
+}
+
+/** Owner-specific authority for transports that must not trust the public compatibility helper. */
+export function createToolExecutionSuspensionAuthority(): Readonly<{
+  suspend(result: Promise<ToolExecution>): ToolExecutionSuspension
+  owns(value: ToolExecutionOutcome): value is ToolExecutionSuspension
+}> {
+  const owner = Object.freeze({})
+  return Object.freeze({
+    suspend: (result) => mintToolExecutionSuspension(owner, result),
+    owns: (value): value is ToolExecutionSuspension =>
+      typeof value === 'object' && value !== null && suspensionOwners.get(value) === owner,
+  })
+}
+
+/** @internal Used by AgentLoop/AgentHarness to prove instance ownership. */
+export function isToolExecutionSuspensionOwnedBy(
+  owner: object,
+  value: ToolExecutionOutcome,
+): value is ToolExecutionSuspension {
+  return typeof value === 'object' && value !== null && suspensionOwners.get(value) === owner
+}
+
+/** Accept only suspension objects created by suspendToolExecution in this Agent Core instance. */
+export function isToolExecutionSuspension(
+  value: ToolExecutionOutcome,
+): value is ToolExecutionSuspension {
+  return typeof value === 'object' && value !== null && toolExecutionSuspensions.has(value)
 }
 
 // ---- run phase (drives the in-progress status line in chat UIs) ----

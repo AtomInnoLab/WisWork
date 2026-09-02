@@ -35,6 +35,16 @@ const skill = {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('Markdown agent controller', () => {
+  it('delegates mutation suspension ownership to its underlying harness authority', () => {
+    const first = createAgentController({ transport: manualTransport(), skill })
+    const second = createAgentController({ transport: manualTransport(), skill })
+    const suspension = first.suspendToolExecution({ proposal: 'pending' })
+    expect(first.ownsToolExecutionSuspension(suspension)).toBe(true)
+    expect(second.ownsToolExecutionSuspension(suspension)).toBe(false)
+    first.dispose()
+    second.dispose()
+  })
+
   it('keeps an untitled session on first save but isolates different documents', () => {
     expect(shouldResetAgentSession(null, '/saved.md')).toBe(false)
     expect(shouldResetAgentSession('/a.md', '/b.md')).toBe(true)

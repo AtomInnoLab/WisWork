@@ -79,6 +79,7 @@ import type {
   UiTheme,
 } from '../shared/ipc'
 import type { PresentationTransaction } from '@wiswork/presentation-ops'
+import { createPcHostCodexApi } from '@wiswork/agent-runtime'
 
 const api: SlidesApi = {
   verifyAcceptanceTextProof: (request) =>
@@ -344,6 +345,7 @@ const api: SlidesApi = {
 }
 
 contextBridge.exposeInMainWorld('slidesApi', api)
+contextBridge.exposeInMainWorld('codexRuntime', createPcHostCodexApi(ipcRenderer))
 
 // Chat attachment bridge: method names/signatures match the window.desktop attachment subset in docs, so the renderer's files-skill is copied over wholesale
 const filesApi: DesktopFilesApi = {

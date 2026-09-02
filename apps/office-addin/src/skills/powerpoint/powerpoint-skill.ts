@@ -1169,7 +1169,7 @@ export function createPowerPointSkill(options: {
   options.proposals.subscribeAudit?.((event) => {
     if (!presentation) return
     if (event.kind === 'proposed') presentation.recordProposal(event)
-    else presentation.recordSettlement(event)
+    else if (event.kind === 'settled') presentation.recordSettlement(event)
   })
   async function proposePackageEdit(
     toolName: string,

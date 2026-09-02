@@ -1482,247 +1482,255 @@ export function AiPanel({
         })
       }
     }
-    loopRef.current = createAgentController({
-      transport: createElectronTransport(() => settingsRef.current),
-      systemSuffix: aiLangDirective,
-      skill: composeSkills('slides+files', '', [
-        createSlidesSkill(
-          access,
-          presentationVerificationFlags(import.meta.env, 'VITE_WISWORK_PRESENTATION_'),
-        ),
-        createFilesSkill(availableAttachments, (path) => readAttachmentPathsRef.current.add(path)),
-      ]),
-      events: {
-        onPresentationClarify: () =>
-          setChat((previous) => [
-            ...previous,
-            { role: 'assistant', text: translatePresentationVerification(lang, 'clarify') },
-          ]),
-        onPresentationPlan: ({ steps, requiresConfirmation }) =>
-          setChat((previous) => [
-            ...previous,
-            {
-              role: 'assistant',
-              text: [
-                translatePresentationVerification(lang, 'plan'),
-                ...steps.map(
-                  (step) =>
-                    `• ${translatePresentationVerification(
-                      lang,
-                      step === 'presentation_verify_postconditions'
-                        ? 'verify_postconditions'
-                        : 'apply_bounded_edits',
-                    )}`,
-                ),
-                ...(requiresConfirmation
-                  ? [translatePresentationVerification(lang, 'needs_user')]
-                  : []),
-              ].join('\n'),
-            },
-          ]),
-        onPresentationCorrection: () =>
-          setChat((previous) => [
-            ...previous,
-            { role: 'assistant', text: translatePresentationVerification(lang, 'correction') },
-          ]),
-        onText: (text) => patchLastAssistant({ text }),
-        onToolStart: (call) => {
-          // Live "running" chip: replaced in place by onToolExecuted
-          const activity: ToolActivity = {
-            name: call.name,
-            summary: call.name.replace(/[_-]+/g, ' '),
-            running: true,
-          }
-          patchLastAssistant((last) => ({ tools: [...(last.tools ?? []), activity] }))
-        },
-        onToolExecuted: ({ call, execution }) => {
-          const activity: ToolActivity = {
-            name: call.name,
-            summary: execution.summary,
-            isError: execution.isError,
-            output: execution.output ? execution.output.slice(0, TOOL_OUTPUT_MAX_CHARS) : undefined,
-            // Side channel: display comes from tools, not into LLM context, UI only
-            display: execution.display,
-          }
-          lastTurnToolsRef.current.push(activity)
-          if (!execution.display) {
-            runToolsRef.current.push({
+    loopRef.current = createAgentController(
+      {
+        transport: createElectronTransport(() => settingsRef.current),
+        systemSuffix: aiLangDirective,
+        skill: composeSkills('slides+files', '', [
+          createSlidesSkill(
+            access,
+            presentationVerificationFlags(import.meta.env, 'VITE_WISWORK_PRESENTATION_'),
+          ),
+          createFilesSkill(availableAttachments, (path) =>
+            readAttachmentPathsRef.current.add(path),
+          ),
+        ]),
+        events: {
+          onPresentationClarify: () =>
+            setChat((previous) => [
+              ...previous,
+              { role: 'assistant', text: translatePresentationVerification(lang, 'clarify') },
+            ]),
+          onPresentationPlan: ({ steps, requiresConfirmation }) =>
+            setChat((previous) => [
+              ...previous,
+              {
+                role: 'assistant',
+                text: [
+                  translatePresentationVerification(lang, 'plan'),
+                  ...steps.map(
+                    (step) =>
+                      `• ${translatePresentationVerification(
+                        lang,
+                        step === 'presentation_verify_postconditions'
+                          ? 'verify_postconditions'
+                          : 'apply_bounded_edits',
+                      )}`,
+                  ),
+                  ...(requiresConfirmation
+                    ? [translatePresentationVerification(lang, 'needs_user')]
+                    : []),
+                ].join('\n'),
+              },
+            ]),
+          onPresentationCorrection: () =>
+            setChat((previous) => [
+              ...previous,
+              { role: 'assistant', text: translatePresentationVerification(lang, 'correction') },
+            ]),
+          onText: (text) => patchLastAssistant({ text }),
+          onToolStart: (call) => {
+            // Live "running" chip: replaced in place by onToolExecuted
+            const activity: ToolActivity = {
+              name: call.name,
+              summary: call.name.replace(/[_-]+/g, ' '),
+              running: true,
+            }
+            patchLastAssistant((last) => ({ tools: [...(last.tools ?? []), activity] }))
+          },
+          onToolExecuted: ({ call, execution }) => {
+            const activity: ToolActivity = {
               name: call.name,
               summary: execution.summary,
               isError: execution.isError,
-              input: safeJsonInput(call.input),
               output: execution.output
-                ? execution.output.slice(0, PERSIST_TOOL_FIELD_MAX)
+                ? execution.output.slice(0, TOOL_OUTPUT_MAX_CHARS)
                 : undefined,
-            })
-          }
-          patchLastAssistant((last) => {
-            // Swap out the running placeholder pushed by onToolStart (parse-fail calls have none)
-            const tools = [...(last.tools ?? [])]
-            if (tools.at(-1)?.running) tools.pop()
-            return { tools: [...tools, activity] }
-          })
-        },
-        onTurnEnd: () => {
-          lastTurnToolsRef.current = []
-          patchLastAssistant({ streaming: false })
-          setChat((prev) => [
-            ...prev,
-            {
-              role: 'assistant',
-              text: '',
-              streaming: true,
-              ...(activeQueueTaskIdRef.current
-                ? { queueTaskId: activeQueueTaskIdRef.current }
-                : {}),
-            },
-          ])
-        },
-        onPresentationReceipt: ({ facts }) => translatePresentationVerification(lang, facts.status),
-        onDone: ({ text, cancelled, turnLimit, presentation, clarification }) => {
-          if (activeQueueRunRef.current) qcPagesRef.current = []
-          const localizedStatus = presentation
-            ? translatePresentationVerification(lang, presentation.status)
-            : ''
-          const finalText =
-            (clarification
-              ? translatePresentationVerification(lang, 'clarify')
-              : localizedStatus) ||
-            (turnLimit
-              ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
-              : text || (cancelled ? translatePresentationVerification(lang, 'cancelled') : ''))
-          const ranTools = runToolsRef.current.length > 0
-          setChat((prev) => {
-            const next = [...prev]
-            const activeId = activeQueueTaskIdRef.current
-            const index = activeId ? queuedAssistantIndex(next, activeId) : next.length - 1
-            const last = next[index]
-            if (!last || last.role !== 'assistant') return prev
-            // Tool-heavy runs often end with an empty closing turn. Earlier
-            // bubbles already show the executed work — drop the empty trailing
-            // bubble instead of mislabeling the whole run as "no content".
-            if (!finalText && !last.text && !last.tools?.length && ranTools) {
-              next.splice(index, 1)
-              return next
+              // Side channel: display comes from tools, not into LLM context, UI only
+              display: execution.display,
             }
-            next[index] = {
-              ...last,
-              streaming: false,
-              text: finalText || (last.tools?.length ? last.text : tGlobal('aiNoResponse')),
-              // A stop mid-tool can leave a running placeholder behind — drop it
-              tools: last.tools?.filter((tl) => !tl.running),
-            }
-            return next
-          })
-          void completeSlidesHostRun({
-            cancelled,
-            finishHistoryBatch: () => finishHistoryBatch(false),
-            isCurrent: () => launchTokenRef.current === activeRunTokenRef.current,
-            hasQcPages: () => qcPagesRef.current.length > 0,
-            clearQcPages: () => {
-              qcPagesRef.current = []
-            },
-            runQc: () => void runQcPassRef.current(),
-            setBusy,
-            publishHistorySnapshot: (snapshot) => {
-              if (typeof snapshot !== 'number') return
-              runSnapshotIdRef.current = snapshot
-              patchLastAssistant({ snapshotId: snapshot })
-            },
-          }).finally(() => {
-            const queued = activeQueueRunRef.current
-            activeQueueRunRef.current = undefined
-            activeQueueTaskIdRef.current = undefined
-            activeSelectionScopeRef.current = undefined
-            if (queued) {
-              queued.resolve({
-                taskId: queued.taskId,
-                invocationId: queued.invocationId,
-                ...(queued.transactionId ? { transactionId: queued.transactionId } : {}),
-                status: cancelled && queued.status === 'unchanged' ? 'cancelled' : queued.status,
+            lastTurnToolsRef.current.push(activity)
+            if (!execution.display) {
+              runToolsRef.current.push({
+                name: call.name,
+                summary: execution.summary,
+                isError: execution.isError,
+                input: safeJsonInput(call.input),
+                output: execution.output
+                  ? execution.output.slice(0, PERSIST_TOOL_FIELD_MAX)
+                  : undefined,
               })
             }
-          })
-          // Persist the assistant message; tools store the whole run's full activity —
-          // side effects outside the updater (StrictMode double-invokes updaters, duplicating history writes)
-          if (finalText && !cancelled) {
-            persistMessage('assistant', finalText, runToolsRef.current)
-          }
-        },
-        onAbandonedPresentationCompletion: async (event) => {
-          const key = 'slides-pending-presentation-completions'
-          const digest = async (value: string) => {
-            const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
-            return [...new Uint8Array(bytes)]
-              .map((byte) => byte.toString(16).padStart(2, '0'))
-              .join('')
-          }
-          const safeEvent = {
-            documentDigest: await digest(event.documentToken),
-            sessionDigest: await digest(event.sessionToken),
-            receipt: event.receipt,
-            facts: event.facts,
-          }
-          try {
-            const existing = JSON.parse(localStorage.getItem(key) ?? '[]')
-            const bounded = Array.isArray(existing) ? existing.slice(-49) : []
-            localStorage.setItem(key, JSON.stringify([...bounded, safeEvent]))
-          } catch {
-            localStorage.setItem(key, JSON.stringify([safeEvent]))
-          }
-        },
-        onError: (error) => {
-          qcPagesRef.current = []
-          setChat((prev) => {
-            const next = [...prev]
-            const activeId = activeQueueTaskIdRef.current
-            // the loop rolled this run's user message out of the model context — surface that
-            for (let i = next.length - 1; i >= 0; i--) {
-              const entry = next[i]!
-              if (entry.role === 'user' && (!activeId || entry.queueTaskId === activeId)) {
-                next[i] = { ...entry, undelivered: true }
-                break
+            patchLastAssistant((last) => {
+              // Swap out the running placeholder pushed by onToolStart (parse-fail calls have none)
+              const tools = [...(last.tools ?? [])]
+              if (tools.at(-1)?.running) tools.pop()
+              return { tools: [...tools, activity] }
+            })
+          },
+          onTurnEnd: () => {
+            lastTurnToolsRef.current = []
+            patchLastAssistant({ streaming: false })
+            setChat((prev) => [
+              ...prev,
+              {
+                role: 'assistant',
+                text: '',
+                streaming: true,
+                ...(activeQueueTaskIdRef.current
+                  ? { queueTaskId: activeQueueTaskIdRef.current }
+                  : {}),
+              },
+            ])
+          },
+          onPresentationReceipt: ({ facts }) =>
+            translatePresentationVerification(lang, facts.status),
+          onDone: ({ text, cancelled, turnLimit, presentation, clarification }) => {
+            if (activeQueueRunRef.current) qcPagesRef.current = []
+            const localizedStatus = presentation
+              ? translatePresentationVerification(lang, presentation.status)
+              : ''
+            const finalText =
+              (clarification
+                ? translatePresentationVerification(lang, 'clarify')
+                : localizedStatus) ||
+              (turnLimit
+                ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
+                : text || (cancelled ? translatePresentationVerification(lang, 'cancelled') : ''))
+            const ranTools = runToolsRef.current.length > 0
+            setChat((prev) => {
+              const next = [...prev]
+              const activeId = activeQueueTaskIdRef.current
+              const index = activeId ? queuedAssistantIndex(next, activeId) : next.length - 1
+              const last = next[index]
+              if (!last || last.role !== 'assistant') return prev
+              // Tool-heavy runs often end with an empty closing turn. Earlier
+              // bubbles already show the executed work — drop the empty trailing
+              // bubble instead of mislabeling the whole run as "no content".
+              if (!finalText && !last.text && !last.tools?.length && ranTools) {
+                next.splice(index, 1)
+                return next
               }
-            }
-            const index = activeId ? queuedAssistantIndex(next, activeId) : next.length - 1
-            const last = next[index]
-            if (last?.role === 'assistant') {
               next[index] = {
                 ...last,
                 streaming: false,
-                error,
+                text: finalText || (last.tools?.length ? last.text : tGlobal('aiNoResponse')),
+                // A stop mid-tool can leave a running placeholder behind — drop it
                 tools: last.tools?.filter((tl) => !tl.running),
               }
-            }
-            return next
-          })
-          // Signed-out failures get an inline sign-in button; detected via
-          // wiswork status rather than matching the localized error text
-          void window.slidesApi
-            .aiAccountStatus()
-            .then((status) => {
-              if (status.loggedIn) return
-              setChat((prev) => {
-                const next = [...prev]
-                const last = next.at(-1)
-                if (last?.role === 'assistant' && last.error) {
-                  next[next.length - 1] = { ...last, loginRequired: true }
-                }
-                return next
-              })
+              return next
             })
-            .catch(() => {})
-          void finishHistoryBatch().finally(() => {
-            setBusy(false)
-            const queued = activeQueueRunRef.current
-            activeQueueRunRef.current = undefined
-            activeQueueTaskIdRef.current = undefined
-            activeSelectionScopeRef.current = undefined
-            queued?.reject(new Error(error))
-          })
+            void completeSlidesHostRun({
+              cancelled,
+              finishHistoryBatch: () => finishHistoryBatch(false),
+              isCurrent: () => launchTokenRef.current === activeRunTokenRef.current,
+              hasQcPages: () => qcPagesRef.current.length > 0,
+              clearQcPages: () => {
+                qcPagesRef.current = []
+              },
+              runQc: () => void runQcPassRef.current(),
+              setBusy,
+              publishHistorySnapshot: (snapshot) => {
+                if (typeof snapshot !== 'number') return
+                runSnapshotIdRef.current = snapshot
+                patchLastAssistant({ snapshotId: snapshot })
+              },
+            }).finally(() => {
+              const queued = activeQueueRunRef.current
+              activeQueueRunRef.current = undefined
+              activeQueueTaskIdRef.current = undefined
+              activeSelectionScopeRef.current = undefined
+              if (queued) {
+                queued.resolve({
+                  taskId: queued.taskId,
+                  invocationId: queued.invocationId,
+                  ...(queued.transactionId ? { transactionId: queued.transactionId } : {}),
+                  status: cancelled && queued.status === 'unchanged' ? 'cancelled' : queued.status,
+                })
+              }
+            })
+            // Persist the assistant message; tools store the whole run's full activity —
+            // side effects outside the updater (StrictMode double-invokes updaters, duplicating history writes)
+            if (finalText && !cancelled) {
+              persistMessage('assistant', finalText, runToolsRef.current)
+            }
+          },
+          onAbandonedPresentationCompletion: async (event) => {
+            const key = 'slides-pending-presentation-completions'
+            const digest = async (value: string) => {
+              const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+              return [...new Uint8Array(bytes)]
+                .map((byte) => byte.toString(16).padStart(2, '0'))
+                .join('')
+            }
+            const safeEvent = {
+              documentDigest: await digest(event.documentToken),
+              sessionDigest: await digest(event.sessionToken),
+              receipt: event.receipt,
+              facts: event.facts,
+            }
+            try {
+              const existing = JSON.parse(localStorage.getItem(key) ?? '[]')
+              const bounded = Array.isArray(existing) ? existing.slice(-49) : []
+              localStorage.setItem(key, JSON.stringify([...bounded, safeEvent]))
+            } catch {
+              localStorage.setItem(key, JSON.stringify([safeEvent]))
+            }
+          },
+          onError: (error) => {
+            qcPagesRef.current = []
+            setChat((prev) => {
+              const next = [...prev]
+              const activeId = activeQueueTaskIdRef.current
+              // the loop rolled this run's user message out of the model context — surface that
+              for (let i = next.length - 1; i >= 0; i--) {
+                const entry = next[i]!
+                if (entry.role === 'user' && (!activeId || entry.queueTaskId === activeId)) {
+                  next[i] = { ...entry, undelivered: true }
+                  break
+                }
+              }
+              const index = activeId ? queuedAssistantIndex(next, activeId) : next.length - 1
+              const last = next[index]
+              if (last?.role === 'assistant') {
+                next[index] = {
+                  ...last,
+                  streaming: false,
+                  error,
+                  tools: last.tools?.filter((tl) => !tl.running),
+                }
+              }
+              return next
+            })
+            // Signed-out failures get an inline sign-in button; detected via
+            // wiswork status rather than matching the localized error text
+            void window.slidesApi
+              .aiAccountStatus()
+              .then((status) => {
+                if (status.loggedIn) return
+                setChat((prev) => {
+                  const next = [...prev]
+                  const last = next.at(-1)
+                  if (last?.role === 'assistant' && last.error) {
+                    next[next.length - 1] = { ...last, loginRequired: true }
+                  }
+                  return next
+                })
+              })
+              .catch(() => {})
+            void finishHistoryBatch().finally(() => {
+              setBusy(false)
+              const queued = activeQueueRunRef.current
+              activeQueueRunRef.current = undefined
+              activeQueueTaskIdRef.current = undefined
+              activeSelectionScopeRef.current = undefined
+              queued?.reject(new Error(error))
+            })
+          },
         },
       },
-    })
+      window.codexRuntime ? { host: 'slides', api: window.codexRuntime } : undefined,
+    )
   }
   useAgentControllerCleanup(loopRef)
 

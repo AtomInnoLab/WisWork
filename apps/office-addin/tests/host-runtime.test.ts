@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createOfficeHostRuntime } from '../src/agent/host-runtime.js'
+import type { StructuredProposalController } from '../src/agent/proposal-controller.js'
+import type { ElevatedOfficeAdapter } from '../src/skills/shared/elevated-office-program.js'
 
 const inventories = {
   word: [
@@ -46,6 +48,40 @@ const inventories = {
 } as const
 
 describe('host runtime composition', () => {
+  it('advertises the distinct raw tool only when an Enhanced adapter is supplied', () => {
+    const standard = createOfficeHostRuntime('word')
+    expect(standard.skill.tools.map((tool) => tool.name)).not.toContain('propose_raw_office_edit')
+    const adapter: ElevatedOfficeAdapter = {
+      host: 'word',
+      captureAuthority: () => ({
+        activeMode: 'enhanced',
+        signedIn: true,
+        paired: true,
+        hostEnabled: true,
+        rawOfficeEnabled: true,
+        rawOfficeJsEnabled: true,
+        rawOfficeOoxmlEnabled: true,
+        documentId: 'doc_AAAAAAAAAAAAAAAA',
+        sessionId: 'ses_AAAAAAAAAAAAAAAA',
+        generation: 1,
+        revision: 'rev_AAAAAAAAAAAAAAAA',
+      }),
+      snapshot: async () => ({ id: 'history_AAAAAAAAAAAAAAAA' }),
+      validateSnapshot: async () => true,
+      execute: async () => undefined,
+      readback: async () => ({ verified: true }),
+      rollback: async () => undefined,
+    }
+    const names = createOfficeHostRuntime('word', {
+      elevatedOfficeAdapter: adapter,
+    }).skill.tools.map((tool) => tool.name)
+    expect(names).toContain('execute_office_js')
+    expect(names).toContain('propose_raw_office_edit')
+    standard.enableElevatedOffice(adapter.captureAuthority)
+    expect(standard.skill.tools.map((tool) => tool.name)).toContain('propose_raw_office_edit')
+    standard.disableElevatedOffice()
+    expect(standard.skill.tools.map((tool) => tool.name)).not.toContain('propose_raw_office_edit')
+  })
   it.each(Object.entries(inventories))(
     'composes shared tools with only the %s host skill',
     (host, expected) => {
@@ -77,6 +113,19 @@ describe('host runtime composition', () => {
     expect(runtime.vfs.list('/home/skills')).toEqual([])
     expect(runtime.skills.list()).toEqual([])
     expect(runtime.proposals.pending()).toBeUndefined()
+  })
+
+  it('inherits quarantine across session clearing and releases it only on document disposal', () => {
+    const runtime = createOfficeHostRuntime('word')
+    const proposals = runtime.proposals as StructuredProposalController
+    proposals.quarantine({ sessionId: 'session-a', generation: 1 })
+
+    runtime.clearSession()
+    expect(proposals.isQuarantined()).toBe(true)
+    runtime.disableElevatedOffice()
+    expect(proposals.isQuarantined()).toBe(true)
+    runtime.dispose()
+    expect(proposals.isQuarantined()).toBe(false)
   })
 
   it('ignores an upload that settles after the runtime is disposed', async () => {

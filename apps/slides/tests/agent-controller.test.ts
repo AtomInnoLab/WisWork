@@ -36,6 +36,194 @@ const skill = {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('Slides interactive agent controller', () => {
+  it('replaces an Enhanced deck registration and rejects callbacks from the old generation', async () => {
+    let documentId: string | null = null
+    const toolListeners: Array<(request: any) => void> = []
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => undefined),
+      startTurn: vi.fn(async () => undefined),
+      cancelTurn: vi.fn(async () => undefined),
+      toolResult: vi.fn(async () => undefined),
+      onEvent: vi.fn(() => () => undefined),
+      onToolCall: vi.fn((listener) => {
+        toolListeners.push(listener)
+        return () => undefined
+      }),
+    }
+    const executeTool = vi.fn(async () => ({ output: 'ok', summary: 'edited', mutated: true }))
+    const controller = createAgentController(
+      { transport: manualTransport(), skill: { ...skill, executeTool } },
+      { host: 'slides', api },
+    )
+    controller.activate()
+    await flush()
+    expect(api.register).toHaveBeenCalledWith(expect.objectContaining({ generation: 0 }))
+    const oldListener = toolListeners[0]!
+    controller.reset()
+    await flush()
+    await flush()
+    expect(api.unregister).toHaveBeenCalledWith(expect.any(String), 0)
+    expect(api.register).toHaveBeenLastCalledWith(expect.objectContaining({ generation: 1 }))
+    oldListener({
+      documentId,
+      generation: 0,
+      call: { id: 'stale', name: 'execute_slide_script', input: {} },
+    })
+    await flush()
+    expect(executeTool).not.toHaveBeenCalled()
+    expect(api.toolResult).not.toHaveBeenCalled()
+    controller.dispose()
+  })
+
+  it('keeps Enhanced slide mutations inside the renderer presentation lifecycle', async () => {
+    let documentId: string | null = null
+    let onToolCall: ((request: any) => void) | undefined
+    let onEvent: ((event: any) => void) | undefined
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => undefined),
+      startTurn: vi.fn(async () => undefined),
+      cancelTurn: vi.fn(async () => undefined),
+      toolResult: vi.fn(async () => undefined),
+      onEvent: vi.fn((listener) => {
+        onEvent = listener
+        return () => undefined
+      }),
+      onToolCall: vi.fn((listener) => {
+        onToolCall = listener
+        return () => undefined
+      }),
+    }
+    const contract: any = {
+      version: 1,
+      taskId: 'task-1',
+      documentToken: 'doc-1',
+      sessionToken: 'session-1',
+      baseRevision: `sha256:${'a'.repeat(64)}`,
+      affectedSlides: [1],
+      referenceSlides: [],
+      checks: [
+        {
+          id: 'check-1',
+          kind: 'element_property',
+          slide: 1,
+          roleOrTarget: { kind: 'role', role: 'title' },
+          property: 'color',
+          expected: '#112233',
+        },
+      ],
+      maxCorrectionPasses: 2,
+    }
+    const prepare = vi.fn(() => ({
+      kind: 'ready' as const,
+      contract,
+      plan: ['Apply bounded deck edits'],
+      requiresConfirmation: true,
+    }))
+    const confirm = vi.fn(async () => true)
+    const enroll = vi.fn(() => ({ kind: 'ready' as const, contract }))
+    const complete = vi.fn(() => ({
+      kind: 'receipt' as const,
+      receipt: {
+        version: 1,
+        taskId: 'task-1',
+        status: 'verified' as const,
+        mutationReceiptIds: ['mutation-1'],
+        passedCheckIds: ['check-1'],
+        failedCheckIds: [],
+        unavailableCheckIds: [],
+        correctionPasses: 0,
+        affectedSlides: [1],
+      },
+    }))
+    const enhancedSkill: any = {
+      ...skill,
+      presentation: { prepare, confirm, enroll, complete },
+    }
+    const captureSnapshot = vi.fn(() => 'deck-before')
+    const done = vi.fn()
+    const controller = createAgentController(
+      {
+        transport: manualTransport(),
+        skill: enhancedSkill,
+        captureSnapshot,
+        events: { onDone: done },
+      },
+      { host: 'slides', api },
+    )
+    controller.activate()
+    await flush()
+    expect(controller.run('edit safely')).toBe(true)
+    await flush()
+    expect(prepare).toHaveBeenCalledOnce()
+    expect(confirm).toHaveBeenCalledOnce()
+    onToolCall?.({
+      documentId,
+      generation: 0,
+      call: { id: 'edit-1', name: 'execute_slide_script', input: {} },
+    })
+    await flush()
+    await flush()
+    expect(enroll).toHaveBeenCalledOnce()
+    expect(enhancedSkill.executeTool).toHaveBeenCalled()
+    expect(captureSnapshot).toHaveBeenCalledOnce()
+    expect(api.toolResult).toHaveBeenCalledOnce()
+    onEvent?.({ type: 'done', result: { text: '', cancelled: false, turnLimit: false } })
+    await flush()
+    expect(complete).toHaveBeenCalledOnce()
+    expect(done).toHaveBeenCalledWith(
+      expect.objectContaining({ presentation: expect.objectContaining({ status: 'verified' }) }),
+    )
+    controller.dispose()
+  })
+
+  it('uses Standard when standalone Slides has no Codex IPC handler', async () => {
+    const transport = manualTransport()
+    const api: any = {
+      status: vi.fn(async () => {
+        throw new Error("No handler registered for 'codex:pc-host:status'")
+      }),
+    }
+    const controller = createAgentController({ transport, skill }, { host: 'slides', api })
+    controller.activate()
+    await flush()
+    expect(controller.run('standard slides')).toBe(true)
+    await flush()
+    expect(transport.callbacks).toHaveLength(1)
+    controller.dispose()
+  })
+
+  it('selects Enhanced without dispatching the Standard transport', async () => {
+    const transport = manualTransport()
+    let documentId: string | null = null
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => undefined),
+      startTurn: vi.fn(async () => undefined),
+      cancelTurn: vi.fn(async () => undefined),
+      toolResult: vi.fn(async () => undefined),
+      onEvent: vi.fn(() => () => undefined),
+      onToolCall: vi.fn(() => () => undefined),
+    }
+    const controller = createAgentController({ transport, skill }, { host: 'slides', api })
+    controller.activate()
+    await flush()
+    expect(controller.run('enhanced slides')).toBe(true)
+    await flush()
+    expect(api.startTurn).toHaveBeenCalledOnce()
+    expect(transport.callbacks).toHaveLength(0)
+    controller.dispose()
+  })
   it('classifies cancellation without exposing raw QC orchestration errors', () => {
     const controller = new AbortController()
     controller.abort()

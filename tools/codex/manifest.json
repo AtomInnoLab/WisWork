@@ -1,0 +1,210 @@
+{
+  "schemaVersion": 1,
+  "component": {
+    "version": "0.147.0",
+    "license": {
+      "spdx": "Apache-2.0",
+      "sourceUrl": "https://github.com/openai/codex/blob/rust-v0.147.0/LICENSE"
+    },
+    "assets": [
+      {
+        "id": "codex-app-server-0.147.0-darwin-arm64",
+        "platform": "darwin",
+        "arch": "arm64",
+        "target": "aarch64-apple-darwin",
+        "primaryUrl": "https://downloads.wiswork.com/components/codex/0.147.0/codex-app-server-package-aarch64-apple-darwin.tar.gz",
+        "fallbackUrl": "https://github.com/openai/codex/releases/download/rust-v0.147.0/codex-app-server-package-aarch64-apple-darwin.tar.gz",
+        "bytes": 92265540,
+        "sha256": "552ec417bd679532a531175e705979b9908e575b54ca267f461620b77441a2ad",
+        "archive": {
+          "format": "tar.gz",
+          "maxExtractedBytes": 237623246
+        },
+        "trust": {
+          "policy": "macos",
+          "teamIdentifier": "2DC432GLL2",
+          "requireNotarization": true
+        },
+        "layout": {
+          "entrypoint": "bin/codex-app-server",
+          "directories": [
+            "bin",
+            "codex-path",
+            "codex-resources",
+            "codex-resources/zsh",
+            "codex-resources/zsh/bin"
+          ],
+          "files": [
+            {
+              "path": "bin/codex-app-server",
+              "bytes": 182846768,
+              "sha256": "b1a7e99d3dba6cef9bb3785097321041a6b6594600a520bb320a9d80b35fd65c",
+              "mode": "executable",
+              "install": true
+            },
+            {
+              "path": "bin/codex-code-mode-host",
+              "bytes": 49991616,
+              "sha256": "861a07e9d413bd66d5a7b0de3be6f65d4d58e75b2ba3f8c7232f2ba41ab1fd82",
+              "mode": "executable",
+              "install": true
+            },
+            {
+              "path": "codex-package.json",
+              "bytes": 222,
+              "sha256": "42863b3ecc5f3f87fc578f4aebcb8bb9d76ed9bdad62dbc9877a515e86076c5e",
+              "mode": "data",
+              "install": true
+            },
+            {
+              "path": "codex-path/rg",
+              "bytes": 4030432,
+              "sha256": "842e37b57c419f66f1914009a88d8a0ad7d12199bfd8dbebc9cce8842634e7af",
+              "mode": "executable",
+              "install": false
+            },
+            {
+              "path": "codex-resources/zsh/bin/zsh",
+              "bytes": 754208,
+              "sha256": "4da1e21a0c7f4ff41811930665ce99d674d068d8560dc477023228d8266137bf",
+              "mode": "executable",
+              "install": false
+            }
+          ]
+        }
+      },
+      {
+        "id": "codex-app-server-0.147.0-darwin-x64",
+        "platform": "darwin",
+        "arch": "x64",
+        "target": "x86_64-apple-darwin",
+        "primaryUrl": "https://downloads.wiswork.com/components/codex/0.147.0/codex-app-server-package-x86_64-apple-darwin.tar.gz",
+        "fallbackUrl": "https://github.com/openai/codex/releases/download/rust-v0.147.0/codex-app-server-package-x86_64-apple-darwin.tar.gz",
+        "bytes": 99846280,
+        "sha256": "3124de77fcb1f2eed35e959453ebd49cc4e786cf9236414948f02d58026728f8",
+        "archive": {
+          "format": "tar.gz",
+          "maxExtractedBytes": 254313853
+        },
+        "trust": {
+          "policy": "macos",
+          "teamIdentifier": "2DC432GLL2",
+          "requireNotarization": true
+        },
+        "layout": {
+          "entrypoint": "bin/codex-app-server",
+          "directories": [
+            "bin",
+            "codex-path",
+            "codex-resources",
+            "codex-resources/zsh",
+            "codex-resources/zsh/bin"
+          ],
+          "files": [
+            {
+              "path": "bin/codex-app-server",
+              "bytes": 196617296,
+              "sha256": "f0da5ac98055516180a480bafd684f6003df1ad64a07c99006389f1e07e2ef3c",
+              "mode": "executable",
+              "install": true
+            },
+            {
+              "path": "bin/codex-code-mode-host",
+              "bytes": 52496608,
+              "sha256": "3454c7d1b9f0ec6df4da61cc1bfaf15bb01e15e35e2da48ba0f0e44840dc1e7d",
+              "mode": "executable",
+              "install": true
+            },
+            {
+              "path": "codex-package.json",
+              "bytes": 221,
+              "sha256": "20bca4d88925b826c3601afe7909412fc33cf815d2406cea994ab3dddb489b78",
+              "mode": "data",
+              "install": true
+            },
+            {
+              "path": "codex-path/rg",
+              "bytes": 4437184,
+              "sha256": "1a49284bea601c2f084c62a834f859d6b1bc23a37dbd98b6f8da0b10b2b35037",
+              "mode": "executable",
+              "install": false
+            },
+            {
+              "path": "codex-resources/zsh/bin/zsh",
+              "bytes": 762544,
+              "sha256": "f44aad35ea74894fd381790c4b5c31decbb9961df1dc356f4442252b036f6df5",
+              "mode": "executable",
+              "install": false
+            }
+          ]
+        }
+      },
+      {
+        "id": "codex-app-server-0.147.0-win32-x64",
+        "platform": "win32",
+        "arch": "x64",
+        "target": "x86_64-pc-windows-msvc",
+        "primaryUrl": "https://downloads.wiswork.com/components/codex/0.147.0/codex-app-server-package-x86_64-pc-windows-msvc.tar.gz",
+        "fallbackUrl": "https://github.com/openai/codex/releases/download/rust-v0.147.0/codex-app-server-package-x86_64-pc-windows-msvc.tar.gz",
+        "bytes": 110054928,
+        "sha256": "c8908d687cf7caa3074921479726db32f96a295372c3544f1e96919a7254951f",
+        "archive": {
+          "format": "tar.gz",
+          "maxExtractedBytes": 319468461
+        },
+        "trust": {
+          "policy": "windows",
+          "publisher": "CN=OpenAI, L.L.C."
+        },
+        "layout": {
+          "entrypoint": "bin/codex-app-server.exe",
+          "directories": ["bin", "codex-path", "codex-resources"],
+          "files": [
+            {
+              "path": "bin/codex-app-server.exe",
+              "bytes": 247694640,
+              "sha256": "5f9fcc5c8cb2358908534d42ed00dff72e0295a8b76bdc69e01a8bca75e29662",
+              "mode": "executable",
+              "install": true
+            },
+            {
+              "path": "bin/codex-code-mode-host.exe",
+              "bytes": 57450288,
+              "sha256": "37c23a542037e1bcfd0fa7eb4a150c697229d7ff31bf675c519d5bff7226b191",
+              "mode": "executable",
+              "install": true
+            },
+            {
+              "path": "codex-package.json",
+              "bytes": 237,
+              "sha256": "90f75ac3f356281935567105ce486bd42fc23f25812d1629f2a048255a1b6496",
+              "mode": "data",
+              "install": true
+            },
+            {
+              "path": "codex-path/rg.exe",
+              "bytes": 4218880,
+              "sha256": "14231169855ec5205cf5a1b6f1db358ff4aed4247c86b69ce8aae647c77f6680",
+              "mode": "executable",
+              "install": false
+            },
+            {
+              "path": "codex-resources/codex-command-runner.exe",
+              "bytes": 1300272,
+              "sha256": "3a70491d8d588afa459a42816f05b8c2fdd6bddb0ef318f3dfccc963a30b420a",
+              "mode": "executable",
+              "install": false
+            },
+            {
+              "path": "codex-resources/codex-windows-sandbox-setup.exe",
+              "bytes": 8804144,
+              "sha256": "a4df86996dfbb218d96d73a80606d89b742dfa4ddd3470614e90dde89e3250a3",
+              "mode": "executable",
+              "install": false
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

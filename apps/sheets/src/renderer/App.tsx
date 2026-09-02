@@ -859,164 +859,167 @@ export function App(): React.JSX.Element {
 
   const agentLoopRef = useRef<AgentHarness<unknown> | null>(null)
   if (!agentLoopRef.current) {
-    agentLoopRef.current = createAgentController({
-      transport: createElectronTransport(() => aiSettingsRef.current!),
-      systemSuffix: aiLangDirective,
-      skill: composeSkills('sheets+files', '', [
-        createWorkbookSkill(sheetsSkillDeps()),
-        createFilesSkill(availableAttachments),
-        createSearchSkill(),
-      ]),
-      events: {
-        onText: (text) => {
-          if (text) runLastTextRef.current = text
-          // Status bar (and the ribbon-row status span) show a short state only;
-          // the full streamed prose lives in the chat panel.
-          setMessage(t('appAiThinking'))
-          // When the model retries successfully and keeps streaming after a
-          // mid-run failure (e.g. one apply error), clear the error flag —
-          // otherwise the whole successful message stays rendered in red.
-          patchLastAssistant((entry) => ({ ...entry, text, isError: false }))
-        },
-        onToolStart: (call) => {
-          // Live "running" chip: replaced in place by onToolExecuted
-          patchLastAssistant((entry) => ({
-            ...entry,
-            tools: [
-              ...entry.tools,
-              {
-                summary: call.name.replace(/[_-]+/g, ' '),
-                isError: false,
-                name: call.name,
-                running: true,
-              },
-            ],
-          }))
-        },
-        onToolExecuted: ({ call, execution }) => {
-          if (execution.mutated) runMutatedRef.current = true
-          const input = safeJsonInput(call.input)
-          const output = execution.output
-            ? execution.output.slice(0, PERSIST_TOOL_FIELD_MAX)
-            : undefined
-          runToolsRef.current.push({
-            name: call.name,
-            summary: execution.summary,
-            isError: !!execution.isError,
-            ...(input !== undefined ? { input } : {}),
-            ...(output !== undefined ? { output } : {}),
-          })
-          patchLastAssistant((entry) => {
-            // Swap out the running placeholder pushed by onToolStart (parse-fail calls have none)
-            const tools = [...entry.tools]
-            if (tools.at(-1)?.running) tools.pop()
-            return {
+    agentLoopRef.current = createAgentController(
+      {
+        transport: createElectronTransport(() => aiSettingsRef.current!),
+        systemSuffix: aiLangDirective,
+        skill: composeSkills('sheets+files', '', [
+          createWorkbookSkill(sheetsSkillDeps()),
+          createFilesSkill(availableAttachments),
+          createSearchSkill(),
+        ]),
+        events: {
+          onText: (text) => {
+            if (text) runLastTextRef.current = text
+            // Status bar (and the ribbon-row status span) show a short state only;
+            // the full streamed prose lives in the chat panel.
+            setMessage(t('appAiThinking'))
+            // When the model retries successfully and keeps streaming after a
+            // mid-run failure (e.g. one apply error), clear the error flag —
+            // otherwise the whole successful message stays rendered in red.
+            patchLastAssistant((entry) => ({ ...entry, text, isError: false }))
+          },
+          onToolStart: (call) => {
+            // Live "running" chip: replaced in place by onToolExecuted
+            patchLastAssistant((entry) => ({
               ...entry,
               tools: [
-                ...tools,
+                ...entry.tools,
                 {
-                  summary: execution.summary,
-                  isError: !!execution.isError,
+                  summary: call.name.replace(/[_-]+/g, ' '),
+                  isError: false,
                   name: call.name,
-                  ...(execution.output ? { output: execution.output.slice(0, 2000) } : {}),
+                  running: true,
                 },
               ],
-            }
-          })
-        },
-        onDone: ({ text, cancelled, turnLimit }) => {
-          // Prefer tool summaries when the model finished via tools with no prose
-          // (agent-core fills history with COMPLETED_VIA_TOOLS_TEXT so follow-ups
-          // stay provider-safe; the UI can show the real work that ran).
-          const toolSummaries = (() => {
-            const lines: string[] = []
-            const seen = new Set<string>()
-            for (const tool of runToolsRef.current) {
-              if (!tool.summary || tool.isError || seen.has(tool.summary)) continue
-              seen.add(tool.summary)
-              lines.push(tool.summary)
-              if (lines.length >= 8) break
-            }
-            return lines.join('\n')
-          })()
-          // A cancelled run must keep the "stopped" notice: earlier narration or
-          // tool summaries would make an aborted run read as completed.
-          const prose =
-            text && text !== COMPLETED_VIA_TOOLS_TEXT
-              ? text
-              : cancelled
-                ? ''
-                : runLastTextRef.current || toolSummaries || text
-          // A final empty turn must not claim completion: reuse the model's last
-          // streamed text; with none, only a mutating run gets the "done" phrasing.
-          const fallback = cancelled
-            ? t('appAiStopped')
-            : runLastTextRef.current ||
-              toolSummaries ||
-              (runMutatedRef.current ? t('appAiNoSummary') : t('appAiNoAction'))
-          const finalText = turnLimit
-            ? [prose, t('appAiTurnLimit')].filter(Boolean).join('\n\n')
-            : prose || fallback
-          setMessage(cancelled ? t('appAiStopped') : t('appAiDone'))
-          patchLastAssistant((entry) => ({
-            ...entry,
-            text: finalText,
-            streaming: false,
-            isError: false,
-            // A stop mid-tool can leave a running placeholder behind — drop it
-            tools: entry.tools.filter((tl) => !tl.running),
-          }))
-          // Persist the assistant message (side effect outside the updater;
-          // tools stores the run's complete activity)
-          if (!cancelled && finalText) {
-            persistChatMessage('assistant', finalText, runToolsRef.current)
-          }
-          void autoSaveCompletedAiRun().finally(() => setAiBusy(false))
-        },
-        onError: (error) => {
-          setMessage(error)
-          setChat((previous) => {
-            const next = [...previous]
-            // the loop rolled this run's user message out of the model context — surface that
-            for (let i = next.length - 1; i >= 0; i--) {
-              const entry = next[i]!
-              if (entry.role === 'user') {
-                next[i] = { ...entry, undelivered: true }
-                break
-              }
-            }
-            const last = next.at(-1)
-            if (last?.role === 'assistant') {
-              next[next.length - 1] = {
-                ...last,
-                text: error,
-                isError: true,
-                streaming: false,
-                tools: last.tools.filter((tl) => !tl.running),
-              }
-            }
-            return next
-          })
-          // Signed-out failures get an inline sign-in button; detected via
-          // wiswork status rather than matching the localized error text
-          void window.desktopApi
-            .aiAccountStatus()
-            .then((status) => {
-              if (status.loggedIn) return
-              setChat((previous) => {
-                const next = [...previous]
-                const last = next.at(-1)
-                if (last?.role === 'assistant' && last.isError) {
-                  next[next.length - 1] = { ...last, loginRequired: true }
-                }
-                return next
-              })
+            }))
+          },
+          onToolExecuted: ({ call, execution }) => {
+            if (execution.mutated) runMutatedRef.current = true
+            const input = safeJsonInput(call.input)
+            const output = execution.output
+              ? execution.output.slice(0, PERSIST_TOOL_FIELD_MAX)
+              : undefined
+            runToolsRef.current.push({
+              name: call.name,
+              summary: execution.summary,
+              isError: !!execution.isError,
+              ...(input !== undefined ? { input } : {}),
+              ...(output !== undefined ? { output } : {}),
             })
-            .catch(() => {})
-          void autoSaveCompletedAiRun().finally(() => setAiBusy(false))
+            patchLastAssistant((entry) => {
+              // Swap out the running placeholder pushed by onToolStart (parse-fail calls have none)
+              const tools = [...entry.tools]
+              if (tools.at(-1)?.running) tools.pop()
+              return {
+                ...entry,
+                tools: [
+                  ...tools,
+                  {
+                    summary: execution.summary,
+                    isError: !!execution.isError,
+                    name: call.name,
+                    ...(execution.output ? { output: execution.output.slice(0, 2000) } : {}),
+                  },
+                ],
+              }
+            })
+          },
+          onDone: ({ text, cancelled, turnLimit }) => {
+            // Prefer tool summaries when the model finished via tools with no prose
+            // (agent-core fills history with COMPLETED_VIA_TOOLS_TEXT so follow-ups
+            // stay provider-safe; the UI can show the real work that ran).
+            const toolSummaries = (() => {
+              const lines: string[] = []
+              const seen = new Set<string>()
+              for (const tool of runToolsRef.current) {
+                if (!tool.summary || tool.isError || seen.has(tool.summary)) continue
+                seen.add(tool.summary)
+                lines.push(tool.summary)
+                if (lines.length >= 8) break
+              }
+              return lines.join('\n')
+            })()
+            // A cancelled run must keep the "stopped" notice: earlier narration or
+            // tool summaries would make an aborted run read as completed.
+            const prose =
+              text && text !== COMPLETED_VIA_TOOLS_TEXT
+                ? text
+                : cancelled
+                  ? ''
+                  : runLastTextRef.current || toolSummaries || text
+            // A final empty turn must not claim completion: reuse the model's last
+            // streamed text; with none, only a mutating run gets the "done" phrasing.
+            const fallback = cancelled
+              ? t('appAiStopped')
+              : runLastTextRef.current ||
+                toolSummaries ||
+                (runMutatedRef.current ? t('appAiNoSummary') : t('appAiNoAction'))
+            const finalText = turnLimit
+              ? [prose, t('appAiTurnLimit')].filter(Boolean).join('\n\n')
+              : prose || fallback
+            setMessage(cancelled ? t('appAiStopped') : t('appAiDone'))
+            patchLastAssistant((entry) => ({
+              ...entry,
+              text: finalText,
+              streaming: false,
+              isError: false,
+              // A stop mid-tool can leave a running placeholder behind — drop it
+              tools: entry.tools.filter((tl) => !tl.running),
+            }))
+            // Persist the assistant message (side effect outside the updater;
+            // tools stores the run's complete activity)
+            if (!cancelled && finalText) {
+              persistChatMessage('assistant', finalText, runToolsRef.current)
+            }
+            void autoSaveCompletedAiRun().finally(() => setAiBusy(false))
+          },
+          onError: (error) => {
+            setMessage(error)
+            setChat((previous) => {
+              const next = [...previous]
+              // the loop rolled this run's user message out of the model context — surface that
+              for (let i = next.length - 1; i >= 0; i--) {
+                const entry = next[i]!
+                if (entry.role === 'user') {
+                  next[i] = { ...entry, undelivered: true }
+                  break
+                }
+              }
+              const last = next.at(-1)
+              if (last?.role === 'assistant') {
+                next[next.length - 1] = {
+                  ...last,
+                  text: error,
+                  isError: true,
+                  streaming: false,
+                  tools: last.tools.filter((tl) => !tl.running),
+                }
+              }
+              return next
+            })
+            // Signed-out failures get an inline sign-in button; detected via
+            // wiswork status rather than matching the localized error text
+            void window.desktopApi
+              .aiAccountStatus()
+              .then((status) => {
+                if (status.loggedIn) return
+                setChat((previous) => {
+                  const next = [...previous]
+                  const last = next.at(-1)
+                  if (last?.role === 'assistant' && last.isError) {
+                    next[next.length - 1] = { ...last, loginRequired: true }
+                  }
+                  return next
+                })
+              })
+              .catch(() => {})
+            void autoSaveCompletedAiRun().finally(() => setAiBusy(false))
+          },
         },
       },
-    })
+      window.codexRuntime ? { host: 'sheets', api: window.codexRuntime } : undefined,
+    )
   }
   useAgentControllerCleanup(agentLoopRef)
   useEffect(

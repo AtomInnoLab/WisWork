@@ -116,6 +116,74 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify Codex component release policy
+        run: npm run test:codex-release
+
+      - name: Gate Codex Enhanced rollout and seven production hosts
+        run: |
+          npm run test:codex-rollout
+          npm run test:enhanced-seven-host
+
+      - name: Gate component lifecycle, crash, restart and kill switches
+        run: >-
+          npx vitest run
+          packages/codex-bridge/tests/component-manager.test.ts
+          packages/codex-bridge/tests/process-manager.test.ts
+          apps/shell/tests/codex-runtime.test.ts
+          apps/shell/tests/enhanced-mode-component.test.ts
+          apps/shell/tests/pc-codex-hosts.test.ts
+          apps/shell/tests/office-codex-proxy.test.ts
+          apps/office-addin/tests/elevated-office-program.test.ts
+
+      - name: Verify pinned macOS Codex app-server component
+        if: startsWith(matrix.id, 'macos-')
+        run: npx tsx tools/install-enhanced-component.ts --cache "$RUNNER_TEMP/wiswork-codex-component"
+
+      - name: Verify pinned Windows Codex app-server component
+        if: matrix.id == 'windows-x64'
+        shell: pwsh
+        run: npx tsx tools/install-enhanced-component.ts --cache (Join-Path $env:RUNNER_TEMP 'wiswork-codex-component')
+
+      - name: Exercise native component update, restart, crash recovery, kill switches and removal
+        shell: bash
+        run: npx tsx tools/run-codex-native-lifecycle.ts --cache "$RUNNER_TEMP/wiswork-codex-lifecycle"
+
+      - name: Exercise pinned macOS Codex model-driven read gate
+        if: startsWith(matrix.id, 'macos-')
+        run: |
+          set -euo pipefail
+          COMPONENTS=("$RUNNER_TEMP"/wiswork-codex-component/0.147.0/darwin-*/bin/codex-app-server)
+          test "${#COMPONENTS[@]}" -eq 1
+          WISWORK_CODEX_INTEGRATION_EXECUTABLE="${COMPONENTS[0]}" \
+            npx vitest run apps/shell/tests/codex-engine.integration.test.ts -t 'drives one bounded'
+
+      - name: Exercise pinned Windows Codex model-driven read gate
+        if: matrix.id == 'windows-x64'
+        shell: pwsh
+        run: |
+          $env:WISWORK_CODEX_INTEGRATION_EXECUTABLE = Join-Path $env:RUNNER_TEMP 'wiswork-codex-component/0.147.0/win32-x64/bin/codex-app-server.exe'
+          npx vitest run apps/shell/tests/codex-engine.integration.test.ts -t 'drives one bounded'
+
+      - name: Read back pinned macOS component signing identity
+        if: startsWith(matrix.id, 'macos-')
+        run: |
+          set -euo pipefail
+          COMPONENTS=("$RUNNER_TEMP"/wiswork-codex-component/0.147.0/darwin-*/bin/codex-app-server)
+          test "${#COMPONENTS[@]}" -eq 1
+          DETAILS=$(codesign -dv --verbose=4 "${COMPONENTS[0]}" 2>&1)
+          printf '%s\n' "$DETAILS" | grep '^TeamIdentifier=2DC432GLL2$'
+          spctl --assess --type execute --verbose=4 "${COMPONENTS[0]}"
+
+      - name: Read back pinned Windows component signing identity
+        if: matrix.id == 'windows-x64'
+        shell: pwsh
+        run: |
+          $component = Join-Path $env:RUNNER_TEMP 'wiswork-codex-component/0.147.0/win32-x64/bin/codex-app-server.exe'
+          if (-not (Test-Path -LiteralPath $component -PathType Leaf)) { throw 'Missing verified app-server component' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $component
+          $signature | Select-Object Status, @{Name='Subject';Expression={$_.SignerCertificate.Subject}}, @{Name='Thumbprint';Expression={$_.SignerCertificate.Thumbprint}} | Format-List
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -ne 'CN=OpenAI, L.L.C.') { throw 'Pinned app-server publisher mismatch' }
+
       - name: Generate notices
         run: npm run notices
 
@@ -202,6 +270,11 @@ jobs:
           WISWORK_UPDATE_PROVIDER: github
         run: npx electron-builder --config electron-builder.cjs ${{ matrix.electron_args }} --publish never
 
+      - name: Verify macOS package excludes optional Codex components
+        if: startsWith(matrix.id, 'macos-')
+        working-directory: apps/shell
+        run: node ../../tools/optional-runtime-policy.mjs --mode post-package --artifact-dir release
+
       - name: Verify signed macOS artifacts
         if: startsWith(matrix.id, 'macos-')
         working-directory: apps/shell
@@ -235,6 +308,12 @@ jobs:
           WISWORK_TECTONIC_SOURCE: ${{ github.workspace }}/apps/latex/native/tectonic-ci.exe
           WISWORK_UPDATE_PROVIDER: github
         run: npx electron-builder --config electron-builder.cjs ${{ matrix.electron_args }} --publish never
+
+      - name: Verify Windows package excludes optional Codex components
+        if: matrix.id == 'windows-x64'
+        working-directory: apps/shell
+        shell: pwsh
+        run: node ../../tools/optional-runtime-policy.mjs --mode post-package --artifact-dir release
 
       - name: Verify Windows artifacts
         if: matrix.id == 'windows-x64'

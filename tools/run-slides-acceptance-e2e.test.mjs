@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { orchestrateSlidesAcceptanceE2E } from './run-slides-acceptance-e2e.mjs'
 
-async function scenario(codes) {
+async function scenario(codes, filters = []) {
   const calls = []
   const reports = []
   const code = await orchestrateSlidesAcceptanceE2E(
@@ -11,6 +11,7 @@ async function scenario(codes) {
       return codes[name] ?? 0
     },
     (message) => reports.push(message),
+    filters,
   )
   return { code, calls, reports }
 }
@@ -24,6 +25,21 @@ test('runs primary and always restores the default artifact', async () => {
     'playwright',
     'default-build',
     'default-artifact',
+  ])
+})
+
+test('forwards a dedicated Playwright spec filter without changing build and cleanup', async () => {
+  const calls = []
+  await orchestrateSlidesAcceptanceE2E(
+    async (step) => {
+      calls.push(step)
+      return 0
+    },
+    () => undefined,
+    ['e2e/slides-acceptance-render.spec.ts'],
+  )
+  assert.deepEqual(calls.find(({ name }) => name === 'playwright').args.slice(-1), [
+    'e2e/slides-acceptance-render.spec.ts',
   ])
 })
 

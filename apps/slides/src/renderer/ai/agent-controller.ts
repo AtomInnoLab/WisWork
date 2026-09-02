@@ -1,5 +1,19 @@
 import { createAgentHarness, type AgentHarness } from '@wiswork/agent-harness'
-import type { AgentLoopOptions } from '@wiswork/agent-core'
+import type {
+  AgentLoopOptions,
+  AgentStreamCallbacks,
+  AgentStreamRequest,
+  AgentTransport,
+  ToolExecution,
+  ToolExecutionOutcome,
+  ToolExecutionSuspension,
+} from '@wiswork/agent-core'
+import {
+  createPcHostRegistration,
+  isPcHostCodexUnavailable,
+  type PcEnhancedHost,
+  type PcHostCodexApi,
+} from '@wiswork/agent-runtime'
 import { useEffect, useRef } from 'react'
 
 interface LifecycleAgentController<TSnapshot> extends AgentHarness<TSnapshot> {
@@ -9,6 +23,92 @@ interface LifecycleAgentController<TSnapshot> extends AgentHarness<TSnapshot> {
 
 export interface AgentControllerRef<TSnapshot> {
   current: AgentHarness<TSnapshot> | null
+}
+
+function createSlidesEnhancedHarness<TSnapshot>(
+  options: AgentLoopOptions<TSnapshot>,
+  api: PcHostCodexApi,
+  documentId: string,
+  generation: number,
+): { harness: AgentHarness<TSnapshot>; close(): void } {
+  let callbacks: AgentStreamCallbacks | null = null
+  let closed = false
+  const executions = new Map<string, ToolExecution>()
+  const registration = api.register(
+    createPcHostRegistration({ host: 'slides', documentId, generation, skill: options.skill }),
+  )
+  const unsubscribeEvents = api.onEvent((event) => {
+    if (closed || !callbacks) return
+    if (event.type === 'text') callbacks.onDelta(event.text)
+    else if (event.type === 'done') callbacks.onDone()
+    else if (event.type === 'error') callbacks.onError(event.code)
+  })
+  const unsubscribeTools = api.onToolCall((request) => {
+    if (
+      closed ||
+      !callbacks ||
+      request.documentId !== documentId ||
+      request.generation !== generation
+    )
+      return
+    callbacks.onToolCall(request.call)
+    callbacks.onDone()
+  })
+  const transport: AgentTransport = {
+    stream(request: AgentStreamRequest, next: AgentStreamCallbacks) {
+      callbacks = next
+      const toolMessage = request.messages.at(-1)
+      if (toolMessage?.role === 'tool') {
+        for (const result of toolMessage.results) {
+          const execution = executions.get(result.id) ?? {
+            output: result.output,
+            summary: result.name,
+            ...(result.isError ? { isError: true } : {}),
+          }
+          executions.delete(result.id)
+          void api
+            .toolResult({ documentId, generation, callId: result.id, execution })
+            .catch(() => next.onError('enhanced_turn_failed'))
+        }
+      } else {
+        const user = [...request.messages].reverse().find((message) => message.role === 'user')
+        void registration
+          .then(() => api.status())
+          .then((status) => {
+            if (status.activeAgentRuntime !== 'enhanced' || status.documentId !== documentId)
+              throw new Error('enhanced_document_unavailable')
+            return api.startTurn({ documentId, text: user?.role === 'user' ? user.text : '' })
+          })
+          .catch(() => next.onError('enhanced_turn_failed'))
+      }
+      return { cancel: () => void api.cancelTurn(documentId).catch(() => undefined) }
+    },
+  }
+  const skill = {
+    ...options.skill,
+    async executeTool(call: Parameters<typeof options.skill.executeTool>[0], signal?: AbortSignal) {
+      const outcome = await options.skill.executeTool(call, signal)
+      if ('kind' in outcome && outcome.kind === 'tool-execution-suspension') {
+        void outcome.result.then((execution) => executions.set(call.id, execution))
+      } else executions.set(call.id, outcome)
+      return outcome
+    },
+  }
+  const harness = createAgentHarness({ ...options, transport, skill })
+  return {
+    harness,
+    close() {
+      if (closed) return
+      closed = true
+      harness.dispose()
+      unsubscribeEvents()
+      unsubscribeTools()
+      void registration
+        .catch(() => undefined)
+        .then(() => api.cancelTurn(documentId).catch(() => undefined))
+        .then(() => api.unregister(documentId, generation).catch(() => undefined))
+    },
+  }
 }
 
 export function classifySlidesQcFailure(
@@ -22,9 +122,28 @@ export function classifySlidesQcFailure(
 
 export const createAgentController = <TSnapshot>(
   options: AgentLoopOptions<TSnapshot>,
+  runtime?: { readonly host: PcEnhancedHost; readonly api: PcHostCodexApi },
 ): LifecycleAgentController<TSnapshot> => {
-  let inner: AgentHarness<TSnapshot> | null = createAgentHarness(options)
+  let inner: AgentHarness<TSnapshot> | null = runtime ? null : createAgentHarness(options)
   let terminal = false
+  let activation = 0
+  let generation = 0
+  let closeEnhanced: (() => void) | null = null
+  let enhancedActive = false
+  const documentId = `${runtime?.host ?? 'standard'}:${crypto.randomUUID()}`
+  const createSelected = async (token: number) => {
+    if (!runtime) return
+    const status = await runtime.api.status()
+    if (terminal || token !== activation) return
+    if (status.activeAgentRuntime === 'standard') {
+      inner = createAgentHarness(options)
+      return
+    }
+    const selected = createSlidesEnhancedHarness(options, runtime.api, documentId, generation)
+    inner = selected.harness
+    closeEnhanced = selected.close
+    enhancedActive = true
+  }
   const controller: LifecycleAgentController<TSnapshot> = {
     get snapshot() {
       return inner?.snapshot ?? { status: 'idle', busy: false, generation: 0 }
@@ -42,17 +161,48 @@ export const createAgentController = <TSnapshot>(
       inner?.stop()
     },
     reset() {
-      inner?.reset()
+      if (runtime && enhancedActive) {
+        const previous = generation
+        closeEnhanced?.()
+        closeEnhanced = null
+        enhancedActive = false
+        inner = null
+        generation += 1
+        const token = ++activation
+        void runtime.api
+          .unregister(documentId, previous)
+          .catch(() => undefined)
+          .then(() => createSelected(token))
+          .catch(() => options.events?.onError?.('enhanced_document_unavailable'))
+      } else inner?.reset()
     },
     restore(messages) {
       inner?.restore(messages)
     },
+    suspendToolExecution(result) {
+      if (!inner?.suspendToolExecution) throw new Error('enhanced_suspension_owned_by_shell')
+      return inner.suspendToolExecution(result)
+    },
+    ownsToolExecutionSuspension(value: ToolExecutionOutcome): value is ToolExecutionSuspension {
+      return inner?.ownsToolExecutionSuspension?.(value) === true
+    },
     activate() {
-      if (!terminal && !inner) inner = createAgentHarness(options)
+      if (!terminal && !inner) {
+        if (!runtime) inner = createAgentHarness(options)
+        else
+          void createSelected(++activation).catch((error) => {
+            if (isPcHostCodexUnavailable(error) && !terminal) inner = createAgentHarness(options)
+            else options.events?.onError?.('enhanced_document_unavailable')
+          })
+      }
     },
     deactivate() {
-      inner?.dispose()
+      if (closeEnhanced) closeEnhanced()
+      else inner?.dispose()
+      closeEnhanced = null
+      enhancedActive = false
       inner = null
+      activation++
     },
     dispose() {
       terminal = true

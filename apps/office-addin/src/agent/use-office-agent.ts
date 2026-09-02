@@ -98,7 +98,14 @@ const confirmationErrors: Readonly<Record<string, SafeSessionError>> = Object.fr
   },
   office_state_uncertain: {
     code: 'office_state_uncertain',
-    message: 'The change may be partially applied. Inspect the document before trying again.',
+    message:
+      'The change may be partially applied. Wait for reconciliation; if editing stays blocked, reload the document before trying again.',
+    retryable: false,
+  },
+  office_applied_unverified: {
+    code: 'office_applied_unverified',
+    message:
+      'The change may have been applied, but verification was unavailable. Inspect the document before continuing.',
     retryable: false,
   },
 })
@@ -196,6 +203,20 @@ export function createOfficeAgentSession(dependencies: {
   proposals: ProposalController | StructuredProposalController
   diagnostics?: Pick<OfficeDiagnostics, 'startTrace' | 'setTool' | 'record' | 'clear'>
   presentationText?: (key: PresentationVerificationStringKey) => string
+  remoteTools?: {
+    setToolHandler?(
+      handler:
+        | ((call: {
+            turnId: string
+            callId: string
+            generation: number
+            toolName: string
+            input: Record<string, unknown>
+            signal: AbortSignal
+          }) => Promise<{ output: string; isError?: boolean }>)
+        | undefined,
+    ): void
+  }
 }): OfficeAgentSession {
   const { proposals } = dependencies
   const presentation = dependencies.skill.presentation as
@@ -334,6 +355,28 @@ export function createOfficeAgentSession(dependencies: {
         summary: 'Applied approved change',
       }
     }
+    if (decision.status === 'applied_unverified') {
+      const writePending = decision.safeCode === 'office_write_pending'
+      return {
+        output: JSON.stringify({
+          proposalId,
+          status: writePending ? 'write_pending' : 'applied_unverified',
+          ...(writePending
+            ? {
+                safeCode: 'office_write_pending',
+                instruction:
+                  'The write outcome is unresolved. Do not claim success and do not attempt another edit.',
+              }
+            : {}),
+        }),
+        mutated: true,
+        summary: writePending
+          ? (dependencies.presentationText?.('write_pending_quarantined') ??
+            'Write may still be running; further edits are frozen pending reconciliation or reload.')
+          : 'Applied; verification unavailable',
+        stopToolBatch: true,
+      }
+    }
     if (decision.status === 'failed') {
       if (decision.error === 'proposal_stale') staleTools.add(toolName)
       return {
@@ -388,6 +431,45 @@ export function createOfficeAgentSession(dependencies: {
       return suspendToolExecution(finalProposalExecution(proposal.id, outcome, call.name))
     },
   }
+  dependencies.remoteTools?.setToolHandler?.(async (call) => {
+    const definition = sessionSkill.tools.find((tool) => tool.name === call.toolName)
+    if (!definition) return { output: 'unknown_tool', isError: true }
+    const invalidateRemoteProposal = () => proposals.newTurn()
+    call.signal.addEventListener('abort', invalidateRemoteProposal, { once: true })
+    try {
+      const outcome = await sessionSkill.executeTool(
+        {
+          id: call.callId,
+          invocationId: `${call.turnId}:${call.callId}`,
+          name: call.toolName,
+          input: call.input,
+        },
+        call.signal,
+      )
+      const settled =
+        'kind' in outcome && outcome.kind === 'tool-execution-suspension'
+          ? await Promise.race([
+              outcome.result,
+              new Promise<never>((_, reject) => {
+                if (call.signal.aborted) reject(new DOMException('Aborted', 'AbortError'))
+                else
+                  call.signal.addEventListener(
+                    'abort',
+                    () => reject(new DOMException('Aborted', 'AbortError')),
+                    { once: true },
+                  )
+              }),
+            ])
+          : outcome
+      call.signal.removeEventListener('abort', invalidateRemoteProposal)
+      return { output: settled.output, ...(settled.isError ? { isError: true } : {}) }
+    } catch {
+      if (call.signal.aborted) proposals.newTurn()
+      return { output: 'tool_execution_failed', isError: true }
+    } finally {
+      call.signal.removeEventListener('abort', invalidateRemoteProposal)
+    }
+  })
   const clearConversation = () => {
     activeAssistantId = undefined
     state = {
@@ -650,14 +732,33 @@ export function createOfficeAgentSession(dependencies: {
         retryable: false,
       })
       try {
+        const decision = proposals.waitForDecision(id)
         await proposals.confirm(id)
         if (epoch !== sessionEpoch) return
-        if (event)
+        const outcome = await decision
+        const writePending =
+          outcome.status === 'applied_unverified' && outcome.safeCode === 'office_write_pending'
+        if (event && writePending)
+          replace(event.id, (item) =>
+            item.kind === 'proposal'
+              ? {
+                  ...item,
+                  state: 'uncertain',
+                  error:
+                    dependencies.presentationText?.('write_pending_quarantined') ??
+                    'Write may still be running; further edits are frozen pending reconciliation or reload.',
+                }
+              : item,
+          )
+        else if (event)
           replace(event.id, (item) =>
             item.kind === 'proposal' ? { ...item, state: 'applied' } : item,
           )
         publish({
-          activity: 'Document updated',
+          activity: writePending
+            ? (dependencies.presentationText?.('write_pending_quarantined') ??
+              'Write may still be running; further edits are frozen pending reconciliation or reload.')
+            : 'Document updated',
           error: undefined,
           errorMessage: undefined,
           retryable: false,
@@ -737,6 +838,7 @@ export function createOfficeAgentSession(dependencies: {
     dispose() {
       if (disposed) return
       disposed = true
+      dependencies.remoteTools?.setToolHandler?.(undefined)
       sessionEpoch += 1
       unsubscribeProposals()
       harness.dispose()

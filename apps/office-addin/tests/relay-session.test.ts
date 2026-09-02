@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   OFFICE_RELAY_URL,
   createOfficeRelaySession,
@@ -157,6 +157,225 @@ describe('Office cloud relay session', () => {
     })
     session.disconnect()
     await expect(pending).rejects.toThrow('relay_disconnected')
+  })
+
+  it('routes exact session-bound Enhanced tool subframes through the existing agent capability', async () => {
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1'],
+      randomUUID: () => 'request_12345678',
+    })
+    const calls: string[] = []
+    session.setToolHandler?.(async (call) => {
+      calls.push(call.toolName)
+      return { output: JSON.stringify({ title: 'Document' }) }
+    })
+    const connecting = session.connect('word')
+    socket.open()
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pair_12345678',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.approved',
+        session_id: 'session_12345678',
+        capability: 'capability_12345678',
+        expires_in: 1800,
+        capabilities: ['agent.v1'],
+      }),
+    )
+    await connecting
+    const enhanced = {
+      version: 1,
+      runtime_mode: 'enhanced',
+      runtime_instance: 'runtime_0123456789abcdef',
+      component_version: '0.147.0',
+      host: 'office-word',
+      raw_office: false,
+      expires_at: Date.now() + 60_000,
+      policy_generation: 2,
+      session_generation: 4,
+    }
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'relay.session_state',
+        session_id: 'session_12345678',
+        generation: 4,
+        enhanced,
+      }),
+    )
+    await flushFrames()
+    expect(session.snapshot()).toMatchObject({ status: 'connected', enhanced })
+    const pending = session.capabilityFetch('agent.v1', { messages: [] })
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'relay.tool_call',
+        session_id: 'session_12345678',
+        request_id: 'request_12345678',
+        turn_id: 'turn_12345678',
+        call_id: 'call_12345678',
+        generation: 4,
+        tool_name: 'read_document',
+        input: {},
+      }),
+    )
+    await flushFrames()
+    expect(calls).toEqual(['read_document'])
+    expect(frame(socket, 2)).toEqual({
+      version: 2,
+      type: 'office.tool_result',
+      session_id: 'session_12345678',
+      capability: 'capability_12345678',
+      request_id: 'request_12345678',
+      turn_id: 'turn_12345678',
+      call_id: 'call_12345678',
+      generation: 4,
+      output: JSON.stringify({ title: 'Document' }),
+      is_error: false,
+    })
+    session.disconnect()
+    await expect(pending).rejects.toThrow('relay_disconnected')
+  })
+
+  it('revokes the session on replayed or generation-drifted tool subframes', async () => {
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1'],
+      randomUUID: () => 'request_12345678',
+    })
+    session.setToolHandler?.(async () => new Promise(() => undefined))
+    const connecting = session.connect('excel')
+    socket.open()
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pair_12345678',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.approved',
+        session_id: 'session_12345678',
+        capability: 'capability_12345678',
+        expires_in: 1800,
+        capabilities: ['agent.v1'],
+      }),
+    )
+    await connecting
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'relay.session_state',
+        session_id: 'session_12345678',
+        generation: 9,
+        enhanced: {
+          version: 1,
+          runtime_mode: 'enhanced',
+          runtime_instance: 'runtime_0123456789abcdef',
+          component_version: '0.147.0',
+          host: 'office-excel',
+          raw_office: false,
+          expires_at: Date.now() + 60_000,
+          policy_generation: 2,
+          session_generation: 9,
+        },
+      }),
+    )
+    await flushFrames()
+    void session.capabilityFetch('agent.v1', { messages: [] }).catch(() => undefined)
+    await Promise.resolve()
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'relay.tool_call',
+        session_id: 'session_12345678',
+        request_id: 'request_12345678',
+        turn_id: 'turn_12345678',
+        call_id: 'call_12345678',
+        generation: 8,
+        tool_name: 'read_workbook',
+        input: {},
+      }),
+    )
+    await flushFrames()
+    expect(session.snapshot()).toEqual({ status: 'offline' })
+  })
+
+  it('cancels an active Enhanced request when its session statement expires', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+    try {
+      const socket = new FakeSocket()
+      const session = createOfficeRelaySession({
+        createSocket: () => socket,
+        capabilities: ['agent.v1'],
+        randomUUID: () => 'request_12345678',
+      })
+      const connecting = session.connect('powerpoint')
+      socket.open()
+      socket.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'office.created',
+          pairing_id: 'pair_12345678',
+          verification_code: '123456',
+          expires_in: 120,
+        }),
+      )
+      socket.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'office.approved',
+          session_id: 'session_12345678',
+          capability: 'capability_12345678',
+          expires_in: 1800,
+          capabilities: ['agent.v1'],
+        }),
+      )
+      await connecting
+      socket.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'relay.session_state',
+          session_id: 'session_12345678',
+          generation: 2,
+          enhanced: {
+            version: 1,
+            runtime_mode: 'enhanced',
+            runtime_instance: 'runtime_0123456789abcdef',
+            component_version: '0.147.0',
+            host: 'office-powerpoint',
+            raw_office: false,
+            expires_at: 1_100,
+            policy_generation: 1,
+            session_generation: 2,
+          },
+        }),
+      )
+      await flushFrames()
+      const pending = session.capabilityFetch('agent.v1', { messages: [] })
+      const rejected = expect(pending).rejects.toThrow('relay_disconnected')
+      await vi.advanceTimersByTimeAsync(100)
+      expect(session.snapshot()).toEqual({ status: 'offline' })
+      await rejected
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('sends bounded diagnostics only over an approved v2 session', async () => {

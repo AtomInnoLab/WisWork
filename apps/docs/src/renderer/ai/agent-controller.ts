@@ -1,5 +1,16 @@
 import { createAgentHarness, type AgentHarness } from '@wiswork/agent-harness'
-import type { AgentLoopOptions } from '@wiswork/agent-core'
+import type {
+  AgentLoopOptions,
+  ToolExecutionOutcome,
+  ToolExecutionSuspension,
+} from '@wiswork/agent-core'
+import {
+  createEnhancedRendererClient,
+  EnhancedAgentRuntime,
+  isPcHostCodexUnavailable,
+  type PcEnhancedHost,
+  type PcHostCodexApi,
+} from '@wiswork/agent-runtime'
 import { useEffect, useRef } from 'react'
 
 interface LifecycleAgentController<TSnapshot> extends AgentHarness<TSnapshot> {
@@ -13,9 +24,32 @@ export interface AgentControllerRef<TSnapshot> {
 
 export const createAgentController = <TSnapshot>(
   options: AgentLoopOptions<TSnapshot>,
+  runtime?: { readonly host: PcEnhancedHost; readonly api: PcHostCodexApi },
 ): LifecycleAgentController<TSnapshot> => {
-  let inner: AgentHarness<TSnapshot> | null = createAgentHarness(options)
+  let inner: AgentHarness<TSnapshot> | null = runtime ? null : createAgentHarness(options)
   let terminal = false
+  let activation = 0
+  let generation = 0
+  const documentId = `${runtime?.host ?? 'standard'}:${crypto.randomUUID()}`
+  const createEnhanced = async (token: number) => {
+    if (!runtime) return
+    const status = await runtime.api.status()
+    if (terminal || token !== activation) return
+    if (status.activeAgentRuntime === 'standard') {
+      inner = createAgentHarness(options)
+      return
+    }
+    const client = createEnhancedRendererClient({
+      ...runtime.api,
+      subscribe: (_documentId, listener) => runtime.api.onEvent(listener),
+    })
+    const selected = new EnhancedAgentRuntime(client).createSession({
+      ...options,
+      host: runtime.host,
+      document: { id: documentId, generation },
+    })
+    inner = selected as unknown as AgentHarness<TSnapshot>
+  }
   const controller: LifecycleAgentController<TSnapshot> = {
     get snapshot() {
       return inner?.snapshot ?? { status: 'idle', busy: false, generation: 0 }
@@ -26,14 +60,42 @@ export const createAgentController = <TSnapshot>(
     subscribe: (listener) => inner?.subscribe(listener) ?? (() => undefined),
     run: (instruction, images) => inner?.run(instruction, images) ?? false,
     stop: () => inner?.stop(),
-    reset: () => inner?.reset(),
+    reset: () => {
+      if (runtime && (inner as unknown as { mode?: string } | null)?.mode === 'enhanced') {
+        const previous = generation
+        inner?.dispose()
+        inner = null
+        generation += 1
+        const token = ++activation
+        void runtime.api
+          .unregister(documentId, previous)
+          .catch(() => undefined)
+          .then(() => createEnhanced(token))
+          .catch(() => options.events?.onError?.('enhanced_document_unavailable'))
+      } else inner?.reset()
+    },
     restore: (messages) => inner?.restore(messages),
+    suspendToolExecution(result) {
+      if (!inner?.suspendToolExecution) throw new Error('enhanced_suspension_owned_by_shell')
+      return inner.suspendToolExecution(result)
+    },
+    ownsToolExecutionSuspension(value: ToolExecutionOutcome): value is ToolExecutionSuspension {
+      return inner?.ownsToolExecutionSuspension?.(value) === true
+    },
     activate() {
-      if (!terminal && !inner) inner = createAgentHarness(options)
+      if (!terminal && !inner) {
+        if (!runtime) inner = createAgentHarness(options)
+        else
+          void createEnhanced(++activation).catch((error) => {
+            if (isPcHostCodexUnavailable(error) && !terminal) inner = createAgentHarness(options)
+            else options.events?.onError?.('enhanced_document_unavailable')
+          })
+      }
     },
     deactivate() {
       inner?.dispose()
       inner = null
+      activation++
     },
     dispose() {
       terminal = true

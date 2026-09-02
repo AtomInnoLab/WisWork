@@ -18,6 +18,11 @@ import type {
   ToolExecutionOutcome,
   ToolExecutionSuspension,
 } from './types'
+import {
+  isToolExecutionSuspension,
+  isToolExecutionSuspensionOwnedBy,
+  mintLoopToolExecutionSuspension,
+} from './types'
 
 export interface ToolExecutedEvent<TSnapshot> {
   call: AgentToolCall
@@ -121,18 +126,6 @@ const FINAL_RESPONSE_CORRECTION_MAX_BYTES = 4_000
 const PRESENTATION_QUESTION_MAX_CHARS = 1_000
 const PRESENTATION_PLAN_MAX_STEPS = 12
 const PRESENTATION_PLAN_STEP_MAX_CHARS = 500
-
-function isToolExecutionSuspension(
-  outcome: ToolExecutionOutcome,
-): outcome is ToolExecutionSuspension {
-  const candidate = outcome as Partial<ToolExecutionSuspension>
-  return (
-    typeof outcome === 'object' &&
-    outcome !== null &&
-    candidate.kind === 'tool-execution-suspension' &&
-    candidate.result instanceof Promise
-  )
-}
 
 function isFinalToolExecution(value: unknown): value is ToolExecution {
   if (typeof value !== 'object' || value === null) return false
@@ -328,6 +321,14 @@ export class AgentLoop<TSnapshot = unknown> {
   private turns = 0
   /** Finalizing turn after hitting the turn limit: no tools, let the model answer from what it has read */
   private finalizing = false
+
+  /** Mint a suspension bound to this loop instance; transports cannot self-authorize one. */
+  suspendToolExecution(result: Promise<ToolExecution>): ToolExecutionSuspension {
+    return mintLoopToolExecutionSuspension(this, result)
+  }
+  ownsToolExecutionSuspension(value: ToolExecutionOutcome): value is ToolExecutionSuspension {
+    return isToolExecutionSuspensionOwnedBy(this, value)
+  }
   /** one terminal-response correction is permitted per run */
   private completionReviewRetried = false
   private mutationSeen = false

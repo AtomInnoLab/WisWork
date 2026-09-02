@@ -161,6 +161,13 @@ struct Active {
     bytes: usize,
     deadline: Instant,
     started: bool,
+    pending_tool: Option<PendingTool>,
+    used_tool_calls: VecDeque<String>,
+}
+struct PendingTool {
+    turn_id: String,
+    call_id: String,
+    generation: u64,
 }
 struct Session {
     version: u64,
@@ -767,7 +774,14 @@ async fn process(
     }
     let kind = string(&map, "type")?;
     if text.len() > CONTROL_MAX
-        && !matches!(kind, "office.request" | "office.diagnostic" | "pc.chunk")
+        && !matches!(
+            kind,
+            "office.request"
+                | "office.diagnostic"
+                | "pc.chunk"
+                | "pc.tool_call"
+                | "office.tool_result"
+        )
     {
         return Err("frame_too_large");
     }
@@ -802,6 +816,7 @@ async fn process(
         }
         "office.request" => request(app, conn, map).await,
         "office.cancel" => cancel(app, conn, map).await,
+        "office.tool_result" => tool_result(app, conn, map).await,
         "office.diagnostic" => {
             if let Err(code) = diagnostic(app, conn, tx, map, text.len()).await {
                 diagnostic_response(
@@ -813,6 +828,8 @@ async fn process(
         }
         "pc.chunk" => chunk(app, conn, map).await,
         "pc.start" => start(app, conn, map).await,
+        "pc.session_state" => session_state(app, conn, map).await,
+        "pc.tool_call" => tool_call(app, conn, map).await,
         "pc.done" => done(app, conn, map).await,
         "pc.error" => pc_error(app, conn, map).await,
         _ => Err("unknown_type"),
@@ -2423,6 +2440,12 @@ fn session_fields(m: &Map<String, Value>) -> Result<(&str, &str, &str), &'static
         string(m, "request_id")?,
     ))
 }
+fn valid_identifier(value: &str) -> bool {
+    (8..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
 async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
     let protocol = version(&m)?;
     let mut expected = vec![
@@ -2486,6 +2509,8 @@ async fn request(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'st
         bytes: 0,
         deadline: Instant::now() + app.inner.config.request_ttl,
         started: false,
+        pending_tool: None,
+        used_tool_calls: VecDeque::new(),
     });
     send(
         &session.pc_tx,
@@ -2548,6 +2573,137 @@ async fn cancel(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'sta
     send(
         &session.pc_tx,
         json!({"version":protocol,"type":"relay.cancel","session_id":sid,"request_id":rid}),
+    );
+    Ok(())
+}
+
+async fn tool_call(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
+    let protocol = version(&m)?;
+    if protocol != PROTOCOL_V2
+        || !exact(
+            &m,
+            &[
+                "version",
+                "type",
+                "session_id",
+                "capability",
+                "request_id",
+                "turn_id",
+                "call_id",
+                "generation",
+                "tool_name",
+                "input",
+            ],
+        )
+    {
+        return Err("invalid_frame");
+    }
+    let (sid, cap, rid) = session_fields(&m)?;
+    let turn_id = string(&m, "turn_id")?;
+    let call_id = string(&m, "call_id")?;
+    let tool_name = string(&m, "tool_name")?;
+    let generation = m["generation"].as_u64().ok_or("invalid_frame")?;
+    if !valid_identifier(turn_id)
+        || !valid_identifier(call_id)
+        || tool_name.is_empty()
+        || tool_name.len() > 128
+        || !tool_name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    {
+        return Err("invalid_frame");
+    }
+    if !m["input"].is_object()
+        || serde_json::to_vec(&m["input"])
+            .map_err(|_| "invalid_frame")?
+            .len()
+            > REQUEST_MAX
+    {
+        return Err("request_too_large");
+    }
+    let mut st = app.inner.state.lock().await;
+    expire(&app.inner, &mut st);
+    let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
+    if session.pc != conn || session.pc_cap != cap || session.version != protocol {
+        return Err("invalid_capability");
+    }
+    let active = session.active.as_mut().ok_or("invalid_request")?;
+    if active.id != rid || !active.started || active.deadline <= Instant::now() {
+        return Err("invalid_request");
+    }
+    if active.pending_tool.is_some() {
+        return Err("tool_active");
+    }
+    if active.used_tool_calls.iter().any(|used| used == call_id) {
+        return Err("duplicate_tool_call");
+    }
+    if active.used_tool_calls.len() == 64 {
+        active.used_tool_calls.pop_front();
+    }
+    active.used_tool_calls.push_back(call_id.to_owned());
+    active.pending_tool = Some(PendingTool {
+        turn_id: turn_id.to_owned(),
+        call_id: call_id.to_owned(),
+        generation,
+    });
+    renew_session(session, app.inner.config.session_ttl);
+    send(
+        &session.office_tx,
+        json!({"version":protocol,"type":"relay.tool_call","session_id":sid,"request_id":rid,"turn_id":turn_id,"call_id":call_id,"generation":generation,"tool_name":tool_name,"input":m["input"]}),
+    );
+    Ok(())
+}
+
+async fn tool_result(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
+    let protocol = version(&m)?;
+    if protocol != PROTOCOL_V2
+        || !exact(
+            &m,
+            &[
+                "version",
+                "type",
+                "session_id",
+                "capability",
+                "request_id",
+                "turn_id",
+                "call_id",
+                "generation",
+                "output",
+                "is_error",
+            ],
+        )
+    {
+        return Err("invalid_frame");
+    }
+    let (sid, cap, rid) = session_fields(&m)?;
+    let turn_id = string(&m, "turn_id")?;
+    let call_id = string(&m, "call_id")?;
+    let generation = m["generation"].as_u64().ok_or("invalid_frame")?;
+    let output = string(&m, "output")?;
+    let is_error = m["is_error"].as_bool().ok_or("invalid_frame")?;
+    if output.len() > RESPONSE_MAX {
+        return Err("response_too_large");
+    }
+    let mut st = app.inner.state.lock().await;
+    expire(&app.inner, &mut st);
+    let session = st.sessions.get_mut(sid).ok_or("invalid_session")?;
+    if session.office != conn || session.office_cap != cap || session.version != protocol {
+        return Err("invalid_capability");
+    }
+    let active = session.active.as_mut().ok_or("invalid_request")?;
+    if active.id != rid {
+        return Err("invalid_request");
+    }
+    let pending = active.pending_tool.as_ref().ok_or("invalid_tool_call")?;
+    if pending.turn_id != turn_id || pending.call_id != call_id || pending.generation != generation
+    {
+        return Err("invalid_tool_call");
+    }
+    active.pending_tool = None;
+    renew_session(session, app.inner.config.session_ttl);
+    send(
+        &session.pc_tx,
+        json!({"version":protocol,"type":"relay.tool_result","session_id":sid,"request_id":rid,"turn_id":turn_id,"call_id":call_id,"generation":generation,"output":output,"is_error":is_error}),
     );
     Ok(())
 }
@@ -2658,6 +2814,89 @@ async fn start(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stat
     );
     Ok(())
 }
+
+fn valid_enhanced_statement(value: &Value, host: &str) -> bool {
+    let Some(record) = value.as_object() else {
+        return false;
+    };
+    let expected_host = match host {
+        "Word" => "office-word",
+        "Excel" => "office-excel",
+        "PowerPoint" => "office-powerpoint",
+        _ => return false,
+    };
+    exact(
+        record,
+        &[
+            "version",
+            "runtime_mode",
+            "runtime_instance",
+            "component_version",
+            "host",
+            "raw_office",
+            "expires_at",
+            "policy_generation",
+            "session_generation",
+        ],
+    ) && record["version"] == 1
+        && record["runtime_mode"] == "enhanced"
+        && record["runtime_instance"]
+            .as_str()
+            .is_some_and(valid_identifier)
+        && record["component_version"]
+            .as_str()
+            .is_some_and(|v| v == "0.147.0")
+        && record["host"] == expected_host
+        && record["raw_office"].is_boolean()
+        && record["expires_at"].as_u64().is_some_and(|v| v > 0)
+        && record["policy_generation"].as_u64().is_some()
+        && record["session_generation"].as_u64().is_some()
+}
+
+async fn session_state(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
+    let protocol = version(&m)?;
+    if protocol != PROTOCOL_V2
+        || !exact(
+            &m,
+            &[
+                "version",
+                "type",
+                "session_id",
+                "capability",
+                "generation",
+                "enhanced",
+            ],
+        )
+    {
+        return Err("invalid_frame");
+    }
+    let sid = string(&m, "session_id")?;
+    let cap = string(&m, "capability")?;
+    let generation = m["generation"].as_u64().ok_or("invalid_frame")?;
+    if !m["enhanced"].is_null()
+        && serde_json::to_vec(&m["enhanced"])
+            .map_err(|_| "invalid_frame")?
+            .len()
+            > 4096
+    {
+        return Err("frame_too_large");
+    }
+    let mut store = app.inner.state.lock().await;
+    expire(&app.inner, &mut store);
+    let session = store.sessions.get_mut(sid).ok_or("invalid_session")?;
+    if session.pc != conn || session.pc_cap != cap || session.version != protocol {
+        return Err("invalid_capability");
+    }
+    if !m["enhanced"].is_null() && !valid_enhanced_statement(&m["enhanced"], &session.host) {
+        return Err("invalid_frame");
+    }
+    renew_session(session, app.inner.config.session_ttl);
+    send(
+        &session.office_tx,
+        json!({"version":protocol,"type":"relay.session_state","session_id":sid,"generation":generation,"enhanced":m["enhanced"]}),
+    );
+    Ok(())
+}
 async fn done(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'static str> {
     let protocol = version(&m)?;
     if !exact(
@@ -2681,6 +2920,13 @@ async fn done(app: &App, conn: u64, m: Map<String, Value>) -> Result<(), &'stati
     }
     if !session.active.as_ref().is_some_and(|active| active.started) {
         return Err("invalid_request");
+    }
+    if session
+        .active
+        .as_ref()
+        .is_some_and(|active| active.pending_tool.is_some())
+    {
+        return Err("tool_active");
     }
     renew_session(session, app.inner.config.session_ttl);
     session.active = None;
