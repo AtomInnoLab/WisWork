@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
@@ -83,10 +83,7 @@ test('reviewed repository assets contain no downloaded component binary or archi
 })
 
 test('every desktop builder invocation immediately runs the shared post-package checker', () => {
-  for (const path of [
-    '.github/workflows/desktop-release.yml',
-    '.github/workflows/package-macos.yml',
-  ]) {
+  for (const path of ['.github/workflows/desktop-release.yml']) {
     const workflow = read(path)
     const builderCount = [...workflow.matchAll(/run: npx electron-builder[^\n]*/g)].length
     const checkerCount = [
@@ -115,6 +112,7 @@ test('every desktop builder invocation immediately runs the shared post-package 
     assert.match(workflow, /grep '\^TeamIdentifier=2DC432GLL2\$'/)
   }
   const desktop = read('.github/workflows/desktop-release.yml')
+  assert.equal(existsSync(join(root, '.github/workflows/package-macos.yml')), false)
   assert.match(desktop, /Get-AuthenticodeSignature/)
   assert.match(desktop, /SignerCertificate\.Subject -ne 'CN=OpenAI, L\.L\.C\.'/)
 })

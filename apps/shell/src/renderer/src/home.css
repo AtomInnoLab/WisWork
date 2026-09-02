@@ -598,12 +598,12 @@ body.vib .home {
 }
 
 .enhanced-mode-copy > span.error {
-  color: #c63f3f;
+  color: var(--danger);
 }
 
 .enhanced-mode-action {
   max-width: 112px;
-  color: var(--accent, #407cff);
+  color: var(--accent);
   font-size: 10px;
   line-height: 1.2;
   text-align: end;

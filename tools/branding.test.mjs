@@ -83,13 +83,14 @@ test('unsigned macOS test packaging disables signing and notarization only when 
   assert.equal(config.afterAllArtifactBuild, undefined)
 })
 
-test('macOS packaging workflow builds an arm64 sidecar and uploads dmg and zip artifacts', () => {
-  const workflow = readFileSync(join(root, '.github/workflows/package-macos.yml'), 'utf8')
+test('Desktop Release builds signed macOS arm64 and x64 release artifacts', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/desktop-release.yml'), 'utf8')
   assert.match(workflow, /aarch64-apple-darwin/)
-  assert.match(workflow, /WISWORK_UNSIGNED_MAC_BUILD:\s*['"]1['"]/)
-  assert.match(workflow, /electron-builder --config electron-builder\.cjs --mac dmg zip --arm64/)
-  assert.match(workflow, /release\/\*\.dmg/)
-  assert.match(workflow, /release\/\*\.zip/)
+  assert.match(workflow, /x86_64-apple-darwin/)
+  assert.match(workflow, /electron_args: --mac dmg zip --arm64/)
+  assert.match(workflow, /electron_args: --mac dmg zip --x64/)
+  assert.match(workflow, /gh release upload/)
+  assert.match(workflow, /gh release edit "\$TAG" --draft=false/)
 })
 
 test('shell packages the LaTeX renderer and only the verified Tectonic executable', () => {
@@ -115,27 +116,15 @@ test('shell packages the LaTeX renderer and only the verified Tectonic executabl
   assert.equal(JSON.stringify(config).includes('tectonic-default-bundle-v33'), false)
 })
 
-test('macOS workflow fetches, verifies, injects, and inspects the arm64 Tectonic sidecar', () => {
-  const workflow = readFileSync(join(root, '.github/workflows/package-macos.yml'), 'utf8')
-  for (const path of [
-    'apps/shell/**',
-    'apps/latex/**',
-    'packages/auth/**',
-    'packages/latex-project/**',
-    'packages/latex-compiler/**',
-    'packages/pdf-viewer/**',
-    'tools/tectonic/**',
-    'package-lock.json',
-  ]) {
-    assert.ok(workflow.includes(`- '${path}'`) || workflow.includes(`- "${path}"`), path)
-  }
+test('Desktop Release verifies, injects, and inspects each native Tectonic sidecar', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/desktop-release.yml'), 'utf8')
   assert.match(workflow, /node tools\/fetch-tectonic\.mjs --platform darwin-arm64 --output [^\n]+/)
-  assert.match(workflow, /file [^\n]*tectonic[^\n]*\| grep -q arm64/)
-  assert.match(workflow, /tectonic[^\n]*--version[^\n]*0\.16\.9/)
+  assert.match(workflow, /file "\$TECTONIC" \| grep -q arm64/)
+  assert.match(workflow, /"\$TECTONIC" --version/)
   assert.match(workflow, /WISWORK_TECTONIC_SOURCE:/)
-  assert.match(workflow, /modules\/latex\/renderer\/index\.html/)
-  assert.match(workflow, /Contents\/Resources\/native\/tectonic/)
-  assert.match(workflow, /SHA256SUMS\.txt/)
+  assert.match(workflow, /TECTONIC="\$APP\/Contents\/Resources\/native\/tectonic"/)
+  assert.match(workflow, /xcrun stapler validate "\$DMG"/)
+  assert.match(workflow, /release\/latest-mac\.yml/)
 })
 
 test('generated notices and developer docs cover LaTeX and pinned Tectonic metadata', () => {
