@@ -149,8 +149,19 @@ describe('responsesToMessages', () => {
           },
         },
       ],
-      tool_choice: { type: 'auto', disable_parallel_tool_use: true },
     })
+    expect(
+      responsesToMessages({
+        model: 'gpt-5.6-sol',
+        input: [
+          additionalTools,
+          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Hello' }] },
+        ],
+        tool_choice: 'auto',
+        parallel_tool_calls: false,
+        client_metadata: metadata,
+      }),
+    ).not.toHaveProperty('tool_choice')
   })
 
   it('maps custom exec call history and preserves call IDs', () => {

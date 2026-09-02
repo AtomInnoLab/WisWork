@@ -111,4 +111,25 @@ describe('local responses bridge', () => {
       await bridge.close()
     }
   })
+
+  it('reports only bounded upstream failure stages without response bodies', async () => {
+    const diagnostics: string[] = []
+    const bridge = await startResponsesBridge({
+      fetchWithAuth: async () =>
+        new Response('private provider failure', {
+          status: 429,
+          headers: { 'content-type': 'application/json' },
+        }),
+      prepareTurn: prepared,
+      diagnostics: (code) => diagnostics.push(code),
+    })
+    try {
+      const result = await post(new URL(bridge.responsesUrl), bridge.secret, '{}')
+      expect(result.status).toBe(502)
+      expect(diagnostics).toEqual(['responses_upstream_started', 'responses_upstream_rate_limited'])
+      expect(JSON.stringify(diagnostics)).not.toContain('private')
+    } finally {
+      await bridge.close()
+    }
+  })
 })

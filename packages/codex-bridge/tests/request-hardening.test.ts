@@ -43,8 +43,8 @@ describe('strict Responses request conversion', () => {
       model: 'openai/gpt-5.6-sol',
       system: 'System',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }] }],
-      tool_choice: { type: 'auto', disable_parallel_tool_use: true },
     })
+    expect(converted.messagesRequest).not.toHaveProperty('tool_choice')
     const exec = converted.messagesRequest.tools?.find((tool) => tool.name === 'exec')
     expect(exec?.description).toContain(
       'text(await tools.mcp__wiswork__wiswork_read_document({...}))',

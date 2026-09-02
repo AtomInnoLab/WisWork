@@ -1014,9 +1014,10 @@ function convertResponsesRequest(
   )
   if (systemParts.length > 0) converted.system = systemParts.join('\n\n')
   if (upstreamTools.length > 0) converted.tools = upstreamTools
-  if (request.parallel_tool_calls === false && upstreamTools.length > 0) {
-    converted.tool_choice = { type: 'auto', disable_parallel_tool_use: true }
-  }
+  // Keep the WisUsage wire shape identical to the production Standard transport.
+  // The carrier and stream converter below enforce a single tool call locally;
+  // provider-specific tool_choice extensions are not part of that contract and
+  // can be rejected before a response stream is created.
   return {
     request: converted,
     context: {

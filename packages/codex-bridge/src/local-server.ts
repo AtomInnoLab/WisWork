@@ -18,6 +18,7 @@ export interface ResponsesBridgeOptions {
   readonly fetchWithAuth: (request: MessagesRequest, signal: AbortSignal) => Promise<Response>
   /** Host-owned, one-use Task 2 carrier closure. Never derive authority from request metadata. */
   readonly prepareTurn: (input: unknown) => PreparedResponsesTurn
+  readonly diagnostics?: (code: string) => void
   readonly maxBodyBytes?: number
   readonly maxActiveTurns?: number
   readonly maxTurnDurationMs?: number
@@ -213,6 +214,11 @@ export async function startResponsesBridge(
   const sockets = new Set<Socket>()
   let active = 0
   let closing = false
+  const diagnostic = (code: string): void => {
+    try {
+      options.diagnostics?.(code)
+    } catch {}
+  }
 
   const server = http.createServer((request, response) => {
     const controller = new AbortController()
@@ -291,14 +297,31 @@ export async function startResponsesBridge(
         }
         let upstream: Response
         try {
+          diagnostic('responses_upstream_started')
           upstream = await awaitAbortable(
             options.fetchWithAuth(turn.messagesRequest, controller.signal),
             controller.signal,
           )
         } catch {
+          diagnostic(timedOut ? 'responses_upstream_timeout' : 'responses_upstream_unavailable')
           if (timedOut) sendError(response, 504, 'turn_timeout')
           else if (!controller.signal.aborted) sendError(response, 502, 'upstream_error')
           return
+        }
+        if (!upstream.ok) {
+          diagnostic(
+            upstream.status === 401 || upstream.status === 403
+              ? 'responses_upstream_auth'
+              : upstream.status === 429
+                ? 'responses_upstream_rate_limited'
+                : upstream.status >= 500
+                  ? 'responses_upstream_unavailable'
+                  : 'responses_upstream_rejected',
+          )
+        } else if (upstream.body === null) {
+          diagnostic('responses_upstream_empty')
+        } else if (!exactEventStream(upstream.headers.get('content-type'))) {
+          diagnostic('responses_upstream_content_type')
         }
         if (
           !upstream.ok ||
@@ -330,6 +353,7 @@ export async function startResponsesBridge(
           }
           response.end()
         } catch {
+          diagnostic('responses_stream_invalid')
           cancelResponse(upstream)
           if (!response.destroyed) response.destroy()
         }
