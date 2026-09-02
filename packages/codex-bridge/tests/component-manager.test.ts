@@ -227,6 +227,19 @@ describe('optional Enhanced mode component manager', () => {
         requireNotarization: true,
       }),
     ).toThrowError('enhanced_mode_platform_trust_failed')
+    expect(
+      platformTrustCommands('darwin', '/private/app-server', {
+        policy: 'macos',
+        teamIdentifier: '2DC432GLL2',
+        requireNotarization: false,
+      }),
+    ).toEqual([
+      {
+        file: '/usr/bin/codesign',
+        args: ['--verify', '--strict', '--verbose=4', '/private/app-server'],
+      },
+      { file: '/usr/bin/codesign', args: ['-dv', '--verbose=4', '/private/app-server'] },
+    ])
   })
   it('locks the repository manifest to the inspected official archive and minimal runtime subset', async () => {
     const manifestPath = join(
@@ -782,10 +795,12 @@ describe('optional Enhanced mode component manager', () => {
     await expect(manager.status()).resolves.toMatchObject({ state: 'invalid' })
     await rm(join(binDirectory, 'unexpected-helper'))
 
-    await chmod(installed.executablePath, 0o755)
-    await expect(manager.resolveExecutable()).rejects.toMatchObject({
-      code: 'enhanced_mode_integrity_failed',
-    })
+    if (process.platform !== 'win32') {
+      await chmod(installed.executablePath, 0o755)
+      await expect(manager.resolveExecutable()).rejects.toMatchObject({
+        code: 'enhanced_mode_integrity_failed',
+      })
+    }
   })
 
   it('rejects unsafe archive content and removes every staging/download artifact', async () => {

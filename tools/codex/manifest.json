@@ -23,7 +23,7 @@
         "trust": {
           "policy": "macos",
           "teamIdentifier": "2DC432GLL2",
-          "requireNotarization": true
+          "requireNotarization": false
         },
         "layout": {
           "entrypoint": "bin/codex-app-server",
@@ -89,7 +89,7 @@
         "trust": {
           "policy": "macos",
           "teamIdentifier": "2DC432GLL2",
-          "requireNotarization": true
+          "requireNotarization": false
         },
         "layout": {
           "entrypoint": "bin/codex-app-server",

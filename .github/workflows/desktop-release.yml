@@ -172,7 +172,6 @@ jobs:
           test "${#COMPONENTS[@]}" -eq 1
           DETAILS=$(codesign -dv --verbose=4 "${COMPONENTS[0]}" 2>&1)
           printf '%s\n' "$DETAILS" | grep '^TeamIdentifier=2DC432GLL2$'
-          spctl --assess --type execute --verbose=4 "${COMPONENTS[0]}"
 
       - name: Read back pinned Windows component signing identity
         if: matrix.id == 'windows-x64'

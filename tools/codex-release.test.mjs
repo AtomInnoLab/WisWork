@@ -62,6 +62,11 @@ test('manifest pins only the three official 0.147.0 app-server package assets', 
         'codex-package.json',
       ],
     )
+    if (asset.platform === 'darwin') {
+      assert.equal(asset.trust.policy, 'macos')
+      assert.equal(asset.trust.teamIdentifier, '2DC432GLL2')
+      assert.equal(asset.trust.requireNotarization, false)
+    }
   }
   assert.deepEqual(
     [...optionalRuntimeKnownHashes(root)].sort(),

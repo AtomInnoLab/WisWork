@@ -10,10 +10,12 @@ size and SHA-256 digest. Every archive entry is allowlisted and integrity checke
 `bin/codex-app-server` (or `.exe`) is retained. Code mode, search, shell, command-runner, and sandbox
 helpers are discarded because Enhanced mode exposes none of their generic authorities.
 
-The release workflow must verify the retained executable against the pinned macOS team/notarization
-or Windows Authenticode publisher policy, exercise the real app-server contract on every platform,
-and pass the package-exclusion and legal-notice gates. A checksum match alone is not release
-authorization.
+The release workflow must verify the retained executable against the pinned macOS Team Identifier
+with strict `codesign` validation or the exact Windows Authenticode publisher, exercise the real
+app-server contract on every platform, and pass the package-exclusion and legal-notice gates. The
+official 0.147.0 macOS command-line assets are not standalone Gatekeeper-notarized app bundles, so
+`spctl` assessment is reserved for the signed/notarized WisWork application artifacts. A checksum
+match alone is not release authorization.
 
 The expected team identifier and exact Windows certificate subject are release-gate inputs, not a
 claim established by Linux fixture inspection. The macOS and Windows release jobs read the real
