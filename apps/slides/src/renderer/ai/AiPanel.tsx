@@ -25,6 +25,7 @@ import {
   stopSlidesHostRun,
   useAgentControllerCleanup,
 } from './agent-controller'
+import { friendlyEnhancedError, shouldMarkEnhancedMessageUndelivered } from './enhanced-error-copy'
 import { renderSlidesToPngBase64 } from '../export-render'
 import {
   captureCurrentQcShot,
@@ -1678,16 +1679,24 @@ export function AiPanel({
             }
           },
           onError: (error) => {
+            const friendlyError = friendlyEnhancedError(
+              error,
+              tGlobal('aiErrGenerateFailed'),
+              tGlobal('aiErrStreamTimeout'),
+            )
             qcPagesRef.current = []
             setChat((prev) => {
               const next = [...prev]
               const activeId = activeQueueTaskIdRef.current
-              // the loop rolled this run's user message out of the model context — surface that
-              for (let i = next.length - 1; i >= 0; i--) {
-                const entry = next[i]!
-                if (entry.role === 'user' && (!activeId || entry.queueTaskId === activeId)) {
-                  next[i] = { ...entry, undelivered: true }
-                  break
+              // Only call the request undelivered when no document tool ran. Once a bounded edit
+              // has completed, claiming that the request had no effect would be false.
+              if (shouldMarkEnhancedMessageUndelivered(runToolsRef.current.length)) {
+                for (let i = next.length - 1; i >= 0; i--) {
+                  const entry = next[i]!
+                  if (entry.role === 'user' && (!activeId || entry.queueTaskId === activeId)) {
+                    next[i] = { ...entry, undelivered: true }
+                    break
+                  }
                 }
               }
               const index = activeId ? queuedAssistantIndex(next, activeId) : next.length - 1
@@ -1696,7 +1705,7 @@ export function AiPanel({
                 next[index] = {
                   ...last,
                   streaming: false,
-                  error,
+                  error: friendlyError,
                   tools: last.tools?.filter((tl) => !tl.running),
                 }
               }
@@ -1724,7 +1733,7 @@ export function AiPanel({
               activeQueueRunRef.current = undefined
               activeQueueTaskIdRef.current = undefined
               activeSelectionScopeRef.current = undefined
-              queued?.reject(new Error(error))
+              queued?.reject(new Error(friendlyError))
             })
           },
         },
