@@ -132,4 +132,34 @@ describe('local responses bridge', () => {
       await bridge.close()
     }
   })
+
+  it('reports a closed protocol reason without upstream content', async () => {
+    const diagnostics: string[] = []
+    const bridge = await startResponsesBridge({
+      fetchWithAuth: async () =>
+        new Response('data: private\n\n', {
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      prepareTurn: () => ({
+        ...prepared(),
+        async *messagesStreamToResponses() {
+          yield 'event: response.created\ndata: {"type":"response.created"}\n\n'
+          const error = new Error('invalid_messages_sse')
+          error.name = 'ProtocolCompatibilityError'
+          throw error
+        },
+      }),
+      diagnostics: (code) => diagnostics.push(code),
+    })
+    try {
+      await post(new URL(bridge.responsesUrl), bridge.secret, '{}').catch(() => undefined)
+      expect(diagnostics).toEqual([
+        'responses_upstream_started',
+        'responses_stream_invalid_messages_sse',
+      ])
+      expect(JSON.stringify(diagnostics)).not.toContain('private')
+    } finally {
+      await bridge.close()
+    }
+  })
 })
