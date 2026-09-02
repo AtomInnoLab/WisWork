@@ -222,17 +222,20 @@ describe('optional Enhanced mode component manager', () => {
       publisher: 'OpenAI OpCo, LLC',
       publisherThumbprint: '8B0ADFB840E141DAD3044D2B5AC819873DDE3590',
     })
-    expect(windows).toHaveLength(7)
+    expect(windows).toHaveLength(8)
     expect(windows[0]?.file).toBe('powershell.exe')
-    expect(windows[0]?.args.at(-1)).toContain('$null -eq $s.SignerCertificate')
-    expect(windows[1]?.args.at(-1)).toContain("Status -eq 'HashMismatch'")
-    expect(windows[2]?.args.at(-1)).toContain("Status -eq 'NotTrusted'")
-    expect(windows[3]?.args.at(-1)).toContain("Status -eq 'UnknownError'")
-    expect(windows[4]?.args.at(-1)).toContain("Status -ne 'Valid'")
-    expect(windows[5]?.args.at(-1)).toContain(
+    expect(windows[0]?.args.at(-1)).toContain(
+      'Microsoft.PowerShell.Security\\Get-AuthenticodeSignature',
+    )
+    expect(windows[1]?.args.at(-1)).toContain('$null -eq $s.SignerCertificate')
+    expect(windows[2]?.args.at(-1)).toContain("Status -eq 'HashMismatch'")
+    expect(windows[3]?.args.at(-1)).toContain("Status -eq 'NotTrusted'")
+    expect(windows[4]?.args.at(-1)).toContain("Status -eq 'UnknownError'")
+    expect(windows[5]?.args.at(-1)).toContain("Status -ne 'Valid'")
+    expect(windows[6]?.args.at(-1)).toContain(
       "Thumbprint -ne '8B0ADFB840E141DAD3044D2B5AC819873DDE3590'",
     )
-    expect(windows[6]?.args.at(-1)).toContain("Subject -notlike '*OpenAI OpCo, LLC*'")
+    expect(windows[7]?.args.at(-1)).toContain("Subject -notlike '*OpenAI OpCo, LLC*'")
     expect(() =>
       platformTrustCommands('linux', '/tmp/app-server', {
         policy: 'macos',

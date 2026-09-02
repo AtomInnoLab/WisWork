@@ -160,6 +160,7 @@ const PLATFORM_TRUST_DIAGNOSTIC_CODES = new Set([
   'enhanced_mode_macos_team_identifier_mismatch',
   'enhanced_mode_macos_notarization_failed',
   'enhanced_mode_windows_authenticode_failed',
+  'enhanced_mode_windows_authenticode_unavailable',
   'enhanced_mode_windows_signer_missing',
   'enhanced_mode_windows_signature_hash_mismatch',
   'enhanced_mode_windows_signature_not_trusted',
@@ -590,6 +591,8 @@ async function defaultVerifyPlatformTrust(
       }
     } else {
       if (process.platform !== 'win32') fail('enhanced_mode_platform_trust_failed')
+      const systemRoot = process.env.SystemRoot ?? process.env.WINDIR
+      if (!systemRoot || !isAbsolute(systemRoot)) fail('enhanced_mode_platform_trust_failed')
       for (const [script, failureCode] of windowsTrustScripts(executablePath, policy)) {
         try {
           await execFile(
@@ -600,7 +603,9 @@ async function defaultVerifyPlatformTrust(
               maxBuffer: MAX_VERSION_OUTPUT,
               windowsHide: true,
               signal: options.signal,
-              env: {},
+              // Windows PowerShell needs the OS root to discover its built-in security module.
+              // Do not inherit PATH, user module paths, credentials, or other ambient state.
+              env: { SystemRoot: systemRoot, WINDIR: systemRoot },
             },
           )
         } catch {
@@ -645,8 +650,12 @@ function windowsTrustScripts(
 ): readonly (readonly [script: string, failureCode: string])[] {
   const escapedPath = executablePath.replaceAll("'", "''")
   const escapedPublisher = policy.publisher.replaceAll("'", "''")
-  const signature = `$s=Get-AuthenticodeSignature -LiteralPath '${escapedPath}';`
+  const signature = `$s=Microsoft.PowerShell.Security\\Get-AuthenticodeSignature -LiteralPath '${escapedPath}';`
   return [
+    [
+      `$ErrorActionPreference='Stop'; try { ${signature} } catch { exit 19 }; if($null -eq $s) { exit 19 }`,
+      'enhanced_mode_windows_authenticode_unavailable',
+    ],
     [
       `${signature} if($null -eq $s.SignerCertificate) { exit 20 }`,
       'enhanced_mode_windows_signer_missing',

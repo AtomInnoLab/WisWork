@@ -236,7 +236,7 @@ async function main(): Promise<void> {
   await rawDisabled.initialize()
   if (rawDisabled.createOfficeSessionStatement('office-word')?.raw_office !== false)
     throw new Error('native_lifecycle_raw_tool_status_failed')
-  await Promise.all([standardRuntime.close(), hostDisabled.close(), rawDisabled.close()])
+  await Promise.all([standardRuntime.shutdown(), hostDisabled.shutdown(), rawDisabled.shutdown()])
   await manager.remove()
   if ((await manager.status()).state !== 'missing')
     throw new Error('native_lifecycle_remove_failed')
