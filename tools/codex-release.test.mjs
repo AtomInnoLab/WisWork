@@ -138,6 +138,7 @@ test('license and notice generators cover the optional app-server', () => {
 
 test('native lifecycle pairs private session creation with bounded cleanup', () => {
   const lifecycle = read('tools/run-codex-native-lifecycle.ts')
+  const processManager = read('packages/codex-bridge/src/process-manager.ts')
   assert.match(lifecycle, /createDirectories:\s*async/)
   assert.match(lifecycle, /removeDirectories:\s*async \(directories\)/)
   assert.match(lifecycle, /rm\(directories\.root, \{ recursive: true, force: true \}\)/)
@@ -147,6 +148,8 @@ test('native lifecycle pairs private session creation with bounded cleanup', () 
   assert.match(lifecycle, /hostDisabled\.shutdown\(\)/)
   assert.match(lifecycle, /rawDisabled\.shutdown\(\)/)
   assert.doesNotMatch(lifecycle, /standardRuntime\.close\(\)/)
+  assert.match(processManager, /maxRetries:\s*50/)
+  assert.match(processManager, /retryDelay:\s*100/)
 })
 
 test('base package source policy still passes without a component cache', () => {
