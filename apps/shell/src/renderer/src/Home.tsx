@@ -15,6 +15,7 @@ import type {
   ProjectHomeApi,
   ProjectSummaryEntry,
   RecentEntry,
+  OfficeRelayStatus,
 } from '../../shared/home-api'
 import { fileCountKey, latexProjectCountKey, visiblePageCount } from './counts'
 import { formatAccountLoginDiagnostic, loginErrorKind } from './login-diagnostic'
@@ -78,6 +79,32 @@ export function accountPresentation(status: AccountStatus | null, loggedInLabel:
   const name = email ? email.split('@')[0] : (status?.userId ?? loggedInLabel)
   const initial = (email || name || 'W').trim().charAt(0).toUpperCase() || 'W'
   return { initial, name, email }
+}
+
+export function officeConnectionCopy(language: string, status: OfficeRelayStatus) {
+  const chinese = language === 'zh' || language === 'zh-TW'
+  const connected = status === 'paired'
+  const pending =
+    status === 'connecting' ||
+    status === 'claiming' ||
+    status === 'awaiting_approval' ||
+    status === 'waiting_for_office'
+  return {
+    label: chinese ? '连接 Office' : 'Connect Office',
+    detail: connected
+      ? chinese
+        ? '已连接'
+        : 'Connected'
+      : pending
+        ? chinese
+          ? '正在连接…'
+          : 'Connecting…'
+        : chinese
+          ? '输入 Office 中显示的 6 位代码'
+          : 'Enter the 6-digit code shown in Office',
+    action: chinese ? '连接' : 'Connect',
+    connected,
+  }
 }
 
 export function AccountMenuIdentity({
@@ -173,7 +200,7 @@ const FILTERS: { key: string; label: StringKey }[] = [
   { key: 'pdf', label: 'filterPdf' },
 ]
 
-function ThemeSwitch() {
+function ThemeSwitch({ language }: { language: string }) {
   const [theme, setTheme] = useState<AppTheme>(() =>
     document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
   )
@@ -200,7 +227,7 @@ function ThemeSwitch() {
         onClick={() => choose('light')}
       >
         <span aria-hidden="true">☀</span>
-        Light
+        {language === 'zh' || language === 'zh-TW' ? '浅色' : 'Light'}
       </button>
       <button
         type="button"
@@ -209,7 +236,7 @@ function ThemeSwitch() {
         onClick={() => choose('dark')}
       >
         <span aria-hidden="true">☾</span>
-        Dark
+        {language === 'zh' || language === 'zh-TW' ? '深色' : 'Dark'}
       </button>
     </div>
   )
@@ -633,10 +660,11 @@ function AccountEntry() {
   const [enhancedStatus, setEnhancedStatus] = useState<EnhancedModeStatus | null>(null)
   const [enhancedBusy, setEnhancedBusy] = useState(false)
   const [enhancedError, setEnhancedError] = useState(false)
-  const [officeRelayStatus, setOfficeRelayStatus] = useState('disconnected')
+  const [officeRelayStatus, setOfficeRelayStatus] = useState<OfficeRelayStatus>('disconnected')
   const [officeRelayCode, setOfficeRelayCode] = useState('')
   const [officeRelayBusy, setOfficeRelayBusy] = useState(false)
   const [officeRelayError, setOfficeRelayError] = useState('')
+  const [officeConnectionOpen, setOfficeConnectionOpen] = useState(false)
 
   // query login state + app version once on mount
   useEffect(() => {
@@ -760,6 +788,7 @@ function AccountEntry() {
   }
 
   const enhancedView = enhancedStatus ? enhancedModeView(enhancedStatus, lang) : null
+  const officeCopy = officeConnectionCopy(lang, officeRelayStatus)
   const runEnhancedAction = (remove = false) => {
     if (!enhancedStatus || !window.aiOfficeEnhancedMode || enhancedBusy) return
     const action = remove ? 'remove' : enhancedView?.action
@@ -880,7 +909,7 @@ function AccountEntry() {
             </>
           )}
           <div className="account-menu-divider" />
-          <ThemeSwitch />
+          <ThemeSwitch language={lang} />
           <div className="account-menu-divider" />
           <div
             className="lang-row-wrap"
@@ -1001,21 +1030,6 @@ function AccountEntry() {
                   {lang === 'zh' || lang === 'zh-TW' ? '取消下载' : 'Cancel download'}
                 </button>
               )}
-              {enhancedStatus && enhancedStatus.platform && (
-                <div className="enhanced-mode-diagnostics">
-                  <span>
-                    {enhancedStatus.version} · {enhancedStatus.platform}
-                    {enhancedStatus.bytes
-                      ? ` · ${Math.ceil(enhancedStatus.bytes / 1_048_576)} MB`
-                      : ''}
-                  </span>
-                  <span>
-                    {enhancedStatus.publisher} · {enhancedStatus.license}
-                  </span>
-                  <span title={enhancedStatus.primaryUrl}>WisWork CDN</span>
-                  <span title={enhancedStatus.fallbackUrl}>OpenAI GitHub Release</span>
-                </div>
-              )}
             </>
           )}
           {appVersion && (
@@ -1035,45 +1049,83 @@ function AccountEntry() {
             </div>
           )}
           {loggedIn && (
-            <div className="office-relay-claim">
-              <label htmlFor="office-relay-code">Connect Office with its 6-digit code</label>
-              <div className="office-relay-claim-row">
-                <input
-                  id="office-relay-code"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  maxLength={6}
-                  value={officeRelayCode}
-                  placeholder="000000"
-                  onChange={(event) => {
-                    setOfficeRelayCode(event.target.value.replace(/\D/g, '').slice(0, 6))
-                    setOfficeRelayError('')
-                  }}
-                />
-                <button
-                  className="btn btn-office-allow"
-                  disabled={officeRelayBusy || !/^\d{6}$/.test(officeRelayCode)}
-                  onClick={() => {
-                    setOfficeRelayBusy(true)
-                    setOfficeRelayError('')
-                    void window.aiOffice
-                      .claimOfficeRelay(officeRelayCode)
-                      .then(() => {
-                        setOfficeRelayStatus('claiming')
-                        setOfficeRelayCode('')
-                      })
-                      .catch((error) =>
-                        setOfficeRelayError(error instanceof Error ? error.message : 'relay_error'),
-                      )
-                      .finally(() => setOfficeRelayBusy(false))
-                  }}
+            <>
+              <button
+                className="account-menu-item office-connection-row"
+                role="menuitem"
+                aria-expanded={officeConnectionOpen}
+                onClick={() => setOfficeConnectionOpen((open) => !open)}
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <rect
+                    x="2"
+                    y="2.5"
+                    width="12"
+                    height="9"
+                    rx="1.7"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                  />
+                  <path
+                    d="M5.5 14h5M8 11.5V14"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinecap="round"
+                  />
+                </svg>
+                <span>{officeCopy.label}</span>
+                <span
+                  className={`office-connection-status${officeCopy.connected ? ' connected' : ''}`}
                 >
-                  Connect
-                </button>
-              </div>
-              <div role="status">Office relay: {officeRelayStatus}</div>
-              {officeRelayError && <div role="alert">Could not claim code: {officeRelayError}</div>}
-            </div>
+                  {officeCopy.connected ? officeCopy.detail : '›'}
+                </span>
+              </button>
+              {officeConnectionOpen && !officeCopy.connected && (
+                <div className="office-connection-panel">
+                  <p>{officeCopy.detail}</p>
+                  <div className="office-relay-claim-row">
+                    <input
+                      id="office-relay-code"
+                      aria-label={officeCopy.detail}
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      maxLength={6}
+                      value={officeRelayCode}
+                      placeholder="000000"
+                      onChange={(event) => {
+                        setOfficeRelayCode(event.target.value.replace(/\D/g, '').slice(0, 6))
+                        setOfficeRelayError('')
+                      }}
+                    />
+                    <button
+                      className="office-connect-button"
+                      disabled={officeRelayBusy || !/^\d{6}$/.test(officeRelayCode)}
+                      onClick={() => {
+                        setOfficeRelayBusy(true)
+                        setOfficeRelayError('')
+                        void window.aiOffice
+                          .claimOfficeRelay(officeRelayCode)
+                          .then(() => {
+                            setOfficeRelayStatus('claiming')
+                            setOfficeRelayCode('')
+                          })
+                          .catch(() => setOfficeRelayError('relay_error'))
+                          .finally(() => setOfficeRelayBusy(false))
+                      }}
+                    >
+                      {officeRelayBusy ? '…' : officeCopy.action}
+                    </button>
+                  </div>
+                  {officeRelayError && (
+                    <p className="office-connection-error" role="alert">
+                      {lang === 'zh' || lang === 'zh-TW'
+                        ? '连接失败，请检查代码后重试'
+                        : 'Could not connect. Check the code and try again.'}
+                    </p>
+                  )}
+                </div>
+              )}
+            </>
           )}
           {loggedIn && (
             <button

@@ -8,7 +8,9 @@ import type { DocumentToolSession } from './tool-router.js'
 import type { PcHostProposalSummary } from '@wiswork/agent-runtime'
 import { startTrustedMcpTransport, TrustedMcpTransportDenied } from './mcp-server.js'
 
-const MAX_CALLS = 8
+// Full presentations commonly need an initial read plus several bounded edits per slide.
+// Keep a hard ceiling without cutting ordinary 8–12 slide generation off halfway through.
+const MAX_CALLS = 24
 const DEFAULT_TTL_MS = 10 * 60_000
 const MAX_ACTIVE_GRANTS = 64
 const MAX_PROPOSAL_TTL_MS = 30_000

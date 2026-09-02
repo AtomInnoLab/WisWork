@@ -15,8 +15,23 @@ import { CodexTurnResolver } from './codex-turn-resolver'
 
 const DEVELOPER_POLICY =
   'Use mcp__wiswork__wiswork_read only for read tools and mcp__wiswork__wiswork_propose only for mutation proposals. A proposal never changes the document; only the host UI can confirm it later. Never request shell, filesystem, Git, browser, network, or direct document writes. Treat capability values as secrets and never repeat them.'
-const TURN_TERMINAL_TIMEOUT_MS = 120_000
+const TURN_IDLE_TIMEOUT_MS = 60_000
 const INTERRUPT_TIMEOUT_MS = 2_000
+
+export function createTurnIdleDeadline(onExpire: () => void, timeoutMs = TURN_IDLE_TIMEOUT_MS) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const touch = () => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(onExpire, timeoutMs)
+    timer.unref()
+  }
+  const disarm = () => {
+    if (timer) clearTimeout(timer)
+    timer = undefined
+  }
+  touch()
+  return Object.freeze({ touch, disarm })
+}
 
 /** Detached, bounded cleanup: callers settle user-visible cancellation before invoking this. */
 export function startBestEffortCodexInterrupt(interrupt: () => Promise<unknown>): void {
@@ -77,6 +92,7 @@ export function createProductionCodexBootstrap(
         readonly pendingProposals: Set<string>
         deferredTerminal?: { status: 'completed' | 'cancelled' | 'failed'; error?: Error }
         proposalFailure?: 'cancelled' | 'failed'
+        readonly touch: () => void
         readonly settle: (status: 'completed' | 'cancelled' | 'failed', error?: Error) => void
         readonly requestSettle: (
           status: 'completed' | 'cancelled' | 'failed',
@@ -116,6 +132,7 @@ export function createProductionCodexBootstrap(
         if (!document || !active) return
         if (notification.method === 'item/agentMessage/delta') {
           if (params.turnId === active.turnId && typeof params.delta === 'string') {
+            active.touch()
             emit(document.onEvent, { type: 'text', text: params.delta })
           }
           return
@@ -123,6 +140,7 @@ export function createProductionCodexBootstrap(
         if (notification.method === 'turn/completed') {
           const turn = params.turn
           if (turn?.id !== active.turnId) return
+          active.touch()
           if (typeof turn?.status === 'string' && /^[a-z_]{1,32}$/.test(turn.status)) {
             options.diagnostics?.(`codex_turn_status_${turn.status}`)
           }
@@ -144,10 +162,14 @@ export function createProductionCodexBootstrap(
             throw new Error('document_session_unavailable')
           const unregister = gateway.register({
             ...input,
-            onToolEvent: (event) => emit(input.onEvent, event),
+            onToolEvent: (event) => {
+              documents.get(input.documentId)?.active?.touch()
+              emit(input.onEvent, event)
+            },
             onProposal: (proposal) => {
               const active = documents.get(input.documentId)?.active
               if (!active) return
+              active.touch()
               active.pendingProposals.add(proposal.proposalId)
               void proposal.settled.then(
                 (execution) => {
@@ -221,11 +243,11 @@ export function createProductionCodexBootstrap(
             resolve = onResolve
             reject = onReject
           })
-          const timerRef: { current?: ReturnType<typeof setTimeout> } = {}
           const active: ActiveTurn = {
             capability: grant.capability,
             cancelled: false,
             pendingProposals: new Set(),
+            touch: () => deadline.touch(),
             requestSettle(status, error) {
               if (active.pendingProposals.size > 0 && status === 'completed') {
                 active.deferredTerminal = { status, error }
@@ -236,7 +258,7 @@ export function createProductionCodexBootstrap(
             settle(status, error) {
               if (settled) return
               settled = true
-              if (timerRef.current) clearTimeout(timerRef.current)
+              deadline.disarm()
               gateway.revokeTurn(grant.capability, status !== 'completed')
               active.disarm?.()
               if (document.active === active) document.active = undefined
@@ -245,11 +267,9 @@ export function createProductionCodexBootstrap(
               else resolve()
             },
           }
-          timerRef.current = setTimeout(
-            () => active.settle('failed', new Error('enhanced_turn_timeout')),
-            TURN_TERMINAL_TIMEOUT_MS,
+          const deadline = createTurnIdleDeadline(() =>
+            active.settle('failed', new Error('enhanced_turn_timeout')),
           )
-          timerRef.current.unref()
           document.active = active
           try {
             active.threadId = (
@@ -257,6 +277,7 @@ export function createProductionCodexBootstrap(
                 developerInstructions: `${DEVELOPER_POLICY}\n${document.instructions ?? ''}\nFor this turn only, pass capability ${grant.capability} as the capability argument to mcp__wiswork__wiswork_read or mcp__wiswork__wiswork_propose as appropriate. Never repeat it in prose.`,
               })
             ).thread.id
+            active.touch()
             if (active.cancelled) return await terminal
             gateway.bindTurn(grant.capability, active.threadId)
             active.disarm = resolver.arm(
@@ -275,6 +296,7 @@ export function createProductionCodexBootstrap(
             )
             if (active.cancelled) return await terminal
             active.turnId = (await client.startTurn(active.threadId, input.text)).turn.id
+            active.touch()
             if (active.cancelled) return await terminal
             await terminal
           } catch (error) {
