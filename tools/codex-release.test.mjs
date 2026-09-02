@@ -141,6 +141,8 @@ test('native lifecycle pairs private session creation with bounded cleanup', () 
   assert.match(lifecycle, /createDirectories:\s*async/)
   assert.match(lifecycle, /removeDirectories:\s*async \(directories\)/)
   assert.match(lifecycle, /rm\(directories\.root, \{ recursive: true, force: true \}\)/)
+  assert.match(lifecycle, /serverChildren\.push\(child\)/)
+  assert.doesNotMatch(lifecycle, /args\[0\] === ['"]app-server['"]/)
 })
 
 test('base package source policy still passes without a component cache', () => {
