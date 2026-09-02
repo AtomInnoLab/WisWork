@@ -94,6 +94,7 @@ export function createProductionCodexBootstrap(
         bridge = await startResponsesBridge({
           fetchWithAuth: options.fetchWithAuth,
           prepareTurn: resolver.prepare,
+          diagnostics: options.diagnostics,
         })
         gateway = await startDynamicMcpGateway(options.diagnostics)
         manager = new CodexProcessManager({
@@ -306,9 +307,15 @@ export function createProductionCodexBootstrap(
               else resolve()
             },
           }
-          const deadline = createTurnIdleDeadline(() =>
-            active.settle('failed', new Error('enhanced_turn_timeout')),
-          )
+          const deadline = createTurnIdleDeadline(() => {
+            active.cancelled = true
+            active.settle('failed', new Error('enhanced_turn_timeout'))
+            if (active.threadId && active.turnId) {
+              startBestEffortCodexInterrupt(() =>
+                client.interruptTurn(active.threadId!, active.turnId!),
+              )
+            }
+          })
           document.active = active
           try {
             active.threadId = (

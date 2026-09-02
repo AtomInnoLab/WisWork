@@ -87,7 +87,6 @@ export interface MessagesRequest {
     description?: string
     input_schema: Record<string, unknown>
   }>
-  tool_choice?: { type: 'auto'; disable_parallel_tool_use: true }
   max_tokens: number
   stream: true
 }
