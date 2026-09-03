@@ -90,7 +90,91 @@ function toolResponse(
   )
 }
 
+function turnCapability(request: MessagesRequest): string | undefined {
+  const matches = [
+    ...JSON.stringify(request.messages).matchAll(
+      /<wiswork_turn_capability>([A-Za-z0-9_-]{43})<\/wiswork_turn_capability>/g,
+    ),
+  ]
+  return matches.at(-1)?.[1]
+}
+
 describe('real 0.147 production engine bridge', () => {
+  realIt(
+    'keeps the app-server alive across consecutive authority-bound turns',
+    async () => {
+      const upstream = vi.fn(async () => finalResponse())
+      const crashed = vi.fn()
+      const diagnostics: string[] = []
+      const engine = await createProductionCodexBootstrap({
+        fetchWithAuth: upstream,
+        diagnostics: (code) => diagnostics.push(code),
+      }).start({ executablePath: executable!, onCrash: crashed })
+      const session = {
+        identity: {
+          ownerId: 'slides-owner',
+          host: 'slides',
+          documentId: 'consecutive-slides',
+          sessionId: 'consecutive-session',
+          generation: 1,
+        },
+        credentials: { sessionId: 'consecutive-session', secret: 'secret' },
+        listTools: () => [
+          {
+            name: 'plan_deck',
+            description: 'Plan a presentation before editing.',
+            inputSchema: { type: 'object', additionalProperties: true },
+            annotations: { readOnlyHint: true, destructiveHint: false },
+          },
+        ],
+        callTool: vi.fn(),
+        cancelAll: vi.fn(() => 0),
+        close: vi.fn(),
+      } as any
+      engine.registerDocument!({
+        ownerId: 'slides-owner',
+        documentId: 'consecutive-slides',
+        host: 'slides',
+        generation: 1,
+        session,
+      })
+      try {
+        await engine
+          .startTurn({
+            documentId: 'consecutive-slides',
+            host: 'slides',
+            generation: 1,
+            text: '做一份完整产品发布会演示。',
+          })
+          .catch((error) => {
+            throw new Error(`first_turn_failed:${diagnostics.join(',')}`, { cause: error })
+          })
+        await engine
+          .startTurn({
+            documentId: 'consecutive-slides',
+            host: 'slides',
+            generation: 1,
+            text: 'Previous user: 做一份完整产品发布会演示。 Previous assistant: 请提供产品名称和受众。 Latest user: 你帮我决定吧。',
+          })
+          .catch((error) => {
+            throw new Error(`second_turn_failed:${diagnostics.join(',')}`, { cause: error })
+          })
+        expect(upstream).toHaveBeenCalledTimes(2)
+        const firstRequest = upstream.mock.calls[0]![0]
+        const secondRequest = upstream.mock.calls[1]![0]
+        expect(JSON.stringify(secondRequest.messages)).toContain('做一份完整产品发布会演示')
+        expect(JSON.stringify(secondRequest.messages)).toContain('你帮我决定吧')
+        expect(turnCapability(firstRequest)).toBeTruthy()
+        expect(turnCapability(secondRequest)).toBeTruthy()
+        expect(turnCapability(secondRequest)).not.toBe(turnCapability(firstRequest))
+        expect(crashed).not.toHaveBeenCalled()
+      } finally {
+        await engine.close()
+      }
+    },
+    20_000,
+  )
+
   realWisIt(
     'accepts the live WisUsage stream shape for a Slides planning turn',
     async () => {
@@ -221,7 +305,7 @@ describe('real 0.147 production engine bridge', () => {
       const upstream = vi.fn(async (request: MessagesRequest) => {
         providerCalls += 1
         if (providerCalls > 1) return finalResponse()
-        const capability = request.system?.match(/pass capability ([A-Za-z0-9_-]{43})/)?.[1]
+        const capability = turnCapability(request)
         return toolResponse(
           `text(await tools.mcp__wiswork__wiswork_propose(${JSON.stringify({ capability, callId: 'mutation-1', toolName: 'replace_blocks', input: {} })}))`,
         )
@@ -286,10 +370,10 @@ describe('real 0.147 production engine bridge', () => {
       const upstream = vi.fn(async (request: MessagesRequest) => {
         providerCalls += 1
         if (providerCalls > 1) return finalResponse()
-        const match = request.system?.match(/pass capability ([A-Za-z0-9_-]{43})/)
-        expect(match?.[1]).toBeTruthy()
+        const capability = turnCapability(request)
+        expect(capability).toBeTruthy()
         return toolResponse(
-          `text(await tools.mcp__wiswork__wiswork_read(${JSON.stringify({ capability: match![1], callId: 'read-1', toolName: 'read_blocks', input: {} })}))`,
+          `text(await tools.mcp__wiswork__wiswork_read(${JSON.stringify({ capability, callId: 'read-1', toolName: 'read_blocks', input: {} })}))`,
           'plaintext',
         )
       })
@@ -412,7 +496,7 @@ describe('real 0.147 production engine bridge', () => {
       const upstream = vi.fn(async (request: MessagesRequest) => {
         const next = calls[providerCalls++]
         if (!next) return finalResponse()
-        const capability = request.system?.match(/pass capability ([A-Za-z0-9_-]{43})/)?.[1]
+        const capability = turnCapability(request)
         expect(capability).toBeTruthy()
         const method = next.carrier === 'read' ? 'wiswork_read' : 'wiswork_propose'
         return toolResponse(
