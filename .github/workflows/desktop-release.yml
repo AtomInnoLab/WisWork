@@ -76,6 +76,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Temporarily publish only Apple Silicon to keep the release feedback loop fast.
+        # Re-enable macOS x64/Windows by restoring their reviewed matrix entries and
+        # the multi-platform metadata merge in verify-release.
         include:
           - id: macos-arm64
             runner: macos-14
@@ -83,17 +86,6 @@ jobs:
             cargo_target: aarch64-apple-darwin
             file_arch: arm64
             electron_args: --mac dmg zip --arm64
-          - id: macos-x64
-            runner: macos-15-intel
-            tectonic_platform: darwin-x64
-            cargo_target: x86_64-apple-darwin
-            file_arch: x86_64
-            electron_args: --mac dmg zip --x64
-          - id: windows-x64
-            runner: windows-latest
-            tectonic_platform: win32-x64
-            cargo_target: x86_64-pc-windows-msvc
-            electron_args: --win nsis --x64
     steps:
       - name: Checkout validated commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -373,7 +365,7 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: .artifacts/release
-          pattern: '{macos-arm64,macos-x64,windows-x64}'
+          pattern: macos-arm64
           merge-multiple: false
 
       - name: Verify update metadata and collect release files
@@ -401,25 +393,15 @@ jobs:
             cp "$source" ".artifacts/release/files/$name"
             ARTIFACT_NAME="$name"
           }
-          copy_one 'Windows NSIS installer' .artifacts/release/windows-x64/WisWork-*.exe
-          WINDOWS_INSTALLER="$ARTIFACT_NAME"
           copy_one 'macOS arm64 ZIP' .artifacts/release/macos-arm64/WisWork-*-arm64.zip
           ARM64_ZIP="$ARTIFACT_NAME"
-          copy_one 'macOS x64 ZIP' .artifacts/release/macos-x64/WisWork-*.zip
-          X64_ZIP="$ARTIFACT_NAME"
           copy_one 'macOS arm64 DMG' .artifacts/release/macos-arm64/WisWork-*-arm64.dmg
           ARM64_DMG="$ARTIFACT_NAME"
-          copy_one 'macOS x64 DMG' .artifacts/release/macos-x64/WisWork-*.dmg
-          X64_DMG="$ARTIFACT_NAME"
-          node tools/release/merge-update-metadata.mjs \
-            --windows .artifacts/release/windows-x64/latest.yml \
-            --mac-arm64 .artifacts/release/macos-arm64/latest-mac.yml \
-            --mac-x64 .artifacts/release/macos-x64/latest-mac.yml \
-            --artifacts-dir .artifacts/release/files \
-            --output-dir .artifacts/publish \
+          mkdir -p .artifacts/publish
+          node tools/release/generate-update-metadata.mjs \
+            --artifact ".artifacts/release/files/$ARM64_ZIP" \
             --version "$VERSION" \
-            --additional-artifact "$ARM64_DMG" \
-            --additional-artifact "$X64_DMG"
+            --output .artifacts/publish/latest-mac.yml
           cp .artifacts/release/files/* .artifacts/publish/
 
       - name: Upload verified publish artifact
