@@ -15,6 +15,10 @@ function fixture(
   mode: 'standard' | 'enhanced' = 'enhanced',
   rollout: EnhancedRolloutPolicy = policy(),
 ) {
+  const diagnosticTasks = {
+    begin: vi.fn(() => 'diag_000000000000000000000000'),
+    finish: vi.fn(),
+  }
   let crash = () => undefined
   const engine = {
     startTurn: vi.fn(async () => undefined),
@@ -34,9 +38,10 @@ function fixture(
     isSignedIn: vi.fn(async () => true),
     resolveExecutable: vi.fn(async () => '/private/components/codex-app-server'),
     bootstrap,
+    diagnosticTasks,
   })
   const owner = { isDestroyed: () => false }
-  return { runtime, owner, engine, bootstrap, crash: () => crash() }
+  return { runtime, owner, engine, bootstrap, diagnosticTasks, crash: () => crash() }
 }
 
 describe('Shell Codex runtime lifecycle', () => {
@@ -125,6 +130,13 @@ describe('Shell Codex runtime lifecycle', () => {
     await expect(f.runtime.startTurn(f.owner, 'deck', 'Try again')).rejects.toThrow(
       'enhanced_service_unavailable',
     )
+    expect(f.diagnosticTasks.begin).toHaveBeenNthCalledWith(1, 'slides')
+    expect(f.diagnosticTasks.finish).toHaveBeenNthCalledWith(
+      1,
+      'diag_000000000000000000000000',
+      'failed',
+      'enhanced_turn_timeout',
+    )
   })
 
   it('keeps a document busy until the engine reports terminal settlement', async () => {
@@ -142,6 +154,10 @@ describe('Shell Codex runtime lifecycle', () => {
     )
     await f.runtime.cancelTurn(f.owner, 'doc')
     expect(f.engine.cancelTurn).toHaveBeenCalledWith('doc')
+    expect(f.diagnosticTasks.finish).toHaveBeenCalledWith(
+      'diag_000000000000000000000000',
+      'cancelled',
+    )
     settle()
     await first
     await expect(f.runtime.startTurn(f.owner, 'doc', 'third')).resolves.toBeUndefined()

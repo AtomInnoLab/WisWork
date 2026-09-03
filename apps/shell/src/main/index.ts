@@ -1,8 +1,9 @@
 import { execSync, spawn } from 'node:child_process'
-import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import {
   BrowserWindow,
+  clipboard,
   Menu,
   app,
   dialog,
@@ -174,6 +175,7 @@ import { createShellEnhancedPolicyAuthority } from './enhanced-policy-authority'
 import { migrateLegacyUserData } from './user-data-migration'
 import { createAuthDeepLinkQueue } from './auth-deep-link-queue'
 import { createBeforeQuitBarrier } from './before-quit-barrier'
+import { EnhancedDiagnosticsStore, probeWisUsageEventStream } from './enhanced-diagnostics'
 import codexComponentManifest from '../../../../tools/codex/manifest.json'
 import {
   registerEnhancedModeComponentIpc,
@@ -2618,6 +2620,13 @@ app.whenReady().then(async () => {
   const enhancedTelemetry = createEnhancedTelemetry((event) =>
     console.info('[enhanced-aggregate]', event),
   )
+  const enhancedDiagnostics = new EnhancedDiagnosticsStore({
+    path: join(app.getPath('userData'), 'diagnostics', 'enhanced-runtime.json'),
+  })
+  const enhancedDiagnostic = (code: string) => {
+    enhancedDiagnostics.record(code)
+    console.warn('[enhanced-runtime]', code)
+  }
   const enhancedModeComponent = new EnhancedModeComponentManager({
     cacheRoot: join(app.getPath('userData'), 'components', 'enhanced-mode'),
     manifest: codexComponentManifest,
@@ -2669,10 +2678,15 @@ app.whenReady().then(async () => {
             body: JSON.stringify(request),
           }),
         ),
-      diagnostics: (code) => console.warn('[enhanced-runtime]', code),
+      diagnostics: enhancedDiagnostic,
     }),
-    diagnostics: (code) => console.warn('[enhanced-runtime]', code),
+    diagnostics: enhancedDiagnostic,
     telemetry: enhancedTelemetry,
+    diagnosticTasks: {
+      begin: (host) => enhancedDiagnostics.beginTask(host),
+      finish: (diagnosticId, status, failureCode) =>
+        enhancedDiagnostics.finishTask(diagnosticId, status, failureCode),
+    },
   })
   pcCodexHosts = registerPcCodexHosts({
     ipcMain,
@@ -2712,6 +2726,103 @@ app.whenReady().then(async () => {
     policyAllowed: enhancedPolicyAllowed,
     // Task 6 supplies the host session adapter. Until then a saved request is visible but not active.
     enhancedRuntimeAvailable: () => codexRuntime?.state === 'ready',
+    diagnostics: {
+      summary: () => ({
+        recent: enhancedDiagnostics.recent().map((task) => ({
+          diagnosticId: task.diagnosticId,
+          host: task.host,
+          startedAt: task.startedAt,
+          ...(task.endedAt === undefined ? {} : { endedAt: task.endedAt }),
+          status: task.status,
+          ...(task.failureCode === undefined ? {} : { failureCode: task.failureCode }),
+        })),
+        detailedUntil: enhancedDiagnostics.detailedUntil(),
+      }),
+      selfCheck: async () => {
+        const wisusageProbe = async () => {
+          const controller = new AbortController()
+          const timeout = setTimeout(() => controller.abort(), 10_000)
+          timeout.unref()
+          try {
+            const response = await requireAuthRuntime().client.fetchWithAuth((accessToken) =>
+              fetch(WISWORK_MESSAGES_URL, {
+                method: 'POST',
+                signal: controller.signal,
+                headers: {
+                  authorization: `Bearer ${accessToken}`,
+                  'content-type': 'application/json',
+                  'x-req-location': WISWORK_REQUEST_LOCATION,
+                },
+                body: JSON.stringify({
+                  model: 'openai/gpt-5.6-sol',
+                  max_tokens: 8,
+                  stream: true,
+                  system: 'WisWork connectivity self-check. Reply OK only.',
+                  messages: [{ role: 'user', content: 'OK' }],
+                }),
+              }),
+            )
+            return probeWisUsageEventStream(response)
+          } finally {
+            clearTimeout(timeout)
+          }
+        }
+        return enhancedDiagnostics.runSelfCheck({
+          component: async () => (await enhancedModeComponent.status()).state === 'ready',
+          authentication: async () =>
+            (await requireAuthRuntime().client.getValidAccountStatus()).loggedIn === true,
+          runtime: async () => codexRuntime?.state === 'ready',
+          mcp: async () =>
+            enhancedDiagnostics.hasObserved('mcp_ready') ? true : ('not_tested' as const),
+          wisusage: wisusageProbe,
+        })
+      },
+      enableDetailed: () => {
+        enhancedDiagnostics.enableDetailed()
+        return {
+          recent: enhancedDiagnostics.recent().map((task) => ({
+            diagnosticId: task.diagnosticId,
+            host: task.host,
+            startedAt: task.startedAt,
+            ...(task.endedAt === undefined ? {} : { endedAt: task.endedAt }),
+            status: task.status,
+            ...(task.failureCode === undefined ? {} : { failureCode: task.failureCode }),
+          })),
+          detailedUntil: enhancedDiagnostics.detailedUntil(),
+        }
+      },
+      copyId: (diagnosticId) => {
+        if (!enhancedDiagnostics.recent().some((task) => task.diagnosticId === diagnosticId)) {
+          throw new Error('diagnostic_not_found')
+        }
+        clipboard.writeText(diagnosticId)
+      },
+      export: async () => {
+        const options = {
+          title: 'Export Enhanced diagnostics',
+          defaultPath: `wiswork-enhanced-diagnostics-${Date.now()}.json`,
+          filters: [{ name: 'JSON', extensions: ['json'] }],
+        }
+        const result = shellWindow
+          ? await dialog.showSaveDialog(shellWindow, options)
+          : await dialog.showSaveDialog(options)
+        if (result.canceled || !result.filePath) return 'cancelled' as const
+        const report = enhancedDiagnostics.exportReport({
+          appVersion: app.getVersion(),
+          componentVersion: codexComponentManifest.component.version,
+          platform: process.platform as 'darwin' | 'win32' | 'linux',
+          arch: process.arch as 'arm64' | 'x64',
+        })
+        const temporary = `${result.filePath}.${process.pid}.${Date.now()}.tmp`
+        try {
+          writeFileSync(temporary, report, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+          renameSync(temporary, result.filePath)
+        } finally {
+          rmSync(temporary, { force: true })
+        }
+        return 'saved' as const
+      },
+    },
     ...(enhancedAsset
       ? {
           metadata: {

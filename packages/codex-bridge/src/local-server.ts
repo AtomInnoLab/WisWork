@@ -34,6 +34,7 @@ export interface ResponsesBridgeOptions {
   /** Host-owned, one-use Task 2 carrier closure. Never derive authority from request metadata. */
   readonly prepareTurn: (input: unknown) => PreparedResponsesTurn
   readonly diagnostics?: (code: string) => void
+  readonly onDeterministicFailure?: (code: string) => void
   readonly maxBodyBytes?: number
   readonly maxActiveTurns?: number
   readonly maxTurnDurationMs?: number
@@ -374,6 +375,13 @@ export async function startResponsesBridge(
             SAFE_STREAM_PROTOCOL_CODES.has(error.message)
               ? error.message
               : undefined
+          if (protocolCode) {
+            try {
+              options.onDeterministicFailure?.(protocolCode)
+            } catch {
+              // Failure reporting must never change bridge settlement.
+            }
+          }
           diagnostic(protocolCode ? `responses_stream_${protocolCode}` : 'responses_stream_invalid')
           cancelResponse(upstream)
           if (!response.destroyed) response.destroy()

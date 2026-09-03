@@ -135,6 +135,7 @@ describe('local responses bridge', () => {
 
   it('reports a closed protocol reason without upstream content', async () => {
     const diagnostics: string[] = []
+    const onDeterministicFailure = vi.fn()
     const bridge = await startResponsesBridge({
       fetchWithAuth: async () =>
         new Response('data: private\n\n', {
@@ -150,6 +151,7 @@ describe('local responses bridge', () => {
         },
       }),
       diagnostics: (code) => diagnostics.push(code),
+      onDeterministicFailure,
     })
     try {
       await post(new URL(bridge.responsesUrl), bridge.secret, '{}').catch(() => undefined)
@@ -158,6 +160,7 @@ describe('local responses bridge', () => {
         'responses_stream_invalid_messages_sse',
       ])
       expect(JSON.stringify(diagnostics)).not.toContain('private')
+      expect(onDeterministicFailure).toHaveBeenCalledWith('invalid_messages_sse')
     } finally {
       await bridge.close()
     }

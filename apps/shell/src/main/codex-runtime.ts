@@ -70,6 +70,14 @@ export interface ShellCodexRuntimeOptions {
   readonly bootstrap: CodexRuntimeBootstrap
   readonly diagnostics?: (code: string) => void
   readonly telemetry?: EnhancedTelemetry
+  readonly diagnosticTasks?: Readonly<{
+    begin(host: EnhancedHost): string
+    finish(
+      diagnosticId: string,
+      status: 'succeeded' | 'failed' | 'cancelled',
+      failureCode?: string,
+    ): void
+  }>
 }
 
 interface DocumentRecord {
@@ -78,6 +86,8 @@ interface DocumentRecord {
   readonly host: EnhancedHost
   readonly generation: number
   busy: boolean
+  diagnosticId?: string
+  diagnosticCancelled?: boolean
   readonly unregisterEngine?: () => void
 }
 
@@ -273,6 +283,9 @@ export class ShellCodexRuntime {
     const engine = this.#engine
     if (!engine) throw new ShellCodexRuntimeError('enhanced_runtime_unavailable')
     document.busy = true
+    const diagnosticId = this.#options.diagnosticTasks?.begin(document.host)
+    document.diagnosticId = diagnosticId
+    document.diagnosticCancelled = false
     this.#options.telemetry?.host(document.host, 'dispatch', 'succeeded')
     const epoch = this.#epoch
     try {
@@ -282,7 +295,6 @@ export class ShellCodexRuntime {
         generation: document.generation,
         text,
       })
-      this.#options.telemetry?.host(document.host, 'complete', 'succeeded')
       if (
         this.#epoch !== epoch ||
         this.#engine !== engine ||
@@ -290,7 +302,15 @@ export class ShellCodexRuntime {
       ) {
         throw new ShellCodexRuntimeError('enhanced_turn_stale')
       }
+      if (diagnosticId && !document.diagnosticCancelled) {
+        this.#options.diagnosticTasks?.finish(diagnosticId, 'succeeded')
+      }
+      this.#options.telemetry?.host(document.host, 'complete', 'succeeded')
     } catch (error) {
+      const failureCode = error instanceof Error ? error.message : 'enhanced_turn_failed'
+      if (diagnosticId && !document.diagnosticCancelled) {
+        this.#options.diagnosticTasks?.finish(diagnosticId, 'failed', failureCode)
+      }
       this.#options.telemetry?.host(document.host, 'complete', 'failed')
       // Never replay or cross-dispatch the same request through Standard.
       throw new ShellCodexRuntimeError(
@@ -303,18 +323,27 @@ export class ShellCodexRuntime {
             'enhanced_request_rejected',
             'enhanced_service_unavailable',
             'enhanced_connection_failed',
+            'enhanced_response_incompatible',
           ].includes(error.message)
           ? error.message
           : 'enhanced_turn_failed',
       )
     } finally {
-      if (this.#documents.get(documentId) === document) document.busy = false
+      if (this.#documents.get(documentId) === document) {
+        document.busy = false
+        document.diagnosticId = undefined
+        document.diagnosticCancelled = undefined
+      }
     }
   }
 
   async cancelTurn(owner: CodexOwner, documentId: string): Promise<void> {
     const document = this.#owned(owner, documentId)
     if (!document.busy) return
+    if (document.diagnosticId && !document.diagnosticCancelled) {
+      document.diagnosticCancelled = true
+      this.#options.diagnosticTasks?.finish(document.diagnosticId, 'cancelled')
+    }
     await this.#engine?.cancelTurn(documentId)
   }
 

@@ -657,6 +657,119 @@ body.vib .home {
   font-size: 10px;
 }
 
+.diagnostic-center-toggle {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.diagnostic-center-chevron {
+  margin-left: auto;
+}
+
+.diagnostic-center {
+  margin: 4px 12px 8px 34px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.diagnostic-center-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.diagnostic-center button {
+  min-height: 28px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+}
+
+.diagnostic-center button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.diagnostic-task-list {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.diagnostic-check-list {
+  display: grid;
+  gap: 3px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.diagnostic-check-list li {
+  display: flex;
+  justify-content: space-between;
+}
+
+.diagnostic-task {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  text-align: start;
+}
+
+.diagnostic-task code {
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.diagnostic-status.failed {
+  color: var(--danger);
+}
+
+.diagnostic-status.succeeded {
+  color: var(--success);
+}
+
+.diagnostic-status.passed {
+  color: var(--success);
+}
+
+.diagnostic-status.not_tested {
+  color: var(--text-muted);
+}
+
+.diagnostic-status.cancelled,
+.diagnostic-status.running {
+  color: var(--text-muted);
+}
+
+.diagnostic-ok {
+  color: var(--success);
+}
+
+.diagnostic-error {
+  color: var(--danger);
+}
+
+.diagnostic-detail-toggle {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.diagnostic-privacy-note {
+  margin-bottom: 0;
+  line-height: 1.4;
+}
+
 /* language row in the account menu (hover opens the flyout) */
 .account-menu-item.lang-row {
   display: flex;
