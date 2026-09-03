@@ -8,7 +8,7 @@ function previewMetadata({ pr, commit, version, builtAt = new Date().toISOString
   return {
     productName: `WisWork Preview PR${pr}`,
     appId: `com.atominnolab.wiswork.preview.pr${pr}`,
-    version: `${version}-pr${pr}.${commit.slice(0, 7)}`,
+    version: `${version}-pr${pr}.g${commit.slice(0, 7)}`,
     iteration: { mode: 'preview', commit, builtAt, pr: Number(pr) },
   }
 }

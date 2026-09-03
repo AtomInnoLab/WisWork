@@ -16,12 +16,13 @@ test('preview identity is isolated and provenance is validated', () => {
   })
   assert.equal(metadata.productName, 'WisWork Preview PR123')
   assert.equal(metadata.appId, 'com.atominnolab.wiswork.preview.pr123')
-  assert.equal(metadata.version, '0.6.14-pr123.aaaaaaa')
+  assert.equal(metadata.version, '0.6.14-pr123.gaaaaaaa')
   assert.equal(metadata.iteration.mode, 'preview')
   for (const pr of ['0', '-1', '123/../../', '01', '${{ secrets.TOKEN }}']) {
     assert.throws(() => previewMetadata({ pr, commit: 'a'.repeat(40), version: '0.6.14' }))
   }
   assert.throws(() => previewMetadata({ pr: '1', commit: 'main', version: '0.6.14' }))
+  assert.equal(previewMetadata({ pr: '1', commit: '0'.repeat(40), version: '0.6.14' }).version, '0.6.14-pr1.g0000000')
 })
 
 test('automatic preview builds have no signing secrets or release permissions', () => {
