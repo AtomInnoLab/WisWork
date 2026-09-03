@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { ENHANCED_HOSTS, type EnhancedHost } from '@wiswork/agent-runtime'
+import { parseProtocolRecording, type ProtocolRecording } from '@wiswork/codex-bridge'
 
 const MAX_TASKS = 10
 const MAX_EVENTS = 256
@@ -166,7 +167,19 @@ export interface EnhancedDiagnosticExportMetadata {
 
 const copy = <T>(value: T): T => structuredClone(value)
 const boundedPhase = (value: string): string =>
-  /^[a-z][a-z0-9_]{0,47}$/.test(value) ? value : 'unknown'
+  [
+    'turn',
+    'request',
+    'stream',
+    'process',
+    'tool',
+    'initialize',
+    'session',
+    'protocol',
+    'unknown',
+  ].includes(value)
+    ? value
+    : 'unknown'
 
 export async function probeWisUsageEventStream(response: Response): Promise<boolean> {
   if (!response.ok || !response.body) return false
@@ -314,7 +327,7 @@ function safeDiagnostic(code: string): {
     }
   return {
     component: 'runtime',
-    phase: boundedPhase(code),
+    phase: 'unknown',
     outcome: 'started',
     code: 'runtime_event',
   }
@@ -392,6 +405,7 @@ export class EnhancedDiagnosticsStore {
   readonly #tasks: MutableTask[]
   readonly #active = new Set<string>()
   readonly #systemEvents: EnhancedDiagnosticEvent[] = []
+  readonly #protocolRecordings: ProtocolRecording[] = []
   #sequence = 0
   #detailedUntil = 0
   #lastSelfCheck: EnhancedSelfCheckResult | undefined
@@ -451,6 +465,16 @@ export class EnhancedDiagnosticsStore {
     )
   }
 
+  /** Session-memory only; exported explicitly, never persist raw protocol payloads. */
+  recordProtocol(value: unknown): void {
+    try {
+      this.#protocolRecordings.push(parseProtocolRecording(value))
+      this.#protocolRecordings.splice(0, Math.max(0, this.#protocolRecordings.length - 4))
+    } catch {
+      /* Reject untrusted recordings without affecting the task. */
+    }
+  }
+
   finishTask(
     diagnosticId: string,
     status: Exclude<DiagnosticTaskStatus, 'running'>,
@@ -501,11 +525,47 @@ export class EnhancedDiagnosticsStore {
     const report = {
       schema: 'wiswork-enhanced-diagnostics/v1',
       generatedAt: this.#now(),
-      metadata,
+      metadata: {
+        appVersion: /^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(metadata.appVersion)
+          ? metadata.appVersion
+          : 'unknown',
+        componentVersion: /^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(metadata.componentVersion)
+          ? metadata.componentVersion
+          : 'unknown',
+        platform: ['darwin', 'win32', 'linux'].includes(metadata.platform)
+          ? metadata.platform
+          : 'unknown',
+        arch: ['arm64', 'x64'].includes(metadata.arch) ? metadata.arch : 'unknown',
+      },
       detailedUntil: this.#detailedUntil > this.#now() ? this.#detailedUntil : null,
       tasks: this.recent(),
       systemEvents: copy(this.#systemEvents),
-      ...(selfCheck ? { selfCheck: copy(selfCheck) } : {}),
+      protocolRecordings: copy(this.#protocolRecordings),
+      ...(selfCheck
+        ? {
+            selfCheck: {
+              diagnosticId: /^diag_[A-Za-z0-9_-]{24}$/.test(selfCheck.diagnosticId)
+                ? selfCheck.diagnosticId
+                : 'unknown',
+              startedAt: Number.isSafeInteger(selfCheck.startedAt) ? selfCheck.startedAt : 0,
+              endedAt: Number.isSafeInteger(selfCheck.endedAt) ? selfCheck.endedAt : 0,
+              status: selfCheck.status === 'passed' ? 'passed' : 'failed',
+              checks: Array.isArray(selfCheck.checks)
+                ? selfCheck.checks.slice(0, 5).map((check) => ({
+                    layer: ['component', 'authentication', 'runtime', 'mcp', 'wisusage'].includes(
+                      check.layer,
+                    )
+                      ? check.layer
+                      : 'unknown',
+                    status: ['passed', 'failed', 'not_tested'].includes(check.status)
+                      ? check.status
+                      : 'not_tested',
+                    ...(check.code && SAFE_CODES.has(check.code) ? { code: check.code } : {}),
+                  }))
+                : [],
+            },
+          }
+        : {}),
     }
     const serialized = `${JSON.stringify(report, null, 2)}\n`
     if (Buffer.byteLength(serialized) > MAX_FILE_BYTES)

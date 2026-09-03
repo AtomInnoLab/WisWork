@@ -6,6 +6,13 @@ import type {
   ProtocolLimits,
   ResponsesRequest,
 } from './types.js'
+import {
+  recordingChunks,
+  parseProtocolRecording,
+  type ProtocolFrameObserver,
+} from './protocol-recording.js'
+export { ProtocolRecorder, parseProtocolRecording } from './protocol-recording.js'
+export type { ProtocolRecording } from './protocol-recording.js'
 
 export * from './types.js'
 export * from './security.js'
@@ -180,8 +187,10 @@ export function createDocumentCarrierIssuer(
     const prepared = convertResponsesRequest(input, limitOverrides, entry)
     return Object.freeze({
       messagesRequest: prepared.request,
-      messagesStreamToResponses: (chunks: AsyncIterable<string | Uint8Array>) =>
-        convertMessagesStream(chunks, prepared.context, prepared.limits),
+      messagesStreamToResponses: (
+        chunks: AsyncIterable<string | Uint8Array>,
+        recorder: ProtocolFrameObserver | undefined = undefined,
+      ) => convertMessagesStream(chunks, prepared.context, prepared.limits, recorder),
     })
   }
   return Object.freeze({ issueForTurn, prepareTurn })
@@ -1058,8 +1067,10 @@ export function prepareResponsesTurn(
   const prepared = convertResponsesRequest(input, limitOverrides)
   return Object.freeze({
     messagesRequest: prepared.request,
-    messagesStreamToResponses: (chunks: AsyncIterable<string | Uint8Array>) =>
-      convertMessagesStream(chunks, prepared.context, prepared.limits),
+    messagesStreamToResponses: (
+      chunks: AsyncIterable<string | Uint8Array>,
+      recorder: ProtocolFrameObserver | undefined = undefined,
+    ) => convertMessagesStream(chunks, prepared.context, prepared.limits, recorder),
   })
 }
 
@@ -1071,6 +1082,7 @@ async function* convertMessagesStream(
   chunks: AsyncIterable<string | Uint8Array>,
   context: PrivateStreamContext,
   limits: ProtocolLimits,
+  recorder: ProtocolFrameObserver | undefined = undefined,
 ): AsyncGenerator<string> {
   const decoder = new TextDecoder('utf-8', { fatal: true })
   type StrictBlock =
@@ -1772,6 +1784,11 @@ async function* convertMessagesStream(
       strict.frames += 1
       if (strict.frames > limits.maxSseFrames) fail('sse_frame_count_limit_exceeded')
       if (byteLength(frame) > limits.maxSseFrameBytes) fail('sse_frame_limit_exceeded')
+      try {
+        recorder?.recordFrame(frame)
+      } catch {
+        /* Diagnostics never alter settlement. */
+      }
       const parsed = parseStrictFrame(frame)
       if (parsed === undefined) continue
       if ('done' in parsed) {
@@ -1790,7 +1807,58 @@ async function* convertMessagesStream(
   } catch {
     fail('invalid_messages_utf8')
   }
-  if (buffer !== '') fail('invalid_messages_sse')
+  if (buffer !== '') {
+    try {
+      recorder?.recordFrame('data: invalid')
+    } catch {
+      /* Fail open. */
+    }
+    fail('invalid_messages_sse')
+  }
   if (strict.phase !== 'terminal') fail('premature_messages_eof')
   for await (const terminal of yieldBounded(strict.terminalFrames)) yield terminal
+}
+
+/** Offline structural simulation only. Never executes tools or returns captured content. */
+export async function replayProtocolRecording(
+  value: unknown,
+): Promise<{ events: string[]; error?: string; fidelity: 'structural-only'; truncated: boolean }> {
+  const recording = parseProtocolRecording(value)
+  const events: string[] = []
+  // Synthetic parser authority is local to this simulation and never executes a tool.
+  const context: PrivateStreamContext = {
+    usedCallIds: [],
+    allowedExecMethods: ['mcp__wiswork__replay'],
+    carrierEntry: {
+      issuer: {},
+      host: 'docs',
+      documentId: 'replay',
+      sessionId: 'replay',
+      generation: 0,
+      turnId: 'replay',
+      sourceNonce: '',
+      methods: ['mcp__wiswork__replay'],
+      schemaDigest: '',
+      state: 'consumed',
+      remainingCalls: 1,
+    },
+  }
+  try {
+    for await (const frame of convertMessagesStream(
+      recordingChunks(recording),
+      context,
+      DEFAULT_PROTOCOL_LIMITS,
+    )) {
+      const event = /^event: ([a-z_.]+)\n/.exec(frame)?.[1]
+      if (event) events.push(event)
+    }
+    return { events, fidelity: 'structural-only', truncated: recording.truncated }
+  } catch (error) {
+    return {
+      events,
+      error: error instanceof ProtocolCompatibilityError ? error.code : 'replay_failed',
+      fidelity: 'structural-only',
+      truncated: recording.truncated,
+    }
+  }
 }
