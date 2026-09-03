@@ -1105,15 +1105,18 @@ async function* convertMessagesStream(
     }
     if (event === undefined && dataLines.length === 0) return undefined
     if (dataLines.join('\n') === '[DONE]') fail('unsupported_messages_sse')
-    if (event === undefined || dataLines.length === 0) fail('invalid_messages_sse')
+    if (dataLines.length === 0) fail('invalid_messages_sse')
     let data: unknown
     try {
       data = JSON.parse(dataLines.join('\n'))
     } catch {
       fail('invalid_messages_sse')
     }
-    if (!isRecord(data) || data.type !== event) fail('invalid_messages_sse')
-    return { event, data }
+    if (!isRecord(data) || typeof data.type !== 'string' || data.type === '') {
+      fail('invalid_messages_sse')
+    }
+    if (event !== undefined && data.type !== event) fail('invalid_messages_sse')
+    return { event: data.type, data }
   }
   const validateIndex = (value: unknown, starting: boolean): number => {
     if (!Number.isSafeInteger(value) || (value as number) < 0) fail('invalid_messages_block_index')
@@ -1381,7 +1384,7 @@ async function* convertMessagesStream(
       if (strict.phase !== 'content' || strict.active !== undefined || !isRecord(data.delta)) {
         fail('invalid_messages_event_order')
       }
-      if (!isRecord(data.usage)) fail('invalid_messages_usage')
+      if (data.usage !== undefined && !isRecord(data.usage)) fail('invalid_messages_usage')
       if (!hasOnlyKeys(data.delta, ['stop_reason', 'stop_sequence'])) fail('invalid_messages_event')
       if (
         data.delta.stop_sequence !== undefined &&
@@ -1390,9 +1393,11 @@ async function* convertMessagesStream(
       ) {
         fail('invalid_messages_event')
       }
-      if (!hasOnlyKeys(data.usage, ['output_tokens'])) fail('invalid_messages_event')
+      if (data.usage !== undefined && !hasOnlyKeys(data.usage, ['output_tokens'])) {
+        fail('invalid_messages_event')
+      }
       strict.stopReason = requireString(data.delta.stop_reason, 'invalid_messages_event')
-      strict.outputTokens = usageInteger(data.usage.output_tokens, false)
+      strict.outputTokens = usageInteger(data.usage?.output_tokens, true)
       strict.phase = 'await_stop'
       return []
     }

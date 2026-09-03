@@ -12,6 +12,21 @@ const MAX_TURN_MS = 10 * 60_000
 const MAX_IDLE_MS = 30_000
 const MAX_STREAM_BYTES = 32_000_000
 const MAX_STREAM_FRAMES = 100_000
+const SAFE_STREAM_PROTOCOL_CODES = new Set([
+  'invalid_messages_sse',
+  'invalid_messages_event',
+  'invalid_messages_event_order',
+  'invalid_messages_usage',
+  'unsupported_messages_sse',
+  'unsupported_messages_event',
+  'unsupported_upstream_model',
+  'unsupported_reasoning_block',
+  'unsupported_content_block',
+  'unsupported_content_delta',
+  'unsupported_stop_reason',
+  'premature_messages_eof',
+  'upstream_error',
+])
 
 export interface ResponsesBridgeOptions {
   /** The sole authenticated WisUsage transport. It receives an already-fixed request. */
@@ -352,8 +367,14 @@ export async function startResponsesBridge(
               })
           }
           response.end()
-        } catch {
-          diagnostic('responses_stream_invalid')
+        } catch (error) {
+          const protocolCode =
+            error instanceof Error &&
+            error.name === 'ProtocolCompatibilityError' &&
+            SAFE_STREAM_PROTOCOL_CODES.has(error.message)
+              ? error.message
+              : undefined
+          diagnostic(protocolCode ? `responses_stream_${protocolCode}` : 'responses_stream_invalid')
           cancelResponse(upstream)
           if (!response.destroyed) response.destroy()
         }

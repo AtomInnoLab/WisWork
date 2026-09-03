@@ -120,6 +120,38 @@ describe('final pinned bridge contract', () => {
     ).resolves.toBeUndefined()
   })
 
+  it('accepts WisUsage data-only SSE and an omitted terminal usage object', async () => {
+    const turn = prepareResponsesTurn(clone())
+    const output: string[] = []
+    for await (const frame of turn.messagesStreamToResponses(
+      chunks(
+        'data: {"type":"message_start","message":{"id":"msg_1","model":"openai/gpt-5.6-sol","usage":{"input_tokens":1}}}\n\n',
+        'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n',
+        'data: {"type":"content_block_stop","index":0}\n\n',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+        'data: {"type":"message_stop"}\n\n',
+      ),
+    )) {
+      output.push(frame)
+    }
+    expect(output.join('')).toContain('event: response.completed')
+    expect(output.join('')).toContain('"output_tokens":0')
+  })
+
+  it('still rejects a mismatched explicit SSE event name', async () => {
+    const turn = prepareResponsesTurn(clone())
+    await expect(
+      consume(
+        turn.messagesStreamToResponses(
+          chunks(
+            'event: message_stop\ndata: {"type":"message_start","message":{"id":"msg_1","model":"openai/gpt-5.6-sol","usage":{"input_tokens":1}}}\n\n',
+          ),
+        ),
+      ),
+    ).rejects.toThrow('invalid_messages_sse')
+  })
+
   it('rejects more than one MCP call in a response', async () => {
     const code = 'await tools.mcp__wiswork__wiswork_read_document({})'
     const call = (index: number, id: string) =>

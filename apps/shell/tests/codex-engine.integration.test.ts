@@ -46,12 +46,12 @@ it('maps only bounded app-server error categories to actionable public failures'
 function finalResponse(): Response {
   return new Response(
     [
-      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","model":"openai/gpt-5.6-sol","usage":{"input_tokens":1}}}\n\n',
-      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
-      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}\n\n',
-      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
-      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n',
-      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      'data: {"type":"message_start","message":{"id":"msg_1","model":"openai/gpt-5.6-sol","usage":{"input_tokens":1}}}\n\n',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}\n\n',
+      'data: {"type":"content_block_stop","index":0}\n\n',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+      'data: {"type":"message_stop"}\n\n',
     ].join(''),
     { status: 200, headers: { 'content-type': 'text/event-stream' } },
   )
@@ -60,12 +60,12 @@ function finalResponse(): Response {
 function toolResponse(code: string): Response {
   return new Response(
     [
-      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_tool","model":"openai/gpt-5.6-sol","usage":{"input_tokens":1}}}\n\n',
-      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"custom_7","name":"exec","input":{}}}\n\n',
-      `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n`,
-      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
-      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}\n\n',
-      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      'data: {"type":"message_start","message":{"id":"msg_tool","model":"openai/gpt-5.6-sol","usage":{"input_tokens":1}}}\n\n',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"custom_7","name":"exec","input":{}}}\n\n',
+      `data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n`,
+      'data: {"type":"content_block_stop","index":0}\n\n',
+      'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
+      'data: {"type":"message_stop"}\n\n',
     ].join(''),
     { status: 200, headers: { 'content-type': 'text/event-stream' } },
   )
