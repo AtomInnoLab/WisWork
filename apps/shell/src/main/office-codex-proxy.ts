@@ -32,6 +32,7 @@ const READ_TOOLS = new Set([
   'list_slide_shapes',
   'read_slide_text',
   'verify_slides',
+  'plan_deck',
 ])
 const MUTATION_TOOLS = new Set([
   'write_document',
