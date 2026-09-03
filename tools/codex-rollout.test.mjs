@@ -53,6 +53,7 @@ test('native release matrix gates pinned lifecycle, identity, real protocol and 
     'run-codex-native-lifecycle.ts',
     'install-enhanced-component',
     'codex-engine.integration.test',
+    'generates and verifies a three-page onboarding deck',
     'TeamIdentifier=2DC432GLL2',
     'optional-runtime-policy.mjs --mode post-package',
   ])
