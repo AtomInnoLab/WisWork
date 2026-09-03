@@ -14,7 +14,7 @@ import type {
 import { CodexTurnResolver } from './codex-turn-resolver'
 
 const DEVELOPER_POLICY =
-  'Use mcp__wiswork__wiswork_read only for read tools and mcp__wiswork__wiswork_propose only for mutation proposals. A proposal never changes the document; only the host UI can confirm it later. Never request shell, filesystem, Git, browser, network, or direct document writes. Treat capability values as secrets and never repeat them.'
+  'Use mcp__wiswork__wiswork_read only for read tools and mcp__wiswork__wiswork_propose only for mutation proposals. A proposal never changes the document; only the host UI can confirm it later. Never request shell, filesystem, Git, browser, network, or direct document writes. Each user turn begins with a private wiswork_turn_capability tag. Use only that latest value as the capability argument and never repeat any capability in prose.'
 const TURN_IDLE_TIMEOUT_MS = 60_000
 const INTERRUPT_TIMEOUT_MS = 2_000
 
@@ -138,6 +138,7 @@ export function createProductionCodexBootstrap(
           unregister: () => void
           onEvent?: (event: CodexRuntimeEngineEvent) => void
           instructions?: string
+          threadId?: string
           active?: ActiveTurn
         }
       >()
@@ -267,6 +268,7 @@ export function createProductionCodexBootstrap(
             unregister: () => void
             onEvent?: (event: CodexRuntimeEngineEvent) => void
             instructions?: string
+            threadId?: string
             active?: ActiveTurn
           } = {
             session: input.session,
@@ -292,7 +294,7 @@ export function createProductionCodexBootstrap(
           const grant = gateway.beginTurn({
             documentId: input.documentId,
             generation: input.generation,
-            threadId: 'reserved',
+            threadId: document.threadId ?? 'reserved',
           })
           let resolve!: () => void
           let reject!: (error: Error) => void
@@ -336,14 +338,17 @@ export function createProductionCodexBootstrap(
           })
           document.active = active
           try {
-            active.threadId = (
-              await client.startThread({
-                developerInstructions: `${DEVELOPER_POLICY}\n${document.instructions ?? ''}\nFor this turn only, pass capability ${grant.capability} as the capability argument to mcp__wiswork__wiswork_read or mcp__wiswork__wiswork_propose as appropriate. Never repeat it in prose.`,
-              })
-            ).thread.id
+            if (!document.threadId) {
+              document.threadId = (
+                await client.startThread({
+                  developerInstructions: `${DEVELOPER_POLICY}\n${document.instructions ?? ''}`,
+                })
+              ).thread.id
+              gateway.bindTurn(grant.capability, document.threadId)
+            }
+            active.threadId = document.threadId
             active.touch()
             if (active.cancelled) return await terminal
-            gateway.bindTurn(grant.capability, active.threadId)
             active.disarm = resolver.arm(
               active.threadId,
               ({ sessionId }) =>
@@ -359,7 +364,12 @@ export function createProductionCodexBootstrap(
               grant.capability,
             )
             if (active.cancelled) return await terminal
-            active.turnId = (await client.startTurn(active.threadId, input.text)).turn.id
+            active.turnId = (
+              await client.startTurn(
+                active.threadId,
+                `<wiswork_turn_capability>${grant.capability}</wiswork_turn_capability>\n\n${input.text}`,
+              )
+            ).turn.id
             active.touch()
             if (active.cancelled) return await terminal
             await terminal
