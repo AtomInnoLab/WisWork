@@ -64,6 +64,7 @@ describe('EnhancedDiagnosticsStore', () => {
     const id = store.beginTask('slides')
     store.record('responses_stream_unsupported_reasoning_block')
     store.record('responses_stream_reasoning_content_limit_exceeded')
+    store.record('responses_stream_invalid_messages_usage')
     store.record('responses_stream_invalid_custom_tool_input')
     store.finishTask(id, 'failed')
 
@@ -71,6 +72,7 @@ describe('EnhancedDiagnosticsStore', () => {
       expect.arrayContaining([
         'stream_reasoning_unsupported',
         'stream_reasoning_limit_exceeded',
+        'stream_usage_invalid',
         'stream_tool_input_invalid',
       ]),
     )

@@ -74,7 +74,7 @@ function toolResponse(code: string, reasoning: 'encrypted' | 'plaintext' = 'encr
       'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"custom_7","name":"exec","input":{}}}\n\n',
       `data: ${JSON.stringify({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n`,
       'data: {"type":"content_block_stop","index":1}\n\n',
-      'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
+      'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":4,"output_tokens_details":{"reasoning_tokens":3}}}\n\n',
       'data: {"type":"message_stop"}\n\n',
     ].join(''),
     { status: 200, headers: { 'content-type': 'text/event-stream' } },

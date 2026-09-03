@@ -1095,6 +1095,7 @@ async function* convertMessagesStream(
     cachedTokens: 0,
     cacheWriteTokens: 0,
     outputTokens: 0,
+    reasoningTokens: 0,
     stopReason: undefined as string | undefined,
     stoppedTool: undefined as Extract<StrictBlock, { kind: 'tool' }> | undefined,
     output: [] as Array<Record<string, unknown>>,
@@ -1557,10 +1558,19 @@ async function* convertMessagesStream(
         if (data.usage.output_tokens_details !== undefined) {
           if (
             !isRecord(data.usage.output_tokens_details) ||
-            !hasOnlyKeys(data.usage.output_tokens_details, ['thinking_tokens'])
+            !hasOnlyKeys(data.usage.output_tokens_details, [
+              'thinking_tokens',
+              'reasoning_tokens',
+            ]) ||
+            (data.usage.output_tokens_details.thinking_tokens !== undefined &&
+              data.usage.output_tokens_details.reasoning_tokens !== undefined)
           )
             fail('invalid_messages_usage')
-          usageInteger(data.usage.output_tokens_details.thinking_tokens, false)
+          strict.reasoningTokens = usageInteger(
+            data.usage.output_tokens_details.reasoning_tokens ??
+              data.usage.output_tokens_details.thinking_tokens,
+            false,
+          )
         }
         if (data.usage.cost_details !== undefined) {
           if (
@@ -1657,7 +1667,7 @@ async function* convertMessagesStream(
             cached_tokens: strict.cachedTokens,
             cache_write_tokens: strict.cacheWriteTokens,
           },
-          output_tokens_details: { reasoning_tokens: 0 },
+          output_tokens_details: { reasoning_tokens: strict.reasoningTokens },
         },
       }
       strict.phase = 'terminal'
