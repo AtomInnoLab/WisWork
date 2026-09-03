@@ -207,8 +207,9 @@ async function main() {
     // Generated notices/native resources are prerequisites, not concurrent source edits.
     // Capture inputs immediately before compilation and re-read shared inputs on every snapshot.
     const beforeBuild = snapshot()
-    for (const name of selectBuilds(beforeBuild, previous))
-      await run('npm', ['run', 'build', '-w', `@wiswork/${name}`])
+    const selectedBuilds = selectBuilds(beforeBuild, previous)
+    console.log(`Builds after prerequisites: ${selectedBuilds.join(', ') || '(cached)'}`)
+    for (const name of selectedBuilds) await run('npm', ['run', 'build', '-w', `@wiswork/${name}`])
     verifiedBuildSnapshot(beforeBuild, snapshot())
     await run(process.execPath, ['tools/optional-runtime-policy.mjs', '--mode', 'source'])
     await run(

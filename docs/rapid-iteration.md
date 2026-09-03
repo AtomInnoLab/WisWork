@@ -13,7 +13,9 @@ npm run dogfood:mac
 
 The first build needs Node 22.12+, Rust, Xcode command-line tools and network access for locked dependencies/native assets. Warm builds reuse matching source/output fingerprints; changes to shared packages conservatively rebuild the required editors. A cold build is not expected to meet the 1–3 minute warm-build target. Measure the printed duration on your machine before promising a latency target.
 
-The app is **WisWork Dogfood**, in `apps/shell/release-dogfood`, not `/Applications/WisWork.app`. Its profile is separate from both production and `WisWork Dev`. No production data migration, update feed or file association takeover is allowed. Close the previous Dogfood instance before relaunching to avoid its single-instance lock; never kill the production app to clear that lock. Use test documents. Authentication and optional Enhanced installation in the isolated profile may require setup; existing production credentials are not copied. Verified components already installed in that profile can be reused by the existing component manager; optional binaries are not bundled into the app.
+The app is **WisWork Dogfood**, in `apps/shell/release-dogfood`, not `/Applications/WisWork.app`. Its profile is separate from both production and `WisWork Dev`. No production data migration, update feed or file association takeover is allowed. Close the previous Dogfood instance before relaunching to avoid its single-instance lock; never kill the production app to clear that lock. Use test documents. Existing production credentials are not copied. Verified components already installed in that profile can be reused by the existing component manager; optional binaries are not bundled into the app.
+
+**Current authentication limitation:** the existing OAuth callback is hard-coded to `wiswork://`, which belongs to production. Test builds deliberately do not register or consume that callback. A fresh isolated profile therefore cannot complete ordinary browser sign-in yet. Local editor/package tests work independently, but real-model dogfood acceptance requires a dedicated test callback flow and matching authorization-server configuration. Do not work around this by taking over the production protocol or copying production credentials. This first delivery is not a complete authenticated dogfood loop.
 
 Build output includes version, commit, timestamp and mode plus log/artifact paths. Local build logs are not privacy-scrubbed diagnostic exports: inspect them before sharing. Dirty working-tree builds may contain changes beyond the named commit.
 
@@ -26,6 +28,8 @@ npm run diagnostics:replay -- /absolute/path/report.json
 ```
 
 This is offline protocol validation, not another model request. Keep the exported report associated with the task that failed; an old report cannot diagnose a newer build's run.
+
+Only the latest four captures from the current process are retained; restart clears them. Use `--index 0` through `--index 3` to select an available capture. Capture metadata is separate from the replay result. Recordings are not yet correlated to document/task authority, so use timestamps and original outcome as investigative evidence—not as proof that a particular task caused the capture. `structural-only` is always shown in replay output.
 
 The replay path records bounded, allowlisted protocol structure. It must never export raw SSE bodies, document/user text, JWTs, tool argument bodies, reasoning content or filesystem paths. Unknown or invalid report fields must not be echoed in CLI errors.
 

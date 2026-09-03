@@ -2689,7 +2689,8 @@ app.whenReady().then(async () => {
           }),
         ),
       diagnostics: enhancedDiagnostic,
-      onProtocolRecording: (recording) => enhancedDiagnostics.recordProtocol(recording),
+      onProtocolRecording: (recording, outcome) =>
+        enhancedDiagnostics.recordProtocol(recording, outcome),
     }),
     diagnostics: enhancedDiagnostic,
     telemetry: enhancedTelemetry,
