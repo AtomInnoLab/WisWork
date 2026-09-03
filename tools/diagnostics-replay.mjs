@@ -12,6 +12,27 @@ export async function replayFile(path, index = 0) {
   const input = JSON.parse(await readFile(path, 'utf8'))
   const recording =
     input?.schema === 'wiswork-enhanced-diagnostics/v1' ? input.protocolRecordings?.[index] : input
+  const info =
+    input?.schema === 'wiswork-enhanced-diagnostics/v1'
+      ? input.protocolRecordingInfo?.[index]
+      : undefined
+  const source =
+    info &&
+    typeof info.recordingId === 'string' &&
+    /^recording_[A-Za-z0-9_-]{24}$/.test(info.recordingId) &&
+    Number.isSafeInteger(info.recordedAt) &&
+    info.recordedAt >= 0 &&
+    ['completed', 'incomplete', 'protocol_rejected', 'interrupted', 'not_observed'].includes(
+      info.originalOutcome,
+    ) &&
+    info.association === 'unattributed'
+      ? {
+          recordingId: info.recordingId,
+          recordedAt: info.recordedAt,
+          originalOutcome: info.originalOutcome,
+          association: 'unattributed',
+        }
+      : undefined
   const directory = await mkdtemp(join(tmpdir(), 'wiswork-replay-'))
   try {
     const outfile = join(directory, 'replay.mjs')
@@ -27,7 +48,7 @@ export async function replayFile(path, index = 0) {
       logLevel: 'silent',
     })
     const { replayProtocolRecording } = await import(pathToFileURL(outfile).href)
-    return await replayProtocolRecording(recording)
+    return { ...(await replayProtocolRecording(recording)), ...(source ? { source } : {}) }
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

@@ -53,10 +53,19 @@ describe('EnhancedDiagnosticsStore', () => {
       pr: 123,
       builtAt: '2026-09-03T00:00:00.000Z',
     })
-    expect(report.protocolRecordingInfo).toEqual([
+    expect(report.protocolRecordingInfo).toMatchObject([
       { index: 0, recordedAt: 100, association: 'unattributed' },
       { index: 1, recordedAt: 105, association: 'unattributed' },
     ])
+    expect(report.protocolRecordingInfo[0].recordingId).toMatch(/^recording_[A-Za-z0-9_-]{24}$/)
+    expect(report.protocolRecordingInfo[0].recordingId).not.toBe(
+      report.protocolRecordingInfo[1].recordingId,
+    )
+    expect(report.protocolRecordingInfo[0].originalOutcome).toBe('not_observed')
+    store.recordProtocol(recording, 'protocol_rejected')
+    expect(JSON.parse(store.exportReport(metadata)).protocolRecordingInfo[2].originalOutcome).toBe(
+      'protocol_rejected',
+    )
     expect(JSON.stringify(report)).not.toContain('SECRET')
     for (const build of [
       { ...metadata.build, commit: '/private/SECRET' },

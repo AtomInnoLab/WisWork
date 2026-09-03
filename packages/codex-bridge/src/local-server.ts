@@ -3,7 +3,11 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo, Socket } from 'node:net'
 import { TextDecoder } from 'node:util'
 import type { MessagesRequest, PreparedResponsesTurn } from './types.js'
-import { ProtocolRecorder, type ProtocolRecording } from './protocol-recording.js'
+import {
+  ProtocolRecorder,
+  type ProtocolRecording,
+  type ProtocolRecordingOutcome,
+} from './protocol-recording.js'
 
 const HOST = '127.0.0.1'
 const PATH = '/v1/responses'
@@ -37,7 +41,10 @@ export interface ResponsesBridgeOptions {
   /** Host-owned, one-use Task 2 carrier closure. Never derive authority from request metadata. */
   readonly prepareTurn: (input: unknown) => PreparedResponsesTurn
   readonly diagnostics?: (code: string) => void
-  readonly onProtocolRecording?: (recording: ProtocolRecording) => void
+  readonly onProtocolRecording?: (
+    recording: ProtocolRecording,
+    outcome: ProtocolRecordingOutcome,
+  ) => void
   readonly onDeterministicFailure?: (code: string) => void
   readonly maxBodyBytes?: number
   readonly maxActiveTurns?: number
@@ -361,11 +368,14 @@ export async function startResponsesBridge(
           'x-content-type-options': 'nosniff',
         })
         const recorder = options.onProtocolRecording ? new ProtocolRecorder() : undefined
+        let originalOutcome: ProtocolRecordingOutcome = 'interrupted'
         try {
           for await (const frame of turn.messagesStreamToResponses(
             upstreamChunks(upstream.body, controller.signal, maxStreamIdleMs),
             recorder,
           )) {
+            if (frame.startsWith('event: response.completed\n')) originalOutcome = 'completed'
+            if (frame.startsWith('event: response.incomplete\n')) originalOutcome = 'incomplete'
             if (controller.signal.aborted) throw new RequestEndedError()
             if (!response.write(frame))
               await new Promise<void>((resolve, reject) => {
@@ -388,12 +398,16 @@ export async function startResponsesBridge(
               // Failure reporting must never change bridge settlement.
             }
           }
+          originalOutcome =
+            error instanceof Error && error.name === 'ProtocolCompatibilityError'
+              ? 'protocol_rejected'
+              : 'interrupted'
           diagnostic(protocolCode ? `responses_stream_${protocolCode}` : 'responses_stream_invalid')
           cancelResponse(upstream)
           if (!response.destroyed) response.destroy()
         } finally {
           try {
-            if (recorder) options.onProtocolRecording?.(recorder.snapshot())
+            if (recorder) options.onProtocolRecording?.(recorder.snapshot(), originalOutcome)
           } catch {
             /* Diagnostics are fail-open. */
           }

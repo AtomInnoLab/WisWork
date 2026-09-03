@@ -12,7 +12,7 @@ import {
   type ProtocolFrameObserver,
 } from './protocol-recording.js'
 export { ProtocolRecorder, parseProtocolRecording } from './protocol-recording.js'
-export type { ProtocolRecording } from './protocol-recording.js'
+export type { ProtocolRecording, ProtocolRecordingOutcome } from './protocol-recording.js'
 
 export * from './types.js'
 export * from './security.js'
