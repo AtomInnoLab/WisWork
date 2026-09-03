@@ -28,7 +28,12 @@ import {
 } from './project-mutation-state'
 import { useI18n } from './locale'
 import type { I18n, StringKey } from './locale'
-import type { EnhancedModeApi, EnhancedModeStatus } from '../../shared/enhanced-mode-api'
+import type {
+  EnhancedDiagnosticsSummary,
+  EnhancedModeApi,
+  EnhancedModeStatus,
+  EnhancedSelfCheckPublicResult,
+} from '../../shared/enhanced-mode-api'
 import { enhancedModeView, selectEnhancedMode } from './enhanced-mode-view'
 
 declare global {
@@ -660,6 +665,11 @@ function AccountEntry() {
   const [enhancedStatus, setEnhancedStatus] = useState<EnhancedModeStatus | null>(null)
   const [enhancedBusy, setEnhancedBusy] = useState(false)
   const [enhancedError, setEnhancedError] = useState(false)
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
+  const [diagnostics, setDiagnostics] = useState<EnhancedDiagnosticsSummary | null>(null)
+  const [selfCheck, setSelfCheck] = useState<EnhancedSelfCheckPublicResult | null>(null)
+  const [diagnosticsBusy, setDiagnosticsBusy] = useState(false)
+  const [diagnosticsNotice, setDiagnosticsNotice] = useState('')
   const [officeRelayStatus, setOfficeRelayStatus] = useState<OfficeRelayStatus>('disconnected')
   const [officeRelayCode, setOfficeRelayCode] = useState('')
   const [officeRelayBusy, setOfficeRelayBusy] = useState(false)
@@ -825,6 +835,27 @@ function AccountEntry() {
       .then(setEnhancedStatus)
       .catch(() => setEnhancedError(true))
       .finally(() => setEnhancedBusy(false))
+  }
+
+  const refreshDiagnostics = () => {
+    if (!window.aiOfficeEnhancedMode) return
+    setDiagnosticsBusy(true)
+    setDiagnosticsNotice('')
+    void window.aiOfficeEnhancedMode
+      .diagnostics()
+      .then(setDiagnostics)
+      .catch(() =>
+        setDiagnosticsNotice(
+          lang === 'zh' || lang === 'zh-TW' ? '无法读取诊断信息' : 'Diagnostics unavailable',
+        ),
+      )
+      .finally(() => setDiagnosticsBusy(false))
+  }
+
+  const toggleDiagnostics = () => {
+    const next = !diagnosticsOpen
+    setDiagnosticsOpen(next)
+    if (next) refreshDiagnostics()
   }
 
   const cancelLangFlyClose = () => {
@@ -1066,6 +1097,154 @@ function AccountEntry() {
                 >
                   {lang === 'zh' || lang === 'zh-TW' ? '取消下载' : 'Cancel download'}
                 </button>
+              )}
+              <button
+                className="account-menu-item diagnostic-center-toggle"
+                role="menuitem"
+                aria-expanded={diagnosticsOpen}
+                onClick={toggleDiagnostics}
+              >
+                <span aria-hidden="true">ⓘ</span>
+                <span>{lang === 'zh' || lang === 'zh-TW' ? '诊断与反馈' : 'Diagnostics'}</span>
+                <span className="diagnostic-center-chevron">{diagnosticsOpen ? '−' : '+'}</span>
+              </button>
+              {diagnosticsOpen && (
+                <section
+                  className="diagnostic-center"
+                  aria-label={
+                    lang === 'zh' || lang === 'zh-TW' ? '增强模式诊断' : 'Enhanced diagnostics'
+                  }
+                >
+                  <div className="diagnostic-center-actions">
+                    <button
+                      disabled={diagnosticsBusy}
+                      onClick={() => {
+                        setDiagnosticsBusy(true)
+                        setDiagnosticsNotice('')
+                        void window.aiOfficeEnhancedMode
+                          ?.selfCheck()
+                          .then((result) => {
+                            setSelfCheck(result)
+                            refreshDiagnostics()
+                          })
+                          .catch(() =>
+                            setDiagnosticsNotice(
+                              lang === 'zh' || lang === 'zh-TW'
+                                ? '自检未能完成'
+                                : 'Self-check could not finish',
+                            ),
+                          )
+                          .finally(() => setDiagnosticsBusy(false))
+                      }}
+                    >
+                      {diagnosticsBusy
+                        ? '…'
+                        : lang === 'zh' || lang === 'zh-TW'
+                          ? '运行自检'
+                          : 'Run self-check'}
+                    </button>
+                    <button
+                      onClick={() =>
+                        void window.aiOfficeEnhancedMode
+                          ?.exportDiagnostics()
+                          .then((result) =>
+                            setDiagnosticsNotice(
+                              result === 'saved'
+                                ? lang === 'zh' || lang === 'zh-TW'
+                                  ? '诊断报告已导出'
+                                  : 'Report exported'
+                                : '',
+                            ),
+                          )
+                      }
+                    >
+                      {lang === 'zh' || lang === 'zh-TW' ? '导出报告' : 'Export report'}
+                    </button>
+                  </div>
+                  {selfCheck && (
+                    <>
+                      <p
+                        className={
+                          selfCheck.status === 'passed' ? 'diagnostic-ok' : 'diagnostic-error'
+                        }
+                      >
+                        {selfCheck.status === 'passed'
+                          ? lang === 'zh' || lang === 'zh-TW'
+                            ? '基础连接正常'
+                            : 'Core connectivity is healthy'
+                          : lang === 'zh' || lang === 'zh-TW'
+                            ? '部分检查未通过'
+                            : 'Some checks failed'}
+                      </p>
+                      <ul className="diagnostic-check-list">
+                        {selfCheck.checks.map((check) => (
+                          <li key={check.layer}>
+                            <span>{check.layer}</span>
+                            <span className={`diagnostic-status ${check.status}`}>
+                              {check.status === 'passed'
+                                ? '✓'
+                                : check.status === 'not_tested'
+                                  ? '–'
+                                  : '×'}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                  <div className="diagnostic-task-list">
+                    {(diagnostics?.recent ?? []).slice(0, 3).map((task) => (
+                      <button
+                        key={task.diagnosticId}
+                        className="diagnostic-task"
+                        title={
+                          lang === 'zh' || lang === 'zh-TW' ? '复制诊断 ID' : 'Copy diagnostic ID'
+                        }
+                        onClick={() =>
+                          void window.aiOfficeEnhancedMode
+                            ?.copyDiagnosticId(task.diagnosticId)
+                            .then(() =>
+                              setDiagnosticsNotice(
+                                lang === 'zh' || lang === 'zh-TW'
+                                  ? '诊断 ID 已复制'
+                                  : 'Diagnostic ID copied',
+                              ),
+                            )
+                        }
+                      >
+                        <span>{task.host}</span>
+                        <code>{task.diagnosticId.slice(-8)}</code>
+                        <span className={`diagnostic-status ${task.status}`}>{task.status}</span>
+                      </button>
+                    ))}
+                    {diagnostics && diagnostics.recent.length === 0 && (
+                      <p>
+                        {lang === 'zh' || lang === 'zh-TW' ? '暂无最近任务' : 'No recent tasks'}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    className="diagnostic-detail-toggle"
+                    disabled={!diagnostics || diagnostics.detailedUntil !== null}
+                    onClick={() =>
+                      void window.aiOfficeEnhancedMode?.enableDetailed().then(setDiagnostics)
+                    }
+                  >
+                    {diagnostics?.detailedUntil
+                      ? lang === 'zh' || lang === 'zh-TW'
+                        ? '详细诊断已临时开启'
+                        : 'Detailed diagnostics temporarily enabled'
+                      : lang === 'zh' || lang === 'zh-TW'
+                        ? '开启 30 分钟详细诊断'
+                        : 'Enable detailed diagnostics for 30 minutes'}
+                  </button>
+                  {diagnosticsNotice && <p role="status">{diagnosticsNotice}</p>}
+                  <p className="diagnostic-privacy-note">
+                    {lang === 'zh' || lang === 'zh-TW'
+                      ? '报告不包含文档内容、提示词、密钥或本机路径。'
+                      : 'Reports exclude document content, prompts, credentials, and local paths.'}
+                  </p>
+                </section>
               )}
             </>
           )}

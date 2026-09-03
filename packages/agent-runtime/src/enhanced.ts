@@ -100,6 +100,7 @@ class EnhancedSession<TSnapshot> implements AgentRuntimeSession {
             'enhanced_request_rejected',
             'enhanced_service_unavailable',
             'enhanced_connection_failed',
+            'enhanced_response_incompatible',
           ].find((candidate) => message.includes(candidate)) ?? 'enhanced_turn_failed'
         this.#events?.onError?.(code)
         this.#publish({ status: 'error', busy: false, generation, error: code })
