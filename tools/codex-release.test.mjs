@@ -94,7 +94,12 @@ test('reviewed repository assets contain no downloaded component binary or archi
 test('every desktop builder invocation immediately runs the shared post-package checker', () => {
   for (const path of ['.github/workflows/desktop-release.yml']) {
     const workflow = read(path)
-    const builderCount = [...workflow.matchAll(/run: npx electron-builder[^\n]*/g)].length
+    const builderInvocations = [
+      ...workflow.matchAll(
+        /run: (?:npx electron-builder|node \.\.\/\.\.\/tools\/release\/run-macos-packaging\.mjs)[^\n]*/g,
+      ),
+    ]
+    const builderCount = builderInvocations.length
     const checkerCount = [
       ...workflow.matchAll(
         /run: node \.\.\/\.\.\/tools\/optional-runtime-policy\.mjs --mode post-package --artifact-dir release/g,
@@ -110,7 +115,7 @@ test('every desktop builder invocation immediately runs the shared post-package 
       builderCount,
       `${path} must verify the real component per build`,
     )
-    for (const match of workflow.matchAll(/run: npx electron-builder[^\n]*/g)) {
+    for (const match of builderInvocations) {
       const tail = workflow.slice(match.index + match[0].length)
       assert.ok(tail.indexOf('optional-runtime-policy.mjs --mode post-package') >= 0)
       assert.ok(

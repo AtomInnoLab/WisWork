@@ -267,7 +267,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           WISWORK_TECTONIC_SOURCE: ${{ github.workspace }}/apps/latex/native/tectonic-ci
           WISWORK_UPDATE_PROVIDER: github
-        run: npx electron-builder --config electron-builder.cjs ${{ matrix.electron_args }} --publish never
+        run: node ../../tools/release/run-macos-packaging.mjs ${{ matrix.electron_args }} --publish never
 
       - name: Verify macOS package excludes optional Codex components
         if: startsWith(matrix.id, 'macos-')

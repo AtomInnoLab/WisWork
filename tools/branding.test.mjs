@@ -91,6 +91,10 @@ test('Desktop Release builds signed macOS arm64 and x64 release artifacts', () =
   assert.match(workflow, /electron_args: --mac dmg zip --x64/)
   assert.match(workflow, /gh release upload/)
   assert.match(workflow, /gh release edit "\$TAG" --draft=false/)
+  assert.match(
+    workflow,
+    /run-macos-packaging\.mjs \$\{\{ matrix\.electron_args \}\} --publish never/,
+  )
 })
 
 test('shell packages the LaTeX renderer and only the verified Tectonic executable', () => {
