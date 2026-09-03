@@ -45,13 +45,24 @@ async function runAtStage(stage, task) {
 
 export function diagnosticForFailure(error) {
   const cause = error instanceof TectonicFetchError ? error.cause : error
-  const systemCode =
-    typeof cause?.code === 'string' && /^[A-Z0-9_]{1,32}$/.test(cause.code) ? cause.code : 'UNKNOWN'
   return {
     code: 'TECTONIC_FETCH_FAILED',
     stage: error instanceof TectonicFetchError ? error.stage : 'prepare',
-    systemCode,
+    systemCode: systemCodeForFailure(cause),
   }
+}
+
+function systemCodeForFailure(error) {
+  const visited = new Set()
+  let current = error
+  for (let depth = 0; depth < 6 && current && typeof current === 'object'; depth += 1) {
+    if (visited.has(current)) break
+    visited.add(current)
+    const code = Object.getOwnPropertyDescriptor(current, 'code')?.value
+    if (typeof code === 'string' && /^[A-Z0-9_]{1,32}$/.test(code)) return code
+    current = Object.getOwnPropertyDescriptor(current, 'cause')?.value
+  }
+  return 'UNKNOWN'
 }
 
 export function parseArguments(argv) {
@@ -170,8 +181,11 @@ export async function fetchVerifiedAsset(asset, targetPath, options = {}) {
   } catch (error) {
     if ((error.code ?? '') !== 'ENOENT') throw error
   }
-  const maxAttempts = options.maxAttempts ?? 3
+  const maxAttempts = options.maxAttempts ?? 5
   const retryDelayMs = options.retryDelayMs ?? 1_000
+  const sleepImplementation =
+    options.sleepImplementation ??
+    ((delay) => new Promise((resolveWait) => setTimeout(resolveWait, delay)))
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 5) {
     throw new Error('download attempt limit is invalid')
   }
@@ -186,8 +200,9 @@ export async function fetchVerifiedAsset(asset, targetPath, options = {}) {
       lastError = error
       if (attempt === maxAttempts) break
       const nextAttempt = attempt + 1
-      options.onRetry?.(nextAttempt)
-      await new Promise((resolveWait) => setTimeout(resolveWait, retryDelayMs * attempt))
+      options.onRetry?.(nextAttempt, systemCodeForFailure(error))
+      const delay = Math.min(retryDelayMs * 2 ** (attempt - 1), 30_000)
+      await sleepImplementation(delay)
     }
   }
   throw lastError
@@ -472,8 +487,10 @@ export async function main(argv = process.argv.slice(2)) {
   assertWithin(options.cachePath, targetPath)
   const result = await runAtStage('download', () =>
     fetchVerifiedAsset(asset, targetPath, {
-      onRetry: (attempt) =>
-        process.stderr.write(`${JSON.stringify({ code: 'TECTONIC_FETCH_RETRY', attempt })}\n`),
+      onRetry: (attempt, systemCode) =>
+        process.stderr.write(
+          `${JSON.stringify({ code: 'TECTONIC_FETCH_RETRY', attempt, systemCode })}\n`,
+        ),
     }),
   )
   const executablePath = await runAtStage('extract', () =>
