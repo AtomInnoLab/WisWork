@@ -57,7 +57,7 @@ export type ResponsesInputItem =
       id: string
       summary: []
       content: null
-      encrypted_content: string
+      encrypted_content: string | null
     }
   | {
       type: 'additional_tools'

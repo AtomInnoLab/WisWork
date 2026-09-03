@@ -229,13 +229,50 @@ describe('bounded Anthropic SSE state machine', () => {
     )
   })
 
-  it('continues to reject plaintext thinking blocks', async () => {
+  it('validates and discards bounded plaintext thinking without exposing it or blocking the turn', async () => {
+    const events = await collect(
+      noToolTurn().messagesStreamToResponses(
+        chunks(
+          start,
+          'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"private chain of thought"}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"opaque-signature"}}\n\n',
+          'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+          delta,
+          stop,
+        ),
+      ),
+    )
+
+    expect(JSON.stringify(events)).not.toContain('private chain of thought')
+    expect(JSON.stringify(events)).not.toContain('opaque-signature')
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: 'response.output_item.done',
+        data: expect.objectContaining({
+          item: {
+            id: 'item_0',
+            type: 'reasoning',
+            status: 'completed',
+            summary: [],
+          },
+        }),
+      }),
+    )
+    expect(events.at(-1)?.event).toBe('response.completed')
+  })
+
+  it('bounds discarded plaintext thinking and its signature', async () => {
     await expectStreamCode(
       [
         start,
-        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"secret prompt"}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
+        `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '1'.repeat(60) } })}\n\n`,
+        `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: '2'.repeat(41) } })}\n\n`,
       ],
-      'unsupported_reasoning_block',
+      'reasoning_content_limit_exceeded',
+      false,
+      { maxStringLength: 100 },
     )
   })
 

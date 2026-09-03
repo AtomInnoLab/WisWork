@@ -938,6 +938,7 @@ function convertResponsesRequest(
       ) {
         fail('unsupported_reasoning_input')
       }
+      if (rawItem.encrypted_content === null) continue
       const encrypted = requireString(rawItem.encrypted_content, 'unsupported_reasoning_input')
       if (encrypted === '') fail('unsupported_reasoning_input')
       append('assistant', [{ type: 'redacted_thinking', data: encrypted }])
@@ -1075,6 +1076,7 @@ async function* convertMessagesStream(
   type StrictBlock =
     | { kind: 'text'; itemId: string; text: string }
     | { kind: 'reasoning'; itemId: string; encryptedContent: string }
+    | { kind: 'discarded_reasoning'; itemId: string; bytes: number }
     | {
         kind: 'tool'
         itemId: string
@@ -1279,7 +1281,25 @@ async function* convertMessagesStream(
       const index = validateIndex(data.index, true)
       const itemId = `item_${index}`
       if (data.content_block.type === 'thinking') {
-        fail('unsupported_reasoning_block')
+        if (
+          !hasOnlyKeys(data.content_block, ['type', 'thinking']) ||
+          data.content_block.thinking !== ''
+        ) {
+          fail('unsupported_reasoning_block')
+        }
+        strict.active = { kind: 'discarded_reasoning', itemId, bytes: 0 }
+        strict.activeIndex = index
+        return [
+          sse('response.output_item.added', {
+            output_index: index,
+            item: {
+              id: itemId,
+              type: 'reasoning',
+              status: 'in_progress',
+              summary: [],
+            },
+          }),
+        ]
       }
       if (data.content_block.type === 'redacted_thinking') {
         if (!hasOnlyKeys(data.content_block, ['type', 'data'])) {
@@ -1371,6 +1391,18 @@ async function* convertMessagesStream(
       }
       const index = validateIndex(data.index, false)
       if (!isRecord(data.delta)) fail('invalid_messages_event')
+      if (
+        strict.active.kind === 'discarded_reasoning' &&
+        (data.delta.type === 'thinking_delta' || data.delta.type === 'signature_delta')
+      ) {
+        const field = data.delta.type === 'thinking_delta' ? 'thinking' : 'signature'
+        if (!hasOnlyKeys(data.delta, ['type', field])) fail('invalid_messages_event')
+        const value = requireString(data.delta[field], 'invalid_messages_event')
+        const bytes = strict.active.bytes + utf8Length(value)
+        if (bytes > limits.maxStringLength) fail('reasoning_content_limit_exceeded')
+        strict.active.bytes = bytes
+        return []
+      }
       if (strict.active.kind === 'text' && data.delta.type === 'text_delta') {
         if (!hasOnlyKeys(data.delta, ['type', 'text'])) fail('invalid_messages_event')
         const deltaText = requireString(data.delta.text, 'invalid_messages_event')
@@ -1443,6 +1475,16 @@ async function* convertMessagesStream(
           status: 'completed',
           summary: [],
           encrypted_content: block.encryptedContent,
+        }
+        strict.output.push(item)
+        return [sse('response.output_item.done', { output_index: index, item })]
+      }
+      if (block.kind === 'discarded_reasoning') {
+        const item = {
+          id: block.itemId,
+          type: 'reasoning',
+          status: 'completed',
+          summary: [],
         }
         strict.output.push(item)
         return [sse('response.output_item.done', { output_index: index, item })]

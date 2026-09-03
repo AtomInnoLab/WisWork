@@ -72,7 +72,11 @@ export function compileCanonicalSlidesCalls(input: {
     const sourceId = call.input.sourceId
     if (typeof sourceId !== 'string') return { kind: 'bypass' }
     const targetToken = input.sourceTargetTokens[`${slide}:${sourceId}`]
-    if (!targetToken) return { kind: 'clarify', question: 'presentation_target_required' }
+    // A newly-created runtime element may not have reached the durable authority map yet.
+    // This is an internal verification-availability condition, not missing user intent.
+    // Let the existing transactional tool path validate the source id instead of presenting
+    // an unanswerable "more information needed" state to the user.
+    if (!targetToken) return { kind: 'bypass' }
     if (call.name === 'set_element_style' || call.name === 'set_element_transform') {
       let added = false
       for (const [field, property] of Object.entries(canonicalProperties)) {

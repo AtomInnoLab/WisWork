@@ -69,6 +69,22 @@ function enrollment(): SlidesTaskEnrollment {
 }
 
 describe('Slides verified task controller', () => {
+  it('bypasses optional verification instead of asking the user when a runtime source is not yet authority-bound', () => {
+    expect(
+      compileCanonicalSlidesCalls({
+        calls: [call],
+        authority: {
+          documentToken: 'doc-1',
+          sessionToken: 'session-1',
+          revision: contract.baseRevision,
+          slides: [{ number: 1, slideToken: 'slide-1', elements: [] }],
+        },
+        sourceTargetTokens: {},
+        taskId: 'new-deck-style',
+      }),
+    ).toEqual({ kind: 'bypass' })
+  })
+
   it('deduplicates repeated source targets before authoritative enrollment inspection', async () => {
     const inspect = vi.fn(async (request: { sourceTargets?: unknown[] }) => {
       expect(request.sourceTargets).toEqual([{ slide: 1, sourceId: 'runtime-1' }])

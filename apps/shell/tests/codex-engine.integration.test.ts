@@ -57,11 +57,19 @@ function finalResponse(): Response {
   )
 }
 
-function toolResponse(code: string): Response {
+function toolResponse(code: string, reasoning: 'encrypted' | 'plaintext' = 'encrypted'): Response {
   return new Response(
     [
       'data: {"type":"message_start","message":{"id":"msg_tool","model":"openai/gpt-5.6-sol","usage":{"input_tokens":1}}}\n\n',
-      'data: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"opaque-production-reasoning"}}\n\n',
+      ...(reasoning === 'encrypted'
+        ? [
+            'data: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"opaque-production-reasoning"}}\n\n',
+          ]
+        : [
+            'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"private production reasoning"}}\n\n',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"opaque-signature"}}\n\n',
+          ]),
       'data: {"type":"content_block_stop","index":0}\n\n',
       'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"custom_7","name":"exec","input":{}}}\n\n',
       `data: ${JSON.stringify({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n`,
@@ -208,6 +216,7 @@ describe('real 0.147 production engine bridge', () => {
         expect(match?.[1]).toBeTruthy()
         return toolResponse(
           `text(await tools.mcp__wiswork__wiswork_read(${JSON.stringify({ capability: match![1], callId: 'read-1', toolName: 'read_blocks', input: {} })}))`,
+          'plaintext',
         )
       })
       const engine = await createProductionCodexBootstrap({
