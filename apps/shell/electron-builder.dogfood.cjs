@@ -2,6 +2,7 @@
 delete process.env.WISWORK_UPDATE_PROVIDER
 delete process.env.WISWORK_UPDATE_URL
 delete process.env.WISWORK_MAC_X64
+delete process.env.WISWORK_TECTONIC_SOURCE
 process.env.WISWORK_UNSIGNED_MAC_BUILD = '1'
 const base = require('./electron-builder.cjs')
 const { existsSync } = require('node:fs')
