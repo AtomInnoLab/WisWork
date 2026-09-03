@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
+import recording from '../../../packages/codex-bridge/tests/fixtures/protocol-redacted-max-tokens.json'
 import {
   EnhancedDiagnosticsStore,
   probeWisUsageEventStream,
@@ -26,6 +27,32 @@ function fixture(now = 100) {
 }
 
 describe('EnhancedDiagnosticsStore', () => {
+  it('exports only bounded validated recordings and projects unknown metadata away', () => {
+    const { store } = fixture()
+    for (let i = 0; i < 6; i++) store.recordProtocol(recording)
+    store.recordProtocol({ ...recording, secret: 'PRIVATE JWT' })
+    const report = store.exportReport({
+      appVersion: '0.1.0',
+      componentVersion: '0.2.0',
+      platform: 'darwin',
+      arch: 'arm64',
+      secret: { path: '/private/data' },
+    } as any)
+    expect(JSON.parse(report).protocolRecordings).toHaveLength(4)
+    expect(report).not.toMatch(/PRIVATE|JWT|private|secret/)
+    const withCheck = store.exportReport(
+      { appVersion: '0.1.0', componentVersion: '0.2.0', platform: 'darwin', arch: 'arm64' },
+      {
+        diagnosticId: ids[0],
+        startedAt: 0,
+        endedAt: 1,
+        status: 'passed',
+        checks: [{ layer: 'runtime', status: 'passed', secret: 'PRIVATE' }],
+        secret: 'PRIVATE',
+      } as any,
+    )
+    expect(withCheck).not.toContain('PRIVATE')
+  })
   it('validates WisUsage data-only SSE framing without retaining response content', async () => {
     await expect(
       probeWisUsageEventStream(

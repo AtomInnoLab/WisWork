@@ -3,6 +3,7 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo, Socket } from 'node:net'
 import { TextDecoder } from 'node:util'
 import type { MessagesRequest, PreparedResponsesTurn } from './types.js'
+import { ProtocolRecorder, type ProtocolRecording } from './protocol-recording.js'
 
 const HOST = '127.0.0.1'
 const PATH = '/v1/responses'
@@ -36,6 +37,7 @@ export interface ResponsesBridgeOptions {
   /** Host-owned, one-use Task 2 carrier closure. Never derive authority from request metadata. */
   readonly prepareTurn: (input: unknown) => PreparedResponsesTurn
   readonly diagnostics?: (code: string) => void
+  readonly onProtocolRecording?: (recording: ProtocolRecording) => void
   readonly onDeterministicFailure?: (code: string) => void
   readonly maxBodyBytes?: number
   readonly maxActiveTurns?: number
@@ -358,9 +360,11 @@ export async function startResponsesBridge(
           'content-type': 'text/event-stream; charset=utf-8',
           'x-content-type-options': 'nosniff',
         })
+        const recorder = options.onProtocolRecording ? new ProtocolRecorder() : undefined
         try {
           for await (const frame of turn.messagesStreamToResponses(
             upstreamChunks(upstream.body, controller.signal, maxStreamIdleMs),
+            recorder,
           )) {
             if (controller.signal.aborted) throw new RequestEndedError()
             if (!response.write(frame))
@@ -387,6 +391,12 @@ export async function startResponsesBridge(
           diagnostic(protocolCode ? `responses_stream_${protocolCode}` : 'responses_stream_invalid')
           cancelResponse(upstream)
           if (!response.destroyed) response.destroy()
+        } finally {
+          try {
+            if (recorder) options.onProtocolRecording?.(recorder.snapshot())
+          } catch {
+            /* Diagnostics are fail-open. */
+          }
         }
       } catch {
         if (!response.headersSent) sendError(response, 500, 'bridge_error')

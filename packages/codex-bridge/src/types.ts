@@ -102,6 +102,7 @@ export interface PreparedResponsesTurn {
   readonly messagesRequest: MessagesRequest
   readonly messagesStreamToResponses: (
     chunks: AsyncIterable<string | Uint8Array>,
+    recorder?: import('./protocol-recording.js').ProtocolFrameObserver,
   ) => AsyncGenerator<string>
 }
 
