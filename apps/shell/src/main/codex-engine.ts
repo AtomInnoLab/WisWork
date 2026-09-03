@@ -86,6 +86,7 @@ export function createProductionCodexBootstrap(
   return {
     async start({ executablePath, onCrash }): Promise<CodexRuntimeEngine> {
       const resolver = new CodexTurnResolver(options.diagnostics)
+      let rejectDeterministicFailure: (code: string) => void = () => undefined
       let bridge: Awaited<ReturnType<typeof startResponsesBridge>> | undefined
       let gateway: Awaited<ReturnType<typeof startDynamicMcpGateway>> | undefined
       let manager: CodexProcessManager | undefined
@@ -95,6 +96,7 @@ export function createProductionCodexBootstrap(
           fetchWithAuth: options.fetchWithAuth,
           prepareTurn: resolver.prepare,
           diagnostics: options.diagnostics,
+          onDeterministicFailure: (code) => rejectDeterministicFailure(code),
         })
         gateway = await startDynamicMcpGateway(options.diagnostics)
         manager = new CodexProcessManager({
@@ -139,6 +141,22 @@ export function createProductionCodexBootstrap(
           active?: ActiveTurn
         }
       >()
+      rejectDeterministicFailure = () => {
+        const activeTurns = [...documents.values()].flatMap((document) =>
+          document.active ? [document.active] : [],
+        )
+        // The bridge has no document identity. A single active turn is unambiguous; with
+        // concurrent turns, let each app-server stream fail independently.
+        if (activeTurns.length !== 1) return
+        const active = activeTurns[0]!
+        active.cancelled = true
+        active.settle('failed', new Error('enhanced_response_incompatible'))
+        if (active.threadId && active.turnId) {
+          startBestEffortCodexInterrupt(() =>
+            client.interruptTurn(active.threadId!, active.turnId!),
+          )
+        }
+      }
       const emit = (
         listener: ((event: CodexRuntimeEngineEvent) => void) | undefined,
         event: CodexRuntimeEngineEvent,

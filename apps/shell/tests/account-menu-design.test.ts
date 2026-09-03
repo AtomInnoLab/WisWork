@@ -26,4 +26,14 @@ describe('account menu information hierarchy', () => {
     expect(home).toContain('office-connection-row')
     expect(home).toContain('office-connection-panel')
   })
+
+  it('offers a secondary privacy-safe diagnostic center with self-check and export', () => {
+    const home = read('apps/shell/src/renderer/src/Home.tsx')
+    expect(home).toContain('diagnostic-center-toggle')
+    expect(home).toContain('.selfCheck()')
+    expect(home).toContain('.copyDiagnosticId(task.diagnosticId)')
+    expect(home).toContain('.exportDiagnostics()')
+    expect(home).toContain('报告不包含文档内容、提示词、密钥或本机路径。')
+    expect(home).not.toContain('task.events.map')
+  })
 })

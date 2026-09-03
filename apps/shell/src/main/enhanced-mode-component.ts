@@ -4,7 +4,9 @@ import type {
 } from '@wiswork/codex-bridge'
 import {
   ENHANCED_MODE_CHANNELS,
+  type EnhancedDiagnosticsSummary,
   type EnhancedModeStatus,
+  type EnhancedSelfCheckPublicResult,
   type ProductAgentMode,
 } from '../shared/enhanced-mode-api'
 
@@ -39,6 +41,13 @@ export interface RegisterEnhancedModeComponentIpcOptions {
   readonly authorizeEnhanced: () => Promise<boolean>
   readonly policyAllowed: () => boolean
   readonly enhancedRuntimeAvailable: () => boolean
+  readonly diagnostics?: Readonly<{
+    summary(): EnhancedDiagnosticsSummary
+    selfCheck(): Promise<EnhancedSelfCheckPublicResult>
+    enableDetailed(): EnhancedDiagnosticsSummary
+    copyId(diagnosticId: string): void
+    export(): Promise<'saved' | 'cancelled'>
+  }>
   readonly metadata?: Readonly<{
     platform: string
     bytes: number
@@ -192,6 +201,38 @@ export function registerEnhancedModeComponentIpc(
     }
     options.writeSavedMode(mode)
     return status()
+  })
+  options.ipcMain.handle(ENHANCED_MODE_CHANNELS.diagnostics, (event, ...args) => {
+    trusted(event.sender)
+    if (args.length !== 0 || !options.diagnostics) publicFail('enhanced_mode_invalid_request')
+    return options.diagnostics.summary()
+  })
+  options.ipcMain.handle(ENHANCED_MODE_CHANNELS.selfCheck, async (event, ...args) => {
+    trusted(event.sender)
+    if (args.length !== 0 || !options.diagnostics) publicFail('enhanced_mode_invalid_request')
+    return options.diagnostics.selfCheck()
+  })
+  options.ipcMain.handle(ENHANCED_MODE_CHANNELS.enableDetailed, (event, ...args) => {
+    trusted(event.sender)
+    if (args.length !== 0 || !options.diagnostics) publicFail('enhanced_mode_invalid_request')
+    return options.diagnostics.enableDetailed()
+  })
+  options.ipcMain.handle(ENHANCED_MODE_CHANNELS.copyDiagnosticId, (event, ...args) => {
+    trusted(event.sender)
+    if (
+      args.length !== 1 ||
+      typeof args[0] !== 'string' ||
+      !/^diag_[A-Za-z0-9_-]{24}$/.test(args[0]) ||
+      !options.diagnostics
+    ) {
+      publicFail('enhanced_mode_invalid_request')
+    }
+    options.diagnostics.copyId(args[0] as string)
+  })
+  options.ipcMain.handle(ENHANCED_MODE_CHANNELS.exportDiagnostics, async (event, ...args) => {
+    trusted(event.sender)
+    if (args.length !== 0 || !options.diagnostics) publicFail('enhanced_mode_invalid_request')
+    return options.diagnostics.export()
   })
 
   return {

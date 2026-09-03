@@ -43,6 +43,19 @@ function fixture(
     savedMode = mode
   })
   const sender = new FakeSender()
+  const diagnostics = {
+    summary: vi.fn(() => ({ recent: [], detailedUntil: null })),
+    selfCheck: vi.fn(async () => ({
+      diagnosticId: 'diag_000000000000000000000000',
+      startedAt: 1,
+      endedAt: 2,
+      status: 'passed' as const,
+      checks: [],
+    })),
+    enableDetailed: vi.fn(() => ({ recent: [], detailedUntil: 1_800_000 })),
+    copyId: vi.fn(),
+    export: vi.fn(async () => 'saved' as const),
+  }
   const controller = registerEnhancedModeComponentIpc({
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as never) },
     component,
@@ -54,12 +67,14 @@ function fixture(
     authorizeEnhanced: async () => options.signedIn !== false,
     policyAllowed: () => options.policyAllowed !== false,
     enhancedRuntimeAvailable: () => true,
+    diagnostics,
   })
   return {
     handlers,
     component,
     sender,
     controller,
+    diagnostics,
     writeMode,
     get savedMode() {
       return savedMode
@@ -198,5 +213,29 @@ describe('Enhanced mode optional component IPC', () => {
     await expect(
       blocked.handlers.get(ENHANCED_MODE_CHANNELS.status)!({ sender: blocked.sender }),
     ).resolves.toMatchObject({ lifecycleState: 'blocked_by_policy' })
+  })
+
+  it('exposes diagnostics only through trusted bounded commands', async () => {
+    const f = fixture()
+    expect(f.handlers.get(ENHANCED_MODE_CHANNELS.diagnostics)!({ sender: f.sender })).toEqual({
+      recent: [],
+      detailedUntil: null,
+    })
+    await expect(
+      f.handlers.get(ENHANCED_MODE_CHANNELS.selfCheck)!({ sender: f.sender }),
+    ).resolves.toMatchObject({ status: 'passed' })
+    expect(
+      f.handlers.get(ENHANCED_MODE_CHANNELS.copyDiagnosticId)!(
+        { sender: f.sender },
+        'diag_000000000000000000000000',
+      ),
+    ).toBeUndefined()
+    expect(f.diagnostics.copyId).toHaveBeenCalledWith('diag_000000000000000000000000')
+    expect(() =>
+      f.handlers.get(ENHANCED_MODE_CHANNELS.copyDiagnosticId)!({ sender: f.sender }, '../secret'),
+    ).toThrow('enhanced_mode_invalid_request')
+    await expect(
+      f.handlers.get(ENHANCED_MODE_CHANNELS.exportDiagnostics)!({ sender: new FakeSender() }),
+    ).rejects.toThrow('enhanced_mode_untrusted_request')
   })
 })

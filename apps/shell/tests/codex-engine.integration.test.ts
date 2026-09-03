@@ -73,6 +73,60 @@ function toolResponse(code: string): Response {
 
 describe('real 0.147 production engine bridge', () => {
   realIt(
+    'fails the first deterministic provider protocol error without waiting for retry timeout',
+    async () => {
+      const diagnostics: string[] = []
+      const upstream = vi.fn(
+        async () =>
+          new Response('data: {"type":"unknown_private_shape"}\n\n', {
+            headers: { 'content-type': 'text/event-stream' },
+          }),
+      )
+      const engine = await createProductionCodexBootstrap({
+        fetchWithAuth: upstream,
+        diagnostics: (code) => diagnostics.push(code),
+      }).start({ executablePath: executable!, onCrash: vi.fn() })
+      const session = {
+        identity: {
+          ownerId: 'owner',
+          host: 'docs',
+          documentId: 'invalid-stream',
+          sessionId: 'session',
+          generation: 1,
+        },
+        credentials: { sessionId: 'session', secret: 'secret' },
+        listTools: () => [],
+        callTool: vi.fn(),
+        cancelAll: vi.fn(() => 0),
+        close: vi.fn(),
+      } as any
+      engine.registerDocument!({
+        ownerId: 'owner',
+        documentId: 'invalid-stream',
+        host: 'docs',
+        generation: 1,
+        session,
+      })
+      try {
+        const started = Date.now()
+        await expect(
+          engine.startTurn({
+            documentId: 'invalid-stream',
+            host: 'docs',
+            generation: 1,
+            text: 'Reply OK.',
+          }),
+        ).rejects.toThrow('enhanced_response_incompatible')
+        expect(Date.now() - started).toBeLessThan(5_000)
+        expect(diagnostics).toContain('responses_stream_unsupported_messages_event')
+      } finally {
+        await engine.close()
+      }
+    },
+    15_000,
+  )
+
+  realIt(
     'holds the real provider terminal until a pending host proposal settles',
     async () => {
       let providerCalls = 0

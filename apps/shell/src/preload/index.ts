@@ -351,6 +351,16 @@ const enhancedModeApi: EnhancedModeApi = {
       return Promise.reject(new Error('Invalid mode.'))
     return ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.setMode, mode) as Promise<EnhancedModeStatus>
   },
+  diagnostics: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.diagnostics),
+  selfCheck: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.selfCheck),
+  enableDetailed: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.enableDetailed),
+  copyDiagnosticId(diagnosticId) {
+    if (!/^diag_[A-Za-z0-9_-]{24}$/.test(diagnosticId)) {
+      return Promise.reject(new Error('Invalid diagnostic ID.'))
+    }
+    return ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.copyDiagnosticId, diagnosticId)
+  },
+  exportDiagnostics: () => ipcRenderer.invoke(ENHANCED_MODE_CHANNELS.exportDiagnostics),
 }
 
 contextBridge.exposeInMainWorld('aiOfficeEnhancedMode', enhancedModeApi)
