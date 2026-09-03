@@ -320,6 +320,37 @@ describe('bounded Anthropic SSE state machine', () => {
     )
   })
 
+  it('accepts bounded OpenAI reasoning token usage from the normalized WisUsage stream', async () => {
+    const events = await collect(
+      noToolTurn().messagesStreamToResponses(
+        chunks(
+          start,
+          'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"private"}}\n\n',
+          'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+          'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3,"output_tokens_details":{"reasoning_tokens":2}}}\n\n',
+          stop,
+        ),
+      ),
+    )
+
+    expect(JSON.stringify(events)).not.toContain('private')
+    expect(events.at(-1)?.data.response.usage.output_tokens_details).toEqual({
+      reasoning_tokens: 2,
+    })
+    expect(events.at(-1)?.event).toBe('response.completed')
+  })
+
+  it('rejects ambiguous normalized reasoning token usage', async () => {
+    await expectStreamCode(
+      [
+        start,
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3,"output_tokens_details":{"thinking_tokens":1,"reasoning_tokens":2}}}\n\n',
+      ],
+      'invalid_messages_usage',
+      false,
+    )
+  })
+
   it.each([
     ['non-string thinking', { type: 'thinking', thinking: null }],
     ['structured signature', { type: 'thinking', thinking: '', signature: { value: 'secret' } }],
