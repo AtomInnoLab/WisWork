@@ -26,6 +26,7 @@ export type DiagnosticSafeCode =
   | 'auth_required'
   | 'runtime_starting'
   | 'runtime_ready'
+  | 'runtime_event'
   | 'runtime_unavailable'
   | 'runtime_crashed'
   | 'upstream_started'
@@ -53,6 +54,7 @@ const SAFE_CODES = new Set<DiagnosticSafeCode>([
   'auth_required',
   'runtime_starting',
   'runtime_ready',
+  'runtime_event',
   'runtime_unavailable',
   'runtime_crashed',
   'upstream_started',
@@ -252,6 +254,8 @@ function safeDiagnostic(code: string): {
     }
   if (code === 'enhanced_turn_timeout')
     return { component: 'host', phase: 'turn', outcome: 'failed', code: 'turn_timeout' }
+  if (code === 'enhanced_turn_failed')
+    return { component: 'host', phase: 'turn', outcome: 'failed', code: 'turn_failed' }
   if (code === 'codex_turn_started')
     return { component: 'runtime', phase: 'turn', outcome: 'started', code: 'turn_started' }
   if (code === 'codex_turn_completed')
@@ -277,11 +281,22 @@ function safeDiagnostic(code: string): {
       outcome: 'failed',
       code: 'runtime_unavailable',
     }
+  if (
+    code === 'app_server_error' ||
+    code === 'codex_error' ||
+    code === 'app_server_thread_status_systemError'
+  )
+    return {
+      component: 'runtime',
+      phase: 'protocol',
+      outcome: 'failed',
+      code: 'unknown_failure',
+    }
   return {
     component: 'runtime',
     phase: boundedPhase(code),
-    outcome: 'failed',
-    code: 'unknown_failure',
+    outcome: 'started',
+    code: 'runtime_event',
   }
 }
 
