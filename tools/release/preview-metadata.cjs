@@ -1,5 +1,5 @@
 function previewMetadata({ pr, commit, version, builtAt = new Date().toISOString() }) {
-  if (!/^[1-9][0-9]{0,8}$/.test(pr ?? '')) throw new Error('Invalid preview PR number')
+  if (!/^[1-9][0-9]{0,5}$/.test(pr ?? '')) throw new Error('Invalid preview PR number')
   if (!/^[a-f0-9]{40}$/.test(commit ?? '')) throw new Error('Invalid preview commit')
   if (!/^\d+\.\d+\.\d+$/.test(version ?? '')) throw new Error('Invalid base version')
   if (typeof builtAt !== 'string' || !Number.isFinite(Date.parse(builtAt))) {

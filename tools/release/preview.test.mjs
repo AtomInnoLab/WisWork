@@ -18,7 +18,7 @@ test('preview identity is isolated and provenance is validated', () => {
   assert.equal(metadata.appId, 'com.atominnolab.wiswork.preview.pr123')
   assert.equal(metadata.version, '0.6.14-pr123.gaaaaaaa')
   assert.equal(metadata.iteration.mode, 'preview')
-  for (const pr of ['0', '-1', '123/../../', '01', '${{ secrets.TOKEN }}']) {
+  for (const pr of ['0', '-1', '123/../../', '01', '1000000', '${{ secrets.TOKEN }}']) {
     assert.throws(() => previewMetadata({ pr, commit: 'a'.repeat(40), version: '0.6.14' }))
   }
   assert.throws(() => previewMetadata({ pr: '1', commit: 'main', version: '0.6.14' }))

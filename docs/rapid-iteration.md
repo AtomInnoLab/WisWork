@@ -11,7 +11,7 @@ npm run dogfood:mac -- --no-launch
 npm run dogfood:mac
 ```
 
-The first build needs Node 22.12+, Rust, Xcode command-line tools and network access for locked dependencies/native assets. Warm builds reuse matching source/output fingerprints; changes to shared packages conservatively rebuild the required editors. A cold build is not expected to meet the 1–3 minute warm-build target. Measure the printed duration on your machine before promising a latency target.
+The first build needs Node 22.12+, Rust 1.88+, Xcode command-line tools and network access for locked dependencies/native assets. If Rust 1.88.0 is already installed but the default is older, use `RUSTUP_TOOLCHAIN=1.88.0 npm run dogfood:mac` for this command only; no global default change is needed. Warm builds reuse matching source/output fingerprints; changes to shared packages conservatively rebuild the required editors. A cold build is not expected to meet the 1–3 minute warm-build target. Measure the printed duration on your machine before promising a latency target.
 
 The app is **WisWork Dogfood**, in `apps/shell/release-dogfood`, not `/Applications/WisWork.app`. Its profile is separate from both production and `WisWork Dev`. No production data migration, update feed or file association takeover is allowed. Close the previous Dogfood instance before relaunching to avoid its single-instance lock; never kill the production app to clear that lock. Use test documents. Existing production credentials are not copied. Verified components already installed in that profile can be reused by the existing component manager; optional binaries are not bundled into the app.
 
