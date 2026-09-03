@@ -136,7 +136,7 @@ describe('responsesToMessages', () => {
       model: 'openai/gpt-5.6-sol',
       system: 'System from Codex',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }] }],
-      max_tokens: 8192,
+      max_tokens: 32_768,
       stream: true,
       tools: [
         {

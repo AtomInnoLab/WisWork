@@ -213,6 +213,8 @@ export const DEFAULT_PROTOCOL_LIMITS: Readonly<ProtocolLimits> = Object.freeze({
   maxTotalOutput: 32_000_000,
 })
 
+const DEFAULT_MODEL_OUTPUT_TOKENS = 32_768
+
 function resolveLimits(overrides: Partial<ProtocolLimits> = {}): ProtocolLimits {
   let descriptors: PropertyDescriptorMap
   try {
@@ -1023,9 +1025,9 @@ function convertResponsesRequest(
   const converted: MessagesRequest = {
     model: 'openai/gpt-5.6-sol',
     messages,
-    // Match the Standard Agent transport default. Presentation proposals routinely exceed 4K
-    // output tokens once encrypted reasoning and a bounded tool call share the same response.
-    max_tokens: request.max_output_tokens ?? 8192,
+    // Complex presentation turns may contain encrypted reasoning plus a bounded tool call.
+    // Keep ample headroom while retaining the explicit 128K protocol ceiling above.
+    max_tokens: request.max_output_tokens ?? DEFAULT_MODEL_OUTPUT_TOKENS,
     stream: true,
   }
   const systemParts = [request.instructions, ...developerInstructions].filter(
