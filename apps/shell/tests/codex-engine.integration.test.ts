@@ -6,6 +6,7 @@ import { suspendToolExecution } from '@wiswork/agent-core'
 import type { RenderSlide, ShapeRenderNode } from '@wiswork/pptx-render'
 import { createSlidesSkill } from '../../slides/src/renderer/ai/slides-skill'
 import { executePreparedGeometryFamilyTransaction } from '../../slides/src/renderer/ai/presentation-geometry-transactions'
+import { writePresentationE2eArtifact } from '../../slides/tests/presentation-e2e-artifact'
 import {
   createProductionCodexBootstrap,
   safeTurnFailure,
@@ -705,6 +706,12 @@ describe('real 0.147 production engine bridge', () => {
         expect(new Set(transactionIds).size).toBe(3)
         expect(events.at(-1)).toEqual({ type: 'terminal', status: 'completed' })
         expect(diagnostics).toContain('gateway_tool_call_completed')
+        const artifact = await writePresentationE2eArtifact(
+          slides,
+          process.env.WISWORK_ENHANCED_PPT_E2E_OUTPUT ?? '/tmp/wiswork-enhanced-ppt-e2e.pptx',
+        )
+        expect(artifact.slideCount).toBe(3)
+        expect(artifact.text).toMatch(/新人入职培训/)
       } finally {
         await engine.close()
         delete (globalThis as any).window

@@ -5,6 +5,7 @@ import type { RenderSlide, ShapeRenderNode } from '@wiswork/pptx-render'
 import { describe, expect, it } from 'vitest'
 import { createSlidesSkill } from '../src/renderer/ai/slides-skill'
 import { executePreparedGeometryFamilyTransaction } from '../src/renderer/ai/presentation-geometry-transactions'
+import { writePresentationE2eArtifact } from './presentation-e2e-artifact'
 
 const token = process.env.WISWORK_REAL_WISUSAGE_TOKEN
 const liveIt = token ? it : it.skip
@@ -255,6 +256,12 @@ describe('Standard Slides live presentation workflow', () => {
         .join('\n')
       expect(visibleText).toMatch(/新人|入职|欢迎/)
       expect(transactionIds.length, `live tool sequence: ${calls.join(',')}`).toBeGreaterThan(0)
+      const artifact = await writePresentationE2eArtifact(
+        slides,
+        process.env.WISWORK_STANDARD_PPT_E2E_OUTPUT ?? '/tmp/wiswork-standard-ppt-e2e.pptx',
+      )
+      expect(artifact.slideCount).toBe(3)
+      expect(artifact.text).toMatch(/新人|入职|欢迎/)
     },
     120_000,
   )
