@@ -262,6 +262,50 @@ describe('bounded Anthropic SSE state machine', () => {
     expect(events.at(-1)?.event).toBe('response.completed')
   })
 
+  it.each([
+    [
+      'inline thinking',
+      { type: 'thinking', thinking: 'private inline reasoning' },
+      [] as Array<Record<string, unknown>>,
+    ],
+    [
+      'inline thinking and signature',
+      { type: 'thinking', thinking: 'private inline reasoning', signature: 'inline-signature' },
+      [] as Array<Record<string, unknown>>,
+    ],
+    [
+      'normalized null signature',
+      { type: 'thinking', thinking: '', signature: null },
+      [{ type: 'thinking_delta', thinking: 'private normalized reasoning' }],
+    ],
+    [
+      'mixed inline and delta thinking',
+      { type: 'thinking', thinking: 'private prefix', signature: '' },
+      [
+        { type: 'thinking_delta', thinking: ' private suffix' },
+        { type: 'signature_delta', signature: 'delta-signature' },
+      ],
+    ],
+  ])('accepts and fully redacts %s', async (_label, contentBlock, deltas) => {
+    const stream = [
+      start,
+      `event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: contentBlock })}\n\n`,
+      ...deltas.map(
+        (reasoningDelta) =>
+          `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: reasoningDelta })}\n\n`,
+      ),
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      delta,
+      stop,
+    ]
+    const events = await collect(noToolTurn().messagesStreamToResponses(chunks(...stream)))
+
+    const serialized = JSON.stringify(events)
+    expect(serialized).not.toContain('private')
+    expect(serialized).not.toContain('signature')
+    expect(events.at(-1)?.event).toBe('response.completed')
+  })
+
   it('bounds discarded plaintext thinking and its signature', async () => {
     await expectStreamCode(
       [
@@ -273,6 +317,21 @@ describe('bounded Anthropic SSE state machine', () => {
       'reasoning_content_limit_exceeded',
       false,
       { maxStringLength: 100 },
+    )
+  })
+
+  it.each([
+    ['non-string thinking', { type: 'thinking', thinking: null }],
+    ['structured signature', { type: 'thinking', thinking: '', signature: { value: 'secret' } }],
+    ['unknown field', { type: 'thinking', thinking: '', private: 'secret' }],
+  ])('rejects malformed plaintext reasoning: %s', async (_label, contentBlock) => {
+    await expectStreamCode(
+      [
+        start,
+        `event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: contentBlock })}\n\n`,
+      ],
+      'unsupported_reasoning_block',
+      false,
     )
   })
 

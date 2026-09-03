@@ -1282,12 +1282,21 @@ async function* convertMessagesStream(
       const itemId = `item_${index}`
       if (data.content_block.type === 'thinking') {
         if (
-          !hasOnlyKeys(data.content_block, ['type', 'thinking']) ||
-          data.content_block.thinking !== ''
+          !hasOnlyKeys(data.content_block, ['type', 'thinking', 'signature']) ||
+          typeof data.content_block.thinking !== 'string' ||
+          (data.content_block.signature !== undefined &&
+            data.content_block.signature !== null &&
+            typeof data.content_block.signature !== 'string')
         ) {
           fail('unsupported_reasoning_block')
         }
-        strict.active = { kind: 'discarded_reasoning', itemId, bytes: 0 }
+        const bytes =
+          utf8Length(data.content_block.thinking) +
+          (typeof data.content_block.signature === 'string'
+            ? utf8Length(data.content_block.signature)
+            : 0)
+        if (bytes > limits.maxStringLength) fail('reasoning_content_limit_exceeded')
+        strict.active = { kind: 'discarded_reasoning', itemId, bytes }
         strict.activeIndex = index
         return [
           sse('response.output_item.added', {
