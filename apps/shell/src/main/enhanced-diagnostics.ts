@@ -163,6 +163,32 @@ export interface EnhancedDiagnosticExportMetadata {
   readonly componentVersion: string
   readonly platform: 'darwin' | 'win32' | 'linux'
   readonly arch: 'arm64' | 'x64'
+  readonly build?: unknown
+}
+
+function safeBuildMetadata(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const build = value as Record<string, unknown>
+  if (
+    typeof build.commit !== 'string' ||
+    !/^[a-f0-9]{40}$/.test(build.commit) ||
+    (build.mode !== 'dogfood' && build.mode !== 'preview') ||
+    (build.pr !== undefined &&
+      (!Number.isSafeInteger(build.pr) ||
+        (build.pr as number) < 1 ||
+        (build.pr as number) > 999999)) ||
+    typeof build.builtAt !== 'string' ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(build.builtAt) ||
+    !Number.isFinite(Date.parse(build.builtAt)) ||
+    new Date(build.builtAt).toISOString() !== build.builtAt
+  )
+    return undefined
+  return {
+    commit: build.commit,
+    mode: build.mode,
+    ...(build.pr === undefined ? {} : { pr: build.pr as number }),
+    builtAt: build.builtAt,
+  }
 }
 
 const copy = <T>(value: T): T => structuredClone(value)
@@ -405,7 +431,7 @@ export class EnhancedDiagnosticsStore {
   readonly #tasks: MutableTask[]
   readonly #active = new Set<string>()
   readonly #systemEvents: EnhancedDiagnosticEvent[] = []
-  readonly #protocolRecordings: ProtocolRecording[] = []
+  readonly #protocolRecordings: { recording: ProtocolRecording; recordedAt: number }[] = []
   #sequence = 0
   #detailedUntil = 0
   #lastSelfCheck: EnhancedSelfCheckResult | undefined
@@ -468,7 +494,10 @@ export class EnhancedDiagnosticsStore {
   /** Session-memory only; exported explicitly, never persist raw protocol payloads. */
   recordProtocol(value: unknown): void {
     try {
-      this.#protocolRecordings.push(parseProtocolRecording(value))
+      const recording = parseProtocolRecording(value)
+      const recordedAt = this.#now()
+      if (!Number.isSafeInteger(recordedAt) || recordedAt < 0) return
+      this.#protocolRecordings.push({ recording, recordedAt })
       this.#protocolRecordings.splice(0, Math.max(0, this.#protocolRecordings.length - 4))
     } catch {
       /* Reject untrusted recordings without affecting the task. */
@@ -522,11 +551,14 @@ export class EnhancedDiagnosticsStore {
     metadata: EnhancedDiagnosticExportMetadata,
     selfCheck: EnhancedSelfCheckResult | undefined = this.#lastSelfCheck,
   ) {
+    const build = safeBuildMetadata(metadata.build)
     const report = {
       schema: 'wiswork-enhanced-diagnostics/v1',
       generatedAt: this.#now(),
       metadata: {
-        appVersion: /^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(metadata.appVersion)
+        appVersion: /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:-pr[1-9]\d{0,5}\.g[a-f0-9]{7,40})?$/.test(
+          metadata.appVersion,
+        )
           ? metadata.appVersion
           : 'unknown',
         componentVersion: /^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(metadata.componentVersion)
@@ -536,11 +568,18 @@ export class EnhancedDiagnosticsStore {
           ? metadata.platform
           : 'unknown',
         arch: ['arm64', 'x64'].includes(metadata.arch) ? metadata.arch : 'unknown',
+        ...(build ? { build } : {}),
       },
       detailedUntil: this.#detailedUntil > this.#now() ? this.#detailedUntil : null,
       tasks: this.recent(),
       systemEvents: copy(this.#systemEvents),
-      protocolRecordings: copy(this.#protocolRecordings),
+      protocolRecordings: this.#protocolRecordings.map(({ recording }) => copy(recording)),
+      // Completion order, oldest first. Concurrent requests cannot be attributed to host tasks.
+      protocolRecordingInfo: this.#protocolRecordings.map(({ recordedAt }, index) => ({
+        index,
+        recordedAt,
+        association: 'unattributed' as const,
+      })),
       ...(selfCheck
         ? {
             selfCheck: {
