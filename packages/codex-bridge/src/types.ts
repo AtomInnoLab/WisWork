@@ -53,6 +53,13 @@ export type ResponsesInputItem =
       status?: 'completed'
     }
   | {
+      type: 'reasoning'
+      id: string
+      summary: []
+      content: null
+      encrypted_content: string
+    }
+  | {
       type: 'additional_tools'
       role: 'developer'
       tools: Array<Record<string, unknown>>

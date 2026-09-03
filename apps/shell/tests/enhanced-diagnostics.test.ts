@@ -59,6 +59,19 @@ describe('EnhancedDiagnosticsStore', () => {
     expect(JSON.stringify(task)).not.toContain('/Users/')
   })
 
+  it('distinguishes safe stream failure categories without retaining model content', () => {
+    const { store } = fixture()
+    const id = store.beginTask('slides')
+    store.record('responses_stream_unsupported_reasoning_block')
+    store.record('responses_stream_invalid_custom_tool_input')
+    store.finishTask(id, 'failed')
+
+    expect(store.recent()[0]?.events.map((event) => event.code)).toEqual(
+      expect.arrayContaining(['stream_reasoning_unsupported', 'stream_tool_input_invalid']),
+    )
+    expect(JSON.stringify(store.recent()[0])).not.toContain('reasoning_block')
+  })
+
   it('keeps ten tasks, bounds detailed events, and preserves the first safe state after restart', () => {
     const test = fixture()
     test.store.enableDetailed()

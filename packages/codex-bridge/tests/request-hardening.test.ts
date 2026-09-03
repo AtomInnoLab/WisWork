@@ -133,13 +133,45 @@ describe('strict Responses request conversion', () => {
     expect(() => prepareResponsesTurn(request, limits)).toThrowError(code)
   })
 
-  it('rejects reasoning history instead of inventing a thinking dialect', () => {
+  it('round-trips only the exact encrypted reasoning history shape', () => {
+    const turn = prepareResponsesTurn({
+      model: 'gpt-5.6-sol',
+      input: [
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x' }] },
+        {
+          type: 'reasoning',
+          id: 'item_0',
+          summary: [],
+          content: null,
+          encrypted_content: 'opaque-reasoning',
+        },
+      ],
+    })
+    expect(turn.messagesRequest.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'x' }] },
+      {
+        role: 'assistant',
+        content: [{ type: 'redacted_thinking', data: 'opaque-reasoning' }],
+      },
+    ])
+  })
+
+  it.each([
+    { type: 'reasoning', encrypted_content: 'secret' },
+    {
+      type: 'reasoning',
+      id: 'item_0',
+      summary: [{ type: 'summary_text', text: 'secret prompt' }],
+      content: null,
+      encrypted_content: 'opaque-reasoning',
+    },
+  ])('rejects unsupported reasoning history variants without exposing content', (reasoning) => {
     expectCode(
       {
         model: 'gpt-5.6-sol',
         input: [
           { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x' }] },
-          { type: 'reasoning', encrypted_content: 'secret' },
+          reasoning,
         ],
       },
       'unsupported_reasoning_input',
