@@ -165,6 +165,36 @@ describe('Office Agent workspace UI', () => {
     expect(workspaceMarkup({}, undefined, 'unknown')).toContain('WisWork AI')
   })
 
+  it('uses the desktop Slides conversation hierarchy for PowerPoint', () => {
+    const html = workspaceMarkup({}, undefined, 'powerpoint')
+    expect(html).toContain('class="agent-workspace presentation-agent')
+    expect(html).toContain('class="ai-msg ai-msg-user"')
+    expect(html).toContain('class="ai-msg ai-msg-assistant"')
+    expect(html).toContain('class="ai-work-group"')
+    expect(html).toContain('已完成 · 1 个步骤')
+    expect(html).not.toContain('class="tool-event')
+    expect(html).not.toContain('message-role')
+    expect(html).not.toContain('class="agent-status"')
+  })
+
+  it('uses the desktop Slides generation empty state for PowerPoint', () => {
+    const html = workspaceMarkup(
+      {
+        assistantText: '',
+        status: 'idle',
+        proposal: undefined,
+        timeline: Object.freeze([]),
+      },
+      undefined,
+      'powerpoint',
+    )
+    expect(html).toContain('让 AI 为你生成演示文稿')
+    expect(html).toContain('描述主题、场合和大致页数')
+    expect(html).toContain('起草一份项目汇报')
+    expect(html).toContain('class="ai-starter"')
+    expect(html).not.toContain('让 AI 帮你从零起草')
+  })
+
   it('keeps the rollback workspace compact without the legacy explanatory masthead', () => {
     const snapshot = {
       assistantText: '',
