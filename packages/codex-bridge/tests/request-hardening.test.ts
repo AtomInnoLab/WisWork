@@ -156,6 +156,25 @@ describe('strict Responses request conversion', () => {
     ])
   })
 
+  it('accepts the exact empty reasoning history item produced after discarded plaintext thinking', () => {
+    const turn = prepareResponsesTurn({
+      model: 'gpt-5.6-sol',
+      input: [
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x' }] },
+        {
+          type: 'reasoning',
+          id: 'item_0',
+          summary: [],
+          content: null,
+          encrypted_content: null,
+        },
+      ],
+    })
+    expect(turn.messagesRequest.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'x' }] },
+    ])
+  })
+
   it.each([
     { type: 'reasoning', encrypted_content: 'secret' },
     {
