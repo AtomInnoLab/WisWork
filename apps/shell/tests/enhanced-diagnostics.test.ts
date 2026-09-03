@@ -27,6 +27,50 @@ function fixture(now = 100) {
 }
 
 describe('EnhancedDiagnosticsStore', () => {
+  it('exports strict preview build identity without unknown fields and labels capture ordering', () => {
+    const { store, tick } = fixture()
+    const metadata = {
+      appVersion: '0.6.14-pr123.gabcdef0',
+      componentVersion: '0.147.0',
+      platform: 'darwin',
+      arch: 'arm64',
+      build: {
+        commit: 'a'.repeat(40),
+        mode: 'preview',
+        pr: 123,
+        builtAt: '2026-09-03T00:00:00.000Z',
+        nested: { token: 'SECRET' },
+      },
+    } as const
+    store.recordProtocol(recording)
+    tick(5)
+    store.recordProtocol(recording)
+    const report = JSON.parse(store.exportReport(metadata))
+    expect(report.metadata.appVersion).toBe(metadata.appVersion)
+    expect(report.metadata.build).toEqual({
+      commit: 'a'.repeat(40),
+      mode: 'preview',
+      pr: 123,
+      builtAt: '2026-09-03T00:00:00.000Z',
+    })
+    expect(report.protocolRecordingInfo).toEqual([
+      { index: 0, recordedAt: 100, association: 'unattributed' },
+      { index: 1, recordedAt: 105, association: 'unattributed' },
+    ])
+    expect(JSON.stringify(report)).not.toContain('SECRET')
+    for (const build of [
+      { ...metadata.build, commit: '/private/SECRET' },
+      { ...metadata.build, mode: 'SECRET' },
+      { ...metadata.build, pr: 1_000_000 },
+      { ...metadata.build, builtAt: '2026-02-31T00:00:00.000Z' },
+    ]) {
+      expect(JSON.parse(store.exportReport({ ...metadata, build })).metadata.build).toBeUndefined()
+    }
+    expect(
+      JSON.parse(store.exportReport({ ...metadata, appVersion: '0.6.14-private.SECRET' })).metadata
+        .appVersion,
+    ).toBe('unknown')
+  })
   it('exports only bounded validated recordings and projects unknown metadata away', () => {
     const { store } = fixture()
     for (let i = 0; i < 6; i++) store.recordProtocol(recording)
