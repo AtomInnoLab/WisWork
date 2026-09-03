@@ -193,7 +193,43 @@ describe('bounded Anthropic SSE state machine', () => {
     )
   })
 
-  it('rejects thinking blocks while opaque round-trip is disabled', async () => {
+  it('preserves bounded production redacted thinking as encrypted Responses reasoning', async () => {
+    const events = await collect(
+      noToolTurn().messagesStreamToResponses(
+        chunks(
+          start,
+          'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"opaque-reasoning"}}\n\n',
+          'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+          delta,
+          stop,
+        ),
+      ),
+    )
+
+    const reasoning = events.find((event) => event.event === 'response.output_item.done')
+    expect(reasoning?.data.item).toEqual({
+      id: 'item_0',
+      type: 'reasoning',
+      status: 'completed',
+      summary: [],
+      encrypted_content: 'opaque-reasoning',
+    })
+    expect(events.at(-1)?.data.response.output).toContainEqual(reasoning?.data.item)
+  })
+
+  it('bounds encrypted reasoning without exposing it in the error', async () => {
+    await expectStreamCode(
+      [
+        start,
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"secret prompt that is too long"}}\n\n',
+      ],
+      'reasoning_content_limit_exceeded',
+      false,
+      { maxStringLength: 20 },
+    )
+  })
+
+  it('continues to reject plaintext thinking blocks', async () => {
     await expectStreamCode(
       [
         start,
@@ -201,6 +237,55 @@ describe('bounded Anthropic SSE state machine', () => {
       ],
       'unsupported_reasoning_block',
     )
+  })
+
+  it('maps max-token truncation inside tool JSON to an incomplete response without a tool call', async () => {
+    const events = await collect(
+      prepareCarrierTurn(structuredClone(captured)).messagesStreamToResponses(
+        chunks(
+          start,
+          'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"opaque-reasoning"}}\n\n',
+          'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+          'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"c","name":"exec","input":{}}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"code\\":\\"await tools.mcp__wiswork__wiswork_read_document("}}\n\n',
+          'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+          'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":4096}}\n\n',
+          stop,
+        ),
+      ),
+    )
+
+    expect(
+      events.filter(
+        (event) =>
+          event.event === 'response.output_item.added' &&
+          event.data.item?.type === 'custom_tool_call',
+      ),
+    ).toHaveLength(0)
+    expect(events.map((event) => event.event)).not.toContain('response.custom_tool_call_input.done')
+    expect(events.at(-1)?.event).toBe('response.incomplete')
+    expect(events.at(-1)?.data.response.incomplete_details).toEqual({
+      reason: 'max_output_tokens',
+    })
+  })
+
+  it('does not execute even syntactically complete tool JSON when the provider reports max tokens', async () => {
+    const safeCode = 'await tools.mcp__wiswork__wiswork_read_document({})'
+    const events = await collect(
+      prepareCarrierTurn(structuredClone(captured)).messagesStreamToResponses(
+        chunks(
+          start,
+          'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"exec","input":{}}}\n\n',
+          `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code: safeCode }) } })}\n\n`,
+          'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+          'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":4096}}\n\n',
+          stop,
+        ),
+      ),
+    )
+
+    expect(events.some((event) => event.data.item?.type === 'custom_tool_call')).toBe(false)
+    expect(events.at(-1)?.event).toBe('response.incomplete')
   })
 
   it('rejects an unadvertised tool from the bound turn', async () => {
@@ -227,6 +312,8 @@ describe('bounded Anthropic SSE state machine', () => {
         'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"exec","input":{}}}\n\n',
         `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n`,
         'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}\n\n',
+        stop,
       ],
       'unsafe_custom_tool_input',
       true,

@@ -921,9 +921,26 @@ function convertResponsesRequest(
       pending = undefined
       resultIndex = 0
     }
-    if (rawItem.type === 'reasoning') fail('unsupported_reasoning_input')
     if (rawItem.role === 'developer' || rawItem.type === 'additional_tools')
       fail('invalid_conversation')
+
+    if (rawItem.type === 'reasoning') {
+      if (
+        pending ||
+        !sawMessage ||
+        !hasOnlyKeys(rawItem, ['type', 'id', 'summary', 'content', 'encrypted_content']) ||
+        requireString(rawItem.id, 'unsupported_reasoning_input') === '' ||
+        !Array.isArray(rawItem.summary) ||
+        rawItem.summary.length !== 0 ||
+        rawItem.content !== null
+      ) {
+        fail('unsupported_reasoning_input')
+      }
+      const encrypted = requireString(rawItem.encrypted_content, 'unsupported_reasoning_input')
+      if (encrypted === '') fail('unsupported_reasoning_input')
+      append('assistant', [{ type: 'redacted_thinking', data: encrypted }])
+      continue
+    }
 
     if (rawItem.type === 'message') {
       if (pending) fail('invalid_tool_result_batch')
@@ -1006,7 +1023,9 @@ function convertResponsesRequest(
   const converted: MessagesRequest = {
     model: 'openai/gpt-5.6-sol',
     messages,
-    max_tokens: request.max_output_tokens ?? 4096,
+    // Match the Standard Agent transport default. Presentation proposals routinely exceed 4K
+    // output tokens once encrypted reasoning and a bounded tool call share the same response.
+    max_tokens: request.max_output_tokens ?? 8192,
     stream: true,
   }
   const systemParts = [request.instructions, ...developerInstructions].filter(
@@ -1053,6 +1072,7 @@ async function* convertMessagesStream(
   const decoder = new TextDecoder('utf-8', { fatal: true })
   type StrictBlock =
     | { kind: 'text'; itemId: string; text: string }
+    | { kind: 'reasoning'; itemId: string; encryptedContent: string }
     | {
         kind: 'tool'
         itemId: string
@@ -1072,6 +1092,7 @@ async function* convertMessagesStream(
     cacheWriteTokens: 0,
     outputTokens: 0,
     stopReason: undefined as string | undefined,
+    stoppedTool: undefined as Extract<StrictBlock, { kind: 'tool' }> | undefined,
     output: [] as Array<Record<string, unknown>>,
     usedCalls: new Set(context.usedCallIds),
     toolCalls: 0,
@@ -1244,6 +1265,7 @@ async function* convertMessagesStream(
     if (strict.phase === 'await_start') fail('invalid_messages_event_order')
     if (event === 'content_block_start') {
       if (!hasOnlyKeys(data, ['type', 'index', 'content_block'])) fail('invalid_messages_event')
+      if (strict.stoppedTool !== undefined) fail('tool_call_limit_exceeded')
       if (
         strict.phase !== 'content' ||
         strict.active !== undefined ||
@@ -1254,11 +1276,34 @@ async function* convertMessagesStream(
       if (strict.nextIndex >= limits.maxBlocks) fail('output_block_limit_exceeded')
       const index = validateIndex(data.index, true)
       const itemId = `item_${index}`
-      if (
-        data.content_block.type === 'thinking' ||
-        data.content_block.type === 'redacted_thinking'
-      ) {
+      if (data.content_block.type === 'thinking') {
         fail('unsupported_reasoning_block')
+      }
+      if (data.content_block.type === 'redacted_thinking') {
+        if (!hasOnlyKeys(data.content_block, ['type', 'data'])) {
+          fail('unsupported_reasoning_block')
+        }
+        const encryptedContent = requireString(
+          data.content_block.data,
+          'unsupported_reasoning_block',
+        )
+        if (encryptedContent === '') fail('unsupported_reasoning_block')
+        if (utf8Length(encryptedContent) > limits.maxStringLength) {
+          fail('reasoning_content_limit_exceeded')
+        }
+        strict.active = { kind: 'reasoning', itemId, encryptedContent }
+        strict.activeIndex = index
+        return [
+          sse('response.output_item.added', {
+            output_index: index,
+            item: {
+              id: itemId,
+              type: 'reasoning',
+              status: 'in_progress',
+              summary: [],
+            },
+          }),
+        ]
       }
       if (data.content_block.type === 'text') {
         if (
@@ -1315,19 +1360,7 @@ async function* convertMessagesStream(
       strict.usedCalls.add(callId)
       strict.active = { kind: 'tool', itemId, callId, name, arguments: '' }
       strict.activeIndex = index
-      return [
-        sse('response.output_item.added', {
-          output_index: index,
-          item: {
-            id: itemId,
-            type: 'custom_tool_call',
-            status: 'in_progress',
-            call_id: callId,
-            name,
-            input: '',
-          },
-        }),
-      ]
+      return []
     }
     if (event === 'content_block_delta') {
       if (!hasOnlyKeys(data, ['type', 'index', 'delta'])) fail('invalid_messages_event')
@@ -1401,37 +1434,19 @@ async function* convertMessagesStream(
           sse('response.output_item.done', { output_index: index, item }),
         ]
       }
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(block.arguments)
-      } catch {
-        fail('invalid_custom_tool_input')
+      if (block.kind === 'reasoning') {
+        const item = {
+          id: block.itemId,
+          type: 'reasoning',
+          status: 'completed',
+          summary: [],
+          encrypted_content: block.encryptedContent,
+        }
+        strict.output.push(item)
+        return [sse('response.output_item.done', { output_index: index, item })]
       }
-      if (!isRecord(parsed) || !hasOnlyKeys(parsed, ['code']) || typeof parsed.code !== 'string')
-        fail('invalid_custom_tool_input')
-      parseSafeExecCode(parsed.code, context.allowedExecMethods, limits)
-      const item = {
-        id: block.itemId,
-        type: 'custom_tool_call',
-        status: 'completed',
-        call_id: block.callId,
-        name: 'exec',
-        input: parsed.code,
-      }
-      strict.output.push(item)
-      return [
-        sse('response.custom_tool_call_input.delta', {
-          item_id: block.itemId,
-          output_index: index,
-          delta: parsed.code,
-        }),
-        sse('response.custom_tool_call_input.done', {
-          item_id: block.itemId,
-          output_index: index,
-          input: parsed.code,
-        }),
-        sse('response.output_item.done', { output_index: index, item }),
-      ]
+      strict.stoppedTool = block
+      return []
     }
     if (event === 'message_delta') {
       if (!hasOnlyKeys(data, ['type', 'delta', 'usage', 'context_management']))
@@ -1510,9 +1525,62 @@ async function* convertMessagesStream(
         }
       }
       strict.stopReason = requireString(data.delta.stop_reason, 'invalid_messages_event')
+      const frames: string[] = []
+      if (strict.stoppedTool && strict.stopReason !== 'max_tokens') {
+        const block = strict.stoppedTool
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(block.arguments)
+        } catch {
+          fail('invalid_custom_tool_input')
+        }
+        if (
+          !isRecord(parsed) ||
+          !hasOnlyKeys(parsed, ['code']) ||
+          typeof parsed.code !== 'string'
+        ) {
+          fail('invalid_custom_tool_input')
+        }
+        parseSafeExecCode(parsed.code, context.allowedExecMethods, limits)
+        const item = {
+          id: block.itemId,
+          type: 'custom_tool_call',
+          status: 'completed',
+          call_id: block.callId,
+          name: 'exec',
+          input: parsed.code,
+        }
+        strict.output.push(item)
+        const outputIndex = strict.nextIndex - 1
+        frames.push(
+          sse('response.output_item.added', {
+            output_index: outputIndex,
+            item: {
+              id: block.itemId,
+              type: 'custom_tool_call',
+              status: 'in_progress',
+              call_id: block.callId,
+              name: block.name,
+              input: '',
+            },
+          }),
+          sse('response.custom_tool_call_input.delta', {
+            item_id: block.itemId,
+            output_index: outputIndex,
+            delta: parsed.code,
+          }),
+          sse('response.custom_tool_call_input.done', {
+            item_id: block.itemId,
+            output_index: outputIndex,
+            input: parsed.code,
+          }),
+          sse('response.output_item.done', { output_index: outputIndex, item }),
+        )
+      }
+      strict.stoppedTool = undefined
       strict.outputTokens = usageInteger(data.usage?.output_tokens, true)
       strict.phase = 'await_stop'
-      return []
+      return frames
     }
     if (event === 'message_stop') {
       if (!hasOnlyKeys(data, ['type'])) fail('invalid_messages_event')
