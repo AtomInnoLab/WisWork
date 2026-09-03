@@ -30,10 +30,17 @@ test('seven-host catalog executes production runtime, adapter, transaction and r
 test('native release matrix gates pinned lifecycle, identity, real protocol and base-package absence', () => {
   const workflow = yaml.load(read('.github/workflows/desktop-release.yml'))
   const build = workflow.jobs.build
-  assert.deepEqual(
-    build.strategy.matrix.include.map(({ runner }) => runner),
-    ['macos-14', 'macos-15-intel', 'windows-latest'],
-  )
+  assert.deepEqual(build.strategy.matrix.include, [
+    {
+      id: 'macos-arm64',
+      runner: 'macos-14',
+      tectonic_platform: 'darwin-arm64',
+      cargo_target: 'aarch64-apple-darwin',
+      file_arch: 'arm64',
+      electron_args: '--mac dmg zip --arm64',
+    },
+  ])
+  assert.equal(workflow.jobs['verify-release'].steps[3].with.pattern, 'macos-arm64')
   const runs = build.steps.flatMap((step) => (typeof step.run === 'string' ? [step.run] : []))
   const commands = runs.join('\n')
   for (const gate of [
@@ -46,7 +53,6 @@ test('native release matrix gates pinned lifecycle, identity, real protocol and 
     'run-codex-native-lifecycle.ts',
     'install-enhanced-component',
     'codex-engine.integration.test',
-    'Get-AuthenticodeSignature',
     'TeamIdentifier=2DC432GLL2',
     'optional-runtime-policy.mjs --mode post-package',
   ])

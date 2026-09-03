@@ -83,12 +83,12 @@ test('unsigned macOS test packaging disables signing and notarization only when 
   assert.equal(config.afterAllArtifactBuild, undefined)
 })
 
-test('Desktop Release builds signed macOS arm64 and x64 release artifacts', () => {
+test('Desktop Release builds only the signed macOS arm64 release artifacts', () => {
   const workflow = readFileSync(join(root, '.github/workflows/desktop-release.yml'), 'utf8')
   assert.match(workflow, /aarch64-apple-darwin/)
-  assert.match(workflow, /x86_64-apple-darwin/)
   assert.match(workflow, /electron_args: --mac dmg zip --arm64/)
-  assert.match(workflow, /electron_args: --mac dmg zip --x64/)
+  assert.doesNotMatch(workflow, /electron_args: --mac dmg zip --x64/)
+  assert.doesNotMatch(workflow, /electron_args: --win nsis --x64/)
   assert.match(workflow, /gh release upload/)
   assert.match(workflow, /gh release edit "\$TAG" --draft=false/)
   assert.match(
