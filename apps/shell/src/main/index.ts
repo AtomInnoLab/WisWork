@@ -234,11 +234,10 @@ import {
 // run silently quits and forwards its argv to the running installed WisWork.
 // WISWORK_USER_DATA: test drivers point this at a scratch dir so an
 // automated instance can run alongside the dev instance (separate lock).
-const iterationIdentity = app.isPackaged
-  ? resolveIterationIdentity(
-      JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')).wisworkIteration,
-    )
-  : null
+const iterationMetadata: unknown = app.isPackaged
+  ? JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')).wisworkIteration
+  : undefined
+const iterationIdentity = resolveIterationIdentity(iterationMetadata)
 if (iterationIdentity) {
   app.setName(iterationIdentity.productName)
   app.setPath('userData', join(app.getPath('appData'), iterationIdentity.productName))
@@ -2824,6 +2823,7 @@ app.whenReady().then(async () => {
           componentVersion: codexComponentManifest.component.version,
           platform: process.platform as 'darwin' | 'win32' | 'linux',
           arch: process.arch as 'arm64' | 'x64',
+          build: iterationMetadata,
         })
         const temporary = `${result.filePath}.${process.pid}.${Date.now()}.tmp`
         try {
