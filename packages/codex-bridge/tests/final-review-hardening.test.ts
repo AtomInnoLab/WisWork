@@ -85,7 +85,7 @@ describe('final pinned bridge contract', () => {
   ])('accepts one bounded exec pragma', async (code) => {
     const turn = prepareResponsesTurn(clone())
     const toolStart =
-      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"exec","input":{}}}\n\n'
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"exec","input":{},"caller":{"type":"direct"}}}\n\n'
     const toolDelta = `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n`
     const toolStop = 'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n'
     await expect(
@@ -93,6 +93,20 @@ describe('final pinned bridge contract', () => {
         turn.messagesStreamToResponses(chunks(start, toolStart, toolDelta, toolStop, delta, stop)),
       ),
     ).resolves.toBeUndefined()
+  })
+
+  it('rejects an unknown production tool caller variant', async () => {
+    const turn = prepareResponsesTurn(clone())
+    await expect(
+      consume(
+        turn.messagesStreamToResponses(
+          chunks(
+            start,
+            'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"exec","input":{},"caller":{"type":"indirect"}}}\n\n',
+          ),
+        ),
+      ),
+    ).rejects.toThrow('unsupported_messages_event')
   })
 
   it('accepts a grammar-valid pragma with leading horizontal whitespace', async () => {
@@ -131,12 +145,35 @@ describe('final pinned bridge contract', () => {
         'data: {"type":"content_block_stop","index":0}\n\n',
         'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
         'data: {"type":"message_stop"}\n\n',
+        'event: data\ndata: [DONE]\n\n',
       ),
     )) {
       output.push(frame)
     }
     expect(output.join('')).toContain('event: response.completed')
     expect(output.join('')).toContain('"output_tokens":0')
+  })
+
+  it('accepts the bounded production WisUsage metadata envelope without forwarding it', async () => {
+    const turn = prepareResponsesTurn(clone())
+    const output: string[] = []
+    for await (const frame of turn.messagesStreamToResponses(
+      chunks(
+        'data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","container":null,"content":[],"model":"openai/gpt-5.6-sol","stop_reason":null,"stop_details":null,"stop_sequence":null,"usage":{"input_tokens":12,"output_tokens":0,"output_tokens_details":null,"cache_creation_input_tokens":null,"cache_read_input_tokens":null,"cache_creation":null,"inference_geo":null,"server_tool_use":null,"service_tier":null,"speed":"standard"},"provider":"openai"}}\n\n',
+        'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"","citations":[]}}\n\n',
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n',
+        'data: {"type":"content_block_stop","index":0}\n\n',
+        'data: {"type":"message_delta","delta":{"container":null,"stop_details":null,"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":12,"output_tokens":2,"output_tokens_details":{"thinking_tokens":0},"cache_creation_input_tokens":null,"cache_read_input_tokens":0,"cache_creation":null,"server_tool_use":null,"service_tier":"standard","speed":"standard","cost":0.001,"is_byok":false,"cost_details":{"upstream_inference_cost":0.001,"upstream_inference_prompt_cost":0.0004,"upstream_inference_completions_cost":0.0006}},"context_management":null}\n\n',
+        'data: {"type":"message_stop"}\n\n',
+      ),
+    )) {
+      output.push(frame)
+    }
+    const serialized = output.join('')
+    expect(serialized).toContain('event: response.completed')
+    expect(serialized).toContain('"output_tokens":2')
+    expect(serialized).not.toContain('provider')
+    expect(serialized).not.toContain('cost_details')
   })
 
   it('still rejects a mismatched explicit SSE event name', async () => {
