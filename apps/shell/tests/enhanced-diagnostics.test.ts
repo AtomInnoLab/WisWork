@@ -46,6 +46,7 @@ describe('EnhancedDiagnosticsStore', () => {
     const { store, tick } = fixture()
     const id = store.beginTask('slides')
     tick()
+    store.record('app_server_thread_started')
     store.record('responses_stream_invalid_messages_sse')
     store.record('private prompt jwt_123 /Users/person/file.pptx')
     store.finishTask(id, 'failed', 'enhanced_turn_timeout')
@@ -53,6 +54,7 @@ describe('EnhancedDiagnosticsStore', () => {
     expect(task).toMatchObject({ diagnosticId: id, host: 'slides', status: 'failed' })
     expect(task.events.map((event) => event.code)).toContain('stream_protocol_rejected')
     expect(task.failureCode).toBe('stream_protocol_rejected')
+    expect(task.events.some((event) => event.phase === 'app_server_thread_started')).toBe(false)
     expect(JSON.stringify(task)).not.toContain('private prompt')
     expect(JSON.stringify(task)).not.toContain('/Users/')
   })
@@ -81,6 +83,14 @@ describe('EnhancedDiagnosticsStore', () => {
       status: 'failed',
       failureCode: 'runtime_crashed',
     })
+  })
+
+  it('maps a generic enhanced turn failure without treating normal runtime events as failures', () => {
+    const { store } = fixture()
+    const id = store.beginTask('slides')
+    store.record('app_server_thread_started')
+    store.finishTask(id, 'failed', 'enhanced_turn_failed')
+    expect(store.recent()[0]).toMatchObject({ failureCode: 'turn_failed' })
   })
 
   it('rejects a tampered persisted report instead of re-exporting injected content', () => {

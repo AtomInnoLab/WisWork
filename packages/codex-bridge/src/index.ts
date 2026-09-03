@@ -1078,14 +1078,26 @@ async function* convertMessagesStream(
     frames: 0,
     totalOutput: 0,
     terminalFrames: [] as string[],
+    sawUpstreamDone: false,
   }
   let buffer = ''
 
   const byteLength = (value: string): number => new TextEncoder().encode(value).byteLength
   const usageInteger = (value: unknown, optional: boolean): number => {
-    if (value === undefined && optional) return 0
+    if ((value === undefined || value === null) && optional) return 0
     if (!Number.isSafeInteger(value) || (value as number) < 0) fail('invalid_messages_usage')
     return value as number
+  }
+  const metadataString = (value: unknown, nullable = false): void => {
+    if (nullable && value === null) return
+    if (typeof value !== 'string' || utf8Length(value) > limits.maxStringLength) {
+      fail('invalid_messages_event')
+    }
+  }
+  const metadataNumber = (value: unknown): void => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      fail('invalid_messages_usage')
+    }
   }
   const snapshot = (status: 'in_progress' | 'completed' | 'incomplete'): UnknownRecord => ({
     id: strict.responseId,
@@ -1094,7 +1106,9 @@ async function* convertMessagesStream(
     status,
     output: strict.output,
   })
-  const parseStrictFrame = (frame: string): { event: string; data: UnknownRecord } | undefined => {
+  const parseStrictFrame = (
+    frame: string,
+  ): { event: string; data: UnknownRecord } | { done: true } | undefined => {
     let event: string | undefined
     const dataLines: string[] = []
     for (const line of frame.split(/\r\n|\r|\n/)) {
@@ -1104,7 +1118,10 @@ async function* convertMessagesStream(
       else if (line !== '') fail('invalid_messages_sse')
     }
     if (event === undefined && dataLines.length === 0) return undefined
-    if (dataLines.join('\n') === '[DONE]') fail('unsupported_messages_sse')
+    if (dataLines.join('\n') === '[DONE]') {
+      if (event !== undefined && event !== 'data') fail('invalid_messages_sse')
+      return { done: true }
+    }
     if (dataLines.length === 0) fail('invalid_messages_sse')
     let data: unknown
     try {
@@ -1155,8 +1172,11 @@ async function* convertMessagesStream(
           'id',
           'type',
           'role',
+          'container',
           'content',
           'model',
+          'provider',
+          'stop_details',
           'stop_reason',
           'stop_sequence',
           'usage',
@@ -1167,13 +1187,16 @@ async function* convertMessagesStream(
       if (
         (data.message.type !== undefined && data.message.type !== 'message') ||
         (data.message.role !== undefined && data.message.role !== 'assistant') ||
+        (data.message.container !== undefined && data.message.container !== null) ||
         (data.message.content !== undefined &&
           (!Array.isArray(data.message.content) || data.message.content.length !== 0)) ||
+        (data.message.stop_details !== undefined && data.message.stop_details !== null) ||
         (data.message.stop_reason !== undefined && data.message.stop_reason !== null) ||
         (data.message.stop_sequence !== undefined && data.message.stop_sequence !== null)
       ) {
         fail('invalid_messages_event')
       }
+      if (data.message.provider !== undefined) metadataString(data.message.provider)
       if (data.message.model !== 'openai/gpt-5.6-sol') fail('unsupported_upstream_model')
       strict.responseId = requireString(data.message.id, 'invalid_messages_event')
       if (strict.responseId === '') fail('invalid_messages_event')
@@ -1184,6 +1207,12 @@ async function* convertMessagesStream(
           'output_tokens',
           'cache_read_input_tokens',
           'cache_creation_input_tokens',
+          'cache_creation',
+          'inference_geo',
+          'output_tokens_details',
+          'server_tool_use',
+          'service_tier',
+          'speed',
         ])
       ) {
         fail('invalid_messages_event')
@@ -1192,6 +1221,21 @@ async function* convertMessagesStream(
       usageInteger(data.message.usage.output_tokens, true)
       strict.cachedTokens = usageInteger(data.message.usage.cache_read_input_tokens, true)
       strict.cacheWriteTokens = usageInteger(data.message.usage.cache_creation_input_tokens, true)
+      if (
+        (data.message.usage.cache_creation !== undefined &&
+          data.message.usage.cache_creation !== null) ||
+        (data.message.usage.output_tokens_details !== undefined &&
+          data.message.usage.output_tokens_details !== null) ||
+        (data.message.usage.server_tool_use !== undefined &&
+          data.message.usage.server_tool_use !== null)
+      ) {
+        fail('invalid_messages_usage')
+      }
+      if (data.message.usage.inference_geo !== undefined)
+        metadataString(data.message.usage.inference_geo, true)
+      if (data.message.usage.service_tier !== undefined)
+        metadataString(data.message.usage.service_tier, true)
+      if (data.message.usage.speed !== undefined) metadataString(data.message.usage.speed)
       strict.inputTokens = ordinary + strict.cachedTokens + strict.cacheWriteTokens
       if (!Number.isSafeInteger(strict.inputTokens)) fail('invalid_messages_usage')
       strict.phase = 'content'
@@ -1217,7 +1261,13 @@ async function* convertMessagesStream(
         fail('unsupported_reasoning_block')
       }
       if (data.content_block.type === 'text') {
-        if (!hasOnlyKeys(data.content_block, ['type', 'text']) || data.content_block.text !== '')
+        if (
+          !hasOnlyKeys(data.content_block, ['type', 'text', 'citations']) ||
+          data.content_block.text !== '' ||
+          (data.content_block.citations !== undefined &&
+            (!Array.isArray(data.content_block.citations) ||
+              data.content_block.citations.length !== 0))
+        )
           fail('unsupported_messages_event')
         strict.active = { kind: 'text', itemId, text: '' }
         strict.activeIndex = index
@@ -1242,9 +1292,13 @@ async function* convertMessagesStream(
       }
       if (data.content_block.type !== 'tool_use') fail('unsupported_content_block')
       if (
-        !hasOnlyKeys(data.content_block, ['type', 'id', 'name', 'input']) ||
+        !hasOnlyKeys(data.content_block, ['type', 'id', 'name', 'input', 'caller']) ||
         !isRecord(data.content_block.input) ||
-        Object.keys(data.content_block.input).length !== 0
+        Object.keys(data.content_block.input).length !== 0 ||
+        (data.content_block.caller !== undefined &&
+          (!isRecord(data.content_block.caller) ||
+            !hasOnlyKeys(data.content_block.caller, ['type']) ||
+            data.content_block.caller.type !== 'direct'))
       ) {
         fail('unsupported_messages_event')
       }
@@ -1380,21 +1434,80 @@ async function* convertMessagesStream(
       ]
     }
     if (event === 'message_delta') {
-      if (!hasOnlyKeys(data, ['type', 'delta', 'usage'])) fail('invalid_messages_event')
+      if (!hasOnlyKeys(data, ['type', 'delta', 'usage', 'context_management']))
+        fail('invalid_messages_event')
       if (strict.phase !== 'content' || strict.active !== undefined || !isRecord(data.delta)) {
         fail('invalid_messages_event_order')
       }
+      if (data.context_management !== undefined && data.context_management !== null)
+        fail('invalid_messages_event')
       if (data.usage !== undefined && !isRecord(data.usage)) fail('invalid_messages_usage')
-      if (!hasOnlyKeys(data.delta, ['stop_reason', 'stop_sequence'])) fail('invalid_messages_event')
+      if (!hasOnlyKeys(data.delta, ['container', 'stop_details', 'stop_reason', 'stop_sequence']))
+        fail('invalid_messages_event')
       if (
-        data.delta.stop_sequence !== undefined &&
-        data.delta.stop_sequence !== null &&
-        typeof data.delta.stop_sequence !== 'string'
+        (data.delta.container !== undefined && data.delta.container !== null) ||
+        (data.delta.stop_details !== undefined && data.delta.stop_details !== null) ||
+        (data.delta.stop_sequence !== undefined &&
+          data.delta.stop_sequence !== null &&
+          typeof data.delta.stop_sequence !== 'string')
       ) {
         fail('invalid_messages_event')
       }
-      if (data.usage !== undefined && !hasOnlyKeys(data.usage, ['output_tokens'])) {
+      if (
+        data.usage !== undefined &&
+        !hasOnlyKeys(data.usage, [
+          'input_tokens',
+          'output_tokens',
+          'output_tokens_details',
+          'cache_creation_input_tokens',
+          'cache_read_input_tokens',
+          'cache_creation',
+          'server_tool_use',
+          'service_tier',
+          'speed',
+          'cost',
+          'is_byok',
+          'cost_details',
+        ])
+      ) {
         fail('invalid_messages_event')
+      }
+      if (data.usage !== undefined) {
+        usageInteger(data.usage.input_tokens, true)
+        usageInteger(data.usage.cache_creation_input_tokens, true)
+        usageInteger(data.usage.cache_read_input_tokens, true)
+        if (
+          (data.usage.cache_creation !== undefined && data.usage.cache_creation !== null) ||
+          (data.usage.server_tool_use !== undefined && data.usage.server_tool_use !== null)
+        )
+          fail('invalid_messages_usage')
+        if (data.usage.service_tier !== undefined) metadataString(data.usage.service_tier, true)
+        if (data.usage.speed !== undefined) metadataString(data.usage.speed)
+        if (data.usage.cost !== undefined) metadataNumber(data.usage.cost)
+        if (data.usage.is_byok !== undefined && typeof data.usage.is_byok !== 'boolean')
+          fail('invalid_messages_usage')
+        if (data.usage.output_tokens_details !== undefined) {
+          if (
+            !isRecord(data.usage.output_tokens_details) ||
+            !hasOnlyKeys(data.usage.output_tokens_details, ['thinking_tokens'])
+          )
+            fail('invalid_messages_usage')
+          usageInteger(data.usage.output_tokens_details.thinking_tokens, false)
+        }
+        if (data.usage.cost_details !== undefined) {
+          if (
+            !isRecord(data.usage.cost_details) ||
+            !hasOnlyKeys(data.usage.cost_details, [
+              'upstream_inference_cost',
+              'upstream_inference_prompt_cost',
+              'upstream_inference_completions_cost',
+            ])
+          )
+            fail('invalid_messages_usage')
+          metadataNumber(data.usage.cost_details.upstream_inference_cost)
+          metadataNumber(data.usage.cost_details.upstream_inference_prompt_cost)
+          metadataNumber(data.usage.cost_details.upstream_inference_completions_cost)
+        }
       }
       strict.stopReason = requireString(data.delta.stop_reason, 'invalid_messages_event')
       strict.outputTokens = usageInteger(data.usage?.output_tokens, true)
@@ -1468,6 +1581,12 @@ async function* convertMessagesStream(
       if (byteLength(frame) > limits.maxSseFrameBytes) fail('sse_frame_limit_exceeded')
       const parsed = parseStrictFrame(frame)
       if (parsed === undefined) continue
+      if ('done' in parsed) {
+        if (strict.phase !== 'terminal' || strict.sawUpstreamDone) fail('unsupported_messages_sse')
+        strict.sawUpstreamDone = true
+        continue
+      }
+      if (strict.sawUpstreamDone) fail('post_terminal_messages_event')
       for await (const converted of yieldBounded(processStrictEvent(parsed.event, parsed.data))) {
         yield converted
       }
