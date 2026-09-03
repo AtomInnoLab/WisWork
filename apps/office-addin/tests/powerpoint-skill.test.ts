@@ -64,6 +64,156 @@ function adapter(overrides: Partial<PowerPointAdapter> = {}): PowerPointAdapter 
 const call = (name: string, input: Record<string, unknown> = {}) => ({ id: 'call-1', name, input })
 
 describe('PowerPoint compatibility skill', () => {
+  it('exposes the same plan-before-build workflow as desktop Slides', async () => {
+    const skill = createPowerPointSkill({
+      adapter: adapter(),
+      proposals: createStructuredProposalController(),
+    })
+    expect(skill.tools.map((tool) => tool.name)).toContain('plan_deck')
+    expect(skill.systemPrompt).toContain('inspect the presentation before planning')
+    expect(skill.systemPrompt).toContain('plan_deck before the first mutation')
+    expect(skill.systemPrompt).toContain('verify_slides after the approved build')
+
+    await expect(
+      skill.executeTool(
+        call('plan_deck', {
+          core_hook: 'New hires reach their first useful result in seven days',
+          style: 'Clear blue training system with one idea per slide',
+          pages: [
+            {
+              title: 'Welcome',
+              type: 'cover',
+              brief: 'Set expectations for the first week',
+              layout: 'hero_statement',
+              image_queries: ['new employee onboarding team'],
+            },
+            {
+              title: 'Your first seven days',
+              type: 'content',
+              brief: 'Show the onboarding milestones',
+              layout: 'timeline',
+              image_queries: [],
+            },
+          ],
+        }),
+      ),
+    ).resolves.toMatchObject({
+      mutated: false,
+      summary: 'Planned 2 slides',
+      output: expect.stringContaining('New hires reach their first useful result in seven days'),
+    })
+  })
+
+  it('rejects malformed PowerPoint plans without creating a proposal', async () => {
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: adapter(), proposals })
+    await expect(
+      skill.executeTool(call('plan_deck', { core_hook: '', style: 'plain', pages: [] })),
+    ).resolves.toMatchObject({ isError: true, mutated: false, output: 'invalid_tool_input' })
+    expect(proposals.pending()).toBeUndefined()
+  })
+
+  it('runs plan, confirmation-gated build, readback, and final verification in order', async () => {
+    const order: string[] = []
+    const fake = adapter({
+      executeDeclarative: vi.fn().mockImplementation(async () => {
+        order.push('write')
+        return { createdShapeIds: ['created-1'] }
+      }),
+      listSlideShapes: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          order.push('readback-shapes')
+          return { slideId: 'slide-1', slideIndex: 0, shapes: [] }
+        })
+        .mockImplementation(async () => {
+          order.push('readback')
+          return {
+            slideId: 'slide-1',
+            slideIndex: 0,
+            shapes: [
+              {
+                id: 'created-1',
+                name: 'Deck title',
+                type: 'TextBox',
+                left: 60,
+                top: 72,
+                width: 840,
+                height: 96,
+              },
+            ],
+          }
+        }),
+      readSlideText: vi.fn().mockImplementation(async () => {
+        order.push('readback-text')
+        return {
+          slideId: 'slide-1',
+          shapeId: 'created-1',
+          text: 'LLM onboarding',
+          paragraphs: ['LLM onboarding'],
+        }
+      }),
+      verifySlides: vi.fn().mockImplementation(async () => {
+        order.push('verify')
+        return { slideWidth: 960, slideHeight: 540, slides: [] }
+      }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+
+    await skill.executeTool(
+      call('plan_deck', {
+        core_hook: 'Help new hires become productive with LLMs',
+        style: 'Minimal blue onboarding deck',
+        pages: [
+          {
+            title: 'LLM onboarding',
+            type: 'cover',
+            brief: 'Introduce the training goal',
+            layout: 'hero_statement',
+            image_queries: [],
+          },
+        ],
+      }),
+    )
+    order.push('plan')
+    await skill.executeTool(
+      call('execute_office_js', {
+        program: {
+          version: 1,
+          operations: [
+            {
+              op: 'add_text_box',
+              slide_index: 0,
+              name: 'Deck title',
+              text: 'LLM onboarding',
+              left: 60,
+              top: 72,
+              width: 840,
+              height: 96,
+            },
+          ],
+        },
+      }),
+    )
+    order.push('proposal')
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
+
+    await proposals.confirm(proposals.pending()!.id)
+    await skill.executeTool(call('verify_slides'))
+
+    expect(order).toEqual([
+      'plan',
+      'verify',
+      'proposal',
+      'write',
+      'readback-shapes',
+      'readback',
+      'readback-text',
+      'verify',
+    ])
+  })
+
   it('exposes native master inspection and editing with exact schemas', () => {
     const skill = createPowerPointSkill({
       adapter: adapter(),
@@ -75,6 +225,7 @@ describe('PowerPoint compatibility skill', () => {
       'list_slide_shapes',
       'read_slide_text',
       'verify_slides',
+      'plan_deck',
       'execute_office_js',
       'edit_slide_text',
       'edit_slide_xml',

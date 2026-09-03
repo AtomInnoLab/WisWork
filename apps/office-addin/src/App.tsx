@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { Markdown } from '@wiswork/ui'
+import {
+  Markdown,
+  PresentationActivityGroup,
+  PresentationEmptyState,
+  PresentationMessage,
+} from '@wiswork/ui'
 import {
   normalizeLang,
   translatePresentationVerification,
@@ -28,6 +33,7 @@ import {
 } from './agent/use-office-agent.js'
 import type {
   OfficePresentationEvent,
+  OfficePresentationTimeline,
   ProposalPresentationEvent,
 } from './agent/presentation-state.js'
 import { createPcBridgeSession, type PcBridgeSession } from './pc-bridge/session.js'
@@ -435,6 +441,7 @@ function TimelineEvent(props: {
   applying: boolean
   confirm: (id: string) => void
   reject: () => void
+  presentationParity?: boolean
 }) {
   const { event } = props
   if (event.kind === 'proposal') return <ProposalReview {...props} event={event} />
@@ -444,6 +451,17 @@ function TimelineEvent(props: {
         <span className="tool-indicator" aria-hidden="true" />
         <p>{event.summary}</p>
       </article>
+    )
+  }
+  if (props.presentationParity) {
+    if (event.kind === 'system') {
+      return <div className="ai-msg ai-msg-system">{event.text}</div>
+    }
+    const role = event.kind === 'user' ? 'user' : event.kind === 'error' ? 'error' : 'assistant'
+    return (
+      <PresentationMessage role={role} streaming={event.kind === 'assistant' && event.streaming}>
+        {event.kind === 'assistant' ? <Markdown text={event.text} /> : event.text}
+      </PresentationMessage>
     )
   }
   return (
@@ -458,6 +476,81 @@ function TimelineEvent(props: {
       )}
     </article>
   )
+}
+
+function PowerPointTimeline(props: {
+  timeline: OfficePresentationTimeline
+  activeProposalId?: string
+  busy: boolean
+  applying: boolean
+  activity: string
+  confirm: (id: string) => void
+  reject: () => void
+}) {
+  const nodes: React.ReactNode[] = []
+  let index = 0
+  while (index < props.timeline.length) {
+    const event = props.timeline[index]!
+    if (event.kind !== 'tool') {
+      nodes.push(
+        <TimelineEvent
+          key={event.id}
+          event={event}
+          activeProposalId={props.activeProposalId}
+          busy={props.busy}
+          applying={props.applying}
+          confirm={props.confirm}
+          reject={props.reject}
+          presentationParity
+        />,
+      )
+      index += 1
+      continue
+    }
+    const tools = []
+    while (index < props.timeline.length && props.timeline[index]?.kind === 'tool') {
+      const tool = props.timeline[index] as Extract<OfficePresentationEvent, { kind: 'tool' }>
+      tools.push({
+        id: tool.callId,
+        label: tool.summary,
+        status:
+          tool.state === 'running'
+            ? ('running' as const)
+            : tool.state === 'error'
+              ? ('error' as const)
+              : ('done' as const),
+      })
+      index += 1
+    }
+    nodes.push(
+      <PresentationActivityGroup
+        key={`tools:${tools[0]?.id}`}
+        items={tools}
+        workingLabel="处理中…"
+        workedLabel={(count) => `已完成 · ${count} 个步骤`}
+      />,
+    )
+  }
+  const hasRunningTool = props.timeline.some(
+    (event) => event.kind === 'tool' && event.state === 'running',
+  )
+  if (props.busy && !hasRunningTool) {
+    nodes.push(
+      <PresentationActivityGroup
+        key="active-agent-work"
+        items={[
+          {
+            id: 'active-agent-work',
+            label: props.activity || '思考中',
+            status: 'running',
+          },
+        ]}
+        workingLabel="处理中…"
+        workedLabel={(count) => `已完成 · ${count} 个步骤`}
+      />,
+    )
+  }
+  return <>{nodes}</>
 }
 
 export function AgentWorkspace(props: {
@@ -511,11 +604,12 @@ export function AgentWorkspace(props: {
   const showConversationChrome =
     hasTimeline || state.busy || state.applying || Boolean(state.error) || Boolean(proposal)
   const showStatus =
-    state.busy || state.applying || Boolean(state.activity) || state.status === 'cancelled'
+    host !== 'powerpoint' &&
+    (state.busy || state.applying || Boolean(state.activity) || state.status === 'cancelled')
 
   return (
     <main
-      className={`agent-workspace ${props.legacy ? 'legacy-workspace ' : ''}${panel ? 'has-management ' : ''}${showConversationChrome ? 'has-conversation' : 'is-empty'}`}
+      className={`agent-workspace ${host === 'powerpoint' ? 'presentation-agent ' : ''}${props.legacy ? 'legacy-workspace ' : ''}${panel ? 'has-management ' : ''}${showConversationChrome ? 'has-conversation' : 'is-empty'}`}
       aria-busy={state.busy || state.applying}
     >
       {showConversationChrome && (
@@ -613,7 +707,15 @@ export function AgentWorkspace(props: {
           followLatest.current = isTimelineNearBottom(event.currentTarget)
         }}
       >
-        {!hasTimeline && (
+        {!hasTimeline && host === 'powerpoint' && (
+          <PresentationEmptyState
+            title="让 AI 为你生成演示文稿"
+            body="描述主题、场合和大致页数，AI 直接生成整份幻灯片。"
+            prompts={starterPrompts.powerpoint}
+            onChoose={setInstruction}
+          />
+        )}
+        {!hasTimeline && host !== 'powerpoint' && (
           <div className="empty-state">
             <h2>让 AI 帮你从零起草</h2>
             <p>
@@ -635,17 +737,29 @@ export function AgentWorkspace(props: {
             </div>
           </div>
         )}
-        {state.timeline.map((event) => (
-          <TimelineEvent
-            key={event.id}
-            event={event}
+        {host === 'powerpoint' ? (
+          <PowerPointTimeline
+            timeline={state.timeline}
             activeProposalId={proposal?.id}
             busy={state.busy}
             applying={state.applying}
+            activity={state.activity}
             confirm={(id) => void session.confirm(id)}
             reject={() => session.reject()}
           />
-        ))}
+        ) : (
+          state.timeline.map((event) => (
+            <TimelineEvent
+              key={event.id}
+              event={event}
+              activeProposalId={proposal?.id}
+              busy={state.busy}
+              applying={state.applying}
+              confirm={(id) => void session.confirm(id)}
+              reject={() => session.reject()}
+            />
+          ))
+        )}
         {proposal &&
           !state.timeline.some(
             (event) => event.kind === 'proposal' && event.proposal.id === proposal.id,

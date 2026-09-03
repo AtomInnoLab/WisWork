@@ -188,6 +188,9 @@ const AGENT_SYSTEM_PROMPT = `You are the AI assistant inside WisWork Slides. Hel
 const SLIDES_CAPABILITY_CORRECTION =
   '[System correction] This requested edit is supported. Use the available Slides editing tools to apply it, verify the result, and only then report completion. Do not stop at inspection or advice.'
 
+const incompleteDeckCorrection = (planned: number, actual: number) =>
+  `[System correction] The confirmed plan has ${planned} pages, but the deck currently has only ${actual}. Continue building every missing page with the available Slides tools, inspect the completed deck, and only then report completion.`
+
 const DENIAL_ASSERTION =
   /(?:无法|不能|不支持|不可用|没有(?:办法|能力)|只能|\bcannot\b|\bcan't\b|\bunable to\b|\bdoes not support\b|\bnot supported\b|\bunavailable\b|\bonly (?:can|allows?)\b)/i
 const TEXT_TARGET = /(?:字体|文字|文本|标题|重点文字|\bfont\b|\btext\b|\btitle\b)/i
@@ -1615,7 +1618,13 @@ export function createSlidesSkill(
       access.getSelectionScope?.()
         ? `<selection scope>\n${selectionScopeSummary(access.getSelectionScope()!)}. This scope is immutable and enforced by the host.\n</selection scope>`
         : `<deck outline>\n${buildDeckOutline(access.getSlides(), access.getCurrent(), access.getSelectedIds())}\n</deck outline>`,
-    reviewFinalResponse: reviewSlidesFinalResponse,
+    reviewFinalResponse: (context) => {
+      const planned = state.plannedPageCount
+      const actual = access.getSlides().length
+      if (planned !== undefined && actual < planned)
+        return incompleteDeckCorrection(planned, actual)
+      return reviewSlidesFinalResponse(context)
+    },
     ...(controller ? { presentation: controller.hooks } : {}),
     executeTool: (call, signal) => executeTool(executionAccess, call, state, signal),
   }
@@ -1629,6 +1638,8 @@ interface SkillState {
   lastStyleSkill?: string
   /** Topic associated with the most recently available Style Skill */
   lastTopic?: string
+  /** Total page count from the latest accepted plan; terminal responses must not silently stop early. */
+  plannedPageCount?: number
 }
 
 const fail = (summary: string, output: string) => ({
@@ -2772,6 +2783,7 @@ async function executeTool(
       if (!coreHook || !style || pages.length === 0) {
         return fail(t('aiFailPlan'), 'plan_deck requires core_hook + style + non-empty pages')
       }
+      if (state) state.plannedPageCount = pages.length
       // Planning summary echoed back to the user
       const lines = pages.map((p: Record<string, unknown>, i: number) => {
         const q =

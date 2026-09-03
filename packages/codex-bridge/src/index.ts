@@ -1076,7 +1076,12 @@ async function* convertMessagesStream(
   type StrictBlock =
     | { kind: 'text'; itemId: string; text: string }
     | { kind: 'reasoning'; itemId: string; encryptedContent: string }
-    | { kind: 'discarded_reasoning'; itemId: string; bytes: number }
+    | {
+        kind: 'discarded_reasoning'
+        itemId: string
+        bytes: number
+        nestedEncrypted?: { index: number; encryptedContent: string; stopped: boolean }
+      }
     | {
         kind: 'tool'
         itemId: string
@@ -1272,6 +1277,36 @@ async function* convertMessagesStream(
       if (!hasOnlyKeys(data, ['type', 'index', 'content_block'])) fail('invalid_messages_event')
       if (strict.stoppedTool !== undefined) fail('tool_call_limit_exceeded')
       if (
+        strict.phase === 'content' &&
+        strict.active?.kind === 'discarded_reasoning' &&
+        strict.active.nestedEncrypted === undefined &&
+        isRecord(data.content_block) &&
+        data.content_block.type === 'redacted_thinking'
+      ) {
+        if (
+          !hasOnlyKeys(data.content_block, ['type', 'data']) ||
+          !Number.isSafeInteger(data.index) ||
+          data.index !== strict.nextIndex + 1 ||
+          data.index >= limits.maxBlocks
+        ) {
+          fail('invalid_messages_block_index')
+        }
+        const encryptedContent = requireString(
+          data.content_block.data,
+          'unsupported_reasoning_block',
+        )
+        if (encryptedContent === '') fail('unsupported_reasoning_block')
+        if (strict.active.bytes + utf8Length(encryptedContent) > limits.maxStringLength) {
+          fail('reasoning_content_limit_exceeded')
+        }
+        strict.active.nestedEncrypted = {
+          index: data.index,
+          encryptedContent,
+          stopped: false,
+        }
+        return []
+      }
+      if (
         strict.phase !== 'content' ||
         strict.active !== undefined ||
         !isRecord(data.content_block)
@@ -1403,6 +1438,13 @@ async function* convertMessagesStream(
       if (!isRecord(data.delta)) fail('invalid_messages_event')
       if (
         strict.active.kind === 'discarded_reasoning' &&
+        strict.active.nestedEncrypted !== undefined &&
+        !strict.active.nestedEncrypted.stopped
+      ) {
+        fail('unsupported_content_delta')
+      }
+      if (
+        strict.active.kind === 'discarded_reasoning' &&
         (data.delta.type === 'thinking_delta' || data.delta.type === 'signature_delta')
       ) {
         const field = data.delta.type === 'thinking_delta' ? 'thinking' : 'signature'
@@ -1447,11 +1489,28 @@ async function* convertMessagesStream(
       if (strict.phase !== 'content' || strict.active === undefined) {
         fail('invalid_messages_event_order')
       }
+      if (
+        strict.active.kind === 'discarded_reasoning' &&
+        strict.active.nestedEncrypted !== undefined &&
+        !strict.active.nestedEncrypted.stopped &&
+        data.index === strict.active.nestedEncrypted.index
+      ) {
+        strict.active.nestedEncrypted.stopped = true
+        return []
+      }
       const index = validateIndex(data.index, false)
       const block = strict.active
+      if (
+        block.kind === 'discarded_reasoning' &&
+        block.nestedEncrypted !== undefined &&
+        !block.nestedEncrypted.stopped
+      ) {
+        fail('invalid_messages_event_order')
+      }
       strict.active = undefined
       strict.activeIndex = undefined
-      strict.nextIndex += 1
+      strict.nextIndex +=
+        block.kind === 'discarded_reasoning' && block.nestedEncrypted !== undefined ? 2 : 1
       if (block.kind === 'text') {
         const part = { type: 'output_text', text: block.text, annotations: [] }
         const item = {
@@ -1495,6 +1554,9 @@ async function* convertMessagesStream(
           type: 'reasoning',
           status: 'completed',
           summary: [],
+          ...(block.nestedEncrypted === undefined
+            ? {}
+            : { encrypted_content: block.nestedEncrypted.encryptedContent }),
         }
         strict.output.push(item)
         return [sse('response.output_item.done', { output_index: index, item })]

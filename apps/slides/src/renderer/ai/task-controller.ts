@@ -59,9 +59,13 @@ export function compileCanonicalSlidesCalls(input: {
   const changes: SlidesAcceptanceIntent['changes'] = []
   for (const call of input.calls) {
     const slideIndex = call.input.slideIndex
-    if (!Number.isSafeInteger(slideIndex) || (slideIndex as number) < 0)
-      return { kind: 'clarify', question: 'presentation_scope_required' }
+    // An invalid model-generated index is not missing user intent. Let the
+    // transactional tool reject it and give the model a chance to self-correct;
+    // asking the user produced an unanswerable generic clarification state.
+    if (!Number.isSafeInteger(slideIndex) || (slideIndex as number) < 0) return { kind: 'bypass' }
     const slide = (slideIndex as number) + 1
+    if (!input.authority.slides.some((candidate) => candidate.number === slide))
+      return { kind: 'bypass' }
     affected.add(slide)
     if (call.name === 'set_slide_background') {
       const color = call.input.color

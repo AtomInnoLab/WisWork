@@ -51,6 +51,36 @@ describe('Slides capability truth', () => {
     ).toBe(CORRECTION)
   })
 
+  it('rejects a terminal response while a planned new deck is still missing pages', async () => {
+    const deck = access()
+    deck.getSlides = () => [
+      {
+        widthPx: 1280,
+        heightPx: 720,
+        scale: 1,
+        background: { kind: 'solid', color: '#FFFFFF' },
+        nodes: [],
+      },
+    ]
+    const skill = createSlidesSkill(deck)
+    await skill.executeTool({
+      id: 'plan',
+      name: 'plan_deck',
+      input: {
+        core_hook: '新人第一天',
+        style: '简洁蓝色',
+        pages: [
+          { title: '欢迎', brief: '欢迎', layout: 'cover' },
+          { title: '安排', brief: '安排', layout: 'timeline' },
+          { title: '协作', brief: '协作', layout: 'closing' },
+        ],
+      },
+    })
+    expect(skill.reviewFinalResponse?.({ text: '已完成。', mutated: true })).toContain(
+      'plan has 3 pages',
+    )
+  })
+
   it.each([
     'Would you like me to change the title color and position?',
     'Can I change the font color?',

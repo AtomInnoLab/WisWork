@@ -135,6 +135,7 @@ const CATALOG = Object.freeze({
     list_slide_shapes: ['read', 'semantic-read'],
     read_slide_text: ['read', 'semantic-read'],
     verify_slides: ['read', 'bounded-render-facts'],
+    plan_deck: ['read', 'semantic-read'],
     edit_slide_text: ['mutate', 'transaction-proposal'],
     edit_slide_xml: ['mutate', 'transaction-proposal'],
     edit_slide_chart: ['mutate', 'transaction-proposal'],

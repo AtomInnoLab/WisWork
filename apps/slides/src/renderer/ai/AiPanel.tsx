@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import {
   composeSkills,
   IPC_STREAM_SILENCE_TIMEOUT_MS,
@@ -36,7 +36,7 @@ import {
   toVisualQualityReceipt,
 } from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
-import { Markdown } from '@wiswork/ui'
+import { Markdown, PresentationActivityGroup } from '@wiswork/ui'
 import type { PresentationQualityReceipt } from '@wiswork/presentation-ops'
 import { presentationVerificationFlags } from '@wiswork/presentation-verification'
 import { translatePresentationVerification } from '@wiswork/i18n'
@@ -3015,61 +3015,6 @@ function ImageThumb({ url, title }: { url: string; title?: string }) {
   )
 }
 
-/** Step-row status icons (timeline glyphs: 14px in a 20px slot, 1.6 stroke) */
-function StepIcon({ status }: { status: 'running' | 'done' | 'error' }) {
-  if (status === 'running') {
-    return (
-      <svg
-        viewBox="0 0 24 24"
-        width="14"
-        height="14"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden
-      >
-        <path d="M6.5 3.5h11M6.5 20.5h11M8 3.5v3.2c0 2.6 4 4.2 4 5.3 0 1.1 4 2.7 4 5.3v3.2M16 3.5v3.2c0 2.6-4 4.2-4 5.3 0 1.1-4 2.7-4 5.3v3.2" />
-      </svg>
-    )
-  }
-  if (status === 'error') {
-    return (
-      <svg
-        viewBox="0 0 24 24"
-        width="14"
-        height="14"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden
-      >
-        <circle cx="12" cy="12" r="9" />
-        <path d="m9.2 9.2 5.6 5.6M14.8 9.2l-5.6 5.6" />
-      </svg>
-    )
-  }
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <circle cx="12" cy="12" r="9" />
-      <path d="m8.5 12.4 2.4 2.4 4.6-5" />
-    </svg>
-  )
-}
-
 /** Quiet roll-back action in the message toolbar: restores the deck to before the run's edits */
 function RollbackButton({ disabled, onClick }: { disabled: boolean; onClick: () => void }) {
   const { t: tr } = useI18n()
@@ -3100,83 +3045,39 @@ function RollbackButton({ disabled, onClick }: { disabled: boolean; onClick: () 
  *  and a manual toggle that always wins. Rows inside are step rows with 1px connectors. */
 function ToolChipList({ tools }: { tools: ToolActivity[] }) {
   const { t: tr } = useI18n()
-  const [expanded, setExpanded] = useState<Set<number>>(new Set())
-  const [userOpen, setUserOpen] = useState<boolean | null>(null)
-
-  const toggle = useCallback((j: number) => {
-    setExpanded((prev) => {
-      const next = new Set(prev)
-      if (next.has(j)) next.delete(j)
-      else next.add(j)
-      return next
-    })
-  }, [])
-
-  const anyRunning = tools.some((tool) => tool.running)
-  const open = userOpen ?? anyRunning
-  const label = anyRunning ? tr('aiGroupWorking') : tr('aiWorkedSteps', { n: tools.length })
-
   return (
-    <div className="ai-work-group">
-      <button
-        type="button"
-        className={`ai-work-group-summary${anyRunning ? ' running' : ''}`}
-        aria-expanded={open}
-        onClick={() => setUserOpen(!open)}
-      >
-        {anyRunning && !open && <span className="ai-tool-chip-spinner" aria-hidden />}
-        <span className="ai-work-group-label">{label}</span>
-        <span className={`ai-tool-chip-caret${open ? ' open' : ''}`} aria-hidden>
-          ›
-        </span>
-      </button>
-      <div className={`ai-work-group-body${open ? ' open' : ''}`}>
-        <div className="ai-work-group-body-inner">
-          {tools.map((tool, j) => {
-            const hasDisplayData = !!(
-              tool.display?.items?.length ||
-              (tool.display?.kind === 'text' && tool.display.text)
-            )
-            const hasOutput = !tool.running && (!!tool.output || hasDisplayData)
-            const isOpen = expanded.has(j)
-            const stepStatus = tool.running ? 'running' : tool.isError ? 'error' : 'done'
-            return (
-              <div key={j} className="ai-step-row">
-                <span className={`ai-step-icon ${stepStatus}`} aria-hidden>
-                  <StepIcon status={stepStatus} />
-                </span>
-                <div className="ai-step-content">
-                  {hasOutput ? (
-                    <button
-                      type="button"
-                      className="ai-step-title clickable"
-                      data-tip={tool.name}
-                      aria-expanded={isOpen}
-                      onClick={() => toggle(j)}
-                    >
-                      {tool.summary}
-                    </button>
-                  ) : (
-                    <span className="ai-step-title" data-tip={tool.name}>
-                      {tool.summary}
-                    </span>
-                  )}
-                  {hasOutput && isOpen && (
-                    <div className="ai-step-detail">
-                      <ToolOutputPanel
-                        name={tool.name}
-                        output={tool.output ?? ''}
-                        display={tool.display}
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    </div>
+    <PresentationActivityGroup
+      items={tools.map((tool, index) => {
+        const hasDisplayData = !!(
+          tool.display?.items?.length ||
+          (tool.display?.kind === 'text' && tool.display.text)
+        )
+        const hasOutput = !tool.running && (!!tool.output || hasDisplayData)
+        return {
+          id: `${index}:${tool.name}`,
+          label: tool.summary,
+          status: tool.running
+            ? ('running' as const)
+            : tool.isError
+              ? ('error' as const)
+              : ('done' as const),
+          tooltip: tool.name,
+          ...(hasOutput
+            ? {
+                detail: (
+                  <ToolOutputPanel
+                    name={tool.name}
+                    output={tool.output ?? ''}
+                    display={tool.display}
+                  />
+                ),
+              }
+            : {}),
+        }
+      })}
+      workingLabel={tr('aiGroupWorking')}
+      workedLabel={(count) => tr('aiWorkedSteps', { n: count })}
+    />
   )
 }
 

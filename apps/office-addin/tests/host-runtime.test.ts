@@ -40,6 +40,7 @@ const inventories = {
     'edit_slide_xml',
     'execute_office_js',
     'list_slide_shapes',
+    'plan_deck',
     'read',
     'read_slide_text',
     'screenshot_slide',

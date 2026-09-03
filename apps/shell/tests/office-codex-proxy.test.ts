@@ -111,6 +111,41 @@ describe('Office Codex proxy', () => {
     }
   })
 
+  it('keeps the PowerPoint planning tool available in Enhanced mode', async () => {
+    const runtime = {
+      async runOfficeTurn(input: any) {
+        expect(
+          input.toolSession.listTools(input.toolSession.credentials).map((tool: any) => tool.name),
+        ).toEqual(['plan_deck', 'verify_slides'])
+        input.onEvent({ type: 'terminal', status: 'completed' })
+      },
+    }
+    const proxy = createOfficeCodexProxy({
+      runtime: runtime as any,
+      rollout,
+      policyAuthority: createShellEnhancedPolicyAuthority(() => 0),
+    })
+    const response = await proxy({
+      body: {
+        system: 'PowerPoint rules',
+        messages: [{ role: 'user', content: 'Create a six-slide deck' }],
+        tools: [
+          { name: 'plan_deck', description: 'plan', input_schema: { type: 'object' } },
+          { name: 'verify_slides', description: 'verify', input_schema: { type: 'object' } },
+        ],
+      },
+      signal: new AbortController().signal,
+      host: 'PowerPoint',
+      sessionId: 'session_12345678',
+      requestId: 'request_12345678',
+      statement: { ...statement, host: 'office-powerpoint' },
+      executeTool: vi.fn(),
+    })
+    for await (const _chunk of response.body as AsyncIterable<Uint8Array>) {
+      /* drain */
+    }
+  })
+
   it('exposes only the distinct raw proposal tool when both signed statement and trusted policy allow it', async () => {
     const runtime = {
       async runOfficeTurn(input: any) {

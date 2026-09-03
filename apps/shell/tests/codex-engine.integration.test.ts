@@ -15,6 +15,8 @@ import {
 const configuredExecutable = process.env.WISWORK_CODEX_INTEGRATION_EXECUTABLE
 const executable = configuredExecutable ? realpathSync(configuredExecutable) : undefined
 const realIt = executable && isAbsolute(executable) ? it : it.skip
+const realWisUsageToken = process.env.WISWORK_REAL_WISUSAGE_TOKEN
+const realWisIt = executable && isAbsolute(executable) && realWisUsageToken ? it : it.skip
 
 it('detaches an unresponsive interrupt and bounds its lifetime', async () => {
   vi.useFakeTimers()
@@ -89,6 +91,71 @@ function toolResponse(
 }
 
 describe('real 0.147 production engine bridge', () => {
+  realWisIt(
+    'accepts the live WisUsage stream shape for a Slides planning turn',
+    async () => {
+      const diagnostics: string[] = []
+      const upstream = async (request: MessagesRequest, signal?: AbortSignal) =>
+        fetch('https://wisusage.atominnolab.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${realWisUsageToken}`,
+            'content-type': 'application/json',
+            'x-req-location': 'sg',
+          },
+          body: JSON.stringify(request),
+          signal,
+        })
+      const engine = await createProductionCodexBootstrap({
+        fetchWithAuth: upstream,
+        diagnostics: (code) => diagnostics.push(code),
+      }).start({ executablePath: executable!, onCrash: vi.fn() })
+      const session = {
+        identity: {
+          ownerId: 'slides-owner',
+          host: 'slides',
+          documentId: 'live-slides-stream',
+          sessionId: 'live-slides-session',
+          generation: 1,
+        },
+        credentials: { sessionId: 'live-slides-session', secret: 'secret' },
+        listTools: () => [
+          {
+            name: 'plan_deck',
+            description: 'Plan a presentation before editing.',
+            inputSchema: { type: 'object', additionalProperties: true },
+            annotations: { readOnlyHint: true, destructiveHint: false },
+          },
+        ],
+        callTool: vi.fn(async () => ({ output: '{"planned":true}', summary: 'planned' })),
+        cancelAll: vi.fn(() => 0),
+        close: vi.fn(),
+      } as any
+      engine.registerDocument!({
+        ownerId: 'slides-owner',
+        documentId: 'live-slides-stream',
+        host: 'slides',
+        generation: 1,
+        session,
+      })
+      try {
+        await engine
+          .startTurn({
+            documentId: 'live-slides-stream',
+            host: 'slides',
+            generation: 1,
+            text: '做一份新人入职培训课件，先规划结构。',
+          })
+          .catch((error) => {
+            throw new Error(`live_engine_failed:${diagnostics.join(',')}`, { cause: error })
+          })
+      } finally {
+        await engine.close()
+      }
+    },
+    65_000,
+  )
+
   realIt(
     'fails the first deterministic provider protocol error without waiting for retry timeout',
     async () => {

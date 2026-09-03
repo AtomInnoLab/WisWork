@@ -69,6 +69,22 @@ function enrollment(): SlidesTaskEnrollment {
 }
 
 describe('Slides verified task controller', () => {
+  it('lets the transactional tool report an invalid generated slide index instead of asking the user', () => {
+    expect(
+      compileCanonicalSlidesCalls({
+        calls: [{ ...call, input: { ...call.input, slideIndex: -1 } }],
+        authority: {
+          documentToken: 'doc-1',
+          sessionToken: 'session-1',
+          revision: contract.baseRevision,
+          slides: [{ number: 1, slideToken: 'slide-1', elements: [] }],
+        },
+        sourceTargetTokens: {},
+        taskId: 'invalid-model-target',
+      }),
+    ).toEqual({ kind: 'bypass' })
+  })
+
   it('bypasses optional verification instead of asking the user when a runtime source is not yet authority-bound', () => {
     expect(
       compileCanonicalSlidesCalls({
