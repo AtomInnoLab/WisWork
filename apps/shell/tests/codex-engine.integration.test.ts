@@ -66,8 +66,8 @@ function toolResponse(code: string, reasoning: 'encrypted' | 'plaintext' = 'encr
             'data: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"opaque-production-reasoning"}}\n\n',
           ]
         : [
-            'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
-            'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"private production reasoning"}}\n\n',
+            'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"private production prefix","signature":null}}\n\n',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" and suffix"}}\n\n',
             'data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"opaque-signature"}}\n\n',
           ]),
       'data: {"type":"content_block_stop","index":0}\n\n',

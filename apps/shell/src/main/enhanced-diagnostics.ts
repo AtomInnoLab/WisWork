@@ -39,6 +39,7 @@ export type DiagnosticSafeCode =
   | 'stream_protocol_rejected'
   | 'stream_ended_early'
   | 'stream_reasoning_unsupported'
+  | 'stream_reasoning_limit_exceeded'
   | 'stream_tool_input_invalid'
   | 'mcp_starting'
   | 'mcp_ready'
@@ -69,6 +70,7 @@ const SAFE_CODES = new Set<DiagnosticSafeCode>([
   'stream_protocol_rejected',
   'stream_ended_early',
   'stream_reasoning_unsupported',
+  'stream_reasoning_limit_exceeded',
   'stream_tool_input_invalid',
   'mcp_starting',
   'mcp_ready',
@@ -247,12 +249,13 @@ function safeDiagnostic(code: string): {
       outcome: 'failed',
       code: code.includes('premature_messages_eof')
         ? 'stream_ended_early'
-        : code.includes('unsupported_reasoning_block') ||
-            code.includes('reasoning_content_limit_exceeded')
-          ? 'stream_reasoning_unsupported'
-          : code.includes('invalid_custom_tool_input')
-            ? 'stream_tool_input_invalid'
-            : 'stream_protocol_rejected',
+        : code.includes('reasoning_content_limit_exceeded')
+          ? 'stream_reasoning_limit_exceeded'
+          : code.includes('unsupported_reasoning_block')
+            ? 'stream_reasoning_unsupported'
+            : code.includes('invalid_custom_tool_input')
+              ? 'stream_tool_input_invalid'
+              : 'stream_protocol_rejected',
     }
   if (code === 'enhanced_response_incompatible')
     return {
