@@ -2,7 +2,11 @@ import { randomBytes } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { ENHANCED_HOSTS, type EnhancedHost } from '@wiswork/agent-runtime'
-import { parseProtocolRecording, type ProtocolRecording } from '@wiswork/codex-bridge'
+import {
+  parseProtocolRecording,
+  type ProtocolRecording,
+  type ProtocolRecordingOutcome,
+} from '@wiswork/codex-bridge'
 
 const MAX_TASKS = 10
 const MAX_EVENTS = 256
@@ -431,7 +435,12 @@ export class EnhancedDiagnosticsStore {
   readonly #tasks: MutableTask[]
   readonly #active = new Set<string>()
   readonly #systemEvents: EnhancedDiagnosticEvent[] = []
-  readonly #protocolRecordings: { recording: ProtocolRecording; recordedAt: number }[] = []
+  readonly #protocolRecordings: {
+    recording: ProtocolRecording
+    recordedAt: number
+    recordingId: string
+    originalOutcome: ProtocolRecordingOutcome
+  }[] = []
   #sequence = 0
   #detailedUntil = 0
   #lastSelfCheck: EnhancedSelfCheckResult | undefined
@@ -492,12 +501,26 @@ export class EnhancedDiagnosticsStore {
   }
 
   /** Session-memory only; exported explicitly, never persist raw protocol payloads. */
-  recordProtocol(value: unknown): void {
+  recordProtocol(value: unknown, outcome: ProtocolRecordingOutcome = 'not_observed'): void {
     try {
       const recording = parseProtocolRecording(value)
       const recordedAt = this.#now()
       if (!Number.isSafeInteger(recordedAt) || recordedAt < 0) return
-      this.#protocolRecordings.push({ recording, recordedAt })
+      const originalOutcome = [
+        'completed',
+        'incomplete',
+        'protocol_rejected',
+        'interrupted',
+        'not_observed',
+      ].includes(outcome)
+        ? outcome
+        : 'not_observed'
+      this.#protocolRecordings.push({
+        recording,
+        recordedAt,
+        recordingId: `recording_${randomBytes(18).toString('base64url')}`,
+        originalOutcome,
+      })
       this.#protocolRecordings.splice(0, Math.max(0, this.#protocolRecordings.length - 4))
     } catch {
       /* Reject untrusted recordings without affecting the task. */
@@ -575,11 +598,15 @@ export class EnhancedDiagnosticsStore {
       systemEvents: copy(this.#systemEvents),
       protocolRecordings: this.#protocolRecordings.map(({ recording }) => copy(recording)),
       // Completion order, oldest first. Concurrent requests cannot be attributed to host tasks.
-      protocolRecordingInfo: this.#protocolRecordings.map(({ recordedAt }, index) => ({
-        index,
-        recordedAt,
-        association: 'unattributed' as const,
-      })),
+      protocolRecordingInfo: this.#protocolRecordings.map(
+        ({ recordedAt, recordingId, originalOutcome }, index) => ({
+          index,
+          recordedAt,
+          recordingId,
+          originalOutcome,
+          association: 'unattributed' as const,
+        }),
+      ),
       ...(selfCheck
         ? {
             selfCheck: {

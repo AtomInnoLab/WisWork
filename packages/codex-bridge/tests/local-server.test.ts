@@ -45,6 +45,7 @@ const prepared = () => ({
 describe('local responses bridge', () => {
   it('captures real translated upstream frames via the fail-open export callback', async () => {
     const captures: ProtocolRecording[] = []
+    const outcomes: string[] = []
     const bridge = await startResponsesBridge({
       fetchWithAuth: async () =>
         new Response(
@@ -52,8 +53,9 @@ describe('local responses bridge', () => {
           { headers: { 'content-type': 'text/event-stream' } },
         ),
       prepareTurn: prepareResponsesTurn,
-      onProtocolRecording: (capture) => {
+      onProtocolRecording: (capture, outcome) => {
         captures.push(capture)
+        outcomes.push(outcome)
         throw new Error('ignored observer failure')
       },
     })
@@ -66,6 +68,7 @@ describe('local responses bridge', () => {
       expect(response.status).toBe(200)
       expect(response.body).toContain('response.incomplete')
       expect(captures).toHaveLength(1)
+      expect(outcomes).toEqual(['incomplete'])
       expect((await replayProtocolRecording(captures[0])).events).toContain('response.incomplete')
     } finally {
       await bridge.close()

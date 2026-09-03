@@ -39,12 +39,25 @@ test('spawned CLI accepts an explicit index in an exported report and rejects pr
       JSON.stringify({
         schema: 'wiswork-enhanced-diagnostics/v1',
         protocolRecordings: [fixture, fixture],
+        protocolRecordingInfo: [
+          null,
+          {
+            recordingId: `recording_${'a'.repeat(24)}`,
+            recordedAt: 100,
+            originalOutcome: 'incomplete',
+            association: 'unattributed',
+            secret: 'SECRET JWT',
+          },
+        ],
       }),
     )
     const cli = fileURLToPath(new URL('./diagnostics-replay.mjs', import.meta.url))
     const result = spawnSync(process.execPath, [cli, path, '--index', '1'], { encoding: 'utf8' })
     assert.equal(result.status, 0, result.stderr)
     assert.ok(JSON.parse(result.stdout).events.includes('response.incomplete'))
+    assert.equal(JSON.parse(result.stdout).source.originalOutcome, 'incomplete')
+    assert.equal(JSON.parse(result.stdout).source.recordingId, `recording_${'a'.repeat(24)}`)
+    assert.equal(result.stdout.includes('SECRET'), false)
     await writeFile(path, JSON.stringify({ ...fixture, private: 'SECRET JWT' }))
     const rejected = spawnSync(process.execPath, [cli, path], { encoding: 'utf8' })
     assert.equal(rejected.status, 1)

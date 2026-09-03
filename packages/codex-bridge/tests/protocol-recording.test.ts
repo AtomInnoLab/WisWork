@@ -18,6 +18,49 @@ async function* stream(values: unknown[]) {
 }
 
 describe('structural protocol recording', () => {
+  it('redacts numeric payloads but retains only known structural numbers and supported metadata', async () => {
+    const recorder = new ProtocolRecorder()
+    recorder.recordFrame(
+      frame({
+        type: 'message_start',
+        message: { ...start.message, content: [123456], container: { name: 654321 } },
+      }),
+    )
+    expect(JSON.stringify(recorder.snapshot())).not.toMatch(/123456|654321/)
+    const valid = new ProtocolRecorder()
+    valid.recordFrame(
+      frame({
+        type: 'message_start',
+        message: {
+          ...start.message,
+          provider: 'anthropic',
+          usage: {
+            input_tokens: 3,
+            inference_geo: 'private',
+            service_tier: 'private',
+            speed: 'private',
+            cache_creation: null,
+          },
+        },
+      }),
+    )
+    valid.recordFrame(
+      frame({
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn' },
+        usage: {
+          output_tokens: 4,
+          cost: 0.25,
+          is_byok: false,
+          output_tokens_details: { thinking_tokens: 0 },
+        },
+      }),
+    )
+    valid.recordFrame(frame({ type: 'message_stop' }))
+    const result = await replayProtocolRecording(valid.snapshot())
+    expect(result.error).toBeUndefined()
+    expect(result.events).toContain('response.completed')
+  })
   it('runs fixtures through real protocol logic, including changed stop reason and missing terminal', async () => {
     expect((await replayProtocolRecording(redacted)).events).toContain('response.incomplete')
     expect((await replayProtocolRecording(incomplete)).error).toBe('invalid_custom_tool_input')

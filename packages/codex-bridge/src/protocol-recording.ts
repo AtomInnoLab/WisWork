@@ -26,6 +26,20 @@ const KEYS = new Set([
   'container',
   'stop_details',
   'context_management',
+  'provider',
+  'cache_creation',
+  'inference_geo',
+  'output_tokens_details',
+  'server_tool_use',
+  'service_tier',
+  'speed',
+  'cost',
+  'is_byok',
+  'cost_details',
+  'thinking_tokens',
+  'upstream_inference_cost',
+  'upstream_inference_prompt_cost',
+  'upstream_inference_completions_cost',
   '__unknown',
 ])
 const ENUMS: Record<string, readonly string[]> = {
@@ -62,10 +76,12 @@ export interface ProtocolRecording {
 export interface ProtocolFrameObserver {
   recordFrame(frame: string): void
 }
+export type ProtocolRecordingOutcome =
+  'completed' | 'incomplete' | 'protocol_rejected' | 'interrupted' | 'not_observed'
 const MAX_BYTES = 64 * 1024
 const invalid = () => new Error('invalid_protocol_recording')
 
-function sanitize(value: unknown, key = '', depth = 0, budget = { nodes: 0 }): Sketch {
+function sanitize(value: unknown, key = '', depth = 0, budget = { nodes: 0 }, path = ''): Sketch {
   if (++budget.nodes > 512 || depth > 12) return null
   if (key === 'input')
     return value &&
@@ -79,21 +95,46 @@ function sanitize(value: unknown, key = '', depth = 0, budget = { nodes: 0 }): S
     if (typeof value !== 'string') return null
     return value === '' ? '' : key === 'partial_json' ? '{' : '<redacted>'
   }
-  if (value === null || typeof value === 'boolean') return value
-  if (typeof value === 'number')
-    return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000 ? value : -1
+  if (value === null) return value
+  if (typeof value === 'boolean') return path === 'usage.is_byok' ? value : null
+  if (typeof value === 'number') {
+    const integer =
+      path === 'index' ||
+      /^(?:message\.)?usage\.(?:input_tokens|output_tokens|cache_read_input_tokens|cache_creation_input_tokens)$/.test(
+        path,
+      ) ||
+      path === 'usage.output_tokens_details.thinking_tokens'
+    const cost =
+      /^usage\.(?:cost|cost_details\.(?:upstream_inference_cost|upstream_inference_prompt_cost|upstream_inference_completions_cost))$/.test(
+        path,
+      )
+    if (!integer && !cost) return null
+    return Number.isFinite(value) &&
+      (!integer || Number.isSafeInteger(value)) &&
+      value >= 0 &&
+      value <= 1_000_000
+      ? value
+      : -1
+  }
   if (typeof value === 'string') {
     if (ENUMS[key]) return ENUMS[key].includes(value) ? value : 'unknown'
     if (key === 'partial_json') return value === '' ? '' : '{'
     return value === '' ? '' : '<redacted>'
   }
   if (Array.isArray(value))
-    return value.slice(0, 16).map((item) => sanitize(item, '', depth + 1, budget))
+    return value.slice(0, 16).map((item) => sanitize(item, '', depth + 1, budget, `${path}[]`))
   if (typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) return null
   const output: Record<string, Sketch> = {}
   for (const name of Object.keys(value).slice(0, 48)) {
     if (!KEYS.has(name) || name === '__unknown') output.__unknown = null
-    else output[name] = sanitize((value as Record<string, unknown>)[name], name, depth + 1, budget)
+    else
+      output[name] = sanitize(
+        (value as Record<string, unknown>)[name],
+        name,
+        depth + 1,
+        budget,
+        path ? `${path}.${name}` : name,
+      )
   }
   return output
 }

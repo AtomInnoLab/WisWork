@@ -80,6 +80,7 @@ export interface ProductionCodexBootstrapOptions {
   readonly diagnostics?: (code: string) => void
   readonly onProtocolRecording?: (
     recording: import('@wiswork/codex-bridge').ProtocolRecording,
+    outcome: import('@wiswork/codex-bridge').ProtocolRecordingOutcome,
   ) => void
 }
 
