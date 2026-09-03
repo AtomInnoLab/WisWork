@@ -217,6 +217,86 @@ describe('bounded Anthropic SSE state machine', () => {
     expect(events.at(-1)?.data.response.output).toContainEqual(reasoning?.data.item)
   })
 
+  it('accepts the live WisUsage nested plaintext and encrypted reasoning envelope', async () => {
+    const events = await collect(
+      noToolTurn().messagesStreamToResponses(
+        chunks(
+          start,
+          'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"private prefix","signature":null}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" private suffix"}}\n\n',
+          'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"opaque-live-reasoning"}}\n\n',
+          'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+          'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+          'event: content_block_start\ndata: {"type":"content_block_start","index":2,"content_block":{"type":"text","text":"","citations":[]}}\n\n',
+          'event: content_block_delta\ndata: {"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"done"}}\n\n',
+          'event: content_block_stop\ndata: {"type":"content_block_stop","index":2}\n\n',
+          delta,
+          stop,
+        ),
+      ),
+    )
+
+    const serialized = JSON.stringify(events)
+    expect(serialized).not.toContain('private prefix')
+    expect(serialized).not.toContain('private suffix')
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: 'response.output_item.done',
+        data: expect.objectContaining({
+          item: expect.objectContaining({
+            id: 'item_0',
+            type: 'reasoning',
+            encrypted_content: 'opaque-live-reasoning',
+          }),
+        }),
+      }),
+    )
+    expect(events.at(-1)?.event).toBe('response.completed')
+  })
+
+  it.each([
+    [
+      'inside a text block',
+      [
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"opaque"}}\n\n',
+      ],
+      'invalid_messages_event_order',
+    ],
+    [
+      'with a noncontiguous index',
+      [
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":2,"content_block":{"type":"redacted_thinking","data":"opaque"}}\n\n',
+      ],
+      'invalid_messages_block_index',
+    ],
+    [
+      'without closing the encrypted child first',
+      [
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"opaque"}}\n\n',
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      ],
+      'invalid_messages_event_order',
+    ],
+  ])('rejects a nested encrypted reasoning block %s', async (_label, events, code) => {
+    await expectStreamCode([start, ...events], code)
+  })
+
+  it('bounds the combined plaintext and encrypted nested reasoning envelope', async () => {
+    await expectStreamCode(
+      [
+        start,
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"private-text"}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"opaque-value"}}\n\n',
+      ],
+      'reasoning_content_limit_exceeded',
+      false,
+      { maxStringLength: 20 },
+    )
+  })
+
   it('bounds encrypted reasoning without exposing it in the error', async () => {
     await expectStreamCode(
       [

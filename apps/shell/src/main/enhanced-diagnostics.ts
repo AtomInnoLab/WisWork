@@ -37,6 +37,7 @@ export type DiagnosticSafeCode =
   | 'upstream_rejected'
   | 'upstream_invalid_content_type'
   | 'stream_protocol_rejected'
+  | 'stream_event_order_invalid'
   | 'stream_ended_early'
   | 'stream_reasoning_unsupported'
   | 'stream_reasoning_limit_exceeded'
@@ -69,6 +70,7 @@ const SAFE_CODES = new Set<DiagnosticSafeCode>([
   'upstream_rejected',
   'upstream_invalid_content_type',
   'stream_protocol_rejected',
+  'stream_event_order_invalid',
   'stream_ended_early',
   'stream_reasoning_unsupported',
   'stream_reasoning_limit_exceeded',
@@ -251,15 +253,17 @@ function safeDiagnostic(code: string): {
       outcome: 'failed',
       code: code.includes('premature_messages_eof')
         ? 'stream_ended_early'
-        : code.includes('reasoning_content_limit_exceeded')
-          ? 'stream_reasoning_limit_exceeded'
-          : code.includes('invalid_messages_usage')
-            ? 'stream_usage_invalid'
-            : code.includes('unsupported_reasoning_block')
-              ? 'stream_reasoning_unsupported'
-              : code.includes('invalid_custom_tool_input')
-                ? 'stream_tool_input_invalid'
-                : 'stream_protocol_rejected',
+        : code.includes('invalid_messages_event_order')
+          ? 'stream_event_order_invalid'
+          : code.includes('reasoning_content_limit_exceeded')
+            ? 'stream_reasoning_limit_exceeded'
+            : code.includes('invalid_messages_usage')
+              ? 'stream_usage_invalid'
+              : code.includes('unsupported_reasoning_block')
+                ? 'stream_reasoning_unsupported'
+                : code.includes('invalid_custom_tool_input')
+                  ? 'stream_tool_input_invalid'
+                  : 'stream_protocol_rejected',
     }
   if (code === 'enhanced_response_incompatible')
     return {
