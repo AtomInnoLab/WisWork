@@ -64,6 +64,26 @@ function registration(overrides: Partial<DocumentToolRegistration> = {}): Docume
 }
 
 describe('Task 4 review hardening', () => {
+  it('compiles the bounded Slides whole-deck builder as a mutation proposal', () => {
+    const grant = Object.freeze({})
+    expect(() =>
+      createDocumentToolManifest({
+        policyGrant: grant,
+        consumePolicyGrant: (candidate) => {
+          if (candidate !== grant) throw new Error('invalid_enhanced_policy_handle')
+          return {
+            generation: 1,
+            host: 'slides' as const,
+            policy,
+            capabilities: ['transaction-proposal' as const],
+          }
+        },
+        tools: [{ name: 'build_deck', description: 'Build.', inputSchema: { type: 'object' } }],
+        policy: { build_deck: 'mutate' },
+      }),
+    ).not.toThrow()
+  })
+
   it('rejects aliases and capabilities not compiled for the exact host', () => {
     expect(() =>
       createDocumentToolManifest({

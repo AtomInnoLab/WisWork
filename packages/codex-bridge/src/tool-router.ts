@@ -76,6 +76,7 @@ const CATALOG = Object.freeze({
         'list_style_templates',
       ].map((name) => [name, ['read', 'semantic-read']]),
       ...[
+        'build_deck',
         'set_element_text',
         'set_element_style',
         'set_element_transform',
