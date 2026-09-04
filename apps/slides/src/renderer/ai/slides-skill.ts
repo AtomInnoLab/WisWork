@@ -193,6 +193,9 @@ const AGENT_SYSTEM_PROMPT = `You are the AI assistant inside WisWork Slides. Hel
 const SLIDES_CAPABILITY_CORRECTION =
   '[System correction] This requested edit is supported. Use the available Slides editing tools to apply it, verify the result, and only then report completion. Do not stop at inspection or advice.'
 
+const QUESTIONNAIRE_CONTINUATION_CORRECTION =
+  '[System correction] The questionnaire answers are already available in the latest tool result. Do not ask the user to choose again or stop with an explanation. Continue with plan_deck and the available Slides tools now.'
+
 const incompleteDeckCorrection = (planned: number, actual: number) =>
   `[System correction] The confirmed plan has ${planned} pages, but the deck currently has only ${actual}. Continue building every missing page with the available Slides tools, inspect the completed deck, and only then report completion.`
 
@@ -1675,6 +1678,8 @@ export function createSlidesSkill(
         ? `<selection scope>\n${selectionScopeSummary(access.getSelectionScope()!)}. This scope is immutable and enforced by the host.\n</selection scope>`
         : `<deck outline>\n${buildDeckOutline(access.getSlides(), access.getCurrent(), access.getSelectedIds())}\n</deck outline>`,
     reviewFinalResponse: (context) => {
+      if (state.questionnaireAnsweredPendingPlan && !context.mutated)
+        return QUESTIONNAIRE_CONTINUATION_CORRECTION
       const planned = state.plannedPageCount
       const actual = access.getSlides().length
       if (planned !== undefined && actual < planned)
@@ -1700,6 +1705,8 @@ interface SkillState {
   plannedPageCount?: number
   /** A new-deck plan must be materialized atomically before low-level refinement. */
   awaitingBuildDeck?: boolean
+  /** Questionnaire completion cannot terminate the run before the model plans the deck. */
+  questionnaireAnsweredPendingPlan?: boolean
 }
 
 const fail = (summary: string, output: string) => ({
@@ -2843,6 +2850,7 @@ async function executeTool(
         )
       const r = await access.askClarification(questions)
       signal?.throwIfAborted()
+      if (state) state.questionnaireAnsweredPendingPlan = true
       if (r.cancelled) {
         return {
           output:
@@ -2866,6 +2874,7 @@ async function executeTool(
         return fail(t('aiFailPlan'), 'plan_deck requires core_hook + style + non-empty pages')
       }
       if (state) {
+        state.questionnaireAnsweredPendingPlan = false
         state.plannedPageCount = pages.length
         state.awaitingBuildDeck = pages.length >= 2
       }
