@@ -3046,10 +3046,13 @@ async function executeTool(
             : '#2367E8',
       }
       let deckMutated = false
-      while (access.getSlides().length < pages.length) {
-        const current = access.getSlides()
+      // React applies applyDeck asynchronously. Keep the tool's authoritative
+      // working copy from each native addSlide result instead of rereading a
+      // render-owned ref that may still describe the preceding deck.
+      let workingSlides = slides
+      while (workingSlides.length < pages.length) {
         const created = await window.slidesApi.addSlide({
-          sourceIndex: current.length - 1,
+          sourceIndex: workingSlides.length - 1,
           clearText: true,
           fitWidthPx: access.fitWidthPx,
         })
@@ -3067,12 +3070,13 @@ async function executeTool(
               }
             : fail(t('aiFailNewSlide'), 'Creation failed')
         }
+        workingSlides = created.slides
         access.applyDeck(created.slides, created.index)
         deckMutated = true
       }
       for (let slideIndex = 0; slideIndex < pages.length; slideIndex++) {
         const page = pages[slideIndex]!
-        const slide = access.getSlides()[slideIndex]!
+        const slide = workingSlides[slideIndex]!
         const scale = slide.scale || access.fitWidthPx / slide.widthPx
         const titleId = `deck-title-${slideIndex}`
         const bodyId = `deck-body-${slideIndex}`

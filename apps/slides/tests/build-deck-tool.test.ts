@@ -12,6 +12,57 @@ const blank = (): RenderSlide => ({
 })
 
 describe('build_deck', () => {
+  it('uses the returned deck while React state is still stale', async () => {
+    const staleSlides = [blank()]
+    let authoritativeSlides = staleSlides
+    const addSlide = vi.fn(async ({ sourceIndex }: { sourceIndex: number }) => {
+      if (authoritativeSlides.length >= 2) return null
+      const next = authoritativeSlides.slice()
+      next.splice(sourceIndex + 1, 0, blank())
+      authoritativeSlides = next
+      return { slides: next, index: sourceIndex + 1 }
+    })
+    ;(globalThis as unknown as { window: Record<string, unknown> }).window = {
+      slidesApi: { addSlide },
+    }
+    const executePresentationOperation = vi.fn(async (request) => ({
+      receipt: {
+        status: 'applied' as const,
+        transactionId: request.transactionId,
+        resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+        operationCount: request.operations.length,
+      },
+      authoritativeState: 'fresh' as const,
+    }))
+    const skill = createSlidesSkill({
+      // Mirrors production: applyDeck schedules React state, while the render-owned
+      // getter can remain stale until this async tool yields back to React.
+      getSlides: () => staleSlides,
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => undefined,
+      applyDeck: () => undefined,
+      executePresentationOperation,
+      fitWidthPx: 1280,
+    })
+
+    const result = await skill.executeTool({
+      id: 'stale-react-state',
+      name: 'build_deck',
+      input: {
+        pages: [
+          { title: 'A', body: ['B'] },
+          { title: 'C', body: ['D'] },
+        ],
+      },
+    })
+
+    expect(result).toMatchObject({ mutated: true })
+    expect(result.isError).not.toBe(true)
+    expect(addSlide).toHaveBeenCalledOnce()
+    expect(executePresentationOperation).toHaveBeenCalledTimes(2)
+  })
+
   it('creates every page and sends title and body through canonical transactions', async () => {
     let slides = [blank()]
     const executePresentationTransaction = vi.fn(async (transaction) => ({
