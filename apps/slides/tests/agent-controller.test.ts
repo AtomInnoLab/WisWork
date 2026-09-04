@@ -169,6 +169,7 @@ describe('Slides interactive agent controller', () => {
       generation: 0,
       call: { id: 'edit-1', name: 'execute_slide_script', input: {} },
     })
+    await new Promise((resolve) => setTimeout(resolve, 30))
     await flush()
     await flush()
     expect(enroll).toHaveBeenCalledOnce()
@@ -264,6 +265,57 @@ describe('Slides interactive agent controller', () => {
     expect(controller.snapshot.busy).toBe(false)
     onEvent?.({ type: 'done', result: { text: '', cancelled: false, turnLimit: false } })
     expect(done).toHaveBeenCalledOnce()
+    controller.dispose()
+  })
+
+  it('collects concurrent Enhanced tool calls into one renderer batch', async () => {
+    let documentId: string | null = null
+    let onToolCall: ((request: any) => void) | undefined
+    const executeTool = vi.fn(async (call: any) => ({
+      output: call.id,
+      summary: call.id,
+      mutated: false,
+    }))
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => undefined),
+      startTurn: vi.fn(() => new Promise<void>(() => undefined)),
+      cancelTurn: vi.fn(async () => undefined),
+      toolResult: vi.fn(async () => undefined),
+      onEvent: vi.fn(() => () => undefined),
+      onToolCall: vi.fn((listener) => {
+        onToolCall = listener
+        return () => undefined
+      }),
+    }
+    const controller = createAgentController(
+      { transport: manualTransport(), skill: { ...skill, executeTool } },
+      { host: 'slides', api },
+    )
+    controller.activate()
+    await flush()
+    expect(controller.run('inspect and edit')).toBe(true)
+    await flush()
+
+    onToolCall?.({
+      documentId,
+      generation: 0,
+      call: { id: 'read', name: 'execute_slide_script', input: {} },
+    })
+    onToolCall?.({
+      documentId,
+      generation: 0,
+      call: { id: 'edit', name: 'execute_slide_script', input: {} },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await flush()
+    await flush()
+
+    expect(executeTool).toHaveBeenCalledTimes(2)
+    expect(api.toolResult).toHaveBeenCalledTimes(2)
     controller.dispose()
   })
 

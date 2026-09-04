@@ -31,15 +31,23 @@ function createSlidesEnhancedHarness<TSnapshot>(
   documentId: string,
   generation: number,
 ): { harness: AgentHarness<TSnapshot>; close(): Promise<void> } {
+  const toolBatchQuietWindowMs = 20
   let callbacks: AgentStreamCallbacks | null = null
   let closed = false
   let turnSettled = true
+  let toolBatchTimer: ReturnType<typeof setTimeout> | null = null
   const executions = new Map<string, ToolExecution>()
   const registration = api.register(
     createPcHostRegistration({ host: 'slides', documentId, generation, skill: options.skill }),
   )
+  const clearToolBatchTimer = () => {
+    if (toolBatchTimer === null) return
+    clearTimeout(toolBatchTimer)
+    toolBatchTimer = null
+  }
   const settleTurn = (error?: string) => {
     if (turnSettled) return
+    clearToolBatchTimer()
     turnSettled = true
     if (error) callbacks?.onError(error)
     else callbacks?.onDone()
@@ -59,7 +67,12 @@ function createSlidesEnhancedHarness<TSnapshot>(
     )
       return
     callbacks.onToolCall(request.call)
-    callbacks.onDone()
+    clearToolBatchTimer()
+    const batchCallbacks = callbacks
+    toolBatchTimer = setTimeout(() => {
+      toolBatchTimer = null
+      if (!closed && callbacks === batchCallbacks) batchCallbacks.onDone()
+    }, toolBatchQuietWindowMs)
   })
   const transport: AgentTransport = {
     stream(request: AgentStreamRequest, next: AgentStreamCallbacks) {
@@ -110,6 +123,7 @@ function createSlidesEnhancedHarness<TSnapshot>(
     close() {
       if (closePromise) return closePromise
       closed = true
+      clearToolBatchTimer()
       harness.dispose()
       unsubscribeEvents()
       unsubscribeTools()
