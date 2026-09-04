@@ -183,6 +183,52 @@ describe('build_deck', () => {
     expect(new Set(transactions.map((item) => JSON.stringify(item.operations))).size).toBe(3)
   })
 
+  it('treats empty optional image fields as no image', async () => {
+    let slides = [blank()]
+    ;(globalThis as unknown as { window: Record<string, unknown> }).window = {
+      slidesApi: {
+        addSlide: vi.fn(async ({ sourceIndex }: { sourceIndex: number }) => {
+          const next = slides.slice()
+          next.splice(sourceIndex + 1, 0, blank())
+          return { slides: next, index: sourceIndex + 1 }
+        }),
+      },
+    }
+    const skill = createSlidesSkill({
+      getSlides: () => slides,
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => undefined,
+      applyDeck: (next) => {
+        slides = next
+      },
+      executePresentationOperation: vi.fn(async (request) => ({
+        receipt: {
+          status: 'applied' as const,
+          transactionId: request.transactionId,
+          resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+          operationCount: request.operations.length,
+        },
+        authoritativeState: 'fresh' as const,
+      })),
+      fitWidthPx: 1280,
+    })
+
+    const result = await skill.executeTool({
+      id: 'empty-images',
+      name: 'build_deck',
+      input: {
+        theme: { mode: 'dark' },
+        pages: [
+          { layout: 'cover', title: 'A', body: ['B'], imageUrl: '', imageAlt: '' },
+          { layout: 'cards', title: 'C', body: ['D'], imageUrl: '', imageAlt: '' },
+        ],
+      },
+    })
+
+    expect(result).toMatchObject({ mutated: true })
+  })
+
   it('does not overwrite an existing presentation', async () => {
     const existing = blank()
     existing.nodes.push({ id: 'existing' } as never)
@@ -319,5 +365,74 @@ describe('build_deck', () => {
       },
     })
     expect(result).toMatchObject({ isError: true, mutated: true, stopToolBatch: true })
+  })
+
+  it('unlocks repair tools after a partially applied build fails', async () => {
+    let slides = [blank()]
+    const deleteSlide = vi.fn(async (slideIndex: number) => {
+      slides = slides.filter((_, index) => index !== slideIndex)
+      return slides
+    })
+    ;(globalThis as unknown as { window: Record<string, unknown> }).window = {
+      slidesApi: {
+        addSlide: vi.fn(async () => {
+          slides = [...slides, blank()]
+          return { slides, index: 1 }
+        }),
+        deleteSlide,
+      },
+    }
+    const skill = createSlidesSkill({
+      getSlides: () => slides,
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => undefined,
+      applyDeck: (next) => {
+        slides = next
+      },
+      executePresentationOperation: vi.fn(async (request) => ({
+        receipt: {
+          status: 'unchanged' as const,
+          transactionId: request.transactionId,
+          code: 'write_not_applied' as const,
+          operationCount: request.operations.length,
+        },
+        authoritativeState: 'fresh' as const,
+      })),
+      fitWidthPx: 1280,
+    })
+
+    await skill.executeTool({
+      id: 'plan',
+      name: 'plan_deck',
+      input: {
+        core_hook: 'A hook',
+        style: 'A style',
+        pages: [
+          { title: 'A', brief: 'B', layout: 'cover' },
+          { title: 'C', brief: 'D', layout: 'cards' },
+        ],
+      },
+    })
+    const failed = await skill.executeTool({
+      id: 'failed-build',
+      name: 'build_deck',
+      input: {
+        pages: [
+          { title: 'A', body: ['B'] },
+          { title: 'C', body: ['D'] },
+        ],
+      },
+    })
+    const repair = await skill.executeTool({
+      id: 'repair',
+      name: 'delete_slide',
+      input: { slideIndex: 1 },
+    })
+
+    expect(failed).toMatchObject({ isError: true, mutated: true })
+    expect(repair).toMatchObject({ mutated: true })
+    expect(repair.output).not.toContain('Call build_deck once')
+    expect(deleteSlide).toHaveBeenCalledOnce()
   })
 })

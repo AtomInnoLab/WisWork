@@ -162,8 +162,12 @@ export class ShellCodexRuntime {
 
   initialize(): Promise<void> {
     if (this.#initialization) return this.#initialization
-    this.#initialization = this.#initialize()
-    return this.#initialization
+    const initialization = this.#initialize()
+    this.#initialization = initialization
+    void initialization.catch(() => {
+      if (this.#initialization === initialization) this.#initialization = undefined
+    })
+    return initialization
   }
 
   async #initialize(): Promise<void> {

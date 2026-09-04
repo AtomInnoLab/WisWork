@@ -2946,15 +2946,20 @@ async function executeTool(
         const kicker = record.kicker
         if (kicker !== undefined && (typeof kicker !== 'string' || kicker.length > 80))
           return fail(t('aiFailPlan'), 'Page kicker is invalid')
-        const imageUrl = record.imageUrl
-        const imageAlt = record.imageAlt
+        const imageUrl =
+          typeof record.imageUrl === 'string' && record.imageUrl.trim()
+            ? record.imageUrl.trim()
+            : undefined
+        const imageAlt =
+          typeof record.imageAlt === 'string' && record.imageAlt.trim()
+            ? record.imageAlt.trim()
+            : undefined
         if (
           imageUrl !== undefined &&
           (typeof imageUrl !== 'string' ||
             !/^https:\/\//.test(imageUrl) ||
             imageUrl.length > 2_048 ||
             typeof imageAlt !== 'string' ||
-            imageAlt.trim().length < 1 ||
             imageAlt.length > 160)
         )
           return fail(t('aiFailPlan'), 'Every image requires an HTTPS imageUrl and imageAlt')
@@ -2978,9 +2983,7 @@ async function executeTool(
           body: body.map((item) => (item as string).trim()),
           ...(layout ? { layout: layout as DeckLayout } : {}),
           ...(typeof kicker === 'string' && kicker.trim() ? { kicker: kicker.trim() } : {}),
-          ...(typeof imageUrl === 'string'
-            ? { imageUrl, imageAlt: (imageAlt as string).trim() }
-            : {}),
+          ...(typeof imageUrl === 'string' ? { imageUrl, imageAlt: imageAlt as string } : {}),
         })
       }
       const themeRecord =
@@ -3041,7 +3044,8 @@ async function executeTool(
           fitWidthPx: access.fitWidthPx,
         })
         signal?.throwIfAborted()
-        if (!created)
+        if (!created) {
+          if (deckMutated && state) state.awaitingBuildDeck = false
           return deckMutated
             ? {
                 output:
@@ -3052,6 +3056,7 @@ async function executeTool(
                 summary: t('aiFailNewSlide'),
               }
             : fail(t('aiFailNewSlide'), 'Creation failed')
+        }
         access.applyDeck(created.slides, created.index)
         deckMutated = true
       }
@@ -3311,7 +3316,8 @@ async function executeTool(
         )
         const outcome = textFamilyReceiptOutcome(execution.receipt)
         deckMutated ||= outcome.mutated
-        if (!outcome.ok)
+        if (!outcome.ok) {
+          if (state) state.awaitingBuildDeck = false
           return {
             output: `The deck was partially created before page ${slideIndex + 1} failed. Inspect or undo before retrying.`,
             isError: true,
@@ -3319,6 +3325,7 @@ async function executeTool(
             stopToolBatch: true,
             summary: outcome.detail ?? `Page ${slideIndex + 1} failed`,
           }
+        }
       }
       if (designed) {
         for (const [slideIndex, page] of pages.entries()) {
@@ -3335,7 +3342,8 @@ async function executeTool(
             fitWidthPx: access.fitWidthPx,
           })
           signal?.throwIfAborted()
-          if (!inserted)
+          if (!inserted) {
+            if (state) state.awaitingBuildDeck = false
             return {
               output: `The deck content was created, but image insertion failed on page ${slideIndex + 1}. Inspect or undo before retrying.`,
               isError: true,
@@ -3343,6 +3351,7 @@ async function executeTool(
               stopToolBatch: true,
               summary: t('aiFailInsertImage'),
             }
+          }
           access.applySlide(slideIndex, inserted.slide)
         }
       }
