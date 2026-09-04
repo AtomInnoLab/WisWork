@@ -171,24 +171,24 @@ describe('Standard Slides live presentation workflow', () => {
         planDeckOutline: async () => ({
           ok: true,
           outline: {
-            core_hook: '入职第一天，快速进入状态',
+            core_hook: '从预测下一个词到理解和生成内容',
             pages: [
               {
-                title: '欢迎加入',
+                title: '认识大语言模型',
                 type: 'cover',
-                brief: '新人入职欢迎',
+                brief: 'LLM 的一句话定义与核心价值',
                 layout: 'cover_dark_minimal',
               },
               {
-                title: '第一天安排',
+                title: 'LLM 如何工作',
                 type: 'content',
-                brief: '上午下午时间线',
+                brief: '训练、上下文和生成过程',
                 layout: 'timeline_horizontal',
               },
               {
-                title: '协作方式',
+                title: '能力、风险与使用建议',
                 type: 'closing',
-                brief: '沟通渠道与行动',
+                brief: '适用场景、幻觉风险和人机协作',
                 layout: 'closing_cta',
               },
             ],
@@ -231,38 +231,51 @@ describe('Standard Slides live presentation workflow', () => {
         const harness = createAgentHarness({
           transport,
           skill,
-          maxTurns: 8,
+          // The production loop is unbounded, while this live gate is bounded to
+          // prove the whole-deck tool avoids a long sequence of blank-page turns.
+          maxTurns: 12,
           events: {
             onDone: ({ text }) => resolve({ text }),
             onError: (error) => resolve({ error }),
           },
         })
         expect(
-          harness.run(
-            '创建一份3页新人入职培训PPT：简洁蓝色风格，包含欢迎、第一天安排、协作方式。需求明确，请直接制作，不要再询问。',
-          ),
+          harness.run('制作一个介绍 LLM 的 PPT。细节请你决定并直接完成，不要停在澄清阶段。'),
         ).toBe(true)
       })
 
       expect(result.error).toBeUndefined()
-      expect(slides).toHaveLength(3)
-      const visibleText = slides
-        .flatMap((slide) => slide.nodes)
-        .flatMap((node) =>
-          node.type === 'text' || node.type === 'shape'
-            ? (node.text?.lines ?? []).flatMap((line) => line.runs.map((run) => run.text))
-            : [],
-        )
-        .join('\n')
-      expect(visibleText).toMatch(/新人|入职|欢迎/)
+      expect(slides.length).toBeGreaterThanOrEqual(3)
+      expect(slides.length).toBeLessThanOrEqual(12)
+      const pageTexts = slides.map((slide) =>
+        slide.nodes
+          .flatMap((node) =>
+            node.type === 'text' || node.type === 'shape'
+              ? (node.text?.lines ?? []).flatMap((line) => line.runs.map((run) => run.text))
+              : [],
+          )
+          .join('\n'),
+      )
+      const visibleText = pageTexts.join('\n')
       expect(transactionIds.length, `live tool sequence: ${calls.join(',')}`).toBeGreaterThan(0)
+      expect(
+        pageTexts.every((text) => text.trim().length >= 10),
+        `empty generated pages: ${pageTexts
+          .map((text, index) => (text.trim() ? '' : index + 1))
+          .filter(Boolean)
+          .join(',')}`,
+      ).toBe(true)
+      expect(
+        visibleText,
+        `live tool sequence: ${calls.join(',')}; transactions: ${transactionIds.length}; slides: ${slides.length}`,
+      ).toMatch(/LLM|大语言模型|语言模型/)
       const artifact = await writePresentationE2eArtifact(
         slides,
         process.env.WISWORK_STANDARD_PPT_E2E_OUTPUT ?? '/tmp/wiswork-standard-ppt-e2e.pptx',
       )
-      expect(artifact.slideCount).toBe(3)
-      expect(artifact.text).toMatch(/新人|入职|欢迎/)
+      expect(artifact.slideCount).toBe(slides.length)
+      expect(artifact.text).toMatch(/LLM|大语言模型|语言模型/)
     },
-    120_000,
+    180_000,
   )
 })

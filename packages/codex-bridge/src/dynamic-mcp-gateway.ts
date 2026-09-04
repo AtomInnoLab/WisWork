@@ -183,14 +183,32 @@ export async function startDynamicMcpGateway(
       try {
         diagnostic('gateway_tool_call_received')
         if (call.name !== 'wiswork_read' && call.name !== 'wiswork_propose')
-          throw new Error('denied')
+          throw new Error('carrier_invalid')
+        const inputKeys =
+          typeof call.input === 'object' && call.input !== null && !Array.isArray(call.input)
+            ? Object.keys(call.input)
+            : []
+        diagnostic(
+          `gateway_input_shape_${['capability', 'callId', 'toolName', 'input']
+            .map((key) => (inputKeys.includes(key) ? '1' : '0'))
+            .join('')}_${
+            inputKeys.some((key) => !['capability', 'callId', 'toolName', 'input'].includes(key))
+              ? 'extra'
+              : 'exact'
+          }`,
+        )
+        diagnostic(
+          `gateway_input_aliases_${['tool', 'name', 'arguments', 'args', 'id']
+            .map((key) => (inputKeys.includes(key) ? '1' : '0'))
+            .join('')}`,
+        )
         const args = exactRecord(call.input, ['capability', 'callId', 'toolName', 'input'])
         if (
           typeof args.capability !== 'string' ||
           typeof args.callId !== 'string' ||
           typeof args.toolName !== 'string'
         )
-          throw new Error('denied')
+          throw new Error('carrier_input_invalid')
         sweepExpired()
         const grant = grants.get(args.capability)
         // Capability is consumed/budgeted before any document or host lookup.
@@ -201,7 +219,7 @@ export async function startDynamicMcpGateway(
           grant.remaining <= 0 ||
           grant.calls.has(args.callId)
         )
-          throw new Error('denied')
+          throw new Error('capability_invalid')
         grant.remaining -= 1
         grant.calls.add(args.callId)
         const documentCall: AgentToolCall = {
@@ -215,7 +233,8 @@ export async function startDynamicMcpGateway(
         const isRead =
           definition?.annotations?.readOnlyHint === true &&
           definition.annotations.destructiveHint !== true
-        if ((call.name === 'wiswork_read') !== isRead) throw new Error('denied')
+        if (!definition) throw new Error('tool_unavailable')
+        if ((call.name === 'wiswork_read') !== isRead) throw new Error('carrier_mismatch')
         emitTool(grant.document, {
           type: 'tool-start',
           callId: documentCall.id,
@@ -230,16 +249,17 @@ export async function startDynamicMcpGateway(
           call.name === 'wiswork_propose'
             ? grant.document.summarizeProposal?.(documentCall)
             : undefined
-        if (call.name === 'wiswork_propose' && !proposalSummary) throw new Error('denied')
+        if (call.name === 'wiswork_propose' && !proposalSummary)
+          throw new Error('proposal_summary_invalid')
         const outcome = grant.document.session.callTool(
           grant.document.session.credentials,
           documentCall,
         )
         if (call.name === 'wiswork_propose') {
-          if (outcome instanceof Promise) throw new Error('denied')
-          if (!isToolExecutionSuspension(outcome)) throw new Error('denied')
+          if (outcome instanceof Promise) throw new Error('proposal_outcome_invalid')
+          if (!isToolExecutionSuspension(outcome)) throw new Error('proposal_outcome_invalid')
           const proposalId = randomBytes(32).toString('base64url')
-          if (!grant.document.onProposal) throw new Error('denied')
+          if (!grant.document.onProposal) throw new Error('proposal_handler_unavailable')
           grant.document.onProposal({
             proposalId,
             call: documentCall,
@@ -278,7 +298,7 @@ export async function startDynamicMcpGateway(
         diagnostic('gateway_tool_call_completed')
         started = undefined
         return execution
-      } catch {
+      } catch (error) {
         if (started) {
           emitTool(started.document, {
             type: 'tool-complete',
@@ -287,6 +307,14 @@ export async function startDynamicMcpGateway(
             isError: true,
           })
         }
+        const reason =
+          error instanceof Error &&
+          /^(?:carrier_invalid|carrier_input_invalid|capability_invalid|tool_unavailable|carrier_mismatch|proposal_summary_invalid|proposal_outcome_invalid|proposal_handler_unavailable)$/.test(
+            error.message,
+          )
+            ? error.message
+            : 'unknown'
+        diagnostic(`gateway_tool_call_denied_${reason}`)
         diagnostic('gateway_tool_call_denied')
         throw new TrustedMcpTransportDenied('turn_capability_denied')
       }

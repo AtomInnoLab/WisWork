@@ -1,9 +1,27 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createEnhancedRendererClient } from '../src/renderer'
+import { createEnhancedRendererClient, createPcHostRegistration } from '../src/renderer'
 
 const mutation = { id: 'call-1', name: 'replace_blocks', input: {} }
 
 describe('enhanced renderer mutation snapshots', () => {
+  it('registers the whole-deck builder as a mutation that requires confirmation', () => {
+    const registration = createPcHostRegistration({
+      host: 'slides',
+      documentId: 'deck',
+      generation: 1,
+      skill: {
+        id: 'slides',
+        systemPrompt: '',
+        tools: [
+          { name: 'plan_deck', description: '', inputSchema: {} },
+          { name: 'build_deck', description: '', inputSchema: {} },
+        ],
+        executeTool: vi.fn(),
+      },
+    })
+    expect(registration.mutatingTools).toEqual(['build_deck'])
+  })
+
   it('captures before execution and restores the private snapshot on the exact result event', async () => {
     let toolListener!: (request: any) => void
     let sessionListener!: (event: any) => void

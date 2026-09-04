@@ -8,10 +8,34 @@ import { createSlidesSkill } from '../../slides/src/renderer/ai/slides-skill'
 import { executePreparedGeometryFamilyTransaction } from '../../slides/src/renderer/ai/presentation-geometry-transactions'
 import { writePresentationE2eArtifact } from '../../slides/tests/presentation-e2e-artifact'
 import {
+  buildDocumentToolInstructions,
   createProductionCodexBootstrap,
   safeTurnFailure,
   startBestEffortCodexInterrupt,
 } from '../src/main/codex-engine'
+
+it('gives Codex an exact carrier envelope and the registered document tool schemas', () => {
+  const instructions = buildDocumentToolInstructions({
+    credentials: { sessionId: 'private-session', secret: 'private-secret' },
+    listTools: () => [
+      {
+        name: 'plan_deck',
+        description: 'Plan the deck.',
+        inputSchema: {
+          type: 'object',
+          properties: { pages: { type: 'array' } },
+          required: ['pages'],
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false },
+      },
+    ],
+  } as never)
+  expect(instructions).toContain('"name":"plan_deck"')
+  expect(instructions).toContain('"carrier":"wiswork_read"')
+  expect(instructions).toContain('arguments only inside input')
+  expect(instructions).not.toContain('private-session')
+  expect(instructions).not.toContain('private-secret')
+})
 
 const configuredExecutable = process.env.WISWORK_CODEX_INTEGRATION_EXECUTABLE
 const executable = configuredExecutable ? realpathSync(configuredExecutable) : undefined
@@ -234,6 +258,14 @@ describe('real 0.147 production engine bridge', () => {
           .catch((error) => {
             throw new Error(`live_engine_failed:${diagnostics.join(',')}`, { cause: error })
           })
+        const gatewayDiagnostics = diagnostics.filter(
+          (code) =>
+            code.startsWith('gateway_input_shape_') ||
+            code.startsWith('gateway_input_aliases_') ||
+            code.startsWith('gateway_tool_call_denied_'),
+        )
+        expect(session.callTool, gatewayDiagnostics.join(',')).toHaveBeenCalled()
+        expect(diagnostics).not.toContain('gateway_tool_call_denied')
       } finally {
         await engine.close()
       }
@@ -467,11 +499,6 @@ describe('real 0.147 production engine bridge', () => {
       const confirmations: string[] = []
       const pendingConfirmations = new Map<string, () => void>()
       const diagnostics: string[] = []
-      const scripts = [
-        `addText('title', '新人入职培训', {x: 90, y: 80, w: 1100, h: 100}); addText('body', '欢迎加入 WisWork', {x: 120, y: 250, w: 1040, h: 100}); return 'cover';`,
-        `addText('title', '第一天安排', {x: 90, y: 70, w: 1100, h: 90}); addText('body', '认识团队\\n配置环境\\n了解工作方式', {x: 120, y: 200, w: 1040, h: 260}); return 'agenda';`,
-        `addText('title', '开始协作', {x: 90, y: 70, w: 1100, h: 90}); addText('body', '主动沟通\\n记录决策\\n及时反馈', {x: 120, y: 200, w: 1040, h: 260}); return 'collaboration';`,
-      ]
       const calls = [
         {
           carrier: 'read',
@@ -486,13 +513,17 @@ describe('real 0.147 production engine bridge', () => {
             ],
           },
         },
-        { carrier: 'propose', toolName: 'add_slide', input: { sourceIndex: 0 } },
-        { carrier: 'propose', toolName: 'add_slide', input: { sourceIndex: 1 } },
-        ...scripts.map((code, slideIndex) => ({
+        {
           carrier: 'propose',
-          toolName: 'execute_slide_script',
-          input: { slideIndex, code, explanation: `生成第 ${slideIndex + 1} 页` },
-        })),
+          toolName: 'build_deck',
+          input: {
+            pages: [
+              { title: '新人入职培训', body: ['欢迎加入 WisWork'] },
+              { title: '第一天安排', body: ['认识团队', '配置环境', '了解工作方式'] },
+              { title: '开始协作', body: ['主动沟通', '记录决策', '及时反馈'] },
+            ],
+          },
+        },
       ] as const
       const upstream = vi.fn(async (request: MessagesRequest) => {
         const next = calls[providerCalls++]
@@ -696,12 +727,18 @@ describe('real 0.147 production engine bridge', () => {
             .join('\n'),
         )
         expect(slides).toHaveLength(3)
-        expect(slideText).toEqual([
+        expect(
+          slideText,
+          JSON.stringify({
+            requests: executePresentationOperation.mock.calls,
+            transactions: hostApi.executePresentationTransaction.mock.calls,
+          }),
+        ).toEqual([
           expect.stringContaining('新人入职培训'),
           expect.stringContaining('第一天安排'),
           expect.stringContaining('开始协作'),
         ])
-        expect(confirmations).toHaveLength(5)
+        expect(confirmations).toHaveLength(1)
         expect(transactionIds).toHaveLength(3)
         expect(new Set(transactionIds).size).toBe(3)
         expect(events.at(-1)).toEqual({ type: 'terminal', status: 'completed' })
