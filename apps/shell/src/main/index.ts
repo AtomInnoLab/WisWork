@@ -2705,7 +2705,10 @@ app.whenReady().then(async () => {
     runtime: codexRuntime,
     documentIdForOwner: (owner) => pcCodexHosts?.documentIdForOwner(owner) ?? null,
   })
-  void codexRuntime.initialize().catch(() => undefined)
+  // Office session state is emitted once when a pairing is established or resumed. Settle the
+  // restart-selected runtime first so a ready Enhanced runtime cannot be advertised as Standard
+  // for the lifetime of that Office session.
+  await codexRuntime.initialize().catch(() => undefined)
   const officePolicyAuthority = createShellEnhancedPolicyAuthority(
     () => codexRuntime?.policyGeneration ?? -1,
   )
