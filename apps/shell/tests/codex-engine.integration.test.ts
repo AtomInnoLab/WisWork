@@ -508,19 +508,40 @@ describe('real 0.147 production engine bridge', () => {
             style: '简洁、清晰、友好',
             pages: [
               { title: '新人入职培训', brief: '欢迎', layout: 'cover' },
-              { title: '第一天安排', brief: '安排', layout: 'content' },
-              { title: '开始协作', brief: '协作', layout: 'content' },
+              { title: '第一天安排', brief: '安排', layout: 'timeline' },
+              { title: '开始协作', brief: '协作', layout: 'cards' },
             ],
           },
+        },
+        {
+          carrier: 'read',
+          toolName: 'image_search',
+          input: { query: 'modern creative team collaboration', maxResults: 3 },
         },
         {
           carrier: 'propose',
           toolName: 'build_deck',
           input: {
+            theme: { mode: 'dark', primary: '#0B1020', accent: '#66E3FF' },
             pages: [
-              { title: '新人入职培训', body: ['欢迎加入 WisWork'] },
-              { title: '第一天安排', body: ['认识团队', '配置环境', '了解工作方式'] },
-              { title: '开始协作', body: ['主动沟通', '记录决策', '及时反馈'] },
+              {
+                layout: 'cover',
+                kicker: 'WELCOME · WISWORK',
+                title: '新人入职培训',
+                body: ['从第一天，到独立协作'],
+                imageUrl: 'https://images.example/team.jpg',
+                imageAlt: '团队协作场景',
+              },
+              {
+                layout: 'timeline',
+                title: '第一天安排',
+                body: ['认识团队', '配置环境', '了解工作方式'],
+              },
+              {
+                layout: 'cards',
+                title: '开始协作',
+                body: ['主动沟通', '记录决策', '及时反馈'],
+              },
             ],
           },
         },
@@ -539,6 +560,14 @@ describe('real 0.147 production engine bridge', () => {
       })
       ;(globalThis as any).window = {
         slidesApi: {
+          imageSearch: vi.fn(async () => ({
+            images: [{ imageUrl: 'https://images.example/team.jpg', title: 'Team' }],
+            method: 'serper',
+          })),
+          insertImageUrl: vi.fn(async ({ slideIndex }: { slideIndex: number }) => ({
+            sourceId: `image-${slideIndex}`,
+            slide: slides[slideIndex],
+          })),
           addSlide: vi.fn(async ({ sourceIndex }: { sourceIndex: number }) => {
             const next = slides.slice()
             const index = sourceIndex + 1
@@ -604,9 +633,9 @@ describe('real 0.147 production engine bridge', () => {
                             x: 0,
                             baselineY: 24,
                             fontFamily: 'Arial',
-                            fontSizePx: 24,
-                            color: '#111111',
-                            bold: false,
+                            fontSizePx: Number(run.fontSize ?? 18) / 0.75,
+                            color: run.color ?? '#111111',
+                            bold: Boolean(run.bold),
                             italic: false,
                             underline: false,
                             widthPx: String(run.text).length * 12,
@@ -614,6 +643,22 @@ describe('real 0.147 production engine bridge', () => {
                           top: 0,
                           height: 28,
                         })),
+                      },
+                    } as ShapeRenderNode),
+              )
+            } else if (operation.kind === 'set_fill') {
+              const sourceId = operation.target.createdByClientId
+                ? created.get(operation.target.createdByClientId)
+                : operation.target.elementId
+              nodes = nodes.map((node) =>
+                node.sourceId !== sourceId
+                  ? node
+                  : ({
+                      ...node,
+                      fill: {
+                        kind: 'solid',
+                        color: operation.fill.color,
+                        transparency: operation.fill.transparency ?? 0,
                       },
                     } as ShapeRenderNode),
               )
@@ -671,12 +716,13 @@ describe('real 0.147 production engine bridge', () => {
           [...relevantTools.values()].map((tool) => ({
             ...tool,
             annotations: {
-              readOnlyHint: tool.name === 'plan_deck',
-              destructiveHint: tool.name !== 'plan_deck',
+              readOnlyHint: tool.name === 'plan_deck' || tool.name === 'image_search',
+              destructiveHint: tool.name !== 'plan_deck' && tool.name !== 'image_search',
             },
           })),
         callTool: vi.fn((_: unknown, call: any) => {
-          if (call.name === 'plan_deck') return skill.executeTool(call)
+          if (call.name === 'plan_deck' || call.name === 'image_search')
+            return skill.executeTool(call)
           let confirm!: () => void
           const confirmed = new Promise<void>((resolve) => {
             confirm = resolve
@@ -726,7 +772,10 @@ describe('real 0.147 production engine bridge', () => {
             )
             .join('\n'),
         )
-        expect(slides).toHaveLength(3)
+        expect(
+          slides,
+          JSON.stringify({ providerCalls, confirmations, events, diagnostics }),
+        ).toHaveLength(3)
         expect(
           slideText,
           JSON.stringify({
@@ -741,6 +790,13 @@ describe('real 0.147 production engine bridge', () => {
         expect(confirmations).toHaveLength(1)
         expect(transactionIds).toHaveLength(3)
         expect(new Set(transactionIds).size).toBe(3)
+        expect((globalThis as any).window.slidesApi.imageSearch).toHaveBeenCalledOnce()
+        expect((globalThis as any).window.slidesApi.insertImageUrl).toHaveBeenCalledWith(
+          expect.objectContaining({ slideIndex: 0, url: 'https://images.example/team.jpg' }),
+        )
+        expect(
+          slides.flatMap((slide) => slide.nodes).some((node) => node.fill.kind === 'solid'),
+        ).toBe(true)
         expect(events.at(-1)).toEqual({ type: 'terminal', status: 'completed' })
         expect(diagnostics).toContain('gateway_tool_call_completed')
         const artifact = await writePresentationE2eArtifact(
