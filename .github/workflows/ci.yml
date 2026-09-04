@@ -53,6 +53,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Check PPT preflight orchestration
+        run: npm run test:ppt-preflight-runner
+
       - name: Check product branding
         run: npm run test:branding
 

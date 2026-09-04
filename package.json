@@ -35,6 +35,8 @@
     "test:e2e": "node tools/run-slides-acceptance-e2e.mjs",
     "test:slides-e2e-runner": "node --test tools/run-slides-acceptance-e2e.test.mjs",
     "test:slides-artifact:default": "node tools/check-slides-e2e-artifact.mjs absent",
+    "test:ppt-preflight": "node tools/run-ppt-preflight.mjs",
+    "test:ppt-preflight-runner": "node --test tools/run-ppt-preflight.test.mjs",
     "test:branding": "node --test tools/branding.test.mjs",
     "test:macos-packaging-runner": "node --test tools/release/run-macos-packaging.test.mjs",
     "test:runtime-policy": "node --test tools/optional-runtime-policy.test.mjs",
