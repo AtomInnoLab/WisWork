@@ -37,7 +37,11 @@ import {
   type BackgroundFamilyTransactionRequest,
 } from './presentation-background-transactions'
 import type { SlidesAcceptanceAuthority } from './task-acceptance'
-import { compileCanonicalSlidesCalls, createSlidesTaskController } from './task-controller'
+import {
+  canonicalAffectedSlides,
+  compileCanonicalSlidesCalls,
+  createSlidesTaskController,
+} from './task-controller'
 import type { SlidesTaskReviewAdapter } from './task-review'
 import type { PresentationTelemetryEvent } from '@wiswork/presentation-verification'
 import type { PresentationCompletionReceipt } from '@wiswork/presentation-verification'
@@ -171,7 +175,7 @@ const AGENT_SYSTEM_PROMPT = `You are the AI assistant inside WisWork Slides. Hel
 
 ## Workflow
 - Start with get_deck_context, and use read_slide when exact text, colors, or element details matter.
-- For a new presentation, use ask_clarification when requirements are ambiguous, then plan_deck. Build every page with add_slide and the local add_text_box, add_shape, add_chart, add_table, add_smartart, and insert_web_image tools. Empty decks are valid and may be built directly with these tools.
+- For a new presentation, use ask_clarification only when the user has not delegated the missing choices, then plan_deck. After planning, use build_deck once to create the complete title-and-content deck. Use the lower-level add_slide/add_text_box/add_shape tools only for later refinement. Empty decks are valid and may be built directly.
 - Supported editing capability map:
   - Change existing text font, size, color, emphasis, or alignment with set_element_style; for coordinated edits use execute_slide_script and setStyle.
   - Move, resize, rotate, or align titles and other elements with set_element_transform; for coordinated edits use execute_slide_script and setBox/moveBy/resizeBy.
@@ -772,6 +776,37 @@ const ALL_TOOLS: AgentToolDef[] = [
         },
       },
       required: ['core_hook', 'style', 'pages'],
+    },
+  },
+  {
+    name: 'build_deck',
+    description:
+      '[Preferred after plan_deck] Create the complete new presentation in one bounded operation: all pages, titles, and body content. Use this instead of repeatedly creating blank pages. Available only when the current deck is blank.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        pages: {
+          type: 'array',
+          minItems: 2,
+          maxItems: 12,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              title: { type: 'string' },
+              body: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 8,
+                items: { type: 'string' },
+              },
+            },
+            required: ['title', 'body'],
+          },
+        },
+      },
+      required: ['pages'],
     },
   },
   {
@@ -1471,11 +1506,10 @@ export function createSlidesSkill(
             if (!access.getAcceptanceAuthorityLease || !access.inspectAcceptanceAuthority)
               return { kind: 'bypass' }
             const lease = await access.getAcceptanceAuthorityLease()
-            const affectedSlides = [
-              ...new Set(calls.map((call) => Number(call.input.slideIndex) + 1)),
-            ]
-            if (affectedSlides.some((slide) => !Number.isSafeInteger(slide) || slide < 1))
-              return { kind: 'clarify', question: 'presentation_scope_required' }
+            const affectedSlides = canonicalAffectedSlides(calls)
+            // Bad model-generated coordinates are not missing user intent. Let the
+            // transactional tool return its precise error so the model can repair it.
+            if (!affectedSlides) return { kind: 'bypass' }
             const sourceTargets = [
               ...new Map(
                 calls.flatMap((call) => {
@@ -1640,6 +1674,8 @@ interface SkillState {
   lastTopic?: string
   /** Total page count from the latest accepted plan; terminal responses must not silently stop early. */
   plannedPageCount?: number
+  /** A new-deck plan must be materialized atomically before low-level refinement. */
+  awaitingBuildDeck?: boolean
 }
 
 const fail = (summary: string, output: string) => ({
@@ -1769,6 +1805,22 @@ async function executeTool(
       'unsupported_feature: This feature is not available in the current WisWork development version.',
     )
   }
+  if (
+    state?.awaitingBuildDeck &&
+    !new Set([
+      'get_deck_context',
+      'read_slide',
+      'web_search',
+      'image_search',
+      'list_style_templates',
+      'plan_deck',
+      'build_deck',
+    ]).has(call.name)
+  )
+    return fail(
+      call.name,
+      'The new-deck plan is ready. Call build_deck once with every planned page before using lower-level refinement tools.',
+    )
   switch (call.name) {
     case 'get_deck_context':
       return {
@@ -2783,7 +2835,10 @@ async function executeTool(
       if (!coreHook || !style || pages.length === 0) {
         return fail(t('aiFailPlan'), 'plan_deck requires core_hook + style + non-empty pages')
       }
-      if (state) state.plannedPageCount = pages.length
+      if (state) {
+        state.plannedPageCount = pages.length
+        state.awaitingBuildDeck = pages.length >= 2
+      }
       // Planning summary echoed back to the user
       const lines = pages.map((p: Record<string, unknown>, i: number) => {
         const q =
@@ -2794,9 +2849,109 @@ async function executeTool(
       })
       const summary = t('aiSumPlan', { count: pages.length, hook: coreHook })
       return {
-        output: `Plan confirmed:\nCore Hook: ${coreHook}\nStyle: ${style}\n${lines.join('\n')}\nNow follow this plan and build all ${pages.length} pages with the available local slide and element tools. Use the latest deck outline and each tool result to track actual completion.`,
+        output: `Plan confirmed:\nCore Hook: ${coreHook}\nStyle: ${style}\n${lines.join('\n')}\nNEXT REQUIRED ACTION: call build_deck exactly once. Convert every planned page into {title, body:[concise content lines]}. Do not call add_slide or styling tools before build_deck completes.`,
         mutated: false,
         summary,
+      }
+    }
+
+    case 'build_deck': {
+      const rawPages = call.input.pages
+      if (!Array.isArray(rawPages) || rawPages.length < 2 || rawPages.length > 12)
+        return fail(t('aiFailPlan'), 'build_deck requires 2-12 pages')
+      if (slides.length !== 1 || slides[0]!.nodes.length > 0)
+        return fail(t('aiFailPlan'), 'build_deck is only available for a blank presentation')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailNewTextbox'), 'Canonical presentation transactions are unavailable')
+      const pages: Array<{ title: string; body: string[] }> = []
+      for (const rawPage of rawPages) {
+        if (!rawPage || typeof rawPage !== 'object' || Array.isArray(rawPage))
+          return fail(t('aiFailPlan'), 'Each page requires title and body')
+        const title = (rawPage as Record<string, unknown>).title
+        const body = (rawPage as Record<string, unknown>).body
+        if (
+          typeof title !== 'string' ||
+          title.trim().length < 1 ||
+          title.length > 160 ||
+          !Array.isArray(body) ||
+          body.length < 1 ||
+          body.length > 8 ||
+          body.some((item) => typeof item !== 'string' || item.length < 1 || item.length > 500)
+        )
+          return fail(t('aiFailPlan'), 'Page title or body is invalid')
+        pages.push({ title: title.trim(), body: body.map((item) => (item as string).trim()) })
+      }
+      while (access.getSlides().length < pages.length) {
+        const current = access.getSlides()
+        const created = await window.slidesApi.addSlide({
+          sourceIndex: current.length - 1,
+          clearText: true,
+          fitWidthPx: access.fitWidthPx,
+        })
+        signal?.throwIfAborted()
+        if (!created) return fail(t('aiFailNewSlide'), 'Creation failed')
+        access.applyDeck(created.slides, created.index)
+      }
+      for (let slideIndex = 0; slideIndex < pages.length; slideIndex++) {
+        const page = pages[slideIndex]!
+        const slide = access.getSlides()[slideIndex]!
+        const scale = slide.scale || access.fitWidthPx / slide.widthPx
+        const titleId = `deck-title-${slideIndex}`
+        const bodyId = `deck-body-${slideIndex}`
+        const execution = await access.executePresentationOperation(
+          {
+            transactionId: await geometryToolTransactionId({
+              name: call.name,
+              invocationId: call.invocationId,
+              input: { page: slideIndex, title: page.title, body: page.body },
+            }),
+            slideIndex,
+            operations: [
+              {
+                kind: 'add_text_box',
+                clientId: titleId,
+                text: page.title,
+                geometry: {
+                  x: geometryPxToPoints(72, scale),
+                  y: geometryPxToPoints(54, scale),
+                  width: geometryPxToPoints(1136, scale),
+                  height: geometryPxToPoints(90, scale),
+                },
+              },
+              {
+                kind: 'set_text',
+                createdByClientId: titleId,
+                paragraphs: [{ runs: [{ text: page.title, fontSize: 30, bold: true }] }],
+              },
+              {
+                kind: 'add_text_box',
+                clientId: bodyId,
+                text: page.body.join('\n'),
+                geometry: {
+                  x: geometryPxToPoints(92, scale),
+                  y: geometryPxToPoints(180, scale),
+                  width: geometryPxToPoints(1096, scale),
+                  height: geometryPxToPoints(430, scale),
+                },
+              },
+              {
+                kind: 'set_text',
+                createdByClientId: bodyId,
+                paragraphs: page.body.map((text) => ({ runs: [{ text, fontSize: 20 }] })),
+              },
+            ],
+          },
+          signal,
+        )
+        const outcome = textFamilyReceiptOutcome(execution.receipt)
+        if (!outcome.ok)
+          return fail(t('aiFailNewTextbox'), outcome.detail ?? `Page ${slideIndex + 1} failed`)
+      }
+      if (state) state.awaitingBuildDeck = false
+      return {
+        output: `Created a complete ${pages.length}-page presentation with titles and body content.`,
+        mutated: true,
+        summary: `Created ${pages.length} complete pages`,
       }
     }
 

@@ -81,6 +81,29 @@ describe('Slides capability truth', () => {
     )
   })
 
+  it('requires the bounded whole-deck builder after planning instead of accumulating blank pages', async () => {
+    const skill = createSlidesSkill(access())
+    await skill.executeTool({
+      id: 'plan',
+      name: 'plan_deck',
+      input: {
+        core_hook: 'LLM in one sentence',
+        style: 'minimal',
+        pages: [
+          { title: 'What', brief: 'Definition', layout: 'cover' },
+          { title: 'How', brief: 'Mechanism', layout: 'content' },
+        ],
+      },
+    })
+    const result = await skill.executeTool({
+      id: 'blank-page',
+      name: 'add_slide',
+      input: { sourceIndex: 0 },
+    })
+    expect(result).toMatchObject({ isError: true, mutated: false })
+    expect(result.output).toContain('build_deck')
+  })
+
   it.each([
     'Would you like me to change the title color and position?',
     'Can I change the font color?',

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentToolCall } from '../src/shared/ipc'
 import {
+  canonicalAffectedSlides,
   compileCanonicalSlidesCalls,
   createSlidesTaskController,
   type SlidesTaskEnrollment,
@@ -69,6 +70,16 @@ function enrollment(): SlidesTaskEnrollment {
 }
 
 describe('Slides verified task controller', () => {
+  it('does not turn invalid model-generated slide coordinates into a user clarification', () => {
+    expect(
+      canonicalAffectedSlides([{ ...call, input: { ...call.input, slideIndex: undefined } }]),
+    ).toBeUndefined()
+    expect(
+      canonicalAffectedSlides([{ ...call, input: { ...call.input, slideIndex: -1 } }]),
+    ).toBeUndefined()
+    expect(canonicalAffectedSlides([call, { ...call, id: 'call-2' }])).toEqual([1])
+  })
+
   it('lets the transactional tool report an invalid generated slide index instead of asking the user', () => {
     expect(
       compileCanonicalSlidesCalls({

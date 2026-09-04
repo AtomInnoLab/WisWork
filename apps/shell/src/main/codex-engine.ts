@@ -14,7 +14,7 @@ import type {
 import { CodexTurnResolver } from './codex-turn-resolver'
 
 const DEVELOPER_POLICY =
-  'Use mcp__wiswork__wiswork_read only for read tools and mcp__wiswork__wiswork_propose only for mutation proposals. A proposal never changes the document; only the host UI can confirm it later. Never request shell, filesystem, Git, browser, network, or direct document writes. Each user turn begins with a private wiswork_turn_capability tag. Use only that latest value as the capability argument and never repeat any capability in prose.'
+  "Use mcp__wiswork__wiswork_read only for read tools and mcp__wiswork__wiswork_propose only for mutation proposals. A proposal never changes the document; only the host UI can confirm it later. Every carrier call MUST use exactly {capability,callId,toolName,input}: capability is the latest private wiswork_turn_capability, callId is a new short unique string, toolName is one exact semantic tool name from the document catalog, and input is that semantic tool's argument object. Never flatten semantic arguments into the carrier object. Never request shell, filesystem, Git, browser, network, or direct document writes. Never repeat a capability in prose."
 const TURN_IDLE_TIMEOUT_MS = 60_000
 const INTERRUPT_TIMEOUT_MS = 2_000
 
@@ -78,6 +78,24 @@ export function startBestEffortCodexInterrupt(interrupt: () => Promise<unknown>)
 export interface ProductionCodexBootstrapOptions {
   readonly fetchWithAuth: (request: MessagesRequest, signal: AbortSignal) => Promise<Response>
   readonly diagnostics?: (code: string) => void
+}
+
+const DOCUMENT_CATALOG_MAX_BYTES = 64 * 1024
+
+export function buildDocumentToolInstructions(session: DocumentToolSession): string {
+  const tools = session.listTools(session.credentials).map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    carrier:
+      tool.annotations.readOnlyHint && !tool.annotations.destructiveHint
+        ? 'wiswork_read'
+        : 'wiswork_propose',
+  }))
+  const catalog = JSON.stringify(tools)
+  if (Buffer.byteLength(catalog, 'utf8') > DOCUMENT_CATALOG_MAX_BYTES)
+    throw new Error('document_tool_catalog_too_large')
+  return `\nDocument semantic tool catalog (JSON): ${catalog}\nFor every call, put the selected tool's arguments only inside input.`
 }
 
 export function createProductionCodexBootstrap(
@@ -274,7 +292,7 @@ export function createProductionCodexBootstrap(
             session: input.session,
             unregister,
             onEvent: input.onEvent,
-            instructions: input.instructions,
+            instructions: `${input.instructions ?? ''}${buildDocumentToolInstructions(input.session)}`,
           }
           documents.set(input.documentId, entry)
           return () => {

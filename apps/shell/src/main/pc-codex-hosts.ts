@@ -115,6 +115,7 @@ const proposalSummary = (
     }
   }
   const insert = new Set([
+    'build_deck',
     'add_slide',
     'add_text_box',
     'add_shape',
@@ -159,8 +160,16 @@ const proposalSummary = (
             : undefined
   if (!operation) return undefined
   const target =
-    call.name.includes('slide') || call.name === 'set_speaker_notes' ? 'slides' : 'elements'
-  return { operation, target, scope: 'single', count: 1 }
+    call.name.includes('slide') || call.name === 'set_speaker_notes' || call.name === 'build_deck'
+      ? 'slides'
+      : 'elements'
+  const slideCount = call.name === 'build_deck' ? boundedCount(call.input.pages) : undefined
+  return {
+    operation,
+    target,
+    scope: slideCount && slideCount > 1 ? 'bounded-set' : 'single',
+    count: slideCount ?? 1,
+  }
 }
 const exactObject = (
   value: unknown,

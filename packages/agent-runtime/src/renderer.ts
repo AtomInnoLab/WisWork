@@ -86,6 +86,7 @@ const PC_ALLOWED_TOOLS: Readonly<
     'ask_clarification',
     'plan_deck',
     'list_style_templates',
+    'build_deck',
     'set_element_text',
     'set_element_style',
     'set_element_transform',

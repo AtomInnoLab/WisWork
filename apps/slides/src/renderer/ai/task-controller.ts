@@ -48,6 +48,17 @@ const canonicalProperties = {
   h: 'height',
 } as const
 
+export function canonicalAffectedSlides(calls: readonly AgentToolCall[]): number[] | undefined {
+  const slides = calls.map((call) => {
+    const slideIndex = call.input.slideIndex
+    return Number.isSafeInteger(slideIndex) && (slideIndex as number) >= 0
+      ? (slideIndex as number) + 1
+      : undefined
+  })
+  if (slides.some((slide) => slide === undefined)) return undefined
+  return [...new Set(slides as number[])]
+}
+
 /** Compiles only exact canonical calls. Scripts and unsupported families bypass verification. */
 export function compileCanonicalSlidesCalls(input: {
   calls: readonly AgentToolCall[]
