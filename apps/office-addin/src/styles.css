@@ -85,6 +85,14 @@ p {
   grid-template-rows: minmax(0, 1fr) auto auto;
 }
 
+.agent-workspace.is-empty.has-empty-header {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.agent-workspace.is-empty.has-empty-header.has-management {
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+}
+
 .app-header {
   grid-row: 1;
 }
@@ -325,6 +333,22 @@ p {
   grid-row: 3;
 }
 
+.is-empty.has-empty-header .agent-timeline {
+  grid-row: 2;
+}
+
+.is-empty.has-empty-header .composer-shell {
+  grid-row: 3;
+}
+
+.is-empty.has-empty-header.has-management .management-panel {
+  grid-row: 3;
+}
+
+.is-empty.has-empty-header.has-management .composer-shell {
+  grid-row: 4;
+}
+
 .app-header {
   display: flex;
   align-items: center;
@@ -341,6 +365,20 @@ p {
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.runtime-mode {
+  display: flex;
+  gap: 6px;
+  margin: 2px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.runtime-mode span::before {
+  content: '·';
+  margin-right: 6px;
 }
 
 .editor-identity {
@@ -656,6 +694,44 @@ p {
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-12);
   background: var(--color-bg-page);
+}
+
+.proposal-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 100%;
+  margin-bottom: 14px;
+  padding: 10px 0;
+}
+
+.proposal-result-icon {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--office-success);
+  background: var(--color-bg-subtle);
+  font-size: 13px;
+}
+
+.proposal-result h2,
+.proposal-result p {
+  margin: 0;
+}
+
+.proposal-result h2 {
+  color: var(--color-text-primary);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.proposal-result p {
+  margin-top: 2px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
 }
 
 .proposal-heading h2 {

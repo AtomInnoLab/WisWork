@@ -281,6 +281,17 @@ describe('Office relay binding lifecycle', () => {
     expect(bootstrap).toContain("officeRelayDiagnostic = 'error:invalid_config'")
   })
 
+  it('settles the selected Enhanced runtime before restoring an Office pairing', () => {
+    const source = readFileSync(join(import.meta.dirname, '../src/main/index.ts'), 'utf8')
+    const runtimeReady = source.indexOf('await codexRuntime.initialize().catch(() => undefined)')
+    const relayCreated = source.indexOf('officeRelay = createOfficeRelayPool({')
+    const pairingRestored = source.indexOf('await startOfficeRelayPersistence({')
+
+    expect(runtimeReady).toBeGreaterThan(0)
+    expect(runtimeReady).toBeLessThan(relayCreated)
+    expect(runtimeReady).toBeLessThan(pairingRestored)
+  })
+
   it('wires one-time relay closure and OAuth reactivation through executable runtime controls', () => {
     const source = readFileSync(join(import.meta.dirname, '../src/main/index.ts'), 'utf8')
     expect(source).toContain(

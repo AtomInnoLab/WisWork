@@ -134,6 +134,23 @@ describe('generic proposal presentation', () => {
     expect(packaged.targets).toEqual(['Slide 1 package'])
   })
 
+  it('drops opaque Office object identifiers from user-facing PowerPoint impact', () => {
+    const presentation = proposalPresentation({
+      id: 'opaque-target',
+      operation: 'edit_slide',
+      title: 'Update slide',
+      impact: {
+        host: 'powerpoint',
+        targets: ['256#3943334991', 'slide-2'],
+        count: 2,
+      },
+      preview: { slideIndex: 1 },
+      fingerprint: 'fp',
+    })
+
+    expect(presentation.targets).toEqual(['Slide 2'])
+  })
+
   it('keeps the legacy append preview compatible', () => {
     expect(
       proposalPresentation({
