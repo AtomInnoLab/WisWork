@@ -6,6 +6,7 @@ const realFetch = globalThis.fetch
 afterEach(() => {
   globalThis.fetch = realFetch
   delete process.env.SERPER_API_KEY
+  delete process.env.SERPAPI_API_KEY
 })
 
 function mockFetch(
@@ -217,6 +218,52 @@ describe('imageSearch (Serper)', () => {
       imageUrl: 'https://cdn.example.com/a.jpg',
       width: 800,
       height: 600,
+    })
+  })
+})
+
+describe('imageSearch (SerpApi)', () => {
+  it('uses the SerpApi Google Images contract and parses image_results', async () => {
+    process.env.SERPAPI_API_KEY = 'serpapi-test-key'
+    mockFetch((rawUrl) => {
+      const url = new URL(rawUrl)
+      expect(url.origin + url.pathname).toBe('https://serpapi.com/search')
+      expect(Object.fromEntries(url.searchParams)).toMatchObject({
+        engine: 'google_images',
+        q: 'flowers',
+        hl: 'en',
+        gl: 'us',
+        api_key: 'serpapi-test-key',
+      })
+      return {
+        ok: true,
+        json: {
+          images_results: [
+            {
+              title: 'Wildflowers',
+              original: 'https://cdn.example.com/flowers.jpg',
+              link: 'https://example.com/flowers',
+              source: 'Example',
+              original_width: 1200,
+              original_height: 800,
+            },
+          ],
+        },
+      }
+    })
+
+    await expect(imageSearch('flowers', 3)).resolves.toEqual({
+      method: 'serpapi',
+      images: [
+        {
+          title: 'Wildflowers',
+          imageUrl: 'https://cdn.example.com/flowers.jpg',
+          sourceUrl: 'https://example.com/flowers',
+          source: 'Example',
+          width: 1200,
+          height: 800,
+        },
+      ],
     })
   })
 })
