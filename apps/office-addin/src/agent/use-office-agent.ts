@@ -183,6 +183,17 @@ const DIAGNOSTIC_TOOL_ERRORS = new Set([
   'proposal_stale',
 ])
 
+const AUTOMATIC_POWERPOINT_MUTATION_TOOLS = new Set([
+  'edit_slide_text',
+  'execute_office_js',
+  'edit_slide_xml',
+  'edit_slide_chart',
+  'edit_slide_master',
+  'edit_slide_master_xml',
+  'duplicate_slide',
+  'insert-image',
+])
+
 function diagnosticToolError(output: string): string {
   const safe = (value: string) =>
     DIAGNOSTIC_TOOL_ERRORS.has(value) || /^office_recovery_failed:word_[a-z_]+$/.test(value)
@@ -203,6 +214,12 @@ export function createOfficeAgentSession(dependencies: {
   proposals: ProposalController | StructuredProposalController
   diagnostics?: Pick<OfficeDiagnostics, 'startTrace' | 'setTool' | 'record' | 'clear'>
   presentationText?: (key: PresentationVerificationStringKey) => string
+  /**
+   * PC-managed PowerPoint autonomy. Ordinary bounded proposals still use the Office
+   * validate/write/verify transaction, but do not interrupt the run with UI confirmation.
+   * Elevated raw Office proposals are never eligible.
+   */
+  automaticPowerPointMutations?: boolean
   remoteTools?: {
     setToolHandler?(
       handler:
@@ -219,6 +236,19 @@ export function createOfficeAgentSession(dependencies: {
   }
 }): OfficeAgentSession {
   const { proposals } = dependencies
+  const isAutomaticProposal = (
+    proposal: OfficeProposal | StructuredProposal | undefined,
+  ): proposal is StructuredProposal =>
+    dependencies.automaticPowerPointMutations === true &&
+    proposal !== undefined &&
+    'impact' in proposal &&
+    proposal.impact.host.toLowerCase() === 'powerpoint' &&
+    typeof proposal.toolName === 'string' &&
+    AUTOMATIC_POWERPOINT_MUTATION_TOOLS.has(proposal.toolName)
+  const visibleProposal = () => {
+    const proposal = proposals.pending()
+    return isAutomaticProposal(proposal) ? undefined : proposal
+  }
   const presentation = dependencies.skill.presentation as
     | (NonNullable<AgentSkill['presentation']> & {
         setReviewer?: (reviewer: OfficePowerPointVisualReviewer) => void
@@ -300,12 +330,12 @@ export function createOfficeAgentSession(dependencies: {
     retryable: false,
     timeline: emptyPresentationTimeline(),
   }
-  let cached: OfficeAgentSnapshot = { ...state, proposal: proposals.pending() }
+  let cached: OfficeAgentSnapshot = { ...state, proposal: visibleProposal() }
 
   const publish = (next: Partial<typeof state> = {}) => {
     if (disposed) return
     state = { ...state, ...next }
-    cached = { ...state, proposal: proposals.pending() }
+    cached = { ...state, proposal: visibleProposal() }
     listeners.forEach((listener) => listener())
   }
 
@@ -331,7 +361,7 @@ export function createOfficeAgentSession(dependencies: {
           event.kind === 'proposal' && event.state === 'pending',
       )
   const appendPendingProposal = () => {
-    const proposal = proposals.pending()
+    const proposal = visibleProposal()
     if (
       proposal &&
       !state.timeline.some(
@@ -428,7 +458,14 @@ export function createOfficeAgentSession(dependencies: {
       if ('kind' in outcome && outcome.kind === 'tool-execution-suspension') return outcome
       const proposal = proposals.pending()
       if (!proposal) return outcome
-      return suspendToolExecution(finalProposalExecution(proposal.id, outcome, call.name))
+      const final = finalProposalExecution(proposal.id, outcome, call.name)
+      if (isAutomaticProposal(proposal)) {
+        void proposals.confirm(proposal.id).catch(() => {
+          // The proposal controller records a stable failed decision. finalProposalExecution
+          // resumes the same tool call with that safe result instead of creating an unhandled task.
+        })
+      }
+      return suspendToolExecution(final)
     },
   }
   dependencies.remoteTools?.setToolHandler?.(async (call) => {
@@ -651,7 +688,7 @@ export function createOfficeAgentSession(dependencies: {
   })
 
   const unsubscribeProposals = proposals.subscribe(() => {
-    const pending = proposals.pending()
+    const pending = visibleProposal()
     if (pending) {
       appendPendingProposal()
       publish({ activity: 'Waiting for your approval' })
