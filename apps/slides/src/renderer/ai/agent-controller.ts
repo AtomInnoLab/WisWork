@@ -25,6 +25,14 @@ export interface AgentControllerRef<TSnapshot> {
   current: AgentHarness<TSnapshot> | null
 }
 
+const hostToolExecution = (execution: ToolExecution): ToolExecution => ({
+  output: execution.output,
+  summary: execution.summary,
+  ...(execution.isError === undefined ? {} : { isError: execution.isError }),
+  ...(execution.mutated === undefined ? {} : { mutated: execution.mutated }),
+  ...(execution.stopToolBatch === undefined ? {} : { stopToolBatch: execution.stopToolBatch }),
+})
+
 function createSlidesEnhancedHarness<TSnapshot>(
   options: AgentLoopOptions<TSnapshot>,
   api: PcHostCodexApi,
@@ -118,8 +126,10 @@ function createSlidesEnhancedHarness<TSnapshot>(
     async executeTool(call: Parameters<typeof options.skill.executeTool>[0], signal?: AbortSignal) {
       const outcome = await options.skill.executeTool(call, signal)
       if ('kind' in outcome && outcome.kind === 'tool-execution-suspension') {
-        void outcome.result.then((execution) => executions.set(call.id, execution))
-      } else executions.set(call.id, outcome)
+        void outcome.result.then((execution) =>
+          executions.set(call.id, hostToolExecution(execution)),
+        )
+      } else executions.set(call.id, hostToolExecution(outcome))
       return outcome
     },
   }

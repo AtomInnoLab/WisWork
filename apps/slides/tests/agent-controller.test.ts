@@ -319,6 +319,59 @@ describe('Slides interactive agent controller', () => {
     controller.dispose()
   })
 
+  it('keeps image-search display data local when returning an Enhanced tool result', async () => {
+    let documentId: string | null = null
+    let onToolCall: ((request: any) => void) | undefined
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => undefined),
+      startTurn: vi.fn(() => new Promise<void>(() => undefined)),
+      cancelTurn: vi.fn(async () => undefined),
+      toolResult: vi.fn(async () => undefined),
+      onEvent: vi.fn(() => () => undefined),
+      onToolCall: vi.fn((listener) => {
+        onToolCall = listener
+        return () => undefined
+      }),
+    }
+    const executeTool = vi.fn(async () => ({
+      output: 'https://example.test/image.png',
+      summary: 'Found 1 image',
+      mutated: false,
+      display: { kind: 'images' as const, items: [{ url: 'https://example.test/image.png' }] },
+    }))
+    const controller = createAgentController(
+      { transport: manualTransport(), skill: { ...skill, executeTool } },
+      { host: 'slides', api },
+    )
+    controller.activate()
+    await flush()
+    expect(controller.run('find an image')).toBe(true)
+    await flush()
+
+    onToolCall?.({
+      documentId,
+      generation: 0,
+      call: { id: 'image', name: 'execute_slide_script', input: {} },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await flush()
+
+    expect(api.toolResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        execution: {
+          output: 'https://example.test/image.png',
+          summary: 'Found 1 image',
+          mutated: false,
+        },
+      }),
+    )
+    controller.dispose()
+  })
+
   it('settles a renderer tool-result turn when the Enhanced terminal event arrives first', async () => {
     let documentId: string | null = null
     let onEvent: ((event: any) => void) | undefined
