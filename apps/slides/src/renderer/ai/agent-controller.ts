@@ -123,7 +123,14 @@ function createSlidesEnhancedHarness<TSnapshot>(
       return outcome
     },
   }
-  const harness = createAgentHarness({ ...options, transport, skill })
+  const events: AgentLoopOptions<TSnapshot>['events'] = {
+    ...options.events,
+    onError(error) {
+      if (!closed) void api.cancelTurn(documentId).catch(() => undefined)
+      options.events?.onError?.(error)
+    },
+  }
+  const harness = createAgentHarness({ ...options, transport, skill, events })
   let closePromise: Promise<void> | null = null
   return {
     harness,

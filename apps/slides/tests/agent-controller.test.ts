@@ -375,6 +375,62 @@ describe('Slides interactive agent controller', () => {
     controller.dispose()
   })
 
+  it('cancels the Enhanced runtime when the renderer presentation loop fails locally', async () => {
+    let documentId: string | null = null
+    let onToolCall: ((request: any) => void) | undefined
+    const error = vi.fn()
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => undefined),
+      startTurn: vi.fn(() => new Promise<void>(() => undefined)),
+      cancelTurn: vi.fn(async () => undefined),
+      toolResult: vi.fn(async () => undefined),
+      onEvent: vi.fn(() => () => undefined),
+      onToolCall: vi.fn((listener) => {
+        onToolCall = listener
+        return () => undefined
+      }),
+    }
+    const controller = createAgentController(
+      {
+        transport: manualTransport(),
+        skill: {
+          ...skill,
+          presentation: {
+            prepare: () => ({ kind: 'bypass' as const }),
+            enroll: async () => {
+              throw new Error('local enrollment failed')
+            },
+            complete: async () => {
+              throw new Error('not reached')
+            },
+          },
+        },
+        events: { onError: error },
+      },
+      { host: 'slides', api },
+    )
+    controller.activate()
+    await flush()
+    expect(controller.run('generate')).toBe(true)
+    await flush()
+
+    onToolCall?.({
+      documentId,
+      generation: 0,
+      call: { id: 'edit', name: 'execute_slide_script', input: {} },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await flush()
+
+    expect(error).toHaveBeenCalledWith('presentation_enrollment_unavailable')
+    expect(api.cancelTurn).toHaveBeenCalledWith(documentId)
+    controller.dispose()
+  })
+
   it('waits for an old Enhanced registration to close before reactivating the deck', async () => {
     const transport = manualTransport()
     let documentId: string | null = null
