@@ -18,6 +18,12 @@ The gate fails unless every stage succeeds:
    mutation flow, canonical slide transactions, readback, and PPTX export.
 4. Built-from-source Electron Slides acceptance rendering. No DMG, ZIP, or installer is created.
 
+The production contract also rejects the old repeated title/body-only builder. A designed deck can
+carry a dark or light theme, five bounded layout families (`cover`, `split_image`, `cards`,
+`timeline`, and `statement`), and HTTPS imagery selected through `image_search`. The focused gate
+checks theme colors, layout diversity, image placement, and export style preservation before any
+live model run.
+
 Artifacts and a credential-free report are written to `test-results/ppt-preflight/`:
 
 - `standard-llm.pptx`

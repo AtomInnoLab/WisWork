@@ -26,7 +26,20 @@ export async function writePresentationE2eArtifact(
       if ((node.type !== 'text' && node.type !== 'shape') || !node.text) continue
       const paragraphs = node.text.lines
         .map((line) => ({
-          runs: line.runs.map((run) => ({ text: run.text })).filter((run) => run.text.length > 0),
+          runs: line.runs
+            .map((run) => ({
+              text: run.text,
+              ...(run.bold ? { bold: true } : {}),
+              ...(run.italic ? { italic: true } : {}),
+              ...(run.underline ? { underline: true } : {}),
+              ...(run.fontSizePx ? { fontSize: run.fontSizePx * 0.75 } : {}),
+              ...(run.fontFamily ? { fontFamily: run.fontFamily } : {}),
+              ...(run.color ? { color: run.color } : {}),
+            }))
+            .filter((run) => run.text.length > 0),
+          ...(line.align === 'left' || line.align === 'center' || line.align === 'right'
+            ? { align: line.align }
+            : {}),
         }))
         .filter((paragraph) => paragraph.runs.length > 0)
       if (paragraphs.length === 0) continue
@@ -39,6 +52,7 @@ export async function writePresentationE2eArtifact(
           cy: Math.max(EMU_PER_PIXEL, Math.round(node.box.h * EMU_PER_PIXEL)),
         },
         paragraphs,
+        ...(node.fill.kind === 'solid' ? { fillColor: node.fill.color } : {}),
       })
     }
   }
