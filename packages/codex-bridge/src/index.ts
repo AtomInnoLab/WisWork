@@ -1047,10 +1047,12 @@ function convertResponsesRequest(
   )
   if (systemParts.length > 0) converted.system = systemParts.join('\n\n')
   if (upstreamTools.length > 0) converted.tools = upstreamTools
-  // Keep the WisUsage wire shape identical to the production Standard transport.
-  // The carrier and stream converter below enforce a single tool call locally;
-  // provider-specific tool_choice extensions are not part of that contract and
-  // can be rejected before a response stream is created.
+  // Codex 0.147 explicitly disables parallel tools for this stateful code-mode
+  // turn. Preserve that contract on the Messages wire: concurrent exec blocks
+  // can otherwise contend for one document session and strand pending calls.
+  if (upstreamTools.length > 0 && request.parallel_tool_calls === false) {
+    converted.tool_choice = { type: 'auto', disable_parallel_tool_use: true }
+  }
   return {
     request: converted,
     context: {

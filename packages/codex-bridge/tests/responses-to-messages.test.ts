@@ -161,7 +161,7 @@ describe('responsesToMessages', () => {
         parallel_tool_calls: false,
         client_metadata: metadata,
       }),
-    ).not.toHaveProperty('tool_choice')
+    ).toMatchObject({ tool_choice: { type: 'auto', disable_parallel_tool_use: true } })
   })
 
   it('maps custom exec call history and preserves call IDs', () => {
