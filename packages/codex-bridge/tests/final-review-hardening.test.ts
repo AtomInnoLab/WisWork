@@ -189,7 +189,7 @@ describe('final pinned bridge contract', () => {
     ).rejects.toThrow('invalid_messages_sse')
   })
 
-  it('rejects more than one MCP call in a response', async () => {
+  it('accepts a bounded batch of MCP calls in one response', async () => {
     const code = 'await tools.mcp__wiswork__wiswork_read_document({})'
     const call = (index: number, id: string) =>
       `event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index, content_block: { type: 'tool_use', id, name: 'exec', input: {} } })}\n\n` +
@@ -197,18 +197,48 @@ describe('final pinned bridge contract', () => {
       `event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index })}\n\n`
     const turn = prepareResponsesTurn(clone())
     await expect(
-      consume(turn.messagesStreamToResponses(chunks(start, call(0, 'c1'), call(1, 'c2')))),
+      consume(
+        turn.messagesStreamToResponses(
+          chunks(
+            start,
+            call(0, 'c1'),
+            call(1, 'c2'),
+            'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}\n\n',
+            'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+          ),
+        ),
+      ),
+    ).resolves.toBeUndefined()
+  })
+
+  it('rejects an MCP response above the bounded batch limit', async () => {
+    const code = 'await tools.mcp__wiswork__wiswork_read_document({})'
+    const call = (index: number) =>
+      `event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index, content_block: { type: 'tool_use', id: `c${index}`, name: 'exec', input: {} } })}\n\n` +
+      `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n` +
+      `event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index })}\n\n`
+    const turn = prepareResponsesTurn(clone())
+    await expect(
+      consume(
+        turn.messagesStreamToResponses(
+          chunks(start, ...Array.from({ length: 17 }, (_, index) => call(index))),
+        ),
+      ),
     ).rejects.toThrow('tool_call_limit_exceeded')
   })
 
-  it('rejects more than one MCP call in a historical assistant batch', () => {
+  it('accepts a bounded historical assistant tool batch', () => {
     const body = clone()
     const code = 'await tools.mcp__wiswork__wiswork_read_document({})'
     body.input.push(
       { type: 'custom_tool_call', call_id: 'c1', name: 'exec', input: code },
       { type: 'custom_tool_call', call_id: 'c2', name: 'exec', input: code },
     )
-    expect(() => prepareResponsesTurn(body)).toThrowError('tool_call_limit_exceeded')
+    body.input.push(
+      { type: 'custom_tool_call_output', call_id: 'c1', output: 'one' },
+      { type: 'custom_tool_call_output', call_id: 'c2', output: 'two' },
+    )
+    expect(() => prepareResponsesTurn(body)).not.toThrow()
   })
 
   it.each([
