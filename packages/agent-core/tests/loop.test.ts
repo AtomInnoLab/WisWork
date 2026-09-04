@@ -879,8 +879,8 @@ describe('AgentLoop', () => {
     await flush()
     await flush()
 
-    expect(reviewFinalResponse).toHaveBeenCalledTimes(1)
-    expect(reviewFinalResponse).toHaveBeenCalledWith({
+    expect(reviewFinalResponse).toHaveBeenCalledTimes(2)
+    expect(reviewFinalResponse).toHaveBeenNthCalledWith(1, {
       text: 'I cannot make that supported edit.',
       mutated: false,
     })
@@ -1086,13 +1086,18 @@ describe('AgentLoop', () => {
     })
   })
 
-  it('allows at most one completion-review retry per run', async () => {
+  it('allows sequential completion-review corrections for multi-stage work', async () => {
     const respond = (text: string) => (cb: AgentStreamCallbacks) => {
       cb.onDelta(text)
       cb.onDone()
     }
-    const transport = scriptedTransport([respond('first denial'), respond('second denial')])
-    const reviewFinalResponse = vi.fn(() => 'try again')
+    const transport = scriptedTransport([
+      respond('questionnaire acknowledged'),
+      respond('plan claimed complete'),
+      respond('deck actually built'),
+    ])
+    const corrections = ['continue to planning', 'call build_deck', undefined]
+    const reviewFinalResponse = vi.fn(() => corrections.shift())
     const skill: AgentSkill = { ...makeSkill(), reviewFinalResponse }
     const onDone = vi.fn()
     const loop = new AgentLoop({ transport, skill, events: { onDone } })
@@ -1101,10 +1106,10 @@ describe('AgentLoop', () => {
     await flush()
     await flush()
 
-    expect(reviewFinalResponse).toHaveBeenCalledTimes(1)
-    expect(transport.requests).toHaveLength(2)
+    expect(reviewFinalResponse).toHaveBeenCalledTimes(3)
+    expect(transport.requests).toHaveLength(3)
     expect(onDone).toHaveBeenCalledWith({
-      text: 'second denial',
+      text: 'deck actually built',
       cancelled: false,
       turnLimit: false,
     })

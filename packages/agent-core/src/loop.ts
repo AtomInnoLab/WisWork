@@ -329,8 +329,9 @@ export class AgentLoop<TSnapshot = unknown> {
   ownsToolExecutionSuspension(value: ToolExecutionOutcome): value is ToolExecutionSuspension {
     return isToolExecutionSuspensionOwnedBy(this, value)
   }
-  /** one terminal-response correction is permitted per run */
-  private completionReviewRetried = false
+  /** Bounded retries let staged workflows reject more than one premature completion. */
+  private completionReviewRetries = 0
+  private lastCompletionReviewCorrection = ''
   private mutationSeen = false
   private presentationContract: PresentationAcceptanceContract | null = null
   private presentationCorrectionPasses = 0
@@ -413,7 +414,8 @@ export class AgentLoop<TSnapshot = unknown> {
     this.cancelled = false
     this.turns = 0
     this.finalizing = false
-    this.completionReviewRetried = false
+    this.completionReviewRetries = 0
+    this.lastCompletionReviewCorrection = ''
     this.mutationSeen = false
     this.presentationContract = null
     this.presentationCorrectionPasses = 0
@@ -883,7 +885,7 @@ export class AgentLoop<TSnapshot = unknown> {
       toolCalls.length === 0 &&
       !this.cancelled &&
       !this.finalizing &&
-      !this.completionReviewRetried &&
+      this.completionReviewRetries < 3 &&
       skill.reviewFinalResponse
     ) {
       const generation = this.generation
@@ -899,8 +901,13 @@ export class AgentLoop<TSnapshot = unknown> {
       }
       if (generation !== this.generation || !this.running) return
       const safeCorrection = safeFinalResponseCorrection(correction)
-      if (safeCorrection && !this.cancelled) {
-        this.completionReviewRetried = true
+      if (
+        safeCorrection &&
+        safeCorrection !== this.lastCompletionReviewCorrection &&
+        !this.cancelled
+      ) {
+        this.completionReviewRetries++
+        this.lastCompletionReviewCorrection = safeCorrection
         this.history.push({
           role: 'assistant',
           text: this.turnText || COMPLETED_VIA_TOOLS_TEXT,
