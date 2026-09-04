@@ -29,6 +29,7 @@ import { friendlyEnhancedError, shouldMarkEnhancedMessageUndelivered } from './e
 import { renderSlidesToPngBase64 } from '../export-render'
 import { shouldShowStreamingProgress } from './streaming-progress'
 import {
+  applyQcGeometryFixes,
   captureCurrentQcShot,
   isQcEnabled,
   qcSlidePage,
@@ -2165,7 +2166,7 @@ export function AiPanel({
           if (slidesRef.current[page]) lines.push(tGlobal('aiQcPageSkipped', { n: page + 1 }))
           continue
         }
-        const result = await qcSlidePage({
+        let result = await qcSlidePage({
           access,
           transport,
           pageIndex: page,
@@ -2175,6 +2176,51 @@ export function AiPanel({
           isCurrent: isCurrentQc,
         })
         if (!isCurrentQc()) break
+        if (result.fixes?.length) {
+          const batchOpened = await window.slidesApi.beginHistoryBatch()
+          let correctionSnapshotId: number | undefined
+          let applied = false
+          try {
+            if (batchOpened)
+              applied = await applyQcGeometryFixes(access, page, result.fixes, controller.signal)
+          } finally {
+            if (batchOpened) {
+              const id = await window.slidesApi.endHistoryBatch()
+              if (typeof id === 'number') correctionSnapshotId = id
+            }
+          }
+          if (applied && isCurrentQc()) {
+            const recaptured = await captureCurrentQcShot({
+              capture: () => captureSlideShot(page),
+              signal: controller.signal,
+              isCurrent: isCurrentQc,
+            })
+            if (!recaptured) break
+            if (recaptured.value) {
+              const verified = await qcSlidePage({
+                access,
+                transport,
+                pageIndex: page,
+                screenshot: recaptured.value,
+                systemSuffix: aiLangDirective,
+                signal: controller.signal,
+                isCurrent: isCurrentQc,
+              })
+              if (!isCurrentQc()) break
+              if (correctionSnapshotId !== undefined && verified.postIssues > result.preIssues) {
+                const restored = await window.slidesApi.aiSnapshotRestore(correctionSnapshotId)
+                if (restored) {
+                  applyDeckRef.current(restored, Math.min(currentRef.current, restored.length - 1))
+                  lines.push(tGlobal('aiQcPageReverted', { n: page + 1 }))
+                } else {
+                  result = { ...verified, edited: true }
+                }
+              } else {
+                result = { ...verified, edited: true }
+              }
+            }
+          }
+        }
         const transactionId = qcTransactionByPageRef.current.get(page)
         const deterministic = transactionId
           ? [...qualityReceiptsRef.current]

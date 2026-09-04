@@ -190,6 +190,14 @@ export function auditSlideQuality(
   }
   const entries = collectEntries(slide.nodes)
   const findings: PresentationQualityFinding[] = []
+  if (entries.length === 0) {
+    findings.push({
+      code: 'empty_slide',
+      severity: 'critical',
+      slideId: identity.slideId,
+      evidence: {},
+    })
+  }
   let identityOrdinal = 0
   const add = (finding: PresentationQualityFinding) => {
     if (findings.length >= MAX_QUALITY_FINDINGS) return

@@ -13,6 +13,8 @@ import {
   captureCurrentQcShot,
   toVisualQualityReceipt,
   publishAppliedDeterministicQuality,
+  parseQcReview,
+  applyQcGeometryFixes,
 } from '../src/renderer/ai/slide-qc'
 import type { DeckAccess } from '../src/renderer/ai/slides-skill'
 import { createElectronTransport } from '../src/renderer/ai/transport'
@@ -27,6 +29,97 @@ const access: DeckAccess = {
 }
 
 describe('visual quality receipts', () => {
+  it('accepts only bounded same-slide geometry fixes from visual review', () => {
+    const slide = {
+      widthPx: 1280,
+      heightPx: 720,
+      nodes: [{ sourceId: 'title', decoration: false }],
+    } as never
+    expect(
+      parseQcReview(
+        JSON.stringify({
+          status: 'needs_fix',
+          summary: 'Title is clipped',
+          fixes: [{ sourceId: 'title', x: 72, y: 48, width: 900, height: 90 }],
+        }),
+        slide,
+      ),
+    ).toEqual({
+      status: 'needs_fix',
+      summary: 'Title is clipped',
+      fixes: [{ sourceId: 'title', x: 72, y: 48, width: 900, height: 90 }],
+    })
+    expect(() =>
+      parseQcReview(
+        JSON.stringify({
+          status: 'needs_fix',
+          summary: 'bad target',
+          fixes: [{ sourceId: 'other', x: 0, y: 0, width: 100, height: 100 }],
+        }),
+        slide,
+      ),
+    ).toThrow()
+  })
+
+  it('applies one atomic geometry-only correction to the reviewed page', async () => {
+    const executePresentationOperation = vi.fn(async () => ({
+      receipt: {
+        status: 'applied' as const,
+        transactionId: 'qc-fix',
+        resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+        operationCount: 1,
+      },
+      authoritativeState: 'fresh' as const,
+    }))
+    const one: DeckAccess = {
+      ...access,
+      getSlides: () => [
+        {
+          widthPx: 1280,
+          heightPx: 720,
+          scale: 1,
+          nodes: [{ sourceId: 'title', decoration: false }],
+        } as never,
+      ],
+      executePresentationOperation,
+    }
+    await expect(
+      applyQcGeometryFixes(one, 0, [{ sourceId: 'title', x: 72, y: 48, width: 900, height: 90 }]),
+    ).resolves.toBe(true)
+    expect(executePresentationOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slideIndex: 0,
+        operations: [
+          expect.objectContaining({
+            kind: 'set_geometry',
+            sourceId: 'title',
+            geometry: { x: 54, y: 36, width: 675, height: 67.5 },
+          }),
+        ],
+      }),
+      undefined,
+    )
+  })
+
+  it('rejects out-of-canvas corrections at the mutation boundary', async () => {
+    const executePresentationOperation = vi.fn()
+    const one: DeckAccess = {
+      ...access,
+      getSlides: () => [
+        {
+          widthPx: 1280,
+          heightPx: 720,
+          scale: 1,
+          nodes: [{ sourceId: 'title', decoration: false }],
+        } as never,
+      ],
+      executePresentationOperation,
+    }
+    await expect(
+      applyQcGeometryFixes(one, 0, [{ sourceId: 'title', x: 1200, y: 48, width: 900, height: 90 }]),
+    ).resolves.toBe(false)
+    expect(executePresentationOperation).not.toHaveBeenCalled()
+  })
   it('measures the exact IPC envelope including settings before slidesApi.aiStream', async () => {
     const previous = window.slidesApi
     const aiStream = vi.fn()
@@ -351,7 +444,7 @@ describe('qcSlidePage cancellation', () => {
     expect(delegate).not.toHaveBeenCalled()
   })
 
-  it('delegates once when the complete serialized request is under 2 MiB', async () => {
+  it('keeps a critical deterministic failure even when visual review says OK', async () => {
     const delegate = vi.fn((_request, callbacks) => {
       queueMicrotask(() => {
         callbacks.onDelta('OK')
@@ -365,7 +458,7 @@ describe('qcSlidePage cancellation', () => {
     }
     await expect(
       qcSlidePage({ access: one, transport: { stream: delegate }, pageIndex: 0, screenshot: null }),
-    ).resolves.toMatchObject({ edited: false, reply: 'OK' })
+    ).resolves.toMatchObject({ edited: false, reply: 'empty_slide', postIssues: 1 })
     expect(delegate).toHaveBeenCalledOnce()
   })
 
