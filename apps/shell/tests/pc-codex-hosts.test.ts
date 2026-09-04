@@ -12,7 +12,10 @@ describe('PC Codex host registrar', () => {
   it('registers the complete production Slides tool catalog', async () => {
     const handlers = new Map<string, (...args: any[]) => any>()
     const owner = { id: 71, isDestroyed: () => false, send: vi.fn() }
-    const registerDocument = vi.fn(() => () => undefined)
+    const registerDocument = vi.fn((input) => {
+      expect(input.session.listTools(input.session.credentials).length).toBeGreaterThan(0)
+      return () => undefined
+    })
     const policy = {
       globalEnabled: true,
       rawOfficeEnabled: false,
