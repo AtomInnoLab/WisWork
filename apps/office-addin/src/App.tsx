@@ -72,6 +72,22 @@ const agentProductLabels: Record<OfficeHost, string> = {
   unknown: 'WisWork AI',
 }
 
+export function officeRuntimeModeForTaskpane(
+  host: OfficeHost,
+  snapshot: {
+    readonly status: string
+    readonly enhanced?: { readonly host: string; readonly expires_at: number }
+  },
+  now = Date.now(),
+): 'standard' | 'enhanced' {
+  return snapshot.status === 'connected' &&
+    host !== 'unknown' &&
+    snapshot.enhanced?.host === `office-${host}` &&
+    snapshot.enhanced.expires_at > now
+    ? 'enhanced'
+    : 'standard'
+}
+
 export function relayConnectionPresentation(
   status: OfficeRelayStatus | 'signed_out',
   verificationCode?: string,
@@ -173,6 +189,12 @@ function proposalTarget(target: string, host?: string): string {
     .join(' · ')
 }
 
+function isDisplaySafeProposalTarget(target: string): boolean {
+  // Office object-path identifiers are implementation details and are not stable or meaningful
+  // enough for a user confirmation surface.
+  return !/^\d+(?:#\d+)+$/.test(target)
+}
+
 export function proposalPresentation(proposal: DisplayProposal) {
   const legacy = isLegacyProposal(proposal)
   const hasComparison =
@@ -197,7 +219,9 @@ export function proposalPresentation(proposal: DisplayProposal) {
     count: legacy ? undefined : proposal.impact.count,
     targets: legacy
       ? []
-      : proposal.impact.targets.map((target) => proposalTarget(target, proposal.impact.host)),
+      : proposal.impact.targets
+          .filter(isDisplaySafeProposalTarget)
+          .map((target) => proposalTarget(target, proposal.impact.host)),
     before,
     after,
     preview: hasComparison || legacy ? '' : previewSummary(proposal.preview),
@@ -365,6 +389,19 @@ function ProposalReview(props: {
     isLegacyProposal(event.proposal) ||
     (event.proposal.before !== undefined && event.proposal.after !== undefined)
   const canReview = event.state === 'pending' && props.activeProposalId === event.proposal.id
+  if (event.state === 'applied') {
+    return (
+      <article className="proposal-result" aria-label="Document change completed">
+        <span className="proposal-result-icon" aria-hidden="true">
+          ✓
+        </span>
+        <div>
+          <h2>{presentation.title}</h2>
+          {!isLegacyProposal(event.proposal) && <p>已更新 {presentation.count} 项</p>}
+        </div>
+      </article>
+    )
+  }
   return (
     <article
       className={`proposal-card proposal-${event.state}`}
@@ -376,13 +413,11 @@ function ProposalReview(props: {
             ? 'Approval required'
             : event.state === 'applying'
               ? 'Applying approved change'
-              : event.state === 'applied'
-                ? 'Change applied'
-                : event.state === 'uncertain'
-                  ? 'Write status uncertain'
-                  : event.state === 'rejected'
-                    ? 'Change rejected'
-                    : 'Change failed'}
+              : event.state === 'uncertain'
+                ? 'Write status uncertain'
+                : event.state === 'rejected'
+                  ? 'Change rejected'
+                  : 'Change failed'}
         </span>
         <h2>{presentation.title}</h2>
       </div>
@@ -393,22 +428,24 @@ function ProposalReview(props: {
           <span>{presentation.targets.join(', ') || 'No named targets'}</span>
         </div>
       )}
-      <details className="proposal-preview" open>
-        <summary>Review exact impact</summary>
-        {hasComparison && (
-          <div className="proposal-diff">
-            <div className="preview-block">
-              <strong>Before</strong>
-              <p className="proposal-copy">{presentation.before || '(empty document)'}</p>
+      {(hasComparison || presentation.preview) && (
+        <details className="proposal-preview" open>
+          <summary>查看修改内容</summary>
+          {hasComparison && (
+            <div className="proposal-diff">
+              <div className="preview-block">
+                <strong>修改前</strong>
+                <p className="proposal-copy">{presentation.before || '空白内容'}</p>
+              </div>
+              <div className="preview-block after">
+                <strong>修改后</strong>
+                <p className="proposal-copy">{presentation.after || '空白内容'}</p>
+              </div>
             </div>
-            <div className="preview-block after">
-              <strong>After</strong>
-              <p className="proposal-copy">{presentation.after || '(empty document)'}</p>
-            </div>
-          </div>
-        )}
-        {presentation.preview && <p className="proposal-copy">{presentation.preview}</p>}
-      </details>
+          )}
+          {presentation.preview && <p className="proposal-copy">{presentation.preview}</p>}
+        </details>
+      )}
       {event.error && <p className="error-text">{event.error}</p>}
       {canReview && (
         <div className="actions">
@@ -561,6 +598,7 @@ export function AgentWorkspace(props: {
   initialPanel?: WorkspacePanelName
   legacy?: boolean
   connectionNotice?: string
+  runtimeMode?: 'standard' | 'enhanced'
 }) {
   const { session, ui, disconnect, host } = props
   const state = useOfficeAgent(session)
@@ -612,11 +650,17 @@ export function AgentWorkspace(props: {
       className={`agent-workspace ${host === 'powerpoint' ? 'presentation-agent ' : ''}${props.legacy ? 'legacy-workspace ' : ''}${panel ? 'has-management ' : ''}${showConversationChrome ? 'has-conversation' : 'is-empty'}`}
       aria-busy={state.busy || state.applying}
     >
-      {showConversationChrome && (
+      {(showConversationChrome || host === 'powerpoint') && (
         <header className="app-header">
           <div className="editor-identity">
             <span className="connection-dot" aria-hidden="true" />
-            <h1>{agentProductLabels[host]}</h1>
+            <div>
+              <h1>{agentProductLabels[host]}</h1>
+              <p className="runtime-mode" aria-label="由 WisWork PC 管理的 Agent 模式">
+                {props.runtimeMode === 'enhanced' ? '增强模式' : '标准模式'}
+                <span>由 WisWork PC 管理</span>
+              </p>
+            </div>
             <span className="visually-hidden">Connected to WisWork PC</span>
           </div>
           <div className="header-actions">
@@ -1269,6 +1313,7 @@ export function ConfiguredApp(
       disconnect={disconnect}
       host={host}
       connectionNotice={connectionNotice}
+      runtimeMode={officeRuntimeModeForTaskpane(host, bridgeState)}
     />
   )
 }

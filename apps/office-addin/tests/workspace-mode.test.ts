@@ -6,12 +6,39 @@ import { officePresentationVerificationFlags } from '../src/agent/presentation-f
 import {
   AgentWorkspace,
   LegacyAgentWorkspace,
+  officeRuntimeModeForTaskpane,
   officePresentationText,
   workspaceComponentForMode,
 } from '../src/App.js'
 import { LANGS, htmlLang, presentationVerificationStrings } from '@wiswork/i18n'
 
 describe('Office workspace rollback flag', () => {
+  it('derives the Taskpane mode only from the current PC session statement', () => {
+    const enhanced = {
+      version: 1 as const,
+      runtime_mode: 'enhanced' as const,
+      runtime_instance: 'runtime_123456789',
+      component_version: '0.147.0' as const,
+      host: 'office-powerpoint' as const,
+      raw_office: false,
+      expires_at: 20_000,
+      policy_generation: 1,
+      session_generation: 2,
+    }
+    expect(
+      officeRuntimeModeForTaskpane('powerpoint', { status: 'connected', enhanced }, 10_000),
+    ).toBe('enhanced')
+    expect(officeRuntimeModeForTaskpane('word', { status: 'connected', enhanced }, 10_000)).toBe(
+      'standard',
+    )
+    expect(
+      officeRuntimeModeForTaskpane('powerpoint', { status: 'connected', enhanced }, 20_000),
+    ).toBe('standard')
+    expect(
+      officeRuntimeModeForTaskpane('powerpoint', { status: 'offline', enhanced }, 10_000),
+    ).toBe('standard')
+  })
+
   it('defaults to the new workspace and accepts only the exact independent legacy flag', () => {
     expect(officeWorkspaceMode({})).toBe('workspace')
     expect(officeWorkspaceMode({ VITE_WISWORK_OFFICE_WORKSPACE: '1' })).toBe('workspace')

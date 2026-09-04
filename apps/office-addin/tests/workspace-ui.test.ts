@@ -32,6 +32,7 @@ function workspaceMarkup(
   panel?: WorkspacePanelName,
   host: 'word' | 'excel' | 'powerpoint' | 'unknown' = 'word',
   connectionNotice?: string,
+  runtimeMode: 'standard' | 'enhanced' = 'standard',
 ) {
   const snapshot: OfficeAgentSnapshot = {
     assistantText: 'Draft ready',
@@ -90,11 +91,61 @@ function workspaceMarkup(
       host,
       initialPanel: panel,
       connectionNotice,
+      runtimeMode,
     }),
   )
 }
 
 describe('Office Agent workspace UI', () => {
+  it('shows the runtime selected by WisWork PC without exposing a second mode switch', () => {
+    const standard = workspaceMarkup({}, undefined, 'powerpoint', undefined, 'standard')
+    const enhanced = workspaceMarkup({}, undefined, 'powerpoint', undefined, 'enhanced')
+
+    expect(standard).toContain('标准模式')
+    expect(enhanced).toContain('增强模式')
+    expect(enhanced).toContain('由 WisWork PC 管理')
+    expect(enhanced).not.toMatch(/切换到|启用增强|mode-switch/)
+  })
+
+  it('collapses an applied PowerPoint proposal into a concise verified result', () => {
+    const structured = {
+      id: 'ppt-applied',
+      operation: 'edit_slide',
+      title: '设置 LLM 介绍 PPT 封面',
+      impact: {
+        host: 'powerpoint',
+        targets: ['256#3943334991', 'slide-1'],
+        count: 4,
+      },
+      preview: { slideIndex: 0 },
+      fingerprint: 'private',
+      before: '',
+      after: '',
+    }
+    const html = workspaceMarkup(
+      {
+        proposal: undefined,
+        timeline: Object.freeze([
+          Object.freeze({
+            id: 'result',
+            kind: 'proposal' as const,
+            proposal: structured,
+            state: 'applied' as const,
+          }),
+        ]),
+      },
+      undefined,
+      'powerpoint',
+    )
+
+    expect(html).toContain('设置 LLM 介绍 PPT 封面')
+    expect(html).toContain('已更新 4 项')
+    expect(html).not.toMatch(
+      /CHANGE APPLIED|Review exact impact|Before|After|empty document|Version/i,
+    )
+    expect(html).not.toContain('256#3943334991')
+  })
+
   it('renders an accessible full workspace with causal timeline and inline proposal actions', () => {
     const html = workspaceMarkup()
     expect(html).toContain('aria-label="Agent conversation"')
@@ -373,7 +424,7 @@ describe('Office Agent workspace UI', () => {
         }),
       ]),
     })
-    expect(html).toContain('(empty document)')
+    expect(html).toContain('空白内容')
     expect(html).toContain('这是完整草稿。')
     expect(html).not.toContain('Mode: replace')
   })
