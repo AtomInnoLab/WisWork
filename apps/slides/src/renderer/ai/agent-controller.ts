@@ -33,15 +33,22 @@ function createSlidesEnhancedHarness<TSnapshot>(
 ): { harness: AgentHarness<TSnapshot>; close(): Promise<void> } {
   let callbacks: AgentStreamCallbacks | null = null
   let closed = false
+  let turnSettled = true
   const executions = new Map<string, ToolExecution>()
   const registration = api.register(
     createPcHostRegistration({ host: 'slides', documentId, generation, skill: options.skill }),
   )
+  const settleTurn = (error?: string) => {
+    if (turnSettled) return
+    turnSettled = true
+    if (error) callbacks?.onError(error)
+    else callbacks?.onDone()
+  }
   const unsubscribeEvents = api.onEvent((event) => {
     if (closed || !callbacks) return
     if (event.type === 'text') callbacks.onDelta(event.text)
-    else if (event.type === 'done') callbacks.onDone()
-    else if (event.type === 'error') callbacks.onError(event.code)
+    else if (event.type === 'done') settleTurn()
+    else if (event.type === 'error') settleTurn(event.code)
   })
   const unsubscribeTools = api.onToolCall((request) => {
     if (
@@ -72,6 +79,7 @@ function createSlidesEnhancedHarness<TSnapshot>(
         }
       } else {
         const user = [...request.messages].reverse().find((message) => message.role === 'user')
+        turnSettled = false
         void registration
           .then(() => api.status())
           .then((status) => {
@@ -79,7 +87,8 @@ function createSlidesEnhancedHarness<TSnapshot>(
               throw new Error('enhanced_document_unavailable')
             return api.startTurn({ documentId, text: user?.role === 'user' ? user.text : '' })
           })
-          .catch(() => next.onError('enhanced_turn_failed'))
+          .then(() => settleTurn())
+          .catch(() => settleTurn('enhanced_turn_failed'))
       }
       return { cancel: () => void api.cancelTurn(documentId).catch(() => undefined) }
     },

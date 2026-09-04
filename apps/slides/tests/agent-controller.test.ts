@@ -89,7 +89,7 @@ describe('Slides interactive agent controller', () => {
         documentId = input.documentId
       }),
       unregister: vi.fn(async () => undefined),
-      startTurn: vi.fn(async () => undefined),
+      startTurn: vi.fn(() => new Promise<void>(() => undefined)),
       cancelTurn: vi.fn(async () => undefined),
       toolResult: vi.fn(async () => undefined),
       onEvent: vi.fn((listener) => {
@@ -222,6 +222,48 @@ describe('Slides interactive agent controller', () => {
     await flush()
     expect(api.startTurn).toHaveBeenCalledOnce()
     expect(transport.callbacks).toHaveLength(0)
+    controller.dispose()
+  })
+
+  it('settles an Enhanced run when startTurn completes without a terminal event', async () => {
+    let documentId: string | null = null
+    let onEvent: ((event: any) => void) | undefined
+    let finishTurn!: () => void
+    const turn = new Promise<void>((resolve) => {
+      finishTurn = resolve
+    })
+    const done = vi.fn()
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => undefined),
+      startTurn: vi.fn(() => turn),
+      cancelTurn: vi.fn(async () => undefined),
+      toolResult: vi.fn(async () => undefined),
+      onEvent: vi.fn((listener) => {
+        onEvent = listener
+        return () => undefined
+      }),
+      onToolCall: vi.fn(() => () => undefined),
+    }
+    const controller = createAgentController(
+      { transport: manualTransport(), skill, events: { onDone: done } },
+      { host: 'slides', api },
+    )
+    controller.activate()
+    await flush()
+    expect(controller.run('enhanced slides')).toBe(true)
+    await flush()
+    expect(done).not.toHaveBeenCalled()
+
+    finishTurn()
+    await flush()
+    expect(done).toHaveBeenCalledOnce()
+    expect(controller.snapshot.busy).toBe(false)
+    onEvent?.({ type: 'done', result: { text: '', cancelled: false, turnLimit: false } })
+    expect(done).toHaveBeenCalledOnce()
     controller.dispose()
   })
 
