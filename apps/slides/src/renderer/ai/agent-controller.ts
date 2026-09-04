@@ -79,6 +79,7 @@ function createSlidesEnhancedHarness<TSnapshot>(
       callbacks = next
       const toolMessage = request.messages.at(-1)
       if (toolMessage?.role === 'tool') {
+        const submissions: Promise<void>[] = []
         for (const result of toolMessage.results) {
           const execution = executions.get(result.id) ?? {
             output: result.output,
@@ -86,10 +87,16 @@ function createSlidesEnhancedHarness<TSnapshot>(
             ...(result.isError ? { isError: true } : {}),
           }
           executions.delete(result.id)
-          void api
-            .toolResult({ documentId, generation, callId: result.id, execution })
-            .catch(() => next.onError('enhanced_turn_failed'))
+          submissions.push(api.toolResult({ documentId, generation, callId: result.id, execution }))
         }
+        void Promise.all(submissions)
+          .then(() => {
+            // The runtime can finish while the renderer is still executing the
+            // preceding tool batch. Replay that terminal edge to the new
+            // tool-result stream so the local AgentLoop cannot stay busy.
+            if (!closed && callbacks === next && turnSettled) next.onDone()
+          })
+          .catch(() => next.onError('enhanced_turn_failed'))
       } else {
         const user = [...request.messages].reverse().find((message) => message.role === 'user')
         turnSettled = false

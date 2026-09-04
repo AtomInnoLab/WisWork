@@ -319,6 +319,62 @@ describe('Slides interactive agent controller', () => {
     controller.dispose()
   })
 
+  it('settles a renderer tool-result turn when the Enhanced terminal event arrives first', async () => {
+    let documentId: string | null = null
+    let onEvent: ((event: any) => void) | undefined
+    let onToolCall: ((request: any) => void) | undefined
+    let releaseTool!: () => void
+    const toolPending = new Promise<void>((resolve) => {
+      releaseTool = resolve
+    })
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => undefined),
+      startTurn: vi.fn(() => new Promise<void>(() => undefined)),
+      cancelTurn: vi.fn(async () => undefined),
+      toolResult: vi.fn(async () => undefined),
+      onEvent: vi.fn((listener) => {
+        onEvent = listener
+        return () => undefined
+      }),
+      onToolCall: vi.fn((listener) => {
+        onToolCall = listener
+        return () => undefined
+      }),
+    }
+    const executeTool = vi.fn(async () => {
+      await toolPending
+      return { output: 'ok', summary: 'read', mutated: false }
+    })
+    const controller = createAgentController(
+      { transport: manualTransport(), skill: { ...skill, executeTool } },
+      { host: 'slides', api },
+    )
+    controller.activate()
+    await flush()
+    expect(controller.run('inspect')).toBe(true)
+    await flush()
+
+    onToolCall?.({
+      documentId,
+      generation: 0,
+      call: { id: 'read', name: 'execute_slide_script', input: {} },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(executeTool).toHaveBeenCalledOnce()
+    onEvent?.({ type: 'done', result: { text: '', cancelled: false, turnLimit: false } })
+    releaseTool()
+    await flush()
+    await flush()
+
+    expect(api.toolResult).toHaveBeenCalledOnce()
+    expect(controller.snapshot.busy).toBe(false)
+    controller.dispose()
+  })
+
   it('waits for an old Enhanced registration to close before reactivating the deck', async () => {
     const transport = manualTransport()
     let documentId: string | null = null
