@@ -641,16 +641,17 @@ export function AgentWorkspace(props: {
   const hasTimeline = state.timeline.length > 0
   const showConversationChrome =
     hasTimeline || state.busy || state.applying || Boolean(state.error) || Boolean(proposal)
+  const showHeader = showConversationChrome || host === 'powerpoint'
   const showStatus =
     host !== 'powerpoint' &&
     (state.busy || state.applying || Boolean(state.activity) || state.status === 'cancelled')
 
   return (
     <main
-      className={`agent-workspace ${host === 'powerpoint' ? 'presentation-agent ' : ''}${props.legacy ? 'legacy-workspace ' : ''}${panel ? 'has-management ' : ''}${showConversationChrome ? 'has-conversation' : 'is-empty'}`}
+      className={`agent-workspace ${host === 'powerpoint' ? 'presentation-agent ' : ''}${props.legacy ? 'legacy-workspace ' : ''}${panel ? 'has-management ' : ''}${showConversationChrome ? 'has-conversation' : `is-empty ${showHeader ? 'has-empty-header' : ''}`}`}
       aria-busy={state.busy || state.applying}
     >
-      {(showConversationChrome || host === 'powerpoint') && (
+      {showHeader && (
         <header className="app-header">
           <div className="editor-identity">
             <span className="connection-dot" aria-hidden="true" />

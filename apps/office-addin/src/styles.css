@@ -85,6 +85,14 @@ p {
   grid-template-rows: minmax(0, 1fr) auto auto;
 }
 
+.agent-workspace.is-empty.has-empty-header {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.agent-workspace.is-empty.has-empty-header.has-management {
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+}
+
 .app-header {
   grid-row: 1;
 }
@@ -323,6 +331,22 @@ p {
 
 .is-empty.has-management .composer-shell {
   grid-row: 3;
+}
+
+.is-empty.has-empty-header .agent-timeline {
+  grid-row: 2;
+}
+
+.is-empty.has-empty-header .composer-shell {
+  grid-row: 3;
+}
+
+.is-empty.has-empty-header.has-management .management-panel {
+  grid-row: 3;
+}
+
+.is-empty.has-empty-header.has-management .composer-shell {
+  grid-row: 4;
 }
 
 .app-header {

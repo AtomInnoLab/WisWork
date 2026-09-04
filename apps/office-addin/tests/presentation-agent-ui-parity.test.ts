@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
 import React, { act } from 'react'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -29,6 +31,15 @@ function render(node: React.ReactNode) {
 }
 
 describe('shared presentation agent UI', () => {
+  it('keeps the empty Taskpane in one vertical column at every pane width', () => {
+    const css = readFileSync(resolve(import.meta.dirname, '../src/styles.css'), 'utf8')
+    expect(css).toMatch(
+      /\.agent-workspace\.is-empty\.has-empty-header\s*{[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\) auto;/s,
+    )
+    expect(css).toMatch(/\.is-empty\.has-empty-header \.agent-timeline\s*{[^}]*grid-row:\s*2;/s)
+    expect(css).toMatch(/\.is-empty\.has-empty-header \.composer-shell\s*{[^}]*grid-row:\s*3;/s)
+  })
+
   it('uses the same quiet message hierarchy in desktop Slides and Office PowerPoint', () => {
     const markup = renderToStaticMarkup(
       React.createElement(
