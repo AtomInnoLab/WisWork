@@ -30,7 +30,7 @@ function createSlidesEnhancedHarness<TSnapshot>(
   api: PcHostCodexApi,
   documentId: string,
   generation: number,
-): { harness: AgentHarness<TSnapshot>; close(): void } {
+): { harness: AgentHarness<TSnapshot>; close(): Promise<void> } {
   let callbacks: AgentStreamCallbacks | null = null
   let closed = false
   const executions = new Map<string, ToolExecution>()
@@ -95,18 +95,20 @@ function createSlidesEnhancedHarness<TSnapshot>(
     },
   }
   const harness = createAgentHarness({ ...options, transport, skill })
+  let closePromise: Promise<void> | null = null
   return {
     harness,
     close() {
-      if (closed) return
+      if (closePromise) return closePromise
       closed = true
       harness.dispose()
       unsubscribeEvents()
       unsubscribeTools()
-      void registration
+      closePromise = registration
         .catch(() => undefined)
         .then(() => api.cancelTurn(documentId).catch(() => undefined))
         .then(() => api.unregister(documentId, generation).catch(() => undefined))
+      return closePromise
     },
   }
 }
@@ -128,7 +130,8 @@ export const createAgentController = <TSnapshot>(
   let terminal = false
   let activation = 0
   let generation = 0
-  let closeEnhanced: (() => void) | null = null
+  let closeEnhanced: (() => Promise<void>) | null = null
+  let lifecycle = Promise.resolve()
   let enhancedActive = false
   const documentId = `${runtime?.host ?? 'standard'}:${crypto.randomUUID()}`
   const createSelected = async (token: number) => {
@@ -162,16 +165,14 @@ export const createAgentController = <TSnapshot>(
     },
     reset() {
       if (runtime && enhancedActive) {
-        const previous = generation
-        closeEnhanced?.()
+        const close = closeEnhanced
         closeEnhanced = null
         enhancedActive = false
         inner = null
         generation += 1
         const token = ++activation
-        void runtime.api
-          .unregister(documentId, previous)
-          .catch(() => undefined)
+        lifecycle = lifecycle.then(() => close?.()).then(() => undefined)
+        void lifecycle
           .then(() => createSelected(token))
           .catch(() => options.events?.onError?.('enhanced_document_unavailable'))
       } else inner?.reset()
@@ -189,16 +190,22 @@ export const createAgentController = <TSnapshot>(
     activate() {
       if (!terminal && !inner) {
         if (!runtime) inner = createAgentHarness(options)
-        else
-          void createSelected(++activation).catch((error) => {
-            if (isPcHostCodexUnavailable(error) && !terminal) inner = createAgentHarness(options)
-            else options.events?.onError?.('enhanced_document_unavailable')
-          })
+        else {
+          const token = ++activation
+          void lifecycle
+            .then(() => createSelected(token))
+            .catch((error) => {
+              if (isPcHostCodexUnavailable(error) && !terminal) inner = createAgentHarness(options)
+              else options.events?.onError?.('enhanced_document_unavailable')
+            })
+        }
       }
     },
     deactivate() {
-      if (closeEnhanced) closeEnhanced()
-      else inner?.dispose()
+      const close = closeEnhanced
+      if (close) {
+        lifecycle = lifecycle.then(() => close()).then(() => undefined)
+      } else inner?.dispose()
       closeEnhanced = null
       enhancedActive = false
       inner = null
