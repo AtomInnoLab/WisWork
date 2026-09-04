@@ -4,6 +4,31 @@ import { createEnhancedRendererClient, createPcHostRegistration } from '../src/r
 const mutation = { id: 'call-1', name: 'replace_blocks', input: {} }
 
 describe('enhanced renderer mutation snapshots', () => {
+  it('registers the complete Slides research and whole-deck capability set', () => {
+    const registration = createPcHostRegistration({
+      host: 'slides',
+      documentId: 'deck',
+      generation: 1,
+      skill: {
+        id: 'slides',
+        systemPrompt: 'slides',
+        tools: ['web_search', 'image_search', 'insert_web_image', 'build_deck'].map((name) => ({
+          name,
+          description: name,
+          inputSchema: { type: 'object' },
+        })),
+        executeTool: vi.fn(),
+      },
+    })
+    expect(registration.tools.map((tool) => tool.name)).toEqual([
+      'web_search',
+      'image_search',
+      'insert_web_image',
+      'build_deck',
+    ])
+    expect(registration.mutatingTools).toEqual(['insert_web_image', 'build_deck'])
+  })
+
   it('registers the whole-deck builder as a mutation that requires confirmation', () => {
     const registration = createPcHostRegistration({
       host: 'slides',

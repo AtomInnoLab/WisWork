@@ -64,6 +64,35 @@ function registration(overrides: Partial<DocumentToolRegistration> = {}): Docume
 }
 
 describe('Task 4 review hardening', () => {
+  it('compiles the complete Slides research and whole-deck capability set', () => {
+    const grant = Object.freeze({})
+    expect(() =>
+      createDocumentToolManifest({
+        policyGrant: grant,
+        consumePolicyGrant: (candidate) => {
+          if (candidate !== grant) throw new Error('invalid_enhanced_policy_handle')
+          return {
+            generation: 1,
+            host: 'slides' as const,
+            policy,
+            capabilities: ['semantic-read', 'transaction-proposal'] as EnhancedCapability[],
+          }
+        },
+        tools: ['web_search', 'image_search', 'insert_web_image', 'build_deck'].map((name) => ({
+          name,
+          description: name,
+          inputSchema: { type: 'object' },
+        })),
+        policy: {
+          web_search: 'read',
+          image_search: 'read',
+          insert_web_image: 'mutate',
+          build_deck: 'mutate',
+        },
+      }),
+    ).not.toThrow()
+  })
+
   it('rejects aliases and capabilities not compiled for the exact host', () => {
     expect(() =>
       createDocumentToolManifest({
