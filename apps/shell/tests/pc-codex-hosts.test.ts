@@ -4,6 +4,67 @@ import { ShellCodexRuntime } from '../src/main/codex-runtime'
 import { registerPcCodexHosts } from '../src/main/pc-codex-hosts'
 
 describe('PC Codex host registrar', () => {
+  it('waits for Enhanced startup before reporting or registering the renderer', async () => {
+    const handlers = new Map<string, (...args: any[]) => any>()
+    const owner = { id: 6, isDestroyed: () => false, send: vi.fn() }
+    let finishStartup!: (engine: any) => void
+    const startup = new Promise<any>((resolve) => {
+      finishStartup = resolve
+    })
+    const engine = {
+      registerDocument: vi.fn(() => () => undefined),
+      closeDocument: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    }
+    const policy = {
+      globalEnabled: true,
+      rawOfficeEnabled: false,
+      hosts: Object.fromEntries(ENHANCED_HOSTS.map((host) => [host, true])) as any,
+    }
+    const runtime = new ShellCodexRuntime({
+      activeAgentRuntime: 'enhanced',
+      policy,
+      isSignedIn: async () => true,
+      resolveExecutable: async () => '/private/codex',
+      bootstrap: { start: () => startup },
+    })
+    registerPcCodexHosts({
+      ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
+      runtime,
+      policy,
+      hostForOwner: () => 'slides',
+    })
+
+    let statusSettled = false
+    const status = Promise.resolve(
+      handlers.get(PC_HOST_CODEX_CHANNELS.status)!({ sender: owner }),
+    ).finally(() => {
+      statusSettled = true
+    })
+    const registration = Promise.resolve(
+      handlers.get(PC_HOST_CODEX_CHANNELS.register)!(
+        { sender: owner },
+        {
+          host: 'slides',
+          documentId: 'deck',
+          generation: 0,
+          systemPrompt: '',
+          tools: [{ name: 'read_slide', description: 'read', inputSchema: { type: 'object' } }],
+          mutatingTools: [],
+        },
+      ),
+    )
+    await Promise.resolve()
+    expect(statusSettled).toBe(false)
+    finishStartup(engine)
+    await expect(status).resolves.toEqual({
+      activeAgentRuntime: 'enhanced',
+      documentId: 'deck',
+    })
+    await expect(registration).resolves.toBeUndefined()
+    expect(engine.registerDocument).toHaveBeenCalledOnce()
+  })
+
   it('binds registration to the trusted host and dispatches reads and mutations to its owner', async () => {
     const handlers = new Map<string, (...args: any[]) => any>()
     const sent: Array<[string, unknown]> = []

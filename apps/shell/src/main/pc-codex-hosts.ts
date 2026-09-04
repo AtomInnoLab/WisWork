@@ -349,12 +349,16 @@ export function registerPcCodexHosts(options: {
     record.text = ''
   }
 
-  options.ipcMain.handle(PC_HOST_CODEX_CHANNELS.status, (event, ...args) => {
+  options.ipcMain.handle(PC_HOST_CODEX_CHANNELS.status, async (event, ...args) => {
     trusted(event.sender)
     if (args.length) throw new Error('enhanced_invalid_request')
+    // Renderer windows can become interactive before the optional runtime has
+    // finished launching. Do not advertise the configured mode as active until
+    // initialization has actually settled.
+    await options.runtime.initialize().catch(() => undefined)
     const record = records.get(event.sender)
     return {
-      activeAgentRuntime: options.runtime.configuredAgentRuntime,
+      activeAgentRuntime: options.runtime.activeAgentRuntime,
       documentId: record?.documentId ?? null,
     }
   })
@@ -393,6 +397,10 @@ export function registerPcCodexHosts(options: {
       throw new Error('enhanced_invalid_request')
     if (records.has(event.sender) || byDocument.has(input.documentId))
       throw new Error('enhanced_document_exists')
+    await options.runtime.initialize()
+    if (options.runtime.activeAgentRuntime !== 'enhanced') {
+      throw new Error('enhanced_document_unavailable')
+    }
     const authority = createShellEnhancedPolicyAuthority(() => input.generation)
     const grant = authority.issue({
       generation: input.generation,
