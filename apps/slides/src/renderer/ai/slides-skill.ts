@@ -820,6 +820,8 @@ const ALL_TOOLS: AgentToolDef[] = [
                 minItems: 1,
                 maxItems: 8,
                 items: { type: 'string' },
+                description:
+                  'Content items. cards supports 1-8 items and reflows them automatically; timeline supports at most 5; cover and statement support at most 2.',
               },
               imageUrl: {
                 type: 'string',
@@ -2982,7 +2984,6 @@ async function executeTool(
         )
           return fail(t('aiFailPlan'), 'Images are supported only by cover and split_image layouts')
         if (
-          (layout === 'cards' && body.length > 4) ||
           (layout === 'timeline' && body.length > 5) ||
           ((layout === 'cover' || layout === 'statement') && body.length > 2)
         )
@@ -3244,18 +3245,21 @@ async function executeTool(
             })
           } else {
             box(titleId, page.title, 72, 62, 1050, 80, 32, palette.foreground, { bold: true })
-            page.body.slice(0, 4).forEach((text, index, list) => {
-              const columns = Math.min(3, list.length)
+            page.body.forEach((text, index, list) => {
+              const columns = Math.min(list.length > 6 ? 4 : 3, list.length)
               const width = (1110 - (columns - 1) * 24) / columns
               const row = Math.floor(index / columns)
               const column = index % columns
+              const rows = Math.ceil(list.length / columns)
+              const height = rows > 1 ? 168 : 260
+              const rowGap = rows > 1 ? 37 : 0
               box(
                 `deck-card-${slideIndex}-${index}`,
                 text,
                 72 + column * (width + 24),
-                210 + row * 205,
+                210 + row * (height + rowGap),
                 width,
-                168,
+                height,
                 18,
                 palette.foreground,
                 {

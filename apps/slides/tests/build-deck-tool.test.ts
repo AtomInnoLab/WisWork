@@ -162,8 +162,8 @@ describe('build_deck', () => {
           },
           {
             layout: 'cards',
-            title: '三类核心能力',
-            body: ['理解｜提炼复杂信息', '生成｜组织内容与表达', '行动｜连接工具完成任务'],
+            title: '八类核心能力',
+            body: ['理解', '生成', '行动', '检索', '分析', '规划', '校验', '协作'],
           },
         ],
       },
@@ -179,6 +179,7 @@ describe('build_deck', () => {
     expect(serialized).toContain('#0B1020')
     expect(serialized).toContain('#66E3FF')
     expect(serialized).toContain('LLM · 2026')
+    expect(serialized).toContain('deck-card-2-7')
     expect(transactions.map((item) => item.operations.length)).not.toEqual([4, 4, 4])
     expect(new Set(transactions.map((item) => JSON.stringify(item.operations))).size).toBe(3)
   })
@@ -255,7 +256,7 @@ describe('build_deck', () => {
     expect(result).toMatchObject({ isError: true, mutated: false })
   })
 
-  it('rejects unsearched images and content that cannot fit the selected layout', async () => {
+  it('rejects unsearched images and designed pages without an explicit layout', async () => {
     const executePresentationOperation = vi.fn()
     const skill = createSlidesSkill({
       getSlides: () => [blank()],
@@ -283,17 +284,6 @@ describe('build_deck', () => {
         ],
       },
     })
-    const overflow = await skill.executeTool({
-      id: 'overflow',
-      name: 'build_deck',
-      input: {
-        theme: { mode: 'light' },
-        pages: [
-          { layout: 'cards', title: 'A', body: ['1', '2', '3', '4', '5'] },
-          { layout: 'statement', title: 'B', body: ['C'] },
-        ],
-      },
-    })
     const missingLayout = await skill.executeTool({
       id: 'missing-layout',
       name: 'build_deck',
@@ -306,7 +296,6 @@ describe('build_deck', () => {
       },
     })
     expect(unsearched).toMatchObject({ isError: true, mutated: false })
-    expect(overflow).toMatchObject({ isError: true, mutated: false })
     expect(missingLayout).toMatchObject({ isError: true, mutated: false })
     expect(executePresentationOperation).not.toHaveBeenCalled()
   })
