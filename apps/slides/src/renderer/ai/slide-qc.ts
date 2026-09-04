@@ -12,6 +12,7 @@ import {
 import type { PresentationQualityReceipt } from '@wiswork/presentation-ops'
 import { auditSlideQuality, createDeterministicQualityReceipt } from './layout-audit'
 import type { DeckAccess } from './slides-skill'
+import { geometryPxToPoints } from './presentation-geometry-transactions'
 
 /** Kill switch: localStorage 'ai-slides-qc' = '0' disables the automatic pass */
 export function isQcEnabled(): boolean {
@@ -30,6 +31,130 @@ export const VISUAL_QC_LIMITS = Object.freeze({
   maxSummaryElements: 100,
   maxPromptChars: 12_000,
 })
+
+export interface QcGeometryFix {
+  sourceId: string
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface QcReview {
+  status: 'pass' | 'needs_fix' | 'cannot_verify'
+  summary: string
+  fixes: QcGeometryFix[]
+}
+
+const QC_MAX_FIXES = 8
+
+export function parseQcReview(
+  text: string,
+  slide: ReturnType<DeckAccess['getSlides']>[number],
+): QcReview {
+  if (text.trim().toUpperCase() === 'OK') return { status: 'pass', summary: 'OK', fixes: [] }
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start < 0 || end <= start) throw new Error('quality_review_invalid')
+  const value = JSON.parse(text.slice(start, end + 1)) as unknown
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('quality_review_invalid')
+  const record = value as Record<string, unknown>
+  if (
+    Object.keys(record).some((key) => !['status', 'summary', 'fixes'].includes(key)) ||
+    !['pass', 'needs_fix', 'cannot_verify'].includes(String(record.status)) ||
+    typeof record.summary !== 'string' ||
+    record.summary.length > 240 ||
+    !Array.isArray(record.fixes) ||
+    record.fixes.length > QC_MAX_FIXES
+  )
+    throw new Error('quality_review_invalid')
+  const allowed = new Set(
+    slide.nodes.filter((node) => !node.decoration).map((node) => node.sourceId),
+  )
+  const fixes = record.fixes.map((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+      throw new Error('quality_review_invalid')
+    const fix = raw as Record<string, unknown>
+    if (
+      Object.keys(fix).some((key) => !['sourceId', 'x', 'y', 'width', 'height'].includes(key)) ||
+      typeof fix.sourceId !== 'string' ||
+      !allowed.has(fix.sourceId)
+    )
+      throw new Error('quality_review_invalid')
+    const numbers = [fix.x, fix.y, fix.width, fix.height]
+    if (numbers.some((item) => typeof item !== 'number' || !Number.isFinite(item)))
+      throw new Error('quality_review_invalid')
+    const [x, y, width, height] = numbers as number[]
+    if (
+      x < 0 ||
+      y < 0 ||
+      width < 8 ||
+      height < 8 ||
+      x + width > slide.widthPx ||
+      y + height > slide.heightPx
+    )
+      throw new Error('quality_review_invalid')
+    return { sourceId: fix.sourceId, x, y, width, height }
+  })
+  if ((record.status === 'pass' || record.status === 'cannot_verify') && fixes.length)
+    throw new Error('quality_review_invalid')
+  if (record.status === 'needs_fix' && fixes.length === 0) throw new Error('quality_review_invalid')
+  return {
+    status: record.status as QcReview['status'],
+    summary: record.summary.trim().replace(/\s+/g, ' '),
+    fixes,
+  }
+}
+
+export async function applyQcGeometryFixes(
+  access: DeckAccess,
+  pageIndex: number,
+  fixes: readonly QcGeometryFix[],
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (!access.executePresentationOperation || fixes.length === 0 || fixes.length > QC_MAX_FIXES)
+    return false
+  const slide = access.getSlides()[pageIndex]
+  if (!slide) return false
+  const scale = slide.scale || access.fitWidthPx / slide.widthPx
+  if (!Number.isFinite(scale) || scale <= 0) return false
+  const allowed = new Set(
+    slide.nodes.filter((node) => !node.decoration).map((node) => node.sourceId),
+  )
+  if (
+    fixes.some(
+      (fix) =>
+        !allowed.has(fix.sourceId) ||
+        ![fix.x, fix.y, fix.width, fix.height].every(Number.isFinite) ||
+        fix.x < 0 ||
+        fix.y < 0 ||
+        fix.width < 8 ||
+        fix.height < 8 ||
+        fix.x + fix.width > slide.widthPx ||
+        fix.y + fix.height > slide.heightPx,
+    )
+  )
+    return false
+  const execution = await access.executePresentationOperation(
+    {
+      transactionId: `slides-qc-fix-${crypto.randomUUID().replaceAll('-', '')}`,
+      slideIndex: pageIndex,
+      operations: fixes.map((fix) => ({
+        kind: 'set_geometry' as const,
+        sourceId: fix.sourceId,
+        geometry: {
+          x: geometryPxToPoints(fix.x, scale),
+          y: geometryPxToPoints(fix.y, scale),
+          width: geometryPxToPoints(fix.width, scale),
+          height: geometryPxToPoints(fix.height, scale),
+        },
+      })),
+    },
+    signal,
+  )
+  return execution.receipt.status === 'applied' || execution.receipt.status === 'unchanged'
+}
 
 export function visualQcRequestBytes(request: AgentStreamRequest): number {
   return new TextEncoder().encode(JSON.stringify(request)).byteLength
@@ -178,9 +303,9 @@ Look at the screenshot for OBJECTIVE layout defects only:
 - obviously ragged alignment or wildly uneven spacing among sibling items (cards, bullets, columns)
 - distorted or badly cropped images
 
-Do not edit, invoke tools, quote slide text, or propose an automatic follow-up edit.
+Do not invoke tools, quote slide text, change wording, add/delete elements, or move anything across slides.
 
-Final reply: one short line (under 15 words) stating the quality warning, or exactly "OK" if clean.`
+Return ONLY strict JSON: {"status":"pass|needs_fix|cannot_verify","summary":"under 15 words","fixes":[{"sourceId":"existing id","x":0,"y":0,"width":100,"height":100}]}. Use fixes only for objective geometry defects, at most 8, inside the canvas. For clean slides use status pass and an empty fixes array. For defects that geometry alone cannot safely fix use cannot_verify and an empty fixes array.`
 
 export interface QcPageResult {
   /** page still exists and the pass ran */
@@ -192,6 +317,7 @@ export interface QcPageResult {
   /** deterministic audit issue counts before/after (rollback signal: after > before) */
   preIssues: number
   postIssues: number
+  fixes?: QcGeometryFix[]
   error?: string
 }
 
@@ -301,7 +427,7 @@ ${JSON.stringify(entries)}
 
 ${auditStr}
 
-Inspect the screenshot and report objective layout defects. Do not edit.`.slice(
+Inspect the screenshot and return the strict quality JSON. Geometry fixes may reference only the listed ids.`.slice(
     0,
     VISUAL_QC_LIMITS.maxPromptChars,
   )
@@ -358,14 +484,30 @@ export function qcSlidePage(opts: QcPageOptions): Promise<QcPageResult> {
         return
       }
       const after = access.getSlides()[pageIndex]
+      let review: QcReview | undefined
+      if (!r.error && after) {
+        try {
+          review = parseQcReview(r.reply, after)
+        } catch {
+          r = { reply: '', error: 'quality_review_invalid' }
+        }
+      }
+      const postFindings = after
+        ? auditSlideQuality(after, { slideId: `slide-${pageIndex + 1}` })
+        : []
+      const blockingFinding = postFindings.find((finding) => finding.severity === 'critical')
       resolve({
         ok: true,
         edited: false,
-        reply: r.reply.trim().replace(/\s+/g, ' ').slice(0, 240),
+        reply:
+          review?.status === 'pass' && blockingFinding
+            ? blockingFinding.code
+            : review?.status === 'pass'
+              ? 'OK'
+              : (review?.summary ?? r.reply.trim().replace(/\s+/g, ' ').slice(0, 240)),
         preIssues: preIssues.length,
-        postIssues: after
-          ? auditSlideQuality(after, { slideId: `slide-${pageIndex + 1}` }).length
-          : 0,
+        postIssues: postFindings.length,
+        ...(review?.fixes.length ? { fixes: review.fixes } : {}),
         ...(r.error !== undefined ? { error: r.error } : {}),
       })
     }
