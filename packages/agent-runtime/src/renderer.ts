@@ -42,6 +42,8 @@ const READ_TOOLS: Readonly<Record<EnhancedHost, ReadonlySet<string>>> = Object.f
   slides: new Set([
     'get_deck_context',
     'read_slide',
+    'web_search',
+    'image_search',
     'ask_clarification',
     'plan_deck',
     'list_style_templates',
@@ -83,6 +85,9 @@ const PC_ALLOWED_TOOLS: Readonly<
   slides: new Set([
     'get_deck_context',
     'read_slide',
+    'web_search',
+    'image_search',
+    'insert_web_image',
     'ask_clarification',
     'plan_deck',
     'list_style_templates',

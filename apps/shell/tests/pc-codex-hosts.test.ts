@@ -1,9 +1,67 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ENHANCED_HOSTS, PC_HOST_CODEX_CHANNELS } from '@wiswork/agent-runtime'
+import {
+  createPcHostRegistration,
+  ENHANCED_HOSTS,
+  PC_HOST_CODEX_CHANNELS,
+} from '@wiswork/agent-runtime'
+import { createSlidesSkill } from '../../slides/src/renderer/ai/slides-skill'
 import { ShellCodexRuntime } from '../src/main/codex-runtime'
 import { registerPcCodexHosts } from '../src/main/pc-codex-hosts'
 
 describe('PC Codex host registrar', () => {
+  it('registers the complete production Slides tool catalog', async () => {
+    const handlers = new Map<string, (...args: any[]) => any>()
+    const owner = { id: 71, isDestroyed: () => false, send: vi.fn() }
+    const registerDocument = vi.fn(() => () => undefined)
+    const policy = {
+      globalEnabled: true,
+      rawOfficeEnabled: false,
+      hosts: Object.fromEntries(ENHANCED_HOSTS.map((host) => [host, true])) as any,
+    }
+    const runtime = new ShellCodexRuntime({
+      activeAgentRuntime: 'enhanced',
+      policy,
+      isSignedIn: async () => true,
+      resolveExecutable: async () => '/private/codex',
+      bootstrap: {
+        start: async () => ({
+          registerDocument,
+          startTurn: vi.fn(async () => undefined),
+          cancelTurn: vi.fn(async () => undefined),
+          closeDocument: vi.fn(async () => undefined),
+          close: vi.fn(async () => undefined),
+        }),
+      },
+    })
+    await runtime.initialize()
+    const registrar = registerPcCodexHosts({
+      ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
+      runtime,
+      policy,
+      hostForOwner: (candidate) => (candidate === owner ? 'slides' : null),
+    })
+    const skill = createSlidesSkill({
+      getSlides: () => [],
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => undefined,
+      applyDeck: () => undefined,
+      fitWidthPx: 1280,
+    })
+    const registration = createPcHostRegistration({
+      host: 'slides',
+      documentId: 'production-slides-catalog',
+      generation: 1,
+      skill,
+    })
+
+    await expect(
+      handlers.get(PC_HOST_CODEX_CHANNELS.register)!({ sender: owner }, registration),
+    ).resolves.toBeUndefined()
+    expect(registerDocument).toHaveBeenCalledOnce()
+    await registrar.close()
+  })
+
   it('binds registration to the trusted host and dispatches reads and mutations to its owner', async () => {
     const handlers = new Map<string, (...args: any[]) => any>()
     const sent: Array<[string, unknown]> = []
