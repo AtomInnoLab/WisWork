@@ -185,4 +185,50 @@ describe('enhanced renderer mutation snapshots', () => {
     expect((toolResult.mock.calls as any)[0][0]).not.toHaveProperty('snapshotBefore')
     expect((toolResult.mock.calls as any)[0][0].execution).toMatchObject({ mutated: true })
   })
+
+  it('serializes replacement registrations for the same renderer document', async () => {
+    let registered = false
+    let releaseUnregister!: () => void
+    const unregisterPending = new Promise<void>((resolve) => {
+      releaseUnregister = resolve
+    })
+    const bridge: any = {
+      register: vi.fn(async () => {
+        if (registered) throw new Error('enhanced_document_exists')
+        registered = true
+      }),
+      unregister: vi.fn(async () => {
+        await unregisterPending
+        registered = false
+      }),
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId: 'doc' })),
+      startTurn: vi.fn(async () => undefined),
+      cancelTurn: vi.fn(async () => undefined),
+      subscribe: () => () => undefined,
+      onToolCall: () => () => undefined,
+      toolResult: vi.fn(async () => undefined),
+    }
+    const input: any = {
+      host: 'docs',
+      documentId: 'doc',
+      generation: 1,
+      skill: {
+        id: 'docs',
+        systemPrompt: '',
+        tools: [{ name: 'read_blocks', description: '', inputSchema: {} }],
+        executeTool: vi.fn(),
+      },
+    }
+    const first = createEnhancedRendererClient(bridge).open(input)
+    await first.start({ text: 'first' })
+    void first.close()
+    const second = createEnhancedRendererClient({ ...bridge }).open({ ...input, generation: 2 })
+
+    await Promise.resolve()
+    expect(bridge.register).toHaveBeenCalledOnce()
+    releaseUnregister()
+    await expect(second.start({ text: 'second' })).resolves.toBeUndefined()
+    expect(bridge.register).toHaveBeenCalledTimes(2)
+    await second.close()
+  })
 })

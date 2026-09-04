@@ -224,6 +224,57 @@ describe('Slides interactive agent controller', () => {
     expect(transport.callbacks).toHaveLength(0)
     controller.dispose()
   })
+
+  it('waits for an old Enhanced registration to close before reactivating the deck', async () => {
+    const transport = manualTransport()
+    let documentId: string | null = null
+    let registered = false
+    let releaseUnregister!: () => void
+    const unregisterPending = new Promise<void>((resolve) => {
+      releaseUnregister = resolve
+    })
+    const errors: string[] = []
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        if (registered) throw new Error('enhanced_document_exists')
+        registered = true
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => {
+        await unregisterPending
+        registered = false
+      }),
+      startTurn: vi.fn(async () => undefined),
+      cancelTurn: vi.fn(async () => undefined),
+      toolResult: vi.fn(async () => undefined),
+      onEvent: vi.fn(() => () => undefined),
+      onToolCall: vi.fn(() => () => undefined),
+    }
+    const controller = createAgentController(
+      { transport, skill, events: { onError: (code) => errors.push(code) } },
+      { host: 'slides', api },
+    )
+
+    controller.activate()
+    await flush()
+    expect(api.register).toHaveBeenCalledOnce()
+    controller.deactivate()
+    controller.activate()
+    await flush()
+    expect(api.register).toHaveBeenCalledOnce()
+
+    releaseUnregister()
+    await flush()
+    await flush()
+    expect(api.register).toHaveBeenCalledTimes(2)
+    expect(errors).toEqual([])
+    expect(controller.run('first turn after reactivation')).toBe(true)
+    await flush()
+    expect(api.startTurn).toHaveBeenCalledOnce()
+    controller.dispose()
+  })
+
   it('classifies cancellation without exposing raw QC orchestration errors', () => {
     const controller = new AbortController()
     controller.abort()

@@ -23,6 +23,8 @@ export interface EnhancedRendererBridge {
   telemetry?(event: import('./telemetry').EnhancedTelemetryEvent): Promise<void>
 }
 
+const closingRegistrations = new Map<string, Promise<void>>()
+
 const READ_TOOLS: Readonly<Record<EnhancedHost, ReadonlySet<string>>> = Object.freeze({
   latex: new Set([
     'list_project_files',
@@ -169,7 +171,9 @@ export function createEnhancedRendererClient(
       const hostRegistration = createPcHostRegistration(input)
       const mutatingTools = new Set(hostRegistration.mutatingTools)
       const snapshots = new Map<string, Readonly<{ id: string; value: unknown }>>()
-      const registration = bridge.register(hostRegistration)
+      const registration = (closingRegistrations.get(input.documentId) ?? Promise.resolve())
+        .catch(() => undefined)
+        .then(() => bridge.register(hostRegistration))
       const unsubscribe = bridge.subscribe(input.documentId, (event) => {
         if (ended) return
         let restored = event
@@ -292,9 +296,19 @@ export function createEnhancedRendererClient(
           snapshots.clear()
           listeners.clear()
           sessions.delete(session)
-          await registration.catch(() => undefined)
-          await bridge.cancelTurn(input.documentId).catch(() => undefined)
-          await bridge.unregister(input.documentId, input.generation).catch(() => undefined)
+          const closing = registration
+            .catch(() => undefined)
+            .then(() => bridge.cancelTurn(input.documentId).catch(() => undefined))
+            .then(() =>
+              bridge.unregister(input.documentId, input.generation).catch(() => undefined),
+            )
+          closingRegistrations.set(input.documentId, closing)
+          try {
+            await closing
+          } finally {
+            if (closingRegistrations.get(input.documentId) === closing)
+              closingRegistrations.delete(input.documentId)
+          }
         },
       })
       sessions.add(session)
