@@ -25,23 +25,46 @@ export interface AgentControllerRef<TSnapshot> {
   current: AgentHarness<TSnapshot> | null
 }
 
+const hostToolExecution = (execution: ToolExecution): ToolExecution => ({
+  output: execution.output,
+  summary: execution.summary,
+  ...(execution.isError === undefined ? {} : { isError: execution.isError }),
+  ...(execution.mutated === undefined ? {} : { mutated: execution.mutated }),
+  ...(execution.stopToolBatch === undefined ? {} : { stopToolBatch: execution.stopToolBatch }),
+})
+
 function createSlidesEnhancedHarness<TSnapshot>(
   options: AgentLoopOptions<TSnapshot>,
   api: PcHostCodexApi,
   documentId: string,
   generation: number,
 ): { harness: AgentHarness<TSnapshot>; close(): Promise<void> } {
+  const toolBatchQuietWindowMs = 20
   let callbacks: AgentStreamCallbacks | null = null
   let closed = false
+  let turnSettled = true
+  let toolBatchTimer: ReturnType<typeof setTimeout> | null = null
   const executions = new Map<string, ToolExecution>()
   const registration = api.register(
     createPcHostRegistration({ host: 'slides', documentId, generation, skill: options.skill }),
   )
+  const clearToolBatchTimer = () => {
+    if (toolBatchTimer === null) return
+    clearTimeout(toolBatchTimer)
+    toolBatchTimer = null
+  }
+  const settleTurn = (error?: string) => {
+    if (turnSettled) return
+    clearToolBatchTimer()
+    turnSettled = true
+    if (error) callbacks?.onError(error)
+    else callbacks?.onDone()
+  }
   const unsubscribeEvents = api.onEvent((event) => {
     if (closed || !callbacks) return
     if (event.type === 'text') callbacks.onDelta(event.text)
-    else if (event.type === 'done') callbacks.onDone()
-    else if (event.type === 'error') callbacks.onError(event.code)
+    else if (event.type === 'done') settleTurn()
+    else if (event.type === 'error') settleTurn(event.code)
   })
   const unsubscribeTools = api.onToolCall((request) => {
     if (
@@ -52,13 +75,19 @@ function createSlidesEnhancedHarness<TSnapshot>(
     )
       return
     callbacks.onToolCall(request.call)
-    callbacks.onDone()
+    clearToolBatchTimer()
+    const batchCallbacks = callbacks
+    toolBatchTimer = setTimeout(() => {
+      toolBatchTimer = null
+      if (!closed && callbacks === batchCallbacks) batchCallbacks.onDone()
+    }, toolBatchQuietWindowMs)
   })
   const transport: AgentTransport = {
     stream(request: AgentStreamRequest, next: AgentStreamCallbacks) {
       callbacks = next
       const toolMessage = request.messages.at(-1)
       if (toolMessage?.role === 'tool') {
+        const submissions: Promise<void>[] = []
         for (const result of toolMessage.results) {
           const execution = executions.get(result.id) ?? {
             output: result.output,
@@ -66,12 +95,19 @@ function createSlidesEnhancedHarness<TSnapshot>(
             ...(result.isError ? { isError: true } : {}),
           }
           executions.delete(result.id)
-          void api
-            .toolResult({ documentId, generation, callId: result.id, execution })
-            .catch(() => next.onError('enhanced_turn_failed'))
+          submissions.push(api.toolResult({ documentId, generation, callId: result.id, execution }))
         }
+        void Promise.all(submissions)
+          .then(() => {
+            // The runtime can finish while the renderer is still executing the
+            // preceding tool batch. Replay that terminal edge to the new
+            // tool-result stream so the local AgentLoop cannot stay busy.
+            if (!closed && callbacks === next && turnSettled) next.onDone()
+          })
+          .catch(() => next.onError('enhanced_turn_failed'))
       } else {
         const user = [...request.messages].reverse().find((message) => message.role === 'user')
+        turnSettled = false
         void registration
           .then(() => api.status())
           .then((status) => {
@@ -79,7 +115,8 @@ function createSlidesEnhancedHarness<TSnapshot>(
               throw new Error('enhanced_document_unavailable')
             return api.startTurn({ documentId, text: user?.role === 'user' ? user.text : '' })
           })
-          .catch(() => next.onError('enhanced_turn_failed'))
+          .then(() => settleTurn())
+          .catch(() => settleTurn('enhanced_turn_failed'))
       }
       return { cancel: () => void api.cancelTurn(documentId).catch(() => undefined) }
     },
@@ -89,18 +126,28 @@ function createSlidesEnhancedHarness<TSnapshot>(
     async executeTool(call: Parameters<typeof options.skill.executeTool>[0], signal?: AbortSignal) {
       const outcome = await options.skill.executeTool(call, signal)
       if ('kind' in outcome && outcome.kind === 'tool-execution-suspension') {
-        void outcome.result.then((execution) => executions.set(call.id, execution))
-      } else executions.set(call.id, outcome)
+        void outcome.result.then((execution) =>
+          executions.set(call.id, hostToolExecution(execution)),
+        )
+      } else executions.set(call.id, hostToolExecution(outcome))
       return outcome
     },
   }
-  const harness = createAgentHarness({ ...options, transport, skill })
+  const events: AgentLoopOptions<TSnapshot>['events'] = {
+    ...options.events,
+    onError(error) {
+      if (!closed) void api.cancelTurn(documentId).catch(() => undefined)
+      options.events?.onError?.(error)
+    },
+  }
+  const harness = createAgentHarness({ ...options, transport, skill, events })
   let closePromise: Promise<void> | null = null
   return {
     harness,
     close() {
       if (closePromise) return closePromise
       closed = true
+      clearToolBatchTimer()
       harness.dispose()
       unsubscribeEvents()
       unsubscribeTools()

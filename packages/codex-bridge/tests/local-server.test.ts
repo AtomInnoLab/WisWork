@@ -1,6 +1,12 @@
 import { request } from 'node:http'
 import { describe, expect, it, vi } from 'vitest'
 import { startResponsesBridge } from '../src/local-server.js'
+import {
+  prepareResponsesTurn,
+  replayProtocolRecording,
+  type ProtocolRecording,
+} from '../src/index.js'
+import recording from './fixtures/protocol-redacted-max-tokens.json'
 
 function post(url: URL, secret: string, body: string, headers: Record<string, string> = {}) {
   return new Promise<{ status: number; body: string }>((resolve, reject) => {
@@ -37,6 +43,37 @@ const prepared = () => ({
 })
 
 describe('local responses bridge', () => {
+  it('captures real translated upstream frames via the fail-open export callback', async () => {
+    const captures: ProtocolRecording[] = []
+    const outcomes: string[] = []
+    const bridge = await startResponsesBridge({
+      fetchWithAuth: async () =>
+        new Response(
+          recording.frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(''),
+          { headers: { 'content-type': 'text/event-stream' } },
+        ),
+      prepareTurn: prepareResponsesTurn,
+      onProtocolRecording: (capture, outcome) => {
+        captures.push(capture)
+        outcomes.push(outcome)
+        throw new Error('ignored observer failure')
+      },
+    })
+    try {
+      const response = await post(
+        new URL(bridge.responsesUrl),
+        bridge.secret,
+        JSON.stringify({ model: 'gpt-5.6-sol', input: 'private request' }),
+      )
+      expect(response.status).toBe(200)
+      expect(response.body).toContain('response.incomplete')
+      expect(captures).toHaveLength(1)
+      expect(outcomes).toEqual(['incomplete'])
+      expect((await replayProtocolRecording(captures[0])).events).toContain('response.incomplete')
+    } finally {
+      await bridge.close()
+    }
+  })
   it('binds numeric loopback with a random per-process credential and fixed path', async () => {
     const bridge = await startResponsesBridge({
       fetchWithAuth: async () =>

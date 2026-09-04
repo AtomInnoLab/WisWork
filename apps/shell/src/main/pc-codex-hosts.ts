@@ -43,6 +43,7 @@ type HostRecord = {
   readonly documentId: string
   readonly generation: number
   readonly closeRuntime: () => Promise<void>
+  readonly closeSession: () => void
   readonly harness: ReturnType<typeof createAgentHarness>
   readonly pending: Map<string, Pending>
   readonly proposals: Map<string, PendingProposal>
@@ -282,7 +283,7 @@ export function registerPcCodexHosts(options: {
         record.session.mutationAuthority.reject(claimed.claim, 'mutation_cancelled')
     }
     record.proposals.clear()
-    record.session.close()
+    record.closeSession()
     record.harness.dispose()
     await record.closeRuntime()
   }
@@ -425,9 +426,10 @@ export function registerPcCodexHosts(options: {
         },
       },
     })
-    // Assigned after the session is built because its callbacks close over the final record.
+    // Assigned after the session is built because dispatch callbacks close over the final record.
     // eslint-disable-next-line prefer-const
     let record!: HostRecord
+    let sessionOpen = true
     const session = createDocumentToolSession({
       identity: {
         ownerId: `renderer-${event.sender.id}`,
@@ -437,7 +439,7 @@ export function registerPcCodexHosts(options: {
         generation: input.generation,
       },
       manifest,
-      isOpen: () => !record.closed && !event.sender.isDestroyed(),
+      isOpen: () => sessionOpen && !event.sender.isDestroyed(),
       executeRead: (call) => dispatch(record, call),
       suspendMutation: (result) => {
         return harness.suspendToolExecution(result)
@@ -459,6 +461,10 @@ export function registerPcCodexHosts(options: {
       documentId: input.documentId,
       generation: input.generation,
       closeRuntime: close.close,
+      closeSession: () => {
+        sessionOpen = false
+        session.close()
+      },
       harness,
       pending: new Map(),
       proposals: new Map(),

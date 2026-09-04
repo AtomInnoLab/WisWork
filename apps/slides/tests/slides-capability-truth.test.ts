@@ -81,6 +81,29 @@ describe('Slides capability truth', () => {
     )
   })
 
+  it('rejects a terminal explanation after questionnaire answers until deck planning continues', async () => {
+    const deck = access()
+    deck.askClarification = async () => ({
+      answers: 'Audience: developers\nLength: 9 pages\nStyle: dark technology',
+      cancelled: false,
+    })
+    const skill = createSlidesSkill(deck)
+    await skill.executeTool({
+      id: 'clarify',
+      name: 'ask_clarification',
+      input: {
+        questions: [{ id: 'audience', label: 'Audience?', options: ['Developers', 'Managers'] }],
+      },
+    })
+
+    expect(
+      skill.reviewFinalResponse?.({
+        text: 'Please choose in the questionnaire above, then I will generate the deck.',
+        mutated: false,
+      }),
+    ).toContain('questionnaire answers are already available')
+  })
+
   it('requires the bounded whole-deck builder after planning instead of accumulating blank pages', async () => {
     const skill = createSlidesSkill(access())
     await skill.executeTool({

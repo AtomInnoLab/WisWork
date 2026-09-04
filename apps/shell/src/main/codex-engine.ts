@@ -78,6 +78,10 @@ export function startBestEffortCodexInterrupt(interrupt: () => Promise<unknown>)
 export interface ProductionCodexBootstrapOptions {
   readonly fetchWithAuth: (request: MessagesRequest, signal: AbortSignal) => Promise<Response>
   readonly diagnostics?: (code: string) => void
+  readonly onProtocolRecording?: (
+    recording: import('@wiswork/codex-bridge').ProtocolRecording,
+    outcome: import('@wiswork/codex-bridge').ProtocolRecordingOutcome,
+  ) => void
 }
 
 const DOCUMENT_CATALOG_MAX_BYTES = 64 * 1024
@@ -114,6 +118,7 @@ export function createProductionCodexBootstrap(
           fetchWithAuth: options.fetchWithAuth,
           prepareTurn: resolver.prepare,
           diagnostics: options.diagnostics,
+          onProtocolRecording: options.onProtocolRecording,
           onDeterministicFailure: (code) => rejectDeterministicFailure(code),
         })
         gateway = await startDynamicMcpGateway(options.diagnostics)

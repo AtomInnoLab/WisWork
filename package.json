@@ -41,6 +41,7 @@
     "test:codex-release": "node --test tools/codex-release.test.mjs",
     "test:codex-rollout": "node --test tools/codex-rollout.test.mjs",
     "test:enhanced-seven-host": "node tools/enhanced-seven-host-golden.mjs execute-goldens",
+    "diagnostics:replay": "node tools/diagnostics-replay.mjs",
     "test:runtime-package": "node tools/optional-runtime-policy.mjs --mode post-package --artifact-dir apps/shell/release",
     "notices": "node tools/gen-third-party-notices.mjs",
     "licenses": "node tools/check-licenses.mjs",

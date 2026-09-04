@@ -27,6 +27,7 @@ import {
 } from './agent-controller'
 import { friendlyEnhancedError, shouldMarkEnhancedMessageUndelivered } from './enhanced-error-copy'
 import { renderSlidesToPngBase64 } from '../export-render'
+import { shouldShowStreamingProgress } from './streaming-progress'
 import {
   captureCurrentQcShot,
   isQcEnabled,
@@ -2590,14 +2591,17 @@ export function AiPanel({
               {entry.role === 'user' && entry.attachments && entry.attachments.length > 0 && (
                 <SentAttachments atts={entry.attachments} previews={attachmentPreviews} />
               )}
-              {entry.role === 'assistant' && !entry.text && entry.streaming ? (
-                <span className="ai-typing-row">
-                  <AiTypingIndicator
-                    label={entry.tools?.length ? t('aiContinuing') : t('aiThinking')}
-                  />
-                </span>
-              ) : entry.role === 'assistant' ? (
-                <Markdown text={entry.text} />
+              {entry.role === 'assistant' ? (
+                <>
+                  {entry.text && <Markdown text={entry.text} />}
+                  {shouldShowStreamingProgress(entry) && (
+                    <span className="ai-typing-row">
+                      <AiTypingIndicator
+                        label={entry.tools?.length ? t('aiContinuing') : t('aiThinking')}
+                      />
+                    </span>
+                  )}
+                </>
               ) : (
                 entry.text
               )}

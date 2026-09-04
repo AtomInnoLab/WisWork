@@ -111,6 +111,34 @@ describe('Shell Codex runtime lifecycle', () => {
     expect(f.engine.startTurn).toHaveBeenCalledTimes(1)
   })
 
+  it('allows an explicit retry after a transient Enhanced startup failure', async () => {
+    const engine = {
+      startTurn: vi.fn(async () => undefined),
+      cancelTurn: vi.fn(async () => undefined),
+      closeDocument: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    }
+    const bootstrap = {
+      start: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('transient startup failure'))
+        .mockResolvedValueOnce(engine),
+    }
+    const runtime = new ShellCodexRuntime({
+      activeAgentRuntime: 'enhanced',
+      policy: policy(),
+      isSignedIn: async () => true,
+      resolveExecutable: async () => '/private/codex',
+      bootstrap,
+    })
+
+    await expect(runtime.initialize()).rejects.toThrow('enhanced_start_failed')
+    await expect(runtime.initialize()).resolves.toBeUndefined()
+
+    expect(runtime.state).toBe('ready')
+    expect(bootstrap.start).toHaveBeenCalledTimes(2)
+  })
+
   it('preserves actionable bounded turn failures for the renderer', async () => {
     const f = fixture()
     f.engine.startTurn.mockRejectedValueOnce(new Error('enhanced_turn_timeout'))

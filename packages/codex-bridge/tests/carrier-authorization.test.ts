@@ -91,7 +91,7 @@ describe('closed document carrier issuer', () => {
     expect(JSON.stringify(handle)).not.toContain('approved')
   })
 
-  it('enforces the one-call budget in the private issuer ledger', async () => {
+  it('enforces the bounded call budget in the private issuer ledger', async () => {
     const owner = issuer()
     const prepared = owner.prepareTurn(structuredClone(captured), {}, owner.issueForTurn(turn()))
     const frames = [
@@ -102,9 +102,11 @@ describe('closed document carrier issuer', () => {
       'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}\n\n',
       'event: message_stop\ndata: {"type":"message_stop"}\n\n',
     ]
-    await expect(
-      consume(prepared.messagesStreamToResponses(chunks(...frames))),
-    ).resolves.toBeUndefined()
+    for (let index = 0; index < 16; index += 1) {
+      await expect(
+        consume(prepared.messagesStreamToResponses(chunks(...frames))),
+      ).resolves.toBeUndefined()
+    }
     await expect(consume(prepared.messagesStreamToResponses(chunks(...frames)))).rejects.toThrow(
       'tool_call_limit_exceeded',
     )

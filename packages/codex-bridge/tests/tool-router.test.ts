@@ -230,6 +230,34 @@ describe('document-scoped tool session', () => {
     ).resolves.toMatchObject({ output: 'tool_timeout' })
   })
 
+  it('allows a model tool batch to run multiple bounded reads concurrently', async () => {
+    let releaseFirst!: () => void
+    const firstPending = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    const executeRead = vi.fn(async (call: { id: string }): Promise<ToolExecution> => {
+      if (call.id === 'first') await firstPending
+      return { output: call.id, summary: call.id, mutated: false }
+    })
+    const f = fixture({ executeRead })
+
+    const first = f.session.callTool(f.session.credentials, {
+      id: 'first',
+      name: readTool.name,
+      input: {},
+    }) as Promise<ToolExecution>
+    const second = f.session.callTool(f.session.credentials, {
+      id: 'second',
+      name: readTool.name,
+      input: {},
+    }) as Promise<ToolExecution>
+
+    await expect(Promise.resolve(second)).resolves.toMatchObject({ output: 'second' })
+    expect(executeRead).toHaveBeenCalledTimes(2)
+    releaseFirst()
+    await expect(first).resolves.toMatchObject({ output: 'first' })
+  })
+
   it('binds the catalog digest into a Task 2 one-use carrier', () => {
     const validate = vi.fn((capability: unknown) => capability === 'opaque')
     const issuer = createDocumentCarrierIssuer(

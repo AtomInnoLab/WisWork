@@ -12,6 +12,57 @@ const blank = (): RenderSlide => ({
 })
 
 describe('build_deck', () => {
+  it('uses the returned deck while React state is still stale', async () => {
+    const staleSlides = [blank()]
+    let authoritativeSlides = staleSlides
+    const addSlide = vi.fn(async ({ sourceIndex }: { sourceIndex: number }) => {
+      if (authoritativeSlides.length >= 2) return null
+      const next = authoritativeSlides.slice()
+      next.splice(sourceIndex + 1, 0, blank())
+      authoritativeSlides = next
+      return { slides: next, index: sourceIndex + 1 }
+    })
+    ;(globalThis as unknown as { window: Record<string, unknown> }).window = {
+      slidesApi: { addSlide },
+    }
+    const executePresentationOperation = vi.fn(async (request) => ({
+      receipt: {
+        status: 'applied' as const,
+        transactionId: request.transactionId,
+        resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+        operationCount: request.operations.length,
+      },
+      authoritativeState: 'fresh' as const,
+    }))
+    const skill = createSlidesSkill({
+      // Mirrors production: applyDeck schedules React state, while the render-owned
+      // getter can remain stale until this async tool yields back to React.
+      getSlides: () => staleSlides,
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => undefined,
+      applyDeck: () => undefined,
+      executePresentationOperation,
+      fitWidthPx: 1280,
+    })
+
+    const result = await skill.executeTool({
+      id: 'stale-react-state',
+      name: 'build_deck',
+      input: {
+        pages: [
+          { title: 'A', body: ['B'] },
+          { title: 'C', body: ['D'] },
+        ],
+      },
+    })
+
+    expect(result).toMatchObject({ mutated: true })
+    expect(result.isError).not.toBe(true)
+    expect(addSlide).toHaveBeenCalledOnce()
+    expect(executePresentationOperation).toHaveBeenCalledTimes(2)
+  })
+
   it('creates every page and sends title and body through canonical transactions', async () => {
     let slides = [blank()]
     const executePresentationTransaction = vi.fn(async (transaction) => ({
@@ -162,8 +213,8 @@ describe('build_deck', () => {
           },
           {
             layout: 'cards',
-            title: '三类核心能力',
-            body: ['理解｜提炼复杂信息', '生成｜组织内容与表达', '行动｜连接工具完成任务'],
+            title: '八类核心能力',
+            body: ['理解', '生成', '行动', '检索', '分析', '规划', '校验', '协作'],
           },
         ],
       },
@@ -179,8 +230,55 @@ describe('build_deck', () => {
     expect(serialized).toContain('#0B1020')
     expect(serialized).toContain('#66E3FF')
     expect(serialized).toContain('LLM · 2026')
+    expect(serialized).toContain('deck-card-2-7')
     expect(transactions.map((item) => item.operations.length)).not.toEqual([4, 4, 4])
     expect(new Set(transactions.map((item) => JSON.stringify(item.operations))).size).toBe(3)
+  })
+
+  it('treats empty optional image fields as no image', async () => {
+    let slides = [blank()]
+    ;(globalThis as unknown as { window: Record<string, unknown> }).window = {
+      slidesApi: {
+        addSlide: vi.fn(async ({ sourceIndex }: { sourceIndex: number }) => {
+          const next = slides.slice()
+          next.splice(sourceIndex + 1, 0, blank())
+          return { slides: next, index: sourceIndex + 1 }
+        }),
+      },
+    }
+    const skill = createSlidesSkill({
+      getSlides: () => slides,
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => undefined,
+      applyDeck: (next) => {
+        slides = next
+      },
+      executePresentationOperation: vi.fn(async (request) => ({
+        receipt: {
+          status: 'applied' as const,
+          transactionId: request.transactionId,
+          resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+          operationCount: request.operations.length,
+        },
+        authoritativeState: 'fresh' as const,
+      })),
+      fitWidthPx: 1280,
+    })
+
+    const result = await skill.executeTool({
+      id: 'empty-images',
+      name: 'build_deck',
+      input: {
+        theme: { mode: 'dark' },
+        pages: [
+          { layout: 'cover', title: 'A', body: ['B'], imageUrl: '', imageAlt: '' },
+          { layout: 'cards', title: 'C', body: ['D'], imageUrl: '', imageAlt: '' },
+        ],
+      },
+    })
+
+    expect(result).toMatchObject({ mutated: true })
   })
 
   it('does not overwrite an existing presentation', async () => {
@@ -209,7 +307,7 @@ describe('build_deck', () => {
     expect(result).toMatchObject({ isError: true, mutated: false })
   })
 
-  it('rejects unsearched images and content that cannot fit the selected layout', async () => {
+  it('rejects unsearched images and designed pages without an explicit layout', async () => {
     const executePresentationOperation = vi.fn()
     const skill = createSlidesSkill({
       getSlides: () => [blank()],
@@ -237,17 +335,6 @@ describe('build_deck', () => {
         ],
       },
     })
-    const overflow = await skill.executeTool({
-      id: 'overflow',
-      name: 'build_deck',
-      input: {
-        theme: { mode: 'light' },
-        pages: [
-          { layout: 'cards', title: 'A', body: ['1', '2', '3', '4', '5'] },
-          { layout: 'statement', title: 'B', body: ['C'] },
-        ],
-      },
-    })
     const missingLayout = await skill.executeTool({
       id: 'missing-layout',
       name: 'build_deck',
@@ -260,7 +347,6 @@ describe('build_deck', () => {
       },
     })
     expect(unsearched).toMatchObject({ isError: true, mutated: false })
-    expect(overflow).toMatchObject({ isError: true, mutated: false })
     expect(missingLayout).toMatchObject({ isError: true, mutated: false })
     expect(executePresentationOperation).not.toHaveBeenCalled()
   })
@@ -319,5 +405,74 @@ describe('build_deck', () => {
       },
     })
     expect(result).toMatchObject({ isError: true, mutated: true, stopToolBatch: true })
+  })
+
+  it('unlocks repair tools after a partially applied build fails', async () => {
+    let slides = [blank()]
+    const deleteSlide = vi.fn(async (slideIndex: number) => {
+      slides = slides.filter((_, index) => index !== slideIndex)
+      return slides
+    })
+    ;(globalThis as unknown as { window: Record<string, unknown> }).window = {
+      slidesApi: {
+        addSlide: vi.fn(async () => {
+          slides = [...slides, blank()]
+          return { slides, index: 1 }
+        }),
+        deleteSlide,
+      },
+    }
+    const skill = createSlidesSkill({
+      getSlides: () => slides,
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => undefined,
+      applyDeck: (next) => {
+        slides = next
+      },
+      executePresentationOperation: vi.fn(async (request) => ({
+        receipt: {
+          status: 'unchanged' as const,
+          transactionId: request.transactionId,
+          code: 'write_not_applied' as const,
+          operationCount: request.operations.length,
+        },
+        authoritativeState: 'fresh' as const,
+      })),
+      fitWidthPx: 1280,
+    })
+
+    await skill.executeTool({
+      id: 'plan',
+      name: 'plan_deck',
+      input: {
+        core_hook: 'A hook',
+        style: 'A style',
+        pages: [
+          { title: 'A', brief: 'B', layout: 'cover' },
+          { title: 'C', brief: 'D', layout: 'cards' },
+        ],
+      },
+    })
+    const failed = await skill.executeTool({
+      id: 'failed-build',
+      name: 'build_deck',
+      input: {
+        pages: [
+          { title: 'A', body: ['B'] },
+          { title: 'C', body: ['D'] },
+        ],
+      },
+    })
+    const repair = await skill.executeTool({
+      id: 'repair',
+      name: 'delete_slide',
+      input: { slideIndex: 1 },
+    })
+
+    expect(failed).toMatchObject({ isError: true, mutated: true })
+    expect(repair).toMatchObject({ mutated: true })
+    expect(repair.output).not.toContain('Call build_deck once')
+    expect(deleteSlide).toHaveBeenCalledOnce()
   })
 })

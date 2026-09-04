@@ -724,7 +724,12 @@ export function createDocumentToolSession(
       }
       return suspension
     }
-    if (pending.size > 0 || pendingMutations.size > 0) return stable('tool_call_in_progress')
+    // Code-mode models may emit several independent semantic reads in one tool
+    // batch. Each read already has its own bounded controller and call id, so
+    // rejecting the later calls only breaks an otherwise valid Agent Loop.
+    // Keep reads excluded while a mutation is pending, but allow bounded reads
+    // to execute concurrently with other reads in this document session.
+    if (pendingMutations.size > 0) return stable('tool_call_in_progress')
     const controller = new AbortController()
     const abort = () => controller.abort()
     outerSignal?.addEventListener('abort', abort, { once: true })

@@ -193,6 +193,9 @@ const AGENT_SYSTEM_PROMPT = `You are the AI assistant inside WisWork Slides. Hel
 const SLIDES_CAPABILITY_CORRECTION =
   '[System correction] This requested edit is supported. Use the available Slides editing tools to apply it, verify the result, and only then report completion. Do not stop at inspection or advice.'
 
+const QUESTIONNAIRE_CONTINUATION_CORRECTION =
+  '[System correction] The questionnaire answers are already available in the latest tool result. Do not ask the user to choose again or stop with an explanation. Continue with plan_deck and the available Slides tools now.'
+
 const incompleteDeckCorrection = (planned: number, actual: number) =>
   `[System correction] The confirmed plan has ${planned} pages, but the deck currently has only ${actual}. Continue building every missing page with the available Slides tools, inspect the completed deck, and only then report completion.`
 
@@ -817,6 +820,8 @@ const ALL_TOOLS: AgentToolDef[] = [
                 minItems: 1,
                 maxItems: 8,
                 items: { type: 'string' },
+                description:
+                  'Content items. cards supports 1-8 items and reflows them automatically; timeline supports at most 5; cover and statement support at most 2.',
               },
               imageUrl: {
                 type: 'string',
@@ -1675,6 +1680,8 @@ export function createSlidesSkill(
         ? `<selection scope>\n${selectionScopeSummary(access.getSelectionScope()!)}. This scope is immutable and enforced by the host.\n</selection scope>`
         : `<deck outline>\n${buildDeckOutline(access.getSlides(), access.getCurrent(), access.getSelectedIds())}\n</deck outline>`,
     reviewFinalResponse: (context) => {
+      if (state.questionnaireAnsweredPendingPlan && !context.mutated)
+        return QUESTIONNAIRE_CONTINUATION_CORRECTION
       const planned = state.plannedPageCount
       const actual = access.getSlides().length
       if (planned !== undefined && actual < planned)
@@ -1700,6 +1707,8 @@ interface SkillState {
   plannedPageCount?: number
   /** A new-deck plan must be materialized atomically before low-level refinement. */
   awaitingBuildDeck?: boolean
+  /** Questionnaire completion cannot terminate the run before the model plans the deck. */
+  questionnaireAnsweredPendingPlan?: boolean
 }
 
 const fail = (summary: string, output: string) => ({
@@ -2843,6 +2852,7 @@ async function executeTool(
         )
       const r = await access.askClarification(questions)
       signal?.throwIfAborted()
+      if (state) state.questionnaireAnsweredPendingPlan = true
       if (r.cancelled) {
         return {
           output:
@@ -2866,6 +2876,7 @@ async function executeTool(
         return fail(t('aiFailPlan'), 'plan_deck requires core_hook + style + non-empty pages')
       }
       if (state) {
+        state.questionnaireAnsweredPendingPlan = false
         state.plannedPageCount = pages.length
         state.awaitingBuildDeck = pages.length >= 2
       }
@@ -2946,15 +2957,20 @@ async function executeTool(
         const kicker = record.kicker
         if (kicker !== undefined && (typeof kicker !== 'string' || kicker.length > 80))
           return fail(t('aiFailPlan'), 'Page kicker is invalid')
-        const imageUrl = record.imageUrl
-        const imageAlt = record.imageAlt
+        const imageUrl =
+          typeof record.imageUrl === 'string' && record.imageUrl.trim()
+            ? record.imageUrl.trim()
+            : undefined
+        const imageAlt =
+          typeof record.imageAlt === 'string' && record.imageAlt.trim()
+            ? record.imageAlt.trim()
+            : undefined
         if (
           imageUrl !== undefined &&
           (typeof imageUrl !== 'string' ||
             !/^https:\/\//.test(imageUrl) ||
             imageUrl.length > 2_048 ||
             typeof imageAlt !== 'string' ||
-            imageAlt.trim().length < 1 ||
             imageAlt.length > 160)
         )
           return fail(t('aiFailPlan'), 'Every image requires an HTTPS imageUrl and imageAlt')
@@ -2968,7 +2984,6 @@ async function executeTool(
         )
           return fail(t('aiFailPlan'), 'Images are supported only by cover and split_image layouts')
         if (
-          (layout === 'cards' && body.length > 4) ||
           (layout === 'timeline' && body.length > 5) ||
           ((layout === 'cover' || layout === 'statement') && body.length > 2)
         )
@@ -2978,9 +2993,7 @@ async function executeTool(
           body: body.map((item) => (item as string).trim()),
           ...(layout ? { layout: layout as DeckLayout } : {}),
           ...(typeof kicker === 'string' && kicker.trim() ? { kicker: kicker.trim() } : {}),
-          ...(typeof imageUrl === 'string'
-            ? { imageUrl, imageAlt: (imageAlt as string).trim() }
-            : {}),
+          ...(typeof imageUrl === 'string' ? { imageUrl, imageAlt: imageAlt as string } : {}),
         })
       }
       const themeRecord =
@@ -3033,15 +3046,19 @@ async function executeTool(
             : '#2367E8',
       }
       let deckMutated = false
-      while (access.getSlides().length < pages.length) {
-        const current = access.getSlides()
+      // React applies applyDeck asynchronously. Keep the tool's authoritative
+      // working copy from each native addSlide result instead of rereading a
+      // render-owned ref that may still describe the preceding deck.
+      let workingSlides = slides
+      while (workingSlides.length < pages.length) {
         const created = await window.slidesApi.addSlide({
-          sourceIndex: current.length - 1,
+          sourceIndex: workingSlides.length - 1,
           clearText: true,
           fitWidthPx: access.fitWidthPx,
         })
         signal?.throwIfAborted()
-        if (!created)
+        if (!created) {
+          if (deckMutated && state) state.awaitingBuildDeck = false
           return deckMutated
             ? {
                 output:
@@ -3052,12 +3069,14 @@ async function executeTool(
                 summary: t('aiFailNewSlide'),
               }
             : fail(t('aiFailNewSlide'), 'Creation failed')
+        }
+        workingSlides = created.slides
         access.applyDeck(created.slides, created.index)
         deckMutated = true
       }
       for (let slideIndex = 0; slideIndex < pages.length; slideIndex++) {
         const page = pages[slideIndex]!
-        const slide = access.getSlides()[slideIndex]!
+        const slide = workingSlides[slideIndex]!
         const scale = slide.scale || access.fitWidthPx / slide.widthPx
         const titleId = `deck-title-${slideIndex}`
         const bodyId = `deck-body-${slideIndex}`
@@ -3230,18 +3249,21 @@ async function executeTool(
             })
           } else {
             box(titleId, page.title, 72, 62, 1050, 80, 32, palette.foreground, { bold: true })
-            page.body.slice(0, 4).forEach((text, index, list) => {
-              const columns = Math.min(3, list.length)
+            page.body.forEach((text, index, list) => {
+              const columns = Math.min(list.length > 6 ? 4 : 3, list.length)
               const width = (1110 - (columns - 1) * 24) / columns
               const row = Math.floor(index / columns)
               const column = index % columns
+              const rows = Math.ceil(list.length / columns)
+              const height = rows > 1 ? 168 : 260
+              const rowGap = rows > 1 ? 37 : 0
               box(
                 `deck-card-${slideIndex}-${index}`,
                 text,
                 72 + column * (width + 24),
-                210 + row * 205,
+                210 + row * (height + rowGap),
                 width,
-                168,
+                height,
                 18,
                 palette.foreground,
                 {
@@ -3311,7 +3333,8 @@ async function executeTool(
         )
         const outcome = textFamilyReceiptOutcome(execution.receipt)
         deckMutated ||= outcome.mutated
-        if (!outcome.ok)
+        if (!outcome.ok) {
+          if (state) state.awaitingBuildDeck = false
           return {
             output: `The deck was partially created before page ${slideIndex + 1} failed. Inspect or undo before retrying.`,
             isError: true,
@@ -3319,6 +3342,7 @@ async function executeTool(
             stopToolBatch: true,
             summary: outcome.detail ?? `Page ${slideIndex + 1} failed`,
           }
+        }
       }
       if (designed) {
         for (const [slideIndex, page] of pages.entries()) {
@@ -3335,7 +3359,8 @@ async function executeTool(
             fitWidthPx: access.fitWidthPx,
           })
           signal?.throwIfAborted()
-          if (!inserted)
+          if (!inserted) {
+            if (state) state.awaitingBuildDeck = false
             return {
               output: `The deck content was created, but image insertion failed on page ${slideIndex + 1}. Inspect or undo before retrying.`,
               isError: true,
@@ -3343,6 +3368,7 @@ async function executeTool(
               stopToolBatch: true,
               summary: t('aiFailInsertImage'),
             }
+          }
           access.applySlide(slideIndex, inserted.slide)
         }
       }

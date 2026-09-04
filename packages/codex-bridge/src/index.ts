@@ -6,6 +6,13 @@ import type {
   ProtocolLimits,
   ResponsesRequest,
 } from './types.js'
+import {
+  recordingChunks,
+  parseProtocolRecording,
+  type ProtocolFrameObserver,
+} from './protocol-recording.js'
+export { ProtocolRecorder, parseProtocolRecording } from './protocol-recording.js'
+export type { ProtocolRecording, ProtocolRecordingOutcome } from './protocol-recording.js'
 
 export * from './types.js'
 export * from './security.js'
@@ -41,6 +48,8 @@ interface CarrierLedgerEntry {
   state: 'issued' | 'consumed'
   remainingCalls: number
 }
+
+const MAX_TOOL_CALLS_PER_RESPONSE = 16
 
 const carrierLedger = new WeakMap<object, CarrierLedgerEntry>()
 const CARRIER_HOSTS = new Set([
@@ -162,7 +171,7 @@ export function createDocumentCarrierIssuer(
       issuer: issuerIdentity,
       ...(validationContext as Omit<CarrierLedgerEntry, 'issuer' | 'state' | 'remainingCalls'>),
       state: 'issued',
-      remainingCalls: 1,
+      remainingCalls: MAX_TOOL_CALLS_PER_RESPONSE,
     })
     return handle
   }
@@ -180,8 +189,10 @@ export function createDocumentCarrierIssuer(
     const prepared = convertResponsesRequest(input, limitOverrides, entry)
     return Object.freeze({
       messagesRequest: prepared.request,
-      messagesStreamToResponses: (chunks: AsyncIterable<string | Uint8Array>) =>
-        convertMessagesStream(chunks, prepared.context, prepared.limits),
+      messagesStreamToResponses: (
+        chunks: AsyncIterable<string | Uint8Array>,
+        recorder: ProtocolFrameObserver | undefined = undefined,
+      ) => convertMessagesStream(chunks, prepared.context, prepared.limits, recorder),
     })
   }
   return Object.freeze({ issueForTurn, prepareTurn })
@@ -955,7 +966,7 @@ function convertResponsesRequest(
     }
     if (isCall) {
       if (!sawMessage || (pending && resultIndex !== 0)) fail('invalid_conversation')
-      if (pending && pending.length >= 1) fail('tool_call_limit_exceeded')
+      if (pending && pending.length >= MAX_TOOL_CALLS_PER_RESPONSE) fail('tool_call_limit_exceeded')
       const id = requireString(rawItem.call_id, 'invalid_tool_call')
       if (id === '') fail('invalid_tool_call')
       if (used.has(id)) fail('duplicate_call_id')
@@ -1036,10 +1047,12 @@ function convertResponsesRequest(
   )
   if (systemParts.length > 0) converted.system = systemParts.join('\n\n')
   if (upstreamTools.length > 0) converted.tools = upstreamTools
-  // Keep the WisUsage wire shape identical to the production Standard transport.
-  // The carrier and stream converter below enforce a single tool call locally;
-  // provider-specific tool_choice extensions are not part of that contract and
-  // can be rejected before a response stream is created.
+  // Codex 0.147 explicitly disables parallel tools for this stateful code-mode
+  // turn. Preserve that contract on the Messages wire: concurrent exec blocks
+  // can otherwise contend for one document session and strand pending calls.
+  if (upstreamTools.length > 0 && request.parallel_tool_calls === false) {
+    converted.tool_choice = { type: 'auto', disable_parallel_tool_use: true }
+  }
   return {
     request: converted,
     context: {
@@ -1058,8 +1071,10 @@ export function prepareResponsesTurn(
   const prepared = convertResponsesRequest(input, limitOverrides)
   return Object.freeze({
     messagesRequest: prepared.request,
-    messagesStreamToResponses: (chunks: AsyncIterable<string | Uint8Array>) =>
-      convertMessagesStream(chunks, prepared.context, prepared.limits),
+    messagesStreamToResponses: (
+      chunks: AsyncIterable<string | Uint8Array>,
+      recorder: ProtocolFrameObserver | undefined = undefined,
+    ) => convertMessagesStream(chunks, prepared.context, prepared.limits, recorder),
   })
 }
 
@@ -1071,6 +1086,7 @@ async function* convertMessagesStream(
   chunks: AsyncIterable<string | Uint8Array>,
   context: PrivateStreamContext,
   limits: ProtocolLimits,
+  recorder: ProtocolFrameObserver | undefined = undefined,
 ): AsyncGenerator<string> {
   const decoder = new TextDecoder('utf-8', { fatal: true })
   type StrictBlock =
@@ -1085,6 +1101,7 @@ async function* convertMessagesStream(
     | {
         kind: 'tool'
         itemId: string
+        outputIndex: number
         callId: string
         name: string
         arguments: string
@@ -1102,7 +1119,7 @@ async function* convertMessagesStream(
     outputTokens: 0,
     reasoningTokens: 0,
     stopReason: undefined as string | undefined,
-    stoppedTool: undefined as Extract<StrictBlock, { kind: 'tool' }> | undefined,
+    stoppedTools: [] as Array<Extract<StrictBlock, { kind: 'tool' }>>,
     output: [] as Array<Record<string, unknown>>,
     usedCalls: new Set(context.usedCallIds),
     toolCalls: 0,
@@ -1275,7 +1292,6 @@ async function* convertMessagesStream(
     if (strict.phase === 'await_start') fail('invalid_messages_event_order')
     if (event === 'content_block_start') {
       if (!hasOnlyKeys(data, ['type', 'index', 'content_block'])) fail('invalid_messages_event')
-      if (strict.stoppedTool !== undefined) fail('tool_call_limit_exceeded')
       if (
         strict.phase === 'content' &&
         strict.active?.kind === 'discarded_reasoning' &&
@@ -1419,13 +1435,17 @@ async function* convertMessagesStream(
       if (callId === '') fail('invalid_messages_event')
       if (strict.usedCalls.has(callId)) fail('duplicate_call_id')
       if (name !== 'exec' || context.allowedExecMethods.length === 0) fail('unadvertised_tool_call')
-      if (!context.carrierEntry || context.carrierEntry.remainingCalls <= 0) {
+      if (
+        strict.toolCalls >= MAX_TOOL_CALLS_PER_RESPONSE ||
+        !context.carrierEntry ||
+        context.carrierEntry.remainingCalls <= 0
+      ) {
         fail('tool_call_limit_exceeded')
       }
       context.carrierEntry.remainingCalls -= 1
       strict.toolCalls += 1
       strict.usedCalls.add(callId)
-      strict.active = { kind: 'tool', itemId, callId, name, arguments: '' }
+      strict.active = { kind: 'tool', itemId, outputIndex: index, callId, name, arguments: '' }
       strict.activeIndex = index
       return []
     }
@@ -1561,7 +1581,7 @@ async function* convertMessagesStream(
         strict.output.push(item)
         return [sse('response.output_item.done', { output_index: index, item })]
       }
-      strict.stoppedTool = block
+      strict.stoppedTools.push(block)
       return []
     }
     if (event === 'message_delta') {
@@ -1651,58 +1671,59 @@ async function* convertMessagesStream(
       }
       strict.stopReason = requireString(data.delta.stop_reason, 'invalid_messages_event')
       const frames: string[] = []
-      if (strict.stoppedTool && strict.stopReason !== 'max_tokens') {
-        const block = strict.stoppedTool
-        let parsed: unknown
-        try {
-          parsed = JSON.parse(block.arguments)
-        } catch {
-          fail('invalid_custom_tool_input')
-        }
-        if (
-          !isRecord(parsed) ||
-          !hasOnlyKeys(parsed, ['code']) ||
-          typeof parsed.code !== 'string'
-        ) {
-          fail('invalid_custom_tool_input')
-        }
-        parseSafeExecCode(parsed.code, context.allowedExecMethods, limits)
-        const item = {
-          id: block.itemId,
-          type: 'custom_tool_call',
-          status: 'completed',
-          call_id: block.callId,
-          name: 'exec',
-          input: parsed.code,
-        }
-        strict.output.push(item)
-        const outputIndex = strict.nextIndex - 1
-        frames.push(
-          sse('response.output_item.added', {
-            output_index: outputIndex,
-            item: {
-              id: block.itemId,
-              type: 'custom_tool_call',
-              status: 'in_progress',
-              call_id: block.callId,
-              name: block.name,
-              input: '',
-            },
-          }),
-          sse('response.custom_tool_call_input.delta', {
-            item_id: block.itemId,
-            output_index: outputIndex,
-            delta: parsed.code,
-          }),
-          sse('response.custom_tool_call_input.done', {
-            item_id: block.itemId,
-            output_index: outputIndex,
+      if (strict.stopReason !== 'max_tokens') {
+        for (const block of strict.stoppedTools) {
+          let parsed: unknown
+          try {
+            parsed = JSON.parse(block.arguments)
+          } catch {
+            fail('invalid_custom_tool_input')
+          }
+          if (
+            !isRecord(parsed) ||
+            !hasOnlyKeys(parsed, ['code']) ||
+            typeof parsed.code !== 'string'
+          ) {
+            fail('invalid_custom_tool_input')
+          }
+          parseSafeExecCode(parsed.code, context.allowedExecMethods, limits)
+          const item = {
+            id: block.itemId,
+            type: 'custom_tool_call',
+            status: 'completed',
+            call_id: block.callId,
+            name: 'exec',
             input: parsed.code,
-          }),
-          sse('response.output_item.done', { output_index: outputIndex, item }),
-        )
+          }
+          strict.output.push(item)
+          const outputIndex = block.outputIndex
+          frames.push(
+            sse('response.output_item.added', {
+              output_index: outputIndex,
+              item: {
+                id: block.itemId,
+                type: 'custom_tool_call',
+                status: 'in_progress',
+                call_id: block.callId,
+                name: block.name,
+                input: '',
+              },
+            }),
+            sse('response.custom_tool_call_input.delta', {
+              item_id: block.itemId,
+              output_index: outputIndex,
+              delta: parsed.code,
+            }),
+            sse('response.custom_tool_call_input.done', {
+              item_id: block.itemId,
+              output_index: outputIndex,
+              input: parsed.code,
+            }),
+            sse('response.output_item.done', { output_index: outputIndex, item }),
+          )
+        }
       }
-      strict.stoppedTool = undefined
+      strict.stoppedTools = []
       strict.outputTokens = usageInteger(data.usage?.output_tokens, true)
       strict.phase = 'await_stop'
       return frames
@@ -1772,6 +1793,11 @@ async function* convertMessagesStream(
       strict.frames += 1
       if (strict.frames > limits.maxSseFrames) fail('sse_frame_count_limit_exceeded')
       if (byteLength(frame) > limits.maxSseFrameBytes) fail('sse_frame_limit_exceeded')
+      try {
+        recorder?.recordFrame(frame)
+      } catch {
+        /* Diagnostics never alter settlement. */
+      }
       const parsed = parseStrictFrame(frame)
       if (parsed === undefined) continue
       if ('done' in parsed) {
@@ -1790,7 +1816,58 @@ async function* convertMessagesStream(
   } catch {
     fail('invalid_messages_utf8')
   }
-  if (buffer !== '') fail('invalid_messages_sse')
+  if (buffer !== '') {
+    try {
+      recorder?.recordFrame('data: invalid')
+    } catch {
+      /* Fail open. */
+    }
+    fail('invalid_messages_sse')
+  }
   if (strict.phase !== 'terminal') fail('premature_messages_eof')
   for await (const terminal of yieldBounded(strict.terminalFrames)) yield terminal
+}
+
+/** Offline structural simulation only. Never executes tools or returns captured content. */
+export async function replayProtocolRecording(
+  value: unknown,
+): Promise<{ events: string[]; error?: string; fidelity: 'structural-only'; truncated: boolean }> {
+  const recording = parseProtocolRecording(value)
+  const events: string[] = []
+  // Synthetic parser authority is local to this simulation and never executes a tool.
+  const context: PrivateStreamContext = {
+    usedCallIds: [],
+    allowedExecMethods: ['mcp__wiswork__replay'],
+    carrierEntry: {
+      issuer: {},
+      host: 'docs',
+      documentId: 'replay',
+      sessionId: 'replay',
+      generation: 0,
+      turnId: 'replay',
+      sourceNonce: '',
+      methods: ['mcp__wiswork__replay'],
+      schemaDigest: '',
+      state: 'consumed',
+      remainingCalls: MAX_TOOL_CALLS_PER_RESPONSE,
+    },
+  }
+  try {
+    for await (const frame of convertMessagesStream(
+      recordingChunks(recording),
+      context,
+      DEFAULT_PROTOCOL_LIMITS,
+    )) {
+      const event = /^event: ([a-z_.]+)\n/.exec(frame)?.[1]
+      if (event) events.push(event)
+    }
+    return { events, fidelity: 'structural-only', truncated: recording.truncated }
+  } catch (error) {
+    return {
+      events,
+      error: error instanceof ProtocolCompatibilityError ? error.code : 'replay_failed',
+      fidelity: 'structural-only',
+      truncated: recording.truncated,
+    }
+  }
 }
