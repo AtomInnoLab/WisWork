@@ -36,6 +36,50 @@ const skill = {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('Slides interactive agent controller', () => {
+  it('does not let the preceding startTurn completion settle a follow-up run', async () => {
+    let documentId: string | null = null
+    let onEvent: ((event: any) => void) | undefined
+    let finishFirst!: () => void
+    const first = new Promise<void>((resolve) => {
+      finishFirst = resolve
+    })
+    const done = vi.fn()
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => undefined),
+      startTurn: vi
+        .fn()
+        .mockReturnValueOnce(first)
+        .mockImplementation(() => new Promise<void>(() => {})),
+      cancelTurn: vi.fn(async () => undefined),
+      toolResult: vi.fn(async () => undefined),
+      onEvent: vi.fn((listener) => {
+        onEvent = listener
+        return () => {}
+      }),
+      onToolCall: vi.fn(() => () => {}),
+    }
+    const controller = createAgentController(
+      { transport: manualTransport(), skill, events: { onDone: done } },
+      { host: 'slides', api },
+    )
+    controller.activate()
+    await flush()
+    controller.run('first')
+    await flush()
+    onEvent?.({ type: 'done', result: { text: '', cancelled: false, turnLimit: false } })
+    await flush()
+    expect(controller.run('follow-up')).toBe(true)
+    await flush()
+    finishFirst()
+    await flush()
+    expect(controller.snapshot.busy).toBe(true)
+    expect(done).toHaveBeenCalledOnce()
+    controller.dispose()
+  })
   it('replaces an Enhanced deck registration and rejects callbacks from the old generation', async () => {
     let documentId: string | null = null
     const toolListeners: Array<(request: any) => void> = []

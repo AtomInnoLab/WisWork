@@ -21,6 +21,48 @@ const statement = {
 } as const
 
 describe('Office Codex proxy', () => {
+  it('does not report success when a failed terminal event precedes promise rejection', async () => {
+    let finish!: () => void
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const proxy = createOfficeCodexProxy({
+      runtime: {
+        async runOfficeTurn(input: any) {
+          input.onEvent({ type: 'terminal', status: 'failed' })
+          await pending
+          throw new Error('enhanced_request_rejected')
+        },
+      } as any,
+      rollout,
+      policyAuthority: createShellEnhancedPolicyAuthority(() => 0),
+    })
+    const response = await proxy({
+      body: {
+        system: 'rules',
+        messages: [{ role: 'user', content: 'read' }],
+        tools: [
+          { name: 'get_document_text', description: 'read', input_schema: { type: 'object' } },
+        ],
+      },
+      signal: new AbortController().signal,
+      host: 'Word',
+      sessionId: 'session_12345678',
+      requestId: 'request_12345678',
+      statement,
+      executeTool: vi.fn(),
+    })
+    const chunks: string[] = []
+    const consume = (async () => {
+      for await (const chunk of response.body as AsyncIterable<Uint8Array>)
+        chunks.push(new TextDecoder().decode(chunk))
+    })()
+    const rejected = expect(consume).rejects.toThrow('enhanced_request_rejected')
+    await Promise.resolve()
+    finish()
+    await rejected
+    expect(chunks.join('')).not.toContain('[DONE]')
+  })
   it('uses one document-scoped tool session and returns Codex text as bounded SSE', async () => {
     const executeTool = vi.fn(async () => ({ output: '{"text":"hello"}', isError: false }))
     const runtime = {

@@ -208,7 +208,6 @@ export function createProductionCodexBootstrap(
           const willRetry = (notification.params as { willRetry?: unknown }).willRetry
           if (willRetry === false) {
             active.settle('failed', failure)
-            queueMicrotask(onCrash)
           }
           return
         }
