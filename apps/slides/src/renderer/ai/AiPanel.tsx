@@ -30,6 +30,7 @@ import { renderSlidesToPngBase64 } from '../export-render'
 import { shouldShowStreamingProgress } from './streaming-progress'
 import {
   applyQcGeometryFixes,
+  buildVisualQcContext,
   captureCurrentQcShot,
   isQcEnabled,
   qcSlidePage,
@@ -2113,6 +2114,11 @@ export function AiPanel({
     const header = tGlobal('aiQcStart', { count: capped.length })
     const lines: string[] = []
     const receipts: PresentationQualityReceipt[] = []
+    const contextOutcomes: Array<{
+      page: number
+      status: 'passed' | 'needs_fix' | 'unavailable'
+      corrected: boolean
+    }> = []
     const renderEntry = () => [header, ...lines].join('\n')
     setBusy(true)
     stickToBottomRef.current = true
@@ -2138,6 +2144,7 @@ export function AiPanel({
         if (!captured) break
         const shot = captured.value
         if (!shot) {
+          contextOutcomes.push({ page: page + 1, status: 'unavailable', corrected: false })
           const transactionId = qcTransactionByPageRef.current.get(page)
           const deterministic = transactionId
             ? [...qualityReceiptsRef.current]
@@ -2245,10 +2252,13 @@ export function AiPanel({
           receipts.push(qualityReceipt)
         }
         if (qualityReceipt?.status !== 'available') {
+          contextOutcomes.push({ page: page + 1, status: 'unavailable', corrected: result.edited })
           lines.push(tGlobal('aiQcUnavailable', { n: page + 1, error: 'quality_unavailable' }))
         } else if (qualityReceipt.findings.length > 0) {
+          contextOutcomes.push({ page: page + 1, status: 'needs_fix', corrected: result.edited })
           lines.push(tGlobal('aiQcPageIssues', { n: page + 1, summary: result.reply }))
         } else {
+          contextOutcomes.push({ page: page + 1, status: 'passed', corrected: result.edited })
           lines.push(tGlobal('aiQcPassed', { n: page + 1 }))
         }
         patchLastAssistant({ text: renderEntry() })
@@ -2303,6 +2313,8 @@ export function AiPanel({
         qcRunningRef.current = false
         qcAbortRef.current = null
         const finalText = renderEntry()
+        if (contextOutcomes.length > 0)
+          loopRef.current?.appendAssistantContext(buildVisualQcContext(contextOutcomes))
         patchLastAssistant({
           streaming: false,
           text: finalText,

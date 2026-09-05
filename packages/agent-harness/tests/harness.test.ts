@@ -191,6 +191,25 @@ describe('createAgentHarness', () => {
     expect(harness.messages.filter((message) => message.role === 'user')).toHaveLength(1)
   })
 
+  it('appends a bounded trusted post-run observation to the preceding assistant turn', async () => {
+    const transport = manualTransport()
+    const harness = createAgentHarness(options(transport))
+    expect(harness.run('build slides')).toBe(true)
+    await flush()
+    transport.callbacks[0]!.onDelta('done')
+    transport.callbacks[0]!.onDone()
+    await flush()
+
+    expect(harness.appendAssistantContext('Visual screenshot review: slides 1-3 passed.')).toBe(
+      true,
+    )
+    expect(harness.messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      text: expect.stringContaining('Visual screenshot review: slides 1-3 passed.'),
+    })
+    expect(harness.appendAssistantContext('x'.repeat(2_049))).toBe(false)
+  })
+
   it.each(['buildContext', 'formatUserMessage'] as const)(
     'recovers when %s throws synchronously and allows a later run',
     async (failurePoint) => {

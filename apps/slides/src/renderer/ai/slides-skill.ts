@@ -1496,7 +1496,7 @@ export function createSlidesSkill(
     planning: true,
     verifiedCompletion: true,
     visualReview: true,
-    autoCorrection: false,
+    autoCorrection: true,
   },
 ): AgentSkill {
   // The HTML pipeline was already used in this conversation → later calls without an explicit mode default to append.

@@ -233,6 +233,9 @@ export const createAgentController = <TSnapshot>(
     restore(messages) {
       inner?.restore(messages)
     },
+    appendAssistantContext(text) {
+      return inner?.appendAssistantContext(text) ?? false
+    },
     suspendToolExecution(result) {
       if (!inner?.suspendToolExecution) throw new Error('enhanced_suspension_owned_by_shell')
       return inner.suspendToolExecution(result)

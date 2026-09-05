@@ -370,6 +370,30 @@ export class AgentLoop<TSnapshot = unknown> {
   }
 
   /**
+   * Merge one trusted, bounded host observation into the completed assistant turn.
+   * This is for post-run verification metadata only; screenshots and document content
+   * must never be passed here.
+   */
+  appendAssistantContext(text: string): boolean {
+    if (this.running || typeof text !== 'string') return false
+    const value = text.trim()
+    if (
+      !value ||
+      value.length > 2_048 ||
+      /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(value)
+    )
+      return false
+    const last = this.history.at(-1)
+    if (!last || last.role !== 'assistant') return false
+    this.history[this.history.length - 1] = {
+      ...last,
+      text: `${last.text}\n\n${value}`.trim(),
+    }
+    this.trimHistory()
+    return true
+  }
+
+  /**
    * Seed the conversation with restored history (e.g. transcript reloaded from
    * disk when a document reopens), so follow-up instructions keep their context.
    * No-op unless the loop is idle with an empty history.
