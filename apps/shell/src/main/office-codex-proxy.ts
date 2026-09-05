@@ -260,22 +260,20 @@ export function createOfficeCodexProxy(options: {
             )
           if (event.type === 'terminal') {
             telemetry('complete', event.status === 'completed' ? 'succeeded' : 'failed')
-            terminal = true
-            wake?.()
-            wake = undefined
+            if (event.status !== 'completed') failure = new Error('enhanced_turn_failed')
           }
         },
       })
       .catch((error) => {
         failure = error instanceof Error ? error : new Error('enhanced_turn_failed')
-        terminal = true
-        wake?.()
-        wake = undefined
       })
       .finally(() => {
         clearInterval(pump)
         open = false
         session.close()
+        terminal = true
+        wake?.()
+        wake = undefined
       })
     return {
       status: 200,

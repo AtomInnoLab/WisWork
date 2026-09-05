@@ -43,6 +43,7 @@ function createSlidesEnhancedHarness<TSnapshot>(
   let callbacks: AgentStreamCallbacks | null = null
   let closed = false
   let turnSettled = true
+  let turnEpoch = 0
   let toolBatchTimer: ReturnType<typeof setTimeout> | null = null
   const executions = new Map<string, ToolExecution>()
   const registration = api.register(
@@ -107,6 +108,7 @@ function createSlidesEnhancedHarness<TSnapshot>(
           .catch(() => next.onError('enhanced_turn_failed'))
       } else {
         const user = [...request.messages].reverse().find((message) => message.role === 'user')
+        const epoch = ++turnEpoch
         turnSettled = false
         void registration
           .then(() => api.status())
@@ -115,8 +117,12 @@ function createSlidesEnhancedHarness<TSnapshot>(
               throw new Error('enhanced_document_unavailable')
             return api.startTurn({ documentId, text: user?.role === 'user' ? user.text : '' })
           })
-          .then(() => settleTurn())
-          .catch(() => settleTurn('enhanced_turn_failed'))
+          .then(() => {
+            if (!closed && epoch === turnEpoch) settleTurn()
+          })
+          .catch(() => {
+            if (!closed && epoch === turnEpoch) settleTurn('enhanced_turn_failed')
+          })
       }
       return { cancel: () => void api.cancelTurn(documentId).catch(() => undefined) }
     },
