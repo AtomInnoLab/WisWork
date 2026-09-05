@@ -39,6 +39,38 @@ const metadata = {
   }),
 }
 
+it('preserves native PNG tool output through the model bridge', () => {
+  const request = responsesToMessages({
+    model: 'gpt-5.6-sol',
+    client_metadata: metadata,
+    input: [
+      additionalTools,
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Inspect slide' }] },
+      {
+        type: 'custom_tool_call',
+        call_id: 'shot',
+        name: 'exec',
+        input:
+          'const result = await tools.mcp__wiswork__read_document({}); for (const block of result.content) { if (block.type === "image") image(block); else if (block.type === "text") text(block.text); }',
+      },
+      {
+        type: 'custom_tool_call_output',
+        call_id: 'shot',
+        output: [{ type: 'input_image', image_url: 'data:image/png;base64,aGVsbG8=' }],
+      },
+    ],
+  })
+  expect(request.messages.at(-1)?.content).toEqual([
+    {
+      type: 'tool_result',
+      tool_use_id: 'shot',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+      ],
+    },
+  ])
+})
+
 const additionalTools = {
   type: 'additional_tools',
   role: 'developer',

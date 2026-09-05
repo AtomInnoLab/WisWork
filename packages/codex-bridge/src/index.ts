@@ -713,7 +713,7 @@ function validatePinnedAdditionalTools(item: UnknownRecord, limits: ProtocolLimi
 }
 
 function safeExecDescription(methods: readonly string[]): string {
-  return `Execute exactly one document MCP call. An optional first line // @exec: {"yield_time_ms":1000,"max_output_tokens":100} is allowed. Allowed syntax: text(await tools.${methods.join(
+  return `For screenshots use exactly: const result = await tools.${methods[0]}({...}); for (const block of result.content) { if (block.type === "image") image(block); else if (block.type === "text") text(block.text); } This emits native images, never stringify PNG data. Execute exactly one document MCP call. An optional first line // @exec: {"yield_time_ms":1000,"max_output_tokens":100} is allowed. Allowed syntax: text(await tools.${methods.join(
     '({...})) or text(await tools.',
   )}({...})). Arguments must be a JSON object literal. No other JavaScript is allowed.`
 }
@@ -751,7 +751,10 @@ function parseSafeExecCode(code: string, methods: readonly string[], limits: Pro
   }
   const direct = /^await\s+tools\.([A-Za-z_][A-Za-z0-9_]*)\((\{[\s\S]*\})\);?$/
   const wrapped = /^text\(\s*await\s+tools\.([A-Za-z_][A-Za-z0-9_]*)\((\{[\s\S]*\})\)\s*\);?$/
-  const match = wrapped.exec(source.trim()) ?? direct.exec(source.trim())
+  const visual =
+    /^const result = await tools\.([A-Za-z_][A-Za-z0-9_]*)\((\{[\s\S]*\})\); for \(const block of result\.content\) \{ if \(block\.type === "image"\) image\(block\); else if \(block\.type === "text"\) text\(block\.text\); \}$/
+  const match =
+    wrapped.exec(source.trim()) ?? direct.exec(source.trim()) ?? visual.exec(source.trim())
   if (!match || !methods.includes(match[1]!)) fail('unsafe_custom_tool_input')
   let argument: unknown
   try {
@@ -800,7 +803,7 @@ function convertMessageContent(
       ) {
         fail('invalid_conversation')
       }
-      return { type: 'image', source: { type: 'url', url: part.image_url } }
+      return modelImage(part.image_url)
     }
     fail('unsupported_input_content')
   })
@@ -811,6 +814,15 @@ interface PrivateStreamContext {
   usedCallIds: readonly string[]
   allowedExecMethods: readonly string[]
   carrierEntry?: CarrierLedgerEntry
+}
+
+function modelImage(url: string): Record<string, unknown> {
+  if (url.startsWith('data:')) {
+    const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(url)
+    if (!match) fail('invalid_image_content')
+    return { type: 'image', source: { type: 'base64', media_type: match[1], data: match[2] } }
+  }
+  return { type: 'image', source: { type: 'url', url } }
 }
 
 function convertResponsesRequest(
@@ -1004,22 +1016,27 @@ function convertResponsesRequest(
       const expected = pending[resultIndex]!
       if (id !== expected.id) fail('invalid_tool_result_batch')
       if (isRecord(rawItem.output)) fail('tool_result_output_object')
-      let output: string
+      let output: string | Array<Record<string, unknown>>
       if (Array.isArray(rawItem.output)) {
         if (rawItem.output.length === 0) fail('invalid_tool_result')
         contentCount.parts += rawItem.output.length
         if (contentCount.parts > limits.maxContentParts) fail('request_content_limit_exceeded')
-        output = rawItem.output
-          .map((part) => {
-            if (
-              !isRecord(part) ||
-              !hasOnlyKeys(part, ['type', 'text']) ||
-              part.type !== 'input_text'
-            )
-              fail('invalid_tool_result')
-            return requireString(part.text, 'invalid_tool_result')
-          })
-          .join('\n')
+        const multimodal = rawItem.output.some(
+          (part) => isRecord(part) && part.type === 'input_image',
+        )
+        const parts = rawItem.output.map((part) => {
+          if (
+            isRecord(part) &&
+            part.type === 'input_image' &&
+            hasOnlyKeys(part, ['type', 'image_url']) &&
+            typeof part.image_url === 'string'
+          )
+            return modelImage(part.image_url)
+          if (!isRecord(part) || !hasOnlyKeys(part, ['type', 'text']) || part.type !== 'input_text')
+            fail('invalid_tool_result')
+          return { type: 'text', text: requireString(part.text, 'invalid_tool_result') }
+        })
+        output = multimodal ? parts : parts.map((part) => part.text).join('\n')
       } else {
         output = requireString(rawItem.output, 'invalid_tool_result')
       }

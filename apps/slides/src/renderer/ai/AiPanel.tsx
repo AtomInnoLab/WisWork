@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { boundedScreenshot } from './bounded-screenshot'
 import {
   composeSkills,
   IPC_STREAM_SILENCE_TIMEOUT_MS,
@@ -1978,8 +1979,10 @@ export function AiPanel({
     const slide = slidesRef.current[pageIndex]
     if (!slide) return null
     try {
-      const [png] = await renderSlidesToPngBase64([slide], imagesRef.current, 1)
-      return png ? { base64: png, mime: 'image/png' } : null
+      return await boundedScreenshot(async (ratio) => {
+        const [png] = await renderSlidesToPngBase64([slide], imagesRef.current, ratio)
+        return png
+      })
     } catch {
       return null
     }
