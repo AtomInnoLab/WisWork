@@ -264,17 +264,16 @@ export function createProductionCodexBootstrap(
                       active.proposalFailure ??= 'cancelled'
                       options.diagnostics?.('enhanced_proposal_cancelled')
                     } else {
-                      active.proposalFailure = 'failed'
-                      active.proposalError = new Error(
-                        execution.output === 'mutation_expired'
-                          ? 'enhanced_proposal_expired'
-                          : 'enhanced_proposal_failed',
-                      )
-                      options.diagnostics?.(
-                        execution.output === 'mutation_expired'
-                          ? 'enhanced_proposal_expired'
-                          : 'enhanced_proposal_execution_failed',
-                      )
+                      if (execution.output === 'mutation_expired') {
+                        active.proposalFailure = 'failed'
+                        active.proposalError = new Error('enhanced_proposal_expired')
+                        options.diagnostics?.('enhanced_proposal_expired')
+                      } else {
+                        // A rejected document edit is a normal tool result, not a runtime
+                        // failure. Keep the turn alive so the model can inspect, repair its
+                        // arguments, and retry without losing the agent loop.
+                        options.diagnostics?.('enhanced_proposal_execution_failed')
+                      }
                     }
                   } else {
                     options.diagnostics?.('enhanced_proposal_applied')

@@ -689,6 +689,10 @@ export function AiPanel({
   const runQcPassRef = useRef<() => Promise<void>>(() => Promise.resolve())
   /** DeckAccess reused by the QC pass (same executors as the main loop's slides skill) */
   const accessRef = useRef<DeckAccess | null>(null)
+  /** Main-agent visual tool calls through the latest renderer without rebuilding the harness. */
+  const captureSlideShotRef = useRef<(pageIndex: number) => Promise<AgentImage | null>>(
+    async () => null,
+  )
   /** Wall-clock start of the current run, drives the elapsed badge */
   const runStartedAtRef = useRef(0)
   const historyBatchActiveRef = useRef(false)
@@ -880,6 +884,7 @@ export function AiPanel({
       getSlides: () => slidesRef.current,
       getCurrent: () => currentRef.current,
       getSelectedIds: () => selectedRef.current,
+      captureSlideScreenshot: (slideIndex) => captureSlideShotRef.current(slideIndex),
       getSelectionScope: () => activeSelectionScopeRef.current,
       getAcceptanceAuthorityLease: async () => {
         const lease = await window.slidesApi.getAcceptanceAuthorityLease()
@@ -1979,6 +1984,7 @@ export function AiPanel({
       return null
     }
   }
+  captureSlideShotRef.current = captureSlideShot
 
   const runWith = (
     instruction: string,

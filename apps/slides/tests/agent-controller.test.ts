@@ -363,7 +363,7 @@ describe('Slides interactive agent controller', () => {
     controller.dispose()
   })
 
-  it('keeps image-search display data local when returning an Enhanced tool result', async () => {
+  it('keeps display data local but forwards bounded model images in Enhanced tool results', async () => {
     let documentId: string | null = null
     let onToolCall: ((request: any) => void) | undefined
     const api: any = {
@@ -385,6 +385,7 @@ describe('Slides interactive agent controller', () => {
       output: 'https://example.test/image.png',
       summary: 'Found 1 image',
       mutated: false,
+      modelContent: [{ type: 'image' as const, image: { base64: 'aGVsbG8=', mime: 'image/png' } }],
       display: { kind: 'images' as const, items: [{ url: 'https://example.test/image.png' }] },
     }))
     const controller = createAgentController(
@@ -410,6 +411,7 @@ describe('Slides interactive agent controller', () => {
           output: 'https://example.test/image.png',
           summary: 'Found 1 image',
           mutated: false,
+          modelContent: [{ type: 'image', image: { base64: 'aGVsbG8=', mime: 'image/png' } }],
         },
       }),
     )

@@ -98,7 +98,7 @@ it('diagnoses thread and turn start boundaries without retaining request content
   await second.close()
 })
 
-it.each(['applied', 'mutation_expired', 'mutation_cancelled', 'cancel', 'close'])(
+it.each(['applied', 'tool_failed', 'mutation_expired', 'mutation_cancelled', 'cancel', 'close'])(
   'waits past idle timeout after model completion until proposal %s',
   async (output) => {
     vi.useFakeTimers()
@@ -165,7 +165,7 @@ it.each(['applied', 'mutation_expired', 'mutation_cancelled', 'cancel', 'close']
     expect(events.at(-1)).toMatchObject({
       type: 'terminal',
       status:
-        output === 'applied'
+        output === 'applied' || output === 'tool_failed'
           ? 'completed'
           : output === 'mutation_cancelled'
             ? 'cancelled'

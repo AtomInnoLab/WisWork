@@ -31,6 +31,7 @@ const hostToolExecution = (execution: ToolExecution): ToolExecution => ({
   ...(execution.isError === undefined ? {} : { isError: execution.isError }),
   ...(execution.mutated === undefined ? {} : { mutated: execution.mutated }),
   ...(execution.stopToolBatch === undefined ? {} : { stopToolBatch: execution.stopToolBatch }),
+  ...(execution.modelContent === undefined ? {} : { modelContent: execution.modelContent }),
 })
 
 function createSlidesEnhancedHarness<TSnapshot>(

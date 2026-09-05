@@ -1,4 +1,9 @@
-import type { AgentSkill, FinalResponseReviewContext, ToolDisplay } from '@wiswork/agent-core'
+import type {
+  AgentImage,
+  AgentSkill,
+  FinalResponseReviewContext,
+  ToolDisplay,
+} from '@wiswork/agent-core'
 import type {
   GroupRenderNode,
   PictureRenderNode,
@@ -59,6 +64,8 @@ export interface DeckAccess {
   getSlides(): RenderSlide[]
   getCurrent(): number
   getSelectedIds(): string[]
+  /** Render one slide for bounded, in-memory visual inspection by the main agent. */
+  captureSlideScreenshot?(slideIndex: number): Promise<AgentImage | null>
   getAcceptanceAuthorityLease?(): Promise<SlidesAcceptanceAuthorityLease>
   verifyAcceptanceTextProof?(request: SlidesAcceptanceTextProofRequest): Promise<boolean>
   /** Read-only, revision-bound durable facts used to compile and verify a frozen task contract. */
@@ -176,12 +183,14 @@ const AGENT_SYSTEM_PROMPT = `You are the AI assistant inside WisWork Slides. Hel
 
 ## Workflow
 - Start with get_deck_context, and use read_slide when exact text, colors, or element details matter.
+- For visual work, use screenshot_slide before a substantial edit and again after it. Inspect the rendered PNG for clipping, overlap, hierarchy, spacing, contrast, and balance. Never claim that visual quality passed from structure alone.
 - For a new presentation, use ask_clarification only when the user has not delegated the missing choices, then plan_deck. Search for relevant imagery before building. After planning, use build_deck once with a coherent theme, varied page layouts, concise hierarchy, and selected image URLs. A deck made only from repeated title-and-body pages is not complete. Use lower-level tools only for later refinement. Empty decks are valid and may be built directly.
 - Supported editing capability map:
   - Change existing text font, size, color, emphasis, or alignment with set_element_style; for coordinated edits use execute_slide_script and setStyle.
   - Move, resize, rotate, or align titles and other elements with set_element_transform; for coordinated edits use execute_slide_script and setBox/moveBy/resizeBy.
   - For a multi-page request, inspect and edit each target page (one tool call per target slideIndex), then verify the affected pages. Do not infer that changing one page changes the others.
 - An edit request must not finish with inspection or advice only. Apply the requested supported edits and verify them before responding.
+- If an approved edit returns an error, treat it as a tool execution failure, not as missing confirmation. Read the fresh slide state, correct the tool arguments, and retry when safe; never tell the user to confirm a proposal that has already settled.
 - Claim a capability limitation only after the relevant tool explicitly returns unsupported or fail-closed. Do not infer limitations from a read result or from unfamiliarity with a tool.
 - Use execute_slide_script for coordinated edits to existing elements. Use the individual set_element_* tools for focused changes.
 - Use set_speaker_notes to add, replace, or clear presenter notes without changing canvas content.
@@ -477,6 +486,18 @@ const ALL_TOOLS: AgentToolDef[] = [
     name: 'read_slide',
     description:
       'Read all elements of a page with full text (untruncated) and current colors (fill/text/stroke, hex). Call before rewriting a page.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slideIndex: { type: 'integer', description: 'Page number (0-based)' },
+      },
+      required: ['slideIndex'],
+    },
+  },
+  {
+    name: 'screenshot_slide',
+    description:
+      'Render one page as a PNG for visual inspection. Use before a substantial visual edit and again after applying it; do not claim visual quality without the post-edit screenshot.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1503,6 +1524,7 @@ export function createSlidesSkill(
   // Safety net for when the AI ignores the "pass all pages at once" constraint: separate calls no longer overwrite each other (P0-1).
   const state: SkillState = {}
   const scopedTools = new Set([
+    'screenshot_slide',
     'set_element_text',
     'set_element_style',
     'set_element_transform',
@@ -1789,6 +1811,7 @@ async function executeTool(
   const activeScope = access.getSelectionScope?.()
   if (activeScope) {
     const allowed = new Set([
+      'screenshot_slide',
       'set_element_text',
       'set_element_style',
       'set_element_transform',
@@ -1843,6 +1866,7 @@ async function executeTool(
     !new Set([
       'get_deck_context',
       'read_slide',
+      'screenshot_slide',
       'web_search',
       'image_search',
       'list_style_templates',
@@ -1871,6 +1895,22 @@ async function executeTool(
         output: formatSlideDump(slide),
         mutated: false,
         summary: t('aiSumReadSlide', { n: idx + 1 }),
+      }
+    }
+
+    case 'screenshot_slide': {
+      const idx = Number(call.input.slideIndex)
+      if (!Number.isSafeInteger(idx) || !slides[idx])
+        return fail('Capture slide screenshot', `slideIndex out of range (0-${slides.length - 1})`)
+      if (!access.captureSlideScreenshot)
+        return fail('Capture slide screenshot', 'visual_capture_unavailable')
+      const image = await access.captureSlideScreenshot(idx)
+      if (!image) return fail('Capture slide screenshot', 'visual_capture_failed')
+      return {
+        output: `Rendered slide ${idx + 1}. Inspect the attached PNG for clipping, overlap, hierarchy, spacing, contrast, and visual balance.`,
+        mutated: false,
+        summary: `Captured slide ${idx + 1}`,
+        modelContent: [{ type: 'image' as const, image }],
       }
     }
 

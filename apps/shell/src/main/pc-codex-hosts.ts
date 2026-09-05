@@ -197,7 +197,14 @@ const detachedExecution = (value: unknown): ToolExecution => {
   )
     throw new Error('enhanced_invalid_request')
   const descriptors = Object.getOwnPropertyDescriptors(value)
-  const allowed = new Set(['output', 'summary', 'isError', 'mutated', 'stopToolBatch'])
+  const allowed = new Set([
+    'output',
+    'summary',
+    'isError',
+    'mutated',
+    'stopToolBatch',
+    'modelContent',
+  ])
   if (
     Object.getOwnPropertySymbols(value).length ||
     Object.keys(descriptors).some((key) => !allowed.has(key)) ||
@@ -209,6 +216,7 @@ const detachedExecution = (value: unknown): ToolExecution => {
   const isError = descriptors.isError?.value
   const mutated = descriptors.mutated?.value
   const stopToolBatch = descriptors.stopToolBatch?.value
+  const modelContent = descriptors.modelContent?.value
   if (
     typeof output !== 'string' ||
     Buffer.byteLength(output) > 1_000_000 ||
@@ -219,12 +227,37 @@ const detachedExecution = (value: unknown): ToolExecution => {
     (stopToolBatch !== undefined && typeof stopToolBatch !== 'boolean')
   )
     throw new Error('enhanced_invalid_request')
+  let detachedModelContent: ToolExecution['modelContent']
+  if (modelContent !== undefined) {
+    if (!Array.isArray(modelContent) || modelContent.length !== 1)
+      throw new Error('enhanced_invalid_request')
+    const block = modelContent[0]
+    if (!exactObject(block, ['type', 'image']) || block.type !== 'image')
+      throw new Error('enhanced_invalid_request')
+    const image = block.image
+    if (!exactObject(image, ['base64', 'mime'])) throw new Error('enhanced_invalid_request')
+    if (
+      image.mime !== 'image/png' ||
+      typeof image.base64 !== 'string' ||
+      image.base64.length > 2_800_000 ||
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(image.base64) ||
+      Buffer.byteLength(Buffer.from(image.base64, 'base64')) > 2_000_000
+    )
+      throw new Error('enhanced_invalid_request')
+    detachedModelContent = [
+      Object.freeze({
+        type: 'image',
+        image: Object.freeze({ base64: image.base64, mime: 'image/png' }),
+      }),
+    ]
+  }
   return Object.freeze({
     output,
     summary,
     ...(isError === undefined ? {} : { isError }),
     ...(mutated === undefined ? {} : { mutated }),
     ...(stopToolBatch === undefined ? {} : { stopToolBatch }),
+    ...(detachedModelContent === undefined ? {} : { modelContent: detachedModelContent }),
   })
 }
 
