@@ -10,7 +10,6 @@ import { startTrustedMcpTransport, TrustedMcpTransportDenied } from './mcp-serve
 
 // Full presentations commonly need an initial read plus several bounded edits per slide.
 // Keep a hard ceiling without cutting ordinary 8–12 slide generation off halfway through.
-const MAX_CALLS = 24
 const DEFAULT_TTL_MS = 10 * 60_000
 const MAX_ACTIVE_GRANTS = 64
 const MAX_PROPOSAL_TTL_MS = 5 * 60_000
@@ -57,7 +56,6 @@ interface TurnGrant {
   threadId: string
   readonly expiresAt: number
   readonly calls: Set<string>
-  remaining: number
   turnId?: string
   bound: boolean
 }
@@ -211,16 +209,10 @@ export async function startDynamicMcpGateway(
           throw new Error('carrier_input_invalid')
         sweepExpired()
         const grant = grants.get(args.capability)
-        // Capability is consumed/budgeted before any document or host lookup.
-        if (
-          !grant ||
-          !grant.bound ||
-          Date.now() > grant.expiresAt ||
-          grant.remaining <= 0 ||
-          grant.calls.has(args.callId)
-        )
+        // Authenticate and reject replay before any document or host lookup.
+        // A live turn must not lose authority simply because visual review uses many tools.
+        if (!grant || !grant.bound || Date.now() > grant.expiresAt || grant.calls.has(args.callId))
           throw new Error('capability_invalid')
-        grant.remaining -= 1
         grant.calls.add(args.callId)
         const documentCall: AgentToolCall = {
           id: args.callId,
@@ -358,7 +350,6 @@ export async function startDynamicMcpGateway(
         threadId: input.threadId,
         expiresAt: Date.now() + ttl,
         calls: new Set(),
-        remaining: MAX_CALLS,
         bound: input.threadId !== 'reserved',
       })
       return Object.freeze({ capability })

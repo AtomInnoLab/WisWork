@@ -188,7 +188,7 @@ describe('fixed dynamic MCP gateway', () => {
     }
   })
 
-  it('allows a bounded 24-call presentation workflow and denies the twenty-fifth', async () => {
+  it('allows long visual review workflows without a per-turn call quota', async () => {
     const execute = vi.fn(async (_call: unknown) => ({ output: 'ok', summary: 'ok' }))
     const gateway = await startDynamicMcpGateway()
     const close = gateway.register({
@@ -209,7 +209,7 @@ describe('fixed dynamic MCP gateway', () => {
         generation: 1,
         threadId: 'thread',
       })
-      for (let index = 0; index < 25; index += 1) {
+      for (let index = 0; index < 80; index += 1) {
         const response = await rpc(gateway.url, gateway.secret, index + 1, 'tools/call', {
           name: 'wiswork_read',
           arguments: {
@@ -219,9 +219,9 @@ describe('fixed dynamic MCP gateway', () => {
             input: {},
           },
         })
-        expect(response.status).toBe(index < 24 ? 200 : 403)
+        expect(response.status).toBe(200)
       }
-      expect(execute).toHaveBeenCalledTimes(24)
+      expect(execute).toHaveBeenCalledTimes(80)
     } finally {
       close()
       await gateway.close()
