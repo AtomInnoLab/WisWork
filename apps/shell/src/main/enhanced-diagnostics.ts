@@ -21,6 +21,13 @@ const NORMAL_MILESTONE_CODES = new Set<DiagnosticSafeCode>([
   'mcp_tool_completed',
   'turn_started',
   'turn_completed',
+  'thread_starting',
+  'thread_started',
+  'turn_starting',
+  'turn_accepted',
+  'proposal_created',
+  'proposal_applied',
+  'proposal_cancelled',
 ])
 
 export type DiagnosticComponent = 'component' | 'auth' | 'runtime' | 'wisusage' | 'mcp' | 'host'
@@ -57,6 +64,19 @@ export type DiagnosticSafeCode =
   | 'turn_completed'
   | 'turn_failed'
   | 'turn_timeout'
+  | 'thread_starting'
+  | 'thread_started'
+  | 'thread_start_failed'
+  | 'turn_starting'
+  | 'turn_accepted'
+  | 'turn_start_failed'
+  | 'app_server_error'
+  | 'codex_error'
+  | 'thread_system_error'
+  | 'proposal_created'
+  | 'proposal_applied'
+  | 'proposal_cancelled'
+  | 'proposal_execution_failed'
   | 'proposal_expired'
   | 'unknown_failure'
 
@@ -91,6 +111,19 @@ const SAFE_CODES = new Set<DiagnosticSafeCode>([
   'turn_completed',
   'turn_failed',
   'turn_timeout',
+  'thread_starting',
+  'thread_started',
+  'thread_start_failed',
+  'turn_starting',
+  'turn_accepted',
+  'turn_start_failed',
+  'app_server_error',
+  'codex_error',
+  'thread_system_error',
+  'proposal_created',
+  'proposal_applied',
+  'proposal_cancelled',
+  'proposal_execution_failed',
   'proposal_expired',
   'unknown_failure',
 ])
@@ -257,6 +290,23 @@ function safeDiagnostic(code: string): {
   outcome: DiagnosticOutcome
   code: DiagnosticSafeCode
 } {
+  const lifecycle = {
+    enhanced_thread_starting: ['thread', 'started', 'thread_starting'],
+    enhanced_thread_started: ['thread', 'succeeded', 'thread_started'],
+    enhanced_thread_start_failed: ['thread', 'failed', 'thread_start_failed'],
+    enhanced_turn_starting: ['turn_start', 'started', 'turn_starting'],
+    enhanced_turn_accepted: ['turn_start', 'succeeded', 'turn_accepted'],
+    enhanced_turn_start_failed: ['turn_start', 'failed', 'turn_start_failed'],
+    enhanced_proposal_created: ['proposal', 'started', 'proposal_created'],
+    enhanced_proposal_applied: ['proposal', 'succeeded', 'proposal_applied'],
+    enhanced_proposal_cancelled: ['proposal', 'cancelled', 'proposal_cancelled'],
+    enhanced_proposal_execution_failed: ['proposal', 'failed', 'proposal_execution_failed'],
+  } as const
+  const lifecycleEvent = lifecycle[code as keyof typeof lifecycle]
+  if (lifecycleEvent) {
+    const [phase, outcome, safeCode] = lifecycleEvent
+    return { component: 'runtime', phase, outcome, code: safeCode }
+  }
   if (code === 'responses_upstream_started')
     return { component: 'wisusage', phase: 'request', outcome: 'started', code: 'upstream_started' }
   if (code === 'responses_upstream_timeout')
@@ -348,16 +398,16 @@ function safeDiagnostic(code: string): {
       outcome: 'failed',
       code: 'runtime_unavailable',
     }
-  if (
-    code === 'app_server_error' ||
-    code === 'codex_error' ||
-    code === 'app_server_thread_status_systemError'
-  )
+  if (code === 'app_server_error')
+    return { component: 'runtime', phase: 'protocol', outcome: 'failed', code: 'app_server_error' }
+  if (code === 'codex_error')
+    return { component: 'runtime', phase: 'protocol', outcome: 'failed', code: 'codex_error' }
+  if (code === 'app_server_thread_status_systemError')
     return {
       component: 'runtime',
-      phase: 'protocol',
+      phase: 'thread',
       outcome: 'failed',
-      code: 'unknown_failure',
+      code: 'thread_system_error',
     }
   return {
     component: 'runtime',

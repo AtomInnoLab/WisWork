@@ -5,6 +5,8 @@ const mock = vi.hoisted(() => ({
   notify: undefined as any,
   document: undefined as any,
   revoke: vi.fn(),
+  startThread: vi.fn(async () => ({ thread: { id: 'thread' } })),
+  startTurn: vi.fn(async () => ({ turn: { id: 'turn' } })),
 }))
 vi.mock('@wiswork/codex-bridge', async (original) => ({
   ...(await original<any>()),
@@ -31,8 +33,8 @@ vi.mock('@wiswork/codex-bridge', async (original) => ({
           mock.notify = listener
           return () => {}
         },
-        startThread: async () => ({ thread: { id: 'thread' } }),
-        startTurn: async () => ({ turn: { id: 'turn' } }),
+        startThread: mock.startThread,
+        startTurn: mock.startTurn,
         interruptTurn: async () => {},
       }
     }
@@ -41,6 +43,59 @@ vi.mock('@wiswork/codex-bridge', async (original) => ({
 afterEach(() => {
   vi.useRealTimers()
   vi.clearAllMocks()
+  mock.startThread.mockImplementation(async () => ({ thread: { id: 'thread' } }))
+  mock.startTurn.mockImplementation(async () => ({ turn: { id: 'turn' } }))
+})
+
+it('diagnoses thread and turn start boundaries without retaining request content', async () => {
+  const diagnostics: string[] = []
+  mock.startThread.mockRejectedValueOnce(new Error('private thread failure'))
+  const first = await createProductionCodexBootstrap({
+    fetchWithAuth: vi.fn(),
+    diagnostics: (code) => diagnostics.push(code),
+  }).start({ executablePath: '', onCrash: vi.fn() })
+  first.registerDocument!({
+    ownerId: 'owner',
+    documentId: 'doc',
+    host: 'slides',
+    generation: 1,
+    session: { credentials: {}, listTools: () => [], close: () => {} } as any,
+  })
+  await expect(
+    first.startTurn({ documentId: 'doc', host: 'slides', generation: 1, text: 'PRIVATE PROMPT' }),
+  ).rejects.toThrow()
+  expect(diagnostics).toEqual(
+    expect.arrayContaining(['enhanced_thread_starting', 'enhanced_thread_start_failed']),
+  )
+  expect(diagnostics.join(',')).not.toContain('PRIVATE')
+  await first.close()
+
+  diagnostics.length = 0
+  mock.startTurn.mockRejectedValueOnce(new Error('private turn failure'))
+  const second = await createProductionCodexBootstrap({
+    fetchWithAuth: vi.fn(),
+    diagnostics: (code) => diagnostics.push(code),
+  }).start({ executablePath: '', onCrash: vi.fn() })
+  second.registerDocument!({
+    ownerId: 'owner',
+    documentId: 'doc',
+    host: 'slides',
+    generation: 1,
+    session: { credentials: {}, listTools: () => [], close: () => {} } as any,
+  })
+  await expect(
+    second.startTurn({ documentId: 'doc', host: 'slides', generation: 1, text: 'PRIVATE PROMPT' }),
+  ).rejects.toThrow()
+  expect(diagnostics).toEqual(
+    expect.arrayContaining([
+      'enhanced_thread_starting',
+      'enhanced_thread_started',
+      'enhanced_turn_starting',
+      'enhanced_turn_start_failed',
+    ]),
+  )
+  expect(diagnostics.join(',')).not.toContain('PRIVATE')
+  await second.close()
 })
 
 it.each(['applied', 'mutation_expired', 'mutation_cancelled', 'cancel', 'close'])(

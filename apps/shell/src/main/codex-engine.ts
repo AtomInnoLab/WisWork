@@ -251,6 +251,7 @@ export function createProductionCodexBootstrap(
             onProposal: (proposal) => {
               const active = documents.get(input.documentId)?.active
               if (!active) return
+              options.diagnostics?.('enhanced_proposal_created')
               active.touch()
               active.pendingProposals.add(proposal.proposalId)
               void proposal.settled.then(
@@ -261,6 +262,7 @@ export function createProductionCodexBootstrap(
                       execution.output === 'tool_cancelled'
                     ) {
                       active.proposalFailure ??= 'cancelled'
+                      options.diagnostics?.('enhanced_proposal_cancelled')
                     } else {
                       active.proposalFailure = 'failed'
                       active.proposalError = new Error(
@@ -268,7 +270,14 @@ export function createProductionCodexBootstrap(
                           ? 'enhanced_proposal_expired'
                           : 'enhanced_proposal_failed',
                       )
+                      options.diagnostics?.(
+                        execution.output === 'mutation_expired'
+                          ? 'enhanced_proposal_expired'
+                          : 'enhanced_proposal_execution_failed',
+                      )
                     }
+                  } else {
+                    options.diagnostics?.('enhanced_proposal_applied')
                   }
                   active.pendingProposals.delete(proposal.proposalId)
                   const deferred = active.deferredTerminal
@@ -282,6 +291,7 @@ export function createProductionCodexBootstrap(
                   }
                 },
                 () => {
+                  options.diagnostics?.('enhanced_proposal_execution_failed')
                   active.proposalFailure = 'failed'
                   active.proposalError = new Error('enhanced_proposal_failed')
                   active.pendingProposals.delete(proposal.proposalId)
@@ -384,11 +394,18 @@ export function createProductionCodexBootstrap(
           document.active = active
           try {
             if (!document.threadId) {
-              document.threadId = (
-                await client.startThread({
-                  developerInstructions: `${DEVELOPER_POLICY}\n${document.instructions ?? ''}`,
-                })
-              ).thread.id
+              options.diagnostics?.('enhanced_thread_starting')
+              try {
+                document.threadId = (
+                  await client.startThread({
+                    developerInstructions: `${DEVELOPER_POLICY}\n${document.instructions ?? ''}`,
+                  })
+                ).thread.id
+              } catch (error) {
+                options.diagnostics?.('enhanced_thread_start_failed')
+                throw error
+              }
+              options.diagnostics?.('enhanced_thread_started')
               gateway.bindTurn(grant.capability, document.threadId)
             }
             active.threadId = document.threadId
@@ -409,12 +426,19 @@ export function createProductionCodexBootstrap(
               grant.capability,
             )
             if (active.cancelled) return await terminal
-            active.turnId = (
-              await client.startTurn(
-                active.threadId,
-                `<wiswork_turn_capability>${grant.capability}</wiswork_turn_capability>\n\n${input.text}`,
-              )
-            ).turn.id
+            options.diagnostics?.('enhanced_turn_starting')
+            try {
+              active.turnId = (
+                await client.startTurn(
+                  active.threadId,
+                  `<wiswork_turn_capability>${grant.capability}</wiswork_turn_capability>\n\n${input.text}`,
+                )
+              ).turn.id
+            } catch (error) {
+              options.diagnostics?.('enhanced_turn_start_failed')
+              throw error
+            }
+            options.diagnostics?.('enhanced_turn_accepted')
             active.touch()
             if (active.cancelled) return await terminal
             await terminal

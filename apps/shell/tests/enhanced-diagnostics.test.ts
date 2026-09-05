@@ -202,6 +202,58 @@ describe('EnhancedDiagnosticsStore', () => {
     expect(store.recent()[0]).toMatchObject({ failureCode: 'proposal_expired' })
   })
 
+  it('keeps local start and app-server failure boundaries distinct', () => {
+    const { store } = fixture()
+    const id = store.beginTask('slides')
+    for (const code of [
+      'enhanced_thread_starting',
+      'enhanced_thread_start_failed',
+      'enhanced_turn_starting',
+      'enhanced_turn_start_failed',
+      'app_server_error',
+      'codex_error',
+      'app_server_thread_status_systemError',
+    ]) {
+      store.record(code)
+    }
+    store.finishTask(id, 'failed')
+
+    expect(store.recent()[0]?.events.map((event) => event.code)).toEqual(
+      expect.arrayContaining([
+        'thread_starting',
+        'thread_start_failed',
+        'turn_starting',
+        'turn_start_failed',
+        'app_server_error',
+        'codex_error',
+        'thread_system_error',
+      ]),
+    )
+  })
+
+  it('records only closed proposal lifecycle states', () => {
+    const { store } = fixture()
+    const id = store.beginTask('slides')
+    for (const code of [
+      'enhanced_proposal_created',
+      'enhanced_proposal_applied',
+      'enhanced_proposal_cancelled',
+      'enhanced_proposal_execution_failed',
+    ]) {
+      store.record(code)
+    }
+    store.finishTask(id, 'failed')
+
+    expect(store.recent()[0]?.events.map((event) => event.code)).toEqual(
+      expect.arrayContaining([
+        'proposal_created',
+        'proposal_applied',
+        'proposal_cancelled',
+        'proposal_execution_failed',
+      ]),
+    )
+  })
+
   it('rejects a tampered persisted report instead of re-exporting injected content', () => {
     const test = fixture()
     writeFileSync(
