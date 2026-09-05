@@ -47,6 +47,44 @@ afterEach(() => {
 })
 
 describe('Enhanced mutation confirmation', () => {
+  it('shows expiry if confirm is clicked before an overdue timer runs', async () => {
+    vi.useFakeTimers()
+    const view = setup('zh')
+    const started = Date.now()
+    view.emit(proposal({ expiresAt: started + 1_000 }))
+    vi.setSystemTime(started + 1_001)
+    await act(async () =>
+      view.node.querySelector<HTMLButtonElement>('[data-action="confirm"]')!.click(),
+    )
+    expect(view.api.confirmProposal).not.toHaveBeenCalled()
+    expect(view.node.textContent).toContain('确认已过期，本次更改未应用')
+  })
+  it('keeps the confirmation visible and usable after thirty seconds', async () => {
+    vi.useFakeTimers()
+    const view = setup()
+    view.emit(proposal({ expiresAt: Date.now() + 300_000 }))
+    await act(async () => vi.advanceTimersByTimeAsync(61_000))
+    expect(view.node.querySelector('[role="alertdialog"]')).not.toBeNull()
+    await act(async () =>
+      view.node.querySelector<HTMLButtonElement>('[data-action="confirm"]')!.click(),
+    )
+    expect(view.api.confirmProposal).toHaveBeenCalledOnce()
+    expect(view.api.cancelProposal).not.toHaveBeenCalled()
+  })
+  it('shows an explicit not-applied notice after expiry without permitting confirmation', async () => {
+    vi.useFakeTimers()
+    const view = setup('zh')
+    view.emit(proposal({ expiresAt: Date.now() + 1_000 }))
+    await act(async () => vi.advanceTimersByTimeAsync(1_001))
+    expect(view.node.textContent).toContain('确认已过期，本次更改未应用')
+    expect(view.node.querySelector('[data-action="confirm"]')).toBeNull()
+    expect(view.api.confirmProposal).not.toHaveBeenCalled()
+    await act(async () =>
+      view.node.querySelector<HTMLButtonElement>('[data-action="dismiss"]')!.click(),
+    )
+    expect(view.node.querySelector('[role="alertdialog"]')).toBeNull()
+  })
+
   it('keeps a proposal pending until one explicit confirmation', async () => {
     const view = setup()
     view.emit(proposal())

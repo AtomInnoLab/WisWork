@@ -195,6 +195,13 @@ describe('EnhancedDiagnosticsStore', () => {
     expect(store.recent()[0]).toMatchObject({ failureCode: 'turn_failed' })
   })
 
+  it('records confirmation expiry distinctly from runtime failure', () => {
+    const { store } = fixture()
+    const id = store.beginTask('slides')
+    store.finishTask(id, 'failed', 'enhanced_proposal_expired')
+    expect(store.recent()[0]).toMatchObject({ failureCode: 'proposal_expired' })
+  })
+
   it('rejects a tampered persisted report instead of re-exporting injected content', () => {
     const test = fixture()
     writeFileSync(

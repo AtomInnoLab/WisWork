@@ -119,6 +119,37 @@ const mutationEnglish = {
 } as const
 
 export type EnhancedMutationConfirmationKey = keyof typeof mutationEnglish
+
+export const mutationExpiryStrings: Readonly<Record<Lang, readonly [string, string]>> = {
+  zh: ['确认已过期，本次更改未应用。请重新提交方案。', '关闭'],
+  'zh-TW': ['確認已過期，本次變更未套用。請重新提交方案。', '關閉'],
+  en: ['Confirmation expired. This change was not applied. Submit a new proposal.', 'Close'],
+  ja: [
+    '確認の期限が切れました。変更は適用されていません。新しい提案を送信してください。',
+    '閉じる',
+  ],
+  ko: ['확인 시간이 만료되어 변경이 적용되지 않았습니다. 새 제안을 제출하세요.', '닫기'],
+  fr: [
+    'Confirmation expirée. Modification non appliquée. Soumettez une nouvelle proposition.',
+    'Fermer',
+  ],
+  de: [
+    'Bestätigung abgelaufen. Änderung nicht angewendet. Reichen Sie einen neuen Vorschlag ein.',
+    'Schließen',
+  ],
+  es: ['Confirmación caducada. El cambio no se aplicó. Envía una nueva propuesta.', 'Cerrar'],
+  th: ['การยืนยันหมดอายุ ยังไม่ได้ใช้การเปลี่ยนแปลงนี้ โปรดส่งข้อเสนอใหม่', 'ปิด'],
+  id: ['Konfirmasi kedaluwarsa. Perubahan tidak diterapkan. Kirim usulan baru.', 'Tutup'],
+  ru: ['Срок подтверждения истёк. Изменение не применено. Отправьте новое предложение.', 'Закрыть'],
+  ar: ['انتهت مهلة التأكيد. لم يُطبّق التغيير. أرسل اقتراحًا جديدًا.', 'إغلاق'],
+  pt: ['Confirmação expirada. A alteração não foi aplicada. Envie uma nova proposta.', 'Fechar'],
+  it: ['Conferma scaduta. Modifica non applicata. Invia una nuova proposta.', 'Chiudi'],
+  pl: ['Potwierdzenie wygasło. Nie zastosowano zmiany. Prześlij nową propozycję.', 'Zamknij'],
+  nl: ['Bevestiging verlopen. Wijziging niet toegepast. Dien een nieuw voorstel in.', 'Sluiten'],
+  ms: ['Pengesahan tamat tempoh. Perubahan tidak digunakan. Hantar cadangan baharu.', 'Tutup'],
+  he: ['תוקף האישור פג. השינוי לא הוחל. יש לשלוח הצעה חדשה.', 'סגירה'],
+  hi: ['पुष्टि की समय सीमा समाप्त हुई। बदलाव लागू नहीं हुआ। नया प्रस्ताव भेजें।', 'बंद करें'],
+}
 type MutationConfirmationStrings = Record<EnhancedMutationConfirmationKey, string>
 
 /** Complete informed-consent copy for bounded Enhanced mutations. */

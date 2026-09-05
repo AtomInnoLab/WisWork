@@ -41,7 +41,7 @@ import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/loca
 import { Markdown, PresentationActivityGroup } from '@wiswork/ui'
 import type { PresentationQualityReceipt } from '@wiswork/presentation-ops'
 import { presentationVerificationFlags } from '@wiswork/presentation-verification'
-import { translatePresentationVerification } from '@wiswork/i18n'
+import { translatePresentationVerification, mutationExpiryStrings } from '@wiswork/i18n'
 import { verifyAndBrandSlidesAcceptanceAuthority, verifySlidesAcceptance } from './task-acceptance'
 import { reviewSlidesRendering } from './task-review'
 import { WisWorkMark } from '../components/icons'
@@ -1685,6 +1685,7 @@ export function AiPanel({
               error,
               tGlobal('aiErrGenerateFailed'),
               tGlobal('aiErrStreamTimeout'),
+              mutationExpiryStrings[lang][0],
             )
             qcPagesRef.current = []
             setChat((prev) => {

@@ -5,6 +5,11 @@ import {
 } from '../src/renderer/ai/enhanced-error-copy'
 
 describe('Enhanced Slides error copy', () => {
+  it('distinguishes expired confirmation from generation failure', () => {
+    expect(
+      friendlyEnhancedError('enhanced_proposal_expired', '生成失败', '请求超时', '确认已过期'),
+    ).toBe('确认已过期')
+  })
   it('never exposes internal runtime error codes to users', () => {
     expect(friendlyEnhancedError('enhanced_turn_failed', '生成失败', '请求超时')).toBe('生成失败')
     expect(friendlyEnhancedError('enhanced_turn_timeout', '生成失败', '请求超时')).toBe('请求超时')

@@ -57,6 +57,7 @@ export type DiagnosticSafeCode =
   | 'turn_completed'
   | 'turn_failed'
   | 'turn_timeout'
+  | 'proposal_expired'
   | 'unknown_failure'
 
 const SAFE_CODES = new Set<DiagnosticSafeCode>([
@@ -90,6 +91,7 @@ const SAFE_CODES = new Set<DiagnosticSafeCode>([
   'turn_completed',
   'turn_failed',
   'turn_timeout',
+  'proposal_expired',
   'unknown_failure',
 ])
 const COMPONENTS = new Set<DiagnosticComponent>([
@@ -317,6 +319,8 @@ function safeDiagnostic(code: string): {
     }
   if (code === 'enhanced_turn_timeout')
     return { component: 'host', phase: 'turn', outcome: 'failed', code: 'turn_timeout' }
+  if (code === 'enhanced_proposal_expired')
+    return { component: 'host', phase: 'turn', outcome: 'failed', code: 'proposal_expired' }
   if (code === 'enhanced_turn_failed')
     return { component: 'host', phase: 'turn', outcome: 'failed', code: 'turn_failed' }
   if (code === 'codex_turn_started')

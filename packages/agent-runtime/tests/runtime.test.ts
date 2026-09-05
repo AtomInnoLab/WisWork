@@ -92,4 +92,22 @@ describe('Agent runtime facade', () => {
     emit({ type: 'done', result: { text: 'stale', cancelled: false, turnLimit: false } })
     expect(session.messages).toEqual([])
   })
+
+  it('preserves the expired confirmation error from the host', async () => {
+    const remote: EnhancedRuntimeClientSession = {
+      start: async () => {
+        throw new Error('enhanced_proposal_expired')
+      },
+      cancel: async () => undefined,
+      close: async () => undefined,
+      subscribe: () => () => undefined,
+    }
+    const runtime = new EnhancedAgentRuntime({ open: () => remote, close: async () => undefined })
+    const error = vi.fn()
+    const session = runtime.createSession(options({ stream: vi.fn() } as never, { onError: error }))
+    session.run('edit')
+    await Promise.resolve()
+    expect(error).toHaveBeenCalledWith('enhanced_proposal_expired')
+    expect(session.snapshot.busy).toBe(false)
+  })
 })
