@@ -233,7 +233,10 @@ describe('fixed dynamic MCP gateway', () => {
     async (ttlMs) => {
       const onProposal = vi.fn()
       const writer = vi.fn()
-      const never = new Promise<never>(() => undefined)
+      let settle!: (value: any) => void
+      const never = new Promise<any>((resolve) => {
+        settle = resolve
+      })
       const gateway = await startDynamicMcpGateway()
       const close = gateway.register({
         ownerId: 'owner',
@@ -265,7 +268,8 @@ describe('fixed dynamic MCP gateway', () => {
           threadId: 'thread',
           ttlMs,
         })
-        const response = await rpc(gateway.url, gateway.secret, 50, 'tools/call', {
+        let returned = false
+        const pendingResponse = rpc(gateway.url, gateway.secret, 50, 'tools/call', {
           name: 'wiswork_propose',
           arguments: {
             capability: grant.capability,
@@ -273,7 +277,19 @@ describe('fixed dynamic MCP gateway', () => {
             toolName: 'replace_text',
             input: { text: 'pending' },
           },
+        }).then((response) => {
+          returned = true
+          return response
         })
+        await vi.waitFor(() => expect(onProposal).toHaveBeenCalledOnce())
+        expect(returned).toBe(false)
+        settle({
+          output: 'Images are supported only by cover and split_image layouts',
+          summary: 'Build failed',
+          isError: true,
+          mutated: false,
+        })
+        const response = await pendingResponse
         expect(response.status).toBe(200)
         expect(await response.json()).toEqual(
           expect.objectContaining({
@@ -281,10 +297,10 @@ describe('fixed dynamic MCP gateway', () => {
               content: [
                 expect.objectContaining({
                   type: 'text',
-                  text: expect.stringContaining('proposalId'),
+                  text: 'Images are supported only by cover and split_image layouts',
                 }),
               ],
-              isError: false,
+              isError: true,
             }),
           }),
         )

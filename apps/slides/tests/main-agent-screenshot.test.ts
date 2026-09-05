@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createSlidesSkill, type DeckAccess } from '../src/renderer/ai/slides-skill'
+import { createPcHostRegistration } from '@wiswork/agent-runtime'
 
 const slide = {
   id: 'slide-1',
@@ -19,6 +20,16 @@ const access = (): DeckAccess => ({
 })
 
 describe('Slides main-agent screenshot tool', () => {
+  it('survives the Enhanced registration allowlist as a read', () => {
+    const registration = createPcHostRegistration({
+      host: 'slides',
+      documentId: 'deck',
+      generation: 1,
+      skill: createSlidesSkill(access()),
+    })
+    expect(registration.tools.some((tool) => tool.name === 'screenshot_slide')).toBe(true)
+    expect(registration.mutatingTools).not.toContain('screenshot_slide')
+  })
   it('advertises a read-only screenshot and returns it as model content', async () => {
     const deck = access()
     const skill = createSlidesSkill(deck)

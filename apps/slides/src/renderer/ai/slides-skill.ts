@@ -3022,7 +3022,10 @@ async function executeTool(
           layout !== 'cover' &&
           layout !== 'split_image'
         )
-          return fail(t('aiFailPlan'), 'Images are supported only by cover and split_image layouts')
+          return fail(
+            t('aiFailPlan'),
+            `Page ${pages.length + 1} uses layout ${layout} with imageUrl. Images are supported only by cover and split_image layouts. No pages were written. Change this page to split_image (or remove imageUrl and imageAlt to keep its layout), then retry build_deck with all pages.`,
+          )
         if (
           (layout === 'timeline' && body.length > 5) ||
           ((layout === 'cover' || layout === 'statement') && body.length > 2)

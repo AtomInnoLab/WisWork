@@ -267,16 +267,14 @@ export async function startDynamicMcpGateway(
             summary: proposalSummary!,
             settled: outcome.result,
           })
-          const execution: ToolExecution = {
-            output: JSON.stringify({ proposalId, status: 'pending_confirmation' }),
-            summary: 'Proposal pending confirmation',
-            mutated: false,
-          }
+          // Keep the model tool call open through consent and execution. Returning
+          // a pending receipt here loses the eventual error and lets reads race writes.
+          const execution = await outcome.result
           emitTool(grant.document, {
             type: 'tool-complete',
             callId: documentCall.id,
             toolName: documentCall.name,
-            isError: false,
+            isError: execution.isError === true,
           })
           diagnostic('gateway_proposal_created')
           diagnostic('gateway_tool_call_completed')

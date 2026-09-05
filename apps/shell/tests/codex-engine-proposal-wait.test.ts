@@ -138,6 +138,8 @@ it.each(['applied', 'tool_failed', 'mutation_expired', 'mutation_cancelled', 'ca
       summary: {},
       settled,
     })
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(result).toBe('pending')
     mock.notify({
       method: 'turn/completed',
       params: { threadId: 'thread', turn: { id: 'turn', status: 'completed' } },

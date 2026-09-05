@@ -252,8 +252,8 @@ export function createProductionCodexBootstrap(
               const active = documents.get(input.documentId)?.active
               if (!active) return
               options.diagnostics?.('enhanced_proposal_created')
-              active.touch()
               active.pendingProposals.add(proposal.proposalId)
+              active.touch()
               void proposal.settled.then(
                 (execution) => {
                   if (execution.isError) {
@@ -279,6 +279,7 @@ export function createProductionCodexBootstrap(
                     options.diagnostics?.('enhanced_proposal_applied')
                   }
                   active.pendingProposals.delete(proposal.proposalId)
+                  active.touch()
                   const deferred = active.deferredTerminal
                   if (deferred && active.pendingProposals.size === 0) {
                     active.deferredTerminal = undefined
@@ -294,6 +295,7 @@ export function createProductionCodexBootstrap(
                   active.proposalFailure = 'failed'
                   active.proposalError = new Error('enhanced_proposal_failed')
                   active.pendingProposals.delete(proposal.proposalId)
+                  active.touch()
                   if (active.deferredTerminal && active.pendingProposals.size === 0) {
                     active.deferredTerminal = undefined
                     active.settle('failed', new Error('enhanced_proposal_failed'))
@@ -349,7 +351,8 @@ export function createProductionCodexBootstrap(
             cancelled: false,
             pendingProposals: new Set(),
             touch: () => {
-              if (!settled && !active.deferredTerminal) deadline.touch()
+              if (active.pendingProposals.size > 0) deadline.disarm()
+              else if (!settled && !active.deferredTerminal) deadline.touch()
             },
             requestSettle(status, error) {
               if (active.pendingProposals.size > 0 && status === 'completed') {

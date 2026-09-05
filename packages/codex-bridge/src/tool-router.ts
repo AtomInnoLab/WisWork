@@ -72,6 +72,7 @@ const CATALOG = Object.freeze({
       ...[
         'get_deck_context',
         'read_slide',
+        'screenshot_slide',
         'web_search',
         'image_search',
         'ask_clarification',
