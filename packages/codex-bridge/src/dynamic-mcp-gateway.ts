@@ -13,7 +13,7 @@ import { startTrustedMcpTransport, TrustedMcpTransportDenied } from './mcp-serve
 const MAX_CALLS = 24
 const DEFAULT_TTL_MS = 10 * 60_000
 const MAX_ACTIVE_GRANTS = 64
-const MAX_PROPOSAL_TTL_MS = 30_000
+const MAX_PROPOSAL_TTL_MS = 5 * 60_000
 
 export interface DynamicGatewayDocument {
   readonly ownerId: string

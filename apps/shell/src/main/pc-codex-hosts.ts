@@ -278,7 +278,7 @@ export function registerPcCodexHosts(options: {
     record.pending.clear()
     for (const proposal of record.proposals.values()) {
       if (proposal.timer) clearTimeout(proposal.timer)
-      const claimed = record.session.mutationAuthority.claimNext()
+      const claimed = record.session.mutationAuthority.claimNext(proposal.call.id)
       if (claimed && claimed.request.call.id === proposal.call.id)
         record.session.mutationAuthority.reject(claimed.claim, 'mutation_cancelled')
     }
@@ -302,7 +302,7 @@ export function registerPcCodexHosts(options: {
       proposal.timer = setTimeout(
         () => {
           if (!record.proposals.delete(proposal.proposalId)) return
-          const claimed = record.session.mutationAuthority.claimNext()
+          const claimed = record.session.mutationAuthority.claimNext(proposal.call.id)
           if (claimed && claimed.request.call.id === proposal.call.id) {
             record.session.mutationAuthority.reject(claimed.claim, 'mutation_expired')
             send(record, PC_HOST_CODEX_CHANNELS.event, {
@@ -337,7 +337,10 @@ export function registerPcCodexHosts(options: {
     }
     if (event.type !== 'terminal') return
     if (event.status === 'failed')
-      send(record, PC_HOST_CODEX_CHANNELS.event, { type: 'error', code: 'enhanced_turn_failed' })
+      send(record, PC_HOST_CODEX_CHANNELS.event, {
+        type: 'error',
+        code: event.code === 'enhanced_proposal_expired' ? event.code : 'enhanced_turn_failed',
+      })
     else
       send(record, PC_HOST_CODEX_CHANNELS.event, {
         type: 'done',
@@ -551,7 +554,7 @@ export function registerPcCodexHosts(options: {
     if (proposal.expiresAt <= Date.now()) {
       record.proposals.delete(proposalId)
       if (proposal.timer) clearTimeout(proposal.timer)
-      const claimed = record.session.mutationAuthority.claimNext()
+      const claimed = record.session.mutationAuthority.claimNext(proposal.call.id)
       if (claimed && claimed.request.call.id === proposal.call.id)
         record.session.mutationAuthority.reject(claimed.claim, 'mutation_expired')
       else if (claimed)
@@ -566,7 +569,7 @@ export function registerPcCodexHosts(options: {
       const { record, proposal } = proposalRecord(event.sender, documentId, generation, proposalId)
       record.proposals.delete(proposal.proposalId)
       if (proposal.timer) clearTimeout(proposal.timer)
-      const claimed = record.session.mutationAuthority.claimNext()
+      const claimed = record.session.mutationAuthority.claimNext(proposal.call.id)
       if (
         !claimed ||
         claimed.request.call.id !== proposal.call.id ||
@@ -594,7 +597,7 @@ export function registerPcCodexHosts(options: {
       const { record, proposal } = proposalRecord(event.sender, documentId, generation, proposalId)
       record.proposals.delete(proposal.proposalId)
       if (proposal.timer) clearTimeout(proposal.timer)
-      const claimed = record.session.mutationAuthority.claimNext()
+      const claimed = record.session.mutationAuthority.claimNext(proposal.call.id)
       if (!claimed || claimed.request.call.id !== proposal.call.id) {
         if (claimed)
           record.session.mutationAuthority.reject(claimed.claim, 'mutation_binding_mismatch')

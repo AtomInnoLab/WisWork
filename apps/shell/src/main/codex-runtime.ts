@@ -53,7 +53,11 @@ export type CodexRuntimeEngineEvent =
       expiresAt: number
       summary: PcHostProposalSummary
     }>
-  | Readonly<{ type: 'terminal'; status: 'completed' | 'cancelled' | 'failed' }>
+  | Readonly<{
+      type: 'terminal'
+      status: 'completed' | 'cancelled' | 'failed'
+      code?: 'enhanced_proposal_expired'
+    }>
 
 export interface CodexRuntimeBootstrap {
   start(input: {
@@ -321,6 +325,7 @@ export class ShellCodexRuntime {
         error instanceof Error &&
           [
             'enhanced_turn_timeout',
+            'enhanced_proposal_expired',
             'enhanced_auth_required',
             'enhanced_usage_limit',
             'enhanced_context_limit',

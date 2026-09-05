@@ -147,6 +147,7 @@ export function createProductionCodexBootstrap(
         lastFailure?: Error
         deferredTerminal?: { status: 'completed' | 'cancelled' | 'failed'; error?: Error }
         proposalFailure?: 'cancelled' | 'failed'
+        proposalError?: Error
         readonly touch: () => void
         readonly settle: (status: 'completed' | 'cancelled' | 'failed', error?: Error) => void
         readonly requestSettle: (
@@ -255,10 +256,18 @@ export function createProductionCodexBootstrap(
               void proposal.settled.then(
                 (execution) => {
                   if (execution.isError) {
-                    if (execution.output === 'mutation_cancelled') {
+                    if (
+                      execution.output === 'mutation_cancelled' ||
+                      execution.output === 'tool_cancelled'
+                    ) {
                       active.proposalFailure ??= 'cancelled'
                     } else {
                       active.proposalFailure = 'failed'
+                      active.proposalError = new Error(
+                        execution.output === 'mutation_expired'
+                          ? 'enhanced_proposal_expired'
+                          : 'enhanced_proposal_failed',
+                      )
                     }
                   }
                   active.pendingProposals.delete(proposal.proposalId)
@@ -268,12 +277,13 @@ export function createProductionCodexBootstrap(
                     const failure = active.proposalFailure
                     active.settle(
                       failure ?? deferred.status,
-                      failure === 'failed' ? new Error('enhanced_proposal_failed') : deferred.error,
+                      failure === 'failed' ? active.proposalError : deferred.error,
                     )
                   }
                 },
                 () => {
                   active.proposalFailure = 'failed'
+                  active.proposalError = new Error('enhanced_proposal_failed')
                   active.pendingProposals.delete(proposal.proposalId)
                   if (active.deferredTerminal && active.pendingProposals.size === 0) {
                     active.deferredTerminal = undefined
@@ -329,10 +339,17 @@ export function createProductionCodexBootstrap(
             capability: grant.capability,
             cancelled: false,
             pendingProposals: new Set(),
-            touch: () => deadline.touch(),
+            touch: () => {
+              if (!settled && !active.deferredTerminal) deadline.touch()
+            },
             requestSettle(status, error) {
               if (active.pendingProposals.size > 0 && status === 'completed') {
                 active.deferredTerminal = { status, error }
+                deadline.disarm()
+                return
+              }
+              if (status === 'completed' && active.proposalFailure) {
+                active.settle(active.proposalFailure, active.proposalError)
                 return
               }
               active.settle(status, error)
@@ -344,7 +361,13 @@ export function createProductionCodexBootstrap(
               gateway.revokeTurn(grant.capability, status !== 'completed')
               active.disarm?.()
               if (document.active === active) document.active = undefined
-              emit(document.onEvent, { type: 'terminal', status })
+              emit(document.onEvent, {
+                type: 'terminal',
+                status,
+                ...(error?.message === 'enhanced_proposal_expired'
+                  ? { code: 'enhanced_proposal_expired' as const }
+                  : {}),
+              })
               if (error) reject(error)
               else resolve()
             },

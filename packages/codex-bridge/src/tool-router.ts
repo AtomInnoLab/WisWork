@@ -30,6 +30,7 @@ const MAX_GRAPH_NODES = 20_000
 const MAX_TOTAL_GRAPH_NODES = 100_000
 const MAX_GRAPH_DEPTH = 48
 const MAX_CALL_MS = 30_000
+const MAX_CONSENT_MS = 5 * 60_000
 const MAX_TOTAL_CALLS = 1_024
 const MAX_PENDING_MUTATIONS = 8
 const SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/
@@ -233,7 +234,9 @@ export interface DetachedMutationRequest {
   readonly catalogDigest: string
 }
 export interface MutationAuthority {
-  claimNext(): Readonly<{ claim: MutationClaim; request: DetachedMutationRequest }> | undefined
+  claimNext(
+    callId?: string,
+  ): Readonly<{ claim: MutationClaim; request: DetachedMutationRequest }> | undefined
   settle(claim: MutationClaim, execution: ToolExecution): void
   reject(claim: MutationClaim, code?: string): void
 }
@@ -712,7 +715,10 @@ export function createDocumentToolSession(
         () => finish(stable('tool_cancelled', 'Tool cancelled')),
         { once: true },
       )
-      mutation.timer = setTimeout(() => finish(stable('tool_timeout', 'Tool timed out')), maxCallMs)
+      mutation.timer = setTimeout(
+        () => finish(stable('mutation_expired', 'Proposal expired without applying changes')),
+        MAX_CONSENT_MS,
+      )
       mutation.timer.unref()
       pendingMutations.set(call.id, mutation)
       mutationQueue.push(mutation)
@@ -772,10 +778,13 @@ export function createDocumentToolSession(
     entry.pending.finish(execution)
   }
   const mutationAuthority: MutationAuthority = Object.freeze({
-    claimNext() {
+    claimNext(callId?: string) {
       let mutation: PendingMutation | undefined
       while (mutationQueue.length > 0) {
-        const candidate = mutationQueue.shift()!
+        const index =
+          callId === undefined ? 0 : mutationQueue.findIndex((item) => item.callId === callId)
+        if (index < 0) return undefined
+        const candidate = mutationQueue.splice(index, 1)[0]!
         if (candidate.state === 'queued') {
           mutation = candidate
           break
@@ -783,6 +792,12 @@ export function createDocumentToolSession(
       }
       if (!mutation) return undefined
       mutation.state = 'claimed'
+      if (mutation.timer) clearTimeout(mutation.timer)
+      mutation.timer = setTimeout(
+        () => mutation.finish(stable('tool_timeout', 'Tool timed out')),
+        maxCallMs,
+      )
+      mutation.timer.unref()
       const claim = Object.freeze(Object.create(null)) as MutationClaim
       mutationClaims.set(claim as object, {
         authority: authorityIdentity,

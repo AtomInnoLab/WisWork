@@ -158,6 +158,10 @@ describe('Shell Codex runtime lifecycle', () => {
     await expect(f.runtime.startTurn(f.owner, 'deck', 'Try again')).rejects.toThrow(
       'enhanced_service_unavailable',
     )
+    f.engine.startTurn.mockRejectedValueOnce(new Error('enhanced_proposal_expired'))
+    await expect(f.runtime.startTurn(f.owner, 'deck', 'Expired proposal')).rejects.toThrow(
+      'enhanced_proposal_expired',
+    )
     expect(f.diagnosticTasks.begin).toHaveBeenNthCalledWith(1, 'slides')
     expect(f.diagnosticTasks.finish).toHaveBeenNthCalledWith(
       1,

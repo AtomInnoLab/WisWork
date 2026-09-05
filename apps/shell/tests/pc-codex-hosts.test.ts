@@ -296,6 +296,11 @@ describe('PC Codex host registrar', () => {
       mutated: false,
     })
     expect(sent.filter(([channel]) => channel === PC_HOST_CODEX_CHANNELS.toolCall)).toHaveLength(3)
+    registered.onEvent({ type: 'terminal', status: 'failed', code: 'enhanced_proposal_expired' })
+    expect(sent.at(-1)).toEqual([
+      PC_HOST_CODEX_CHANNELS.event,
+      { type: 'error', code: 'enhanced_proposal_expired' },
+    ])
     await registrar.closeOwner(owner)
     expect(engine.closeDocument).toHaveBeenCalledWith('doc-1')
   })

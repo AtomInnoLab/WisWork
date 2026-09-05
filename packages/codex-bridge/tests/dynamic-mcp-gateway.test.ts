@@ -228,77 +228,87 @@ describe('fixed dynamic MCP gateway', () => {
     }
   })
 
-  it('completes a mutation proposal without awaiting or executing the suspended writer', async () => {
-    const onProposal = vi.fn()
-    const writer = vi.fn()
-    const never = new Promise<never>(() => undefined)
-    const gateway = await startDynamicMcpGateway()
-    const close = gateway.register({
-      ownerId: 'owner',
-      documentId: 'doc-proposal',
-      generation: 1,
-      onProposal,
-      summarizeProposal: () => ({
-        operation: 'replace',
-        target: 'blocks',
-        scope: 'bounded-set',
-        count: 1,
-      }),
-      session: {
-        credentials: { sessionId: 'session', secret: 'secret' },
-        listTools: () => [
-          {
-            name: 'replace_text',
-            annotations: { readOnlyHint: false, destructiveHint: true },
-          },
-        ],
-        callTool: () => suspendToolExecution(never),
-        cancelAll: writer,
-      } as any,
-    })
-    try {
-      const grant = gateway.beginTurn({
+  it.each([600_000, 90_000])(
+    'completes a pending mutation with consent capped by the %i ms grant',
+    async (ttlMs) => {
+      const onProposal = vi.fn()
+      const writer = vi.fn()
+      const never = new Promise<never>(() => undefined)
+      const gateway = await startDynamicMcpGateway()
+      const close = gateway.register({
+        ownerId: 'owner',
         documentId: 'doc-proposal',
         generation: 1,
-        threadId: 'thread',
+        onProposal,
+        summarizeProposal: () => ({
+          operation: 'replace',
+          target: 'blocks',
+          scope: 'bounded-set',
+          count: 1,
+        }),
+        session: {
+          credentials: { sessionId: 'session', secret: 'secret' },
+          listTools: () => [
+            {
+              name: 'replace_text',
+              annotations: { readOnlyHint: false, destructiveHint: true },
+            },
+          ],
+          callTool: () => suspendToolExecution(never),
+          cancelAll: writer,
+        } as any,
       })
-      const response = await rpc(gateway.url, gateway.secret, 50, 'tools/call', {
-        name: 'wiswork_propose',
-        arguments: {
-          capability: grant.capability,
-          callId: 'proposal-call',
-          toolName: 'replace_text',
-          input: { text: 'pending' },
-        },
-      })
-      expect(response.status).toBe(200)
-      expect(await response.json()).toEqual(
-        expect.objectContaining({
-          result: expect.objectContaining({
-            content: [
-              expect.objectContaining({
-                type: 'text',
-                text: expect.stringContaining('proposalId'),
-              }),
-            ],
-            isError: false,
+      try {
+        const grant = gateway.beginTurn({
+          documentId: 'doc-proposal',
+          generation: 1,
+          threadId: 'thread',
+          ttlMs,
+        })
+        const response = await rpc(gateway.url, gateway.secret, 50, 'tools/call', {
+          name: 'wiswork_propose',
+          arguments: {
+            capability: grant.capability,
+            callId: 'proposal-call',
+            toolName: 'replace_text',
+            input: { text: 'pending' },
+          },
+        })
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual(
+          expect.objectContaining({
+            result: expect.objectContaining({
+              content: [
+                expect.objectContaining({
+                  type: 'text',
+                  text: expect.stringContaining('proposalId'),
+                }),
+              ],
+              isError: false,
+            }),
           }),
-        }),
-      )
-      expect(onProposal).toHaveBeenCalledOnce()
-      expect(onProposal).toHaveBeenCalledWith(
-        expect.objectContaining({
-          call: expect.objectContaining({ name: 'replace_text' }),
-          summary: { operation: 'replace', target: 'blocks', scope: 'bounded-set', count: 1 },
-          settled: never,
-        }),
-      )
-      expect(writer).not.toHaveBeenCalled()
-    } finally {
-      close()
-      await gateway.close()
-    }
-  })
+        )
+        expect(onProposal).toHaveBeenCalledOnce()
+        expect(onProposal.mock.calls[0]![0].expiresAt - Date.now()).toBeGreaterThan(
+          Math.min(ttlMs, 300_000) - 10_000,
+        )
+        expect(onProposal.mock.calls[0]![0].expiresAt - Date.now()).toBeLessThanOrEqual(
+          Math.min(ttlMs, 300_000),
+        )
+        expect(onProposal).toHaveBeenCalledWith(
+          expect.objectContaining({
+            call: expect.objectContaining({ name: 'replace_text' }),
+            summary: { operation: 'replace', target: 'blocks', scope: 'bounded-set', count: 1 },
+            settled: never,
+          }),
+        )
+        expect(writer).not.toHaveBeenCalled()
+      } finally {
+        close()
+        await gateway.close()
+      }
+    },
+  )
 
   it('fails closed before suspending a mutation that has no safe host summary', async () => {
     const callTool = vi.fn()

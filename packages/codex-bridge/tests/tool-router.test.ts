@@ -81,6 +81,98 @@ function fixture(overrides: Partial<DocumentToolRegistration> = {}) {
 }
 
 describe('document-scoped tool session', () => {
+  it('does not claim another proposal when the requested consent already expired', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    try {
+      f.session.callTool(f.session.credentials, { id: 'first', name: writeTool.name, input: {} })
+      await vi.advanceTimersByTimeAsync(10_000)
+      f.session.callTool(f.session.credentials, { id: 'second', name: writeTool.name, input: {} })
+      await vi.advanceTimersByTimeAsync(290_000)
+      expect(f.session.mutationAuthority.claimNext('first')).toBeUndefined()
+      expect(f.session.mutationAuthority.claimNext('second')?.request.call.id).toBe('second')
+    } finally {
+      f.session.close()
+      vi.useRealTimers()
+    }
+  })
+  it('keeps consent queued beyond 30 seconds and starts execution timeout only when claimed', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    try {
+      const outcome = f.session.callTool(f.session.credentials, {
+        id: 'wait',
+        name: writeTool.name,
+        input: {},
+      }) as any
+      const finished = vi.fn()
+      void outcome.result.then(finished)
+      await vi.advanceTimersByTimeAsync(240_000)
+      expect(finished).not.toHaveBeenCalled()
+      const claimed = f.session.mutationAuthority.claimNext()!
+      expect(claimed).toBeDefined()
+      await vi.advanceTimersByTimeAsync(29_999)
+      expect(finished).not.toHaveBeenCalled()
+      f.session.mutationAuthority.settle(claimed.claim, {
+        output: 'applied',
+        summary: 'applied',
+        mutated: true,
+      })
+      await expect(outcome.result).resolves.toMatchObject({ output: 'applied', mutated: true })
+      expect(() =>
+        f.session.mutationAuthority.settle(claimed.claim, { output: 'again', summary: 'again' }),
+      ).toThrow('mutation_claim_consumed')
+    } finally {
+      f.session.close()
+      vi.useRealTimers()
+    }
+  })
+
+  it('expires unclaimed consent at five minutes without allowing a later claim', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    try {
+      const outcome = f.session.callTool(f.session.credentials, {
+        id: 'expire',
+        name: writeTool.name,
+        input: {},
+      }) as any
+      await vi.advanceTimersByTimeAsync(300_000)
+      await expect(outcome.result).resolves.toMatchObject({
+        output: 'mutation_expired',
+        isError: true,
+        mutated: false,
+      })
+      expect(f.session.mutationAuthority.claimNext()).toBeUndefined()
+    } finally {
+      f.session.close()
+      vi.useRealTimers()
+    }
+  })
+
+  it('still times out claimed execution after 30 seconds and rejects late receipts', async () => {
+    vi.useFakeTimers()
+    const f = fixture()
+    try {
+      const outcome = f.session.callTool(f.session.credentials, {
+        id: 'slow-write',
+        name: writeTool.name,
+        input: {},
+      }) as any
+      await vi.advanceTimersByTimeAsync(40_000)
+      const claimed = f.session.mutationAuthority.claimNext()!
+      expect(claimed).toBeDefined()
+      await vi.advanceTimersByTimeAsync(30_000)
+      await expect(outcome.result).resolves.toMatchObject({ output: 'tool_timeout', isError: true })
+      expect(() =>
+        f.session.mutationAuthority.settle(claimed.claim, { output: 'late', summary: 'late' }),
+      ).toThrow('mutation_claim_consumed')
+    } finally {
+      f.session.close()
+      vi.useRealTimers()
+    }
+  })
+
   it('binds canonical high-entropy credentials and immutable exact identity', () => {
     const f = fixture()
     expect(Buffer.from(f.session.credentials.sessionId, 'base64url')).toHaveLength(32)
