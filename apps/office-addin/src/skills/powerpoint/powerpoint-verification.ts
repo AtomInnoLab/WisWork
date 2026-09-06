@@ -114,8 +114,16 @@ export function createBrowserPowerPointVerificationAuthority(
   adapter: PowerPointAdapter,
 ): OfficePowerPointVerificationAuthority {
   const sessionToken = `office-${crypto.randomUUID()}`
+  const read = async <T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
+    try {
+      return await operation()
+    } catch (error) {
+      if (signal?.aborted || (error instanceof Error && error.message === 'cancelled')) throw error
+      throw new Error('office_read_failed')
+    }
+  }
   const lease = async (signal?: AbortSignal): Promise<OfficePowerPointAuthorityLease> => {
-    const state = await adapter.verifySlides(signal)
+    const state = await read(() => adapter.verifySlides(signal), signal)
     let documentSeed = 'unsaved'
     try {
       documentSeed = String(Office.context.document.url || 'unsaved')
@@ -132,11 +140,15 @@ export function createBrowserPowerPointVerificationAuthority(
     acquire: lease,
     current: lease,
     async readShape(slideIndex, shapeId, signal) {
-      const [shapes, text, style] = await Promise.all([
-        adapter.listSlideShapes(slideIndex, signal),
-        adapter.readSlideText(slideIndex, shapeId, signal).catch(() => undefined),
-        adapter.readShapeTextStyle?.(slideIndex, shapeId, signal).catch(() => undefined),
-      ])
+      const [shapes, text, style] = await read(
+        () =>
+          Promise.all([
+            adapter.listSlideShapes(slideIndex, signal),
+            adapter.readSlideText(slideIndex, shapeId, signal).catch(() => undefined),
+            adapter.readShapeTextStyle?.(slideIndex, shapeId, signal).catch(() => undefined),
+          ]),
+        signal,
+      )
       const shape = shapes.shapes.find((item) => item.id === shapeId)
       if (!shape) throw new Error('office_read_failed')
       return {
@@ -156,10 +168,11 @@ export function createBrowserPowerPointVerificationAuthority(
       }
     },
     async readSlide(slideIndex, signal) {
-      const state = await adapter.listSlideShapes(slideIndex, signal)
+      const state = await read(() => adapter.listSlideShapes(slideIndex, signal), signal)
       return { slideId: state.slideId }
     },
-    captureScreenshot: (slideIndex, signal) => adapter.screenshotSlide(slideIndex, signal),
+    captureScreenshot: (slideIndex, signal) =>
+      read(() => adapter.screenshotSlide(slideIndex, signal), signal),
   }
 }
 

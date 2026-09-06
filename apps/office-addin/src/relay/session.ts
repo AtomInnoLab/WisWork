@@ -1100,6 +1100,10 @@ export function createOfficeRelaySession(
         Array.isArray(frame.input)
       )
         return protocolFailure()
+      // A successfully validated remote tool call is authoritative proof that this
+      // taskpane is attached to the current Enhanced runtime generation. Re-publish
+      // it so React cannot remain on a stale pre-session-state snapshot.
+      publish({ ...state, enhanced: enhancedStatement })
       const controller = new AbortController()
       activeTool = {
         requestId: frame.request_id as string,

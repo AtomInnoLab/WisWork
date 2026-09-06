@@ -120,6 +120,14 @@ function productionAdapter(state: { text: string; left: number }): PowerPointAda
 }
 
 describe('Office PowerPoint presentation verification', () => {
+  it('normalizes host-specific shape read failures at the verification boundary', async () => {
+    const adapter = productionAdapter({ text: 'Before', left: 5 })
+    vi.mocked(adapter.listSlideShapes).mockRejectedValueOnce(new Error('GeneralException'))
+    const source = createBrowserPowerPointVerificationAuthority(adapter)
+
+    await expect(source.readShape(0, 'shape-1')).rejects.toThrow('office_read_failed')
+  })
+
   it('degrades to normal execution when host enrollment is temporarily unavailable', async () => {
     const subject = createOfficePowerPointVerification({
       authority: authority({ acquire: vi.fn().mockRejectedValue(new Error('office_read_failed')) }),

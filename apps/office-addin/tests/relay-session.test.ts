@@ -215,6 +215,8 @@ describe('Office cloud relay session', () => {
     )
     await flushFrames()
     expect(session.snapshot()).toMatchObject({ status: 'connected', enhanced })
+    const modeUpdate = vi.fn()
+    const unsubscribeModeUpdate = session.subscribe(modeUpdate)
     const pending = session.capabilityFetch('agent.v1', { messages: [] })
     socket.receive(
       JSON.stringify({
@@ -230,6 +232,9 @@ describe('Office cloud relay session', () => {
       }),
     )
     await flushFrames()
+    expect(modeUpdate).toHaveBeenCalled()
+    expect(session.snapshot()).toMatchObject({ status: 'connected', enhanced })
+    unsubscribeModeUpdate()
     expect(calls).toEqual(['read_document'])
     expect(frame(socket, 2)).toEqual({
       version: 2,

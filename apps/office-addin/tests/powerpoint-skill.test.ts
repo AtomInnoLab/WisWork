@@ -1525,6 +1525,43 @@ describe('browser PowerPoint adapter', () => {
     expect(sync).toHaveBeenCalled()
   })
 
+  it('retries shape inventory with basic fields when Mac rejects rich geometry loading', async () => {
+    const sync = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('GeneralException'))
+      .mockResolvedValue(undefined)
+    const shapes = {
+      load: vi.fn(),
+      items: [{ id: '2', name: 'Title', type: 'TextBox' }],
+    }
+    const slide = { id: 's1', shapes, load: vi.fn() }
+    const slides = {
+      getCount: vi.fn(() => ({ value: 1 })),
+      getItemAt: vi.fn(() => slide),
+    }
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          platform: 'Mac',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides }, sync }),
+      },
+    })
+
+    await expect(new BrowserPowerPointAdapter().listSlideShapes(0)).resolves.toMatchObject({
+      slideId: 's1',
+      shapes: [{ id: '2', name: 'Title', type: 'TextBox' }],
+    })
+    expect(shapes.load).toHaveBeenLastCalledWith('items/id,items/name,items/type')
+  })
+
   it('checks cancellation before every write/sync and implements text edit and duplicate', async () => {
     const packageZip = new JSZip()
     packageZip.file('ppt/slides/slide1.xml', '<p:sld xmlns:p="urn:p"/>')
