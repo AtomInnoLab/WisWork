@@ -3,6 +3,18 @@ import type { OfficeProposal, StructuredProposal } from './proposal-controller.j
 export const MAX_PRESENTATION_EVENTS = 100
 export const MAX_PRESENTATION_TEXT = 12_000
 
+export function presentationProgressLabel(timeline: OfficePresentationTimeline): string {
+  let currentTurnStart = 0
+  for (let index = timeline.length - 1; index >= 0; index--) {
+    if (timeline[index]?.kind !== 'user') continue
+    currentTurnStart = index + 1
+    break
+  }
+  return timeline.slice(currentTurnStart).some((event) => event.kind === 'tool')
+    ? '继续处理中'
+    : '思考中'
+}
+
 export interface OfficeClarificationQuestion {
   readonly id: string
   readonly label: string

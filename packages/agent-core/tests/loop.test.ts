@@ -254,6 +254,121 @@ describe('AgentLoop', () => {
       },
     )
 
+    it.each([
+      { mutations: [true, false], expected: [true, false] },
+      { mutations: [false, true], expected: [false, true] },
+    ])(
+      'tracks mutation and unchanged receipts per presentation batch',
+      async ({ mutations, expected }) => {
+        let batch = 0
+        let execution = 0
+        const completedWith: boolean[] = []
+        const loop = new AgentLoop({
+          transport: scriptedTransport([
+            (cb) => {
+              cb.onToolCall({ id: 'one', name: 'do_thing', input: {} })
+              cb.onDone()
+            },
+            (cb) => {
+              cb.onToolCall({ id: 'two', name: 'do_thing', input: {} })
+              cb.onDone()
+            },
+            (cb) => cb.onDone(),
+          ]),
+          skill: {
+            ...makeSkill(() => ({ output: 'ok', summary: 'ok', mutated: mutations[execution++] })),
+            presentation: {
+              batchScoped: true,
+              prepare: () => ({ kind: 'bypass' }),
+              enroll: () => ({
+                kind: 'ready',
+                contract: { ...contract, taskId: 'task-' + ++batch },
+              }),
+              complete: ({ contract: active, mutated }) => {
+                completedWith.push(mutated)
+                return {
+                  kind: 'receipt',
+                  receipt: mutated
+                    ? { ...receipt(), taskId: active.taskId }
+                    : { ...unchangedReceipt(), taskId: active.taskId },
+                }
+              },
+            },
+          },
+        })
+        loop.run('edit')
+        for (let i = 0; i < 10; i++) await flush()
+        expect(completedWith).toEqual(expected)
+        expect(execution).toBe(2)
+      },
+    )
+
+    it('rejects an unchanged receipt after a batch actually mutated', async () => {
+      const onError = vi.fn()
+      const executeTool = vi.fn(() => ({ output: 'ok', summary: 'ok', mutated: true }))
+      const loop = new AgentLoop({
+        transport: scriptedTransport([
+          (cb) => {
+            cb.onToolCall({ id: 'mutated', name: 'do_thing', input: {} })
+            cb.onDone()
+          },
+          (cb) => {
+            cb.onToolCall({ id: 'next', name: 'do_thing', input: {} })
+            cb.onDone()
+          },
+        ]),
+        skill: {
+          ...makeSkill(executeTool),
+          presentation: {
+            batchScoped: true,
+            prepare: () => ({ kind: 'bypass' }),
+            enroll: () => ({ kind: 'ready', contract }),
+            complete: () => ({ kind: 'receipt', receipt: unchangedReceipt() }),
+          },
+        },
+        events: { onError },
+      })
+      loop.run('edit')
+      for (let i = 0; i < 8; i++) await flush()
+      expect(onError).toHaveBeenCalledWith('presentation_receipt_invalid')
+      expect(executeTool).toHaveBeenCalledOnce()
+    })
+
+    it('does not carry a bypass mutation into a newly enrolled batch', async () => {
+      let enrollment = 0
+      let execution = 0
+      const completedWith: boolean[] = []
+      const loop = new AgentLoop({
+        transport: scriptedTransport([
+          (cb) => {
+            cb.onToolCall({ id: 'bypass', name: 'do_thing', input: {} })
+            cb.onDone()
+          },
+          (cb) => {
+            cb.onToolCall({ id: 'enrolled', name: 'do_thing', input: {} })
+            cb.onDone()
+          },
+          (cb) => cb.onDone(),
+        ]),
+        skill: {
+          ...makeSkill(() => ({ output: 'ok', summary: 'ok', mutated: execution++ === 0 })),
+          presentation: {
+            batchScoped: true,
+            prepare: () => ({ kind: 'bypass' }),
+            enroll: () => (enrollment++ === 0 ? { kind: 'bypass' } : { kind: 'ready', contract }),
+            complete: ({ mutated }) => {
+              completedWith.push(mutated)
+              return { kind: 'receipt', receipt: unchangedReceipt() }
+            },
+          },
+        },
+      })
+      loop.run('edit')
+      for (let i = 0; i < 10; i++) await flush()
+      expect(execution).toBe(2)
+      expect(completedWith).toEqual([false])
+    })
+
     it('accepts authoritative host correction passes without double-counting model turns', async () => {
       const hostCorrected = { ...receipt(), correctionPasses: 2 }
       const done = vi.fn()

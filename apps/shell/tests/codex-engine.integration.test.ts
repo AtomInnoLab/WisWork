@@ -19,6 +19,12 @@ it('gives Codex an exact carrier envelope and the registered document tool schem
     credentials: { sessionId: 'private-session', secret: 'private-secret' },
     listTools: () => [
       {
+        name: 'ask_clarification',
+        description: 'Ask structured questions.',
+        inputSchema: { type: 'object', properties: { questions: { type: 'array' } } },
+        annotations: { readOnlyHint: true, destructiveHint: false },
+      },
+      {
         name: 'plan_deck',
         description: 'Plan the deck.',
         inputSchema: {
@@ -33,6 +39,13 @@ it('gives Codex an exact carrier envelope and the registered document tool schem
   expect(instructions).toContain('"name":"plan_deck"')
   expect(instructions).toContain('"carrier":"wiswork_read"')
   expect(instructions).toContain('arguments only inside input')
+  expect(instructions).toContain(
+    'When the host workflow makes you decide that user feedback is required',
+  )
+  expect(instructions).toContain('MUST call ask_clarification')
+  expect(instructions).not.toContain('missing information would materially improve')
+  expect(instructions).toContain('Never present those questions only as assistant prose')
+  expect(instructions).toContain('continue the same task after its tool result')
   expect(instructions).not.toContain('private-session')
   expect(instructions).not.toContain('private-secret')
 })

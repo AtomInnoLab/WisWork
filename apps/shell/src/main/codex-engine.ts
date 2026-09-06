@@ -99,7 +99,10 @@ export function buildDocumentToolInstructions(session: DocumentToolSession): str
   const catalog = JSON.stringify(tools)
   if (Buffer.byteLength(catalog, 'utf8') > DOCUMENT_CATALOG_MAX_BYTES)
     throw new Error('document_tool_catalog_too_large')
-  return `\nDocument semantic tool catalog (JSON): ${catalog}\nFor every call, put the selected tool's arguments only inside input.`
+  const feedbackProtocol = tools.some((tool) => tool.name === 'ask_clarification')
+    ? '\nInteractive feedback protocol: When the host workflow makes you decide that user feedback is required, you MUST call ask_clarification with model-authored questions and options. Never present those questions only as assistant prose. Wait for the host-rendered feedback UI, consume the tool result, and continue the same task after its tool result.'
+    : ''
+  return `\nDocument semantic tool catalog (JSON): ${catalog}\nFor every call, put the selected tool's arguments only inside input.${feedbackProtocol}`
 }
 
 export function createProductionCodexBootstrap(

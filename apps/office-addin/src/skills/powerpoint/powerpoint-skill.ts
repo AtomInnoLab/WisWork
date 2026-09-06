@@ -219,13 +219,6 @@ const declarativeProgramSchema = {
             },
             ['op', 'slide_index', 'shape_id'],
           ),
-          exactOperation(
-            {
-              op: { type: 'string', enum: ['duplicate_slide'] },
-              slide_index: operationSlideIndex,
-            },
-            ['op', 'slide_index'],
-          ),
         ],
       },
     },
@@ -480,7 +473,7 @@ const tools = [
   {
     name: 'execute_office_js',
     description:
-      'Execute a transaction-protected bounded declarative PowerPoint program under the PC-managed session policy. The input shape is exactly { program: { version: 1, operations: [...] }, explanation?: string }; do not place version or operations at the top level; do not stringify it and do not send JavaScript. Use snake_case fields except the bounded text-style properties. Supported operations are set_shape_text, set_shape_text_style (color/fontFamily/fontSize/bold/italic), set_shape_geometry, add_text_box, delete_shape, and duplicate_slide.',
+      'Execute a transaction-protected bounded declarative PowerPoint program under the PC-managed session policy. The input shape is exactly { program: { version: 1, operations: [...] }, explanation?: string }; do not place version or operations at the top level; do not stringify it and do not send JavaScript. Use snake_case fields except the bounded text-style properties. Supported operations are set_shape_text, set_shape_text_style (color/fontFamily/fontSize/bold/italic), set_shape_geometry, add_text_box, and delete_shape. Use the dedicated duplicate_slide tool for slide duplication.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1258,13 +1251,16 @@ export function createPowerPointSkill(options: {
   const nativeMasterEditingSupported = !isMac && options.nativeMasterEditingSupported !== false
   const presentation =
     options.verificationAuthority && options.presentationFlags?.verifiedCompletion !== false
-      ? createOfficePowerPointVerification({
-          authority: options.verificationAuthority,
-          platform: options.platform,
-          reviewer: options.visualReviewer,
-          flags: options.presentationFlags,
-          telemetry: options.presentationTelemetry,
-        })
+      ? {
+          ...createOfficePowerPointVerification({
+            authority: options.verificationAuthority,
+            platform: options.platform,
+            reviewer: options.visualReviewer,
+            flags: options.presentationFlags,
+            telemetry: options.presentationTelemetry,
+          }),
+          batchScoped: true,
+        }
       : undefined
   options.proposals.subscribeAudit?.((event) => {
     if (!presentation) return
@@ -1345,7 +1341,7 @@ export function createPowerPointSkill(options: {
   return {
     id: 'office-powerpoint',
     systemPrompt:
-      'Follow the WisWork Slides workflow for presentation tasks: inspect the presentation before planning; for a new deck, call ask_clarification unless the user already supplied or delegated the audience, focus, style, and page-count choices; then use plan_deck before the first mutation; run web_search and image_search for needed facts and visuals; apply bounded slide-level edits; inspect representative results with screenshot_slide; and call verify_slides after the approved build before reporting completion. ' +
+      'Follow the WisWork Slides workflow for presentation tasks: inspect the presentation before planning; for a new deck, you must call ask_clarification unless the user already supplied or delegated the audience, focus, style, and page-count choices. Never replace that tool call with prose questions; the host renders its model-authored questions as interactive feedback and returns the answers so you can continue the same task. Then use plan_deck before the first mutation; run web_search and image_search for needed facts and visuals; apply bounded slide-level edits; inspect representative results with screenshot_slide; and call verify_slides after the approved build before reporting completion. ' +
       'PowerPoint reads are bounded. Every write creates an explicit proposal and is semantically verified after confirmation. execute_office_js accepts only a versioned declarative JSON program; JavaScript and ambient browser authority are rejected. XML tools accept only allowlisted bounded package parts.' +
       ' ' +
       (isMac
@@ -1579,7 +1575,7 @@ export function createPowerPointSkill(options: {
             program.operations.some((operation) => operation.op === 'duplicate_slide') &&
             program.operations.length !== 1
           )
-            throw new Error('invalid_tool_input')
+            throw invalidToolInput('program.operations')
           const shapeTargets = new Map<string, PowerPointDeclarativeOperation[]>()
           for (const operation of program.operations) {
             if (!('shape_id' in operation)) continue
@@ -1594,12 +1590,12 @@ export function createPowerPointSkill(options: {
                 related.some((operation) => operation.op === 'delete_shape') && related.length > 1,
             )
           )
-            throw new Error('invalid_tool_input')
+            throw invalidToolInput('program.operations')
           await options.adapter.verifySlides(signal)
           const slideIndexes = [
             ...new Set(program.operations.map((operation) => operation.slide_index)),
           ]
-          if (slideIndexes.length > 8) throw new Error('invalid_tool_input')
+          if (slideIndexes.length > 8) throw invalidToolInput('program.operations')
           const snapshots = await Promise.all(
             slideIndexes.map((index) => options.adapter.snapshotSlide(index, signal)),
           )

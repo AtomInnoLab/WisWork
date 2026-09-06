@@ -33,8 +33,9 @@ import {
   useOfficeAgent,
   type OfficeAgentSession,
 } from './agent/use-office-agent.js'
-import type {
-  OfficePresentationEvent,
+import {
+  presentationProgressLabel,
+  type OfficePresentationEvent,
   OfficeClarificationQuestion,
   OfficePresentationTimeline,
   ProposalPresentationEvent,
@@ -574,7 +575,7 @@ function PowerPointTimeline(props: {
   if (props.busy) {
     nodes.push(
       <div className="ai-typing-row" key="active-agent-work">
-        <AiTypingIndicator label="继续处理中" />
+        <AiTypingIndicator label={presentationProgressLabel(props.timeline)} />
       </div>,
     )
   }

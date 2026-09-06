@@ -804,6 +804,16 @@ describe('Office PowerPoint presentation verification', () => {
     expect(JSON.stringify([...state].filter(([key]) => /^[1-5]:/.test(key)))).toBe(outside)
   })
 
+  it('closes each verified PowerPoint tool batch before enrolling the next batch', () => {
+    const skill = createPowerPointSkill({
+      adapter: productionAdapter({ text: 'Before', left: 5 }),
+      proposals: createStructuredProposalController(),
+      verificationAuthority: authority(),
+    })
+
+    expect(skill.presentation?.batchScoped).toBe(true)
+  })
+
   it('rejects more than eight unique affected/reference slides before proposal dispatch', async () => {
     const proposals = createStructuredProposalController()
     const adapter = productionAdapter({ text: 'Before', left: 5 })
