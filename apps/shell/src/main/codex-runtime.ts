@@ -325,6 +325,7 @@ export class ShellCodexRuntime {
         error instanceof Error &&
           [
             'enhanced_turn_timeout',
+            'enhanced_questionnaire_incomplete',
             'enhanced_proposal_expired',
             'enhanced_auth_required',
             'enhanced_usage_limit',

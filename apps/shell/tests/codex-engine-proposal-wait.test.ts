@@ -98,6 +98,74 @@ it('diagnoses thread and turn start boundaries without retaining request content
   await second.close()
 })
 
+it.each([false, true])(
+  'keeps a questionnaire inside one host run; cancelled=%s',
+  async (cancelled) => {
+    const engine = await createProductionCodexBootstrap({ fetchWithAuth: vi.fn() }).start({
+      executablePath: '',
+      onCrash: vi.fn(),
+    })
+    engine.registerDocument!({
+      ownerId: 'owner',
+      documentId: 'doc',
+      host: 'slides',
+      generation: 1,
+      session: {
+        credentials: {},
+        listTools: () => [{ name: 'build_deck', annotations: { readOnlyHint: false } }],
+        close: () => {},
+      } as any,
+    })
+    let done = false
+    const running = engine
+      .startTurn({ documentId: 'doc', host: 'slides', generation: 1, text: 'make slides' })
+      .then(() => {
+        done = true
+      })
+    await new Promise((r) => setTimeout(r, 0))
+    mock.document.onToolEvent({
+      type: 'tool-start',
+      callId: 'survey',
+      toolName: 'ask_clarification',
+    })
+    mock.notify({
+      method: 'turn/completed',
+      params: { threadId: 'thread', turn: { id: 'turn', status: 'completed' } },
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(done).toBe(false)
+    if (cancelled) await engine.cancelTurn('doc')
+    mock.document.onToolEvent({
+      type: 'tool-complete',
+      callId: 'survey',
+      toolName: 'ask_clarification',
+      isError: false,
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    if (cancelled) {
+      await running
+      expect(mock.startTurn).toHaveBeenCalledTimes(1)
+      await engine.close()
+      return
+    }
+    expect(mock.startTurn).toHaveBeenCalledTimes(2)
+    expect(mock.revoke).not.toHaveBeenCalled()
+    mock.document.onToolEvent({
+      type: 'tool-complete',
+      callId: 'build',
+      toolName: 'build_deck',
+      isError: false,
+    })
+    mock.notify({
+      method: 'turn/completed',
+      params: { threadId: 'thread', turn: { id: 'turn', status: 'completed' } },
+    })
+    await running
+    expect(done).toBe(true)
+    await engine.close()
+  },
+)
+
 it.each(['applied', 'tool_failed', 'mutation_expired', 'mutation_cancelled', 'cancel', 'close'])(
   'waits past idle timeout after model completion until proposal %s',
   async (output) => {

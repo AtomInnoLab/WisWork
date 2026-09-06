@@ -39,7 +39,7 @@ export function safeEnhancedError(error: unknown): string {
   const message = typeof error === 'string' ? error : error instanceof Error ? error.message : ''
   return (
     message.match(
-      /\benhanced_(?:turn_in_progress|turn_timeout|proposal_expired|auth_required|usage_limit|context_limit|request_rejected|service_unavailable|connection_failed|response_incompatible|document_unavailable|runtime_unavailable)\b/,
+      /\benhanced_(?:questionnaire_incomplete|turn_in_progress|turn_timeout|proposal_expired|auth_required|usage_limit|context_limit|request_rejected|service_unavailable|connection_failed|response_incompatible|document_unavailable|runtime_unavailable)\b/,
     )?.[0] ?? 'enhanced_turn_failed'
   )
 }

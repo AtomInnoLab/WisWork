@@ -144,6 +144,9 @@ export function createProductionCodexBootstrap(
         disarm?: () => void
         cancelled: boolean
         readonly pendingProposals: Set<string>
+        readonly pendingQuestionnaires: Set<string>
+        questionnaireNeedsFollowup: boolean
+        questionnaireRetries: number
         lastFailure?: Error
         deferredTerminal?: { status: 'completed' | 'cancelled' | 'failed'; error?: Error }
         proposalFailure?: 'cancelled' | 'failed'
@@ -245,8 +248,33 @@ export function createProductionCodexBootstrap(
           const unregister = gateway.register({
             ...input,
             onToolEvent: (event) => {
-              documents.get(input.documentId)?.active?.touch()
+              const active = documents.get(input.documentId)?.active
+              if (active && input.host === 'slides') {
+                if (event.toolName === 'ask_clarification') {
+                  if (event.type === 'tool-start') active.pendingQuestionnaires.add(event.callId)
+                  else if (event.type === 'tool-complete') {
+                    active.pendingQuestionnaires.delete(event.callId)
+                    if (!event.isError) active.questionnaireNeedsFollowup = true
+                  }
+                } else if (event.type === 'tool-complete' && !event.isError) {
+                  const tool = input.session
+                    .listTools(input.session.credentials)
+                    .find((tool) => tool.name === event.toolName)
+                  if (tool?.annotations?.readOnlyHint === false)
+                    active.questionnaireNeedsFollowup = false
+                }
+              }
+              active?.touch()
               emit(input.onEvent, event)
+              if (
+                active?.deferredTerminal &&
+                active.pendingQuestionnaires.size === 0 &&
+                active.pendingProposals.size === 0
+              ) {
+                const terminal = active.deferredTerminal
+                active.deferredTerminal = undefined
+                active.requestSettle(terminal.status, terminal.error)
+              }
             },
             onProposal: (proposal) => {
               const active = documents.get(input.documentId)?.active
@@ -350,18 +378,58 @@ export function createProductionCodexBootstrap(
             capability: grant.capability,
             cancelled: false,
             pendingProposals: new Set(),
+            pendingQuestionnaires: new Set(),
+            questionnaireNeedsFollowup: false,
+            questionnaireRetries: 0,
             touch: () => {
-              if (active.pendingProposals.size > 0) deadline.disarm()
+              if (active.pendingProposals.size > 0 || active.pendingQuestionnaires.size > 0)
+                deadline.disarm()
               else if (!settled && !active.deferredTerminal) deadline.touch()
             },
             requestSettle(status, error) {
-              if (active.pendingProposals.size > 0 && status === 'completed') {
+              if (
+                (active.pendingProposals.size > 0 || active.pendingQuestionnaires.size > 0) &&
+                status === 'completed'
+              ) {
                 active.deferredTerminal = { status, error }
                 deadline.disarm()
                 return
               }
               if (status === 'completed' && active.proposalFailure) {
                 active.settle(active.proposalFailure, active.proposalError)
+                return
+              }
+              if (
+                status === 'completed' &&
+                active.questionnaireNeedsFollowup &&
+                !active.cancelled
+              ) {
+                if (active.questionnaireRetries >= 2 || !active.threadId) {
+                  active.settle('failed', new Error('enhanced_questionnaire_incomplete'))
+                  return
+                }
+                active.questionnaireRetries++
+                active.turnId = undefined
+                active.touch()
+                options.diagnostics?.('enhanced_questionnaire_continuing')
+                void client
+                  .startTurn(
+                    active.threadId,
+                    `<wiswork_turn_capability>${grant.capability}</wiswork_turn_capability>\nThe questionnaire has been answered. Continue the original request using those answers in this conversation. Do not ask the user to repeat them or stop after acknowledgement. Use the appropriate planning and document tools, then inspect screenshots and repair the result before concluding. If blocked, report the concrete failure.`,
+                  )
+                  .then(({ turn }) => {
+                    if (!settled && !active.cancelled) {
+                      active.turnId = turn.id
+                      active.touch()
+                    } else if (active.threadId) {
+                      startBestEffortCodexInterrupt(() =>
+                        client.interruptTurn(active.threadId!, turn.id),
+                      )
+                    }
+                  })
+                  .catch(() =>
+                    active.settle('failed', new Error('enhanced_questionnaire_incomplete')),
+                  )
                 return
               }
               active.settle(status, error)
