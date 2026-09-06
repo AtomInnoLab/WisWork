@@ -5,6 +5,7 @@ import {
   type ToolExecution,
 } from '@wiswork/agent-core'
 import {
+  compiledDocumentTool,
   createDocumentToolManifest,
   createDocumentToolSession,
   type ToolMutability,
@@ -18,46 +19,6 @@ import type { OfficeRetrievalProxy, OfficeWebCapability } from './office-retriev
 const MAX_BODY_BYTES = 256 * 1024
 const MAX_TEXT_BYTES = 128 * 1024
 const MAX_TOOLS = 64
-const READ_TOOLS = new Set([
-  'get_document_text',
-  'get_document_structure',
-  'get_ooxml',
-  'screenshot_document',
-  'get_cell_ranges',
-  'get_range_as_csv',
-  'search_data',
-  'screenshot_range',
-  'get_all_objects',
-  'inspect_slide_masters',
-  'screenshot_slide',
-  'list_slide_shapes',
-  'read_slide_text',
-  'verify_slides',
-  'plan_deck',
-  'web_search',
-  'web_fetch',
-  'image_search',
-])
-const MUTATION_TOOLS = new Set([
-  'write_document',
-  'execute_office_js',
-  'set_cell_range',
-  'clear_cell_range',
-  'copy_to',
-  'modify_sheet_structure',
-  'modify_workbook_structure',
-  'resize_range',
-  'modify_object',
-  'eval_officejs',
-  'edit_slide_text',
-  'edit_slide_xml',
-  'edit_slide_chart',
-  'edit_slide_master',
-  'edit_slide_master_xml',
-  'duplicate_slide',
-  'propose_raw_office_edit',
-])
-
 interface PolicyAuthority {
   issue(value: {
     generation: number
@@ -75,6 +36,7 @@ const hostName = (value: 'Word' | 'Excel' | 'PowerPoint') =>
 
 function parseRequest(
   body: unknown,
+  host: OfficeEnhancedSessionStatement['host'],
   rawOffice: boolean,
 ): {
   text: string
@@ -114,13 +76,10 @@ function parseRequest(
       Array.isArray(tool.input_schema)
     )
       throw new Error('enhanced_request_invalid')
-    const mutability = READ_TOOLS.has(name)
-      ? 'read'
-      : MUTATION_TOOLS.has(name)
-        ? 'mutate'
-        : undefined
-    const raw = name === 'propose_raw_office_edit'
-    if (!mutability || (raw && !rawOffice)) continue
+    const compiled = compiledDocumentTool(host, name)
+    if (!compiled) continue
+    const [mutability, requiredCapability] = compiled
+    if (requiredCapability === 'raw-office-proposal' && !rawOffice) continue
     tools.push({
       name,
       description: tool.description,
@@ -161,7 +120,7 @@ export function createOfficeCodexProxy(options: {
     if (request.statement.host !== host || request.statement.expires_at <= Date.now())
       throw new Error('enhanced_session_stale')
     telemetry('plan', 'started')
-    const parsed = parseRequest(request.body, request.statement.raw_office)
+    const parsed = parseRequest(request.body, host, request.statement.raw_office)
     const pcRetrieval = new Set(['web_search', 'image_search'])
     if (!request.executeRetrieval) {
       parsed.tools = parsed.tools.filter((tool) => !pcRetrieval.has(tool.name))

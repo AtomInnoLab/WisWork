@@ -6,6 +6,7 @@ import {
 import { describe, expect, it, vi } from 'vitest'
 import { createDocumentCarrierIssuer } from '../src/index.js'
 import {
+  compiledDocumentTool,
   createDocumentToolManifest,
   createDocumentToolSession,
   ToolRouterError,
@@ -81,6 +82,17 @@ function fixture(overrides: Partial<DocumentToolRegistration> = {}) {
 }
 
 describe('document-scoped tool session', () => {
+  it('does not expose mutable references to the compiled policy catalog', () => {
+    const compiled = compiledDocumentTool('office-powerpoint', 'execute_office_js')!
+    expect(() => {
+      ;(compiled as unknown as string[])[0] = 'read'
+    }).toThrow()
+    expect(compiledDocumentTool('office-powerpoint', 'execute_office_js')).toEqual([
+      'mutate',
+      'transaction-proposal',
+    ])
+  })
+
   it('permits PC-backed retrieval tools for the Office PowerPoint host', () => {
     const grant = Object.freeze({})
     expect(() =>
@@ -95,12 +107,19 @@ describe('document-scoped tool session', () => {
             capabilities: ['semantic-read'],
           }
         },
-        tools: ['web_search', 'image_search'].map((name) => ({
-          name,
-          description: name,
-          inputSchema: { type: 'object' },
-        })),
-        policy: { web_search: 'read', image_search: 'read' },
+        tools: ['web_search', 'image_search', 'get_presentation_state', 'ask_clarification'].map(
+          (name) => ({
+            name,
+            description: name,
+            inputSchema: { type: 'object' },
+          }),
+        ),
+        policy: {
+          web_search: 'read',
+          image_search: 'read',
+          get_presentation_state: 'read',
+          ask_clarification: 'read',
+        },
       }),
     ).not.toThrow()
   })
