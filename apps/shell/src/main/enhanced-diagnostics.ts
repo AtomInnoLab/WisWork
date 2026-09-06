@@ -57,6 +57,8 @@ export type DiagnosticSafeCode =
   | 'stream_tool_input_invalid'
   | 'mcp_starting'
   | 'mcp_ready'
+  | 'mcp_tools_missing'
+  | 'carrier_authorization_mismatch'
   | 'mcp_tool_started'
   | 'mcp_tool_completed'
   | 'mcp_tool_denied'
@@ -105,6 +107,8 @@ const SAFE_CODES = new Set<DiagnosticSafeCode>([
   'stream_tool_input_invalid',
   'mcp_starting',
   'mcp_ready',
+  'mcp_tools_missing',
+  'carrier_authorization_mismatch',
   'mcp_tool_started',
   'mcp_tool_completed',
   'mcp_tool_denied',
@@ -410,6 +414,15 @@ function safeDiagnostic(code: string): {
     return { component: 'mcp', phase: denialReason, outcome: 'failed', code: 'mcp_tool_denied' }
   if (code === 'gateway_tool_call_denied' || code === 'mcp_request_failed')
     return { component: 'mcp', phase: 'tool', outcome: 'failed', code: 'mcp_tool_denied' }
+  if (code === 'resolver_method_missing')
+    return { component: 'mcp', phase: 'initialize', outcome: 'failed', code: 'mcp_tools_missing' }
+  if (code === 'resolver_protocol_carrier_authorization_mismatch')
+    return {
+      component: 'runtime',
+      phase: 'protocol',
+      outcome: 'failed',
+      code: 'carrier_authorization_mismatch',
+    }
   if (code === 'gateway_tools_list' || code === 'mcp_tools_list')
     return { component: 'mcp', phase: 'initialize', outcome: 'succeeded', code: 'mcp_ready' }
   if (code.startsWith('mcp_') || code.includes('mcpServer_startupStatus'))

@@ -3,13 +3,17 @@ import { suspendToolExecution } from '@wiswork/agent-core'
 import { startDynamicMcpGateway } from '../src/dynamic-mcp-gateway.js'
 
 const initialized = new Map<string, Promise<void>>()
+const clientIds = new Map<string, string>()
 
 function ensureInitialized(url: string, secret: string): Promise<void> {
   let pending = initialized.get(url)
   if (pending) return pending
   pending = (async () => {
-    const headers = { authorization: `Bearer ${secret}`, 'content-type': 'application/json' }
-    await fetch(url, {
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${secret}`,
+      'content-type': 'application/json',
+    }
+    const response = await fetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -23,6 +27,8 @@ function ensureInitialized(url: string, secret: string): Promise<void> {
         },
       }),
     })
+    headers['Mcp-Session-Id'] = response.headers.get('mcp-session-id')!
+    clientIds.set(url, headers['Mcp-Session-Id'])
     await fetch(url, {
       method: 'POST',
       headers,
@@ -37,7 +43,11 @@ async function rpc(url: string, secret: string, id: number, method: string, para
   await ensureInitialized(url, secret)
   return fetch(url, {
     method: 'POST',
-    headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
+    headers: {
+      authorization: `Bearer ${secret}`,
+      'content-type': 'application/json',
+      'Mcp-Session-Id': clientIds.get(url)!,
+    },
     body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
   })
 }

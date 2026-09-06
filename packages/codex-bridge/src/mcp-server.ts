@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { randomBytes } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import type { AgentToolCall } from '@wiswork/agent-core'
 import { isToolExecutionSuspension } from '@wiswork/agent-core'
@@ -16,7 +17,17 @@ const MAX_BODY = 1_000_000
 const MAX_RPC_CALLS = 1_024
 const MAX_ACTIVE_TOOL_SESSIONS = 64
 const PROTOCOL = '2025-06-18'
+const CLIENT_IDLE_MS = 30 * 60_000
 type RpcId = string | number
+interface RpcSession {
+  session: DocumentToolSession
+  state: 'new' | 'initialized' | 'ready'
+  ids: Set<string>
+}
+interface TrustedClient extends RpcSession {
+  lastActivity: number
+  pending: number
+}
 
 export interface DocumentMcpSession {
   readonly url: string
@@ -129,11 +140,10 @@ async function startDocumentMcpServerInternal(
     maxActiveSessions > MAX_ACTIVE_TOOL_SESSIONS
   )
     throw new TypeError('invalid_mcp_session_limit')
-  const sessions = new Map<
-    string,
-    { session: DocumentToolSession; state: 'new' | 'initialized' | 'ready'; ids: Set<string> }
-  >()
+  const sessions = new Map<string, RpcSession>()
   const sockets = new Set<import('node:net').Socket>()
+  // Transport identity scopes protocol state only; document authority remains in session.
+  const clients = new Map<string, TrustedClient>()
   let closed = false
   const diagnostic = (code: string): void => {
     try {
@@ -149,7 +159,7 @@ async function startDocumentMcpServerInternal(
       if (closed) return send(response, 503, { error: 'mcp_closed' })
       const match = request.url?.match(/^\/mcp\/([A-Za-z0-9_-]{43})$/)
       const auth = request.headers.authorization
-      const entry = match ? sessions.get(match[1]!) : undefined
+      let entry = match ? sessions.get(match[1]!) : undefined
       const session = entry?.session
       const credentials =
         session && typeof auth === 'string' && auth.startsWith('Bearer ')
@@ -163,6 +173,48 @@ async function startDocumentMcpServerInternal(
         request.resume()
         return send(response, 401, { error: 'unauthorized' })
       }
+      const clientId = request.headers['mcp-session-id']
+      if (trustedSession) {
+        for (const [key, client] of clients) {
+          if (client.pending === 0 && Date.now() - client.lastActivity >= CLIENT_IDLE_MS) {
+            clients.delete(key)
+            diagnostic('mcp_client_expired')
+          }
+        }
+        if (
+          clientId !== undefined &&
+          (typeof clientId !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(clientId))
+        ) {
+          diagnostic('mcp_client_invalid')
+          request.resume()
+          return send(response, 400, { error: 'invalid_session_id' })
+        }
+        if (typeof clientId === 'string') {
+          entry = clients.get(clientId)
+          if (!entry) {
+            diagnostic('mcp_client_unknown')
+            request.resume()
+            return send(response, 404, { error: 'session_not_found' })
+          }
+          const client = clients.get(clientId)!
+          client.pending += 1
+          let finished = false
+          const finish = (): void => {
+            if (finished) return
+            finished = true
+            client.pending -= 1
+            client.lastActivity = Date.now()
+          }
+          response.once('finish', finish)
+          response.once('close', finish)
+          if (request.method === 'DELETE') {
+            clients.delete(clientId)
+            request.resume()
+            response.writeHead(204, { 'cache-control': 'no-store' })
+            return response.end()
+          }
+        } else entry = { session, state: 'new', ids: new Set() }
+      }
       if (request.method !== 'POST') {
         diagnostic('mcp_http_405')
         request.resume()
@@ -174,6 +226,8 @@ async function startDocumentMcpServerInternal(
         return send(response, 415, { error: 'unsupported_media_type' })
       }
       const raw = await body(request, maxBodyBytes)
+      if (trustedSession && typeof clientId === 'string' && clients.get(clientId) !== entry)
+        return send(response, 404, { error: 'session_not_found' })
       if (!raw) {
         diagnostic('mcp_body_limit')
         return send(response, 413, { error: 'body_limit' })
@@ -196,12 +250,23 @@ async function startDocumentMcpServerInternal(
         return rpcError(response, null, -32600, 'invalid_request')
       const id = message.id as RpcId | undefined
       const params = (message.params ?? {}) as Record<string, unknown>
+      if (trustedSession && clientId === undefined && message.method !== 'initialize') {
+        diagnostic('mcp_client_missing')
+        return send(response, 400, { error: 'session_id_required' })
+      }
       if (id !== undefined) {
         const idKey = `${typeof id}:${String(id)}`
-        if (entry!.ids.has(idKey)) return rpcError(response, id, -32600, 'request_id_consumed')
+        if (entry!.ids.has(idKey)) {
+          diagnostic('mcp_request_id_consumed')
+          return rpcError(response, id, -32600, 'request_id_consumed')
+        }
         if (entry!.ids.size >= maxRpcCalls) {
-          session.close()
-          sessions.delete(session.credentials.sessionId)
+          diagnostic('mcp_client_call_limit')
+          if (trustedSession) clients.delete(clientId as string)
+          else {
+            session.close()
+            sessions.delete(session.credentials.sessionId)
+          }
           return rpcError(response, id, -32600, 'session_call_limit')
         }
         entry!.ids.add(idKey)
@@ -255,6 +320,15 @@ async function startDocumentMcpServerInternal(
         )
           return rpcError(response, id, -32602, 'invalid_params')
         entry!.state = 'initialized'
+        if (trustedSession && clientId === undefined) {
+          if (clients.size >= maxActiveSessions) {
+            diagnostic('mcp_client_limit')
+            return send(response, 429, { error: 'session_limit' })
+          }
+          const assignedId = randomBytes(32).toString('base64url')
+          clients.set(assignedId, { ...entry!, lastActivity: Date.now(), pending: 0 })
+          response.setHeader('Mcp-Session-Id', assignedId)
+        }
         return send(response, 200, {
           jsonrpc: '2.0',
           id,
@@ -386,6 +460,7 @@ async function startDocumentMcpServerInternal(
       closed = true
       for (const entry of sessions.values()) entry.session.close()
       sessions.clear()
+      clients.clear()
       for (const socket of sockets) socket.destroy()
       await new Promise<void>((resolve) => server.close(() => resolve()))
     },
