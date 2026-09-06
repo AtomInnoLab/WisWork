@@ -270,6 +270,21 @@ export function createOfficeRelayClient(options: {
     setStatus(`disconnected:${reason}` as OfficeRelayStatus)
   }
 
+  const promoteEnhancedSession = (): void => {
+    if (!session || session.enhanced || protocolVersion !== 2) return
+    const enhanced = options.enhancedStatement?.(session.host)
+    if (!enhanced) return
+    session = { ...session, enhanced }
+    send({
+      version: 2,
+      type: 'pc.session_state',
+      session_id: session.sessionId,
+      capability: session.capability,
+      generation: enhanced.session_generation,
+      enhanced,
+    })
+  }
+
   const runRequest = async (frame: Record<string, unknown>, owner: number) => {
     if (
       !session ||
@@ -285,6 +300,7 @@ export function createOfficeRelayClient(options: {
     )
       return clear('protocol_violation', true)
     if (!jsonObject(frame.body)) return clear('protocol_violation', true)
+    promoteEnhancedSession()
     requestIds.add(frame.request_id)
     const bodyBytes = Buffer.byteLength(JSON.stringify(frame.body))
     if (bodyBytes > MAX_REQUEST_BYTES) return clear('request_too_large', true)
