@@ -355,35 +355,37 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
         return false
       }
     }
+    const apiSupport = {
+      v12: api('1.2'),
+      v14: api('1.4'),
+      v15: api('1.5'),
+      v18: api('1.8'),
+      v110: api('1.10'),
+    }
     return this.run('1.2', async (context) => {
       const presentation = context.presentation as RuntimeRecord
       const slides = presentation.slides as RuntimeRecord
-      if (
-        typeof slides?.load !== 'function' ||
-        typeof presentation.getSelectedSlides !== 'function'
-      )
-        throw new Error('office_api_unsupported')
-      const selected = (presentation.getSelectedSlides as () => RuntimeRecord)()
-      if (typeof selected?.load !== 'function') throw new Error('office_api_unsupported')
+      if (typeof slides?.load !== 'function') throw new Error('office_api_unsupported')
+      let selected: RuntimeRecord | undefined
+      if (apiSupport.v15) {
+        if (typeof presentation.getSelectedSlides !== 'function')
+          throw new Error('office_api_unsupported')
+        selected = (presentation.getSelectedSlides as () => RuntimeRecord)()
+        if (typeof selected?.load !== 'function') throw new Error('office_api_unsupported')
+      }
       ;(slides.load as (properties: string) => void)('items/id')
-      ;(selected.load as (properties: string) => void)('items/id')
+      if (selected) (selected.load as (properties: string) => void)('items/id')
       await sync(context, signal)
       const items = (slides.items as RuntimeRecord[]) ?? []
       const selectedIds = new Set(
-        ((selected.items as RuntimeRecord[]) ?? []).map((item) => string(item.id)),
+        ((selected?.items as RuntimeRecord[] | undefined) ?? []).map((item) => string(item.id)),
       )
       return {
         slideCount: items.length,
         selectedSlideIndexes: items.flatMap((item, index) =>
           selectedIds.has(string(item.id)) ? [index] : [],
         ),
-        api: {
-          v12: api('1.2'),
-          v14: api('1.4'),
-          v15: api('1.5'),
-          v18: api('1.8'),
-          v110: api('1.10'),
-        },
+        api: apiSupport,
       }
     })
   }
