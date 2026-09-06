@@ -29,10 +29,10 @@ describe('Office Add-in manifest and routes', () => {
     expect(config).toBeDefined()
     const manifest = renderDeploymentManifest(template, config!)
 
-    expect(manifest).toContain('<Version>0.3.8.0</Version>')
+    expect(manifest).toContain('<Version>0.3.9.0</Version>')
     expect(manifest).toContain('<DisplayName DefaultValue="WisWork" />')
     expect(manifest).toContain(
-      '<SourceLocation DefaultValue="https://office.example/taskpane.html?v=0.3.8" />',
+      '<SourceLocation DefaultValue="https://office.example/taskpane.html?v=0.3.9" />',
     )
     expect(manifest).toContain('<IconUrl DefaultValue="https://office.example/assets/icon.png" />')
     expect(manifest).toContain('<AppDomain>https://office.example</AppDomain>')

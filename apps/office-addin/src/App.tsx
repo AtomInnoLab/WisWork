@@ -35,6 +35,7 @@ import {
 } from './agent/use-office-agent.js'
 import type {
   OfficePresentationEvent,
+  OfficeClarificationQuestion,
   OfficePresentationTimeline,
   ProposalPresentationEvent,
 } from './agent/presentation-state.js'
@@ -580,6 +581,54 @@ function PowerPointTimeline(props: {
   return <>{nodes}</>
 }
 
+function PowerPointQuestionnaire(props: {
+  questions: readonly OfficeClarificationQuestion[]
+  onSubmit: (answers: string) => void
+  onSkip: () => void
+}) {
+  const [answers, setAnswers] = useState<Record<string, string>>({})
+  return (
+    <section className="ppt-questionnaire" aria-label="演示文稿制作问卷">
+      {props.questions.map((question) => (
+        <label key={question.id}>
+          <strong>{question.label}</strong>
+          {question.description && <span>{question.description}</span>}
+          <select
+            value={answers[question.id] ?? ''}
+            onChange={(event) =>
+              setAnswers((current) => ({ ...current, [question.id]: event.target.value }))
+            }
+          >
+            <option value="">帮我决定</option>
+            {question.options.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </label>
+      ))}
+      <div className="ppt-questionnaire-actions">
+        <button type="button" className="secondary" onClick={props.onSkip}>
+          全部帮我决定
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            props.onSubmit(
+              props.questions
+                .map((question) => `${question.label}: ${answers[question.id] || '（帮我决定）'}`)
+                .join('\n'),
+            )
+          }
+        >
+          继续制作
+        </button>
+      </div>
+    </section>
+  )
+}
+
 export function AgentWorkspace(props: {
   session: OfficeAgentSession
   ui: OfficeWorkspaceUi
@@ -794,6 +843,13 @@ export function AgentWorkspace(props: {
               reject={() => session.reject()}
             />
           ))
+        )}
+        {state.questionnaire && (
+          <PowerPointQuestionnaire
+            questions={state.questionnaire}
+            onSubmit={(answers) => session.answerQuestionnaire?.(answers)}
+            onSkip={() => session.skipQuestionnaire?.()}
+          />
         )}
         {proposal &&
           !state.timeline.some(

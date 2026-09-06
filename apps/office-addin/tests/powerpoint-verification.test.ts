@@ -115,6 +115,30 @@ function productionAdapter(state: { text: string; left: number }): PowerPointAda
 }
 
 describe('Office PowerPoint presentation verification', () => {
+  it('degrades to normal execution when host enrollment is temporarily unavailable', async () => {
+    const subject = createOfficePowerPointVerification({
+      authority: authority({ acquire: vi.fn().mockRejectedValue(new Error('office_read_failed')) }),
+      platform: 'Mac',
+    })
+
+    await expect(subject.enroll([textCall], undefined)).resolves.toEqual({ kind: 'bypass' })
+  })
+
+  it('does not bypass unexpected or correction-pass enrollment failures', async () => {
+    const unexpected = createOfficePowerPointVerification({
+      authority: authority({ acquire: vi.fn().mockRejectedValue(new Error('programming_error')) }),
+    })
+    await expect(unexpected.enroll([textCall], undefined)).rejects.toThrow('programming_error')
+    const source = authority()
+    const correction = createOfficePowerPointVerification({ authority: source })
+    const initial = await correction.enroll([textCall], undefined)
+    if (initial.kind !== 'ready') throw new Error('not ready')
+    source.readShape.mockRejectedValueOnce(new Error('office_read_failed'))
+    await expect(correction.enroll([textCall], initial.contract)).rejects.toThrow(
+      'office_read_failed',
+    )
+  })
+
   async function visualSubject(review: OfficePowerPointVisualReviewer['review'], overrides = {}) {
     const call = { ...textCall, id: 'visual-call', input: { ...textCall.input, text: 'Final' } }
     let applied = false

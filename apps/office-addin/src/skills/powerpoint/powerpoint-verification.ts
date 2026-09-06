@@ -583,7 +583,24 @@ export function createOfficePowerPointVerification(options: {
 
   const hooks: OfficePowerPointVerificationHooks = {
     prepare: () => ({ kind: 'bypass' }),
-    enroll: (calls, currentContract, signal) => enroll(calls, currentContract, signal),
+    enroll: async (calls, currentContract, signal) => {
+      try {
+        return await enroll(calls, currentContract, signal)
+      } catch (error) {
+        if (signal?.aborted || currentContract) throw error
+        const code = error instanceof Error ? error.message : ''
+        if (!['office_read_failed', 'office_api_unsupported'].includes(code)) throw error
+        emitPresentationTelemetry(options.telemetry, {
+          host: 'office',
+          phase: 'plan',
+          outcome: 'cannot_verify',
+          code: 'enrollment_unavailable',
+          count: calls.length,
+          durationMs: 0,
+        })
+        return { kind: 'bypass' }
+      }
+    },
     recordProposal(value) {
       if (proposals.length < 50)
         proposals.push({

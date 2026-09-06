@@ -81,6 +81,43 @@ function proposalsHarness() {
 }
 
 describe('Office agent session', () => {
+  it('pauses a PowerPoint questionnaire and resumes the same tool call with the answers', async () => {
+    let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
+    const proposals = proposalsHarness()
+    const session = createOfficeAgentSession({
+      transport: transportHarness().transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'ask_clarification', description: 'ask', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(),
+      },
+      proposals: proposals.controller,
+      remoteTools: {
+        setToolHandler: (next) => {
+          handler = next
+        },
+      },
+    })
+    const result = handler!({
+      turnId: 'turn_12345678',
+      callId: 'call_12345678',
+      generation: 1,
+      toolName: 'ask_clarification',
+      input: {
+        questions: [
+          { id: 'audience', label: '面向谁？', options: ['客户', '内部团队'] },
+          { id: 'style', label: '什么风格？', options: ['简洁', '杂志感'] },
+        ],
+      },
+      signal: new AbortController().signal,
+    })
+    await vi.waitFor(() => expect(session.snapshot().questionnaire).toHaveLength(2))
+    session.answerQuestionnaire?.('面向谁？: 客户\n什么风格？: 杂志感')
+    await expect(result).resolves.toMatchObject({ output: expect.stringContaining('客户') })
+    expect(session.snapshot().questionnaire).toBeUndefined()
+  })
+
   it('invalidates a suspended remote proposal when cancelled before confirmation', async () => {
     let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
     const proposals = proposalsHarness()
