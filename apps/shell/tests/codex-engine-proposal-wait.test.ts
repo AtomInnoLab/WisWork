@@ -1,5 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
+import type { ToolExecution } from '@wiswork/agent-core'
 import { createProductionCodexBootstrap } from '../src/main/codex-engine'
+import type { CodexRuntimeEngineEvent } from '../src/main/codex-runtime'
 
 const mock = vi.hoisted(() => ({
   notify: undefined as any,
@@ -46,6 +48,288 @@ afterEach(() => {
   mock.startThread.mockImplementation(async () => ({ thread: { id: 'thread' } }))
   mock.startTurn.mockImplementation(async () => ({ turn: { id: 'turn' } }))
 })
+
+async function startSlidesTurn() {
+  vi.useFakeTimers()
+  const events: CodexRuntimeEngineEvent[] = []
+  const engine = await createProductionCodexBootstrap({ fetchWithAuth: vi.fn() }).start({
+    executablePath: '',
+    onCrash: vi.fn(),
+  })
+  engine.registerDocument!({
+    ownerId: 'owner',
+    documentId: 'doc',
+    host: 'slides',
+    generation: 1,
+    session: {
+      credentials: {},
+      listTools: () => [
+        { name: 'ask_clarification', annotations: { readOnlyHint: true } },
+        { name: 'read_presentation', annotations: { readOnlyHint: true } },
+        { name: 'build_deck', annotations: { readOnlyHint: false } },
+      ],
+      close: () => {},
+    } as any,
+    onEvent: (event) => events.push(event),
+  })
+  let result = 'pending'
+  const running = engine
+    .startTurn({ documentId: 'doc', host: 'slides', generation: 1, text: 'make slides' })
+    .then(
+      () => {
+        result = 'done'
+      },
+      (error: Error) => {
+        result = error.message
+      },
+    )
+  await vi.advanceTimersByTimeAsync(0)
+  return {
+    engine,
+    events,
+    running,
+    get result() {
+      return result
+    },
+    startTool(toolName: string, callId = toolName) {
+      mock.document.onToolEvent({ type: 'tool-start', callId, toolName })
+    },
+    completeTool(toolName: string, isError = false, callId = toolName) {
+      mock.document.onToolEvent({ type: 'tool-complete', callId, toolName, isError })
+    },
+    completeNativeTurn() {
+      mock.notify({
+        method: 'turn/completed',
+        params: { threadId: 'thread', turn: { id: 'turn', status: 'completed' } },
+      })
+    },
+    propose() {
+      let resolve!: (execution: ToolExecution) => void
+      let reject!: (error: Error) => void
+      const settled = new Promise<ToolExecution>((onResolve, onReject) => {
+        resolve = onResolve
+        reject = onReject
+      })
+      mock.document.onProposal({
+        proposalId: 'proposal',
+        call: { id: 'build_deck', name: 'build_deck', input: {} },
+        expiresAt: Date.now() + 300_000,
+        summary: {},
+        settled,
+      })
+      return { resolve, reject }
+    },
+  }
+}
+
+it.each(
+  [
+    { output: 'applied', isError: false, mutated: true },
+    { output: 'partial_build', isError: true, mutated: true },
+    { output: 'tool_failed', isError: true, mutated: false },
+  ].flatMap((execution) => ['before', 'after'].map((completion) => ({ execution, completion }))),
+)(
+  'recognizes the native questionnaire continuation when $execution.output finishes $completion completion',
+  async ({ execution, completion }) => {
+    const turn = await startSlidesTurn()
+    turn.startTool('ask_clarification')
+    turn.completeTool('ask_clarification')
+    turn.startTool('build_deck')
+    const proposal = turn.propose()
+    if (completion === 'after') {
+      turn.completeNativeTurn()
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(turn.result).toBe('pending')
+      expect(mock.revoke).not.toHaveBeenCalled()
+    }
+    proposal.resolve({ ...execution, summary: execution.output })
+    // Proposal promise listeners run before the gateway emits tool-complete.
+    await vi.advanceTimersByTimeAsync(0)
+    turn.completeTool('build_deck', execution.isError)
+    if (completion === 'before') turn.completeNativeTurn()
+    await turn.running
+    expect(turn.result).toBe('done')
+    expect(turn.events.filter((event) => event.type === 'terminal')).toEqual([
+      { type: 'terminal', status: 'completed' },
+    ])
+    expect(mock.startTurn).toHaveBeenCalledExactlyOnceWith(
+      'thread',
+      '<wiswork_turn_capability>capability</wiswork_turn_capability>\n\nmake slides',
+    )
+    await turn.engine.close()
+  },
+)
+
+it.each([false, true])(
+  'recognizes a post-answer read as continuation; isError=%s',
+  async (isError) => {
+    const turn = await startSlidesTurn()
+    turn.startTool('ask_clarification')
+    turn.completeTool('ask_clarification')
+    turn.startTool('read_presentation')
+    turn.completeTool('read_presentation', isError)
+    turn.completeNativeTurn()
+    await turn.running
+    expect(turn.result).toBe('done')
+    expect(mock.startTurn).toHaveBeenCalledTimes(1)
+    await turn.engine.close()
+  },
+)
+
+it.each(['before', 'after'])(
+  'recovers a failed questionnaire after a successful retry; proposal finishes %s native completion',
+  async (completion) => {
+    const turn = await startSlidesTurn()
+    turn.startTool('ask_clarification', 'malformed-survey')
+    turn.completeTool('ask_clarification', true, 'malformed-survey')
+    turn.startTool('ask_clarification', 'corrected-survey')
+    turn.completeTool('ask_clarification', false, 'corrected-survey')
+    turn.startTool('build_deck')
+    const proposal = turn.propose()
+    if (completion === 'after') {
+      turn.completeNativeTurn()
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(turn.result).toBe('pending')
+      expect(mock.revoke).not.toHaveBeenCalled()
+    }
+    proposal.resolve({
+      output: 'partial_build',
+      summary: 'Partial build',
+      isError: true,
+      mutated: true,
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    turn.completeTool('build_deck', true)
+    if (completion === 'before') turn.completeNativeTurn()
+    await turn.running
+    expect(turn.result).toBe('done')
+    expect(turn.events.filter((event) => event.type === 'terminal')).toEqual([
+      { type: 'terminal', status: 'completed' },
+    ])
+    expect(mock.startTurn).toHaveBeenCalledTimes(1)
+    await turn.engine.close()
+  },
+)
+
+it('keeps an unrecovered questionnaire failure after other tool activity', async () => {
+  const turn = await startSlidesTurn()
+  turn.startTool('ask_clarification')
+  turn.completeTool('ask_clarification', true)
+  turn.startTool('read_presentation')
+  turn.completeTool('read_presentation')
+  turn.completeNativeTurn()
+  await turn.running
+  expect(turn.result).toBe('enhanced_questionnaire_incomplete')
+  expect(mock.startTurn).toHaveBeenCalledTimes(1)
+  await turn.engine.close()
+})
+
+it.each(['completed', 'cancelled'])(
+  'waits for a questionnaire retry and preserves %s without continuation',
+  async (status) => {
+    const turn = await startSlidesTurn()
+    turn.startTool('ask_clarification', 'malformed-survey')
+    turn.completeTool('ask_clarification', true, 'malformed-survey')
+    turn.startTool('ask_clarification', 'corrected-survey')
+    turn.completeNativeTurn()
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(turn.result).toBe('pending')
+    expect(mock.revoke).not.toHaveBeenCalled()
+    if (status === 'cancelled') await turn.engine.cancelTurn('doc')
+    turn.completeTool('ask_clarification', false, 'corrected-survey')
+    await turn.running
+    expect(turn.result).toBe(status === 'cancelled' ? 'done' : 'enhanced_questionnaire_incomplete')
+    expect(turn.events.filter((event) => event.type === 'terminal')).toEqual([
+      { type: 'terminal', status: status === 'cancelled' ? 'cancelled' : 'failed' },
+    ])
+    expect(mock.startTurn).toHaveBeenCalledTimes(1)
+    await turn.engine.close()
+  },
+)
+
+it.each(['none', 'unknown_tool', 'before_answer', 'write_before_answer'])(
+  'still detects an uncontinued questionnaire with activity=%s',
+  async (activity) => {
+    const turn = await startSlidesTurn()
+    turn.startTool('ask_clarification')
+    if (activity === 'before_answer') turn.startTool('read_presentation')
+    if (activity === 'write_before_answer') turn.startTool('build_deck')
+    turn.completeTool('ask_clarification')
+    if (activity === 'unknown_tool') {
+      turn.startTool('unknown_tool')
+      turn.completeTool('unknown_tool')
+    }
+    if (activity === 'before_answer') turn.completeTool('read_presentation')
+    if (activity === 'write_before_answer') turn.completeTool('build_deck')
+    turn.completeNativeTurn()
+    await turn.running
+    expect(turn.result).toBe('enhanced_questionnaire_incomplete')
+    expect(mock.startTurn).toHaveBeenCalledTimes(1)
+    await turn.engine.close()
+  },
+)
+
+it.each([
+  { output: 'applied', expected: 'enhanced_questionnaire_incomplete', status: 'failed' },
+  { output: 'tool_failed', expected: 'enhanced_questionnaire_incomplete', status: 'failed' },
+  { output: 'mutation_expired', expected: 'enhanced_proposal_expired', status: 'failed' },
+  { output: 'mutation_cancelled', expected: 'done', status: 'cancelled' },
+  { output: 'rejected', expected: 'enhanced_proposal_failed', status: 'failed' },
+])(
+  'waits for the pending questionnaire after a deferred proposal $output',
+  async ({ output, expected, status }) => {
+    const turn = await startSlidesTurn()
+    turn.startTool('ask_clarification')
+    turn.startTool('build_deck')
+    const proposal = turn.propose()
+    turn.completeNativeTurn()
+    if (output === 'rejected') proposal.reject(new Error('private execution failure'))
+    else
+      proposal.resolve({
+        output,
+        summary: output,
+        isError: output !== 'applied',
+        mutated: output === 'applied',
+      })
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(turn.result).toBe('pending')
+    expect(mock.revoke).not.toHaveBeenCalled()
+    expect(turn.events.some((event) => event.type === 'terminal')).toBe(false)
+    turn.completeTool('build_deck', output !== 'applied')
+    turn.completeTool('ask_clarification')
+    await turn.running
+    expect(turn.result).toBe(expected)
+    expect(turn.events.at(-1)).toMatchObject({ type: 'terminal', status })
+    expect(mock.startTurn).toHaveBeenCalledTimes(1)
+    await turn.engine.close()
+  },
+)
+
+it.each(['before', 'after'])(
+  'waits for a proposal even when the questionnaire fails %s native completion',
+  async (completion) => {
+    const turn = await startSlidesTurn()
+    turn.startTool('ask_clarification')
+    turn.startTool('build_deck')
+    const proposal = turn.propose()
+    if (completion === 'before') turn.completeTool('ask_clarification', true)
+    turn.completeNativeTurn()
+    if (completion === 'after') turn.completeTool('ask_clarification', true)
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(turn.result).toBe('pending')
+    expect(mock.revoke).not.toHaveBeenCalled()
+    proposal.resolve({
+      output: 'tool_failed',
+      summary: 'Tool failed',
+      isError: true,
+      mutated: false,
+    })
+    await turn.running
+    expect(turn.result).toBe('enhanced_questionnaire_incomplete')
+    expect(mock.startTurn).toHaveBeenCalledTimes(1)
+    await turn.engine.close()
+  },
+)
 
 it('diagnoses thread and turn start boundaries without retaining request content', async () => {
   const diagnostics: string[] = []
@@ -161,6 +445,11 @@ it.each(['answered', 'cancelled', 'failed'])(
     }
     expect(mock.startTurn).toHaveBeenCalledTimes(1)
     expect(mock.revoke).not.toHaveBeenCalled()
+    mock.document.onToolEvent({
+      type: 'tool-start',
+      callId: 'build',
+      toolName: 'build_deck',
+    })
     mock.document.onToolEvent({
       type: 'tool-complete',
       callId: 'build',

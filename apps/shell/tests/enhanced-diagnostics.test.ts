@@ -133,7 +133,7 @@ describe('EnhancedDiagnosticsStore', () => {
     const task = store.recent()[0]!
     expect(task).toMatchObject({ diagnosticId: id, host: 'slides', status: 'failed' })
     expect(task.events.map((event) => event.code)).toContain('stream_protocol_rejected')
-    expect(task.failureCode).toBe('stream_protocol_rejected')
+    expect(task.failureCode).toBe('turn_timeout')
     expect(task.events.some((event) => event.phase === 'app_server_thread_started')).toBe(false)
     expect(JSON.stringify(task)).not.toContain('private prompt')
     expect(JSON.stringify(task)).not.toContain('/Users/')
@@ -200,6 +200,62 @@ describe('EnhancedDiagnosticsStore', () => {
     const id = store.beginTask('slides')
     store.finishTask(id, 'failed', 'enhanced_proposal_expired')
     expect(store.recent()[0]).toMatchObject({ failureCode: 'proposal_expired' })
+  })
+
+  it('preserves questionnaire terminal failure instead of an earlier repair failure', () => {
+    const { store } = fixture()
+    const id = store.beginTask('slides')
+    store.record('enhanced_proposal_execution_failed')
+    store.finishTask(id, 'failed', 'enhanced_questionnaire_incomplete')
+    expect(store.recent()[0]).toMatchObject({ failureCode: 'questionnaire_incomplete' })
+    expect(store.recent()[0]!.events.at(-1)).toMatchObject({
+      code: 'questionnaire_incomplete',
+      outcome: 'failed',
+    })
+  })
+
+  it.each([
+    'carrier_invalid',
+    'carrier_input_invalid',
+    'capability_invalid',
+    'tool_unavailable',
+    'carrier_mismatch',
+    'proposal_summary_invalid',
+    'proposal_outcome_invalid',
+    'proposal_handler_unavailable',
+  ])('restores denial reason %s and unrelated task history after restart', (reason) => {
+    const { store, path } = fixture()
+    const previous = store.beginTask('docs')
+    store.finishTask(previous, 'succeeded')
+    const current = store.beginTask('slides')
+    store.record(`gateway_tool_call_denied_${reason}`)
+    store.finishTask(current, 'failed', 'enhanced_questionnaire_incomplete')
+
+    const restored = new EnhancedDiagnosticsStore({ path })
+    expect(restored.recent()).toEqual(store.recent())
+    expect(restored.recent()).toHaveLength(2)
+    expect(restored.recent().find((task) => task.diagnosticId === current)).toMatchObject({
+      failureCode: 'questionnaire_incomplete',
+      events: expect.arrayContaining([
+        expect.objectContaining({ code: 'mcp_tool_denied', phase: reason }),
+      ]),
+    })
+  })
+
+  it('keeps allowlisted per-call denial reasons without persisting arbitrary details', () => {
+    const { store } = fixture()
+    store.beginTask('slides')
+    store.record('gateway_tool_call_denied_carrier_mismatch')
+    store.record('gateway_tool_call_denied_capability_invalid')
+    store.record('gateway_tool_call_denied_PRIVATE_CONTENT')
+    const task = store.recent()[0]!
+    expect(task.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'mcp_tool_denied', phase: 'carrier_mismatch' }),
+        expect.objectContaining({ code: 'mcp_tool_denied', phase: 'capability_invalid' }),
+      ]),
+    )
+    expect(JSON.stringify(task)).not.toContain('PRIVATE_CONTENT')
   })
 
   it('keeps local start and app-server failure boundaries distinct', () => {

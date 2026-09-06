@@ -885,6 +885,27 @@ export function AiPanel({
       getSlides: () => slidesRef.current,
       getCurrent: () => currentRef.current,
       getSelectedIds: () => selectedRef.current,
+      refreshAuthoritativeState: async (signal) => {
+        signal?.throwIfAborted()
+        const runToken = activeRunTokenRef.current
+        const before = await window.slidesApi.getAcceptanceAuthorityLease()
+        if (!before) return false
+        const refreshed = await window.slidesApi.getRenderSlides()
+        signal?.throwIfAborted()
+        if (
+          !refreshed ||
+          activeRunTokenRef.current !== runToken ||
+          activeRunTokenRef.current !== launchTokenRef.current ||
+          refreshed.documentToken !== before.documentToken ||
+          refreshed.sessionToken !== before.sessionToken
+        )
+          return false
+        // Update synchronous refs as well as React; the next tool must not read
+        // the preceding render while the state update is still queued.
+        slidesRef.current = refreshed.slides
+        applyDeckRef.current(refreshed.slides, currentRef.current)
+        return true
+      },
       captureSlideScreenshot: (slideIndex) => captureSlideShotRef.current(slideIndex),
       getSelectionScope: () => activeSelectionScopeRef.current,
       getAcceptanceAuthorityLease: async () => {

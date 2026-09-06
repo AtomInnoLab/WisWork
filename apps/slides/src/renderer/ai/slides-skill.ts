@@ -64,6 +64,8 @@ export interface DeckAccess {
   getSlides(): RenderSlide[]
   getCurrent(): number
   getSelectedIds(): string[]
+  /** Refresh renderer refs from the current native document after an uncertain write. */
+  refreshAuthoritativeState?(signal?: AbortSignal): Promise<boolean>
   /** Render one slide for bounded, in-memory visual inspection by the main agent. */
   captureSlideScreenshot?(slideIndex: number): Promise<AgentImage | null>
   getAcceptanceAuthorityLease?(): Promise<SlidesAcceptanceAuthorityLease>
@@ -850,7 +852,8 @@ const ALL_TOOLS: AgentToolDef[] = [
               },
               imageUrl: {
                 type: 'string',
-                description: 'An HTTPS imageUrl selected from image_search',
+                description:
+                  'An HTTPS imageUrl selected from image_search. Supported on cover, statement (ending page), and split_image. Cover and statement use a right-side image panel, not a full-page background; text stays unobscured on the left.',
               },
               imageAlt: { type: 'string', description: 'Short accessible description' },
             },
@@ -1296,18 +1299,30 @@ function nodeToParagraphs(node: ShapeRenderNode): EditParagraph[] {
  * by the set_element_style tool and execute_slide_script's setStyle dispatch.
  */
 function mergeStyleIntoParagraphs(cur: EditParagraph[], ov: SlideStylePatch): EditParagraph[] {
-  return cur.map((p) => ({
-    runs: p.runs.map((r) => ({
-      text: r.text,
-      bold: ov.bold ?? r.bold,
-      italic: ov.italic ?? r.italic,
-      underline: ov.underline ?? r.underline,
-      fontSize: typeof ov.fontSize === 'number' ? ov.fontSize : r.fontSize,
-      fontFamily: ov.fontFamily ?? r.fontFamily,
-      color: ov.color ?? r.color,
-    })),
-    align: ov.align ?? p.align,
-  }))
+  return cur.map((p) => {
+    const align = ov.align ?? p.align
+    return {
+      runs: p.runs.map((r) => {
+        const bold = ov.bold ?? r.bold
+        const italic = ov.italic ?? r.italic
+        const underline = ov.underline ?? r.underline
+        const fontSize = typeof ov.fontSize === 'number' ? ov.fontSize : r.fontSize
+        const fontFamily = ov.fontFamily ?? r.fontFamily
+        const color = ov.color ?? r.color
+        // Optional canonical fields must be absent, not own properties with undefined values.
+        return {
+          text: r.text,
+          ...(bold === undefined ? {} : { bold }),
+          ...(italic === undefined ? {} : { italic }),
+          ...(underline === undefined ? {} : { underline }),
+          ...(fontSize === undefined ? {} : { fontSize }),
+          ...(fontFamily === undefined ? {} : { fontFamily }),
+          ...(color === undefined ? {} : { color }),
+        }
+      }),
+      ...(align === undefined ? {} : { align }),
+    }
+  })
 }
 
 /** Element info shared by outline/read_slide/edit scripts (includes absolute geometry; locked = layout decoration, read-only). */
@@ -1733,6 +1748,8 @@ interface SkillState {
   plannedPageCount?: number
   /** A new-deck plan must be materialized atomically before low-level refinement. */
   awaitingBuildDeck?: boolean
+  /** A native image write may have happened without a matching renderer update. */
+  authoritativeRefreshRequired?: boolean
   /** Questionnaire completion cannot terminate the run before the model plans the deck. */
   questionnaireAnsweredPendingPlan?: boolean
 }
@@ -1743,6 +1760,22 @@ const fail = (summary: string, output: string) => ({
   mutated: false,
   summary,
 })
+
+async function refreshAuthoritativeState(
+  access: DeckAccess,
+  state: SkillState | undefined,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  let refreshed = false
+  try {
+    refreshed = (await access.refreshAuthoritativeState?.(signal)) === true
+  } catch {
+    // Keep the refresh requirement: cached reads cannot safely drive a retry.
+  }
+  signal?.throwIfAborted()
+  if (refreshed && state) state.authoritativeRefreshRequired = false
+  return refreshed
+}
 
 // ── Figure-provenance gate ────────────────────────────────────
 // Prompt rules ("search before writing data") did not stop invented numbers being
@@ -1857,6 +1890,18 @@ async function executeTool(
       signal?.throwIfAborted()
       unguardedAccess.applyDeck(updatedSlides, goTo)
     },
+  }
+  if (
+    state?.authoritativeRefreshRequired &&
+    !(await refreshAuthoritativeState(access, state, signal))
+  ) {
+    return {
+      ...fail(
+        call.name,
+        'authoritative_reload_required: Native document state could not be refreshed. Do not use cached page data or retry edits until the document is reloaded.',
+      ),
+      stopToolBatch: true,
+    }
   }
   const slides = access.getSlides()
   if (UNSUPPORTED_CLOUD_TOOLS.has(call.name)) {
@@ -3024,11 +3069,12 @@ async function executeTool(
           typeof imageUrl === 'string' &&
           layout !== undefined &&
           layout !== 'cover' &&
+          layout !== 'statement' &&
           layout !== 'split_image'
         )
           return fail(
             t('aiFailPlan'),
-            `Page ${pages.length + 1} uses layout ${layout} with imageUrl. Images are supported only by cover and split_image layouts. No pages were written. Change this page to split_image (or remove imageUrl and imageAlt to keep its layout), then retry build_deck with all pages.`,
+            `Page ${pages.length + 1} uses layout ${layout} with imageUrl. Images are supported by cover, statement and split_image layouts. No pages were written. Change this page to split_image (or remove imageUrl and imageAlt to keep its layout), then retry build_deck with all pages.`,
           )
         if (
           (layout === 'timeline' && body.length > 5) ||
@@ -3172,7 +3218,7 @@ async function executeTool(
           box(`deck-bg-${slideIndex}`, ' ', 0, 0, 1280, 720, 1, palette.background, {
             fill: palette.background,
           })
-          if (layout === 'cover') {
+          if (layout === 'cover' || (layout === 'statement' && page.imageUrl)) {
             box(`deck-accent-${slideIndex}`, ' ', 72, 104, 10, 452, 1, palette.accent, {
               fill: palette.accent,
             })
@@ -3322,7 +3368,7 @@ async function executeTool(
           box(
             `deck-page-${slideIndex}`,
             `${slideIndex + 1} / ${pages.length}`,
-            1120,
+            page.imageUrl && (layout === 'cover' || layout === 'statement') ? 586 : 1120,
             660,
             96,
             24,
@@ -3391,32 +3437,54 @@ async function executeTool(
           }
         }
       }
+      // The content now exists. Refinement must remain available even if an
+      // image IPC rejects or the user cancels during the image phase.
+      if (state) state.awaitingBuildDeck = false
       if (designed) {
+        const failedImagePages: number[] = []
         for (const [slideIndex, page] of pages.entries()) {
           if (!page.imageUrl) continue
           const layout = page.layout ?? (slideIndex === 0 ? 'cover' : 'split_image')
           const placement =
-            layout === 'cover'
+            layout === 'cover' || layout === 'statement'
               ? { xPx: 730, yPx: 0, wPx: 550, hPx: 720 }
               : { xPx: 660, yPx: 130, wPx: 548, hPx: 470 }
-          const inserted = await window.slidesApi.insertImageUrl({
-            slideIndex,
-            url: page.imageUrl,
-            ...placement,
-            fitWidthPx: access.fitWidthPx,
-          })
+          let inserted: Awaited<ReturnType<typeof window.slidesApi.insertImageUrl>>
+          if (state) state.authoritativeRefreshRequired = true
+          try {
+            inserted = await window.slidesApi.insertImageUrl({
+              slideIndex,
+              url: page.imageUrl,
+              ...placement,
+              fitWidthPx: access.fitWidthPx,
+            })
+          } catch {
+            signal?.throwIfAborted()
+            // IPC may fail after a native write. Do not blindly retry the same
+            // image or lose the partial-mutation receipt to the generic catch.
+            failedImagePages.push(slideIndex + 1)
+            continue
+          }
           signal?.throwIfAborted()
           if (!inserted) {
-            if (state) state.awaitingBuildDeck = false
-            return {
-              output: `The deck content was created, but image insertion failed on page ${slideIndex + 1}. Inspect or undo before retrying.`,
-              isError: true,
-              mutated: true,
-              stopToolBatch: true,
-              summary: t('aiFailInsertImage'),
-            }
+            failedImagePages.push(slideIndex + 1)
+            continue
           }
           access.applySlide(slideIndex, inserted.slide)
+          if (state && failedImagePages.length === 0) state.authoritativeRefreshRequired = false
+        }
+        if (failedImagePages.length) {
+          if (state) state.awaitingBuildDeck = false
+          const refreshed = await refreshAuthoritativeState(access, state, signal)
+          return {
+            output: refreshed
+              ? `Deck text was created. Image insertion could not be confirmed on pages ${failedImagePages.join(', ')}; other images were attempted. Native document state has been refreshed. Read these pages before retrying because an image may already exist. Repair only missing or incorrect images in this turn. Do not rebuild the entire deck or report visual verification as complete.`
+              : `authoritative_reload_required: Deck text was created, but image insertion could not be confirmed on pages ${failedImagePages.join(', ')} and native state could not be refreshed. Do not retry images or claim verification from cached page data. Reload the document before further edits.`,
+            isError: true,
+            mutated: true,
+            stopToolBatch: true,
+            summary: t('aiFailInsertImage'),
+          }
         }
       }
       if (state) state.awaitingBuildDeck = false

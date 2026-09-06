@@ -145,7 +145,7 @@ export function createProductionCodexBootstrap(
         cancelled: boolean
         readonly pendingProposals: Set<string>
         readonly pendingQuestionnaires: Set<string>
-        questionnaireNeedsFollowup: boolean
+        questionnaireAwaitingContinuation: boolean
         questionnaireFailure?: Error
         lastFailure?: Error
         deferredTerminal?: { status: 'completed' | 'cancelled' | 'failed'; error?: Error }
@@ -254,27 +254,25 @@ export function createProductionCodexBootstrap(
                   if (event.type === 'tool-start') active.pendingQuestionnaires.add(event.callId)
                   else if (event.type === 'tool-complete') {
                     active.pendingQuestionnaires.delete(event.callId)
-                    if (!event.isError) active.questionnaireNeedsFollowup = true
-                    else
+                    if (!event.isError) {
+                      active.questionnaireFailure = undefined
+                      active.questionnaireAwaitingContinuation = true
+                    } else
                       active.questionnaireFailure = new Error('enhanced_questionnaire_incomplete')
                   }
-                } else if (event.type === 'tool-complete' && !event.isError) {
+                } else if (event.type === 'tool-start') {
                   const tool = input.session
                     .listTools(input.session.credentials)
                     .find((tool) => tool.name === event.toolName)
-                  if (tool?.annotations?.readOnlyHint === false)
-                    active.questionnaireNeedsFollowup = false
+                  // A known tool call after the answer proves the native loop continued.
+                  // Its read/write outcome is separate from questionnaire completion.
+                  if (tool) active.questionnaireAwaitingContinuation = false
                 }
               }
               active?.touch()
               emit(input.onEvent, event)
-              if (
-                active?.deferredTerminal &&
-                active.pendingQuestionnaires.size === 0 &&
-                active.pendingProposals.size === 0
-              ) {
+              if (active?.deferredTerminal) {
                 const terminal = active.deferredTerminal
-                active.deferredTerminal = undefined
                 active.requestSettle(terminal.status, terminal.error)
               }
             },
@@ -311,14 +309,7 @@ export function createProductionCodexBootstrap(
                   active.pendingProposals.delete(proposal.proposalId)
                   active.touch()
                   const deferred = active.deferredTerminal
-                  if (deferred && active.pendingProposals.size === 0) {
-                    active.deferredTerminal = undefined
-                    const failure = active.proposalFailure
-                    active.settle(
-                      failure ?? deferred.status,
-                      failure === 'failed' ? active.proposalError : deferred.error,
-                    )
-                  }
+                  if (deferred) active.requestSettle(deferred.status, deferred.error)
                 },
                 () => {
                   options.diagnostics?.('enhanced_proposal_execution_failed')
@@ -326,10 +317,8 @@ export function createProductionCodexBootstrap(
                   active.proposalError = new Error('enhanced_proposal_failed')
                   active.pendingProposals.delete(proposal.proposalId)
                   active.touch()
-                  if (active.deferredTerminal && active.pendingProposals.size === 0) {
-                    active.deferredTerminal = undefined
-                    active.settle('failed', new Error('enhanced_proposal_failed'))
-                  }
+                  const deferred = active.deferredTerminal
+                  if (deferred) active.requestSettle(deferred.status, deferred.error)
                 },
               )
               const { settled: _settled, ...publicProposal } = proposal
@@ -381,17 +370,14 @@ export function createProductionCodexBootstrap(
             cancelled: false,
             pendingProposals: new Set(),
             pendingQuestionnaires: new Set(),
-            questionnaireNeedsFollowup: false,
+            questionnaireAwaitingContinuation: false,
             touch: () => {
               if (active.pendingProposals.size > 0 || active.pendingQuestionnaires.size > 0)
                 deadline.disarm()
               else if (!settled && !active.deferredTerminal) deadline.touch()
             },
             requestSettle(status, error) {
-              if (status === 'completed' && active.questionnaireFailure) {
-                active.settle('failed', active.questionnaireFailure)
-                return
-              }
+              if (settled) return
               if (
                 (active.pendingProposals.size > 0 || active.pendingQuestionnaires.size > 0) &&
                 status === 'completed'
@@ -400,13 +386,18 @@ export function createProductionCodexBootstrap(
                 deadline.disarm()
                 return
               }
+              active.deferredTerminal = undefined
+              if (status === 'completed' && active.questionnaireFailure) {
+                active.settle('failed', active.questionnaireFailure)
+                return
+              }
               if (status === 'completed' && active.proposalFailure) {
                 active.settle(active.proposalFailure, active.proposalError)
                 return
               }
               if (
                 status === 'completed' &&
-                active.questionnaireNeedsFollowup &&
+                active.questionnaireAwaitingContinuation &&
                 !active.cancelled
               ) {
                 // Never repair an unfinished native tool cell by opening a new

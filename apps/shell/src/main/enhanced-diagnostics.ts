@@ -78,6 +78,7 @@ export type DiagnosticSafeCode =
   | 'proposal_cancelled'
   | 'proposal_execution_failed'
   | 'proposal_expired'
+  | 'questionnaire_incomplete'
   | 'unknown_failure'
 
 const SAFE_CODES = new Set<DiagnosticSafeCode>([
@@ -125,6 +126,7 @@ const SAFE_CODES = new Set<DiagnosticSafeCode>([
   'proposal_cancelled',
   'proposal_execution_failed',
   'proposal_expired',
+  'questionnaire_incomplete',
   'unknown_failure',
 ])
 const COMPONENTS = new Set<DiagnosticComponent>([
@@ -241,6 +243,14 @@ const boundedPhase = (value: string): string =>
     'initialize',
     'session',
     'protocol',
+    'carrier_invalid',
+    'carrier_input_invalid',
+    'capability_invalid',
+    'tool_unavailable',
+    'carrier_mismatch',
+    'proposal_summary_invalid',
+    'proposal_outcome_invalid',
+    'proposal_handler_unavailable',
     'unknown',
   ].includes(value)
     ? value
@@ -371,6 +381,15 @@ function safeDiagnostic(code: string): {
     return { component: 'host', phase: 'turn', outcome: 'failed', code: 'turn_timeout' }
   if (code === 'enhanced_proposal_expired')
     return { component: 'host', phase: 'turn', outcome: 'failed', code: 'proposal_expired' }
+  if (code === 'enhanced_questionnaire_incomplete')
+    return { component: 'host', phase: 'turn', outcome: 'failed', code: 'questionnaire_incomplete' }
+  if (code === 'enhanced_proposal_failed')
+    return {
+      component: 'host',
+      phase: 'turn',
+      outcome: 'failed',
+      code: 'proposal_execution_failed',
+    }
   if (code === 'enhanced_turn_failed')
     return { component: 'host', phase: 'turn', outcome: 'failed', code: 'turn_failed' }
   if (code === 'codex_turn_started')
@@ -383,6 +402,12 @@ function safeDiagnostic(code: string): {
     return { component: 'mcp', phase: 'tool', outcome: 'started', code: 'mcp_tool_started' }
   if (code === 'gateway_tool_call_completed')
     return { component: 'mcp', phase: 'tool', outcome: 'succeeded', code: 'mcp_tool_completed' }
+  const denialReason =
+    /^gateway_tool_call_denied_(carrier_invalid|carrier_input_invalid|capability_invalid|tool_unavailable|carrier_mismatch|proposal_summary_invalid|proposal_outcome_invalid|proposal_handler_unavailable)$/.exec(
+      code,
+    )?.[1]
+  if (denialReason)
+    return { component: 'mcp', phase: denialReason, outcome: 'failed', code: 'mcp_tool_denied' }
   if (code === 'gateway_tool_call_denied' || code === 'mcp_request_failed')
     return { component: 'mcp', phase: 'tool', outcome: 'failed', code: 'mcp_tool_denied' }
   if (code === 'gateway_tools_list' || code === 'mcp_tools_list')
@@ -593,8 +618,12 @@ export class EnhancedDiagnosticsStore {
     task.endedAt = this.#now()
     if (status === 'failed') {
       task.failureCode =
-        task.events.find((event) => event.outcome === 'failed')?.code ??
-        safeDiagnostic(rawFailureCode ?? '').code
+        rawFailureCode !== undefined
+          ? safeDiagnostic(rawFailureCode).code
+          : (task.events
+              .slice()
+              .reverse()
+              .find((event) => event.outcome === 'failed')?.code ?? 'turn_failed')
     }
     this.#append(task, {
       component: 'host',
