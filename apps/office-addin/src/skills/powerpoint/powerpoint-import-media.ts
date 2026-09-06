@@ -85,7 +85,7 @@ export function createPowerPointImportMediaSkill(options: {
   return {
     id: 'office-powerpoint-import-media',
     systemPrompt:
-      'Image insertions use bounded VFS media, confirmation, stale-state checks, and semantic verification.',
+      'Image insertions use bounded VFS media, the PC-managed PowerPoint session policy, stale-state checks, and semantic verification.',
     tools: [tool],
     async executeTool(call, signal) {
       if (call.inputError || call.truncated)

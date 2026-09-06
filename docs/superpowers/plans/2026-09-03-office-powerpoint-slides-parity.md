@@ -4,7 +4,7 @@
 
 Make Office PowerPoint Taskpane consume the same display-safe presentation-agent vocabulary and visual primitives as desktop Slides while preserving separate host adapters and document authority. Shared code will live in `packages/ui`; presentation runtime truth remains in `agent-core`, Slides, and Office.
 
-Global constraints: no raw renderer colors, no document authority in UI packages, no silent Standard/Enhanced fallback, no removal of proposal/transaction/readback/rollback controls, and no false parity for unsupported Office.js features.
+Global constraints: no raw renderer colors, no document authority in UI packages, no silent Standard/Enhanced fallback, no removal of proposal/transaction/readback/rollback controls, no ordinary PowerPoint confirmation modal, raw Office confirmation remains mandatory, and no false parity for unsupported Office.js features.
 
 ## Task 1 — Shared presentation-agent view primitives
 
@@ -29,10 +29,10 @@ Global constraints: no raw renderer colors, no document authority in UI packages
 
 - Modify `apps/office-addin/src/skills/powerpoint/powerpoint-skill.ts`, `agent/host-runtime.ts`, and `agent/use-office-agent.ts` only where needed.
 - Add a PowerPoint-specific creation prompt/contract matching desktop sequencing: context, material clarification, plan, research, bounded construction, verification, receipt.
-- Reuse existing Office proposal and presentation-verification authorities; unsupported desktop operations must be represented as capabilities or safe alternatives, not invented tool calls.
+- Reuse existing Office proposal and presentation-verification authorities. Add a host-scoped session policy that automatically confirms only ordinary PowerPoint proposals while preserving raw Office confirmation; unsupported desktop operations must be represented as capabilities or safe alternatives, not invented tool calls.
 - Add Standard and Enhanced integration fixtures for new-deck and existing-deck workflows, including cancel and stale proposal paths.
 - RED: end-to-end Office PowerPoint fixture lacks plan/build/verify parity or terminal truth.
-- GREEN: both runtimes reach the same semantic receipt through Office adapters with explicit confirmation.
+- GREEN: both runtimes reach the same semantic receipt through Office adapters without ordinary confirmation UI; raw Office proposals remain pending until explicit confirmation.
 - Commit separately.
 
 ## Task 4 — Compatibility and release verification

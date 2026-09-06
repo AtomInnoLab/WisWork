@@ -81,6 +81,58 @@ function fixture(overrides: Partial<DocumentToolRegistration> = {}) {
 }
 
 describe('document-scoped tool session', () => {
+  it('separates bounded Office operations from elevated raw Office proposals', () => {
+    const bounded = [
+      ['office-word', 'execute_office_js'],
+      ['office-excel', 'eval_officejs'],
+      ['office-powerpoint', 'execute_office_js'],
+    ] as const
+
+    for (const [host, name] of bounded) {
+      const grant = Object.freeze({})
+      expect(() =>
+        createDocumentToolManifest({
+          policyGrant: grant,
+          consumePolicyGrant(candidate: unknown) {
+            if (candidate !== grant) throw new Error('invalid_enhanced_policy_handle')
+            return {
+              generation: 4,
+              host,
+              policy: rollout,
+              capabilities: ['transaction-proposal'] as const,
+            }
+          },
+          tools: [{ name, description: 'Bounded declarative operations.', inputSchema: {} }],
+          policy: { [name]: 'mutate' },
+        }),
+      ).not.toThrow()
+    }
+
+    const rawGrant = Object.freeze({})
+    expect(() =>
+      createDocumentToolManifest({
+        policyGrant: rawGrant,
+        consumePolicyGrant(candidate: unknown) {
+          if (candidate !== rawGrant) throw new Error('invalid_enhanced_policy_handle')
+          return {
+            generation: 4,
+            host: 'office-powerpoint',
+            policy: rollout,
+            capabilities: ['transaction-proposal'] as const,
+          }
+        },
+        tools: [
+          {
+            name: 'propose_raw_office_edit',
+            description: 'Elevated raw Office proposal.',
+            inputSchema: {},
+          },
+        ],
+        policy: { propose_raw_office_edit: 'mutate' },
+      }),
+    ).toThrow('tool_capability_denied')
+  })
+
   it('waits for human questionnaire answers beyond the ordinary read timeout', async () => {
     vi.useFakeTimers()
     let answer!: (value: ToolExecution) => void

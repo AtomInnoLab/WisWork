@@ -11,7 +11,7 @@ The agent is appropriate because producing a deck requires iterative planning, r
 - Give PowerPoint Taskpane and desktop Slides one presentation-agent interaction model.
 - Present the same lifecycle: understand, clarify when necessary, plan, research, build, review a proposed change, apply, verify, correct, and report completion.
 - Use the same visual language for messages, grouped work steps, progress, confirmation, errors, retry, stop, and undo/recovery status.
-- Preserve Office's existing proposal, stale-revision check, snapshot, readback, rollback, quarantine, and raw Office permission boundaries.
+- Preserve Office's existing proposal, stale-revision check, snapshot, readback, rollback, quarantine, and raw Office permission boundaries as invisible runtime controls.
 - Make unsupported Office.js operations explicit without degrading the whole task when a supported alternative exists.
 
 ## Non-goals
@@ -28,8 +28,8 @@ The agent is appropriate because producing a deck requires iterative planning, r
 3. **Clarification** — ask only when audience, purpose, or another material requirement cannot be safely inferred.
 4. **Plan** — expose a compact plan with build and verification steps; do not dump protocol details.
 5. **Research** — use web and image search when relevant and surface sources/images as bounded step details.
-6. **Build** — perform bounded slide operations. Reads are automatic; mutations produce a reviewable proposal.
-7. **Checkpoint** — show operation, target, scope, and count without raw arguments, secrets, hashes, or internal IDs.
+6. **Build** — perform bounded slide operations. Ordinary PowerPoint mutations use the PC-managed session policy and proceed without interrupting the run; raw Office JS/OOXML remains separately confirmation-gated.
+7. **Checkpoint** — keep ordinary proposal/transaction checkpoints in the activity timeline rather than opening a modal. When raw Office authority is requested, show operation, target, scope, and count without raw arguments, secrets, hashes, or internal IDs.
 8. **Verification** — read back affected state, run presentation postconditions and visual review where supported, and correct only inside the approved policy.
 9. **Handoff** — report verified completion, partial/unverified state, or failure truthfully and expose retry/stop/undo as applicable.
 
@@ -57,15 +57,16 @@ It never carries document handles, Office objects, tool arguments, credentials, 
 
 ## Trust and autonomy
 
-| Action                            | Policy                                          | Rationale                                                   |
-| --------------------------------- | ----------------------------------------------- | ----------------------------------------------------------- |
-| Read deck/context                 | Automatic                                       | Bounded and non-mutating.                                   |
-| Search web/images                 | Automatic within configured service policy      | Needed to complete the task; results remain untrusted data. |
-| Prepare plan/proposal             | Automatic                                       | No document mutation.                                       |
-| Apply Office mutation             | Explicit confirmation                           | User-visible document change through Office.js.             |
-| Verify/read back                  | Automatic                                       | Establishes truthful completion.                            |
-| Correct after failed verification | Only within the approved presentation policy    | Prevents silent scope expansion.                            |
-| Continue after uncertain write    | Refused until reconciliation or document reload | Avoids compounding an unknown document state.               |
+| Action                            | Policy                                          | Rationale                                                                                       |
+| --------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Read deck/context                 | Automatic                                       | Bounded and non-mutating.                                                                       |
+| Search web/images                 | Automatic within configured service policy      | Needed to complete the task; results remain untrusted data.                                     |
+| Prepare plan/proposal             | Automatic                                       | No document mutation.                                                                           |
+| Apply bounded PowerPoint mutation | Automatic inside the active PC-managed session  | Matches desktop Slides while retaining validation, snapshot, readback, and rollback underneath. |
+| Apply raw Office JS/OOXML         | Explicit confirmation for every proposal        | Elevated authority remains exceptional and user-visible.                                        |
+| Verify/read back                  | Automatic                                       | Establishes truthful completion.                                                                |
+| Correct after failed verification | Only within the approved presentation policy    | Prevents silent scope expansion.                                                                |
+| Continue after uncertain write    | Refused until reconciliation or document reload | Avoids compounding an unknown document state.                                                   |
 
 ## Failure handling
 
@@ -79,7 +80,7 @@ It never carries document handles, Office objects, tool arguments, credentials, 
 ## Acceptance criteria
 
 - PowerPoint Taskpane renders the same hierarchy, grouped progress, message treatment, confirmation states, and terminal recovery actions as desktop Slides at desktop and 280 px widths.
-- A new-deck request produces context, optional clarification, a visible plan, bounded build proposals, explicit confirmation, readback verification, and a truthful receipt.
+- A new-deck request produces context, optional clarification, a visible plan, uninterrupted bounded construction, readback and screenshot verification, and a truthful receipt. Ordinary edits do not open confirmation UI; raw Office JS/OOXML still does.
 - Standard and Enhanced runtimes produce the same Taskpane event model and never fall back silently.
 - Cancel, retry, stale proposal, verification failure, rollback, and uncertain-write states have deterministic tests.
 - Existing Word/Excel behavior, Office security tests, Slides presentation tests, theme checks, typechecks, and production builds remain green.

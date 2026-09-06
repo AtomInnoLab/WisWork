@@ -308,6 +308,21 @@ describe('Office Agent workspace UI', () => {
     expect(html).not.toContain('class="app-header"')
   })
 
+  it('shows uninterrupted ordinary editing for PowerPoint while keeping elevated review implicit', () => {
+    const html = workspaceMarkup(
+      {
+        assistantText: '',
+        status: 'idle',
+        proposal: undefined,
+        timeline: Object.freeze([]),
+      },
+      undefined,
+      'powerpoint',
+    )
+    expect(html).toContain('自动应用常规更改')
+    expect(html).not.toContain('更改需确认')
+  })
+
   it('exposes bounded attachment and skill management panels without permanent vertical chrome', () => {
     const files = workspaceMarkup({}, 'attachments')
     expect(files).toContain('role="dialog"')

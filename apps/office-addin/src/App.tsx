@@ -1016,7 +1016,7 @@ export function AgentWorkspace(props: {
             </button>
             <span className="confirmation-chip">
               <span aria-hidden="true" />
-              更改需确认
+              {host === 'powerpoint' ? '自动应用常规更改' : '更改需确认'}
             </span>
           </div>
           {state.busy ? (
@@ -1167,6 +1167,7 @@ export function ConfiguredApp(
                 transport: createPcBridgeAgentTransport(bridge),
                 skill: runtime.skill,
                 proposals: runtime.proposals,
+                automaticPowerPointMutations: activeHost === 'powerpoint',
                 ...('setToolHandler' in bridge ? { remoteTools: bridge } : {}),
                 diagnostics,
                 presentationText: (key) =>

@@ -118,7 +118,7 @@ const CATALOG = Object.freeze({
     get_ooxml: ['read', 'semantic-read'],
     screenshot_document: ['read', 'bounded-render-facts'],
     write_document: ['mutate', 'transaction-proposal'],
-    execute_office_js: ['mutate', 'raw-office-proposal'],
+    execute_office_js: ['mutate', 'transaction-proposal'],
     propose_raw_office_edit: ['mutate', 'raw-office-proposal'],
   }),
   'office-excel': Object.freeze({
@@ -134,7 +134,7 @@ const CATALOG = Object.freeze({
     modify_workbook_structure: ['mutate', 'transaction-proposal'],
     resize_range: ['mutate', 'transaction-proposal'],
     modify_object: ['mutate', 'transaction-proposal'],
-    eval_officejs: ['mutate', 'raw-office-proposal'],
+    eval_officejs: ['mutate', 'transaction-proposal'],
     propose_raw_office_edit: ['mutate', 'raw-office-proposal'],
   }),
   'office-powerpoint': Object.freeze({
@@ -150,7 +150,7 @@ const CATALOG = Object.freeze({
     edit_slide_master: ['mutate', 'transaction-proposal'],
     edit_slide_master_xml: ['mutate', 'transaction-proposal'],
     duplicate_slide: ['mutate', 'transaction-proposal'],
-    execute_office_js: ['mutate', 'raw-office-proposal'],
+    execute_office_js: ['mutate', 'transaction-proposal'],
     propose_raw_office_edit: ['mutate', 'raw-office-proposal'],
   }),
 }) as unknown as Readonly<

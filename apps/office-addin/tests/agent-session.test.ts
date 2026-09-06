@@ -1038,6 +1038,101 @@ describe('Office agent session', () => {
     expect(harness.stream).toHaveBeenCalledTimes(2)
   })
 
+  it('auto-applies ordinary PowerPoint proposals without exposing confirmation UI', async () => {
+    const harness = transportHarness()
+    const proposals = createStructuredProposalController()
+    const execute = vi.fn(async () => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'powerpoint',
+        systemPrompt: 'test',
+        tools: [{ name: 'edit_slide_text', description: 'write', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(() => {
+          const proposal = proposals.propose({
+            operation: 'edit_slide_text',
+            toolName: 'edit_slide_text',
+            title: 'Update slide',
+            preview: {},
+            impact: { host: 'powerpoint', targets: ['slide-1/shape-1'], count: 1 },
+            fingerprint: 'v1',
+            validate: async () => true,
+            execute,
+          })
+          return {
+            output: JSON.stringify({ proposalId: proposal.id }),
+            mutated: false,
+            summary: 'Prepared change',
+          }
+        }),
+      },
+      proposals,
+      automaticPowerPointMutations: true,
+    })
+
+    session.send('update the slide')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({ id: 'ppt-write', name: 'edit_slide_text', input: {} })
+    harness.callbacks().onDone()
+
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+    expect(session.snapshot().proposal).toBeUndefined()
+    expect(session.snapshot().timeline.some((event) => event.kind === 'proposal')).toBe(false)
+  })
+
+  it('keeps raw Office proposals explicitly confirmation-gated in automatic PowerPoint mode', async () => {
+    const harness = transportHarness()
+    const proposals = createStructuredProposalController()
+    const execute = vi.fn(async () => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'powerpoint',
+        systemPrompt: 'test',
+        tools: [
+          {
+            name: 'propose_raw_office_edit',
+            description: 'raw write',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        executeTool: vi.fn(() => {
+          const proposal = proposals.propose({
+            operation: 'propose_raw_office_edit',
+            toolName: 'propose_raw_office_edit',
+            title: 'Raw Office edit',
+            preview: {},
+            impact: { host: 'powerpoint', targets: ['slide-1'], count: 1 },
+            fingerprint: 'raw-v1',
+            validate: async () => true,
+            execute,
+          })
+          return {
+            output: JSON.stringify({ proposalId: proposal.id }),
+            mutated: false,
+            summary: 'Prepared raw change',
+          }
+        }),
+      },
+      proposals,
+      automaticPowerPointMutations: true,
+    })
+
+    session.send('run raw edit')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({
+      id: 'raw-write',
+      name: 'propose_raw_office_edit',
+      input: {},
+    })
+    harness.callbacks().onDone()
+
+    await vi.waitFor(() => expect(session.snapshot().proposal).toBeDefined())
+    expect(execute).not.toHaveBeenCalled()
+    expect(harness.stream).toHaveBeenCalledOnce()
+  })
+
   it.each([
     ['word', 'write_document'],
     ['excel', 'set_cell_range'],
