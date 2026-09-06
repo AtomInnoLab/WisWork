@@ -56,6 +56,9 @@ jobs:
       - name: Check product branding
         run: npm run test:branding
 
+      - name: Check rapid iteration isolation
+        run: npm run test:rapid-iteration
+
       - name: Check dependency licenses
         run: npm run licenses
 

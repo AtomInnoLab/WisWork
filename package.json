@@ -17,6 +17,8 @@
     "packages/*"
   ],
   "scripts": {
+    "dogfood:mac": "node tools/dogfood-mac.mjs",
+    "test:rapid-iteration": "node --test tools/dogfood-mac.test.mjs tools/release/preview.test.mjs tools/diagnostics-replay.test.mjs",
     "postinstall": "node node_modules/electron/install.js",
     "format": "node tools/format-changed.mjs --write",
     "format:check": "node tools/format-changed.mjs --check",

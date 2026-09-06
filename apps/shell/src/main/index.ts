@@ -1,4 +1,5 @@
 import { execSync, spawn } from 'node:child_process'
+import { resolveIterationIdentity } from './iteration-identity'
 import { copyFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import {
@@ -233,7 +234,14 @@ import {
 // run silently quits and forwards its argv to the running installed WisWork.
 // WISWORK_USER_DATA: test drivers point this at a scratch dir so an
 // automated instance can run alongside the dev instance (separate lock).
-if (!app.isPackaged)
+const iterationMetadata: unknown = app.isPackaged
+  ? JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8')).wisworkIteration
+  : undefined
+const iterationIdentity = resolveIterationIdentity(iterationMetadata)
+if (iterationIdentity) {
+  app.setName(iterationIdentity.productName)
+  app.setPath('userData', join(app.getPath('appData'), iterationIdentity.productName))
+} else if (!app.isPackaged)
   app.setPath(
     'userData',
     process.env.WISWORK_USER_DATA ?? join(app.getPath('appData'), 'WisWork Dev'),
@@ -2080,7 +2088,7 @@ function registerHomeIpc(): void {
     if (!isUpdateChannel(channel) || channel === currentUpdateChannel()) return
     cachedUpdateChannel = channel
     writeAppSetting(APP_SETTINGS_PATH(), 'updateChannel', channel)
-    applyUpdateChannel(channel)
+    if (!iterationIdentity) applyUpdateChannel(channel)
   })
 
   ipcMain.handle(
@@ -2496,13 +2504,14 @@ function revealShellWindow(): void {
   shellWindow?.focus()
 }
 
-registerAuthProtocolRouting({
-  registerProtocolClient: (protocol) => app.setAsDefaultProtocolClient(protocol),
-  onOpenUrl: (handler) => app.on('open-url', handler),
-  onSecondInstance: (handler) => app.on('second-instance', (_event, argv) => handler(argv)),
-  initialArgv: process.argv,
-  consume: async (input) => authDeepLinks.handle(input),
-})
+if (!iterationIdentity)
+  registerAuthProtocolRouting({
+    registerProtocolClient: (protocol) => app.setAsDefaultProtocolClient(protocol),
+    onOpenUrl: (handler) => app.on('open-url', handler),
+    onSecondInstance: (handler) => app.on('second-instance', (_event, argv) => handler(argv)),
+    initialArgv: process.argv,
+    consume: async (input) => authDeepLinks.handle(input),
+  })
 
 // On macOS a file opened from Finder is not in argv; it arrives via the open-file event (before ready).
 // If another instance already holds the lock, this process exits, and the path must ride along in
@@ -2586,7 +2595,8 @@ app.whenReady().then(async () => {
 
   // Hold the lock before touching either legacy or current profile. Migration completes before
   // auth/session/settings consumers and before any BrowserWindow is created.
-  if (app.isPackaged) migrateLegacyUserData(app.getPath('appData'), app.getPath('userData'))
+  if (app.isPackaged && !iterationIdentity)
+    migrateLegacyUserData(app.getPath('appData'), app.getPath('userData'))
   const themeController = createThemeController({
     settingsPath: APP_SETTINGS_PATH(),
     nativeTheme,
@@ -2817,6 +2827,7 @@ app.whenReady().then(async () => {
           componentVersion: codexComponentManifest.component.version,
           platform: process.platform as 'darwin' | 'win32' | 'linux',
           arch: process.arch as 'arm64' | 'x64',
+          build: iterationMetadata,
         })
         const temporary = `${result.filePath}.${process.pid}.${Date.now()}.tmp`
         try {
@@ -3189,7 +3200,7 @@ app.whenReady().then(async () => {
   // deferred to ready: labels need currentLang(), which reads app.getLocale()
   installBackToHomeItems()
   installDockMenu()
-  initAutoUpdater(() => shellWindow, currentUpdateChannel())
+  if (!iterationIdentity) initAutoUpdater(() => shellWindow, currentUpdateChannel())
 
   const openedLaunchPath = pendingLaunchPath ? openDocumentPath(pendingLaunchPath) : false
   if (!openedLaunchPath && !restoredActive) tabManager?.openHomeTab()
