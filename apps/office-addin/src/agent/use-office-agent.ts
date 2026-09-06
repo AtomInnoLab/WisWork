@@ -490,13 +490,19 @@ export function createOfficeAgentSession(dependencies: {
               value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
             return {
               id: typeof item.id === 'string' ? item.id.slice(0, 40) : `q${index + 1}`,
-              label: typeof item.label === 'string' ? boundedText(item.label) : '',
+              label: typeof item.label === 'string' ? boundedText(item.label).slice(0, 300) : '',
               ...(typeof item.description === 'string'
-                ? { description: boundedText(item.description) }
+                ? { description: boundedText(item.description).slice(0, 300) }
                 : {}),
               options: Array.isArray(item.options)
                 ? item.options
-                    .filter((option): option is string => typeof option === 'string')
+                    .flatMap((option) => {
+                      if (typeof option === 'string') return [boundedText(option).slice(0, 120)]
+                      if (!option || typeof option !== 'object' || Array.isArray(option)) return []
+                      const label = (option as Record<string, unknown>).label
+                      return typeof label === 'string' ? [boundedText(label).slice(0, 120)] : []
+                    })
+                    .filter(Boolean)
                     .slice(0, 5)
                 : [],
             }

@@ -444,7 +444,20 @@ const tools = [
                 type: 'array',
                 minItems: 2,
                 maxItems: 5,
-                items: { type: 'string', minLength: 1, maxLength: 120 },
+                items: {
+                  oneOf: [
+                    { type: 'string', minLength: 1, maxLength: 120 },
+                    {
+                      type: 'object',
+                      properties: {
+                        label: { type: 'string', minLength: 1, maxLength: 120 },
+                        description: { type: 'string', maxLength: 300 },
+                      },
+                      required: ['label'],
+                      additionalProperties: false,
+                    },
+                  ],
+                },
               },
             },
             required: ['id', 'label', 'options'],

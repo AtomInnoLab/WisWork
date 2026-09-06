@@ -1256,7 +1256,11 @@ describe('PowerPoint compatibility skill', () => {
 
 describe('browser PowerPoint adapter', () => {
   it('reads slide count, selected zero-based indices, and the API ladder', async () => {
-    const slides = { items: [{ id: 'slide-1' }, { id: 'slide-2' }], load: vi.fn() }
+    const slides = {
+      items: [{ id: 'slide-1' }, { id: 'slide-2' }],
+      load: vi.fn(),
+      getCount: vi.fn(() => ({ value: 2 })),
+    }
     const selected = { items: [{ id: 'slide-2' }], load: vi.fn() }
     const isSetSupported = vi.fn((_name: string, version: string) => version !== '1.10')
     Object.assign(globalThis, {
@@ -1274,8 +1278,41 @@ describe('browser PowerPoint adapter', () => {
     expect(slides.load).toHaveBeenCalledWith('items/id')
   })
 
-  it('reads bounded state on PowerPointApi 1.2 hosts without selected-slide APIs', async () => {
-    const slides = { items: [{ id: 'slide-1' }], load: vi.fn() }
+  it('keeps presentation state usable when the optional 1.5 selection read fails', async () => {
+    const slides = {
+      items: [{ id: 'slide-1' }, { id: 'slide-2' }],
+      load: vi.fn(),
+      getCount: vi.fn(() => ({ value: 2 })),
+    }
+    const selected = { items: [], load: vi.fn() }
+    const sync = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('host busy'))
+    Object.assign(globalThis, {
+      Office: {
+        context: { host: 'PowerPoint', requirements: { isSetSupported: vi.fn(() => true) } },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({
+            presentation: { slides, getSelectedSlides: () => selected },
+            sync,
+          }),
+      },
+    })
+
+    await expect(new BrowserPowerPointAdapter().getPresentationState()).resolves.toEqual({
+      slideCount: 2,
+      selectedSlideIndexes: [],
+      api: { v12: true, v14: true, v15: true, v18: true, v110: true },
+    })
+    expect(sync).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads bounded state on PowerPointApi 1.2 hosts through getCount only', async () => {
+    const count = { value: 1 }
+    const slides = { getCount: vi.fn(() => count) }
     const isSetSupported = vi.fn(
       (_name: string, version: string) => version === '1.2' || version === '1.4',
     )
@@ -1292,7 +1329,7 @@ describe('browser PowerPoint adapter', () => {
       selectedSlideIndexes: [],
       api: { v12: true, v14: true, v15: false, v18: false, v110: false },
     })
-    expect(slides.load).toHaveBeenCalledWith('items/id')
+    expect(slides.getCount).toHaveBeenCalledOnce()
   })
 
   it('rejects master package replacement on Mac before entering PowerPoint.run', async () => {
