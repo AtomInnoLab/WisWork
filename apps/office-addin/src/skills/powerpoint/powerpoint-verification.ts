@@ -119,7 +119,7 @@ export function createBrowserPowerPointVerificationAuthority(
       return await operation()
     } catch (error) {
       if (signal?.aborted || (error instanceof Error && error.message === 'cancelled')) throw error
-      throw new Error('office_read_failed')
+      throw new Error('office_read_failed', { cause: error })
     }
   }
   const lease = async (signal?: AbortSignal): Promise<OfficePowerPointAuthorityLease> => {
