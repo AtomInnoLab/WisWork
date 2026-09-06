@@ -94,6 +94,7 @@ export function createOfficeHostRuntime(
     diagnostics?: Pick<OfficeDiagnostics, 'setTool' | 'record'>
     presentationVerification?: PresentationVerificationFlags
     presentationTelemetry?: (event: PresentationTelemetryEvent) => void
+    additionalSkills?: AgentSkill[]
     /** Present only for an active, signed-in, paired Enhanced Office session. */
     elevatedOfficeAdapter?: ElevatedOfficeAdapter
     elevatedOfficeAuthority?: () => ElevatedOfficeAuthority
@@ -189,7 +190,10 @@ export function createOfficeHostRuntime(
         confirmationTitle: options.elevatedOfficeConfirmationTitle,
       })
     : undefined
-  const composed = composeOfficeSkills(hostSkill, shared, extensions)
+  const composed = composeOfficeSkills(hostSkill, shared, [
+    ...extensions,
+    ...(options.additionalSkills ?? []),
+  ])
   const dynamicTools = [...composed.tools, ...(elevated?.tools ?? [])]
   const dynamicSkill: AgentSkill = {
     ...composed,

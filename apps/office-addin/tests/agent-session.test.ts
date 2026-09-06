@@ -145,6 +145,15 @@ describe('Office agent session', () => {
         signal: new AbortController().signal,
       }),
     ).toEqual({ output: '{"title":"Doc"}' })
+    expect(session.snapshot().timeline).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'tool',
+          callId: 'call_12345678',
+          state: 'complete',
+        }),
+      ]),
+    )
     expect(executeTool).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'read_document' }),
       expect.any(AbortSignal),

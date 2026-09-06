@@ -1,3 +1,4 @@
+import { imageSearch, wisUsageWebSearch } from '@wiswork/ai-search'
 const MAX_RESPONSE_BYTES = 512 * 1024
 const MAX_QUERY_CHARS = 4_096
 const MAX_FETCH_CONTENT_CHARS = 256 * 1024
@@ -20,6 +21,43 @@ export type OfficeRetrievalProxy = (
   body: unknown,
   signal?: AbortSignal,
 ) => Promise<Uint8Array>
+
+export function createOfficeLocalSearchProxy(options: {
+  fetchWithAuth(request: (accessToken: string) => Promise<Response>): Promise<Response>
+  webSearch?: typeof wisUsageWebSearch
+  searchImages?: typeof imageSearch
+}): OfficeRetrievalProxy {
+  const searchWeb = options.webSearch ?? wisUsageWebSearch
+  const searchImages = options.searchImages ?? imageSearch
+  return async (capability, body, signal) => {
+    const request = requestFor(capability, body)
+    if (signal?.aborted) throw new Error('search_cancelled')
+    if (request.operation === 'web-search') {
+      const input = request.input as { query: string; max_results: number }
+      const result = await searchWeb(input.query, Math.min(input.max_results, 10), {
+        fetchWithAuth: options.fetchWithAuth,
+        signal,
+      })
+      return new TextEncoder().encode(JSON.stringify({ results: result.results }))
+    }
+    if (request.operation === 'image-search') {
+      const input = request.input as { query: string; max_results: number }
+      const result = await searchImages(input.query, input.max_results)
+      if (signal?.aborted) throw new Error('search_cancelled')
+      return new TextEncoder().encode(
+        JSON.stringify({
+          images: result.images.map((image) => ({
+            title: image.title,
+            image_url: image.imageUrl,
+            source_url: image.sourceUrl,
+            source: image.source,
+          })),
+        }),
+      )
+    }
+    throw new Error('retrieval_capability_unavailable')
+  }
+}
 
 const record = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== 'object' || Array.isArray(value))

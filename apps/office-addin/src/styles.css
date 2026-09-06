@@ -105,6 +105,79 @@ p {
   grid-row: 3;
 }
 
+.presentation-agent .ai-typing-row {
+  display: inline-flex;
+  align-items: baseline;
+  min-height: 24px;
+}
+
+.presentation-agent .ai-typing {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 0;
+  color: var(--color-text-secondary);
+}
+
+.presentation-agent .ai-typing-label {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.presentation-agent .ai-typing-dots {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 12px;
+}
+
+.presentation-agent .ai-typing-dot-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+}
+
+.presentation-agent .ai-typing-dot-grow,
+.presentation-agent .ai-typing-dot-shrink {
+  border-radius: 50%;
+  background: var(--color-brand-secondary);
+}
+
+.presentation-agent .ai-typing-dot-grow {
+  animation: office-ai-dot-grow 2s infinite;
+}
+.presentation-agent .ai-typing-dot-shrink {
+  animation: office-ai-dot-shrink 2s infinite;
+}
+
+@keyframes office-ai-dot-grow {
+  0%,
+  100% {
+    width: 4px;
+    height: 4px;
+    opacity: 0.45;
+  }
+  50% {
+    width: 12px;
+    height: 12px;
+    opacity: 1;
+  }
+}
+
+@keyframes office-ai-dot-shrink {
+  0%,
+  100% {
+    width: 12px;
+    height: 12px;
+    opacity: 1;
+  }
+  50% {
+    width: 4px;
+    height: 4px;
+    opacity: 0.45;
+  }
+}
+
 /* PowerPoint uses the same presentation-agent hierarchy as desktop Slides. */
 .presentation-agent .agent-timeline {
   display: flex;

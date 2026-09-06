@@ -22,6 +22,7 @@ export interface ToolPresentationEvent extends PresentationEventBase {
   readonly name: string
   readonly summary: string
   readonly state: 'running' | 'complete' | 'error'
+  readonly durationMs?: number
 }
 
 export interface ProposalPresentationEvent extends PresentationEventBase {
