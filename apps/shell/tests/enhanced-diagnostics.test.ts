@@ -258,6 +258,31 @@ describe('EnhancedDiagnosticsStore', () => {
     expect(JSON.stringify(task)).not.toContain('PRIVATE_CONTENT')
   })
 
+  it('reports missing carrier tools and binding rejection without arbitrary details', () => {
+    const { store } = fixture()
+    store.beginTask('office-powerpoint')
+    store.record('resolver_method_missing')
+    store.record('resolver_protocol_carrier_authorization_mismatch')
+    store.record('resolver_protocol_PRIVATE_CONTENT')
+    expect(store.recent()[0]?.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          component: 'mcp',
+          phase: 'initialize',
+          outcome: 'failed',
+          code: 'mcp_tools_missing',
+        }),
+        expect.objectContaining({
+          component: 'runtime',
+          phase: 'protocol',
+          outcome: 'failed',
+          code: 'carrier_authorization_mismatch',
+        }),
+      ]),
+    )
+    expect(JSON.stringify(store.recent())).not.toContain('PRIVATE_CONTENT')
+  })
+
   it('keeps local start and app-server failure boundaries distinct', () => {
     const { store } = fixture()
     const id = store.beginTask('slides')
