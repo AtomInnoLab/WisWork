@@ -61,6 +61,7 @@ export type DiagnosticSafeCode =
   | 'carrier_authorization_mismatch'
   | 'mcp_tool_started'
   | 'mcp_tool_completed'
+  | 'mcp_tool_failed'
   | 'mcp_tool_denied'
   | 'turn_started'
   | 'turn_completed'
@@ -111,6 +112,7 @@ const SAFE_CODES = new Set<DiagnosticSafeCode>([
   'carrier_authorization_mismatch',
   'mcp_tool_started',
   'mcp_tool_completed',
+  'mcp_tool_failed',
   'mcp_tool_denied',
   'turn_started',
   'turn_completed',
