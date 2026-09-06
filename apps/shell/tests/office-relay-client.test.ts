@@ -56,6 +56,7 @@ function setup(loggedIn = true) {
 describe('Office relay PC client', () => {
   it('publishes Enhanced session state and routes exact tool subframes inside agent.v1', async () => {
     const socket = new FakeSocket()
+    let runtimeReady = false
     const enhanced = {
       version: 1,
       runtime_mode: 'enhanced',
@@ -90,7 +91,7 @@ describe('Office relay PC client', () => {
         throw new Error('standard_must_not_run')
       },
       enhancedProxy,
-      enhancedStatement: () => enhanced,
+      enhancedStatement: () => (runtimeReady ? enhanced : undefined),
       negotiateCapabilities: true,
       onPending() {},
     })
@@ -133,9 +134,10 @@ describe('Office relay PC client', () => {
       type: 'pc.session_state',
       session_id: 'session_12345678',
       capability: 'secret-capability',
-      generation: 7,
-      enhanced,
+      generation: 0,
+      enhanced: null,
     })
+    runtimeReady = true
     socket.message({
       version: 2,
       type: 'relay.request',
@@ -144,6 +146,14 @@ describe('Office relay PC client', () => {
       capability_name: 'agent.v1',
       body: { messages: [] },
     })
+    await vi.waitFor(() =>
+      expect(
+        socket.sent
+          .map(JSON.parse)
+          .filter((value) => value.type === 'pc.session_state')
+          .at(-1),
+      ).toMatchObject({ generation: 7, enhanced }),
+    )
     await vi.waitFor(() =>
       expect(socket.sent.map(JSON.parse).some((value) => value.type === 'pc.tool_call')).toBe(true),
     )
