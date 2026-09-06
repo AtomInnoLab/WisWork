@@ -5,12 +5,15 @@ Approved design: ../specs/2026-09-05-proposal-wait-design.md
 Goal: bounded human confirmation separate from execution; no automatic consent or extended execution authority. Existing isolated branch baseline f3f1271e. No migration or deployment.
 
 ## Unit 1: trusted lifecycle
+
 Modify packages/codex-bridge/src/tool-router.ts and dynamic-mcp-gateway.ts, apps/shell/src/main/codex-engine.ts and relevant tests. Queued mutations wait up to five minutes (proposal capped by grant), claimed execution remains bounded at 30 seconds. Completed models wait for proposals without idle timeout. Preserve cancellation/close/identity/one-shot safeguards. Add failing clock-based tests, implement, run bridge/Shell suites and typechecks. Scoped commit: fix proposal wait lifecycle.
 
 ## Unit 2: confirmation feedback
+
 Inspect packaged confirmation delivery and packages/ui/src/EnhancedMutationConfirmation.tsx plus i18n and tests. Expiry must retain explicit not-applied feedback; no consumed token retry. Test expiry/confirmation/close. Scoped commit: show proposal expiration.
 
 ## Review and delivery
+
 Independent complete-diff review, remedy important findings, rerun affected suites and builds. Package PC only if validation passes; user installs manually. Attempt actual UI validation or explicitly report inability. Do not claim document delivery from model prose. Roll back by reverting scoped commits; preserve user data and existing release output.
 
 ## Verification record
