@@ -1,3 +1,4 @@
+import type { ToolDisplay } from '@wiswork/agent-core'
 import type { OfficeProposal, StructuredProposal } from './proposal-controller.js'
 
 export const MAX_PRESENTATION_EVENTS = 100
@@ -42,6 +43,8 @@ export interface ToolPresentationEvent extends PresentationEventBase {
   readonly summary: string
   readonly state: 'running' | 'complete' | 'error'
   readonly durationMs?: number
+  readonly output?: string
+  readonly display?: ToolDisplay
 }
 
 export interface ProposalPresentationEvent extends PresentationEventBase {

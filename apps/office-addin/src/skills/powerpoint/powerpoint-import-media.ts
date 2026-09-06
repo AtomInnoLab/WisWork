@@ -1,7 +1,7 @@
 import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
 import { exactObject, integerField, optionalField, stringField } from '../../agent/tool-schema.js'
-import { readBoundedImage } from '../shared/import-media.js'
+import { readBoundedImage, validateBoundedImageBytes } from '../shared/import-media.js'
 import type { InMemoryVfs } from '../shared/vfs.js'
 
 export interface PowerPointImageAdapter {
@@ -44,6 +44,15 @@ const input = exactObject({
   height: point,
   explanation: optionalField(stringField({ maxLength: 100 })),
 })
+const webInput = exactObject({
+  url: stringField({ minLength: 1, maxLength: 2_048 }),
+  slide_index: integerField({ min: 0, max: 100_000 }),
+  left: point,
+  top: point,
+  width: point,
+  height: point,
+  explanation: optionalField(stringField({ maxLength: 100 })),
+})
 const tool = {
   name: 'insert-image',
   description: 'Propose inserting a bounded VFS PNG or JPEG on a slide.',
@@ -62,6 +71,24 @@ const tool = {
     additionalProperties: false,
   },
 }
+const webTool = {
+  name: 'insert_web_image',
+  description: 'Fetch and propose inserting a bounded PNG or JPEG URL returned by image_search.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      url: { type: 'string', maxLength: 2_048 },
+      slide_index: { type: 'integer', minimum: 0, maximum: 100_000 },
+      left: { type: 'number', minimum: 0, maximum: 2_000 },
+      top: { type: 'number', minimum: 0, maximum: 2_000 },
+      width: { type: 'number', minimum: 0, maximum: 2_000 },
+      height: { type: 'number', minimum: 0, maximum: 2_000 },
+      explanation: { type: 'string', maxLength: 100 },
+    },
+    required: ['url', 'slide_index', 'left', 'top', 'width', 'height'],
+    additionalProperties: false,
+  },
+}
 function failed(name: string, error: unknown): ToolExecution {
   const message = error instanceof Error ? error.message : ''
   const code = [
@@ -70,6 +97,7 @@ function failed(name: string, error: unknown): ToolExecution {
     'image_mime_unsupported',
     'invalid_image',
     'vfs_not_found',
+    'image_fetch_unavailable',
     'office_api_unsupported',
     'cancelled',
   ].includes(message)
@@ -81,21 +109,28 @@ export function createPowerPointImportMediaSkill(options: {
   adapter: PowerPointImageAdapter
   proposals: StructuredProposalController
   vfs: InMemoryVfs
+  fetchImage?: (url: string, signal?: AbortSignal) => Promise<Uint8Array>
 }): AgentSkill {
   return {
     id: 'office-powerpoint-import-media',
     systemPrompt:
-      'Image insertions use bounded VFS media, the PC-managed PowerPoint session policy, stale-state checks, and semantic verification.',
-    tools: [tool],
+      'When insert_web_image is available, use it for an HTTPS image_url returned by image_search; use insert-image only for an attached VFS path. Image insertions use bounded media, the PC-managed PowerPoint session policy, stale-state checks, and semantic verification.',
+    tools: options.fetchImage ? [tool, webTool] : [tool],
     async executeTool(call, signal) {
       if (call.inputError || call.truncated)
         return failed(call.name, new Error('invalid_tool_input'))
       try {
         if (signal?.aborted) throw new Error('cancelled')
-        if (call.name !== 'insert-image') throw new Error('invalid_tool_input')
-        const value = input(call.input)
+        if (call.name !== 'insert-image' && call.name !== 'insert_web_image')
+          throw new Error('invalid_tool_input')
+        const local = call.name === 'insert-image' ? input(call.input) : undefined
+        const remote = call.name === 'insert_web_image' ? webInput(call.input) : undefined
+        const value = local ?? remote!
         if (value.width < 1 || value.height < 1) throw new Error('invalid_tool_input')
-        const image = await readBoundedImage(options.vfs, value.path)
+        const image =
+          local !== undefined
+            ? await readBoundedImage(options.vfs, local.path)
+            : await validateBoundedImageBytes(await options.fetchImage!(remote!.url, signal))
         const geometry = {
           left: value.left,
           top: value.top,
@@ -119,7 +154,7 @@ export function createPowerPointImportMediaSkill(options: {
           toolName: call.name,
           title: value.explanation || 'Insert image',
           preview: {
-            path: value.path,
+            source: local?.path ?? remote!.url,
             mime: image.mime,
             bytes: image.bytes,
             sourceWidth: image.width,

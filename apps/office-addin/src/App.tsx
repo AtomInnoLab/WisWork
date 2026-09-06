@@ -528,6 +528,40 @@ function PowerPointTimeline(props: {
   confirm: (id: string) => void
   reject: () => void
 }) {
+  const toolDetail = (
+    tool: Extract<OfficePresentationEvent, { kind: 'tool' }>,
+  ): React.ReactNode | undefined => {
+    if (tool.display?.kind === 'images' && tool.display.items?.length) {
+      return (
+        <div className="ai-tool-display-images">
+          {tool.display.items.map((item) => (
+            <a key={item.url} href={item.url} target="_blank" rel="noreferrer">
+              {item.thumb?.startsWith('data:image/') ? (
+                <img src={item.thumb} alt={item.title || ''} />
+              ) : (
+                item.title || item.url
+              )}
+            </a>
+          ))}
+        </div>
+      )
+    }
+    if (tool.display?.kind === 'links' && tool.display.items?.length) {
+      return (
+        <ul className="ai-tool-display-links">
+          {tool.display.items.map((item) => (
+            <li key={item.url}>
+              <a href={item.url} target="_blank" rel="noreferrer">
+                {item.title || item.url}
+              </a>
+            </li>
+          ))}
+        </ul>
+      )
+    }
+    const text = tool.display?.kind === 'text' ? tool.display.text : tool.output
+    return text ? <pre className="ai-tool-display-text">{text}</pre> : undefined
+  }
   const nodes: React.ReactNode[] = []
   let index = 0
   while (index < props.timeline.length) {
@@ -560,6 +594,7 @@ function PowerPointTimeline(props: {
             : tool.state === 'error'
               ? ('error' as const)
               : ('done' as const),
+        detail: toolDetail(tool),
       })
       index += 1
     }
@@ -1139,7 +1174,7 @@ export function ConfiguredApp(
       (transportMode === 'loopback'
         ? createPcBridgeSession()
         : createOfficeRelaySession({
-            capabilities: ['agent.v1', 'web-search.v1', 'image-search.v1'],
+            capabilities: ['agent.v1', 'web-search.v1', 'image-search.v1', 'image-fetch.v1'],
             persistentPairing: __WISWORK_OFFICE_PAIRING_RESUME__,
           })),
     [props.connectionBridge, transportMode],
@@ -1216,6 +1251,25 @@ export function ConfiguredApp(
                 enableConversions: capabilityFlags.conversions,
                 enableSkillPackages: capabilityFlags.skillPackages,
                 enableImportMedia: capabilityFlags.importMedia,
+                ...('capabilityFetch' in bridge && activeHost === 'powerpoint'
+                  ? {
+                      fetchPowerPointImage: async (url: string, signal?: AbortSignal) => {
+                        const response = await bridge.capabilityFetch(
+                          'image-fetch.v1',
+                          { url },
+                          signal,
+                        )
+                        if (!response.ok) throw new Error('image_fetch_unavailable')
+                        const payload = (await response.json()) as { data_base64?: unknown }
+                        if (typeof payload.data_base64 !== 'string')
+                          throw new Error('image_fetch_unavailable')
+                        const binary = atob(payload.data_base64)
+                        return Uint8Array.from(binary, (character) => character.charCodeAt(0))
+                      },
+                      powerPointImageFetchAvailable: () =>
+                        bridge.snapshot().capabilities?.includes('image-fetch.v1') === true,
+                    }
+                  : {}),
                 document,
                 diagnostics,
                 ...('capabilityFetch' in bridge && activeHost === 'powerpoint'
@@ -1275,6 +1329,14 @@ export function ConfiguredApp(
       workspace.runtime.clearSession()
     }
   }, [bridgeState.status, workspace])
+
+  useEffect(() => {
+    workspace?.runtime.setPowerPointImageFetchAvailable?.(
+      bridgeState.status === 'connected' &&
+        'capabilities' in bridgeState &&
+        bridgeState.capabilities?.includes('image-fetch.v1') === true,
+    )
+  }, [bridgeState, workspace])
 
   useEffect(() => {
     const enhanced = bridgeState.enhanced

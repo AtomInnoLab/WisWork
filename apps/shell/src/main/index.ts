@@ -2922,7 +2922,7 @@ app.whenReady().then(async () => {
         })
     const retrievalCapabilities = retrievalEndpoint
       ? (['web-search.v1', 'web-fetch.v1', 'image-search.v1'] as const)
-      : (['web-search.v1', 'image-search.v1'] as const)
+      : (['web-search.v1', 'image-search.v1', 'image-fetch.v1'] as const)
     const endpoint = officeRelayEndpointFromEnv(process.env)
     officeRelay = createOfficeRelayPool({
       createClient: (events) =>

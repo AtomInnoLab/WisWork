@@ -53,6 +53,7 @@ const SUPPORTED_CAPABILITIES: &[&str] = &[
     "web-search.v1",
     "web-fetch.v1",
     "image-search.v1",
+    "image-fetch.v1",
 ];
 
 #[derive(Clone)]
