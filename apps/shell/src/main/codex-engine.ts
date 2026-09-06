@@ -146,7 +146,6 @@ export function createProductionCodexBootstrap(
         readonly pendingProposals: Set<string>
         readonly pendingQuestionnaires: Set<string>
         questionnaireNeedsFollowup: boolean
-        questionnaireRetries: number
         questionnaireFailure?: Error
         lastFailure?: Error
         deferredTerminal?: { status: 'completed' | 'cancelled' | 'failed'; error?: Error }
@@ -383,7 +382,6 @@ export function createProductionCodexBootstrap(
             pendingProposals: new Set(),
             pendingQuestionnaires: new Set(),
             questionnaireNeedsFollowup: false,
-            questionnaireRetries: 0,
             touch: () => {
               if (active.pendingProposals.size > 0 || active.pendingQuestionnaires.size > 0)
                 deadline.disarm()
@@ -411,32 +409,9 @@ export function createProductionCodexBootstrap(
                 active.questionnaireNeedsFollowup &&
                 !active.cancelled
               ) {
-                if (active.questionnaireRetries >= 2 || !active.threadId) {
-                  active.settle('failed', new Error('enhanced_questionnaire_incomplete'))
-                  return
-                }
-                active.questionnaireRetries++
-                active.turnId = undefined
-                active.touch()
-                options.diagnostics?.('enhanced_questionnaire_continuing')
-                void client
-                  .startTurn(
-                    active.threadId,
-                    `<wiswork_turn_capability>${grant.capability}</wiswork_turn_capability>\nThe questionnaire has been answered. Continue the original request using those answers in this conversation. Do not ask the user to repeat them or stop after acknowledgement. Use the appropriate planning and document tools, then inspect screenshots and repair the result before concluding. If blocked, report the concrete failure.`,
-                  )
-                  .then(({ turn }) => {
-                    if (!settled && !active.cancelled) {
-                      active.turnId = turn.id
-                      active.touch()
-                    } else if (active.threadId) {
-                      startBestEffortCodexInterrupt(() =>
-                        client.interruptTurn(active.threadId!, turn.id),
-                      )
-                    }
-                  })
-                  .catch(() =>
-                    active.settle('failed', new Error('enhanced_questionnaire_incomplete')),
-                  )
+                // Never repair an unfinished native tool cell by opening a new
+                // turn. The model must wait for its result in the original turn.
+                active.settle('failed', new Error('enhanced_questionnaire_incomplete'))
                 return
               }
               active.settle(status, error)

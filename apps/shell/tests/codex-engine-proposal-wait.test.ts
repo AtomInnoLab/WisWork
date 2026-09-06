@@ -132,10 +132,11 @@ it.each(['answered', 'cancelled', 'failed'])(
       callId: 'survey',
       toolName: 'ask_clarification',
     })
-    mock.notify({
-      method: 'turn/completed',
-      params: { threadId: 'thread', turn: { id: 'turn', status: 'completed' } },
-    })
+    if (outcome !== 'answered')
+      mock.notify({
+        method: 'turn/completed',
+        params: { threadId: 'thread', turn: { id: 'turn', status: 'completed' } },
+      })
     await new Promise((r) => setTimeout(r, 0))
     expect(done).toBe(false)
     if (cancelled) await engine.cancelTurn('doc')
@@ -158,7 +159,7 @@ it.each(['answered', 'cancelled', 'failed'])(
       await engine.close()
       return
     }
-    expect(mock.startTurn).toHaveBeenCalledTimes(2)
+    expect(mock.startTurn).toHaveBeenCalledTimes(1)
     expect(mock.revoke).not.toHaveBeenCalled()
     mock.document.onToolEvent({
       type: 'tool-complete',

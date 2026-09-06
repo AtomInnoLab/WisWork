@@ -40,7 +40,7 @@ describe('closed document carrier issuer', () => {
     expect(JSON.stringify(handle)).toBe('{}')
 
     const prepared = owner.prepareTurn(structuredClone(captured), {}, handle)
-    expect(prepared.messagesRequest.tools).toHaveLength(1)
+    expect(prepared.messagesRequest.tools?.map((tool) => tool.name)).toEqual(['wait', 'exec'])
     expect(Object.keys(prepared).sort()).toEqual(['messagesRequest', 'messagesStreamToResponses'])
     expect(() => owner.prepareTurn(structuredClone(captured), {}, handle)).toThrow(
       'carrier_authorization_consumed',

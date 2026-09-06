@@ -62,6 +62,39 @@ async function expectStreamCode(
 }
 
 describe('bounded Anthropic SSE state machine', () => {
+  it('emits a native wait function call for a yielded exec cell', async () => {
+    const frame = (type: string, data: object) =>
+      `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`
+    const turn = prepareCarrierTurn(structuredClone(captured))
+    const events = await collect(
+      turn.messagesStreamToResponses(
+        chunks(
+          start,
+          frame('content_block_start', {
+            index: 0,
+            content_block: { type: 'tool_use', id: 'wait-call', name: 'wait', input: {} },
+          }),
+          frame('content_block_delta', {
+            index: 0,
+            delta: {
+              type: 'input_json_delta',
+              partial_json: '{"cell_id":"survey-1","yield_time_ms":1000}',
+            },
+          }),
+          frame('content_block_stop', { index: 0 }),
+          delta.replace('end_turn', 'tool_use'),
+          stop,
+        ),
+      ),
+    )
+    expect(
+      events.find((event) => event.event === 'response.output_item.done')?.data.item,
+    ).toMatchObject({
+      type: 'function_call',
+      name: 'wait',
+      arguments: '{"cell_id":"survey-1","yield_time_ms":1000}',
+    })
+  })
   it.each([
     ['empty stream', [], 'premature_messages_eof'],
     ['start only', [start], 'premature_messages_eof'],

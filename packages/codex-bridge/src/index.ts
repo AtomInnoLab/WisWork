@@ -712,6 +712,25 @@ function validatePinnedAdditionalTools(item: UnknownRecord, limits: ProtocolLimi
   return true
 }
 
+function parseWaitInput(value: unknown): void {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['cell_id', 'yield_time_ms', 'max_tokens']) ||
+    typeof value.cell_id !== 'string' ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(value.cell_id)
+  )
+    fail('invalid_wait_input')
+  for (const key of ['yield_time_ms', 'max_tokens']) {
+    if (
+      value[key] !== undefined &&
+      (!Number.isSafeInteger(value[key]) ||
+        (value[key] as number) <= 0 ||
+        (value[key] as number) > (key === 'yield_time_ms' ? 300_000 : 32_000))
+    )
+      fail('invalid_wait_input')
+  }
+}
+
 function safeExecDescription(methods: readonly string[]): string {
   return `For screenshots use exactly: const result = await tools.${methods[0]}({...}); for (const block of result.content) { if (block.type === "image") image(block); else if (block.type === "text") text(block.text); } This emits native images, never stringify PNG data. Execute exactly one document MCP call. An optional first line // @exec: {"yield_time_ms":1000,"max_output_tokens":100} is allowed. Allowed syntax: text(await tools.${methods.join(
     '({...})) or text(await tools.',
@@ -914,6 +933,21 @@ function convertResponsesRequest(
   }
   if (exposesExec) {
     upstreamTools.push({
+      name: 'wait',
+      description:
+        'When exec returns Script running with cell ID, call wait with that cell_id until it completes. This includes questionnaires awaiting human answers. Do not end the task or request the answers again while the cell is running.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          cell_id: { type: 'string' },
+          yield_time_ms: { type: 'integer', minimum: 1, maximum: 300000 },
+          max_tokens: { type: 'integer', minimum: 1, maximum: 32000 },
+        },
+        required: ['cell_id'],
+        additionalProperties: false,
+      },
+    })
+    upstreamTools.push({
       name: 'exec',
       description: safeExecDescription(allowedExecMethods),
       input_schema: {
@@ -940,8 +974,9 @@ function convertResponsesRequest(
 
   for (const rawItem of conversationItems) {
     if (!isRecord(rawItem)) fail('unsupported_input_item')
-    const isResult = rawItem.type === 'custom_tool_call_output'
-    const isCall = rawItem.type === 'custom_tool_call'
+    const isResult =
+      rawItem.type === 'custom_tool_call_output' || rawItem.type === 'function_call_output'
+    const isCall = rawItem.type === 'custom_tool_call' || rawItem.type === 'function_call'
     if (pending && resultIndex === pending.length && !isResult) {
       pending = undefined
       resultIndex = 0
@@ -984,13 +1019,28 @@ function convertResponsesRequest(
       if (used.has(id)) fail('duplicate_call_id')
       used.add(id)
       usedCallIds.push(id)
-      if (!hasOnlyKeys(rawItem, ['type', 'id', 'call_id', 'name', 'input', 'status']))
+      if (!hasOnlyKeys(rawItem, ['type', 'id', 'call_id', 'name', 'input', 'arguments', 'status']))
         fail('unsupported_input_item')
       if (rawItem.id !== undefined) {
         const itemId = requireString(rawItem.id, 'invalid_tool_call')
         if (itemId === '' || utf8Length(itemId) > limits.maxStringLength) fail('invalid_tool_call')
       }
       if (rawItem.status !== undefined && rawItem.status !== 'completed') fail('invalid_tool_call')
+      if (rawItem.type === 'function_call') {
+        if (rawItem.name !== 'wait' || !exposesExec || rawItem.input !== undefined)
+          fail('unadvertised_tool_call')
+        let input: unknown
+        try {
+          input = JSON.parse(requireString(rawItem.arguments, 'invalid_wait_input'))
+        } catch {
+          fail('invalid_wait_input')
+        }
+        parseWaitInput(input)
+        pending ??= []
+        pending.push({ id })
+        append('assistant', [{ type: 'tool_use', id, name: 'wait', input }])
+        continue
+      }
       if (rawItem.name !== 'exec' || !exposesExec) fail('unadvertised_tool_call')
       const code = requireString(rawItem.input, 'invalid_custom_tool_input')
       parseSafeExecCode(code, allowedExecMethods, limits)
@@ -1451,7 +1501,8 @@ async function* convertMessagesStream(
       const name = requireString(data.content_block.name, 'invalid_messages_event')
       if (callId === '') fail('invalid_messages_event')
       if (strict.usedCalls.has(callId)) fail('duplicate_call_id')
-      if (name !== 'exec' || context.allowedExecMethods.length === 0) fail('unadvertised_tool_call')
+      if (!['exec', 'wait'].includes(name) || context.allowedExecMethods.length === 0)
+        fail('unadvertised_tool_call')
       if (
         strict.toolCalls >= MAX_TOOL_CALLS_PER_RESPONSE ||
         !context.carrierEntry ||
@@ -1695,6 +1746,37 @@ async function* convertMessagesStream(
             parsed = JSON.parse(block.arguments)
           } catch {
             fail('invalid_custom_tool_input')
+          }
+          if (block.name === 'wait') {
+            parseWaitInput(parsed)
+            const argumentsText = JSON.stringify(parsed)
+            const item = {
+              id: block.itemId,
+              type: 'function_call',
+              status: 'completed',
+              call_id: block.callId,
+              name: 'wait',
+              arguments: argumentsText,
+            }
+            strict.output.push(item)
+            frames.push(
+              sse('response.output_item.added', {
+                output_index: block.outputIndex,
+                item: { ...item, status: 'in_progress', arguments: '' },
+              }),
+              sse('response.function_call_arguments.delta', {
+                item_id: block.itemId,
+                output_index: block.outputIndex,
+                delta: argumentsText,
+              }),
+              sse('response.function_call_arguments.done', {
+                item_id: block.itemId,
+                output_index: block.outputIndex,
+                arguments: argumentsText,
+              }),
+              sse('response.output_item.done', { output_index: block.outputIndex, item }),
+            )
+            continue
           }
           if (
             !isRecord(parsed) ||
