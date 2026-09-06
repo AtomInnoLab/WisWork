@@ -107,6 +107,23 @@ describe('Office Agent workspace UI', () => {
     expect(enhanced).not.toMatch(/切换到|启用增强|mode-switch/)
   })
 
+  it('shows PowerPoint clarification as one model-authored question at a time', () => {
+    const html = workspaceMarkup(
+      {
+        questionnaire: Object.freeze([
+          Object.freeze({ id: 'audience', label: '这份 PPT 面向谁？', options: ['客户', '团队'] }),
+          Object.freeze({ id: 'style', label: '希望什么风格？', options: ['简洁', '杂志感'] }),
+        ]),
+      },
+      undefined,
+      'powerpoint',
+    )
+
+    expect(html).toContain('这份 PPT 面向谁？')
+    expect(html).not.toContain('希望什么风格？')
+    expect(html).toContain('下一题')
+  })
+
   it('collapses an applied PowerPoint proposal into a concise verified result', () => {
     const structured = {
       id: 'ppt-applied',

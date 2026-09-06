@@ -588,42 +588,51 @@ function PowerPointQuestionnaire(props: {
   onSkip: () => void
 }) {
   const [answers, setAnswers] = useState<Record<string, string>>({})
+  const [activeIndex, setActiveIndex] = useState(0)
+  const question = props.questions[activeIndex]
+  const finish = (nextAnswers: Record<string, string>) =>
+    props.onSubmit(
+      props.questions
+        .map((item) => `${item.label}: ${nextAnswers[item.id] || '（帮我决定）'}`)
+        .join('\n'),
+    )
+  const advance = (delegated = false) => {
+    if (!question) return
+    const nextAnswers = delegated ? { ...answers, [question.id]: '' } : answers
+    if (activeIndex + 1 < props.questions.length) {
+      setAnswers(nextAnswers)
+      setActiveIndex((current) => current + 1)
+    } else finish(nextAnswers)
+  }
+  if (!question) return null
   return (
     <section className="ppt-questionnaire" aria-label="演示文稿制作问卷">
-      {props.questions.map((question) => (
-        <label key={question.id}>
-          <strong>{question.label}</strong>
-          {question.description && <span>{question.description}</span>}
-          <select
-            value={answers[question.id] ?? ''}
-            onChange={(event) =>
-              setAnswers((current) => ({ ...current, [question.id]: event.target.value }))
-            }
-          >
-            <option value="">帮我决定</option>
-            {question.options.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </label>
-      ))}
-      <div className="ppt-questionnaire-actions">
-        <button type="button" className="secondary" onClick={props.onSkip}>
-          全部帮我决定
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            props.onSubmit(
-              props.questions
-                .map((question) => `${question.label}: ${answers[question.id] || '（帮我决定）'}`)
-                .join('\n'),
-            )
+      <p className="ppt-questionnaire-progress">
+        {activeIndex + 1} / {props.questions.length}
+      </p>
+      <label key={question.id}>
+        <strong>{question.label}</strong>
+        {question.description && <span>{question.description}</span>}
+        <select
+          value={answers[question.id] ?? ''}
+          onChange={(event) =>
+            setAnswers((current) => ({ ...current, [question.id]: event.target.value }))
           }
         >
-          继续制作
+          <option value="">帮我决定</option>
+          {question.options.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="ppt-questionnaire-actions">
+        <button type="button" className="secondary" onClick={() => advance(true)}>
+          帮我决定
+        </button>
+        <button type="button" onClick={() => advance()}>
+          {activeIndex + 1 < props.questions.length ? '下一题' : '继续制作'}
         </button>
       </div>
     </section>

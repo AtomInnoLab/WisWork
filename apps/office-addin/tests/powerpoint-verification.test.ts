@@ -59,6 +59,32 @@ it('removes the production verification hook when verified completion is rolled 
   })
   expect(skill.presentation).toBeUndefined()
 })
+
+it('does not attach batch-scoped enrollment on Mac while keeping the PowerPoint workflow tools', () => {
+  const skill = createPowerPointSkill({
+    adapter: productionAdapter({ text: 'Before', left: 5 }),
+    proposals: createStructuredProposalController(),
+    verificationAuthority: authority(),
+    platform: 'Mac',
+    presentationFlags: {
+      planning: true,
+      verifiedCompletion: true,
+      visualReview: true,
+      autoCorrection: true,
+    },
+  })
+
+  expect(skill.presentation).toBeUndefined()
+  expect(skill.tools.map((tool) => tool.name)).toEqual(
+    expect.arrayContaining([
+      'ask_clarification',
+      'plan_deck',
+      'list_slide_shapes',
+      'screenshot_slide',
+      'verify_slides',
+    ]),
+  )
+})
 const verificationBinding = (call: typeof textCall, targets = ['slide-1/shape-1']) =>
   canonicalPowerPointVerificationBinding(call, targets)
 
@@ -120,6 +146,14 @@ function productionAdapter(state: { text: string; left: number }): PowerPointAda
 }
 
 describe('Office PowerPoint presentation verification', () => {
+  it('normalizes host-specific shape read failures at the verification boundary', async () => {
+    const adapter = productionAdapter({ text: 'Before', left: 5 })
+    vi.mocked(adapter.listSlideShapes).mockRejectedValueOnce(new Error('GeneralException'))
+    const source = createBrowserPowerPointVerificationAuthority(adapter)
+
+    await expect(source.readShape(0, 'shape-1')).rejects.toThrow('office_read_failed')
+  })
+
   it('degrades to normal execution when host enrollment is temporarily unavailable', async () => {
     const subject = createOfficePowerPointVerification({
       authority: authority({ acquire: vi.fn().mockRejectedValue(new Error('office_read_failed')) }),

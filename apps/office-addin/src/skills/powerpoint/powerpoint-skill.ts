@@ -1284,7 +1284,9 @@ export function createPowerPointSkill(options: {
   const masterXmlEditingSupported = !isMac
   const nativeMasterEditingSupported = !isMac && options.nativeMasterEditingSupported !== false
   const presentation =
-    options.verificationAuthority && options.presentationFlags?.verifiedCompletion !== false
+    !isMac &&
+    options.verificationAuthority &&
+    options.presentationFlags?.verifiedCompletion !== false
       ? {
           ...createOfficePowerPointVerification({
             authority: options.verificationAuthority,

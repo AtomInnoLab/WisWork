@@ -618,17 +618,28 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
 
   async listSlideShapes(slideIndex: number, signal?: AbortSignal): Promise<SlideShapesResult> {
     cancelled(signal)
-    return this.run('1.4', async (context) => {
-      const presentation = context.presentation as RuntimeRecord
-      const slides = presentation.slides as RuntimeRecord
-      const slide = await getSlide(context, slides, slideIndex, signal)
-      const shapes = slide.shapes as RuntimeRecord
-      loadShapes(shapes, MAX_POWERPOINT_SHAPES)
-      await sync(context, signal)
-      const items = shapes.items as RuntimeRecord[]
-      if (items.length > MAX_POWERPOINT_SHAPES) throw new Error('office_read_failed')
-      return { slideId: string(slide.id), slideIndex, shapes: items.map(shapeInfo) }
-    })
+    const inventory = (properties: string) =>
+      this.run('1.4', async (context) => {
+        const presentation = context.presentation as RuntimeRecord
+        const slides = presentation.slides as RuntimeRecord
+        const slide = await getSlide(context, slides, slideIndex, signal)
+        const shapes = slide.shapes as RuntimeRecord
+        if (typeof shapes?.load !== 'function') throw new Error('office_api_unsupported')
+        ;(shapes.load as (value: string) => void)(properties)
+        await sync(context, signal)
+        const items = shapes.items as RuntimeRecord[]
+        if (!Array.isArray(items) || items.length > MAX_POWERPOINT_SHAPES)
+          throw new Error('office_read_failed')
+        return { slideId: string(slide.id), slideIndex, shapes: items.map(shapeInfo) }
+      })
+    try {
+      return await inventory(
+        'items/id,items/name,items/type,items/left,items/top,items/width,items/height',
+      )
+    } catch (error) {
+      if (signal?.aborted || (error instanceof Error && error.message === 'cancelled')) throw error
+      return inventory('items/id,items/name,items/type')
+    }
   }
 
   async screenshotSlide(
