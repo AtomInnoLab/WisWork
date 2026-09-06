@@ -972,6 +972,16 @@ export class AgentLoop<TSnapshot = unknown> {
       return
     }
 
+    if (
+      toolCalls.length > 0 &&
+      skill.presentation?.batchScoped &&
+      this.presentationContract &&
+      !this.presentationCorrectionPending
+    ) {
+      // The preceding immutable contract is verified before a new batch can
+      // receive fresh host-owned enrollment. Never silently widen a contract.
+      if (await this.finishPresentationRun(true)) return
+    }
     this.history.push({ role: 'assistant', text: this.turnText, toolCalls })
     const generation = this.generation
     if (skill.presentation?.enroll) {
@@ -1197,7 +1207,7 @@ export class AgentLoop<TSnapshot = unknown> {
   }
 
   /** Returns true when the run was settled or redirected into a corrective turn. */
-  private async finishPresentationRun(): Promise<boolean> {
+  private async finishPresentationRun(continueAfterVerifiedBatch = false): Promise<boolean> {
     const contract = this.presentationContract
     const hooks = this.options.skill.presentation
     if (!contract || !hooks) return false
@@ -1290,6 +1300,14 @@ export class AgentLoop<TSnapshot = unknown> {
           renderPresentationCompletionText(facts))
         : renderPresentationCompletionText(facts)
       this.history.push({ role: 'assistant', text })
+      if (continueAfterVerifiedBatch && receipt.status === 'verified' && !this.cancelled) {
+        this.presentationContract = null
+        this.presentationCorrectionPasses = 0
+        this.presentationCorrectionTurns = 0
+        this.presentationCorrectionPending = false
+        this.presentationPlanEmitted = false
+        return false
+      }
       this.running = false
       this.runUserMsg = null
       this.abortController = null

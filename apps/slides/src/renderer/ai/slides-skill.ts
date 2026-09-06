@@ -1711,7 +1711,7 @@ export function createSlidesSkill(
         return incompleteDeckCorrection(planned, actual)
       return reviewSlidesFinalResponse(context)
     },
-    ...(controller ? { presentation: controller.hooks } : {}),
+    ...(controller ? { presentation: { ...controller.hooks, batchScoped: true } } : {}),
     executeTool: (call, signal) => executeTool(executionAccess, call, state, signal),
   }
 }

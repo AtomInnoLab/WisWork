@@ -16,6 +16,7 @@ import {
   parseQcReview,
   applyQcGeometryFixes,
   buildVisualQcContext,
+  buildVisualQcRepairInstruction,
 } from '../src/renderer/ai/slide-qc'
 import type { DeckAccess } from '../src/renderer/ai/slides-skill'
 import { createElectronTransport } from '../src/renderer/ai/transport'
@@ -30,6 +31,13 @@ const access: DeckAccess = {
 }
 
 describe('visual quality receipts', () => {
+  it('resumes the main agent for unresolved pages, but not after cancellation or repeated attempts', () => {
+    const outcomes = [{ page: 1, status: 'needs_fix' as const, corrected: false }]
+    expect(buildVisualQcRepairInstruction(outcomes, 0, false)).toContain('slideIndex: 0')
+    expect(buildVisualQcRepairInstruction(outcomes, 2, false)).toBeUndefined()
+    expect(buildVisualQcRepairInstruction(outcomes, 0, true)).toBeUndefined()
+    expect(buildVisualQcRepairInstruction([], 0, false)).toBeUndefined()
+  })
   it('builds a bounded model-visible summary without screenshot or slide content', () => {
     expect(
       buildVisualQcContext([

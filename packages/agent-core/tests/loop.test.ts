@@ -157,6 +157,56 @@ describe('AgentLoop', () => {
       )
     })
 
+    it.each(['verified', 'applied_unverified'] as const)(
+      'reconciles a batch-scoped contract before advancing: %s',
+      async (status) => {
+        const order: string[] = []
+        let batch = 0
+        const done = vi.fn()
+        const loop = new AgentLoop({
+          transport: scriptedTransport([
+            (cb) => {
+              cb.onToolCall({ id: 'one', name: 'do_thing', input: {} })
+              cb.onDone()
+            },
+            (cb) => {
+              cb.onToolCall({ id: 'two', name: 'do_thing', input: {} })
+              cb.onDone()
+            },
+            (cb) => cb.onDone(),
+          ]),
+          skill: {
+            ...makeSkill(() => {
+              order.push('execute')
+              return { output: 'ok', summary: 'ok', mutated: true }
+            }),
+            presentation: {
+              batchScoped: true,
+              prepare: () => ({ kind: 'bypass' }),
+              enroll: (_calls, previous) => {
+                expect(previous).toBeUndefined()
+                order.push('enroll')
+                return { kind: 'ready', contract: { ...contract, taskId: `task-${++batch}` } }
+              },
+              complete: ({ contract: active }) => {
+                order.push('verify')
+                return { kind: 'receipt', receipt: { ...receipt(status), taskId: active.taskId } }
+              },
+            },
+          },
+          events: { onDone: done },
+        })
+        loop.run('edit')
+        for (let i = 0; i < 8; i++) await flush()
+        expect(order).toEqual(
+          status === 'verified'
+            ? ['enroll', 'execute', 'verify', 'enroll', 'execute', 'verify']
+            : ['enroll', 'execute', 'verify'],
+        )
+        expect(done).toHaveBeenCalledOnce()
+      },
+    )
+
     it('accepts authoritative host correction passes without double-counting model turns', async () => {
       const hostCorrected = { ...receipt(), correctionPasses: 2 }
       const done = vi.fn()
