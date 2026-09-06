@@ -333,6 +333,7 @@ export class AgentLoop<TSnapshot = unknown> {
   private completionReviewRetries = 0
   private lastCompletionReviewCorrection = ''
   private mutationSeen = false
+  private presentationBatchMutationSeen = false
   private presentationContract: PresentationAcceptanceContract | null = null
   private presentationCorrectionPasses = 0
   private presentationPlanEmitted = false
@@ -445,6 +446,7 @@ export class AgentLoop<TSnapshot = unknown> {
     this.completionReviewRetries = 0
     this.lastCompletionReviewCorrection = ''
     this.mutationSeen = false
+    this.presentationBatchMutationSeen = false
     this.presentationContract = null
     this.presentationCorrectionPasses = 0
     this.presentationPlanEmitted = false
@@ -1049,6 +1051,8 @@ export class AgentLoop<TSnapshot = unknown> {
           this.failPresentationRun('presentation_scope_expansion')
           return
         }
+        if (!this.presentationContract && skill.presentation.batchScoped)
+          this.presentationBatchMutationSeen = false
         this.presentationContract = enrolled
         const steps = (enrollment.plan ?? [])
           .slice(0, PRESENTATION_PLAN_MAX_STEPS)
@@ -1155,7 +1159,10 @@ export class AgentLoop<TSnapshot = unknown> {
         }
       }
       const firstMutation = !!execution.mutated && !this.mutationSeen
-      if (execution.mutated) this.mutationSeen = true
+      if (execution.mutated) {
+        this.mutationSeen = true
+        this.presentationBatchMutationSeen = true
+      }
       if (execution.mutated && this.presentationCorrectionPending) {
         this.presentationCorrectionPasses++
         this.presentationCorrectionPending = false
@@ -1178,7 +1185,7 @@ export class AgentLoop<TSnapshot = unknown> {
 
     // Cancelled while tools were executing: finish immediately, no further model request
     if (this.cancelled) {
-      if (this.presentationContract && this.mutationSeen) {
+      if (this.presentationContract && this.presentationBatchMutationSeen) {
         await this.finishPresentationRun()
       } else {
         this.running = false
@@ -1222,7 +1229,7 @@ export class AgentLoop<TSnapshot = unknown> {
       const reconciliationSignal = this.reconciliationController?.signal
       completion = await hooks.complete({
         contract,
-        mutated: this.mutationSeen,
+        mutated: this.presentationBatchMutationSeen,
         cancelled: this.cancelled,
         correctionPasses: this.presentationCorrectionPasses,
         ...(reconciliationSignal ? { signal: reconciliationSignal } : {}),
@@ -1294,6 +1301,8 @@ export class AgentLoop<TSnapshot = unknown> {
     }
     try {
       const receipt = parsePresentationCompletionReceipt(completionValue, contract)
+      if (this.presentationBatchMutationSeen && receipt.status === 'unchanged')
+        throw new TypeError('mutated batch cannot be unchanged')
       // A receipt may not under-report corrections already orchestrated here.
       if (receipt.correctionPasses < this.presentationCorrectionPasses)
         throw new TypeError('presentation correction count mismatch')
@@ -1304,8 +1313,13 @@ export class AgentLoop<TSnapshot = unknown> {
           renderPresentationCompletionText(facts))
         : renderPresentationCompletionText(facts)
       this.history.push({ role: 'assistant', text })
-      if (continueAfterVerifiedBatch && receipt.status === 'verified' && !this.cancelled) {
+      if (
+        continueAfterVerifiedBatch &&
+        (receipt.status === 'verified' || receipt.status === 'unchanged') &&
+        !this.cancelled
+      ) {
         this.presentationContract = null
+        this.presentationBatchMutationSeen = false
         this.presentationCorrectionPasses = 0
         this.presentationCorrectionTurns = 0
         this.presentationCorrectionPending = false

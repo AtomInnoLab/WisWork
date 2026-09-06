@@ -231,6 +231,15 @@ function diagnosticToolError(output: string): string {
   }
 }
 
+export function presentationClarificationText(
+  question: string,
+  translate?: (key: PresentationVerificationStringKey) => string,
+): string {
+  if (!question || question === 'presentation_scope_required')
+    return translate?.('clarify') ?? 'More information needed'
+  return boundedText(question)
+}
+
 export function createOfficeAgentSession(dependencies: {
   transport: AgentTransport
   skill: AgentSkill
@@ -645,7 +654,7 @@ export function createOfficeAgentSession(dependencies: {
         append({
           id: eventId(),
           kind: 'system',
-          text: boundedText(question || dependencies.presentationText?.('clarify') || 'clarify'),
+          text: presentationClarificationText(question, dependencies.presentationText),
         }),
       onPresentationPlan: ({ steps, requiresConfirmation }) =>
         append({

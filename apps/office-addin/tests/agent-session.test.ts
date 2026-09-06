@@ -1,6 +1,10 @@
 import type { AgentStreamCallbacks, AgentTransport, ToolExecution } from '@wiswork/agent-core'
 import { describe, expect, it, vi } from 'vitest'
-import { bindAuthLoss, createOfficeAgentSession } from '../src/agent/use-office-agent.js'
+import {
+  bindAuthLoss,
+  createOfficeAgentSession,
+  presentationClarificationText,
+} from '../src/agent/use-office-agent.js'
 import type { ProposalDecision, StructuredProposal } from '../src/agent/proposal-controller.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import type { OfficePowerPointVisualReviewer } from '../src/skills/powerpoint/powerpoint-verification.js'
@@ -79,6 +83,15 @@ function proposalsHarness() {
     },
   }
 }
+
+describe('presentation clarification display', () => {
+  it('never exposes the internal scope control code to people', () => {
+    expect(presentationClarificationText('presentation_scope_required', () => '需要补充信息')).toBe(
+      '需要补充信息',
+    )
+    expect(presentationClarificationText('Which slide?', () => '需要补充信息')).toBe('Which slide?')
+  })
+})
 
 describe('Office agent session', () => {
   it('pauses a PowerPoint questionnaire and resumes the same tool call with the answers', async () => {

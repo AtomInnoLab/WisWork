@@ -72,6 +72,8 @@ describe('PowerPoint compatibility skill', () => {
     expect(skill.tools.map((tool) => tool.name)).toContain('plan_deck')
     expect(skill.systemPrompt).toContain('inspect the presentation before planning')
     expect(skill.systemPrompt).toContain('plan_deck before the first mutation')
+    expect(skill.systemPrompt).toContain('must call ask_clarification')
+    expect(skill.systemPrompt).toContain('Never replace that tool call with prose questions')
     expect(skill.systemPrompt).toContain('verify_slides after the approved build')
 
     await expect(
@@ -1129,6 +1131,57 @@ describe('PowerPoint compatibility skill', () => {
     )
 
     await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('office_verify_failed')
+  })
+
+  it('advertises slide duplication only through the dedicated tool', () => {
+    const skill = createPowerPointSkill({
+      adapter: adapter(),
+      proposals: createStructuredProposalController(),
+    })
+    const execute = skill.tools.find((tool) => tool.name === 'execute_office_js')!
+
+    expect(JSON.stringify(execute.inputSchema)).not.toContain('duplicate_slide')
+    expect(execute.description).toContain('dedicated duplicate_slide tool')
+    expect(skill.tools.some((tool) => tool.name === 'duplicate_slide')).toBe(true)
+  })
+
+  it('reports the operations field when a declarative duplicate is mixed with edits', async () => {
+    const fake = adapter({ executeDeclarative: vi.fn() })
+    const skill = createPowerPointSkill({
+      adapter: fake,
+      proposals: createStructuredProposalController(),
+    })
+
+    const result = await skill.executeTool(
+      call('execute_office_js', {
+        program: {
+          version: 1,
+          operations: [
+            { op: 'duplicate_slide', slide_index: 0 },
+            {
+              op: 'add_text_box',
+              slide_index: 1,
+              name: 'title',
+              text: 'Title',
+              left: 40,
+              top: 40,
+              width: 600,
+              height: 80,
+            },
+          ],
+        },
+      }),
+    )
+
+    expect(result).toMatchObject({
+      isError: true,
+      output: 'invalid_tool_input',
+      diagnosticError: {
+        code: 'InvalidToolInput',
+        debugInfo: { errorLocation: 'program.operations' },
+      },
+    })
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
   })
 
   it('rejects a declarative mutation that edits and then deletes the same shape', async () => {

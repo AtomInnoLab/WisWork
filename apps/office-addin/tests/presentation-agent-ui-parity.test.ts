@@ -6,7 +6,13 @@ import { resolve } from 'node:path'
 import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { PresentationActivityGroup, PresentationEmptyState, PresentationMessage } from '@wiswork/ui'
+import {
+  AiTypingIndicator,
+  PresentationActivityGroup,
+  PresentationEmptyState,
+  PresentationMessage,
+} from '@wiswork/ui'
+import { presentationProgressLabel } from '../src/agent/presentation-state.js'
 
 ;(
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -108,6 +114,41 @@ describe('shared presentation agent UI', () => {
     act(() => prompt.click())
     expect(choose).toHaveBeenCalledWith('Create a project update')
     expect(container.textContent).not.toMatch(/connected|session/i)
+  })
+
+  it('matches Desktop thinking and continuing phases with elapsed time', () => {
+    expect(presentationProgressLabel([])).toBe('思考中')
+    expect(
+      presentationProgressLabel([
+        {
+          id: 'old-tool',
+          kind: 'tool',
+          callId: 'old',
+          name: 'web_search',
+          summary: '网页搜索完成',
+          state: 'complete',
+        },
+        { id: 'new-user', kind: 'user', text: '新任务' },
+      ]),
+    ).toBe('思考中')
+    expect(
+      presentationProgressLabel([
+        {
+          id: 'tool',
+          kind: 'tool',
+          callId: 'call',
+          name: 'web_search',
+          summary: '网页搜索完成',
+          state: 'complete',
+        },
+      ]),
+    ).toBe('继续处理中')
+
+    vi.useFakeTimers()
+    render(React.createElement(AiTypingIndicator, { label: '思考中' }))
+    act(() => vi.advanceTimersByTime(3100))
+    expect(container.textContent).toContain('思考中… · 3s')
+    vi.useRealTimers()
   })
 
   it('renders bounded display-safe activity only', () => {
