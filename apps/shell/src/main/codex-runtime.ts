@@ -53,7 +53,11 @@ export type CodexRuntimeEngineEvent =
       expiresAt: number
       summary: PcHostProposalSummary
     }>
-  | Readonly<{ type: 'terminal'; status: 'completed' | 'cancelled' | 'failed' }>
+  | Readonly<{
+      type: 'terminal'
+      status: 'completed' | 'cancelled' | 'failed'
+      code?: 'enhanced_proposal_expired'
+    }>
 
 export interface CodexRuntimeBootstrap {
   start(input: {
@@ -162,8 +166,12 @@ export class ShellCodexRuntime {
 
   initialize(): Promise<void> {
     if (this.#initialization) return this.#initialization
-    this.#initialization = this.#initialize()
-    return this.#initialization
+    const initialization = this.#initialize()
+    this.#initialization = initialization
+    void initialization.catch(() => {
+      if (this.#initialization === initialization) this.#initialization = undefined
+    })
+    return initialization
   }
 
   async #initialize(): Promise<void> {
@@ -317,6 +325,8 @@ export class ShellCodexRuntime {
         error instanceof Error &&
           [
             'enhanced_turn_timeout',
+            'enhanced_questionnaire_incomplete',
+            'enhanced_proposal_expired',
             'enhanced_auth_required',
             'enhanced_usage_limit',
             'enhanced_context_limit',

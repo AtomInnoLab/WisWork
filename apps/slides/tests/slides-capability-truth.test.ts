@@ -51,6 +51,82 @@ describe('Slides capability truth', () => {
     ).toBe(CORRECTION)
   })
 
+  it('rejects a terminal response while a planned new deck is still missing pages', async () => {
+    const deck = access()
+    deck.getSlides = () => [
+      {
+        widthPx: 1280,
+        heightPx: 720,
+        scale: 1,
+        background: { kind: 'solid', color: '#FFFFFF' },
+        nodes: [],
+      },
+    ]
+    const skill = createSlidesSkill(deck)
+    await skill.executeTool({
+      id: 'plan',
+      name: 'plan_deck',
+      input: {
+        core_hook: '新人第一天',
+        style: '简洁蓝色',
+        pages: [
+          { title: '欢迎', brief: '欢迎', layout: 'cover' },
+          { title: '安排', brief: '安排', layout: 'timeline' },
+          { title: '协作', brief: '协作', layout: 'closing' },
+        ],
+      },
+    })
+    expect(skill.reviewFinalResponse?.({ text: '已完成。', mutated: true })).toContain(
+      'plan has 3 pages',
+    )
+  })
+
+  it('rejects a terminal explanation after questionnaire answers until deck planning continues', async () => {
+    const deck = access()
+    deck.askClarification = async () => ({
+      answers: 'Audience: developers\nLength: 9 pages\nStyle: dark technology',
+      cancelled: false,
+    })
+    const skill = createSlidesSkill(deck)
+    await skill.executeTool({
+      id: 'clarify',
+      name: 'ask_clarification',
+      input: {
+        questions: [{ id: 'audience', label: 'Audience?', options: ['Developers', 'Managers'] }],
+      },
+    })
+
+    expect(
+      skill.reviewFinalResponse?.({
+        text: 'Please choose in the questionnaire above, then I will generate the deck.',
+        mutated: false,
+      }),
+    ).toContain('questionnaire answers are already available')
+  })
+
+  it('requires the bounded whole-deck builder after planning instead of accumulating blank pages', async () => {
+    const skill = createSlidesSkill(access())
+    await skill.executeTool({
+      id: 'plan',
+      name: 'plan_deck',
+      input: {
+        core_hook: 'LLM in one sentence',
+        style: 'minimal',
+        pages: [
+          { title: 'What', brief: 'Definition', layout: 'cover' },
+          { title: 'How', brief: 'Mechanism', layout: 'content' },
+        ],
+      },
+    })
+    const result = await skill.executeTool({
+      id: 'blank-page',
+      name: 'add_slide',
+      input: { sourceIndex: 0 },
+    })
+    expect(result).toMatchObject({ isError: true, mutated: false })
+    expect(result.output).toContain('build_deck')
+  })
+
   it.each([
     'Would you like me to change the title color and position?',
     'Can I change the font color?',

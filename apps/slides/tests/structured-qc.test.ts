@@ -73,6 +73,17 @@ const slide = (nodes: RenderNode[]): RenderSlide => ({
 })
 
 describe('structured deterministic quality audit', () => {
+  it('blocks an empty slide as a critical quality failure', () => {
+    expect(auditSlideQuality(slide([]), { slideId: 'slide-1' })).toEqual([
+      {
+        code: 'empty_slide',
+        severity: 'critical',
+        slideId: 'slide-1',
+        evidence: {},
+      },
+    ])
+  })
+
   it('returns stable identity-only findings for both overflow axes and bounds', () => {
     const findings = auditSlideQuality(
       slide([text('overflow', box(950, -20, 100, 40), 'PRIVATE', 80, 120)]),

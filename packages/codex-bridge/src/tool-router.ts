@@ -30,6 +30,9 @@ const MAX_GRAPH_NODES = 20_000
 const MAX_TOTAL_GRAPH_NODES = 100_000
 const MAX_GRAPH_DEPTH = 48
 const MAX_CALL_MS = 30_000
+// Human interaction is not a 30-second computation. Keep it bounded and cancellable.
+const MAX_QUESTIONNAIRE_MS = 10 * 60_000
+const MAX_CONSENT_MS = 5 * 60_000
 const MAX_TOTAL_CALLS = 1_024
 const MAX_PENDING_MUTATIONS = 8
 const SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/
@@ -71,6 +74,9 @@ const CATALOG = Object.freeze({
       ...[
         'get_deck_context',
         'read_slide',
+        'screenshot_slide',
+        'web_search',
+        'image_search',
         'ask_clarification',
         'plan_deck',
         'list_style_templates',
@@ -82,9 +88,11 @@ const CATALOG = Object.freeze({
         'execute_slide_script',
         'set_element_fill',
         'set_element_stroke',
+        'insert_web_image',
         'crop_image',
         'set_picture_opacity',
         'replace_image',
+        'build_deck',
         'delete_slide',
         'save_style_template',
         'add_slide',
@@ -135,6 +143,7 @@ const CATALOG = Object.freeze({
     list_slide_shapes: ['read', 'semantic-read'],
     read_slide_text: ['read', 'semantic-read'],
     verify_slides: ['read', 'bounded-render-facts'],
+    plan_deck: ['read', 'semantic-read'],
     edit_slide_text: ['mutate', 'transaction-proposal'],
     edit_slide_xml: ['mutate', 'transaction-proposal'],
     edit_slide_chart: ['mutate', 'transaction-proposal'],
@@ -228,7 +237,9 @@ export interface DetachedMutationRequest {
   readonly catalogDigest: string
 }
 export interface MutationAuthority {
-  claimNext(): Readonly<{ claim: MutationClaim; request: DetachedMutationRequest }> | undefined
+  claimNext(
+    callId?: string,
+  ): Readonly<{ claim: MutationClaim; request: DetachedMutationRequest }> | undefined
   settle(claim: MutationClaim, execution: ToolExecution): void
   reject(claim: MutationClaim, code?: string): void
 }
@@ -707,7 +718,10 @@ export function createDocumentToolSession(
         () => finish(stable('tool_cancelled', 'Tool cancelled')),
         { once: true },
       )
-      mutation.timer = setTimeout(() => finish(stable('tool_timeout', 'Tool timed out')), maxCallMs)
+      mutation.timer = setTimeout(
+        () => finish(stable('mutation_expired', 'Proposal expired without applying changes')),
+        MAX_CONSENT_MS,
+      )
       mutation.timer.unref()
       pendingMutations.set(call.id, mutation)
       mutationQueue.push(mutation)
@@ -719,7 +733,12 @@ export function createDocumentToolSession(
       }
       return suspension
     }
-    if (pending.size > 0 || pendingMutations.size > 0) return stable('tool_call_in_progress')
+    // Code-mode models may emit several independent semantic reads in one tool
+    // batch. Each read already has its own bounded controller and call id, so
+    // rejecting the later calls only breaks an otherwise valid Agent Loop.
+    // Keep reads excluded while a mutation is pending, but allow bounded reads
+    // to execute concurrently with other reads in this document session.
+    if (pendingMutations.size > 0) return stable('tool_call_in_progress')
     const controller = new AbortController()
     const abort = () => controller.abort()
     outerSignal?.addEventListener('abort', abort, { once: true })
@@ -733,7 +752,9 @@ export function createDocumentToolSession(
           execution = await awaitBounded(
             Promise.resolve(registration.executeRead(call, controller.signal)),
             controller.signal,
-            maxCallMs,
+            identity.host === 'slides' && call.name === 'ask_clarification'
+              ? MAX_QUESTIONNAIRE_MS
+              : maxCallMs,
           )
         } catch (error) {
           return stable(error instanceof ToolRouterError ? error.code : 'tool_execution_failed')
@@ -762,10 +783,13 @@ export function createDocumentToolSession(
     entry.pending.finish(execution)
   }
   const mutationAuthority: MutationAuthority = Object.freeze({
-    claimNext() {
+    claimNext(callId?: string) {
       let mutation: PendingMutation | undefined
       while (mutationQueue.length > 0) {
-        const candidate = mutationQueue.shift()!
+        const index =
+          callId === undefined ? 0 : mutationQueue.findIndex((item) => item.callId === callId)
+        if (index < 0) return undefined
+        const candidate = mutationQueue.splice(index, 1)[0]!
         if (candidate.state === 'queued') {
           mutation = candidate
           break
@@ -773,6 +797,12 @@ export function createDocumentToolSession(
       }
       if (!mutation) return undefined
       mutation.state = 'claimed'
+      if (mutation.timer) clearTimeout(mutation.timer)
+      mutation.timer = setTimeout(
+        () => mutation.finish(stable('tool_timeout', 'Tool timed out')),
+        maxCallMs,
+      )
+      mutation.timer.unref()
       const claim = Object.freeze(Object.create(null)) as MutationClaim
       mutationClaims.set(claim as object, {
         authority: authorityIdentity,

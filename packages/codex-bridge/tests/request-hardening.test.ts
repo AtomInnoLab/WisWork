@@ -44,7 +44,9 @@ describe('strict Responses request conversion', () => {
       system: 'System',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }] }],
     })
-    expect(converted.messagesRequest).not.toHaveProperty('tool_choice')
+    expect(converted.messagesRequest).toMatchObject({
+      tool_choice: { type: 'auto', disable_parallel_tool_use: true },
+    })
     const exec = converted.messagesRequest.tools?.find((tool) => tool.name === 'exec')
     expect(exec?.description).toContain(
       'text(await tools.mcp__wiswork__wiswork_read_document({...}))',
@@ -153,6 +155,25 @@ describe('strict Responses request conversion', () => {
         role: 'assistant',
         content: [{ type: 'redacted_thinking', data: 'opaque-reasoning' }],
       },
+    ])
+  })
+
+  it('accepts the exact empty reasoning history item produced after discarded plaintext thinking', () => {
+    const turn = prepareResponsesTurn({
+      model: 'gpt-5.6-sol',
+      input: [
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x' }] },
+        {
+          type: 'reasoning',
+          id: 'item_0',
+          summary: [],
+          content: null,
+          encrypted_content: null,
+        },
+      ],
+    })
+    expect(turn.messagesRequest.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'x' }] },
     ])
   })
 

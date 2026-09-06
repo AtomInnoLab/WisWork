@@ -116,6 +116,53 @@ const failedReceipt = () => ({
 })
 
 describe('AgentLoop', () => {
+  describe('trusted post-run observation character validation', () => {
+    const idleLoop = () => {
+      const loop = new AgentLoop({
+        transport: scriptedTransport([]),
+        skill: makeSkill(),
+        events: {},
+      })
+      loop.restore([
+        { role: 'user', text: 'Review slides' },
+        { role: 'assistant', text: 'Done' },
+      ])
+      return loop
+    }
+
+    it.each(
+      Array.from({ length: 0x20 }, (_, code) => code)
+        .filter((code) => ![0x09, 0x0a, 0x0d].includes(code))
+        .concat(0x7f),
+    )('rejects embedded control character %i without changing history', (code) => {
+      const loop = idleLoop()
+      const before = structuredClone(loop.messages)
+      expect(loop.appendAssistantContext(`Before${String.fromCharCode(code)}after`)).toBe(false)
+      expect(loop.messages).toEqual(before)
+    })
+
+    it.each(['\t', '\n', '\r', '\r\n', '中🙂é', '\u0085'])('retains allowed text %j', (text) => {
+      const loop = idleLoop()
+      const observation = `Before${text}after`
+      expect(loop.appendAssistantContext(observation)).toBe(true)
+      expect(loop.messages.at(-1)).toMatchObject({
+        role: 'assistant',
+        text: `Done\n\n${observation}`,
+      })
+    })
+
+    it('preserves trimming and the 2048-character bound', () => {
+      const loop = idleLoop()
+      expect(loop.appendAssistantContext(' \t\r\n ')).toBe(false)
+      expect(loop.appendAssistantContext('x'.repeat(2_049))).toBe(false)
+      expect(loop.appendAssistantContext(`  ${'x'.repeat(2_048)}\n`)).toBe(true)
+      expect(loop.messages.at(-1)).toMatchObject({
+        role: 'assistant',
+        text: `Done\n\n${'x'.repeat(2_048)}`,
+      })
+    })
+  })
+
   describe('presentation task orchestration', () => {
     it('enrolls exact tool calls before the first dispatch and closes through a receipt', async () => {
       let dispatched = false
@@ -156,6 +203,56 @@ describe('AgentLoop', () => {
         expect.objectContaining({ presentation: expect.objectContaining({ status: 'verified' }) }),
       )
     })
+
+    it.each(['verified', 'applied_unverified'] as const)(
+      'reconciles a batch-scoped contract before advancing: %s',
+      async (status) => {
+        const order: string[] = []
+        let batch = 0
+        const done = vi.fn()
+        const loop = new AgentLoop({
+          transport: scriptedTransport([
+            (cb) => {
+              cb.onToolCall({ id: 'one', name: 'do_thing', input: {} })
+              cb.onDone()
+            },
+            (cb) => {
+              cb.onToolCall({ id: 'two', name: 'do_thing', input: {} })
+              cb.onDone()
+            },
+            (cb) => cb.onDone(),
+          ]),
+          skill: {
+            ...makeSkill(() => {
+              order.push('execute')
+              return { output: 'ok', summary: 'ok', mutated: true }
+            }),
+            presentation: {
+              batchScoped: true,
+              prepare: () => ({ kind: 'bypass' }),
+              enroll: (_calls, previous) => {
+                expect(previous).toBeUndefined()
+                order.push('enroll')
+                return { kind: 'ready', contract: { ...contract, taskId: `task-${++batch}` } }
+              },
+              complete: ({ contract: active }) => {
+                order.push('verify')
+                return { kind: 'receipt', receipt: { ...receipt(status), taskId: active.taskId } }
+              },
+            },
+          },
+          events: { onDone: done },
+        })
+        loop.run('edit')
+        for (let i = 0; i < 8; i++) await flush()
+        expect(order).toEqual(
+          status === 'verified'
+            ? ['enroll', 'execute', 'verify', 'enroll', 'execute', 'verify']
+            : ['enroll', 'execute', 'verify'],
+        )
+        expect(done).toHaveBeenCalledOnce()
+      },
+    )
 
     it('accepts authoritative host correction passes without double-counting model turns', async () => {
       const hostCorrected = { ...receipt(), correctionPasses: 2 }
@@ -879,8 +976,8 @@ describe('AgentLoop', () => {
     await flush()
     await flush()
 
-    expect(reviewFinalResponse).toHaveBeenCalledTimes(1)
-    expect(reviewFinalResponse).toHaveBeenCalledWith({
+    expect(reviewFinalResponse).toHaveBeenCalledTimes(2)
+    expect(reviewFinalResponse).toHaveBeenNthCalledWith(1, {
       text: 'I cannot make that supported edit.',
       mutated: false,
     })
@@ -1086,13 +1183,18 @@ describe('AgentLoop', () => {
     })
   })
 
-  it('allows at most one completion-review retry per run', async () => {
+  it('allows sequential completion-review corrections for multi-stage work', async () => {
     const respond = (text: string) => (cb: AgentStreamCallbacks) => {
       cb.onDelta(text)
       cb.onDone()
     }
-    const transport = scriptedTransport([respond('first denial'), respond('second denial')])
-    const reviewFinalResponse = vi.fn(() => 'try again')
+    const transport = scriptedTransport([
+      respond('questionnaire acknowledged'),
+      respond('plan claimed complete'),
+      respond('deck actually built'),
+    ])
+    const corrections = ['continue to planning', 'call build_deck', undefined]
+    const reviewFinalResponse = vi.fn(() => corrections.shift())
     const skill: AgentSkill = { ...makeSkill(), reviewFinalResponse }
     const onDone = vi.fn()
     const loop = new AgentLoop({ transport, skill, events: { onDone } })
@@ -1101,10 +1203,10 @@ describe('AgentLoop', () => {
     await flush()
     await flush()
 
-    expect(reviewFinalResponse).toHaveBeenCalledTimes(1)
-    expect(transport.requests).toHaveLength(2)
+    expect(reviewFinalResponse).toHaveBeenCalledTimes(3)
+    expect(transport.requests).toHaveLength(3)
     expect(onDone).toHaveBeenCalledWith({
-      text: 'second denial',
+      text: 'deck actually built',
       cancelled: false,
       turnLimit: false,
     })

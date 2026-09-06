@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
+import { boundedScreenshot } from './bounded-screenshot'
 import {
   composeSkills,
   IPC_STREAM_SILENCE_TIMEOUT_MS,
@@ -27,7 +28,10 @@ import {
 } from './agent-controller'
 import { friendlyEnhancedError, shouldMarkEnhancedMessageUndelivered } from './enhanced-error-copy'
 import { renderSlidesToPngBase64 } from '../export-render'
+import { shouldShowStreamingProgress } from './streaming-progress'
 import {
+  applyQcGeometryFixes,
+  buildVisualQcContext,
   captureCurrentQcShot,
   isQcEnabled,
   qcSlidePage,
@@ -36,10 +40,10 @@ import {
   toVisualQualityReceipt,
 } from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
-import { Markdown } from '@wiswork/ui'
+import { Markdown, PresentationActivityGroup } from '@wiswork/ui'
 import type { PresentationQualityReceipt } from '@wiswork/presentation-ops'
 import { presentationVerificationFlags } from '@wiswork/presentation-verification'
-import { translatePresentationVerification } from '@wiswork/i18n'
+import { translatePresentationVerification, mutationExpiryStrings } from '@wiswork/i18n'
 import { verifyAndBrandSlidesAcceptanceAuthority, verifySlidesAcceptance } from './task-acceptance'
 import { reviewSlidesRendering } from './task-review'
 import { WisWorkMark } from '../components/icons'
@@ -686,6 +690,10 @@ export function AiPanel({
   const runQcPassRef = useRef<() => Promise<void>>(() => Promise.resolve())
   /** DeckAccess reused by the QC pass (same executors as the main loop's slides skill) */
   const accessRef = useRef<DeckAccess | null>(null)
+  /** Main-agent visual tool calls through the latest renderer without rebuilding the harness. */
+  const captureSlideShotRef = useRef<(pageIndex: number) => Promise<AgentImage | null>>(
+    async () => null,
+  )
   /** Wall-clock start of the current run, drives the elapsed badge */
   const runStartedAtRef = useRef(0)
   const historyBatchActiveRef = useRef(false)
@@ -877,6 +885,28 @@ export function AiPanel({
       getSlides: () => slidesRef.current,
       getCurrent: () => currentRef.current,
       getSelectedIds: () => selectedRef.current,
+      refreshAuthoritativeState: async (signal) => {
+        signal?.throwIfAborted()
+        const runToken = activeRunTokenRef.current
+        const before = await window.slidesApi.getAcceptanceAuthorityLease()
+        if (!before) return false
+        const refreshed = await window.slidesApi.getRenderSlides()
+        signal?.throwIfAborted()
+        if (
+          !refreshed ||
+          activeRunTokenRef.current !== runToken ||
+          activeRunTokenRef.current !== launchTokenRef.current ||
+          refreshed.documentToken !== before.documentToken ||
+          refreshed.sessionToken !== before.sessionToken
+        )
+          return false
+        // Update synchronous refs as well as React; the next tool must not read
+        // the preceding render while the state update is still queued.
+        slidesRef.current = refreshed.slides
+        applyDeckRef.current(refreshed.slides, currentRef.current)
+        return true
+      },
+      captureSlideScreenshot: (slideIndex) => captureSlideShotRef.current(slideIndex),
       getSelectionScope: () => activeSelectionScopeRef.current,
       getAcceptanceAuthorityLease: async () => {
         const lease = await window.slidesApi.getAcceptanceAuthorityLease()
@@ -1623,6 +1653,7 @@ export function AiPanel({
             })
             void completeSlidesHostRun({
               cancelled,
+              qualityReviewOwner: 'agent',
               finishHistoryBatch: () => finishHistoryBatch(false),
               isCurrent: () => launchTokenRef.current === activeRunTokenRef.current,
               hasQcPages: () => qcPagesRef.current.length > 0,
@@ -1683,6 +1714,7 @@ export function AiPanel({
               error,
               tGlobal('aiErrGenerateFailed'),
               tGlobal('aiErrStreamTimeout'),
+              mutationExpiryStrings[lang][0],
             )
             qcPagesRef.current = []
             setChat((prev) => {
@@ -1969,12 +2001,15 @@ export function AiPanel({
     const slide = slidesRef.current[pageIndex]
     if (!slide) return null
     try {
-      const [png] = await renderSlidesToPngBase64([slide], imagesRef.current, 1)
-      return png ? { base64: png, mime: 'image/png' } : null
+      return await boundedScreenshot(async (ratio) => {
+        const [png] = await renderSlidesToPngBase64([slide], imagesRef.current, ratio)
+        return png
+      })
     } catch {
       return null
     }
   }
+  captureSlideShotRef.current = captureSlideShot
 
   const runWith = (
     instruction: string,
@@ -2110,6 +2145,11 @@ export function AiPanel({
     const header = tGlobal('aiQcStart', { count: capped.length })
     const lines: string[] = []
     const receipts: PresentationQualityReceipt[] = []
+    const contextOutcomes: Array<{
+      page: number
+      status: 'passed' | 'needs_fix' | 'unavailable'
+      corrected: boolean
+    }> = []
     const renderEntry = () => [header, ...lines].join('\n')
     setBusy(true)
     stickToBottomRef.current = true
@@ -2135,6 +2175,7 @@ export function AiPanel({
         if (!captured) break
         const shot = captured.value
         if (!shot) {
+          contextOutcomes.push({ page: page + 1, status: 'unavailable', corrected: false })
           const transactionId = qcTransactionByPageRef.current.get(page)
           const deterministic = transactionId
             ? [...qualityReceiptsRef.current]
@@ -2164,7 +2205,7 @@ export function AiPanel({
           if (slidesRef.current[page]) lines.push(tGlobal('aiQcPageSkipped', { n: page + 1 }))
           continue
         }
-        const result = await qcSlidePage({
+        let result = await qcSlidePage({
           access,
           transport,
           pageIndex: page,
@@ -2174,6 +2215,51 @@ export function AiPanel({
           isCurrent: isCurrentQc,
         })
         if (!isCurrentQc()) break
+        if (result.fixes?.length) {
+          const batchOpened = await window.slidesApi.beginHistoryBatch()
+          let correctionSnapshotId: number | undefined
+          let applied = false
+          try {
+            if (batchOpened)
+              applied = await applyQcGeometryFixes(access, page, result.fixes, controller.signal)
+          } finally {
+            if (batchOpened) {
+              const id = await window.slidesApi.endHistoryBatch()
+              if (typeof id === 'number') correctionSnapshotId = id
+            }
+          }
+          if (applied && isCurrentQc()) {
+            const recaptured = await captureCurrentQcShot({
+              capture: () => captureSlideShot(page),
+              signal: controller.signal,
+              isCurrent: isCurrentQc,
+            })
+            if (!recaptured) break
+            if (recaptured.value) {
+              const verified = await qcSlidePage({
+                access,
+                transport,
+                pageIndex: page,
+                screenshot: recaptured.value,
+                systemSuffix: aiLangDirective,
+                signal: controller.signal,
+                isCurrent: isCurrentQc,
+              })
+              if (!isCurrentQc()) break
+              if (correctionSnapshotId !== undefined && verified.postIssues > result.preIssues) {
+                const restored = await window.slidesApi.aiSnapshotRestore(correctionSnapshotId)
+                if (restored) {
+                  applyDeckRef.current(restored, Math.min(currentRef.current, restored.length - 1))
+                  lines.push(tGlobal('aiQcPageReverted', { n: page + 1 }))
+                } else {
+                  result = { ...verified, edited: true }
+                }
+              } else {
+                result = { ...verified, edited: true }
+              }
+            }
+          }
+        }
         const transactionId = qcTransactionByPageRef.current.get(page)
         const deterministic = transactionId
           ? [...qualityReceiptsRef.current]
@@ -2197,10 +2283,13 @@ export function AiPanel({
           receipts.push(qualityReceipt)
         }
         if (qualityReceipt?.status !== 'available') {
+          contextOutcomes.push({ page: page + 1, status: 'unavailable', corrected: result.edited })
           lines.push(tGlobal('aiQcUnavailable', { n: page + 1, error: 'quality_unavailable' }))
         } else if (qualityReceipt.findings.length > 0) {
+          contextOutcomes.push({ page: page + 1, status: 'needs_fix', corrected: result.edited })
           lines.push(tGlobal('aiQcPageIssues', { n: page + 1, summary: result.reply }))
         } else {
+          contextOutcomes.push({ page: page + 1, status: 'passed', corrected: result.edited })
           lines.push(tGlobal('aiQcPassed', { n: page + 1 }))
         }
         patchLastAssistant({ text: renderEntry() })
@@ -2255,6 +2344,8 @@ export function AiPanel({
         qcRunningRef.current = false
         qcAbortRef.current = null
         const finalText = renderEntry()
+        if (contextOutcomes.length > 0)
+          loopRef.current?.appendAssistantContext(buildVisualQcContext(contextOutcomes))
         patchLastAssistant({
           streaming: false,
           text: finalText,
@@ -2590,14 +2681,17 @@ export function AiPanel({
               {entry.role === 'user' && entry.attachments && entry.attachments.length > 0 && (
                 <SentAttachments atts={entry.attachments} previews={attachmentPreviews} />
               )}
-              {entry.role === 'assistant' && !entry.text && entry.streaming ? (
-                <span className="ai-typing-row">
-                  <AiTypingIndicator
-                    label={entry.tools?.length ? t('aiContinuing') : t('aiThinking')}
-                  />
-                </span>
-              ) : entry.role === 'assistant' ? (
-                <Markdown text={entry.text} />
+              {entry.role === 'assistant' ? (
+                <>
+                  {entry.text && <Markdown text={entry.text} />}
+                  {shouldShowStreamingProgress(entry) && (
+                    <span className="ai-typing-row">
+                      <AiTypingIndicator
+                        label={entry.tools?.length ? t('aiContinuing') : t('aiThinking')}
+                      />
+                    </span>
+                  )}
+                </>
               ) : (
                 entry.text
               )}
@@ -3015,61 +3109,6 @@ function ImageThumb({ url, title }: { url: string; title?: string }) {
   )
 }
 
-/** Step-row status icons (timeline glyphs: 14px in a 20px slot, 1.6 stroke) */
-function StepIcon({ status }: { status: 'running' | 'done' | 'error' }) {
-  if (status === 'running') {
-    return (
-      <svg
-        viewBox="0 0 24 24"
-        width="14"
-        height="14"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden
-      >
-        <path d="M6.5 3.5h11M6.5 20.5h11M8 3.5v3.2c0 2.6 4 4.2 4 5.3 0 1.1 4 2.7 4 5.3v3.2M16 3.5v3.2c0 2.6-4 4.2-4 5.3 0 1.1-4 2.7-4 5.3v3.2" />
-      </svg>
-    )
-  }
-  if (status === 'error') {
-    return (
-      <svg
-        viewBox="0 0 24 24"
-        width="14"
-        height="14"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden
-      >
-        <circle cx="12" cy="12" r="9" />
-        <path d="m9.2 9.2 5.6 5.6M14.8 9.2l-5.6 5.6" />
-      </svg>
-    )
-  }
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <circle cx="12" cy="12" r="9" />
-      <path d="m8.5 12.4 2.4 2.4 4.6-5" />
-    </svg>
-  )
-}
-
 /** Quiet roll-back action in the message toolbar: restores the deck to before the run's edits */
 function RollbackButton({ disabled, onClick }: { disabled: boolean; onClick: () => void }) {
   const { t: tr } = useI18n()
@@ -3100,83 +3139,39 @@ function RollbackButton({ disabled, onClick }: { disabled: boolean; onClick: () 
  *  and a manual toggle that always wins. Rows inside are step rows with 1px connectors. */
 function ToolChipList({ tools }: { tools: ToolActivity[] }) {
   const { t: tr } = useI18n()
-  const [expanded, setExpanded] = useState<Set<number>>(new Set())
-  const [userOpen, setUserOpen] = useState<boolean | null>(null)
-
-  const toggle = useCallback((j: number) => {
-    setExpanded((prev) => {
-      const next = new Set(prev)
-      if (next.has(j)) next.delete(j)
-      else next.add(j)
-      return next
-    })
-  }, [])
-
-  const anyRunning = tools.some((tool) => tool.running)
-  const open = userOpen ?? anyRunning
-  const label = anyRunning ? tr('aiGroupWorking') : tr('aiWorkedSteps', { n: tools.length })
-
   return (
-    <div className="ai-work-group">
-      <button
-        type="button"
-        className={`ai-work-group-summary${anyRunning ? ' running' : ''}`}
-        aria-expanded={open}
-        onClick={() => setUserOpen(!open)}
-      >
-        {anyRunning && !open && <span className="ai-tool-chip-spinner" aria-hidden />}
-        <span className="ai-work-group-label">{label}</span>
-        <span className={`ai-tool-chip-caret${open ? ' open' : ''}`} aria-hidden>
-          ›
-        </span>
-      </button>
-      <div className={`ai-work-group-body${open ? ' open' : ''}`}>
-        <div className="ai-work-group-body-inner">
-          {tools.map((tool, j) => {
-            const hasDisplayData = !!(
-              tool.display?.items?.length ||
-              (tool.display?.kind === 'text' && tool.display.text)
-            )
-            const hasOutput = !tool.running && (!!tool.output || hasDisplayData)
-            const isOpen = expanded.has(j)
-            const stepStatus = tool.running ? 'running' : tool.isError ? 'error' : 'done'
-            return (
-              <div key={j} className="ai-step-row">
-                <span className={`ai-step-icon ${stepStatus}`} aria-hidden>
-                  <StepIcon status={stepStatus} />
-                </span>
-                <div className="ai-step-content">
-                  {hasOutput ? (
-                    <button
-                      type="button"
-                      className="ai-step-title clickable"
-                      data-tip={tool.name}
-                      aria-expanded={isOpen}
-                      onClick={() => toggle(j)}
-                    >
-                      {tool.summary}
-                    </button>
-                  ) : (
-                    <span className="ai-step-title" data-tip={tool.name}>
-                      {tool.summary}
-                    </span>
-                  )}
-                  {hasOutput && isOpen && (
-                    <div className="ai-step-detail">
-                      <ToolOutputPanel
-                        name={tool.name}
-                        output={tool.output ?? ''}
-                        display={tool.display}
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    </div>
+    <PresentationActivityGroup
+      items={tools.map((tool, index) => {
+        const hasDisplayData = !!(
+          tool.display?.items?.length ||
+          (tool.display?.kind === 'text' && tool.display.text)
+        )
+        const hasOutput = !tool.running && (!!tool.output || hasDisplayData)
+        return {
+          id: `${index}:${tool.name}`,
+          label: tool.summary,
+          status: tool.running
+            ? ('running' as const)
+            : tool.isError
+              ? ('error' as const)
+              : ('done' as const),
+          tooltip: tool.name,
+          ...(hasOutput
+            ? {
+                detail: (
+                  <ToolOutputPanel
+                    name={tool.name}
+                    output={tool.output ?? ''}
+                    display={tool.display}
+                  />
+                ),
+              }
+            : {}),
+        }
+      })}
+      workingLabel={tr('aiGroupWorking')}
+      workedLabel={(count) => tr('aiWorkedSteps', { n: count })}
+    />
   )
 }
 

@@ -317,7 +317,14 @@ async function startDocumentMcpServerInternal(
             jsonrpc: '2.0',
             id,
             result: {
-              content: [{ type: 'text', text: execution.output }],
+              content: [
+                { type: 'text', text: execution.output },
+                ...(execution.modelContent ?? []).map((block) => ({
+                  type: 'image' as const,
+                  data: block.image.base64,
+                  mimeType: block.image.mime,
+                })),
+              ],
               isError: execution.isError === true,
             },
           })

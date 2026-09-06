@@ -32,6 +32,7 @@ export const createAgentController = <TSnapshot>(
     stop: () => inner?.stop(),
     reset: () => inner?.reset(),
     restore: (messages) => inner?.restore(messages),
+    appendAssistantContext: (text) => inner?.appendAssistantContext(text) ?? false,
     suspendToolExecution(result) {
       if (!inner?.suspendToolExecution) throw new Error('agent_suspension_unavailable')
       return inner.suspendToolExecution(result)

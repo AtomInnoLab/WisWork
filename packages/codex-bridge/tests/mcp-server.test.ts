@@ -34,7 +34,7 @@ const policyGrant = () => {
     },
   }
 }
-const registration = () => {
+const registration = (execution: any = { output: 'document', summary: 'read' }) => {
   const suspensionAuthority = createToolExecutionSuspensionAuthority()
   return {
     identity: {
@@ -50,7 +50,7 @@ const registration = () => {
       policy: { get_document_context: 'read' },
     }),
     isOpen: () => true,
-    executeRead: async () => ({ output: 'document', summary: 'read' }),
+    executeRead: async () => execution,
     suspendMutation: suspensionAuthority.suspend,
     ownsSuspension: suspensionAuthority.owns,
   }
@@ -114,6 +114,32 @@ async function initialize(url: string, secret: string) {
 }
 
 describe('document MCP server', () => {
+  it('returns bounded tool images as MCP image content', async () => {
+    const server = await startDocumentMcpServer()
+    const session = server.register(
+      registration({
+        output: 'rendered',
+        summary: 'screenshot',
+        modelContent: [{ type: 'image', image: { base64: 'aGVsbG8=', mime: 'image/png' } }],
+      }),
+    )
+    try {
+      await initialize(session.url, session.secret)
+      const called = await post(session.url, session.secret, {
+        jsonrpc: '2.0',
+        id: 30,
+        method: 'tools/call',
+        params: { name: tool.name, arguments: {} },
+      })
+      expect(called.json.result.content).toEqual([
+        { type: 'text', text: 'rendered' },
+        { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+      ])
+    } finally {
+      await server.close()
+    }
+  })
+
   it('authenticates first, enforces exact state order and isolates sessions', async () => {
     const server = await startDocumentMcpServer()
     const a = server.register(registration())

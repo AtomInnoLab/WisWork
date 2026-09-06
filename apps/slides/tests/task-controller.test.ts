@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentToolCall } from '../src/shared/ipc'
 import {
+  canonicalAffectedSlides,
   compileCanonicalSlidesCalls,
   createSlidesTaskController,
   type SlidesTaskEnrollment,
@@ -69,6 +70,48 @@ function enrollment(): SlidesTaskEnrollment {
 }
 
 describe('Slides verified task controller', () => {
+  it('does not turn invalid model-generated slide coordinates into a user clarification', () => {
+    expect(
+      canonicalAffectedSlides([{ ...call, input: { ...call.input, slideIndex: undefined } }]),
+    ).toBeUndefined()
+    expect(
+      canonicalAffectedSlides([{ ...call, input: { ...call.input, slideIndex: -1 } }]),
+    ).toBeUndefined()
+    expect(canonicalAffectedSlides([call, { ...call, id: 'call-2' }])).toEqual([1])
+  })
+
+  it('lets the transactional tool report an invalid generated slide index instead of asking the user', () => {
+    expect(
+      compileCanonicalSlidesCalls({
+        calls: [{ ...call, input: { ...call.input, slideIndex: -1 } }],
+        authority: {
+          documentToken: 'doc-1',
+          sessionToken: 'session-1',
+          revision: contract.baseRevision,
+          slides: [{ number: 1, slideToken: 'slide-1', elements: [] }],
+        },
+        sourceTargetTokens: {},
+        taskId: 'invalid-model-target',
+      }),
+    ).toEqual({ kind: 'bypass' })
+  })
+
+  it('bypasses optional verification instead of asking the user when a runtime source is not yet authority-bound', () => {
+    expect(
+      compileCanonicalSlidesCalls({
+        calls: [call],
+        authority: {
+          documentToken: 'doc-1',
+          sessionToken: 'session-1',
+          revision: contract.baseRevision,
+          slides: [{ number: 1, slideToken: 'slide-1', elements: [] }],
+        },
+        sourceTargetTokens: {},
+        taskId: 'new-deck-style',
+      }),
+    ).toEqual({ kind: 'bypass' })
+  })
+
   it('deduplicates repeated source targets before authoritative enrollment inspection', async () => {
     const inspect = vi.fn(async (request: { sourceTargets?: unknown[] }) => {
       expect(request.sourceTargets).toEqual([{ slide: 1, sourceId: 'runtime-1' }])

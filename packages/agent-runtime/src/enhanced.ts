@@ -94,6 +94,7 @@ class EnhancedSession<TSnapshot> implements AgentRuntimeSession {
         const code =
           [
             'enhanced_turn_timeout',
+            'enhanced_proposal_expired',
             'enhanced_auth_required',
             'enhanced_usage_limit',
             'enhanced_context_limit',

@@ -266,7 +266,7 @@ export function validateAiStreamRequest(value: unknown): AiStreamRequest {
   const request = record(value)
   exact(request, ['requestId', 'settings', 'system', 'messages', 'tools', 'maxTokens'])
   const state = { chars: 0, nodes: 0 }
-  const maxTokens = request.maxTokens ?? 8_192
+  const maxTokens = request.maxTokens ?? AI_IPC_LIMITS.maxTokens
   if (
     typeof maxTokens !== 'number' ||
     !Number.isInteger(maxTokens) ||
@@ -395,7 +395,7 @@ export function registerWisworkModelIpc(options: RegisterWisworkModelIpcOptions)
         request.system,
         request.messages,
         request.tools ?? [],
-        request.maxTokens ?? 8_192,
+        request.maxTokens ?? AI_IPC_LIMITS.maxTokens,
         {
           signal: controller.signal,
           onDelta: (text) => send(event, { requestId: request.requestId, type: 'delta', text }),

@@ -48,6 +48,7 @@ import {
   type PresentationTargetEnrollment,
 } from './operations/desktop-host'
 import { PresentationTransactionExecutor } from './operations/executor'
+import { blocksCanonicalPresentationTransaction } from './operations/transaction-admission'
 import { PreparedTargetLedger } from './operations/prepared-target-ledger'
 import {
   inspectSlidesAcceptanceAuthority,
@@ -583,7 +584,7 @@ export function registerSlidesOnlyAiIpc(): void {
         } as const
       }
     }
-    if (session.masterEdit || session.historyBatch || session.transformPreview) {
+    if (blocksCanonicalPresentationTransaction(session)) {
       throw new AiIpcError('invalid_payload')
     }
     let executor = transactionExecutors.get(session)

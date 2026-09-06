@@ -10,10 +10,9 @@ import { startTrustedMcpTransport, TrustedMcpTransportDenied } from './mcp-serve
 
 // Full presentations commonly need an initial read plus several bounded edits per slide.
 // Keep a hard ceiling without cutting ordinary 8–12 slide generation off halfway through.
-const MAX_CALLS = 24
 const DEFAULT_TTL_MS = 10 * 60_000
 const MAX_ACTIVE_GRANTS = 64
-const MAX_PROPOSAL_TTL_MS = 30_000
+const MAX_PROPOSAL_TTL_MS = 5 * 60_000
 
 export interface DynamicGatewayDocument {
   readonly ownerId: string
@@ -57,7 +56,6 @@ interface TurnGrant {
   threadId: string
   readonly expiresAt: number
   readonly calls: Set<string>
-  remaining: number
   turnId?: string
   bound: boolean
 }
@@ -183,26 +181,38 @@ export async function startDynamicMcpGateway(
       try {
         diagnostic('gateway_tool_call_received')
         if (call.name !== 'wiswork_read' && call.name !== 'wiswork_propose')
-          throw new Error('denied')
+          throw new Error('carrier_invalid')
+        const inputKeys =
+          typeof call.input === 'object' && call.input !== null && !Array.isArray(call.input)
+            ? Object.keys(call.input)
+            : []
+        diagnostic(
+          `gateway_input_shape_${['capability', 'callId', 'toolName', 'input']
+            .map((key) => (inputKeys.includes(key) ? '1' : '0'))
+            .join('')}_${
+            inputKeys.some((key) => !['capability', 'callId', 'toolName', 'input'].includes(key))
+              ? 'extra'
+              : 'exact'
+          }`,
+        )
+        diagnostic(
+          `gateway_input_aliases_${['tool', 'name', 'arguments', 'args', 'id']
+            .map((key) => (inputKeys.includes(key) ? '1' : '0'))
+            .join('')}`,
+        )
         const args = exactRecord(call.input, ['capability', 'callId', 'toolName', 'input'])
         if (
           typeof args.capability !== 'string' ||
           typeof args.callId !== 'string' ||
           typeof args.toolName !== 'string'
         )
-          throw new Error('denied')
+          throw new Error('carrier_input_invalid')
         sweepExpired()
         const grant = grants.get(args.capability)
-        // Capability is consumed/budgeted before any document or host lookup.
-        if (
-          !grant ||
-          !grant.bound ||
-          Date.now() > grant.expiresAt ||
-          grant.remaining <= 0 ||
-          grant.calls.has(args.callId)
-        )
-          throw new Error('denied')
-        grant.remaining -= 1
+        // Authenticate and reject replay before any document or host lookup.
+        // A live turn must not lose authority simply because visual review uses many tools.
+        if (!grant || !grant.bound || Date.now() > grant.expiresAt || grant.calls.has(args.callId))
+          throw new Error('capability_invalid')
         grant.calls.add(args.callId)
         const documentCall: AgentToolCall = {
           id: args.callId,
@@ -215,7 +225,8 @@ export async function startDynamicMcpGateway(
         const isRead =
           definition?.annotations?.readOnlyHint === true &&
           definition.annotations.destructiveHint !== true
-        if ((call.name === 'wiswork_read') !== isRead) throw new Error('denied')
+        if (!definition) throw new Error('tool_unavailable')
+        if ((call.name === 'wiswork_read') !== isRead) throw new Error('carrier_mismatch')
         emitTool(grant.document, {
           type: 'tool-start',
           callId: documentCall.id,
@@ -230,16 +241,17 @@ export async function startDynamicMcpGateway(
           call.name === 'wiswork_propose'
             ? grant.document.summarizeProposal?.(documentCall)
             : undefined
-        if (call.name === 'wiswork_propose' && !proposalSummary) throw new Error('denied')
+        if (call.name === 'wiswork_propose' && !proposalSummary)
+          throw new Error('proposal_summary_invalid')
         const outcome = grant.document.session.callTool(
           grant.document.session.credentials,
           documentCall,
         )
         if (call.name === 'wiswork_propose') {
-          if (outcome instanceof Promise) throw new Error('denied')
-          if (!isToolExecutionSuspension(outcome)) throw new Error('denied')
+          if (outcome instanceof Promise) throw new Error('proposal_outcome_invalid')
+          if (!isToolExecutionSuspension(outcome)) throw new Error('proposal_outcome_invalid')
           const proposalId = randomBytes(32).toString('base64url')
-          if (!grant.document.onProposal) throw new Error('denied')
+          if (!grant.document.onProposal) throw new Error('proposal_handler_unavailable')
           grant.document.onProposal({
             proposalId,
             call: documentCall,
@@ -247,16 +259,14 @@ export async function startDynamicMcpGateway(
             summary: proposalSummary!,
             settled: outcome.result,
           })
-          const execution: ToolExecution = {
-            output: JSON.stringify({ proposalId, status: 'pending_confirmation' }),
-            summary: 'Proposal pending confirmation',
-            mutated: false,
-          }
+          // Keep the model tool call open through consent and execution. Returning
+          // a pending receipt here loses the eventual error and lets reads race writes.
+          const execution = await outcome.result
           emitTool(grant.document, {
             type: 'tool-complete',
             callId: documentCall.id,
             toolName: documentCall.name,
-            isError: false,
+            isError: execution.isError === true,
           })
           diagnostic('gateway_proposal_created')
           diagnostic('gateway_tool_call_completed')
@@ -278,7 +288,7 @@ export async function startDynamicMcpGateway(
         diagnostic('gateway_tool_call_completed')
         started = undefined
         return execution
-      } catch {
+      } catch (error) {
         if (started) {
           emitTool(started.document, {
             type: 'tool-complete',
@@ -287,6 +297,14 @@ export async function startDynamicMcpGateway(
             isError: true,
           })
         }
+        const reason =
+          error instanceof Error &&
+          /^(?:carrier_invalid|carrier_input_invalid|capability_invalid|tool_unavailable|carrier_mismatch|proposal_summary_invalid|proposal_outcome_invalid|proposal_handler_unavailable)$/.test(
+            error.message,
+          )
+            ? error.message
+            : 'unknown'
+        diagnostic(`gateway_tool_call_denied_${reason}`)
         diagnostic('gateway_tool_call_denied')
         throw new TrustedMcpTransportDenied('turn_capability_denied')
       }
@@ -332,7 +350,6 @@ export async function startDynamicMcpGateway(
         threadId: input.threadId,
         expiresAt: Date.now() + ttl,
         calls: new Set(),
-        remaining: MAX_CALLS,
         bound: input.threadId !== 'reserved',
       })
       return Object.freeze({ capability })

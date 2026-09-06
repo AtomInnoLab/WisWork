@@ -133,7 +133,7 @@ describe('EnhancedDiagnosticsStore', () => {
     const task = store.recent()[0]!
     expect(task).toMatchObject({ diagnosticId: id, host: 'slides', status: 'failed' })
     expect(task.events.map((event) => event.code)).toContain('stream_protocol_rejected')
-    expect(task.failureCode).toBe('stream_protocol_rejected')
+    expect(task.failureCode).toBe('turn_timeout')
     expect(task.events.some((event) => event.phase === 'app_server_thread_started')).toBe(false)
     expect(JSON.stringify(task)).not.toContain('private prompt')
     expect(JSON.stringify(task)).not.toContain('/Users/')
@@ -143,11 +143,20 @@ describe('EnhancedDiagnosticsStore', () => {
     const { store } = fixture()
     const id = store.beginTask('slides')
     store.record('responses_stream_unsupported_reasoning_block')
+    store.record('responses_stream_reasoning_content_limit_exceeded')
+    store.record('responses_stream_invalid_messages_usage')
     store.record('responses_stream_invalid_custom_tool_input')
+    store.record('responses_stream_invalid_messages_event_order')
     store.finishTask(id, 'failed')
 
     expect(store.recent()[0]?.events.map((event) => event.code)).toEqual(
-      expect.arrayContaining(['stream_reasoning_unsupported', 'stream_tool_input_invalid']),
+      expect.arrayContaining([
+        'stream_reasoning_unsupported',
+        'stream_reasoning_limit_exceeded',
+        'stream_usage_invalid',
+        'stream_tool_input_invalid',
+        'stream_event_order_invalid',
+      ]),
     )
     expect(JSON.stringify(store.recent()[0])).not.toContain('reasoning_block')
   })
@@ -184,6 +193,121 @@ describe('EnhancedDiagnosticsStore', () => {
     store.record('app_server_thread_started')
     store.finishTask(id, 'failed', 'enhanced_turn_failed')
     expect(store.recent()[0]).toMatchObject({ failureCode: 'turn_failed' })
+  })
+
+  it('records confirmation expiry distinctly from runtime failure', () => {
+    const { store } = fixture()
+    const id = store.beginTask('slides')
+    store.finishTask(id, 'failed', 'enhanced_proposal_expired')
+    expect(store.recent()[0]).toMatchObject({ failureCode: 'proposal_expired' })
+  })
+
+  it('preserves questionnaire terminal failure instead of an earlier repair failure', () => {
+    const { store } = fixture()
+    const id = store.beginTask('slides')
+    store.record('enhanced_proposal_execution_failed')
+    store.finishTask(id, 'failed', 'enhanced_questionnaire_incomplete')
+    expect(store.recent()[0]).toMatchObject({ failureCode: 'questionnaire_incomplete' })
+    expect(store.recent()[0]!.events.at(-1)).toMatchObject({
+      code: 'questionnaire_incomplete',
+      outcome: 'failed',
+    })
+  })
+
+  it.each([
+    'carrier_invalid',
+    'carrier_input_invalid',
+    'capability_invalid',
+    'tool_unavailable',
+    'carrier_mismatch',
+    'proposal_summary_invalid',
+    'proposal_outcome_invalid',
+    'proposal_handler_unavailable',
+  ])('restores denial reason %s and unrelated task history after restart', (reason) => {
+    const { store, path } = fixture()
+    const previous = store.beginTask('docs')
+    store.finishTask(previous, 'succeeded')
+    const current = store.beginTask('slides')
+    store.record(`gateway_tool_call_denied_${reason}`)
+    store.finishTask(current, 'failed', 'enhanced_questionnaire_incomplete')
+
+    const restored = new EnhancedDiagnosticsStore({ path })
+    expect(restored.recent()).toEqual(store.recent())
+    expect(restored.recent()).toHaveLength(2)
+    expect(restored.recent().find((task) => task.diagnosticId === current)).toMatchObject({
+      failureCode: 'questionnaire_incomplete',
+      events: expect.arrayContaining([
+        expect.objectContaining({ code: 'mcp_tool_denied', phase: reason }),
+      ]),
+    })
+  })
+
+  it('keeps allowlisted per-call denial reasons without persisting arbitrary details', () => {
+    const { store } = fixture()
+    store.beginTask('slides')
+    store.record('gateway_tool_call_denied_carrier_mismatch')
+    store.record('gateway_tool_call_denied_capability_invalid')
+    store.record('gateway_tool_call_denied_PRIVATE_CONTENT')
+    const task = store.recent()[0]!
+    expect(task.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'mcp_tool_denied', phase: 'carrier_mismatch' }),
+        expect.objectContaining({ code: 'mcp_tool_denied', phase: 'capability_invalid' }),
+      ]),
+    )
+    expect(JSON.stringify(task)).not.toContain('PRIVATE_CONTENT')
+  })
+
+  it('keeps local start and app-server failure boundaries distinct', () => {
+    const { store } = fixture()
+    const id = store.beginTask('slides')
+    for (const code of [
+      'enhanced_thread_starting',
+      'enhanced_thread_start_failed',
+      'enhanced_turn_starting',
+      'enhanced_turn_start_failed',
+      'app_server_error',
+      'codex_error',
+      'app_server_thread_status_systemError',
+    ]) {
+      store.record(code)
+    }
+    store.finishTask(id, 'failed')
+
+    expect(store.recent()[0]?.events.map((event) => event.code)).toEqual(
+      expect.arrayContaining([
+        'thread_starting',
+        'thread_start_failed',
+        'turn_starting',
+        'turn_start_failed',
+        'app_server_error',
+        'codex_error',
+        'thread_system_error',
+      ]),
+    )
+  })
+
+  it('records only closed proposal lifecycle states', () => {
+    const { store } = fixture()
+    const id = store.beginTask('slides')
+    for (const code of [
+      'enhanced_proposal_created',
+      'enhanced_proposal_applied',
+      'enhanced_proposal_cancelled',
+      'enhanced_proposal_execution_failed',
+    ]) {
+      store.record(code)
+    }
+    store.finishTask(id, 'failed')
+
+    expect(store.recent()[0]?.events.map((event) => event.code)).toEqual(
+      expect.arrayContaining([
+        'proposal_created',
+        'proposal_applied',
+        'proposal_cancelled',
+        'proposal_execution_failed',
+      ]),
+    )
   })
 
   it('rejects a tampered persisted report instead of re-exporting injected content', () => {

@@ -23,6 +23,7 @@ export interface AgentHarness<_TSnapshot> {
   stop(): void
   reset(): void
   restore(messages: readonly AgentMessage[]): void
+  appendAssistantContext(text: string): boolean
   dispose(): void
   /** Opaque loop-owned authority used by reviewed Enhanced mutation controllers. */
   suspendToolExecution(
@@ -182,6 +183,12 @@ export function createAgentHarness<TSnapshot>(
       const before = loop.messages
       loop.restore(messages)
       if (loop.messages !== before) publish({ ...currentSnapshot })
+    },
+    appendAssistantContext(text) {
+      if (disposed) return false
+      const appended = loop.appendAssistantContext(text)
+      if (appended) publish({ ...currentSnapshot })
+      return appended
     },
     dispose() {
       if (disposed) return

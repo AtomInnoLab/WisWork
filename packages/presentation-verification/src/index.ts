@@ -42,8 +42,8 @@ export function presentationVerificationFlags(
     planning: flag('PLANNING', true),
     verifiedCompletion: flag('VERIFIED_COMPLETION', true),
     visualReview: flag('VISUAL_REVIEW', true),
-    // Correction remains opt-in while golden evaluation is rolling out.
-    autoCorrection: flag('AUTO_CORRECTION', false),
+    // Corrections remain bounded by frozen intents, strict targets, two passes, and rollback.
+    autoCorrection: flag('AUTO_CORRECTION', true),
   })
 }
 

@@ -48,6 +48,17 @@ const canonicalProperties = {
   h: 'height',
 } as const
 
+export function canonicalAffectedSlides(calls: readonly AgentToolCall[]): number[] | undefined {
+  const slides = calls.map((call) => {
+    const slideIndex = call.input.slideIndex
+    return Number.isSafeInteger(slideIndex) && (slideIndex as number) >= 0
+      ? (slideIndex as number) + 1
+      : undefined
+  })
+  if (slides.some((slide) => slide === undefined)) return undefined
+  return [...new Set(slides as number[])]
+}
+
 /** Compiles only exact canonical calls. Scripts and unsupported families bypass verification. */
 export function compileCanonicalSlidesCalls(input: {
   calls: readonly AgentToolCall[]
@@ -59,9 +70,13 @@ export function compileCanonicalSlidesCalls(input: {
   const changes: SlidesAcceptanceIntent['changes'] = []
   for (const call of input.calls) {
     const slideIndex = call.input.slideIndex
-    if (!Number.isSafeInteger(slideIndex) || (slideIndex as number) < 0)
-      return { kind: 'clarify', question: 'presentation_scope_required' }
+    // An invalid model-generated index is not missing user intent. Let the
+    // transactional tool reject it and give the model a chance to self-correct;
+    // asking the user produced an unanswerable generic clarification state.
+    if (!Number.isSafeInteger(slideIndex) || (slideIndex as number) < 0) return { kind: 'bypass' }
     const slide = (slideIndex as number) + 1
+    if (!input.authority.slides.some((candidate) => candidate.number === slide))
+      return { kind: 'bypass' }
     affected.add(slide)
     if (call.name === 'set_slide_background') {
       const color = call.input.color
@@ -72,7 +87,11 @@ export function compileCanonicalSlidesCalls(input: {
     const sourceId = call.input.sourceId
     if (typeof sourceId !== 'string') return { kind: 'bypass' }
     const targetToken = input.sourceTargetTokens[`${slide}:${sourceId}`]
-    if (!targetToken) return { kind: 'clarify', question: 'presentation_target_required' }
+    // A newly-created runtime element may not have reached the durable authority map yet.
+    // This is an internal verification-availability condition, not missing user intent.
+    // Let the existing transactional tool path validate the source id instead of presenting
+    // an unanswerable "more information needed" state to the user.
+    if (!targetToken) return { kind: 'bypass' }
     if (call.name === 'set_element_style' || call.name === 'set_element_transform') {
       let added = false
       for (const [field, property] of Object.entries(canonicalProperties)) {

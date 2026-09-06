@@ -6,6 +6,13 @@ export { Markdown } from './Markdown'
 export { WisWorkAppMark } from './WisWorkAppMark'
 export { WisWorkAgentMark } from './WisWorkAgentMark'
 export {
+  PresentationActivityGroup,
+  PresentationEmptyState,
+  PresentationMessage,
+  type PresentationActivityItem,
+  type PresentationMessageRole,
+} from './PresentationAgent'
+export {
   EnhancedMutationConfirmation,
   isEnhancedMutationProposal,
   type EnhancedMutationOperation,

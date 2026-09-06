@@ -3,15 +3,45 @@ import { realpathSync } from 'node:fs'
 import type { MessagesRequest } from '@wiswork/codex-bridge'
 import { describe, expect, it, vi } from 'vitest'
 import { suspendToolExecution } from '@wiswork/agent-core'
+import type { RenderSlide, ShapeRenderNode } from '@wiswork/pptx-render'
+import { createSlidesSkill } from '../../slides/src/renderer/ai/slides-skill'
+import { executePreparedGeometryFamilyTransaction } from '../../slides/src/renderer/ai/presentation-geometry-transactions'
+import { writePresentationE2eArtifact } from '../../slides/tests/presentation-e2e-artifact'
 import {
+  buildDocumentToolInstructions,
   createProductionCodexBootstrap,
   safeTurnFailure,
   startBestEffortCodexInterrupt,
 } from '../src/main/codex-engine'
 
+it('gives Codex an exact carrier envelope and the registered document tool schemas', () => {
+  const instructions = buildDocumentToolInstructions({
+    credentials: { sessionId: 'private-session', secret: 'private-secret' },
+    listTools: () => [
+      {
+        name: 'plan_deck',
+        description: 'Plan the deck.',
+        inputSchema: {
+          type: 'object',
+          properties: { pages: { type: 'array' } },
+          required: ['pages'],
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false },
+      },
+    ],
+  } as never)
+  expect(instructions).toContain('"name":"plan_deck"')
+  expect(instructions).toContain('"carrier":"wiswork_read"')
+  expect(instructions).toContain('arguments only inside input')
+  expect(instructions).not.toContain('private-session')
+  expect(instructions).not.toContain('private-secret')
+})
+
 const configuredExecutable = process.env.WISWORK_CODEX_INTEGRATION_EXECUTABLE
 const executable = configuredExecutable ? realpathSync(configuredExecutable) : undefined
 const realIt = executable && isAbsolute(executable) ? it : it.skip
+const realWisUsageToken = process.env.WISWORK_REAL_WISUSAGE_TOKEN
+const realWisIt = executable && isAbsolute(executable) && realWisUsageToken ? it : it.skip
 
 it('detaches an unresponsive interrupt and bounds its lifetime', async () => {
   vi.useFakeTimers()
@@ -57,23 +87,192 @@ function finalResponse(): Response {
   )
 }
 
-function toolResponse(code: string): Response {
+function toolResponse(
+  code: string,
+  reasoning: 'encrypted' | 'plaintext' = 'encrypted',
+  toolUseId = 'custom_7',
+): Response {
   return new Response(
     [
       'data: {"type":"message_start","message":{"id":"msg_tool","model":"openai/gpt-5.6-sol","usage":{"input_tokens":1}}}\n\n',
-      'data: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"opaque-production-reasoning"}}\n\n',
+      ...(reasoning === 'encrypted'
+        ? [
+            'data: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"opaque-production-reasoning"}}\n\n',
+          ]
+        : [
+            'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"private production prefix","signature":null}}\n\n',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" and suffix"}}\n\n',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"opaque-signature"}}\n\n',
+          ]),
       'data: {"type":"content_block_stop","index":0}\n\n',
-      'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"custom_7","name":"exec","input":{}}}\n\n',
+      `data: ${JSON.stringify({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: toolUseId, name: 'exec', input: {} } })}\n\n`,
       `data: ${JSON.stringify({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n`,
       'data: {"type":"content_block_stop","index":1}\n\n',
-      'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
+      'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":4,"output_tokens_details":{"reasoning_tokens":3}}}\n\n',
       'data: {"type":"message_stop"}\n\n',
     ].join(''),
     { status: 200, headers: { 'content-type': 'text/event-stream' } },
   )
 }
 
+function turnCapability(request: MessagesRequest): string | undefined {
+  const matches = [
+    ...JSON.stringify(request.messages).matchAll(
+      /<wiswork_turn_capability>([A-Za-z0-9_-]{43})<\/wiswork_turn_capability>/g,
+    ),
+  ]
+  return matches.at(-1)?.[1]
+}
+
 describe('real 0.147 production engine bridge', () => {
+  realIt(
+    'keeps the app-server alive across consecutive authority-bound turns',
+    async () => {
+      const upstream = vi.fn(async () => finalResponse())
+      const crashed = vi.fn()
+      const diagnostics: string[] = []
+      const engine = await createProductionCodexBootstrap({
+        fetchWithAuth: upstream,
+        diagnostics: (code) => diagnostics.push(code),
+      }).start({ executablePath: executable!, onCrash: crashed })
+      const session = {
+        identity: {
+          ownerId: 'slides-owner',
+          host: 'slides',
+          documentId: 'consecutive-slides',
+          sessionId: 'consecutive-session',
+          generation: 1,
+        },
+        credentials: { sessionId: 'consecutive-session', secret: 'secret' },
+        listTools: () => [
+          {
+            name: 'plan_deck',
+            description: 'Plan a presentation before editing.',
+            inputSchema: { type: 'object', additionalProperties: true },
+            annotations: { readOnlyHint: true, destructiveHint: false },
+          },
+        ],
+        callTool: vi.fn(),
+        cancelAll: vi.fn(() => 0),
+        close: vi.fn(),
+      } as any
+      engine.registerDocument!({
+        ownerId: 'slides-owner',
+        documentId: 'consecutive-slides',
+        host: 'slides',
+        generation: 1,
+        session,
+      })
+      try {
+        await engine
+          .startTurn({
+            documentId: 'consecutive-slides',
+            host: 'slides',
+            generation: 1,
+            text: '做一份完整产品发布会演示。',
+          })
+          .catch((error) => {
+            throw new Error(`first_turn_failed:${diagnostics.join(',')}`, { cause: error })
+          })
+        await engine
+          .startTurn({
+            documentId: 'consecutive-slides',
+            host: 'slides',
+            generation: 1,
+            text: 'Previous user: 做一份完整产品发布会演示。 Previous assistant: 请提供产品名称和受众。 Latest user: 你帮我决定吧。',
+          })
+          .catch((error) => {
+            throw new Error(`second_turn_failed:${diagnostics.join(',')}`, { cause: error })
+          })
+        expect(upstream).toHaveBeenCalledTimes(2)
+        const firstRequest = upstream.mock.calls[0]![0]
+        const secondRequest = upstream.mock.calls[1]![0]
+        expect(JSON.stringify(secondRequest.messages)).toContain('做一份完整产品发布会演示')
+        expect(JSON.stringify(secondRequest.messages)).toContain('你帮我决定吧')
+        expect(turnCapability(firstRequest)).toBeTruthy()
+        expect(turnCapability(secondRequest)).toBeTruthy()
+        expect(turnCapability(secondRequest)).not.toBe(turnCapability(firstRequest))
+        expect(crashed).not.toHaveBeenCalled()
+      } finally {
+        await engine.close()
+      }
+    },
+    20_000,
+  )
+
+  realWisIt(
+    'accepts the live WisUsage stream shape for a Slides planning turn',
+    async () => {
+      const diagnostics: string[] = []
+      const upstream = async (request: MessagesRequest, signal?: AbortSignal) =>
+        fetch('https://wisusage.atominnolab.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${realWisUsageToken}`,
+            'content-type': 'application/json',
+            'x-req-location': 'sg',
+          },
+          body: JSON.stringify(request),
+          signal,
+        })
+      const engine = await createProductionCodexBootstrap({
+        fetchWithAuth: upstream,
+        diagnostics: (code) => diagnostics.push(code),
+      }).start({ executablePath: executable!, onCrash: vi.fn() })
+      const session = {
+        identity: {
+          ownerId: 'slides-owner',
+          host: 'slides',
+          documentId: 'live-slides-stream',
+          sessionId: 'live-slides-session',
+          generation: 1,
+        },
+        credentials: { sessionId: 'live-slides-session', secret: 'secret' },
+        listTools: () => [
+          {
+            name: 'plan_deck',
+            description: 'Plan a presentation before editing.',
+            inputSchema: { type: 'object', additionalProperties: true },
+            annotations: { readOnlyHint: true, destructiveHint: false },
+          },
+        ],
+        callTool: vi.fn(async () => ({ output: '{"planned":true}', summary: 'planned' })),
+        cancelAll: vi.fn(() => 0),
+        close: vi.fn(),
+      } as any
+      engine.registerDocument!({
+        ownerId: 'slides-owner',
+        documentId: 'live-slides-stream',
+        host: 'slides',
+        generation: 1,
+        session,
+      })
+      try {
+        await engine
+          .startTurn({
+            documentId: 'live-slides-stream',
+            host: 'slides',
+            generation: 1,
+            text: '做一份新人入职培训课件，先规划结构。',
+          })
+          .catch((error) => {
+            throw new Error(`live_engine_failed:${diagnostics.join(',')}`, { cause: error })
+          })
+        const gatewayDiagnostics = diagnostics.filter(
+          (code) =>
+            code.startsWith('gateway_input_shape_') ||
+            code.startsWith('gateway_input_aliases_') ||
+            code.startsWith('gateway_tool_call_denied_'),
+        )
+        expect(session.callTool, gatewayDiagnostics.join(',')).toHaveBeenCalled()
+        expect(diagnostics).not.toContain('gateway_tool_call_denied')
+      } finally {
+        await engine.close()
+      }
+    },
+    65_000,
+  )
+
   realIt(
     'fails the first deterministic provider protocol error without waiting for retry timeout',
     async () => {
@@ -139,7 +338,7 @@ describe('real 0.147 production engine bridge', () => {
       const upstream = vi.fn(async (request: MessagesRequest) => {
         providerCalls += 1
         if (providerCalls > 1) return finalResponse()
-        const capability = request.system?.match(/pass capability ([A-Za-z0-9_-]{43})/)?.[1]
+        const capability = turnCapability(request)
         return toolResponse(
           `text(await tools.mcp__wiswork__wiswork_propose(${JSON.stringify({ capability, callId: 'mutation-1', toolName: 'replace_blocks', input: {} })}))`,
         )
@@ -204,10 +403,11 @@ describe('real 0.147 production engine bridge', () => {
       const upstream = vi.fn(async (request: MessagesRequest) => {
         providerCalls += 1
         if (providerCalls > 1) return finalResponse()
-        const match = request.system?.match(/pass capability ([A-Za-z0-9_-]{43})/)
-        expect(match?.[1]).toBeTruthy()
+        const capability = turnCapability(request)
+        expect(capability).toBeTruthy()
         return toolResponse(
-          `text(await tools.mcp__wiswork__wiswork_read(${JSON.stringify({ capability: match![1], callId: 'read-1', toolName: 'read_blocks', input: {} })}))`,
+          `text(await tools.mcp__wiswork__wiswork_read(${JSON.stringify({ capability, callId: 'read-1', toolName: 'read_blocks', input: {} })}))`,
+          'plaintext',
         )
       })
       const engine = await createProductionCodexBootstrap({
@@ -277,6 +477,337 @@ describe('real 0.147 production engine bridge', () => {
         )
       } finally {
         await engine.close()
+      }
+    },
+    65_000,
+  )
+
+  realIt(
+    'generates and verifies a three-page onboarding deck through the real Codex and Slides tool loop',
+    async () => {
+      const blankSlide = (): RenderSlide => ({
+        widthPx: 1280,
+        heightPx: 720,
+        scale: 1,
+        background: { kind: 'solid', color: '#FFFFFF' },
+        nodes: [],
+      })
+      let slides = [blankSlide()]
+      let providerCalls = 0
+      let transactionSequence = 0
+      const transactionIds: string[] = []
+      const confirmations: string[] = []
+      const pendingConfirmations = new Map<string, () => void>()
+      const diagnostics: string[] = []
+      const calls = [
+        {
+          carrier: 'read',
+          toolName: 'plan_deck',
+          input: {
+            core_hook: '从第一天到独立协作',
+            style: '简洁、清晰、友好',
+            pages: [
+              { title: '新人入职培训', brief: '欢迎', layout: 'cover' },
+              { title: '第一天安排', brief: '安排', layout: 'timeline' },
+              { title: '开始协作', brief: '协作', layout: 'cards' },
+            ],
+          },
+        },
+        {
+          carrier: 'read',
+          toolName: 'image_search',
+          input: { query: 'modern creative team collaboration', maxResults: 3 },
+        },
+        {
+          carrier: 'propose',
+          toolName: 'build_deck',
+          input: {
+            theme: { mode: 'dark', primary: '#0B1020', accent: '#66E3FF' },
+            pages: [
+              {
+                layout: 'cover',
+                kicker: 'WELCOME · WISWORK',
+                title: '新人入职培训',
+                body: ['从第一天，到独立协作'],
+                imageUrl: 'https://images.example/team.jpg',
+                imageAlt: '团队协作场景',
+              },
+              {
+                layout: 'timeline',
+                title: '第一天安排',
+                body: ['认识团队', '配置环境', '了解工作方式'],
+              },
+              {
+                layout: 'cards',
+                title: '开始协作',
+                body: ['主动沟通', '记录决策', '及时反馈'],
+              },
+            ],
+          },
+        },
+      ] as const
+      const upstream = vi.fn(async (request: MessagesRequest) => {
+        const next = calls[providerCalls++]
+        if (!next) return finalResponse()
+        const capability = turnCapability(request)
+        expect(capability).toBeTruthy()
+        const method = next.carrier === 'read' ? 'wiswork_read' : 'wiswork_propose'
+        return toolResponse(
+          `text(await tools.mcp__wiswork__${method}(${JSON.stringify({ capability, callId: `deck-${providerCalls}`, toolName: next.toolName, input: next.input })}))`,
+          'plaintext',
+          `custom_deck_${providerCalls}`,
+        )
+      })
+      ;(globalThis as any).window = {
+        slidesApi: {
+          imageSearch: vi.fn(async () => ({
+            images: [{ imageUrl: 'https://images.example/team.jpg', title: 'Team' }],
+            method: 'serper',
+          })),
+          insertImageUrl: vi.fn(async ({ slideIndex }: { slideIndex: number }) => ({
+            sourceId: `image-${slideIndex}`,
+            slide: slides[slideIndex],
+          })),
+          addSlide: vi.fn(async ({ sourceIndex }: { sourceIndex: number }) => {
+            const next = slides.slice()
+            const index = sourceIndex + 1
+            next.splice(index, 0, blankSlide())
+            return { slides: next, index }
+          }),
+        },
+      }
+      let activeSlideIndex = 0
+      const hostApi = {
+        preparePresentationTarget: vi.fn(async (request: { slideIndex: number }) => {
+          activeSlideIndex = request.slideIndex
+          return {
+            status: 'prepared' as const,
+            expectedDeckRevision: `sha256:${String(transactionIds.length).padStart(64, '0')}`,
+            target: {
+              slideId: `ppt/slides/slide${request.slideIndex + 1}.xml`,
+              expectedFingerprint: `sha256:${String(request.slideIndex + 1).padStart(64, '0')}`,
+            },
+          }
+        }),
+        cancelPresentationTransaction: vi.fn(async () => true),
+        executePresentationTransaction: vi.fn(async (transaction: any) => {
+          const slide = slides[activeSlideIndex]!
+          const created = new Map<string, string>()
+          let nodes = slide.nodes.slice()
+          for (const operation of transaction.operations as any[]) {
+            if (operation.kind === 'add_text_box') {
+              const sourceId = `generated-${++transactionSequence}`
+              created.set(operation.clientId, sourceId)
+              nodes.push({
+                id: `render-${sourceId}`,
+                sourceId,
+                type: 'text',
+                box: {
+                  x: operation.geometry.x,
+                  y: operation.geometry.y,
+                  w: operation.geometry.width,
+                  h: operation.geometry.height,
+                  rotationDeg: operation.geometry.rotation,
+                  flipH: false,
+                  flipV: false,
+                  centerX: operation.geometry.x + operation.geometry.width / 2,
+                  centerY: operation.geometry.y + operation.geometry.height / 2,
+                },
+                fill: { kind: 'none' },
+                text: { lines: [], insets: { l: 0, t: 0, r: 0, b: 0 }, anchor: 'top' },
+              } as ShapeRenderNode)
+            } else if (operation.kind === 'set_text') {
+              const sourceId = operation.target.createdByClientId
+                ? created.get(operation.target.createdByClientId)
+                : operation.target.elementId
+              nodes = nodes.map((node) =>
+                node.sourceId !== sourceId
+                  ? node
+                  : ({
+                      ...node,
+                      text: {
+                        ...(node as ShapeRenderNode).text!,
+                        lines: operation.paragraphs.map((paragraph: any) => ({
+                          runs: paragraph.runs.map((run: any) => ({
+                            text: run.text,
+                            x: 0,
+                            baselineY: 24,
+                            fontFamily: 'Arial',
+                            fontSizePx: Number(run.fontSize ?? 18) / 0.75,
+                            color: run.color ?? '#111111',
+                            bold: Boolean(run.bold),
+                            italic: false,
+                            underline: false,
+                            widthPx: String(run.text).length * 12,
+                          })),
+                          top: 0,
+                          height: 28,
+                        })),
+                      },
+                    } as ShapeRenderNode),
+              )
+            } else if (operation.kind === 'set_fill') {
+              const sourceId = operation.target.createdByClientId
+                ? created.get(operation.target.createdByClientId)
+                : operation.target.elementId
+              nodes = nodes.map((node) =>
+                node.sourceId !== sourceId
+                  ? node
+                  : ({
+                      ...node,
+                      fill: {
+                        kind: 'solid',
+                        color: operation.fill.color,
+                        transparency: operation.fill.transparency ?? 0,
+                      },
+                    } as ShapeRenderNode),
+              )
+            }
+          }
+          slides = slides.map((candidate, index) =>
+            index === activeSlideIndex ? { ...candidate, nodes } : candidate,
+          )
+          transactionIds.push(transaction.transactionId)
+          return {
+            status: 'applied' as const,
+            transactionId: transaction.transactionId,
+            resultingDeckRevision: `sha256:${String(transactionIds.length).padStart(64, '0')}`,
+            operationCount: transaction.operations.length,
+          }
+        }),
+      }
+      const executePresentationOperation = vi.fn((request: any, signal?: AbortSignal) =>
+        executePreparedGeometryFamilyTransaction(hostApi, request, signal, async () => true),
+      )
+      const skill = createSlidesSkill({
+        getSlides: () => slides,
+        getCurrent: () => 0,
+        getSelectedIds: () => [],
+        applySlide: (index, slide) => {
+          slides = slides.map((candidate, candidateIndex) =>
+            candidateIndex === index ? slide : candidate,
+          )
+        },
+        applyDeck: (next) => {
+          slides = next
+        },
+        executePresentationOperation,
+        fitWidthPx: 1280,
+      })
+      const relevantTools = new Map(
+        skill.tools
+          .filter((tool) => calls.some((call) => call.toolName === tool.name))
+          .map((tool) => [tool.name, tool]),
+      )
+      const engine = await createProductionCodexBootstrap({
+        fetchWithAuth: upstream,
+        diagnostics: (code) => diagnostics.push(code),
+      }).start({ executablePath: executable!, onCrash: vi.fn() })
+      const registered: any = {
+        identity: {
+          ownerId: 'slides-owner',
+          host: 'slides',
+          documentId: 'slides-onboarding-deck',
+          sessionId: 'slides-session',
+          generation: 1,
+        },
+        credentials: { sessionId: 'slides-session', secret: 'secret' },
+        listTools: () =>
+          [...relevantTools.values()].map((tool) => ({
+            ...tool,
+            annotations: {
+              readOnlyHint: tool.name === 'plan_deck' || tool.name === 'image_search',
+              destructiveHint: tool.name !== 'plan_deck' && tool.name !== 'image_search',
+            },
+          })),
+        callTool: vi.fn((_: unknown, call: any) => {
+          if (call.name === 'plan_deck' || call.name === 'image_search')
+            return skill.executeTool(call)
+          let confirm!: () => void
+          const confirmed = new Promise<void>((resolve) => {
+            confirm = resolve
+          })
+          const result = confirmed.then(() => skill.executeTool(call))
+          pendingConfirmations.set(call.id, confirm)
+          return suspendToolExecution(result)
+        }),
+        cancelAll: vi.fn(() => 0),
+        close: vi.fn(),
+      }
+      const events: any[] = []
+      engine.registerDocument!({
+        ownerId: 'slides-owner',
+        documentId: 'slides-onboarding-deck',
+        host: 'slides',
+        generation: 1,
+        session: registered,
+        summarizeProposal: () => ({
+          operation: 'restructure',
+          target: 'slides',
+          scope: 'whole-document',
+        }),
+        onEvent: (event) => {
+          events.push(event)
+          if (event.type !== 'proposal') return
+          const confirm = pendingConfirmations.get(event.call.id)
+          if (!confirm) throw new Error('missing_test_confirmation')
+          pendingConfirmations.delete(event.call.id)
+          confirmations.push(event.call.id)
+          confirm()
+        },
+      })
+      try {
+        await engine.startTurn({
+          documentId: 'slides-onboarding-deck',
+          host: 'slides',
+          generation: 1,
+          text: '做一份新人入职培训课件',
+        })
+        const slideText = slides.map((slide) =>
+          slide.nodes
+            .flatMap((node) =>
+              node.type === 'text'
+                ? (node.text?.lines.flatMap((line) => line.runs.map((run) => run.text)) ?? [])
+                : [],
+            )
+            .join('\n'),
+        )
+        expect(
+          slides,
+          JSON.stringify({ providerCalls, confirmations, events, diagnostics }),
+        ).toHaveLength(3)
+        expect(
+          slideText,
+          JSON.stringify({
+            requests: executePresentationOperation.mock.calls,
+            transactions: hostApi.executePresentationTransaction.mock.calls,
+          }),
+        ).toEqual([
+          expect.stringContaining('新人入职培训'),
+          expect.stringContaining('第一天安排'),
+          expect.stringContaining('开始协作'),
+        ])
+        expect(confirmations).toHaveLength(1)
+        expect(transactionIds).toHaveLength(3)
+        expect(new Set(transactionIds).size).toBe(3)
+        expect((globalThis as any).window.slidesApi.imageSearch).toHaveBeenCalledOnce()
+        expect((globalThis as any).window.slidesApi.insertImageUrl).toHaveBeenCalledWith(
+          expect.objectContaining({ slideIndex: 0, url: 'https://images.example/team.jpg' }),
+        )
+        expect(
+          slides.flatMap((slide) => slide.nodes).some((node) => node.fill.kind === 'solid'),
+        ).toBe(true)
+        expect(events.at(-1)).toEqual({ type: 'terminal', status: 'completed' })
+        expect(diagnostics).toContain('gateway_tool_call_completed')
+        const artifact = await writePresentationE2eArtifact(
+          slides,
+          process.env.WISWORK_ENHANCED_PPT_E2E_OUTPUT ?? '/tmp/wiswork-enhanced-ppt-e2e.pptx',
+        )
+        expect(artifact.slideCount).toBe(3)
+        expect(artifact.text).toMatch(/新人入职培训/)
+      } finally {
+        await engine.close()
+        delete (globalThis as any).window
       }
     },
     65_000,

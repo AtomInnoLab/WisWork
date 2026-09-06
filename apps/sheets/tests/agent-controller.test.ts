@@ -44,6 +44,48 @@ const skill = {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('Sheets agent controller', () => {
+  it('forwards bounded observations to the standard harness without adding a user turn', () => {
+    const controller = createAgentController({ transport: manualTransport(), skill })
+    controller.restore([
+      { role: 'user', text: 'Review the document' },
+      { role: 'assistant', text: 'Done' },
+    ])
+    expect(controller.appendAssistantContext('Host verification completed.')).toBe(true)
+    expect(controller.messages).toEqual([
+      { role: 'user', text: 'Review the document' },
+      { role: 'assistant', text: 'Done\n\nHost verification completed.' },
+    ])
+    const before = structuredClone(controller.messages)
+    expect(controller.appendAssistantContext('x'.repeat(2_049))).toBe(false)
+    expect(controller.messages).toEqual(before)
+    controller.dispose()
+  })
+
+  it('declines observations while deactivated or disposed', () => {
+    const controller = createAgentController({ transport: manualTransport(), skill })
+    controller.deactivate()
+    expect(controller.appendAssistantContext('Unavailable.')).toBe(false)
+    controller.activate()
+    controller.restore([
+      { role: 'user', text: 'Review' },
+      { role: 'assistant', text: 'Done' },
+    ])
+    expect(controller.appendAssistantContext('Available again.')).toBe(true)
+    controller.dispose()
+    expect(controller.appendAssistantContext('Disposed.')).toBe(false)
+    expect(controller.messages).toEqual([])
+  })
+
+  it('does not append host observations into a running turn', async () => {
+    const controller = createAgentController({ transport: manualTransport(), skill })
+    expect(controller.run('Still working')).toBe(true)
+    await flush()
+    const before = structuredClone(controller.messages)
+    expect(controller.appendAssistantContext('Premature verification.')).toBe(false)
+    expect(controller.messages).toEqual(before)
+    controller.dispose()
+  })
+
   it('uses Standard when standalone Sheets has no Codex IPC handler', async () => {
     const transport = manualTransport()
     const api: any = {
@@ -78,6 +120,8 @@ describe('Sheets agent controller', () => {
     const controller = createAgentController({ transport, skill }, { host: 'sheets', api })
     controller.activate()
     await flush()
+    expect(controller.appendAssistantContext('Shell-owned observation.')).toBe(false)
+    expect(controller.messages).toEqual([])
     expect(controller.run('enhanced sheets')).toBe(true)
     await flush()
     expect(api.startTurn).toHaveBeenCalledOnce()

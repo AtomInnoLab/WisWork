@@ -3,6 +3,7 @@ import { AI_CONNECT_TIMEOUT_MS } from '../src/watchdog'
 import {
   AI_IPC_LIMITS,
   registerWisworkModelIpc,
+  validateAiStreamRequest,
   type IpcMainLike,
   type WisworkIpcEvent,
 } from '../src/ipc'
@@ -75,6 +76,11 @@ function harness(options?: {
 beforeEach(() => vi.unstubAllGlobals())
 
 describe('registerWisworkModelIpc', () => {
+  it('uses the full bounded output budget for agent streams that omit an override', () => {
+    const { maxTokens: _maxTokens, ...request } = validRequest()
+    expect(validateAiStreamRequest(request).maxTokens).toBe(AI_IPC_LIMITS.maxTokens)
+  })
+
   it('rejects untrusted senders on every registered handler', async () => {
     const { invoke } = harness()
     for (const [channel, args] of [

@@ -1,4 +1,9 @@
-import type { AgentSkill, FinalResponseReviewContext, ToolDisplay } from '@wiswork/agent-core'
+import type {
+  AgentImage,
+  AgentSkill,
+  FinalResponseReviewContext,
+  ToolDisplay,
+} from '@wiswork/agent-core'
 import type {
   GroupRenderNode,
   PictureRenderNode,
@@ -30,6 +35,7 @@ import {
   geometryPxToPoints,
   geometryToolTransactionId,
   normalizePresentationRotation,
+  type CanonicalElementOperation,
   type GeometryFamilyTransactionRequest,
 } from './presentation-geometry-transactions'
 import {
@@ -37,7 +43,11 @@ import {
   type BackgroundFamilyTransactionRequest,
 } from './presentation-background-transactions'
 import type { SlidesAcceptanceAuthority } from './task-acceptance'
-import { compileCanonicalSlidesCalls, createSlidesTaskController } from './task-controller'
+import {
+  canonicalAffectedSlides,
+  compileCanonicalSlidesCalls,
+  createSlidesTaskController,
+} from './task-controller'
 import type { SlidesTaskReviewAdapter } from './task-review'
 import type { PresentationTelemetryEvent } from '@wiswork/presentation-verification'
 import type { PresentationCompletionReceipt } from '@wiswork/presentation-verification'
@@ -54,6 +64,10 @@ export interface DeckAccess {
   getSlides(): RenderSlide[]
   getCurrent(): number
   getSelectedIds(): string[]
+  /** Refresh renderer refs from the current native document after an uncertain write. */
+  refreshAuthoritativeState?(signal?: AbortSignal): Promise<boolean>
+  /** Render one slide for bounded, in-memory visual inspection by the main agent. */
+  captureSlideScreenshot?(slideIndex: number): Promise<AgentImage | null>
   getAcceptanceAuthorityLease?(): Promise<SlidesAcceptanceAuthorityLease>
   verifyAcceptanceTextProof?(request: SlidesAcceptanceTextProofRequest): Promise<boolean>
   /** Read-only, revision-bound durable facts used to compile and verify a frozen task contract. */
@@ -170,13 +184,19 @@ export interface ClarifyQuestion {
 const AGENT_SYSTEM_PROMPT = `You are the AI assistant inside WisWork Slides. Help users create, edit, and verify presentations with the available local tools.
 
 ## Workflow
+- Own the complete visual quality loop in this SAME agent run: generate/edit -> wait for applied tool results -> screenshot every created or changed slide -> inspect each native image -> repair concrete defects -> screenshot the repaired slides again. Do not end the run expecting a host post-processing reviewer or another user message to finish the work.
+- After building a deck, review ALL generated pages, not just the cover. After a focused edit, review the affected pages. Keep track of pages checked and unresolved issues. A successful screenshot call alone is not a pass; actually inspect the image. If you find obscured text, missing images, poor contrast, clipping or overlap, use the normal editing tools and confirmation flow to fix it in this run. Read fresh element IDs and geometry before editing. Do not describe a submitted proposal as applied.
+- A geometry-only fix is not your only option: use text/style/fill/image tools or a bounded slide script as appropriate, preserving the user's content and scope. Recheck after each applied repair. If tools fail, use the returned error to correct the operation rather than repeating the same failed call. Stop only when checked pages are satisfactory, the user cancels, or a concrete unresolved blocker prevents safe progress. Report that blocker and affected pages honestly; never claim full visual acceptance for unreviewed or unresolved pages.
 - Start with get_deck_context, and use read_slide when exact text, colors, or element details matter.
-- For a new presentation, use ask_clarification when requirements are ambiguous, then plan_deck. Build every page with add_slide and the local add_text_box, add_shape, add_chart, add_table, add_smartart, and insert_web_image tools. Empty decks are valid and may be built directly with these tools.
+- For visual work, use screenshot_slide before a substantial edit and again after it. Inspect the rendered PNG for clipping, overlap, hierarchy, spacing, contrast, and balance. Never claim that visual quality passed from structure alone.
+- A screenshot call is not a visual review. Inspect the native image, identify concrete issues, apply corrections, then capture and inspect each changed page again. If any required page cannot be captured, or you see truncated base64 instead of an image, explicitly report visual verification incomplete; never mark all pages passed. In Enhanced exec use exactly: const result = await tools.mcp__wiswork__wiswork_read({...}); for (const block of result.content) { if (block.type === "image") image(block); else if (block.type === "text") text(block.text); }
+- For a new presentation, use ask_clarification only when the user has not delegated the missing choices, then plan_deck. Search for relevant imagery before building. After planning, use build_deck once with a coherent theme, varied page layouts, concise hierarchy, and selected image URLs. A deck made only from repeated title-and-body pages is not complete. Use lower-level tools only for later refinement. Empty decks are valid and may be built directly.
 - Supported editing capability map:
   - Change existing text font, size, color, emphasis, or alignment with set_element_style; for coordinated edits use execute_slide_script and setStyle.
   - Move, resize, rotate, or align titles and other elements with set_element_transform; for coordinated edits use execute_slide_script and setBox/moveBy/resizeBy.
   - For a multi-page request, inspect and edit each target page (one tool call per target slideIndex), then verify the affected pages. Do not infer that changing one page changes the others.
 - An edit request must not finish with inspection or advice only. Apply the requested supported edits and verify them before responding.
+- If an approved edit returns an error, treat it as a tool execution failure, not as missing confirmation. Read the fresh slide state, correct the tool arguments, and retry when safe; never tell the user to confirm a proposal that has already settled.
 - Claim a capability limitation only after the relevant tool explicitly returns unsupported or fail-closed. Do not infer limitations from a read result or from unfamiliarity with a tool.
 - Use execute_slide_script for coordinated edits to existing elements. Use the individual set_element_* tools for focused changes.
 - Use set_speaker_notes to add, replace, or clear presenter notes without changing canvas content.
@@ -187,6 +207,12 @@ const AGENT_SYSTEM_PROMPT = `You are the AI assistant inside WisWork Slides. Hel
 
 const SLIDES_CAPABILITY_CORRECTION =
   '[System correction] This requested edit is supported. Use the available Slides editing tools to apply it, verify the result, and only then report completion. Do not stop at inspection or advice.'
+
+const QUESTIONNAIRE_CONTINUATION_CORRECTION =
+  '[System correction] The questionnaire answers are already available in the latest tool result. Do not ask the user to choose again or stop with an explanation. Continue with plan_deck and the available Slides tools now.'
+
+const incompleteDeckCorrection = (planned: number, actual: number) =>
+  `[System correction] The confirmed plan has ${planned} pages, but the deck currently has only ${actual}. Continue building every missing page with the available Slides tools, inspect the completed deck, and only then report completion.`
 
 const DENIAL_ASSERTION =
   /(?:无法|不能|不支持|不可用|没有(?:办法|能力)|只能|\bcannot\b|\bcan't\b|\bunable to\b|\bdoes not support\b|\bnot supported\b|\bunavailable\b|\bonly (?:can|allows?)\b)/i
@@ -475,6 +501,18 @@ const ALL_TOOLS: AgentToolDef[] = [
     },
   },
   {
+    name: 'screenshot_slide',
+    description:
+      'Render one page as a PNG for visual inspection. Use before a substantial visual edit and again after applying it; do not claim visual quality without the post-edit screenshot.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slideIndex: { type: 'integer', description: 'Page number (0-based)' },
+      },
+      required: ['slideIndex'],
+    },
+  },
+  {
     name: 'set_element_text',
     description:
       "Replace a text element's entire content. paragraphs is the complete post-replacement paragraph array, one object per paragraph; whole-paragraph bold/italic etc. use the boolean fields on the paragraph object.",
@@ -754,8 +792,9 @@ const ALL_TOOLS: AgentToolDef[] = [
               },
               layout: {
                 type: 'string',
+                enum: ['cover', 'split_image', 'cards', 'timeline', 'statement'],
                 description:
-                  'Layout (e.g. three_column_cards/hero_big_number/two_column/timeline/left_text_right_image); content pages must not repeat',
+                  'Production layout passed unchanged to build_deck; vary layouts across adjacent pages',
               },
               image_queries: {
                 type: 'array',
@@ -769,6 +808,60 @@ const ALL_TOOLS: AgentToolDef[] = [
         },
       },
       required: ['core_hook', 'style', 'pages'],
+    },
+  },
+  {
+    name: 'build_deck',
+    description:
+      '[Preferred after plan_deck] Create a polished complete presentation in one bounded operation. Choose varied layouts, a coherent theme, and pass selected image_search URLs for visual pages. Use this instead of repeatedly creating blank pages. Available only when the current deck is blank.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        theme: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            mode: { type: 'string', enum: ['dark', 'light'] },
+            primary: { type: 'string', description: '#RRGGBB background color' },
+            accent: { type: 'string', description: '#RRGGBB accent color' },
+          },
+          required: ['mode'],
+        },
+        pages: {
+          type: 'array',
+          minItems: 2,
+          maxItems: 12,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              layout: {
+                type: 'string',
+                enum: ['cover', 'split_image', 'cards', 'timeline', 'statement'],
+              },
+              kicker: { type: 'string', description: 'Short eyebrow label above the title' },
+              title: { type: 'string' },
+              body: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 8,
+                items: { type: 'string' },
+                description:
+                  'Content items. cards supports 1-8 items and reflows them automatically; timeline supports at most 5; cover and statement support at most 2.',
+              },
+              imageUrl: {
+                type: 'string',
+                description:
+                  'An HTTPS imageUrl selected from image_search. Supported on cover, statement (ending page), and split_image. Cover and statement use a right-side image panel, not a full-page background; text stays unobscured on the left.',
+              },
+              imageAlt: { type: 'string', description: 'Short accessible description' },
+            },
+            required: ['title', 'body'],
+          },
+        },
+      },
+      required: ['pages'],
     },
   },
   {
@@ -1206,18 +1299,30 @@ function nodeToParagraphs(node: ShapeRenderNode): EditParagraph[] {
  * by the set_element_style tool and execute_slide_script's setStyle dispatch.
  */
 function mergeStyleIntoParagraphs(cur: EditParagraph[], ov: SlideStylePatch): EditParagraph[] {
-  return cur.map((p) => ({
-    runs: p.runs.map((r) => ({
-      text: r.text,
-      bold: ov.bold ?? r.bold,
-      italic: ov.italic ?? r.italic,
-      underline: ov.underline ?? r.underline,
-      fontSize: typeof ov.fontSize === 'number' ? ov.fontSize : r.fontSize,
-      fontFamily: ov.fontFamily ?? r.fontFamily,
-      color: ov.color ?? r.color,
-    })),
-    align: ov.align ?? p.align,
-  }))
+  return cur.map((p) => {
+    const align = ov.align ?? p.align
+    return {
+      runs: p.runs.map((r) => {
+        const bold = ov.bold ?? r.bold
+        const italic = ov.italic ?? r.italic
+        const underline = ov.underline ?? r.underline
+        const fontSize = typeof ov.fontSize === 'number' ? ov.fontSize : r.fontSize
+        const fontFamily = ov.fontFamily ?? r.fontFamily
+        const color = ov.color ?? r.color
+        // Optional canonical fields must be absent, not own properties with undefined values.
+        return {
+          text: r.text,
+          ...(bold === undefined ? {} : { bold }),
+          ...(italic === undefined ? {} : { italic }),
+          ...(underline === undefined ? {} : { underline }),
+          ...(fontSize === undefined ? {} : { fontSize }),
+          ...(fontFamily === undefined ? {} : { fontFamily }),
+          ...(color === undefined ? {} : { color }),
+        }
+      }),
+      ...(align === undefined ? {} : { align }),
+    }
+  })
 }
 
 /** Element info shared by outline/read_slide/edit scripts (includes absolute geometry; locked = layout decoration, read-only). */
@@ -1431,13 +1536,14 @@ export function createSlidesSkill(
     planning: true,
     verifiedCompletion: true,
     visualReview: true,
-    autoCorrection: false,
+    autoCorrection: true,
   },
 ): AgentSkill {
   // The HTML pipeline was already used in this conversation → later calls without an explicit mode default to append.
   // Safety net for when the AI ignores the "pass all pages at once" constraint: separate calls no longer overwrite each other (P0-1).
   const state: SkillState = {}
   const scopedTools = new Set([
+    'screenshot_slide',
     'set_element_text',
     'set_element_style',
     'set_element_transform',
@@ -1468,11 +1574,10 @@ export function createSlidesSkill(
             if (!access.getAcceptanceAuthorityLease || !access.inspectAcceptanceAuthority)
               return { kind: 'bypass' }
             const lease = await access.getAcceptanceAuthorityLease()
-            const affectedSlides = [
-              ...new Set(calls.map((call) => Number(call.input.slideIndex) + 1)),
-            ]
-            if (affectedSlides.some((slide) => !Number.isSafeInteger(slide) || slide < 1))
-              return { kind: 'clarify', question: 'presentation_scope_required' }
+            const affectedSlides = canonicalAffectedSlides(calls)
+            // Bad model-generated coordinates are not missing user intent. Let the
+            // transactional tool return its precise error so the model can repair it.
+            if (!affectedSlides) return { kind: 'bypass' }
             const sourceTargets = [
               ...new Map(
                 calls.flatMap((call) => {
@@ -1615,8 +1720,16 @@ export function createSlidesSkill(
       access.getSelectionScope?.()
         ? `<selection scope>\n${selectionScopeSummary(access.getSelectionScope()!)}. This scope is immutable and enforced by the host.\n</selection scope>`
         : `<deck outline>\n${buildDeckOutline(access.getSlides(), access.getCurrent(), access.getSelectedIds())}\n</deck outline>`,
-    reviewFinalResponse: reviewSlidesFinalResponse,
-    ...(controller ? { presentation: controller.hooks } : {}),
+    reviewFinalResponse: (context) => {
+      if (state.questionnaireAnsweredPendingPlan && !context.mutated)
+        return QUESTIONNAIRE_CONTINUATION_CORRECTION
+      const planned = state.plannedPageCount
+      const actual = access.getSlides().length
+      if (planned !== undefined && actual < planned)
+        return incompleteDeckCorrection(planned, actual)
+      return reviewSlidesFinalResponse(context)
+    },
+    ...(controller ? { presentation: { ...controller.hooks, batchScoped: true } } : {}),
     executeTool: (call, signal) => executeTool(executionAccess, call, state, signal),
   }
 }
@@ -1625,10 +1738,20 @@ interface SkillState {
   fallbackInvocationIds?: WeakMap<AgentToolCall, string>
   /** A web_search ran in this conversation — unlocks dataSource:'search' in the figure gate */
   webSearched?: boolean
+  /** Exact HTTPS image URLs returned by image_search in this skill session. */
+  searchedImageUrls?: Set<string>
   /** Most recently available Style Skill (used by save_style_template) */
   lastStyleSkill?: string
   /** Topic associated with the most recently available Style Skill */
   lastTopic?: string
+  /** Total page count from the latest accepted plan; terminal responses must not silently stop early. */
+  plannedPageCount?: number
+  /** A new-deck plan must be materialized atomically before low-level refinement. */
+  awaitingBuildDeck?: boolean
+  /** A native image write may have happened without a matching renderer update. */
+  authoritativeRefreshRequired?: boolean
+  /** Questionnaire completion cannot terminate the run before the model plans the deck. */
+  questionnaireAnsweredPendingPlan?: boolean
 }
 
 const fail = (summary: string, output: string) => ({
@@ -1637,6 +1760,22 @@ const fail = (summary: string, output: string) => ({
   mutated: false,
   summary,
 })
+
+async function refreshAuthoritativeState(
+  access: DeckAccess,
+  state: SkillState | undefined,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  let refreshed = false
+  try {
+    refreshed = (await access.refreshAuthoritativeState?.(signal)) === true
+  } catch {
+    // Keep the refresh requirement: cached reads cannot safely drive a retry.
+  }
+  signal?.throwIfAborted()
+  if (refreshed && state) state.authoritativeRefreshRequired = false
+  return refreshed
+}
 
 // ── Figure-provenance gate ────────────────────────────────────
 // Prompt rules ("search before writing data") did not stop invented numbers being
@@ -1709,6 +1848,7 @@ async function executeTool(
   const activeScope = access.getSelectionScope?.()
   if (activeScope) {
     const allowed = new Set([
+      'screenshot_slide',
       'set_element_text',
       'set_element_style',
       'set_element_transform',
@@ -1751,6 +1891,18 @@ async function executeTool(
       unguardedAccess.applyDeck(updatedSlides, goTo)
     },
   }
+  if (
+    state?.authoritativeRefreshRequired &&
+    !(await refreshAuthoritativeState(access, state, signal))
+  ) {
+    return {
+      ...fail(
+        call.name,
+        'authoritative_reload_required: Native document state could not be refreshed. Do not use cached page data or retry edits until the document is reloaded.',
+      ),
+      stopToolBatch: true,
+    }
+  }
   const slides = access.getSlides()
   if (UNSUPPORTED_CLOUD_TOOLS.has(call.name)) {
     return fail(
@@ -1758,6 +1910,23 @@ async function executeTool(
       'unsupported_feature: This feature is not available in the current WisWork development version.',
     )
   }
+  if (
+    state?.awaitingBuildDeck &&
+    !new Set([
+      'get_deck_context',
+      'read_slide',
+      'screenshot_slide',
+      'web_search',
+      'image_search',
+      'list_style_templates',
+      'plan_deck',
+      'build_deck',
+    ]).has(call.name)
+  )
+    return fail(
+      call.name,
+      'The new-deck plan is ready. Call build_deck once with every planned page before using lower-level refinement tools.',
+    )
   switch (call.name) {
     case 'get_deck_context':
       return {
@@ -1775,6 +1944,22 @@ async function executeTool(
         output: formatSlideDump(slide),
         mutated: false,
         summary: t('aiSumReadSlide', { n: idx + 1 }),
+      }
+    }
+
+    case 'screenshot_slide': {
+      const idx = Number(call.input.slideIndex)
+      if (!Number.isSafeInteger(idx) || !slides[idx])
+        return fail('Capture slide screenshot', `slideIndex out of range (0-${slides.length - 1})`)
+      if (!access.captureSlideScreenshot)
+        return fail('Capture slide screenshot', 'visual_capture_unavailable')
+      const image = await access.captureSlideScreenshot(idx)
+      if (!image) return fail('Capture slide screenshot', 'visual_capture_failed')
+      return {
+        output: `Rendered slide ${idx + 1}. Inspect the attached PNG for clipping, overlap, hierarchy, spacing, contrast, and visual balance.`,
+        mutated: false,
+        summary: `Captured slide ${idx + 1}`,
+        modelContent: [{ type: 'image' as const, image }],
       }
     }
 
@@ -2587,6 +2772,12 @@ async function executeTool(
       if (!query) return fail(t('aiFailImageSearch'), 'query must not be empty')
       const r = await window.slidesApi.imageSearch(query, Number(call.input.maxResults) || 8)
       signal?.throwIfAborted()
+      if (state) {
+        state.searchedImageUrls ??= new Set()
+        for (const image of r.images) {
+          if (/^https:\/\//.test(image.imageUrl)) state.searchedImageUrls.add(image.imageUrl)
+        }
+      }
       // output for the LLM: keep the existing format (the LLM needs to read URLs into image_queries; format unchanged)
       const lines = r.images.map(
         (im, i) =>
@@ -2750,6 +2941,7 @@ async function executeTool(
         )
       const r = await access.askClarification(questions)
       signal?.throwIfAborted()
+      if (state) state.questionnaireAnsweredPendingPlan = true
       if (r.cancelled) {
         return {
           output:
@@ -2772,6 +2964,11 @@ async function executeTool(
       if (!coreHook || !style || pages.length === 0) {
         return fail(t('aiFailPlan'), 'plan_deck requires core_hook + style + non-empty pages')
       }
+      if (state) {
+        state.questionnaireAnsweredPendingPlan = false
+        state.plannedPageCount = pages.length
+        state.awaitingBuildDeck = pages.length >= 2
+      }
       // Planning summary echoed back to the user
       const lines = pages.map((p: Record<string, unknown>, i: number) => {
         const q =
@@ -2782,9 +2979,521 @@ async function executeTool(
       })
       const summary = t('aiSumPlan', { count: pages.length, hook: coreHook })
       return {
-        output: `Plan confirmed:\nCore Hook: ${coreHook}\nStyle: ${style}\n${lines.join('\n')}\nNow follow this plan and build all ${pages.length} pages with the available local slide and element tools. Use the latest deck outline and each tool result to track actual completion.`,
+        output: `Plan confirmed:\nCore Hook: ${coreHook}\nStyle: ${style}\n${lines.join('\n')}\nNEXT REQUIRED ACTION: run image_search for the planned visual pages, then call build_deck exactly once. Preserve the planned layout diversity and pass theme plus {layout,kicker,title,body,imageUrl,imageAlt}. Aim for 3-5 visual pages in a typical 8-page deck; never invent image URLs. Do not call add_slide or styling tools before build_deck completes.`,
         mutated: false,
         summary,
+      }
+    }
+
+    case 'build_deck': {
+      const rawPages = call.input.pages
+      if (!Array.isArray(rawPages) || rawPages.length < 2 || rawPages.length > 12)
+        return fail(t('aiFailPlan'), 'build_deck requires 2-12 pages')
+      if (slides.length !== 1 || slides[0]!.nodes.length > 0)
+        return fail(t('aiFailPlan'), 'build_deck is only available for a blank presentation')
+      if (!access.executePresentationOperation)
+        return fail(t('aiFailNewTextbox'), 'Canonical presentation transactions are unavailable')
+      type DeckLayout = 'cover' | 'split_image' | 'cards' | 'timeline' | 'statement'
+      const layouts = new Set<DeckLayout>([
+        'cover',
+        'split_image',
+        'cards',
+        'timeline',
+        'statement',
+      ])
+      const rawTheme = call.input.theme
+      const designedInput =
+        rawTheme !== undefined ||
+        rawPages.some(
+          (page) =>
+            page &&
+            typeof page === 'object' &&
+            !Array.isArray(page) &&
+            ('layout' in page || 'imageUrl' in page || 'kicker' in page),
+        )
+      const pages: Array<{
+        title: string
+        body: string[]
+        layout?: DeckLayout
+        kicker?: string
+        imageUrl?: string
+        imageAlt?: string
+      }> = []
+      for (const rawPage of rawPages) {
+        if (!rawPage || typeof rawPage !== 'object' || Array.isArray(rawPage))
+          return fail(t('aiFailPlan'), 'Each page requires title and body')
+        const title = (rawPage as Record<string, unknown>).title
+        const body = (rawPage as Record<string, unknown>).body
+        if (
+          typeof title !== 'string' ||
+          title.trim().length < 1 ||
+          title.length > 160 ||
+          !Array.isArray(body) ||
+          body.length < 1 ||
+          body.length > 8 ||
+          body.some((item) => typeof item !== 'string' || item.length < 1 || item.length > 500)
+        )
+          return fail(t('aiFailPlan'), 'Page title or body is invalid')
+        const record = rawPage as Record<string, unknown>
+        const layout = record.layout
+        if (designedInput && layout === undefined)
+          return fail(t('aiFailPlan'), 'Every designed page requires an explicit layout')
+        if (
+          layout !== undefined &&
+          (!layouts.has(layout as DeckLayout) || typeof layout !== 'string')
+        )
+          return fail(t('aiFailPlan'), 'Unsupported page layout')
+        const kicker = record.kicker
+        if (kicker !== undefined && (typeof kicker !== 'string' || kicker.length > 80))
+          return fail(t('aiFailPlan'), 'Page kicker is invalid')
+        const imageUrl =
+          typeof record.imageUrl === 'string' && record.imageUrl.trim()
+            ? record.imageUrl.trim()
+            : undefined
+        const imageAlt =
+          typeof record.imageAlt === 'string' && record.imageAlt.trim()
+            ? record.imageAlt.trim()
+            : undefined
+        if (
+          imageUrl !== undefined &&
+          (typeof imageUrl !== 'string' ||
+            !/^https:\/\//.test(imageUrl) ||
+            imageUrl.length > 2_048 ||
+            typeof imageAlt !== 'string' ||
+            imageAlt.length > 160)
+        )
+          return fail(t('aiFailPlan'), 'Every image requires an HTTPS imageUrl and imageAlt')
+        if (typeof imageUrl === 'string' && !state?.searchedImageUrls?.has(imageUrl))
+          return fail(t('aiFailPlan'), 'imageUrl must come from image_search in this session')
+        if (
+          typeof imageUrl === 'string' &&
+          layout !== undefined &&
+          layout !== 'cover' &&
+          layout !== 'statement' &&
+          layout !== 'split_image'
+        )
+          return fail(
+            t('aiFailPlan'),
+            `Page ${pages.length + 1} uses layout ${layout} with imageUrl. Images are supported by cover, statement and split_image layouts. No pages were written. Change this page to split_image (or remove imageUrl and imageAlt to keep its layout), then retry build_deck with all pages.`,
+          )
+        if (
+          (layout === 'timeline' && body.length > 5) ||
+          ((layout === 'cover' || layout === 'statement') && body.length > 2)
+        )
+          return fail(t('aiFailPlan'), `Too many body items for ${layout} layout`)
+        pages.push({
+          title: title.trim(),
+          body: body.map((item) => (item as string).trim()),
+          ...(layout ? { layout: layout as DeckLayout } : {}),
+          ...(typeof kicker === 'string' && kicker.trim() ? { kicker: kicker.trim() } : {}),
+          ...(typeof imageUrl === 'string' ? { imageUrl, imageAlt: imageAlt as string } : {}),
+        })
+      }
+      const themeRecord =
+        rawTheme && typeof rawTheme === 'object' && !Array.isArray(rawTheme)
+          ? (rawTheme as Record<string, unknown>)
+          : undefined
+      const isHex = (value: unknown): value is string =>
+        typeof value === 'string' && /^#[0-9A-Fa-f]{6}$/.test(value)
+      if (
+        themeRecord &&
+        (Object.keys(themeRecord).some((key) => !['mode', 'primary', 'accent'].includes(key)) ||
+          !['dark', 'light'].includes(String(themeRecord.mode)) ||
+          (themeRecord.primary !== undefined && !isHex(themeRecord.primary)) ||
+          (themeRecord.accent !== undefined && !isHex(themeRecord.accent)))
+      )
+        return fail(t('aiFailPlan'), 'Deck theme is invalid')
+      const designed = Boolean(themeRecord || pages.some((page) => page.layout || page.imageUrl))
+      const dark = themeRecord?.mode !== 'light'
+      const luminance = (hex: string) => {
+        const rgb = [1, 3, 5].map(
+          (offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255,
+        )
+        return rgb.reduce(
+          (sum, component, index) => sum + component * [0.2126, 0.7152, 0.0722][index]!,
+          0,
+        )
+      }
+      if (
+        isHex(themeRecord?.primary) &&
+        ((dark && luminance(themeRecord.primary) > 0.42) ||
+          (!dark && luminance(themeRecord.primary) < 0.58))
+      )
+        return fail(
+          t('aiFailPlan'),
+          'Theme primary color does not provide readable contrast for its mode',
+        )
+      const palette = {
+        background: isHex(themeRecord?.primary)
+          ? themeRecord.primary.toUpperCase()
+          : dark
+            ? '#0B1020'
+            : '#F5F7FB',
+        foreground: dark ? '#F7F9FC' : '#142033',
+        muted: dark ? '#A9B4C7' : '#52647A',
+        panel: dark ? '#172036' : '#FFFFFF',
+        accent: isHex(themeRecord?.accent)
+          ? themeRecord.accent.toUpperCase()
+          : dark
+            ? '#66E3FF'
+            : '#2367E8',
+      }
+      let deckMutated = false
+      // React applies applyDeck asynchronously. Keep the tool's authoritative
+      // working copy from each native addSlide result instead of rereading a
+      // render-owned ref that may still describe the preceding deck.
+      let workingSlides = slides
+      while (workingSlides.length < pages.length) {
+        const created = await window.slidesApi.addSlide({
+          sourceIndex: workingSlides.length - 1,
+          clearText: true,
+          fitWidthPx: access.fitWidthPx,
+        })
+        signal?.throwIfAborted()
+        if (!created) {
+          if (deckMutated && state) state.awaitingBuildDeck = false
+          return deckMutated
+            ? {
+                output:
+                  'The deck was partially created before page creation failed. Inspect or undo before retrying.',
+                isError: true,
+                mutated: true,
+                stopToolBatch: true,
+                summary: t('aiFailNewSlide'),
+              }
+            : fail(t('aiFailNewSlide'), 'Creation failed')
+        }
+        workingSlides = created.slides
+        access.applyDeck(created.slides, created.index)
+        deckMutated = true
+      }
+      for (let slideIndex = 0; slideIndex < pages.length; slideIndex++) {
+        const page = pages[slideIndex]!
+        const slide = workingSlides[slideIndex]!
+        const scale = slide.scale || access.fitWidthPx / slide.widthPx
+        const titleId = `deck-title-${slideIndex}`
+        const bodyId = `deck-body-${slideIndex}`
+        const operations: CanonicalElementOperation[] = []
+        const box = (
+          id: string,
+          text: string,
+          x: number,
+          y: number,
+          width: number,
+          height: number,
+          fontSize: number,
+          color: string,
+          options: { bold?: boolean; fill?: string; align?: 'left' | 'center' | 'right' } = {},
+        ) => {
+          operations.push({
+            kind: 'add_text_box',
+            clientId: id,
+            text,
+            geometry: {
+              x: geometryPxToPoints(x, scale),
+              y: geometryPxToPoints(y, scale),
+              width: geometryPxToPoints(width, scale),
+              height: geometryPxToPoints(height, scale),
+            },
+          })
+          if (options.fill)
+            operations.push({
+              kind: 'set_fill',
+              createdByClientId: id,
+              fill: { kind: 'solid', color: options.fill },
+            })
+          operations.push({
+            kind: 'set_text',
+            createdByClientId: id,
+            paragraphs: [
+              {
+                runs: [{ text, fontSize, color, ...(options.bold ? { bold: true } : {}) }],
+                ...(options.align ? { align: options.align } : {}),
+              },
+            ],
+          })
+        }
+        if (designed) {
+          const layout = page.layout ?? (slideIndex === 0 ? 'cover' : 'cards')
+          box(`deck-bg-${slideIndex}`, ' ', 0, 0, 1280, 720, 1, palette.background, {
+            fill: palette.background,
+          })
+          if (layout === 'cover' || (layout === 'statement' && page.imageUrl)) {
+            box(`deck-accent-${slideIndex}`, ' ', 72, 104, 10, 452, 1, palette.accent, {
+              fill: palette.accent,
+            })
+            if (page.kicker)
+              box(
+                `deck-kicker-${slideIndex}`,
+                page.kicker.toUpperCase(),
+                112,
+                112,
+                560,
+                34,
+                13,
+                palette.accent,
+                {
+                  bold: true,
+                },
+              )
+            box(
+              titleId,
+              page.title,
+              112,
+              180,
+              page.imageUrl ? 570 : 980,
+              210,
+              42,
+              palette.foreground,
+              {
+                bold: true,
+              },
+            )
+            box(
+              bodyId,
+              page.body.join('  ·  '),
+              112,
+              430,
+              page.imageUrl ? 570 : 960,
+              92,
+              19,
+              palette.muted,
+            )
+          } else if (layout === 'split_image') {
+            box(
+              `deck-index-${slideIndex}`,
+              String(slideIndex + 1).padStart(2, '0'),
+              72,
+              54,
+              80,
+              34,
+              14,
+              palette.accent,
+              { bold: true },
+            )
+            box(titleId, page.title, 72, 105, 540, 105, 32, palette.foreground, { bold: true })
+            page.body.forEach((text, index) =>
+              box(
+                `deck-item-${slideIndex}-${index}`,
+                `${index + 1}  ${text}`,
+                72,
+                245 + index * 94,
+                535,
+                68,
+                18,
+                palette.foreground,
+                {
+                  fill: palette.panel,
+                },
+              ),
+            )
+          } else if (layout === 'timeline') {
+            box(titleId, page.title, 72, 62, 1050, 80, 32, palette.foreground, { bold: true })
+            page.body.slice(0, 5).forEach((text, index, list) => {
+              const width = 1080 / list.length
+              box(
+                `deck-step-no-${slideIndex}-${index}`,
+                String(index + 1),
+                78 + index * width,
+                230,
+                54,
+                54,
+                20,
+                palette.background,
+                {
+                  bold: true,
+                  fill: palette.accent,
+                  align: 'center',
+                },
+              )
+              box(
+                `deck-step-${slideIndex}-${index}`,
+                text,
+                72 + index * width,
+                315,
+                width - 28,
+                150,
+                17,
+                palette.foreground,
+                {
+                  fill: palette.panel,
+                },
+              )
+            })
+          } else if (layout === 'statement') {
+            if (page.kicker)
+              box(
+                `deck-kicker-${slideIndex}`,
+                page.kicker.toUpperCase(),
+                118,
+                105,
+                1040,
+                34,
+                13,
+                palette.accent,
+                { bold: true, align: 'center' },
+              )
+            box(titleId, page.title, 148, 205, 984, 160, 38, palette.foreground, {
+              bold: true,
+              align: 'center',
+            })
+            box(bodyId, page.body.join(' · '), 210, 415, 860, 80, 18, palette.muted, {
+              align: 'center',
+            })
+          } else {
+            box(titleId, page.title, 72, 62, 1050, 80, 32, palette.foreground, { bold: true })
+            page.body.forEach((text, index, list) => {
+              const columns = Math.min(list.length > 6 ? 4 : 3, list.length)
+              const width = (1110 - (columns - 1) * 24) / columns
+              const row = Math.floor(index / columns)
+              const column = index % columns
+              const rows = Math.ceil(list.length / columns)
+              const height = rows > 1 ? 168 : 260
+              const rowGap = rows > 1 ? 37 : 0
+              box(
+                `deck-card-${slideIndex}-${index}`,
+                text,
+                72 + column * (width + 24),
+                210 + row * (height + rowGap),
+                width,
+                height,
+                18,
+                palette.foreground,
+                {
+                  fill: palette.panel,
+                },
+              )
+            })
+          }
+          box(
+            `deck-page-${slideIndex}`,
+            `${slideIndex + 1} / ${pages.length}`,
+            page.imageUrl && (layout === 'cover' || layout === 'statement') ? 586 : 1120,
+            660,
+            96,
+            24,
+            11,
+            palette.muted,
+            { align: 'right' },
+          )
+        }
+        const execution = await access.executePresentationOperation(
+          {
+            transactionId: await geometryToolTransactionId({
+              name: call.name,
+              invocationId: call.invocationId,
+              input: { page: slideIndex, title: page.title, body: page.body },
+            }),
+            slideIndex,
+            operations: designed
+              ? operations
+              : [
+                  {
+                    kind: 'add_text_box',
+                    clientId: titleId,
+                    text: page.title,
+                    geometry: {
+                      x: geometryPxToPoints(72, scale),
+                      y: geometryPxToPoints(54, scale),
+                      width: geometryPxToPoints(1136, scale),
+                      height: geometryPxToPoints(90, scale),
+                    },
+                  },
+                  {
+                    kind: 'set_text',
+                    createdByClientId: titleId,
+                    paragraphs: [{ runs: [{ text: page.title, fontSize: 30, bold: true }] }],
+                  },
+                  {
+                    kind: 'add_text_box',
+                    clientId: bodyId,
+                    text: page.body.join('\n'),
+                    geometry: {
+                      x: geometryPxToPoints(92, scale),
+                      y: geometryPxToPoints(180, scale),
+                      width: geometryPxToPoints(1096, scale),
+                      height: geometryPxToPoints(430, scale),
+                    },
+                  },
+                  {
+                    kind: 'set_text',
+                    createdByClientId: bodyId,
+                    paragraphs: page.body.map((text) => ({ runs: [{ text, fontSize: 20 }] })),
+                  },
+                ],
+          },
+          signal,
+        )
+        const outcome = textFamilyReceiptOutcome(execution.receipt)
+        deckMutated ||= outcome.mutated
+        if (!outcome.ok) {
+          if (state) state.awaitingBuildDeck = false
+          return {
+            output: `The deck was partially created before page ${slideIndex + 1} failed. Inspect or undo before retrying.`,
+            isError: true,
+            mutated: true,
+            stopToolBatch: true,
+            summary: outcome.detail ?? `Page ${slideIndex + 1} failed`,
+          }
+        }
+      }
+      // The content now exists. Refinement must remain available even if an
+      // image IPC rejects or the user cancels during the image phase.
+      if (state) state.awaitingBuildDeck = false
+      if (designed) {
+        const failedImagePages: number[] = []
+        for (const [slideIndex, page] of pages.entries()) {
+          if (!page.imageUrl) continue
+          const layout = page.layout ?? (slideIndex === 0 ? 'cover' : 'split_image')
+          const placement =
+            layout === 'cover' || layout === 'statement'
+              ? { xPx: 730, yPx: 0, wPx: 550, hPx: 720 }
+              : { xPx: 660, yPx: 130, wPx: 548, hPx: 470 }
+          let inserted: Awaited<ReturnType<typeof window.slidesApi.insertImageUrl>>
+          if (state) state.authoritativeRefreshRequired = true
+          try {
+            inserted = await window.slidesApi.insertImageUrl({
+              slideIndex,
+              url: page.imageUrl,
+              ...placement,
+              fitWidthPx: access.fitWidthPx,
+            })
+          } catch {
+            signal?.throwIfAborted()
+            // IPC may fail after a native write. Do not blindly retry the same
+            // image or lose the partial-mutation receipt to the generic catch.
+            failedImagePages.push(slideIndex + 1)
+            continue
+          }
+          signal?.throwIfAborted()
+          if (!inserted) {
+            failedImagePages.push(slideIndex + 1)
+            continue
+          }
+          access.applySlide(slideIndex, inserted.slide)
+          if (state && failedImagePages.length === 0) state.authoritativeRefreshRequired = false
+        }
+        if (failedImagePages.length) {
+          if (state) state.awaitingBuildDeck = false
+          const refreshed = await refreshAuthoritativeState(access, state, signal)
+          return {
+            output: refreshed
+              ? `Deck text was created. Image insertion could not be confirmed on pages ${failedImagePages.join(', ')}; other images were attempted. Native document state has been refreshed. Read these pages before retrying because an image may already exist. Repair only missing or incorrect images in this turn. Do not rebuild the entire deck or report visual verification as complete.`
+              : `authoritative_reload_required: Deck text was created, but image insertion could not be confirmed on pages ${failedImagePages.join(', ')} and native state could not be refreshed. Do not retry images or claim verification from cached page data. Reload the document before further edits.`,
+            isError: true,
+            mutated: true,
+            stopToolBatch: true,
+            summary: t('aiFailInsertImage'),
+          }
+        }
+      }
+      if (state) state.awaitingBuildDeck = false
+      return {
+        output: designed
+          ? `Created a polished ${pages.length}-page presentation with a coherent theme, varied layouts, and ${pages.filter((page) => page.imageUrl).length} placed images.`
+          : `Created a complete ${pages.length}-page presentation with titles and body content.`,
+        mutated: true,
+        summary: `Created ${pages.length} complete pages`,
       }
     }
 

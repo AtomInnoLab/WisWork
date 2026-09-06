@@ -1,9 +1,70 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ENHANCED_HOSTS, PC_HOST_CODEX_CHANNELS } from '@wiswork/agent-runtime'
+import {
+  createPcHostRegistration,
+  ENHANCED_HOSTS,
+  PC_HOST_CODEX_CHANNELS,
+} from '@wiswork/agent-runtime'
+import { createSlidesSkill } from '../../slides/src/renderer/ai/slides-skill'
 import { ShellCodexRuntime } from '../src/main/codex-runtime'
 import { registerPcCodexHosts } from '../src/main/pc-codex-hosts'
 
 describe('PC Codex host registrar', () => {
+  it('registers the complete production Slides tool catalog', async () => {
+    const handlers = new Map<string, (...args: any[]) => any>()
+    const owner = { id: 71, isDestroyed: () => false, send: vi.fn() }
+    const registerDocument = vi.fn((input) => {
+      expect(input.session.listTools(input.session.credentials).length).toBeGreaterThan(0)
+      return () => undefined
+    })
+    const policy = {
+      globalEnabled: true,
+      rawOfficeEnabled: false,
+      hosts: Object.fromEntries(ENHANCED_HOSTS.map((host) => [host, true])) as any,
+    }
+    const runtime = new ShellCodexRuntime({
+      activeAgentRuntime: 'enhanced',
+      policy,
+      isSignedIn: async () => true,
+      resolveExecutable: async () => '/private/codex',
+      bootstrap: {
+        start: async () => ({
+          registerDocument,
+          startTurn: vi.fn(async () => undefined),
+          cancelTurn: vi.fn(async () => undefined),
+          closeDocument: vi.fn(async () => undefined),
+          close: vi.fn(async () => undefined),
+        }),
+      },
+    })
+    await runtime.initialize()
+    const registrar = registerPcCodexHosts({
+      ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
+      runtime,
+      policy,
+      hostForOwner: (candidate) => (candidate === owner ? 'slides' : null),
+    })
+    const skill = createSlidesSkill({
+      getSlides: () => [],
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => undefined,
+      applyDeck: () => undefined,
+      fitWidthPx: 1280,
+    })
+    const registration = createPcHostRegistration({
+      host: 'slides',
+      documentId: 'production-slides-catalog',
+      generation: 1,
+      skill,
+    })
+
+    await expect(
+      handlers.get(PC_HOST_CODEX_CHANNELS.register)!({ sender: owner }, registration),
+    ).resolves.toBeUndefined()
+    expect(registerDocument).toHaveBeenCalledOnce()
+    await registrar.close()
+  })
+
   it('binds registration to the trusted host and dispatches reads and mutations to its owner', async () => {
     const handlers = new Map<string, (...args: any[]) => any>()
     const sent: Array<[string, unknown]> = []
@@ -90,6 +151,28 @@ describe('PC Codex host registrar', () => {
     )
     await expect(read).resolves.toMatchObject({ output: 'ok' })
 
+    const screenshotRead = registered.session.callTool(registered.session.credentials, {
+      id: 'shot-1',
+      name: 'read_blocks',
+      input: {},
+    }) as Promise<unknown>
+    await handlers.get(PC_HOST_CODEX_CHANNELS.toolResult)!(
+      { sender: owner },
+      {
+        documentId: 'doc-1',
+        generation: 3,
+        callId: 'shot-1',
+        execution: {
+          output: 'rendered',
+          summary: 'screenshot',
+          modelContent: [{ type: 'image', image: { base64: 'aGVsbG8=', mime: 'image/png' } }],
+        },
+      },
+    )
+    await expect(screenshotRead).resolves.toMatchObject({
+      modelContent: [{ type: 'image', image: { base64: 'aGVsbG8=', mime: 'image/png' } }],
+    })
+
     const readWithoutSnapshotAuthority = registered.session.callTool(
       registered.session.credentials,
       {
@@ -145,7 +228,7 @@ describe('PC Codex host registrar', () => {
       }),
     ])
     expect(JSON.stringify(sent.at(-1)?.[1])).not.toContain('not-for-ui')
-    expect(sent.filter(([channel]) => channel === PC_HOST_CODEX_CHANNELS.toolCall)).toHaveLength(2)
+    expect(sent.filter(([channel]) => channel === PC_HOST_CODEX_CHANNELS.toolCall)).toHaveLength(3)
     expect(() =>
       handlers.get(PC_HOST_CODEX_CHANNELS.confirmProposal)!(
         { sender: owner },
@@ -234,7 +317,12 @@ describe('PC Codex host registrar', () => {
       isError: true,
       mutated: false,
     })
-    expect(sent.filter(([channel]) => channel === PC_HOST_CODEX_CHANNELS.toolCall)).toHaveLength(3)
+    expect(sent.filter(([channel]) => channel === PC_HOST_CODEX_CHANNELS.toolCall)).toHaveLength(4)
+    registered.onEvent({ type: 'terminal', status: 'failed', code: 'enhanced_proposal_expired' })
+    expect(sent.at(-1)).toEqual([
+      PC_HOST_CODEX_CHANNELS.event,
+      { type: 'error', code: 'enhanced_proposal_expired' },
+    ])
     await registrar.closeOwner(owner)
     expect(engine.closeDocument).toHaveBeenCalledWith('doc-1')
   })

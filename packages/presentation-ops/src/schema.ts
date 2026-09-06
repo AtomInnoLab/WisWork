@@ -37,6 +37,7 @@ const qualityCodes: readonly PresentationQualityCode[] = [
   'element_collision',
   'tiny_text',
   'empty_placeholder',
+  'empty_slide',
   'low_contrast',
   'visual_quality',
   'quality_capacity_exceeded',

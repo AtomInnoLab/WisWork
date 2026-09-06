@@ -49,7 +49,9 @@ export type ResponsesInputItem =
       type: 'custom_tool_call_output'
       id?: string
       call_id: string
-      output: string | Array<{ type: 'input_text'; text: string }>
+      output:
+        | string
+        | Array<{ type: 'input_text'; text: string } | { type: 'input_image'; image_url: string }>
       status?: 'completed'
     }
   | {
@@ -57,7 +59,7 @@ export type ResponsesInputItem =
       id: string
       summary: []
       content: null
-      encrypted_content: string
+      encrypted_content: string | null
     }
   | {
       type: 'additional_tools'
@@ -94,6 +96,7 @@ export interface MessagesRequest {
     description?: string
     input_schema: Record<string, unknown>
   }>
+  tool_choice?: { type: 'auto'; disable_parallel_tool_use: true }
   max_tokens: number
   stream: true
 }

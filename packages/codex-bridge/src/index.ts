@@ -49,6 +49,8 @@ interface CarrierLedgerEntry {
   remainingCalls: number
 }
 
+const MAX_TOOL_CALLS_PER_RESPONSE = 16
+
 const carrierLedger = new WeakMap<object, CarrierLedgerEntry>()
 const CARRIER_HOSTS = new Set([
   'latex',
@@ -169,7 +171,7 @@ export function createDocumentCarrierIssuer(
       issuer: issuerIdentity,
       ...(validationContext as Omit<CarrierLedgerEntry, 'issuer' | 'state' | 'remainingCalls'>),
       state: 'issued',
-      remainingCalls: 1,
+      remainingCalls: MAX_TOOL_CALLS_PER_RESPONSE,
     })
     return handle
   }
@@ -710,8 +712,27 @@ function validatePinnedAdditionalTools(item: UnknownRecord, limits: ProtocolLimi
   return true
 }
 
+function parseWaitInput(value: unknown): void {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['cell_id', 'yield_time_ms', 'max_tokens']) ||
+    typeof value.cell_id !== 'string' ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(value.cell_id)
+  )
+    fail('invalid_wait_input')
+  for (const key of ['yield_time_ms', 'max_tokens']) {
+    if (
+      value[key] !== undefined &&
+      (!Number.isSafeInteger(value[key]) ||
+        (value[key] as number) <= 0 ||
+        (value[key] as number) > (key === 'yield_time_ms' ? 300_000 : 32_000))
+    )
+      fail('invalid_wait_input')
+  }
+}
+
 function safeExecDescription(methods: readonly string[]): string {
-  return `Execute exactly one document MCP call. An optional first line // @exec: {"yield_time_ms":1000,"max_output_tokens":100} is allowed. Allowed syntax: text(await tools.${methods.join(
+  return `For screenshots use exactly: const result = await tools.${methods[0]}({...}); for (const block of result.content) { if (block.type === "image") image(block); else if (block.type === "text") text(block.text); } This emits native images, never stringify PNG data. Execute exactly one document MCP call. An optional first line // @exec: {"yield_time_ms":1000,"max_output_tokens":100} is allowed. Allowed syntax: text(await tools.${methods.join(
     '({...})) or text(await tools.',
   )}({...})). Arguments must be a JSON object literal. No other JavaScript is allowed.`
 }
@@ -749,7 +770,10 @@ function parseSafeExecCode(code: string, methods: readonly string[], limits: Pro
   }
   const direct = /^await\s+tools\.([A-Za-z_][A-Za-z0-9_]*)\((\{[\s\S]*\})\);?$/
   const wrapped = /^text\(\s*await\s+tools\.([A-Za-z_][A-Za-z0-9_]*)\((\{[\s\S]*\})\)\s*\);?$/
-  const match = wrapped.exec(source.trim()) ?? direct.exec(source.trim())
+  const visual =
+    /^const result = await tools\.([A-Za-z_][A-Za-z0-9_]*)\((\{[\s\S]*\})\); for \(const block of result\.content\) \{ if \(block\.type === "image"\) image\(block\); else if \(block\.type === "text"\) text\(block\.text\); \}$/
+  const match =
+    wrapped.exec(source.trim()) ?? direct.exec(source.trim()) ?? visual.exec(source.trim())
   if (!match || !methods.includes(match[1]!)) fail('unsafe_custom_tool_input')
   let argument: unknown
   try {
@@ -798,7 +822,7 @@ function convertMessageContent(
       ) {
         fail('invalid_conversation')
       }
-      return { type: 'image', source: { type: 'url', url: part.image_url } }
+      return modelImage(part.image_url)
     }
     fail('unsupported_input_content')
   })
@@ -809,6 +833,15 @@ interface PrivateStreamContext {
   usedCallIds: readonly string[]
   allowedExecMethods: readonly string[]
   carrierEntry?: CarrierLedgerEntry
+}
+
+function modelImage(url: string): Record<string, unknown> {
+  if (url.startsWith('data:')) {
+    const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(url)
+    if (!match) fail('invalid_image_content')
+    return { type: 'image', source: { type: 'base64', media_type: match[1], data: match[2] } }
+  }
+  return { type: 'image', source: { type: 'url', url } }
 }
 
 function convertResponsesRequest(
@@ -900,6 +933,21 @@ function convertResponsesRequest(
   }
   if (exposesExec) {
     upstreamTools.push({
+      name: 'wait',
+      description:
+        'When exec returns Script running with cell ID, call wait with that cell_id until it completes. This includes questionnaires awaiting human answers. Do not end the task or request the answers again while the cell is running.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          cell_id: { type: 'string' },
+          yield_time_ms: { type: 'integer', minimum: 1, maximum: 300000 },
+          max_tokens: { type: 'integer', minimum: 1, maximum: 32000 },
+        },
+        required: ['cell_id'],
+        additionalProperties: false,
+      },
+    })
+    upstreamTools.push({
       name: 'exec',
       description: safeExecDescription(allowedExecMethods),
       input_schema: {
@@ -926,8 +974,9 @@ function convertResponsesRequest(
 
   for (const rawItem of conversationItems) {
     if (!isRecord(rawItem)) fail('unsupported_input_item')
-    const isResult = rawItem.type === 'custom_tool_call_output'
-    const isCall = rawItem.type === 'custom_tool_call'
+    const isResult =
+      rawItem.type === 'custom_tool_call_output' || rawItem.type === 'function_call_output'
+    const isCall = rawItem.type === 'custom_tool_call' || rawItem.type === 'function_call'
     if (pending && resultIndex === pending.length && !isResult) {
       pending = undefined
       resultIndex = 0
@@ -947,6 +996,7 @@ function convertResponsesRequest(
       ) {
         fail('unsupported_reasoning_input')
       }
+      if (rawItem.encrypted_content === null) continue
       const encrypted = requireString(rawItem.encrypted_content, 'unsupported_reasoning_input')
       if (encrypted === '') fail('unsupported_reasoning_input')
       append('assistant', [{ type: 'redacted_thinking', data: encrypted }])
@@ -963,19 +1013,34 @@ function convertResponsesRequest(
     }
     if (isCall) {
       if (!sawMessage || (pending && resultIndex !== 0)) fail('invalid_conversation')
-      if (pending && pending.length >= 1) fail('tool_call_limit_exceeded')
+      if (pending && pending.length >= MAX_TOOL_CALLS_PER_RESPONSE) fail('tool_call_limit_exceeded')
       const id = requireString(rawItem.call_id, 'invalid_tool_call')
       if (id === '') fail('invalid_tool_call')
       if (used.has(id)) fail('duplicate_call_id')
       used.add(id)
       usedCallIds.push(id)
-      if (!hasOnlyKeys(rawItem, ['type', 'id', 'call_id', 'name', 'input', 'status']))
+      if (!hasOnlyKeys(rawItem, ['type', 'id', 'call_id', 'name', 'input', 'arguments', 'status']))
         fail('unsupported_input_item')
       if (rawItem.id !== undefined) {
         const itemId = requireString(rawItem.id, 'invalid_tool_call')
         if (itemId === '' || utf8Length(itemId) > limits.maxStringLength) fail('invalid_tool_call')
       }
       if (rawItem.status !== undefined && rawItem.status !== 'completed') fail('invalid_tool_call')
+      if (rawItem.type === 'function_call') {
+        if (rawItem.name !== 'wait' || !exposesExec || rawItem.input !== undefined)
+          fail('unadvertised_tool_call')
+        let input: unknown
+        try {
+          input = JSON.parse(requireString(rawItem.arguments, 'invalid_wait_input'))
+        } catch {
+          fail('invalid_wait_input')
+        }
+        parseWaitInput(input)
+        pending ??= []
+        pending.push({ id })
+        append('assistant', [{ type: 'tool_use', id, name: 'wait', input }])
+        continue
+      }
       if (rawItem.name !== 'exec' || !exposesExec) fail('unadvertised_tool_call')
       const code = requireString(rawItem.input, 'invalid_custom_tool_input')
       parseSafeExecCode(code, allowedExecMethods, limits)
@@ -1001,22 +1066,27 @@ function convertResponsesRequest(
       const expected = pending[resultIndex]!
       if (id !== expected.id) fail('invalid_tool_result_batch')
       if (isRecord(rawItem.output)) fail('tool_result_output_object')
-      let output: string
+      let output: string | Array<Record<string, unknown>>
       if (Array.isArray(rawItem.output)) {
         if (rawItem.output.length === 0) fail('invalid_tool_result')
         contentCount.parts += rawItem.output.length
         if (contentCount.parts > limits.maxContentParts) fail('request_content_limit_exceeded')
-        output = rawItem.output
-          .map((part) => {
-            if (
-              !isRecord(part) ||
-              !hasOnlyKeys(part, ['type', 'text']) ||
-              part.type !== 'input_text'
-            )
-              fail('invalid_tool_result')
-            return requireString(part.text, 'invalid_tool_result')
-          })
-          .join('\n')
+        const multimodal = rawItem.output.some(
+          (part) => isRecord(part) && part.type === 'input_image',
+        )
+        const parts = rawItem.output.map((part) => {
+          if (
+            isRecord(part) &&
+            part.type === 'input_image' &&
+            hasOnlyKeys(part, ['type', 'image_url']) &&
+            typeof part.image_url === 'string'
+          )
+            return modelImage(part.image_url)
+          if (!isRecord(part) || !hasOnlyKeys(part, ['type', 'text']) || part.type !== 'input_text')
+            fail('invalid_tool_result')
+          return { type: 'text', text: requireString(part.text, 'invalid_tool_result') }
+        })
+        output = multimodal ? parts : parts.map((part) => part.text).join('\n')
       } else {
         output = requireString(rawItem.output, 'invalid_tool_result')
       }
@@ -1044,10 +1114,12 @@ function convertResponsesRequest(
   )
   if (systemParts.length > 0) converted.system = systemParts.join('\n\n')
   if (upstreamTools.length > 0) converted.tools = upstreamTools
-  // Keep the WisUsage wire shape identical to the production Standard transport.
-  // The carrier and stream converter below enforce a single tool call locally;
-  // provider-specific tool_choice extensions are not part of that contract and
-  // can be rejected before a response stream is created.
+  // Codex 0.147 explicitly disables parallel tools for this stateful code-mode
+  // turn. Preserve that contract on the Messages wire: concurrent exec blocks
+  // can otherwise contend for one document session and strand pending calls.
+  if (upstreamTools.length > 0 && request.parallel_tool_calls === false) {
+    converted.tool_choice = { type: 'auto', disable_parallel_tool_use: true }
+  }
   return {
     request: converted,
     context: {
@@ -1088,8 +1160,15 @@ async function* convertMessagesStream(
     | { kind: 'text'; itemId: string; text: string }
     | { kind: 'reasoning'; itemId: string; encryptedContent: string }
     | {
+        kind: 'discarded_reasoning'
+        itemId: string
+        bytes: number
+        nestedEncrypted?: { index: number; encryptedContent: string; stopped: boolean }
+      }
+    | {
         kind: 'tool'
         itemId: string
+        outputIndex: number
         callId: string
         name: string
         arguments: string
@@ -1105,8 +1184,9 @@ async function* convertMessagesStream(
     cachedTokens: 0,
     cacheWriteTokens: 0,
     outputTokens: 0,
+    reasoningTokens: 0,
     stopReason: undefined as string | undefined,
-    stoppedTool: undefined as Extract<StrictBlock, { kind: 'tool' }> | undefined,
+    stoppedTools: [] as Array<Extract<StrictBlock, { kind: 'tool' }>>,
     output: [] as Array<Record<string, unknown>>,
     usedCalls: new Set(context.usedCallIds),
     toolCalls: 0,
@@ -1279,7 +1359,36 @@ async function* convertMessagesStream(
     if (strict.phase === 'await_start') fail('invalid_messages_event_order')
     if (event === 'content_block_start') {
       if (!hasOnlyKeys(data, ['type', 'index', 'content_block'])) fail('invalid_messages_event')
-      if (strict.stoppedTool !== undefined) fail('tool_call_limit_exceeded')
+      if (
+        strict.phase === 'content' &&
+        strict.active?.kind === 'discarded_reasoning' &&
+        strict.active.nestedEncrypted === undefined &&
+        isRecord(data.content_block) &&
+        data.content_block.type === 'redacted_thinking'
+      ) {
+        if (
+          !hasOnlyKeys(data.content_block, ['type', 'data']) ||
+          !Number.isSafeInteger(data.index) ||
+          data.index !== strict.nextIndex + 1 ||
+          data.index >= limits.maxBlocks
+        ) {
+          fail('invalid_messages_block_index')
+        }
+        const encryptedContent = requireString(
+          data.content_block.data,
+          'unsupported_reasoning_block',
+        )
+        if (encryptedContent === '') fail('unsupported_reasoning_block')
+        if (strict.active.bytes + utf8Length(encryptedContent) > limits.maxStringLength) {
+          fail('reasoning_content_limit_exceeded')
+        }
+        strict.active.nestedEncrypted = {
+          index: data.index,
+          encryptedContent,
+          stopped: false,
+        }
+        return []
+      }
       if (
         strict.phase !== 'content' ||
         strict.active !== undefined ||
@@ -1291,7 +1400,34 @@ async function* convertMessagesStream(
       const index = validateIndex(data.index, true)
       const itemId = `item_${index}`
       if (data.content_block.type === 'thinking') {
-        fail('unsupported_reasoning_block')
+        if (
+          !hasOnlyKeys(data.content_block, ['type', 'thinking', 'signature']) ||
+          typeof data.content_block.thinking !== 'string' ||
+          (data.content_block.signature !== undefined &&
+            data.content_block.signature !== null &&
+            typeof data.content_block.signature !== 'string')
+        ) {
+          fail('unsupported_reasoning_block')
+        }
+        const bytes =
+          utf8Length(data.content_block.thinking) +
+          (typeof data.content_block.signature === 'string'
+            ? utf8Length(data.content_block.signature)
+            : 0)
+        if (bytes > limits.maxStringLength) fail('reasoning_content_limit_exceeded')
+        strict.active = { kind: 'discarded_reasoning', itemId, bytes }
+        strict.activeIndex = index
+        return [
+          sse('response.output_item.added', {
+            output_index: index,
+            item: {
+              id: itemId,
+              type: 'reasoning',
+              status: 'in_progress',
+              summary: [],
+            },
+          }),
+        ]
       }
       if (data.content_block.type === 'redacted_thinking') {
         if (!hasOnlyKeys(data.content_block, ['type', 'data'])) {
@@ -1365,14 +1501,19 @@ async function* convertMessagesStream(
       const name = requireString(data.content_block.name, 'invalid_messages_event')
       if (callId === '') fail('invalid_messages_event')
       if (strict.usedCalls.has(callId)) fail('duplicate_call_id')
-      if (name !== 'exec' || context.allowedExecMethods.length === 0) fail('unadvertised_tool_call')
-      if (!context.carrierEntry || context.carrierEntry.remainingCalls <= 0) {
+      if (!['exec', 'wait'].includes(name) || context.allowedExecMethods.length === 0)
+        fail('unadvertised_tool_call')
+      if (
+        strict.toolCalls >= MAX_TOOL_CALLS_PER_RESPONSE ||
+        !context.carrierEntry ||
+        context.carrierEntry.remainingCalls <= 0
+      ) {
         fail('tool_call_limit_exceeded')
       }
       context.carrierEntry.remainingCalls -= 1
       strict.toolCalls += 1
       strict.usedCalls.add(callId)
-      strict.active = { kind: 'tool', itemId, callId, name, arguments: '' }
+      strict.active = { kind: 'tool', itemId, outputIndex: index, callId, name, arguments: '' }
       strict.activeIndex = index
       return []
     }
@@ -1383,6 +1524,25 @@ async function* convertMessagesStream(
       }
       const index = validateIndex(data.index, false)
       if (!isRecord(data.delta)) fail('invalid_messages_event')
+      if (
+        strict.active.kind === 'discarded_reasoning' &&
+        strict.active.nestedEncrypted !== undefined &&
+        !strict.active.nestedEncrypted.stopped
+      ) {
+        fail('unsupported_content_delta')
+      }
+      if (
+        strict.active.kind === 'discarded_reasoning' &&
+        (data.delta.type === 'thinking_delta' || data.delta.type === 'signature_delta')
+      ) {
+        const field = data.delta.type === 'thinking_delta' ? 'thinking' : 'signature'
+        if (!hasOnlyKeys(data.delta, ['type', field])) fail('invalid_messages_event')
+        const value = requireString(data.delta[field], 'invalid_messages_event')
+        const bytes = strict.active.bytes + utf8Length(value)
+        if (bytes > limits.maxStringLength) fail('reasoning_content_limit_exceeded')
+        strict.active.bytes = bytes
+        return []
+      }
       if (strict.active.kind === 'text' && data.delta.type === 'text_delta') {
         if (!hasOnlyKeys(data.delta, ['type', 'text'])) fail('invalid_messages_event')
         const deltaText = requireString(data.delta.text, 'invalid_messages_event')
@@ -1417,11 +1577,28 @@ async function* convertMessagesStream(
       if (strict.phase !== 'content' || strict.active === undefined) {
         fail('invalid_messages_event_order')
       }
+      if (
+        strict.active.kind === 'discarded_reasoning' &&
+        strict.active.nestedEncrypted !== undefined &&
+        !strict.active.nestedEncrypted.stopped &&
+        data.index === strict.active.nestedEncrypted.index
+      ) {
+        strict.active.nestedEncrypted.stopped = true
+        return []
+      }
       const index = validateIndex(data.index, false)
       const block = strict.active
+      if (
+        block.kind === 'discarded_reasoning' &&
+        block.nestedEncrypted !== undefined &&
+        !block.nestedEncrypted.stopped
+      ) {
+        fail('invalid_messages_event_order')
+      }
       strict.active = undefined
       strict.activeIndex = undefined
-      strict.nextIndex += 1
+      strict.nextIndex +=
+        block.kind === 'discarded_reasoning' && block.nestedEncrypted !== undefined ? 2 : 1
       if (block.kind === 'text') {
         const part = { type: 'output_text', text: block.text, annotations: [] }
         const item = {
@@ -1459,7 +1636,20 @@ async function* convertMessagesStream(
         strict.output.push(item)
         return [sse('response.output_item.done', { output_index: index, item })]
       }
-      strict.stoppedTool = block
+      if (block.kind === 'discarded_reasoning') {
+        const item = {
+          id: block.itemId,
+          type: 'reasoning',
+          status: 'completed',
+          summary: [],
+          ...(block.nestedEncrypted === undefined
+            ? {}
+            : { encrypted_content: block.nestedEncrypted.encryptedContent }),
+        }
+        strict.output.push(item)
+        return [sse('response.output_item.done', { output_index: index, item })]
+      }
+      strict.stoppedTools.push(block)
       return []
     }
     if (event === 'message_delta') {
@@ -1518,10 +1708,19 @@ async function* convertMessagesStream(
         if (data.usage.output_tokens_details !== undefined) {
           if (
             !isRecord(data.usage.output_tokens_details) ||
-            !hasOnlyKeys(data.usage.output_tokens_details, ['thinking_tokens'])
+            !hasOnlyKeys(data.usage.output_tokens_details, [
+              'thinking_tokens',
+              'reasoning_tokens',
+            ]) ||
+            (data.usage.output_tokens_details.thinking_tokens !== undefined &&
+              data.usage.output_tokens_details.reasoning_tokens !== undefined)
           )
             fail('invalid_messages_usage')
-          usageInteger(data.usage.output_tokens_details.thinking_tokens, false)
+          strict.reasoningTokens = usageInteger(
+            data.usage.output_tokens_details.reasoning_tokens ??
+              data.usage.output_tokens_details.thinking_tokens,
+            false,
+          )
         }
         if (data.usage.cost_details !== undefined) {
           if (
@@ -1540,58 +1739,90 @@ async function* convertMessagesStream(
       }
       strict.stopReason = requireString(data.delta.stop_reason, 'invalid_messages_event')
       const frames: string[] = []
-      if (strict.stoppedTool && strict.stopReason !== 'max_tokens') {
-        const block = strict.stoppedTool
-        let parsed: unknown
-        try {
-          parsed = JSON.parse(block.arguments)
-        } catch {
-          fail('invalid_custom_tool_input')
-        }
-        if (
-          !isRecord(parsed) ||
-          !hasOnlyKeys(parsed, ['code']) ||
-          typeof parsed.code !== 'string'
-        ) {
-          fail('invalid_custom_tool_input')
-        }
-        parseSafeExecCode(parsed.code, context.allowedExecMethods, limits)
-        const item = {
-          id: block.itemId,
-          type: 'custom_tool_call',
-          status: 'completed',
-          call_id: block.callId,
-          name: 'exec',
-          input: parsed.code,
-        }
-        strict.output.push(item)
-        const outputIndex = strict.nextIndex - 1
-        frames.push(
-          sse('response.output_item.added', {
-            output_index: outputIndex,
-            item: {
+      if (strict.stopReason !== 'max_tokens') {
+        for (const block of strict.stoppedTools) {
+          let parsed: unknown
+          try {
+            parsed = JSON.parse(block.arguments)
+          } catch {
+            fail('invalid_custom_tool_input')
+          }
+          if (block.name === 'wait') {
+            parseWaitInput(parsed)
+            const argumentsText = JSON.stringify(parsed)
+            const item = {
               id: block.itemId,
-              type: 'custom_tool_call',
-              status: 'in_progress',
+              type: 'function_call',
+              status: 'completed',
               call_id: block.callId,
-              name: block.name,
-              input: '',
-            },
-          }),
-          sse('response.custom_tool_call_input.delta', {
-            item_id: block.itemId,
-            output_index: outputIndex,
-            delta: parsed.code,
-          }),
-          sse('response.custom_tool_call_input.done', {
-            item_id: block.itemId,
-            output_index: outputIndex,
+              name: 'wait',
+              arguments: argumentsText,
+            }
+            strict.output.push(item)
+            frames.push(
+              sse('response.output_item.added', {
+                output_index: block.outputIndex,
+                item: { ...item, status: 'in_progress', arguments: '' },
+              }),
+              sse('response.function_call_arguments.delta', {
+                item_id: block.itemId,
+                output_index: block.outputIndex,
+                delta: argumentsText,
+              }),
+              sse('response.function_call_arguments.done', {
+                item_id: block.itemId,
+                output_index: block.outputIndex,
+                arguments: argumentsText,
+              }),
+              sse('response.output_item.done', { output_index: block.outputIndex, item }),
+            )
+            continue
+          }
+          if (
+            !isRecord(parsed) ||
+            !hasOnlyKeys(parsed, ['code']) ||
+            typeof parsed.code !== 'string'
+          ) {
+            fail('invalid_custom_tool_input')
+          }
+          parseSafeExecCode(parsed.code, context.allowedExecMethods, limits)
+          const item = {
+            id: block.itemId,
+            type: 'custom_tool_call',
+            status: 'completed',
+            call_id: block.callId,
+            name: 'exec',
             input: parsed.code,
-          }),
-          sse('response.output_item.done', { output_index: outputIndex, item }),
-        )
+          }
+          strict.output.push(item)
+          const outputIndex = block.outputIndex
+          frames.push(
+            sse('response.output_item.added', {
+              output_index: outputIndex,
+              item: {
+                id: block.itemId,
+                type: 'custom_tool_call',
+                status: 'in_progress',
+                call_id: block.callId,
+                name: block.name,
+                input: '',
+              },
+            }),
+            sse('response.custom_tool_call_input.delta', {
+              item_id: block.itemId,
+              output_index: outputIndex,
+              delta: parsed.code,
+            }),
+            sse('response.custom_tool_call_input.done', {
+              item_id: block.itemId,
+              output_index: outputIndex,
+              input: parsed.code,
+            }),
+            sse('response.output_item.done', { output_index: outputIndex, item }),
+          )
+        }
       }
-      strict.stoppedTool = undefined
+      strict.stoppedTools = []
       strict.outputTokens = usageInteger(data.usage?.output_tokens, true)
       strict.phase = 'await_stop'
       return frames
@@ -1618,7 +1849,7 @@ async function* convertMessagesStream(
             cached_tokens: strict.cachedTokens,
             cache_write_tokens: strict.cacheWriteTokens,
           },
-          output_tokens_details: { reasoning_tokens: 0 },
+          output_tokens_details: { reasoning_tokens: strict.reasoningTokens },
         },
       }
       strict.phase = 'terminal'
@@ -1717,7 +1948,7 @@ export async function replayProtocolRecording(
       methods: ['mcp__wiswork__replay'],
       schemaDigest: '',
       state: 'consumed',
-      remainingCalls: 1,
+      remainingCalls: MAX_TOOL_CALLS_PER_RESPONSE,
     },
   }
   try {

@@ -33,6 +33,21 @@ const MAX_SLIDE_INDEX = 100_000
 const MAX_CODE = 32 * 1024
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
 const POWERPOINT_GEOMETRY_EPSILON = 0.01
+
+function arrayField<T>(
+  parser: (value: unknown) => T,
+  options: { minItems?: number; maxItems: number },
+): (value: unknown) => T[] {
+  return (value) => {
+    if (
+      !Array.isArray(value) ||
+      value.length < (options.minItems ?? 0) ||
+      value.length > options.maxItems
+    )
+      throw new Error('invalid_tool_input')
+    return value.map((item) => parser(item))
+  }
+}
 const MASTER_PATTERN_TYPES = [
   'Percent5',
   'Percent10',
@@ -106,6 +121,22 @@ const shapeInput = exactObject({
   explanation: optionalField(stringField({ maxLength: 50 })),
 })
 const verifyInput = exactObject({ explanation: optionalField(stringField({ maxLength: 50 })) })
+const planDeckInput = exactObject({
+  core_hook: stringField({ minLength: 1, maxLength: 500 }),
+  style: stringField({ minLength: 1, maxLength: 1_000 }),
+  pages: arrayField(
+    exactObject({
+      title: stringField({ minLength: 1, maxLength: 300 }),
+      type: optionalField(stringField({ maxLength: 50 })),
+      brief: stringField({ minLength: 1, maxLength: 2_000 }),
+      layout: stringField({ minLength: 1, maxLength: 100 }),
+      image_queries: optionalField(
+        arrayField(stringField({ minLength: 1, maxLength: 200 }), { maxItems: 4 }),
+      ),
+    }),
+    { minItems: 1, maxItems: 20 },
+  ),
+})
 const textEditInput = exactObject({
   slide_index: integerField({ min: 0, max: MAX_SLIDE_INDEX }),
   shape_id: stringField({ minLength: 1, maxLength: 256 }),
@@ -375,6 +406,41 @@ const tools = [
       type: 'object',
       properties: { explanation: { type: 'string', maxLength: 50 } },
       required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'plan_deck',
+    description:
+      'Record the complete narrative and visual plan before creating or substantially rebuilding a presentation. This tool never edits PowerPoint.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        core_hook: { type: 'string', minLength: 1, maxLength: 500 },
+        style: { type: 'string', minLength: 1, maxLength: 1_000 },
+        pages: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 20,
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', minLength: 1, maxLength: 300 },
+              type: { type: 'string', maxLength: 50 },
+              brief: { type: 'string', minLength: 1, maxLength: 2_000 },
+              layout: { type: 'string', minLength: 1, maxLength: 100 },
+              image_queries: {
+                type: 'array',
+                maxItems: 4,
+                items: { type: 'string', minLength: 1, maxLength: 200 },
+              },
+            },
+            required: ['title', 'brief', 'layout'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['core_hook', 'style', 'pages'],
       additionalProperties: false,
     },
   },
@@ -1245,6 +1311,7 @@ export function createPowerPointSkill(options: {
   return {
     id: 'office-powerpoint',
     systemPrompt:
+      'Follow the WisWork Slides workflow for presentation tasks: inspect the presentation before planning; ask the user only when a material audience, purpose, or scope decision cannot be inferred; use plan_deck before the first mutation when creating or substantially rebuilding a deck; research facts and images when needed; apply bounded edits through proposals; and call verify_slides after the approved build before reporting completion. ' +
       'PowerPoint reads are bounded. Every write creates an explicit proposal and is semantically verified after confirmation. execute_office_js accepts only a versioned declarative JSON program; JavaScript and ambient browser authority are rejected. XML tools accept only allowlisted bounded package parts.' +
       ' Prefer inspect_slide_masters and native edit_slide_master for backgrounds, theme colors, and layout inheritance. PowerPoint for Mac must never use edit_slide_master_xml.',
     tools: tools.filter(
@@ -1263,6 +1330,26 @@ export function createPowerPointSkill(options: {
         )
       try {
         assertNotCancelled(signal)
+        if (call.name === 'plan_deck') {
+          const plan = planDeckInput(call.input)
+          return {
+            output: boundedJson({
+              status: 'planned',
+              coreHook: plan.core_hook,
+              style: plan.style,
+              pages: plan.pages.map((page, index) => ({
+                page: index + 1,
+                title: page.title,
+                type: page.type ?? 'content',
+                brief: page.brief,
+                layout: page.layout,
+                imageQueries: page.image_queries ?? [],
+              })),
+            }),
+            mutated: false,
+            summary: `Planned ${plan.pages.length} slides`,
+          }
+        }
         if (presentation?.shouldSkip(call))
           return {
             output: JSON.stringify({ status: 'unchanged' }),

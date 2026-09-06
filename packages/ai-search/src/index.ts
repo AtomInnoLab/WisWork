@@ -1,6 +1,6 @@
 /**
  * Search utilities (main process) — authenticated WisUsage web search plus
- * legacy Serper/DuckDuckGo image search.
+ * SerpApi/Serper/DuckDuckGo image search.
  * Runs in the main process to avoid renderer CORS.
  */
 
@@ -15,6 +15,7 @@ import {
 export type { ImageSearchResult, WebSearchResult } from './shared'
 
 const SERPER_KEY = () => process.env.SERPER_API_KEY ?? ''
+const SERPAPI_KEY = () => process.env.SERPAPI_API_KEY ?? ''
 const WISUSAGE_SEARCH_URL = 'https://wisusage.atominnolab.com/v1/xiaosu/search'
 const WISUSAGE_RESPONSE_LIMIT = 1_048_576
 const WISUSAGE_QUERY_LIMIT = 1_000
@@ -218,6 +219,42 @@ export async function imageSearch(
   images: ImageSearchResult[]
   method: string
 }> {
+  const serpApiKey = SERPAPI_KEY()
+  if (serpApiKey) {
+    try {
+      const url = new URL('https://serpapi.com/search')
+      url.searchParams.set('engine', 'google_images')
+      url.searchParams.set('q', query)
+      url.searchParams.set('hl', 'en')
+      url.searchParams.set('gl', 'us')
+      url.searchParams.set('api_key', serpApiKey)
+      const resp = await fetchWithTimeout(url.href)
+      if (resp.ok) {
+        const data = asRecord(await resp.json())
+        const raw: unknown[] = Array.isArray(data.images_results) ? data.images_results : []
+        const images: ImageSearchResult[] = []
+        for (const item of raw) {
+          const image = asRecord(item)
+          const imageUrl = String(image.original ?? '')
+          if (!imageUrl || COPYRIGHT_HOSTS.some((host) => imageUrl.toLowerCase().includes(host)))
+            continue
+          const entry: ImageSearchResult = {
+            title: String(image.title ?? ''),
+            imageUrl,
+            sourceUrl: String(image.link ?? ''),
+            source: String(image.source ?? safeHost(image.link)),
+          }
+          if (typeof image.original_width === 'number') entry.width = image.original_width
+          if (typeof image.original_height === 'number') entry.height = image.original_height
+          images.push(entry)
+          if (images.length >= maxResults) break
+        }
+        if (images.length) return { images, method: 'serpapi' }
+      }
+    } catch {
+      /* fall back to Serper or DuckDuckGo */
+    }
+  }
   const key = SERPER_KEY()
   if (key) {
     try {
