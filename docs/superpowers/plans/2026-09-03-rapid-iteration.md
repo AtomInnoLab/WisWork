@@ -18,3 +18,7 @@ Replay captures only enumerated protocol structure and bounded numeric metadata.
 ## Verification and rollback
 
 Each implementation unit starts with a failing test for testable behavior and provides verification evidence. Record baseline failures separately. Build/run the local package only when prerequisites allow, without touching production app state. Rollback means remove only generated test artifacts and revert this branch; production installation/data remain untouched. Do not claim UI validation, signed preview delivery, production recording or full-suite success unless actually verified.
+
+## Continuation: real packaging findings
+
+Observed: `npm run notices` exits successfully with zero Rust crates when unfiltered cargo metadata requires uncached foreign-platform dependencies; the same locked metadata succeeds offline with `--filter-platform aarch64-apple-darwin`. Add an explicit target-scoped strict notices option for Dogfood and Preview, preserving existing release behavior until separately reviewed. Files: `tools/gen-third-party-notices.mjs`, a testable metadata helper and Node tests, `tools/dogfood-mac.mjs`, `.github/workflows/desktop-preview.yml`, developer guide. Require nonempty metadata and fail before publishing notices on metadata error. Test missing crates/command failure, valid target selection and source preservation; run actual generation and package verification. Do not silently ship incomplete notices. Authentication changes await a separately approved callback/server configuration design.
