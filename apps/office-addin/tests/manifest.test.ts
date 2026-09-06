@@ -29,9 +29,10 @@ describe('Office Add-in manifest and routes', () => {
     expect(config).toBeDefined()
     const manifest = renderDeploymentManifest(template, config!)
 
-    expect(manifest).toContain('<Version>0.3.6.0</Version>')
+    expect(manifest).toContain('<Version>0.3.7.0</Version>')
+    expect(manifest).toContain('<DisplayName DefaultValue="WisWork" />')
     expect(manifest).toContain(
-      '<SourceLocation DefaultValue="https://office.example/taskpane.html?v=0.3.6" />',
+      '<SourceLocation DefaultValue="https://office.example/taskpane.html?v=0.3.7" />',
     )
     expect(manifest).toContain('<IconUrl DefaultValue="https://office.example/assets/icon.png" />')
     expect(manifest).toContain('<AppDomain>https://office.example</AppDomain>')
@@ -81,6 +82,7 @@ describe('Office Add-in manifest and routes', () => {
     ).toBe('http://127.0.0.1:44000 http://127.0.0.1:44001')
     expect(viteConfig).not.toContain('oauth/callback')
     expect(taskpane).toContain("connect-src 'self' __WISWORK_CONNECT_ORIGINS__")
+    expect(taskpane).toContain('<title>WisWork</title>')
     expect(taskpane).not.toMatch(/auth\.dev|wisusage|callback/i)
     expect(viteConfig).not.toContain("'Access-Control-Allow-Origin': '*'")
   })
