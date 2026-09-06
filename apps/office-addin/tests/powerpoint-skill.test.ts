@@ -1274,6 +1274,27 @@ describe('browser PowerPoint adapter', () => {
     expect(slides.load).toHaveBeenCalledWith('items/id')
   })
 
+  it('reads bounded state on PowerPointApi 1.2 hosts without selected-slide APIs', async () => {
+    const slides = { items: [{ id: 'slide-1' }], load: vi.fn() }
+    const isSetSupported = vi.fn(
+      (_name: string, version: string) => version === '1.2' || version === '1.4',
+    )
+    Object.assign(globalThis, {
+      Office: { context: { host: 'PowerPoint', requirements: { isSetSupported } } },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides }, sync: vi.fn() }),
+      },
+    })
+
+    await expect(new BrowserPowerPointAdapter().getPresentationState()).resolves.toEqual({
+      slideCount: 1,
+      selectedSlideIndexes: [],
+      api: { v12: true, v14: true, v15: false, v18: false, v110: false },
+    })
+    expect(slides.load).toHaveBeenCalledWith('items/id')
+  })
+
   it('rejects master package replacement on Mac before entering PowerPoint.run', async () => {
     const run = vi.fn()
     Object.assign(globalThis, {

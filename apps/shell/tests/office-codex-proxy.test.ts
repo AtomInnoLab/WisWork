@@ -157,12 +157,29 @@ describe('Office Codex proxy', () => {
     }
   })
 
-  it('keeps the PowerPoint planning tool available in Enhanced mode', async () => {
+  it('executes the Enhanced PowerPoint state, feedback, and planning sequence', async () => {
+    const executeTool = vi.fn(async (call: { toolName: string }) => ({
+      output:
+        call.toolName === 'get_presentation_state'
+          ? '{"slideCount":1,"selectedSlideIndexes":[]}'
+          : call.toolName === 'ask_clarification'
+            ? 'audience: general; style: concise; pages: 8'
+            : '{"title":"LLM","slides":[]}',
+      isError: false,
+    }))
     const runtime = {
       async runOfficeTurn(input: any) {
         expect(
           input.toolSession.listTools(input.toolSession.credentials).map((tool: any) => tool.name),
-        ).toEqual(['plan_deck', 'verify_slides'])
+        ).toEqual(['get_presentation_state', 'ask_clarification', 'plan_deck', 'verify_slides'])
+        for (const name of ['get_presentation_state', 'ask_clarification', 'plan_deck']) {
+          const result = await input.toolSession.callTool(input.toolSession.credentials, {
+            id: `call_${name}`,
+            name,
+            input: {},
+          })
+          expect(result.isError).not.toBe(true)
+        }
         input.onEvent({ type: 'terminal', status: 'completed' })
       },
     }
@@ -176,8 +193,19 @@ describe('Office Codex proxy', () => {
         system: 'PowerPoint rules',
         messages: [{ role: 'user', content: 'Create a six-slide deck' }],
         tools: [
+          {
+            name: 'get_presentation_state',
+            description: 'state',
+            input_schema: { type: 'object' },
+          },
+          { name: 'ask_clarification', description: 'feedback', input_schema: { type: 'object' } },
           { name: 'plan_deck', description: 'plan', input_schema: { type: 'object' } },
           { name: 'verify_slides', description: 'verify', input_schema: { type: 'object' } },
+          {
+            name: 'get_document_text',
+            description: 'wrong host',
+            input_schema: { type: 'object' },
+          },
         ],
       },
       signal: new AbortController().signal,
@@ -185,11 +213,16 @@ describe('Office Codex proxy', () => {
       sessionId: 'session_12345678',
       requestId: 'request_12345678',
       statement: { ...statement, host: 'office-powerpoint' },
-      executeTool: vi.fn(),
+      executeTool,
     })
     for await (const _chunk of response.body as AsyncIterable<Uint8Array>) {
       /* drain */
     }
+    expect(executeTool.mock.calls.map(([call]) => call.toolName)).toEqual([
+      'get_presentation_state',
+      'ask_clarification',
+      'plan_deck',
+    ])
   })
 
   it('keeps PC-backed web and image search available to Enhanced PowerPoint turns', async () => {

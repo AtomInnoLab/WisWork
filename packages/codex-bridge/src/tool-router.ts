@@ -38,7 +38,7 @@ const MAX_PENDING_MUTATIONS = 8
 const SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/
 
 export type ToolMutability = 'read' | 'mutate'
-type RequiredCapability =
+export type RequiredCapability =
   'semantic-read' | 'transaction-proposal' | 'bounded-render-facts' | 'raw-office-proposal'
 
 const CATALOG = Object.freeze({
@@ -138,6 +138,7 @@ const CATALOG = Object.freeze({
     propose_raw_office_edit: ['mutate', 'raw-office-proposal'],
   }),
   'office-powerpoint': Object.freeze({
+    get_presentation_state: ['read', 'semantic-read'],
     web_search: ['read', 'semantic-read'],
     web_fetch: ['read', 'semantic-read'],
     image_search: ['read', 'semantic-read'],
@@ -160,6 +161,14 @@ const CATALOG = Object.freeze({
 }) as unknown as Readonly<
   Record<EnhancedHost, Readonly<Record<string, readonly [ToolMutability, RequiredCapability]>>>
 >
+
+export function compiledDocumentTool(
+  host: EnhancedHost,
+  name: string,
+): readonly [ToolMutability, RequiredCapability] | undefined {
+  const compiled = CATALOG[host]?.[name]
+  return compiled ? Object.freeze([compiled[0], compiled[1]]) : undefined
+}
 
 export interface DocumentToolIdentity {
   readonly ownerId: string
@@ -387,7 +396,6 @@ export function createDocumentToolManifest(input: DocumentToolManifestInput): Do
   } catch (error) {
     throw new ToolRouterError(error instanceof Error ? error.message : 'invalid_enhanced_policy')
   }
-  const catalog = CATALOG[authorization.host]
   const capabilities = new Set(authorization.capabilities)
   const names = new Set<string>()
   let descriptions = 0
@@ -404,7 +412,7 @@ export function createDocumentToolManifest(input: DocumentToolManifestInput): Do
       !plainRecord(tool.inputSchema)
     )
       throw new ToolRouterError('invalid_tool_definition')
-    const compiled = catalog[tool.name]
+    const compiled = compiledDocumentTool(authorization.host, tool.name)
     if (!compiled) throw new ToolRouterError('tool_not_compiled_for_host')
     if (!capabilities.has(compiled[1])) throw new ToolRouterError('tool_capability_denied')
     if (input.policy[tool.name] !== compiled[0]) throw new ToolRouterError('invalid_tool_policy')
@@ -756,9 +764,7 @@ export function createDocumentToolSession(
           execution = await awaitBounded(
             Promise.resolve(registration.executeRead(call, controller.signal)),
             controller.signal,
-            call.name === 'ask_clarification'
-              ? MAX_QUESTIONNAIRE_MS
-              : maxCallMs,
+            call.name === 'ask_clarification' ? MAX_QUESTIONNAIRE_MS : maxCallMs,
           )
         } catch (error) {
           return stable(error instanceof ToolRouterError ? error.code : 'tool_execution_failed')
