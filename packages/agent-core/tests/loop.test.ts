@@ -116,6 +116,53 @@ const failedReceipt = () => ({
 })
 
 describe('AgentLoop', () => {
+  describe('trusted post-run observation character validation', () => {
+    const idleLoop = () => {
+      const loop = new AgentLoop({
+        transport: scriptedTransport([]),
+        skill: makeSkill(),
+        events: {},
+      })
+      loop.restore([
+        { role: 'user', text: 'Review slides' },
+        { role: 'assistant', text: 'Done' },
+      ])
+      return loop
+    }
+
+    it.each(
+      Array.from({ length: 0x20 }, (_, code) => code)
+        .filter((code) => ![0x09, 0x0a, 0x0d].includes(code))
+        .concat(0x7f),
+    )('rejects embedded control character %i without changing history', (code) => {
+      const loop = idleLoop()
+      const before = structuredClone(loop.messages)
+      expect(loop.appendAssistantContext(`Before${String.fromCharCode(code)}after`)).toBe(false)
+      expect(loop.messages).toEqual(before)
+    })
+
+    it.each(['\t', '\n', '\r', '\r\n', '中🙂é', '\u0085'])('retains allowed text %j', (text) => {
+      const loop = idleLoop()
+      const observation = `Before${text}after`
+      expect(loop.appendAssistantContext(observation)).toBe(true)
+      expect(loop.messages.at(-1)).toMatchObject({
+        role: 'assistant',
+        text: `Done\n\n${observation}`,
+      })
+    })
+
+    it('preserves trimming and the 2048-character bound', () => {
+      const loop = idleLoop()
+      expect(loop.appendAssistantContext(' \t\r\n ')).toBe(false)
+      expect(loop.appendAssistantContext('x'.repeat(2_049))).toBe(false)
+      expect(loop.appendAssistantContext(`  ${'x'.repeat(2_048)}\n`)).toBe(true)
+      expect(loop.messages.at(-1)).toMatchObject({
+        role: 'assistant',
+        text: `Done\n\n${'x'.repeat(2_048)}`,
+      })
+    })
+  })
+
   describe('presentation task orchestration', () => {
     it('enrolls exact tool calls before the first dispatch and closes through a receipt', async () => {
       let dispatched = false

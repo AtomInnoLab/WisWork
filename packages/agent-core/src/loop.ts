@@ -380,7 +380,11 @@ export class AgentLoop<TSnapshot = unknown> {
     if (
       !value ||
       value.length > 2_048 ||
-      /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(value)
+      Array.from(value).some((character) => {
+        const code = character.charCodeAt(0)
+        // Permit tab, LF and CR, but reject the other C0 controls and DEL.
+        return (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) || code === 0x7f
+      })
     )
       return false
     const last = this.history.at(-1)
