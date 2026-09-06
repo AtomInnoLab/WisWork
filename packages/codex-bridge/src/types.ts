@@ -49,7 +49,9 @@ export type ResponsesInputItem =
       type: 'custom_tool_call_output'
       id?: string
       call_id: string
-      output: string | Array<{ type: 'input_text'; text: string }>
+      output:
+        | string
+        | Array<{ type: 'input_text'; text: string } | { type: 'input_image'; image_url: string }>
       status?: 'completed'
     }
   | {

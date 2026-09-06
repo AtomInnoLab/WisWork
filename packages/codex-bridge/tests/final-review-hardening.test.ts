@@ -47,8 +47,7 @@ describe('final pinned bridge contract', () => {
 
   it('accepts the faithful MCP turn metadata shape', () => {
     const turn = prepareResponsesTurn(clone())
-    expect(turn.messagesRequest.tools).toHaveLength(1)
-    expect(turn.messagesRequest.tools![0].name).toBe('exec')
+    expect(turn.messagesRequest.tools?.map((tool) => tool.name)).toEqual(['wait', 'exec'])
   })
 
   it('rejects malformed workspace metadata', () => {

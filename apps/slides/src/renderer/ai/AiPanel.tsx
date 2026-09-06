@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { boundedScreenshot } from './bounded-screenshot'
 import {
   composeSkills,
   IPC_STREAM_SILENCE_TIMEOUT_MS,
@@ -30,6 +31,7 @@ import { renderSlidesToPngBase64 } from '../export-render'
 import { shouldShowStreamingProgress } from './streaming-progress'
 import {
   applyQcGeometryFixes,
+  buildVisualQcContext,
   captureCurrentQcShot,
   isQcEnabled,
   qcSlidePage,
@@ -41,7 +43,7 @@ import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/loca
 import { Markdown, PresentationActivityGroup } from '@wiswork/ui'
 import type { PresentationQualityReceipt } from '@wiswork/presentation-ops'
 import { presentationVerificationFlags } from '@wiswork/presentation-verification'
-import { translatePresentationVerification } from '@wiswork/i18n'
+import { translatePresentationVerification, mutationExpiryStrings } from '@wiswork/i18n'
 import { verifyAndBrandSlidesAcceptanceAuthority, verifySlidesAcceptance } from './task-acceptance'
 import { reviewSlidesRendering } from './task-review'
 import { WisWorkMark } from '../components/icons'
@@ -688,6 +690,10 @@ export function AiPanel({
   const runQcPassRef = useRef<() => Promise<void>>(() => Promise.resolve())
   /** DeckAccess reused by the QC pass (same executors as the main loop's slides skill) */
   const accessRef = useRef<DeckAccess | null>(null)
+  /** Main-agent visual tool calls through the latest renderer without rebuilding the harness. */
+  const captureSlideShotRef = useRef<(pageIndex: number) => Promise<AgentImage | null>>(
+    async () => null,
+  )
   /** Wall-clock start of the current run, drives the elapsed badge */
   const runStartedAtRef = useRef(0)
   const historyBatchActiveRef = useRef(false)
@@ -879,6 +885,28 @@ export function AiPanel({
       getSlides: () => slidesRef.current,
       getCurrent: () => currentRef.current,
       getSelectedIds: () => selectedRef.current,
+      refreshAuthoritativeState: async (signal) => {
+        signal?.throwIfAborted()
+        const runToken = activeRunTokenRef.current
+        const before = await window.slidesApi.getAcceptanceAuthorityLease()
+        if (!before) return false
+        const refreshed = await window.slidesApi.getRenderSlides()
+        signal?.throwIfAborted()
+        if (
+          !refreshed ||
+          activeRunTokenRef.current !== runToken ||
+          activeRunTokenRef.current !== launchTokenRef.current ||
+          refreshed.documentToken !== before.documentToken ||
+          refreshed.sessionToken !== before.sessionToken
+        )
+          return false
+        // Update synchronous refs as well as React; the next tool must not read
+        // the preceding render while the state update is still queued.
+        slidesRef.current = refreshed.slides
+        applyDeckRef.current(refreshed.slides, currentRef.current)
+        return true
+      },
+      captureSlideScreenshot: (slideIndex) => captureSlideShotRef.current(slideIndex),
       getSelectionScope: () => activeSelectionScopeRef.current,
       getAcceptanceAuthorityLease: async () => {
         const lease = await window.slidesApi.getAcceptanceAuthorityLease()
@@ -1625,6 +1653,7 @@ export function AiPanel({
             })
             void completeSlidesHostRun({
               cancelled,
+              qualityReviewOwner: 'agent',
               finishHistoryBatch: () => finishHistoryBatch(false),
               isCurrent: () => launchTokenRef.current === activeRunTokenRef.current,
               hasQcPages: () => qcPagesRef.current.length > 0,
@@ -1685,6 +1714,7 @@ export function AiPanel({
               error,
               tGlobal('aiErrGenerateFailed'),
               tGlobal('aiErrStreamTimeout'),
+              mutationExpiryStrings[lang][0],
             )
             qcPagesRef.current = []
             setChat((prev) => {
@@ -1971,12 +2001,15 @@ export function AiPanel({
     const slide = slidesRef.current[pageIndex]
     if (!slide) return null
     try {
-      const [png] = await renderSlidesToPngBase64([slide], imagesRef.current, 1)
-      return png ? { base64: png, mime: 'image/png' } : null
+      return await boundedScreenshot(async (ratio) => {
+        const [png] = await renderSlidesToPngBase64([slide], imagesRef.current, ratio)
+        return png
+      })
     } catch {
       return null
     }
   }
+  captureSlideShotRef.current = captureSlideShot
 
   const runWith = (
     instruction: string,
@@ -2112,6 +2145,11 @@ export function AiPanel({
     const header = tGlobal('aiQcStart', { count: capped.length })
     const lines: string[] = []
     const receipts: PresentationQualityReceipt[] = []
+    const contextOutcomes: Array<{
+      page: number
+      status: 'passed' | 'needs_fix' | 'unavailable'
+      corrected: boolean
+    }> = []
     const renderEntry = () => [header, ...lines].join('\n')
     setBusy(true)
     stickToBottomRef.current = true
@@ -2137,6 +2175,7 @@ export function AiPanel({
         if (!captured) break
         const shot = captured.value
         if (!shot) {
+          contextOutcomes.push({ page: page + 1, status: 'unavailable', corrected: false })
           const transactionId = qcTransactionByPageRef.current.get(page)
           const deterministic = transactionId
             ? [...qualityReceiptsRef.current]
@@ -2244,10 +2283,13 @@ export function AiPanel({
           receipts.push(qualityReceipt)
         }
         if (qualityReceipt?.status !== 'available') {
+          contextOutcomes.push({ page: page + 1, status: 'unavailable', corrected: result.edited })
           lines.push(tGlobal('aiQcUnavailable', { n: page + 1, error: 'quality_unavailable' }))
         } else if (qualityReceipt.findings.length > 0) {
+          contextOutcomes.push({ page: page + 1, status: 'needs_fix', corrected: result.edited })
           lines.push(tGlobal('aiQcPageIssues', { n: page + 1, summary: result.reply }))
         } else {
+          contextOutcomes.push({ page: page + 1, status: 'passed', corrected: result.edited })
           lines.push(tGlobal('aiQcPassed', { n: page + 1 }))
         }
         patchLastAssistant({ text: renderEntry() })
@@ -2302,6 +2344,8 @@ export function AiPanel({
         qcRunningRef.current = false
         qcAbortRef.current = null
         const finalText = renderEntry()
+        if (contextOutcomes.length > 0)
+          loopRef.current?.appendAssistantContext(buildVisualQcContext(contextOutcomes))
         patchLastAssistant({
           streaming: false,
           text: finalText,

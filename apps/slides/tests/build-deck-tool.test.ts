@@ -11,7 +11,256 @@ const blank = (): RenderSlide => ({
   nodes: [],
 })
 
+async function plannedImageDeck(
+  firstImage:
+    'missing' | 'throws' | 'cancel' | 'success' | 'write_then_missing' | 'write_then_throw',
+  refreshFails = false,
+) {
+  let slides = [blank()]
+  let writtenSlide: RenderSlide | undefined
+  const controller = new AbortController()
+  const applySlide = vi.fn((index: number, slide: RenderSlide) => {
+    slides[index] = slide
+  })
+  const insertImageUrl = vi.fn(async ({ slideIndex }: { slideIndex: number }) => {
+    if (slideIndex === 0) {
+      if (firstImage.startsWith('write_then_')) {
+        writtenSlide = {
+          ...blank(),
+          nodes: [
+            {
+              id: 'native-image',
+              sourceId: 'native-image',
+              type: 'picture',
+              box: {
+                x: 730,
+                y: 0,
+                w: 550,
+                h: 720,
+                rotationDeg: 0,
+                flipH: false,
+                flipV: false,
+                centerX: 1005,
+                centerY: 360,
+              },
+            },
+          ],
+        }
+        if (firstImage === 'write_then_throw') throw new Error('rebuild_failed')
+        return null
+      }
+      if (firstImage === 'missing') return null
+      if (firstImage === 'throws') throw new Error('slides_session_busy')
+      if (firstImage === 'cancel') {
+        controller.abort()
+        throw new DOMException('Cancelled', 'AbortError')
+      }
+    }
+    return {
+      sourceId: `image-${slideIndex}`,
+      slide: { ...blank(), background: { kind: 'solid' as const, color: '#123456' } },
+    }
+  })
+  const executePresentationOperation = vi.fn(async (request) => ({
+    receipt: {
+      status: 'applied' as const,
+      transactionId: request.transactionId,
+      resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+      operationCount: request.operations.length,
+    },
+    authoritativeState: 'fresh' as const,
+  }))
+  const deleteSlide = vi.fn(async (index: number) => {
+    slides = slides.filter((_, i) => i !== index)
+    return slides
+  })
+  ;(globalThis as unknown as { window: Record<string, unknown> }).window = {
+    slidesApi: {
+      imageSearch: vi.fn(async () => ({
+        images: [{ imageUrl: 'https://images.example/hero.jpg', title: 'Hero' }],
+        method: 'serper',
+      })),
+      addSlide: vi.fn(async () => ({ slides: [...slides, blank()], index: slides.length })),
+      insertImageUrl,
+      deleteSlide,
+    },
+  }
+  const skill = createSlidesSkill({
+    getSlides: () => slides,
+    getCurrent: () => 0,
+    getSelectedIds: () => [],
+    applySlide,
+    applyDeck: (next) => {
+      slides = next
+    },
+    refreshAuthoritativeState: async () => {
+      if (refreshFails) return false
+      if (writtenSlide) slides[0] = writtenSlide
+      return true
+    },
+    executePresentationOperation,
+    fitWidthPx: 1280,
+  })
+  const pages = [
+    {
+      layout: 'cover',
+      title: 'Start',
+      body: ['Introduction'],
+      imageUrl: 'https://images.example/hero.jpg',
+      imageAlt: 'Hero',
+    },
+    {
+      layout: 'statement',
+      title: 'End',
+      body: ['Conclusion'],
+      imageUrl: 'https://images.example/hero.jpg',
+      imageAlt: 'Hero',
+    },
+  ]
+  await skill.executeTool({
+    id: 'plan',
+    name: 'plan_deck',
+    input: { core_hook: 'Hook', style: 'Dark', pages },
+  })
+  await skill.executeTool({ id: 'search', name: 'image_search', input: { query: 'team' } })
+  return {
+    skill,
+    pages,
+    controller,
+    insertImageUrl,
+    applySlide,
+    executePresentationOperation,
+    deleteSlide,
+  }
+}
+
 describe('build_deck', () => {
+  it.each(['write_then_missing', 'write_then_throw'] as const)(
+    'refreshes native image state before recommending repair after %s',
+    async (mode) => {
+      const test = await plannedImageDeck(mode)
+      const result = await test.skill.executeTool({
+        id: 'build',
+        invocationId: 'build',
+        name: 'build_deck',
+        input: { theme: { mode: 'dark' }, pages: test.pages },
+      })
+      expect(result).toMatchObject({ isError: true, mutated: true })
+      const read = await test.skill.executeTool({
+        id: 'read',
+        name: 'read_slide',
+        input: { slideIndex: 0 },
+      })
+      expect(read.output).toContain('native-image')
+      expect(test.insertImageUrl).toHaveBeenCalledTimes(2)
+    },
+  )
+
+  it('does not expose stale reads or permit blind repair when native refresh fails', async () => {
+    const test = await plannedImageDeck('write_then_missing', true)
+    const result = await test.skill.executeTool({
+      id: 'build',
+      invocationId: 'build',
+      name: 'build_deck',
+      input: { theme: { mode: 'dark' }, pages: test.pages },
+    })
+    expect(result).toMatchObject({ isError: true, mutated: true, stopToolBatch: true })
+    expect(result.output).toContain('authoritative_reload_required')
+    const read = await test.skill.executeTool({
+      id: 'read',
+      name: 'read_slide',
+      input: { slideIndex: 0 },
+    })
+    expect(read.isError).toBe(true)
+    expect(read.output).toContain('authoritative_reload_required')
+    const repair = await test.skill.executeTool({
+      id: 'repair',
+      name: 'delete_slide',
+      input: { slideIndex: 1 },
+    })
+    expect(repair.isError).toBe(true)
+    expect(test.deleteSlide).not.toHaveBeenCalled()
+  })
+
+  it.each(['missing', 'throws'] as const)(
+    'permits same-run repair and applies later images after an image %s',
+    async (failure) => {
+      const test = await plannedImageDeck(failure)
+      const result = await test.skill.executeTool({
+        id: 'build',
+        invocationId: 'build',
+        name: 'build_deck',
+        input: { theme: { mode: 'dark' }, pages: test.pages },
+      })
+      expect(result).toMatchObject({ isError: true, mutated: true, stopToolBatch: true })
+      expect(result.output).toContain('pages 1')
+      expect(result.output).toMatch(/read|inspect/i)
+      expect(test.insertImageUrl).toHaveBeenCalledTimes(2)
+      expect(test.applySlide).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ background: { kind: 'solid', color: '#123456' } }),
+      )
+      const repair = await test.skill.executeTool({
+        id: 'repair',
+        name: 'delete_slide',
+        input: { slideIndex: 1 },
+      })
+      expect(repair.isError).not.toBe(true)
+      expect(test.deleteSlide).toHaveBeenCalledOnce()
+    },
+  )
+
+  it('stops image insertion on cancellation but leaves the partial deck available for a later repair', async () => {
+    const test = await plannedImageDeck('cancel')
+    await expect(
+      test.skill.executeTool(
+        {
+          id: 'build',
+          invocationId: 'build',
+          name: 'build_deck',
+          input: { theme: { mode: 'dark' }, pages: test.pages },
+        },
+        test.controller.signal,
+      ),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(test.insertImageUrl).toHaveBeenCalledOnce()
+    const repair = await test.skill.executeTool({
+      id: 'repair',
+      name: 'delete_slide',
+      input: { slideIndex: 1 },
+    })
+    expect(repair.isError).not.toBe(true)
+    expect(test.deleteSlide).toHaveBeenCalledOnce()
+  })
+
+  it('keeps cover and final statement page numbers outside the topmost image panel', async () => {
+    const test = await plannedImageDeck('success')
+    const result = await test.skill.executeTool({
+      id: 'build',
+      invocationId: 'build',
+      name: 'build_deck',
+      input: { theme: { mode: 'dark' }, pages: test.pages },
+    })
+    expect(result.isError).not.toBe(true)
+    for (const [index, [request]] of test.executePresentationOperation.mock.calls.entries()) {
+      const footer = request.operations.find(
+        (op: { clientId?: string; kind: string }) =>
+          op.kind === 'add_text_box' && op.clientId === `deck-page-${index}`,
+      )
+      const title = request.operations.find(
+        (op: { clientId?: string; kind: string }) =>
+          op.kind === 'add_text_box' && op.clientId === `deck-title-${index}`,
+      )
+      expect(test.insertImageUrl).toHaveBeenNthCalledWith(
+        index + 1,
+        expect.objectContaining({ slideIndex: index, xPx: 730, yPx: 0, wPx: 550, hPx: 720 }),
+      )
+      // Canonical coordinates are points; the mocked deck scale is one.
+      expect((footer.geometry.x + footer.geometry.width) / 0.75).toBeLessThanOrEqual(730)
+      expect((title.geometry.x + title.geometry.width) / 0.75).toBeLessThanOrEqual(730)
+    }
+  })
+
   it('uses the returned deck while React state is still stale', async () => {
     const staleSlides = [blank()]
     let authoritativeSlides = staleSlides
@@ -197,7 +446,7 @@ describe('build_deck', () => {
         theme: { mode: 'dark', primary: '#0B1020', accent: '#66E3FF' },
         pages: [
           {
-            layout: 'cover',
+            layout: 'statement',
             kicker: 'LLM · 2026',
             title: '语言模型，正在变成新界面',
             body: ['从回答问题，到完成工作'],
@@ -400,11 +649,18 @@ describe('build_deck', () => {
             imageUrl: 'https://images.example/hero.jpg',
             imageAlt: 'Hero',
           },
-          { layout: 'cards', title: 'C', body: ['D'] },
+          {
+            layout: 'split_image',
+            title: 'C',
+            body: ['D'],
+            imageUrl: 'https://images.example/hero.jpg',
+            imageAlt: 'Hero',
+          },
         ],
       },
     })
     expect(result).toMatchObject({ isError: true, mutated: true, stopToolBatch: true })
+    expect(window.slidesApi.insertImageUrl).toHaveBeenCalledTimes(2)
   })
 
   it('unlocks repair tools after a partially applied build fails', async () => {

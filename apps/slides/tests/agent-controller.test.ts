@@ -9,6 +9,7 @@ import {
   completeSlidesHostRun,
   stopSlidesHostRun,
   recordSlidesRunAttachments,
+  safeEnhancedError,
   useAgentControllerCleanup,
 } from '../src/renderer/ai/agent-controller'
 
@@ -36,6 +37,12 @@ const skill = {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('Slides interactive agent controller', () => {
+  it('retains safe IPC error codes without exposing the surrounding message', () => {
+    expect(safeEnhancedError(new Error('IPC failed: enhanced_turn_in_progress'))).toBe(
+      'enhanced_turn_in_progress',
+    )
+    expect(safeEnhancedError(new Error('private document text'))).toBe('enhanced_turn_failed')
+  })
   it('does not let the preceding startTurn completion settle a follow-up run', async () => {
     let documentId: string | null = null
     let onEvent: ((event: any) => void) | undefined
@@ -72,9 +79,10 @@ describe('Slides interactive agent controller', () => {
     await flush()
     onEvent?.({ type: 'done', result: { text: '', cancelled: false, turnLimit: false } })
     await flush()
-    expect(controller.run('follow-up')).toBe(true)
-    await flush()
+    expect(controller.run('follow-up')).toBe(false)
     finishFirst()
+    await flush()
+    expect(controller.run('follow-up')).toBe(true)
     await flush()
     expect(controller.snapshot.busy).toBe(true)
     expect(done).toHaveBeenCalledOnce()
@@ -123,7 +131,7 @@ describe('Slides interactive agent controller', () => {
     controller.dispose()
   })
 
-  it('keeps Enhanced slide mutations inside the renderer presentation lifecycle', async () => {
+  it('keeps Enhanced tool execution but leaves lifecycle ownership with the runtime', async () => {
     let documentId: string | null = null
     let onToolCall: ((request: any) => void) | undefined
     let onEvent: ((event: any) => void) | undefined
@@ -206,8 +214,8 @@ describe('Slides interactive agent controller', () => {
     await flush()
     expect(controller.run('edit safely')).toBe(true)
     await flush()
-    expect(prepare).toHaveBeenCalledOnce()
-    expect(confirm).toHaveBeenCalledOnce()
+    expect(prepare).not.toHaveBeenCalled()
+    expect(confirm).not.toHaveBeenCalled()
     onToolCall?.({
       documentId,
       generation: 0,
@@ -216,16 +224,14 @@ describe('Slides interactive agent controller', () => {
     await new Promise((resolve) => setTimeout(resolve, 30))
     await flush()
     await flush()
-    expect(enroll).toHaveBeenCalledOnce()
+    expect(enroll).not.toHaveBeenCalled()
     expect(enhancedSkill.executeTool).toHaveBeenCalled()
     expect(captureSnapshot).toHaveBeenCalledOnce()
     expect(api.toolResult).toHaveBeenCalledOnce()
     onEvent?.({ type: 'done', result: { text: '', cancelled: false, turnLimit: false } })
     await flush()
-    expect(complete).toHaveBeenCalledOnce()
-    expect(done).toHaveBeenCalledWith(
-      expect.objectContaining({ presentation: expect.objectContaining({ status: 'verified' }) }),
-    )
+    expect(complete).not.toHaveBeenCalled()
+    expect(done).not.toHaveBeenCalled()
     controller.dispose()
   })
 
@@ -363,7 +369,7 @@ describe('Slides interactive agent controller', () => {
     controller.dispose()
   })
 
-  it('keeps image-search display data local when returning an Enhanced tool result', async () => {
+  it('keeps display data local but forwards bounded model images in Enhanced tool results', async () => {
     let documentId: string | null = null
     let onToolCall: ((request: any) => void) | undefined
     const api: any = {
@@ -385,6 +391,7 @@ describe('Slides interactive agent controller', () => {
       output: 'https://example.test/image.png',
       summary: 'Found 1 image',
       mutated: false,
+      modelContent: [{ type: 'image' as const, image: { base64: 'aGVsbG8=', mime: 'image/png' } }],
       display: { kind: 'images' as const, items: [{ url: 'https://example.test/image.png' }] },
     }))
     const controller = createAgentController(
@@ -410,6 +417,7 @@ describe('Slides interactive agent controller', () => {
           output: 'https://example.test/image.png',
           summary: 'Found 1 image',
           mutated: false,
+          modelContent: [{ type: 'image', image: { base64: 'aGVsbG8=', mime: 'image/png' } }],
         },
       }),
     )
@@ -417,6 +425,10 @@ describe('Slides interactive agent controller', () => {
   })
 
   it('settles a renderer tool-result turn when the Enhanced terminal event arrives first', async () => {
+    let finishRuntime!: () => void
+    const runtimePending = new Promise<void>((resolve) => {
+      finishRuntime = resolve
+    })
     let documentId: string | null = null
     let onEvent: ((event: any) => void) | undefined
     let onToolCall: ((request: any) => void) | undefined
@@ -430,7 +442,7 @@ describe('Slides interactive agent controller', () => {
         documentId = input.documentId
       }),
       unregister: vi.fn(async () => undefined),
-      startTurn: vi.fn(() => new Promise<void>(() => undefined)),
+      startTurn: vi.fn(() => runtimePending),
       cancelTurn: vi.fn(async () => undefined),
       toolResult: vi.fn(async () => undefined),
       onEvent: vi.fn((listener) => {
@@ -468,11 +480,14 @@ describe('Slides interactive agent controller', () => {
     await flush()
 
     expect(api.toolResult).toHaveBeenCalledOnce()
+    expect(controller.snapshot.busy).toBe(true)
+    finishRuntime()
+    await flush()
     expect(controller.snapshot.busy).toBe(false)
     controller.dispose()
   })
 
-  it('cancels the Enhanced runtime when the renderer presentation loop fails locally', async () => {
+  it('does not let local presentation enrollment cancel the remote model', async () => {
     let documentId: string | null = null
     let onToolCall: ((request: any) => void) | undefined
     const error = vi.fn()
@@ -523,8 +538,9 @@ describe('Slides interactive agent controller', () => {
     await new Promise((resolve) => setTimeout(resolve, 30))
     await flush()
 
-    expect(error).toHaveBeenCalledWith('presentation_enrollment_unavailable')
-    expect(api.cancelTurn).toHaveBeenCalledWith(documentId)
+    expect(error).not.toHaveBeenCalled()
+    expect(api.cancelTurn).not.toHaveBeenCalled()
+    expect(api.toolResult).toHaveBeenCalledOnce()
     controller.dispose()
   })
 
@@ -706,6 +722,22 @@ describe('Slides interactive agent controller', () => {
     await flush()
     expect(ref.current).toBeNull()
     expect(done).not.toHaveBeenCalled()
+  })
+
+  it('leaves visual review in the agent run instead of launching post-run QC', async () => {
+    const runQc = vi.fn()
+    const clearQcPages = vi.fn()
+    await completeSlidesHostRun({
+      cancelled: false,
+      qualityReviewOwner: 'agent',
+      finishHistoryBatch: async () => undefined,
+      hasQcPages: () => true,
+      clearQcPages,
+      runQc,
+      setBusy: vi.fn(),
+    })
+    expect(runQc).not.toHaveBeenCalled()
+    expect(clearQcPages).toHaveBeenCalledOnce()
   })
 
   it('uses the production Slides coordinator for attachments, history snapshots, QC, and clarification stop', async () => {

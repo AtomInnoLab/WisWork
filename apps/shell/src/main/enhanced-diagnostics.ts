@@ -21,6 +21,13 @@ const NORMAL_MILESTONE_CODES = new Set<DiagnosticSafeCode>([
   'mcp_tool_completed',
   'turn_started',
   'turn_completed',
+  'thread_starting',
+  'thread_started',
+  'turn_starting',
+  'turn_accepted',
+  'proposal_created',
+  'proposal_applied',
+  'proposal_cancelled',
 ])
 
 export type DiagnosticComponent = 'component' | 'auth' | 'runtime' | 'wisusage' | 'mcp' | 'host'
@@ -57,6 +64,21 @@ export type DiagnosticSafeCode =
   | 'turn_completed'
   | 'turn_failed'
   | 'turn_timeout'
+  | 'thread_starting'
+  | 'thread_started'
+  | 'thread_start_failed'
+  | 'turn_starting'
+  | 'turn_accepted'
+  | 'turn_start_failed'
+  | 'app_server_error'
+  | 'codex_error'
+  | 'thread_system_error'
+  | 'proposal_created'
+  | 'proposal_applied'
+  | 'proposal_cancelled'
+  | 'proposal_execution_failed'
+  | 'proposal_expired'
+  | 'questionnaire_incomplete'
   | 'unknown_failure'
 
 const SAFE_CODES = new Set<DiagnosticSafeCode>([
@@ -90,6 +112,21 @@ const SAFE_CODES = new Set<DiagnosticSafeCode>([
   'turn_completed',
   'turn_failed',
   'turn_timeout',
+  'thread_starting',
+  'thread_started',
+  'thread_start_failed',
+  'turn_starting',
+  'turn_accepted',
+  'turn_start_failed',
+  'app_server_error',
+  'codex_error',
+  'thread_system_error',
+  'proposal_created',
+  'proposal_applied',
+  'proposal_cancelled',
+  'proposal_execution_failed',
+  'proposal_expired',
+  'questionnaire_incomplete',
   'unknown_failure',
 ])
 const COMPONENTS = new Set<DiagnosticComponent>([
@@ -206,6 +243,14 @@ const boundedPhase = (value: string): string =>
     'initialize',
     'session',
     'protocol',
+    'carrier_invalid',
+    'carrier_input_invalid',
+    'capability_invalid',
+    'tool_unavailable',
+    'carrier_mismatch',
+    'proposal_summary_invalid',
+    'proposal_outcome_invalid',
+    'proposal_handler_unavailable',
     'unknown',
   ].includes(value)
     ? value
@@ -255,6 +300,23 @@ function safeDiagnostic(code: string): {
   outcome: DiagnosticOutcome
   code: DiagnosticSafeCode
 } {
+  const lifecycle = {
+    enhanced_thread_starting: ['thread', 'started', 'thread_starting'],
+    enhanced_thread_started: ['thread', 'succeeded', 'thread_started'],
+    enhanced_thread_start_failed: ['thread', 'failed', 'thread_start_failed'],
+    enhanced_turn_starting: ['turn_start', 'started', 'turn_starting'],
+    enhanced_turn_accepted: ['turn_start', 'succeeded', 'turn_accepted'],
+    enhanced_turn_start_failed: ['turn_start', 'failed', 'turn_start_failed'],
+    enhanced_proposal_created: ['proposal', 'started', 'proposal_created'],
+    enhanced_proposal_applied: ['proposal', 'succeeded', 'proposal_applied'],
+    enhanced_proposal_cancelled: ['proposal', 'cancelled', 'proposal_cancelled'],
+    enhanced_proposal_execution_failed: ['proposal', 'failed', 'proposal_execution_failed'],
+  } as const
+  const lifecycleEvent = lifecycle[code as keyof typeof lifecycle]
+  if (lifecycleEvent) {
+    const [phase, outcome, safeCode] = lifecycleEvent
+    return { component: 'runtime', phase, outcome, code: safeCode }
+  }
   if (code === 'responses_upstream_started')
     return { component: 'wisusage', phase: 'request', outcome: 'started', code: 'upstream_started' }
   if (code === 'responses_upstream_timeout')
@@ -317,6 +379,17 @@ function safeDiagnostic(code: string): {
     }
   if (code === 'enhanced_turn_timeout')
     return { component: 'host', phase: 'turn', outcome: 'failed', code: 'turn_timeout' }
+  if (code === 'enhanced_proposal_expired')
+    return { component: 'host', phase: 'turn', outcome: 'failed', code: 'proposal_expired' }
+  if (code === 'enhanced_questionnaire_incomplete')
+    return { component: 'host', phase: 'turn', outcome: 'failed', code: 'questionnaire_incomplete' }
+  if (code === 'enhanced_proposal_failed')
+    return {
+      component: 'host',
+      phase: 'turn',
+      outcome: 'failed',
+      code: 'proposal_execution_failed',
+    }
   if (code === 'enhanced_turn_failed')
     return { component: 'host', phase: 'turn', outcome: 'failed', code: 'turn_failed' }
   if (code === 'codex_turn_started')
@@ -329,6 +402,12 @@ function safeDiagnostic(code: string): {
     return { component: 'mcp', phase: 'tool', outcome: 'started', code: 'mcp_tool_started' }
   if (code === 'gateway_tool_call_completed')
     return { component: 'mcp', phase: 'tool', outcome: 'succeeded', code: 'mcp_tool_completed' }
+  const denialReason =
+    /^gateway_tool_call_denied_(carrier_invalid|carrier_input_invalid|capability_invalid|tool_unavailable|carrier_mismatch|proposal_summary_invalid|proposal_outcome_invalid|proposal_handler_unavailable)$/.exec(
+      code,
+    )?.[1]
+  if (denialReason)
+    return { component: 'mcp', phase: denialReason, outcome: 'failed', code: 'mcp_tool_denied' }
   if (code === 'gateway_tool_call_denied' || code === 'mcp_request_failed')
     return { component: 'mcp', phase: 'tool', outcome: 'failed', code: 'mcp_tool_denied' }
   if (code === 'gateway_tools_list' || code === 'mcp_tools_list')
@@ -344,16 +423,16 @@ function safeDiagnostic(code: string): {
       outcome: 'failed',
       code: 'runtime_unavailable',
     }
-  if (
-    code === 'app_server_error' ||
-    code === 'codex_error' ||
-    code === 'app_server_thread_status_systemError'
-  )
+  if (code === 'app_server_error')
+    return { component: 'runtime', phase: 'protocol', outcome: 'failed', code: 'app_server_error' }
+  if (code === 'codex_error')
+    return { component: 'runtime', phase: 'protocol', outcome: 'failed', code: 'codex_error' }
+  if (code === 'app_server_thread_status_systemError')
     return {
       component: 'runtime',
-      phase: 'protocol',
+      phase: 'thread',
       outcome: 'failed',
-      code: 'unknown_failure',
+      code: 'thread_system_error',
     }
   return {
     component: 'runtime',
@@ -539,8 +618,12 @@ export class EnhancedDiagnosticsStore {
     task.endedAt = this.#now()
     if (status === 'failed') {
       task.failureCode =
-        task.events.find((event) => event.outcome === 'failed')?.code ??
-        safeDiagnostic(rawFailureCode ?? '').code
+        rawFailureCode !== undefined
+          ? safeDiagnostic(rawFailureCode).code
+          : (task.events
+              .slice()
+              .reverse()
+              .find((event) => event.outcome === 'failed')?.code ?? 'turn_failed')
     }
     this.#append(task, {
       component: 'host',

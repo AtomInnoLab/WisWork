@@ -31,7 +31,18 @@ const hostToolExecution = (execution: ToolExecution): ToolExecution => ({
   ...(execution.isError === undefined ? {} : { isError: execution.isError }),
   ...(execution.mutated === undefined ? {} : { mutated: execution.mutated }),
   ...(execution.stopToolBatch === undefined ? {} : { stopToolBatch: execution.stopToolBatch }),
+  ...(execution.modelContent === undefined ? {} : { modelContent: execution.modelContent }),
 })
+
+/** Preserve only enumerated public codes, never raw IPC messages or document data. */
+export function safeEnhancedError(error: unknown): string {
+  const message = typeof error === 'string' ? error : error instanceof Error ? error.message : ''
+  return (
+    message.match(
+      /\benhanced_(?:questionnaire_incomplete|turn_in_progress|turn_timeout|proposal_expired|auth_required|usage_limit|context_limit|request_rejected|service_unavailable|connection_failed|response_incompatible|document_unavailable|runtime_unavailable)\b/,
+    )?.[0] ?? 'enhanced_turn_failed'
+  )
+}
 
 function createSlidesEnhancedHarness<TSnapshot>(
   options: AgentLoopOptions<TSnapshot>,
@@ -44,6 +55,7 @@ function createSlidesEnhancedHarness<TSnapshot>(
   let closed = false
   let turnSettled = true
   let turnEpoch = 0
+  let terminalError: string | undefined
   let toolBatchTimer: ReturnType<typeof setTimeout> | null = null
   const executions = new Map<string, ToolExecution>()
   const registration = api.register(
@@ -64,8 +76,9 @@ function createSlidesEnhancedHarness<TSnapshot>(
   const unsubscribeEvents = api.onEvent((event) => {
     if (closed || !callbacks) return
     if (event.type === 'text') callbacks.onDelta(event.text)
-    else if (event.type === 'done') settleTurn()
-    else if (event.type === 'error') settleTurn(event.code)
+    // startTurn resolves only after Shell releases document.busy. Runtime
+    // terminal events arrive earlier and must not unlock the composer yet.
+    else if (event.type === 'error') terminalError = safeEnhancedError(event.code)
   })
   const unsubscribeTools = api.onToolCall((request) => {
     if (
@@ -105,11 +118,12 @@ function createSlidesEnhancedHarness<TSnapshot>(
             // tool-result stream so the local AgentLoop cannot stay busy.
             if (!closed && callbacks === next && turnSettled) next.onDone()
           })
-          .catch(() => next.onError('enhanced_turn_failed'))
+          .catch((error) => next.onError(safeEnhancedError(error)))
       } else {
         const user = [...request.messages].reverse().find((message) => message.role === 'user')
         const epoch = ++turnEpoch
         turnSettled = false
+        terminalError = undefined
         void registration
           .then(() => api.status())
           .then((status) => {
@@ -118,10 +132,11 @@ function createSlidesEnhancedHarness<TSnapshot>(
             return api.startTurn({ documentId, text: user?.role === 'user' ? user.text : '' })
           })
           .then(() => {
-            if (!closed && epoch === turnEpoch) settleTurn()
+            if (!closed && epoch === turnEpoch) settleTurn(terminalError)
           })
-          .catch(() => {
-            if (!closed && epoch === turnEpoch) settleTurn('enhanced_turn_failed')
+          .catch((error) => {
+            if (!closed && epoch === turnEpoch)
+              settleTurn(terminalError ?? safeEnhancedError(error))
           })
       }
       return { cancel: () => void api.cancelTurn(documentId).catch(() => undefined) }
@@ -129,6 +144,10 @@ function createSlidesEnhancedHarness<TSnapshot>(
   }
   const skill = {
     ...options.skill,
+    // This harness is a tool executor for the remote model, not a second
+    // autonomous run. Keep transactional executeTool/consent validation below.
+    presentation: undefined,
+    reviewFinalResponse: undefined,
     async executeTool(call: Parameters<typeof options.skill.executeTool>[0], signal?: AbortSignal) {
       const outcome = await options.skill.executeTool(call, signal)
       if ('kind' in outcome && outcome.kind === 'tool-execution-suspension') {
@@ -233,6 +252,9 @@ export const createAgentController = <TSnapshot>(
     restore(messages) {
       inner?.restore(messages)
     },
+    appendAssistantContext(text) {
+      return inner?.appendAssistantContext(text) ?? false
+    },
     suspendToolExecution(result) {
       if (!inner?.suspendToolExecution) throw new Error('enhanced_suspension_owned_by_shell')
       return inner.suspendToolExecution(result)
@@ -333,6 +355,7 @@ export async function beginSlidesHostRun({
 
 export async function completeSlidesHostRun({
   cancelled,
+  qualityReviewOwner = 'host',
   finishHistoryBatch,
   isCurrent,
   hasQcPages,
@@ -342,6 +365,7 @@ export async function completeSlidesHostRun({
   publishHistorySnapshot,
 }: {
   cancelled: boolean
+  qualityReviewOwner?: 'host' | 'agent'
   finishHistoryBatch: () => Promise<unknown>
   isCurrent?: () => boolean
   hasQcPages: () => boolean
@@ -357,7 +381,7 @@ export async function completeSlidesHostRun({
   } finally {
     if (!isCurrent || isCurrent()) {
       setBusy(false)
-      if (cancelled) clearQcPages()
+      if (cancelled || qualityReviewOwner === 'agent') clearQcPages()
       else if (hasQcPages()) runQc()
     }
   }

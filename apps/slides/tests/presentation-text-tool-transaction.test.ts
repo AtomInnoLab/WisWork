@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RenderSlide, ShapeRenderNode } from '@wiswork/pptx-render'
-import type { PresentationOperation, PresentationReceipt } from '@wiswork/presentation-ops'
+import {
+  parsePresentationTransaction,
+  type PresentationOperation,
+  type PresentationReceipt,
+  type PresentationTransaction,
+} from '@wiswork/presentation-ops'
 import { createSlidesSkill, type DeckAccess } from '../src/renderer/ai/slides-skill'
 import { executePreparedTextFamilyTransaction } from '../src/renderer/ai/presentation-text-transactions'
 import { textToolTransactionId } from '../src/renderer/ai/presentation-text-transactions'
@@ -369,6 +374,141 @@ describe('Slides canonical geometry-family transactions', () => {
     })
     expect(result.mutated).toBe(mutated)
     expect(result.isError === true).toBe(isError)
+  })
+})
+
+describe('Slides style tool canonical schema contract', () => {
+  function setup(renderSlide: RenderSlide = slide) {
+    const api = {
+      preparePresentationTarget: vi.fn(async () => ({
+        status: 'prepared' as const,
+        expectedDeckRevision: fp('0'),
+        target: {
+          slideId: 'ppt/slides/slide1.xml',
+          elementId: '{01234567-89AB-CDEF-0123-456789ABCDEF}',
+          expectedType: 'text' as const,
+          expectedFingerprint: fp('a'),
+        },
+      })),
+      executePresentationTransaction: vi.fn(async (transaction: PresentationTransaction) => {
+        parsePresentationTransaction(transaction)
+        return {
+          status: 'applied' as const,
+          transactionId: transaction.transactionId,
+          resultingDeckRevision: fp('b'),
+          operationCount: transaction.operations.length,
+        }
+      }),
+      cancelPresentationTransaction: vi.fn(async () => true),
+    }
+    const skill = createSlidesSkill({
+      getSlides: () => [renderSlide],
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: vi.fn(),
+      applyDeck: vi.fn(),
+      executePresentationOperation: (request, signal) => {
+        if ('operations' in request)
+          return executePreparedGeometryFamilyTransaction(api, request, signal)
+        if ('operation' in request)
+          return executePreparedTextFamilyTransaction(api, request, signal)
+        throw new Error('Unexpected background transaction in a style tool test')
+      },
+      fitWidthPx: 1280,
+    })
+    return { api, skill }
+  }
+
+  it.each(['execute_slide_script', 'set_element_style'] as const)(
+    'applies a font-size-only %s through the real schema with absent fields omitted',
+    async (name) => {
+      const { api, skill } = setup()
+      const result = await skill.executeTool({
+        id: `font-size-${name}`,
+        name,
+        input:
+          name === 'execute_slide_script'
+            ? { slideIndex: 0, code: "setStyle('2', { fontSize: 24 })" }
+            : { slideIndex: 0, sourceId: '2', fontSize: 24 },
+      })
+
+      expect(result).toMatchObject({ mutated: true })
+      expect(result.isError).not.toBe(true)
+      expect(api.executePresentationTransaction).toHaveBeenCalledTimes(1)
+      const transaction = api.executePresentationTransaction.mock.calls[0]![0]
+      expect(transaction.operations).toHaveLength(1)
+      const operation = transaction.operations[0]!
+      expect(operation.kind).toBe('set_text')
+      if (operation.kind !== 'set_text') throw new Error('Expected a text transaction')
+      expect(operation.paragraphs).toStrictEqual([
+        {
+          runs: [{ text: 'Before', fontSize: 24, fontFamily: 'Arial', color: '#000000' }],
+        },
+      ])
+    },
+  )
+
+  it('preserves explicit false overrides and every run of multiline text through the real script adapter', async () => {
+    const styled = structuredClone(slide)
+    const text = (styled.nodes[0] as ShapeRenderNode).text!
+    const first = text.lines[0]!.runs[0]!
+    Object.assign(first, { bold: true, italic: true, underline: true })
+    text.lines[0]!.runs.push({ ...first, text: ' and after', fontSizePx: 24, color: '#123456' })
+    text.lines.push({ ...text.lines[0]!, runs: [{ ...first, text: 'Second line' }] })
+    const { api, skill } = setup(styled)
+
+    const result = await skill.executeTool({
+      id: 'disable-emphasis',
+      name: 'execute_slide_script',
+      input: {
+        slideIndex: 0,
+        code: "setStyle('2', { bold: false, italic: false, underline: false })",
+      },
+    })
+
+    expect(result).toMatchObject({ mutated: true })
+    expect(result.isError).not.toBe(true)
+    expect(api.executePresentationTransaction).toHaveBeenCalledTimes(1)
+    const operation = api.executePresentationTransaction.mock.calls[0]![0].operations[0]!
+    expect(operation.kind).toBe('set_text')
+    if (operation.kind !== 'set_text') throw new Error('Expected a text transaction')
+    const run = {
+      bold: false,
+      italic: false,
+      underline: false,
+      fontSize: 12,
+      fontFamily: 'Arial',
+      color: '#000000',
+    }
+    expect(operation.paragraphs).toStrictEqual([
+      {
+        runs: [
+          { ...run, text: 'Before' },
+          { ...run, text: ' and after', fontSize: 18, color: '#123456' },
+        ],
+      },
+      { runs: [{ ...run, text: 'Second line' }] },
+    ])
+    expect(first).toMatchObject({ bold: true, italic: true, underline: true })
+  })
+
+  it('still rejects an explicit undefined boolean in a raw canonical request before preparing a write', async () => {
+    const { api } = setup()
+    const result = await executePreparedGeometryFamilyTransaction(api, {
+      transactionId: 'invalid-undefined-style',
+      slideIndex: 0,
+      operations: [
+        {
+          sourceId: '2',
+          kind: 'set_text',
+          paragraphs: [{ runs: [{ text: 'Before', bold: undefined }] }],
+        },
+      ],
+    })
+
+    expect(result.receipt).toMatchObject({ status: 'unchanged', code: 'write_not_applied' })
+    expect(api.preparePresentationTarget).not.toHaveBeenCalled()
+    expect(api.executePresentationTransaction).not.toHaveBeenCalled()
   })
 })
 

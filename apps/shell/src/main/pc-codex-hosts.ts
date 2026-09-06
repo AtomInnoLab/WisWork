@@ -197,7 +197,14 @@ const detachedExecution = (value: unknown): ToolExecution => {
   )
     throw new Error('enhanced_invalid_request')
   const descriptors = Object.getOwnPropertyDescriptors(value)
-  const allowed = new Set(['output', 'summary', 'isError', 'mutated', 'stopToolBatch'])
+  const allowed = new Set([
+    'output',
+    'summary',
+    'isError',
+    'mutated',
+    'stopToolBatch',
+    'modelContent',
+  ])
   if (
     Object.getOwnPropertySymbols(value).length ||
     Object.keys(descriptors).some((key) => !allowed.has(key)) ||
@@ -209,6 +216,7 @@ const detachedExecution = (value: unknown): ToolExecution => {
   const isError = descriptors.isError?.value
   const mutated = descriptors.mutated?.value
   const stopToolBatch = descriptors.stopToolBatch?.value
+  const modelContent = descriptors.modelContent?.value
   if (
     typeof output !== 'string' ||
     Buffer.byteLength(output) > 1_000_000 ||
@@ -219,12 +227,37 @@ const detachedExecution = (value: unknown): ToolExecution => {
     (stopToolBatch !== undefined && typeof stopToolBatch !== 'boolean')
   )
     throw new Error('enhanced_invalid_request')
+  let detachedModelContent: ToolExecution['modelContent']
+  if (modelContent !== undefined) {
+    if (!Array.isArray(modelContent) || modelContent.length !== 1)
+      throw new Error('enhanced_invalid_request')
+    const block = modelContent[0]
+    if (!exactObject(block, ['type', 'image']) || block.type !== 'image')
+      throw new Error('enhanced_invalid_request')
+    const image = block.image
+    if (!exactObject(image, ['base64', 'mime'])) throw new Error('enhanced_invalid_request')
+    if (
+      image.mime !== 'image/png' ||
+      typeof image.base64 !== 'string' ||
+      image.base64.length > 2_800_000 ||
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(image.base64) ||
+      Buffer.byteLength(Buffer.from(image.base64, 'base64')) > 2_000_000
+    )
+      throw new Error('enhanced_invalid_request')
+    detachedModelContent = [
+      Object.freeze({
+        type: 'image',
+        image: Object.freeze({ base64: image.base64, mime: 'image/png' }),
+      }),
+    ]
+  }
   return Object.freeze({
     output,
     summary,
     ...(isError === undefined ? {} : { isError }),
     ...(mutated === undefined ? {} : { mutated }),
     ...(stopToolBatch === undefined ? {} : { stopToolBatch }),
+    ...(detachedModelContent === undefined ? {} : { modelContent: detachedModelContent }),
   })
 }
 
@@ -278,7 +311,7 @@ export function registerPcCodexHosts(options: {
     record.pending.clear()
     for (const proposal of record.proposals.values()) {
       if (proposal.timer) clearTimeout(proposal.timer)
-      const claimed = record.session.mutationAuthority.claimNext()
+      const claimed = record.session.mutationAuthority.claimNext(proposal.call.id)
       if (claimed && claimed.request.call.id === proposal.call.id)
         record.session.mutationAuthority.reject(claimed.claim, 'mutation_cancelled')
     }
@@ -302,7 +335,7 @@ export function registerPcCodexHosts(options: {
       proposal.timer = setTimeout(
         () => {
           if (!record.proposals.delete(proposal.proposalId)) return
-          const claimed = record.session.mutationAuthority.claimNext()
+          const claimed = record.session.mutationAuthority.claimNext(proposal.call.id)
           if (claimed && claimed.request.call.id === proposal.call.id) {
             record.session.mutationAuthority.reject(claimed.claim, 'mutation_expired')
             send(record, PC_HOST_CODEX_CHANNELS.event, {
@@ -337,7 +370,10 @@ export function registerPcCodexHosts(options: {
     }
     if (event.type !== 'terminal') return
     if (event.status === 'failed')
-      send(record, PC_HOST_CODEX_CHANNELS.event, { type: 'error', code: 'enhanced_turn_failed' })
+      send(record, PC_HOST_CODEX_CHANNELS.event, {
+        type: 'error',
+        code: event.code === 'enhanced_proposal_expired' ? event.code : 'enhanced_turn_failed',
+      })
     else
       send(record, PC_HOST_CODEX_CHANNELS.event, {
         type: 'done',
@@ -551,7 +587,7 @@ export function registerPcCodexHosts(options: {
     if (proposal.expiresAt <= Date.now()) {
       record.proposals.delete(proposalId)
       if (proposal.timer) clearTimeout(proposal.timer)
-      const claimed = record.session.mutationAuthority.claimNext()
+      const claimed = record.session.mutationAuthority.claimNext(proposal.call.id)
       if (claimed && claimed.request.call.id === proposal.call.id)
         record.session.mutationAuthority.reject(claimed.claim, 'mutation_expired')
       else if (claimed)
@@ -566,7 +602,7 @@ export function registerPcCodexHosts(options: {
       const { record, proposal } = proposalRecord(event.sender, documentId, generation, proposalId)
       record.proposals.delete(proposal.proposalId)
       if (proposal.timer) clearTimeout(proposal.timer)
-      const claimed = record.session.mutationAuthority.claimNext()
+      const claimed = record.session.mutationAuthority.claimNext(proposal.call.id)
       if (
         !claimed ||
         claimed.request.call.id !== proposal.call.id ||
@@ -594,7 +630,7 @@ export function registerPcCodexHosts(options: {
       const { record, proposal } = proposalRecord(event.sender, documentId, generation, proposalId)
       record.proposals.delete(proposal.proposalId)
       if (proposal.timer) clearTimeout(proposal.timer)
-      const claimed = record.session.mutationAuthority.claimNext()
+      const claimed = record.session.mutationAuthority.claimNext(proposal.call.id)
       if (!claimed || claimed.request.call.id !== proposal.call.id) {
         if (claimed)
           record.session.mutationAuthority.reject(claimed.claim, 'mutation_binding_mismatch')

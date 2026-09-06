@@ -15,6 +15,9 @@ import {
 } from '../src/index'
 
 describe('cross-host golden contract', () => {
+  it('enables bounded automatic correction by default', () => {
+    expect(presentationVerificationFlags({}).autoCorrection).toBe(true)
+  })
   it('contains executable authority, page, operation and check-accounting facts', () => {
     expect(PRESENTATION_GOLDEN_CASES).toHaveLength(12)
     expect(PRESENTATION_CONSISTENCY_GOLDEN.pages).toHaveLength(8)
@@ -145,7 +148,7 @@ describe('presentation acceptance contracts', () => {
       planning: true,
       verifiedCompletion: true,
       visualReview: true,
-      autoCorrection: false,
+      autoCorrection: true,
     })
     expect(
       presentationVerificationFlags({

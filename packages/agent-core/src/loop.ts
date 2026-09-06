@@ -370,6 +370,34 @@ export class AgentLoop<TSnapshot = unknown> {
   }
 
   /**
+   * Merge one trusted, bounded host observation into the completed assistant turn.
+   * This is for post-run verification metadata only; screenshots and document content
+   * must never be passed here.
+   */
+  appendAssistantContext(text: string): boolean {
+    if (this.running || typeof text !== 'string') return false
+    const value = text.trim()
+    if (
+      !value ||
+      value.length > 2_048 ||
+      Array.from(value).some((character) => {
+        const code = character.charCodeAt(0)
+        // Permit tab, LF and CR, but reject the other C0 controls and DEL.
+        return (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) || code === 0x7f
+      })
+    )
+      return false
+    const last = this.history.at(-1)
+    if (!last || last.role !== 'assistant') return false
+    this.history[this.history.length - 1] = {
+      ...last,
+      text: `${last.text}\n\n${value}`.trim(),
+    }
+    this.trimHistory()
+    return true
+  }
+
+  /**
    * Seed the conversation with restored history (e.g. transcript reloaded from
    * disk when a document reopens), so follow-up instructions keep their context.
    * No-op unless the loop is idle with an empty history.
@@ -948,6 +976,16 @@ export class AgentLoop<TSnapshot = unknown> {
       return
     }
 
+    if (
+      toolCalls.length > 0 &&
+      skill.presentation?.batchScoped &&
+      this.presentationContract &&
+      !this.presentationCorrectionPending
+    ) {
+      // The preceding immutable contract is verified before a new batch can
+      // receive fresh host-owned enrollment. Never silently widen a contract.
+      if (await this.finishPresentationRun(true)) return
+    }
     this.history.push({ role: 'assistant', text: this.turnText, toolCalls })
     const generation = this.generation
     if (skill.presentation?.enroll) {
@@ -1173,7 +1211,7 @@ export class AgentLoop<TSnapshot = unknown> {
   }
 
   /** Returns true when the run was settled or redirected into a corrective turn. */
-  private async finishPresentationRun(): Promise<boolean> {
+  private async finishPresentationRun(continueAfterVerifiedBatch = false): Promise<boolean> {
     const contract = this.presentationContract
     const hooks = this.options.skill.presentation
     if (!contract || !hooks) return false
@@ -1266,6 +1304,14 @@ export class AgentLoop<TSnapshot = unknown> {
           renderPresentationCompletionText(facts))
         : renderPresentationCompletionText(facts)
       this.history.push({ role: 'assistant', text })
+      if (continueAfterVerifiedBatch && receipt.status === 'verified' && !this.cancelled) {
+        this.presentationContract = null
+        this.presentationCorrectionPasses = 0
+        this.presentationCorrectionTurns = 0
+        this.presentationCorrectionPending = false
+        this.presentationPlanEmitted = false
+        return false
+      }
       this.running = false
       this.runUserMsg = null
       this.abortController = null

@@ -46,6 +46,48 @@ export interface QcReview {
   fixes: QcGeometryFix[]
 }
 
+export type VisualQcContextOutcome = {
+  page: number
+  status: 'passed' | 'needs_fix' | 'unavailable'
+  corrected: boolean
+}
+
+/** A bounded follow-up, using fresh screenshots instead of trusting reviewer prose as instructions. */
+export function buildVisualQcRepairInstruction(
+  outcomes: readonly VisualQcContextOutcome[],
+  attempts: number,
+  cancelled: boolean,
+): string | undefined {
+  if (cancelled || attempts >= 2) return undefined
+  const pages = [...new Set(outcomes.filter((o) => o.status === 'needs_fix').map((o) => o.page))]
+    .filter((page) => Number.isSafeInteger(page) && page > 0)
+    .slice(0, QC_MAX_PAGES)
+  if (!pages.length) return undefined
+  return `Continue the requested presentation work: automatic screenshot review found unresolved visual defects on ${pages.map((page) => `slideIndex: ${page - 1}`).join(', ')}. Read and screenshot only these pages to identify the defects. Repair them using the normal proposal and confirmation tools, preserving content and other pages. Wait for applied results, then screenshot the changed pages again. Do not merely report the findings or claim completion before verification. If a change cannot be applied safely, report the specific unresolved blocker.`
+}
+
+/** Model-visible post-run metadata only; never includes screenshot pixels or slide content. */
+export function buildVisualQcContext(outcomes: readonly VisualQcContextOutcome[]): string {
+  const pages = (status: VisualQcContextOutcome['status']) =>
+    outcomes
+      .filter((outcome) => outcome.status === status)
+      .map((outcome) => outcome.page)
+      .join(', ')
+  const corrected = outcomes
+    .filter((outcome) => outcome.corrected)
+    .map((outcome) => outcome.page)
+    .join(', ')
+  return [
+    'Automatic visual QC rendered and reviewed screenshots.',
+    pages('passed') ? `Passed slides: ${pages('passed')}.` : '',
+    corrected ? `Automatically corrected and rechecked slides: ${corrected}.` : '',
+    pages('needs_fix') ? `Slides still needing attention: ${pages('needs_fix')}.` : '',
+    pages('unavailable') ? `Unavailable slides: ${pages('unavailable')}.` : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+}
+
 const QC_MAX_FIXES = 8
 
 export function parseQcReview(

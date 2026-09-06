@@ -144,9 +144,13 @@ export function createProductionCodexBootstrap(
         disarm?: () => void
         cancelled: boolean
         readonly pendingProposals: Set<string>
+        readonly pendingQuestionnaires: Set<string>
+        questionnaireAwaitingContinuation: boolean
+        questionnaireFailure?: Error
         lastFailure?: Error
         deferredTerminal?: { status: 'completed' | 'cancelled' | 'failed'; error?: Error }
         proposalFailure?: 'cancelled' | 'failed'
+        proposalError?: Error
         readonly touch: () => void
         readonly settle: (status: 'completed' | 'cancelled' | 'failed', error?: Error) => void
         readonly requestSettle: (
@@ -244,41 +248,77 @@ export function createProductionCodexBootstrap(
           const unregister = gateway.register({
             ...input,
             onToolEvent: (event) => {
-              documents.get(input.documentId)?.active?.touch()
+              const active = documents.get(input.documentId)?.active
+              if (active && input.host === 'slides') {
+                if (event.toolName === 'ask_clarification') {
+                  if (event.type === 'tool-start') active.pendingQuestionnaires.add(event.callId)
+                  else if (event.type === 'tool-complete') {
+                    active.pendingQuestionnaires.delete(event.callId)
+                    if (!event.isError) {
+                      active.questionnaireFailure = undefined
+                      active.questionnaireAwaitingContinuation = true
+                    } else
+                      active.questionnaireFailure = new Error('enhanced_questionnaire_incomplete')
+                  }
+                } else if (event.type === 'tool-start') {
+                  const tool = input.session
+                    .listTools(input.session.credentials)
+                    .find((tool) => tool.name === event.toolName)
+                  // A known tool call after the answer proves the native loop continued.
+                  // Its read/write outcome is separate from questionnaire completion.
+                  if (tool) active.questionnaireAwaitingContinuation = false
+                }
+              }
+              active?.touch()
               emit(input.onEvent, event)
+              if (active?.deferredTerminal) {
+                const terminal = active.deferredTerminal
+                active.requestSettle(terminal.status, terminal.error)
+              }
             },
             onProposal: (proposal) => {
               const active = documents.get(input.documentId)?.active
               if (!active) return
-              active.touch()
+              options.diagnostics?.('enhanced_proposal_created')
               active.pendingProposals.add(proposal.proposalId)
+              active.touch()
               void proposal.settled.then(
                 (execution) => {
                   if (execution.isError) {
-                    if (execution.output === 'mutation_cancelled') {
+                    if (
+                      execution.output === 'mutation_cancelled' ||
+                      execution.output === 'tool_cancelled'
+                    ) {
                       active.proposalFailure ??= 'cancelled'
+                      options.diagnostics?.('enhanced_proposal_cancelled')
                     } else {
-                      active.proposalFailure = 'failed'
+                      if (execution.output === 'mutation_expired') {
+                        active.proposalFailure = 'failed'
+                        active.proposalError = new Error('enhanced_proposal_expired')
+                        options.diagnostics?.('enhanced_proposal_expired')
+                      } else {
+                        // A rejected document edit is a normal tool result, not a runtime
+                        // failure. Keep the turn alive so the model can inspect, repair its
+                        // arguments, and retry without losing the agent loop.
+                        options.diagnostics?.('enhanced_proposal_execution_failed')
+                      }
                     }
+                  } else {
+                    options.diagnostics?.('enhanced_proposal_applied')
                   }
                   active.pendingProposals.delete(proposal.proposalId)
+                  active.touch()
                   const deferred = active.deferredTerminal
-                  if (deferred && active.pendingProposals.size === 0) {
-                    active.deferredTerminal = undefined
-                    const failure = active.proposalFailure
-                    active.settle(
-                      failure ?? deferred.status,
-                      failure === 'failed' ? new Error('enhanced_proposal_failed') : deferred.error,
-                    )
-                  }
+                  if (deferred) active.requestSettle(deferred.status, deferred.error)
                 },
                 () => {
+                  options.diagnostics?.('enhanced_proposal_execution_failed')
                   active.proposalFailure = 'failed'
+                  active.proposalError = new Error('enhanced_proposal_failed')
                   active.pendingProposals.delete(proposal.proposalId)
-                  if (active.deferredTerminal && active.pendingProposals.size === 0) {
-                    active.deferredTerminal = undefined
-                    active.settle('failed', new Error('enhanced_proposal_failed'))
-                  }
+                  active.touch()
+                  const deferred = active.deferredTerminal
+                  if (deferred) active.requestSettle(deferred.status, deferred.error)
                 },
               )
               const { settled: _settled, ...publicProposal } = proposal
@@ -329,10 +369,40 @@ export function createProductionCodexBootstrap(
             capability: grant.capability,
             cancelled: false,
             pendingProposals: new Set(),
-            touch: () => deadline.touch(),
+            pendingQuestionnaires: new Set(),
+            questionnaireAwaitingContinuation: false,
+            touch: () => {
+              if (active.pendingProposals.size > 0 || active.pendingQuestionnaires.size > 0)
+                deadline.disarm()
+              else if (!settled && !active.deferredTerminal) deadline.touch()
+            },
             requestSettle(status, error) {
-              if (active.pendingProposals.size > 0 && status === 'completed') {
+              if (settled) return
+              if (
+                (active.pendingProposals.size > 0 || active.pendingQuestionnaires.size > 0) &&
+                status === 'completed'
+              ) {
                 active.deferredTerminal = { status, error }
+                deadline.disarm()
+                return
+              }
+              active.deferredTerminal = undefined
+              if (status === 'completed' && active.questionnaireFailure) {
+                active.settle('failed', active.questionnaireFailure)
+                return
+              }
+              if (status === 'completed' && active.proposalFailure) {
+                active.settle(active.proposalFailure, active.proposalError)
+                return
+              }
+              if (
+                status === 'completed' &&
+                active.questionnaireAwaitingContinuation &&
+                !active.cancelled
+              ) {
+                // Never repair an unfinished native tool cell by opening a new
+                // turn. The model must wait for its result in the original turn.
+                active.settle('failed', new Error('enhanced_questionnaire_incomplete'))
                 return
               }
               active.settle(status, error)
@@ -344,7 +414,13 @@ export function createProductionCodexBootstrap(
               gateway.revokeTurn(grant.capability, status !== 'completed')
               active.disarm?.()
               if (document.active === active) document.active = undefined
-              emit(document.onEvent, { type: 'terminal', status })
+              emit(document.onEvent, {
+                type: 'terminal',
+                status,
+                ...(error?.message === 'enhanced_proposal_expired'
+                  ? { code: 'enhanced_proposal_expired' as const }
+                  : {}),
+              })
               if (error) reject(error)
               else resolve()
             },
@@ -361,11 +437,18 @@ export function createProductionCodexBootstrap(
           document.active = active
           try {
             if (!document.threadId) {
-              document.threadId = (
-                await client.startThread({
-                  developerInstructions: `${DEVELOPER_POLICY}\n${document.instructions ?? ''}`,
-                })
-              ).thread.id
+              options.diagnostics?.('enhanced_thread_starting')
+              try {
+                document.threadId = (
+                  await client.startThread({
+                    developerInstructions: `${DEVELOPER_POLICY}\n${document.instructions ?? ''}`,
+                  })
+                ).thread.id
+              } catch (error) {
+                options.diagnostics?.('enhanced_thread_start_failed')
+                throw error
+              }
+              options.diagnostics?.('enhanced_thread_started')
               gateway.bindTurn(grant.capability, document.threadId)
             }
             active.threadId = document.threadId
@@ -386,12 +469,19 @@ export function createProductionCodexBootstrap(
               grant.capability,
             )
             if (active.cancelled) return await terminal
-            active.turnId = (
-              await client.startTurn(
-                active.threadId,
-                `<wiswork_turn_capability>${grant.capability}</wiswork_turn_capability>\n\n${input.text}`,
-              )
-            ).turn.id
+            options.diagnostics?.('enhanced_turn_starting')
+            try {
+              active.turnId = (
+                await client.startTurn(
+                  active.threadId,
+                  `<wiswork_turn_capability>${grant.capability}</wiswork_turn_capability>\n\n${input.text}`,
+                )
+              ).turn.id
+            } catch (error) {
+              options.diagnostics?.('enhanced_turn_start_failed')
+              throw error
+            }
+            options.diagnostics?.('enhanced_turn_accepted')
             active.touch()
             if (active.cancelled) return await terminal
             await terminal

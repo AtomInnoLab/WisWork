@@ -60,6 +60,19 @@ describe('Office workspace rollback flag', () => {
 })
 
 describe('Office presentation verification rollout flags', () => {
+  const defaults = {
+    planning: true,
+    verifiedCompletion: true,
+    visualReview: true,
+    autoCorrection: true,
+  }
+  const flagCases = [
+    ['PLANNING', 'planning'],
+    ['VERIFIED_COMPLETION', 'verifiedCompletion'],
+    ['VISUAL_REVIEW', 'visualReview'],
+    ['AUTO_CORRECTION', 'autoCorrection'],
+  ] as const
+
   it('keeps the Node-evaluated Vite build config free of workspace runtime imports', () => {
     const source = readFileSync(resolve(import.meta.dirname, '../build-config.ts'), 'utf8')
     expect(source).not.toMatch(/from\s+['"]@wiswork\//)
@@ -79,13 +92,28 @@ describe('Office presentation verification rollout flags', () => {
           ],
         )
   })
-  it('uses safe defaults and independent exact rollback switches', () => {
-    expect(officePresentationVerificationFlags({})).toEqual({
-      planning: true,
-      verifiedCompletion: true,
-      visualReview: true,
-      autoCorrection: false,
+  it('enables the bounded verification and correction loop by default', () => {
+    expect(officePresentationVerificationFlags({})).toEqual(defaults)
+  })
+
+  it.each(flagCases)('rolls back only %s with the exact zero flag', (name, property) => {
+    const key = `VITE_WISWORK_PRESENTATION_${name}`
+    expect(officePresentationVerificationFlags({ [key]: '0' })).toEqual({
+      ...defaults,
+      [property]: false,
     })
+    for (const value of [undefined, '', '1'])
+      expect(officePresentationVerificationFlags({ [key]: value })).toEqual(defaults)
+  })
+
+  it.each(flagCases)('rejects non-exact values for %s', (name) => {
+    for (const value of ['false', 'true', '2', ' 0', '1 '])
+      expect(() =>
+        officePresentationVerificationFlags({ [`VITE_WISWORK_PRESENTATION_${name}`]: value }),
+      ).toThrow('invalid_presentation_verification_flags')
+  })
+
+  it('keeps correction independent from the other verification switches', () => {
     expect(
       officePresentationVerificationFlags({
         VITE_WISWORK_PRESENTATION_PLANNING: '0',
@@ -99,5 +127,17 @@ describe('Office presentation verification rollout flags', () => {
       visualReview: false,
       autoCorrection: true,
     })
+  })
+
+  it('ignores server-only and workspace rollback flags', () => {
+    expect(
+      officePresentationVerificationFlags({
+        WISWORK_PRESENTATION_PLANNING: '0',
+        WISWORK_PRESENTATION_VERIFIED_COMPLETION: '0',
+        WISWORK_PRESENTATION_VISUAL_REVIEW: '0',
+        WISWORK_PRESENTATION_AUTO_CORRECTION: '0',
+        VITE_WISWORK_OFFICE_WORKSPACE: '0',
+      }),
+    ).toEqual(defaults)
   })
 })

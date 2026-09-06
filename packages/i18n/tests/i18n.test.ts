@@ -15,7 +15,16 @@ import {
   translatePresentationVerification,
   enhancedMutationConfirmationStrings,
   translateEnhancedMutationConfirmation,
+  mutationExpiryStrings,
 } from '../src/index'
+
+it('provides nonempty proposal expiry and dismissal copy in every locale', () => {
+  expect(Object.keys(mutationExpiryStrings).sort()).toEqual([...LANGS].sort())
+  for (const lang of LANGS) {
+    expect(mutationExpiryStrings[lang]).toHaveLength(2)
+    expect(mutationExpiryStrings[lang].every((value) => value.trim().length > 0)).toBe(true)
+  }
+})
 
 describe('presentation verification translations', () => {
   it('covers every user-visible state in every locale', () => {
