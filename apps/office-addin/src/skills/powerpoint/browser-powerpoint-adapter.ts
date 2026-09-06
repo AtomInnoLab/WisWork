@@ -225,7 +225,7 @@ function cancelled(signal?: AbortSignal): void {
   if (signal?.aborted) throw new Error('cancelled')
 }
 
-function runtime(minimumVersion: '1.2' | '1.4' | '1.8' | '1.10'): RuntimeRecord {
+function runtime(minimumVersion: '1.2' | '1.4' | '1.5' | '1.8' | '1.10'): RuntimeRecord {
   const root = globalThis as unknown as RuntimeRecord
   const office = root.Office as RuntimeRecord | undefined
   const powerPoint = root.PowerPoint as RuntimeRecord | undefined
@@ -362,32 +362,42 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       v18: api('1.8'),
       v110: api('1.10'),
     }
-    return this.run('1.2', async (context) => {
-      const presentation = context.presentation as RuntimeRecord
-      const slides = presentation.slides as RuntimeRecord
-      if (typeof slides?.load !== 'function') throw new Error('office_api_unsupported')
-      let selected: RuntimeRecord | undefined
-      if (apiSupport.v15) {
-        if (typeof presentation.getSelectedSlides !== 'function')
-          throw new Error('office_api_unsupported')
-        selected = (presentation.getSelectedSlides as () => RuntimeRecord)()
-        if (typeof selected?.load !== 'function') throw new Error('office_api_unsupported')
+    const slideCount = await this.run('1.2', async (context) =>
+      getSlideCount(
+        context,
+        (context.presentation as RuntimeRecord).slides as RuntimeRecord,
+        signal,
+      ),
+    )
+    let selectedSlideIndexes: number[] = []
+    if (apiSupport.v15) {
+      try {
+        selectedSlideIndexes = await this.run('1.5', async (context) => {
+          const presentation = context.presentation as RuntimeRecord
+          const slides = presentation.slides as RuntimeRecord
+          if (
+            typeof slides?.load !== 'function' ||
+            typeof presentation.getSelectedSlides !== 'function'
+          )
+            throw new Error('office_api_unsupported')
+          const selected = (presentation.getSelectedSlides as () => RuntimeRecord)()
+          if (typeof selected?.load !== 'function') throw new Error('office_api_unsupported')
+          ;(slides.load as (properties: string) => void)('items/id')
+          ;(selected.load as (properties: string) => void)('items/id')
+          await sync(context, signal)
+          const selectedIds = new Set(
+            ((selected.items as RuntimeRecord[] | undefined) ?? []).map((item) => string(item.id)),
+          )
+          return ((slides.items as RuntimeRecord[] | undefined) ?? []).flatMap((item, index) =>
+            selectedIds.has(string(item.id)) ? [index] : [],
+          )
+        })
+      } catch (error) {
+        if (signal?.aborted) throw error
+        selectedSlideIndexes = []
       }
-      ;(slides.load as (properties: string) => void)('items/id')
-      if (selected) (selected.load as (properties: string) => void)('items/id')
-      await sync(context, signal)
-      const items = (slides.items as RuntimeRecord[]) ?? []
-      const selectedIds = new Set(
-        ((selected?.items as RuntimeRecord[] | undefined) ?? []).map((item) => string(item.id)),
-      )
-      return {
-        slideCount: items.length,
-        selectedSlideIndexes: items.flatMap((item, index) =>
-          selectedIds.has(string(item.id)) ? [index] : [],
-        ),
-        api: apiSupport,
-      }
-    })
+    }
+    return { slideCount, selectedSlideIndexes, api: apiSupport }
   }
   async readShapeTextStyle(slideIndex: number, shapeId: string, signal?: AbortSignal) {
     return this.run('1.4', async (context) => {
@@ -417,7 +427,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     })
   }
   private run<T>(
-    minimumVersion: '1.2' | '1.4' | '1.8' | '1.10',
+    minimumVersion: '1.2' | '1.4' | '1.5' | '1.8' | '1.10',
     callback: (context: RuntimeRecord) => Promise<T>,
   ): Promise<T> {
     const powerPoint = runtime(minimumVersion)
