@@ -6,7 +6,7 @@ import type {
 import WebSocket from 'ws'
 import type { OfficePairingRequest, OfficeRelayStatus } from '../shared/home-api'
 import type { OfficeRelayBinding } from './office-relay-binding-store'
-import type { OfficeRetrievalProxy } from './office-retrieval-proxy'
+import type { OfficeRetrievalProxy, OfficeWebCapability } from './office-retrieval-proxy'
 export type { OfficeRelayStatus } from '../shared/home-api'
 
 const MAX_CONTROL_BYTES = 16 * 1024
@@ -139,6 +139,7 @@ export function createOfficeRelayClient(options: {
     host: OfficePairingRequest['hostLabel'],
   ) => Readonly<OfficeEnhancedSessionStatement> | undefined
   retrievalProxy?: OfficeRetrievalProxy
+  retrievalCapabilities?: readonly OfficeWebCapability[]
   negotiateCapabilities?: boolean
   persistentPairing?: boolean | (() => boolean)
   onBinding?: (binding: OfficeRelayBinding) => void | Promise<void>
@@ -162,7 +163,12 @@ export function createOfficeRelayClient(options: {
     typeof options.persistentPairing === 'function'
       ? options.persistentPairing() === true
       : options.persistentPairing === true
-  const offeredCapabilities = options.retrievalProxy ? [...V2_CAPABILITIES] : ['agent.v1']
+  const offeredCapabilities = options.retrievalProxy
+    ? [
+        'agent.v1',
+        ...(options.retrievalCapabilities ?? V2_CAPABILITIES.filter((name) => name !== 'agent.v1')),
+      ]
+    : ['agent.v1']
   let pending: (OfficePairingRequest & { capabilities?: string[]; features?: string[] }) | null =
     null
   let session: {
@@ -355,6 +361,7 @@ export function createOfficeRelayClient(options: {
                   requestId: frame.request_id as string,
                   statement: session.enhanced,
                   executeTool,
+                  ...(options.retrievalProxy ? { executeRetrieval: options.retrievalProxy } : {}),
                 })
               : (() => {
                   throw new Error('enhanced_proxy_unavailable')

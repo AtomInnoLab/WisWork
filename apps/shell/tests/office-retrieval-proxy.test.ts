@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  createOfficeLocalSearchProxy,
   createOfficeRetrievalProxy,
   officeRetrievalEndpointFromEnv,
 } from '../src/main/office-retrieval-proxy'
@@ -33,6 +34,50 @@ describe('Office fixed retrieval proxy', () => {
         TEST_SERVICES,
       ),
     ).toBe(TEST_ENDPOINT)
+  })
+
+  it('uses the existing PC web and image search implementations', async () => {
+    const webSearch = vi.fn(async () => ({
+      results: [{ title: 'Web', url: 'https://example.com', snippet: 'Result' }],
+      method: 'wisusage-xiaosu' as const,
+    }))
+    const searchImages = vi.fn(async () => ({
+      images: [
+        {
+          title: 'Image',
+          imageUrl: 'https://example.com/image.jpg',
+          sourceUrl: 'https://example.com',
+          source: 'example.com',
+        },
+      ],
+      method: 'serpapi',
+    }))
+    const proxy = createOfficeLocalSearchProxy({
+      fetchWithAuth: vi.fn(),
+      webSearch,
+      searchImages,
+    })
+    const web = await proxy('web-search.v1', { query: 'office', max_results: 3 })
+    const images = await proxy('image-search.v1', { query: 'slides', max_results: 4 })
+    expect(JSON.parse(new TextDecoder().decode(web))).toEqual({
+      results: [{ title: 'Web', url: 'https://example.com', snippet: 'Result' }],
+    })
+    expect(JSON.parse(new TextDecoder().decode(images))).toEqual({
+      images: [
+        {
+          title: 'Image',
+          image_url: 'https://example.com/image.jpg',
+          source_url: 'https://example.com',
+          source: 'example.com',
+        },
+      ],
+    })
+    expect(webSearch).toHaveBeenCalledWith(
+      'office',
+      3,
+      expect.objectContaining({ fetchWithAuth: expect.any(Function) }),
+    )
+    expect(searchImages).toHaveBeenCalledWith('slides', 4)
   })
 
   it('sends an exact bounded request to the fixed service with PC auth and returns sanitized JSON', async () => {

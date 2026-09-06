@@ -81,6 +81,30 @@ function fixture(overrides: Partial<DocumentToolRegistration> = {}) {
 }
 
 describe('document-scoped tool session', () => {
+  it('permits PC-backed retrieval tools for the Office PowerPoint host', () => {
+    const grant = Object.freeze({})
+    expect(() =>
+      createDocumentToolManifest({
+        policyGrant: grant,
+        consumePolicyGrant(candidate: unknown) {
+          if (candidate !== grant) throw new Error('invalid_enhanced_policy_handle')
+          return {
+            generation: 4,
+            host: 'office-powerpoint',
+            policy: rollout,
+            capabilities: ['semantic-read'],
+          }
+        },
+        tools: ['web_search', 'image_search'].map((name) => ({
+          name,
+          description: name,
+          inputSchema: { type: 'object' },
+        })),
+        policy: { web_search: 'read', image_search: 'read' },
+      }),
+    ).not.toThrow()
+  })
+
   it('separates bounded Office operations from elevated raw Office proposals', () => {
     const bounded = [
       ['office-word', 'execute_office_js'],

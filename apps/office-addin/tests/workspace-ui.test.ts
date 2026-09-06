@@ -228,6 +228,31 @@ describe('Office Agent workspace UI', () => {
     expect(html).not.toContain('class="agent-status"')
   })
 
+  it('shows the desktop Slides working indicator and descriptive search step', () => {
+    const html = workspaceMarkup(
+      {
+        busy: true,
+        status: 'working',
+        activity: '图片搜索',
+        timeline: Object.freeze([
+          {
+            id: 'search-1',
+            kind: 'tool' as const,
+            callId: 'call-search-1',
+            name: 'image_search',
+            summary: '图片搜索',
+            state: 'running' as const,
+          },
+        ]),
+      },
+      undefined,
+      'powerpoint',
+    )
+    expect(html).toContain('图片搜索')
+    expect(html).toContain('class="ai-typing"')
+    expect(html).toContain('aria-label="继续处理中"')
+  })
+
   it('uses the desktop Slides generation empty state for PowerPoint', () => {
     const html = workspaceMarkup(
       {

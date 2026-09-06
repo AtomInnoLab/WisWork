@@ -25,8 +25,13 @@ const invalid = (name: string): ToolExecution => ({
   summary: name,
 })
 
-export function createOfficeWebSkill(session: OfficeRelaySession): AgentSkill {
-  const negotiated = new Set(session.snapshot().capabilities ?? [])
+export function createOfficeWebSkill(
+  session: OfficeRelaySession,
+  options: { advertisedCapabilities?: readonly OfficeRelayCapability[] } = {},
+): AgentSkill {
+  const negotiated = new Set(
+    options.advertisedCapabilities ?? session.snapshot().capabilities ?? [],
+  )
   const available = definitions.filter(([, capability]) => negotiated.has(capability))
   return {
     id: 'office-authenticated-web',

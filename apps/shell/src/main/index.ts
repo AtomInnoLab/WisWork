@@ -216,6 +216,7 @@ import {
   terminalOfficeRelayAuthLoss,
 } from './office-relay-runtime'
 import {
+  createOfficeLocalSearchProxy,
   createOfficeRetrievalProxy,
   officeRetrievalEndpointFromEnv,
 } from './office-retrieval-proxy'
@@ -2916,7 +2917,12 @@ app.whenReady().then(async () => {
           endpoint: retrievalEndpoint,
           fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
         })
-      : undefined
+      : createOfficeLocalSearchProxy({
+          fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+        })
+    const retrievalCapabilities = retrievalEndpoint
+      ? (['web-search.v1', 'web-fetch.v1', 'image-search.v1'] as const)
+      : (['web-search.v1', 'image-search.v1'] as const)
     const endpoint = officeRelayEndpointFromEnv(process.env)
     officeRelay = createOfficeRelayPool({
       createClient: (events) =>
@@ -2935,6 +2941,7 @@ app.whenReady().then(async () => {
             return codexRuntime?.createOfficeSessionStatement(enhancedHost)
           },
           retrievalProxy,
+          retrievalCapabilities,
           negotiateCapabilities: true,
           persistentPairing: () => officeRelayPersistenceAvailable,
           onPending: events.onPending,

@@ -192,6 +192,64 @@ describe('Office Codex proxy', () => {
     }
   })
 
+  it('keeps PC-backed web and image search available to Enhanced PowerPoint turns', async () => {
+    const executeTool = vi.fn()
+    const executeRetrieval = vi.fn(async (capability: string) =>
+      capability === 'image-search.v1' ? { images: [] } : { results: [] },
+    )
+    const runtime = {
+      async runOfficeTurn(input: any) {
+        const names = input.toolSession
+          .listTools(input.toolSession.credentials)
+          .map((tool: any) => tool.name)
+        expect(names).toEqual(['web_search', 'web_fetch', 'image_search', 'plan_deck'])
+        for (const name of names.slice(0, 3)) {
+          await input.toolSession.callTool(input.toolSession.credentials, {
+            id: `call_${name}`,
+            name,
+            input:
+              name === 'web_fetch'
+                ? { url: 'https://example.com' }
+                : { query: 'volcano', max_results: 4 },
+          })
+        }
+        input.onEvent({ type: 'terminal', status: 'completed' })
+      },
+    }
+    const proxy = createOfficeCodexProxy({
+      runtime: runtime as any,
+      rollout,
+      policyAuthority: createShellEnhancedPolicyAuthority(() => 0),
+    })
+    const response = await proxy({
+      body: {
+        system: 'PowerPoint rules',
+        messages: [{ role: 'user', content: 'Create a researched deck' }],
+        tools: ['web_search', 'web_fetch', 'image_search', 'plan_deck'].map((name) => ({
+          name,
+          description: name,
+          input_schema: { type: 'object' },
+        })),
+      },
+      signal: new AbortController().signal,
+      host: 'PowerPoint',
+      sessionId: 'session_12345678',
+      requestId: 'request_12345678',
+      statement: { ...statement, host: 'office-powerpoint' },
+      executeRetrieval,
+      executeTool,
+    })
+    for await (const _chunk of response.body as AsyncIterable<Uint8Array>) {
+      /* drain */
+    }
+    expect(executeTool).not.toHaveBeenCalled()
+    expect(executeRetrieval.mock.calls.map(([capability]) => capability)).toEqual([
+      'web-search.v1',
+      'web-fetch.v1',
+      'image-search.v1',
+    ])
+  })
+
   it('keeps bounded declarative PowerPoint writes without granting raw Office authority', async () => {
     const runtime = {
       async runOfficeTurn(input: any) {

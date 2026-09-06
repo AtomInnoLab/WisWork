@@ -13,6 +13,7 @@ import type { MessagesProxyResponse, OfficeEnhancedSessionStatement } from '@wis
 import type { EnhancedRolloutPolicy, EnhancedTelemetry } from '@wiswork/agent-runtime'
 import type { ShellCodexRuntime } from './codex-runtime'
 import type { OfficeRelayToolCall, OfficeRelayToolResult } from './office-relay-client'
+import type { OfficeRetrievalProxy, OfficeWebCapability } from './office-retrieval-proxy'
 
 const MAX_BODY_BYTES = 256 * 1024
 const MAX_TEXT_BYTES = 128 * 1024
@@ -33,6 +34,9 @@ const READ_TOOLS = new Set([
   'read_slide_text',
   'verify_slides',
   'plan_deck',
+  'web_search',
+  'web_fetch',
+  'image_search',
 ])
 const MUTATION_TOOLS = new Set([
   'write_document',
@@ -141,6 +145,7 @@ export function createOfficeCodexProxy(options: {
     requestId: string
     statement: Readonly<OfficeEnhancedSessionStatement>
     executeTool(call: OfficeRelayToolCall): Promise<OfficeRelayToolResult>
+    executeRetrieval?: OfficeRetrievalProxy
   }): Promise<MessagesProxyResponse> => {
     const host = hostName(request.host)
     const telemetry = (
@@ -157,6 +162,11 @@ export function createOfficeCodexProxy(options: {
       throw new Error('enhanced_session_stale')
     telemetry('plan', 'started')
     const parsed = parseRequest(request.body, request.statement.raw_office)
+    const pcRetrieval = new Set(['web_search', 'image_search'])
+    if (!request.executeRetrieval) {
+      parsed.tools = parsed.tools.filter((tool) => !pcRetrieval.has(tool.name))
+      for (const name of pcRetrieval) delete parsed.policy[name]
+    }
     telemetry('plan', 'succeeded')
     const capabilities = [
       'semantic-read',
@@ -190,13 +200,31 @@ export function createOfficeCodexProxy(options: {
       telemetry('dispatch', 'started')
       let result: OfficeRelayToolResult
       try {
-        result = await request.executeTool({
-          turnId,
-          callId: call.id,
-          generation: request.statement.session_generation,
-          toolName: call.name,
-          input: call.input,
-        })
+        const retrievalCapability: Partial<Record<string, OfficeWebCapability>> = {
+          web_search: 'web-search.v1',
+          web_fetch: 'web-fetch.v1',
+          image_search: 'image-search.v1',
+        }
+        const capability = retrievalCapability[call.name]
+        if (capability && request.executeRetrieval) {
+          const output = await request.executeRetrieval(
+            capability,
+            call.input,
+            signal ?? request.signal,
+          )
+          result = {
+            output: new TextDecoder('utf-8', { fatal: true }).decode(output),
+            isError: false,
+          }
+        } else {
+          result = await request.executeTool({
+            turnId,
+            callId: call.id,
+            generation: request.statement.session_generation,
+            toolName: call.name,
+            input: call.input,
+          })
+        }
       } catch (error) {
         telemetry('dispatch', 'failed')
         throw error
