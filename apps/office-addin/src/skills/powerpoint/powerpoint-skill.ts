@@ -410,6 +410,39 @@ const tools = [
     },
   },
   {
+    name: 'ask_clarification',
+    description:
+      'For a whole new deck, show 2-4 concise multiple-choice questions about audience, focus, style, and page count. Wait for the answers, then continue with plan_deck. Skip only when the user already supplied or delegated these choices.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        questions: {
+          type: 'array',
+          minItems: 2,
+          maxItems: 4,
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', minLength: 1, maxLength: 40 },
+              label: { type: 'string', minLength: 1, maxLength: 300 },
+              description: { type: 'string', maxLength: 300 },
+              options: {
+                type: 'array',
+                minItems: 2,
+                maxItems: 5,
+                items: { type: 'string', minLength: 1, maxLength: 120 },
+              },
+            },
+            required: ['id', 'label', 'options'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['questions'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'plan_deck',
     description:
       'Record the complete narrative and visual plan before creating or substantially rebuilding a presentation. This tool never edits PowerPoint.',
@@ -447,7 +480,7 @@ const tools = [
   {
     name: 'execute_office_js',
     description:
-      'Execute a transaction-protected bounded declarative PowerPoint program under the PC-managed session policy. Pass program directly as an object with version 1 and an operations array; do not stringify it and do not send JavaScript. Use snake_case fields except the bounded text-style properties. Supported operations are set_shape_text, set_shape_text_style (color/fontFamily/fontSize/bold/italic), set_shape_geometry, add_text_box, delete_shape, and duplicate_slide.',
+      'Execute a transaction-protected bounded declarative PowerPoint program under the PC-managed session policy. The input shape is exactly { program: { version: 1, operations: [...] }, explanation?: string }; do not place version or operations at the top level; do not stringify it and do not send JavaScript. Use snake_case fields except the bounded text-style properties. Supported operations are set_shape_text, set_shape_text_style (color/fontFamily/fontSize/bold/italic), set_shape_geometry, add_text_box, delete_shape, and duplicate_slide.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1220,8 +1253,9 @@ export function createPowerPointSkill(options: {
   presentationFlags?: PresentationVerificationFlags
   presentationTelemetry?: (event: PresentationTelemetryEvent) => void
 }): AgentSkill {
-  const masterXmlEditingSupported = options.platform?.toLowerCase() !== 'mac'
-  const nativeMasterEditingSupported = options.nativeMasterEditingSupported !== false
+  const isMac = options.platform?.toLowerCase() === 'mac'
+  const masterXmlEditingSupported = !isMac
+  const nativeMasterEditingSupported = !isMac && options.nativeMasterEditingSupported !== false
   const presentation =
     options.verificationAuthority && options.presentationFlags?.verifiedCompletion !== false
       ? createOfficePowerPointVerification({
@@ -1311,9 +1345,12 @@ export function createPowerPointSkill(options: {
   return {
     id: 'office-powerpoint',
     systemPrompt:
-      'Follow the WisWork Slides workflow for presentation tasks: inspect the presentation before planning; ask the user only when a material audience, purpose, or scope decision cannot be inferred; use plan_deck before the first mutation when creating or substantially rebuilding a deck; research facts and images when needed; apply bounded edits through proposals; and call verify_slides after the approved build before reporting completion. ' +
+      'Follow the WisWork Slides workflow for presentation tasks: inspect the presentation before planning; for a new deck, call ask_clarification unless the user already supplied or delegated the audience, focus, style, and page-count choices; then use plan_deck before the first mutation; run web_search and image_search for needed facts and visuals; apply bounded slide-level edits; inspect representative results with screenshot_slide; and call verify_slides after the approved build before reporting completion. ' +
       'PowerPoint reads are bounded. Every write creates an explicit proposal and is semantically verified after confirmation. execute_office_js accepts only a versioned declarative JSON program; JavaScript and ambient browser authority are rejected. XML tools accept only allowlisted bounded package parts.' +
-      ' Prefer inspect_slide_masters and native edit_slide_master for backgrounds, theme colors, and layout inheritance. PowerPoint for Mac must never use edit_slide_master_xml.',
+      ' ' +
+      (isMac
+        ? 'On PowerPoint for Mac, build new decks with slide-level tools and never call slide-master tools; finish with screenshot_slide and verify_slides.'
+        : 'Prefer inspect_slide_masters and native edit_slide_master for backgrounds, theme colors, and layout inheritance.'),
     tools: tools.filter(
       (tool) =>
         (masterXmlEditingSupported || tool.name !== 'edit_slide_master_xml') &&
@@ -1330,6 +1367,8 @@ export function createPowerPointSkill(options: {
         )
       try {
         assertNotCancelled(signal)
+        if (call.name === 'ask_clarification')
+          return failure(call.name, 'questionnaire_unavailable')
         if (call.name === 'plan_deck') {
           const plan = planDeckInput(call.input)
           return {

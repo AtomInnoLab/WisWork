@@ -249,7 +249,7 @@ export function createProductionCodexBootstrap(
             ...input,
             onToolEvent: (event) => {
               const active = documents.get(input.documentId)?.active
-              if (active && input.host === 'slides') {
+              if (active && (input.host === 'slides' || input.host === 'office-powerpoint')) {
                 if (event.toolName === 'ask_clarification') {
                   if (event.type === 'tool-start') active.pendingQuestionnaires.add(event.callId)
                   else if (event.type === 'tool-complete') {

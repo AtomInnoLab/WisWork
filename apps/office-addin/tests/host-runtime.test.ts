@@ -32,6 +32,7 @@ const inventories = {
     'set_cell_range',
   ],
   powerpoint: [
+    'ask_clarification',
     'bash',
     'duplicate_slide',
     'edit_slide_chart',

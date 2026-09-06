@@ -104,6 +104,19 @@ describe('PowerPoint compatibility skill', () => {
     })
   })
 
+  it('does not advertise the unreliable native master editor on PowerPoint for Mac', () => {
+    const skill = createPowerPointSkill({
+      adapter: adapter(),
+      proposals: createStructuredProposalController(),
+      platform: 'Mac',
+      nativeMasterEditingSupported: true,
+    })
+    const names = skill.tools.map((tool) => tool.name)
+    expect(names).not.toContain('edit_slide_master')
+    expect(names).not.toContain('inspect_slide_masters')
+    expect(skill.systemPrompt).toContain('build new decks with slide-level tools')
+  })
+
   it('rejects malformed PowerPoint plans without creating a proposal', async () => {
     const proposals = createStructuredProposalController()
     const skill = createPowerPointSkill({ adapter: adapter(), proposals })
@@ -225,6 +238,7 @@ describe('PowerPoint compatibility skill', () => {
       'list_slide_shapes',
       'read_slide_text',
       'verify_slides',
+      'ask_clarification',
       'plan_deck',
       'execute_office_js',
       'edit_slide_text',
@@ -358,9 +372,10 @@ describe('PowerPoint compatibility skill', () => {
       platform: 'Mac',
     })
 
-    expect(skill.tools.map((tool) => tool.name)).toContain('edit_slide_master')
+    expect(skill.tools.map((tool) => tool.name)).not.toContain('edit_slide_master')
+    expect(skill.tools.map((tool) => tool.name)).not.toContain('inspect_slide_masters')
     expect(skill.tools.map((tool) => tool.name)).not.toContain('edit_slide_master_xml')
-    expect(skill.systemPrompt).toContain('inspect_slide_masters')
+    expect(skill.systemPrompt).toContain('build new decks with slide-level tools')
     await expect(
       skill.executeTool(
         call('edit_slide_master_xml', {
