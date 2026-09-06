@@ -1157,3 +1157,34 @@ p {
     transition-duration: 0.01ms !important;
   }
 }
+
+.ppt-questionnaire {
+  margin: 12px 18px;
+  padding: 18px;
+  border-radius: 18px;
+  background: var(--surface-subtle);
+  display: grid;
+  gap: 18px;
+}
+.ppt-questionnaire label {
+  display: grid;
+  gap: 7px;
+}
+.ppt-questionnaire label > span {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.ppt-questionnaire select {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  color: var(--text-primary);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.ppt-questionnaire-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

@@ -146,6 +146,7 @@ const CATALOG = Object.freeze({
     list_slide_shapes: ['read', 'semantic-read'],
     read_slide_text: ['read', 'semantic-read'],
     verify_slides: ['read', 'bounded-render-facts'],
+    ask_clarification: ['read', 'semantic-read'],
     plan_deck: ['read', 'semantic-read'],
     edit_slide_text: ['mutate', 'transaction-proposal'],
     edit_slide_xml: ['mutate', 'transaction-proposal'],
@@ -755,7 +756,7 @@ export function createDocumentToolSession(
           execution = await awaitBounded(
             Promise.resolve(registration.executeRead(call, controller.signal)),
             controller.signal,
-            identity.host === 'slides' && call.name === 'ask_clarification'
+            call.name === 'ask_clarification'
               ? MAX_QUESTIONNAIRE_MS
               : maxCallMs,
           )

@@ -3,6 +3,13 @@ import type { OfficeProposal, StructuredProposal } from './proposal-controller.j
 export const MAX_PRESENTATION_EVENTS = 100
 export const MAX_PRESENTATION_TEXT = 12_000
 
+export interface OfficeClarificationQuestion {
+  readonly id: string
+  readonly label: string
+  readonly description?: string
+  readonly options: readonly string[]
+}
+
 export type PresentationProposal = OfficeProposal | StructuredProposal
 
 interface PresentationEventBase {

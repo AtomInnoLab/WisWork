@@ -19,6 +19,7 @@ import {
   boundedText,
   emptyPresentationTimeline,
   replacePresentationEvent,
+  type OfficeClarificationQuestion,
   type OfficePresentationTimeline,
   type ProposalPresentationEvent,
 } from './presentation-state.js'
@@ -37,6 +38,7 @@ export interface OfficeAgentSnapshot {
   errorMessage?: string
   retryable: boolean
   proposal?: OfficeProposal | StructuredProposal
+  questionnaire?: readonly OfficeClarificationQuestion[]
   timeline: OfficePresentationTimeline
 }
 
@@ -49,6 +51,8 @@ export interface OfficeAgentSession {
   reject(): void
   newTask(): void
   retry(): void
+  answerQuestionnaire?(answers: string): void
+  skipQuestionnaire?(): void
   logout(): void
   authenticationLost(): void
   dispose(): void
@@ -362,6 +366,7 @@ export function createOfficeAgentSession(dependencies: {
   let sessionEpoch = 0
   let activeAssistantId: string | undefined
   let lastInstruction = ''
+  let clarificationResolve: ((value: ToolExecution) => void) | undefined
   let runStartedAt = 0
   const staleTools = new Set<string>()
   const toolStartedAt = new Map<string, number>()
@@ -460,6 +465,64 @@ export function createOfficeAgentSession(dependencies: {
   const sessionSkill: AgentSkill = {
     ...dependencies.skill,
     async executeTool(call, signal): Promise<ToolExecutionOutcome> {
+      if (call.name === 'ask_clarification') {
+        if (clarificationResolve)
+          return {
+            output: 'questionnaire_in_progress',
+            isError: true,
+            mutated: false,
+            summary: 'Questionnaire already active',
+          }
+        const raw = Array.isArray(call.input.questions) ? call.input.questions : []
+        const questions: OfficeClarificationQuestion[] = raw
+          .slice(0, 4)
+          .map((value, index) => {
+            const item =
+              value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+            return {
+              id: typeof item.id === 'string' ? item.id.slice(0, 40) : `q${index + 1}`,
+              label: typeof item.label === 'string' ? boundedText(item.label) : '',
+              ...(typeof item.description === 'string'
+                ? { description: boundedText(item.description) }
+                : {}),
+              options: Array.isArray(item.options)
+                ? item.options
+                    .filter((option): option is string => typeof option === 'string')
+                    .slice(0, 5)
+                : [],
+            }
+          })
+          .filter((question) => question.label && question.options.length >= 2)
+        if (questions.length < 2)
+          return {
+            output: 'invalid_tool_input',
+            isError: true,
+            mutated: false,
+            summary: 'Questionnaire input invalid',
+          }
+        return suspendToolExecution(
+          new Promise<ToolExecution>((resolve) => {
+            clarificationResolve = resolve
+            publish({ questionnaire: questions, activity: '等待你完成问卷' })
+            signal?.addEventListener(
+              'abort',
+              () => {
+                if (clarificationResolve === resolve) {
+                  clarificationResolve = undefined
+                  publish({ questionnaire: undefined })
+                }
+                resolve({
+                  output: 'cancelled',
+                  isError: true,
+                  mutated: false,
+                  summary: 'Questionnaire cancelled',
+                })
+              },
+              { once: true },
+            )
+          }),
+        )
+      }
       if (staleTools.has(call.name)) {
         return {
           output: JSON.stringify({
@@ -570,6 +633,7 @@ export function createOfficeAgentSession(dependencies: {
       errorMessage: undefined,
       retryable: false,
       timeline: emptyPresentationTimeline(),
+      questionnaire: undefined,
     }
   }
 
@@ -902,6 +966,29 @@ export function createOfficeAgentSession(dependencies: {
         return
       const instruction = lastInstruction
       startRun(instruction)
+    },
+    answerQuestionnaire(answers) {
+      const resolve = clarificationResolve
+      if (!resolve) return
+      clarificationResolve = undefined
+      publish({ questionnaire: undefined, activity: '继续规划演示文稿…' })
+      resolve({
+        output: `User questionnaire answers:\n${boundedText(answers)}\nContinue with plan_deck, research, slide creation, screenshots, and verify_slides now.`,
+        mutated: false,
+        summary: 'Collected questionnaire answers',
+      })
+    },
+    skipQuestionnaire() {
+      const resolve = clarificationResolve
+      if (!resolve) return
+      clarificationResolve = undefined
+      publish({ questionnaire: undefined, activity: '继续规划演示文稿…' })
+      resolve({
+        output:
+          'The user delegated these choices. Decide professionally and continue with plan_deck now.',
+        mutated: false,
+        summary: 'Questionnaire choices delegated',
+      })
     },
     logout() {
       if (disposed) return

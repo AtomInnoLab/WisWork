@@ -74,7 +74,12 @@ async function startSlidesTurn() {
   })
   let result = 'pending'
   const running = engine
-    .startTurn({ documentId: 'doc', host: 'slides', generation: 1, text: 'make slides' })
+    .startTurn({
+      documentId: 'doc',
+      host: 'slides',
+      generation: 1,
+      text: 'make slides',
+    })
     .then(
       () => {
         result = 'done'
@@ -382,9 +387,13 @@ it('diagnoses thread and turn start boundaries without retaining request content
   await second.close()
 })
 
-it.each(['answered', 'cancelled', 'failed'])(
-  'keeps a questionnaire inside one host run; outcome=%s',
-  async (outcome) => {
+it.each(
+  ['slides', 'office-powerpoint'].flatMap((host) =>
+    ['answered', 'cancelled', 'failed'].map((outcome) => ({ host, outcome })),
+  ),
+)(
+  'keeps a $host questionnaire inside one host run; outcome=$outcome',
+  async ({ host, outcome }) => {
     const cancelled = outcome === 'cancelled'
     const engine = await createProductionCodexBootstrap({ fetchWithAuth: vi.fn() }).start({
       executablePath: '',
@@ -393,7 +402,7 @@ it.each(['answered', 'cancelled', 'failed'])(
     engine.registerDocument!({
       ownerId: 'owner',
       documentId: 'doc',
-      host: 'slides',
+      host: host as 'slides' | 'office-powerpoint',
       generation: 1,
       session: {
         credentials: {},
@@ -403,7 +412,12 @@ it.each(['answered', 'cancelled', 'failed'])(
     })
     let done = false
     const running = engine
-      .startTurn({ documentId: 'doc', host: 'slides', generation: 1, text: 'make slides' })
+      .startTurn({
+        documentId: 'doc',
+        host: host as 'slides' | 'office-powerpoint',
+        generation: 1,
+        text: 'make slides',
+      })
       .then(
         () => {
           done = true
