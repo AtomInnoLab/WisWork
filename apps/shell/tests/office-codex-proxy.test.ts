@@ -122,7 +122,7 @@ describe('Office Codex proxy', () => {
       async runOfficeTurn(input: any) {
         expect(
           input.toolSession.listTools(input.toolSession.credentials).map((tool: any) => tool.name),
-        ).toEqual(['get_document_text'])
+        ).toEqual(['get_document_text', 'execute_office_js'])
         input.onEvent({ type: 'terminal', status: 'completed' })
       },
     }
@@ -137,7 +137,11 @@ describe('Office Codex proxy', () => {
         messages: [],
         tools: [
           { name: 'get_document_text', description: 'read', input_schema: { type: 'object' } },
-          { name: 'execute_office_js', description: 'raw', input_schema: { type: 'object' } },
+          {
+            name: 'execute_office_js',
+            description: 'bounded declarative operations',
+            input_schema: { type: 'object' },
+          },
           { name: 'bash', description: 'forbidden', input_schema: { type: 'object' } },
         ],
       },
@@ -181,6 +185,54 @@ describe('Office Codex proxy', () => {
       sessionId: 'session_12345678',
       requestId: 'request_12345678',
       statement: { ...statement, host: 'office-powerpoint' },
+      executeTool: vi.fn(),
+    })
+    for await (const _chunk of response.body as AsyncIterable<Uint8Array>) {
+      /* drain */
+    }
+  })
+
+  it('keeps bounded declarative PowerPoint writes without granting raw Office authority', async () => {
+    const runtime = {
+      async runOfficeTurn(input: any) {
+        expect(
+          input.toolSession.listTools(input.toolSession.credentials).map((tool: any) => tool.name),
+        ).toEqual(['execute_office_js', 'edit_slide_text'])
+        input.onEvent({ type: 'terminal', status: 'completed' })
+      },
+    }
+    const proxy = createOfficeCodexProxy({
+      runtime: runtime as any,
+      rollout,
+      policyAuthority: createShellEnhancedPolicyAuthority(() => 0),
+    })
+    const response = await proxy({
+      body: {
+        system: 'PowerPoint rules',
+        messages: [{ role: 'user', content: 'Create a presentation' }],
+        tools: [
+          {
+            name: 'execute_office_js',
+            description: 'bounded declarative operations',
+            input_schema: { type: 'object' },
+          },
+          {
+            name: 'edit_slide_text',
+            description: 'bounded text edit',
+            input_schema: { type: 'object' },
+          },
+          {
+            name: 'propose_raw_office_edit',
+            description: 'elevated raw edit',
+            input_schema: { type: 'object' },
+          },
+        ],
+      },
+      signal: new AbortController().signal,
+      host: 'PowerPoint',
+      sessionId: 'session_12345678',
+      requestId: 'request_12345678',
+      statement: { ...statement, host: 'office-powerpoint', raw_office: false },
       executeTool: vi.fn(),
     })
     for await (const _chunk of response.body as AsyncIterable<Uint8Array>) {
