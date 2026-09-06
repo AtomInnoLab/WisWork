@@ -138,6 +138,9 @@ const CATALOG = Object.freeze({
     propose_raw_office_edit: ['mutate', 'raw-office-proposal'],
   }),
   'office-powerpoint': Object.freeze({
+    web_search: ['read', 'semantic-read'],
+    web_fetch: ['read', 'semantic-read'],
+    image_search: ['read', 'semantic-read'],
     inspect_slide_masters: ['read', 'semantic-read'],
     screenshot_slide: ['read', 'bounded-render-facts'],
     list_slide_shapes: ['read', 'semantic-read'],

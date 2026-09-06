@@ -158,14 +158,33 @@ const safeRunError = (error: string): SafeSessionError =>
   }
 
 function toolActivity(name: string, state: 'running' | 'complete' | 'error'): string {
+  const labels: Readonly<Record<string, string>> = {
+    web_search: '网页搜索',
+    web_fetch: '读取网页',
+    image_search: '图片搜索',
+    plan_deck: '规划演示文稿',
+    screenshot_slide: '检查幻灯片',
+    verify_slides: '验证演示文稿',
+    inspect_slide_masters: '检查母版',
+    list_slide_shapes: '读取页面元素',
+    read_slide_text: '读取幻灯片内容',
+    edit_slide_text: '编辑幻灯片文字',
+    edit_slide_xml: '编辑幻灯片版式',
+    edit_slide_chart: '编辑图表',
+    duplicate_slide: '复制幻灯片',
+    execute_office_js: '制作幻灯片',
+  }
+  const label = labels[name]
+  if (label)
+    return state === 'running' ? label : state === 'error' ? label + '未完成' : label + '完成'
   const attachment = name === 'read' || name === 'bash'
   const read = /^(?:get_|read_|list_|search_|screenshot_|verify_)/.test(name)
   const action = attachment ? '处理附件' : read ? '读取内容' : '准备修改'
   return state === 'running'
-    ? `正在${action}…`
+    ? '正在' + action + '…'
     : state === 'error'
-      ? `${action}未完成`
-      : `已${action}`
+      ? action + '未完成'
+      : '已' + action
 }
 
 const DIAGNOSTIC_TOOL_ERRORS = new Set([
@@ -471,6 +490,18 @@ export function createOfficeAgentSession(dependencies: {
   dependencies.remoteTools?.setToolHandler?.(async (call) => {
     const definition = sessionSkill.tools.find((tool) => tool.name === call.toolName)
     if (!definition) return { output: 'unknown_tool', isError: true }
+    const presentationId = eventId()
+    const startedAt = Date.now()
+    const runningSummary = toolActivity(call.toolName, 'running')
+    append({
+      id: presentationId,
+      kind: 'tool',
+      callId: call.callId,
+      name: boundedText(call.toolName),
+      summary: runningSummary,
+      state: 'running',
+    })
+    publish({ activity: runningSummary })
     const invalidateRemoteProposal = () => proposals.newTurn()
     call.signal.addEventListener('abort', invalidateRemoteProposal, { once: true })
     try {
@@ -498,9 +529,28 @@ export function createOfficeAgentSession(dependencies: {
               }),
             ])
           : outcome
+      const finishedSummary = toolActivity(call.toolName, settled.isError ? 'error' : 'complete')
+      replace(presentationId, (event) =>
+        event.kind === 'tool'
+          ? {
+              ...event,
+              summary: finishedSummary,
+              state: settled.isError ? 'error' : 'complete',
+              durationMs: Date.now() - startedAt,
+            }
+          : event,
+      )
+      publish({ activity: finishedSummary })
       call.signal.removeEventListener('abort', invalidateRemoteProposal)
       return { output: settled.output, ...(settled.isError ? { isError: true } : {}) }
     } catch {
+      const failedSummary = toolActivity(call.toolName, 'error')
+      replace(presentationId, (event) =>
+        event.kind === 'tool'
+          ? { ...event, summary: failedSummary, state: 'error', durationMs: Date.now() - startedAt }
+          : event,
+      )
+      publish({ activity: failedSummary })
       if (call.signal.aborted) proposals.newTurn()
       return { output: 'tool_execution_failed', isError: true }
     } finally {
@@ -527,11 +577,11 @@ export function createOfficeAgentSession(dependencies: {
     transport: dependencies.transport,
     skill: sessionSkill,
     events: {
-      onPresentationClarify: () =>
+      onPresentationClarify: ({ question }) =>
         append({
           id: eventId(),
           kind: 'system',
-          text: dependencies.presentationText?.('clarify') ?? 'clarify',
+          text: boundedText(question || dependencies.presentationText?.('clarify') || 'clarify'),
         }),
       onPresentationPlan: ({ steps, requiresConfirmation }) =>
         append({

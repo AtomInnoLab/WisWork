@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
+  AiTypingIndicator,
   Markdown,
   PresentationActivityGroup,
   PresentationEmptyState,
@@ -10,6 +11,7 @@ import {
   translatePresentationVerification,
   translateRawOfficeConfirmation,
 } from '@wiswork/i18n'
+import { createOfficeWebSkill } from './skills/shared/web-skill.js'
 import { createOfficeHostRuntime, type OfficeHostRuntime } from './agent/host-runtime.js'
 import {
   officeCapabilityFlags,
@@ -568,23 +570,11 @@ function PowerPointTimeline(props: {
       />,
     )
   }
-  const hasRunningTool = props.timeline.some(
-    (event) => event.kind === 'tool' && event.state === 'running',
-  )
-  if (props.busy && !hasRunningTool) {
+  if (props.busy) {
     nodes.push(
-      <PresentationActivityGroup
-        key="active-agent-work"
-        items={[
-          {
-            id: 'active-agent-work',
-            label: props.activity || '思考中',
-            status: 'running',
-          },
-        ]}
-        workingLabel="处理中…"
-        workedLabel={(count) => `已完成 · ${count} 个步骤`}
-      />,
+      <div className="ai-typing-row" key="active-agent-work">
+        <AiTypingIndicator label="继续处理中" />
+      </div>,
     )
   }
   return <>{nodes}</>
@@ -1083,7 +1073,7 @@ export function ConfiguredApp(
       (transportMode === 'loopback'
         ? createPcBridgeSession()
         : createOfficeRelaySession({
-            capabilities: ['agent.v1'],
+            capabilities: ['agent.v1', 'web-search.v1', 'image-search.v1'],
             persistentPairing: __WISWORK_OFFICE_PAIRING_RESUME__,
           })),
     [props.connectionBridge, transportMode],
@@ -1162,6 +1152,15 @@ export function ConfiguredApp(
                 enableImportMedia: capabilityFlags.importMedia,
                 document,
                 diagnostics,
+                ...('capabilityFetch' in bridge && activeHost === 'powerpoint'
+                  ? {
+                      additionalSkills: [
+                        createOfficeWebSkill(bridge, {
+                          advertisedCapabilities: ['web-search.v1', 'image-search.v1'],
+                        }),
+                      ],
+                    }
+                  : {}),
               })
               const session = createOfficeAgentSession({
                 transport: createPcBridgeAgentTransport(bridge),
