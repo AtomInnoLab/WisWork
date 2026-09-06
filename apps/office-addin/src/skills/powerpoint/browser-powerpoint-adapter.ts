@@ -120,7 +120,14 @@ export type PowerPointMasterOperation =
       show_master_graphics: boolean
     }
 
+export interface PowerPointPresentationState {
+  slideCount: number
+  selectedSlideIndexes: number[]
+  api: { v12: boolean; v14: boolean; v15: boolean; v18: boolean; v110: boolean }
+}
+
 export interface PowerPointAdapter {
+  getPresentationState(signal?: AbortSignal): Promise<PowerPointPresentationState>
   inspectSlideMasters(signal?: AbortSignal): Promise<PowerPointMasterState>
   executeMasterOperations(
     operations: PowerPointMasterOperation[],
@@ -218,7 +225,7 @@ function cancelled(signal?: AbortSignal): void {
   if (signal?.aborted) throw new Error('cancelled')
 }
 
-function runtime(minimumVersion: '1.4' | '1.8' | '1.10'): RuntimeRecord {
+function runtime(minimumVersion: '1.2' | '1.4' | '1.8' | '1.10'): RuntimeRecord {
   const root = globalThis as unknown as RuntimeRecord
   const office = root.Office as RuntimeRecord | undefined
   const powerPoint = root.PowerPoint as RuntimeRecord | undefined
@@ -269,23 +276,15 @@ function shapeInfo(value: RuntimeRecord): PowerPointShape {
 }
 
 function loadSlides(slides: RuntimeRecord): void {
-  ;(slides.load as (properties: unknown) => void)({
-    $top: MAX_POWERPOINT_VERIFY_SLIDES + 1,
-    id: true,
-  })
+  // PowerPoint for Mac is more reliable with the documented collection path than
+  // with OfficeExtension load options such as $top. Bound the loaded result after sync.
+  ;(slides.load as (properties: string) => void)('items/id')
 }
 
-function loadShapes(shapes: RuntimeRecord, limit = MAX_POWERPOINT_VERIFY_SHAPES): void {
-  ;(shapes.load as (properties: unknown) => void)({
-    $top: limit + 1,
-    id: true,
-    name: true,
-    type: true,
-    left: true,
-    top: true,
-    width: true,
-    height: true,
-  })
+function loadShapes(shapes: RuntimeRecord, _limit = MAX_POWERPOINT_VERIFY_SHAPES): void {
+  ;(shapes.load as (properties: string) => void)(
+    'items/id,items/name,items/type,items/left,items/top,items/width,items/height',
+  )
 }
 
 async function getSlide(
@@ -335,6 +334,59 @@ function slideSemanticFingerprint(value: string): string {
 }
 
 export class BrowserPowerPointAdapter implements PowerPointAdapter {
+  async getPresentationState(signal?: AbortSignal): Promise<PowerPointPresentationState> {
+    cancelled(signal)
+    const root = globalThis as unknown as RuntimeRecord
+    const requirements = (
+      (root.Office as RuntimeRecord | undefined)?.context as RuntimeRecord | undefined
+    )?.requirements as RuntimeRecord | undefined
+    const supports = requirements?.isSetSupported
+    const api = (version: string) => {
+      try {
+        return (
+          typeof supports === 'function' &&
+          (supports as (name: string, version: string) => boolean).call(
+            requirements,
+            'PowerPointApi',
+            version,
+          ) === true
+        )
+      } catch {
+        return false
+      }
+    }
+    return this.run('1.2', async (context) => {
+      const presentation = context.presentation as RuntimeRecord
+      const slides = presentation.slides as RuntimeRecord
+      if (
+        typeof slides?.load !== 'function' ||
+        typeof presentation.getSelectedSlides !== 'function'
+      )
+        throw new Error('office_api_unsupported')
+      const selected = (presentation.getSelectedSlides as () => RuntimeRecord)()
+      if (typeof selected?.load !== 'function') throw new Error('office_api_unsupported')
+      ;(slides.load as (properties: string) => void)('items/id')
+      ;(selected.load as (properties: string) => void)('items/id')
+      await sync(context, signal)
+      const items = (slides.items as RuntimeRecord[]) ?? []
+      const selectedIds = new Set(
+        ((selected.items as RuntimeRecord[]) ?? []).map((item) => string(item.id)),
+      )
+      return {
+        slideCount: items.length,
+        selectedSlideIndexes: items.flatMap((item, index) =>
+          selectedIds.has(string(item.id)) ? [index] : [],
+        ),
+        api: {
+          v12: api('1.2'),
+          v14: api('1.4'),
+          v15: api('1.5'),
+          v18: api('1.8'),
+          v110: api('1.10'),
+        },
+      }
+    })
+  }
   async readShapeTextStyle(slideIndex: number, shapeId: string, signal?: AbortSignal) {
     return this.run('1.4', async (context) => {
       const presentation = context.presentation as RuntimeRecord
@@ -363,7 +415,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     })
   }
   private run<T>(
-    minimumVersion: '1.4' | '1.8' | '1.10',
+    minimumVersion: '1.2' | '1.4' | '1.8' | '1.10',
     callback: (context: RuntimeRecord) => Promise<T>,
   ): Promise<T> {
     const powerPoint = runtime(minimumVersion)

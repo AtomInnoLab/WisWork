@@ -247,7 +247,8 @@ describe('fixed dynamic MCP gateway', () => {
       const never = new Promise<any>((resolve) => {
         settle = resolve
       })
-      const gateway = await startDynamicMcpGateway()
+      const diagnostics: string[] = []
+      const gateway = await startDynamicMcpGateway((code) => diagnostics.push(code))
       const close = gateway.register({
         ownerId: 'owner',
         documentId: 'doc-proposal',
@@ -315,6 +316,8 @@ describe('fixed dynamic MCP gateway', () => {
           }),
         )
         expect(onProposal).toHaveBeenCalledOnce()
+        expect(diagnostics).toContain('gateway_tool_call_failed')
+        expect(diagnostics).not.toContain('gateway_tool_call_completed')
         expect(onProposal.mock.calls[0]![0].expiresAt - Date.now()).toBeGreaterThan(
           Math.min(ttlMs, 300_000) - 10_000,
         )

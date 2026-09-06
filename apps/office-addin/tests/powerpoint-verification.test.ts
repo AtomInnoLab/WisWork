@@ -64,6 +64,11 @@ const verificationBinding = (call: typeof textCall, targets = ['slide-1/shape-1'
 
 function productionAdapter(state: { text: string; left: number }): PowerPointAdapter {
   return {
+    getPresentationState: vi.fn().mockResolvedValue({
+      slideCount: 1,
+      selectedSlideIndexes: [0],
+      api: { v12: true, v14: true, v15: true, v18: true, v110: true },
+    }),
     inspectSlideMasters: vi.fn().mockResolvedValue({ masters: [] }),
     executeMasterOperations: vi.fn(),
     screenshotSlide: vi.fn(),

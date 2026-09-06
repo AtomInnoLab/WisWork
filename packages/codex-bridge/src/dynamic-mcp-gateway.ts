@@ -269,7 +269,7 @@ export async function startDynamicMcpGateway(
             isError: execution.isError === true,
           })
           diagnostic('gateway_proposal_created')
-          diagnostic('gateway_tool_call_completed')
+          diagnostic(execution.isError ? 'gateway_tool_call_failed' : 'gateway_tool_call_completed')
           started = undefined
           return execution
         }
@@ -285,7 +285,7 @@ export async function startDynamicMcpGateway(
           toolName: documentCall.name,
           isError: execution.isError === true,
         })
-        diagnostic('gateway_tool_call_completed')
+        diagnostic(execution.isError ? 'gateway_tool_call_failed' : 'gateway_tool_call_completed')
         started = undefined
         return execution
       } catch (error) {

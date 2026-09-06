@@ -222,6 +222,51 @@ describe('Office agent session', () => {
     expect(setToolHandler).toHaveBeenLastCalledWith(undefined)
   })
 
+  it('records paired Enhanced semantic tool failures in Taskpane diagnostics', async () => {
+    let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
+    const diagnostics = {
+      startTrace: vi.fn(() => 'trace'),
+      setTool: vi.fn(),
+      record: vi.fn(),
+      clear: vi.fn(),
+    }
+    createOfficeAgentSession({
+      transport: transportHarness().transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [
+          { name: 'list_slide_shapes', description: 'read', inputSchema: { type: 'object' } },
+        ],
+        executeTool: vi.fn(async () => ({
+          output: 'office_read_failed',
+          isError: true,
+          mutated: false,
+          summary: 'failed',
+        })),
+      },
+      proposals: proposalsHarness().controller,
+      diagnostics,
+      remoteTools: {
+        setToolHandler: (next) => {
+          handler = next
+        },
+      },
+    })
+    await handler!({
+      turnId: 'turn_12345678',
+      callId: 'call_12345678',
+      generation: 1,
+      toolName: 'list_slide_shapes',
+      input: { slide_index: 0 },
+      signal: new AbortController().signal,
+    })
+    expect(diagnostics.setTool).toHaveBeenCalledWith('list_slide_shapes')
+    expect(diagnostics.record).toHaveBeenCalledWith(
+      expect.objectContaining({ phase: 'tool', errorCode: 'office_read_failed' }),
+    )
+  })
+
   it('preserves bounded local diagnostics when Relay authentication is lost', () => {
     const diagnostics = {
       startTrace: vi.fn(() => 'trace'),
