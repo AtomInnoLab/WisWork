@@ -337,6 +337,7 @@ export async function beginSlidesHostRun({
 
 export async function completeSlidesHostRun({
   cancelled,
+  qualityReviewOwner = 'host',
   finishHistoryBatch,
   isCurrent,
   hasQcPages,
@@ -346,6 +347,7 @@ export async function completeSlidesHostRun({
   publishHistorySnapshot,
 }: {
   cancelled: boolean
+  qualityReviewOwner?: 'host' | 'agent'
   finishHistoryBatch: () => Promise<unknown>
   isCurrent?: () => boolean
   hasQcPages: () => boolean
@@ -361,7 +363,7 @@ export async function completeSlidesHostRun({
   } finally {
     if (!isCurrent || isCurrent()) {
       setBusy(false)
-      if (cancelled) clearQcPages()
+      if (cancelled || qualityReviewOwner === 'agent') clearQcPages()
       else if (hasQcPages()) runQc()
     }
   }

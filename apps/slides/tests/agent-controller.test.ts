@@ -710,6 +710,22 @@ describe('Slides interactive agent controller', () => {
     expect(done).not.toHaveBeenCalled()
   })
 
+  it('leaves visual review in the agent run instead of launching post-run QC', async () => {
+    const runQc = vi.fn()
+    const clearQcPages = vi.fn()
+    await completeSlidesHostRun({
+      cancelled: false,
+      qualityReviewOwner: 'agent',
+      finishHistoryBatch: async () => undefined,
+      hasQcPages: () => true,
+      clearQcPages,
+      runQc,
+      setBusy: vi.fn(),
+    })
+    expect(runQc).not.toHaveBeenCalled()
+    expect(clearQcPages).toHaveBeenCalledOnce()
+  })
+
   it('uses the production Slides coordinator for attachments, history snapshots, QC, and clarification stop', async () => {
     const order: string[] = []
     const attachments = [{ name: 'brief.pdf', path: '/brief.pdf' }]

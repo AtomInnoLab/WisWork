@@ -32,7 +32,6 @@ import { shouldShowStreamingProgress } from './streaming-progress'
 import {
   applyQcGeometryFixes,
   buildVisualQcContext,
-  buildVisualQcRepairInstruction,
   captureCurrentQcShot,
   isQcEnabled,
   qcSlidePage,
@@ -669,7 +668,6 @@ export function AiPanel({
   const activeRunTokenRef = useRef(0)
   /** Pages landed by this run's generation calls, pending the post-generation layout QC pass */
   const qcPagesRef = useRef<number[]>([])
-  const qcRepairAttemptsRef = useRef(0)
   const qcAbortRef = useRef<AbortController | null>(null)
   const qcRunningRef = useRef(false)
   const completedQcTransactionsRef = useRef(new Set<string>())
@@ -1634,6 +1632,7 @@ export function AiPanel({
             })
             void completeSlidesHostRun({
               cancelled,
+              qualityReviewOwner: 'agent',
               finishHistoryBatch: () => finishHistoryBatch(false),
               isCurrent: () => launchTokenRef.current === activeRunTokenRef.current,
               hasQcPages: () => qcPagesRef.current.length > 0,
@@ -1999,7 +1998,6 @@ export function AiPanel({
       attachments?: AttachmentMeta[]
       prequeued?: boolean
       queueTaskId?: string
-      qcRepair?: boolean
     },
   ): boolean => {
     const loop = loopRef.current
@@ -2016,7 +2014,6 @@ export function AiPanel({
     )
       return false
     runStartingRef.current = true
-    if (!opts?.qcRepair) qcRepairAttemptsRef.current = 0
     const launchToken = ++launchTokenRef.current
     activeRunTokenRef.current = launchToken
     setInput('')
@@ -2336,29 +2333,6 @@ export function AiPanel({
         })
         persistMessage('assistant', finalText)
         setBusy(false)
-        const repair = buildVisualQcRepairInstruction(
-          contextOutcomes,
-          qcRepairAttemptsRef.current,
-          controller.signal.aborted,
-        )
-        if (repair) {
-          // Defer until the preceding onDone/queue cleanup has settled. A new user
-          // run or Stop wins over this internal continuation.
-          queueMicrotask(() => {
-            if (
-              controller.signal.aborted ||
-              activeRunTokenRef.current !== sessionToken ||
-              launchTokenRef.current !== sessionToken ||
-              activeQueueRunRef.current
-            )
-              return
-            qcRepairAttemptsRef.current += 1
-            runWith(repair, '继续修复截图检查发现的问题，并重新截图验证。', {
-              qcRepair: true,
-              attachments: [],
-            })
-          })
-        }
       }
     }
   }
