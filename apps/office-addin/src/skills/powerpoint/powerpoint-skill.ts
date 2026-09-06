@@ -144,10 +144,20 @@ const textEditInput = exactObject({
   explanation: optionalField(stringField({ maxLength: 50 })),
 })
 const slideProperties = {
-  slide_index: { type: 'integer', minimum: 0, maximum: MAX_SLIDE_INDEX },
+  slide_index: {
+    type: 'integer',
+    minimum: 0,
+    maximum: MAX_SLIDE_INDEX,
+    description: "Zero-based slide index: the user's slide 1 is index 0.",
+  },
   explanation: { type: 'string', maxLength: 50 },
 } as const
-const operationSlideIndex = { type: 'integer', minimum: 0, maximum: MAX_SLIDE_INDEX } as const
+const operationSlideIndex = {
+  type: 'integer',
+  minimum: 0,
+  maximum: MAX_SLIDE_INDEX,
+  description: "Zero-based slide index: the user's slide 1 is index 0.",
+} as const
 const operationShapeId = { type: 'string', minLength: 1, maxLength: 256 } as const
 const geometryProperties = {
   left: { type: 'number' },
@@ -348,6 +358,17 @@ const masterProgramSchema = {
   additionalProperties: false,
 } as const
 const tools = [
+  {
+    name: 'get_presentation_state',
+    description:
+      'Read the bounded PowerPoint document state before planning or editing. Returns slide count, selected zero-based slide indices, and supported PowerPoint API versions.',
+    inputSchema: {
+      type: 'object',
+      properties: { explanation: { type: 'string', maxLength: 50 } },
+      required: [],
+      additionalProperties: false,
+    },
+  },
   {
     name: 'inspect_slide_masters',
     description: 'Inspect bounded native slide masters, layouts, backgrounds, and theme colors.',
@@ -1341,7 +1362,7 @@ export function createPowerPointSkill(options: {
   return {
     id: 'office-powerpoint',
     systemPrompt:
-      'Follow the WisWork Slides workflow for presentation tasks: inspect the presentation before planning; for a new deck, you must call ask_clarification unless the user already supplied or delegated the audience, focus, style, and page-count choices. Never replace that tool call with prose questions; the host renders its model-authored questions as interactive feedback and returns the answers so you can continue the same task. Then use plan_deck before the first mutation; run web_search and image_search for needed facts and visuals; apply bounded slide-level edits; inspect representative results with screenshot_slide; and call verify_slides after the approved build before reporting completion. ' +
+      'Follow the WisWork Slides workflow for presentation tasks: call get_presentation_state first, then inspect the presentation before planning; all slide_index values are zero-based, so the user’s first slide is index 0; for a new deck, you must call ask_clarification unless the user already supplied or delegated the audience, focus, style, and page-count choices. Never replace that tool call with prose questions; the host renders its model-authored questions as interactive feedback and returns the answers so you can continue the same task. Then use plan_deck before the first mutation; run web_search and image_search for needed facts and visuals; apply bounded slide-level edits; inspect representative results with screenshot_slide; and call verify_slides after the approved build before reporting completion. ' +
       'PowerPoint reads are bounded. Every write creates an explicit proposal and is semantically verified after confirmation. execute_office_js accepts only a versioned declarative JSON program; JavaScript and ambient browser authority are rejected. XML tools accept only allowlisted bounded package parts.' +
       ' ' +
       (isMac
@@ -1365,6 +1386,14 @@ export function createPowerPointSkill(options: {
         assertNotCancelled(signal)
         if (call.name === 'ask_clarification')
           return failure(call.name, 'questionnaire_unavailable')
+        if (call.name === 'get_presentation_state') {
+          verifyInput(call.input)
+          return {
+            output: boundedJson(await options.adapter.getPresentationState(signal)),
+            mutated: false,
+            summary: 'Read PowerPoint presentation state',
+          }
+        }
         if (call.name === 'plan_deck') {
           const plan = planDeckInput(call.input)
           return {

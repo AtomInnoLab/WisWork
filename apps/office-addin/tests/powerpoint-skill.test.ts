@@ -12,6 +12,11 @@ const png = 'iVBORw0KGgoAAAA='
 
 function adapter(overrides: Partial<PowerPointAdapter> = {}): PowerPointAdapter {
   return {
+    getPresentationState: vi.fn().mockResolvedValue({
+      slideCount: 1,
+      selectedSlideIndexes: [0],
+      api: { v12: true, v14: true, v15: true, v18: true, v110: true },
+    }),
     inspectSlideMasters: vi.fn().mockResolvedValue({
       masters: [
         {
@@ -104,6 +109,31 @@ describe('PowerPoint compatibility skill', () => {
       summary: 'Planned 2 slides',
       output: expect.stringContaining('New hires reach their first useful result in seven days'),
     })
+  })
+
+  it('exposes deterministic presentation state and explicit zero-based slide contracts', async () => {
+    const fake = adapter()
+    const skill = createPowerPointSkill({
+      adapter: fake,
+      proposals: createStructuredProposalController(),
+    })
+    await expect(skill.executeTool(call('get_presentation_state'))).resolves.toMatchObject({
+      output: expect.stringContaining('slideCount'),
+      mutated: false,
+    })
+    expect(fake.getPresentationState).toHaveBeenCalledOnce()
+    for (const tool of skill.tools) {
+      const schema = tool.inputSchema as any
+      if (schema.properties?.slide_index)
+        expect(schema.properties.slide_index.description).toContain('index 0')
+    }
+    const officeJs = skill.tools.find((tool) => tool.name === 'execute_office_js')!
+    const operations = (officeJs.inputSchema as any).properties.program.properties.operations.items
+      .anyOf
+    for (const operation of operations) {
+      if (operation.properties?.slide_index)
+        expect(operation.properties.slide_index.description).toContain('index 0')
+    }
   })
 
   it('does not advertise the unreliable native master editor on PowerPoint for Mac', () => {
@@ -235,6 +265,7 @@ describe('PowerPoint compatibility skill', () => {
       proposals: createStructuredProposalController(),
     })
     expect(skill.tools.map((tool) => tool.name)).toEqual([
+      'get_presentation_state',
       'inspect_slide_masters',
       'screenshot_slide',
       'list_slide_shapes',
@@ -1224,6 +1255,25 @@ describe('PowerPoint compatibility skill', () => {
 })
 
 describe('browser PowerPoint adapter', () => {
+  it('reads slide count, selected zero-based indices, and the API ladder', async () => {
+    const slides = { items: [{ id: 'slide-1' }, { id: 'slide-2' }], load: vi.fn() }
+    const selected = { items: [{ id: 'slide-2' }], load: vi.fn() }
+    const isSetSupported = vi.fn((_name: string, version: string) => version !== '1.10')
+    Object.assign(globalThis, {
+      Office: { context: { host: 'PowerPoint', requirements: { isSetSupported } } },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides, getSelectedSlides: () => selected }, sync: vi.fn() }),
+      },
+    })
+    await expect(new BrowserPowerPointAdapter().getPresentationState()).resolves.toEqual({
+      slideCount: 2,
+      selectedSlideIndexes: [1],
+      api: { v12: true, v14: true, v15: true, v18: true, v110: false },
+    })
+    expect(slides.load).toHaveBeenCalledWith('items/id')
+  })
+
   it('rejects master package replacement on Mac before entering PowerPoint.run', async () => {
     const run = vi.fn()
     Object.assign(globalThis, {

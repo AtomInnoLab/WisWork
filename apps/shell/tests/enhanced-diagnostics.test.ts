@@ -195,6 +195,21 @@ describe('EnhancedDiagnosticsStore', () => {
     expect(store.recent()[0]).toMatchObject({ failureCode: 'turn_failed' })
   })
 
+  it('records semantic document tool failure distinctly from transport completion', () => {
+    const { store } = fixture()
+    const id = store.beginTask('office-powerpoint')
+    store.record('gateway_tool_call_failed')
+    store.finishTask(id, 'succeeded')
+    expect(store.recent()[0]!.events).toContainEqual(
+      expect.objectContaining({
+        component: 'mcp',
+        phase: 'tool',
+        outcome: 'failed',
+        code: 'mcp_tool_failed',
+      }),
+    )
+  })
+
   it('records confirmation expiry distinctly from runtime failure', () => {
     const { store } = fixture()
     const id = store.beginTask('slides')

@@ -61,6 +61,7 @@ export type DiagnosticSafeCode =
   | 'carrier_authorization_mismatch'
   | 'mcp_tool_started'
   | 'mcp_tool_completed'
+  | 'mcp_tool_failed'
   | 'mcp_tool_denied'
   | 'turn_started'
   | 'turn_completed'
@@ -111,6 +112,7 @@ const SAFE_CODES = new Set<DiagnosticSafeCode>([
   'carrier_authorization_mismatch',
   'mcp_tool_started',
   'mcp_tool_completed',
+  'mcp_tool_failed',
   'mcp_tool_denied',
   'turn_started',
   'turn_completed',
@@ -406,6 +408,8 @@ function safeDiagnostic(code: string): {
     return { component: 'mcp', phase: 'tool', outcome: 'started', code: 'mcp_tool_started' }
   if (code === 'gateway_tool_call_completed')
     return { component: 'mcp', phase: 'tool', outcome: 'succeeded', code: 'mcp_tool_completed' }
+  if (code === 'gateway_tool_call_failed')
+    return { component: 'mcp', phase: 'tool', outcome: 'failed', code: 'mcp_tool_failed' }
   const denialReason =
     /^gateway_tool_call_denied_(carrier_invalid|carrier_input_invalid|capability_invalid|tool_unavailable|carrier_mismatch|proposal_summary_invalid|proposal_outcome_invalid|proposal_handler_unavailable)$/.exec(
       code,

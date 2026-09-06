@@ -562,6 +562,7 @@ export function createOfficeAgentSession(dependencies: {
   dependencies.remoteTools?.setToolHandler?.(async (call) => {
     const definition = sessionSkill.tools.find((tool) => tool.name === call.toolName)
     if (!definition) return { output: 'unknown_tool', isError: true }
+    diagnose((diagnostics) => diagnostics.setTool(call.toolName))
     const presentationId = eventId()
     const startedAt = Date.now()
     const runningSummary = toolActivity(call.toolName, 'running')
@@ -613,6 +614,16 @@ export function createOfficeAgentSession(dependencies: {
           : event,
       )
       publish({ activity: finishedSummary })
+      if (settled.isError) {
+        const errorCode = diagnosticToolError(settled.output)
+        diagnose((diagnostics) =>
+          diagnostics.record({
+            phase: 'tool',
+            errorCode,
+            durationMs: Math.max(0, Date.now() - startedAt),
+          }),
+        )
+      }
       call.signal.removeEventListener('abort', invalidateRemoteProposal)
       return { output: settled.output, ...(settled.isError ? { isError: true } : {}) }
     } catch {
@@ -623,6 +634,13 @@ export function createOfficeAgentSession(dependencies: {
           : event,
       )
       publish({ activity: failedSummary })
+      diagnose((diagnostics) =>
+        diagnostics.record({
+          phase: 'tool',
+          errorCode: call.signal.aborted ? 'cancelled' : 'tool_execution_failed',
+          durationMs: Math.max(0, Date.now() - startedAt),
+        }),
+      )
       if (call.signal.aborted) proposals.newTurn()
       return { output: 'tool_execution_failed', isError: true }
     } finally {
