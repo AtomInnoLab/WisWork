@@ -98,9 +98,10 @@ it('diagnoses thread and turn start boundaries without retaining request content
   await second.close()
 })
 
-it.each([false, true])(
-  'keeps a questionnaire inside one host run; cancelled=%s',
-  async (cancelled) => {
+it.each(['answered', 'cancelled', 'failed'])(
+  'keeps a questionnaire inside one host run; outcome=%s',
+  async (outcome) => {
+    const cancelled = outcome === 'cancelled'
     const engine = await createProductionCodexBootstrap({ fetchWithAuth: vi.fn() }).start({
       executablePath: '',
       onCrash: vi.fn(),
@@ -119,9 +120,12 @@ it.each([false, true])(
     let done = false
     const running = engine
       .startTurn({ documentId: 'doc', host: 'slides', generation: 1, text: 'make slides' })
-      .then(() => {
-        done = true
-      })
+      .then(
+        () => {
+          done = true
+        },
+        (error: Error) => error,
+      )
     await new Promise((r) => setTimeout(r, 0))
     mock.document.onToolEvent({
       type: 'tool-start',
@@ -139,9 +143,15 @@ it.each([false, true])(
       type: 'tool-complete',
       callId: 'survey',
       toolName: 'ask_clarification',
-      isError: false,
+      isError: outcome === 'failed',
     })
     await new Promise((r) => setTimeout(r, 0))
+    if (outcome === 'failed') {
+      expect(await running).toMatchObject({ message: 'enhanced_questionnaire_incomplete' })
+      expect(done).toBe(false)
+      await engine.close()
+      return
+    }
     if (cancelled) {
       await running
       expect(mock.startTurn).toHaveBeenCalledTimes(1)

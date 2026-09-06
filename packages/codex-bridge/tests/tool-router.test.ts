@@ -32,11 +32,11 @@ const readTool = {
   inputSchema: { type: 'object' },
 }
 const writeTool = { name: 'replace_blocks', description: 'Write.', inputSchema: { type: 'object' } }
-function policyGrant() {
+function policyGrant(host: 'docs' | 'slides' = 'docs') {
   const grant = Object.freeze({})
   const snapshot = {
     generation: 4,
-    host: 'docs',
+    host,
     policy: rollout,
     capabilities: ['semantic-read', 'transaction-proposal'],
   } as const
@@ -81,6 +81,48 @@ function fixture(overrides: Partial<DocumentToolRegistration> = {}) {
 }
 
 describe('document-scoped tool session', () => {
+  it('waits for human questionnaire answers beyond the ordinary read timeout', async () => {
+    vi.useFakeTimers()
+    let answer!: (value: ToolExecution) => void
+    const f = fixture({
+      identity: {
+        ownerId: 'owner',
+        host: 'slides',
+        documentId: 'doc',
+        sessionId: 'session_1',
+        generation: 4,
+      },
+      manifest: createDocumentToolManifest({
+        ...policyGrant('slides'),
+        tools: [{ ...readTool, name: 'ask_clarification' }],
+        policy: { ask_clarification: 'read' },
+      }),
+      executeRead: () =>
+        new Promise((resolve) => {
+          answer = resolve
+        }),
+    })
+    try {
+      let settled = false
+      const pending = Promise.resolve(
+        f.session.callTool(f.session.credentials, {
+          id: 'survey',
+          name: 'ask_clarification',
+          input: {},
+        }),
+      ).then((result) => {
+        settled = true
+        return result
+      })
+      await vi.advanceTimersByTimeAsync(90_000)
+      expect(settled).toBe(false)
+      answer({ output: 'answers', summary: 'answered', mutated: false })
+      await expect(pending).resolves.toMatchObject({ output: 'answers' })
+    } finally {
+      f.session.close()
+      vi.useRealTimers()
+    }
+  })
   it('does not claim another proposal when the requested consent already expired', async () => {
     vi.useFakeTimers()
     const f = fixture()

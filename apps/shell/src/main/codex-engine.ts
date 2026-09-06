@@ -147,6 +147,7 @@ export function createProductionCodexBootstrap(
         readonly pendingQuestionnaires: Set<string>
         questionnaireNeedsFollowup: boolean
         questionnaireRetries: number
+        questionnaireFailure?: Error
         lastFailure?: Error
         deferredTerminal?: { status: 'completed' | 'cancelled' | 'failed'; error?: Error }
         proposalFailure?: 'cancelled' | 'failed'
@@ -255,6 +256,8 @@ export function createProductionCodexBootstrap(
                   else if (event.type === 'tool-complete') {
                     active.pendingQuestionnaires.delete(event.callId)
                     if (!event.isError) active.questionnaireNeedsFollowup = true
+                    else
+                      active.questionnaireFailure = new Error('enhanced_questionnaire_incomplete')
                   }
                 } else if (event.type === 'tool-complete' && !event.isError) {
                   const tool = input.session
@@ -387,6 +390,10 @@ export function createProductionCodexBootstrap(
               else if (!settled && !active.deferredTerminal) deadline.touch()
             },
             requestSettle(status, error) {
+              if (status === 'completed' && active.questionnaireFailure) {
+                active.settle('failed', active.questionnaireFailure)
+                return
+              }
               if (
                 (active.pendingProposals.size > 0 || active.pendingQuestionnaires.size > 0) &&
                 status === 'completed'

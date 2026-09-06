@@ -30,6 +30,8 @@ const MAX_GRAPH_NODES = 20_000
 const MAX_TOTAL_GRAPH_NODES = 100_000
 const MAX_GRAPH_DEPTH = 48
 const MAX_CALL_MS = 30_000
+// Human interaction is not a 30-second computation. Keep it bounded and cancellable.
+const MAX_QUESTIONNAIRE_MS = 10 * 60_000
 const MAX_CONSENT_MS = 5 * 60_000
 const MAX_TOTAL_CALLS = 1_024
 const MAX_PENDING_MUTATIONS = 8
@@ -750,7 +752,9 @@ export function createDocumentToolSession(
           execution = await awaitBounded(
             Promise.resolve(registration.executeRead(call, controller.signal)),
             controller.signal,
-            maxCallMs,
+            identity.host === 'slides' && call.name === 'ask_clarification'
+              ? MAX_QUESTIONNAIRE_MS
+              : maxCallMs,
           )
         } catch (error) {
           return stable(error instanceof ToolRouterError ? error.code : 'tool_execution_failed')
