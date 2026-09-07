@@ -270,6 +270,28 @@ describe('Office Agent workspace UI', () => {
     expect(html).toContain('aria-label="继续处理中"')
   })
 
+  it('keeps completed PowerPoint tool output available as expandable detail', () => {
+    const html = workspaceMarkup(
+      {
+        timeline: Object.freeze([
+          {
+            id: 'search-1',
+            kind: 'tool' as const,
+            callId: 'call-search-1',
+            name: 'image_search',
+            summary: '图片搜索完成',
+            state: 'complete' as const,
+            output: '{"images":[{"title":"LLM"}]}',
+          },
+        ]),
+      },
+      undefined,
+      'powerpoint',
+    )
+    expect(html).toContain('class="ai-step-title clickable"')
+    expect(html).toContain('aria-expanded="false"')
+  })
+
   it('uses the desktop Slides generation empty state for PowerPoint', () => {
     const html = workspaceMarkup(
       {

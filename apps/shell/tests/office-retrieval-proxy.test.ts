@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  collectBoundedImageBytes,
+  createPinnedLookup,
   createOfficeLocalSearchProxy,
   createOfficeRetrievalProxy,
   officeRetrievalEndpointFromEnv,
@@ -14,6 +16,23 @@ const TEST_SERVICES = {
 } as const
 
 describe('Office fixed retrieval proxy', () => {
+  it('returns the pinned address array when Node requests lookup all mode', async () => {
+    const lookup = createPinnedLookup({ address: '203.0.113.10', family: 4 })
+    const result = await new Promise((resolve, reject) =>
+      lookup('images.example', { all: true }, (error, addresses) =>
+        error ? reject(error) : resolve(addresses),
+      ),
+    )
+    expect(result).toEqual([{ address: '203.0.113.10', family: 4 }])
+  })
+  it('stops collecting a chunked image as soon as its byte budget is exceeded', async () => {
+    async function* chunks() {
+      yield new Uint8Array(3)
+      yield new Uint8Array(3)
+      throw new Error('must_not_read_past_limit')
+    }
+    await expect(collectBoundedImageBytes(chunks(), 5)).rejects.toThrow('retrieval_upstream_error')
+  })
   it('is disabled without configuration and accepts only a compile-allowlisted exact endpoint', () => {
     expect(officeRetrievalEndpointFromEnv({}, TEST_SERVICES)).toBeNull()
     expect(() =>
@@ -67,7 +86,7 @@ describe('Office fixed retrieval proxy', () => {
         {
           title: 'Image',
           image_url: 'https://example.com/image.jpg',
-          source_url: 'https://example.com',
+          source_url: 'https://example.com/',
           source: 'example.com',
         },
       ],
@@ -78,6 +97,116 @@ describe('Office fixed retrieval proxy', () => {
       expect.objectContaining({ fetchWithAuth: expect.any(Function) }),
     )
     expect(searchImages).toHaveBeenCalledWith('slides', 4)
+  })
+
+  it('downloads only a URL produced by image search and returns bounded image bytes', async () => {
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xd9])
+    const downloadImage = vi.fn(async () => ({ mime: 'image/jpeg' as const, bytes }))
+    const proxy = createOfficeLocalSearchProxy({
+      fetchWithAuth: vi.fn(),
+      downloadImage,
+      searchImages: vi.fn(async () => ({
+        images: [
+          {
+            title: 'LLM',
+            imageUrl: 'https://images.example/llm.jpg',
+            sourceUrl: 'https://example.com/llm',
+            source: 'example.com',
+          },
+        ],
+        method: 'serpapi',
+      })),
+    })
+    await expect(
+      proxy('image-fetch.v1', { url: 'https://images.example/llm.jpg' }),
+    ).rejects.toThrow('retrieval_invalid_request')
+    await proxy('image-search.v1', { query: 'llm', max_results: 1 })
+    const result = await proxy('image-fetch.v1', { url: 'https://images.example/llm.jpg' })
+    expect(JSON.parse(new TextDecoder().decode(result))).toEqual({
+      mime: 'image/jpeg',
+      data_base64: Buffer.from(bytes).toString('base64'),
+    })
+    expect(downloadImage).toHaveBeenCalledWith('https://images.example/llm.jpg', undefined)
+  })
+
+  it('rejects an image-search hostname that resolves to a private address', async () => {
+    const proxy = createOfficeLocalSearchProxy({
+      fetchWithAuth: vi.fn(),
+      lookupAddresses: vi.fn(async () => [{ address: '127.0.0.1', family: 4 }]),
+      searchImages: vi.fn(async () => ({
+        images: [
+          {
+            title: 'Private',
+            imageUrl: 'https://images.example/private.jpg',
+            sourceUrl: 'https://example.com/private',
+            source: 'example.com',
+          },
+        ],
+        method: 'serpapi',
+      })),
+    })
+    await proxy('image-search.v1', { query: 'private', max_results: 1 })
+    await expect(
+      proxy('image-fetch.v1', { url: 'https://images.example/private.jpg' }),
+    ).rejects.toThrow('retrieval_upstream_error')
+  })
+
+  it('honors cancellation while public DNS resolution is pending', async () => {
+    let resolveLookup!: (value: readonly { address: string; family: number }[]) => void
+    const lookupAddresses = vi.fn(
+      () =>
+        new Promise<readonly { address: string; family: number }[]>((resolve) => {
+          resolveLookup = resolve
+        }),
+    )
+    const proxy = createOfficeLocalSearchProxy({
+      fetchWithAuth: vi.fn(),
+      lookupAddresses,
+      searchImages: vi.fn(async () => ({
+        images: [
+          {
+            title: 'Image',
+            imageUrl: 'https://images.example/image.jpg',
+            sourceUrl: 'https://example.com/image',
+            source: 'example.com',
+          },
+        ],
+        method: 'serpapi',
+      })),
+    })
+    await proxy('image-search.v1', { query: 'image', max_results: 1 })
+    const controller = new AbortController()
+    const pending = proxy(
+      'image-fetch.v1',
+      { url: 'https://images.example/image.jpg' },
+      controller.signal,
+    )
+    controller.abort()
+    await expect(pending).rejects.toThrow('retrieval_upstream_error')
+    resolveLookup([{ address: '93.184.216.34', family: 4 }])
+  })
+
+  it('times out a stalled image DNS lookup before opening HTTPS', async () => {
+    const proxy = createOfficeLocalSearchProxy({
+      fetchWithAuth: vi.fn(),
+      imageTimeoutMs: 5,
+      lookupAddresses: vi.fn(() => new Promise(() => undefined)),
+      searchImages: vi.fn(async () => ({
+        images: [
+          {
+            title: 'Stalled',
+            imageUrl: 'https://images.example/stalled.jpg',
+            sourceUrl: 'https://example.com/stalled',
+            source: 'example.com',
+          },
+        ],
+        method: 'serpapi',
+      })),
+    })
+    await proxy('image-search.v1', { query: 'stalled', max_results: 1 })
+    await expect(
+      proxy('image-fetch.v1', { url: 'https://images.example/stalled.jpg' }),
+    ).rejects.toThrow('retrieval_upstream_error')
   })
 
   it('sends an exact bounded request to the fixed service with PC auth and returns sanitized JSON', async () => {

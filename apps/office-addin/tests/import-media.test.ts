@@ -114,6 +114,43 @@ describe('host capability advertisement', () => {
     expect(powerpoint).toContain('insert-image')
     expect(powerpoint).not.toContain('csv-to-sheet')
   })
+
+  it('advertises web image insertion only after PC negotiates image-fetch', async () => {
+    ;(globalThis as Record<string, unknown>).Office = {
+      context: {
+        host: 'PowerPoint',
+        platform: 'Mac',
+        requirements: {
+          isSetSupported: (name: string, version: string) =>
+            name === 'PowerPointApi' && version === '1.8',
+        },
+      },
+    }
+    ;(globalThis as Record<string, unknown>).PowerPoint = { run: vi.fn() }
+    const runtime = createOfficeHostRuntime('powerpoint', {
+      fetchPowerPointImage: vi.fn(),
+      powerPointImageFetchAvailable: () => false,
+    })
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain('insert_web_image')
+    expect(runtime.skill.systemPrompt).toContain('When insert_web_image is available')
+    expect(
+      runtime.skill.executeTool(
+        call('insert_web_image', {
+          url: 'https://images.example/llm.png',
+          slide_index: 0,
+          left: 1,
+          top: 2,
+          width: 30,
+          height: 40,
+        }),
+      ),
+    ).toEqual(expect.objectContaining({ output: 'image_fetch_unavailable', isError: true }))
+    runtime.setPowerPointImageFetchAvailable?.(true)
+    expect(runtime.skill.tools.map((tool) => tool.name)).toContain('insert_web_image')
+    runtime.setPowerPointImageFetchAvailable?.(false)
+    expect(runtime.skill.tools.map((tool) => tool.name)).not.toContain('insert_web_image')
+    runtime.dispose()
+  })
 })
 
 describe('bounded CSV and image contracts', () => {
@@ -327,6 +364,35 @@ describe('Excel import/export proposals', () => {
 })
 
 describe('PowerPoint image proposal', () => {
+  it('fetches an image-search URL through the PC relay before inserting it', async () => {
+    const vfs = new InMemoryVfs()
+    const adapter = {
+      snapshotSlide: vi.fn().mockResolvedValue({ slideId: 's1', fingerprint: 'fp' }),
+      insertImage: vi.fn().mockResolvedValue({ id: 'pic1' }),
+      verifyImage: vi.fn().mockResolvedValue(true),
+      removeImage: vi.fn().mockResolvedValue(undefined),
+      verifyImageAbsent: vi.fn().mockResolvedValue(true),
+    }
+    const fetchImage = vi.fn().mockResolvedValue(png(10, 10))
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointImportMediaSkill({ adapter, proposals, vfs, fetchImage })
+    expect(skill.tools.map((tool) => tool.name)).toContain('insert_web_image')
+    const result = await skill.executeTool(
+      call('insert_web_image', {
+        url: 'https://images.example/llm.png',
+        slide_index: 0,
+        left: 1,
+        top: 2,
+        width: 30,
+        height: 40,
+      }),
+    )
+    expect(result.isError).not.toBe(true)
+    expect(fetchImage).toHaveBeenCalledWith('https://images.example/llm.png', undefined)
+    await proposals.confirm(proposals.pending()!.id)
+    expect(adapter.insertImage).toHaveBeenCalledOnce()
+  })
+
   it('revalidates the slide, inserts once, and semantically verifies the created shape', async () => {
     const vfs = new InMemoryVfs()
     vfs.writeFile('/home/user/image.png', png(10, 10))

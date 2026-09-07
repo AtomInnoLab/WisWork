@@ -215,6 +215,7 @@ const AUTOMATIC_POWERPOINT_MUTATION_TOOLS = new Set([
   'edit_slide_master_xml',
   'duplicate_slide',
   'insert-image',
+  'insert_web_image',
 ])
 
 function diagnosticToolError(output: string): string {
@@ -616,6 +617,8 @@ export function createOfficeAgentSession(dependencies: {
               summary: finishedSummary,
               state: settled.isError ? 'error' : 'complete',
               durationMs: Date.now() - startedAt,
+              output: boundedText(settled.output),
+              ...(settled.display ? { display: settled.display } : {}),
             }
           : event,
       )
@@ -776,6 +779,8 @@ export function createOfficeAgentSession(dependencies: {
               ...item,
               summary,
               state: event.execution.isError ? 'error' : 'complete',
+              output: boundedText(event.execution.output),
+              ...(event.execution.display ? { display: event.execution.display } : {}),
             }
           })
         }

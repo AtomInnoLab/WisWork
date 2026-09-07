@@ -41,6 +41,7 @@ describe('Office authenticated web skill', () => {
       output: '{"results":[]}',
       mutated: false,
       summary: 'web_search',
+      display: { kind: 'text', text: '{"results":[]}' },
     })
   })
 
@@ -61,5 +62,27 @@ describe('Office authenticated web skill', () => {
       ),
     ).toEqual(expect.objectContaining({ output: 'invalid_tool_input', isError: true }))
     expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('does not expose unsafe retrieval URLs as clickable display content', async () => {
+    const output = JSON.stringify({
+      images: [
+        { title: 'Script', image_url: 'javascript:alert(1)', source_url: 'https://example.com' },
+        { title: 'Private', image_url: 'https://127.0.0.1/a.png', source_url: 'https://localhost' },
+      ],
+    })
+    const fetch = vi.fn(
+      async () => new Response(output, { headers: { 'content-type': 'application/json' } }),
+    )
+    const skill = createOfficeWebSkill(session(['image-search.v1'], fetch))
+    const result = await skill.executeTool({
+      id: 'call_unsafe',
+      name: 'image_search',
+      input: { query: 'unsafe', max_results: 2 },
+    })
+    expect(result.display).toEqual({
+      kind: 'images',
+      items: [{ url: 'https://example.com/', title: 'Script' }],
+    })
   })
 })

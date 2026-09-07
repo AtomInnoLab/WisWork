@@ -25,6 +25,26 @@ const invalid = (name: string): ToolExecution => ({
   summary: name,
 })
 
+function safeDisplayUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 2_048) return undefined
+  try {
+    const url = new URL(value)
+    const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+    if (
+      url.protocol !== 'https:' ||
+      url.username ||
+      url.password ||
+      hostname === 'localhost' ||
+      /^(?:0|10|127|169\.254|172\.(?:1[6-9]|2\d|3[01])|192\.168)(?:\.|$)/.test(hostname) ||
+      hostname === '::1'
+    )
+      return undefined
+    return url.href
+  } catch {
+    return undefined
+  }
+}
+
 export function createOfficeWebSkill(
   session: OfficeRelaySession,
   options: { advertisedCapabilities?: readonly OfficeRelayCapability[] } = {},
@@ -79,8 +99,46 @@ export function createOfficeWebSkill(
         const bytes = new Uint8Array(await response.arrayBuffer())
         if (bytes.byteLength > MAX_OUTPUT_BYTES) throw new Error('web_retrieval_failed')
         const output = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-        JSON.parse(output)
-        return { output, mutated: false, summary: call.name }
+        const parsed = JSON.parse(output) as Record<string, unknown>
+        const entries = Array.isArray(parsed.images)
+          ? parsed.images
+          : Array.isArray(parsed.results)
+            ? parsed.results
+            : []
+        const items = entries.flatMap((entry) => {
+          if (!entry || typeof entry !== 'object') return []
+          const value = entry as Record<string, unknown>
+          const url = safeDisplayUrl(
+            typeof value.source_url === 'string'
+              ? value.source_url
+              : typeof value.url === 'string'
+                ? value.url
+                : undefined,
+          )
+          if (!url) return []
+          return [
+            {
+              url,
+              ...(typeof value.title === 'string' ? { title: value.title } : {}),
+              ...(safeDisplayUrl(value.image_url)
+                ? { thumb: safeDisplayUrl(value.image_url) }
+                : {}),
+            },
+          ]
+        })
+        return {
+          output,
+          mutated: false,
+          summary: call.name,
+          ...(items.length
+            ? {
+                display: {
+                  kind: capability === 'image-search.v1' ? 'images' : 'links',
+                  items,
+                } as const,
+              }
+            : { display: { kind: 'text', text: output } as const }),
+        }
       } catch (error) {
         const code =
           error instanceof Error && error.message === 'relay_capability_unavailable'

@@ -57,6 +57,7 @@ export interface OfficeHostRuntime {
   readonly skillPackagesEnabled: boolean
   enableElevatedOffice(authority: () => ElevatedOfficeAuthority, confirmationTitle?: string): void
   disableElevatedOffice(): void
+  setPowerPointImageFetchAvailable?(available: boolean): void
   uploadFile(name: string, content: Promise<ArrayBuffer>): Promise<void>
   installSkill(source: Promise<string>): Promise<void>
   installSkillPackage(source: Promise<ArrayBuffer>, signal?: AbortSignal): Promise<void>
@@ -95,6 +96,8 @@ export function createOfficeHostRuntime(
     presentationVerification?: PresentationVerificationFlags
     presentationTelemetry?: (event: PresentationTelemetryEvent) => void
     additionalSkills?: AgentSkill[]
+    fetchPowerPointImage?: (url: string, signal?: AbortSignal) => Promise<Uint8Array>
+    powerPointImageFetchAvailable?: () => boolean
     /** Present only for an active, signed-in, paired Enhanced Office session. */
     elevatedOfficeAdapter?: ElevatedOfficeAdapter
     elevatedOfficeAuthority?: () => ElevatedOfficeAuthority
@@ -168,6 +171,7 @@ export function createOfficeHostRuntime(
                 adapter: new BrowserPowerPointImportMediaAdapter(powerPointAdapter),
                 proposals,
                 vfs,
+                fetchImage: options.fetchPowerPointImage,
               }),
             ]
           : []
@@ -195,11 +199,26 @@ export function createOfficeHostRuntime(
     ...(options.additionalSkills ?? []),
   ])
   const dynamicTools = [...composed.tools, ...(elevated?.tools ?? [])]
+  const webImageTool = dynamicTools.find((tool) => tool.name === 'insert_web_image')
+  const setPowerPointImageFetchAvailable = (available: boolean) => {
+    if (!webImageTool) return
+    const index = dynamicTools.indexOf(webImageTool)
+    if (available && index < 0) dynamicTools.push(webImageTool)
+    else if (!available && index >= 0) dynamicTools.splice(index, 1)
+  }
+  setPowerPointImageFetchAvailable(options.powerPointImageFetchAvailable?.() ?? true)
   const dynamicSkill: AgentSkill = {
     ...composed,
     systemPrompt: `${composed.systemPrompt}\nRaw Office tools are absent unless a paired Enhanced authority enables them.`,
     tools: dynamicTools,
     executeTool(call, signal) {
+      if (call.name === 'insert_web_image' && !dynamicTools.includes(webImageTool!))
+        return {
+          output: 'image_fetch_unavailable',
+          isError: true,
+          mutated: false,
+          summary: call.name,
+        }
       return call.name === 'propose_raw_office_edit' && elevated
         ? elevated.executeTool(call, signal)
         : composed.executeTool(call, signal)
@@ -233,6 +252,7 @@ export function createOfficeHostRuntime(
     options.enableSkillPackages !== false,
     enableElevatedOffice,
     disableElevatedOffice,
+    setPowerPointImageFetchAvailable,
   )
 }
 
@@ -245,6 +265,8 @@ function lifecycle(
   skillPackagesEnabled = true,
   enableElevatedOffice: OfficeHostRuntime['enableElevatedOffice'] = () => undefined,
   disableElevatedOffice: OfficeHostRuntime['disableElevatedOffice'] = () => undefined,
+  setPowerPointImageFetchAvailable: OfficeHostRuntime['setPowerPointImageFetchAvailable'] = () =>
+    undefined,
 ): OfficeHostRuntime {
   const packageRuntime = suppliedPackageRuntime ?? new SkillPackageWorkerRuntime()
   let epoch = 0
@@ -267,6 +289,7 @@ function lifecycle(
     skillPackagesEnabled,
     enableElevatedOffice,
     disableElevatedOffice,
+    setPowerPointImageFetchAvailable,
     async uploadFile(name, content) {
       const captured = epoch
       if (!name || name.length > 128 || name.includes('/') || name.includes('\\'))

@@ -1,4 +1,7 @@
 import { imageSearch, wisUsageWebSearch } from '@wiswork/ai-search'
+import { lookup } from 'node:dns/promises'
+import { request as httpsRequest } from 'node:https'
+import type { LookupFunction } from 'node:net'
 const MAX_RESPONSE_BYTES = 512 * 1024
 const MAX_QUERY_CHARS = 4_096
 const MAX_FETCH_CONTENT_CHARS = 256 * 1024
@@ -15,20 +18,145 @@ export const OFFICE_RETRIEVAL_SERVICES: Readonly<
   Record<string, OfficeRetrievalServiceAttestation>
 > = {}
 
-export type OfficeWebCapability = 'web-search.v1' | 'web-fetch.v1' | 'image-search.v1'
+export type OfficeWebCapability =
+  'web-search.v1' | 'web-fetch.v1' | 'image-search.v1' | 'image-fetch.v1'
 export type OfficeRetrievalProxy = (
   capability: string,
   body: unknown,
   signal?: AbortSignal,
 ) => Promise<Uint8Array>
 
+interface DownloadedImage {
+  mime: 'image/png' | 'image/jpeg'
+  bytes: Uint8Array
+}
+
+export async function collectBoundedImageBytes(
+  chunks: AsyncIterable<Uint8Array>,
+  maximum = 2 * 1024 * 1024,
+): Promise<Uint8Array> {
+  const collected: Uint8Array[] = []
+  let total = 0
+  for await (const chunk of chunks) {
+    total += chunk.byteLength
+    if (total > maximum) throw new Error('retrieval_upstream_error')
+    collected.push(chunk)
+  }
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of collected) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return bytes
+}
+
+export function createPinnedLookup(selected: { address: string; family: number }): LookupFunction {
+  return ((_hostname, options, callback) => {
+    if (typeof options === 'object' && options.all) callback(null, [selected])
+    else callback(null, selected.address, selected.family)
+  }) as LookupFunction
+}
+
+type LookupAddresses = (hostname: string) => Promise<readonly { address: string; family: number }[]>
+
+async function downloadPublicImage(
+  url: string,
+  signal?: AbortSignal,
+  lookupAddresses: LookupAddresses = (hostname) => lookup(hostname, { all: true, verbatim: true }),
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<DownloadedImage> {
+  const startedAt = Date.now()
+  const parsed = new URL(url)
+  if (signal?.aborted) throw new Error('retrieval_upstream_error')
+  let lookupTimer: ReturnType<typeof setTimeout> | undefined
+  let abortLookup: (() => void) | undefined
+  const addresses = await Promise.race([
+    lookupAddresses(parsed.hostname),
+    new Promise<never>((_resolve, reject) => {
+      lookupTimer = setTimeout(() => reject(new Error('retrieval_upstream_error')), timeoutMs)
+    }),
+    new Promise<never>((_resolve, reject) => {
+      abortLookup = () => reject(new Error('retrieval_upstream_error'))
+      signal?.addEventListener('abort', abortLookup, { once: true })
+    }),
+  ]).finally(() => {
+    clearTimeout(lookupTimer)
+    if (abortLookup) signal?.removeEventListener('abort', abortLookup)
+  })
+  if (signal?.aborted) throw new Error('retrieval_upstream_error')
+  if (!addresses.length || addresses.some((entry) => unsafeIpLiteral(entry.address)))
+    throw new Error('retrieval_upstream_error')
+  const selected = addresses[0]!
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const fail = () => {
+      if (settled) return
+      settled = true
+      reject(new Error('retrieval_upstream_error'))
+    }
+    const request = httpsRequest(
+      parsed,
+      {
+        method: 'GET',
+        agent: false,
+        lookup: createPinnedLookup(selected),
+      },
+      (response) => {
+        const mime = response.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
+        const declared = Number(response.headers['content-length'] ?? 0)
+        if (
+          response.statusCode !== 200 ||
+          (mime !== 'image/png' && mime !== 'image/jpeg') ||
+          declared > 2 * 1024 * 1024
+        ) {
+          response.destroy()
+          fail()
+          return
+        }
+        void collectBoundedImageBytes(response)
+          .then((bytes) => {
+            if (settled) return
+            settled = true
+            resolve({ mime, bytes })
+          })
+          .catch(() => {
+            response.destroy()
+            fail()
+          })
+      },
+    )
+    request.once('error', fail)
+    const timeout = setTimeout(
+      () => request.destroy(new Error('retrieval_upstream_error')),
+      Math.max(1, timeoutMs - (Date.now() - startedAt)),
+    )
+    const abort = () => request.destroy(new Error('retrieval_upstream_error'))
+    signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted) abort()
+    request.once('close', () => {
+      clearTimeout(timeout)
+      signal?.removeEventListener('abort', abort)
+    })
+    request.end()
+  })
+}
+
 export function createOfficeLocalSearchProxy(options: {
   fetchWithAuth(request: (accessToken: string) => Promise<Response>): Promise<Response>
   webSearch?: typeof wisUsageWebSearch
   searchImages?: typeof imageSearch
+  downloadImage?: (url: string, signal?: AbortSignal) => Promise<DownloadedImage>
+  lookupAddresses?: LookupAddresses
+  imageTimeoutMs?: number
 }): OfficeRetrievalProxy {
   const searchWeb = options.webSearch ?? wisUsageWebSearch
   const searchImages = options.searchImages ?? imageSearch
+  const downloadImage =
+    options.downloadImage ??
+    ((url: string, signal?: AbortSignal) =>
+      downloadPublicImage(url, signal, options.lookupAddresses, options.imageTimeoutMs))
+  const allowedImages = new Map<string, number>()
   return async (capability, body, signal) => {
     const request = requestFor(capability, body)
     if (signal?.aborted) throw new Error('search_cancelled')
@@ -44,15 +172,28 @@ export function createOfficeLocalSearchProxy(options: {
       const input = request.input as { query: string; max_results: number }
       const result = await searchImages(input.query, input.max_results)
       if (signal?.aborted) throw new Error('search_cancelled')
+      const expiresAt = Date.now() + 15 * 60_000
+      for (const [url, expiry] of allowedImages) if (expiry < Date.now()) allowedImages.delete(url)
+      for (const image of result.images) allowedImages.set(image.imageUrl, expiresAt)
+      while (allowedImages.size > 100) allowedImages.delete(allowedImages.keys().next().value!)
       return new TextEncoder().encode(
         JSON.stringify({
           images: result.images.map((image) => ({
             title: image.title,
-            image_url: image.imageUrl,
-            source_url: image.sourceUrl,
+            image_url: safeHttpsUrl(image.imageUrl),
+            source_url: safeHttpsUrl(new URL(image.sourceUrl).href),
             source: image.source,
           })),
         }),
+      )
+    }
+    if (request.operation === 'image-fetch') {
+      const url = (request.input as { url: string }).url
+      const expiry = allowedImages.get(url) ?? 0
+      if (expiry < Date.now()) throw new Error('retrieval_invalid_request')
+      const { mime, bytes } = await downloadImage(url, signal)
+      return new TextEncoder().encode(
+        JSON.stringify({ mime, data_base64: Buffer.from(bytes).toString('base64') }),
       )
     }
     throw new Error('retrieval_capability_unavailable')
@@ -197,6 +338,10 @@ function requestFor(capability: string, input: unknown) {
   if (capability === 'web-fetch.v1') {
     exact(body, ['url'])
     return { version: 1, operation: 'web-fetch', input: { url: safeHttpsUrl(body.url) } }
+  }
+  if (capability === 'image-fetch.v1') {
+    exact(body, ['url'])
+    return { version: 1, operation: 'image-fetch', input: { url: safeHttpsUrl(body.url) } }
   }
   throw new Error('retrieval_invalid_request')
 }

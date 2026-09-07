@@ -844,7 +844,13 @@ describe('Office relay PC client', () => {
       version: 2,
       type: 'pc.negotiate',
       verification_code: '123456',
-      capabilities: ['agent.v1', 'web-search.v1', 'web-fetch.v1', 'image-search.v1'],
+      capabilities: [
+        'agent.v1',
+        'web-search.v1',
+        'web-fetch.v1',
+        'image-search.v1',
+        'image-fetch.v1',
+      ],
     })
     socket.message({
       version: 2,
@@ -856,7 +862,13 @@ describe('Office relay PC client', () => {
       version: 2,
       type: 'pc.claim',
       verification_code: '123456',
-      capabilities: ['agent.v1', 'web-search.v1', 'web-fetch.v1', 'image-search.v1'],
+      capabilities: [
+        'agent.v1',
+        'web-search.v1',
+        'web-fetch.v1',
+        'image-search.v1',
+        'image-fetch.v1',
+      ],
     })
     socket.message({
       version: 2,

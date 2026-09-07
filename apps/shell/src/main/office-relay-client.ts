@@ -58,7 +58,13 @@ const RELAY_ERROR_CODES = new Set([
 ])
 const TERMINAL_REQUEST_CACHE_SIZE = 64
 const PRODUCTION_RELAY_ENDPOINT = 'wss://office.8-216-134-194.sslip.io/office-relay'
-const V2_CAPABILITIES = ['agent.v1', 'web-search.v1', 'web-fetch.v1', 'image-search.v1'] as const
+const V2_CAPABILITIES = [
+  'agent.v1',
+  'web-search.v1',
+  'web-fetch.v1',
+  'image-search.v1',
+  'image-fetch.v1',
+] as const
 const PAIRING_RESUME_FEATURE = 'pairing-resume.v1'
 
 export interface RelaySocket {

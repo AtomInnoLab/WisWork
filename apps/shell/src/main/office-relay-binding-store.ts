@@ -8,7 +8,13 @@ const MAX_TOTAL_RECORDS = 256
 const MAX_FILE_BYTES = 1024 * 1024
 const IDENTIFIER = /^[A-Za-z0-9_-]{8,128}$/
 const HOSTS = new Set(['Word', 'Excel', 'PowerPoint'])
-const CAPABILITIES = new Set(['agent.v1', 'web-search.v1', 'web-fetch.v1', 'image-search.v1'])
+const CAPABILITIES = new Set([
+  'agent.v1',
+  'web-search.v1',
+  'web-fetch.v1',
+  'image-search.v1',
+  'image-fetch.v1',
+])
 const SECURE_LINUX_BACKENDS = new Set(['gnome_libsecret', 'kwallet', 'kwallet5', 'kwallet6'])
 
 export interface OfficeRelayBinding {

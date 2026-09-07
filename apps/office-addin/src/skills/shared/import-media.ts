@@ -99,6 +99,10 @@ export function supportsBrowserMediaValidation(): boolean {
 
 export async function readBoundedImage(vfs: InMemoryVfs, path: string): Promise<BoundedImage> {
   const bytes = vfs.readBytes(path, { maxBytes: MAX_IMPORT_BYTES + 1 })
+  return validateBoundedImageBytes(bytes)
+}
+
+export async function validateBoundedImageBytes(bytes: Uint8Array): Promise<BoundedImage> {
   if (bytes.byteLength > MAX_IMPORT_BYTES) throw new Error('image_limit')
   const png =
     bytes.length >= 24 &&

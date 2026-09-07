@@ -96,7 +96,7 @@ export type OfficeRelayToolHandler = (
 ) => Promise<{ output: string; isError?: boolean }>
 
 export type OfficeRelayCapability =
-  'agent.v1' | 'web-search.v1' | 'web-fetch.v1' | 'image-search.v1'
+  'agent.v1' | 'web-search.v1' | 'web-fetch.v1' | 'image-search.v1' | 'image-fetch.v1'
 
 export interface OfficeBindingInvalidation {
   readonly origin: typeof OFFICE_RELAY_ORIGIN
