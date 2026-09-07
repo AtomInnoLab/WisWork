@@ -264,6 +264,7 @@ export class ShellCodexRuntime {
     readonly generation: number
     readonly text: string
     readonly toolSession: DocumentToolSession
+    readonly summarizeProposal?: (call: AgentToolCall) => PcHostProposalSummary | undefined
     readonly signal: AbortSignal
     readonly onEvent: (event: CodexRuntimeEngineEvent) => void
   }): Promise<void> {
