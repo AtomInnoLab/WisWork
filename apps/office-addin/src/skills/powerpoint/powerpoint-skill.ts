@@ -1768,6 +1768,26 @@ export function createPowerPointSkill(options: {
           const slideIds = new Map(
             slideIndexes.map((slideIndex, index) => [slideIndex, snapshots[index]!.slideId]),
           )
+          const shapeOperations = program.operations.filter(
+            (operation) => 'shape_id' in operation && operation.op !== 'set_shape_text',
+          )
+          const shapeSlides = [
+            ...new Set(shapeOperations.map((operation) => operation.slide_index)),
+          ]
+          const shapesBySlide = new Map(
+            await Promise.all(
+              shapeSlides.map(async (slideIndex) => {
+                const current = await options.adapter.listSlideShapes(slideIndex, signal)
+                return [slideIndex, new Set(current.shapes.map((shape) => shape.id))] as const
+              }),
+            ),
+          )
+          if (
+            shapeOperations.some(
+              (operation) => !shapesBySlide.get(operation.slide_index)?.has(operation.shape_id),
+            )
+          )
+            throw invalidToolInput('program.operations')
           const beforeTexts = await Promise.all(
             program.operations.flatMap((operation) =>
               operation.op === 'set_shape_text'

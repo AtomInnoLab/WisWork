@@ -124,6 +124,19 @@ describe('document-scoped tool session', () => {
     ).not.toThrow()
   })
 
+  it('compiles the complete Office PowerPoint attachment, media, and editing tool set', () => {
+    const expected = {
+      read: 'read',
+      bash: 'read',
+      'insert-image': 'mutate',
+      insert_web_image: 'mutate',
+      set_slide_background: 'mutate',
+    } as const
+
+    for (const [name, mutability] of Object.entries(expected))
+      expect(compiledDocumentTool('office-powerpoint', name)?.[0]).toBe(mutability)
+  })
+
   it('separates bounded Office operations from elevated raw Office proposals', () => {
     const bounded = [
       ['office-word', 'execute_office_js'],

@@ -606,6 +606,33 @@ describe('PowerPoint compatibility skill', () => {
     expect(proposals.pending()?.preview).toEqual(program)
   })
 
+  it('rejects stale shape ids before creating a PowerPoint write proposal', async () => {
+    const fake = adapter({
+      listSlideShapes: vi.fn().mockResolvedValue({
+        slideId: 'slide-1',
+        slideIndex: 0,
+        shapes: [],
+      }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+
+    await expect(
+      skill.executeTool(
+        call('execute_office_js', {
+          program: {
+            version: 1,
+            operations: [
+              { op: 'set_shape_text_style', slide_index: 0, shape_id: 'deleted-shape', bold: true },
+            ],
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({ output: 'invalid_tool_input', isError: true, mutated: false })
+    expect(proposals.pending()).toBeUndefined()
+    expect(fake.executeDeclarative).not.toHaveBeenCalled()
+  })
+
   it('reports a content-free program location for invalid operation fields', async () => {
     const skill = createPowerPointSkill({
       adapter: adapter(),
@@ -975,6 +1002,14 @@ describe('PowerPoint compatibility skill', () => {
 
   it('accepts strict declarative geometry, text-box creation, and shape deletion families', async () => {
     const fake = adapter({
+      listSlideShapes: vi.fn().mockResolvedValue({
+        slideId: 'slide-1',
+        slideIndex: 0,
+        shapes: [
+          { id: '2', name: 'Title', type: 'TextBox', left: 10, top: 20, width: 200, height: 40 },
+          { id: '9', name: 'Placeholder', type: 'TextBox', left: 0, top: 0, width: 20, height: 20 },
+        ],
+      }),
       exportSlidePackage: vi.fn().mockResolvedValue({
         slideId: 's1',
         base64: 'ppt',
