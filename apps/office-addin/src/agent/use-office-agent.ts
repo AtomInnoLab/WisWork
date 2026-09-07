@@ -490,7 +490,7 @@ export function createOfficeAgentSession(dependencies: {
           }
         const raw = Array.isArray(call.input.questions) ? call.input.questions : []
         const questions: OfficeClarificationQuestion[] = raw
-          .slice(0, 4)
+          .slice(0, 1)
           .map((value, index) => {
             const item =
               value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
@@ -514,7 +514,7 @@ export function createOfficeAgentSession(dependencies: {
             }
           })
           .filter((question) => question.label && question.options.length >= 2)
-        if (questions.length < 2)
+        if (questions.length < 1)
           return {
             output: 'invalid_tool_input',
             isError: true,

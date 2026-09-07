@@ -94,7 +94,40 @@ describe('presentation clarification display', () => {
 })
 
 describe('Office agent session', () => {
-  it('pauses a PowerPoint questionnaire and resumes the same tool call with the answers', async () => {
+  it('shows and resolves one model-authored questionnaire question at a time', async () => {
+    let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
+    const session = createOfficeAgentSession({
+      transport: transportHarness().transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'ask_clarification', description: 'ask', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(),
+      },
+      proposals: proposalsHarness().controller,
+      remoteTools: {
+        setToolHandler: (next) => {
+          handler = next
+        },
+      },
+    })
+    const result = handler!({
+      turnId: 'turn_12345678',
+      callId: 'call_12345678',
+      generation: 1,
+      toolName: 'ask_clarification',
+      input: {
+        questions: [{ id: 'audience', label: '面向谁？', options: ['客户', '内部团队'] }],
+      },
+      signal: new AbortController().signal,
+    })
+
+    await vi.waitFor(() => expect(session.snapshot().questionnaire).toHaveLength(1))
+    session.answerQuestionnaire?.('面向谁？: 客户')
+    await expect(result).resolves.toMatchObject({ output: expect.stringContaining('客户') })
+  })
+
+  it('bounds a batched PowerPoint questionnaire to the first question', async () => {
     let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
     const proposals = proposalsHarness()
     const session = createOfficeAgentSession({
@@ -125,8 +158,8 @@ describe('Office agent session', () => {
       },
       signal: new AbortController().signal,
     })
-    await vi.waitFor(() => expect(session.snapshot().questionnaire).toHaveLength(2))
-    session.answerQuestionnaire?.('面向谁？: 客户\n什么风格？: 杂志感')
+    await vi.waitFor(() => expect(session.snapshot().questionnaire).toHaveLength(1))
+    session.answerQuestionnaire?.('面向谁？: 客户')
     await expect(result).resolves.toMatchObject({ output: expect.stringContaining('客户') })
     expect(session.snapshot().questionnaire).toBeUndefined()
   })
@@ -164,11 +197,6 @@ describe('Office agent session', () => {
               { label: '内部团队', description: '内部培训' },
             ],
           },
-          {
-            id: 'style',
-            label: '什么风格？',
-            options: [{ label: '简洁' }, { label: '杂志感' }],
-          },
         ],
       },
       signal: new AbortController().signal,
@@ -176,7 +204,7 @@ describe('Office agent session', () => {
     await vi.waitFor(() =>
       expect(session.snapshot().questionnaire?.[0]?.options).toEqual(['客户', '内部团队']),
     )
-    session.answerQuestionnaire?.('面向谁？: 客户\n什么风格？: 简洁')
+    session.answerQuestionnaire?.('面向谁？: 客户')
     await expect(result).resolves.toMatchObject({ output: expect.stringContaining('客户') })
   })
 

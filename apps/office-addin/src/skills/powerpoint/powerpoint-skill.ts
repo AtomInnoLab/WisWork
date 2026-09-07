@@ -455,14 +455,14 @@ const tools = [
   {
     name: 'ask_clarification',
     description:
-      'For a whole new deck, show 2-4 concise multiple-choice questions about audience, focus, style, and page count. Wait for the answers, then continue with plan_deck. Skip only when the user already supplied or delegated these choices.',
+      'For a whole new deck, ask one concise multiple-choice question at a time about audience, focus, style, or page count. Wait for each answer before asking the next question or continuing with plan_deck. Skip only when the user already supplied or delegated these choices.',
     inputSchema: {
       type: 'object',
       properties: {
         questions: {
           type: 'array',
-          minItems: 2,
-          maxItems: 4,
+          minItems: 1,
+          maxItems: 1,
           items: {
             type: 'object',
             properties: {
