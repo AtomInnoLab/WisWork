@@ -179,7 +179,11 @@ export function createOfficeCodexProxy(options: {
         } else {
           result = await request.executeTool({
             turnId,
-            callId: call.id,
+            // Model carrier IDs may be shorter than Relay identifiers. Keep the
+            // protocol boundary deterministic without weakening Relay validation.
+            callId: `call_${createHash('sha256')
+              .update(JSON.stringify([turnId, call.id]))
+              .digest('base64url')}`,
             generation: request.statement.session_generation,
             toolName: call.name,
             input: call.input,
