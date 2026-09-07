@@ -1,5 +1,6 @@
 import type { ImageGeometry, PowerPointImageAdapter } from './powerpoint-import-media.js'
 import type { PowerPointAdapter } from './browser-powerpoint-adapter.js'
+import { readUntilConverged } from '../shared/office-write-transaction.js'
 
 type Runtime = Record<string, any>
 function cancelled(signal?: AbortSignal) {
@@ -92,18 +93,27 @@ export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapt
       )
     })
     cancelled(signal)
-    return powerpoint.run(async (context: Runtime) => {
-      const item = await slide(context, index, signal)
-      item.shapes.load('items/id')
-      await sync(context, signal)
-      const created = (item.shapes.items as Runtime[]).find(
-        (shape) => !before.has(String(shape.id)),
-      )
-      if (!created?.id) throw new Error('office_write_failed')
-      created.name = 'WisWork picture'
-      await sync(context, signal)
-      return { id: String(created.id) }
+    const id = await readUntilConverged<string>({
+      signal,
+      attempts: 6,
+      delayMs: 100,
+      read: () =>
+        powerpoint.run(async (context: Runtime) => {
+          const item = await slide(context, index, signal)
+          item.shapes.load('items/id')
+          await sync(context, signal)
+          const created = (item.shapes.items as Runtime[]).find(
+            (shape) => !before.has(String(shape.id)),
+          )
+          if (!created?.id) return ''
+          created.name = 'WisWork picture'
+          await sync(context, signal)
+          return String(created.id)
+        }),
+      accept: Boolean,
     })
+    if (!id) throw new Error('office_write_failed')
+    return { id }
   }
   async verifyImage(
     index: number,

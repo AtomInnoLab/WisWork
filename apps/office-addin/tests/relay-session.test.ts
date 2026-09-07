@@ -252,6 +252,223 @@ describe('Office cloud relay session', () => {
     await expect(pending).rejects.toThrow('relay_disconnected')
   })
 
+  it('allows concurrent Enhanced read tool subframes in the same request', async () => {
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1'],
+      randomUUID: () => 'request_12345678',
+    })
+    const resolvers = new Map<string, (result: { output: string }) => void>()
+    session.setToolHandler?.(
+      (call) =>
+        new Promise((resolve) => {
+          resolvers.set(call.callId, resolve)
+        }),
+    )
+    const connecting = session.connect('powerpoint')
+    socket.open()
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pair_12345678',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.approved',
+        session_id: 'session_12345678',
+        capability: 'capability_12345678',
+        expires_in: 1800,
+        capabilities: ['agent.v1'],
+      }),
+    )
+    await connecting
+    const enhanced = {
+      version: 1,
+      runtime_mode: 'enhanced',
+      runtime_instance: 'runtime_0123456789abcdef',
+      component_version: '0.147.0',
+      host: 'office-powerpoint',
+      raw_office: false,
+      expires_at: Date.now() + 60_000,
+      policy_generation: 2,
+      session_generation: 4,
+    }
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'relay.session_state',
+        session_id: 'session_12345678',
+        generation: 4,
+        enhanced,
+      }),
+    )
+    await flushFrames()
+    const pending = session.capabilityFetch('agent.v1', { messages: [] }).catch((error) => error)
+    for (const [callId, toolName] of [
+      ['call_state_12345678', 'get_presentation_state'],
+      ['call_shapes_12345678', 'list_slide_shapes'],
+    ] as const)
+      socket.receive(
+        JSON.stringify({
+          version: 2,
+          type: 'relay.tool_call',
+          session_id: 'session_12345678',
+          request_id: 'request_12345678',
+          turn_id: 'turn_12345678',
+          call_id: callId,
+          generation: 4,
+          tool_name: toolName,
+          input: {},
+        }),
+      )
+    await flushFrames()
+    await flushFrames()
+    expect(session.snapshot()).toMatchObject({ status: 'connected', enhanced })
+    expect([...resolvers.keys()]).toEqual(['call_state_12345678', 'call_shapes_12345678'])
+    resolvers.get('call_state_12345678')?.({ output: '{"slideCount":8}' })
+    resolvers.get('call_shapes_12345678')?.({ output: '{"shapes":[]}' })
+    await flushFrames()
+    expect([frame(socket, 2), frame(socket, 3)]).toMatchObject([
+      { type: 'office.tool_result', call_id: 'call_state_12345678', is_error: false },
+      { type: 'office.tool_result', call_id: 'call_shapes_12345678', is_error: false },
+    ])
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'relay.tool_call',
+        session_id: 'session_12345678',
+        request_id: 'request_12345678',
+        turn_id: 'turn_12345678',
+        call_id: 'call_state_12345678',
+        generation: 4,
+        tool_name: 'get_presentation_state',
+        input: {},
+      }),
+    )
+    await flushFrames()
+    expect(session.snapshot()).toEqual({ status: 'offline' })
+    await expect(pending).resolves.toMatchObject({ message: 'relay_disconnected' })
+  })
+
+  it('cancels in-flight Enhanced tools when the runtime generation changes', async () => {
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({
+      createSocket: () => socket,
+      capabilities: ['agent.v1'],
+      randomUUID: () => 'request_12345678',
+    })
+    let signal: AbortSignal | undefined
+    let resolveTool: ((result: { output: string }) => void) | undefined
+    let toolCalls = 0
+    session.setToolHandler?.(
+      (call) =>
+        new Promise((resolve) => {
+          toolCalls += 1
+          signal = call.signal
+          resolveTool = resolve
+        }),
+    )
+    const connecting = session.connect('powerpoint')
+    socket.open()
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.created',
+        pairing_id: 'pair_12345678',
+        verification_code: '123456',
+        expires_in: 120,
+      }),
+    )
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'office.approved',
+        session_id: 'session_12345678',
+        capability: 'capability_12345678',
+        expires_in: 1800,
+        capabilities: ['agent.v1'],
+      }),
+    )
+    await connecting
+    const statement = (generation: number) => ({
+      version: 1,
+      runtime_mode: 'enhanced',
+      runtime_instance: 'runtime_0123456789abcdef',
+      component_version: '0.147.0',
+      host: 'office-powerpoint',
+      raw_office: false,
+      expires_at: Date.now() + 60_000,
+      policy_generation: 2,
+      session_generation: generation,
+    })
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'relay.session_state',
+        session_id: 'session_12345678',
+        generation: 4,
+        enhanced: statement(4),
+      }),
+    )
+    await flushFrames()
+    const pending = session.capabilityFetch('agent.v1', { messages: [] }).catch((error) => error)
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'relay.tool_call',
+        session_id: 'session_12345678',
+        request_id: 'request_12345678',
+        turn_id: 'turn_12345678',
+        call_id: 'call_state_12345678',
+        generation: 4,
+        tool_name: 'get_presentation_state',
+        input: {},
+      }),
+    )
+    await flushFrames()
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'relay.session_state',
+        session_id: 'session_12345678',
+        generation: 5,
+        enhanced: statement(5),
+      }),
+    )
+    await flushFrames()
+    expect(signal?.aborted).toBe(true)
+    resolveTool?.({ output: '{"slideCount":8}' })
+    await flushFrames()
+    expect(socket.sent).toHaveLength(2)
+    expect(session.snapshot()).toMatchObject({
+      status: 'connected',
+      enhanced: { session_generation: 5 },
+    })
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'relay.tool_call',
+        session_id: 'session_12345678',
+        request_id: 'request_12345678',
+        turn_id: 'turn_12345678',
+        call_id: 'call_state_12345678',
+        generation: 5,
+        tool_name: 'get_presentation_state',
+        input: {},
+      }),
+    )
+    await flushFrames()
+    expect(toolCalls).toBe(1)
+    expect(session.snapshot()).toEqual({ status: 'offline' })
+    await expect(pending).resolves.toMatchObject({ message: 'relay_disconnected' })
+  })
+
   it('revokes the session on replayed or generation-drifted tool subframes', async () => {
     const socket = new FakeSocket()
     const session = createOfficeRelaySession({

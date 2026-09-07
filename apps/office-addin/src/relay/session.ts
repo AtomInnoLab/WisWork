@@ -26,6 +26,8 @@ const REQUEST_TIMEOUT_MS = 290_000
 const MAX_OPAQUE_LENGTH = 512
 const MAX_DIAGNOSTIC_EVENT_BYTES = 4 * 1024
 const MAX_PENDING_DIAGNOSTICS = 16
+const MAX_ACTIVE_TOOL_CALLS = 8
+const MAX_TOOL_CALL_IDS_PER_REQUEST = 1024
 const TERMINAL_REQUEST_CACHE_SIZE = 64
 const DIAGNOSTIC_ERROR_CODES = new Set([
   'diagnostic_limit',
@@ -272,7 +274,11 @@ export function createOfficeRelaySession(
   let negotiatedCapabilities: OfficeRelayCapability[] = []
   let request: ActiveRequest | undefined
   let toolHandler: OfficeRelayToolHandler | undefined
-  let activeTool: { requestId: string; callId: string; controller: AbortController } | undefined
+  const activeTools = new Map<
+    string,
+    { requestId: string; callId: string; controller: AbortController }
+  >()
+  const requestToolCallIds = new Set<string>()
   let enhancedStatement: OfficeEnhancedStatement | undefined
   let runtimeGeneration = -1
   let runtimeExpiryTimer: ReturnType<typeof setTimeout> | undefined
@@ -304,10 +310,12 @@ export function createOfficeRelaySession(
   const finishRequest = (error?: string) => {
     const active = request
     if (!active) return
-    if (activeTool?.requestId === active.id) {
-      activeTool.controller.abort()
-      activeTool = undefined
-    }
+    for (const [callId, activeTool] of activeTools)
+      if (activeTool.requestId === active.id) {
+        activeTool.controller.abort()
+        activeTools.delete(callId)
+      }
+    requestToolCallIds.clear()
     rememberTerminalRequest(active.id)
     request = undefined
     clearTimeout(active.timer)
@@ -324,8 +332,9 @@ export function createOfficeRelaySession(
   const revoke = (status: OfficeRelayStatus = 'offline', close = true, settle = true) => {
     generation += 1
     finishRequest('relay_disconnected')
-    activeTool?.controller.abort()
-    activeTool = undefined
+    for (const activeTool of activeTools.values()) activeTool.controller.abort()
+    activeTools.clear()
+    requestToolCallIds.clear()
     enhancedStatement = undefined
     runtimeGeneration = -1
     if (runtimeExpiryTimer !== undefined) clearTimeout(runtimeExpiryTimer)
@@ -1058,6 +1067,8 @@ export function createOfficeRelaySession(
           return protocolFailure()
       } else if (frame.generation !== 0) return protocolFailure()
       runtimeGeneration = Number(frame.generation)
+      for (const activeTool of activeTools.values()) activeTool.controller.abort()
+      activeTools.clear()
       enhancedStatement = parsed
       if (runtimeExpiryTimer !== undefined) clearTimeout(runtimeExpiryTimer)
       runtimeExpiryTimer = parsed
@@ -1072,7 +1083,7 @@ export function createOfficeRelaySession(
         !sessionId ||
         !capability ||
         !request ||
-        activeTool ||
+        activeTools.size >= MAX_ACTIVE_TOOL_CALLS ||
         !enhancedStatement ||
         enhancedStatement.expires_at <= Date.now() ||
         !toolHandler ||
@@ -1092,6 +1103,8 @@ export function createOfficeRelaySession(
         frame.request_id !== request.id ||
         !opaque(frame.turn_id) ||
         !opaque(frame.call_id) ||
+        requestToolCallIds.size >= MAX_TOOL_CALL_IDS_PER_REQUEST ||
+        requestToolCallIds.has(frame.call_id as string) ||
         frame.generation !== enhancedStatement.session_generation ||
         typeof frame.tool_name !== 'string' ||
         !/^[A-Za-z0-9_-]{1,128}$/.test(frame.tool_name) ||
@@ -1105,11 +1118,13 @@ export function createOfficeRelaySession(
       // it so React cannot remain on a stale pre-session-state snapshot.
       publish({ ...state, enhanced: enhancedStatement })
       const controller = new AbortController()
-      activeTool = {
+      const callId = frame.call_id as string
+      requestToolCallIds.add(callId)
+      activeTools.set(callId, {
         requestId: frame.request_id as string,
-        callId: frame.call_id as string,
+        callId,
         controller,
-      }
+      })
       void toolHandler({
         turnId: frame.turn_id as string,
         callId: frame.call_id as string,
@@ -1120,8 +1135,7 @@ export function createOfficeRelaySession(
       })
         .then((result) => {
           if (
-            !activeTool ||
-            activeTool.controller !== controller ||
+            activeTools.get(callId)?.controller !== controller ||
             controller.signal.aborted ||
             !sessionId ||
             !capability
@@ -1144,12 +1158,11 @@ export function createOfficeRelaySession(
             output: result.output,
             is_error: result.isError === true,
           })
-          activeTool = undefined
+          activeTools.delete(callId)
         })
         .catch(() => {
           if (
-            !activeTool ||
-            activeTool.controller !== controller ||
+            activeTools.get(callId)?.controller !== controller ||
             controller.signal.aborted ||
             !sessionId ||
             !capability
@@ -1167,7 +1180,7 @@ export function createOfficeRelaySession(
             output: 'tool_execution_failed',
             is_error: true,
           })
-          activeTool = undefined
+          activeTools.delete(callId)
         })
       return
     }
@@ -1567,8 +1580,8 @@ export function createOfficeRelaySession(
     setToolHandler(handler) {
       toolHandler = handler
       if (!handler) {
-        activeTool?.controller.abort()
-        activeTool = undefined
+        for (const activeTool of activeTools.values()) activeTool.controller.abort()
+        activeTools.clear()
       }
     },
   }
