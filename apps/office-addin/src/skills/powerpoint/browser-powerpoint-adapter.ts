@@ -382,13 +382,27 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       v18: api('1.8'),
       v110: api('1.10'),
     }
-    const slideCount = await this.run('1.2', async (context) =>
-      getSlideCount(
-        context,
-        (context.presentation as RuntimeRecord).slides as RuntimeRecord,
-        signal,
-      ),
-    )
+    let slideCount: number
+    try {
+      slideCount = await this.run('1.2', async (context) =>
+        getSlideCount(
+          context,
+          (context.presentation as RuntimeRecord).slides as RuntimeRecord,
+          signal,
+        ),
+      )
+    } catch (error) {
+      if (signal?.aborted) throw error
+      slideCount = await this.run('1.2', async (context) => {
+        const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+        if (typeof slides?.load !== 'function') throw error
+        ;(slides.load as (properties: string) => void)('items/id')
+        await sync(context, signal)
+        const items = slides.items
+        if (!Array.isArray(items) || items.length > 100_000) throw error
+        return items.length
+      })
+    }
     let selectedSlideIndexes: number[] = []
     if (apiSupport.v15) {
       try {

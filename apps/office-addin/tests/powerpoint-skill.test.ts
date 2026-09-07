@@ -1444,6 +1444,37 @@ describe('browser PowerPoint adapter', () => {
     expect(sync).toHaveBeenCalledTimes(2)
   })
 
+  it('falls back to a bounded slide collection when Mac rejects getCount sync', async () => {
+    const slides = {
+      items: [{ id: 'slide-1' }, { id: 'slide-2' }],
+      load: vi.fn(),
+      getCount: vi.fn(() => ({ value: 2 })),
+    }
+    const sync = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('GeneralException'))
+      .mockResolvedValue(undefined)
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          platform: 'Mac',
+          requirements: { isSetSupported: vi.fn(() => true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides }, sync }),
+      },
+    })
+
+    await expect(new BrowserPowerPointAdapter().getPresentationState()).resolves.toMatchObject({
+      slideCount: 2,
+    })
+    expect(slides.load).toHaveBeenCalledWith('items/id')
+    expect(sync).toHaveBeenCalledTimes(2)
+  })
+
   it('reads bounded state on PowerPointApi 1.2 hosts through getCount only', async () => {
     const count = { value: 1 }
     const slides = { getCount: vi.fn(() => count) }
