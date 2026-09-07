@@ -299,6 +299,63 @@ describe('Office agent session', () => {
     expect(setToolHandler).toHaveBeenLastCalledWith(undefined)
   })
 
+  it('interleaves Enhanced progress text with remote tool execution', async () => {
+    let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'read_document', description: 'read', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(async () => ({ output: 'ok', summary: 'read' })),
+      },
+      proposals: proposalsHarness().controller,
+      remoteTools: {
+        setToolHandler: (next) => {
+          handler = next
+        },
+      },
+    })
+
+    session.send('美化文稿')
+    await Promise.resolve()
+    harness.callbacks().onDelta('先检查文稿。')
+    await handler!({
+      turnId: 'turn_12345678',
+      callId: 'call_state_12345678',
+      generation: 1,
+      toolName: 'read_document',
+      input: {},
+      signal: new AbortController().signal,
+    })
+    harness.callbacks().onDelta('再调整版式。')
+    await handler!({
+      turnId: 'turn_12345678',
+      callId: 'call_shapes_12345678',
+      generation: 1,
+      toolName: 'read_document',
+      input: {},
+      signal: new AbortController().signal,
+    })
+    harness.callbacks().onDelta('最后复查。')
+
+    expect(session.snapshot().timeline.map((event) => event.kind)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'assistant',
+      'tool',
+      'assistant',
+    ])
+    expect(
+      session
+        .snapshot()
+        .timeline.filter((event) => event.kind === 'assistant')
+        .map((event) => ('text' in event ? event.text : '')),
+    ).toEqual(['先检查文稿。', '再调整版式。', '最后复查。'])
+  })
+
   it('records paired Enhanced semantic tool failures in Taskpane diagnostics', async () => {
     let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
     const diagnostics = {

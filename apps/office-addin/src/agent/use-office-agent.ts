@@ -380,6 +380,8 @@ export function createOfficeAgentSession(dependencies: {
   let nextEventId = 0
   let sessionEpoch = 0
   let activeAssistantId: string | undefined
+  let cumulativeAssistantText = ''
+  let assistantSegmentPrefix = ''
   let lastInstruction = ''
   let clarificationResolve: ((value: ToolExecution) => void) | undefined
   let runStartedAt = 0
@@ -391,6 +393,11 @@ export function createOfficeAgentSession(dependencies: {
   }
   const replace = (id: string, update: Parameters<typeof replacePresentationEvent>[2]) => {
     state = { ...state, timeline: replacePresentationEvent(state.timeline, id, update) }
+  }
+  const closeAssistantSegment = () => {
+    if (!activeAssistantId) return
+    replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
+    activeAssistantId = undefined
   }
   const pendingProposalEvent = () =>
     [...state.timeline]
@@ -574,6 +581,8 @@ export function createOfficeAgentSession(dependencies: {
   dependencies.remoteTools?.setToolHandler?.(async (call) => {
     const definition = sessionSkill.tools.find((tool) => tool.name === call.toolName)
     if (!definition) return { output: 'unknown_tool', isError: true }
+    assistantSegmentPrefix = cumulativeAssistantText
+    closeAssistantSegment()
     diagnose((diagnostics) => diagnostics.setTool(call.toolName))
     const presentationId = eventId()
     const startedAt = Date.now()
@@ -663,6 +672,8 @@ export function createOfficeAgentSession(dependencies: {
   })
   const clearConversation = () => {
     activeAssistantId = undefined
+    cumulativeAssistantText = ''
+    assistantSegmentPrefix = ''
     state = {
       ...state,
       assistantText: '',
@@ -717,30 +728,32 @@ export function createOfficeAgentSession(dependencies: {
         }),
       onPresentationReceipt: ({ facts }) => dependencies.presentationText?.(facts.status),
       onText: (assistantText) => {
+        if (!assistantText.startsWith(assistantSegmentPrefix)) assistantSegmentPrefix = ''
+        cumulativeAssistantText = assistantText
+        const segment = boundedText(assistantText.slice(assistantSegmentPrefix.length))
         if (!activeAssistantId) {
           activeAssistantId = eventId()
           append({
             id: activeAssistantId,
             kind: 'assistant',
-            text: boundedText(assistantText),
+            text: segment,
             streaming: true,
           })
         } else {
           replace(activeAssistantId, (event) => ({
             ...event,
-            text: boundedText(assistantText),
+            text: segment,
             streaming: true,
           }))
         }
-        publish({ assistantText: boundedText(assistantText) })
+        publish({ assistantText: segment })
       },
       onToolStart: (call) => {
         toolStartedAt.set(call.id, Date.now())
         diagnose((diagnostics) => diagnostics.setTool(call.name))
-        if (activeAssistantId) {
-          replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
-          activeAssistantId = undefined
-        }
+        cumulativeAssistantText = ''
+        assistantSegmentPrefix = ''
+        closeAssistantSegment()
         const summary = toolActivity(call.name, 'running')
         append({
           id: eventId(),
@@ -800,10 +813,7 @@ export function createOfficeAgentSession(dependencies: {
       },
       onDone: (result) => {
         toolStartedAt.clear()
-        if (activeAssistantId) {
-          replace(activeAssistantId, (event) => ({ ...event, streaming: false }))
-          activeAssistantId = undefined
-        }
+        closeAssistantSegment()
         publish({
           busy: false,
           activity: '',
@@ -863,6 +873,8 @@ export function createOfficeAgentSession(dependencies: {
     proposals.newTurn()
     lastInstruction = value
     activeAssistantId = undefined
+    cumulativeAssistantText = ''
+    assistantSegmentPrefix = ''
     append({ id: eventId(), kind: 'user', text: boundedText(value) })
     publish({
       assistantText: '',
