@@ -454,4 +454,53 @@ describe('fixed dynamic MCP gateway', () => {
       await gateway.close()
     }
   })
+
+  it('returns an authorized Office execution failure as a tool error instead of a capability denial', async () => {
+    const diagnostics: string[] = []
+    const gateway = await startDynamicMcpGateway((code) => diagnostics.push(code))
+    gateway.register({
+      ownerId: 'owner',
+      documentId: 'doc-office-failure',
+      generation: 1,
+      session: {
+        credentials: { sessionId: 's', secret: 'k' },
+        listTools: () => [
+          { name: 'read_slide', annotations: { readOnlyHint: true, destructiveHint: false } },
+        ],
+        callTool: async () => {
+          throw new Error('office_write_failed')
+        },
+        cancelAll: () => 0,
+      } as any,
+    })
+    const grant = gateway.beginTurn({
+      documentId: 'doc-office-failure',
+      generation: 1,
+      threadId: 'thread',
+    })
+    try {
+      const response = await rpc(gateway.url, gateway.secret, 92, 'tools/call', {
+        name: 'wiswork_read',
+        arguments: {
+          capability: grant.capability,
+          callId: 'office-failed-call',
+          toolName: 'read_slide',
+          input: {},
+        },
+      })
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual(
+        expect.objectContaining({
+          result: expect.objectContaining({
+            content: [{ type: 'text', text: 'office_write_failed' }],
+            isError: true,
+          }),
+        }),
+      )
+      expect(diagnostics).toContain('gateway_tool_call_failed')
+      expect(diagnostics).not.toContain('gateway_tool_call_denied')
+    } finally {
+      await gateway.close()
+    }
+  })
 })

@@ -36,7 +36,6 @@ import {
   isQcEnabled,
   qcSlidePage,
   QC_MAX_PAGES,
-  publishAppliedDeterministicQuality,
   toVisualQualityReceipt,
 } from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
@@ -666,7 +665,6 @@ export function AiPanel({
   const qcPagesRef = useRef<number[]>([])
   const qcAbortRef = useRef<AbortController | null>(null)
   const qcRunningRef = useRef(false)
-  const completedQcTransactionsRef = useRef(new Set<string>())
   const qualityReceiptsRef = useRef<PresentationQualityReceipt[]>([])
   const qcTransactionByPageRef = useRef(new Map<number, string>())
   const publishQualityReceipt = (receipt: PresentationQualityReceipt) => {
@@ -1125,40 +1123,6 @@ export function AiPanel({
                 : receipt.status === 'applied'
                   ? 'applied'
                   : activeQueueRunRef.current.status
-        }
-        const sessionId = String(activeRunTokenRef.current)
-        const pages =
-          'backgrounds' in request
-            ? request.backgrounds.map((background) => background.slideIndex)
-            : [request.slideIndex]
-        const qualityPages = await publishAppliedDeterministicQuality({
-          transactionId: receipt.transactionId,
-          receiptStatus: receipt.status,
-          sessionId,
-          pageIndexes: pages,
-          completedKeys: completedQcTransactionsRef.current,
-          access,
-          prepareSlide: async (pageIndex) => {
-            const identity = await window.slidesApi.getQualityIdentityMap(pageIndex)
-            return identity
-              ? {
-                  status: 'prepared',
-                  slideId: identity.slideId,
-                  elementIds: identity.elementIds,
-                }
-              : { status: 'missing' }
-          },
-          publish: publishQualityReceipt,
-          signal,
-          isCurrent: () =>
-            activeRunTokenRef.current === Number(sessionId) && !(signal?.aborted ?? false),
-        })
-        if (isQcEnabled()) {
-          for (const page of qualityPages)
-            qcTransactionByPageRef.current.set(page, receipt.transactionId)
-          qcPagesRef.current = [...new Set([...qcPagesRef.current, ...qualityPages])]
-            .filter((page) => page >= 0)
-            .sort((left, right) => left - right)
         }
         return execution
       },
@@ -2788,23 +2752,6 @@ export function AiPanel({
               )}
               {blocks.includes('tools') && entry.tools && <ToolChipList tools={entry.tools} />}
             </React.Fragment>
-          )
-        })}
-        {qualityTimeline.map((receipt) => {
-          const pageNumber = /slide([1-9][0-9]*)\.xml$/.exec(receipt.slideId)?.[1] ?? '?'
-          const text =
-            receipt.status !== 'available'
-              ? t('aiQcUnavailable', { n: pageNumber, error: 'quality_unavailable' })
-              : receipt.findings.length > 0
-                ? t('aiQcPageIssues', { n: pageNumber, summary: `${receipt.findings.length}` })
-                : t('aiQcPassed', { n: pageNumber })
-          return (
-            <div
-              key={`${receipt.transactionId}:${receipt.slideId}`}
-              className="ai-msg ai-msg-assistant ai-msg-quality"
-            >
-              <Markdown text={text} />
-            </div>
           )
         })}
         {activeClarify && (

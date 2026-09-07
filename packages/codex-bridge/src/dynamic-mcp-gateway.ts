@@ -296,6 +296,21 @@ export async function startDynamicMcpGateway(
             toolName: started.toolName,
             isError: true,
           })
+          const safeExecutionError =
+            error instanceof Error &&
+            /^(?:cancelled|image_fetch_unavailable|image_limit|image_mime_unsupported|invalid_image|invalid_tool_input|office_api_unsupported|office_read_failed|office_write_failed|office_verify_failed|office_recovery_failed|office_concurrent_change|office_state_uncertain|proposal_missing|proposal_stale)$/.test(
+              error.message,
+            )
+              ? error.message
+              : undefined
+          if (safeExecutionError) {
+            diagnostic('gateway_tool_call_failed')
+            return {
+              output: safeExecutionError,
+              isError: true,
+              summary: started.toolName,
+            }
+          }
         }
         const reason =
           error instanceof Error &&

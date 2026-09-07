@@ -81,6 +81,8 @@ export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapt
           coercionType: root.Office.CoercionType.Image,
           imageLeft: geometry.left,
           imageTop: geometry.top,
+          imageWidth: geometry.width,
+          imageHeight: geometry.height,
         },
         (result: Runtime) => {
           if (result?.error || String(result?.status).toLowerCase() === 'failed')
@@ -99,10 +101,6 @@ export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapt
       )
       if (!created?.id) throw new Error('office_write_failed')
       created.name = 'WisWork picture'
-      created.left = geometry.left
-      created.top = geometry.top
-      created.width = geometry.width
-      created.height = geometry.height
       await sync(context, signal)
       return { id: String(created.id) }
     })
