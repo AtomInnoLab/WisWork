@@ -151,7 +151,7 @@ export function createProductionCodexBootstrap(
         questionnaireAwaitingContinuation: boolean
         lastFailure?: Error
         deferredTerminal?: { status: 'completed' | 'cancelled' | 'failed'; error?: Error }
-        proposalFailure?: 'cancelled' | 'failed'
+        proposalFailure?: 'failed'
         proposalError?: Error
         readonly touch: () => void
         readonly settle: (status: 'completed' | 'cancelled' | 'failed', error?: Error) => void
@@ -303,12 +303,9 @@ export function createProductionCodexBootstrap(
                       execution.output === 'mutation_cancelled' ||
                       execution.output === 'tool_cancelled'
                     ) {
-                      active.proposalFailure ??= 'cancelled'
                       options.diagnostics?.('enhanced_proposal_cancelled')
                     } else {
                       if (execution.output === 'mutation_expired') {
-                        active.proposalFailure = 'failed'
-                        active.proposalError = new Error('enhanced_proposal_expired')
                         options.diagnostics?.('enhanced_proposal_expired')
                       } else {
                         // A rejected document edit is a normal tool result, not a runtime
