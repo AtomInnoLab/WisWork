@@ -12,7 +12,9 @@ describe('PC Codex host registrar', () => {
   it('registers the complete production Slides tool catalog', async () => {
     const handlers = new Map<string, (...args: any[]) => any>()
     const owner = { id: 71, isDestroyed: () => false, send: vi.fn() }
+    let registered: any
     const registerDocument = vi.fn((input) => {
+      registered = input
       expect(input.session.listTools(input.session.credentials).length).toBeGreaterThan(0)
       return () => undefined
     })
@@ -62,6 +64,15 @@ describe('PC Codex host registrar', () => {
       handlers.get(PC_HOST_CODEX_CHANNELS.register)!({ sender: owner }, registration),
     ).resolves.toBeUndefined()
     expect(registerDocument).toHaveBeenCalledOnce()
+    for (const name of ['insert-image', 'insert_web_image']) {
+      expect(
+        registered.summarizeProposal({
+          id: `proposal-${name}`,
+          name,
+          input: { slide_index: 0 },
+        }),
+      ).toEqual({ operation: 'insert', target: 'elements', scope: 'single', count: 1 })
+    }
     await registrar.close()
   })
 

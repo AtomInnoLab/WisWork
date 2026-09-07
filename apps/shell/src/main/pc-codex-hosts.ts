@@ -123,6 +123,8 @@ const proposalSummary = (
     'add_chart',
     'add_smartart',
     'add_table',
+    'insert-image',
+    'insert_web_image',
   ])
   const remove = new Set(['delete_slide', 'delete_element'])
   const format = new Set([
