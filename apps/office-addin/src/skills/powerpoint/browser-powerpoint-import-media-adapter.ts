@@ -10,7 +10,9 @@ function runtime(): Runtime {
   const requirements = root.Office?.context?.requirements
   if (
     root.Office?.context?.host !== 'PowerPoint' ||
-    !requirements?.isSetSupported?.('PowerPointApi', '1.4') ||
+    !requirements?.isSetSupported?.('PowerPointApi', '1.5') ||
+    !requirements?.isSetSupported?.('ImageCoercion', '1.1') ||
+    typeof root.Office?.context?.document?.setSelectedDataAsync !== 'function' ||
     typeof root.PowerPoint?.run !== 'function'
   )
     throw new Error('office_api_unsupported')
@@ -49,43 +51,48 @@ export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapt
     geometry: ImageGeometry,
     signal?: AbortSignal,
   ): Promise<{ id: string }> {
-    return runtime().run(async (context: Runtime) => {
+    const powerpoint = runtime()
+    const before = await powerpoint.run(async (context: Runtime) => {
       const item = await slide(context, index, signal)
-      if (typeof item.shapes?.addGeometricShape !== 'function')
+      if (typeof context.presentation?.setSelectedSlides !== 'function')
         throw new Error('office_api_unsupported')
       item.shapes.load('items/id')
       await sync(context, signal)
-      const beforeIds = new Set((item.shapes.items as Runtime[]).map((shape) => String(shape.id)))
-      cancelled(signal)
-      let created: Runtime | undefined
-      try {
-        created = item.shapes.addGeometricShape('Rectangle', geometry)
-        if (typeof created?.delete !== 'function' || typeof created?.fill?.setImage !== 'function')
-          throw new Error('office_api_unsupported')
-        created.fill.setImage(base64)
-        created.name = 'WisWork picture'
-        created.load('id')
-        await sync(context, signal)
-        if (!created.id) throw new Error('office_write_failed')
-        return { id: String(created.id) }
-      } catch (writeError) {
-        try {
-          if (created) {
-            created.delete()
-            await sync(context)
-          }
-          item.shapes.load('items/id')
-          await sync(context)
-          const recovered = new Set(
-            (item.shapes.items as Runtime[]).map((shape) => String(shape.id)),
-          )
-          if (recovered.size !== beforeIds.size || [...recovered].some((id) => !beforeIds.has(id)))
-            throw new Error('office_recovery_failed', { cause: writeError })
-        } catch (recoveryError) {
-          throw new Error('office_recovery_failed', { cause: recoveryError })
-        }
-        throw new Error('office_write_failed', { cause: writeError })
-      }
+      context.presentation.setSelectedSlides([String(item.id)])
+      await sync(context, signal)
+      return new Set((item.shapes.items as Runtime[]).map((shape) => String(shape.id)))
+    })
+    cancelled(signal)
+    const root = globalThis as Runtime
+    await new Promise<void>((resolve, reject) => {
+      root.Office.context.document.setSelectedDataAsync(
+        base64,
+        {
+          coercionType: root.Office.CoercionType.Image,
+          imageLeft: geometry.left,
+          imageTop: geometry.top,
+          imageWidth: geometry.width,
+          imageHeight: geometry.height,
+        },
+        (result: Runtime) => {
+          if (result?.error || String(result?.status).toLowerCase() === 'failed')
+            reject(result?.error ?? new Error('office_write_failed'))
+          else resolve()
+        },
+      )
+    })
+    cancelled(signal)
+    return powerpoint.run(async (context: Runtime) => {
+      const item = await slide(context, index, signal)
+      item.shapes.load('items/id')
+      await sync(context, signal)
+      const created = (item.shapes.items as Runtime[]).find(
+        (shape) => !before.has(String(shape.id)),
+      )
+      if (!created?.id) throw new Error('office_write_failed')
+      created.name = 'WisWork picture'
+      await sync(context, signal)
+      return { id: String(created.id) }
     })
   }
   async verifyImage(
