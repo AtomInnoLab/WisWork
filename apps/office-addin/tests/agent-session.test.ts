@@ -1334,7 +1334,9 @@ describe('Office agent session', () => {
 
     session.send('set a dark background')
     await Promise.resolve()
-    harness.callbacks().onToolCall({ id: 'ppt-background', name: 'set_slide_background', input: {} })
+    harness
+      .callbacks()
+      .onToolCall({ id: 'ppt-background', name: 'set_slide_background', input: {} })
     harness.callbacks().onDone()
 
     await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce())

@@ -1404,10 +1404,7 @@ export function ConfiguredApp(
       <StatusScreen title="Unsupported Office host" detail="This host cannot use document tools." />
     )
   }
-  if (
-    pairingForgetError ||
-    shouldShowRelayStatusScreen(bridgeState.status, Boolean(workspace))
-  ) {
+  if (pairingForgetError || shouldShowRelayStatusScreen(bridgeState.status, Boolean(workspace))) {
     if (pairingForgetError) {
       return (
         <StatusScreen
