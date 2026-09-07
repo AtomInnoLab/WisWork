@@ -108,6 +108,12 @@ async function startSlidesTurn() {
         params: { threadId: 'thread', turn: { id: 'turn', status: 'completed' } },
       })
     },
+    emitText(text = 'Continuing after the questionnaire') {
+      mock.notify({
+        method: 'item/agentMessage/delta',
+        params: { threadId: 'thread', turnId: 'turn', delta: text },
+      })
+    },
     propose() {
       let resolve!: (execution: ToolExecution) => void
       let reject!: (error: Error) => void
@@ -216,7 +222,7 @@ it.each(['before', 'after'])(
   },
 )
 
-it('keeps an unrecovered questionnaire failure after other tool activity', async () => {
+it('treats a rejected questionnaire as a recoverable tool error', async () => {
   const turn = await startSlidesTurn()
   turn.startTool('ask_clarification')
   turn.completeTool('ask_clarification', true)
@@ -224,8 +230,20 @@ it('keeps an unrecovered questionnaire failure after other tool activity', async
   turn.completeTool('read_presentation')
   turn.completeNativeTurn()
   await turn.running
-  expect(turn.result).toBe('enhanced_questionnaire_incomplete')
+  expect(turn.result).toBe('done')
   expect(mock.startTurn).toHaveBeenCalledTimes(1)
+  await turn.engine.close()
+})
+
+it('recognizes post-answer assistant text as native questionnaire continuation', async () => {
+  const turn = await startSlidesTurn()
+  turn.startTool('ask_clarification')
+  turn.completeTool('ask_clarification')
+  turn.emitText()
+  turn.completeNativeTurn()
+  await turn.running
+  expect(turn.result).toBe('done')
+  expect(turn.events).toContainEqual({ type: 'text', text: 'Continuing after the questionnaire' })
   await turn.engine.close()
 })
 
@@ -311,7 +329,7 @@ it.each([
 )
 
 it.each(['before', 'after'])(
-  'waits for a proposal even when the questionnaire fails %s native completion',
+  'waits for a proposal and preserves completion when the questionnaire fails %s native completion',
   async (completion) => {
     const turn = await startSlidesTurn()
     turn.startTool('ask_clarification')
@@ -330,7 +348,7 @@ it.each(['before', 'after'])(
       mutated: false,
     })
     await turn.running
-    expect(turn.result).toBe('enhanced_questionnaire_incomplete')
+    expect(turn.result).toBe('done')
     expect(mock.startTurn).toHaveBeenCalledTimes(1)
     await turn.engine.close()
   },
@@ -446,8 +464,8 @@ it.each(
     })
     await new Promise((r) => setTimeout(r, 0))
     if (outcome === 'failed') {
-      expect(await running).toMatchObject({ message: 'enhanced_questionnaire_incomplete' })
-      expect(done).toBe(false)
+      expect(await running).toBeUndefined()
+      expect(done).toBe(true)
       await engine.close()
       return
     }
