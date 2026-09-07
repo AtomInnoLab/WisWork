@@ -106,16 +106,16 @@ export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapt
       if (typeof item.shapes?.getItem !== 'function') throw new Error('office_api_unsupported')
       const shape = item.shapes.getItem(id)
       shape.load('id,left,top,width,height,type')
-      if (typeof shape.fill?.load !== 'function') throw new Error('office_api_unsupported')
-      shape.fill.load('type')
       await sync(context, signal)
+      const close = (actual: unknown, expected: number) =>
+        typeof actual === 'number' && Math.abs(actual - expected) <= 0.01
       return (
         String(shape.id) === id &&
-        String(shape.fill.type).toLowerCase().includes('picture') &&
-        shape.left === geometry.left &&
-        shape.top === geometry.top &&
-        shape.width === geometry.width &&
-        shape.height === geometry.height
+        ['image', 'picture'].some((value) => String(shape.type).toLowerCase().includes(value)) &&
+        close(shape.left, geometry.left) &&
+        close(shape.top, geometry.top) &&
+        close(shape.width, geometry.width) &&
+        close(shape.height, geometry.height)
       )
     })
   }
