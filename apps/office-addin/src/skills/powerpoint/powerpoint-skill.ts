@@ -1853,13 +1853,17 @@ export function createPowerPointSkill(options: {
                       operation.shape_id,
                       confirmSignal,
                     )
+                    const normalizeFontFamily = (value: string | undefined) =>
+                      value?.trim().replace(/\s+/g, ' ').toLocaleLowerCase()
                     return (
                       (expectedStyle.color === undefined ||
                         current.color?.toUpperCase() === expectedStyle.color.toUpperCase()) &&
                       (expectedStyle.fontFamily === undefined ||
-                        current.fontFamily === expectedStyle.fontFamily) &&
+                        normalizeFontFamily(current.fontFamily) ===
+                          normalizeFontFamily(expectedStyle.fontFamily)) &&
                       (expectedStyle.fontSize === undefined ||
-                        current.fontSize === expectedStyle.fontSize) &&
+                        (current.fontSize !== undefined &&
+                          Math.abs(current.fontSize - expectedStyle.fontSize) <= 0.1)) &&
                       (expectedStyle.bold === undefined || current.bold === expectedStyle.bold) &&
                       (expectedStyle.italic === undefined ||
                         current.italic === expectedStyle.italic)

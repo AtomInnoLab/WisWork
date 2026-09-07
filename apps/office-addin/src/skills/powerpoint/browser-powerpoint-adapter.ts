@@ -278,6 +278,11 @@ function string(value: unknown, maximum = 256): string {
   return typeof value === 'string' ? value.slice(0, maximum) : ''
 }
 
+function equivalentText(actual: string, expected: string): boolean {
+  const normalize = (value: string) => value.replace(/\r\n|\r|\v/g, '\n')
+  return normalize(actual) === normalize(expected)
+}
+
 function shapeInfo(value: RuntimeRecord): PowerPointShape {
   return {
     id: string(value.id),
@@ -1403,7 +1408,10 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
               await sync(context, signal)
               return [...trackedByTarget.values()].every((mutation) => {
                 if (mutation.kind === 'text')
-                  return string(mutation.target.text, MAX_POWERPOINT_TEXT) === mutation.after
+                  return equivalentText(
+                    string(mutation.target.text, MAX_POWERPOINT_TEXT),
+                    mutation.after,
+                  )
                 return [
                   finite(mutation.target.left),
                   finite(mutation.target.top),
@@ -1430,8 +1438,8 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             for (const mutation of trackedByTarget.values()) {
               if (mutation.kind === 'text') {
                 const current = string(mutation.target.text, MAX_POWERPOINT_TEXT)
-                if (current === mutation.before) beforeCount += 1
-                else if (current === mutation.after) afterCount += 1
+                if (equivalentText(current, mutation.before ?? '')) beforeCount += 1
+                else if (equivalentText(current, mutation.after)) afterCount += 1
                 else return 'third'
               } else {
                 const current = [

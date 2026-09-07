@@ -893,6 +893,35 @@ describe('PowerPoint compatibility skill', () => {
     expect(fake.readShapeTextStyle).toHaveBeenCalled()
   })
 
+  it('accepts semantically equivalent Mac PowerPoint font readback', async () => {
+    const fake = adapter({
+      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: [] }),
+      readShapeTextStyle: vi.fn().mockResolvedValue({
+        fontFamily: '  APTOS   DISPLAY ',
+        fontSize: 23.999,
+      }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await skill.executeTool(
+      call('execute_office_js', {
+        program: {
+          version: 1,
+          operations: [
+            {
+              op: 'set_shape_text_style',
+              slide_index: 0,
+              shape_id: '2',
+              fontFamily: 'Aptos Display',
+              fontSize: 24,
+            },
+          ],
+        },
+      }),
+    )
+    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+  })
+
   it.each([{ color: 'red' }, { fontSize: 0 }, { fontFamily: '' }, { bold: 'yes' }])(
     'rejects malformed declarative text style without a proposal: %j',
     async (style) => {
@@ -1762,6 +1791,46 @@ describe('browser PowerPoint adapter', () => {
       'cancelled',
     )
     expect(textRange.text).toBe('New')
+  })
+
+  it('accepts the vertical-tab paragraph separator returned by Mac PowerPoint after a write', async () => {
+    const textRange = { text: 'Old', load: vi.fn() }
+    const shape = { textFrame: { textRange } }
+    const slide = {
+      id: 's1',
+      load: vi.fn(),
+      shapes: { getItem: vi.fn(() => shape) },
+    }
+    const slides = {
+      getCount: vi.fn(() => ({ value: 1 })),
+      getItemAt: vi.fn(() => slide),
+    }
+    const sync = vi.fn().mockImplementation(async () => {
+      if (textRange.text === 'First line\nSecond line') textRange.text = 'First line\vSecond line'
+    })
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({ presentation: { slides }, sync }),
+      },
+    })
+
+    await expect(
+      new BrowserPowerPointAdapter().executeDeclarative([
+        {
+          op: 'set_shape_text',
+          slide_index: 0,
+          shape_id: '2',
+          text: 'First line\nSecond line',
+        },
+      ]),
+    ).resolves.toEqual({ createdShapeIds: [] })
   })
 
   it('reconciles a text sync rejection that committed and never overwrites a third state', async () => {

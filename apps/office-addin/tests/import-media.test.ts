@@ -506,6 +506,35 @@ describe('PowerPoint image proposal', () => {
     expect(adapter.insertImage).toHaveBeenCalledOnce()
   })
 
+  it('reports an unstable relay image fetch with a model-actionable error', async () => {
+    const adapter = {
+      snapshotSlide: vi.fn(),
+      insertImage: vi.fn(),
+      verifyImage: vi.fn(),
+      removeImage: vi.fn(),
+      verifyImageAbsent: vi.fn(),
+    }
+    const skill = createPowerPointImportMediaSkill({
+      adapter,
+      proposals: createStructuredProposalController(),
+      vfs: new InMemoryVfs(),
+      fetchImage: vi.fn().mockRejectedValue(new Error('relay_disconnected')),
+    })
+    await expect(
+      skill.executeTool(
+        call('insert_web_image', {
+          url: 'https://images.example/blocked.png',
+          slide_index: 0,
+          left: 1,
+          top: 2,
+          width: 30,
+          height: 40,
+        }),
+      ),
+    ).resolves.toMatchObject({ output: 'image_fetch_unavailable', isError: true })
+    expect(adapter.snapshotSlide).not.toHaveBeenCalled()
+  })
+
   it('revalidates the slide, inserts once, and semantically verifies the created shape', async () => {
     const vfs = new InMemoryVfs()
     vfs.writeFile('/home/user/image.png', png(10, 10))

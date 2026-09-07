@@ -105,6 +105,25 @@ function failed(name: string, error: unknown): ToolExecution {
     : 'office_operation_failed'
   return { output: code, isError: true, mutated: false, summary: name }
 }
+
+async function fetchValidatedImage(
+  fetchImage: (url: string, signal?: AbortSignal) => Promise<Uint8Array>,
+  url: string,
+  signal?: AbortSignal,
+) {
+  try {
+    return await validateBoundedImageBytes(await fetchImage(url, signal))
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      ['image_limit', 'image_mime_unsupported', 'invalid_image', 'cancelled'].includes(
+        error.message,
+      )
+    )
+      throw error
+    throw new Error('image_fetch_unavailable', { cause: error })
+  }
+}
 export function createPowerPointImportMediaSkill(options: {
   adapter: PowerPointImageAdapter
   proposals: StructuredProposalController
@@ -114,7 +133,7 @@ export function createPowerPointImportMediaSkill(options: {
   return {
     id: 'office-powerpoint-import-media',
     systemPrompt:
-      'When insert_web_image is available, use it for an HTTPS image_url returned by image_search; use insert-image only for an attached VFS path. Image insertions use bounded media, the PC-managed PowerPoint session policy, stale-state checks, and semantic verification.',
+      'When insert_web_image is available, use it for an HTTPS image_url returned by image_search; use insert-image only for an attached VFS path. Image insertions use bounded media, the PC-managed PowerPoint session policy, stale-state checks, and semantic verification. If a web image fails, do not retry the same URL; try at most one different image URL, then continue with a text or vector layout.',
     tools: options.fetchImage ? [tool, webTool] : [tool],
     async executeTool(call, signal) {
       if (call.inputError || call.truncated)
@@ -130,7 +149,7 @@ export function createPowerPointImportMediaSkill(options: {
         const image =
           local !== undefined
             ? await readBoundedImage(options.vfs, local.path)
-            : await validateBoundedImageBytes(await options.fetchImage!(remote!.url, signal))
+            : await fetchValidatedImage(options.fetchImage!, remote!.url, signal)
         const geometry = {
           left: value.left,
           top: value.top,
