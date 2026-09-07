@@ -19,6 +19,7 @@ import type { OfficeRetrievalProxy, OfficeWebCapability } from './office-retriev
 const MAX_BODY_BYTES = 256 * 1024
 const MAX_TEXT_BYTES = 128 * 1024
 const MAX_TOOLS = 64
+export const OFFICE_PROXY_KEEPALIVE_MS = 15_000
 interface PolicyAuthority {
   issue(value: {
     generation: number
@@ -158,13 +159,13 @@ export function createOfficeCodexProxy(options: {
       if (mutation) telemetry('pending', 'started')
       telemetry('dispatch', 'started')
       let result: OfficeRelayToolResult
+      const retrievalCapability: Partial<Record<string, OfficeWebCapability>> = {
+        web_search: 'web-search.v1',
+        web_fetch: 'web-fetch.v1',
+        image_search: 'image-search.v1',
+      }
+      const capability = retrievalCapability[call.name]
       try {
-        const retrievalCapability: Partial<Record<string, OfficeWebCapability>> = {
-          web_search: 'web-search.v1',
-          web_fetch: 'web-fetch.v1',
-          image_search: 'image-search.v1',
-        }
-        const capability = retrievalCapability[call.name]
         if (capability && request.executeRetrieval) {
           const output = await request.executeRetrieval(
             capability,
@@ -186,6 +187,16 @@ export function createOfficeCodexProxy(options: {
         }
       } catch (error) {
         telemetry('dispatch', 'failed')
+        if (capability)
+          return {
+            output:
+              error instanceof Error && error.message === 'retrieval_cancelled'
+                ? 'retrieval_cancelled'
+                : 'retrieval_upstream_error',
+            isError: true,
+            summary: 'Office retrieval unavailable',
+            mutated: false,
+          }
         throw error
       }
       telemetry('dispatch', result.isError ? 'failed' : 'succeeded')
@@ -231,6 +242,8 @@ export function createOfficeCodexProxy(options: {
       )
     }, 5)
     pump.unref()
+    const keepalive = setInterval(() => push(': keepalive\n\n'), OFFICE_PROXY_KEEPALIVE_MS)
+    keepalive.unref()
     void options.runtime
       .runOfficeTurn({
         documentId,
@@ -255,6 +268,7 @@ export function createOfficeCodexProxy(options: {
       })
       .finally(() => {
         clearInterval(pump)
+        clearInterval(keepalive)
         open = false
         session.close()
         terminal = true

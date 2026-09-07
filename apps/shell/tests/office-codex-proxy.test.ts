@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ENHANCED_HOSTS, type EnhancedRolloutPolicy } from '@wiswork/agent-runtime'
-import { createOfficeCodexProxy } from '../src/main/office-codex-proxy'
+import { OFFICE_PROXY_KEEPALIVE_MS, createOfficeCodexProxy } from '../src/main/office-codex-proxy'
 import { createShellEnhancedPolicyAuthority } from '../src/main/enhanced-policy-authority'
 
 const rollout: EnhancedRolloutPolicy = {
@@ -21,6 +21,44 @@ const statement = {
 } as const
 
 describe('Office Codex proxy', () => {
+  it('emits bounded SSE keepalives while a long Office turn is silent', async () => {
+    vi.useFakeTimers()
+    let finish!: () => void
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const proxy = createOfficeCodexProxy({
+      runtime: { runOfficeTurn: vi.fn(() => pending) } as any,
+      rollout,
+      policyAuthority: createShellEnhancedPolicyAuthority(() => 0),
+    })
+    const response = await proxy({
+      body: {
+        system: 'rules',
+        messages: [],
+        tools: [
+          { name: 'get_document_text', description: 'read', input_schema: { type: 'object' } },
+        ],
+      },
+      signal: new AbortController().signal,
+      host: 'Word',
+      sessionId: 'session_12345678',
+      requestId: 'request_12345678',
+      statement,
+      executeTool: vi.fn(),
+    })
+    const iterator = (response.body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]()
+    const next = iterator.next()
+    await vi.advanceTimersByTimeAsync(OFFICE_PROXY_KEEPALIVE_MS)
+    await expect(next).resolves.toMatchObject({
+      done: false,
+      value: expect.any(Uint8Array),
+    })
+    finish()
+    await iterator.return?.()
+    vi.useRealTimers()
+  })
+
   it('does not report success when a failed terminal event precedes promise rejection', async () => {
     let finish!: () => void
     const pending = new Promise<void>((resolve) => {
@@ -281,6 +319,44 @@ describe('Office Codex proxy', () => {
       'web-fetch.v1',
       'image-search.v1',
     ])
+  })
+
+  it('returns a recoverable tool error when PC-backed image search is unavailable', async () => {
+    const runtime = {
+      async runOfficeTurn(input: any) {
+        const result = await input.toolSession.callTool(input.toolSession.credentials, {
+          id: 'call_image_search',
+          name: 'image_search',
+          input: { query: 'volcano', max_results: 4 },
+        })
+        expect(result).toMatchObject({ isError: true, output: 'retrieval_upstream_error' })
+        input.onEvent({ type: 'terminal', status: 'completed' })
+      },
+    }
+    const proxy = createOfficeCodexProxy({
+      runtime: runtime as any,
+      rollout,
+      policyAuthority: createShellEnhancedPolicyAuthority(() => 0),
+    })
+    const response = await proxy({
+      body: {
+        system: 'PowerPoint rules',
+        messages: [],
+        tools: [{ name: 'image_search', description: 'images', input_schema: { type: 'object' } }],
+      },
+      signal: new AbortController().signal,
+      host: 'PowerPoint',
+      sessionId: 'session_12345678',
+      requestId: 'request_12345678',
+      statement: { ...statement, host: 'office-powerpoint' },
+      executeRetrieval: vi.fn(async () => {
+        throw new Error('retrieval_upstream_error')
+      }),
+      executeTool: vi.fn(),
+    })
+    for await (const _chunk of response.body as AsyncIterable<Uint8Array>) {
+      /* drain */
+    }
   })
 
   it('keeps bounded declarative PowerPoint writes without granting raw Office authority', async () => {
