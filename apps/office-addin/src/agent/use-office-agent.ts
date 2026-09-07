@@ -193,6 +193,10 @@ function toolActivity(name: string, state: 'running' | 'complete' | 'error'): st
 
 const DIAGNOSTIC_TOOL_ERRORS = new Set([
   'cancelled',
+  'image_fetch_unavailable',
+  'image_limit',
+  'image_mime_unsupported',
+  'invalid_image',
   'invalid_tool_input',
   'office_api_unsupported',
   'office_read_failed',
@@ -791,6 +795,7 @@ export function createOfficeAgentSession(dependencies: {
       },
       onTurnEnd: () => {
         activeAssistantId = undefined
+        append({ id: eventId(), kind: 'phase', text: '继续思考' })
         publish({ activity: 'Thinking…' })
       },
       onDone: (result) => {

@@ -125,6 +125,10 @@ export function relayConnectionPresentation(
   })
 }
 
+export function shouldResetOfficeSession(status: OfficeRelayStatus | 'signed_out'): boolean {
+  return status === 'rejected' || status === 'expired' || status === 'signed_out'
+}
+
 export function relayPersistenceNotice(snapshot: OfficeRelaySnapshot): string | undefined {
   return snapshot.status === 'connected' && snapshot.remembered === false
     ? 'Connected, but this Office installation was not remembered. Pair again after reconnecting.'
@@ -566,6 +570,15 @@ function PowerPointTimeline(props: {
   let index = 0
   while (index < props.timeline.length) {
     const event = props.timeline[index]!
+    if (event.kind === 'phase') {
+      nodes.push(
+        <div className="ai-phase-row" key={event.id}>
+          {event.text}…
+        </div>,
+      )
+      index += 1
+      continue
+    }
     if (event.kind !== 'tool') {
       nodes.push(
         <TimelineEvent
@@ -1324,7 +1337,7 @@ export function ConfiguredApp(
   ])
 
   useEffect(() => {
-    if (bridgeState.status !== 'connected' && workspace) {
+    if (shouldResetOfficeSession(bridgeState.status) && workspace) {
       workspace.session.authenticationLost()
       workspace.runtime.clearSession()
     }

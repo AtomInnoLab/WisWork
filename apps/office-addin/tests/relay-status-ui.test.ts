@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { relayConnectionPresentation, relayPersistenceNotice } from '../src/App.js'
+import {
+  relayConnectionPresentation,
+  relayPersistenceNotice,
+  shouldResetOfficeSession,
+} from '../src/App.js'
 
 describe('persistent relay status UI', () => {
+  it('preserves the active conversation across transient connection states', () => {
+    expect(shouldResetOfficeSession('reconnecting')).toBe(false)
+    expect(shouldResetOfficeSession('connecting')).toBe(false)
+    expect(shouldResetOfficeSession('waiting_for_pc')).toBe(false)
+    expect(shouldResetOfficeSession('offline')).toBe(false)
+    expect(shouldResetOfficeSession('rejected')).toBe(true)
+    expect(shouldResetOfficeSession('expired')).toBe(true)
+  })
+
   it('shows bounded reconnect progress without offering a new pairing action', () => {
     expect(relayConnectionPresentation('reconnecting')).toEqual({
       title: 'Reconnecting to WisWork PC…',

@@ -375,6 +375,43 @@ describe('Office agent session', () => {
     expect(JSON.stringify(diagnostics.record.mock.calls)).not.toContain('write my secret article')
   })
 
+  it('preserves a safe image-fetch failure code in diagnostics', async () => {
+    const harness = transportHarness()
+    const diagnostics = {
+      startTrace: vi.fn(() => 'trace'),
+      setTool: vi.fn(),
+      record: vi.fn(),
+      clear: vi.fn(),
+    }
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'powerpoint',
+        systemPrompt: 'test',
+        tools: [
+          { name: 'insert_web_image', description: 'image', inputSchema: { type: 'object' } },
+        ],
+        executeTool: vi.fn(async () => ({
+          output: 'image_fetch_unavailable',
+          isError: true,
+          summary: 'failed',
+        })),
+      },
+      proposals: proposalsHarness().controller,
+      diagnostics,
+    })
+    session.send('insert an image')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({ id: 'call', name: 'insert_web_image', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(diagnostics.record).toHaveBeenCalled())
+    expect(diagnostics.record).toHaveBeenCalledWith({
+      phase: 'tool',
+      errorCode: 'image_fetch_unavailable',
+      durationMs: expect.any(Number),
+    })
+  })
+
   it('forwards an in-memory Office diagnostic cause without adding it to model output', async () => {
     const harness = transportHarness()
     const officeError = Object.assign(new Error('secret workbook value'), {
@@ -522,6 +559,7 @@ describe('Office agent session', () => {
       'assistant',
       'tool',
       'proposal',
+      'phase',
       'assistant',
     ])
     expect(session.snapshot().timeline[2]).toMatchObject({
@@ -534,6 +572,32 @@ describe('Office agent session', () => {
       proposal: { id: 'p1' },
       state: 'applied',
     })
+  })
+
+  it('records a model-thinking boundary between consecutive tool rounds', async () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'web_search', description: 'search', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(async () => ({ output: 'ok', summary: 'searched' })),
+      },
+      proposals: proposalsHarness().controller,
+    })
+
+    session.send('Research and build')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({ id: 'search-1', name: 'web_search', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+
+    expect(session.snapshot().timeline.map((event) => event.kind)).toEqual([
+      'user',
+      'tool',
+      'phase',
+    ])
   })
 
   it('never exposes internal tool identifiers while a tool is running or fails', async () => {

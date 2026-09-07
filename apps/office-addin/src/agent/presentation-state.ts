@@ -54,8 +54,13 @@ export interface ProposalPresentationEvent extends PresentationEventBase {
   readonly error?: string
 }
 
+export interface PhasePresentationEvent extends PresentationEventBase {
+  readonly kind: 'phase'
+  readonly text: string
+}
+
 export type OfficePresentationEvent =
-  TextPresentationEvent | ToolPresentationEvent | ProposalPresentationEvent
+  TextPresentationEvent | ToolPresentationEvent | ProposalPresentationEvent | PhasePresentationEvent
 
 export type OfficePresentationTimeline = readonly OfficePresentationEvent[]
 
