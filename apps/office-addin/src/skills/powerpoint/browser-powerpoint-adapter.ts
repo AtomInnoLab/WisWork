@@ -128,6 +128,21 @@ export interface PowerPointPresentationState {
 
 export interface PowerPointAdapter {
   getPresentationState(signal?: AbortSignal): Promise<PowerPointPresentationState>
+  readSlideBackground?(
+    slideIndex: number,
+    signal?: AbortSignal,
+  ): Promise<{
+    slideId: string
+    type: string
+    backgroundColor?: string
+    transparency?: number
+  }>
+  setSlideBackground?(
+    slideIndex: number,
+    color: string,
+    transparency: number,
+    signal?: AbortSignal,
+  ): Promise<void>
   inspectSlideMasters(signal?: AbortSignal): Promise<PowerPointMasterState>
   executeMasterOperations(
     operations: PowerPointMasterOperation[],
@@ -562,6 +577,63 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
           }),
         ),
       }
+    })
+  }
+
+  async readSlideBackground(
+    slideIndex: number,
+    signal?: AbortSignal,
+  ): Promise<{
+    slideId: string
+    type: string
+    backgroundColor?: string
+    transparency?: number
+  }> {
+    cancelled(signal)
+    return this.run('1.10', async (context) => {
+      const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+      const item = await getSlide(context, slides, slideIndex, signal)
+      const fill = (item.background as RuntimeRecord | undefined)?.fill as RuntimeRecord | undefined
+      if (!fill || typeof fill.load !== 'function') throw new Error('office_api_unsupported')
+      ;(fill.load as (properties: string) => void)('type')
+      const solid =
+        typeof fill.getSolidFillOrNullObject === 'function'
+          ? (fill.getSolidFillOrNullObject as () => RuntimeRecord)()
+          : undefined
+      if (solid && typeof solid.load === 'function')
+        (solid.load as (properties: string) => void)('color,transparency')
+      await sync(context, signal)
+      return {
+        slideId: string(item.id),
+        type: string(fill.type),
+        ...(solid && !solid.isNullObject && typeof solid.color === 'string'
+          ? { backgroundColor: solid.color }
+          : {}),
+        ...(solid && !solid.isNullObject && typeof solid.transparency === 'number'
+          ? { transparency: solid.transparency }
+          : {}),
+      }
+    })
+  }
+
+  async setSlideBackground(
+    slideIndex: number,
+    color: string,
+    transparency: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    cancelled(signal)
+    await this.run('1.10', async (context) => {
+      const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+      const item = await getSlide(context, slides, slideIndex, signal)
+      const fill = (item.background as RuntimeRecord | undefined)?.fill as RuntimeRecord | undefined
+      if (!fill || typeof fill.setSolidFill !== 'function')
+        throw new Error('office_api_unsupported')
+      ;(fill.setSolidFill as (options: { color: string; transparency: number }) => void)({
+        color,
+        transparency,
+      })
+      await sync(context, signal)
     })
   }
 

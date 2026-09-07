@@ -2919,6 +2919,28 @@ app.whenReady().then(async () => {
         })
       : createOfficeLocalSearchProxy({
           fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+          normalizeImage: async ({ bytes }) => {
+            const decoded = nativeImage.createFromBuffer(Buffer.from(bytes))
+            const { width, height } = decoded.getSize()
+            if (
+              decoded.isEmpty() ||
+              !Number.isSafeInteger(width) ||
+              !Number.isSafeInteger(height) ||
+              width < 1 ||
+              height < 1 ||
+              width > 8_192 ||
+              height > 8_192 ||
+              width * height > 16_000_000
+            )
+              throw new Error('retrieval_upstream_error')
+            const png = decoded.toPNG()
+            if (png.byteLength <= 2 * 1024 * 1024)
+              return { mime: 'image/png' as const, bytes: new Uint8Array(png) }
+            const jpeg = decoded.toJPEG(90)
+            if (!jpeg.byteLength || jpeg.byteLength > 2 * 1024 * 1024)
+              throw new Error('retrieval_upstream_error')
+            return { mime: 'image/jpeg' as const, bytes: new Uint8Array(jpeg) }
+          },
         })
     const retrievalCapabilities = retrievalEndpoint
       ? (['web-search.v1', 'web-fetch.v1', 'image-search.v1'] as const)

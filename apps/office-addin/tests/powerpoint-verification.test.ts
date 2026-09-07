@@ -154,6 +154,44 @@ describe('Office PowerPoint presentation verification', () => {
     await expect(source.readShape(0, 'shape-1')).rejects.toThrow('office_read_failed')
   })
 
+  it('reads the actual slide background for deterministic background verification', async () => {
+    const adapter = productionAdapter({ text: 'Before', left: 5 })
+    adapter.readSlideBackground = vi
+      .fn()
+      .mockResolvedValue({ slideId: 'slide-1', backgroundColor: '#112233' })
+    const source = createBrowserPowerPointVerificationAuthority(adapter)
+
+    await expect(source.readSlide(0)).resolves.toEqual({
+      slideId: 'slide-1',
+      backgroundColor: '#112233',
+    })
+  })
+
+  it('enrolls native slide-background changes with a background target', async () => {
+    const source = authority({
+      readSlide: vi.fn().mockResolvedValue({ slideId: 'slide-1', backgroundColor: '#FFFFFF' }),
+    })
+    const subject = createOfficePowerPointVerification({ authority: source })
+    const call = {
+      id: 'background-call',
+      name: 'set_slide_background',
+      input: { slide_index: 0, color: '#112233', transparency: 0 },
+    }
+
+    await expect(subject.enroll([call], undefined)).resolves.toMatchObject({
+      kind: 'ready',
+      contract: {
+        affectedSlides: [1],
+        checks: [
+          expect.objectContaining({
+            property: 'background_color',
+            expected: '#112233',
+          }),
+        ],
+      },
+    })
+  })
+
   it('degrades to normal execution when host enrollment is temporarily unavailable', async () => {
     const subject = createOfficePowerPointVerification({
       authority: authority({ acquire: vi.fn().mockRejectedValue(new Error('office_read_failed')) }),

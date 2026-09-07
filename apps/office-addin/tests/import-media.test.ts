@@ -5,6 +5,7 @@ import { createOfficeHostRuntime } from '../src/agent/host-runtime.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import { createExcelImportMediaSkill } from '../src/skills/excel/excel-import-media.js'
 import { createPowerPointImportMediaSkill } from '../src/skills/powerpoint/powerpoint-import-media.js'
+import { BrowserPowerPointImportMediaAdapter } from '../src/skills/powerpoint/browser-powerpoint-import-media-adapter.js'
 import {
   exportSafeCsv,
   readBoundedCsv,
@@ -108,7 +109,7 @@ describe('host capability advertisement', () => {
     ;(globalThis as Record<string, any>).Office.context.requirements.isSetSupported = (
       name: string,
       version: string,
-    ) => name === 'PowerPointApi' && version === '1.8'
+    ) => name === 'PowerPointApi' && version === '1.4'
     ;(globalThis as Record<string, unknown>).PowerPoint = { run: vi.fn() }
     const powerpoint = createOfficeHostRuntime('powerpoint').skill.tools.map((item) => item.name)
     expect(powerpoint).toContain('insert-image')
@@ -122,7 +123,7 @@ describe('host capability advertisement', () => {
         platform: 'Mac',
         requirements: {
           isSetSupported: (name: string, version: string) =>
-            name === 'PowerPointApi' && version === '1.8',
+            name === 'PowerPointApi' && version === '1.4',
         },
       },
     }
@@ -364,6 +365,50 @@ describe('Excel import/export proposals', () => {
 })
 
 describe('PowerPoint image proposal', () => {
+  it('inserts pictures through the stable geometric-shape image fill API', async () => {
+    const setImage = vi.fn()
+    const created = {
+      id: 'picture-1',
+      name: '',
+      fill: { setImage },
+      load: vi.fn(),
+      delete: vi.fn(),
+    }
+    const shapes = {
+      items: [],
+      load: vi.fn(),
+      addGeometricShape: vi.fn().mockReturnValue(created),
+    }
+    const slide = { id: 'slide-1', load: vi.fn(), shapes }
+    const context = {
+      presentation: { slides: { getItemAt: vi.fn().mockReturnValue(slide) } },
+      sync: vi.fn().mockResolvedValue(undefined),
+    }
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: { run: (callback: (value: typeof context) => unknown) => callback(context) },
+    })
+
+    const adapter = new BrowserPowerPointImportMediaAdapter({
+      snapshotSlide: vi.fn(),
+    })
+    await expect(
+      adapter.insertImage(0, 'cG5n', { left: 10, top: 20, width: 300, height: 180 }),
+    ).resolves.toEqual({ id: 'picture-1' })
+    expect(shapes.addGeometricShape).toHaveBeenCalledWith('Rectangle', {
+      left: 10,
+      top: 20,
+      width: 300,
+      height: 180,
+    })
+    expect(setImage).toHaveBeenCalledWith('cG5n')
+  })
+
   it('fetches an image-search URL through the PC relay before inserting it', async () => {
     const vfs = new InMemoryVfs()
     const adapter = {
