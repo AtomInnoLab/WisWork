@@ -2642,6 +2642,11 @@ body.vib .slide-list {
   transition: all var(--transition-fast);
 }
 
+.ai-send-btn:not(.ai-stop-btn) {
+  color: var(--color-btn-primary-text);
+  background: var(--color-btn-primary);
+}
+
 .ai-send-btn img {
   display: block;
   width: 100%;
@@ -2659,6 +2664,7 @@ body.vib .slide-list {
 
 .ai-send-btn:disabled {
   cursor: default;
+  opacity: 0.55;
 }
 
 /* Stop button while generating: brand-supplied art (white square on black), transparent button chrome */

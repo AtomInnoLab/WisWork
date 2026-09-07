@@ -40,19 +40,15 @@ import {
   toVisualQualityReceipt,
 } from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
-import { Markdown, PresentationActivityGroup } from '@wiswork/ui'
+import { IconEnter, IconPaperclip, Markdown, PresentationActivityGroup } from '@wiswork/ui'
 import type { PresentationQualityReceipt } from '@wiswork/presentation-ops'
 import { presentationVerificationFlags } from '@wiswork/presentation-verification'
 import { translatePresentationVerification, mutationExpiryStrings } from '@wiswork/i18n'
 import { verifyAndBrandSlidesAcceptanceAuthority, verifySlidesAcceptance } from './task-acceptance'
 import { reviewSlidesRendering } from './task-review'
 import { WisWorkMark } from '../components/icons'
-import sendEnterOn from '../assets/send-enter-on.png'
-
 declare const __WISWORK_SLIDES_ACCEPTANCE_E2E__: boolean
-import sendEnterOff from '../assets/send-enter-off.png'
 import sendStop from '../assets/send-stop.png'
-import attachIcon from '../assets/attach-icon.png'
 import filePdfIcon from '../assets/file-pdf.png'
 import fileWordIcon from '../assets/file-word.png'
 import fileExcelIcon from '../assets/file-excel.png'
@@ -2939,7 +2935,7 @@ export function AiPanel({
                 data-tip={t('aiAttachTitle')}
                 aria-label={t('aiAttachTitle')}
               >
-                <img src={attachIcon} alt="" aria-hidden />
+                <IconPaperclip size={20} />
               </button>
               {busy && !selectionScopeEnabled ? (
                 <button
@@ -2958,7 +2954,7 @@ export function AiPanel({
                   data-tip={t('aiSend')}
                   aria-label={t('aiSend')}
                 >
-                  <img src={input.trim() ? sendEnterOn : sendEnterOff} alt="" aria-hidden />
+                  <IconEnter size={22} />
                 </button>
               )}
             </div>

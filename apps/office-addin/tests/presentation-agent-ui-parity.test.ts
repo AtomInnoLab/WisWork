@@ -46,6 +46,13 @@ describe('shared presentation agent UI', () => {
     expect(css).toMatch(/\.is-empty\.has-empty-header \.composer-shell\s*{[^}]*grid-row:\s*3;/s)
   })
 
+  it('uses one PC-style composer card in empty and conversation states', () => {
+    const css = readFileSync(resolve(import.meta.dirname, '../src/styles.css'), 'utf8')
+    expect(css).toMatch(/\.composer-input-box\s*{[^}]*border-radius:\s*var\(--radius-16\)/s)
+    expect(css).toMatch(/\.composer-input-box textarea\s*{[^}]*border:\s*0/s)
+    expect(css).not.toMatch(/\.is-empty \.composer-shell textarea\s*{/)
+  })
+
   it('uses the same quiet message hierarchy in desktop Slides and Office PowerPoint', () => {
     const markup = renderToStaticMarkup(
       React.createElement(

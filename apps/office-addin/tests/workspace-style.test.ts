@@ -43,7 +43,7 @@ describe('Office workspace styling', () => {
     expect(styles).toMatch(/\.composer-shell\s*\{[\s\S]*position:\s*relative/)
     expect(styles).toMatch(/@media\s*\(max-height:\s*520px\)/)
     expect(styles).toMatch(
-      /@media\s*\(max-height:\s*520px\)[\s\S]*\.composer-shell textarea\s*\{[\s\S]*min-height:\s*44px/,
+      /@media\s*\(max-height:\s*520px\)[\s\S]*\.composer-input-box textarea\s*\{[\s\S]*min-height:\s*44px/,
     )
   })
 })

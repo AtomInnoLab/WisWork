@@ -48,6 +48,16 @@ export function IconEnter(props: IconProps) {
   )
 }
 
+/** Thin paperclip used by every agent composer. */
+export function IconPaperclip(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M5.25 8.75 9.9 4.1a2.1 2.1 0 0 1 3 3l-5.8 5.8a3.5 3.5 0 0 1-5-5l5.65-5.65" />
+      <path d="m5.2 8.8 4.9-4.9" />
+    </Svg>
+  )
+}
+
 export function IconSidebarCollapse(props: IconProps) {
   return (
     <Svg {...props}>
