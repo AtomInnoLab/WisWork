@@ -111,6 +111,12 @@ p {
   min-height: 24px;
 }
 
+.presentation-agent .ai-phase-row {
+  min-height: 24px;
+  padding: 4px 0;
+  color: var(--color-text-secondary);
+}
+
 .presentation-agent .ai-typing {
   display: inline-flex;
   align-items: center;

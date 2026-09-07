@@ -375,6 +375,43 @@ describe('Office agent session', () => {
     expect(JSON.stringify(diagnostics.record.mock.calls)).not.toContain('write my secret article')
   })
 
+  it('preserves a safe image-fetch failure code in diagnostics', async () => {
+    const harness = transportHarness()
+    const diagnostics = {
+      startTrace: vi.fn(() => 'trace'),
+      setTool: vi.fn(),
+      record: vi.fn(),
+      clear: vi.fn(),
+    }
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'powerpoint',
+        systemPrompt: 'test',
+        tools: [
+          { name: 'insert_web_image', description: 'image', inputSchema: { type: 'object' } },
+        ],
+        executeTool: vi.fn(async () => ({
+          output: 'image_fetch_unavailable',
+          isError: true,
+          summary: 'failed',
+        })),
+      },
+      proposals: proposalsHarness().controller,
+      diagnostics,
+    })
+    session.send('insert an image')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({ id: 'call', name: 'insert_web_image', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(diagnostics.record).toHaveBeenCalled())
+    expect(diagnostics.record).toHaveBeenCalledWith({
+      phase: 'tool',
+      errorCode: 'image_fetch_unavailable',
+      durationMs: expect.any(Number),
+    })
+  })
+
   it('forwards an in-memory Office diagnostic cause without adding it to model output', async () => {
     const harness = transportHarness()
     const officeError = Object.assign(new Error('secret workbook value'), {
@@ -534,6 +571,28 @@ describe('Office agent session', () => {
       proposal: { id: 'p1' },
       state: 'applied',
     })
+  })
+
+  it('does not fabricate a thinking message when the model emits only a tool call', async () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [{ name: 'web_search', description: 'search', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(async () => ({ output: 'ok', summary: 'searched' })),
+      },
+      proposals: proposalsHarness().controller,
+    })
+
+    session.send('Research and build')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({ id: 'search-1', name: 'web_search', input: {} })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+
+    expect(session.snapshot().timeline.map((event) => event.kind)).toEqual(['user', 'tool'])
   })
 
   it('never exposes internal tool identifiers while a tool is running or fails', async () => {
@@ -1226,6 +1285,53 @@ describe('Office agent session', () => {
     session.send('update the slide')
     await Promise.resolve()
     harness.callbacks().onToolCall({ id: 'ppt-write', name: 'edit_slide_text', input: {} })
+    harness.callbacks().onDone()
+
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+    expect(session.snapshot().proposal).toBeUndefined()
+    expect(session.snapshot().timeline.some((event) => event.kind === 'proposal')).toBe(false)
+  })
+
+  it('auto-applies a PowerPoint background proposal without blocking the Agent turn', async () => {
+    const harness = transportHarness()
+    const proposals = createStructuredProposalController()
+    const execute = vi.fn(async () => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'powerpoint',
+        systemPrompt: 'test',
+        tools: [
+          { name: 'set_slide_background', description: 'write', inputSchema: { type: 'object' } },
+        ],
+        executeTool: vi.fn(() => {
+          const proposal = proposals.propose({
+            operation: 'set_slide_background',
+            toolName: 'set_slide_background',
+            title: 'Set slide background',
+            preview: {},
+            impact: { host: 'powerpoint', targets: ['slide-1/background'], count: 1 },
+            fingerprint: 'v1',
+            validate: async () => true,
+            execute,
+          })
+          return {
+            output: JSON.stringify({ proposalId: proposal.id }),
+            mutated: false,
+            summary: 'Prepared background change',
+          }
+        }),
+      },
+      proposals,
+      automaticPowerPointMutations: true,
+    })
+
+    session.send('set a dark background')
+    await Promise.resolve()
+    harness
+      .callbacks()
+      .onToolCall({ id: 'ppt-background', name: 'set_slide_background', input: {} })
     harness.callbacks().onDone()
 
     await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce())

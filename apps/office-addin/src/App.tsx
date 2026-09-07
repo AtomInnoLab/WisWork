@@ -125,6 +125,19 @@ export function relayConnectionPresentation(
   })
 }
 
+export function shouldResetOfficeSession(status: OfficeRelayStatus | 'signed_out'): boolean {
+  return status === 'rejected' || status === 'expired' || status === 'signed_out'
+}
+
+export function shouldShowRelayStatusScreen(
+  status: OfficeRelayStatus | 'signed_out',
+  hasWorkspace: boolean,
+): boolean {
+  if (status === 'connected') return false
+  if (!hasWorkspace) return true
+  return !['connecting', 'reconnecting', 'waiting_for_pc'].includes(status)
+}
+
 export function relayPersistenceNotice(snapshot: OfficeRelaySnapshot): string | undefined {
   return snapshot.status === 'connected' && snapshot.remembered === false
     ? 'Connected, but this Office installation was not remembered. Pair again after reconnecting.'
@@ -566,6 +579,15 @@ function PowerPointTimeline(props: {
   let index = 0
   while (index < props.timeline.length) {
     const event = props.timeline[index]!
+    if (event.kind === 'phase') {
+      nodes.push(
+        <div className="ai-phase-row" key={event.id}>
+          {event.text}…
+        </div>,
+      )
+      index += 1
+      continue
+    }
     if (event.kind !== 'tool') {
       nodes.push(
         <TimelineEvent
@@ -683,6 +705,7 @@ export function AgentWorkspace(props: {
   legacy?: boolean
   connectionNotice?: string
   runtimeMode?: 'standard' | 'enhanced'
+  connectionAvailable?: boolean
 }) {
   const { session, ui, disconnect, host } = props
   const state = useOfficeAgent(session)
@@ -716,7 +739,7 @@ export function AgentWorkspace(props: {
   }, [state.busy, state.timeline])
 
   function send() {
-    if (!instruction.trim()) return
+    if (props.connectionAvailable === false || !instruction.trim()) return
     session.send(instruction)
     setInstruction('')
   }
@@ -1088,7 +1111,7 @@ export function AgentWorkspace(props: {
           placeholder="描述修改、写作要求，或直接提问"
           rows={3}
           maxLength={12_000}
-          disabled={state.busy || state.applying}
+          disabled={props.connectionAvailable === false || state.busy || state.applying}
         />
         <div className="composer-toolbar">
           <div className="composer-tools">
@@ -1119,7 +1142,9 @@ export function AgentWorkspace(props: {
               className="send-button"
               type="button"
               aria-label="Send message"
-              disabled={!instruction.trim() || state.applying}
+              disabled={
+                props.connectionAvailable === false || !instruction.trim() || state.applying
+              }
               onClick={send}
             >
               ↑
@@ -1324,7 +1349,7 @@ export function ConfiguredApp(
   ])
 
   useEffect(() => {
-    if (bridgeState.status !== 'connected' && workspace) {
+    if (shouldResetOfficeSession(bridgeState.status) && workspace) {
       workspace.session.authenticationLost()
       workspace.runtime.clearSession()
     }
@@ -1379,7 +1404,7 @@ export function ConfiguredApp(
       <StatusScreen title="Unsupported Office host" detail="This host cannot use document tools." />
     )
   }
-  if (bridgeState.status !== 'connected') {
+  if (pairingForgetError || shouldShowRelayStatusScreen(bridgeState.status, Boolean(workspace))) {
     if (pairingForgetError) {
       return (
         <StatusScreen
@@ -1432,9 +1457,11 @@ export function ConfiguredApp(
   }
   const WorkspaceComponent = workspaceComponentForMode(workspaceMode)
   const connectionNotice =
-    'remembered' in bridgeState
-      ? relayPersistenceNotice(bridgeState as OfficeRelaySnapshot)
-      : undefined
+    bridgeState.status !== 'connected'
+      ? relayConnectionPresentation(bridgeState.status, bridgeState.verificationCode).detail
+      : 'remembered' in bridgeState
+        ? relayPersistenceNotice(bridgeState as OfficeRelaySnapshot)
+        : undefined
   return (
     <WorkspaceComponent
       session={workspace.session}
@@ -1443,6 +1470,7 @@ export function ConfiguredApp(
       host={host}
       connectionNotice={connectionNotice}
       runtimeMode={officeRuntimeModeForTaskpane(host, bridgeState)}
+      connectionAvailable={bridgeState.status === 'connected'}
     />
   )
 }

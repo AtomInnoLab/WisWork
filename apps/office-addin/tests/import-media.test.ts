@@ -441,6 +441,42 @@ describe('PowerPoint image proposal', () => {
     )
   })
 
+  it('verifies the native image shape returned by ImageCoercion without reading fill state', async () => {
+    const shape = {
+      id: 'picture-1',
+      type: 'Image',
+      left: 10,
+      top: 20,
+      width: 299.999,
+      height: 180.001,
+      load: vi.fn(),
+    }
+    const slide = {
+      id: 'slide-1',
+      load: vi.fn(),
+      shapes: { getItem: vi.fn().mockReturnValue(shape) },
+    }
+    const context = {
+      presentation: { slides: { getItemAt: vi.fn().mockReturnValue(slide) } },
+      sync: vi.fn().mockResolvedValue(undefined),
+    }
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+          document: { setSelectedDataAsync: vi.fn() },
+        },
+      },
+      PowerPoint: { run: (callback: (value: typeof context) => unknown) => callback(context) },
+    })
+
+    const adapter = new BrowserPowerPointImportMediaAdapter({ snapshotSlide: vi.fn() })
+    await expect(
+      adapter.verifyImage(0, 'picture-1', { left: 10, top: 20, width: 300, height: 180 }),
+    ).resolves.toBe(true)
+  })
+
   it('fetches an image-search URL through the PC relay before inserting it', async () => {
     const vfs = new InMemoryVfs()
     const adapter = {

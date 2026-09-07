@@ -654,6 +654,10 @@ async function verifyPowerPointReadback(
   const verified = await readUntilConverged({ read: verify, accept: Boolean, signal })
   if (!verified) throw new Error('office_verify_failed')
 }
+function equivalentPowerPointText(actual: string, expected: string): boolean {
+  const normalize = (value: string) => value.replace(/\r\n|\r|\v/g, '\n')
+  return normalize(actual) === normalize(expected)
+}
 function boundedJson(value: unknown): string {
   const result = JSON.stringify(value)
   if (new TextEncoder().encode(result).byteLength > MAX_POWERPOINT_RESULT_BYTES)
@@ -1406,7 +1410,7 @@ export function createPowerPointSkill(options: {
   return {
     id: 'office-powerpoint',
     systemPrompt:
-      'Follow the WisWork Slides workflow for presentation tasks: call get_presentation_state first, then inspect the presentation before planning; all slide_index values are zero-based, so the user’s first slide is index 0; for a new deck, you must call ask_clarification unless the user already supplied or delegated the audience, focus, style, and page-count choices. Never replace that tool call with prose questions; the host renders its model-authored questions as interactive feedback and returns the answers so you can continue the same task. Then use plan_deck before the first mutation; run web_search and image_search for needed facts and visuals; apply bounded slide-level edits; inspect representative results with screenshot_slide; and call verify_slides after the approved build before reporting completion. ' +
+      'Follow the WisWork Slides workflow for presentation tasks: call get_presentation_state first, then inspect the presentation before planning; all slide_index values are zero-based, so the user’s first slide is index 0; for a new deck, you must call ask_clarification unless the user already supplied or delegated the audience, focus, style, and page-count choices. Never replace that tool call with prose questions; the host renders its model-authored questions as interactive feedback and returns the answers so you can continue the same task. Then use plan_deck before the first mutation; run web_search and image_search for needed facts and visuals; apply bounded slide-level edits; inspect representative results with screenshot_slide; and call verify_slides after the approved build before reporting completion. Emit a concise user-visible progress note before every tool batch, explaining the current design decision and next action without revealing private chain-of-thought. ' +
       'PowerPoint reads are bounded. Every write creates an explicit proposal and is semantically verified after confirmation. execute_office_js accepts only a versioned declarative JSON program; JavaScript and ambient browser authority are rejected. XML tools accept only allowlisted bounded package parts.' +
       ' ' +
       (isMac
@@ -1816,7 +1820,7 @@ export function createPowerPointSkill(options: {
                       operation.shape_id,
                       confirmSignal,
                     )
-                    return current.text === operation.text
+                    return equivalentPowerPointText(current.text, operation.text)
                   }, confirmSignal)
                 } else if (operation.op === 'set_shape_text_style') {
                   if (!options.adapter.readShapeTextStyle) throw new Error('office_api_unsupported')
@@ -1882,7 +1886,7 @@ export function createPowerPointSkill(options: {
                           shape.id,
                           confirmSignal,
                         )
-                        if (text.text === operation.text) return true
+                        if (equivalentPowerPointText(text.text, operation.text)) return true
                       }
                       return false
                     }, confirmSignal)
