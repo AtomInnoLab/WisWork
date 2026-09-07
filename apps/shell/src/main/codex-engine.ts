@@ -202,12 +202,21 @@ export function createProductionCodexBootstrap(
           turnId?: string
           delta?: string
           turn?: { id?: string; status?: unknown }
+          status?: { type?: unknown }
         }
         const document = [...documents.values()].find(
           (candidate) => candidate.active?.threadId === params.threadId,
         )
         const active = document?.active
         if (!document || !active) return
+        if (
+          notification.method === 'thread/status/changed' &&
+          params.status?.type === 'systemError'
+        ) {
+          document.threadId = undefined
+          active.settle('failed', new Error('enhanced_service_unavailable'))
+          return
+        }
         if (notification.method === 'error') {
           const failure = new Error(safeTurnFailure(notification.params))
           active.lastFailure = failure
