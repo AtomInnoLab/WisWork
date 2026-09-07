@@ -2614,23 +2614,6 @@ export function AiPanel({
             <div className="ai-history-sep">{t('aiHistorySep')}</div>
           </>
         )}
-        {qualityTimeline.map((receipt) => {
-          const pageNumber = /slide([1-9][0-9]*)\.xml$/.exec(receipt.slideId)?.[1] ?? '?'
-          const text =
-            receipt.status !== 'available'
-              ? t('aiQcUnavailable', { n: pageNumber, error: 'quality_unavailable' })
-              : receipt.findings.length > 0
-                ? t('aiQcPageIssues', { n: pageNumber, summary: `${receipt.findings.length}` })
-                : t('aiQcPassed', { n: pageNumber })
-          return (
-            <div
-              key={`${receipt.transactionId}:${receipt.slideId}`}
-              className="ai-msg ai-msg-assistant ai-msg-quality"
-            >
-              <Markdown text={text} />
-            </div>
-          )
-        })}
         {chat.length === 0 && historicChat.length === 0 && qualityTimeline.length === 0 && (
           <div className="ai-chat-empty">
             <div className="ai-chat-empty-title">
@@ -2805,6 +2788,23 @@ export function AiPanel({
               )}
               {blocks.includes('tools') && entry.tools && <ToolChipList tools={entry.tools} />}
             </React.Fragment>
+          )
+        })}
+        {qualityTimeline.map((receipt) => {
+          const pageNumber = /slide([1-9][0-9]*)\.xml$/.exec(receipt.slideId)?.[1] ?? '?'
+          const text =
+            receipt.status !== 'available'
+              ? t('aiQcUnavailable', { n: pageNumber, error: 'quality_unavailable' })
+              : receipt.findings.length > 0
+                ? t('aiQcPageIssues', { n: pageNumber, summary: `${receipt.findings.length}` })
+                : t('aiQcPassed', { n: pageNumber })
+          return (
+            <div
+              key={`${receipt.transactionId}:${receipt.slideId}`}
+              className="ai-msg ai-msg-assistant ai-msg-quality"
+            >
+              <Markdown text={text} />
+            </div>
           )
         })}
         {activeClarify && (

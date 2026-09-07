@@ -31,6 +31,12 @@ function access(): DeckAccess {
 }
 
 describe('Slides capability truth', () => {
+  it('asks the model to narrate each tool batch with user-visible progress', () => {
+    expect(createSlidesSkill(access()).systemPrompt).toContain(
+      'user-visible progress note before every tool batch',
+    )
+  })
+
   it.each([
     '但当前可用的幻灯片编辑接口无法直接修改现有文字的字体颜色，只能改文字内容或位置。',
     '当前工具不能调整标题栏的位置，所以我暂未修改。',
