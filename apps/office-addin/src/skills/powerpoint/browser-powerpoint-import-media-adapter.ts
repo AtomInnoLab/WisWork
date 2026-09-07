@@ -5,6 +5,16 @@ type Runtime = Record<string, any>
 function cancelled(signal?: AbortSignal) {
   if (signal?.aborted) throw new Error('cancelled')
 }
+function officeAsyncError(value: unknown): Error {
+  const source = value && typeof value === 'object' ? (value as Runtime) : {}
+  return Object.assign(new Error('office_write_failed'), {
+    ...(typeof source.code === 'string' ? { code: source.code } : {}),
+    ...(typeof source.name === 'string' ? { name: source.name } : {}),
+    ...(source.debugInfo && typeof source.debugInfo === 'object'
+      ? { debugInfo: source.debugInfo }
+      : {}),
+  })
+}
 function runtime(): Runtime {
   const root = globalThis as Runtime
   const requirements = root.Office?.context?.requirements
@@ -71,12 +81,10 @@ export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapt
           coercionType: root.Office.CoercionType.Image,
           imageLeft: geometry.left,
           imageTop: geometry.top,
-          imageWidth: geometry.width,
-          imageHeight: geometry.height,
         },
         (result: Runtime) => {
           if (result?.error || String(result?.status).toLowerCase() === 'failed')
-            reject(result?.error ?? new Error('office_write_failed'))
+            reject(officeAsyncError(result?.error))
           else resolve()
         },
       )
@@ -91,6 +99,10 @@ export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapt
       )
       if (!created?.id) throw new Error('office_write_failed')
       created.name = 'WisWork picture'
+      created.left = geometry.left
+      created.top = geometry.top
+      created.width = geometry.width
+      created.height = geometry.height
       await sync(context, signal)
       return { id: String(created.id) }
     })

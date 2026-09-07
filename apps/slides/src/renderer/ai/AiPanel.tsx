@@ -28,7 +28,7 @@ import {
 } from './agent-controller'
 import { friendlyEnhancedError, shouldMarkEnhancedMessageUndelivered } from './enhanced-error-copy'
 import { renderSlidesToPngBase64 } from '../export-render'
-import { shouldShowStreamingProgress } from './streaming-progress'
+import { presentationTimelineBlockOrder, shouldShowStreamingProgress } from './streaming-progress'
 import {
   applyQcGeometryFixes,
   buildVisualQcContext,
@@ -40,19 +40,15 @@ import {
   toVisualQualityReceipt,
 } from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
-import { Markdown, PresentationActivityGroup } from '@wiswork/ui'
+import { IconEnter, IconPaperclip, Markdown, PresentationActivityGroup } from '@wiswork/ui'
 import type { PresentationQualityReceipt } from '@wiswork/presentation-ops'
 import { presentationVerificationFlags } from '@wiswork/presentation-verification'
 import { translatePresentationVerification, mutationExpiryStrings } from '@wiswork/i18n'
 import { verifyAndBrandSlidesAcceptanceAuthority, verifySlidesAcceptance } from './task-acceptance'
 import { reviewSlidesRendering } from './task-review'
 import { WisWorkMark } from '../components/icons'
-import sendEnterOn from '../assets/send-enter-on.png'
-
 declare const __WISWORK_SLIDES_ACCEPTANCE_E2E__: boolean
-import sendEnterOff from '../assets/send-enter-off.png'
 import sendStop from '../assets/send-stop.png'
-import attachIcon from '../assets/attach-icon.png'
 import filePdfIcon from '../assets/file-pdf.png'
 import fileWordIcon from '../assets/file-word.png'
 import fileExcelIcon from '../assets/file-excel.png'
@@ -2597,15 +2593,24 @@ export function AiPanel({
         {/* Past conversation (read-only transcript, not fed to the model), displayed continuously with the current turn */}
         {historicChat.length > 0 && (
           <>
-            {historicChat.map((entry, i) => (
-              <div key={`h${i}`} className={`ai-msg ai-msg-${entry.role} ai-msg-historic`}>
-                {entry.role === 'user' && entry.attachments && entry.attachments.length > 0 && (
-                  <SentAttachments atts={entry.attachments} previews={attachmentPreviews} />
-                )}
-                {entry.tools && entry.tools.length > 0 && <ToolChipList tools={entry.tools} />}
-                {entry.text && <Markdown text={entry.text} />}
-              </div>
-            ))}
+            {historicChat.map((entry, i) => {
+              const blocks = presentationTimelineBlockOrder(entry)
+              return (
+                <React.Fragment key={`h${i}`}>
+                  {blocks.includes('message') && (
+                    <div className={`ai-msg ai-msg-${entry.role} ai-msg-historic`}>
+                      {entry.role === 'user' &&
+                        entry.attachments &&
+                        entry.attachments.length > 0 && (
+                          <SentAttachments atts={entry.attachments} previews={attachmentPreviews} />
+                        )}
+                      {entry.text && <Markdown text={entry.text} />}
+                    </div>
+                  )}
+                  {blocks.includes('tools') && entry.tools && <ToolChipList tools={entry.tools} />}
+                </React.Fragment>
+              )
+            })}
             <div className="ai-history-sep">{t('aiHistorySep')}</div>
           </>
         )}
@@ -2673,127 +2678,133 @@ export function AiPanel({
             turnEnded &&
             // edits-only turns have no text but still carry the rollback point
             (!!(entry.text || entry.error) || entry.snapshotId != null)
+          const showProgress = shouldShowStreamingProgress(entry)
+          const blocks = presentationTimelineBlockOrder({
+            ...entry,
+            hasMessageChrome: !!entry.error || !!entry.loginRequired || showToolbar,
+          })
           return (
-            <div
-              key={i}
-              className={`ai-msg ai-msg-${entry.role}${entry.role === 'assistant' && entry.streaming ? ' ai-msg-streaming' : ''}`}
-            >
-              {entry.role === 'user' && entry.attachments && entry.attachments.length > 0 && (
-                <SentAttachments atts={entry.attachments} previews={attachmentPreviews} />
-              )}
-              {entry.role === 'assistant' ? (
-                <>
-                  {entry.text && <Markdown text={entry.text} />}
-                  {shouldShowStreamingProgress(entry) && (
-                    <span className="ai-typing-row">
-                      <AiTypingIndicator
-                        label={entry.tools?.length ? t('aiContinuing') : t('aiThinking')}
-                      />
-                    </span>
-                  )}
-                </>
-              ) : (
-                entry.text
-              )}
-              {entry.role === 'user' && entry.undelivered && (
-                <div className="ai-msg-undelivered">{t('aiUndelivered')}</div>
-              )}
-              {entry.tools && entry.tools.length > 0 && <ToolChipList tools={entry.tools} />}
-              {entry.error && (
-                <div className="ai-msg-error">{t('aiMsgError', { error: entry.error })}</div>
-              )}
-              {entry.loginRequired && (
-                <button
-                  className="ai-login-btn"
-                  onClick={() => void window.slidesApi.aiAccountLogin()}
+            <React.Fragment key={i}>
+              {blocks.includes('message') && (
+                <div
+                  className={`ai-msg ai-msg-${entry.role}${entry.role === 'assistant' && entry.streaming ? ' ai-msg-streaming' : ''}`}
                 >
-                  {t('aiWisWorkLoginBtn')}
-                </button>
-              )}
-              {showToolbar && (
-                <div className="ai-msg-toolbar">
-                  {entry.text && (
-                    <button
-                      className="ai-msg-tool-btn"
-                      onClick={() => copyMessage(entry.text, i)}
-                      aria-label={t('aiCopyReply')}
-                      data-tip={t('aiCopyReply')}
-                    >
-                      {copiedIdx === i ? (
-                        <svg
-                          width="14"
-                          height="14"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.8"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          <polyline points="20 6 9 17 4 12" />
-                        </svg>
-                      ) : (
-                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                          <path
-                            d="M14.6113 5.34253C16.0608 5.3428 17.2363 6.518 17.2363 7.96753V15.5066C17.2361 16.956 16.0607 18.1313 14.6113 18.1316H7.07227C5.62267 18.1316 4.44751 16.9561 4.44727 15.5066V7.96753C4.44732 6.51783 5.62255 5.34253 7.07227 5.34253H14.6113ZM7.07227 6.59253C6.31291 6.59253 5.69732 7.20819 5.69727 7.96753V15.5066C5.69751 16.2658 6.31302 16.8816 7.07227 16.8816H14.6113C15.3703 16.8813 15.9861 16.2656 15.9863 15.5066V7.96753C15.9863 7.20835 15.3705 6.5928 14.6113 6.59253H7.07227ZM10.0176 2.8689C10.3626 2.86905 10.6426 3.14882 10.6426 3.4939C10.6425 3.83888 10.3626 4.11874 10.0176 4.1189H4.59961C3.84022 4.1189 3.22461 4.73451 3.22461 5.4939V11.324C3.22433 11.6689 2.94461 11.949 2.59961 11.949C2.25461 11.949 1.97489 11.6689 1.97461 11.324V5.4939C1.97461 4.04415 3.14987 2.8689 4.59961 2.8689H10.0176Z"
-                            fill="currentColor"
-                          />
-                        </svg>
-                      )}
-                    </button>
+                  {entry.role === 'user' && entry.attachments && entry.attachments.length > 0 && (
+                    <SentAttachments atts={entry.attachments} previews={attachmentPreviews} />
                   )}
-                  {isLast && !busy && lastInstructionRef.current && (
-                    <button
-                      className="ai-msg-tool-btn"
-                      onClick={retry}
-                      aria-label={t('aiRegenerate')}
-                      data-tip={t('aiRegenerate')}
-                    >
-                      {/* 24-canvas glyph at 18px (near-full-bleed paths, sized for optical
-                          parity with the copy icon): stroke 1.5 paints 1.125px (1:16) */}
-                      <svg
-                        style={{ width: 18, height: 18 }}
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden
-                      >
-                        <path d="M3.68881 9.85339C4.1791 8.0054 5.28205 6.30704 6.9459 5.09101C10.8046 2.27085 16.2188 3.11279 19.0389 6.97147C19.7242 7.90904 20.1932 8.93842 20.4553 10.0001" />
-                        <path d="M2.00452 8.46411L2.87229 10.7059C2.96814 10.9535 3.24658 11.0765 3.4942 10.9807L5.73594 10.1129" />
-                        <path d="M20.3308 14.4908C19.8405 16.3388 18.7376 18.0372 17.0738 19.2532C13.215 22.0734 7.80083 21.2314 4.98071 17.3728C4.22167 16.3342 3.72792 15.183 3.48686 13.9999" />
-                        <path d="M22.0151 15.8801L21.1474 13.6384C21.0515 13.3908 20.7731 13.2677 20.5255 13.3636L18.2837 14.2314" />
-                      </svg>
-                    </button>
-                  )}
-                  {entry.snapshotId != null && (
+                  {entry.role === 'assistant' ? (
                     <>
-                      {/* hairline between reply actions (icons) and the document action (icon+label);
-                          CSS shows it only when an icon button actually precedes it */}
-                      <span className="ai-rollback-sep" aria-hidden />
-                      <RollbackButton
-                        disabled={busy}
-                        onClick={() => void rollback(entry.snapshotId!)}
-                      />
+                      {entry.text && <Markdown text={entry.text} />}
+                      {showProgress && (
+                        <span className="ai-typing-row">
+                          <AiTypingIndicator label={t('aiThinking')} />
+                        </span>
+                      )}
                     </>
+                  ) : (
+                    entry.text
                   )}
-                </div>
-              )}
-              {clarifyAnswers
-                .filter((c) => c.afterIdx === i)
-                .map((c, k) => (
-                  <div key={`ca${k}`} className="ai-clarify-answered">
-                    {c.qa.map((pair, m) => (
-                      <div key={m} className="ai-clarify-answered-row">
-                        <div className="ai-clarify-answered-q">{pair.q}</div>
-                        <div className="ai-clarify-answered-a">{pair.a}</div>
+                  {entry.role === 'user' && entry.undelivered && (
+                    <div className="ai-msg-undelivered">{t('aiUndelivered')}</div>
+                  )}
+                  {entry.error && (
+                    <div className="ai-msg-error">{t('aiMsgError', { error: entry.error })}</div>
+                  )}
+                  {entry.loginRequired && (
+                    <button
+                      className="ai-login-btn"
+                      onClick={() => void window.slidesApi.aiAccountLogin()}
+                    >
+                      {t('aiWisWorkLoginBtn')}
+                    </button>
+                  )}
+                  {showToolbar && (
+                    <div className="ai-msg-toolbar">
+                      {entry.text && (
+                        <button
+                          className="ai-msg-tool-btn"
+                          onClick={() => copyMessage(entry.text, i)}
+                          aria-label={t('aiCopyReply')}
+                          data-tip={t('aiCopyReply')}
+                        >
+                          {copiedIdx === i ? (
+                            <svg
+                              width="14"
+                              height="14"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.8"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            >
+                              <polyline points="20 6 9 17 4 12" />
+                            </svg>
+                          ) : (
+                            <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                              <path
+                                d="M14.6113 5.34253C16.0608 5.3428 17.2363 6.518 17.2363 7.96753V15.5066C17.2361 16.956 16.0607 18.1313 14.6113 18.1316H7.07227C5.62267 18.1316 4.44751 16.9561 4.44727 15.5066V7.96753C4.44732 6.51783 5.62255 5.34253 7.07227 5.34253H14.6113ZM7.07227 6.59253C6.31291 6.59253 5.69732 7.20819 5.69727 7.96753V15.5066C5.69751 16.2658 6.31302 16.8816 7.07227 16.8816H14.6113C15.3703 16.8813 15.9861 16.2656 15.9863 15.5066V7.96753C15.9863 7.20835 15.3705 6.5928 14.6113 6.59253H7.07227ZM10.0176 2.8689C10.3626 2.86905 10.6426 3.14882 10.6426 3.4939C10.6425 3.83888 10.3626 4.11874 10.0176 4.1189H4.59961C3.84022 4.1189 3.22461 4.73451 3.22461 5.4939V11.324C3.22433 11.6689 2.94461 11.949 2.59961 11.949C2.25461 11.949 1.97489 11.6689 1.97461 11.324V5.4939C1.97461 4.04415 3.14987 2.8689 4.59961 2.8689H10.0176Z"
+                                fill="currentColor"
+                              />
+                            </svg>
+                          )}
+                        </button>
+                      )}
+                      {isLast && !busy && lastInstructionRef.current && (
+                        <button
+                          className="ai-msg-tool-btn"
+                          onClick={retry}
+                          aria-label={t('aiRegenerate')}
+                          data-tip={t('aiRegenerate')}
+                        >
+                          {/* 24-canvas glyph at 18px (near-full-bleed paths, sized for optical
+                          parity with the copy icon): stroke 1.5 paints 1.125px (1:16) */}
+                          <svg
+                            style={{ width: 18, height: 18 }}
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden
+                          >
+                            <path d="M3.68881 9.85339C4.1791 8.0054 5.28205 6.30704 6.9459 5.09101C10.8046 2.27085 16.2188 3.11279 19.0389 6.97147C19.7242 7.90904 20.1932 8.93842 20.4553 10.0001" />
+                            <path d="M2.00452 8.46411L2.87229 10.7059C2.96814 10.9535 3.24658 11.0765 3.4942 10.9807L5.73594 10.1129" />
+                            <path d="M20.3308 14.4908C19.8405 16.3388 18.7376 18.0372 17.0738 19.2532C13.215 22.0734 7.80083 21.2314 4.98071 17.3728C4.22167 16.3342 3.72792 15.183 3.48686 13.9999" />
+                            <path d="M22.0151 15.8801L21.1474 13.6384C21.0515 13.3908 20.7731 13.2677 20.5255 13.3636L18.2837 14.2314" />
+                          </svg>
+                        </button>
+                      )}
+                      {entry.snapshotId != null && (
+                        <>
+                          {/* hairline between reply actions (icons) and the document action (icon+label);
+                          CSS shows it only when an icon button actually precedes it */}
+                          <span className="ai-rollback-sep" aria-hidden />
+                          <RollbackButton
+                            disabled={busy}
+                            onClick={() => void rollback(entry.snapshotId!)}
+                          />
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {clarifyAnswers
+                    .filter((c) => c.afterIdx === i)
+                    .map((c, k) => (
+                      <div key={`ca${k}`} className="ai-clarify-answered">
+                        {c.qa.map((pair, m) => (
+                          <div key={m} className="ai-clarify-answered-row">
+                            <div className="ai-clarify-answered-q">{pair.q}</div>
+                            <div className="ai-clarify-answered-a">{pair.a}</div>
+                          </div>
+                        ))}
                       </div>
                     ))}
-                  </div>
-                ))}
-            </div>
+                </div>
+              )}
+              {blocks.includes('tools') && entry.tools && <ToolChipList tools={entry.tools} />}
+            </React.Fragment>
           )
         })}
         {activeClarify && (
@@ -2939,7 +2950,7 @@ export function AiPanel({
                 data-tip={t('aiAttachTitle')}
                 aria-label={t('aiAttachTitle')}
               >
-                <img src={attachIcon} alt="" aria-hidden />
+                <IconPaperclip size={20} />
               </button>
               {busy && !selectionScopeEnabled ? (
                 <button
@@ -2958,7 +2969,7 @@ export function AiPanel({
                   data-tip={t('aiSend')}
                   aria-label={t('aiSend')}
                 >
-                  <img src={input.trim() ? sendEnterOn : sendEnterOff} alt="" aria-hidden />
+                  <IconEnter size={22} />
                 </button>
               )}
             </div>

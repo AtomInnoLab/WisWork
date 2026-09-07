@@ -1,7 +1,14 @@
 export { AiComposer } from './AiComposer'
 export { installScreenTips } from './screentip'
 export { AiTypingIndicator } from './AiTypingIndicator'
-export { IconSend, IconSidebarCollapse, IconStop, type IconProps } from './icons'
+export {
+  IconEnter,
+  IconPaperclip,
+  IconSend,
+  IconSidebarCollapse,
+  IconStop,
+  type IconProps,
+} from './icons'
 export { Markdown } from './Markdown'
 export { WisWorkAppMark } from './WisWorkAppMark'
 export { WisWorkAgentMark } from './WisWorkAgentMark'

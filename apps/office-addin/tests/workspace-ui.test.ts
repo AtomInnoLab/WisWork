@@ -266,8 +266,7 @@ describe('Office Agent workspace UI', () => {
       'powerpoint',
     )
     expect(html).toContain('图片搜索')
-    expect(html).toContain('class="ai-typing"')
-    expect(html).toContain('aria-label="继续处理中"')
+    expect(html).not.toContain('aria-label="继续处理中"')
   })
 
   it('keeps completed PowerPoint tool output available as expandable detail', () => {
@@ -387,6 +386,88 @@ describe('Office Agent workspace UI', () => {
     expect(html).not.toContain('更改需确认')
   })
 
+  it('keeps the PowerPoint composer structure stable and opens the native file picker directly', async () => {
+    const snapshot: OfficeAgentSnapshot = {
+      assistantText: '',
+      activity: '',
+      busy: false,
+      applying: false,
+      status: 'idle',
+      retryable: false,
+      timeline: Object.freeze([]),
+    }
+    const session = {
+      snapshot: () => snapshot,
+      subscribe: () => () => undefined,
+      send: vi.fn(),
+      stop: vi.fn(),
+      confirm: vi.fn(),
+      reject: vi.fn(),
+      newTask: vi.fn(),
+      retry: vi.fn(),
+      logout: vi.fn(),
+      authenticationLost: vi.fn(),
+      dispose: vi.fn(),
+    } satisfies OfficeAgentSession
+    const ui: OfficeWorkspaceUi = Object.freeze({
+      attachments: () => Object.freeze([]),
+      skills: () => Object.freeze([]),
+      skillPackagesEnabled: true,
+      upload: vi.fn(),
+      clear: vi.fn(),
+    })
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    await act(async () => {
+      root.render(
+        React.createElement(AgentWorkspace, {
+          session,
+          ui,
+          disconnect: vi.fn(),
+          host: 'powerpoint',
+        }),
+      )
+    })
+
+    const picker = container.querySelector<HTMLInputElement>('#composer-attachment-upload')!
+    const click = vi.spyOn(picker, 'click')
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Add attachments"]')!.click(),
+    )
+
+    expect(click).toHaveBeenCalledOnce()
+    expect(container.querySelector('.composer-input-box')).not.toBeNull()
+    expect(container.querySelector('[role="dialog"]')).toBeNull()
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
+  it('does not replace model-authored progress with a generic continuing placeholder', () => {
+    const html = workspaceMarkup(
+      {
+        busy: true,
+        status: 'working',
+        timeline: Object.freeze([
+          Object.freeze({ id: 'u1', kind: 'user' as const, text: '制作 PPT' }),
+          Object.freeze({ id: 'a1', kind: 'assistant' as const, text: '先整理页面结构。' }),
+          Object.freeze({
+            id: 't1',
+            kind: 'tool' as const,
+            callId: 'tool-1',
+            name: 'plan_deck',
+            summary: '规划演示文稿完成',
+            state: 'complete' as const,
+          }),
+        ]),
+      },
+      undefined,
+      'powerpoint',
+    )
+    expect(html).toContain('先整理页面结构。')
+    expect(html).not.toContain('继续处理中')
+  })
+
   it('exposes bounded attachment and skill management panels without permanent vertical chrome', () => {
     const files = workspaceMarkup({}, 'attachments')
     expect(files).toContain('role="dialog"')
@@ -412,7 +493,7 @@ describe('Office Agent workspace UI', () => {
     expect(applying).toContain('Applying approved change')
     expect(applying).toContain('Applying…')
 
-    expect(applying).toMatch(/aria-label="Attachments"[^>]*disabled/)
+    expect(applying).toMatch(/aria-label="Add attachments"[^>]*disabled/)
     expect(applying).toMatch(/<button type="button" disabled="">管理技能<\/button>/)
     const applyingPanel = workspaceMarkup({ applying: true }, 'attachments')
     expect(applyingPanel).toMatch(/class="upload-button"[^>]*aria-disabled="true"/)
@@ -584,11 +665,13 @@ describe('Office Agent workspace UI', () => {
           session,
           ui,
           disconnect: vi.fn(),
-          host: 'word',
+          host: 'powerpoint',
         }),
       )
     })
-    const opener = container.querySelector<HTMLButtonElement>('[aria-label="Attachments"]')!
+    const opener = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent === '管理技能',
+    )!
     await act(async () => opener.click())
     const dialog = container.querySelector<HTMLElement>('[role="dialog"]')!
     expect(document.activeElement).toBe(dialog.querySelector('h2'))
@@ -597,7 +680,7 @@ describe('Office Agent workspace UI', () => {
       dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     })
     expect(container.querySelector('[role="dialog"]')).toBeNull()
-    expect(document.activeElement).toBe(opener)
+    expect(document.activeElement).toBe(container.querySelector('[aria-label="Session menu"]'))
     await act(async () => root.unmount())
     container.remove()
   })

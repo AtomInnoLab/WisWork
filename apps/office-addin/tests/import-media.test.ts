@@ -434,11 +434,10 @@ describe('PowerPoint image proposal', () => {
         coercionType: 'image',
         imageLeft: 10,
         imageTop: 20,
-        imageWidth: 300,
-        imageHeight: 180,
       },
       expect.any(Function),
     )
+    expect(created).toMatchObject({ left: 10, top: 20, width: 300, height: 180 })
   })
 
   it('verifies the native image shape returned by ImageCoercion without reading fill state', async () => {

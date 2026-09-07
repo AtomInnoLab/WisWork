@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
   AiTypingIndicator,
+  IconEnter,
+  IconPaperclip,
   Markdown,
   PresentationActivityGroup,
   PresentationEmptyState,
@@ -629,7 +631,10 @@ function PowerPointTimeline(props: {
       />,
     )
   }
-  if (props.busy) {
+  const lastEvent = props.timeline.at(-1)
+  const waitingForFirstAgentEvent = !lastEvent || lastEvent.kind === 'user'
+  const streamingAssistant = lastEvent?.kind === 'assistant' && lastEvent.streaming
+  if (props.busy && (waitingForFirstAgentEvent || streamingAssistant)) {
     nodes.push(
       <div className="ai-typing-row" key="active-agent-work">
         <AiTypingIndicator label={presentationProgressLabel(props.timeline)} />
@@ -717,6 +722,7 @@ export function AgentWorkspace(props: {
   const [panel, setPanel] = useState<WorkspacePanelName | undefined>(props.initialPanel)
   const mounted = useRef(true)
   const panelHeading = useRef<HTMLHeadingElement>(null)
+  const composerFileInput = useRef<HTMLInputElement>(null)
   const panelOpener = useRef<HTMLElement | undefined>(undefined)
   const timeline = useRef<HTMLElement>(null)
   const followLatest = useRef(true)
@@ -742,6 +748,19 @@ export function AgentWorkspace(props: {
     if (props.connectionAvailable === false || !instruction.trim()) return
     session.send(instruction)
     setInstruction('')
+  }
+
+  async function uploadFiles(selected: FileList | readonly File[]) {
+    setUploadError('')
+    for (const file of Array.from(selected)) {
+      try {
+        await ui.upload(file)
+      } catch (error) {
+        if (mounted.current) setUploadError(safeUploadError(error, file))
+        break
+      }
+    }
+    if (mounted.current) setFiles(ui.attachments())
   }
 
   const proposal = state.proposal
@@ -1089,68 +1108,95 @@ export function AgentWorkspace(props: {
       )}
 
       <section className="composer-shell" aria-label="Message WisWork Agent">
-        <label className="visually-hidden" htmlFor="instruction">
-          Message WisWork Agent
-        </label>
-        <textarea
-          id="instruction"
-          value={instruction}
-          onChange={(event) => setInstruction(event.target.value)}
-          onKeyDown={(event) => {
-            if (
-              composerKeyAction({
-                key: event.key,
-                shiftKey: event.shiftKey,
-                isComposing: event.nativeEvent.isComposing,
-              }) === 'send'
-            ) {
-              event.preventDefault()
-              send()
-            }
-          }}
-          placeholder="描述修改、写作要求，或直接提问"
-          rows={3}
-          maxLength={12_000}
-          disabled={props.connectionAvailable === false || state.busy || state.applying}
-        />
-        <div className="composer-toolbar">
-          <div className="composer-tools">
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="Attachments"
-              aria-expanded={panel === 'attachments'}
-              disabled={state.applying}
-              onClick={(event) => {
-                panelOpener.current = event.currentTarget
-                setPanel(panel === 'attachments' ? undefined : 'attachments')
-              }}
-            >
-              📎
-            </button>
-            <span className="confirmation-chip">
-              <span aria-hidden="true" />
-              {host === 'powerpoint' ? '自动应用常规更改' : '更改需确认'}
-            </span>
-          </div>
-          {state.busy ? (
-            <button type="button" className="stop-button" onClick={() => session.stop()}>
-              Stop
-            </button>
-          ) : (
-            <button
-              className="send-button"
-              type="button"
-              aria-label="Send message"
-              disabled={
-                props.connectionAvailable === false || !instruction.trim() || state.applying
-              }
-              onClick={send}
-            >
-              ↑
-            </button>
+        <div className="composer-input-box">
+          {files.length > 0 && (
+            <div className="composer-attachments" aria-label="Attached files">
+              {files.map((file) => (
+                <span key={file}>{file.split('/').at(-1)}</span>
+              ))}
+            </div>
           )}
+          <label className="visually-hidden" htmlFor="instruction">
+            Message WisWork Agent
+          </label>
+          <textarea
+            id="instruction"
+            value={instruction}
+            onChange={(event) => setInstruction(event.target.value)}
+            onKeyDown={(event) => {
+              if (
+                composerKeyAction({
+                  key: event.key,
+                  shiftKey: event.shiftKey,
+                  isComposing: event.nativeEvent.isComposing,
+                }) === 'send'
+              ) {
+                event.preventDefault()
+                send()
+              }
+            }}
+            placeholder={
+              host === 'powerpoint'
+                ? '描述要生成的演示文稿，或直接提问'
+                : '描述修改、写作要求，或直接提问'
+            }
+            rows={3}
+            maxLength={12_000}
+            disabled={props.connectionAvailable === false || state.busy || state.applying}
+          />
+          <div className="composer-toolbar">
+            <div className="composer-tools">
+              <input
+                ref={composerFileInput}
+                id="composer-attachment-upload"
+                className="visually-hidden"
+                type="file"
+                multiple
+                disabled={state.applying}
+                onChange={(event) => {
+                  const selected = event.currentTarget.files
+                  if (selected?.length) void uploadFiles(selected)
+                  event.currentTarget.value = ''
+                }}
+              />
+              <button
+                type="button"
+                className="composer-attach-button"
+                aria-label="Add attachments"
+                disabled={state.applying}
+                onClick={() => composerFileInput.current?.click()}
+              >
+                <IconPaperclip size={20} />
+              </button>
+              <span className="confirmation-chip">
+                <span aria-hidden="true" />
+                {host === 'powerpoint' ? '自动应用常规更改' : '更改需确认'}
+              </span>
+            </div>
+            {state.busy ? (
+              <button type="button" className="stop-button" onClick={() => session.stop()}>
+                Stop
+              </button>
+            ) : (
+              <button
+                className="send-button"
+                type="button"
+                aria-label="Send message"
+                disabled={
+                  props.connectionAvailable === false || !instruction.trim() || state.applying
+                }
+                onClick={send}
+              >
+                <IconEnter size={22} />
+              </button>
+            )}
+          </div>
         </div>
+        {uploadError && (
+          <p className="composer-upload-error error-text" role="alert">
+            {uploadError}
+          </p>
+        )}
       </section>
     </main>
   )

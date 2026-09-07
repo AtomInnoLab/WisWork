@@ -1340,6 +1340,55 @@ describe('PowerPoint compatibility skill', () => {
 })
 
 describe('browser PowerPoint adapter', () => {
+  it('reads a representative character style instead of mixed paragraph-marker style', async () => {
+    const mixedFont = { load: vi.fn(), name: '', size: 0, color: '', bold: false, italic: false }
+    const sampledFont = {
+      load: vi.fn(),
+      name: 'Aptos',
+      size: 24,
+      color: '#FFFFFF',
+      bold: true,
+      italic: false,
+    }
+    const range = {
+      text: 'Title',
+      font: mixedFont,
+      load: vi.fn(),
+      getSubstring: vi.fn(() => ({ font: sampledFont })),
+    }
+    const shape = { textFrame: { textRange: range } }
+    const slide = {
+      id: 's1',
+      load: vi.fn(),
+      shapes: { getItem: vi.fn(() => shape) },
+    }
+    const context = {
+      presentation: {
+        slides: { getCount: vi.fn(() => ({ value: 1 })), getItemAt: vi.fn(() => slide) },
+      },
+      sync: vi.fn().mockResolvedValue(undefined),
+    }
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: { run: (callback: (value: typeof context) => unknown) => callback(context) },
+    })
+
+    await expect(new BrowserPowerPointAdapter().readShapeTextStyle(0, '2')).resolves.toEqual({
+      color: '#FFFFFF',
+      fontFamily: 'Aptos',
+      fontSize: 24,
+      bold: true,
+      italic: false,
+    })
+    expect(range.getSubstring).toHaveBeenCalledWith(0, 1)
+    expect(sampledFont.load).toHaveBeenCalledWith('color,name,size,bold,italic')
+  })
+
   it('reads slide count, selected zero-based indices, and the API ladder', async () => {
     const slides = {
       items: [{ id: 'slide-1' }, { id: 'slide-2' }],
