@@ -449,6 +449,54 @@ describe('PowerPoint image proposal', () => {
     expect(created).toMatchObject({ left: 10, top: 20, width: 300, height: 180 })
   })
 
+  it('waits for PowerPoint for Mac to expose a successfully coerced image shape', async () => {
+    const created = {
+      id: 'picture-delayed',
+      type: 'Image',
+      left: 10,
+      top: 20,
+      width: 300,
+      height: 180,
+      load: vi.fn(),
+    }
+    const shapes = { items: [] as (typeof created)[], load: vi.fn() }
+    const slide = { id: 'slide-1', load: vi.fn(), shapes }
+    let inserted = false
+    let postInsertSyncs = 0
+    const context = {
+      presentation: {
+        slides: { getItemAt: vi.fn().mockReturnValue(slide) },
+        setSelectedSlides: vi.fn(),
+      },
+      sync: vi.fn(async () => {
+        if (inserted && ++postInsertSyncs === 3) shapes.items.push(created)
+      }),
+    }
+    Object.assign(globalThis, {
+      Office: {
+        CoercionType: { Image: 'image' },
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+          document: {
+            setSelectedDataAsync: vi.fn(
+              (_data: string, _options: unknown, callback: (result: unknown) => void) => {
+                inserted = true
+                callback({ status: 'succeeded' })
+              },
+            ),
+          },
+        },
+      },
+      PowerPoint: { run: (callback: (value: typeof context) => unknown) => callback(context) },
+    })
+
+    const adapter = new BrowserPowerPointImportMediaAdapter({ snapshotSlide: vi.fn() })
+    await expect(
+      adapter.insertImage(0, 'cG5n', { left: 10, top: 20, width: 300, height: 180 }),
+    ).resolves.toEqual({ id: 'picture-delayed' })
+  })
+
   it('verifies the native image shape returned by ImageCoercion without reading fill state', async () => {
     const shape = {
       id: 'picture-1',

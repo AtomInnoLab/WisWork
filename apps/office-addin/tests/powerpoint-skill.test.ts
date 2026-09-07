@@ -1475,6 +1475,57 @@ describe('browser PowerPoint adapter', () => {
     expect(sync).toHaveBeenCalledTimes(2)
   })
 
+  it('reads slide count from the compressed document when Mac rejects both JS API paths', async () => {
+    const archive = new JSZip()
+    archive.file('ppt/slides/slide1.xml', '<p:sld/>')
+    archive.file('ppt/slides/slide2.xml', '<p:sld/>')
+    archive.file('ppt/slideLayouts/slideLayout1.xml', '<p:sldLayout/>')
+    const bytes = await archive.generateAsync({ type: 'uint8array' })
+    const closeAsync = vi.fn((callback: () => void) => callback())
+    const getFileAsync = vi.fn(
+      (_type: unknown, _options: unknown, callback: (result: unknown) => void) =>
+        callback({
+          status: 'succeeded',
+          value: {
+            size: bytes.byteLength,
+            sliceCount: 1,
+            getSliceAsync: (_index: number, done: (result: unknown) => void) =>
+              done({ status: 'succeeded', value: { data: Array.from(bytes) } }),
+            closeAsync,
+          },
+        }),
+    )
+    const slides = { items: [], load: vi.fn(), getCount: vi.fn(() => ({ value: 2 })) }
+    Object.assign(globalThis, {
+      Office: {
+        FileType: { Compressed: 'compressed' },
+        context: {
+          host: 'PowerPoint',
+          platform: 'Mac',
+          document: { getFileAsync },
+          requirements: { isSetSupported: vi.fn(() => true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({
+            presentation: { slides },
+            sync: vi.fn().mockRejectedValue(new Error('GeneralException')),
+          }),
+      },
+    })
+
+    await expect(new BrowserPowerPointAdapter().getPresentationState()).resolves.toMatchObject({
+      slideCount: 2,
+    })
+    expect(getFileAsync).toHaveBeenCalledWith(
+      'compressed',
+      { sliceSize: 4 * 1024 * 1024 },
+      expect.any(Function),
+    )
+    expect(closeAsync).toHaveBeenCalledOnce()
+  })
+
   it('reads bounded state on PowerPointApi 1.2 hosts through getCount only', async () => {
     const count = { value: 1 }
     const slides = { getCount: vi.fn(() => count) }
