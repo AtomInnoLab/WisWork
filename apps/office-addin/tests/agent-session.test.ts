@@ -127,6 +127,48 @@ describe('Office agent session', () => {
     await expect(result).resolves.toMatchObject({ output: expect.stringContaining('客户') })
   })
 
+  it('continues to plan when the model tries to finish after the questionnaire', async () => {
+    const harness = transportHarness()
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'test',
+        systemPrompt: 'test',
+        tools: [
+          { name: 'ask_clarification', description: 'ask', inputSchema: { type: 'object' } },
+          { name: 'plan_deck', description: 'plan', inputSchema: { type: 'object' } },
+        ],
+        executeTool: vi.fn(async () => ({ output: 'planned', mutated: false, summary: 'Planned' })),
+      },
+      proposals: proposalsHarness().controller,
+    })
+
+    session.send('Create a deck')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({
+      id: 'questionnaire',
+      name: 'ask_clarification',
+      input: { questions: [{ id: 'audience', label: 'Audience?', options: ['A', 'B'] }] },
+    })
+    harness.callbacks().onDone()
+    await vi.waitFor(() => expect(session.snapshot().questionnaire).toHaveLength(1))
+    session.answerQuestionnaire?.('Audience: A')
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+
+    harness.callbacks().onDelta('I have the answers.')
+    harness.callbacks().onDone()
+
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(3))
+    expect(harness.stream.mock.calls[2]?.[0]).toMatchObject({
+      messages: expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          text: expect.stringContaining('Continue the WisWork Slides workflow with plan_deck'),
+        }),
+      ]),
+    })
+  })
+
   it('bounds a batched PowerPoint questionnaire to the first question', async () => {
     let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
     const proposals = proposalsHarness()

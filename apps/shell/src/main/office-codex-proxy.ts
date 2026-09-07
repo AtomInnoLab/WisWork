@@ -11,7 +11,11 @@ import {
   type ToolMutability,
 } from '@wiswork/codex-bridge'
 import type { MessagesProxyResponse, OfficeEnhancedSessionStatement } from '@wiswork/office-bridge'
-import type { EnhancedRolloutPolicy, EnhancedTelemetry } from '@wiswork/agent-runtime'
+import type {
+  EnhancedRolloutPolicy,
+  EnhancedTelemetry,
+  PcHostProposalSummary,
+} from '@wiswork/agent-runtime'
 import type { ShellCodexRuntime } from './codex-runtime'
 import type { OfficeRelayToolCall, OfficeRelayToolResult } from './office-relay-client'
 import type { OfficeRetrievalProxy, OfficeWebCapability } from './office-retrieval-proxy'
@@ -34,6 +38,35 @@ const hostName = (value: 'Word' | 'Excel' | 'PowerPoint') =>
   ({ Word: 'office-word', Excel: 'office-excel', PowerPoint: 'office-powerpoint' })[
     value
   ] as OfficeEnhancedSessionStatement['host']
+
+const summarizeOfficeProposal = (
+  host: OfficeEnhancedSessionStatement['host'],
+  call: { readonly name: string; readonly input: Record<string, unknown> },
+): PcHostProposalSummary => {
+  const program = call.input.program
+  const count = (
+    Object.values(call.input).find(Array.isArray) ??
+    (program && typeof program === 'object' && !Array.isArray(program)
+      ? Object.values(program).find(Array.isArray)
+      : undefined)
+  )?.length
+  const operation =
+    call.name === 'clear_cell_range'
+      ? 'delete'
+      : call.name === 'duplicate_slide' || call.name.includes('structure')
+        ? 'restructure'
+        : call.name.includes('style') ||
+            call.name.includes('master') ||
+            call.name === 'resize_range'
+          ? 'format'
+          : 'replace'
+  return {
+    operation,
+    target: host === 'office-word' ? 'document' : host === 'office-excel' ? 'cells' : 'slides',
+    scope: 'bounded-set',
+    ...(count ? { count } : {}),
+  }
+}
 
 function parseRequest(
   body: unknown,
@@ -255,6 +288,7 @@ export function createOfficeCodexProxy(options: {
         generation: request.statement.policy_generation,
         text: parsed.text,
         toolSession: session,
+        summarizeProposal: (call) => summarizeOfficeProposal(host, call),
         signal: request.signal,
         onEvent(event) {
           if (event.type === 'text')

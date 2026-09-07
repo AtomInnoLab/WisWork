@@ -374,6 +374,20 @@ describe('Office Codex proxy', () => {
         expect(
           input.toolSession.listTools(input.toolSession.credentials).map((tool: any) => tool.name),
         ).toEqual(['execute_office_js', 'edit_slide_text'])
+        expect(
+          input.summarizeProposal({
+            id: 'proposal-1',
+            name: 'execute_office_js',
+            input: { program: { version: 1, operations: [{ op: 'add_text_box' }] } },
+          }),
+        ).toEqual({ operation: 'replace', target: 'slides', scope: 'bounded-set', count: 1 })
+        expect(
+          input.summarizeProposal({
+            id: 'proposal-2',
+            name: 'edit_slide_text',
+            input: { edits: [{ slide_index: 0, shape_id: 'shape-1', text: 'Hello' }] },
+          }),
+        ).toEqual({ operation: 'replace', target: 'slides', scope: 'bounded-set', count: 1 })
         input.onEvent({ type: 'terminal', status: 'completed' })
       },
     }
