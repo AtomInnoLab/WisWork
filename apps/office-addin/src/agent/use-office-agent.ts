@@ -384,6 +384,7 @@ export function createOfficeAgentSession(dependencies: {
   let assistantSegmentPrefix = ''
   let lastInstruction = ''
   let clarificationResolve: ((value: ToolExecution) => void) | undefined
+  let questionnaireAnsweredPendingPlan = false
   let runStartedAt = 0
   const staleTools = new Set<string>()
   const toolStartedAt = new Map<string, number>()
@@ -486,6 +487,11 @@ export function createOfficeAgentSession(dependencies: {
 
   const sessionSkill: AgentSkill = {
     ...dependencies.skill,
+    reviewFinalResponse(context) {
+      if (questionnaireAnsweredPendingPlan)
+        return '[System correction] The questionnaire is complete. Continue the WisWork Slides workflow with plan_deck, research, implementation, screenshot inspection, repair, and verify_slides in this same run.'
+      return dependencies.skill.reviewFinalResponse?.(context)
+    },
     async executeTool(call, signal): Promise<ToolExecutionOutcome> {
       if (call.name === 'ask_clarification') {
         if (clarificationResolve)
@@ -566,6 +572,7 @@ export function createOfficeAgentSession(dependencies: {
       }
       const outcome = await dependencies.skill.executeTool(call, signal)
       if ('kind' in outcome && outcome.kind === 'tool-execution-suspension') return outcome
+      if (call.name === 'plan_deck' && !outcome.isError) questionnaireAnsweredPendingPlan = false
       const proposal = proposals.pending()
       if (!proposal) return outcome
       const final = finalProposalExecution(proposal.id, outcome, call.name)
@@ -674,6 +681,7 @@ export function createOfficeAgentSession(dependencies: {
     activeAssistantId = undefined
     cumulativeAssistantText = ''
     assistantSegmentPrefix = ''
+    questionnaireAnsweredPendingPlan = false
     state = {
       ...state,
       assistantText: '',
@@ -1026,6 +1034,7 @@ export function createOfficeAgentSession(dependencies: {
       const resolve = clarificationResolve
       if (!resolve) return
       clarificationResolve = undefined
+      questionnaireAnsweredPendingPlan = true
       publish({ questionnaire: undefined, activity: '继续规划演示文稿…' })
       resolve({
         output: `User questionnaire answers:\n${boundedText(answers)}\nContinue with plan_deck, research, slide creation, screenshots, and verify_slides now.`,
@@ -1037,6 +1046,7 @@ export function createOfficeAgentSession(dependencies: {
       const resolve = clarificationResolve
       if (!resolve) return
       clarificationResolve = undefined
+      questionnaireAnsweredPendingPlan = true
       publish({ questionnaire: undefined, activity: '继续规划演示文稿…' })
       resolve({
         output:

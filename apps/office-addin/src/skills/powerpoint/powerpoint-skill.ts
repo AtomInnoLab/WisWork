@@ -1313,6 +1313,19 @@ export function createPowerPointSkill(options: {
   presentationFlags?: PresentationVerificationFlags
   presentationTelemetry?: (event: PresentationTelemetryEvent) => void
 }): AgentSkill {
+  const mutationTools = new Set([
+    'set_slide_background',
+    'execute_office_js',
+    'edit_slide_text',
+    'edit_slide_xml',
+    'edit_slide_chart',
+    'edit_slide_master',
+    'edit_slide_master_xml',
+    'duplicate_slide',
+  ])
+  let mutationRevision = 0
+  let screenshotRevision = 0
+  let verificationRevision = 0
   const isMac = options.platform?.toLowerCase() === 'mac'
   const masterXmlEditingSupported = !isMac
   const nativeMasterEditingSupported = !isMac && options.nativeMasterEditingSupported !== false
@@ -1410,7 +1423,7 @@ export function createPowerPointSkill(options: {
   return {
     id: 'office-powerpoint',
     systemPrompt:
-      'Follow the WisWork Slides workflow for presentation tasks: call get_presentation_state first, then inspect the presentation before planning; all slide_index values are zero-based, so the user’s first slide is index 0; for a new deck, you must call ask_clarification unless the user already supplied or delegated the audience, focus, style, and page-count choices. Never replace that tool call with prose questions; the host renders its model-authored questions as interactive feedback and returns the answers so you can continue the same task. Then use plan_deck before the first mutation; run web_search and image_search for needed facts and visuals; apply bounded slide-level edits; inspect representative results with screenshot_slide; and call verify_slides after the approved build before reporting completion. Emit a concise user-visible progress note before every tool batch, explaining the current design decision and next action without revealing private chain-of-thought. ' +
+      'Follow the same complete workflow as WisWork Slides in this agent run: understand the document with get_presentation_state and bounded reads, and inspect the presentation before planning; for a new deck, you must call ask_clarification for missing audience, focus, style, and page-count choices unless the user already supplied or delegated them; use plan_deck before the first mutation to record the narrative and visual plan; run web_search and image_search for needed facts and visuals; implement the complete plan with bounded slide edits; screenshot every created or changed slide and inspect the native images; repair concrete clipping, overlap, hierarchy, spacing, contrast, and balance defects; screenshot every repaired slide again; then call verify_slides after the approved build before reporting completion. A screenshot call alone is not a visual pass: inspect its image and keep the screenshot-repair-screenshot loop in this same run until the checked pages are satisfactory or a concrete blocker remains. Never end the run expecting another user message or host post-processing to finish the deck. All slide_index values are zero-based, so the user’s first slide is index 0. Never replace that tool call with prose questions; the host renders its model-authored questions as interactive feedback and returns the answers so you can continue the same task. Emit a concise user-visible progress note before every tool batch, explaining the current design decision and next action without revealing private chain-of-thought. ' +
       'PowerPoint reads are bounded. Every write creates an explicit proposal and is semantically verified after confirmation. execute_office_js accepts only a versioned declarative JSON program; JavaScript and ambient browser authority are rejected. XML tools accept only allowlisted bounded package parts.' +
       ' ' +
       (isMac
@@ -1422,8 +1435,17 @@ export function createPowerPointSkill(options: {
         (nativeMasterEditingSupported ||
           !['inspect_slide_masters', 'edit_slide_master'].includes(tool.name)),
     ),
+    reviewFinalResponse(context) {
+      if (!context.mutated) return undefined
+      if (screenshotRevision < mutationRevision)
+        return '[System correction] Continue the WisWork Slides quality loop now: call screenshot_slide for every created or changed slide, inspect each native image, repair concrete defects, and screenshot each repaired slide again before finishing.'
+      if (verificationRevision < mutationRevision)
+        return '[System correction] The changed slides have been visually inspected. Call verify_slides now and resolve any remaining failure before reporting completion.'
+      return undefined
+    },
     ...(presentation ? { presentation } : {}),
     async executeTool(call, signal) {
+      if (mutationTools.has(call.name)) mutationRevision++
       if (call.inputError || call.truncated)
         return failure(
           call.name,
@@ -1481,6 +1503,7 @@ export function createPowerPointSkill(options: {
           assertNotCancelled(signal)
           if (result.mime !== 'image/png' || !validPng(result.base64))
             throw new Error('office_read_failed')
+          screenshotRevision = mutationRevision
           return {
             output: boundedJson({
               mime: result.mime,
@@ -1517,8 +1540,10 @@ export function createPowerPointSkill(options: {
         }
         if (call.name === 'verify_slides') {
           verifyInput(call.input)
+          const verified = await options.adapter.verifySlides(signal)
+          if (screenshotRevision === mutationRevision) verificationRevision = mutationRevision
           return {
-            output: boundedJson(await options.adapter.verifySlides(signal)),
+            output: boundedJson(verified),
             mutated: false,
             summary: 'Verified PowerPoint slides',
           }

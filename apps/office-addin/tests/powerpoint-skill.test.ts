@@ -112,6 +112,38 @@ describe('PowerPoint compatibility skill', () => {
     })
   })
 
+  it('keeps the agent in the screenshot and verification loop after each mutation batch', async () => {
+    const skill = createPowerPointSkill({
+      adapter: adapter(),
+      proposals: createStructuredProposalController(),
+    })
+
+    await skill.executeTool(
+      call('plan_deck', {
+        core_hook: 'One clear story',
+        style: 'Editorial',
+        pages: [{ title: 'Cover', brief: 'Opening idea', image_queries: [] }],
+      }),
+    )
+    await skill.executeTool(call('set_slide_background', { slide_index: 0, color: '#112233' }))
+
+    expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain(
+      'screenshot_slide',
+    )
+    await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+    expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain('verify_slides')
+    await skill.executeTool(call('verify_slides'))
+    expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toBeUndefined()
+
+    await skill.executeTool(call('set_slide_background', { slide_index: 0, color: '#223344' }))
+    expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain(
+      'screenshot_slide',
+    )
+    await skill.executeTool(call('verify_slides'))
+    await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+    expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain('verify_slides')
+  })
+
   it('exposes deterministic presentation state and explicit zero-based slide contracts', async () => {
     const fake = adapter()
     const skill = createPowerPointSkill({
