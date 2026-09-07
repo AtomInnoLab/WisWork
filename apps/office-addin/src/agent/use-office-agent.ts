@@ -211,6 +211,7 @@ const DIAGNOSTIC_TOOL_ERRORS = new Set([
 ])
 
 const AUTOMATIC_POWERPOINT_MUTATION_TOOLS = new Set([
+  'set_slide_background',
   'edit_slide_text',
   'execute_office_js',
   'edit_slide_xml',

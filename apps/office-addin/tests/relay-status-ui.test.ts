@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   relayConnectionPresentation,
   relayPersistenceNotice,
+  shouldShowRelayStatusScreen,
   shouldResetOfficeSession,
 } from '../src/App.js'
 
@@ -13,6 +14,14 @@ describe('persistent relay status UI', () => {
     expect(shouldResetOfficeSession('offline')).toBe(false)
     expect(shouldResetOfficeSession('rejected')).toBe(true)
     expect(shouldResetOfficeSession('expired')).toBe(true)
+  })
+
+  it('keeps an existing workspace visible while the relay reconnects', () => {
+    expect(shouldShowRelayStatusScreen('reconnecting', true)).toBe(false)
+    expect(shouldShowRelayStatusScreen('waiting_for_pc', true)).toBe(false)
+    expect(shouldShowRelayStatusScreen('offline', true)).toBe(true)
+    expect(shouldShowRelayStatusScreen('reconnecting', false)).toBe(true)
+    expect(shouldShowRelayStatusScreen('rejected', true)).toBe(true)
   })
 
   it('shows bounded reconnect progress without offering a new pairing action', () => {

@@ -1298,6 +1298,51 @@ describe('Office agent session', () => {
     expect(session.snapshot().timeline.some((event) => event.kind === 'proposal')).toBe(false)
   })
 
+  it('auto-applies a PowerPoint background proposal without blocking the Agent turn', async () => {
+    const harness = transportHarness()
+    const proposals = createStructuredProposalController()
+    const execute = vi.fn(async () => undefined)
+    const session = createOfficeAgentSession({
+      transport: harness.transport,
+      skill: {
+        id: 'powerpoint',
+        systemPrompt: 'test',
+        tools: [
+          { name: 'set_slide_background', description: 'write', inputSchema: { type: 'object' } },
+        ],
+        executeTool: vi.fn(() => {
+          const proposal = proposals.propose({
+            operation: 'set_slide_background',
+            toolName: 'set_slide_background',
+            title: 'Set slide background',
+            preview: {},
+            impact: { host: 'powerpoint', targets: ['slide-1/background'], count: 1 },
+            fingerprint: 'v1',
+            validate: async () => true,
+            execute,
+          })
+          return {
+            output: JSON.stringify({ proposalId: proposal.id }),
+            mutated: false,
+            summary: 'Prepared background change',
+          }
+        }),
+      },
+      proposals,
+      automaticPowerPointMutations: true,
+    })
+
+    session.send('set a dark background')
+    await Promise.resolve()
+    harness.callbacks().onToolCall({ id: 'ppt-background', name: 'set_slide_background', input: {} })
+    harness.callbacks().onDone()
+
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
+    expect(session.snapshot().proposal).toBeUndefined()
+    expect(session.snapshot().timeline.some((event) => event.kind === 'proposal')).toBe(false)
+  })
+
   it('keeps raw Office proposals explicitly confirmation-gated in automatic PowerPoint mode', async () => {
     const harness = transportHarness()
     const proposals = createStructuredProposalController()
