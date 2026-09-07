@@ -559,7 +559,6 @@ describe('Office agent session', () => {
       'assistant',
       'tool',
       'proposal',
-      'phase',
       'assistant',
     ])
     expect(session.snapshot().timeline[2]).toMatchObject({
@@ -574,7 +573,7 @@ describe('Office agent session', () => {
     })
   })
 
-  it('records a model-thinking boundary between consecutive tool rounds', async () => {
+  it('does not fabricate a thinking message when the model emits only a tool call', async () => {
     const harness = transportHarness()
     const session = createOfficeAgentSession({
       transport: harness.transport,
@@ -593,11 +592,7 @@ describe('Office agent session', () => {
     harness.callbacks().onDone()
     await vi.waitFor(() => expect(harness.stream).toHaveBeenCalledTimes(2))
 
-    expect(session.snapshot().timeline.map((event) => event.kind)).toEqual([
-      'user',
-      'tool',
-      'phase',
-    ])
+    expect(session.snapshot().timeline.map((event) => event.kind)).toEqual(['user', 'tool'])
   })
 
   it('never exposes internal tool identifiers while a tool is running or fails', async () => {

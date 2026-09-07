@@ -796,7 +796,6 @@ export function createOfficeAgentSession(dependencies: {
       },
       onTurnEnd: () => {
         activeAssistantId = undefined
-        append({ id: eventId(), kind: 'phase', text: '继续思考' })
         publish({ activity: 'Thinking…' })
       },
       onDone: (result) => {

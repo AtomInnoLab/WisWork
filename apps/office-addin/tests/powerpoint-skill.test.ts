@@ -80,6 +80,7 @@ describe('PowerPoint compatibility skill', () => {
     expect(skill.systemPrompt).toContain('must call ask_clarification')
     expect(skill.systemPrompt).toContain('Never replace that tool call with prose questions')
     expect(skill.systemPrompt).toContain('verify_slides after the approved build')
+    expect(skill.systemPrompt).toContain('user-visible progress note before every tool batch')
 
     await expect(
       skill.executeTool(
@@ -1021,6 +1022,60 @@ describe('PowerPoint compatibility skill', () => {
     })
 
     await skill.executeTool(call('execute_office_js', { code }))
+    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+  })
+
+  it('accepts PowerPoint paragraph normalization when verifying created text', async () => {
+    const fake = adapter({
+      executeDeclarative: vi.fn().mockResolvedValue({ createdShapeIds: ['4'] }),
+      listSlideShapes: vi
+        .fn()
+        .mockResolvedValueOnce({ slideId: 's1', slideIndex: 0, shapes: [] })
+        .mockResolvedValue({
+          slideId: 's1',
+          slideIndex: 0,
+          shapes: [
+            {
+              id: '4',
+              name: 'Summary',
+              type: 'TextBox',
+              left: 100,
+              top: 100,
+              width: 400,
+              height: 100,
+            },
+          ],
+        }),
+      readSlideText: vi.fn().mockResolvedValue({
+        slideId: 's1',
+        shapeId: '4',
+        text: 'First line\rSecond line\vThird line',
+        paragraphs: ['First line', 'Second line', 'Third line'],
+      }),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+
+    await skill.executeTool(
+      call('execute_office_js', {
+        program: {
+          version: 1,
+          operations: [
+            {
+              op: 'add_text_box',
+              slide_index: 0,
+              name: 'Summary',
+              text: 'First line\nSecond line\nThird line',
+              left: 100,
+              top: 100,
+              width: 400,
+              height: 100,
+            },
+          ],
+        },
+      }),
+    )
+
     await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
   })
 
