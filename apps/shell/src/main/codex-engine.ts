@@ -149,7 +149,6 @@ export function createProductionCodexBootstrap(
         readonly pendingProposals: Set<string>
         readonly pendingQuestionnaires: Set<string>
         questionnaireAwaitingContinuation: boolean
-        questionnaireFailure?: Error
         lastFailure?: Error
         deferredTerminal?: { status: 'completed' | 'cancelled' | 'failed'; error?: Error }
         proposalFailure?: 'cancelled' | 'failed'
@@ -220,6 +219,7 @@ export function createProductionCodexBootstrap(
         }
         if (notification.method === 'item/agentMessage/delta') {
           if (params.turnId === active.turnId && typeof params.delta === 'string') {
+            active.questionnaireAwaitingContinuation = false
             active.touch()
             emit(document.onEvent, { type: 'text', text: params.delta })
           }
@@ -258,10 +258,12 @@ export function createProductionCodexBootstrap(
                   else if (event.type === 'tool-complete') {
                     active.pendingQuestionnaires.delete(event.callId)
                     if (!event.isError) {
-                      active.questionnaireFailure = undefined
                       active.questionnaireAwaitingContinuation = true
-                    } else
-                      active.questionnaireFailure = new Error('enhanced_questionnaire_incomplete')
+                    } else {
+                      // A rejected questionnaire is a normal tool result. The model can
+                      // retry it or continue without poisoning an otherwise valid turn.
+                      active.questionnaireAwaitingContinuation = false
+                    }
                   }
                 } else if (event.type === 'tool-start') {
                   const tool = input.session
@@ -390,10 +392,6 @@ export function createProductionCodexBootstrap(
                 return
               }
               active.deferredTerminal = undefined
-              if (status === 'completed' && active.questionnaireFailure) {
-                active.settle('failed', active.questionnaireFailure)
-                return
-              }
               if (status === 'completed' && active.proposalFailure) {
                 active.settle(active.proposalFailure, active.proposalError)
                 return
