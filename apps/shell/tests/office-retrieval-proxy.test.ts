@@ -5,6 +5,7 @@ import {
   createOfficeLocalSearchProxy,
   createOfficeRetrievalProxy,
   officeRetrievalEndpointFromEnv,
+  resolvePublicImageRedirect,
 } from '../src/main/office-retrieval-proxy'
 
 const TEST_ENDPOINT = 'https://retrieval.test.invalid/v1/office/retrieval'
@@ -16,6 +17,20 @@ const TEST_SERVICES = {
 } as const
 
 describe('Office fixed retrieval proxy', () => {
+  it('accepts only bounded HTTPS redirects for searched images', () => {
+    expect(resolvePublicImageRedirect('https://images.example/a', '/final.webp', 3)).toBe(
+      'https://images.example/final.webp',
+    )
+    expect(() =>
+      resolvePublicImageRedirect('https://images.example/a', 'http://images.example/final', 3),
+    ).toThrow('retrieval_upstream_error')
+    expect(() =>
+      resolvePublicImageRedirect('https://images.example/a', 'https://127.0.0.1/final', 3),
+    ).toThrow('retrieval_upstream_error')
+    expect(() => resolvePublicImageRedirect('https://images.example/a', '/fourth-hop', 0)).toThrow(
+      'retrieval_upstream_error',
+    )
+  })
   it('returns the pinned address array when Node requests lookup all mode', async () => {
     const lookup = createPinnedLookup({ address: '203.0.113.10', family: 4 })
     const result = await new Promise((resolve, reject) =>
@@ -130,12 +145,12 @@ describe('Office fixed retrieval proxy', () => {
   })
 
   it('normalizes downloaded search images before returning them to Office', async () => {
-    const source = new Uint8Array([0xff, 0xd8, 0xff, 0xd9])
+    const source = new Uint8Array([0x52, 0x49, 0x46, 0x46])
     const normalized = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
     const normalizeImage = vi.fn(async () => ({ mime: 'image/png' as const, bytes: normalized }))
     const proxy = createOfficeLocalSearchProxy({
       fetchWithAuth: vi.fn(),
-      downloadImage: vi.fn(async () => ({ mime: 'image/jpeg' as const, bytes: source })),
+      downloadImage: vi.fn(async () => ({ mime: 'image/webp' as const, bytes: source })),
       normalizeImage,
       searchImages: vi.fn(async () => ({
         images: [
@@ -151,7 +166,7 @@ describe('Office fixed retrieval proxy', () => {
     })
     await proxy('image-search.v1', { query: 'llm', max_results: 1 })
     const result = await proxy('image-fetch.v1', { url: 'https://images.example/llm.jpg' })
-    expect(normalizeImage).toHaveBeenCalledWith({ mime: 'image/jpeg', bytes: source })
+    expect(normalizeImage).toHaveBeenCalledWith({ mime: 'image/webp', bytes: source })
     expect(JSON.parse(new TextDecoder().decode(result))).toEqual({
       mime: 'image/png',
       data_base64: Buffer.from(normalized).toString('base64'),

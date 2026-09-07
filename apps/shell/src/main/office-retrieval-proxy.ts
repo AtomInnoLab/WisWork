@@ -27,8 +27,14 @@ export type OfficeRetrievalProxy = (
 ) => Promise<Uint8Array>
 
 export interface DownloadedImage {
-  mime: 'image/png' | 'image/jpeg'
+  mime: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' | 'image/avif'
   bytes: Uint8Array
+}
+
+function supportedImageMime(value: unknown): value is DownloadedImage['mime'] {
+  return ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif'].includes(
+    String(value),
+  )
 }
 
 export async function collectBoundedImageBytes(
@@ -60,11 +66,25 @@ export function createPinnedLookup(selected: { address: string; family: number }
 
 type LookupAddresses = (hostname: string) => Promise<readonly { address: string; family: number }[]>
 
+export function resolvePublicImageRedirect(
+  currentUrl: string,
+  location: string | undefined,
+  redirectsRemaining: number,
+): string {
+  if (!location || redirectsRemaining < 1) throw new Error('retrieval_upstream_error')
+  try {
+    return safeHttpsUrl(new URL(location, currentUrl).href)
+  } catch (error) {
+    throw new Error('retrieval_upstream_error', { cause: error })
+  }
+}
+
 async function downloadPublicImage(
   url: string,
   signal?: AbortSignal,
   lookupAddresses: LookupAddresses = (hostname) => lookup(hostname, { all: true, verbatim: true }),
   timeoutMs = REQUEST_TIMEOUT_MS,
+  redirectsRemaining = 3,
 ): Promise<DownloadedImage> {
   const startedAt = Date.now()
   const parsed = new URL(url)
@@ -101,13 +121,43 @@ async function downloadPublicImage(
         method: 'GET',
         agent: false,
         lookup: createPinnedLookup(selected),
+        headers: {
+          Accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif;q=0.9,*/*;q=0.1',
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/128 Safari/537.36',
+        },
       },
       (response) => {
+        if (
+          response.statusCode !== undefined &&
+          response.statusCode >= 300 &&
+          response.statusCode < 400
+        ) {
+          let next: string
+          try {
+            next = resolvePublicImageRedirect(
+              parsed.href,
+              response.headers.location,
+              redirectsRemaining,
+            )
+          } catch {
+            response.destroy()
+            fail()
+            return
+          }
+          if (settled) return
+          settled = true
+          response.destroy()
+          resolve(
+            downloadPublicImage(next, signal, lookupAddresses, timeoutMs, redirectsRemaining - 1),
+          )
+          return
+        }
         const mime = response.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
         const declared = Number(response.headers['content-length'] ?? 0)
         if (
           response.statusCode !== 200 ||
-          (mime !== 'image/png' && mime !== 'image/jpeg') ||
+          !supportedImageMime(mime) ||
           declared > 2 * 1024 * 1024
         ) {
           response.destroy()
@@ -196,6 +246,7 @@ export function createOfficeLocalSearchProxy(options: {
       const { mime, bytes } = options.normalizeImage
         ? await options.normalizeImage(downloaded)
         : downloaded
+      if (mime !== 'image/png' && mime !== 'image/jpeg') throw new Error('retrieval_upstream_error')
       if (bytes.byteLength > 2 * 1024 * 1024) throw new Error('retrieval_upstream_error')
       return new TextEncoder().encode(
         JSON.stringify({ mime, data_base64: Buffer.from(bytes).toString('base64') }),

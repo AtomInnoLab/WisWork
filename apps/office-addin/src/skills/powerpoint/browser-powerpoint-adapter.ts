@@ -433,7 +433,15 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       )
       const range = (shape.textFrame as RuntimeRecord | undefined)?.textRange as
         RuntimeRecord | undefined
-      const font = range?.font as RuntimeRecord | undefined
+      if (!range || typeof range.load !== 'function') throw new Error('office_api_unsupported')
+      ;(range.load as (properties: string) => void)('text')
+      await sync(context, signal)
+      const sampledRange =
+        string(range.text, MAX_POWERPOINT_TEXT).length > 0 &&
+        typeof range.getSubstring === 'function'
+          ? (range.getSubstring as (start: number, length: number) => RuntimeRecord)(0, 1)
+          : range
+      const font = sampledRange.font as RuntimeRecord | undefined
       if (!font || typeof font.load !== 'function') throw new Error('office_api_unsupported')
       ;(font.load as (properties: string) => void)('color,name,size,bold,italic')
       await sync(context, signal)
