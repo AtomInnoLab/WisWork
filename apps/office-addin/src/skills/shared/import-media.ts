@@ -2,6 +2,7 @@ import type { InMemoryVfs } from './vfs.js'
 import { validateSkillPackageImage } from './skill-package.js'
 
 export const MAX_IMPORT_BYTES = 2 * 1024 * 1024
+export const MAX_IMAGE_IMPORT_BYTES = 10 * 1024 * 1024
 export const MAX_CSV_ROWS = 500
 export const MAX_CSV_COLUMNS = 100
 export const MAX_CSV_CELLS = 10_000
@@ -98,12 +99,12 @@ export function supportsBrowserMediaValidation(): boolean {
 }
 
 export async function readBoundedImage(vfs: InMemoryVfs, path: string): Promise<BoundedImage> {
-  const bytes = vfs.readBytes(path, { maxBytes: MAX_IMPORT_BYTES + 1 })
+  const bytes = vfs.readBytes(path, { maxBytes: MAX_IMAGE_IMPORT_BYTES + 1 })
   return validateBoundedImageBytes(bytes)
 }
 
 export async function validateBoundedImageBytes(bytes: Uint8Array): Promise<BoundedImage> {
-  if (bytes.byteLength > MAX_IMPORT_BYTES) throw new Error('image_limit')
+  if (bytes.byteLength > MAX_IMAGE_IMPORT_BYTES) throw new Error('image_limit')
   const png =
     bytes.length >= 24 &&
     [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value)

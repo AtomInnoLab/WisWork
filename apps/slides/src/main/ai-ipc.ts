@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { AiIpcError, registerWisworkModelIpc, validateAiSearchArgs } from '@wiswork/ai-provider'
 import { AuthError, getElectronAuthRuntimeOrNull } from '@wiswork/auth'
 import { wisUsageWebSearch, imageSearch } from '@wiswork/ai-search'
-import { fetchWithSsrfGuard } from '@wiswork/electron-utils'
+import { fetchRemoteImage } from '@wiswork/electron-utils'
 import {
   addPicture,
   collectDeckCreationIds,
@@ -676,9 +676,7 @@ export function registerSlidesOnlyAiIpc(): void {
         // the URL originates from AI tool calls (prompt-injectable via image
         // search results), so refuse non-http schemes and private/link-local
         // targets; redirects are followed manually so every hop is validated
-        const resp = await fetchWithSsrfGuard(String(op.url), {
-          headers: { 'User-Agent': 'Mozilla/5.0' },
-        })
+        const resp = await fetchRemoteImage(String(op.url))
         if (!resp || !resp.ok) return null
         const buf = Buffer.from(await resp.arrayBuffer())
         const ct = resp.headers.get('content-type') ?? ''
@@ -739,9 +737,7 @@ export function registerSlidesOnlyAiIpc(): void {
       const slide = session.opened.deck.slides[op.slideIndex]
       if (!slide) return null
       try {
-        const resp = await fetchWithSsrfGuard(op.url, {
-          headers: { 'User-Agent': 'Mozilla/5.0' },
-        })
+        const resp = await fetchRemoteImage(op.url)
         if (!resp || !resp.ok) return null
         const buf = Buffer.from(await resp.arrayBuffer())
         const ct = resp.headers.get('content-type') ?? ''

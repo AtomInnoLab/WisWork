@@ -8,6 +8,8 @@ import { createPowerPointImportMediaSkill } from '../src/skills/powerpoint/power
 import { BrowserPowerPointImportMediaAdapter } from '../src/skills/powerpoint/browser-powerpoint-import-media-adapter.js'
 import {
   exportSafeCsv,
+  MAX_IMAGE_IMPORT_BYTES,
+  MAX_IMPORT_BYTES,
   readBoundedCsv,
   readBoundedImage,
 } from '../src/skills/shared/import-media.js'
@@ -162,6 +164,11 @@ describe('host capability advertisement', () => {
 })
 
 describe('bounded CSV and image contracts', () => {
+  it('allows practical Office images without expanding the text import budget', () => {
+    expect(MAX_IMPORT_BYTES).toBe(2 * 1024 * 1024)
+    expect(MAX_IMAGE_IMPORT_BYTES).toBe(10 * 1024 * 1024)
+  })
+
   it('parses quoted CSV and rejects hostile dimensions and malformed quotes', () => {
     const vfs = new InMemoryVfs()
     vfs.writeFile('/home/user/input.csv', 'a,"b,b"\r\n"c\nline",d')

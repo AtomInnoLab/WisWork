@@ -10,7 +10,8 @@ describe('remoteImageHeaders', () => {
 
   it('always sends a browser-like User-Agent and image Accept', () => {
     const headers = remoteImageHeaders('https://example.com/a.png')
-    expect(headers['User-Agent']).toBeTruthy()
+    expect(headers['User-Agent']).toContain('AppleWebKit')
+    expect(headers['User-Agent']).toContain('Chrome')
     expect(headers.Accept).toContain('image/')
   })
 
