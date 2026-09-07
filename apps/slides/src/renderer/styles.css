@@ -1641,12 +1641,7 @@ body.vib .slide-list {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  margin-top: 12px;
-}
-
-.ai-msg-assistant .ai-work-group:first-child,
-.ai-work-group:only-child {
-  margin-top: 0;
+  margin: 0;
 }
 
 .ai-work-group-summary {
