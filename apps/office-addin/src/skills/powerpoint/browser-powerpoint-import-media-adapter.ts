@@ -10,7 +10,7 @@ function runtime(): Runtime {
   const requirements = root.Office?.context?.requirements
   if (
     root.Office?.context?.host !== 'PowerPoint' ||
-    !requirements?.isSetSupported?.('PowerPointApi', '1.8') ||
+    !requirements?.isSetSupported?.('PowerPointApi', '1.4') ||
     typeof root.PowerPoint?.run !== 'function'
   )
     throw new Error('office_api_unsupported')
@@ -51,15 +51,19 @@ export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapt
   ): Promise<{ id: string }> {
     return runtime().run(async (context: Runtime) => {
       const item = await slide(context, index, signal)
-      if (typeof item.shapes?.addImage !== 'function') throw new Error('office_api_unsupported')
+      if (typeof item.shapes?.addGeometricShape !== 'function')
+        throw new Error('office_api_unsupported')
       item.shapes.load('items/id')
       await sync(context, signal)
       const beforeIds = new Set((item.shapes.items as Runtime[]).map((shape) => String(shape.id)))
       cancelled(signal)
       let created: Runtime | undefined
       try {
-        created = item.shapes.addImage(base64, geometry)
-        if (typeof created?.delete !== 'function') throw new Error('office_api_unsupported')
+        created = item.shapes.addGeometricShape('Rectangle', geometry)
+        if (typeof created?.delete !== 'function' || typeof created?.fill?.setImage !== 'function')
+          throw new Error('office_api_unsupported')
+        created.fill.setImage(base64)
+        created.name = 'WisWork picture'
         created.load('id')
         await sync(context, signal)
         if (!created.id) throw new Error('office_write_failed')
@@ -95,10 +99,12 @@ export class BrowserPowerPointImportMediaAdapter implements PowerPointImageAdapt
       if (typeof item.shapes?.getItem !== 'function') throw new Error('office_api_unsupported')
       const shape = item.shapes.getItem(id)
       shape.load('id,left,top,width,height,type')
+      if (typeof shape.fill?.load !== 'function') throw new Error('office_api_unsupported')
+      shape.fill.load('type')
       await sync(context, signal)
       return (
         String(shape.id) === id &&
-        String(shape.type).toLowerCase().includes('image') &&
+        String(shape.fill.type).toLowerCase().includes('picture') &&
         shape.left === geometry.left &&
         shape.top === geometry.top &&
         shape.width === geometry.width &&

@@ -46,6 +46,7 @@ const inventories = {
     'read',
     'read_slide_text',
     'screenshot_slide',
+    'set_slide_background',
     'verify_slides',
   ],
 } as const

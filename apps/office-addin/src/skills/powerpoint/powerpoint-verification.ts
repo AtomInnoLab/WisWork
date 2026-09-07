@@ -168,6 +168,16 @@ export function createBrowserPowerPointVerificationAuthority(
       }
     },
     async readSlide(slideIndex, signal) {
+      if (adapter.readSlideBackground)
+        return read(async () => {
+          const state = await adapter.readSlideBackground!(slideIndex, signal)
+          return {
+            slideId: state.slideId,
+            ...(state.backgroundColor === undefined
+              ? {}
+              : { backgroundColor: state.backgroundColor }),
+          }
+        }, signal)
       const state = await read(() => adapter.listSlideShapes(slideIndex, signal), signal)
       return { slideId: state.slideId }
     },
@@ -219,6 +229,19 @@ function callOperations(call: AgentToolCall): Array<{
         target: input.shape_id,
         property: 'text',
         expected: input.text,
+        opIndex: 0,
+      },
+    ]
+  if (
+    call.name === 'set_slide_background' &&
+    Number.isSafeInteger(input.slide_index) &&
+    typeof input.color === 'string'
+  )
+    return [
+      {
+        slide: (input.slide_index as number) + 1,
+        property: 'background_color',
+        expected: input.color,
         opIndex: 0,
       },
     ]
@@ -418,8 +441,15 @@ export function createOfficePowerPointVerification(options: {
       for (const call of calls) {
         const seen = new Set<number>()
         for (const operation of callOperations(call)) {
-          if (!operation.target || seen.has(operation.opIndex)) continue
+          if (seen.has(operation.opIndex)) continue
           seen.add(operation.opIndex)
+          if (!operation.target) {
+            const state = await options.authority.readSlide(operation.slide - 1, signal)
+            const targets = correctionTargets.get(call.id) ?? []
+            targets.push(`${state.slideId}/background`)
+            correctionTargets.set(call.id, targets)
+            continue
+          }
           const state = await options.authority.readShape(
             operation.slide - 1,
             operation.target,
@@ -484,7 +514,14 @@ export function createOfficePowerPointVerification(options: {
     for (const call of calls) {
       const matches: boolean[] = []
       for (const operation of callOperations(call)) {
-        if (!operation.target) continue
+        if (!operation.target) {
+          const state = await options.authority.readSlide(operation.slide - 1)
+          const callTargets = targetsByCall.get(call.id) ?? []
+          callTargets.push(`${state.slideId}/background`)
+          targetsByCall.set(call.id, callTargets)
+          matches.push(equal(operation.property, state.backgroundColor, operation.expected))
+          continue
+        }
         const key = `${operation.slide}:${operation.target}`
         const state =
           shapeStates.get(key) ??

@@ -271,6 +271,7 @@ describe('PowerPoint compatibility skill', () => {
       'list_slide_shapes',
       'read_slide_text',
       'verify_slides',
+      'set_slide_background',
       'ask_clarification',
       'plan_deck',
       'execute_office_js',
@@ -1437,6 +1438,91 @@ describe('browser PowerPoint adapter', () => {
       isMasterBackgroundFollowed: true,
       areBackgroundGraphicsHidden: true,
     })
+  })
+
+  it('sets and verifies a native per-slide solid background', async () => {
+    const fake = adapter({
+      readSlideBackground: vi
+        .fn()
+        .mockResolvedValueOnce({
+          slideId: 'slide-1',
+          type: 'Solid',
+          backgroundColor: '#FFFFFF',
+          transparency: 0,
+        })
+        .mockResolvedValueOnce({
+          slideId: 'slide-1',
+          type: 'Solid',
+          backgroundColor: '#FFFFFF',
+          transparency: 0,
+        })
+        .mockResolvedValue({
+          slideId: 'slide-1',
+          type: 'Solid',
+          backgroundColor: '#112233',
+          transparency: 0,
+        }),
+      setSlideBackground: vi.fn().mockResolvedValue(undefined),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+
+    await expect(
+      skill.executeTool(
+        call('set_slide_background', {
+          slide_index: 0,
+          color: '#112233',
+          transparency: 0,
+        }),
+      ),
+    ).resolves.toMatchObject({ output: expect.stringContaining('set_slide_background') })
+    await expect(proposals.confirm(proposals.pending()!.id)).resolves.toBeUndefined()
+    expect(fake.setSlideBackground).toHaveBeenCalledWith(0, '#112233', 0, expect.any(AbortSignal))
+  })
+
+  it('maps per-slide backgrounds to the PowerPointApi 1.10 fill object', async () => {
+    const setSolidFill = vi.fn()
+    const solid = {
+      isNullObject: false,
+      color: '#ABCDEF',
+      transparency: 0.25,
+      load: vi.fn(),
+    }
+    const fill = {
+      type: 'Solid',
+      load: vi.fn(),
+      getSolidFillOrNullObject: vi.fn().mockReturnValue(solid),
+      setSolidFill,
+    }
+    const slide = { id: 'slide-1', load: vi.fn(), background: { fill } }
+    const context = {
+      presentation: {
+        slides: {
+          getCount: vi.fn().mockReturnValue({ value: 1 }),
+          getItemAt: vi.fn().mockReturnValue(slide),
+        },
+      },
+      sync: vi.fn().mockResolvedValue(undefined),
+    }
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: { run: (callback: (value: typeof context) => unknown) => callback(context) },
+    })
+    const subject = new BrowserPowerPointAdapter()
+
+    await expect(subject.readSlideBackground(0)).resolves.toEqual({
+      slideId: 'slide-1',
+      type: 'Solid',
+      backgroundColor: '#ABCDEF',
+      transparency: 0.25,
+    })
+    await subject.setSlideBackground(0, '#112233', 0)
+    expect(setSolidFill).toHaveBeenCalledWith({ color: '#112233', transparency: 0 })
   })
 
   it('routes declarative duplication through the transaction-safe duplicate primitive', async () => {

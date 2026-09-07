@@ -26,7 +26,7 @@ export type OfficeRetrievalProxy = (
   signal?: AbortSignal,
 ) => Promise<Uint8Array>
 
-interface DownloadedImage {
+export interface DownloadedImage {
   mime: 'image/png' | 'image/jpeg'
   bytes: Uint8Array
 }
@@ -147,6 +147,7 @@ export function createOfficeLocalSearchProxy(options: {
   webSearch?: typeof wisUsageWebSearch
   searchImages?: typeof imageSearch
   downloadImage?: (url: string, signal?: AbortSignal) => Promise<DownloadedImage>
+  normalizeImage?: (image: DownloadedImage) => Promise<DownloadedImage>
   lookupAddresses?: LookupAddresses
   imageTimeoutMs?: number
 }): OfficeRetrievalProxy {
@@ -191,7 +192,11 @@ export function createOfficeLocalSearchProxy(options: {
       const url = (request.input as { url: string }).url
       const expiry = allowedImages.get(url) ?? 0
       if (expiry < Date.now()) throw new Error('retrieval_invalid_request')
-      const { mime, bytes } = await downloadImage(url, signal)
+      const downloaded = await downloadImage(url, signal)
+      const { mime, bytes } = options.normalizeImage
+        ? await options.normalizeImage(downloaded)
+        : downloaded
+      if (bytes.byteLength > 2 * 1024 * 1024) throw new Error('retrieval_upstream_error')
       return new TextEncoder().encode(
         JSON.stringify({ mime, data_base64: Buffer.from(bytes).toString('base64') }),
       )

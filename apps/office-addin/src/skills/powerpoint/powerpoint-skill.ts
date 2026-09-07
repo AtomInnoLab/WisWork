@@ -121,6 +121,20 @@ const shapeInput = exactObject({
   explanation: optionalField(stringField({ maxLength: 50 })),
 })
 const verifyInput = exactObject({ explanation: optionalField(stringField({ maxLength: 50 })) })
+const slideBackgroundInput = exactObject({
+  slide_index: integerField({ min: 0, max: MAX_SLIDE_INDEX }),
+  color: (value: unknown) => {
+    if (typeof value !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(value))
+      throw new Error('invalid_tool_input')
+    return value
+  },
+  transparency: optionalField((value: unknown) => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1)
+      throw new Error('invalid_tool_input')
+    return value
+  }),
+  explanation: optionalField(stringField({ maxLength: 100 })),
+})
 const planDeckInput = exactObject({
   core_hook: stringField({ minLength: 1, maxLength: 500 }),
   style: stringField({ minLength: 1, maxLength: 1_000 }),
@@ -420,6 +434,21 @@ const tools = [
       type: 'object',
       properties: { explanation: { type: 'string', maxLength: 50 } },
       required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'set_slide_background',
+    description:
+      'Propose setting one slide background to a solid color using the native PowerPoint background API.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...slideProperties,
+        color: { type: 'string', pattern: '^#[0-9A-Fa-f]{6}$' },
+        transparency: { type: 'number', minimum: 0, maximum: 1 },
+      },
+      required: ['slide_index', 'color'],
       additionalProperties: false,
     },
   },
@@ -1488,6 +1517,70 @@ export function createPowerPointSkill(options: {
             output: boundedJson(await options.adapter.verifySlides(signal)),
             mutated: false,
             summary: 'Verified PowerPoint slides',
+          }
+        }
+        if (call.name === 'set_slide_background') {
+          const input = slideBackgroundInput(call.input)
+          if (!options.adapter.readSlideBackground || !options.adapter.setSlideBackground)
+            return failure(call.name, 'office_api_unsupported')
+          const before = await options.adapter.readSlideBackground(input.slide_index, signal)
+          if (
+            before.type.toLowerCase() !== 'solid' ||
+            !before.backgroundColor ||
+            before.transparency === undefined
+          )
+            return failure(call.name, 'office_api_unsupported')
+          const color = input.color.toUpperCase()
+          const transparency = input.transparency ?? 0
+          const proposal = options.proposals.propose({
+            operation: call.name,
+            toolName: call.name,
+            title: input.explanation || 'Set slide background',
+            preview: { slideIndex: input.slide_index, color, transparency },
+            impact: {
+              host: 'powerpoint',
+              targets: [`${before.slideId}/background`],
+              count: 1,
+            },
+            verificationBinding: canonicalPowerPointVerificationBinding(call, [
+              `${before.slideId}/background`,
+            ]),
+            fingerprint: fingerprint(JSON.stringify(before)),
+            before,
+            after: { slideId: before.slideId, type: 'Solid', backgroundColor: color, transparency },
+            validate: async (s) =>
+              fingerprint(
+                JSON.stringify(await options.adapter.readSlideBackground!(input.slide_index, s)),
+              ) === fingerprint(JSON.stringify(before)),
+            execute: async (s) =>
+              options.adapter.setSlideBackground!(input.slide_index, color, transparency, s),
+            verify: async (s) => {
+              const current = await options.adapter.readSlideBackground!(input.slide_index, s)
+              if (
+                current.slideId !== before.slideId ||
+                current.backgroundColor?.toUpperCase() !== color ||
+                current.transparency !== transparency
+              ) {
+                await options.adapter.setSlideBackground!(
+                  input.slide_index,
+                  before.backgroundColor!,
+                  before.transparency!,
+                )
+                const restored = await options.adapter.readSlideBackground!(input.slide_index)
+                if (
+                  restored.backgroundColor?.toUpperCase() !==
+                    before.backgroundColor!.toUpperCase() ||
+                  restored.transparency !== before.transparency
+                )
+                  throw new Error('office_recovery_failed')
+                throw new Error('office_verify_failed')
+              }
+            },
+          })
+          return {
+            output: boundedJson(proposal),
+            mutated: false,
+            summary: 'Proposed PowerPoint slide background',
           }
         }
         if (call.name === 'inspect_slide_masters') {
