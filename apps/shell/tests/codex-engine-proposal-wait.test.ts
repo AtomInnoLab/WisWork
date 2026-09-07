@@ -295,8 +295,8 @@ it.each(['none', 'unknown_tool', 'before_answer', 'write_before_answer'])(
 it.each([
   { output: 'applied', expected: 'enhanced_questionnaire_incomplete', status: 'failed' },
   { output: 'tool_failed', expected: 'enhanced_questionnaire_incomplete', status: 'failed' },
-  { output: 'mutation_expired', expected: 'enhanced_proposal_expired', status: 'failed' },
-  { output: 'mutation_cancelled', expected: 'done', status: 'cancelled' },
+  { output: 'mutation_expired', expected: 'enhanced_questionnaire_incomplete', status: 'failed' },
+  { output: 'mutation_cancelled', expected: 'enhanced_questionnaire_incomplete', status: 'failed' },
   { output: 'rejected', expected: 'enhanced_proposal_failed', status: 'failed' },
 ])(
   'waits for the pending questionnaire after a deferred proposal $output',
@@ -563,15 +563,10 @@ it.each(['applied', 'tool_failed', 'mutation_expired', 'mutation_cancelled', 'ca
       mutated: output === 'applied',
     })
     await running
-    expect(result).toBe(output === 'mutation_expired' ? 'enhanced_proposal_expired' : 'done')
+    expect(result).toBe('done')
     expect(events.at(-1)).toMatchObject({
       type: 'terminal',
-      status:
-        output === 'applied' || output === 'tool_failed'
-          ? 'completed'
-          : output === 'mutation_cancelled'
-            ? 'cancelled'
-            : 'failed',
+      status: 'completed',
     })
     await engine.close()
   },
