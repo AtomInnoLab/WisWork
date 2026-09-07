@@ -5,6 +5,7 @@ import {
   type PackageEditResult,
 } from './powerpoint-package.js'
 import { readUntilConverged } from '../shared/office-write-transaction.js'
+import JSZip from 'jszip'
 
 export const MAX_POWERPOINT_SHAPES = 1_000
 export const MAX_POWERPOINT_TEXT = 12_000
@@ -14,6 +15,7 @@ export const MAX_POWERPOINT_VERIFY_OVERLAPS = 1_000
 export const MAX_POWERPOINT_VERIFY_SLIDES = 20
 export const MAX_POWERPOINT_VERIFY_SHAPES = 100
 export const MAX_POWERPOINT_VERIFY_OVERFLOWS = 2_000
+const MAX_POWERPOINT_DOCUMENT_BYTES = 64 * 1024 * 1024
 
 function uncertainPowerPointState(errorLocation: string, cause?: unknown): Error {
   return Object.assign(
@@ -339,6 +341,80 @@ async function getSlideCount(
   return count.value as number
 }
 
+async function getCompressedDocumentSlideCount(signal?: AbortSignal): Promise<number> {
+  cancelled(signal)
+  const root = globalThis as unknown as RuntimeRecord
+  const office = root.Office as RuntimeRecord | undefined
+  const document = (office?.context as RuntimeRecord | undefined)?.document as
+    RuntimeRecord | undefined
+  const compressed = (office?.FileType as RuntimeRecord | undefined)?.Compressed
+  if (typeof document?.getFileAsync !== 'function' || compressed === undefined)
+    throw new Error('office_api_unsupported')
+  const file = await new Promise<RuntimeRecord>((resolve, reject) => {
+    ;(
+      document.getFileAsync as (
+        type: unknown,
+        options: object,
+        callback: (result: RuntimeRecord) => void,
+      ) => void
+    )(compressed, { sliceSize: 4 * 1024 * 1024 }, (result) => {
+      if (result.status !== 'succeeded' || !result.value) reject(new Error('office_read_failed'))
+      else resolve(result.value as RuntimeRecord)
+    })
+  })
+  try {
+    const size = finite(file.size)
+    const sliceCount = finite(file.sliceCount)
+    if (
+      !Number.isSafeInteger(size) ||
+      size < 1 ||
+      size > MAX_POWERPOINT_DOCUMENT_BYTES ||
+      !Number.isSafeInteger(sliceCount) ||
+      sliceCount < 1 ||
+      sliceCount > 1_024
+    )
+      throw new Error('office_read_failed')
+    const bytes = new Uint8Array(size)
+    let offset = 0
+    for (let index = 0; index < sliceCount; index += 1) {
+      cancelled(signal)
+      const slice = await new Promise<RuntimeRecord>((resolve, reject) => {
+        ;(file.getSliceAsync as (index: number, callback: (result: RuntimeRecord) => void) => void)(
+          index,
+          (result) => {
+            if (result.status !== 'succeeded' || !result.value)
+              reject(new Error('office_read_failed'))
+            else resolve(result.value as RuntimeRecord)
+          },
+        )
+      })
+      const data = slice.data
+      if (
+        !(data instanceof Uint8Array) &&
+        (!Array.isArray(data) ||
+          data.some((value) => !Number.isInteger(value) || value < 0 || value > 255))
+      )
+        throw new Error('office_read_failed')
+      const chunk = data instanceof Uint8Array ? data : Uint8Array.from(data as number[])
+      if (offset + chunk.byteLength > bytes.byteLength) throw new Error('office_read_failed')
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    if (offset !== bytes.byteLength) throw new Error('office_read_failed')
+    const zip = await JSZip.loadAsync(bytes, { createFolders: false })
+    const slideCount = Object.keys(zip.files).filter((path) =>
+      /^ppt\/slides\/slide[1-9]\d*\.xml$/.test(path),
+    ).length
+    if (slideCount > 100_000) throw new Error('office_read_failed')
+    return slideCount
+  } finally {
+    if (typeof file.closeAsync === 'function')
+      await new Promise<void>((resolve) =>
+        (file.closeAsync as (callback: () => void) => void)(() => resolve()),
+      )
+  }
+}
+
 function hash(value: string): string {
   let result = 0x811c9dc5
   for (let index = 0; index < value.length; index += 1) {
@@ -393,15 +469,20 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       )
     } catch (error) {
       if (signal?.aborted) throw error
-      slideCount = await this.run('1.2', async (context) => {
-        const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
-        if (typeof slides?.load !== 'function') throw error
-        ;(slides.load as (properties: string) => void)('items/id')
-        await sync(context, signal)
-        const items = slides.items
-        if (!Array.isArray(items) || items.length > 100_000) throw error
-        return items.length
-      })
+      try {
+        slideCount = await this.run('1.2', async (context) => {
+          const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+          if (typeof slides?.load !== 'function') throw error
+          ;(slides.load as (properties: string) => void)('items/id')
+          await sync(context, signal)
+          const items = slides.items
+          if (!Array.isArray(items) || items.length > 100_000) throw error
+          return items.length
+        })
+      } catch (fallbackError) {
+        if (signal?.aborted) throw fallbackError
+        slideCount = await getCompressedDocumentSlideCount(signal)
+      }
     }
     let selectedSlideIndexes: number[] = []
     if (apiSupport.v15) {
