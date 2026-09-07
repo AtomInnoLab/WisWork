@@ -109,7 +109,12 @@ describe('host capability advertisement', () => {
     ;(globalThis as Record<string, any>).Office.context.requirements.isSetSupported = (
       name: string,
       version: string,
-    ) => name === 'PowerPointApi' && version === '1.4'
+    ) =>
+      (name === 'PowerPointApi' && version === '1.5') ||
+      (name === 'ImageCoercion' && version === '1.1')
+    ;(globalThis as Record<string, any>).Office.context.document = {
+      setSelectedDataAsync: vi.fn(),
+    }
     ;(globalThis as Record<string, unknown>).PowerPoint = { run: vi.fn() }
     const powerpoint = createOfficeHostRuntime('powerpoint').skill.tools.map((item) => item.name)
     expect(powerpoint).toContain('insert-image')
@@ -123,8 +128,10 @@ describe('host capability advertisement', () => {
         platform: 'Mac',
         requirements: {
           isSetSupported: (name: string, version: string) =>
-            name === 'PowerPointApi' && version === '1.4',
+            (name === 'PowerPointApi' && version === '1.5') ||
+            (name === 'ImageCoercion' && version === '1.1'),
         },
+        document: { setSelectedDataAsync: vi.fn() },
       },
     }
     ;(globalThis as Record<string, unknown>).PowerPoint = { run: vi.fn() }
@@ -365,30 +372,50 @@ describe('Excel import/export proposals', () => {
 })
 
 describe('PowerPoint image proposal', () => {
-  it('inserts pictures through the stable geometric-shape image fill API', async () => {
-    const setImage = vi.fn()
+  it('inserts pictures through the cross-platform ImageCoercion API', async () => {
     const created = {
       id: 'picture-1',
-      name: '',
-      fill: { setImage },
+      type: 'Image',
+      left: 10,
+      top: 20,
+      width: 300,
+      height: 180,
+      fill: { type: 'PictureAndTexture', load: vi.fn() },
       load: vi.fn(),
       delete: vi.fn(),
     }
     const shapes = {
-      items: [],
+      items: [] as (typeof created)[],
       load: vi.fn(),
-      addGeometricShape: vi.fn().mockReturnValue(created),
+      getItem: vi.fn().mockReturnValue(created),
     }
     const slide = { id: 'slide-1', load: vi.fn(), shapes }
+    const setSelectedDataAsync = vi.fn(
+      (_base64: string, _options: Record<string, unknown>, callback: (result: unknown) => void) => {
+        shapes.items.push(created)
+        callback({ status: 'succeeded' })
+      },
+    )
     const context = {
-      presentation: { slides: { getItemAt: vi.fn().mockReturnValue(slide) } },
+      presentation: {
+        slides: { getItemAt: vi.fn().mockReturnValue(slide) },
+        setSelectedSlides: vi.fn(),
+      },
       sync: vi.fn().mockResolvedValue(undefined),
     }
     Object.assign(globalThis, {
       Office: {
+        CoercionType: { Image: 'image' },
         context: {
           host: 'PowerPoint',
-          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+          requirements: {
+            isSetSupported: vi.fn(
+              (name: string, version: string) =>
+                (name === 'PowerPointApi' && version === '1.5') ||
+                (name === 'ImageCoercion' && version === '1.1'),
+            ),
+          },
+          document: { setSelectedDataAsync },
         },
       },
       PowerPoint: { run: (callback: (value: typeof context) => unknown) => callback(context) },
@@ -400,13 +427,18 @@ describe('PowerPoint image proposal', () => {
     await expect(
       adapter.insertImage(0, 'cG5n', { left: 10, top: 20, width: 300, height: 180 }),
     ).resolves.toEqual({ id: 'picture-1' })
-    expect(shapes.addGeometricShape).toHaveBeenCalledWith('Rectangle', {
-      left: 10,
-      top: 20,
-      width: 300,
-      height: 180,
-    })
-    expect(setImage).toHaveBeenCalledWith('cG5n')
+    expect(context.presentation.setSelectedSlides).toHaveBeenCalledWith(['slide-1'])
+    expect(setSelectedDataAsync).toHaveBeenCalledWith(
+      'cG5n',
+      {
+        coercionType: 'image',
+        imageLeft: 10,
+        imageTop: 20,
+        imageWidth: 300,
+        imageHeight: 180,
+      },
+      expect.any(Function),
+    )
   })
 
   it('fetches an image-search URL through the PC relay before inserting it', async () => {
