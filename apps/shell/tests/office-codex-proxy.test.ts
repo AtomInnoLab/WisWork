@@ -196,15 +196,18 @@ describe('Office Codex proxy', () => {
   })
 
   it('executes the Enhanced PowerPoint state, feedback, and planning sequence', async () => {
-    const executeTool = vi.fn(async (call: { toolName: string }) => ({
-      output:
-        call.toolName === 'get_presentation_state'
-          ? '{"slideCount":1,"selectedSlideIndexes":[]}'
-          : call.toolName === 'ask_clarification'
-            ? 'audience: general; style: concise; pages: 8'
-            : '{"title":"LLM","slides":[]}',
-      isError: false,
-    }))
+    const executeTool = vi.fn(async (call: { toolName: string; callId: string }) => {
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(call.callId)) throw new Error('invalid_tool_call')
+      return {
+        output:
+          call.toolName === 'get_presentation_state'
+            ? '{"slideCount":1,"selectedSlideIndexes":[]}'
+            : call.toolName === 'ask_clarification'
+              ? 'audience: general; style: concise; pages: 8'
+              : '{"title":"LLM","slides":[]}',
+        isError: false,
+      }
+    })
     const runtime = {
       async runOfficeTurn(input: any) {
         expect(
@@ -212,7 +215,12 @@ describe('Office Codex proxy', () => {
         ).toEqual(['get_presentation_state', 'ask_clarification', 'plan_deck', 'verify_slides'])
         for (const name of ['get_presentation_state', 'ask_clarification', 'plan_deck']) {
           const result = await input.toolSession.callTool(input.toolSession.credentials, {
-            id: `call_${name}`,
+            id:
+              name === 'get_presentation_state'
+                ? 'state01'
+                : name === 'ask_clarification'
+                  ? 'aud01'
+                  : 'p',
             name,
             input: {},
           })
@@ -261,6 +269,7 @@ describe('Office Codex proxy', () => {
       'ask_clarification',
       'plan_deck',
     ])
+    expect(new Set(executeTool.mock.calls.map(([call]) => call.callId)).size).toBe(3)
   })
 
   it('keeps PC-backed web and image search available to Enhanced PowerPoint turns', async () => {
