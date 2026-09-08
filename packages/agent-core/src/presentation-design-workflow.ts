@@ -15,6 +15,21 @@ export function buildPresentationDesignDocument(style: string): string {
   return `# DESIGN.md\n\n${style.trim()}`
 }
 
+/** Extract a design snapshot from either desktop prose or Office JSON tool output. */
+export function extractPresentationDesignDocument(output: string): string | undefined {
+  try {
+    const value = JSON.parse(output) as { designMd?: unknown }
+    if (typeof value.designMd === 'string' && value.designMd.trim()) return value.designMd.trim()
+  } catch {
+    // Desktop plan output is intentionally readable prose rather than JSON.
+  }
+  const start = output.indexOf('# DESIGN.md')
+  if (start < 0) return undefined
+  const rest = output.slice(start)
+  const end = rest.search(/\n# [^\n]+\n/)
+  return (end < 0 ? rest : rest.slice(0, end)).trim() || undefined
+}
+
 export interface PresentationDesignPagePlan {
   title: string
   type?: string

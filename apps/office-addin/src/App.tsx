@@ -8,6 +8,7 @@ import {
   PresentationEmptyState,
   PresentationMessage,
 } from '@wiswork/ui'
+import { extractPresentationDesignDocument } from '@wiswork/agent-core'
 import {
   normalizeLang,
   translatePresentationVerification,
@@ -542,6 +543,7 @@ function PowerPointTimeline(props: {
   activity: string
   confirm: (id: string) => void
   reject: () => void
+  onOpenDesign: (designMd: string, editable: boolean) => void
 }) {
   const toolDetail = (
     tool: Extract<OfficePresentationEvent, { kind: 'tool' }>,
@@ -578,6 +580,14 @@ function PowerPointTimeline(props: {
     return text ? <pre className="ai-tool-display-text">{text}</pre> : undefined
   }
   const nodes: React.ReactNode[] = []
+  const latestDesignToolId = [...props.timeline]
+    .reverse()
+    .find(
+      (event) =>
+        event.kind === 'tool' &&
+        event.name === 'plan_deck' &&
+        Boolean(extractPresentationDesignDocument(event.output ?? '')),
+    )?.id
   let index = 0
   while (index < props.timeline.length) {
     const event = props.timeline[index]!
@@ -609,16 +619,22 @@ function PowerPointTimeline(props: {
     const tools = []
     while (index < props.timeline.length && props.timeline[index]?.kind === 'tool') {
       const tool = props.timeline[index] as Extract<OfficePresentationEvent, { kind: 'tool' }>
+      const designMd =
+        tool.name === 'plan_deck' ? extractPresentationDesignDocument(tool.output ?? '') : undefined
       tools.push({
         id: tool.callId,
-        label: tool.summary,
+        label: designMd ? 'DESIGN.md · 已创建' : tool.summary,
         status:
           tool.state === 'running'
             ? ('running' as const)
             : tool.state === 'error'
               ? ('error' as const)
               : ('done' as const),
-        detail: toolDetail(tool),
+        ...(designMd
+          ? {
+              onActivate: () => props.onOpenDesign(designMd, tool.id === latestDesignToolId),
+            }
+          : { detail: toolDetail(tool) }),
       })
       index += 1
     }
@@ -719,6 +735,11 @@ export function AgentWorkspace(props: {
   const [skills, setSkills] = useState<readonly string[]>(ui.skills())
   const [uploadError, setUploadError] = useState('')
   const [diagnosticStatus, setDiagnosticStatus] = useState('')
+  const [designEditor, setDesignEditor] = useState<{
+    designMd: string
+    editable: boolean
+  }>()
+  const [designDraft, setDesignDraft] = useState('')
   const [panel, setPanel] = useState<WorkspacePanelName | undefined>(props.initialPanel)
   const mounted = useRef(true)
   const panelHeading = useRef<HTMLHeadingElement>(null)
@@ -917,6 +938,10 @@ export function AgentWorkspace(props: {
             activity={state.activity}
             confirm={(id) => void session.confirm(id)}
             reject={() => session.reject()}
+            onOpenDesign={(designMd, editable) => {
+              setDesignDraft(designMd)
+              setDesignEditor({ designMd, editable })
+            }}
           />
         ) : (
           state.timeline.map((event) => (
@@ -974,6 +999,55 @@ export function AgentWorkspace(props: {
           </div>
         )}
       </section>
+
+      {designEditor && (
+        <div className="design-dialog-backdrop" role="presentation">
+          <section className="design-dialog" role="dialog" aria-modal="true" aria-label="DESIGN.md">
+            <header>
+              <strong>DESIGN.md</strong>
+              <button type="button" className="quiet" onClick={() => setDesignEditor(undefined)}>
+                ×
+              </button>
+            </header>
+            <p>
+              {designEditor.editable
+                ? '修改后将生成新的设计合同节点，并用于后续制作。'
+                : '这是历史设计合同快照，仅供查看。'}
+            </p>
+            <textarea
+              value={designDraft}
+              readOnly={!designEditor.editable}
+              spellCheck={false}
+              aria-label="DESIGN.md 内容"
+              onChange={(event) => setDesignDraft(event.target.value)}
+            />
+            <footer>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setDesignEditor(undefined)}
+              >
+                关闭
+              </button>
+              {designEditor.editable && (
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={state.busy || state.applying || !session.reviseDesignContract}
+                  onClick={() => {
+                    const body = designDraft.replace(/^\s*#\s*DESIGN\.md\s*/i, '').trim()
+                    if (!body) return
+                    session.reviseDesignContract?.(`# DESIGN.md\n\n${body}`)
+                    setDesignEditor(undefined)
+                  }}
+                >
+                  保存并应用
+                </button>
+              )}
+            </footer>
+          </section>
+        </div>
+      )}
 
       {panel && (
         <section

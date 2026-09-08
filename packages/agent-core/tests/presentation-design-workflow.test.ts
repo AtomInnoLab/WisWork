@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildPresentationDesignDocument,
+  extractPresentationDesignDocument,
   parsePresentationDesignPlan,
   PRESENTATION_DESIGN_WORKFLOW_PROMPT,
 } from '../src/presentation-design-workflow'
@@ -18,6 +19,19 @@ describe('presentation design workflow', () => {
     expect(buildPresentationDesignDocument('  Background: #0A0A0A  ')).toBe(
       '# DESIGN.md\n\nBackground: #0A0A0A',
     )
+  })
+
+  it('extracts timeline snapshots from desktop prose and Office JSON', () => {
+    expect(
+      extractPresentationDesignDocument(
+        'Plan confirmed:\n\n# DESIGN.md\n\nAccent: green\n\n# Deck Plan\nPage 1',
+      ),
+    ).toBe('# DESIGN.md\n\nAccent: green')
+    expect(
+      extractPresentationDesignDocument(
+        JSON.stringify({ status: 'planned', designMd: '# DESIGN.md\n\nAccent: blue' }),
+      ),
+    ).toBe('# DESIGN.md\n\nAccent: blue')
   })
 
   it('normalizes one strict plan shared by every host', () => {

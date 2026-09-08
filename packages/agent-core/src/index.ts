@@ -44,6 +44,7 @@ export { createIpcTransport, IPC_STREAM_SILENCE_TIMEOUT_MS } from './electron-tr
 export type { IpcStreamChunk, IpcStreamStart, IpcTransportOptions } from './electron-transport'
 export {
   buildPresentationDesignDocument,
+  extractPresentationDesignDocument,
   parsePresentationDesignPlan,
   PRESENTATION_DESIGN_WORKFLOW_PROMPT,
 } from './presentation-design-workflow'

@@ -25,6 +25,7 @@ export interface PresentationActivityItem {
   readonly status: 'running' | 'done' | 'error'
   readonly detail?: React.ReactNode
   readonly tooltip?: string
+  readonly onActivate?: () => void
 }
 
 function StepIcon({ status }: { readonly status: PresentationActivityItem['status'] }) {
@@ -90,20 +91,21 @@ export function PresentationActivityGroup({
             <div className="ai-step-row" key={item.id}>
               <StepIcon status={item.status} />
               <div className="ai-step-content">
-                {item.detail !== undefined ? (
+                {item.detail !== undefined || item.onActivate ? (
                   <button
                     type="button"
                     className="ai-step-title clickable"
                     title={item.tooltip}
-                    aria-expanded={expanded.has(item.id)}
-                    onClick={() =>
+                    aria-expanded={item.onActivate ? undefined : expanded.has(item.id)}
+                    onClick={() => {
+                      if (item.onActivate) return item.onActivate()
                       setExpanded((current) => {
                         const next = new Set(current)
                         if (next.has(item.id)) next.delete(item.id)
                         else next.add(item.id)
                         return next
                       })
-                    }
+                    }}
                   >
                     {item.label}
                   </button>
