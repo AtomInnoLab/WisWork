@@ -12,21 +12,24 @@ describe('enhanced renderer mutation snapshots', () => {
       skill: {
         id: 'slides',
         systemPrompt: 'slides',
-        tools: ['web_search', 'image_search', 'insert_web_image', 'build_deck'].map((name) => ({
-          name,
-          description: name,
-          inputSchema: { type: 'object' },
-        })),
+        tools: ['web_search', 'image_search', 'insert-image', 'insert_web_image', 'build_deck'].map(
+          (name) => ({
+            name,
+            description: name,
+            inputSchema: { type: 'object' },
+          }),
+        ),
         executeTool: vi.fn(),
       },
     })
     expect(registration.tools.map((tool) => tool.name)).toEqual([
       'web_search',
       'image_search',
+      'insert-image',
       'insert_web_image',
       'build_deck',
     ])
-    expect(registration.mutatingTools).toEqual(['insert_web_image', 'build_deck'])
+    expect(registration.mutatingTools).toEqual(['insert-image', 'insert_web_image', 'build_deck'])
   })
 
   it('registers the whole-deck builder as a mutation that requires confirmation', () => {

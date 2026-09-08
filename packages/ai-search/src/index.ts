@@ -231,7 +231,11 @@ export async function imageSearch(
       const resp = await fetchWithTimeout(url.href)
       if (resp.ok) {
         const data = asRecord(await resp.json())
-        const raw: unknown[] = Array.isArray(data.images_results) ? data.images_results : []
+        const raw: unknown[] = Array.isArray(data.images_results)
+          ? data.images_results
+          : Array.isArray(data.image_results)
+            ? data.image_results
+            : []
         const images: ImageSearchResult[] = []
         for (const item of raw) {
           const image = asRecord(item)
@@ -249,7 +253,7 @@ export async function imageSearch(
           images.push(entry)
           if (images.length >= maxResults) break
         }
-        if (images.length) return { images, method: 'serpapi' }
+        return { images, method: 'serpapi' }
       }
     } catch {
       /* fall back to Serper or DuckDuckGo */
@@ -283,7 +287,7 @@ export async function imageSearch(
           images.push(entry)
           if (images.length >= maxResults) break
         }
-        if (images.length) return { images, method: 'serper' }
+        return { images, method: 'serper' }
       }
     } catch {
       /* fall back to DuckDuckGo */
@@ -326,13 +330,15 @@ async function duckImageSearch(query: string, maxResults: number): Promise<Image
       `https://duckduckgo.com/?q=${encodeURIComponent(query)}`,
       { headers: { 'User-Agent': 'Mozilla/5.0' } },
     )
+    if (!tokenResp.ok) throw new Error('image_search_upstream_error')
     const tokenHtml = await tokenResp.text()
     const vqd = /vqd=["']?([\d-]+)["']?/.exec(tokenHtml)?.[1]
-    if (!vqd) return []
+    if (!vqd) throw new Error('image_search_upstream_error')
     const resp = await fetchWithTimeout(
       `https://duckduckgo.com/i.js?l=us-en&o=json&q=${encodeURIComponent(query)}&vqd=${vqd}`,
       { headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://duckduckgo.com/' } },
     )
+    if (!resp.ok) throw new Error('image_search_upstream_error')
     const data = asRecord(await resp.json())
     const list: unknown[] = Array.isArray(data.results) ? data.results : []
     const out: ImageSearchResult[] = []
@@ -351,8 +357,8 @@ async function duckImageSearch(query: string, maxResults: number): Promise<Image
       out.push(entry)
     }
     return out
-  } catch {
-    return []
+  } catch (error) {
+    throw new Error('image_search_upstream_error', { cause: error })
   }
 }
 
