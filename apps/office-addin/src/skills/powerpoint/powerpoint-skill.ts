@@ -40,20 +40,6 @@ const MAX_CODE = 32 * 1024
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
 const POWERPOINT_GEOMETRY_EPSILON = 0.01
 
-function arrayField<T>(
-  parser: (value: unknown) => T,
-  options: { minItems?: number; maxItems: number },
-): (value: unknown) => T[] {
-  return (value) => {
-    if (
-      !Array.isArray(value) ||
-      value.length < (options.minItems ?? 0) ||
-      value.length > options.maxItems
-    )
-      throw new Error('invalid_tool_input')
-    return value.map((item) => parser(item))
-  }
-}
 const MASTER_PATTERN_TYPES = [
   'Percent5',
   'Percent10',
