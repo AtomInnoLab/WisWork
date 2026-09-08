@@ -170,37 +170,40 @@ describe('local responses bridge', () => {
     }
   })
 
-  it('reports a closed protocol reason without upstream content', async () => {
-    const diagnostics: string[] = []
-    const onDeterministicFailure = vi.fn()
-    const bridge = await startResponsesBridge({
-      fetchWithAuth: async () =>
-        new Response('data: private\n\n', {
-          headers: { 'content-type': 'text/event-stream' },
+  it.each(['invalid_messages_sse', 'unsafe_custom_tool_input'])(
+    'reports the closed protocol reason %s without upstream content',
+    async (protocolCode) => {
+      const diagnostics: string[] = []
+      const onDeterministicFailure = vi.fn()
+      const bridge = await startResponsesBridge({
+        fetchWithAuth: async () =>
+          new Response('data: private\n\n', {
+            headers: { 'content-type': 'text/event-stream' },
+          }),
+        prepareTurn: () => ({
+          ...prepared(),
+          turnId: 'turn-a',
+          async *messagesStreamToResponses() {
+            yield 'event: response.created\ndata: {"type":"response.created"}\n\n'
+            const error = new Error(protocolCode)
+            error.name = 'ProtocolCompatibilityError'
+            throw error
+          },
         }),
-      prepareTurn: () => ({
-        ...prepared(),
-        turnId: 'turn-a',
-        async *messagesStreamToResponses() {
-          yield 'event: response.created\ndata: {"type":"response.created"}\n\n'
-          const error = new Error('invalid_messages_sse')
-          error.name = 'ProtocolCompatibilityError'
-          throw error
-        },
-      }),
-      diagnostics: (code) => diagnostics.push(code),
-      onDeterministicFailure,
-    })
-    try {
-      await post(new URL(bridge.responsesUrl), bridge.secret, '{}').catch(() => undefined)
-      expect(diagnostics).toEqual([
-        'responses_upstream_started',
-        'responses_stream_invalid_messages_sse',
-      ])
-      expect(JSON.stringify(diagnostics)).not.toContain('private')
-      expect(onDeterministicFailure).toHaveBeenCalledWith('invalid_messages_sse', 'turn-a')
-    } finally {
-      await bridge.close()
-    }
-  })
+        diagnostics: (code) => diagnostics.push(code),
+        onDeterministicFailure,
+      })
+      try {
+        await post(new URL(bridge.responsesUrl), bridge.secret, '{}').catch(() => undefined)
+        expect(diagnostics).toEqual([
+          'responses_upstream_started',
+          `responses_stream_${protocolCode}`,
+        ])
+        expect(JSON.stringify(diagnostics)).not.toContain('private')
+        expect(onDeterministicFailure).toHaveBeenCalledWith(protocolCode, 'turn-a')
+      } finally {
+        await bridge.close()
+      }
+    },
+  )
 })

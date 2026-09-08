@@ -111,6 +111,27 @@ describe('messagesSseToResponses', () => {
     })
   })
 
+  it('accepts the standard single-call result wrapper without a trailing message_stop', async () => {
+    const code = 'const result = await tools.mcp__wiswork__wiswork_read_document({}); text(result);'
+    const events = await collect(
+      convert(
+        chunks(
+          messageStart,
+          'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"custom_8","name":"exec","input":{}}}\n\n',
+          `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n`,
+          'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+          'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":4}}\n\n',
+        ),
+        true,
+      ),
+    )
+
+    expect(
+      events.find(({ event }) => event === 'response.custom_tool_call_input.done')?.data,
+    ).toMatchObject({ input: code })
+    expect(events.at(-1)?.event).toBe('response.completed')
+  })
+
   it('fails closed on malformed exec input without echoing code', async () => {
     let caught: unknown
     try {
