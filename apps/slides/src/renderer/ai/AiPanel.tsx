@@ -671,10 +671,27 @@ export function AiPanel({
     designMd: string
     pages: Array<{ visual: string; acceptance: string[]; density: string }>
   } | null>(null)
+  const [designEditorOpen, setDesignEditorOpen] = useState(false)
+  const [designDraft, setDesignDraft] = useState('# DESIGN.md\n\n')
+  const [designNotice, setDesignNotice] = useState<string | null>(null)
   useEffect(() => {
+    let cancelled = false
     qcAbortRef.current?.abort()
     qcPagesRef.current = []
     presentationDesignContextRef.current = null
+    void (
+      window.slidesApi?.getDesignSidecar?.() ??
+      Promise.resolve<{ ok: boolean; designMd?: string }>({ ok: true })
+    )
+      .then((result) => {
+        if (cancelled || !result.designMd) return
+        presentationDesignContextRef.current = { designMd: result.designMd, pages: [] }
+        setDesignDraft(result.designMd)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
   }, [currentFilePath])
   const publishQualityReceipt = (receipt: PresentationQualityReceipt) => {
     qualityReceiptsRef.current = [...qualityReceiptsRef.current, receipt].slice(-100)
@@ -888,8 +905,10 @@ export function AiPanel({
       getSlides: () => slidesRef.current,
       getCurrent: () => currentRef.current,
       getSelectedIds: () => selectedRef.current,
+      getPresentationDesignDocument: () => presentationDesignContextRef.current?.designMd,
       setPresentationDesignContext: (context) => {
         presentationDesignContextRef.current = context
+        setDesignDraft(context.designMd)
       },
       refreshAuthoritativeState: async (signal) => {
         signal?.throwIfAborted()
@@ -2441,6 +2460,47 @@ export function AiPanel({
     inputRef.current?.focus()
   }
 
+  const openDesignEditor = async () => {
+    const result = await (
+      window.slidesApi?.getDesignSidecar?.() ??
+      Promise.resolve<{ ok: boolean; designMd?: string }>({ ok: true })
+    ).catch(() => ({ ok: false }))
+    const designMd = 'designMd' in result ? result.designMd : undefined
+    if (designMd) {
+      presentationDesignContextRef.current = {
+        designMd,
+        pages: presentationDesignContextRef.current?.pages ?? [],
+      }
+      setDesignDraft(designMd)
+    }
+    setDesignNotice(null)
+    setDesignEditorOpen(true)
+  }
+
+  const saveDesignEditor = async () => {
+    const body = designDraft.replace(/^\s*#\s*DESIGN\.md\s*/i, '').trim()
+    if (!body) {
+      setDesignNotice('DESIGN.md cannot be empty.')
+      return
+    }
+    const designMd = `# DESIGN.md\n\n${body}`
+    const result = await window.slidesApi.saveStyleSidecar({
+      topic: 'Edited design contract',
+      styleSkill: body,
+      createdAt: new Date().toISOString(),
+    })
+    if (!result.ok) {
+      setDesignNotice('DESIGN.md could not be saved.')
+      return
+    }
+    presentationDesignContextRef.current = {
+      designMd,
+      pages: presentationDesignContextRef.current?.pages ?? [],
+    }
+    setDesignDraft(designMd)
+    setDesignNotice('Saved. The next Agent turn will use this design contract.')
+  }
+
   const copyMessage = (text: string, idx: number) => {
     void navigator.clipboard.writeText(text)
     setCopiedIdx(idx)
@@ -2572,6 +2632,15 @@ export function AiPanel({
           {t('aiPanelTitle')}
         </span>
         <div className="ai-panel-header-actions">
+          <button
+            className="ai-header-btn ai-design-btn"
+            onClick={() => void openDesignEditor()}
+            disabled={busy}
+            data-tip="Edit DESIGN.md"
+            aria-label="Edit DESIGN.md"
+          >
+            DESIGN.md
+          </button>
           {chat.length > 0 && (
             <button
               className="ai-header-btn"
@@ -2594,6 +2663,46 @@ export function AiPanel({
           )}
         </div>
       </div>
+
+      {designEditorOpen && (
+        <div className="ai-design-backdrop" role="presentation">
+          <section
+            className="ai-design-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="DESIGN.md"
+          >
+            <header>
+              <strong>DESIGN.md</strong>
+              <button
+                className="ai-header-btn"
+                onClick={() => setDesignEditorOpen(false)}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </header>
+            <p>Controls the visual system used by subsequent generation and screenshot review.</p>
+            <textarea
+              value={designDraft}
+              onChange={(event) => setDesignDraft(event.target.value)}
+              spellCheck={false}
+              aria-label="DESIGN.md content"
+            />
+            {designNotice && (
+              <div className="ai-design-notice" role="status">
+                {designNotice}
+              </div>
+            )}
+            <footer>
+              <button onClick={() => setDesignEditorOpen(false)}>Close</button>
+              <button className="primary" onClick={() => void saveDesignEditor()}>
+                Save
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
 
       <div ref={logRef} className="ai-chat" onScroll={onLogScroll}>
         {/* Past conversation (read-only transcript, not fed to the model), displayed continuously with the current turn */}

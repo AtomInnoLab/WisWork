@@ -1376,6 +1376,8 @@ export interface SlidesApi {
     styleSkill: string
     createdAt: string
   }) => Promise<{ ok: boolean }>
+  /** Read the current persisted or pending DESIGN.md contract. */
+  getDesignSidecar?: () => Promise<{ ok: boolean; designMd?: string }>
   /** Store styleSkill in userData/style-templates/<name>.json */
   saveStyleTemplate: (
     name: string,

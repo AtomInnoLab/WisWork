@@ -102,6 +102,8 @@ export interface MessagesRequest {
 }
 
 export interface PreparedResponsesTurn {
+  /** Trusted local correlation only; never forwarded to the upstream provider. */
+  readonly turnId?: string
   readonly messagesRequest: MessagesRequest
   readonly messagesStreamToResponses: (
     chunks: AsyncIterable<string | Uint8Array>,

@@ -29,7 +29,10 @@ import {
 import { EMU_PER_PX_96 } from '@wiswork/pptx-render'
 import { PRESENTATION_VERIFICATION_LIMITS } from '@wiswork/presentation-verification'
 import { tm } from './i18n-main'
-import { savePresentationDesignSidecar } from './presentation-design-sidecar'
+import {
+  readPresentationDesignSidecar,
+  savePresentationDesignSidecar,
+} from './presentation-design-sidecar'
 import {
   acquirePresentationMutationLease,
   acquirePresentationTransactionLease,
@@ -644,6 +647,13 @@ export function registerSlidesOnlyAiIpc(): void {
       return true
     },
   )
+
+  ipcMain.handle('ai:get-design-sidecar', (event): { ok: boolean; designMd?: string } => {
+    assertAiIpcSender(event)
+    const session = sessions.get(event.sender.id)
+    const designMd = readPresentationDesignSidecar(event.sender.id, session?.path)
+    return designMd ? { ok: true, designMd } : { ok: true }
+  })
 
   // Download an image from a URL and insert it into the given page (image search -> insert in one step; download in the main process avoids CORS)
   ipcMain.handle(

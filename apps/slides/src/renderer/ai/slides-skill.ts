@@ -72,6 +72,8 @@ export interface DeckAccess {
     designMd: string
     pages: Array<{ visual: string; acceptance: string[]; density: string }>
   }): void
+  /** Latest user-edited DESIGN.md document, included in every agent turn. */
+  getPresentationDesignDocument?(): string | undefined
   markPresentationPageReviewed?(slideIndex: number, passed: boolean): void
   /** Refresh renderer refs from the current native document after an uncertain write. */
   refreshAuthoritativeState?(signal?: AbortSignal): Promise<boolean>
@@ -1792,9 +1794,13 @@ export function createSlidesSkill(
         slides.length === 1 &&
         slides[0]!.nodes.length === 0 &&
         !state.plannedPages
-      return selectionScope
+      const designDocument = access.getPresentationDesignDocument?.()?.trim()
+      const documentContext = selectionScope
         ? `<selection scope>\n${selectionScopeSummary(selectionScope)}. This scope is immutable and enforced by the host.\n</selection scope>`
         : `<deck outline>\n${buildDeckOutline(slides, access.getCurrent(), access.getSelectedIds())}\n</deck outline>`
+      return designDocument
+        ? `${documentContext}\n<design contract>\n${designDocument}\n</design contract>`
+        : documentContext
     },
     reviewFinalResponse: (context) => {
       if (state.questionnaireAnsweredPendingPlan && !context.mutated)

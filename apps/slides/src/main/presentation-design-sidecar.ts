@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { buildPresentationDesignDocument } from '@wiswork/agent-core'
 
 const pendingDesigns = new Map<number, string>()
@@ -25,6 +25,21 @@ export function flushPresentationDesignSidecar(senderId: number, deckPath: strin
     return true
   } catch {
     return false
+  }
+}
+
+export function readPresentationDesignSidecar(
+  senderId: number,
+  deckPath: string | undefined,
+): string | undefined {
+  const pending = pendingDesigns.get(senderId)
+  if (pending) return buildPresentationDesignDocument(pending)
+  if (!deckPath || !deckPath.endsWith('.pptx')) return undefined
+  const designPath = deckPath.replace(/\.pptx$/i, '.design.md')
+  try {
+    return existsSync(designPath) ? readFileSync(designPath, 'utf8') : undefined
+  } catch {
+    return undefined
   }
 }
 

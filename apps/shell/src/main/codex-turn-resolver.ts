@@ -119,7 +119,7 @@ export class CodexTurnResolver {
       throw new Error('turn_unbound', { cause: error })
     }
     try {
-      return issuer.prepareTurn(input, {}, handle)
+      return { ...issuer.prepareTurn(input, {}, handle), turnId }
     } catch (error) {
       const code =
         error instanceof Error && /^[a-z_]{1,64}$/.test(error.message) ? error.message : undefined

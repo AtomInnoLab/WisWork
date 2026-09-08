@@ -180,6 +180,7 @@ describe('local responses bridge', () => {
         }),
       prepareTurn: () => ({
         ...prepared(),
+        turnId: 'turn-a',
         async *messagesStreamToResponses() {
           yield 'event: response.created\ndata: {"type":"response.created"}\n\n'
           const error = new Error('invalid_messages_sse')
@@ -197,7 +198,7 @@ describe('local responses bridge', () => {
         'responses_stream_invalid_messages_sse',
       ])
       expect(JSON.stringify(diagnostics)).not.toContain('private')
-      expect(onDeterministicFailure).toHaveBeenCalledWith('invalid_messages_sse')
+      expect(onDeterministicFailure).toHaveBeenCalledWith('invalid_messages_sse', 'turn-a')
     } finally {
       await bridge.close()
     }

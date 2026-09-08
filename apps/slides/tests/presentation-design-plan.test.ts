@@ -2,6 +2,20 @@ import { describe, expect, it, vi } from 'vitest'
 import { createSlidesSkill } from '../src/renderer/ai/slides-skill'
 
 describe('presentation design plan', () => {
+  it('places an edited DESIGN.md contract in the next agent-turn context', () => {
+    const skill = createSlidesSkill({
+      getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] }] as never,
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      getPresentationDesignDocument: () => '# DESIGN.md\n\nAccent: #10B981',
+      applySlide: () => undefined,
+      applyDeck: () => undefined,
+      fitWidthPx: 1280,
+    })
+
+    expect(skill.buildContext?.()).toContain('Accent: #10B981')
+  })
+
   it('blocks legacy low-level writes on a blank deck until the design plan exists', async () => {
     const skill = createSlidesSkill({
       getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] }] as never,

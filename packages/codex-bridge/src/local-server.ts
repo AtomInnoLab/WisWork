@@ -45,7 +45,7 @@ export interface ResponsesBridgeOptions {
     recording: ProtocolRecording,
     outcome: ProtocolRecordingOutcome,
   ) => void
-  readonly onDeterministicFailure?: (code: string) => void
+  readonly onDeterministicFailure?: (code: string, turnId?: string) => void
   readonly maxBodyBytes?: number
   readonly maxActiveTurns?: number
   readonly maxTurnDurationMs?: number
@@ -393,7 +393,7 @@ export async function startResponsesBridge(
               : undefined
           if (protocolCode) {
             try {
-              options.onDeterministicFailure?.(protocolCode)
+              options.onDeterministicFailure?.(protocolCode, turn.turnId)
             } catch {
               // Failure reporting must never change bridge settlement.
             }
