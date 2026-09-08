@@ -1448,6 +1448,79 @@ body.vib .slide-list {
   font-size: 12px;
 }
 
+.ai-design-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgb(0 0 0 / 52%);
+}
+
+.ai-design-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(620px, 100%);
+  height: min(720px, calc(100% - 36px));
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 35%);
+}
+
+.ai-design-dialog header,
+.ai-design-dialog footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ai-design-dialog p,
+.ai-design-notice {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.ai-design-dialog textarea {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--color-bg-page);
+  color: var(--text);
+  font:
+    12px/1.6 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+
+.ai-design-dialog footer {
+  justify-content: flex-end;
+}
+
+.ai-design-dialog footer button {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--color-bg-subtle);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.ai-design-dialog footer button.primary {
+  border-color: #232425;
+  background: #232425;
+  color: #fff;
+}
+
 .ai-header-btn:disabled {
   opacity: 0.45;
   cursor: default;

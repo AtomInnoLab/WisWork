@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { boundedScreenshot } from './bounded-screenshot'
 import {
   composeSkills,
+  extractPresentationDesignDocument,
   IPC_STREAM_SILENCE_TIMEOUT_MS,
   type AgentImage,
   type ToolDisplay,
@@ -671,10 +672,28 @@ export function AiPanel({
     designMd: string
     pages: Array<{ visual: string; acceptance: string[]; density: string }>
   } | null>(null)
+  const [designEditorOpen, setDesignEditorOpen] = useState(false)
+  const [designEditorEditable, setDesignEditorEditable] = useState(false)
+  const [designDraft, setDesignDraft] = useState('# DESIGN.md\n\n')
+  const [designNotice, setDesignNotice] = useState<string | null>(null)
   useEffect(() => {
+    let cancelled = false
     qcAbortRef.current?.abort()
     qcPagesRef.current = []
     presentationDesignContextRef.current = null
+    void (
+      window.slidesApi?.getDesignSidecar?.() ??
+      Promise.resolve<{ ok: boolean; designMd?: string }>({ ok: true })
+    )
+      .then((result) => {
+        if (cancelled || !result.designMd) return
+        presentationDesignContextRef.current = { designMd: result.designMd, pages: [] }
+        setDesignDraft(result.designMd)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
   }, [currentFilePath])
   const publishQualityReceipt = (receipt: PresentationQualityReceipt) => {
     qualityReceiptsRef.current = [...qualityReceiptsRef.current, receipt].slice(-100)
@@ -888,8 +907,10 @@ export function AiPanel({
       getSlides: () => slidesRef.current,
       getCurrent: () => currentRef.current,
       getSelectedIds: () => selectedRef.current,
+      getPresentationDesignDocument: () => presentationDesignContextRef.current?.designMd,
       setPresentationDesignContext: (context) => {
         presentationDesignContextRef.current = context
+        setDesignDraft(context.designMd)
       },
       refreshAuthoritativeState: async (signal) => {
         signal?.throwIfAborted()
@@ -2441,6 +2462,45 @@ export function AiPanel({
     inputRef.current?.focus()
   }
 
+  const openDesignEditor = (designMd: string) => {
+    setDesignDraft(designMd)
+    setDesignEditorEditable(designMd === presentationDesignContextRef.current?.designMd)
+    setDesignNotice(null)
+    setDesignEditorOpen(true)
+  }
+
+  const saveDesignEditor = async () => {
+    const body = designDraft.replace(/^\s*#\s*DESIGN\.md\s*/i, '').trim()
+    if (!body) {
+      setDesignNotice('DESIGN.md cannot be empty.')
+      return
+    }
+    const designMd = `# DESIGN.md\n\n${body}`
+    const result = await window.slidesApi.saveStyleSidecar({
+      topic: 'Edited design contract',
+      styleSkill: body,
+      createdAt: new Date().toISOString(),
+    })
+    if (!result.ok) {
+      setDesignNotice('DESIGN.md could not be saved.')
+      return
+    }
+    presentationDesignContextRef.current = {
+      designMd,
+      pages: presentationDesignContextRef.current?.pages ?? [],
+    }
+    setDesignDraft(designMd)
+    setChat((previous) => [
+      ...previous,
+      {
+        role: 'assistant',
+        text: '',
+        tools: [{ name: 'design_contract', summary: 'DESIGN.md · updated', output: designMd }],
+      },
+    ])
+    setDesignEditorOpen(false)
+  }
+
   const copyMessage = (text: string, idx: number) => {
     void navigator.clipboard.writeText(text)
     setCopiedIdx(idx)
@@ -2595,6 +2655,49 @@ export function AiPanel({
         </div>
       </div>
 
+      {designEditorOpen && (
+        <div className="ai-design-backdrop" role="presentation">
+          <section
+            className="ai-design-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="DESIGN.md"
+          >
+            <header>
+              <strong>DESIGN.md</strong>
+              <button
+                className="ai-header-btn"
+                onClick={() => setDesignEditorOpen(false)}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </header>
+            <p>Controls the visual system used by subsequent generation and screenshot review.</p>
+            <textarea
+              value={designDraft}
+              onChange={(event) => setDesignDraft(event.target.value)}
+              readOnly={!designEditorEditable}
+              spellCheck={false}
+              aria-label="DESIGN.md content"
+            />
+            {designNotice && (
+              <div className="ai-design-notice" role="status">
+                {designNotice}
+              </div>
+            )}
+            <footer>
+              <button onClick={() => setDesignEditorOpen(false)}>Close</button>
+              {designEditorEditable && (
+                <button className="primary" onClick={() => void saveDesignEditor()}>
+                  Save
+                </button>
+              )}
+            </footer>
+          </section>
+        </div>
+      )}
+
       <div ref={logRef} className="ai-chat" onScroll={onLogScroll}>
         {/* Past conversation (read-only transcript, not fed to the model), displayed continuously with the current turn */}
         {historicChat.length > 0 && (
@@ -2613,7 +2716,9 @@ export function AiPanel({
                       {entry.text && <Markdown text={entry.text} />}
                     </div>
                   )}
-                  {blocks.includes('tools') && entry.tools && <ToolChipList tools={entry.tools} />}
+                  {blocks.includes('tools') && entry.tools && (
+                    <ToolChipList tools={entry.tools} onOpenDesign={openDesignEditor} />
+                  )}
                 </React.Fragment>
               )
             })}
@@ -2792,7 +2897,9 @@ export function AiPanel({
                     ))}
                 </div>
               )}
-              {blocks.includes('tools') && entry.tools && <ToolChipList tools={entry.tools} />}
+              {blocks.includes('tools') && entry.tools && (
+                <ToolChipList tools={entry.tools} onOpenDesign={openDesignEditor} />
+              )}
             </React.Fragment>
           )
         })}
@@ -3137,7 +3244,13 @@ function RollbackButton({ disabled, onClick }: { disabled: boolean; onClick: () 
 /** Tool activity group: a single quiet summary row
  *  that auto-opens while tools run, auto-collapses into "Worked · N steps" when they finish,
  *  and a manual toggle that always wins. Rows inside are step rows with 1px connectors. */
-function ToolChipList({ tools }: { tools: ToolActivity[] }) {
+function ToolChipList({
+  tools,
+  onOpenDesign,
+}: {
+  tools: ToolActivity[]
+  onOpenDesign?: (designMd: string) => void
+}) {
   const { t: tr } = useI18n()
   return (
     <PresentationActivityGroup
@@ -3147,6 +3260,10 @@ function ToolChipList({ tools }: { tools: ToolActivity[] }) {
           (tool.display?.kind === 'text' && tool.display.text)
         )
         const hasOutput = !tool.running && (!!tool.output || hasDisplayData)
+        const designMd =
+          tool.name === 'plan_deck' || tool.name === 'design_contract'
+            ? extractPresentationDesignDocument(tool.output ?? '')
+            : undefined
         return {
           id: `${index}:${tool.name}`,
           label: tool.summary,
@@ -3156,7 +3273,13 @@ function ToolChipList({ tools }: { tools: ToolActivity[] }) {
               ? ('error' as const)
               : ('done' as const),
           tooltip: tool.name,
-          ...(hasOutput
+          ...(designMd && onOpenDesign
+            ? {
+                label: tool.name === 'plan_deck' ? 'DESIGN.md · created' : tool.summary,
+                onActivate: () => onOpenDesign(designMd),
+              }
+            : {}),
+          ...(hasOutput && !designMd
             ? {
                 detail: (
                   <ToolOutputPanel

@@ -18,6 +18,17 @@ const DEVELOPER_POLICY =
 const TURN_IDLE_TIMEOUT_MS = 60_000
 const INTERRUPT_TIMEOUT_MS = 2_000
 
+export function selectDeterministicFailureTurn<T extends { turnId?: string }>(
+  activeTurns: readonly T[],
+  turnId?: string,
+): T | undefined {
+  return turnId
+    ? activeTurns.find((candidate) => candidate.turnId === turnId)
+    : activeTurns.length === 1
+      ? activeTurns[0]
+      : undefined
+}
+
 export function safeTurnFailure(params: unknown): string {
   const error =
     typeof params === 'object' && params !== null
@@ -111,7 +122,7 @@ export function createProductionCodexBootstrap(
   return {
     async start({ executablePath, onCrash }): Promise<CodexRuntimeEngine> {
       const resolver = new CodexTurnResolver(options.diagnostics)
-      let rejectDeterministicFailure: (code: string) => void = () => undefined
+      let rejectDeterministicFailure: (code: string, turnId?: string) => void = () => undefined
       let bridge: Awaited<ReturnType<typeof startResponsesBridge>> | undefined
       let gateway: Awaited<ReturnType<typeof startDynamicMcpGateway>> | undefined
       let manager: CodexProcessManager | undefined
@@ -122,7 +133,7 @@ export function createProductionCodexBootstrap(
           prepareTurn: resolver.prepare,
           diagnostics: options.diagnostics,
           onProtocolRecording: options.onProtocolRecording,
-          onDeterministicFailure: (code) => rejectDeterministicFailure(code),
+          onDeterministicFailure: (code, turnId) => rejectDeterministicFailure(code, turnId),
         })
         gateway = await startDynamicMcpGateway(options.diagnostics)
         manager = new CodexProcessManager({
@@ -171,14 +182,12 @@ export function createProductionCodexBootstrap(
           active?: ActiveTurn
         }
       >()
-      rejectDeterministicFailure = () => {
+      rejectDeterministicFailure = (_code, turnId) => {
         const activeTurns = [...documents.values()].flatMap((document) =>
           document.active ? [document.active] : [],
         )
-        // The bridge has no document identity. A single active turn is unambiguous; with
-        // concurrent turns, let each app-server stream fail independently.
-        if (activeTurns.length !== 1) return
-        const active = activeTurns[0]!
+        const active = selectDeterministicFailureTurn(activeTurns, turnId)
+        if (!active) return
         active.cancelled = true
         active.settle('failed', new Error('enhanced_response_incompatible'))
         if (active.threadId && active.turnId) {

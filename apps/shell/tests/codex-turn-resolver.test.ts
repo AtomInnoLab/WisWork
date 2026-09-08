@@ -10,7 +10,7 @@ describe('Shell-private Codex turn resolver', () => {
     const input = {
       client_metadata: { thread_id: 'thread-a', turn_id: 'turn-a', session_id: 'session-a' },
     }
-    expect(resolver.prepare(input)).toBeTruthy()
+    expect(resolver.prepare(input)).toMatchObject({ turnId: 'turn-a' })
     expect(issueForTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         turnId: 'turn-a',

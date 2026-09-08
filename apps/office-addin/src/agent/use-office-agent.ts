@@ -46,6 +46,7 @@ export interface OfficeAgentSession {
   snapshot(): OfficeAgentSnapshot
   subscribe(listener: () => void): () => void
   send(instruction: string): void
+  reviseDesignContract?(designMd: string): void
   stop(): void
   confirm(id: string): Promise<void>
   reject(): void
@@ -872,7 +873,7 @@ export function createOfficeAgentSession(dependencies: {
     }
   })
 
-  const startRun = (instruction: string) => {
+  const startRun = (instruction: string, displayText = instruction) => {
     const value = instruction.trim()
     if (!value || harness.snapshot.busy || state.applying || disposed) return
     diagnose((diagnostics) => diagnostics.startTrace())
@@ -883,7 +884,7 @@ export function createOfficeAgentSession(dependencies: {
     activeAssistantId = undefined
     cumulativeAssistantText = ''
     assistantSegmentPrefix = ''
-    append({ id: eventId(), kind: 'user', text: boundedText(value) })
+    append({ id: eventId(), kind: 'user', text: boundedText(displayText) })
     publish({
       assistantText: '',
       activity: 'Thinking…',
@@ -905,6 +906,12 @@ export function createOfficeAgentSession(dependencies: {
     },
     send(instruction) {
       startRun(instruction)
+    },
+    reviseDesignContract(designMd) {
+      startRun(
+        `Revise the active presentation DESIGN.md to exactly the contract below. Keep the existing page plan unless consistency requires a change. Call plan_deck with the revised style and do not edit slides in this turn.\n\n${designMd}`,
+        '更新 DESIGN.md',
+      )
     },
     stop() {
       if (disposed) return

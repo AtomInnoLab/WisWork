@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   flushPresentationDesignSidecar,
+  readPresentationDesignSidecar,
   savePresentationDesignSidecar,
 } from '../src/main/presentation-design-sidecar'
 
@@ -17,5 +18,16 @@ describe('presentation design sidecar', () => {
     expect(readFileSync(deckPath.replace(/\.pptx$/, '.design.md'), 'utf8')).toContain(
       'Background: #0A0A0A',
     )
+  })
+
+  it('reads external edits and keeps the edited document for an untitled deck', () => {
+    const senderId = 91358
+    const deckPath = join(mkdtempSync(join(tmpdir(), 'wiswork-design-')), 'deck.pptx')
+    const designPath = deckPath.replace(/\.pptx$/, '.design.md')
+    writeFileSync(designPath, '# DESIGN.md\n\nAccent: #10B981')
+
+    expect(readPresentationDesignSidecar(senderId, deckPath)).toContain('Accent: #10B981')
+    expect(savePresentationDesignSidecar(senderId, undefined, 'Accent: #3B82F6')).toBe(true)
+    expect(readPresentationDesignSidecar(senderId, undefined)).toContain('Accent: #3B82F6')
   })
 })
