@@ -29,6 +29,13 @@ export function selectDeterministicFailureTurn<T extends { turnId?: string }>(
       : undefined
 }
 
+export function shouldRetryRejectedToolInput(code: string, priorRetries: number): boolean {
+  return (
+    priorRetries === 0 &&
+    (code === 'invalid_custom_tool_input' || code === 'unsafe_custom_tool_input')
+  )
+}
+
 export function safeTurnFailure(params: unknown): string {
   const error =
     typeof params === 'object' && params !== null
@@ -160,6 +167,7 @@ export function createProductionCodexBootstrap(
         readonly pendingProposals: Set<string>
         readonly pendingQuestionnaires: Set<string>
         questionnaireAwaitingContinuation: boolean
+        rejectedToolInputRetries: number
         lastFailure?: Error
         deferredTerminal?: { status: 'completed' | 'cancelled' | 'failed'; error?: Error }
         proposalFailure?: 'failed'
@@ -188,6 +196,11 @@ export function createProductionCodexBootstrap(
         )
         const active = selectDeterministicFailureTurn(activeTurns, turnId)
         if (!active) return
+        if (shouldRetryRejectedToolInput(_code, active.rejectedToolInputRetries)) {
+          active.rejectedToolInputRetries += 1
+          active.touch()
+          return
+        }
         active.cancelled = true
         active.settle('failed', new Error('enhanced_response_incompatible'))
         if (active.threadId && active.turnId) {
@@ -391,6 +404,7 @@ export function createProductionCodexBootstrap(
             pendingProposals: new Set(),
             pendingQuestionnaires: new Set(),
             questionnaireAwaitingContinuation: false,
+            rejectedToolInputRetries: 0,
             touch: () => {
               if (active.pendingProposals.size > 0 || active.pendingQuestionnaires.size > 0)
                 deadline.disarm()
