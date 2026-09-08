@@ -18,9 +18,7 @@ const DEVELOPER_POLICY =
 const TURN_IDLE_TIMEOUT_MS = 60_000
 const INTERRUPT_TIMEOUT_MS = 2_000
 
-export function selectDeterministicFailureDocument<
-  T extends { active?: { turnId?: string } },
->(
+export function selectDeterministicFailureDocument<T extends { active?: { turnId?: string } }>(
   activeDocuments: readonly T[],
   turnId?: string,
 ): T | undefined {
