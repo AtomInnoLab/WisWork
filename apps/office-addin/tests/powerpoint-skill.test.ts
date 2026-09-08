@@ -69,6 +69,16 @@ function adapter(overrides: Partial<PowerPointAdapter> = {}): PowerPointAdapter 
 const call = (name: string, input: Record<string, unknown> = {}) => ({ id: 'call-1', name, input })
 
 describe('PowerPoint compatibility skill', () => {
+  it('shares the design prototype and batch verification workflow with desktop Slides', () => {
+    const skill = createPowerPointSkill({
+      adapter: adapter(),
+      proposals: createStructuredProposalController(),
+    })
+    expect(skill.systemPrompt).toContain('DESIGN.md')
+    expect(skill.systemPrompt).toContain('representative content page')
+    expect(skill.systemPrompt).toContain('2–3 slides')
+  })
+
   it('exposes the same plan-before-build workflow as desktop Slides', async () => {
     const skill = createPowerPointSkill({
       adapter: adapter(),
@@ -93,6 +103,10 @@ describe('PowerPoint compatibility skill', () => {
               type: 'cover',
               brief: 'Set expectations for the first week',
               layout: 'hero_statement',
+              purpose: 'Open the story',
+              visual: 'One welcoming team photograph',
+              acceptance: ['Title is dominant', 'Image supports the message'],
+              density: 'low',
               image_queries: ['new employee onboarding team'],
             },
             {
@@ -100,9 +114,14 @@ describe('PowerPoint compatibility skill', () => {
               type: 'content',
               brief: 'Show the onboarding milestones',
               layout: 'timeline',
+              purpose: 'Explain the sequence',
+              visual: 'One horizontal milestone timeline',
+              acceptance: ['Milestones scan left to right'],
+              density: 'medium',
               image_queries: [],
             },
           ],
+          prototype_pages: [0, 1],
         }),
       ),
     ).resolves.toMatchObject({
@@ -110,6 +129,25 @@ describe('PowerPoint compatibility skill', () => {
       summary: 'Planned 2 slides',
       output: expect.stringContaining('New hires reach their first useful result in seven days'),
     })
+    const result = await skill.executeTool(
+      call('plan_deck', {
+        core_hook: 'One visual system',
+        style: 'Background: #0A0A0A',
+        pages: [
+          {
+            title: 'Cover',
+            brief: 'Opening',
+            layout: 'cover',
+            purpose: 'Open',
+            visual: 'One title composition',
+            acceptance: ['Clear hierarchy'],
+            density: 'low',
+          },
+        ],
+        prototype_pages: [0],
+      }),
+    )
+    expect(result.output).toContain('# DESIGN.md')
   })
 
   it('keeps the agent in the screenshot and verification loop after each mutation batch', async () => {
@@ -141,6 +179,31 @@ describe('PowerPoint compatibility skill', () => {
     )
     await skill.executeTool(call('verify_slides'))
     await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+    expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain('verify_slides')
+  })
+
+  it('does not let one screenshot certify multiple changed slides', async () => {
+    const skill = createPowerPointSkill({
+      adapter: adapter({
+        getPresentationState: vi.fn().mockResolvedValue({
+          host: 'powerpoint',
+          slideCount: 2,
+          selectedSlideIndexes: [0],
+          capabilities: {},
+        }),
+      }),
+      proposals: createStructuredProposalController(),
+    })
+    await skill.executeTool(call('get_presentation_state'))
+    await skill.executeTool(call('set_slide_background', { slide_index: 0, color: '#112233' }))
+    await skill.executeTool(call('set_slide_background', { slide_index: 1, color: '#223344' }))
+
+    expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain('(1, 2)')
+    await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+    const correction = skill.reviewFinalResponse?.({ text: 'Done', mutated: true })
+    expect(correction).toContain('(2)')
+    expect(correction).not.toContain('(1, 2)')
+    await skill.executeTool(call('screenshot_slide', { slide_index: 1 }))
     expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain('verify_slides')
   })
 

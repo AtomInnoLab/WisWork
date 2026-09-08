@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import {
+  buildQcInstruction,
   generatedPageRange,
   mergeQcPages,
   createSlideFixSkill,
@@ -17,8 +18,9 @@ import {
   applyQcGeometryFixes,
   buildVisualQcContext,
   buildVisualQcRepairInstruction,
+  QC_SYSTEM_PROMPT,
 } from '../src/renderer/ai/slide-qc'
-import type { DeckAccess } from '../src/renderer/ai/slides-skill'
+import { createSlidesSkill, type DeckAccess } from '../src/renderer/ai/slides-skill'
 import { createElectronTransport } from '../src/renderer/ai/transport'
 
 const access: DeckAccess = {
@@ -31,6 +33,28 @@ const access: DeckAccess = {
 }
 
 describe('visual quality receipts', () => {
+  it('uses the shared design prototype and batch workflow in desktop Slides', () => {
+    const prompt = createSlidesSkill(access).systemPrompt
+    expect(prompt).toContain('DESIGN.md')
+    expect(prompt).toContain('representative content page')
+    expect(prompt).toContain('2–3 slides')
+  })
+
+  it('reviews design quality as well as objective geometry', () => {
+    expect(QC_SYSTEM_PROMPT).toContain('information hierarchy')
+    expect(QC_SYSTEM_PROMPT).toContain('one focal visual')
+    expect(QC_SYSTEM_PROMPT).toContain('design-system consistency')
+  })
+  it('passes the editable design contract and page acceptance criteria into screenshot review', () => {
+    const instruction = buildQcInstruction(
+      0,
+      { widthPx: 1280, heightPx: 720, nodes: [] } as never,
+      [],
+      '# DESIGN.md\nDeep navy system\nAcceptance: one dominant hero visual',
+    )
+    expect(instruction).toContain('Deep navy system')
+    expect(instruction).toContain('one dominant hero visual')
+  })
   it('resumes the main agent for unresolved pages, but not after cancellation or repeated attempts', () => {
     const outcomes = [{ page: 1, status: 'needs_fix' as const, corrected: false }]
     expect(buildVisualQcRepairInstruction(outcomes, 0, false)).toContain('slideIndex: 0')

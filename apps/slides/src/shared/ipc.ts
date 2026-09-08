@@ -1370,7 +1370,7 @@ export interface SlidesApi {
     keepSrcRect?: boolean
   }) => Promise<RenderSlide | null>
   onAiStream: (handler: (chunk: AiStreamChunk) => void) => () => void
-  /** Style Skill sidecar: write styleSkill to a same-named .styleskill.json next to the draft */
+  /** Persist the editable design contract to a same-named .design.md next to the draft. */
   saveStyleSidecar: (data: {
     topic: string
     styleSkill: string

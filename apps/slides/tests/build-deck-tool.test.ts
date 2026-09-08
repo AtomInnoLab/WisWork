@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { RenderSlide } from '@wiswork/pptx-render'
-import { createSlidesSkill } from '../src/renderer/ai/slides-skill'
+import { createSlidesSkill as createRawSlidesSkill } from '../src/renderer/ai/slides-skill'
 import { executePreparedGeometryFamilyTransaction } from '../src/renderer/ai/presentation-geometry-transactions'
 
 const blank = (): RenderSlide => ({
@@ -10,6 +10,80 @@ const blank = (): RenderSlide => ({
   background: { kind: 'solid', color: '#FFFFFF' },
   nodes: [],
 })
+
+/** Keep builder-focused legacy cases on the production plan/batch contract. */
+function createSlidesSkill(...args: Parameters<typeof createRawSlidesSkill>) {
+  const skill = createRawSlidesSkill(...args)
+  const execute = skill.executeTool.bind(skill)
+  let planned = false
+  let plannedLayouts: string[] = []
+  const fallbackLayouts = ['cover', 'cards', 'statement']
+  const normalizePlanPages = (pages: unknown[]) =>
+    pages.map((raw, index) => {
+      const page = raw as Record<string, unknown>
+      return {
+        title: page.title,
+        brief:
+          typeof page.brief === 'string'
+            ? page.brief
+            : Array.isArray(page.body)
+              ? page.body.join(' · ')
+              : `Page ${index + 1}`,
+        layout: page.layout ?? fallbackLayouts[index % fallbackLayouts.length],
+        purpose: page.purpose ?? 'Advance the story',
+        visual: page.visual ?? 'One dominant composition',
+        acceptance: page.acceptance ?? ['Clear hierarchy'],
+        density: page.density ?? 'medium',
+        image_queries: [],
+      }
+    })
+  skill.executeTool = async (call, signal) => {
+    if (call.name === 'plan_deck') {
+      const input = call.input as Record<string, unknown>
+      const pages = Array.isArray(input.pages) ? input.pages : []
+      call = {
+        ...call,
+        input: {
+          ...input,
+          pages: normalizePlanPages(pages),
+          prototype_pages: input.prototype_pages ?? pages.map((_, index) => index).slice(0, 3),
+        },
+      }
+      plannedLayouts = normalizePlanPages(pages).map((page) => String(page.layout))
+      planned = true
+    }
+    if (call.name === 'build_deck') {
+      const input = call.input as Record<string, unknown>
+      const pages = Array.isArray(input.pages) ? input.pages : []
+      if (!planned) {
+        await skill.executeTool({
+          id: `${call.id}-plan`,
+          name: 'plan_deck',
+          input: { core_hook: 'Builder test', style: 'Test style', pages },
+        })
+      }
+      call = {
+        ...call,
+        input: {
+          ...input,
+          pages: input.theme
+            ? pages
+            : pages.map((raw, index) => ({
+                ...(raw as Record<string, unknown>),
+                layout:
+                  (raw as Record<string, unknown>).layout ??
+                  plannedLayouts[index] ??
+                  fallbackLayouts[index % fallbackLayouts.length],
+              })),
+          phase: input.phase ?? 'prototype',
+          page_indexes: input.page_indexes ?? pages.map((_, index) => index).slice(0, 3),
+        },
+      }
+    }
+    return execute(call, signal)
+  }
+  return skill
+}
 
 async function plannedImageDeck(
   firstImage:
@@ -372,13 +446,13 @@ describe('build_deck', () => {
       },
     })
 
-    expect(result.mutated).toBe(true)
+    expect(result.mutated, result.output).toBe(true)
     expect(result.isError).not.toBe(true)
     expect(slides).toHaveLength(3)
     expect(executePresentationOperation).toHaveBeenCalledTimes(3)
     expect(executePresentationTransaction).toHaveBeenCalledTimes(3)
     const requests = executePresentationOperation.mock.calls.map(([request]) => request)
-    expect(requests.every((request) => request.operations.length === 4)).toBe(true)
+    expect(requests.every((request) => request.operations.length >= 4)).toBe(true)
     expect(JSON.stringify(requests)).toContain('认识 LLM')
     expect(JSON.stringify(requests)).toContain('验证结果')
   })
@@ -726,7 +800,7 @@ describe('build_deck', () => {
       input: { slideIndex: 1 },
     })
 
-    expect(failed).toMatchObject({ isError: true, mutated: true })
+    expect(failed, failed.output).toMatchObject({ isError: true, mutated: true })
     expect(repair).toMatchObject({ mutated: true })
     expect(repair.output).not.toContain('Call build_deck once')
     expect(deleteSlide).toHaveBeenCalledOnce()

@@ -1,8 +1,11 @@
-import type {
-  AgentImage,
-  AgentSkill,
-  FinalResponseReviewContext,
-  ToolDisplay,
+import {
+  buildPresentationDesignDocument,
+  parsePresentationDesignPlan,
+  PRESENTATION_DESIGN_WORKFLOW_PROMPT,
+  type AgentImage,
+  type AgentSkill,
+  type FinalResponseReviewContext,
+  type ToolDisplay,
 } from '@wiswork/agent-core'
 import type {
   GroupRenderNode,
@@ -64,10 +67,21 @@ export interface DeckAccess {
   getSlides(): RenderSlide[]
   getCurrent(): number
   getSelectedIds(): string[]
+  /** Current editable design contract, retained so screenshot QC can judge intent as well as geometry. */
+  setPresentationDesignContext?(context: {
+    designMd: string
+    pages: Array<{ visual: string; acceptance: string[]; density: string }>
+  }): void
+  markPresentationPageReviewed?(slideIndex: number, passed: boolean): void
   /** Refresh renderer refs from the current native document after an uncertain write. */
   refreshAuthoritativeState?(signal?: AbortSignal): Promise<boolean>
   /** Render one slide for bounded, in-memory visual inspection by the main agent. */
   captureSlideScreenshot?(slideIndex: number): Promise<AgentImage | null>
+  reviewPresentationScreenshot?(
+    slideIndex: number,
+    screenshot: AgentImage,
+    signal?: AbortSignal,
+  ): Promise<boolean>
   getAcceptanceAuthorityLease?(): Promise<SlidesAcceptanceAuthorityLease>
   verifyAcceptanceTextProof?(request: SlidesAcceptanceTextProofRequest): Promise<boolean>
   /** Read-only, revision-bound durable facts used to compile and verify a frozen task contract. */
@@ -138,7 +152,7 @@ export interface DeckAccess {
     error?: string
   }>
   /**
-   * Persist the current draft's Style Skill as a sidecar file (same directory and name as the draft, .styleskill.json).
+   * Persist the current draft's editable design contract next to the draft as .design.md.
    * fail-open: failure doesn't block the main path.
    */
   saveSidecar?(data: { topic: string; styleSkill: string; createdAt: string }): Promise<void>
@@ -182,6 +196,8 @@ export interface ClarifyQuestion {
 }
 
 const AGENT_SYSTEM_PROMPT = `You are the AI assistant inside WisWork Slides. Help users create, edit, and verify presentations with the available local tools.
+
+${PRESENTATION_DESIGN_WORKFLOW_PROMPT}
 
 ## Workflow
 - Emit a concise user-visible progress note before every tool batch, explaining the current design decision and next action without revealing private chain-of-thought. Do not run consecutive tool batches as an unexplained list; after reading tool results, narrate what they changed in the plan before starting the next batch.
@@ -764,7 +780,7 @@ const ALL_TOOLS: AgentToolDef[] = [
   {
     name: 'plan_deck',
     description:
-      "[When creating a whole new deck, call after researching material and images] Outputs a structured plan: the Core Hook + unified style scheme + each page's title/content brief/layout/image keywords. Think the whole deck through first, to avoid starting strong and fizzling out. The plan is echoed to the user.",
+      '[When creating a whole new deck, call after researching material and images] Outputs the Core Hook, an editable DESIGN.md contract, and a page director plan. Every page should declare its narrative purpose, one focal visual, evidence, layout, assets, and acceptance criteria. The plan is echoed to the user.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -776,7 +792,7 @@ const ALL_TOOLS: AgentToolDef[] = [
         style: {
           type: 'string',
           description:
-            'Unified design system: primary/secondary colors, font tone, content margins, card/corner style (e.g. "dark blue primary + gold accents, data-dashboard look"); every page follows it',
+            'Complete DESIGN.md body: concrete color tokens, type hierarchy, margins/grid, image treatment, density limits, layout families, and composition rules',
         },
         pages: {
           type: 'array',
@@ -803,12 +819,40 @@ const ALL_TOOLS: AgentToolDef[] = [
                 description:
                   "English image-search keywords for this page's image slots (one per slot; [] for no images)",
               },
+              purpose: { type: 'string', description: 'Narrative job this page performs' },
+              visual: {
+                type: 'string',
+                description: 'The single focal visual and how it proves the headline',
+              },
+              evidence: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Facts, examples, or source-backed claims supporting the headline',
+              },
+              acceptance: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Slide-specific visual and content checks',
+              },
+              density: {
+                type: 'string',
+                enum: ['low', 'medium', 'high'],
+                description: 'Intentional information density for this slide',
+              },
             },
-            required: ['title', 'brief', 'layout'],
+            required: ['title', 'brief', 'layout', 'purpose', 'visual', 'acceptance', 'density'],
           },
         },
+        prototype_pages: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 3,
+          items: { type: 'integer', minimum: 0 },
+          description:
+            'Zero-based indexes of the cover, representative content page, and most complex visual page; use every page when the deck has fewer than three',
+        },
       },
-      required: ['core_hook', 'style', 'pages'],
+      required: ['core_hook', 'style', 'pages', 'prototype_pages'],
     },
   },
   {
@@ -861,8 +905,16 @@ const ALL_TOOLS: AgentToolDef[] = [
             required: ['title', 'body'],
           },
         },
+        phase: { type: 'string', enum: ['prototype', 'batch'] },
+        page_indexes: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 3,
+          items: { type: 'integer', minimum: 0 },
+          description: 'Planned zero-based pages to materialize in this reviewed batch',
+        },
       },
-      required: ['pages'],
+      required: ['pages', 'phase', 'page_indexes'],
     },
   },
   {
@@ -1709,6 +1761,9 @@ export function createSlidesSkill(
         },
       }
     : access
+  access.markPresentationPageReviewed = (slideIndex, passed) => {
+    if (passed) state.pendingReviewIndexes?.delete(slideIndex)
+  }
   return {
     id: 'slides',
     systemPrompt: AGENT_SYSTEM_PROMPT,
@@ -1724,8 +1779,12 @@ export function createSlidesSkill(
     reviewFinalResponse: (context) => {
       if (state.questionnaireAnsweredPendingPlan && !context.mutated)
         return QUESTIONNAIRE_CONTINUATION_CORRECTION
+      if (state.pendingReviewIndexes?.size)
+        return `Continue the visual quality loop: screenshot and inspect planned pages ${[...state.pendingReviewIndexes].map((index) => index + 1).join(', ')} before producing another batch or reporting completion.`
       const planned = state.plannedPageCount
       const actual = access.getSlides().length
+      if (planned !== undefined && (state.builtPageIndexes?.size ?? 0) < planned)
+        return `Continue production: only ${state.builtPageIndexes?.size ?? 0} of ${planned} planned pages have been materialized.`
       if (planned !== undefined && actual < planned)
         return incompleteDeckCorrection(planned, actual)
       return reviewSlidesFinalResponse(context)
@@ -1753,6 +1812,11 @@ interface SkillState {
   authoritativeRefreshRequired?: boolean
   /** Questionnaire completion cannot terminate the run before the model plans the deck. */
   questionnaireAnsweredPendingPlan?: boolean
+  plannedPages?: ReturnType<typeof parsePresentationDesignPlan>['pages']
+  prototypePages?: number[]
+  builtPageIndexes?: Set<number>
+  pendingReviewIndexes?: Set<number>
+  productionTheme?: string
 }
 
 const fail = (summary: string, output: string) => ({
@@ -1956,6 +2020,17 @@ async function executeTool(
         return fail('Capture slide screenshot', 'visual_capture_unavailable')
       const image = await access.captureSlideScreenshot(idx)
       if (!image) return fail('Capture slide screenshot', 'visual_capture_failed')
+      if (state?.pendingReviewIndexes?.has(idx)) {
+        if (!access.reviewPresentationScreenshot)
+          return fail('Review slide screenshot', 'visual_review_unavailable')
+        const passed = await access.reviewPresentationScreenshot(idx, image, signal)
+        if (!passed)
+          return fail(
+            'Review slide screenshot',
+            'visual_review_failed: repair this page and screenshot it again before continuing',
+          )
+        state.pendingReviewIndexes.delete(idx)
+      }
       return {
         output: `Rendered slide ${idx + 1}. Inspect the attached PNG for clipping, overlap, hierarchy, spacing, contrast, and visual balance.`,
         mutated: false,
@@ -2959,28 +3034,50 @@ async function executeTool(
     }
 
     case 'plan_deck': {
-      const coreHook = String(call.input.core_hook ?? '').trim()
-      const style = String(call.input.style ?? '').trim()
-      const pages = Array.isArray(call.input.pages) ? call.input.pages : []
-      if (!coreHook || !style || pages.length === 0) {
-        return fail(t('aiFailPlan'), 'plan_deck requires core_hook + style + non-empty pages')
+      let plan: ReturnType<typeof parsePresentationDesignPlan>
+      try {
+        plan = parsePresentationDesignPlan(call.input)
+      } catch {
+        return fail(
+          t('aiFailPlan'),
+          'plan_deck requires a complete DESIGN.md, page director plan, and prototype_pages',
+        )
       }
+      const { core_hook: coreHook, style, pages } = plan
       if (state) {
         state.questionnaireAnsweredPendingPlan = false
         state.plannedPageCount = pages.length
         state.awaitingBuildDeck = pages.length >= 2
+        state.lastStyleSkill = style
+        state.lastTopic = coreHook
+        state.plannedPages = pages
+        state.prototypePages = plan.prototype_pages
+        state.builtPageIndexes = new Set()
+        state.pendingReviewIndexes = new Set()
+        state.productionTheme = undefined
       }
+      await access.saveSidecar?.({
+        topic: coreHook,
+        styleSkill: style,
+        createdAt: new Date().toISOString(),
+      })
+      access.setPresentationDesignContext?.({
+        designMd: buildPresentationDesignDocument(style),
+        pages: pages.map(({ visual, acceptance, density }) => ({ visual, acceptance, density })),
+      })
+      signal?.throwIfAborted()
       // Planning summary echoed back to the user
-      const lines = pages.map((p: Record<string, unknown>, i: number) => {
+      const lines = pages.map((p, i) => {
         const q =
           Array.isArray(p.image_queries) && p.image_queries.length
             ? ` [images: ${p.image_queries.length}]`
             : ''
-        return `Page ${i + 1} [${String(p.layout ?? '')}] ${String(p.title ?? '')} — ${String(p.brief ?? '').slice(0, 40)}${q}`
+        const visual = p.visual ? ` | focal: ${String(p.visual).slice(0, 50)}` : ''
+        return `Page ${i + 1} [${String(p.layout ?? '')}] ${String(p.title ?? '')} — ${String(p.brief ?? '').slice(0, 40)}${visual}${q}`
       })
       const summary = t('aiSumPlan', { count: pages.length, hook: coreHook })
       return {
-        output: `Plan confirmed:\nCore Hook: ${coreHook}\nStyle: ${style}\n${lines.join('\n')}\nNEXT REQUIRED ACTION: run image_search for the planned visual pages, then call build_deck exactly once. Preserve the planned layout diversity and pass theme plus {layout,kicker,title,body,imageUrl,imageAlt}. Aim for 3-5 visual pages in a typical 8-page deck; never invent image URLs. Do not call add_slide or styling tools before build_deck completes.`,
+        output: `Plan confirmed:\nCore Hook: ${coreHook}\n\n${buildPresentationDesignDocument(style)}\n\n# Deck Plan\n${lines.join('\n')}\nNEXT REQUIRED ACTION: run image_search for the planned visual pages, then call build_deck with phase:"prototype" and page_indexes:${JSON.stringify(plan.prototype_pages)}. Pass the full planned pages array so the host can bind production to this plan. Screenshot and inspect every prototype page before continuing with phase:"batch" calls of 2–3 remaining page indexes. Preserve layout diversity and pass theme plus {layout,kicker,title,body,imageUrl,imageAlt}. Aim for 3-5 visual pages in a typical 8-page deck; never invent image URLs.`,
         mutated: false,
         summary,
       }
@@ -2990,7 +3087,79 @@ async function executeTool(
       const rawPages = call.input.pages
       if (!Array.isArray(rawPages) || rawPages.length < 2 || rawPages.length > 12)
         return fail(t('aiFailPlan'), 'build_deck requires 2-12 pages')
-      if (slides.length !== 1 || slides[0]!.nodes.length > 0)
+      const phase = call.input.phase
+      const rawPageIndexes = call.input.page_indexes
+      if (
+        !['prototype', 'batch'].includes(String(phase)) ||
+        !Array.isArray(rawPageIndexes) ||
+        rawPageIndexes.length < 1 ||
+        rawPageIndexes.length > 3 ||
+        new Set(rawPageIndexes).size !== rawPageIndexes.length ||
+        rawPageIndexes.some(
+          (index) =>
+            !Number.isSafeInteger(index) ||
+            (index as number) < 0 ||
+            (index as number) >= rawPages.length,
+        )
+      )
+        return fail(
+          t('aiFailPlan'),
+          'build_deck requires phase and 1-3 unique planned page_indexes',
+        )
+      const pageIndexes = rawPageIndexes as number[]
+      const plannedPages = state?.plannedPages
+      if (!state || !plannedPages || plannedPages.length !== rawPages.length)
+        return fail(t('aiFailPlan'), 'build_deck pages must match the active plan_deck plan')
+      if (
+        rawPages.some((raw, index) => {
+          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return true
+          const page = raw as Record<string, unknown>
+          return (
+            page.title !== plannedPages[index]!.title || page.layout !== plannedPages[index]!.layout
+          )
+        })
+      )
+        return fail(
+          t('aiFailPlan'),
+          'build_deck title/layout values must match the active page plan',
+        )
+      if (state.pendingReviewIndexes?.size)
+        return fail(
+          t('aiFailPlan'),
+          `Screenshot and inspect pages ${[...state.pendingReviewIndexes].map((index) => index + 1).join(', ')} before producing another batch`,
+        )
+      const remaining = rawPages.length - (state.builtPageIndexes?.size ?? 0)
+      if (phase === 'batch' && pageIndexes.length < 2 && remaining > 1)
+        return fail(
+          t('aiFailPlan'),
+          'Production batches must contain 2-3 pages unless only one remains',
+        )
+      const productionTheme = JSON.stringify(call.input.theme ?? null)
+      if (state.productionTheme !== undefined && state.productionTheme !== productionTheme)
+        return fail(t('aiFailPlan'), 'Every production batch must use the same planned theme')
+      if (
+        phase === 'prototype' &&
+        (state.builtPageIndexes?.size ||
+          pageIndexes.some((index, position) => index !== state.prototypePages?.[position]))
+      )
+        return fail(
+          t('aiFailPlan'),
+          'The first build_deck call must materialize the planned prototype_pages',
+        )
+      if (
+        phase === 'batch' &&
+        !state?.prototypePages?.every((index) => state.builtPageIndexes?.has(index))
+      )
+        return fail(
+          t('aiFailPlan'),
+          'Complete and review the prototype pages before production batches',
+        )
+      if (pageIndexes.some((index) => state?.builtPageIndexes?.has(index)))
+        return fail(
+          t('aiFailPlan'),
+          'A production batch cannot rewrite an already materialized planned page',
+        )
+      if (!state?.builtPageIndexes?.size && (slides.length !== 1 || slides[0]!.nodes.length > 0))
         return fail(t('aiFailPlan'), 'build_deck is only available for a blank presentation')
       if (!access.executePresentationOperation)
         return fail(t('aiFailNewTextbox'), 'Canonical presentation transactions are unavailable')
@@ -3124,6 +3293,7 @@ async function executeTool(
           t('aiFailPlan'),
           'Theme primary color does not provide readable contrast for its mode',
         )
+      state.productionTheme ??= productionTheme
       const palette = {
         background: isHex(themeRecord?.primary)
           ? themeRecord.primary.toUpperCase()
@@ -3168,7 +3338,7 @@ async function executeTool(
         access.applyDeck(created.slides, created.index)
         deckMutated = true
       }
-      for (let slideIndex = 0; slideIndex < pages.length; slideIndex++) {
+      for (const slideIndex of pageIndexes) {
         const page = pages[slideIndex]!
         const slide = workingSlides[slideIndex]!
         const scale = slide.scale || access.fitWidthPx / slide.widthPx
@@ -3438,12 +3608,10 @@ async function executeTool(
           }
         }
       }
-      // The content now exists. Refinement must remain available even if an
-      // image IPC rejects or the user cancels during the image phase.
-      if (state) state.awaitingBuildDeck = false
       if (designed) {
         const failedImagePages: number[] = []
-        for (const [slideIndex, page] of pages.entries()) {
+        for (const slideIndex of pageIndexes) {
+          const page = pages[slideIndex]!
           if (!page.imageUrl) continue
           const layout = page.layout ?? (slideIndex === 0 ? 'cover' : 'split_image')
           const placement =
@@ -3460,12 +3628,14 @@ async function executeTool(
               fitWidthPx: access.fitWidthPx,
             })
           } catch {
+            if (signal?.aborted && state) state.awaitingBuildDeck = false
             signal?.throwIfAborted()
             // IPC may fail after a native write. Do not blindly retry the same
             // image or lose the partial-mutation receipt to the generic catch.
             failedImagePages.push(slideIndex + 1)
             continue
           }
+          if (signal?.aborted && state) state.awaitingBuildDeck = false
           signal?.throwIfAborted()
           if (!inserted) {
             failedImagePages.push(slideIndex + 1)
@@ -3488,13 +3658,17 @@ async function executeTool(
           }
         }
       }
-      if (state) state.awaitingBuildDeck = false
+      if (state) {
+        for (const index of pageIndexes) state.builtPageIndexes?.add(index)
+        state.pendingReviewIndexes = new Set(pageIndexes)
+        state.awaitingBuildDeck = (state.builtPageIndexes?.size ?? 0) < pages.length
+      }
       return {
         output: designed
-          ? `Created a polished ${pages.length}-page presentation with a coherent theme, varied layouts, and ${pages.filter((page) => page.imageUrl).length} placed images.`
-          : `Created a complete ${pages.length}-page presentation with titles and body content.`,
+          ? `Materialized ${phase} pages ${pageIndexes.map((index) => index + 1).join(', ')} with the planned theme, layouts, and ${pageIndexes.filter((index) => pages[index]?.imageUrl).length} placed images. Screenshot and inspect every page in this batch before continuing.`
+          : `Materialized ${phase} pages ${pageIndexes.map((index) => index + 1).join(', ')}. Screenshot and inspect every page in this batch before continuing.`,
         mutated: true,
-        summary: `Created ${pages.length} complete pages`,
+        summary: `Created ${pageIndexes.length} planned pages`,
       }
     }
 

@@ -21,7 +21,7 @@ import type { WebContents } from 'electron'
 import { execFile } from 'node:child_process'
 import { readFile, writeFile, rm, stat, mkdir, open } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
@@ -263,6 +263,10 @@ import {
 } from './session-state'
 import { buildQualityIdentityMap } from './operations/quality-identity'
 import { registerAiIpc, registerSlidesOnlyAiIpc } from './ai-ipc'
+import {
+  clearPresentationDesignSidecar,
+  flushPresentationDesignSidecar,
+} from './presentation-design-sidecar'
 import { registerUnsupportedCloudIpc } from './unsupported-ipc'
 
 /** One slide, copied from any deck open in this process, waiting to be pasted into another. */
@@ -1403,6 +1407,7 @@ export function registerSlidesIpc(): void {
     }
     let replacement: Session | undefined
     try {
+      clearPresentationDesignSidecar(e.sender.id)
       const opened = await openPptx(await createBlankPptx())
       replacement = {
         path: '',
@@ -3297,6 +3302,7 @@ export function registerSlidesIpc(): void {
         slidesOpenedHook?.(e.sender, session.path)
       }
       await savePptxToFile(session.opened, session.path)
+      flushPresentationDesignSidecar(e.sender.id, session.path)
       autosaveBackoff.delete(session.path)
       void rm(autosavePathFor(session.path), { force: true }).catch(() => {})
       dropUntitledRecovery(e.sender.id)
@@ -3333,8 +3339,15 @@ export function registerSlidesIpc(): void {
         if (sessions.get(e.sender.id) !== session) {
           return { ok: false, error: 'slides_session_busy' }
         }
+        const previousPath = session.path
         await savePptxToFile(session.opened, r.filePath)
         session.path = r.filePath
+        const flushed = flushPresentationDesignSidecar(e.sender.id, session.path)
+        if (!flushed && previousPath?.endsWith('.pptx')) {
+          const previousDesign = previousPath.replace(/\.pptx$/i, '.design.md')
+          if (existsSync(previousDesign))
+            copyFileSync(previousDesign, session.path.replace(/\.pptx$/i, '.design.md'))
+        }
         autosaveBackoff.delete(r.filePath)
         dropUntitledRecovery(e.sender.id)
         await pushRecent(r.filePath)

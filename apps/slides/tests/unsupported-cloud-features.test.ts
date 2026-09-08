@@ -65,7 +65,18 @@ describe('unsupported cloud features', () => {
       input: {
         core_hook: 'Hook',
         style: 'Style',
-        pages: [{ title: 'One', brief: 'Brief', layout: 'title' }],
+        pages: [
+          {
+            title: 'One',
+            brief: 'Brief',
+            layout: 'title',
+            purpose: 'Open',
+            visual: 'Hero title',
+            acceptance: ['Clear hierarchy'],
+            density: 'low',
+          },
+        ],
+        prototype_pages: [0],
       },
     } as AgentToolCall)
     expect(result.isError).toBeUndefined()
