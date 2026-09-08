@@ -518,12 +518,44 @@ describe('real 0.147 production engine bridge', () => {
           toolName: 'plan_deck',
           input: {
             core_hook: '从第一天到独立协作',
-            style: '简洁、清晰、友好',
+            style:
+              '深色协作主题；背景 #0B1020，强调色 #66E3FF；标题 32pt、正文 20pt；四周安全边距 64px，12 栏网格；图片统一右侧裁切，单页一个焦点；每页正文不超过四项；交替使用封面、时间线和卡片布局。',
             pages: [
-              { title: '新人入职培训', brief: '欢迎', layout: 'cover' },
-              { title: '第一天安排', brief: '安排', layout: 'timeline' },
-              { title: '开始协作', brief: '协作', layout: 'cards' },
+              {
+                title: '新人入职培训',
+                brief: '欢迎新成员并建立从第一天到独立协作的预期',
+                layout: 'cover',
+                purpose: '建立主题和欢迎氛围',
+                visual: '右侧团队协作照片作为单一视觉焦点',
+                evidence: [],
+                acceptance: ['标题层级清晰', '图片不遮挡文字'],
+                density: 'low',
+                image_queries: ['modern creative team collaboration'],
+              },
+              {
+                title: '第一天安排',
+                brief: '用时间线说明认识团队、配置环境和了解工作方式',
+                layout: 'timeline',
+                purpose: '让新人理解首日节奏',
+                visual: '三节点横向时间线',
+                evidence: [],
+                acceptance: ['三个节点按顺序排列', '正文无需缩小'],
+                density: 'medium',
+                image_queries: [],
+              },
+              {
+                title: '开始协作',
+                brief: '总结主动沟通、记录决策和及时反馈三项行为',
+                layout: 'cards',
+                purpose: '把培训内容转为行动',
+                visual: '三张等宽行动卡片',
+                evidence: [],
+                acceptance: ['三项行动同等突出', '卡片间距一致'],
+                density: 'medium',
+                image_queries: [],
+              },
             ],
+            prototype_pages: [0, 1, 2],
           },
         },
         {
@@ -536,6 +568,8 @@ describe('real 0.147 production engine bridge', () => {
           toolName: 'build_deck',
           input: {
             theme: { mode: 'dark', primary: '#0B1020', accent: '#66E3FF' },
+            phase: 'prototype',
+            page_indexes: [0, 1, 2],
             pages: [
               {
                 layout: 'cover',
@@ -558,6 +592,9 @@ describe('real 0.147 production engine bridge', () => {
             ],
           },
         },
+        { carrier: 'read', toolName: 'screenshot_slide', input: { slideIndex: 0 } },
+        { carrier: 'read', toolName: 'screenshot_slide', input: { slideIndex: 1 } },
+        { carrier: 'read', toolName: 'screenshot_slide', input: { slideIndex: 2 } },
       ] as const
       const upstream = vi.fn(async (request: MessagesRequest) => {
         const next = calls[providerCalls++]
@@ -706,6 +743,8 @@ describe('real 0.147 production engine bridge', () => {
         },
         executePresentationOperation,
         fitWidthPx: 1280,
+        captureSlideScreenshot: vi.fn(async () => ({ base64: 'aGVsbG8=', mime: 'image/png' })),
+        reviewPresentationScreenshot: vi.fn(async () => true),
       })
       const relevantTools = new Map(
         skill.tools
