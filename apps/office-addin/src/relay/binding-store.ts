@@ -114,6 +114,20 @@ const exactCapabilities = (value: unknown, expected: readonly string[]): value i
       capability === expected[index],
   )
 
+// A newer Taskpane may request more optional capabilities than an older PC binding granted.
+// Resume with the safe intersection; capability-gated tools remain hidden by relay negotiation.
+const compatibleCapabilities = (value: unknown, requested: readonly string[]): value is string[] =>
+  Array.isArray(value) &&
+  value.length > 0 &&
+  value.length <= MAX_CAPABILITIES &&
+  value.every(
+    (capability, index, values) =>
+      typeof capability === 'string' &&
+      DATA_CAPABILITIES.has(capability) &&
+      requested.includes(capability) &&
+      values.indexOf(capability) === index,
+  )
+
 function validPrivateKey(value: unknown): value is CryptoKey {
   if (!value || typeof value !== 'object') return false
   const key = value as Partial<CryptoKey>
@@ -271,7 +285,7 @@ export function createOfficeBindingStore(
         !opaque(record.bindingId) ||
         record.host !== host ||
         record.origin !== OFFICE_RELAY_ORIGIN ||
-        !exactCapabilities(record.capabilities, capabilities) ||
+        !compatibleCapabilities(record.capabilities, capabilities) ||
         !validPrivateKey(record.privateKey)
       ) {
         await cleanup(host, value).catch(() => undefined)

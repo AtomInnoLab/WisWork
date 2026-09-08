@@ -303,6 +303,22 @@ describe('Office persistent binding store', () => {
     }
   })
 
+  it('keeps an older binding when a newer Taskpane requests additional optional capabilities', async () => {
+    const database = new MemoryBindingDatabase()
+    const store = createOfficeBindingStore({ database, subtle: crypto.subtle })
+    const enrollment = await store.createEnrollment('word', ['agent.v1'])
+    await store.stage(enrollment, 'binding_12345678', ['agent.v1'])
+    await store.activate(enrollment, 'binding_12345678', ['agent.v1'])
+
+    await expect(
+      store.load('word', ['agent.v1', 'web-search.v1', 'image-search.v1']),
+    ).resolves.toMatchObject({
+      bindingId: 'binding_12345678',
+      capabilities: ['agent.v1'],
+    })
+    expect(database.deletes).toBe(0)
+  })
+
   it('signs the fixed domain-separated resume transcript as a raw P-256 signature', async () => {
     const database = new MemoryBindingDatabase()
     const inputs: Uint8Array[] = []
