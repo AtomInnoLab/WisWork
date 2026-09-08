@@ -805,4 +805,76 @@ describe('build_deck', () => {
     expect(repair.output).not.toContain('Call build_deck once')
     expect(deleteSlide).toHaveBeenCalledOnce()
   })
+
+  it('allows prototype repair after screenshot review fails before production batches', async () => {
+    let slides = [blank()]
+    ;(globalThis as unknown as { window: Record<string, unknown> }).window = {
+      slidesApi: {
+        addSlide: vi.fn(async () => {
+          slides = [...slides, blank()]
+          return { slides, index: slides.length - 1 }
+        }),
+      },
+    }
+    const skill = createSlidesSkill({
+      getSlides: () => slides,
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => undefined,
+      applyDeck: (next) => {
+        slides = next
+      },
+      captureSlideScreenshot: vi.fn(async () => ({ base64: 'AA==', mime: 'image/png' })),
+      reviewPresentationScreenshot: vi.fn(async () => false),
+      executePresentationOperation: vi.fn(async (request) => ({
+        receipt: {
+          status: 'applied' as const,
+          transactionId: request.transactionId,
+          resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
+          operationCount: request.operations.length,
+        },
+        authoritativeState: 'fresh' as const,
+      })),
+      fitWidthPx: 1280,
+    })
+    const pages = [
+      { title: 'Cover', body: ['Intro'], layout: 'cover' },
+      { title: 'Timeline', body: ['Past', 'Present'], layout: 'timeline' },
+      { title: 'Focus', body: ['Detail'], layout: 'statement' },
+      { title: 'Close', body: ['Action'], layout: 'cards' },
+    ]
+    await skill.executeTool({
+      id: 'plan',
+      name: 'plan_deck',
+      input: { core_hook: 'A hook', style: 'A style', pages, prototype_pages: [0, 1, 2] },
+    })
+    await skill.executeTool({
+      id: 'prototype',
+      name: 'build_deck',
+      input: { pages, phase: 'prototype', page_indexes: [0, 1, 2] },
+    })
+    const review = await skill.executeTool({
+      id: 'review',
+      name: 'screenshot_slide',
+      input: { slideIndex: 0 },
+    })
+    const repair = await skill.executeTool({
+      id: 'repair',
+      name: 'set_element_text',
+      input: {
+        slideIndex: 0,
+        sourceId: 'deck-title-0',
+        paragraphs: [{ runs: [{ text: 'A shorter title' }] }],
+      },
+    })
+    const prematureBatch = await skill.executeTool({
+      id: 'batch',
+      name: 'build_deck',
+      input: { pages, phase: 'batch', page_indexes: [3] },
+    })
+
+    expect(review.output).toContain('visual_review_failed')
+    expect(repair.output).not.toContain('Call build_deck once')
+    expect(prematureBatch.output).toContain('Screenshot and inspect pages 1, 2, 3')
+  })
 })

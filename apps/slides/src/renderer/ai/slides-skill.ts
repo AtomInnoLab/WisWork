@@ -1832,7 +1832,7 @@ interface SkillState {
   lastTopic?: string
   /** Total page count from the latest accepted plan; terminal responses must not silently stop early. */
   plannedPageCount?: number
-  /** A new-deck plan must be materialized atomically before low-level refinement. */
+  /** A new-deck plan must materialize its first batch before low-level refinement. */
   awaitingBuildDeck?: boolean
   /** An agent turn opened on a blank deck must establish its design plan before writing. */
   blankDeckPlanRequired?: boolean
@@ -2027,7 +2027,7 @@ async function executeTool(
   )
     return fail(
       call.name,
-      'The new-deck plan is ready. Call build_deck once with every planned page before using lower-level refinement tools.',
+      'The new-deck plan is ready. Materialize the planned prototype pages with build_deck before using lower-level refinement tools.',
     )
   switch (call.name) {
     case 'get_deck_context':
@@ -3698,7 +3698,10 @@ async function executeTool(
       if (state) {
         for (const index of pageIndexes) state.builtPageIndexes?.add(index)
         state.pendingReviewIndexes = new Set(pageIndexes)
-        state.awaitingBuildDeck = (state.builtPageIndexes?.size ?? 0) < pages.length
+        // Prototype screenshot review may require targeted repairs before the remaining
+        // production batches are allowed. Unlock refinement as soon as the first planned
+        // batch exists; pendingReviewIndexes still prevents expansion until it passes.
+        state.awaitingBuildDeck = false
       }
       return {
         output: designed
