@@ -1276,6 +1276,18 @@ const UNSUPPORTED_CLOUD_TOOLS = new Set([
   'regenerate_slide',
   'generate_deck',
 ])
+const BLANK_DECK_PLANNING_TOOLS = new Set([
+  'get_deck_context',
+  'read_slide',
+  'screenshot_slide',
+  'web_search',
+  'image_search',
+  'ask_clarification',
+  'plan_deck',
+  'build_deck',
+  'save_style_template',
+  'list_style_templates',
+])
 const TOOLS = ALL_TOOLS.filter((tool) => !UNSUPPORTED_CLOUD_TOOLS.has(tool.name))
 
 /** Collect readable text of nodes (including nested group children); returns a list of [sourceId, type, text] */
@@ -1772,10 +1784,18 @@ export function createSlidesSkill(
         ? TOOLS.filter((tool) => scopedTools.has(tool.name))
         : TOOLS
     },
-    buildContext: () =>
-      access.getSelectionScope?.()
-        ? `<selection scope>\n${selectionScopeSummary(access.getSelectionScope()!)}. This scope is immutable and enforced by the host.\n</selection scope>`
-        : `<deck outline>\n${buildDeckOutline(access.getSlides(), access.getCurrent(), access.getSelectedIds())}\n</deck outline>`,
+    buildContext: () => {
+      const selectionScope = access.getSelectionScope?.()
+      const slides = access.getSlides()
+      state.blankDeckPlanRequired =
+        !selectionScope &&
+        slides.length === 1 &&
+        slides[0]!.nodes.length === 0 &&
+        !state.plannedPages
+      return selectionScope
+        ? `<selection scope>\n${selectionScopeSummary(selectionScope)}. This scope is immutable and enforced by the host.\n</selection scope>`
+        : `<deck outline>\n${buildDeckOutline(slides, access.getCurrent(), access.getSelectedIds())}\n</deck outline>`
+    },
     reviewFinalResponse: (context) => {
       if (state.questionnaireAnsweredPendingPlan && !context.mutated)
         return QUESTIONNAIRE_CONTINUATION_CORRECTION
@@ -1808,6 +1828,8 @@ interface SkillState {
   plannedPageCount?: number
   /** A new-deck plan must be materialized atomically before low-level refinement. */
   awaitingBuildDeck?: boolean
+  /** An agent turn opened on a blank deck must establish its design plan before writing. */
+  blankDeckPlanRequired?: boolean
   /** A native image write may have happened without a matching renderer update. */
   authoritativeRefreshRequired?: boolean
   /** Questionnaire completion cannot terminate the run before the model plans the deck. */
@@ -1975,6 +1997,15 @@ async function executeTool(
       'unsupported_feature: This feature is not available in the current WisWork development version.',
     )
   }
+  if (
+    state?.blankDeckPlanRequired &&
+    !state.plannedPages &&
+    !BLANK_DECK_PLANNING_TOOLS.has(call.name)
+  )
+    return fail(
+      call.name,
+      'A blank presentation must start with plan_deck before any slide write. Establish the DESIGN.md and prototype pages, then use build_deck.',
+    )
   if (
     state?.awaitingBuildDeck &&
     !new Set([
