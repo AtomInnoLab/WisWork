@@ -732,7 +732,7 @@ function parseWaitInput(value: unknown): void {
 }
 
 function safeExecDescription(methods: readonly string[]): string {
-  return `For screenshots use exactly: const result = await tools.${methods[0]}({...}); for (const block of result.content) { if (block.type === "image") image(block); else if (block.type === "text") text(block.text); } This emits native images, never stringify PNG data. Execute exactly one document MCP call. An optional first line // @exec: {"yield_time_ms":1000,"max_output_tokens":100} is allowed. Allowed syntax: text(await tools.${methods.join(
+  return `For screenshots use exactly: const result = await tools.${methods[0]}({...}); for (const block of result.content) { if (block.type === "image") image(block); else if (block.type === "text") text(block.text); } This emits native images, never stringify PNG data. Execute exactly one document MCP call. An optional first line // @exec: {"yield_time_ms":1000,"max_output_tokens":100} is allowed. You may return a non-image result with const result = await tools.${methods[0]}({...}); text(result); Allowed inline syntax: text(await tools.${methods.join(
     '({...})) or text(await tools.',
   )}({...})). Arguments must be a JSON object literal. No other JavaScript is allowed.`
 }
@@ -770,10 +770,15 @@ function parseSafeExecCode(code: string, methods: readonly string[], limits: Pro
   }
   const direct = /^await\s+tools\.([A-Za-z_][A-Za-z0-9_]*)\((\{[\s\S]*\})\);?$/
   const wrapped = /^text\(\s*await\s+tools\.([A-Za-z_][A-Za-z0-9_]*)\((\{[\s\S]*\})\)\s*\);?$/
+  const resultWrapped =
+    /^const\s+result\s*=\s*await\s+tools\.([A-Za-z_][A-Za-z0-9_]*)\((\{[\s\S]*\})\)\s*;\s*text\(\s*result\s*\)\s*;?$/
   const visual =
     /^const result = await tools\.([A-Za-z_][A-Za-z0-9_]*)\((\{[\s\S]*\})\); for \(const block of result\.content\) \{ if \(block\.type === "image"\) image\(block\); else if \(block\.type === "text"\) text\(block\.text\); \}$/
   const match =
-    wrapped.exec(source.trim()) ?? direct.exec(source.trim()) ?? visual.exec(source.trim())
+    wrapped.exec(source.trim()) ??
+    direct.exec(source.trim()) ??
+    resultWrapped.exec(source.trim()) ??
+    visual.exec(source.trim())
   if (!match || !methods.includes(match[1]!)) fail('unsafe_custom_tool_input')
   let argument: unknown
   try {
@@ -1922,6 +1927,13 @@ async function* convertMessagesStream(
       /* Fail open. */
     }
     fail('invalid_messages_sse')
+  }
+  if (strict.phase === 'await_stop') {
+    for await (const converted of yieldBounded(
+      processStrictEvent('message_stop', { type: 'message_stop' }),
+    )) {
+      yield converted
+    }
   }
   if (strict.phase !== 'terminal') fail('premature_messages_eof')
   for await (const terminal of yieldBounded(strict.terminalFrames)) yield terminal

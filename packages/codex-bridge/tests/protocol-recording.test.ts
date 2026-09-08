@@ -68,7 +68,7 @@ describe('structural protocol recording', () => {
     limited.frames[4]!.delta!.stop_reason = 'max_tokens'
     expect((await replayProtocolRecording(limited)).events).toContain('response.incomplete')
     expect(
-      (await replayProtocolRecording({ ...redacted, frames: redacted.frames.slice(0, -1) })).error,
+      (await replayProtocolRecording({ ...redacted, frames: redacted.frames.slice(0, -2) })).error,
     ).toBe('premature_messages_eof')
   })
   it('records the production parser path and replays redacted reasoning with max_tokens', async () => {

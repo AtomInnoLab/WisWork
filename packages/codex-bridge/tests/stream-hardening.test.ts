@@ -62,6 +62,11 @@ async function expectStreamCode(
 }
 
 describe('bounded Anthropic SSE state machine', () => {
+  it('accepts a valid terminal message_delta when the upstream omits empty message_stop', async () => {
+    const events = await collect(noToolTurn().messagesStreamToResponses(chunks(start, delta)))
+    expect(events.at(-1)?.event).toBe('response.completed')
+  })
+
   it('emits a native wait function call for a yielded exec cell', async () => {
     const frame = (type: string, data: object) =>
       `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`

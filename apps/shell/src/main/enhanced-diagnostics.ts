@@ -372,7 +372,9 @@ function safeDiagnostic(code: string): {
               ? 'stream_usage_invalid'
               : code.includes('unsupported_reasoning_block')
                 ? 'stream_reasoning_unsupported'
-                : code.includes('invalid_custom_tool_input')
+                : code.includes('invalid_custom_tool_input') ||
+                    code.includes('unsafe_custom_tool_input') ||
+                    code.includes('invalid_wait_input')
                   ? 'stream_tool_input_invalid'
                   : 'stream_protocol_rejected',
     }
