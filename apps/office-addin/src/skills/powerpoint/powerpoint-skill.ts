@@ -1,4 +1,10 @@
-import type { AgentSkill, ToolExecution } from '@wiswork/agent-core'
+import {
+  buildPresentationDesignDocument,
+  parsePresentationDesignPlan,
+  PRESENTATION_DESIGN_WORKFLOW_PROMPT,
+  type AgentSkill,
+  type ToolExecution,
+} from '@wiswork/agent-core'
 import type { PresentationVerificationFlags } from '@wiswork/presentation-verification'
 import type { PresentationTelemetryEvent } from '@wiswork/presentation-verification'
 import type { StructuredProposalController } from '../../agent/proposal-controller.js'
@@ -34,20 +40,6 @@ const MAX_CODE = 32 * 1024
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
 const POWERPOINT_GEOMETRY_EPSILON = 0.01
 
-function arrayField<T>(
-  parser: (value: unknown) => T,
-  options: { minItems?: number; maxItems: number },
-): (value: unknown) => T[] {
-  return (value) => {
-    if (
-      !Array.isArray(value) ||
-      value.length < (options.minItems ?? 0) ||
-      value.length > options.maxItems
-    )
-      throw new Error('invalid_tool_input')
-    return value.map((item) => parser(item))
-  }
-}
 const MASTER_PATTERN_TYPES = [
   'Percent5',
   'Percent10',
@@ -134,22 +126,6 @@ const slideBackgroundInput = exactObject({
     return value
   }),
   explanation: optionalField(stringField({ maxLength: 100 })),
-})
-const planDeckInput = exactObject({
-  core_hook: stringField({ minLength: 1, maxLength: 500 }),
-  style: stringField({ minLength: 1, maxLength: 1_000 }),
-  pages: arrayField(
-    exactObject({
-      title: stringField({ minLength: 1, maxLength: 300 }),
-      type: optionalField(stringField({ maxLength: 50 })),
-      brief: stringField({ minLength: 1, maxLength: 2_000 }),
-      layout: stringField({ minLength: 1, maxLength: 100 }),
-      image_queries: optionalField(
-        arrayField(stringField({ minLength: 1, maxLength: 200 }), { maxItems: 4 }),
-      ),
-    }),
-    { minItems: 1, maxItems: 20 },
-  ),
 })
 const textEditInput = exactObject({
   slide_index: integerField({ min: 0, max: MAX_SLIDE_INDEX }),
@@ -506,7 +482,13 @@ const tools = [
       type: 'object',
       properties: {
         core_hook: { type: 'string', minLength: 1, maxLength: 500 },
-        style: { type: 'string', minLength: 1, maxLength: 1_000 },
+        style: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 6_000,
+          description:
+            'Complete DESIGN.md body: concrete color tokens, type hierarchy, margins/grid, image treatment, density limits, layout families, and composition rules',
+        },
         pages: {
           type: 'array',
           minItems: 1,
@@ -523,13 +505,34 @@ const tools = [
                 maxItems: 4,
                 items: { type: 'string', minLength: 1, maxLength: 200 },
               },
+              purpose: { type: 'string', minLength: 1, maxLength: 500 },
+              visual: { type: 'string', minLength: 1, maxLength: 1_000 },
+              evidence: {
+                type: 'array',
+                maxItems: 8,
+                items: { type: 'string', minLength: 1, maxLength: 500 },
+              },
+              acceptance: {
+                type: 'array',
+                maxItems: 8,
+                items: { type: 'string', minLength: 1, maxLength: 300 },
+              },
+              density: { type: 'string', enum: ['low', 'medium', 'high'] },
             },
-            required: ['title', 'brief', 'layout'],
+            required: ['title', 'brief', 'layout', 'purpose', 'visual', 'acceptance', 'density'],
             additionalProperties: false,
           },
         },
+        prototype_pages: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 3,
+          items: { type: 'integer', minimum: 0 },
+          description:
+            'Zero-based indexes of the cover, representative content page, and most complex visual page; use every page when fewer than three',
+        },
       },
-      required: ['core_hook', 'style', 'pages'],
+      required: ['core_hook', 'style', 'pages', 'prototype_pages'],
       additionalProperties: false,
     },
   },
@@ -1326,6 +1329,30 @@ export function createPowerPointSkill(options: {
   let mutationRevision = 0
   let screenshotRevision = 0
   let verificationRevision = 0
+  let knownSlideCount = 0
+  let unknownMutationPages = false
+  let activeDesignPlan: ReturnType<typeof parsePresentationDesignPlan> | undefined
+  const dirtySlideIndexes = new Set<number>()
+  const mutationSlideIndexes = (call: { name: string; input: Record<string, unknown> }) => {
+    if (['edit_slide_master', 'edit_slide_master_xml'].includes(call.name))
+      return Array.from({ length: knownSlideCount }, (_, index) => index)
+    if (call.name === 'execute_office_js') {
+      const program = call.input.program
+      if (!program || typeof program !== 'object' || Array.isArray(program)) return []
+      const operations = (program as Record<string, unknown>).operations
+      if (!Array.isArray(operations)) return []
+      return operations.flatMap((operation) => {
+        if (!operation || typeof operation !== 'object' || Array.isArray(operation)) return []
+        const index = (operation as Record<string, unknown>).slide_index
+        return Number.isSafeInteger(index) ? [index as number] : []
+      })
+    }
+    const index = call.input.slide_index
+    if (!Number.isSafeInteger(index)) return []
+    return call.name === 'duplicate_slide'
+      ? [index as number, (index as number) + 1]
+      : [index as number]
+  }
   const isMac = options.platform?.toLowerCase() === 'mac'
   const masterXmlEditingSupported = !isMac
   const nativeMasterEditingSupported = !isMac && options.nativeMasterEditingSupported !== false
@@ -1423,6 +1450,7 @@ export function createPowerPointSkill(options: {
   return {
     id: 'office-powerpoint',
     systemPrompt:
+      `${PRESENTATION_DESIGN_WORKFLOW_PROMPT}\n` +
       'Follow the same complete workflow as WisWork Slides in this agent run: understand the document with get_presentation_state and bounded reads, and inspect the presentation before planning; for a new deck, you must call ask_clarification for missing audience, focus, style, and page-count choices unless the user already supplied or delegated them; use plan_deck before the first mutation to record the narrative and visual plan; run web_search and image_search for needed facts and visuals; implement the complete plan with bounded slide edits; screenshot every created or changed slide and inspect the native images; repair concrete clipping, overlap, hierarchy, spacing, contrast, and balance defects; screenshot every repaired slide again; then call verify_slides after the approved build before reporting completion. A screenshot call alone is not a visual pass: inspect its image and keep the screenshot-repair-screenshot loop in this same run until the checked pages are satisfactory or a concrete blocker remains. Never end the run expecting another user message or host post-processing to finish the deck. All slide_index values are zero-based, so the user’s first slide is index 0. Never replace that tool call with prose questions; the host renders its model-authored questions as interactive feedback and returns the answers so you can continue the same task. Emit a concise user-visible progress note before every tool batch, explaining the current design decision and next action without revealing private chain-of-thought. ' +
       'PowerPoint reads are bounded. Every write creates an explicit proposal and is semantically verified after confirmation. execute_office_js accepts only a versioned declarative JSON program; JavaScript and ambient browser authority are rejected. XML tools accept only allowlisted bounded package parts.' +
       ' ' +
@@ -1435,17 +1463,22 @@ export function createPowerPointSkill(options: {
         (nativeMasterEditingSupported ||
           !['inspect_slide_masters', 'edit_slide_master'].includes(tool.name)),
     ),
+    buildContext: () =>
+      activeDesignPlan
+        ? `<active presentation design plan>\n${boundedJson(activeDesignPlan)}\n</active presentation design plan>`
+        : '',
     reviewFinalResponse(context) {
       if (!context.mutated) return undefined
-      if (screenshotRevision < mutationRevision)
-        return '[System correction] Continue the WisWork Slides quality loop now: call screenshot_slide for every created or changed slide, inspect each native image, repair concrete defects, and screenshot each repaired slide again before finishing.'
+      if (unknownMutationPages)
+        return '[System correction] Read the presentation state, then screenshot every slide affected by the master change.'
+      if (dirtySlideIndexes.size)
+        return `[System correction] Continue the WisWork Slides quality loop now: call screenshot_slide for every created or changed slide (${[...dirtySlideIndexes].map((index) => index + 1).join(', ')}), inspect each native image, repair concrete defects, and screenshot each repaired slide again before finishing.`
       if (verificationRevision < mutationRevision)
         return '[System correction] The changed slides have been visually inspected. Call verify_slides now and resolve any remaining failure before reporting completion.'
       return undefined
     },
     ...(presentation ? { presentation } : {}),
     async executeTool(call, signal) {
-      if (mutationTools.has(call.name)) mutationRevision++
       if (call.inputError || call.truncated)
         return failure(
           call.name,
@@ -1458,25 +1491,43 @@ export function createPowerPointSkill(options: {
           return failure(call.name, 'questionnaire_unavailable')
         if (call.name === 'get_presentation_state') {
           verifyInput(call.input)
+          const state = await options.adapter.getPresentationState(signal)
+          knownSlideCount = state.slideCount
+          if (unknownMutationPages) {
+            for (let index = 0; index < knownSlideCount; index++) dirtySlideIndexes.add(index)
+            unknownMutationPages = false
+          }
           return {
-            output: boundedJson(await options.adapter.getPresentationState(signal)),
+            output: boundedJson(state),
             mutated: false,
             summary: 'Read PowerPoint presentation state',
           }
         }
         if (call.name === 'plan_deck') {
-          const plan = planDeckInput(call.input)
+          let plan: ReturnType<typeof parsePresentationDesignPlan>
+          try {
+            plan = parsePresentationDesignPlan(call.input)
+          } catch {
+            return failure(call.name, 'invalid_tool_input')
+          }
+          activeDesignPlan = plan
           return {
             output: boundedJson({
               status: 'planned',
               coreHook: plan.core_hook,
-              style: plan.style,
+              designMd: buildPresentationDesignDocument(plan.style),
+              prototypePages: plan.prototype_pages,
               pages: plan.pages.map((page, index) => ({
                 page: index + 1,
                 title: page.title,
                 type: page.type ?? 'content',
                 brief: page.brief,
                 layout: page.layout,
+                purpose: page.purpose,
+                visual: page.visual,
+                evidence: page.evidence ?? [],
+                acceptance: page.acceptance ?? [],
+                density: page.density,
                 imageQueries: page.image_queries ?? [],
               })),
             }),
@@ -1490,6 +1541,19 @@ export function createPowerPointSkill(options: {
             mutated: false,
             summary: 'PowerPoint state already matched',
           }
+        if (mutationTools.has(call.name)) {
+          const indexes = mutationSlideIndexes(call)
+          const inputIndexes = call.name === 'duplicate_slide' ? indexes.slice(0, 1) : indexes
+          if (
+            knownSlideCount > 0 &&
+            inputIndexes.some((index) => index < 0 || index >= knownSlideCount)
+          )
+            return failure(call.name, 'invalid_tool_input')
+          mutationRevision++
+          for (const index of indexes) dirtySlideIndexes.add(index)
+          if (!indexes.length && ['edit_slide_master', 'edit_slide_master_xml'].includes(call.name))
+            unknownMutationPages = true
+        }
         if (call.name === 'edit_slide_master_xml' && !masterXmlEditingSupported)
           return failure(call.name, 'office_api_unsupported')
         if (
@@ -1504,6 +1568,7 @@ export function createPowerPointSkill(options: {
           if (result.mime !== 'image/png' || !validPng(result.base64))
             throw new Error('office_read_failed')
           screenshotRevision = mutationRevision
+          dirtySlideIndexes.delete(input.slide_index)
           return {
             output: boundedJson({
               mime: result.mime,
@@ -1541,7 +1606,8 @@ export function createPowerPointSkill(options: {
         if (call.name === 'verify_slides') {
           verifyInput(call.input)
           const verified = await options.adapter.verifySlides(signal)
-          if (screenshotRevision === mutationRevision) verificationRevision = mutationRevision
+          if (dirtySlideIndexes.size === 0 && screenshotRevision === mutationRevision)
+            verificationRevision = mutationRevision
           return {
             output: boundedJson(verified),
             mutated: false,

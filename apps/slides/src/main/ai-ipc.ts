@@ -29,6 +29,7 @@ import {
 import { EMU_PER_PX_96 } from '@wiswork/pptx-render'
 import { PRESENTATION_VERIFICATION_LIMITS } from '@wiswork/presentation-verification'
 import { tm } from './i18n-main'
+import { savePresentationDesignSidecar } from './presentation-design-sidecar'
 import {
   acquirePresentationMutationLease,
   acquirePresentationTransactionLease,
@@ -773,7 +774,7 @@ export function registerSlidesOnlyAiIpc(): void {
     },
   )
 
-  // ── Style Skill sidecar persistence: write a same-named .styleskill.json next to the draft (fail-open)
+  // ── Editable design-contract sidecar next to the draft (fail-open)
   ipcMain.handle(
     'ai:save-sidecar',
     async (
@@ -787,11 +788,9 @@ export function registerSlidesOnlyAiIpc(): void {
       validateSlidesAiString(data.createdAt, 128)
       try {
         const session = sessions.get(event.sender.id)
-        const draftPath = session?.path
-        if (!draftPath || !draftPath.endsWith('.pptx')) return { ok: false }
-        const sidecarPath = draftPath.replace(/\.pptx$/i, '.styleskill.json')
-        writeFileSync(sidecarPath, JSON.stringify(data, null, 2))
-        return { ok: true }
+        return {
+          ok: savePresentationDesignSidecar(event.sender.id, session?.path, data.styleSkill),
+        }
       } catch {
         return { ok: false }
       }

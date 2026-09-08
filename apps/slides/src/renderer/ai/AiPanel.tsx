@@ -667,6 +667,15 @@ export function AiPanel({
   const qcRunningRef = useRef(false)
   const qualityReceiptsRef = useRef<PresentationQualityReceipt[]>([])
   const qcTransactionByPageRef = useRef(new Map<number, string>())
+  const presentationDesignContextRef = useRef<{
+    designMd: string
+    pages: Array<{ visual: string; acceptance: string[]; density: string }>
+  } | null>(null)
+  useEffect(() => {
+    qcAbortRef.current?.abort()
+    qcPagesRef.current = []
+    presentationDesignContextRef.current = null
+  }, [currentFilePath])
   const publishQualityReceipt = (receipt: PresentationQualityReceipt) => {
     qualityReceiptsRef.current = [...qualityReceiptsRef.current, receipt].slice(-100)
     setQualityTimeline((previous) =>
@@ -879,6 +888,9 @@ export function AiPanel({
       getSlides: () => slidesRef.current,
       getCurrent: () => currentRef.current,
       getSelectedIds: () => selectedRef.current,
+      setPresentationDesignContext: (context) => {
+        presentationDesignContextRef.current = context
+      },
       refreshAuthoritativeState: async (signal) => {
         signal?.throwIfAborted()
         const runToken = activeRunTokenRef.current
@@ -901,6 +913,25 @@ export function AiPanel({
         return true
       },
       captureSlideScreenshot: (slideIndex) => captureSlideShotRef.current(slideIndex),
+      reviewPresentationScreenshot: async (slideIndex, screenshot, signal) => {
+        const design = presentationDesignContextRef.current
+        const pageDesign = design?.pages[slideIndex]
+        const designContext = design
+          ? `${design.designMd.slice(0, 3_000)}\n\nCurrent page:\n${JSON.stringify(pageDesign ?? {})}`
+          : undefined
+        const result = await qcSlidePage({
+          access,
+          transport: createElectronTransport(() => settingsRef.current, {
+            maxSerializedRequestBytes: 2 * 1024 * 1024,
+          }),
+          pageIndex: slideIndex,
+          screenshot,
+          designContext,
+          systemSuffix: aiLangDirective,
+          signal,
+        })
+        return result.ok && result.postIssues === 0 && result.reply.trim().toUpperCase() === 'OK'
+      },
       getSelectionScope: () => activeSelectionScopeRef.current,
       getAcceptanceAuthorityLease: async () => {
         const lease = await window.slidesApi.getAcceptanceAuthorityLease()
@@ -2165,11 +2196,17 @@ export function AiPanel({
           if (slidesRef.current[page]) lines.push(tGlobal('aiQcPageSkipped', { n: page + 1 }))
           continue
         }
+        const design = presentationDesignContextRef.current
+        const pageDesign = design?.pages[page]
+        const designContext = design
+          ? `${design.designMd.slice(0, 3_000)}\n\nCurrent page:\n${JSON.stringify(pageDesign ?? {})}`
+          : undefined
         let result = await qcSlidePage({
           access,
           transport,
           pageIndex: page,
           screenshot: shot,
+          designContext,
           systemSuffix: aiLangDirective,
           signal: controller.signal,
           isCurrent: isCurrentQc,
@@ -2201,6 +2238,7 @@ export function AiPanel({
                 transport,
                 pageIndex: page,
                 screenshot: recaptured.value,
+                designContext,
                 systemSuffix: aiLangDirective,
                 signal: controller.signal,
                 isCurrent: isCurrentQc,
@@ -2220,6 +2258,10 @@ export function AiPanel({
             }
           }
         }
+        access.markPresentationPageReviewed?.(
+          page,
+          result.ok && result.postIssues === 0 && result.reply.trim().toUpperCase() === 'OK',
+        )
         const transactionId = qcTransactionByPageRef.current.get(page)
         const deterministic = transactionId
           ? [...qualityReceiptsRef.current]

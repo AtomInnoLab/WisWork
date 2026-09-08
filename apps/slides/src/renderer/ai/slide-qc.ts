@@ -336,14 +336,18 @@ export function mergeQcPages(
 }
 
 /** Only the two tools the QC pass needs: fresh geometry reads + atomic layout scripts */
-const QC_SYSTEM_PROMPT = `You are a read-only slide quality reviewer. Each request gives you ONE bounded screenshot and a geometry-only element summary.
+export const QC_SYSTEM_PROMPT = `You are a read-only slide quality reviewer. Each request gives you ONE bounded screenshot and a geometry-only element summary.
 
-Look at the screenshot for OBJECTIVE layout defects only:
+Look at the screenshot for material layout and design defects:
 - text overflowing its box, colliding with a neighbor, or clipped by the canvas edge
 - elements overlapping unintentionally (a text block over another text block; content under an image)
 - unreadable contrast (text color too close to what it sits on)
 - obviously ragged alignment or wildly uneven spacing among sibling items (cards, bullets, columns)
 - distorted or badly cropped images
+- weak information hierarchy where the conclusion is not the clearest element
+- competing focal elements instead of one focal visual
+- excessive density, decorative card repetition, or insufficient whitespace
+- design-system consistency problems in typography, color, image treatment, and spacing
 
 Do not invoke tools, quote slide text, change wording, add/delete elements, or move anything across slides.
 
@@ -414,6 +418,8 @@ export interface QcPageOptions {
   pageIndex: number
   /** pixelRatio-1 PNG of the page's current rendering; null runs a geometry-only pass */
   screenshot: AgentImage | null
+  /** Bounded DESIGN.md excerpt plus this page's visual and acceptance contract. */
+  designContext?: string
   systemSuffix?: () => string
   signal?: AbortSignal
   /** Session/deck identity guard checked again when the asynchronous review settles. */
@@ -446,10 +452,11 @@ export function createSlideFixSkill(access: DeckAccess): AgentSkill {
   }
 }
 
-function buildQcInstruction(
+export function buildQcInstruction(
   pageIndex: number,
   slide: ReturnType<DeckAccess['getSlides']>[number],
   issues: ReturnType<typeof auditSlideQuality>,
+  designContext?: string,
 ): string {
   const auditStr = issues.length
     ? `Deterministic geometry audit codes:\n${JSON.stringify(issues)}\n(These are bounded geometry hints.)`
@@ -468,6 +475,8 @@ Geometry-only inventory (${entries.length} elements; capped):
 ${JSON.stringify(entries)}
 
 ${auditStr}
+
+${designContext ? `Design contract and page acceptance criteria:\n${designContext.slice(0, 4_000)}\n` : ''}
 
 Inspect the screenshot and return the strict quality JSON. Geometry fixes may reference only the listed ids.`.slice(
     0,
@@ -506,7 +515,7 @@ export function qcSlidePage(opts: QcPageOptions): Promise<QcPageResult> {
       error: 'screenshot_unavailable',
     })
   }
-  const instruction = buildQcInstruction(pageIndex, slide, preIssues)
+  const instruction = buildQcInstruction(pageIndex, slide, preIssues, opts.designContext)
 
   return new Promise((resolve) => {
     let settled = false

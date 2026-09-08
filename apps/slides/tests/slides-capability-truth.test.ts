@@ -76,15 +76,38 @@ describe('Slides capability truth', () => {
         core_hook: '新人第一天',
         style: '简洁蓝色',
         pages: [
-          { title: '欢迎', brief: '欢迎', layout: 'cover' },
-          { title: '安排', brief: '安排', layout: 'timeline' },
-          { title: '协作', brief: '协作', layout: 'closing' },
+          {
+            title: '欢迎',
+            brief: '欢迎',
+            layout: 'cover',
+            purpose: '开场',
+            visual: '主标题',
+            acceptance: ['标题突出'],
+            density: 'low',
+          },
+          {
+            title: '安排',
+            brief: '安排',
+            layout: 'timeline',
+            purpose: '解释',
+            visual: '时间线',
+            acceptance: ['顺序清晰'],
+            density: 'medium',
+          },
+          {
+            title: '协作',
+            brief: '协作',
+            layout: 'closing',
+            purpose: '收束',
+            visual: '行动号召',
+            acceptance: ['结论突出'],
+            density: 'low',
+          },
         ],
+        prototype_pages: [0, 1, 2],
       },
     })
-    expect(skill.reviewFinalResponse?.({ text: '已完成。', mutated: true })).toContain(
-      'plan has 3 pages',
-    )
+    expect(skill.reviewFinalResponse?.({ text: '已完成。', mutated: true })).toContain('0 of 3')
   })
 
   it('rejects a terminal explanation after questionnaire answers until deck planning continues', async () => {
@@ -119,9 +142,26 @@ describe('Slides capability truth', () => {
         core_hook: 'LLM in one sentence',
         style: 'minimal',
         pages: [
-          { title: 'What', brief: 'Definition', layout: 'cover' },
-          { title: 'How', brief: 'Mechanism', layout: 'content' },
+          {
+            title: 'What',
+            brief: 'Definition',
+            layout: 'cover',
+            purpose: 'Open',
+            visual: 'Hero',
+            acceptance: ['Clear'],
+            density: 'low',
+          },
+          {
+            title: 'How',
+            brief: 'Mechanism',
+            layout: 'content',
+            purpose: 'Explain',
+            visual: 'Diagram',
+            acceptance: ['Readable'],
+            density: 'medium',
+          },
         ],
+        prototype_pages: [0, 1],
       },
     })
     const result = await skill.executeTool({
