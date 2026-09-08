@@ -54,7 +54,8 @@ export interface DynamicMcpGateway {
 interface TurnGrant {
   readonly document: DynamicGatewayDocument
   threadId: string
-  readonly expiresAt: number
+  expiresAt: number
+  readonly ttlMs: number
   readonly calls: Set<string>
   turnId?: string
   bound: boolean
@@ -213,6 +214,7 @@ export async function startDynamicMcpGateway(
         // A live turn must not lose authority simply because visual review uses many tools.
         if (!grant || !grant.bound || Date.now() > grant.expiresAt || grant.calls.has(args.callId))
           throw new Error('capability_invalid')
+        grant.expiresAt = Date.now() + grant.ttlMs
         grant.calls.add(args.callId)
         const documentCall: AgentToolCall = {
           id: args.callId,
@@ -364,6 +366,7 @@ export async function startDynamicMcpGateway(
         document,
         threadId: input.threadId,
         expiresAt: Date.now() + ttl,
+        ttlMs: ttl,
         calls: new Set(),
         bound: input.threadId !== 'reserved',
       })

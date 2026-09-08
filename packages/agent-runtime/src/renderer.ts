@@ -91,6 +91,7 @@ const PC_ALLOWED_TOOLS: Readonly<
     'screenshot_slide',
     'web_search',
     'image_search',
+    'insert-image',
     'insert_web_image',
     'ask_clarification',
     'plan_deck',

@@ -266,4 +266,69 @@ describe('imageSearch (SerpApi)', () => {
       ],
     })
   })
+
+  it('accepts the alternate SerpApi image_results field', async () => {
+    process.env.SERPAPI_API_KEY = 'serpapi-test-key'
+    mockFetch(() => ({
+      ok: true,
+      json: {
+        image_results: [
+          {
+            title: 'Team meeting',
+            original: 'https://cdn.example.com/meeting.jpg',
+            link: 'https://example.com/meeting',
+            source: 'Example',
+          },
+        ],
+      },
+    }))
+
+    await expect(imageSearch('team meeting office', 3)).resolves.toMatchObject({
+      method: 'serpapi',
+      images: [{ imageUrl: 'https://cdn.example.com/meeting.jpg' }],
+    })
+  })
+
+  it('does not report an empty success when configured SerpApi and fallbacks fail', async () => {
+    process.env.SERPAPI_API_KEY = 'serpapi-test-key'
+    mockFetch(() => ({ ok: false }))
+
+    await expect(imageSearch('team meeting office', 3)).rejects.toThrow(
+      'image_search_upstream_error',
+    )
+  })
+
+  it('preserves a legitimate empty SerpApi result', async () => {
+    process.env.SERPAPI_API_KEY = 'serpapi-test-key'
+    mockFetch(() => ({ ok: true, json: { images_results: [] } }))
+
+    await expect(imageSearch('nothing here', 3)).resolves.toEqual({
+      images: [],
+      method: 'serpapi',
+    })
+  })
+
+  it('does not report an empty success when configured Serper and fallbacks fail', async () => {
+    process.env.SERPER_API_KEY = 'serper-test-key'
+    mockFetch(() => ({ ok: false }))
+
+    await expect(imageSearch('team meeting office', 3)).rejects.toThrow(
+      'image_search_upstream_error',
+    )
+  })
+
+  it('rejects a failed DuckDuckGo image response instead of reporting zero results', async () => {
+    process.env.SERPAPI_API_KEY = 'serpapi-test-key'
+    let request = 0
+    mockFetch(() => {
+      request += 1
+      if (request === 1) return { ok: false }
+      if (request === 2) return { ok: true, text: 'vqd="123-456"' }
+      return { ok: false, json: {} }
+    })
+
+    await expect(imageSearch('team meeting office', 3)).rejects.toThrow(
+      'image_search_upstream_error',
+    )
+  })
 })

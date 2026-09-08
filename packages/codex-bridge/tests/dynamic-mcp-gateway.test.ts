@@ -238,6 +238,70 @@ describe('fixed dynamic MCP gateway', () => {
     }
   })
 
+  it('keeps an active turn capability alive across its original TTL', async () => {
+    let now = 1_000
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const execute = vi.fn(async (_call: unknown) => ({ output: 'ok', summary: 'ok' }))
+    const gateway = await startDynamicMcpGateway()
+    const close = gateway.register({
+      ownerId: 'owner',
+      documentId: 'doc-active',
+      generation: 1,
+      session: {
+        credentials: { sessionId: 'session', secret: 'secret' },
+        listTools: () => [
+          { name: 'read_blocks', annotations: { readOnlyHint: true, destructiveHint: false } },
+        ],
+        callTool: (_credentials: unknown, call: unknown) => execute(call),
+      } as any,
+    })
+    try {
+      const grant = gateway.beginTurn({
+        documentId: 'doc-active',
+        generation: 1,
+        threadId: 'thread',
+        ttlMs: 1_000,
+      })
+      now = 1_900
+      const first = await rpc(gateway.url, gateway.secret, 40, 'tools/call', {
+        name: 'wiswork_read',
+        arguments: {
+          capability: grant.capability,
+          callId: 'call-1',
+          toolName: 'read_blocks',
+          input: {},
+        },
+      })
+      now = 2_800
+      const second = await rpc(gateway.url, gateway.secret, 41, 'tools/call', {
+        name: 'wiswork_read',
+        arguments: {
+          capability: grant.capability,
+          callId: 'call-2',
+          toolName: 'read_blocks',
+          input: {},
+        },
+      })
+      now = 3_801
+      const expired = await rpc(gateway.url, gateway.secret, 42, 'tools/call', {
+        name: 'wiswork_read',
+        arguments: {
+          capability: grant.capability,
+          callId: 'call-3',
+          toolName: 'read_blocks',
+          input: {},
+        },
+      })
+      expect([first.status, second.status]).toEqual([200, 200])
+      expect(expired.status).toBe(403)
+      expect(execute).toHaveBeenCalledTimes(2)
+    } finally {
+      clock.mockRestore()
+      close()
+      await gateway.close()
+    }
+  })
+
   it.each([600_000, 90_000])(
     'completes a pending mutation with consent capped by the %i ms grant',
     async (ttlMs) => {
