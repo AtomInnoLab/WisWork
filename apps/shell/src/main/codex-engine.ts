@@ -18,14 +18,16 @@ const DEVELOPER_POLICY =
 const TURN_IDLE_TIMEOUT_MS = 60_000
 const INTERRUPT_TIMEOUT_MS = 2_000
 
-export function selectDeterministicFailureTurn<T extends { turnId?: string }>(
-  activeTurns: readonly T[],
+export function selectDeterministicFailureDocument<
+  T extends { active?: { turnId?: string } },
+>(
+  activeDocuments: readonly T[],
   turnId?: string,
 ): T | undefined {
   return turnId
-    ? activeTurns.find((candidate) => candidate.turnId === turnId)
-    : activeTurns.length === 1
-      ? activeTurns[0]
+    ? activeDocuments.find((candidate) => candidate.active?.turnId === turnId)
+    : activeDocuments.length === 1
+      ? activeDocuments[0]
       : undefined
 }
 
@@ -191,10 +193,11 @@ export function createProductionCodexBootstrap(
         }
       >()
       rejectDeterministicFailure = (_code, turnId) => {
-        const activeTurns = [...documents.values()].flatMap((document) =>
-          document.active ? [document.active] : [],
+        const document = selectDeterministicFailureDocument(
+          [...documents.values()].filter((candidate) => candidate.active),
+          turnId,
         )
-        const active = selectDeterministicFailureTurn(activeTurns, turnId)
+        const active = document?.active
         if (!active) return
         if (shouldRetryRejectedToolInput(_code, active.rejectedToolInputRetries)) {
           active.rejectedToolInputRetries += 1
@@ -202,6 +205,7 @@ export function createProductionCodexBootstrap(
           return
         }
         active.cancelled = true
+        document.threadId = undefined
         active.settle('failed', new Error('enhanced_response_incompatible'))
         if (active.threadId && active.turnId) {
           startBestEffortCodexInterrupt(() =>

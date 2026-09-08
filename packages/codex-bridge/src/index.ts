@@ -773,7 +773,7 @@ function parseSafeExecCode(code: string, methods: readonly string[], limits: Pro
   const resultWrapped =
     /^const\s+result\s*=\s*await\s+tools\.([A-Za-z_][A-Za-z0-9_]*)\((\{[\s\S]*\})\)\s*;\s*text\(\s*result\s*\)\s*;?$/
   const visual =
-    /^const result = await tools\.([A-Za-z_][A-Za-z0-9_]*)\((\{[\s\S]*\})\); for \(const block of result\.content\) \{ if \(block\.type === "image"\) image\(block\); else if \(block\.type === "text"\) text\(block\.text\); \}$/
+    /^const\s+result\s*=\s*await\s+tools\.([A-Za-z_][A-Za-z0-9_]*)\((\{[\s\S]*\})\)\s*;\s*for\s*\(\s*const\s+block\s+of\s+result\.content\s*\)\s*\{\s*if\s*\(\s*block\.type\s*===\s*['"]image['"]\s*\)\s*image\(\s*block\s*\)\s*;?\s*else\s+if\s*\(\s*block\.type\s*===\s*['"]text['"]\s*\)\s*text\(\s*block\.text\s*\)\s*;?\s*\}\s*;?$/
   const match =
     wrapped.exec(source.trim()) ??
     direct.exec(source.trim()) ??
