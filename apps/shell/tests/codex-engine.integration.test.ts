@@ -138,6 +138,130 @@ function turnCapability(request: MessagesRequest): string | undefined {
 }
 
 describe('real 0.147 production engine bridge', () => {
+  realIt.each([
+    { scenario: 'recovers after receiving rejected exec feedback', keepsRejecting: false },
+    { scenario: 'stops after three rejected exec feedback results', keepsRejecting: true },
+  ])(
+    '$scenario through the real Office model/tool loop',
+    async ({ keepsRejecting }) => {
+      const diagnostics: string[] = []
+      const events: unknown[] = []
+      const crashed = vi.fn()
+      const callTool = vi.fn(async () => ({
+        output: '{"slideCount":1,"selectedSlideIndex":0}',
+        summary: 'Read presentation state',
+      }))
+      let providerCalls = 0
+      const receivedFeedback: unknown[] = []
+      const upstream = vi.fn(async (request: MessagesRequest) => {
+        providerCalls += 1
+        if (providerCalls > 1) {
+          // Inspect actual runtime output, not the host-authored exec input echoed in history.
+          const feedback = request.messages
+            .flatMap((message) => message.content)
+            .find(
+              (block) =>
+                block.type === 'tool_result' &&
+                block.tool_use_id === `office_exec_${providerCalls - 1}`,
+            )
+          expect(feedback).toBeDefined()
+          receivedFeedback.push(feedback)
+          if (keepsRejecting || providerCalls === 2) {
+            expect(JSON.stringify(feedback?.content)).toContain('invalid_tool_input')
+            expect(JSON.stringify(feedback?.content)).toContain('No document tool was executed')
+            expect(callTool).not.toHaveBeenCalled()
+          } else {
+            expect(JSON.stringify(feedback?.content)).toContain('slideCount')
+            expect(callTool).toHaveBeenCalledOnce()
+            return finalResponse()
+          }
+        }
+        const capability = turnCapability(request)
+        expect(capability).toBeTruthy()
+        const argumentsText = JSON.stringify({
+          capability,
+          callId: `office-read-${providerCalls}`,
+          toolName: 'get_presentation_state',
+          input: {},
+        })
+        const code =
+          keepsRejecting || providerCalls === 1
+            ? `const state = await tools.mcp__wiswork__wiswork_read(${argumentsText}); text(state);`
+            : `text(await tools.mcp__wiswork__wiswork_read(${argumentsText}));`
+        return toolResponse(code, 'encrypted', `office_exec_${providerCalls}`)
+      })
+      const engine = await createProductionCodexBootstrap({
+        fetchWithAuth: upstream,
+        diagnostics: (code) => diagnostics.push(code),
+      }).start({ executablePath: executable!, onCrash: crashed })
+      const session = {
+        identity: {
+          ownerId: 'office-owner',
+          host: 'office-powerpoint',
+          documentId: 'office-exec-recovery',
+          sessionId: 'office-session',
+          generation: 1,
+        },
+        credentials: { sessionId: 'office-session', secret: 'secret' },
+        listTools: () => [
+          {
+            name: 'get_presentation_state',
+            description: 'Read presentation state.',
+            inputSchema: { type: 'object', additionalProperties: false },
+            annotations: { readOnlyHint: true, destructiveHint: false },
+          },
+        ],
+        callTool,
+        cancelAll: vi.fn(() => 0),
+        close: vi.fn(),
+      } as any
+      engine.registerDocument!({
+        ownerId: 'office-owner',
+        documentId: 'office-exec-recovery',
+        host: 'office-powerpoint',
+        generation: 1,
+        session,
+        onEvent: (event) => events.push(event),
+      })
+      try {
+        const running = engine.startTurn({
+          documentId: 'office-exec-recovery',
+          host: 'office-powerpoint',
+          generation: 1,
+          text: '继续，先读取当前 PowerPoint 状态。',
+        })
+        if (keepsRejecting) {
+          await expect(running).rejects.toThrow('enhanced_response_incompatible')
+          expect(upstream).toHaveBeenCalledTimes(4)
+          expect(receivedFeedback).toHaveLength(3)
+          expect(callTool).not.toHaveBeenCalled()
+          expect(diagnostics).toContain('responses_stream_tool_input_retry_limit_exceeded')
+          expect(events).toContainEqual(
+            expect.objectContaining({ type: 'terminal', status: 'failed' }),
+          )
+        } else {
+          await running
+          expect(upstream).toHaveBeenCalledTimes(3)
+          expect(receivedFeedback).toHaveLength(2)
+          expect(callTool).toHaveBeenCalledExactlyOnceWith(
+            session.credentials,
+            expect.objectContaining({
+              id: 'office-read-2',
+              name: 'get_presentation_state',
+              input: {},
+            }),
+          )
+          expect(diagnostics.filter((code) => code.startsWith('responses_stream_'))).toEqual([])
+          expect(events.at(-1)).toEqual({ type: 'terminal', status: 'completed' })
+        }
+        expect(crashed).not.toHaveBeenCalled()
+      } finally {
+        await engine.close()
+      }
+    },
+    30_000,
+  )
+
   realIt(
     'keeps the app-server alive across consecutive authority-bound turns',
     async () => {
@@ -493,6 +617,154 @@ describe('real 0.147 production engine bridge', () => {
       }
     },
     65_000,
+  )
+
+  realIt(
+    'keeps buffered tool input alive past both native idle deadlines in Slides',
+    async () => {
+      const diagnostics: string[] = []
+      const events: unknown[] = []
+      const crashed = vi.fn()
+      let providerCalls = 0
+      let argumentChunks = 0
+      let inputCompleted = false
+      let streamStartedAt = 0
+      const callTool = vi.fn(async () => {
+        expect(inputCompleted).toBe(true)
+        expect(Date.now() - streamStartedAt).toBeGreaterThan(60_000)
+        return { output: '{"slideCount":1}', summary: 'Read presentation' }
+      })
+      const upstream = vi.fn(async (request: MessagesRequest) => {
+        providerCalls += 1
+        if (providerCalls > 1) {
+          expect(providerCalls).toBe(2)
+          expect(callTool).toHaveBeenCalledOnce()
+          expect(
+            JSON.stringify(
+              request.messages
+                .flatMap((message) => message.content)
+                .find((block) => block.type === 'tool_result' && block.tool_use_id === 'custom_7'),
+            ),
+          ).toContain('slideCount')
+          return finalResponse()
+        }
+        const capability = turnCapability(request)
+        expect(capability).toBeTruthy()
+        const code = `text(await tools.mcp__wiswork__wiswork_read(${JSON.stringify({ capability, callId: 'buffered-read', toolName: 'read_presentation', input: {} })}))`
+        const frames = (await toolResponse(code).text())
+          .trim()
+          .split('\n\n')
+          .flatMap((frame) => {
+            const data = JSON.parse(frame.slice('data: '.length))
+            if (data.delta?.type !== 'input_json_delta') return [{ frame, delayed: false }]
+            const input = data.delta.partial_json as string
+            return Array.from({ length: 20 }, (_, index) => ({
+              frame: `data: ${JSON.stringify({
+                ...data,
+                delta: {
+                  ...data.delta,
+                  partial_json: input.slice(
+                    Math.floor((index * input.length) / 20),
+                    Math.floor(((index + 1) * input.length) / 20),
+                  ),
+                },
+              })}`,
+              delayed: true,
+            }))
+          })
+        let index = 0
+        let cancelled = false
+        let timer: ReturnType<typeof setTimeout> | undefined
+        let resume: (() => void) | undefined
+        streamStartedAt = Date.now()
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              const next = frames[index++]
+              if (!next) return controller.close()
+              if (next.delayed) {
+                await new Promise<void>((resolve) => {
+                  resume = resolve
+                  timer = setTimeout(resolve, 3_300)
+                })
+                timer = undefined
+                resume = undefined
+                if (cancelled) return
+                expect(callTool).not.toHaveBeenCalled()
+                expect(events).toEqual([])
+                argumentChunks += 1
+                inputCompleted = argumentChunks === 20
+              }
+              controller.enqueue(new TextEncoder().encode(`${next.frame}\n\n`))
+            },
+            cancel() {
+              cancelled = true
+              if (timer) clearTimeout(timer)
+              resume?.()
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        )
+      })
+      const engine = await createProductionCodexBootstrap({
+        fetchWithAuth: upstream,
+        diagnostics: (code) => diagnostics.push(code),
+      }).start({ executablePath: executable!, onCrash: crashed })
+      const session = {
+        identity: {
+          ownerId: 'owner',
+          host: 'slides',
+          documentId: 'buffered-slides',
+          sessionId: 'session',
+          generation: 1,
+        },
+        credentials: { sessionId: 'session', secret: 'secret' },
+        listTools: () => [
+          {
+            name: 'read_presentation',
+            inputSchema: { type: 'object', additionalProperties: false },
+            annotations: { readOnlyHint: true, destructiveHint: false },
+          },
+        ],
+        callTool,
+        cancelAll: vi.fn(() => 0),
+        close: vi.fn(),
+      } as any
+      engine.registerDocument!({
+        ownerId: 'owner',
+        documentId: 'buffered-slides',
+        host: 'slides',
+        generation: 1,
+        session,
+        onEvent: (event) => events.push(event),
+      })
+      try {
+        await engine
+          .startTurn({
+            documentId: 'buffered-slides',
+            host: 'slides',
+            generation: 1,
+            text: 'Read the presentation.',
+          })
+          .catch((error) => {
+            throw new Error(`buffered_turn_failed:${diagnostics.join(',')}`, { cause: error })
+          })
+        expect(argumentChunks).toBe(20)
+        expect(upstream).toHaveBeenCalledTimes(2)
+        expect(callTool).toHaveBeenCalledExactlyOnceWith(
+          session.credentials,
+          expect.objectContaining({ id: 'buffered-read', name: 'read_presentation', input: {} }),
+        )
+        expect(crashed).not.toHaveBeenCalled()
+        expect(events.at(-1)).toEqual({ type: 'terminal', status: 'completed' })
+        expect(diagnostics).toContain('gateway_tool_call_completed')
+        expect(diagnostics.filter((code) => code.startsWith('responses_stream_'))).toEqual([])
+        expect(diagnostics).not.toContain('codex_error')
+      } finally {
+        await engine.close()
+      }
+    },
+    95_000,
   )
 
   realIt(
@@ -921,10 +1193,7 @@ describe('real 0.147 production engine bridge', () => {
     'binds real turn metadata to fake WisUsage and cleans up',
     async () => {
       const diagnostics: string[] = []
-      const upstream = vi.fn(async (request: MessagesRequest) => {
-        expect(request.tools?.map((tool) => tool.name)).toEqual(['exec'])
-        return finalResponse()
-      })
+      const upstream = vi.fn(async (_request: MessagesRequest) => finalResponse())
       const engine = await createProductionCodexBootstrap({
         fetchWithAuth: upstream,
         diagnostics: (code) => diagnostics.push(code),
@@ -960,6 +1229,10 @@ describe('real 0.147 production engine bridge', () => {
             throw new Error(`engine_failed:${diagnostics.join(',')}`, { cause: error })
           })
         expect(upstream).toHaveBeenCalledOnce()
+        expect(upstream.mock.calls[0]![0].tools?.map((tool) => tool.name).sort()).toEqual([
+          'exec',
+          'wait',
+        ])
       } finally {
         await engine.close()
       }

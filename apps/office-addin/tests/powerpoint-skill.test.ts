@@ -494,6 +494,8 @@ describe('PowerPoint compatibility skill', () => {
       proposals: createStructuredProposalController(),
     })
 
+    expect(skill.repeatFinalResponseCorrection).toBe(true)
+
     await skill.executeTool(
       call('plan_deck', {
         core_hook: 'One clear story',

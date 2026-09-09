@@ -6,13 +6,17 @@ import type { CodexRuntimeEngineEvent } from '../src/main/codex-runtime'
 const mock = vi.hoisted(() => ({
   notify: undefined as any,
   document: undefined as any,
+  onStreamActivity: undefined as ((turnId?: string) => void) | undefined,
   revoke: vi.fn(),
   startThread: vi.fn(async () => ({ thread: { id: 'thread' } })),
   startTurn: vi.fn(async () => ({ turn: { id: 'turn' } })),
 }))
 vi.mock('@wiswork/codex-bridge', async (original) => ({
   ...(await original<any>()),
-  startResponsesBridge: async () => ({ baseUrl: '', secret: '', close: async () => {} }),
+  startResponsesBridge: async (options: { onStreamActivity?: (turnId?: string) => void }) => {
+    mock.onStreamActivity = options.onStreamActivity
+    return { baseUrl: '', secret: '', close: async () => {} }
+  },
   startDynamicMcpGateway: async () => ({
     url: '',
     secret: '',
@@ -132,6 +136,159 @@ async function startSlidesTurn() {
     },
   }
 }
+
+it('keeps buffered stream activity alive beyond the turn idle deadline without emitting events', async () => {
+  const turn = await startSlidesTurn()
+  try {
+    turn.emitText('Preparing the design')
+    for (let index = 0; index < 4; index++) {
+      await vi.advanceTimersByTimeAsync(25_000)
+      mock.onStreamActivity?.('turn')
+      expect(turn.result).toBe('pending')
+    }
+    expect(turn.events).toEqual([{ type: 'text', text: 'Preparing the design' }])
+    expect(mock.revoke).not.toHaveBeenCalled()
+    turn.completeNativeTurn()
+    await turn.running
+    expect(turn.result).toBe('done')
+    expect(turn.events.at(-1)).toEqual({ type: 'terminal', status: 'completed' })
+    expect(mock.startTurn).toHaveBeenCalledTimes(1)
+  } finally {
+    await turn.engine.close()
+  }
+})
+
+it.each(['absent', 'missing', 'wrong'])(
+  'still expires the active turn when stream activity has an %s turn ID',
+  async (activity) => {
+    const turn = await startSlidesTurn()
+    try {
+      await vi.advanceTimersByTimeAsync(45_000)
+      if (activity !== 'absent')
+        mock.onStreamActivity?.(activity === 'missing' ? undefined : 'another-turn')
+      await vi.advanceTimersByTimeAsync(15_001)
+      await turn.running
+      expect(turn.result).toBe('enhanced_turn_timeout')
+      expect(turn.events).toEqual([{ type: 'terminal', status: 'failed' }])
+    } finally {
+      await turn.engine.close()
+    }
+  },
+)
+
+it('expires after matching buffered stream activity stops', async () => {
+  const turn = await startSlidesTurn()
+  try {
+    await vi.advanceTimersByTimeAsync(45_000)
+    mock.onStreamActivity?.('turn')
+    await vi.advanceTimersByTimeAsync(45_000)
+    expect(turn.result).toBe('pending')
+    await vi.advanceTimersByTimeAsync(15_001)
+    await turn.running
+    expect(turn.result).toBe('enhanced_turn_timeout')
+    expect(turn.events).toEqual([{ type: 'terminal', status: 'failed' }])
+  } finally {
+    await turn.engine.close()
+  }
+})
+
+it('does not let activity from a completed turn extend its replacement turn', async () => {
+  const turn = await startSlidesTurn()
+  try {
+    turn.completeNativeTurn()
+    await turn.running
+    mock.startTurn.mockResolvedValueOnce({ turn: { id: 'replacement-turn' } })
+    let nextResult = 'pending'
+    const nextRunning = turn.engine
+      .startTurn({ documentId: 'doc', host: 'slides', generation: 1, text: 'continue' })
+      .then(
+        () => {
+          nextResult = 'done'
+        },
+        (error: Error) => {
+          nextResult = error.message
+        },
+      )
+    await vi.advanceTimersByTimeAsync(45_000)
+    mock.onStreamActivity?.('turn')
+    await vi.advanceTimersByTimeAsync(15_001)
+    await nextRunning
+    expect(nextResult).toBe('enhanced_turn_timeout')
+    expect(turn.events).toEqual([
+      { type: 'terminal', status: 'completed' },
+      { type: 'terminal', status: 'failed' },
+    ])
+  } finally {
+    await turn.engine.close()
+  }
+})
+
+it.each(['cancelled', 'closed', 'completed'])(
+  'does not revive a %s turn with buffered stream activity',
+  async (status) => {
+    const turn = await startSlidesTurn()
+    try {
+      if (status === 'cancelled') await turn.engine.cancelTurn('doc')
+      else if (status === 'closed') await turn.engine.closeDocument!('doc')
+      else turn.completeNativeTurn()
+      await turn.running
+      const terminalEvents = [...turn.events]
+      const revocations = mock.revoke.mock.calls.length
+      const result = turn.result
+      for (let index = 0; index < 4; index++) {
+        await vi.advanceTimersByTimeAsync(25_000)
+        mock.onStreamActivity?.('turn')
+      }
+      expect(turn.result).toBe(result)
+      expect(turn.events).toEqual(terminalEvents)
+      expect(mock.revoke).toHaveBeenCalledTimes(revocations)
+      expect(mock.startTurn).toHaveBeenCalledTimes(1)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      await turn.engine.close()
+    }
+  },
+)
+
+it.each(['applied', 'tool_error', 'rejected'])(
+  'publishes proposal tool completion before the deferred terminal; outcome=%s',
+  async (outcome) => {
+    const turn = await startSlidesTurn()
+    try {
+      turn.startTool('build_deck')
+      const proposal = turn.propose()
+      turn.completeNativeTurn()
+      if (outcome === 'rejected') proposal.reject(new Error('private execution failure'))
+      else
+        proposal.resolve({
+          output: outcome,
+          summary: outcome,
+          isError: outcome === 'tool_error',
+          mutated: outcome === 'applied',
+        })
+      // The gateway resumes after these proposal promise listeners and then
+      // publishes tool-complete. Native completion must stay deferred until then.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(turn.result).toBe('pending')
+      expect(mock.revoke).not.toHaveBeenCalled()
+      expect(turn.events.some((event) => event.type === 'terminal')).toBe(false)
+      turn.completeTool('build_deck', outcome !== 'applied')
+      await turn.running
+      expect(turn.result).toBe(outcome === 'rejected' ? 'enhanced_proposal_failed' : 'done')
+      expect(turn.events.slice(-2)).toEqual([
+        {
+          type: 'tool-complete',
+          callId: 'build_deck',
+          toolName: 'build_deck',
+          isError: outcome !== 'applied',
+        },
+        { type: 'terminal', status: outcome === 'rejected' ? 'failed' : 'completed' },
+      ])
+    } finally {
+      await turn.engine.close()
+    }
+  },
+)
 
 it.each(
   [
@@ -360,6 +517,8 @@ it.each(['before', 'after'])(
       isError: true,
       mutated: false,
     })
+    await vi.advanceTimersByTimeAsync(0)
+    turn.completeTool('build_deck', true)
     await turn.running
     expect(turn.result).toBe('done')
     expect(mock.startTurn).toHaveBeenCalledTimes(1)
@@ -574,6 +733,13 @@ it.each(['applied', 'tool_failed', 'mutation_expired', 'mutation_cancelled', 'ca
       summary: output,
       isError: output !== 'applied',
       mutated: output === 'applied',
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    mock.document.onToolEvent({
+      type: 'tool-complete',
+      callId: 'proposal-call',
+      toolName: 'replace_blocks',
+      isError: output !== 'applied',
     })
     await running
     expect(result).toBe('done')

@@ -7,6 +7,8 @@ import {
   type ProtocolRecording,
 } from '../src/index.js'
 import recording from './fixtures/protocol-redacted-max-tokens.json'
+import capturedRequest from './fixtures/codex-0147-request.json'
+import { prepareCarrierTurn } from './fixtures/carrier-authorization.js'
 
 function post(url: URL, secret: string, body: string, headers: Record<string, string> = {}) {
   return new Promise<{ status: number; body: string }>((resolve, reject) => {
@@ -45,6 +47,109 @@ const prepared = () => ({
 })
 
 describe('local responses bridge', () => {
+  it.each(['tool arguments', 'hidden reasoning'])(
+    'keeps actively streamed %s alive beyond the downstream socket idle window',
+    async (bufferedContent) => {
+      const code = 'text(await tools.mcp__wiswork__wiswork_read_document({"title":"设计契约"}))'
+      const serialized = JSON.stringify({ code })
+      const chunks = Array.from({ length: 12 }, (_, index) =>
+        serialized.slice(
+          Math.floor((index * serialized.length) / 12),
+          Math.floor(((index + 1) * serialized.length) / 12),
+        ),
+      )
+      const frames = [
+        {
+          type: 'message_start',
+          message: { id: 'r1', model: 'openai/gpt-5.6-sol', usage: { input_tokens: 1 } },
+        },
+        ...(bufferedContent === 'hidden reasoning'
+          ? [
+              {
+                type: 'content_block_start',
+                index: 0,
+                content_block: { type: 'thinking', thinking: '', signature: '' },
+              },
+              ...chunks.map(() => ({
+                type: 'content_block_delta',
+                index: 0,
+                delta: { type: 'thinking_delta', thinking: 'private hidden reasoning' },
+              })),
+              { type: 'content_block_stop', index: 0 },
+            ]
+          : []),
+        {
+          type: 'content_block_start',
+          index: bufferedContent === 'hidden reasoning' ? 1 : 0,
+          content_block: { type: 'tool_use', id: 'call-1', name: 'exec', input: {} },
+        },
+        ...(bufferedContent === 'hidden reasoning' ? [serialized] : chunks).map((partial_json) => ({
+          type: 'content_block_delta',
+          index: bufferedContent === 'hidden reasoning' ? 1 : 0,
+          delta: { type: 'input_json_delta', partial_json },
+        })),
+        { type: 'content_block_stop', index: bufferedContent === 'hidden reasoning' ? 1 : 0 },
+        { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+        { type: 'message_stop' },
+      ]
+      let nextFrame = 0
+      let cancelled = false
+      const diagnostics: string[] = []
+      const activity: Array<string | undefined> = []
+      const bridge = await startResponsesBridge({
+        fetchWithAuth: async () =>
+          new Response(
+            new ReadableStream({
+              async pull(controller) {
+                if (nextFrame === frames.length) return controller.close()
+                const frame = frames[nextFrame++]
+                if (frame.type === 'content_block_delta')
+                  await new Promise((resolve) => setTimeout(resolve, 20))
+                if (!cancelled)
+                  controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`))
+              },
+              cancel() {
+                cancelled = true
+              },
+            }),
+            { headers: { 'content-type': 'text/event-stream' } },
+          ),
+        prepareTurn: (input) => ({ ...prepareCarrierTurn(input), turnId: 'turn_1' }),
+        diagnostics: (code) => diagnostics.push(code),
+        onStreamActivity: (turnId) => {
+          activity.push(turnId)
+          throw new Error('private observer failure')
+        },
+        maxStreamIdleMs: 100,
+      })
+      try {
+        const result = await post(
+          new URL(bridge.responsesUrl),
+          bridge.secret,
+          JSON.stringify(capturedRequest),
+        )
+        expect(result.status).toBe(200)
+        expect(result.body).toContain('response.completed')
+        expect(result.body).toContain(JSON.stringify(code))
+        const completedCalls = result.body
+          .split('\n')
+          .filter((line) => line.startsWith('data: {'))
+          .map((line) => JSON.parse(line.slice(6)))
+          .filter(
+            (event) =>
+              event.type === 'response.output_item.done' && event.item?.type === 'custom_tool_call',
+          )
+        expect(completedCalls).toHaveLength(1)
+        expect(result.body).not.toContain('private hidden reasoning')
+        expect(activity.length).toBeGreaterThan(12)
+        expect(new Set(activity)).toEqual(new Set(['turn_1']))
+        expect(diagnostics).toEqual(['responses_upstream_started'])
+      } finally {
+        await bridge.close()
+      }
+    },
+  )
+
   it('captures real translated upstream frames via the fail-open export callback', async () => {
     const captures: ProtocolRecording[] = []
     const outcomes: string[] = []
@@ -172,7 +277,7 @@ describe('local responses bridge', () => {
     }
   })
 
-  it.each(['invalid_messages_sse', 'unsafe_custom_tool_input'])(
+  it.each(['invalid_messages_sse', 'unsafe_custom_tool_input', 'tool_input_retry_limit_exceeded'])(
     'reports the closed protocol reason %s without upstream content',
     async (protocolCode) => {
       const diagnostics: string[] = []
@@ -275,4 +380,46 @@ describe('local responses bridge', () => {
       await bridge.close()
     }
   })
+
+  it.each(['upstream stall', 'absolute deadline'])(
+    'still terminates buffered input on %s and cancels its source',
+    async (limit) => {
+      let cancelled = false
+      let sentStart = false
+      const bridge = await startResponsesBridge({
+        fetchWithAuth: async () =>
+          new Response(
+            new ReadableStream({
+              async pull(controller) {
+                if (sentStart && limit === 'upstream stall') return
+                sentStart = true
+                await new Promise((resolve) => setTimeout(resolve, 10))
+                if (!cancelled) controller.enqueue(new TextEncoder().encode('partial input'))
+              },
+              cancel() {
+                cancelled = true
+              },
+            }),
+            { headers: { 'content-type': 'text/event-stream' } },
+          ),
+        prepareTurn: () => ({
+          ...prepared(),
+          async *messagesStreamToResponses(chunks) {
+            yield 'event: response.created\ndata: {"type":"response.created"}\n\n'
+            for await (const _chunk of chunks) {
+              // Deliberately buffer: no executable call exists until all input arrives.
+            }
+          },
+        }),
+        maxStreamIdleMs: 100,
+        maxTurnDurationMs: limit === 'absolute deadline' ? 60 : 2_000,
+      })
+      try {
+        await expect(post(new URL(bridge.responsesUrl), bridge.secret, '{}')).rejects.toThrow()
+        await vi.waitFor(() => expect(cancelled).toBe(true))
+      } finally {
+        await bridge.close()
+      }
+    },
+  )
 })

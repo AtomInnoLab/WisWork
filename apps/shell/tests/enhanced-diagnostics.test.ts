@@ -146,6 +146,7 @@ describe('EnhancedDiagnosticsStore', () => {
     store.record('responses_stream_reasoning_content_limit_exceeded')
     store.record('responses_stream_invalid_messages_usage')
     store.record('responses_stream_invalid_custom_tool_input')
+    store.record('responses_stream_tool_input_retry_limit_exceeded')
     store.record('responses_stream_invalid_messages_event_order')
     store.finishTask(id, 'failed')
 
@@ -155,6 +156,7 @@ describe('EnhancedDiagnosticsStore', () => {
         'stream_reasoning_limit_exceeded',
         'stream_usage_invalid',
         'stream_tool_input_invalid',
+        'stream_tool_input_recovery_exhausted',
         'stream_event_order_invalid',
       ]),
     )
