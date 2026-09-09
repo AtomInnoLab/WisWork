@@ -6,21 +6,18 @@ const pendingDesigns = new Map<number, string>()
 export function savePresentationDesignSidecar(
   senderId: number,
   deckPath: string | undefined,
-  style: string,
+  design: string,
 ): boolean {
-  pendingDesigns.set(senderId, style)
-  if (!deckPath || !deckPath.endsWith('.pptx')) return true
+  pendingDesigns.set(senderId, design)
+  if (!deckPath || !/\.pptx$/i.test(deckPath)) return true
   return flushPresentationDesignSidecar(senderId, deckPath)
 }
 
 export function flushPresentationDesignSidecar(senderId: number, deckPath: string): boolean {
-  const style = pendingDesigns.get(senderId)
-  if (!style || !deckPath.endsWith('.pptx')) return false
+  const design = pendingDesigns.get(senderId)
+  if (!design || !/\.pptx$/i.test(deckPath)) return false
   try {
-    writeFileSync(
-      deckPath.replace(/\.pptx$/i, '.design.md'),
-      buildPresentationDesignDocument(style),
-    )
+    writeFileSync(deckPath.replace(/\.pptx$/i, '.design.md'), normalizeDesignDocument(design))
     pendingDesigns.delete(senderId)
     return true
   } catch {
@@ -33,14 +30,20 @@ export function readPresentationDesignSidecar(
   deckPath: string | undefined,
 ): string | undefined {
   const pending = pendingDesigns.get(senderId)
-  if (pending) return buildPresentationDesignDocument(pending)
-  if (!deckPath || !deckPath.endsWith('.pptx')) return undefined
+  if (pending) return normalizeDesignDocument(pending)
+  if (!deckPath || !/\.pptx$/i.test(deckPath)) return undefined
   const designPath = deckPath.replace(/\.pptx$/i, '.design.md')
   try {
     return existsSync(designPath) ? readFileSync(designPath, 'utf8') : undefined
   } catch {
     return undefined
   }
+}
+
+function normalizeDesignDocument(value: string): string {
+  return value.trimStart().startsWith('# DESIGN.md')
+    ? value.trim()
+    : buildPresentationDesignDocument(value)
 }
 
 export function clearPresentationDesignSidecar(senderId: number): void {

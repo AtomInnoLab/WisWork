@@ -45,6 +45,7 @@ const inventories = {
     'plan_deck',
     'read',
     'read_slide_text',
+    'review_slide_screenshot',
     'screenshot_slide',
     'set_slide_background',
     'verify_slides',

@@ -2,8 +2,11 @@ import React, { useEffect, useRef, useState } from 'react'
 import { boundedScreenshot } from './bounded-screenshot'
 import {
   composeSkills,
+  extractPresentationDesignContract,
   extractPresentationDesignDocument,
   IPC_STREAM_SILENCE_TIMEOUT_MS,
+  renderPresentationDesignContract,
+  revisePresentationDesignContract,
   type AgentImage,
   type ToolDisplay,
 } from '@wiswork/agent-core'
@@ -30,6 +33,7 @@ import {
 import { friendlyEnhancedError, shouldMarkEnhancedMessageUndelivered } from './enhanced-error-copy'
 import { renderSlidesToPngBase64 } from '../export-render'
 import { presentationTimelineBlockOrder, shouldShowStreamingProgress } from './streaming-progress'
+import { presentationDesignLifecycle } from './presentation-design-ui'
 import {
   applyQcGeometryFixes,
   buildVisualQcContext,
@@ -2464,13 +2468,22 @@ export function AiPanel({
 
   const openDesignEditor = (designMd: string) => {
     setDesignDraft(designMd)
-    setDesignEditorEditable(designMd === presentationDesignContextRef.current?.designMd)
+    setDesignEditorEditable(
+      designMd === presentationDesignContextRef.current?.designMd &&
+        presentationDesignLifecycle(designMd).editable,
+    )
     setDesignNotice(null)
     setDesignEditorOpen(true)
   }
 
   const saveDesignEditor = async () => {
-    const body = designDraft.replace(/^\s*#\s*DESIGN\.md\s*/i, '').trim()
+    // A user edit invalidates the exact embedded structured snapshot. Remove it
+    // so the next turn must normalize the visible contract through plan_deck.
+    const editedDraft = designDraft.replace(
+      /\n?<!-- WISWORK_PRESENTATION_(?:DESIGN_CONTRACT|PROGRESS):[^\n]* -->/g,
+      '',
+    )
+    const body = editedDraft.replace(/^\s*#\s*DESIGN\.md\s*/i, '').trim()
     if (!body) {
       setDesignNotice('DESIGN.md cannot be empty.')
       return
@@ -2479,6 +2492,7 @@ export function AiPanel({
     const result = await window.slidesApi.saveStyleSidecar({
       topic: 'Edited design contract',
       styleSkill: body,
+      designMd,
       createdAt: new Date().toISOString(),
     })
     if (!result.ok) {
@@ -2487,7 +2501,7 @@ export function AiPanel({
     }
     presentationDesignContextRef.current = {
       designMd,
-      pages: presentationDesignContextRef.current?.pages ?? [],
+      pages: [],
     }
     setDesignDraft(designMd)
     setChat((previous) => [
@@ -2495,10 +2509,65 @@ export function AiPanel({
       {
         role: 'assistant',
         text: '',
-        tools: [{ name: 'design_contract', summary: 'DESIGN.md · updated', output: designMd }],
+        tools: [
+          {
+            name: 'design_contract',
+            summary: 'DESIGN.md · updated · replan required',
+            output: designMd,
+          },
+        ],
       },
     ])
     setDesignEditorOpen(false)
+  }
+
+  const beginDesignRevision = async () => {
+    const locked = extractPresentationDesignContract(designDraft)
+    if (!locked || !['producing', 'verified'].includes(locked.status)) return
+    const revised = revisePresentationDesignContract(locked, {
+      reason: 'User requested edits to a locked DESIGN.md revision',
+      scope: { type: 'global' },
+    })
+    const designMd = renderPresentationDesignContract(revised.contract)
+    const result = await window.slidesApi.saveStyleSidecar({
+      topic: revised.contract.brief.topic || revised.contract.narrative.coreHook,
+      styleSkill: revised.contract.visualSystem.style,
+      designMd,
+      createdAt: new Date().toISOString(),
+    })
+    if (!result.ok) {
+      setDesignNotice('DESIGN.md revision could not be created.')
+      return
+    }
+    presentationDesignContextRef.current = {
+      designMd,
+      pages: revised.contract.slides.map((slide) => ({
+        visual: slide.visualRoute,
+        acceptance: slide.acceptance.map((rule) => `${rule.id}: ${rule.criterion}`),
+        density: slide.density,
+      })),
+    }
+    setDesignDraft(designMd)
+    setDesignEditorEditable(true)
+    setChat((previous) => [
+      ...previous,
+      {
+        role: 'assistant',
+        text: '',
+        tools: [
+          {
+            name: 'design_contract',
+            summary: `DESIGN.md · revised · r${revised.contract.revision}`,
+            output: JSON.stringify({
+              status: revised.contract.status,
+              revision: revised.contract.revision,
+              designMd,
+              invalidation: revised.invalidation,
+            }),
+          },
+        ],
+      },
+    ])
   }
 
   const copyMessage = (text: string, idx: number) => {
@@ -2693,6 +2762,14 @@ export function AiPanel({
                   Save
                 </button>
               )}
+              {!designEditorEditable &&
+                ['producing', 'verified'].includes(
+                  extractPresentationDesignContract(designDraft)?.status ?? '',
+                ) && (
+                  <button className="primary" onClick={() => void beginDesignRevision()}>
+                    Create revision
+                  </button>
+                )}
             </footer>
           </section>
         </div>
@@ -3260,10 +3337,8 @@ function ToolChipList({
           (tool.display?.kind === 'text' && tool.display.text)
         )
         const hasOutput = !tool.running && (!!tool.output || hasDisplayData)
-        const designMd =
-          tool.name === 'plan_deck' || tool.name === 'design_contract'
-            ? extractPresentationDesignDocument(tool.output ?? '')
-            : undefined
+        const designMd = extractPresentationDesignDocument(tool.output ?? '')
+        const lifecycle = designMd ? presentationDesignLifecycle(designMd) : undefined
         return {
           id: `${index}:${tool.name}`,
           label: tool.summary,
@@ -3275,7 +3350,7 @@ function ToolChipList({
           tooltip: tool.name,
           ...(designMd && onOpenDesign
             ? {
-                label: tool.name === 'plan_deck' ? 'DESIGN.md · created' : tool.summary,
+                label: lifecycle?.label ?? tool.summary,
                 onActivate: () => onOpenDesign(designMd),
               }
             : {}),

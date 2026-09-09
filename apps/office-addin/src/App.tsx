@@ -535,6 +535,28 @@ function TimelineEvent(props: {
   )
 }
 
+export function presentationDesignLifecycle(output: string | undefined) {
+  if (!output) return undefined
+  try {
+    const value = JSON.parse(output) as { status?: unknown; revision?: unknown }
+    const status = typeof value.status === 'string' ? value.status : 'draft'
+    const revision = typeof value.revision === 'number' ? value.revision : 1
+    return {
+      editable: status === 'draft' || status === 'ready',
+      label:
+        status === 'verified'
+          ? 'DESIGN.md · 已验证'
+          : status === 'ready' || status === 'producing'
+            ? 'DESIGN.md · 已锁定'
+            : revision > 1
+              ? 'DESIGN.md · 已修订'
+              : 'DESIGN.md · 已创建',
+    }
+  } catch {
+    return { editable: true, label: 'DESIGN.md · 已创建' }
+  }
+}
+
 function PowerPointTimeline(props: {
   timeline: OfficePresentationTimeline
   activeProposalId?: string
@@ -584,9 +606,7 @@ function PowerPointTimeline(props: {
     .reverse()
     .find(
       (event) =>
-        event.kind === 'tool' &&
-        event.name === 'plan_deck' &&
-        Boolean(extractPresentationDesignDocument(event.output ?? '')),
+        event.kind === 'tool' && Boolean(extractPresentationDesignDocument(event.output ?? '')),
     )?.id
   let index = 0
   while (index < props.timeline.length) {
@@ -619,11 +639,11 @@ function PowerPointTimeline(props: {
     const tools = []
     while (index < props.timeline.length && props.timeline[index]?.kind === 'tool') {
       const tool = props.timeline[index] as Extract<OfficePresentationEvent, { kind: 'tool' }>
-      const designMd =
-        tool.name === 'plan_deck' ? extractPresentationDesignDocument(tool.output ?? '') : undefined
+      const designMd = extractPresentationDesignDocument(tool.output ?? '')
+      const lifecycle = designMd ? presentationDesignLifecycle(tool.output) : undefined
       tools.push({
         id: tool.callId,
-        label: designMd ? 'DESIGN.md · 已创建' : tool.summary,
+        label: lifecycle?.label ?? tool.summary,
         status:
           tool.state === 'running'
             ? ('running' as const)
@@ -632,7 +652,11 @@ function PowerPointTimeline(props: {
               : ('done' as const),
         ...(designMd
           ? {
-              onActivate: () => props.onOpenDesign(designMd, tool.id === latestDesignToolId),
+              onActivate: () =>
+                props.onOpenDesign(
+                  designMd,
+                  tool.id === latestDesignToolId && lifecycle?.editable === true,
+                ),
             }
           : { detail: toolDetail(tool) }),
       })

@@ -789,17 +789,22 @@ export function registerSlidesOnlyAiIpc(): void {
     'ai:save-sidecar',
     async (
       event,
-      data: { topic: string; styleSkill: string; createdAt: string },
+      data: { topic: string; styleSkill: string; designMd?: string; createdAt: string },
     ): Promise<{ ok: boolean }> => {
       assertAiIpcSender(event)
-      validateSlidesAiObject(data, ['topic', 'styleSkill', 'createdAt'])
+      validateSlidesAiObject(data, ['topic', 'styleSkill', 'designMd', 'createdAt'])
       validateSlidesAiString(data.topic, 100_000)
       validateSlidesAiString(data.styleSkill, 1_000_000)
+      if (data.designMd !== undefined) validateSlidesAiString(data.designMd, 2_000_000)
       validateSlidesAiString(data.createdAt, 128)
       try {
         const session = sessions.get(event.sender.id)
         return {
-          ok: savePresentationDesignSidecar(event.sender.id, session?.path, data.styleSkill),
+          ok: savePresentationDesignSidecar(
+            event.sender.id,
+            session?.path,
+            data.designMd ?? data.styleSkill,
+          ),
         }
       } catch {
         return { ok: false }

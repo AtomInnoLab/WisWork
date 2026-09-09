@@ -30,4 +30,21 @@ describe('presentation design sidecar', () => {
     expect(savePresentationDesignSidecar(senderId, undefined, 'Accent: #3B82F6')).toBe(true)
     expect(readPresentationDesignSidecar(senderId, undefined)).toContain('Accent: #3B82F6')
   })
+
+  it('persists a complete rendered contract without nesting a second DESIGN.md heading', () => {
+    const senderId = 91359
+    const deckPath = join(mkdtempSync(join(tmpdir(), 'wiswork-design-')), 'deck.pptx')
+    const designMd = '# DESIGN.md\n\nStatus: producing\nRevision: 4\n\n## Brief\n\n- Topic: Nature'
+
+    expect(savePresentationDesignSidecar(senderId, deckPath, designMd)).toBe(true)
+    expect(readFileSync(deckPath.replace(/\.pptx$/, '.design.md'), 'utf8')).toBe(designMd)
+  })
+
+  it('supports uppercase PowerPoint file extensions', () => {
+    const senderId = 91360
+    const deckPath = join(mkdtempSync(join(tmpdir(), 'wiswork-design-')), 'deck.PPTX')
+
+    expect(savePresentationDesignSidecar(senderId, deckPath, 'Accent: #3B82F6')).toBe(true)
+    expect(readPresentationDesignSidecar(senderId, deckPath)).toContain('Accent: #3B82F6')
+  })
 })
