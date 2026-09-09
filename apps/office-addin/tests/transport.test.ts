@@ -33,6 +33,287 @@ function callbacks() {
 }
 
 describe('Office Agent transport', () => {
+  const activity = (state = 'running', extra: Record<string, unknown> = {}) => ({
+    type: 'wiswork_tool_activity',
+    generation: 3,
+    call_id: 'call_search123',
+    tool_name: 'image_search',
+    state,
+    started_at: 1000,
+    query: 'volcano',
+    ...extra,
+  })
+  const searchRequest = {
+    system: '',
+    messages: [],
+    tools: [{ name: 'image_search', description: 'images', inputSchema: { type: 'object' } }],
+  }
+
+  it('observes host retrieval without asking the local agent to execute it', async () => {
+    const cb = callbacks()
+    const observe = vi.fn()
+    const handleToolFrame = vi.fn()
+    const transport = createPcBridgeAgentTransport({
+      snapshot: () => ({ enhanced: { session_generation: 3 } }),
+      handleToolFrame,
+      authenticatedFetch: vi.fn(async () =>
+        sse([
+          `data: ${JSON.stringify(activity())}`,
+          `data: ${JSON.stringify(activity('complete', { summary: '1 result', result_count: 1, display: { kind: 'images', items: [{ url: 'https://example.com/volcano', title: 'Volcano' }] } }))}`,
+        ]),
+      ),
+    } as any)
+    transport.setToolActivityHandler?.(observe)
+    transport.stream(searchRequest, cb)
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(observe.mock.calls.map(([event]) => event.state)).toEqual(['running', 'complete'])
+    expect(observe.mock.calls[1]?.[0].display.items[0].url).toBe('https://example.com/volcano')
+    expect(cb.onToolCall).not.toHaveBeenCalled()
+    expect(handleToolFrame).not.toHaveBeenCalled()
+    expect(cb.onError).not.toHaveBeenCalled()
+  })
+
+  it('binds the initial enhanced generation negotiated after the request starts', async () => {
+    let generation: number | undefined
+    const cb = callbacks(),
+      observe = vi.fn()
+    const transport = createPcBridgeAgentTransport({
+      snapshot: () =>
+        generation === undefined ? {} : { enhanced: { session_generation: generation } },
+      authenticatedFetch: vi.fn(async () => {
+        // PC promotes an initially standard session while accepting this first request.
+        generation = 3
+        return sse([
+          `data: ${JSON.stringify(activity())}`,
+          `data: ${JSON.stringify(activity('complete', { summary: 'Retrieval complete', result_count: 0 }))}`,
+        ])
+      }),
+    })
+    transport.setToolActivityHandler?.(observe)
+    transport.stream(searchRequest, cb)
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(observe.mock.calls.map(([event]) => event.state)).toEqual(['running', 'complete'])
+    expect(cb.onError).not.toHaveBeenCalled()
+    expect(cb.onToolCall).not.toHaveBeenCalled()
+  })
+
+  it.each([undefined, 3])(
+    'rejects a generation change after the first accepted activity (initial %s)',
+    async (initial) => {
+      let generation = initial
+      let stream!: ReadableStreamDefaultController<Uint8Array>
+      const cb = callbacks(),
+        observe = vi.fn()
+      const transport = createPcBridgeAgentTransport({
+        snapshot: () =>
+          generation === undefined ? {} : { enhanced: { session_generation: generation } },
+        authenticatedFetch: vi.fn(async () => {
+          generation = 3
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                stream = controller
+                controller.enqueue(
+                  new TextEncoder().encode(`data: ${JSON.stringify(activity())}\n\n`),
+                )
+              },
+            }),
+          )
+        }),
+      })
+      transport.setToolActivityHandler?.(observe)
+      transport.stream(searchRequest, cb)
+      await vi.waitFor(() => expect(observe).toHaveBeenCalledOnce())
+      generation = 4
+      stream.enqueue(
+        new TextEncoder().encode(
+          `data: ${JSON.stringify(activity('complete', { generation: 4, summary: 'Retrieval complete' }))}\n\n`,
+        ),
+      )
+      stream.close()
+      await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+      expect(cb.onError).toHaveBeenCalledWith('transport_invalid_stream')
+      expect(observe.mock.calls.map(([event]) => event.state)).toEqual(['running', 'error'])
+      expect(cb.onToolCall).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each([undefined, 3])(
+    'rejects unnegotiated or replaced generation before the first activity (initial %s)',
+    async (initial) => {
+      let generation = initial
+      const cb = callbacks(),
+        observe = vi.fn()
+      const transport = createPcBridgeAgentTransport({
+        snapshot: () =>
+          generation === undefined ? {} : { enhanced: { session_generation: generation } },
+        authenticatedFetch: vi.fn(async () => {
+          if (generation === 3) generation = 4
+          return sse([
+            `data: ${JSON.stringify(activity('running', { generation: generation ?? 3 }))}`,
+          ])
+        }),
+      })
+      transport.setToolActivityHandler?.(observe)
+      transport.stream(searchRequest, cb)
+      await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+      expect(cb.onError).toHaveBeenCalledWith('transport_invalid_stream')
+      expect(observe).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each([
+    { generation: 2 },
+    { tool_name: 'execute_office_js' },
+    { query: 'x'.repeat(241) },
+    { unexpected_secret: 'secret' },
+    { display: { kind: 'images', items: [{ url: 'https://user:secret@example.com/' }] } },
+    { display: { kind: 'images', items: [{ url: 'https://127.0.0.1/' }] } },
+  ])('rejects invalid or stale host retrieval activity: %j', async (extra) => {
+    const cb = callbacks(),
+      observe = vi.fn()
+    const transport = createPcBridgeAgentTransport({
+      snapshot: () => ({ enhanced: { session_generation: 3 } }),
+      authenticatedFetch: vi.fn(async () =>
+        sse([`data: ${JSON.stringify(activity('running', extra))}`]),
+      ),
+    } as any)
+    transport.setToolActivityHandler?.(observe)
+    transport.stream(searchRequest, cb)
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(observe).not.toHaveBeenCalled()
+    expect(cb.onError).toHaveBeenCalledWith('transport_invalid_stream')
+  })
+
+  it('does not publish host activity from a tool-free visual-review subturn', async () => {
+    const cb = callbacks(),
+      observe = vi.fn()
+    const transport = createPcBridgeAgentTransport({
+      snapshot: () => ({ enhanced: { session_generation: 3 } }),
+      authenticatedFetch: vi.fn(async () => sse([`data: ${JSON.stringify(activity())}`])),
+    } as any)
+    transport.setToolActivityHandler?.(observe)
+    transport.stream({ system: '', messages: [], tools: [] }, cb)
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(observe).not.toHaveBeenCalled()
+  })
+
+  it('keeps the main retrieval observer active across a tool-free review subturn', async () => {
+    let main!: ReadableStreamDefaultController<Uint8Array>
+    const observe = vi.fn(),
+      cb = callbacks()
+    const transport = createPcBridgeAgentTransport({
+      snapshot: () => ({ enhanced: { session_generation: 3 } }),
+      authenticatedFetch: vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                main = controller
+              },
+            }),
+          ),
+        )
+        .mockResolvedValueOnce(sse([])),
+    })
+    transport.setToolActivityHandler?.(observe)
+    transport.stream(searchRequest, cb)
+    main.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(activity())}\n\n`))
+    await vi.waitFor(() => expect(observe).toHaveBeenCalledOnce())
+    const review = callbacks()
+    transport.stream({ system: '', messages: [], tools: [] }, review)
+    await vi.waitFor(() => expect(review.onDone).toHaveBeenCalledOnce())
+    main.enqueue(
+      new TextEncoder().encode(
+        `data: ${JSON.stringify(activity('complete', { summary: 'Retrieval complete', result_count: 0 }))}\n\n`,
+      ),
+    )
+    main.close()
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(observe.mock.calls.map(([event]) => event.state)).toEqual(['running', 'complete'])
+  })
+
+  it.each(['duplicate-start', 'duplicate-result', 'orphan-result'])(
+    'rejects %s without duplicate observations or execution',
+    async (scenario) => {
+      const start = activity(),
+        complete = activity('complete', { summary: 'Retrieval complete' })
+      const events =
+        scenario === 'duplicate-start'
+          ? [start, start]
+          : scenario === 'duplicate-result'
+            ? [start, complete, complete]
+            : [complete]
+      const cb = callbacks(),
+        observe = vi.fn()
+      const transport = createPcBridgeAgentTransport({
+        snapshot: () => ({ enhanced: { session_generation: 3 } }),
+        authenticatedFetch: vi.fn(async () =>
+          sse(events.map((event) => `data: ${JSON.stringify(event)}`)),
+        ),
+      })
+      transport.setToolActivityHandler?.(observe)
+      transport.stream(searchRequest, cb)
+      await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+      expect(cb.onError).toHaveBeenCalledWith('transport_invalid_stream')
+      expect(observe.mock.calls.map(([event]) => event.state)).toEqual(
+        scenario === 'duplicate-start'
+          ? ['running', 'error']
+          : scenario === 'duplicate-result'
+            ? ['running', 'complete']
+            : [],
+      )
+      expect(cb.onToolCall).not.toHaveBeenCalled()
+    },
+  )
+
+  it('detaches the observer before late responses when its session is disposed', async () => {
+    const cb = callbacks(),
+      observe = vi.fn()
+    let respond!: (response: Response) => void
+    const transport = createPcBridgeAgentTransport({
+      snapshot: () => ({ enhanced: { session_generation: 3 } }),
+      authenticatedFetch: () =>
+        new Promise<Response>((resolve) => {
+          respond = resolve
+        }),
+    })
+    transport.setToolActivityHandler?.(observe)
+    transport.stream(searchRequest, cb)
+    transport.setToolActivityHandler?.(undefined)
+    respond(sse([`data: ${JSON.stringify(activity())}`]))
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(observe).not.toHaveBeenCalled()
+  })
+
+  it('closes running host activity on cancellation', async () => {
+    const cb = callbacks(),
+      observe = vi.fn()
+    const transport = createPcBridgeAgentTransport({
+      snapshot: () => ({ enhanced: { session_generation: 3 } }),
+      authenticatedFetch: vi.fn(
+        async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(
+                  new TextEncoder().encode(`data: ${JSON.stringify(activity())}\n\n`),
+                )
+              },
+            }),
+          ),
+      ),
+    } as any)
+    transport.setToolActivityHandler?.(observe)
+    const handle = transport.stream(searchRequest, cb)
+    await vi.waitFor(() => expect(observe).toHaveBeenCalledOnce())
+    handle.cancel()
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(observe.mock.calls.map(([event]) => event.state)).toEqual(['running', 'error'])
+    expect(observe.mock.calls[1]?.[0].summary).toBe('Retrieval interrupted')
+  })
+
   it('keeps the stream deadline below Relay while allowing long model turns', () => {
     expect(STREAM_RESPONSE_TIMEOUT_MS).toBe(280_000)
   })

@@ -709,7 +709,7 @@ export function AiPanel({
   }, [currentFilePath])
   useEffect(
     () =>
-      window.slidesApi.onDesignSidecarChanged?.(() => {
+      window.slidesApi?.onDesignSidecarChanged?.(() => {
         void refreshDesignSidecar()
       }),
     [],

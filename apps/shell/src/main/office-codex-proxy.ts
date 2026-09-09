@@ -3,6 +3,7 @@ import {
   createToolExecutionSuspensionAuthority,
   type AgentToolDef,
   type ToolExecution,
+  type ToolDisplay,
 } from '@wiswork/agent-core'
 import {
   compiledDocumentTool,
@@ -23,6 +24,71 @@ import type { OfficeRetrievalProxy, OfficeWebCapability } from './office-retriev
 const MAX_BODY_BYTES = 256 * 1024
 const MAX_TEXT_BYTES = 128 * 1024
 const MAX_TOOLS = 64
+const MAX_RETRIEVAL_DISPLAY_BYTES = 8 * 1024
+
+/** Project public source links only; model output and upstream error bodies stay on PC. */
+function retrievalDisplay(
+  output: string,
+  toolName: string,
+): { result_count?: number; display?: ToolDisplay } {
+  try {
+    const value = JSON.parse(output)
+    const entries: unknown[] = Array.isArray(value?.images)
+      ? value.images
+      : Array.isArray(value?.results)
+        ? value.results
+        : toolName === 'web_fetch'
+          ? [value]
+          : []
+    const items: NonNullable<ToolDisplay['items']> = []
+    for (const entry of entries.slice(0, 20)) {
+      if (!entry || typeof entry !== 'object') continue
+      const record = entry as Record<string, unknown>
+      const raw = record.source_url ?? record.url
+      if (typeof raw !== 'string' || raw.length > 2048) continue
+      let url: URL
+      try {
+        url = new URL(raw)
+      } catch {
+        continue
+      }
+      if (
+        url.protocol !== 'https:' ||
+        url.username ||
+        url.password ||
+        url.port ||
+        !url.hostname.includes('.') ||
+        /^[\d.]+$/.test(url.hostname) ||
+        url.hostname.includes(':') ||
+        /\.(?:localhost|local)$/.test(url.hostname)
+      )
+        continue
+      // Query/fragment may contain signed credentials; source cards do not need them.
+      url.search = ''
+      url.hash = ''
+      const item = {
+        url: url.href,
+        ...(typeof record.title === 'string' ? { title: record.title.slice(0, 160) } : {}),
+      }
+      if (Buffer.byteLength(JSON.stringify([...items, item])) > MAX_RETRIEVAL_DISPLAY_BYTES) break
+      items.push(item)
+      if (items.length === 8) break
+    }
+    return {
+      ...(toolName === 'web_fetch' ? {} : { result_count: Math.min(entries.length, 20) }),
+      ...(items.length
+        ? {
+            display: {
+              kind: toolName === 'image_search' ? 'images' : 'links',
+              items,
+            } as ToolDisplay,
+          }
+        : {}),
+    }
+  } catch {
+    return {}
+  }
+}
 export const OFFICE_PROXY_KEEPALIVE_MS = 15_000
 interface PolicyAuthority {
   issue(value: {
@@ -198,8 +264,35 @@ export function createOfficeCodexProxy(options: {
         image_search: 'image-search.v1',
       }
       const capability = retrievalCapability[call.name]
+      const startedAt = Date.now()
+      const activity = (
+        state: 'running' | 'complete' | 'error',
+        details: Record<string, unknown> = {},
+      ) => {
+        if (terminal || !open) return
+        push(
+          `data: ${JSON.stringify({
+            type: 'wiswork_tool_activity',
+            generation: request.statement.session_generation,
+            call_id: `call_${createHash('sha256')
+              .update(JSON.stringify([turnId, call.id]))
+              .digest('base64url')}`,
+            tool_name: call.name,
+            state,
+            started_at: startedAt,
+            ...(typeof call.input.query === 'string'
+              ? { query: call.input.query.slice(0, 240) }
+              : {}),
+            ...details,
+          })}\n\n`,
+        )
+      }
+      const retrievalSignal = signal ?? request.signal
+      const interrupted = () => activity('error', { summary: 'Retrieval interrupted' })
       try {
         if (capability && request.executeRetrieval) {
+          activity('running')
+          retrievalSignal.addEventListener('abort', interrupted, { once: true })
           const output = await request.executeRetrieval(
             capability,
             call.input,
@@ -209,6 +302,11 @@ export function createOfficeCodexProxy(options: {
             output: new TextDecoder('utf-8', { fatal: true }).decode(output),
             isError: false,
           }
+          if (!retrievalSignal.aborted)
+            activity('complete', {
+              summary: 'Retrieval complete',
+              ...retrievalDisplay(result.output, call.name),
+            })
         } else {
           result = await request.executeTool({
             turnId,
@@ -224,7 +322,9 @@ export function createOfficeCodexProxy(options: {
         }
       } catch (error) {
         telemetry('dispatch', 'failed')
-        if (capability)
+        if (capability) {
+          if (request.executeRetrieval && !retrievalSignal.aborted)
+            activity('error', { summary: 'Retrieval unavailable' })
           return {
             output:
               error instanceof Error && error.message === 'retrieval_cancelled'
@@ -234,7 +334,10 @@ export function createOfficeCodexProxy(options: {
             summary: 'Office retrieval unavailable',
             mutated: false,
           }
+        }
         throw error
+      } finally {
+        retrievalSignal.removeEventListener('abort', interrupted)
       }
       telemetry('dispatch', result.isError ? 'failed' : 'succeeded')
       telemetry('verify', result.isError ? 'failed' : mutation ? 'applied_unverified' : 'verified')

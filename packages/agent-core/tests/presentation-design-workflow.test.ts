@@ -3,6 +3,7 @@ import {
   buildPresentationDesignDocument,
   extractPresentationDesignContract,
   extractPresentationDesignDocument,
+  formatPresentationDesignReadinessFailure,
   parsePresentationDesignContract,
   parsePresentationDesignPlan,
   PRESENTATION_DESIGN_WORKFLOW_PROMPT,
@@ -362,6 +363,122 @@ describe('presentation design workflow', () => {
         'slides[0].assetIds must reference a ready asset',
       ]),
     })
+  })
+
+  it('distinguishes validated status from missing references in the six-slide readiness failure', () => {
+    const contract = parsePresentationDesignContract({
+      schemaVersion: 1,
+      status: 'ready',
+      prototypePages: [1, 2, 3],
+      brief: {
+        topic: 'Nature',
+        audience: 'Leaders',
+        occasion: 'Review',
+        desiredOutcome: 'Approve',
+        language: 'English',
+        pageCount: 6,
+        aspectRatio: '16:9',
+        sourceConstraints: [],
+      },
+      narrative: {
+        coreHook: 'Invest now',
+        opening: 'Risk',
+        development: 'Evidence',
+        tension: 'Loss',
+        resolution: 'Invest',
+        closingAction: 'Approve',
+      },
+      visualSystem: {
+        style: 'Editorial',
+        colors: { accent: '#10B981' },
+        typography: { title: '32pt' },
+        safeMargin: '64px',
+        grid: '12 columns',
+        imageTreatment: 'Documentary',
+        chartTreatment: 'Direct labels',
+        antiPatterns: ['No filler'],
+      },
+      slides: Array.from({ length: 6 }, (_, index) => ({
+        number: index + 1,
+        title: 'Nature',
+        role: 'Evidence',
+        claim: 'Invest now',
+        content: ['A claim'],
+        evidence: [],
+        visualRoute: 'Photo',
+        layoutFamily: 'split',
+        focalVisual: 'Landscape',
+        density: 'low',
+        assetIds: index === 1 ? [] : [`image-${index % 4}`],
+        acceptance: [{ id: `A${index + 1}.1`, criterion: 'Readable' }],
+      })),
+      assets: Array.from({ length: 4 }, (_, index) => ({
+        id: `image-${index}`,
+        slideNumbers: [index + 1],
+        type: 'image',
+        role: 'evidence',
+        intent: 'Support the claim',
+        source: `https://sources.example/page-${index}`,
+        localReference: `https://images.example/${index}.jpg`,
+        crop: '16:9',
+        placement: 'right',
+        status: 'validated',
+      })),
+      deckAcceptance: [{ id: 'D1', criterion: 'Complete' }],
+    })
+    const issues = validatePresentationDesignReadiness(contract).issues
+    expect(issues).toEqual([
+      ...[0, 2, 3, 4, 5].map((index) => `slides[${index}].assetIds must reference a ready asset`),
+      ...[0, 1, 2, 3].map((index) => `assets[${index}] must be ready or fallback_ready`),
+    ])
+    const before = structuredClone(contract)
+    const output = formatPresentationDesignReadinessFailure(contract, issues)
+    expect(output).toContain('"id":"image-0","status":"validated"')
+    expect(output).toContain('"source":true,"localReference":true,"missingForReady":[]')
+    expect(output).not.toContain('https://')
+    expect(contract).toEqual(before)
+
+    const missingReference = structuredClone(contract)
+    delete missingReference.assets[0]!.localReference
+    const missing = formatPresentationDesignReadinessFailure(
+      missingReference,
+      validatePresentationDesignReadiness(missingReference).issues,
+    )
+    expect(missing).toContain('"missingForReady":["localReference"]')
+    // Merely claiming ready does not fix an absent reference.
+    missingReference.assets[0]!.status = 'ready'
+    expect(validatePresentationDesignReadiness(missingReference).ready).toBe(false)
+    const repaired = {
+      ...contract,
+      assets: contract.assets.map((asset) => ({ ...asset, status: 'ready' as const })),
+    }
+    expect(validatePresentationDesignReadiness(repaired)).toEqual({ ready: true, issues: [] })
+    expect(repaired.assets[0]!.localReference).toBe('https://images.example/0.jpg')
+    for (const count of [120, 1_000]) {
+      const oversized = {
+        ...contract,
+        assets: Array.from({ length: count }, (_, index) => ({
+          ...contract.assets[0]!,
+          id: `candidate-${index}-${'素材🖼'.repeat(15)}`,
+        })),
+      }
+      const allIssues = validatePresentationDesignReadiness(oversized).issues
+      const bounded = formatPresentationDesignReadinessFailure(oversized, allIssues)
+      expect(new TextEncoder().encode(bounded).byteLength).toBeLessThanOrEqual(16_000)
+      const omitted = bounded.match(/Omitted (\d+) readiness issues; (\d+) asset details/)
+      expect(omitted).not.toBeNull()
+      const lines = bounded.split('\n')
+      expect(Number(omitted![1])).toBe(
+        allIssues.length - lines.filter((line) => allIssues.includes(line)).length,
+      )
+      expect(Number(omitted![2])).toBe(
+        count - lines.filter((line) => line.startsWith('{"path":')).length,
+      )
+      for (let index = 0; index < 4; index++) expect(bounded).toContain(`"id":"candidate-${index}-`)
+      expect(bounded).toContain('Resubmit the full corrected contract with plan_deck')
+      expect(bounded).toContain('never promote an unresolved asset just to pass the gate')
+      expect(bounded).toContain('reference presence is not proof of validation')
+    }
   })
 
   it('immutably locks a ready revision for production and verifies it', () => {

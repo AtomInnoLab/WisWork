@@ -1,5 +1,6 @@
 import {
   extractPresentationDesignContract,
+  formatPresentationDesignReadinessFailure,
   parsePresentationDesignContract,
   parsePresentationDesignPlan,
   PRESENTATION_DESIGN_CONTRACT_SCHEMA,
@@ -3643,7 +3644,7 @@ async function executeTool(
             if (!readiness.ready)
               return fail(
                 t('aiFailPlan'),
-                `DESIGN.md readiness check failed: ${readiness.issues.join('; ')}`,
+                `DESIGN.md readiness check failed: ${formatPresentationDesignReadinessFailure(contract, readiness.issues)}`,
               )
           }
           plan =

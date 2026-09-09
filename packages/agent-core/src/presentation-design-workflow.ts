@@ -6,6 +6,7 @@ For a whole-deck creation or redesign, work as a presentation director, not a te
 Write every user-facing DESIGN.md field in the user's language. Search queries and source titles may remain in their source language, but explain their intent, placement, and status in the user's language.
 3. Deck plan: give every slide one conclusion-led headline, a narrative role, one focal visual, supporting evidence, a layout family, asset needs/provenance, density, and slide-specific acceptance criteria. Do not use the same layout family on adjacent slides unless continuity requires it.
 4. Asset plan: search real people, products, places, brands, and current facts; validate selected image sources before finalizing DESIGN.md as ready. Generate only abstract/custom illustration when generation exists. Use native editable charts for data. Never invent precise data or image URLs.
+Each plan_deck submission replaces the complete contract; it is not an asset patch. Keep research candidates in the draft, but include only selected production assets in the final ready inventory and preserve research history in discovery.researchNotes. Remove unused candidates, never required visuals merely to pass the gate. For each selected image, source records provenance (use source_url/sourceUrl when returned); localReference is the exact direct image_url/imageUrl returned by image_search, or a host-approved local asset reference, not the source webpage. Search results alone do not prove downloaded image usability. Asset status validated is not ready: after the required validation and placement decisions, explicitly submit ready with both source and localReference. Do not relabel unresolved or unvalidated assets to bypass the gate. A native fallback must be explicit, usable, and recorded with fallback_ready, its fallback description, and provenance or an approved reference. If validation is unavailable, keep the contract draft or use that explicit native fallback and explain the limitation. No hidden asset-finalization tool runs after plan_deck.
 5. Prototype gate: first create or identify the cover, one representative content page, and one complex visual page. Screenshot and review those pages before continuing the remaining production batches. When fewer than three slides are requested, review every slide.
 6. Production loop: complete the remaining work in batches of 2–3 slides. After each batch, inspect screenshots plus geometry, repair concrete defects, and re-screenshot changed slides before continuing.
 7. Quality bar: each slide needs one clear conclusion and one focal visual; readable hierarchy, deliberate whitespace, aligned geometry, sufficient contrast, relevant imagery, and no accidental overflow, overlap, distortion, placeholder content, or repetitive card grids. Review design-system consistency and rhythm across adjacent slides, then run final whole-deck verification.
@@ -305,6 +306,8 @@ export const PRESENTATION_DESIGN_CONTRACT_SCHEMA: Record<string, unknown> = {
     assets: {
       type: 'array',
       maxItems: 120,
+      description:
+        'Full replacement inventory, not a patch. Drafts may contain research candidates. A ready contract contains only selected production assets, all ready or fallback_ready; preserve unused research in discovery.researchNotes.',
       items: {
         type: 'object',
         additionalProperties: true,
@@ -330,15 +333,29 @@ export const PRESENTATION_DESIGN_CONTRACT_SCHEMA: Record<string, unknown> = {
           type: boundedString(100),
           role: boundedString(100),
           intent: boundedString(1_000),
-          source: boundedString(2_000),
+          source: {
+            ...boundedString(2_000),
+            description:
+              'Provenance: the image search source_url/sourceUrl or other verified origin. This is not necessarily a usable image reference.',
+          },
           crop: boundedString(200),
           placement: boundedString(500),
           status: {
             type: 'string',
             enum: ['needed', 'searching', 'downloaded', 'validated', 'ready', 'fallback_ready'],
+            description:
+              'validated is still pre-production. Explicitly use ready only after validation with source, localReference, crop, and placement complete; fallback_ready requires an explicit usable fallback. Never promote an unresolved asset just to pass readiness.',
           },
-          localReference: boundedString(2_000),
-          fallback: boundedString(2_000),
+          localReference: {
+            ...boundedString(2_000),
+            description:
+              'Required for ready: exact direct image_url/imageUrl returned by image_search, or a host-approved local asset reference. Do not substitute a source webpage or invent a URL.',
+          },
+          fallback: {
+            ...boundedString(2_000),
+            description:
+              'Required for fallback_ready: describe the actual usable native chart/vector/text alternative, with source or localReference. Update the slide visual plan to match.',
+          },
         },
       },
     },
@@ -718,6 +735,80 @@ export function validatePresentationDesignReadiness(contract: PresentationDesign
     issues.push('acceptance ids must be unique')
   if (contract.deckAcceptance.length === 0) issues.push('deckAcceptance must not be empty')
   return { ready: issues.length === 0, issues }
+}
+
+/** Explain a rejected submission without changing the contract or claiming asset validation. */
+export function formatPresentationDesignReadinessFailure(
+  contract: PresentationDesignContract,
+  issues: readonly string[],
+): string {
+  const details = contract.assets.flatMap((asset, index) => {
+    const missingForReady = (['id', 'type', 'role', 'intent', 'crop', 'placement'] as const).filter(
+      (field) => !asset[field],
+    ) as string[]
+    if (asset.status === 'fallback_ready') {
+      if (!asset.fallback) missingForReady.push('fallback')
+      if (!asset.source && !asset.localReference) missingForReady.push('source or localReference')
+    } else {
+      if (!asset.source) missingForReady.push('source')
+      if (!asset.localReference) missingForReady.push('localReference')
+    }
+    if (['ready', 'fallback_ready'].includes(asset.status) && missingForReady.length === 0)
+      return []
+    return [
+      {
+        path: `assets[${index}]`,
+        id: asset.id,
+        status: asset.status,
+        source: Boolean(asset.source),
+        localReference: Boolean(asset.localReference),
+        missingForReady,
+      },
+    ]
+  })
+  const recovery = [
+    ...(details.length
+      ? [
+          'For ready assets, source is provenance; localReference must be the exact returned image_url/imageUrl or a host-approved asset reference, not a webpage. validated does not mean ready. Complete validation and placement before explicitly submitting ready; never promote an unresolved asset just to pass the gate. If unavailable, retain draft or declare a usable native fallback with fallback_ready, fallback, and source or localReference. Remove only unused candidates from the final production inventory; preserve research notes and required visuals.',
+        ]
+      : []),
+    'Resubmit the full corrected contract with plan_deck; no asset-finalization tool runs automatically. The active contract is unchanged and this submission has not authorized production.',
+  ].join('\n')
+  const heading = details.length
+    ? 'Asset readiness details (reference presence is not proof of validation):'
+    : ''
+  const omittedSummary = (issueCount: number, assetCount: number) =>
+    `Omitted ${issueCount} readiness issues; ${assetCount} asset details to keep this response bounded.`
+  const encoder = new TextEncoder()
+  // Reserve repair instructions and the largest possible omission counts before adding diagnostics.
+  const reserved = encoder.encode(
+    `${heading}\n${omittedSummary(issues.length, details.length)}\n${recovery}\n`,
+  ).byteLength
+  const takeWithin = (lines: readonly string[], budget: number) => {
+    const kept: string[] = []
+    let bytes = 0
+    for (const line of lines) {
+      const size = encoder.encode(line).byteLength + 1
+      if (bytes + size > budget) break
+      kept.push(line)
+      bytes += size
+    }
+    return { text: kept.join('\n'), count: kept.length, bytes }
+  }
+  const issueBlock = takeWithin(issues, Math.min(4_000, 16_000 - reserved))
+  const assetBlock = takeWithin(
+    details.map((detail) => JSON.stringify(detail)),
+    16_000 - reserved - issueBlock.bytes,
+  )
+  return [
+    issueBlock.text,
+    heading,
+    assetBlock.text,
+    omittedSummary(issues.length - issueBlock.count, details.length - assetBlock.count),
+    recovery,
+  ]
+    .filter(Boolean)
+    .join('\n')
 }
 
 const bullets = (items: string[]): string => items.map((item) => `- ${item}`).join('\n')

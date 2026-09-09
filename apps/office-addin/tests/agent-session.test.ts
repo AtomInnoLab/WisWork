@@ -8,6 +8,7 @@ import {
 import type { ProposalDecision, StructuredProposal } from '../src/agent/proposal-controller.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import type { OfficePowerPointVisualReviewer } from '../src/skills/powerpoint/powerpoint-verification.js'
+import { createPcBridgeAgentTransport } from '../src/agent/transport.js'
 
 function transportHarness() {
   let callbacks: AgentStreamCallbacks | undefined
@@ -396,6 +397,115 @@ describe('Office agent session', () => {
         .timeline.filter((event) => event.kind === 'assistant')
         .map((event) => ('text' in event ? event.text : '')),
     ).toEqual(['先检查文稿。', '再调整版式。', '最后复查。'])
+  })
+
+  it.each(['complete', 'error'])(
+    'interleaves observed PC retrieval %s without local execution',
+    async (state) => {
+      const executeTool = vi.fn(async () => ({ output: 'must not execute', summary: 'search' }))
+      const base = {
+        type: 'wiswork_tool_activity',
+        generation: 3,
+        call_id: 'call_search123',
+        tool_name: 'image_search',
+        started_at: 1000,
+        query: 'volcano',
+      }
+      const frames = [
+        { type: 'content_block_delta', delta: { type: 'text_delta', text: '先搜索图片。' } },
+        { ...base, state: 'running' },
+        {
+          ...base,
+          state,
+          summary: state === 'complete' ? '1 result' : 'Retrieval unavailable',
+          ...(state === 'complete'
+            ? {
+                result_count: 1,
+                display: {
+                  kind: 'images',
+                  items: [{ title: 'Volcano', url: 'https://example.com/volcano' }],
+                },
+              }
+            : {}),
+        },
+        { type: 'content_block_delta', delta: { type: 'text_delta', text: '再准备规划。' } },
+        { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+      ]
+      const transport = createPcBridgeAgentTransport({
+        snapshot: () => ({ enhanced: { session_generation: 3 } }),
+        authenticatedFetch: vi.fn(
+          async () =>
+            new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('')),
+        ),
+      } as any)
+      const session = createOfficeAgentSession({
+        transport,
+        skill: {
+          id: 'test',
+          systemPrompt: '',
+          tools: [{ name: 'image_search', description: 'images', inputSchema: { type: 'object' } }],
+          executeTool,
+        },
+        proposals: proposalsHarness().controller,
+      })
+      session.send('Create a deck')
+      await vi.waitFor(() => expect(session.snapshot().busy).toBe(false))
+      expect(session.snapshot().timeline.map((event) => event.kind)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+        'assistant',
+      ])
+      expect(
+        session
+          .snapshot()
+          .timeline.filter((event) => event.kind === 'assistant')
+          .map((event) => ('text' in event ? event.text : '')),
+      ).toEqual(['先搜索图片。', '再准备规划。'])
+      expect(session.snapshot().timeline[2]).toMatchObject({ name: 'image_search', state })
+      if (state === 'complete')
+        expect(session.snapshot().timeline[2]).toMatchObject({
+          display: {
+            kind: 'images',
+            items: [{ title: 'Volcano', url: 'https://example.com/volcano' }],
+          },
+        })
+      expect(executeTool).not.toHaveBeenCalled()
+      session.dispose()
+    },
+  )
+
+  it('marks observed retrieval failed when its stream fails before a result', async () => {
+    const start = {
+      type: 'wiswork_tool_activity',
+      generation: 3,
+      call_id: 'call_search123',
+      tool_name: 'image_search',
+      started_at: 1000,
+      state: 'running',
+    }
+    const transport = createPcBridgeAgentTransport({
+      snapshot: () => ({ enhanced: { session_generation: 3 } }),
+      authenticatedFetch: vi.fn(
+        async () => new Response(`data: ${JSON.stringify(start)}\n\ndata: {"type":"error"}\n\n`),
+      ),
+    })
+    const session = createOfficeAgentSession({
+      transport,
+      skill: {
+        id: 'test',
+        systemPrompt: '',
+        tools: [{ name: 'image_search', description: 'images', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(),
+      },
+      proposals: proposalsHarness().controller,
+    })
+    session.send('Create a deck')
+    await vi.waitFor(() => expect(session.snapshot().status).toBe('error'))
+    expect(session.snapshot().timeline.find((event) => event.kind === 'tool')).toMatchObject({
+      state: 'error',
+    })
+    session.dispose()
   })
 
   it('records paired Enhanced semantic tool failures in Taskpane diagnostics', async () => {

@@ -49,6 +49,7 @@ export type DiagnosticSafeCode =
   | 'upstream_rejected'
   | 'upstream_invalid_content_type'
   | 'stream_protocol_rejected'
+  | 'stream_interrupted'
   | 'stream_event_order_invalid'
   | 'stream_ended_early'
   | 'stream_reasoning_unsupported'
@@ -101,6 +102,7 @@ const SAFE_CODES = new Set<DiagnosticSafeCode>([
   'upstream_rejected',
   'upstream_invalid_content_type',
   'stream_protocol_rejected',
+  'stream_interrupted',
   'stream_event_order_invalid',
   'stream_ended_early',
   'stream_reasoning_unsupported',
@@ -358,6 +360,14 @@ function safeDiagnostic(code: string): {
       phase: 'request',
       outcome: 'failed',
       code: 'upstream_unavailable',
+    }
+  // The bridge uses these codes for interrupted reads, not protocol validation failures.
+  if (code === 'responses_stream_invalid' || code === 'responses_stream_upstream_interrupted')
+    return {
+      component: 'wisusage',
+      phase: 'stream',
+      outcome: 'failed',
+      code: 'stream_interrupted',
     }
   if (code.startsWith('responses_stream_'))
     return {

@@ -1,7 +1,6 @@
 import {
   suspendToolExecution,
   type AgentSkill,
-  type AgentTransport,
   type ToolExecution,
   type ToolExecutionOutcome,
 } from '@wiswork/agent-core'
@@ -25,6 +24,7 @@ import {
 } from './presentation-state.js'
 import type { PresentationVerificationStringKey } from '@wiswork/i18n'
 import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
+import type { OfficeAgentTransport } from './transport.js'
 
 export type AgentSessionStatus = 'idle' | 'working' | 'done' | 'cancelled' | 'error'
 
@@ -248,7 +248,7 @@ export function presentationClarificationText(
 }
 
 export function createOfficeAgentSession(dependencies: {
-  transport: AgentTransport
+  transport: OfficeAgentTransport
   skill: AgentSkill
   proposals: ProposalController | StructuredProposalController
   diagnostics?: Pick<OfficeDiagnostics, 'startTrace' | 'setTool' | 'record' | 'clear'>
@@ -586,6 +586,45 @@ export function createOfficeAgentSession(dependencies: {
       return suspendToolExecution(final)
     },
   }
+  dependencies.transport.setToolActivityHandler?.((activity) => {
+    if (disposed || !state.busy) return
+    const existing = state.timeline.find(
+      (event) => event.kind === 'tool' && event.callId === activity.callId,
+    )
+    const summary = toolActivity(activity.toolName, activity.state)
+    if (activity.state === 'running') {
+      if (existing) return
+      assistantSegmentPrefix = cumulativeAssistantText
+      closeAssistantSegment()
+      diagnose((diagnostics) => diagnostics.setTool(activity.toolName))
+      append({
+        id: eventId(),
+        kind: 'tool',
+        callId: activity.callId,
+        name: activity.toolName,
+        summary,
+        state: 'running',
+        ...(activity.query ? { output: activity.query } : {}),
+      })
+    } else {
+      if (!existing || existing.kind !== 'tool' || existing.state !== 'running') return
+      replace(existing.id, (event) =>
+        event.kind !== 'tool'
+          ? event
+          : {
+              ...event,
+              state: activity.state,
+              summary:
+                summary +
+                (activity.resultCount === undefined ? '' : ` · ${activity.resultCount} 条结果`),
+              durationMs: Math.max(0, Date.now() - activity.startedAt),
+              output: [activity.query, activity.summary].filter(Boolean).join('\n'),
+              ...(activity.display ? { display: activity.display } : {}),
+            },
+      )
+    }
+    publish({ activity: summary })
+  })
   dependencies.remoteTools?.setToolHandler?.(async (call) => {
     const definition = sessionSkill.tools.find((tool) => tool.name === call.toolName)
     if (!definition) return { output: 'unknown_tool', isError: true }
@@ -1084,6 +1123,7 @@ export function createOfficeAgentSession(dependencies: {
     dispose() {
       if (disposed) return
       disposed = true
+      dependencies.transport.setToolActivityHandler?.(undefined)
       dependencies.remoteTools?.setToolHandler?.(undefined)
       sessionEpoch += 1
       unsubscribeProposals()

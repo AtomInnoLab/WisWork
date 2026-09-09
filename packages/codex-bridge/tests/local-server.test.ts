@@ -325,6 +325,7 @@ describe('local responses bridge', () => {
       prepareTurn: () => ({
         ...prepared(),
         turnId: 'turn-private-parser',
+        // eslint-disable-next-line require-yield -- Simulate rejection before the first frame.
         async *messagesStreamToResponses() {
           const error = new Error('private_new_parser_code')
           error.name = 'ProtocolCompatibilityError'

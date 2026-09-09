@@ -142,6 +142,7 @@ describe('Office Codex proxy', () => {
     for await (const chunk of response.body as AsyncIterable<Uint8Array>)
       chunks.push(new TextDecoder().decode(chunk))
     expect(chunks.join('')).toContain('Done')
+    expect(chunks.join('')).not.toContain('wiswork_tool_activity')
     expect(executeTool).toHaveBeenCalledWith(
       expect.objectContaining({ generation: 3, toolName: 'get_document_text' }),
     )
@@ -275,7 +276,29 @@ describe('Office Codex proxy', () => {
   it('keeps PC-backed web and image search available to Enhanced PowerPoint turns', async () => {
     const executeTool = vi.fn()
     const executeRetrieval = vi.fn(async (capability: string) =>
-      capability === 'image-search.v1' ? { images: [] } : { results: [] },
+      new TextEncoder().encode(
+        JSON.stringify(
+          capability === 'image-search.v1'
+            ? {
+                images: [
+                  {
+                    title: 'Volcano',
+                    source_url: 'https://example.com/volcano',
+                    image_url: 'https://example.com/image.jpg',
+                    private_field: 'private-payload',
+                  },
+                ],
+              }
+            : capability === 'web-fetch.v1'
+              ? {
+                  url: 'https://example.com/article',
+                  title: 'Volcano article',
+                  content: 'private-page-content',
+                  content_type: 'text/plain',
+                }
+              : { results: [] },
+        ),
+      ),
     )
     const runtime = {
       async runOfficeTurn(input: any) {
@@ -284,7 +307,8 @@ describe('Office Codex proxy', () => {
           .map((tool: any) => tool.name)
         expect(names).toEqual(['web_search', 'web_fetch', 'image_search', 'plan_deck'])
         for (const name of names.slice(0, 3)) {
-          await input.toolSession.callTool(input.toolSession.credentials, {
+          input.onEvent({ type: 'text', text: `before ${name}` })
+          const result = await input.toolSession.callTool(input.toolSession.credentials, {
             id: `call_${name}`,
             name,
             input:
@@ -292,6 +316,9 @@ describe('Office Codex proxy', () => {
                 ? { url: 'https://example.com' }
                 : { query: 'volcano', max_results: 4 },
           })
+          expect(result.isError).toBe(false)
+          if (name === 'image_search') expect(result.output).toContain('private-payload')
+          input.onEvent({ type: 'text', text: `after ${name}` })
         }
         input.onEvent({ type: 'terminal', status: 'completed' })
       },
@@ -319,9 +346,54 @@ describe('Office Codex proxy', () => {
       executeRetrieval,
       executeTool,
     })
-    for await (const _chunk of response.body as AsyncIterable<Uint8Array>) {
-      /* drain */
-    }
+    let stream = ''
+    for await (const chunk of response.body as AsyncIterable<Uint8Array>)
+      stream += new TextDecoder().decode(chunk)
+    const activities = stream
+      .split('\n')
+      .filter((line) => line.startsWith('data: {'))
+      .map((line) => JSON.parse(line.slice(6)))
+      .filter((event) => event.type === 'wiswork_tool_activity')
+    expect(activities.map((event) => [event.tool_name, event.state])).toEqual([
+      ['web_search', 'running'],
+      ['web_search', 'complete'],
+      ['web_fetch', 'running'],
+      ['web_fetch', 'complete'],
+      ['image_search', 'running'],
+      ['image_search', 'complete'],
+    ])
+    expect(activities[4]).toMatchObject({
+      generation: 3,
+      query: 'volcano',
+      started_at: expect.any(Number),
+    })
+    expect(activities[3]).toMatchObject({
+      tool_name: 'web_fetch',
+      state: 'complete',
+      display: {
+        kind: 'links',
+        items: [{ url: 'https://example.com/article', title: 'Volcano article' }],
+      },
+    })
+    expect(activities[3]).not.toHaveProperty('result_count')
+    expect(stream).not.toContain('private-page-content')
+    expect(activities[5]).toMatchObject({
+      call_id: activities[4].call_id,
+      result_count: 1,
+      display: {
+        kind: 'images',
+        items: [{ title: 'Volcano', url: 'https://example.com/volcano' }],
+      },
+    })
+    expect(stream).not.toContain('private-payload')
+    expect(stream).not.toContain('image.jpg')
+    expect(stream).not.toContain('tool_use')
+    expect(stream.indexOf('before image_search')).toBeLessThan(
+      stream.indexOf('"tool_name":"image_search","state":"running"'),
+    )
+    expect(stream.indexOf('after image_search')).toBeGreaterThan(
+      stream.indexOf('"tool_name":"image_search","state":"complete"'),
+    )
     expect(executeTool).not.toHaveBeenCalled()
     expect(executeRetrieval.mock.calls.map(([capability]) => capability)).toEqual([
       'web-search.v1',
@@ -359,13 +431,83 @@ describe('Office Codex proxy', () => {
       requestId: 'request_12345678',
       statement: { ...statement, host: 'office-powerpoint' },
       executeRetrieval: vi.fn(async () => {
-        throw new Error('retrieval_upstream_error')
+        throw new Error('private-upstream-secret')
       }),
       executeTool: vi.fn(),
     })
-    for await (const _chunk of response.body as AsyncIterable<Uint8Array>) {
-      /* drain */
-    }
+    let stream = ''
+    for await (const chunk of response.body as AsyncIterable<Uint8Array>)
+      stream += new TextDecoder().decode(chunk)
+    const activities = stream
+      .split('\n')
+      .filter((line) => line.startsWith('data: {'))
+      .map((line) => JSON.parse(line.slice(6)))
+      .filter((event) => event.type === 'wiswork_tool_activity')
+    expect(activities.map((event) => event.state)).toEqual(['running', 'error'])
+    expect(activities[1]).toMatchObject({
+      call_id: activities[0].call_id,
+      summary: 'Retrieval unavailable',
+    })
+    expect(stream).not.toContain('private-upstream-secret')
+  })
+
+  it('bounds retrieval cards and excludes private fields, credentials and unsafe source URLs', async () => {
+    const images = [
+      { title: 'private', source_url: 'https://user:secret@example.com/' },
+      { title: 'local', source_url: 'https://127.0.0.1/' },
+      { title: 'script', source_url: 'javascript:alert(1)' },
+      ...Array.from({ length: 20 }, (_, index) => ({
+        title: '图'.repeat(500),
+        source_url: `https://example.com/${index}/${'x'.repeat(1500)}?token=private-token#secret`,
+        image_url: 'https://example.com/private-preview',
+        private_body: 'private-payload',
+      })),
+    ]
+    const output = JSON.stringify({ images, authorization: 'private-auth' })
+    const executeTool = vi.fn()
+    const proxy = createOfficeCodexProxy({
+      runtime: {
+        async runOfficeTurn(input: any) {
+          const result = await input.toolSession.callTool(input.toolSession.credentials, {
+            id: 'images',
+            name: 'image_search',
+            input: { query: '图'.repeat(4096), max_results: 20 },
+          })
+          expect(result).toMatchObject({ isError: false, output })
+          input.onEvent({ type: 'terminal', status: 'completed' })
+        },
+      } as any,
+      rollout,
+      policyAuthority: createShellEnhancedPolicyAuthority(() => 0),
+    })
+    const response = await proxy({
+      body: {
+        system: '',
+        messages: [],
+        tools: [{ name: 'image_search', description: 'images', input_schema: { type: 'object' } }],
+      },
+      signal: new AbortController().signal,
+      host: 'PowerPoint',
+      sessionId: 'session_12345678',
+      requestId: 'request_12345678',
+      statement: { ...statement, host: 'office-powerpoint' },
+      executeTool,
+      executeRetrieval: async () => new TextEncoder().encode(output),
+    })
+    let stream = ''
+    for await (const chunk of response.body as AsyncIterable<Uint8Array>)
+      stream += new TextDecoder().decode(chunk)
+    const lines = stream.split('\n').filter((line) => line.includes('wiswork_tool_activity'))
+    const [start, complete] = lines.map((line) => JSON.parse(line.slice(6)))
+    expect(start.query).toHaveLength(240)
+    expect(complete.result_count).toBe(20)
+    expect(complete.display.items.length).toBeGreaterThan(0)
+    expect(complete.display.items.length).toBeLessThanOrEqual(8)
+    for (const line of lines) expect(Buffer.byteLength(line)).toBeLessThan(12 * 1024)
+    expect(stream).not.toMatch(
+      /private-payload|private-token|private-auth|private-preview|127\.0\.0\.1|javascript:|user:secret/,
+    )
+    expect(executeTool).not.toHaveBeenCalled()
   })
 
   it('keeps bounded declarative PowerPoint writes without granting raw Office authority', async () => {

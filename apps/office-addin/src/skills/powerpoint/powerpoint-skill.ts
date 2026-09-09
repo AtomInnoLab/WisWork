@@ -1,4 +1,5 @@
 import {
+  formatPresentationDesignReadinessFailure,
   parsePresentationDesignContract,
   PRESENTATION_DESIGN_CONTRACT_SCHEMA,
   PRESENTATION_DESIGN_WORKFLOW_PROMPT,
@@ -1604,7 +1605,10 @@ export function createPowerPointSkill(options: {
             if (!['draft', 'ready'].includes(contract.status))
               return failure(call.name, 'design_contract_invalid_status: expected draft or ready')
             if (contract.status === 'ready' && !readiness.ready)
-              return failure(call.name, `design_contract_not_ready: ${readiness.issues.join('; ')}`)
+              return failure(
+                call.name,
+                `design_contract_not_ready: ${formatPresentationDesignReadinessFailure(contract, readiness.issues)}`,
+              )
           }
           activeDesignContract = contract
           activeDesignContractIsModern = 'contract' in call.input

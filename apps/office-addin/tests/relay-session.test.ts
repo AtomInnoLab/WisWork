@@ -37,6 +37,61 @@ const flushFrames = async () => {
   for (let turn = 0; turn < 4; turn += 1) await Promise.resolve()
 }
 
+async function connectedEnhancedSession() {
+  const socket = new FakeSocket()
+  const session = createOfficeRelaySession({
+    createSocket: () => socket,
+    persistentPairing: false,
+    capabilities: ['agent.v1'],
+    randomUUID: () => 'request_12345678',
+  })
+  const toolHandler = vi.fn(async () => ({ output: 'ok' }))
+  session.setToolHandler?.(toolHandler)
+  const connecting = session.connect('powerpoint')
+  socket.open()
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'office.created',
+      pairing_id: 'pair_12345678',
+      verification_code: '123456',
+      expires_in: 120,
+    }),
+  )
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'office.approved',
+      session_id: 'session_12345678',
+      capability: 'capability_12345678',
+      expires_in: 1800,
+      capabilities: ['agent.v1'],
+    }),
+  )
+  await connecting
+  socket.receive(
+    JSON.stringify({
+      version: 2,
+      type: 'relay.session_state',
+      session_id: 'session_12345678',
+      generation: 1,
+      enhanced: {
+        version: 1,
+        runtime_mode: 'enhanced',
+        runtime_instance: 'runtime_0123456789abcdef',
+        component_version: '0.147.0',
+        host: 'office-powerpoint',
+        raw_office: false,
+        expires_at: Date.now() + 60_000,
+        policy_generation: 1,
+        session_generation: 1,
+      },
+    }),
+  )
+  await flushFrames()
+  return { socket, session, toolHandler }
+}
+
 describe('Office cloud relay session', () => {
   const diagnostic: OfficeDiagnosticEvent = {
     event_id: '00000000-0000-4000-8000-000000000001',
@@ -538,66 +593,151 @@ describe('Office cloud relay session', () => {
     expect(session.snapshot()).toEqual({ status: 'offline' })
   })
 
-  it('cancels an active Enhanced request when its session statement expires', async () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(1_000)
-    try {
-      const socket = new FakeSocket()
-      const session = createOfficeRelaySession({
-        createSocket: () => socket,
-        capabilities: ['agent.v1'],
-        randomUUID: () => 'request_12345678',
-      })
-      const connecting = session.connect('powerpoint')
-      socket.open()
+  it.each([true, false])(
+    'revokes an expired Enhanced statement with active request: %s',
+    async (active) => {
+      vi.useFakeTimers()
+      vi.setSystemTime(1_000)
+      try {
+        const { socket, session } = await connectedEnhancedSession()
+        const pending = active
+          ? session.capabilityFetch('agent.v1', { messages: [] }).catch((error) => error.message)
+          : undefined
+        await vi.advanceTimersByTimeAsync(60_000)
+        expect(session.snapshot()).toEqual({ status: 'offline' })
+        if (active) await expect(pending).resolves.toBe('relay_disconnected')
+        session.disconnect()
+        expect(
+          socket.sent
+            .map((value) => JSON.parse(value))
+            .filter((value) => value.type === 'office.cancel'),
+        ).toEqual(
+          active
+            ? [
+                {
+                  version: 2,
+                  type: 'office.cancel',
+                  session_id: 'session_12345678',
+                  capability: 'capability_12345678',
+                  request_id: 'request_12345678',
+                },
+              ]
+            : [],
+        )
+      } finally {
+        vi.useRealTimers()
+      }
+    },
+  )
+
+  it.each([
+    { size: 100 * 1024, accepted: true },
+    { size: 256 * 1024 + 1, accepted: false },
+    { size: 272 * 1024, accepted: false },
+  ])('bounds Enhanced plan input at the tool limit: $size bytes', async ({ size, accepted }) => {
+    const { socket, session, toolHandler } = await connectedEnhancedSession()
+    const pending = session
+      .capabilityFetch('agent.v1', { messages: [] })
+      .catch((error) => error.message)
+    const input = { design_contract: { design_md: 'x'.repeat(size) } }
+    socket.receive(
+      JSON.stringify({
+        version: 2,
+        type: 'relay.tool_call',
+        session_id: 'session_12345678',
+        request_id: 'request_12345678',
+        turn_id: 'turn_12345678',
+        call_id: 'call_12345678',
+        generation: 1,
+        tool_name: 'plan_deck',
+        input,
+      }),
+    )
+    await flushFrames()
+    expect(session.snapshot().status).toBe(accepted ? 'connected' : 'offline')
+    expect(toolHandler).toHaveBeenCalledTimes(accepted ? 1 : 0)
+    if (accepted)
+      expect(toolHandler).toHaveBeenCalledWith(
+        expect.objectContaining({ toolName: 'plan_deck', input }),
+      )
+    session.disconnect()
+    await expect(pending).resolves.toBe('relay_disconnected')
+  })
+
+  it.each(['relay.chunk', 'relay.session_state'])(
+    'keeps oversized non-tool frames fail-closed: %s',
+    async (type) => {
+      const { socket, session, toolHandler } = await connectedEnhancedSession()
+      const pending = session.capabilityFetch('agent.v1', { messages: [] })
       socket.receive(
         JSON.stringify({
           version: 2,
-          type: 'office.created',
-          pairing_id: 'pair_12345678',
-          verification_code: '123456',
-          expires_in: 120,
+          type: 'relay.start',
+          session_id: 'session_12345678',
+          request_id: 'request_12345678',
+          status: 200,
+          content_type: 'text/event-stream',
         }),
       )
+      const response = await pending
+      const body = response.text().catch((error: Error) => error.message)
       socket.receive(
         JSON.stringify({
           version: 2,
-          type: 'office.approved',
+          type,
           session_id: 'session_12345678',
-          capability: 'capability_12345678',
-          expires_in: 1800,
-          capabilities: ['agent.v1'],
-        }),
-      )
-      await connecting
-      socket.receive(
-        JSON.stringify({
-          version: 2,
-          type: 'relay.session_state',
-          session_id: 'session_12345678',
-          generation: 2,
-          enhanced: {
-            version: 1,
-            runtime_mode: 'enhanced',
-            runtime_instance: 'runtime_0123456789abcdef',
-            component_version: '0.147.0',
-            host: 'office-powerpoint',
-            raw_office: false,
-            expires_at: 1_100,
-            policy_generation: 1,
-            session_generation: 2,
-          },
+          request_id: 'request_12345678',
+          sequence: 0,
+          data: 'x'.repeat(100 * 1024),
         }),
       )
       await flushFrames()
-      const pending = session.capabilityFetch('agent.v1', { messages: [] })
-      const rejected = expect(pending).rejects.toThrow('relay_disconnected')
-      await vi.advanceTimersByTimeAsync(100)
-      expect(session.snapshot()).toEqual({ status: 'offline' })
-      await rejected
-    } finally {
-      vi.useRealTimers()
-    }
+      expect(session.snapshot().status).toBe('offline')
+      expect(toolHandler).not.toHaveBeenCalled()
+      await expect(body).resolves.toBe('relay_disconnected')
+    },
+  )
+
+  it.each([
+    { reason: 'disconnect', active: true },
+    { reason: 'disconnect', active: false },
+    { reason: 'protocol', active: true },
+    { reason: 'protocol', active: false },
+    { reason: 'cancel_send_failure', active: true },
+  ])('cancels once before revoking: $reason, active: $active', async ({ reason, active }) => {
+    const { socket, session } = await connectedEnhancedSession()
+    const pending = active
+      ? session.capabilityFetch('agent.v1', { messages: [] }).catch((error) => error.message)
+      : undefined
+    const send = vi.spyOn(socket, 'send')
+    const close = vi.spyOn(socket, 'close')
+    if (reason === 'cancel_send_failure')
+      send.mockImplementation(() => {
+        throw new Error('socket_failed')
+      })
+    if (reason === 'protocol') {
+      socket.receive('{')
+      await flushFrames()
+    } else session.disconnect()
+    session.disconnect()
+    expect(session.snapshot().status).toBe('offline')
+    expect(socket.readyState).toBe(3)
+    if (active) await expect(pending).resolves.toBe('relay_disconnected')
+    expect(send.mock.calls.map(([value]) => JSON.parse(value))).toEqual(
+      active
+        ? [
+            {
+              version: 2,
+              type: 'office.cancel',
+              session_id: 'session_12345678',
+              capability: 'capability_12345678',
+              request_id: 'request_12345678',
+            },
+          ]
+        : [],
+    )
+    if (active)
+      expect(send.mock.invocationCallOrder[0]).toBeLessThan(close.mock.invocationCallOrder[0]!)
   })
 
   it('sends bounded diagnostics only over an approved v2 session', async () => {

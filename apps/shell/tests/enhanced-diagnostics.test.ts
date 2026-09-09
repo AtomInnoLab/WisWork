@@ -163,6 +163,23 @@ describe('EnhancedDiagnosticsStore', () => {
     expect(JSON.stringify(store.recent()[0])).not.toContain('reasoning_block')
   })
 
+  it('does not report an interrupted stream as a protocol rejection', () => {
+    const { store, path } = fixture()
+    const id = store.beginTask('office-powerpoint')
+    store.record('responses_stream_invalid')
+    store.record('responses_stream_upstream_interrupted')
+    store.record('responses_stream_invalid_messages_sse')
+    store.finishTask(id, 'failed')
+
+    const restored = new EnhancedDiagnosticsStore({ path })
+    const codes = restored
+      .recent()[0]!
+      .events.filter((event) => event.phase === 'stream')
+      .map((event) => event.code)
+    expect(codes.filter((code) => code === 'stream_interrupted')).toHaveLength(2)
+    expect(codes.filter((code) => code === 'stream_protocol_rejected')).toHaveLength(1)
+  })
+
   it('keeps ten tasks, bounds detailed events, and preserves the first safe state after restart', () => {
     const test = fixture()
     test.store.enableDetailed()

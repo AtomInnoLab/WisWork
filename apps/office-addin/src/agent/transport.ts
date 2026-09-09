@@ -4,6 +4,7 @@ import type {
   AgentStreamRequest,
   AgentToolCall,
   AgentTransport,
+  ToolDisplay,
 } from '@wiswork/agent-core'
 import { WISWORK_DEFAULT_MODEL } from '@wiswork/ai-provider'
 
@@ -19,6 +20,118 @@ const MAX_STREAM_RESPONSE_BYTES = 1024 * 1024
 const MAX_STREAM_EVENTS = 4096
 const MAX_SSE_LINE_LENGTH = 64 * 1024
 const MAX_PENDING_TOOL_CALLS = 16
+
+export interface OfficeToolActivity {
+  readonly callId: string
+  readonly toolName: 'web_search' | 'web_fetch' | 'image_search'
+  readonly state: 'running' | 'complete' | 'error'
+  readonly startedAt: number
+  readonly query?: string
+  readonly summary?: string
+  readonly resultCount?: number
+  readonly display?: ToolDisplay
+}
+export interface OfficeAgentTransport extends AgentTransport {
+  setToolActivityHandler?(handler: ((event: OfficeToolActivity) => void) | undefined): void
+}
+
+const RETRIEVAL_TOOLS = new Set(['web_search', 'web_fetch', 'image_search'])
+function parseToolActivity(
+  event: Record<string, unknown>,
+  generation: number | undefined,
+): OfficeToolActivity {
+  const keys = [
+    'type',
+    'generation',
+    'call_id',
+    'tool_name',
+    'state',
+    'started_at',
+    'query',
+    'summary',
+    'result_count',
+    'display',
+  ]
+  const invalid = () => {
+    throw new TransportError('transport_invalid_stream')
+  }
+  if (
+    JSON.stringify(event).length > 12 * 1024 ||
+    Object.keys(event).some((key) => !keys.includes(key)) ||
+    generation === undefined ||
+    event.generation !== generation ||
+    typeof event.call_id !== 'string' ||
+    !/^call_[A-Za-z0-9_-]{8,123}$/.test(event.call_id) ||
+    typeof event.tool_name !== 'string' ||
+    !RETRIEVAL_TOOLS.has(event.tool_name) ||
+    !['running', 'complete', 'error'].includes(String(event.state)) ||
+    !Number.isSafeInteger(event.started_at) ||
+    Number(event.started_at) < 0 ||
+    (event.query !== undefined && (typeof event.query !== 'string' || event.query.length > 240)) ||
+    (event.summary !== undefined &&
+      (typeof event.summary !== 'string' || event.summary.length > 160)) ||
+    (event.result_count !== undefined &&
+      (!Number.isSafeInteger(event.result_count) ||
+        Number(event.result_count) < 0 ||
+        Number(event.result_count) > 20))
+  )
+    invalid()
+  let display: ToolDisplay | undefined
+  if (event.display !== undefined) {
+    const value = event.display as ToolDisplay
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      !['images', 'links'].includes(value.kind) ||
+      Object.keys(value).some((key) => !['kind', 'items'].includes(key)) ||
+      !Array.isArray(value.items) ||
+      value.items.length > 8
+    )
+      invalid()
+    const items = value.items!.map((item) => {
+      if (
+        !item ||
+        typeof item !== 'object' ||
+        Object.keys(item).some((key) => !['url', 'title'].includes(key)) ||
+        typeof item.url !== 'string' ||
+        item.url.length > 2048 ||
+        (item.title !== undefined && (typeof item.title !== 'string' || item.title.length > 160))
+      )
+        invalid()
+      let url: URL
+      try {
+        url = new URL(item.url)
+      } catch {
+        return invalid()
+      }
+      if (
+        url.protocol !== 'https:' ||
+        url.username ||
+        url.password ||
+        url.port ||
+        url.search ||
+        url.hash ||
+        !url.hostname.includes('.') ||
+        /^[\d.]+$/.test(url.hostname) ||
+        url.hostname.includes(':') ||
+        /\.(?:localhost|local)$/.test(url.hostname)
+      )
+        invalid()
+      return { url: url.href, ...(item.title === undefined ? {} : { title: item.title }) }
+    })
+    display = { kind: value.kind, items }
+  }
+  return {
+    callId: event.call_id as string,
+    toolName: event.tool_name as OfficeToolActivity['toolName'],
+    state: event.state as OfficeToolActivity['state'],
+    startedAt: Number(event.started_at),
+    ...(event.query === undefined ? {} : { query: event.query as string }),
+    ...(event.summary === undefined ? {} : { summary: event.summary as string }),
+    ...(event.result_count === undefined ? {} : { resultCount: Number(event.result_count) }),
+    ...(display ? { display } : {}),
+  }
+}
 
 type TransportErrorCode =
   | 'transport_http'
@@ -143,6 +256,7 @@ async function consumeStream(
   callbacks: AgentStreamCallbacks,
   signal: AbortSignal,
   handleControl?: (event: Record<string, unknown>, signal: AbortSignal) => Promise<void>,
+  handleActivity?: (event: Record<string, unknown>) => void,
 ): Promise<void> {
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined)
@@ -173,6 +287,10 @@ async function consumeStream(
       event = JSON.parse(payload) as typeof event
     } catch {
       throw new TransportError('transport_invalid_stream')
+    }
+    if (event.type === 'wiswork_tool_activity') {
+      handleActivity?.(event as Record<string, unknown>)
+      continue
     }
     if (event.type === 'wiswork_tool_call') {
       if (!handleControl) throw new TransportError('transport_invalid_stream')
@@ -237,20 +355,73 @@ async function consumeStream(
 export function createPcBridgeAgentTransport(bridge: {
   authenticatedFetch(path: '/v1/office/messages', init: RequestInit): Promise<Response>
   handleToolFrame?(event: Record<string, unknown>, signal: AbortSignal): Promise<void>
-}): AgentTransport {
+  snapshot?(): { enhanced?: { session_generation: number } }
+}): OfficeAgentTransport {
   return createTransport(
     (init) => bridge.authenticatedFetch('/v1/office/messages', init),
     bridge.handleToolFrame?.bind(bridge),
+    () => bridge.snapshot?.().enhanced?.session_generation,
   )
 }
 
 function createTransport(
   fetchMessages: (init: RequestInit) => Promise<Response>,
   handleControl?: (event: Record<string, unknown>, signal: AbortSignal) => Promise<void>,
-): AgentTransport {
+  enhancedGeneration: () => number | undefined = () => undefined,
+): OfficeAgentTransport {
+  let activityHandler: ((event: OfficeToolActivity) => void) | undefined
+  let activityEpoch = 0
   return {
+    setToolActivityHandler(handler) {
+      activityHandler = handler
+      activityEpoch += 1
+    },
     stream(request: AgentStreamRequest, callbacks: AgentStreamCallbacks) {
       const controller = new AbortController()
+      const allowed = new Set(
+        request.tools.map((tool) => tool.name).filter((name) => RETRIEVAL_TOOLS.has(name)),
+      )
+      // Tool-free review subturns must not observe or supersede the user-facing stream.
+      const epoch = allowed.size ? ++activityEpoch : undefined
+      let generation = enhancedGeneration()
+      const pendingActivities = new Map<string, OfficeToolActivity>()
+      const completedActivities = new Set<string>()
+      const observe = (event: OfficeToolActivity) => {
+        if (epoch === activityEpoch) activityHandler?.(event)
+      }
+      const closeActivities = () => {
+        for (const activity of pendingActivities.values())
+          observe({ ...activity, state: 'error', summary: 'Retrieval interrupted' })
+        pendingActivities.clear()
+      }
+      const handleActivity = (event: Record<string, unknown>) => {
+        if (epoch === undefined || controller.signal.aborted || epoch !== activityEpoch) return
+        // The first request may promote a standard Relay session before its first SSE event.
+        // Bind that newly negotiated generation once; never accept a later replacement.
+        const negotiatedGeneration = enhancedGeneration()
+        generation ??= negotiatedGeneration
+        const activity = parseToolActivity(event, generation)
+        if (negotiatedGeneration !== generation || !allowed.has(activity.toolName))
+          throw new TransportError('transport_invalid_stream')
+        const pending = pendingActivities.get(activity.callId)
+        if (
+          completedActivities.has(activity.callId) ||
+          (activity.state === 'running'
+            ? pending !== undefined
+            : !pending ||
+              pending.toolName !== activity.toolName ||
+              pending.startedAt !== activity.startedAt) ||
+          (activity.state === 'running' &&
+            pendingActivities.size + completedActivities.size >= MAX_COMPLETED_TOOL_CALLS)
+        )
+          throw new TransportError('transport_invalid_stream')
+        if (activity.state === 'running') pendingActivities.set(activity.callId, activity)
+        else {
+          pendingActivities.delete(activity.callId)
+          completedActivities.add(activity.callId)
+        }
+        observe(activity)
+      }
       let timeout: ReturnType<typeof setTimeout> | undefined
       let cancelListener: (() => void) | undefined
       let completed = false
@@ -282,7 +453,7 @@ function createTransport(
             headers: { 'content-type': 'application/json' },
             body,
           }).then((response) =>
-            consumeStream(response, callbacks, controller.signal, handleControl),
+            consumeStream(response, callbacks, controller.signal, handleControl, handleActivity),
           )
           const expired = new Promise<never>((_resolve, reject) => {
             timeout = setTimeout(() => {
@@ -296,6 +467,8 @@ function createTransport(
           })
           await Promise.race([operation, expired, cancelled])
         } catch (error) {
+          // Settle visible cards before onError makes the session inactive.
+          closeActivities()
           if (error instanceof TransportError && error.code === 'transport_timeout')
             callbacks.onError(error.publicMessage())
           else if (!controller.signal.aborted)
@@ -305,6 +478,7 @@ function createTransport(
         } finally {
           if (timeout !== undefined) clearTimeout(timeout)
           if (cancelListener) controller.signal.removeEventListener('abort', cancelListener)
+          closeActivities()
           done()
         }
       })()
