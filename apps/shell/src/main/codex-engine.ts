@@ -252,6 +252,10 @@ export function createProductionCodexBootstrap(
         }
         if (notification.method === 'item/agentMessage/delta') {
           if (params.turnId === active.turnId && typeof params.delta === 'string') {
+            // The model cannot legitimately continue while a questionnaire call is
+            // still awaiting its tool result. Treat that stale call as orphaned so
+            // a later native terminal cannot remain deferred forever.
+            active.pendingQuestionnaires.clear()
             active.questionnaireAwaitingContinuation = false
             active.touch()
             emit(document.onEvent, { type: 'text', text: params.delta })

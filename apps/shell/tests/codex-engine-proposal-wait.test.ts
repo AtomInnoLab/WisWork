@@ -247,6 +247,19 @@ it('recognizes post-answer assistant text as native questionnaire continuation',
   await turn.engine.close()
 })
 
+it('releases an orphaned questionnaire when the model continues with final text', async () => {
+  const turn = await startSlidesTurn()
+  turn.startTool('ask_clarification')
+  turn.emitText('Continuing with professional defaults')
+  turn.completeNativeTurn()
+  await turn.running
+  expect(turn.result).toBe('done')
+  expect(turn.events.filter((event) => event.type === 'terminal')).toEqual([
+    { type: 'terminal', status: 'completed' },
+  ])
+  await turn.engine.close()
+})
+
 it.each(['completed', 'cancelled'])(
   'waits for a questionnaire retry and preserves %s without continuation',
   async (status) => {
