@@ -1864,7 +1864,15 @@ export function createSlidesSkill(
           (state.designContract?.revision !== restored.revision ||
             state.designContract.status !== restored.status)
         ) {
-          const restoredPlan = parsePresentationDesignPlan(contractAsLegacyPlan(restored))
+          const restoredPlan =
+            restored.status === 'draft' && restored.slides.length === 0
+              ? {
+                  core_hook: restored.narrative.coreHook,
+                  style: restored.visualSystem.style,
+                  pages: [],
+                  prototype_pages: [],
+                }
+              : parsePresentationDesignPlan(contractAsLegacyPlan(restored))
           state.designContract = restored
           state.plannedPages = restoredPlan.pages
           state.plannedPageCount = restoredPlan.pages.length
