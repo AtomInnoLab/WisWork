@@ -37,6 +37,117 @@ const skill = {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 describe('Slides interactive agent controller', () => {
+  const lifecycleFixture = () => {
+    let documentId: string | null = null
+    let event!: (value: any) => void
+    let tool!: (value: any) => void
+    const api: any = {
+      status: async () => ({ activeAgentRuntime: 'enhanced', documentId }),
+      register: async (input: any) => {
+        documentId = input.documentId
+      },
+      unregister: async () => undefined,
+      startTurn: () => new Promise<void>(() => undefined),
+      cancelTurn: async () => undefined,
+      toolResult: vi.fn(async () => undefined),
+      onEvent: (listener: any) => {
+        event = listener
+        return () => undefined
+      },
+      onToolCall: (listener: any) => {
+        tool = listener
+        return () => undefined
+      },
+    }
+    const start = vi.fn()
+    const complete = vi.fn()
+    const turnEnd = vi.fn()
+    const display = { kind: 'images' as const, items: [{ url: 'https://example.test/image.png' }] }
+    const executeTool = vi.fn(async () => ({
+      output: 'image result',
+      summary: 'Found image',
+      display,
+    }))
+    const controller = createAgentController(
+      {
+        transport: manualTransport(),
+        skill: { ...skill, executeTool },
+        events: { onToolStart: start, onToolExecuted: complete, onTurnEnd: turnEnd },
+      },
+      { host: 'slides', api },
+    )
+    return {
+      controller,
+      api,
+      start,
+      complete,
+      turnEnd,
+      executeTool,
+      display,
+      event: (value: any) => event(value),
+      tool: (call: any) => tool({ documentId, generation: 0, call }),
+    }
+  }
+
+  it.each(['mutation_cancelled', 'mutation_expired', 'tool_call_in_progress'])(
+    'shows the remote %s receipt without invoking the tool',
+    async (output) => {
+      const f = lifecycleFixture()
+      f.controller.activate()
+      await flush()
+      f.controller.run('change the slide')
+      await flush()
+      const call = {
+        id: 'rejected',
+        invocationId: 'turn-one:rejected',
+        name: 'execute_slide_script',
+        input: {},
+      }
+      f.event({ type: 'tool-start', call })
+      f.event({
+        type: 'tool-executed',
+        event: { call, execution: { output, summary: 'Tool failed', isError: true } },
+      })
+      expect(f.start).toHaveBeenCalledOnce()
+      expect(f.complete).toHaveBeenCalledOnce()
+      expect(f.complete.mock.calls[0][0].execution.output).toBe(output)
+      expect(f.executeTool).not.toHaveBeenCalled()
+      f.controller.dispose()
+    },
+  )
+
+  it('deduplicates local execution against remote lifecycle and keeps rich display', async () => {
+    const f = lifecycleFixture()
+    f.controller.activate()
+    await flush()
+    f.controller.run('find an image')
+    await flush()
+    const call = {
+      id: 'image',
+      invocationId: 'turn-one:image',
+      name: 'execute_slide_script',
+      input: {},
+    }
+    f.event({ type: 'tool-start', call })
+    f.tool(call)
+    await vi.waitFor(() => expect(f.api.toolResult).toHaveBeenCalledOnce())
+    expect(f.turnEnd).not.toHaveBeenCalled()
+    const event = {
+      type: 'tool-executed',
+      event: { call, execution: { output: 'image result', summary: 'Found image' } },
+    }
+    f.event(event)
+    f.event(event)
+    expect(f.start).toHaveBeenCalledOnce()
+    expect(f.complete).toHaveBeenCalledOnce()
+    expect(f.complete.mock.calls[0][0].execution.display).toEqual(f.display)
+    expect(f.turnEnd).toHaveBeenCalledOnce()
+    expect(f.complete.mock.invocationCallOrder[0]).toBeLessThan(
+      f.turnEnd.mock.invocationCallOrder[0],
+    )
+    f.controller.dispose()
+  })
+
   it('retains safe IPC error codes without exposing the surrounding message', () => {
     expect(safeEnhancedError(new Error('IPC failed: enhanced_turn_in_progress'))).toBe(
       'enhanced_turn_in_progress',

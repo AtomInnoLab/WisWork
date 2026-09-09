@@ -7,6 +7,8 @@ import type {
   ToolExecution,
   ToolExecutionOutcome,
   ToolExecutionSuspension,
+  AgentToolCall,
+  ToolExecutedEvent,
 } from '@wiswork/agent-core'
 import {
   createPcHostRegistration,
@@ -56,9 +58,59 @@ function createSlidesEnhancedHarness<TSnapshot>(
   let turnSettled = true
   let turnEpoch = 0
   let terminalError: string | undefined
+  let pendingUiTurnEnd = false
   let toolBatchTimer: ReturnType<typeof setTimeout> | null = null
   const executions = new Map<string, ToolExecution>()
   const toolControllers = new Map<string, AbortController>()
+  const remoteCalls = new Map<string, AgentToolCall>()
+  type Activity = {
+    epoch: number
+    remote: boolean
+    done: boolean
+    local?: ToolExecutedEvent<TSnapshot>
+  }
+  const activities = new Map<string, Activity>()
+  const activityKey = (call: AgentToolCall) => call.invocationId ?? `${turnEpoch}:${call.id}`
+  const startActivity = (call: AgentToolCall, remote: boolean) => {
+    const key = activityKey(call)
+    const existing = activities.get(key)
+    if (existing) {
+      if (remote) existing.remote = true
+      return existing
+    }
+    // Match the document session's bounded tool-call lifetime.
+    if (activities.size >= 1_024) return undefined
+    const activity: Activity = { epoch: turnEpoch, remote, done: false }
+    activities.set(key, activity)
+    options.events?.onToolStart?.(call)
+    return activity
+  }
+  const completeActivity = (event: ToolExecutedEvent<TSnapshot>, remote: boolean) => {
+    if (!remote) event = { ...event, call: remoteCalls.get(event.call.id) ?? event.call }
+    const activity = startActivity(event.call, remote)
+    if (!activity || activity.done || activity.epoch !== turnEpoch) return
+    if (!remote && activity.remote) {
+      activity.local = event
+      return
+    }
+    activity.done = true
+    const local = activity.local
+    activity.local = undefined
+    options.events?.onToolExecuted?.(
+      local && !!local.execution.isError === !!event.execution.isError ? local : event,
+    )
+    const call = remoteCalls.get(event.call.id)
+    if (call) remoteCalls.set(event.call.id, { ...call, input: {} })
+    if (
+      pendingUiTurnEnd &&
+      ![...activities.values()].some(
+        (candidate) => candidate.epoch === turnEpoch && !candidate.done && candidate.local,
+      )
+    ) {
+      pendingUiTurnEnd = false
+      options.events?.onTurnEnd?.()
+    }
+  }
   const registration = api.register(
     createPcHostRegistration({ host: 'slides', documentId, generation, skill: options.skill }),
   )
@@ -77,6 +129,9 @@ function createSlidesEnhancedHarness<TSnapshot>(
   const unsubscribeEvents = api.onEvent((event) => {
     if (closed || !callbacks) return
     if (event.type === 'text') callbacks.onDelta(event.text)
+    else if (event.type === 'tool-start') startActivity(event.call, true)
+    else if (event.type === 'tool-executed')
+      completeActivity(event.event as ToolExecutedEvent<TSnapshot>, true)
     // startTurn resolves only after Shell releases document.busy. Runtime
     // terminal events arrive earlier and must not unlock the composer yet.
     else if (event.type === 'error') terminalError = safeEnhancedError(event.code)
@@ -89,6 +144,7 @@ function createSlidesEnhancedHarness<TSnapshot>(
       request.generation !== generation
     )
       return
+    remoteCalls.set(request.call.id, request.call)
     callbacks.onToolCall(request.call)
     clearToolBatchTimer()
     const batchCallbacks = callbacks
@@ -130,6 +186,7 @@ function createSlidesEnhancedHarness<TSnapshot>(
       } else {
         const user = [...request.messages].reverse().find((message) => message.role === 'user')
         const epoch = ++turnEpoch
+        pendingUiTurnEnd = false
         turnSettled = false
         terminalError = undefined
         void registration
@@ -181,6 +238,23 @@ function createSlidesEnhancedHarness<TSnapshot>(
   }
   const events: AgentLoopOptions<TSnapshot>['events'] = {
     ...options.events,
+    onToolStart(call) {
+      startActivity(remoteCalls.get(call.id) ?? call, false)
+    },
+    onToolExecuted(event) {
+      completeActivity(event, false)
+    },
+    onTurnEnd() {
+      // The local executor advances before IPC results return. Keep its current
+      // chat bubble open until every executed tool receives its authoritative receipt.
+      if (
+        [...activities.values()].some(
+          (activity) => activity.epoch === turnEpoch && !activity.done && activity.local,
+        )
+      )
+        pendingUiTurnEnd = true
+      else options.events?.onTurnEnd?.()
+    },
     onError(error) {
       if (!closed) void api.cancelTurn(documentId).catch(() => undefined)
       options.events?.onError?.(error)
@@ -200,6 +274,8 @@ function createSlidesEnhancedHarness<TSnapshot>(
       unsubscribeToolCancels()
       for (const controller of toolControllers.values()) controller.abort()
       toolControllers.clear()
+      activities.clear()
+      remoteCalls.clear()
       closePromise = registration
         .catch(() => undefined)
         .then(() => api.cancelTurn(documentId).catch(() => undefined))

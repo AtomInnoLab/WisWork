@@ -46,6 +46,7 @@ export {
   buildPresentationDesignDocument,
   extractPresentationDesignContract,
   extractPresentationDesignDocument,
+  formatPresentationDesignReadinessFailure,
   parsePresentationDesignContract,
   parsePresentationDesignPlan,
   PRESENTATION_DESIGN_CONTRACT_SCHEMA,

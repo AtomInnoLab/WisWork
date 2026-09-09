@@ -504,6 +504,50 @@ describe('presentation design plan', () => {
     expect(skill.buildContext?.()).toContain('Revision: 3')
   })
 
+  it('returns asset recovery details without replacing the saved draft or promoting an asset', async () => {
+    const saveSidecar = vi.fn(async () => undefined)
+    const skill = createSlidesSkill({
+      getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] }] as never,
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => undefined,
+      applyDeck: () => undefined,
+      saveSidecar,
+      fitWidthPx: 1280,
+    })
+    const draft = {
+      ...modernContract,
+      status: 'draft',
+      slides: [{ ...modernContract.slides[0]!, assetIds: ['hero'] }],
+      assets: [
+        {
+          id: 'hero',
+          slideNumbers: [1],
+          type: 'image',
+          role: 'evidence',
+          intent: 'Opening image',
+          source: 'https://sources.example/page',
+          crop: '16:9',
+          placement: 'right',
+          status: 'validated',
+        },
+      ],
+    }
+    await skill.executeTool({ id: 'draft', name: 'plan_deck', input: { contract: draft } })
+    const previousContext = skill.buildContext?.()
+    const rejected = await skill.executeTool({
+      id: 'not-ready',
+      name: 'plan_deck',
+      input: { contract: { ...draft, status: 'ready' } },
+    })
+    expect(rejected.isError).toBe(true)
+    expect(rejected.output).toContain('"id":"hero","status":"validated"')
+    expect(rejected.output).toContain('"missingForReady":["localReference"]')
+    expect(rejected.output).toContain('Resubmit the full corrected contract with plan_deck')
+    expect(saveSidecar).toHaveBeenCalledTimes(1)
+    expect(skill.buildContext?.()).toBe(previousContext)
+  })
+
   it('persists and exposes a structured draft before asset research is complete', async () => {
     const saveSidecar = vi.fn(async () => undefined)
     const skill = createSlidesSkill({

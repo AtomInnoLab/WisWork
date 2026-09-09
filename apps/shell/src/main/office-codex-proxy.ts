@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto'
 import {
   createToolExecutionSuspensionAuthority,
   type AgentToolDef,
+  type AgentToolCall,
   type ToolExecution,
+  type ToolDisplay,
 } from '@wiswork/agent-core'
 import {
   compiledDocumentTool,
@@ -23,6 +25,72 @@ import type { OfficeRetrievalProxy, OfficeWebCapability } from './office-retriev
 const MAX_BODY_BYTES = 256 * 1024
 const MAX_TEXT_BYTES = 128 * 1024
 const MAX_TOOLS = 64
+const MAX_RETRIEVAL_DISPLAY_BYTES = 8 * 1024
+const RETRIEVAL_TOOLS = new Set(['web_search', 'web_fetch', 'image_search'])
+
+/** Project public source links only; model output and upstream error bodies stay on PC. */
+function retrievalDisplay(
+  output: string,
+  toolName: string,
+): { result_count?: number; display?: ToolDisplay } {
+  try {
+    const value = JSON.parse(output)
+    const entries: unknown[] = Array.isArray(value?.images)
+      ? value.images
+      : Array.isArray(value?.results)
+        ? value.results
+        : toolName === 'web_fetch'
+          ? [value]
+          : []
+    const items: NonNullable<ToolDisplay['items']> = []
+    for (const entry of entries.slice(0, 20)) {
+      if (!entry || typeof entry !== 'object') continue
+      const record = entry as Record<string, unknown>
+      const raw = record.source_url ?? record.url
+      if (typeof raw !== 'string' || raw.length > 2048) continue
+      let url: URL
+      try {
+        url = new URL(raw)
+      } catch {
+        continue
+      }
+      if (
+        url.protocol !== 'https:' ||
+        url.username ||
+        url.password ||
+        url.port ||
+        !url.hostname.includes('.') ||
+        /^[\d.]+$/.test(url.hostname) ||
+        url.hostname.includes(':') ||
+        /\.(?:localhost|local)$/.test(url.hostname)
+      )
+        continue
+      // Query/fragment may contain signed credentials; source cards do not need them.
+      url.search = ''
+      url.hash = ''
+      const item = {
+        url: url.href,
+        ...(typeof record.title === 'string' ? { title: record.title.slice(0, 160) } : {}),
+      }
+      if (Buffer.byteLength(JSON.stringify([...items, item])) > MAX_RETRIEVAL_DISPLAY_BYTES) break
+      items.push(item)
+      if (items.length === 8) break
+    }
+    return {
+      ...(toolName === 'web_fetch' ? {} : { result_count: Math.min(entries.length, 20) }),
+      ...(items.length
+        ? {
+            display: {
+              kind: toolName === 'image_search' ? 'images' : 'links',
+              items,
+            } as ToolDisplay,
+          }
+        : {}),
+    }
+  } catch {
+    return {}
+  }
+}
 export const OFFICE_PROXY_KEEPALIVE_MS = 15_000
 interface PolicyAuthority {
   issue(value: {
@@ -181,11 +249,65 @@ export function createOfficeCodexProxy(options: {
     })
     const suspension = createToolExecutionSuspensionAuthority()
     let open = true
+    let acceptingEvents = true
     const turnId = `turn_${createHash('sha256').update(`${request.sessionId}:${request.requestId}`).digest('base64url').slice(0, 32)}`
-    const execute = async (
-      call: { id: string; name: string; input: Record<string, unknown> },
-      signal?: AbortSignal,
-    ): Promise<ToolExecution> => {
+    const wireCallId = (identity: string) =>
+      `call_${createHash('sha256')
+        .update(JSON.stringify([turnId, identity]))
+        .digest('base64url')}`
+    const activities = new Map<
+      string,
+      {
+        callId: string
+        toolName: string
+        startedAt: number
+        settled: boolean
+        details?: Record<string, unknown>
+      }
+    >()
+    const activity = (
+      callId: string,
+      toolName: string,
+      state: 'running' | 'complete' | 'error',
+    ) => {
+      if (!open || terminal || !Object.hasOwn(parsed.policy, toolName)) return
+      let item = activities.get(callId)
+      if (state === 'running') {
+        if (request.signal.aborted || item || activities.size >= 1024) return
+        item = { callId, toolName, startedAt: Date.now(), settled: false }
+        activities.set(callId, item)
+      } else {
+        if (!item || item.settled || item.toolName !== toolName) return
+        item.settled = true
+      }
+      push(
+        `data: ${JSON.stringify({
+          // Older Taskpanes understand retrieval activity and ignore unknown event kinds.
+          type: RETRIEVAL_TOOLS.has(toolName) ? 'wiswork_tool_activity' : 'wiswork_tool_lifecycle',
+          generation: request.statement.session_generation,
+          call_id: item.callId,
+          tool_name: toolName,
+          state,
+          started_at: item.startedAt,
+          ...(state === 'running'
+            ? {}
+            : {
+                summary: state === 'error' ? 'Office tool failed' : 'Office tool complete',
+                ...(state === 'complete'
+                  ? item.details
+                  : item.details?.summary === 'Retrieval unavailable'
+                    ? { summary: 'Retrieval unavailable' }
+                    : {}),
+              }),
+        })}\n\n`,
+      )
+      // Retain a bounded replay tombstone, not potentially large preview metadata.
+      if (item.settled) item.details = undefined
+    }
+    const closeActivities = () => {
+      for (const [callId, item] of activities) activity(callId, item.toolName, 'error')
+    }
+    const execute = async (call: AgentToolCall, signal?: AbortSignal): Promise<ToolExecution> => {
       if (signal?.aborted)
         return { output: 'tool_cancelled', isError: true, summary: 'Tool cancelled' }
       const mutation = parsed.policy[call.name] === 'mutate'
@@ -198,6 +320,18 @@ export function createOfficeCodexProxy(options: {
         image_search: 'image-search.v1',
       }
       const capability = retrievalCapability[call.name]
+      const callId = wireCallId(call.invocationId ?? call.id)
+      const enrich = (details: Record<string, unknown>) => {
+        const item = activities.get(callId)
+        if (item && !item.settled && open && !request.signal.aborted)
+          item.details = {
+            ...(typeof call.input.query === 'string'
+              ? { query: call.input.query.slice(0, 240) }
+              : {}),
+            ...details,
+          }
+      }
+      const retrievalSignal = signal ?? request.signal
       try {
         if (capability && request.executeRetrieval) {
           const output = await request.executeRetrieval(
@@ -209,14 +343,17 @@ export function createOfficeCodexProxy(options: {
             output: new TextDecoder('utf-8', { fatal: true }).decode(output),
             isError: false,
           }
+          if (!retrievalSignal.aborted)
+            enrich({
+              summary: 'Retrieval complete',
+              ...retrievalDisplay(result.output, call.name),
+            })
         } else {
           result = await request.executeTool({
             turnId,
             // Model carrier IDs may be shorter than Relay identifiers. Keep the
             // protocol boundary deterministic without weakening Relay validation.
-            callId: `call_${createHash('sha256')
-              .update(JSON.stringify([turnId, call.id]))
-              .digest('base64url')}`,
+            callId,
             generation: request.statement.session_generation,
             toolName: call.name,
             input: call.input,
@@ -224,7 +361,9 @@ export function createOfficeCodexProxy(options: {
         }
       } catch (error) {
         telemetry('dispatch', 'failed')
-        if (capability)
+        if (capability) {
+          if (request.executeRetrieval && !retrievalSignal.aborted)
+            enrich({ summary: 'Retrieval unavailable' })
           return {
             output:
               error instanceof Error && error.message === 'retrieval_cancelled'
@@ -234,6 +373,7 @@ export function createOfficeCodexProxy(options: {
             summary: 'Office retrieval unavailable',
             mutated: false,
           }
+        }
         throw error
       }
       telemetry('dispatch', result.isError ? 'failed' : 'succeeded')
@@ -270,13 +410,26 @@ export function createOfficeCodexProxy(options: {
       wake?.()
       wake = undefined
     }
+    request.signal.addEventListener('abort', closeActivities, { once: true })
     const pump = setInterval(() => {
       const pending = session.mutationAuthority.claimNext()
       if (!pending) return
-      void execute(pending.request.call).then(
-        (result) => session.mutationAuthority.settle(pending.claim, result),
-        () => session.mutationAuthority.reject(pending.claim, 'tool_execution_failed'),
-      )
+      void execute(pending.request.call, pending.request.signal)
+        .then(
+          (result) => {
+            if (!pending.request.signal.aborted)
+              session.mutationAuthority.settle(pending.claim, result)
+          },
+          () => {
+            if (!pending.request.signal.aborted)
+              session.mutationAuthority.reject(pending.claim, 'tool_execution_failed')
+          },
+        )
+        .catch(() => {
+          // Invalid receipts are settled as tool errors before the router throws.
+          // Cancellation/timeouts already consume their claim and abort its signal.
+          telemetry('dispatch', 'failed')
+        })
     }, 5)
     pump.unref()
     const keepalive = setInterval(() => push(': keepalive\n\n'), OFFICE_PROXY_KEEPALIVE_MS)
@@ -291,11 +444,26 @@ export function createOfficeCodexProxy(options: {
         summarizeProposal: (call) => summarizeOfficeProposal(host, call),
         signal: request.signal,
         onEvent(event) {
-          if (event.type === 'text')
+          if (!open || terminal || !acceptingEvents) return
+          if (event.type === 'tool-start' || event.type === 'tool-complete') {
+            const identity = event.turnId ? `${event.turnId}:${event.callId}` : event.callId
+            activity(
+              wireCallId(identity),
+              event.toolName,
+              event.type === 'tool-start'
+                ? 'running'
+                : event.isError || request.signal.aborted
+                  ? 'error'
+                  : 'complete',
+            )
+          }
+          if (event.type === 'text' && !request.signal.aborted)
             push(
               `data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: event.text } })}\n\n`,
             )
           if (event.type === 'terminal') {
+            closeActivities()
+            acceptingEvents = false
             telemetry('complete', event.status === 'completed' ? 'succeeded' : 'failed')
             if (event.status !== 'completed') failure = new Error('enhanced_turn_failed')
           }
@@ -307,6 +475,8 @@ export function createOfficeCodexProxy(options: {
       .finally(() => {
         clearInterval(pump)
         clearInterval(keepalive)
+        closeActivities()
+        request.signal.removeEventListener('abort', closeActivities)
         open = false
         session.close()
         terminal = true

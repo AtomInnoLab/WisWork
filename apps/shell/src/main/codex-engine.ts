@@ -161,6 +161,7 @@ export function createProductionCodexBootstrap(
       }
       type ActiveTurn = {
         readonly capability: string
+        readonly gatewayTurnId: string
         threadId?: string
         turnId?: string
         disarm?: () => void
@@ -297,6 +298,9 @@ export function createProductionCodexBootstrap(
             ...input,
             onToolEvent: (event) => {
               const active = documents.get(input.documentId)?.active
+              // Cancellation settles asynchronously. A receipt from a revoked
+              // grant must neither reach the next run nor reset its deadlines.
+              if (!active || (event.turnId && event.turnId !== active.gatewayTurnId)) return
               if (active && (input.host === 'slides' || input.host === 'office-powerpoint')) {
                 if (event.toolName === 'ask_clarification') {
                   if (event.type === 'tool-start') active.pendingQuestionnaires.add(event.callId)
@@ -412,6 +416,7 @@ export function createProductionCodexBootstrap(
           })
           const active: ActiveTurn = {
             capability: grant.capability,
+            gatewayTurnId: grant.turnId,
             cancelled: false,
             pendingProposals: new Set(),
             pendingQuestionnaires: new Set(),

@@ -8,6 +8,7 @@ import {
 import type { ProposalDecision, StructuredProposal } from '../src/agent/proposal-controller.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import type { OfficePowerPointVisualReviewer } from '../src/skills/powerpoint/powerpoint-verification.js'
+import { createPcBridgeAgentTransport, type OfficeToolActivity } from '../src/agent/transport.js'
 
 function transportHarness() {
   let callbacks: AgentStreamCallbacks | undefined
@@ -396,6 +397,238 @@ describe('Office agent session', () => {
         .timeline.filter((event) => event.kind === 'assistant')
         .map((event) => ('text' in event ? event.text : '')),
     ).toEqual(['先检查文稿。', '再调整版式。', '最后复查。'])
+  })
+
+  it.each(['complete', 'error'])(
+    'interleaves observed PC retrieval %s without local execution',
+    async (state) => {
+      const executeTool = vi.fn(async () => ({ output: 'must not execute', summary: 'search' }))
+      const base = {
+        type: 'wiswork_tool_activity',
+        generation: 3,
+        call_id: 'call_search123',
+        tool_name: 'image_search',
+        started_at: 1000,
+        query: 'volcano',
+      }
+      const frames = [
+        { type: 'content_block_delta', delta: { type: 'text_delta', text: '先搜索图片。' } },
+        { ...base, state: 'running' },
+        {
+          ...base,
+          state,
+          summary: state === 'complete' ? '1 result' : 'Retrieval unavailable',
+          ...(state === 'complete'
+            ? {
+                result_count: 1,
+                display: {
+                  kind: 'images',
+                  items: [{ title: 'Volcano', url: 'https://example.com/volcano' }],
+                },
+              }
+            : {}),
+        },
+        { type: 'content_block_delta', delta: { type: 'text_delta', text: '再准备规划。' } },
+        { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+      ]
+      const transport = createPcBridgeAgentTransport({
+        snapshot: () => ({ enhanced: { session_generation: 3 } }),
+        authenticatedFetch: vi.fn(
+          async () =>
+            new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('')),
+        ),
+      } as any)
+      const session = createOfficeAgentSession({
+        transport,
+        skill: {
+          id: 'test',
+          systemPrompt: '',
+          tools: [{ name: 'image_search', description: 'images', inputSchema: { type: 'object' } }],
+          executeTool,
+        },
+        proposals: proposalsHarness().controller,
+      })
+      session.send('Create a deck')
+      await vi.waitFor(() => expect(session.snapshot().busy).toBe(false))
+      expect(session.snapshot().timeline.map((event) => event.kind)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+        'assistant',
+      ])
+      expect(
+        session
+          .snapshot()
+          .timeline.filter((event) => event.kind === 'assistant')
+          .map((event) => ('text' in event ? event.text : '')),
+      ).toEqual(['先搜索图片。', '再准备规划。'])
+      expect(session.snapshot().timeline[2]).toMatchObject({ name: 'image_search', state })
+      if (state === 'complete')
+        expect(session.snapshot().timeline[2]).toMatchObject({
+          display: {
+            kind: 'images',
+            items: [{ title: 'Volcano', url: 'https://example.com/volcano' }],
+          },
+        })
+      expect(executeTool).not.toHaveBeenCalled()
+      session.dispose()
+    },
+  )
+
+  it.each(['observation-first', 'execution-first', 'execution-start-first'] as const)(
+    'enriches one remote card with canonical failure (%s)',
+    async (order) => {
+      let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
+      let observe: ((event: OfficeToolActivity) => void) | undefined
+      const harness = transportHarness()
+      const executeTool = vi.fn(async () => ({ output: 'full execution receipt', summary: 'read' }))
+      const session = createOfficeAgentSession({
+        transport: {
+          ...harness.transport,
+          setToolActivityHandler: (next) => {
+            observe = next
+          },
+        },
+        skill: {
+          id: 'test',
+          systemPrompt: '',
+          tools: [
+            { name: 'get_document_text', description: 'read', inputSchema: { type: 'object' } },
+          ],
+          executeTool,
+        },
+        proposals: proposalsHarness().controller,
+        remoteTools: {
+          setToolHandler: (next) => {
+            handler = next
+          },
+        },
+      })
+      session.send('Read')
+      await Promise.resolve()
+      const base = { callId: 'call_document123', toolName: 'get_document_text', startedAt: 1000 }
+      if (order === 'observation-first')
+        observe!({ ...base, state: 'running' } as OfficeToolActivity)
+      const execution = handler!({
+        turnId: 'turn_12345678',
+        callId: base.callId,
+        generation: 3,
+        toolName: base.toolName,
+        input: {},
+        signal: new AbortController().signal,
+      })
+      if (order === 'execution-start-first')
+        observe!({ ...base, state: 'running' } as OfficeToolActivity)
+      await execution
+      if (order !== 'execution-first')
+        expect(session.snapshot().timeline.find((event) => event.kind === 'tool')).toMatchObject({
+          state: 'running',
+          output: 'full execution receipt',
+        })
+      else observe!({ ...base, state: 'running' } as OfficeToolActivity)
+      observe!({ ...base, state: 'error', summary: 'Tool failed' } as OfficeToolActivity)
+      const cards = session.snapshot().timeline.filter((event) => event.kind === 'tool')
+      expect(cards).toHaveLength(1)
+      expect(cards[0]).toMatchObject({ state: 'error', output: 'full execution receipt' })
+      expect(executeTool).toHaveBeenCalledOnce()
+      session.dispose()
+    },
+  )
+
+  it.each(['canonical-error', 'new-task', 'disposed'] as const)(
+    'does not publish a late remote receipt after %s',
+    async (reason) => {
+      let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
+      let observe: ((event: OfficeToolActivity) => void) | undefined
+      let finish!: (value: ToolExecution) => void
+      const harness = transportHarness()
+      const executeTool = vi.fn(
+        () =>
+          new Promise<ToolExecution>((resolve) => {
+            finish = resolve
+          }),
+      )
+      const session = createOfficeAgentSession({
+        transport: {
+          ...harness.transport,
+          setToolActivityHandler: (next) => {
+            observe = next
+          },
+        },
+        skill: {
+          id: 'test',
+          systemPrompt: '',
+          tools: [
+            { name: 'get_document_text', description: 'read', inputSchema: { type: 'object' } },
+          ],
+          executeTool,
+        },
+        proposals: proposalsHarness().controller,
+        remoteTools: {
+          setToolHandler: (next) => {
+            handler = next
+          },
+        },
+      })
+      session.send('Old task')
+      await Promise.resolve()
+      const base = { callId: 'call_document123', toolName: 'get_document_text', startedAt: 1000 }
+      observe!({ ...base, state: 'running' })
+      const execution = handler!({
+        turnId: 'turn_12345678',
+        callId: base.callId,
+        generation: 3,
+        toolName: base.toolName,
+        input: {},
+        signal: new AbortController().signal,
+      })
+      if (reason === 'canonical-error')
+        observe!({ ...base, state: 'error', summary: 'Interrupted' })
+      else if (reason === 'new-task') {
+        session.newTask()
+        session.send('New task')
+      } else session.dispose()
+      const before = session.snapshot()
+      finish({ output: 'late private receipt', summary: 'success' })
+      await execution
+      expect(session.snapshot().timeline).toEqual(before.timeline)
+      expect(JSON.stringify(session.snapshot())).not.toContain('late private receipt')
+      expect(executeTool).toHaveBeenCalledOnce()
+      session.dispose()
+    },
+  )
+
+  it('marks observed retrieval failed when its stream fails before a result', async () => {
+    const start = {
+      type: 'wiswork_tool_activity',
+      generation: 3,
+      call_id: 'call_search123',
+      tool_name: 'image_search',
+      started_at: 1000,
+      state: 'running',
+    }
+    const transport = createPcBridgeAgentTransport({
+      snapshot: () => ({ enhanced: { session_generation: 3 } }),
+      authenticatedFetch: vi.fn(
+        async () => new Response(`data: ${JSON.stringify(start)}\n\ndata: {"type":"error"}\n\n`),
+      ),
+    })
+    const session = createOfficeAgentSession({
+      transport,
+      skill: {
+        id: 'test',
+        systemPrompt: '',
+        tools: [{ name: 'image_search', description: 'images', inputSchema: { type: 'object' } }],
+        executeTool: vi.fn(),
+      },
+      proposals: proposalsHarness().controller,
+    })
+    session.send('Create a deck')
+    await vi.waitFor(() => expect(session.snapshot().status).toBe('error'))
+    expect(session.snapshot().timeline.find((event) => event.kind === 'tool')).toMatchObject({
+      state: 'error',
+    })
+    session.dispose()
   })
 
   it('records paired Enhanced semantic tool failures in Taskpane diagnostics', async () => {

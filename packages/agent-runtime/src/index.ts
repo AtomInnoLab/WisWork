@@ -10,6 +10,7 @@ export {
 } from './contracts'
 export { StandardAgentRuntime } from './standard'
 export { EnhancedAgentRuntime } from './enhanced'
+export { upsertToolActivity } from './tool-activity'
 export type {
   EnhancedRuntimeClient,
   EnhancedRuntimeClientSession,

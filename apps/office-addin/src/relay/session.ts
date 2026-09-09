@@ -330,6 +330,19 @@ export function createOfficeRelaySession(
     } else active.reject(new Error(error ?? 'relay_disconnected'))
   }
   const revoke = (status: OfficeRelayStatus = 'offline', close = true, settle = true) => {
+    if (request && sessionId && capability) {
+      try {
+        send({
+          version: protocolVersion,
+          type: 'office.cancel',
+          session_id: sessionId,
+          capability,
+          request_id: request.id,
+        })
+      } catch {
+        // Revocation must still complete when the peer is already unavailable.
+      }
+    }
     generation += 1
     finishRequest('relay_disconnected')
     for (const activeTool of activeTools.values()) activeTool.controller.abort()
@@ -635,7 +648,7 @@ export function createOfficeRelaySession(
     if (epoch !== generation) return
     if (typeof data !== 'string') return protocolFailure()
     const frameBytes = encoder.encode(data).byteLength
-    if (frameBytes > MAX_RELAY_FRAME_BYTES) return protocolFailure()
+    if (frameBytes > MAX_REQUEST_BYTES + MAX_CONTROL_FRAME_BYTES) return protocolFailure()
     let frame: Record<string, unknown>
     try {
       const parsed: unknown = JSON.parse(data)
@@ -644,7 +657,11 @@ export function createOfficeRelaySession(
     } catch {
       return protocolFailure()
     }
-    if (frame.version !== protocolVersion || typeof frame.type !== 'string')
+    if (
+      frame.version !== protocolVersion ||
+      typeof frame.type !== 'string' ||
+      (frame.type !== 'relay.tool_call' && frameBytes > MAX_RELAY_FRAME_BYTES)
+    )
       return protocolFailure()
 
     if (
@@ -1110,7 +1127,8 @@ export function createOfficeRelaySession(
         !/^[A-Za-z0-9_-]{1,128}$/.test(frame.tool_name) ||
         !frame.input ||
         typeof frame.input !== 'object' ||
-        Array.isArray(frame.input)
+        Array.isArray(frame.input) ||
+        encoder.encode(JSON.stringify(frame.input)).byteLength > MAX_REQUEST_BYTES
       )
         return protocolFailure()
       // A successfully validated remote tool call is authoritative proof that this

@@ -332,6 +332,72 @@ describe('PowerPoint compatibility skill', () => {
     ).resolves.toMatchObject({ mutated: false, output: expect.stringContaining('# DESIGN.md') })
   })
 
+  it('explains every unresolved asset before retrying ready and preserves the active draft', async () => {
+    const skill = createPowerPointSkill({
+      adapter: adapter(),
+      proposals: createStructuredProposalController(),
+    })
+    const base = modernContract()
+    const assets = Array.from({ length: 4 }, (_, index) => ({
+      id: `image-${index}`,
+      slideNumbers: [index + 1],
+      type: 'image',
+      role: 'evidence',
+      intent: 'Show the evidence',
+      source: `https://sources.example/page-${index}`,
+      crop: '16:9',
+      placement: 'right',
+      status: 'validated',
+      ...(index === 3 ? {} : { localReference: `https://images.example/${index}.jpg` }),
+    }))
+    const draft = modernContract({
+      status: 'draft',
+      prototypePages: [1, 2, 3],
+      brief: { ...base.brief, pageCount: 6 },
+      slides: Array.from({ length: 6 }, (_, index) => ({
+        ...base.slides[0],
+        number: index + 1,
+        assetIds: index === 1 ? [] : [`image-${index % 4}`],
+        acceptance: [{ id: `A${index + 1}.1`, criterion: 'Readable' }],
+      })),
+      assets,
+    })
+    await skill.executeTool(call('plan_deck', { contract: draft }))
+    const previousContext = skill.buildContext?.()
+    const rejected = await skill.executeTool(
+      call('plan_deck', { contract: { ...draft, status: 'ready' } }),
+    )
+    expect(rejected.isError).toBe(true)
+    for (const index of [0, 2, 3, 4, 5])
+      expect(rejected.output).toContain(`slides[${index}].assetIds must reference a ready asset`)
+    for (let index = 0; index < 4; index++) {
+      expect(rejected.output).toContain(`assets[${index}] must be ready or fallback_ready`)
+      expect(rejected.output).toContain(`"id":"image-${index}","status":"validated"`)
+    }
+    expect(rejected.output).toContain('"localReference":false')
+    expect(rejected.output).toContain('"missingForReady":["localReference"]')
+    expect(rejected.output).toContain('Resubmit the full corrected contract with plan_deck')
+    expect(skill.buildContext?.()).toBe(previousContext)
+    expect(
+      await skill.executeTool(call('set_slide_background', { slide_index: 0, color: '#FFFFFF' })),
+    ).toMatchObject({ isError: true })
+
+    const repaired = {
+      ...draft,
+      status: 'ready',
+      assets: assets.map((asset, index) => ({
+        ...asset,
+        status: 'ready',
+        localReference: `https://images.example/${index}.jpg`,
+      })),
+    }
+    expect(await skill.executeTool(call('plan_deck', { contract: repaired }))).toMatchObject({
+      mutated: false,
+      output: expect.stringContaining('"status":"ready"'),
+    })
+    expect(skill.buildContext?.()).toContain('"localReference":"https://images.example/3.jpg"')
+  })
+
   it('enforces prototype-first production and rejects host verification defects', async () => {
     const base = modernContract()
     const first = (base.slides as Array<Record<string, unknown>>)[0]!

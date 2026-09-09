@@ -167,6 +167,7 @@ function loadPanelWidth(): number | null {
 }
 
 export interface AiToolChip {
+  readonly callId?: string
   readonly summary: string
   readonly isError: boolean
   /** still executing: rendered as a spinner chip, replaced in place when the tool finishes */
