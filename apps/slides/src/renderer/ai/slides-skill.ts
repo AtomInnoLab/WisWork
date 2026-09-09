@@ -1912,8 +1912,7 @@ export function createSlidesSkill(
         : documentContext
     },
     reviewFinalResponse: (context) => {
-      if (state.questionnaireAnsweredPendingPlan && !context.mutated)
-        return QUESTIONNAIRE_CONTINUATION_CORRECTION
+      if (state.questionnaireAnsweredPendingPlan) return QUESTIONNAIRE_CONTINUATION_CORRECTION
       if (state.pendingReviewIndexes?.size)
         return `Continue the visual quality loop: screenshot and inspect planned pages ${[...state.pendingReviewIndexes].map((index) => index + 1).join(', ')} before producing another batch or reporting completion.`
       const planned = state.plannedPageCount
@@ -1973,6 +1972,8 @@ interface SkillState {
   authoritativeRefreshRequired?: boolean
   /** Questionnaire completion cannot terminate the run before the model plans the deck. */
   questionnaireAnsweredPendingPlan?: boolean
+  /** Reuse a submitted questionnaire result if the remote carrier retries delivery. */
+  lastQuestionnaireAnswers?: string
   plannedPages?: ReturnType<typeof parsePresentationDesignPlan>['pages']
   prototypePages?: number[]
   builtPageIndexes?: Set<number>
@@ -2168,6 +2169,59 @@ async function persistContract(
       density: slide.density,
     })),
   })
+}
+
+async function persistDraftResearch(
+  access: DeckAccess,
+  state: SkillState,
+  query: string,
+  images: Array<{ imageUrl: string; title?: string }>,
+): Promise<boolean> {
+  const current = state.designContract
+  if (!current || current.status !== 'draft' || images.length === 0) return false
+  const known = new Set(current.assets.flatMap((asset) => [asset.source, asset.localReference]))
+  const additions = images
+    .filter((image) => /^https:\/\//.test(image.imageUrl) && !known.has(image.imageUrl))
+    .slice(0, 6)
+    .map((image, index) => ({
+      id: `search-${current.assets.length + index + 1}`,
+      slideNumbers: [],
+      type: 'image',
+      role: 'candidate',
+      intent: `${query}${image.title ? ` — ${image.title}` : ''}`,
+      source: image.imageUrl,
+      crop: '',
+      placement: 'Unassigned candidate; bind to a slide before production',
+      status: 'validated' as const,
+      localReference: image.imageUrl,
+    }))
+  const note = `Image search “${query}”: ${images.length} result${images.length === 1 ? '' : 's'} collected; ${additions.length} new candidate${additions.length === 1 ? '' : 's'} recorded.`
+  const contract: PresentationDesignContract = {
+    ...current,
+    discovery: {
+      questionnaire: current.discovery?.questionnaire ?? [],
+      openQuestions: current.discovery?.openQuestions ?? [],
+      researchNotes: [...(current.discovery?.researchNotes ?? []), note].slice(-100),
+    },
+    assets: [...current.assets, ...additions],
+  }
+  state.designContract = contract
+  const designMd = renderPresentationDesignContract(contract)
+  await access.saveSidecar?.({
+    topic: contract.brief.topic || contract.narrative.coreHook,
+    styleSkill: contract.visualSystem.style,
+    designMd,
+    createdAt: new Date().toISOString(),
+  })
+  access.setPresentationDesignContext?.({
+    designMd,
+    pages: contract.slides.map((slide) => ({
+      visual: slide.visualRoute,
+      acceptance: slide.acceptance.map((rule) => `${rule.id}: ${rule.criterion}`),
+      density: slide.density,
+    })),
+  })
+  return true
 }
 
 function restoreDesignCheckpoint(designDocument: string): {
@@ -3352,6 +3406,9 @@ async function executeTool(
           if (/^https:\/\//.test(image.imageUrl)) state.searchedImageUrls.add(image.imageUrl)
         }
       }
+      const designUpdated = state
+        ? await persistDraftResearch(access, state, query, r.images)
+        : false
       // output for the LLM: keep the existing format (the LLM needs to read URLs into image_queries; format unchanged)
       const lines = r.images.map(
         (im, i) =>
@@ -3363,9 +3420,9 @@ async function executeTool(
         items: r.images.map((im) => ({ url: im.imageUrl, title: im.title || undefined })),
       }
       return {
-        output: lines.join('\n') || '(no images)',
+        output: `${lines.join('\n') || '(no images)'}${designUpdated ? '\n\nDESIGN.md draft updated with this search and its candidate assets.' : ''}`,
         mutated: false,
-        summary: t('aiSumImageSearch', { query, count: r.images.length }),
+        summary: `${t('aiSumImageSearch', { query, count: r.images.length })}${designUpdated ? ' · DESIGN.md updated' : ''}`,
         display,
       }
     }
@@ -3491,6 +3548,13 @@ async function executeTool(
     }
 
     case 'ask_clarification': {
+      if (state?.questionnaireAnsweredPendingPlan && state.lastQuestionnaireAnswers) {
+        return {
+          output: `User questionnaire answers (already submitted; reused after transport retry):\n${state.lastQuestionnaireAnswers}\nContinue with plan_deck now. Do not ask the questionnaire again.`,
+          mutated: false,
+          summary: t('aiSumClarifyDone'),
+        }
+      }
       if (!access.askClarification)
         return fail(
           t('aiFailClarify'),
@@ -3524,8 +3588,9 @@ async function executeTool(
           summary: t('aiSumClarifySkipped'),
         }
       }
+      if (state) state.lastQuestionnaireAnswers = r.answers
       return {
-        output: `User questionnaire answers:\n${r.answers}\nDecide the Core Hook and style accordingly, then build the slides with the available local tools.`,
+        output: `User questionnaire answers:\n${r.answers}\nUse these answers now: continue with plan_deck, complete the DESIGN.md contract and required asset research, then produce and verify the slides. Do not ask the questionnaire again.`,
         mutated: false,
         summary: t('aiSumClarifyDone'),
       }
@@ -3578,6 +3643,7 @@ async function executeTool(
       const { core_hook: coreHook, style, pages } = plan
       if (state) {
         state.questionnaireAnsweredPendingPlan = false
+        state.lastQuestionnaireAnswers = undefined
         state.plannedPageCount = pages.length
         state.awaitingBuildDeck = contract.status === 'ready' && pages.length >= 2
         state.lastStyleSkill = style

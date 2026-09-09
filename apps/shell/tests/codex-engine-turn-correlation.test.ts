@@ -13,6 +13,12 @@ describe('deterministic stream failure turn correlation', () => {
     expect(selectDeterministicFailureDocument([first, second], 'missing')).toBeUndefined()
     expect(selectDeterministicFailureDocument([first, second])).toBeUndefined()
   })
+
+  it('attributes a provider turn-id mismatch when exactly one document is active', () => {
+    const only = { threadId: 'thread-a', active: { turnId: 'local-turn-a' } }
+
+    expect(selectDeterministicFailureDocument([only], 'provider-turn-a')).toBe(only)
+  })
 })
 
 describe('malformed tool input recovery', () => {

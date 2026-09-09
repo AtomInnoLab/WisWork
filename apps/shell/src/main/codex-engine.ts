@@ -22,11 +22,10 @@ export function selectDeterministicFailureDocument<T extends { active?: { turnId
   activeDocuments: readonly T[],
   turnId?: string,
 ): T | undefined {
-  return turnId
+  const exact = turnId
     ? activeDocuments.find((candidate) => candidate.active?.turnId === turnId)
-    : activeDocuments.length === 1
-      ? activeDocuments[0]
-      : undefined
+    : undefined
+  return exact ?? (activeDocuments.length === 1 ? activeDocuments[0] : undefined)
 }
 
 export function shouldRetryRejectedToolInput(code: string, priorRetries: number): boolean {

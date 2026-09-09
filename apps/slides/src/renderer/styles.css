@@ -1448,6 +1448,16 @@ body.vib .slide-list {
   font-size: 12px;
 }
 
+.ai-header-btn.ai-design-header-btn {
+  width: auto;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
 .ai-design-backdrop {
   position: absolute;
   inset: 0;
