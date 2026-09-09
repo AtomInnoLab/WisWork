@@ -172,7 +172,7 @@ describe('local responses bridge', () => {
     }
   })
 
-  it.each(['invalid_messages_sse', 'unsafe_custom_tool_input'])(
+  it.each(['invalid_messages_sse', 'unsafe_custom_tool_input', 'tool_input_retry_limit_exceeded'])(
     'reports the closed protocol reason %s without upstream content',
     async (protocolCode) => {
       const diagnostics: string[] = []

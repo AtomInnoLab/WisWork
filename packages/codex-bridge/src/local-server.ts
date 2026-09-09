@@ -29,6 +29,7 @@ const SAFE_STREAM_PROTOCOL_CODES = new Set([
   'reasoning_content_limit_exceeded',
   'invalid_custom_tool_input',
   'unsafe_custom_tool_input',
+  'tool_input_retry_limit_exceeded',
   'invalid_wait_input',
   'unsupported_content_block',
   'unsupported_content_delta',

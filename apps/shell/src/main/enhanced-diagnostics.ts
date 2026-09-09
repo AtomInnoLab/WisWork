@@ -55,6 +55,7 @@ export type DiagnosticSafeCode =
   | 'stream_reasoning_limit_exceeded'
   | 'stream_usage_invalid'
   | 'stream_tool_input_invalid'
+  | 'stream_tool_input_recovery_exhausted'
   | 'mcp_starting'
   | 'mcp_ready'
   | 'mcp_tools_missing'
@@ -106,6 +107,7 @@ const SAFE_CODES = new Set<DiagnosticSafeCode>([
   'stream_reasoning_limit_exceeded',
   'stream_usage_invalid',
   'stream_tool_input_invalid',
+  'stream_tool_input_recovery_exhausted',
   'mcp_starting',
   'mcp_ready',
   'mcp_tools_missing',
@@ -362,21 +364,23 @@ function safeDiagnostic(code: string): {
       component: 'wisusage',
       phase: 'stream',
       outcome: 'failed',
-      code: code.includes('premature_messages_eof')
-        ? 'stream_ended_early'
-        : code.includes('invalid_messages_event_order')
-          ? 'stream_event_order_invalid'
-          : code.includes('reasoning_content_limit_exceeded')
-            ? 'stream_reasoning_limit_exceeded'
-            : code.includes('invalid_messages_usage')
-              ? 'stream_usage_invalid'
-              : code.includes('unsupported_reasoning_block')
-                ? 'stream_reasoning_unsupported'
-                : code.includes('invalid_custom_tool_input') ||
-                    code.includes('unsafe_custom_tool_input') ||
-                    code.includes('invalid_wait_input')
-                  ? 'stream_tool_input_invalid'
-                  : 'stream_protocol_rejected',
+      code: code.includes('tool_input_retry_limit_exceeded')
+        ? 'stream_tool_input_recovery_exhausted'
+        : code.includes('premature_messages_eof')
+          ? 'stream_ended_early'
+          : code.includes('invalid_messages_event_order')
+            ? 'stream_event_order_invalid'
+            : code.includes('reasoning_content_limit_exceeded')
+              ? 'stream_reasoning_limit_exceeded'
+              : code.includes('invalid_messages_usage')
+                ? 'stream_usage_invalid'
+                : code.includes('unsupported_reasoning_block')
+                  ? 'stream_reasoning_unsupported'
+                  : code.includes('invalid_custom_tool_input') ||
+                      code.includes('unsafe_custom_tool_input') ||
+                      code.includes('invalid_wait_input')
+                    ? 'stream_tool_input_invalid'
+                    : 'stream_protocol_rejected',
     }
   if (code === 'enhanced_response_incompatible')
     return {

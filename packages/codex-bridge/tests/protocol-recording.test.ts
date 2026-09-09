@@ -63,7 +63,11 @@ describe('structural protocol recording', () => {
   })
   it('runs fixtures through real protocol logic, including changed stop reason and missing terminal', async () => {
     expect((await replayProtocolRecording(redacted)).events).toContain('response.incomplete')
-    expect((await replayProtocolRecording(incomplete)).error).toBe('invalid_custom_tool_input')
+    const toolReplay = await replayProtocolRecording(incomplete)
+    // Redacted tool arguments cannot establish original validity. The real
+    // parser now turns their invalid JSON into safe model feedback.
+    expect(toolReplay.error).toBeUndefined()
+    expect(toolReplay.events).toContain('response.custom_tool_call_input.done')
     const limited = structuredClone(incomplete)
     limited.frames[4]!.delta!.stop_reason = 'max_tokens'
     expect((await replayProtocolRecording(limited)).events).toContain('response.incomplete')

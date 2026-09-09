@@ -140,7 +140,7 @@ jobs:
         shell: bash
         run: npx tsx tools/run-codex-native-lifecycle.ts --cache "$RUNNER_TEMP/wiswork-codex-lifecycle"
 
-      - name: Exercise pinned macOS Codex model-driven read gate
+      - name: Exercise pinned macOS Codex read, generation and recovery gates
         if: startsWith(matrix.id, 'macos-')
         run: |
           set -euo pipefail
@@ -148,14 +148,14 @@ jobs:
           test "${#COMPONENTS[@]}" -eq 1
           WISWORK_CODEX_INTEGRATION_EXECUTABLE="${COMPONENTS[0]}" \
             npx vitest run apps/shell/tests/codex-engine.integration.test.ts \
-              -t 'drives one bounded|generates and verifies a three-page onboarding deck'
+              -t 'drives one bounded|generates and verifies a three-page onboarding deck|Office model/tool loop'
 
-      - name: Exercise pinned Windows Codex model-driven read gate
+      - name: Exercise pinned Windows Codex read, generation and recovery gates
         if: matrix.id == 'windows-x64'
         shell: pwsh
         run: |
           $env:WISWORK_CODEX_INTEGRATION_EXECUTABLE = Join-Path $env:RUNNER_TEMP 'wiswork-codex-component/0.147.0/win32-x64/bin/codex-app-server.exe'
-          npx vitest run apps/shell/tests/codex-engine.integration.test.ts -t 'drives one bounded|generates and verifies a three-page onboarding deck'
+          npx vitest run apps/shell/tests/codex-engine.integration.test.ts -t 'drives one bounded|generates and verifies a three-page onboarding deck|Office model/tool loop'
 
       - name: Read back pinned macOS component signing identity
         if: startsWith(matrix.id, 'macos-')

@@ -50,6 +50,15 @@ interface CarrierLedgerEntry {
 }
 
 const MAX_TOOL_CALLS_PER_RESPONSE = 16
+const MAX_EXEC_INPUT_CORRECTIONS = 3
+// The only non-document exec program accepted by the bridge. Never interpolate
+// rejected model code or private carrier arguments into this side-effect-free reply.
+const EXEC_INPUT_REJECTION_CODE = `text(${JSON.stringify({
+  isError: true,
+  error: 'invalid_tool_input',
+  message:
+    'No document tool was executed for this call. Retry now using exactly one advertised document MCP method: text(await tools.METHOD({"capability":"<current private capability>","callId":"<new unique id>","toolName":"<semantic tool name>","input":{}})); Replace METHOD with the exact advertised method and input with the semantic arguments. Arguments must be a JSON object literal with double-quoted keys and strings. Send exec as {"code":"<the code>"}. Do not use variable aliases, additional statements or prose in code. Continue the task after the corrected call returns.',
+})});`
 
 const carrierLedger = new WeakMap<object, CarrierLedgerEntry>()
 const CARRIER_HOSTS = new Set([
@@ -739,6 +748,7 @@ function safeExecDescription(methods: readonly string[]): string {
 
 function parseSafeExecCode(code: string, methods: readonly string[], limits: ProtocolLimits): void {
   if (utf8Length(code) > limits.maxToolArguments) fail('tool_arguments_limit_exceeded')
+  if (code === EXEC_INPUT_REJECTION_CODE) return
   let source = code
   const pragmaPrefix = /^[\t ]*\/\/ @exec:/.exec(source)
   if (pragmaPrefix) {
@@ -838,6 +848,7 @@ function convertMessageContent(
 }
 
 interface PrivateStreamContext {
+  readonly execInputCorrections: number
   usedCallIds: readonly string[]
   allowedExecMethods: readonly string[]
   carrierEntry?: CarrierLedgerEntry
@@ -974,6 +985,7 @@ function convertResponsesRequest(
   let pending: Array<{ id: string }> | undefined
   let resultIndex = 0
   let sawMessage = false
+  let execInputCorrections = 0
   const append = (role: 'user' | 'assistant', content: Array<Record<string, unknown>>): void => {
     const previous = messages.at(-1)
     if (previous?.role === role) previous.content.push(...content)
@@ -1015,6 +1027,7 @@ function convertResponsesRequest(
       if (pending) fail('invalid_tool_result_batch')
       const converted = convertMessageContent(rawItem, limits, contentCount)
       if (!sawMessage && converted.role !== 'user') fail('invalid_conversation')
+      if (converted.role === 'user') execInputCorrections = 0
       sawMessage = true
       append(converted.role, converted.content)
       continue
@@ -1052,6 +1065,7 @@ function convertResponsesRequest(
       if (rawItem.name !== 'exec' || !exposesExec) fail('unadvertised_tool_call')
       const code = requireString(rawItem.input, 'invalid_custom_tool_input')
       parseSafeExecCode(code, allowedExecMethods, limits)
+      if (code === EXEC_INPUT_REJECTION_CODE) execInputCorrections += 1
       pending ??= []
       pending.push({ id })
       append('assistant', [{ type: 'tool_use', id, name: 'exec', input: { code } }])
@@ -1131,6 +1145,7 @@ function convertResponsesRequest(
   return {
     request: converted,
     context: {
+      execInputCorrections,
       usedCallIds: Object.freeze([...usedCallIds]),
       allowedExecMethods: Object.freeze([...allowedExecMethods]),
       ...(carrierEntry === undefined ? {} : { carrierEntry }),
@@ -1198,6 +1213,7 @@ async function* convertMessagesStream(
     output: [] as Array<Record<string, unknown>>,
     usedCalls: new Set(context.usedCallIds),
     toolCalls: 0,
+    execInputCorrections: context.execInputCorrections,
     frames: 0,
     totalOutput: 0,
     terminalFrames: [] as string[],
@@ -1755,7 +1771,9 @@ async function* convertMessagesStream(
           try {
             parsed = JSON.parse(block.arguments)
           } catch {
-            fail('invalid_custom_tool_input')
+            // Invalid exec input is reported to the model below; wait and wire
+            // protocol failures still follow their strict validation path.
+            if (block.name !== 'exec') fail('invalid_custom_tool_input')
           }
           if (block.name === 'wait') {
             parseWaitInput(parsed)
@@ -1788,21 +1806,37 @@ async function* convertMessagesStream(
             )
             continue
           }
-          if (
-            !isRecord(parsed) ||
-            !hasOnlyKeys(parsed, ['code']) ||
-            typeof parsed.code !== 'string'
-          ) {
-            fail('invalid_custom_tool_input')
+          let code: string
+          try {
+            if (
+              !isRecord(parsed) ||
+              !hasOnlyKeys(parsed, ['code']) ||
+              typeof parsed.code !== 'string'
+            ) {
+              fail('invalid_custom_tool_input')
+            }
+            parseSafeExecCode(parsed.code, context.allowedExecMethods, limits)
+            code = parsed.code
+          } catch (error) {
+            if (
+              !(error instanceof ProtocolCompatibilityError) ||
+              !['invalid_custom_tool_input', 'unsafe_custom_tool_input'].includes(error.code)
+            )
+              throw error
+            code = EXEC_INPUT_REJECTION_CODE
           }
-          parseSafeExecCode(parsed.code, context.allowedExecMethods, limits)
+          if (code === EXEC_INPUT_REJECTION_CODE) {
+            if (utf8Length(code) > limits.maxToolArguments) fail('tool_arguments_limit_exceeded')
+            if (++strict.execInputCorrections > MAX_EXEC_INPUT_CORRECTIONS)
+              fail('tool_input_retry_limit_exceeded')
+          }
           const item = {
             id: block.itemId,
             type: 'custom_tool_call',
             status: 'completed',
             call_id: block.callId,
             name: 'exec',
-            input: parsed.code,
+            input: code,
           }
           strict.output.push(item)
           const outputIndex = block.outputIndex
@@ -1821,12 +1855,12 @@ async function* convertMessagesStream(
             sse('response.custom_tool_call_input.delta', {
               item_id: block.itemId,
               output_index: outputIndex,
-              delta: parsed.code,
+              delta: code,
             }),
             sse('response.custom_tool_call_input.done', {
               item_id: block.itemId,
               output_index: outputIndex,
-              input: parsed.code,
+              input: code,
             }),
             sse('response.output_item.done', { output_index: outputIndex, item }),
           )
@@ -1952,6 +1986,7 @@ export async function replayProtocolRecording(
   const events: string[] = []
   // Synthetic parser authority is local to this simulation and never executes a tool.
   const context: PrivateStreamContext = {
+    execInputCorrections: 0,
     usedCallIds: [],
     allowedExecMethods: ['mcp__wiswork__replay'],
     carrierEntry: {

@@ -590,19 +590,24 @@ describe('bounded Anthropic SSE state machine', () => {
     'const x = "mcp__wiswork__wiswork_read_document"; text(await tools[x]({}))',
     'text(await tools.mcp__wiswork__wiswork_read_document({})); text(1)',
     'text(await tools.mcp__wiswork__wiswork_read_document({x: 1}))',
-  ])('rejects unsafe custom code without echoing it', async (code) => {
-    await expectStreamCode(
-      [
-        start,
-        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"exec","input":{}}}\n\n',
-        `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n`,
-        'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
-        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}\n\n',
-        stop,
-      ],
-      'unsafe_custom_tool_input',
-      true,
+  ])('replaces unsafe custom code with non-executing feedback', async (code) => {
+    const events = await collect(
+      prepareCarrierTurn(structuredClone(captured)).messagesStreamToResponses(
+        chunks(
+          start,
+          'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"exec","input":{}}}\n\n',
+          `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n`,
+          'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+          'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}\n\n',
+          stop,
+        ),
+      ),
     )
+    expect(events.at(-1)?.event).toBe('response.completed')
+    const recovery = events.find((event) => event.event === 'response.custom_tool_call_input.done')
+      ?.data.input
+    expect(recovery).toContain('No document tool was executed')
+    expect(recovery).not.toBe(code)
   })
 
   it('rejects a giant single transport chunk before buffering it', async () => {
