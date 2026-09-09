@@ -70,6 +70,32 @@ describe('presentation design plan', () => {
     expect(skill.buildContext?.()).toContain('Accent: #10B981')
   })
 
+  it('restores an early DESIGN.md draft before its page plan exists', () => {
+    const earlyDraft = renderPresentationDesignContract({
+      ...modernContract,
+      status: 'draft',
+      prototypePages: [],
+      brief: { ...modernContract.brief, pageCount: 10 },
+      slides: [],
+      deckAcceptance: [],
+    })
+    const skill = createSlidesSkill({
+      getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] }] as never,
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      getPresentationDesignDocument: () => earlyDraft,
+      applySlide: () => undefined,
+      applyDeck: () => undefined,
+      fitWidthPx: 1280,
+    })
+
+    expect(() => skill.buildContext?.()).not.toThrow()
+    expect(skill.buildContext?.()).toContain('Status: draft')
+    expect(
+      skill.reviewFinalResponse?.({ text: '调研完成，下一阶段将生成页面。', mutated: false }),
+    ).toContain('Continue planning in this turn')
+  })
+
   it('blocks legacy low-level writes on a blank deck until the design plan exists', async () => {
     const skill = createSlidesSkill({
       getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] }] as never,

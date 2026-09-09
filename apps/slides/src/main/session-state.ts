@@ -17,6 +17,7 @@ export interface RuntimePaths {
   preloadPath: string
   rendererDevUrl?: string | undefined
   rendererFilePath?: string | undefined
+  openDesignSidecar?: (senderId: number, path: string) => void
 }
 
 export const runtime: RuntimePaths = {
@@ -29,6 +30,7 @@ export function configureSlidesRuntime(paths: RuntimePaths): void {
   runtime.preloadPath = paths.preloadPath
   runtime.rendererDevUrl = paths.rendererDevUrl
   runtime.rendererFilePath = paths.rendererFilePath
+  runtime.openDesignSidecar = paths.openDesignSidecar
 }
 
 // One session per renderer process (standalone window or shell tab), keyed by webContents.id

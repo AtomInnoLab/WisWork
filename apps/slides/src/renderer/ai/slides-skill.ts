@@ -1864,7 +1864,15 @@ export function createSlidesSkill(
           (state.designContract?.revision !== restored.revision ||
             state.designContract.status !== restored.status)
         ) {
-          const restoredPlan = parsePresentationDesignPlan(contractAsLegacyPlan(restored))
+          const restoredPlan =
+            restored.status === 'draft' && restored.slides.length === 0
+              ? {
+                  core_hook: restored.narrative.coreHook,
+                  style: restored.visualSystem.style,
+                  pages: [],
+                  prototype_pages: [],
+                }
+              : parsePresentationDesignPlan(contractAsLegacyPlan(restored))
           state.designContract = restored
           state.plannedPages = restoredPlan.pages
           state.plannedPageCount = restoredPlan.pages.length
@@ -1921,6 +1929,8 @@ export function createSlidesSkill(
         return `Continue production: only ${state.builtPageIndexes?.size ?? 0} of ${planned} planned pages have been materialized.`
       if (planned !== undefined && actual < planned)
         return incompleteDeckCorrection(planned, actual)
+      if (state.designContract?.status === 'draft')
+        return 'Continue planning in this turn: finish research, update DESIGN.md to a complete ready contract with plan_deck, then immediately materialize and verify the prototype slides. Do not stop after describing the next stage.'
       return reviewSlidesFinalResponse(context)
     },
     ...(controller ? { presentation: { ...controller.hooks, batchScoped: true } } : {}),

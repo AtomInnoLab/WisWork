@@ -18,4 +18,21 @@ describe('Slides right AI dock', () => {
     expect(panel).toContain('window.innerWidth - ev.clientX')
     expect(styles).toMatch(/\.ai-panel-resizer\s*{[^}]*left:\s*0/s)
   })
+
+  it('keeps the DESIGN.md dialog inside the visible dock instead of the scroll content', () => {
+    const styles = read('../src/renderer/styles.css')
+    expect(styles).toMatch(/\.ai-panel\s*{[^}]*min-height:\s*0[^}]*overflow:\s*hidden/s)
+    expect(styles).toMatch(/\.ai-design-backdrop\s*{[^}]*position:\s*absolute[^}]*inset:\s*0/s)
+    expect(styles).toMatch(/\.ai-design-backdrop\s*{[^}]*z-index:\s*40/s)
+    expect(styles).toMatch(/\.ai-design-dialog\s*{[^}]*max-height:\s*calc\(100% - 36px\)/s)
+  })
+
+  it('offers the native WisWork Markdown editor with an in-panel fallback', () => {
+    const panel = read('../src/renderer/ai/AiPanel.tsx')
+    const preload = read('../src/preload/index.ts')
+    expect(panel).toContain('openDesignSidecar')
+    expect(panel).toContain("'在 WisWork 中打开'")
+    expect(preload).toContain("ipcRenderer.invoke('ai:open-design-sidecar')")
+    expect(panel).toContain('setDesignEditorEditing(true)')
+  })
 })

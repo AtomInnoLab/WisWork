@@ -307,6 +307,13 @@ configureSlidesRuntime({
   preloadPath: join(SLIDES_OUT, 'preload', 'index.js'),
   rendererDevUrl: process.env.SLIDES_RENDERER_URL,
   rendererFilePath: join(SLIDES_OUT, 'renderer', 'index.html'),
+  openDesignSidecar: (senderId, path) => {
+    if (!tabManager) return
+    designSidecarOwners.set(path, senderId)
+    const existing = tabManager.findMarkdownTabByPath(path)
+    if (existing) tabManager.activateTab(existing)
+    else tabManager.openMarkdownTab(path)
+  },
 })
 configurePdfRuntime({
   preloadPath: join(PDF_OUT, 'preload', 'index.js'),
@@ -1282,6 +1289,7 @@ const tm = (key: Parameters<typeof tMain>[1], params?: Parameters<typeof tMain>[
 
 let shellWindow: BrowserWindow | null = null
 let tabManager: TabManager | null = null
+const designSidecarOwners = new Map<string, number>()
 
 /**
  * When the user creates a file from a specific project view, remember which
@@ -1427,6 +1435,11 @@ function createShellWindow(): void {
     manager.setTabFileFor(wc.id, path)
     recordRecentFile(path)
     applyPendingProject(path)
+    const slidesSenderId = designSidecarOwners.get(path)
+    const slidesContents =
+      slidesSenderId === undefined ? undefined : webContents.fromId(slidesSenderId)
+    if (slidesContents && !slidesContents.isDestroyed())
+      slidesContents.send('ai:design-sidecar-changed')
   })
   // markdown "convert & open in Docs" → route the fresh .docx to a docs tab
   setMarkdownDocxExportedHook((path) => {
