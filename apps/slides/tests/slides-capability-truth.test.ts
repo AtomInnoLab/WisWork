@@ -128,7 +128,7 @@ describe('Slides capability truth', () => {
     expect(
       skill.reviewFinalResponse?.({
         text: 'Please choose in the questionnaire above, then I will generate the deck.',
-        mutated: false,
+        mutated: true,
       }),
     ).toContain('questionnaire answers are already available')
   })

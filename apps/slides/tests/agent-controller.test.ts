@@ -88,6 +88,55 @@ describe('Slides interactive agent controller', () => {
     expect(done).toHaveBeenCalledOnce()
     controller.dispose()
   })
+
+  it('continues an Enhanced turn when the Slides completion policy rejects a premature stop', async () => {
+    let documentId: string | null = null
+    let finishFirst!: () => void
+    const first = new Promise<void>((resolve) => {
+      finishFirst = resolve
+    })
+    const api: any = {
+      status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
+      register: vi.fn(async (input: any) => {
+        documentId = input.documentId
+      }),
+      unregister: vi.fn(async () => undefined),
+      startTurn: vi
+        .fn()
+        .mockReturnValueOnce(first)
+        .mockImplementation(() => new Promise<void>(() => undefined)),
+      cancelTurn: vi.fn(async () => undefined),
+      toolResult: vi.fn(async () => undefined),
+      onEvent: vi.fn(() => () => undefined),
+      onToolCall: vi.fn(() => () => undefined),
+    }
+    const reviewFinalResponse = vi
+      .fn()
+      .mockReturnValueOnce('[System correction] Continue with plan_deck now.')
+      .mockReturnValue(undefined)
+    const controller = createAgentController(
+      {
+        transport: manualTransport(),
+        skill: { ...skill, reviewFinalResponse },
+      },
+      { host: 'slides', api },
+    )
+    controller.activate()
+    await flush()
+    controller.run('create a presentation')
+    await flush()
+    finishFirst()
+    await flush()
+    await flush()
+
+    expect(reviewFinalResponse).toHaveBeenCalledOnce()
+    expect(api.startTurn).toHaveBeenCalledTimes(2)
+    expect(api.startTurn).toHaveBeenLastCalledWith({
+      documentId,
+      text: '[System correction] Continue with plan_deck now.',
+    })
+    controller.dispose()
+  })
   it('replaces an Enhanced deck registration and rejects callbacks from the old generation', async () => {
     let documentId: string | null = null
     const toolListeners: Array<(request: any) => void> = []

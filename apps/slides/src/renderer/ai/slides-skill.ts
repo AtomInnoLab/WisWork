@@ -1912,8 +1912,7 @@ export function createSlidesSkill(
         : documentContext
     },
     reviewFinalResponse: (context) => {
-      if (state.questionnaireAnsweredPendingPlan && !context.mutated)
-        return QUESTIONNAIRE_CONTINUATION_CORRECTION
+      if (state.questionnaireAnsweredPendingPlan) return QUESTIONNAIRE_CONTINUATION_CORRECTION
       if (state.pendingReviewIndexes?.size)
         return `Continue the visual quality loop: screenshot and inspect planned pages ${[...state.pendingReviewIndexes].map((index) => index + 1).join(', ')} before producing another batch or reporting completion.`
       const planned = state.plannedPageCount
@@ -3525,7 +3524,7 @@ async function executeTool(
         }
       }
       return {
-        output: `User questionnaire answers:\n${r.answers}\nDecide the Core Hook and style accordingly, then build the slides with the available local tools.`,
+        output: `User questionnaire answers:\n${r.answers}\nUse these answers now: continue with plan_deck, complete the DESIGN.md contract and required asset research, then produce and verify the slides. Do not ask the questionnaire again.`,
         mutated: false,
         summary: t('aiSumClarifyDone'),
       }

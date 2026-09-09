@@ -153,9 +153,10 @@ function createSlidesEnhancedHarness<TSnapshot>(
   const skill = {
     ...options.skill,
     // This harness is a tool executor for the remote model, not a second
-    // autonomous run. Keep transactional executeTool/consent validation below.
+    // autonomous presentation run. Keep local completion policies so a remote
+    // model cannot terminate after a successful questionnaire or before the
+    // contract-bound production/verification loop is complete.
     presentation: undefined,
-    reviewFinalResponse: undefined,
     async executeTool(call: Parameters<typeof options.skill.executeTool>[0], signal?: AbortSignal) {
       const controller = new AbortController()
       toolControllers.set(call.id, controller)
