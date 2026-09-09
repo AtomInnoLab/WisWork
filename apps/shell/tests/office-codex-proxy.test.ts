@@ -1,7 +1,22 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ENHANCED_HOSTS, type EnhancedRolloutPolicy } from '@wiswork/agent-runtime'
+import { isToolExecutionSuspension, type ToolExecution } from '@wiswork/agent-core'
+import type { DocumentToolSession } from '@wiswork/codex-bridge'
 import { OFFICE_PROXY_KEEPALIVE_MS, createOfficeCodexProxy } from '../src/main/office-codex-proxy'
 import { createShellEnhancedPolicyAuthority } from '../src/main/enhanced-policy-authority'
+
+// Legacy gateway event shape (without turnId) remains supported.
+async function semanticCall(input: any, call: any) {
+  input.onEvent({ type: 'tool-start', callId: call.id, toolName: call.name })
+  const result = await input.toolSession.callTool(input.toolSession.credentials, call)
+  input.onEvent({
+    type: 'tool-complete',
+    callId: call.id,
+    toolName: call.name,
+    isError: result.isError === true,
+  })
+  return result
+}
 
 const rollout: EnhancedRolloutPolicy = {
   globalEnabled: true,
@@ -21,6 +36,173 @@ const statement = {
 } as const
 
 describe('Office Codex proxy', () => {
+  it.each([
+    ['cancel', 'success'],
+    ['cancel', 'failure'],
+    ['timeout', 'success'],
+    ['timeout', 'failure'],
+    ['active', 'failure'],
+    ['active', 'invalid-result'],
+  ] as const)(
+    'contains a late mutation %s / %s without replaying its consumed claim',
+    async (ending, outcome) => {
+      vi.useFakeTimers()
+      const unhandled = vi.fn()
+      process.on('unhandledRejection', unhandled)
+      let session!: DocumentToolSession
+      let receipt!: ToolExecution
+      let resolve!: (value: { output: string; isError: boolean }) => void
+      let reject!: (error: Error) => void
+      const remote = new Promise<{ output: string; isError: boolean }>((done, fail) => {
+        resolve = done
+        reject = fail
+      })
+      const finishRemote = () => {
+        if (outcome === 'success') resolve({ output: 'late private receipt', isError: false })
+        else if (outcome === 'invalid-result') resolve({ output: undefined, isError: false } as any)
+        else reject(new Error('late private failure'))
+      }
+      const executeTool = vi.fn(() => remote)
+      const proxy = createOfficeCodexProxy({
+        runtime: {
+          async runOfficeTurn(input: any) {
+            session = input.toolSession
+            const event = { callId: 'write_1', toolName: 'edit_slide_text' }
+            input.onEvent({ type: 'tool-start', ...event })
+            const result = session.callTool(session.credentials, {
+              id: event.callId,
+              name: event.toolName,
+              input: {},
+            })
+            if (!isToolExecutionSuspension(result)) throw new Error('expected_mutation_suspension')
+            receipt = await result.result
+            input.onEvent({ type: 'tool-complete', ...event, isError: receipt.isError === true })
+            input.onEvent({ type: 'terminal', status: 'completed' })
+          },
+        } as any,
+        rollout,
+        policyAuthority: createShellEnhancedPolicyAuthority(() => 0),
+      })
+      try {
+        const response = await proxy({
+          body: {
+            system: '',
+            messages: [],
+            tools: [
+              { name: 'edit_slide_text', description: 'write', input_schema: { type: 'object' } },
+            ],
+          },
+          signal: new AbortController().signal,
+          host: 'PowerPoint',
+          sessionId: 'session_12345678',
+          requestId: 'request_12345678',
+          statement: { ...statement, host: 'office-powerpoint' },
+          executeTool,
+        })
+        await vi.advanceTimersByTimeAsync(5)
+        expect(executeTool).toHaveBeenCalledOnce()
+        if (ending === 'cancel') session.cancelAll(session.credentials)
+        else if (ending === 'timeout') await vi.advanceTimersByTimeAsync(30_000)
+        else finishRemote()
+        let stream = ''
+        for await (const chunk of response.body as AsyncIterable<Uint8Array>)
+          stream += new TextDecoder().decode(chunk)
+        expect(receipt).toMatchObject({
+          isError: true,
+          output:
+            ending === 'cancel'
+              ? 'tool_cancelled'
+              : ending === 'timeout'
+                ? 'tool_timeout'
+                : outcome === 'invalid-result'
+                  ? 'invalid_tool_result'
+                  : 'tool_execution_failed',
+        })
+        if (ending !== 'active') finishRemote()
+        // Flush the detached pump chain, including the promise rejection notification turn.
+        await vi.advanceTimersByTimeAsync(0)
+        const events = stream
+          .split('\n')
+          .filter((line) => line.includes('wiswork_tool_lifecycle'))
+          .map((line) => JSON.parse(line.slice(6)))
+        expect(events.map((event) => event.state)).toEqual(['running', 'error'])
+        expect(stream).not.toMatch(/late private|mutation_claim_consumed/)
+        expect(unhandled).not.toHaveBeenCalled()
+      } finally {
+        process.removeListener('unhandledRejection', unhandled)
+        session?.close()
+        vi.useRealTimers()
+      }
+    },
+  )
+
+  it('closes an observed read on abort and ignores late semantic completion and private errors', async () => {
+    const abort = new AbortController()
+    let onEvent!: (event: any) => void
+    let finish!: () => void
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const proxy = createOfficeCodexProxy({
+      runtime: {
+        async runOfficeTurn(input: any) {
+          onEvent = input.onEvent
+          onEvent({
+            type: 'tool-start',
+            turnId: 'opaque_turn',
+            callId: 'pending_read',
+            toolName: 'get_document_text',
+          })
+          await pending
+        },
+      } as any,
+      rollout,
+      policyAuthority: createShellEnhancedPolicyAuthority(() => 0),
+    })
+    const response = await proxy({
+      body: {
+        system: '',
+        messages: [],
+        tools: [
+          { name: 'get_document_text', description: 'read', input_schema: { type: 'object' } },
+        ],
+      },
+      signal: abort.signal,
+      host: 'Word',
+      sessionId: 'session_12345678',
+      requestId: 'request_12345678',
+      statement,
+      executeTool: vi.fn(),
+    })
+    abort.abort()
+    onEvent({
+      type: 'tool-complete',
+      turnId: 'opaque_turn',
+      callId: 'pending_read',
+      toolName: 'get_document_text',
+      isError: false,
+      errorCode: 'private-secret',
+    })
+    onEvent({ type: 'terminal', status: 'completed' })
+    onEvent({
+      type: 'tool-start',
+      turnId: 'opaque_turn',
+      callId: 'late_read',
+      toolName: 'get_document_text',
+    })
+    finish()
+    let stream = ''
+    for await (const chunk of response.body as AsyncIterable<Uint8Array>)
+      stream += new TextDecoder().decode(chunk)
+    const events = stream
+      .split('\n')
+      .filter((line) => line.includes('wiswork_tool_lifecycle'))
+      .map((line) => JSON.parse(line.slice(6)))
+    expect(events.map((event) => event.state)).toEqual(['running', 'error'])
+    expect(stream).not.toContain('wiswork_tool_activity')
+    expect(stream).not.toMatch(/private-secret|opaque_turn|pending_read|late_read/)
+  })
+
   it('emits bounded SSE keepalives while a long Office turn is silent', async () => {
     vi.useFakeTimers()
     let finish!: () => void
@@ -308,7 +490,7 @@ describe('Office Codex proxy', () => {
         expect(names).toEqual(['web_search', 'web_fetch', 'image_search', 'plan_deck'])
         for (const name of names.slice(0, 3)) {
           input.onEvent({ type: 'text', text: `before ${name}` })
-          const result = await input.toolSession.callTool(input.toolSession.credentials, {
+          const result = await semanticCall(input, {
             id: `call_${name}`,
             name,
             input:
@@ -362,7 +544,7 @@ describe('Office Codex proxy', () => {
       ['image_search', 'running'],
       ['image_search', 'complete'],
     ])
-    expect(activities[4]).toMatchObject({
+    expect(activities[5]).toMatchObject({
       generation: 3,
       query: 'volcano',
       started_at: expect.any(Number),
@@ -405,7 +587,7 @@ describe('Office Codex proxy', () => {
   it('returns a recoverable tool error when PC-backed image search is unavailable', async () => {
     const runtime = {
       async runOfficeTurn(input: any) {
-        const result = await input.toolSession.callTool(input.toolSession.credentials, {
+        const result = await semanticCall(input, {
           id: 'call_image_search',
           name: 'image_search',
           input: { query: 'volcano', max_results: 4 },
@@ -468,7 +650,7 @@ describe('Office Codex proxy', () => {
     const proxy = createOfficeCodexProxy({
       runtime: {
         async runOfficeTurn(input: any) {
-          const result = await input.toolSession.callTool(input.toolSession.credentials, {
+          const result = await semanticCall(input, {
             id: 'images',
             name: 'image_search',
             input: { query: '图'.repeat(4096), max_results: 20 },
@@ -499,7 +681,8 @@ describe('Office Codex proxy', () => {
       stream += new TextDecoder().decode(chunk)
     const lines = stream.split('\n').filter((line) => line.includes('wiswork_tool_activity'))
     const [start, complete] = lines.map((line) => JSON.parse(line.slice(6)))
-    expect(start.query).toHaveLength(240)
+    expect(start).not.toHaveProperty('query')
+    expect(complete.query).toHaveLength(240)
     expect(complete.result_count).toBe(20)
     expect(complete.display.items.length).toBeGreaterThan(0)
     expect(complete.display.items.length).toBeLessThanOrEqual(8)

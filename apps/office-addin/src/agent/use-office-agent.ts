@@ -24,7 +24,7 @@ import {
 } from './presentation-state.js'
 import type { PresentationVerificationStringKey } from '@wiswork/i18n'
 import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
-import type { OfficeAgentTransport } from './transport.js'
+import { MAX_OBSERVED_TOOL_CALLS, type OfficeAgentTransport } from './transport.js'
 
 export type AgentSessionStatus = 'idle' | 'working' | 'done' | 'cancelled' | 'error'
 
@@ -389,6 +389,8 @@ export function createOfficeAgentSession(dependencies: {
   let runStartedAt = 0
   const staleTools = new Set<string>()
   const toolStartedAt = new Map<string, number>()
+  // Canonical observation is authoritative even when a relay execution receipt arrives first.
+  const observedTools = new Map<string, 'running' | 'settled'>()
   const eventId = () => `event-${++nextEventId}`
   const append = (event: Parameters<typeof appendPresentationEvent>[1]) => {
     state = { ...state, timeline: appendPresentationEvent(state.timeline, event) }
@@ -593,6 +595,9 @@ export function createOfficeAgentSession(dependencies: {
     )
     const summary = toolActivity(activity.toolName, activity.state)
     if (activity.state === 'running') {
+      if (observedTools.has(activity.callId) || observedTools.size >= MAX_OBSERVED_TOOL_CALLS)
+        return
+      observedTools.set(activity.callId, 'running')
       if (existing) return
       assistantSegmentPrefix = cumulativeAssistantText
       closeAssistantSegment()
@@ -607,7 +612,9 @@ export function createOfficeAgentSession(dependencies: {
         ...(activity.query ? { output: activity.query } : {}),
       })
     } else {
-      if (!existing || existing.kind !== 'tool' || existing.state !== 'running') return
+      if (!existing || existing.kind !== 'tool' || observedTools.get(activity.callId) !== 'running')
+        return
+      observedTools.set(activity.callId, 'settled')
       replace(existing.id, (event) =>
         event.kind !== 'tool'
           ? event
@@ -618,7 +625,9 @@ export function createOfficeAgentSession(dependencies: {
                 summary +
                 (activity.resultCount === undefined ? '' : ` · ${activity.resultCount} 条结果`),
               durationMs: Math.max(0, Date.now() - activity.startedAt),
-              output: [activity.query, activity.summary].filter(Boolean).join('\n'),
+              output: activity.query
+                ? [activity.query, activity.summary].filter(Boolean).join('\n')
+                : (event.output ?? activity.summary ?? ''),
               ...(activity.display ? { display: activity.display } : {}),
             },
       )
@@ -626,24 +635,40 @@ export function createOfficeAgentSession(dependencies: {
     publish({ activity: summary })
   })
   dependencies.remoteTools?.setToolHandler?.(async (call) => {
+    if (disposed || call.signal.aborted) return { output: 'tool_cancelled', isError: true }
     const definition = sessionSkill.tools.find((tool) => tool.name === call.toolName)
     if (!definition) return { output: 'unknown_tool', isError: true }
+    const epoch = sessionEpoch
+    const current = () => !disposed && epoch === sessionEpoch
     assistantSegmentPrefix = cumulativeAssistantText
     closeAssistantSegment()
     diagnose((diagnostics) => diagnostics.setTool(call.toolName))
-    const presentationId = eventId()
+    const existing = state.timeline.find(
+      (event) => event.kind === 'tool' && event.callId === call.callId,
+    )
+    const presentationId = existing?.id ?? eventId()
     const startedAt = Date.now()
     const runningSummary = toolActivity(call.toolName, 'running')
-    append({
-      id: presentationId,
-      kind: 'tool',
-      callId: call.callId,
-      name: boundedText(call.toolName),
-      summary: runningSummary,
-      state: 'running',
-    })
+    if (!existing)
+      append({
+        id: presentationId,
+        kind: 'tool',
+        callId: call.callId,
+        name: boundedText(call.toolName),
+        summary: runningSummary,
+        state: 'running',
+      })
     publish({ activity: runningSummary })
-    const invalidateRemoteProposal = () => proposals.newTurn()
+    const invalidateRemoteProposal = () => {
+      if (!current()) return
+      proposals.newTurn()
+      replace(presentationId, (event) =>
+        event.kind === 'tool' && event.state === 'running'
+          ? { ...event, summary: toolActivity(call.toolName, 'error'), state: 'error' }
+          : event,
+      )
+      publish()
+    }
     call.signal.addEventListener('abort', invalidateRemoteProposal, { once: true })
     try {
       const outcome = await sessionSkill.executeTool(
@@ -671,19 +696,21 @@ export function createOfficeAgentSession(dependencies: {
             ])
           : outcome
       const finishedSummary = toolActivity(call.toolName, settled.isError ? 'error' : 'complete')
+      if (!current() || call.signal.aborted) return { output: 'tool_cancelled', isError: true }
+      const observed = observedTools.has(call.callId)
       replace(presentationId, (event) =>
-        event.kind === 'tool'
+        event.kind === 'tool' && event.state === 'running'
           ? {
               ...event,
-              summary: finishedSummary,
-              state: settled.isError ? 'error' : 'complete',
+              summary: observed ? event.summary : finishedSummary,
+              state: observed ? event.state : settled.isError ? 'error' : 'complete',
               durationMs: Date.now() - startedAt,
               output: boundedText(settled.output),
               ...(settled.display ? { display: settled.display } : {}),
             }
           : event,
       )
-      publish({ activity: finishedSummary })
+      publish(observed ? {} : { activity: finishedSummary })
       if (settled.isError) {
         const errorCode = diagnosticToolError(settled.output)
         diagnose((diagnostics) =>
@@ -694,16 +721,22 @@ export function createOfficeAgentSession(dependencies: {
           }),
         )
       }
-      call.signal.removeEventListener('abort', invalidateRemoteProposal)
       return { output: settled.output, ...(settled.isError ? { isError: true } : {}) }
     } catch {
+      if (!current()) return { output: 'tool_cancelled', isError: true }
       const failedSummary = toolActivity(call.toolName, 'error')
+      const observed = observedTools.has(call.callId)
       replace(presentationId, (event) =>
-        event.kind === 'tool'
-          ? { ...event, summary: failedSummary, state: 'error', durationMs: Date.now() - startedAt }
+        event.kind === 'tool' && event.state === 'running'
+          ? {
+              ...event,
+              summary: observed ? event.summary : failedSummary,
+              state: observed ? event.state : 'error',
+              durationMs: Date.now() - startedAt,
+            }
           : event,
       )
-      publish({ activity: failedSummary })
+      publish(observed ? {} : { activity: failedSummary })
       diagnose((diagnostics) =>
         diagnostics.record({
           phase: 'tool',
@@ -915,6 +948,8 @@ export function createOfficeAgentSession(dependencies: {
   const startRun = (instruction: string, displayText = instruction) => {
     const value = instruction.trim()
     if (!value || harness.snapshot.busy || state.applying || disposed) return
+    sessionEpoch += 1
+    observedTools.clear()
     diagnose((diagnostics) => diagnostics.startTrace())
     staleTools.clear()
     runStartedAt = Date.now()

@@ -8,6 +8,7 @@ const mock = vi.hoisted(() => ({
   document: undefined as any,
   onStreamActivity: undefined as ((turnId?: string) => void) | undefined,
   revoke: vi.fn(),
+  beginTurn: vi.fn(() => ({ capability: 'capability', turnId: 'gateway-turn' })),
   startThread: vi.fn(async () => ({ thread: { id: 'thread' } })),
   startTurn: vi.fn(async () => ({ turn: { id: 'turn' } })),
 }))
@@ -24,7 +25,7 @@ vi.mock('@wiswork/codex-bridge', async (original) => ({
       mock.document = document
       return () => {}
     },
-    beginTurn: () => ({ capability: 'capability' }),
+    beginTurn: mock.beginTurn,
     bindTurn: () => {},
     revokeTurn: mock.revoke,
     close: async () => {},
@@ -51,6 +52,59 @@ afterEach(() => {
   vi.clearAllMocks()
   mock.startThread.mockImplementation(async () => ({ thread: { id: 'thread' } }))
   mock.startTurn.mockImplementation(async () => ({ turn: { id: 'turn' } }))
+  mock.beginTurn.mockImplementation(() => ({ capability: 'capability', turnId: 'gateway-turn' }))
+})
+
+it('does not forward or apply a revoked gateway turn receipt to the next run', async () => {
+  const fixture = await startSlidesTurn()
+  mock.document.onToolEvent({
+    type: 'tool-start',
+    callId: 'old',
+    toolName: 'ask_clarification',
+    turnId: 'gateway-turn',
+  })
+  await fixture.engine.cancelTurn('doc')
+  await fixture.running
+  mock.beginTurn.mockReturnValue({ capability: 'next-capability', turnId: 'next-gateway-turn' })
+  const running = fixture.engine.startTurn({
+    documentId: 'doc',
+    host: 'slides',
+    generation: 1,
+    text: 'continue',
+  })
+  await vi.advanceTimersByTimeAsync(0)
+  const count = fixture.events.length
+  mock.document.onToolEvent({
+    type: 'tool-complete',
+    callId: 'old',
+    toolName: 'ask_clarification',
+    turnId: 'gateway-turn',
+    isError: false,
+  })
+  expect(fixture.events).toHaveLength(count)
+  mock.document.onToolEvent({
+    type: 'tool-start',
+    callId: 'new',
+    toolName: 'read_presentation',
+    turnId: 'next-gateway-turn',
+  })
+  expect(fixture.events.at(-1)).toMatchObject({
+    type: 'tool-start',
+    callId: 'new',
+    turnId: 'next-gateway-turn',
+  })
+  fixture.completeNativeTurn()
+  await expect(running).resolves.toBeUndefined()
+  const terminalCount = fixture.events.length
+  mock.document.onToolEvent({
+    type: 'tool-complete',
+    callId: 'new',
+    toolName: 'read_presentation',
+    turnId: 'next-gateway-turn',
+    isError: false,
+  })
+  expect(fixture.events).toHaveLength(terminalCount)
+  await fixture.engine.close()
 })
 
 async function startSlidesTurn() {

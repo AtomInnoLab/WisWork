@@ -1,7 +1,12 @@
 import type { EnhancedHost } from './contracts'
 import { createEnhancedTelemetry } from './telemetry'
 import { isToolExecutionSuspension, type AgentSkill } from '@wiswork/agent-core'
-import type { PcHostRegistration, PcHostToolRequest, PcHostToolResult } from './pc-host'
+import type {
+  PcHostRegistration,
+  PcHostToolCancel,
+  PcHostToolRequest,
+  PcHostToolResult,
+} from './pc-host'
 import type {
   EnhancedRuntimeClient,
   EnhancedRuntimeClientSession,
@@ -19,6 +24,7 @@ export interface EnhancedRendererBridge {
   register(input: PcHostRegistration): Promise<void>
   unregister(documentId: string, generation: number): Promise<void>
   onToolCall(listener: (request: PcHostToolRequest) => void): () => void
+  onToolCancel?(listener: (request: PcHostToolCancel) => void): () => void
   toolResult(input: PcHostToolResult): Promise<void>
   telemetry?(event: import('./telemetry').EnhancedTelemetryEvent): Promise<void>
 }
@@ -174,6 +180,7 @@ export function createEnhancedRendererClient(
       const hostRegistration = createPcHostRegistration(input)
       const mutatingTools = new Set(hostRegistration.mutatingTools)
       const snapshots = new Map<string, Readonly<{ id: string; value: unknown }>>()
+      const toolControllers = new Map<string, AbortController>()
       const registration = (closingRegistrations.get(input.documentId) ?? Promise.resolve())
         .catch(() => undefined)
         .then(() => bridge.register(hostRegistration))
@@ -244,9 +251,21 @@ export function createEnhancedRendererClient(
             return
           }
         }
-        void Promise.resolve(input.skill.executeTool(request.call))
-          .then(async (outcome) => {
-            const execution = isToolExecutionSuspension(outcome) ? await outcome.result : outcome
+        const controller = new AbortController()
+        toolControllers.set(request.call.id, controller)
+        void Promise.resolve()
+          .then(() => {
+            controller.signal.throwIfAborted()
+            return input.skill.executeTool(request.call, controller.signal)
+          })
+          .then((outcome) => (isToolExecutionSuspension(outcome) ? outcome.result : outcome))
+          .catch(() => {
+            snapshots.delete(request.call.id)
+            snapshot = undefined
+            return { output: 'tool_execution_failed', summary: 'Tool failed', isError: true }
+          })
+          .then(async (execution) => {
+            if (ended || controller.signal.aborted) return
             await bridge.toolResult({
               documentId: input.documentId,
               generation: input.generation,
@@ -255,16 +274,21 @@ export function createEnhancedRendererClient(
               ...(snapshot ? { snapshotBefore: snapshot.id } : {}),
             })
           })
-          .catch(() => {
-            snapshots.delete(request.call.id)
-            return bridge.toolResult({
-              documentId: input.documentId,
-              generation: input.generation,
-              callId: request.call.id,
-              execution: { output: 'tool_execution_failed', summary: 'Tool failed', isError: true },
-            })
+          // The privileged owner rejects revoked receipts; never retry a consumed call.
+          .catch(() => snapshots.delete(request.call.id))
+          .finally(() => {
+            if (toolControllers.get(request.call.id) === controller)
+              toolControllers.delete(request.call.id)
           })
       })
+      const unsubscribeCancels =
+        bridge.onToolCancel?.((request) => {
+          if (request.documentId !== input.documentId || request.generation !== input.generation)
+            return
+          toolControllers.get(request.callId)?.abort()
+          toolControllers.delete(request.callId)
+          snapshots.delete(request.callId)
+        }) ?? (() => undefined)
       const session: EnhancedRuntimeClientSession = Object.freeze({
         async start(turn: {
           readonly text: string
@@ -296,6 +320,9 @@ export function createEnhancedRendererClient(
           ended = true
           unsubscribe()
           unsubscribeTools()
+          unsubscribeCancels()
+          for (const controller of toolControllers.values()) controller.abort()
+          toolControllers.clear()
           snapshots.clear()
           listeners.clear()
           sessions.delete(session)

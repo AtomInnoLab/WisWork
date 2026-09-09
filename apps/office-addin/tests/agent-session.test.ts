@@ -8,7 +8,7 @@ import {
 import type { ProposalDecision, StructuredProposal } from '../src/agent/proposal-controller.js'
 import { createStructuredProposalController } from '../src/agent/proposal-controller.js'
 import type { OfficePowerPointVisualReviewer } from '../src/skills/powerpoint/powerpoint-verification.js'
-import { createPcBridgeAgentTransport } from '../src/agent/transport.js'
+import { createPcBridgeAgentTransport, type OfficeToolActivity } from '../src/agent/transport.js'
 
 function transportHarness() {
   let callbacks: AgentStreamCallbacks | undefined
@@ -471,6 +471,129 @@ describe('Office agent session', () => {
           },
         })
       expect(executeTool).not.toHaveBeenCalled()
+      session.dispose()
+    },
+  )
+
+  it.each(['observation-first', 'execution-first', 'execution-start-first'] as const)(
+    'enriches one remote card with canonical failure (%s)',
+    async (order) => {
+      let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
+      let observe: ((event: OfficeToolActivity) => void) | undefined
+      const harness = transportHarness()
+      const executeTool = vi.fn(async () => ({ output: 'full execution receipt', summary: 'read' }))
+      const session = createOfficeAgentSession({
+        transport: {
+          ...harness.transport,
+          setToolActivityHandler: (next) => {
+            observe = next
+          },
+        },
+        skill: {
+          id: 'test',
+          systemPrompt: '',
+          tools: [
+            { name: 'get_document_text', description: 'read', inputSchema: { type: 'object' } },
+          ],
+          executeTool,
+        },
+        proposals: proposalsHarness().controller,
+        remoteTools: {
+          setToolHandler: (next) => {
+            handler = next
+          },
+        },
+      })
+      session.send('Read')
+      await Promise.resolve()
+      const base = { callId: 'call_document123', toolName: 'get_document_text', startedAt: 1000 }
+      if (order === 'observation-first')
+        observe!({ ...base, state: 'running' } as OfficeToolActivity)
+      const execution = handler!({
+        turnId: 'turn_12345678',
+        callId: base.callId,
+        generation: 3,
+        toolName: base.toolName,
+        input: {},
+        signal: new AbortController().signal,
+      })
+      if (order === 'execution-start-first')
+        observe!({ ...base, state: 'running' } as OfficeToolActivity)
+      await execution
+      if (order !== 'execution-first')
+        expect(session.snapshot().timeline.find((event) => event.kind === 'tool')).toMatchObject({
+          state: 'running',
+          output: 'full execution receipt',
+        })
+      else observe!({ ...base, state: 'running' } as OfficeToolActivity)
+      observe!({ ...base, state: 'error', summary: 'Tool failed' } as OfficeToolActivity)
+      const cards = session.snapshot().timeline.filter((event) => event.kind === 'tool')
+      expect(cards).toHaveLength(1)
+      expect(cards[0]).toMatchObject({ state: 'error', output: 'full execution receipt' })
+      expect(executeTool).toHaveBeenCalledOnce()
+      session.dispose()
+    },
+  )
+
+  it.each(['canonical-error', 'new-task', 'disposed'] as const)(
+    'does not publish a late remote receipt after %s',
+    async (reason) => {
+      let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
+      let observe: ((event: OfficeToolActivity) => void) | undefined
+      let finish!: (value: ToolExecution) => void
+      const harness = transportHarness()
+      const executeTool = vi.fn(
+        () =>
+          new Promise<ToolExecution>((resolve) => {
+            finish = resolve
+          }),
+      )
+      const session = createOfficeAgentSession({
+        transport: {
+          ...harness.transport,
+          setToolActivityHandler: (next) => {
+            observe = next
+          },
+        },
+        skill: {
+          id: 'test',
+          systemPrompt: '',
+          tools: [
+            { name: 'get_document_text', description: 'read', inputSchema: { type: 'object' } },
+          ],
+          executeTool,
+        },
+        proposals: proposalsHarness().controller,
+        remoteTools: {
+          setToolHandler: (next) => {
+            handler = next
+          },
+        },
+      })
+      session.send('Old task')
+      await Promise.resolve()
+      const base = { callId: 'call_document123', toolName: 'get_document_text', startedAt: 1000 }
+      observe!({ ...base, state: 'running' })
+      const execution = handler!({
+        turnId: 'turn_12345678',
+        callId: base.callId,
+        generation: 3,
+        toolName: base.toolName,
+        input: {},
+        signal: new AbortController().signal,
+      })
+      if (reason === 'canonical-error')
+        observe!({ ...base, state: 'error', summary: 'Interrupted' })
+      else if (reason === 'new-task') {
+        session.newTask()
+        session.send('New task')
+      } else session.dispose()
+      const before = session.snapshot()
+      finish({ output: 'late private receipt', summary: 'success' })
+      await execution
+      expect(session.snapshot().timeline).toEqual(before.timeline)
+      expect(JSON.stringify(session.snapshot())).not.toContain('late private receipt')
+      expect(executeTool).toHaveBeenCalledOnce()
       session.dispose()
     },
   )

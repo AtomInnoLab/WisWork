@@ -54,6 +54,7 @@ import {
 } from './plan-operations'
 import { isNumericIdentifierText } from './cell-warning'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { upsertToolActivity } from '@wiswork/agent-runtime'
 
 import {
   CellValueType,
@@ -883,15 +884,13 @@ export function App(): React.JSX.Element {
             // Live "running" chip: replaced in place by onToolExecuted
             patchLastAssistant((entry) => ({
               ...entry,
-              tools: [
-                ...entry.tools,
-                {
-                  summary: call.name.replace(/[_-]+/g, ' '),
-                  isError: false,
-                  name: call.name,
-                  running: true,
-                },
-              ],
+              tools: upsertToolActivity(entry.tools, {
+                callId: call.invocationId ?? call.id,
+                summary: call.name.replace(/[_-]+/g, ' '),
+                isError: false,
+                name: call.name,
+                running: true,
+              }),
             }))
           },
           onToolExecuted: ({ call, execution }) => {
@@ -908,20 +907,15 @@ export function App(): React.JSX.Element {
               ...(output !== undefined ? { output } : {}),
             })
             patchLastAssistant((entry) => {
-              // Swap out the running placeholder pushed by onToolStart (parse-fail calls have none)
-              const tools = [...entry.tools]
-              if (tools.at(-1)?.running) tools.pop()
               return {
                 ...entry,
-                tools: [
-                  ...tools,
-                  {
-                    summary: execution.summary,
-                    isError: !!execution.isError,
-                    name: call.name,
-                    ...(execution.output ? { output: execution.output.slice(0, 2000) } : {}),
-                  },
-                ],
+                tools: upsertToolActivity(entry.tools, {
+                  callId: call.invocationId ?? call.id,
+                  summary: execution.summary,
+                  isError: !!execution.isError,
+                  name: call.name,
+                  ...(execution.output ? { output: execution.output.slice(0, 2000) } : {}),
+                }),
               }
             })
           },

@@ -13,6 +13,8 @@ export const MAX_STREAM_TOOL_INPUT_LENGTH = 16 * 1024
 export const MAX_REQUEST_BODY_LENGTH = 256 * 1024
 export const MAX_STREAM_TEXT_LENGTH = 128 * 1024
 export const MAX_COMPLETED_TOOL_CALLS = 32
+// Enhanced streams span a whole document session, not a single provider response.
+export const MAX_OBSERVED_TOOL_CALLS = 1024
 // Stay below the Office relay client's 290s request deadline while allowing long model turns such as
 // multi-slide planning. This is an absolute per-model-turn budget, not an idle timer.
 export const STREAM_RESPONSE_TIMEOUT_MS = 280_000
@@ -23,7 +25,7 @@ const MAX_PENDING_TOOL_CALLS = 16
 
 export interface OfficeToolActivity {
   readonly callId: string
-  readonly toolName: 'web_search' | 'web_fetch' | 'image_search'
+  readonly toolName: string
   readonly state: 'running' | 'complete' | 'error'
   readonly startedAt: number
   readonly query?: string
@@ -35,7 +37,6 @@ export interface OfficeAgentTransport extends AgentTransport {
   setToolActivityHandler?(handler: ((event: OfficeToolActivity) => void) | undefined): void
 }
 
-const RETRIEVAL_TOOLS = new Set(['web_search', 'web_fetch', 'image_search'])
 function parseToolActivity(
   event: Record<string, unknown>,
   generation: number | undefined,
@@ -56,14 +57,14 @@ function parseToolActivity(
     throw new TransportError('transport_invalid_stream')
   }
   if (
-    JSON.stringify(event).length > 12 * 1024 ||
+    new TextEncoder().encode(JSON.stringify(event)).byteLength > 12 * 1024 ||
     Object.keys(event).some((key) => !keys.includes(key)) ||
     generation === undefined ||
     event.generation !== generation ||
     typeof event.call_id !== 'string' ||
     !/^call_[A-Za-z0-9_-]{8,123}$/.test(event.call_id) ||
     typeof event.tool_name !== 'string' ||
-    !RETRIEVAL_TOOLS.has(event.tool_name) ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(event.tool_name) ||
     !['running', 'complete', 'error'].includes(String(event.state)) ||
     !Number.isSafeInteger(event.started_at) ||
     Number(event.started_at) < 0 ||
@@ -288,7 +289,7 @@ async function consumeStream(
     } catch {
       throw new TransportError('transport_invalid_stream')
     }
-    if (event.type === 'wiswork_tool_activity') {
+    if (event.type === 'wiswork_tool_activity' || event.type === 'wiswork_tool_lifecycle') {
       handleActivity?.(event as Record<string, unknown>)
       continue
     }
@@ -378,9 +379,7 @@ function createTransport(
     },
     stream(request: AgentStreamRequest, callbacks: AgentStreamCallbacks) {
       const controller = new AbortController()
-      const allowed = new Set(
-        request.tools.map((tool) => tool.name).filter((name) => RETRIEVAL_TOOLS.has(name)),
-      )
+      const allowed = new Set(request.tools.map((tool) => tool.name))
       // Tool-free review subturns must not observe or supersede the user-facing stream.
       const epoch = allowed.size ? ++activityEpoch : undefined
       let generation = enhancedGeneration()
@@ -391,7 +390,7 @@ function createTransport(
       }
       const closeActivities = () => {
         for (const activity of pendingActivities.values())
-          observe({ ...activity, state: 'error', summary: 'Retrieval interrupted' })
+          observe({ ...activity, state: 'error', summary: 'Tool interrupted' })
         pendingActivities.clear()
       }
       const handleActivity = (event: Record<string, unknown>) => {
@@ -412,7 +411,7 @@ function createTransport(
               pending.toolName !== activity.toolName ||
               pending.startedAt !== activity.startedAt) ||
           (activity.state === 'running' &&
-            pendingActivities.size + completedActivities.size >= MAX_COMPLETED_TOOL_CALLS)
+            pendingActivities.size + completedActivities.size >= MAX_OBSERVED_TOOL_CALLS)
         )
           throw new TransportError('transport_invalid_stream')
         if (activity.state === 'running') pendingActivities.set(activity.callId, activity)

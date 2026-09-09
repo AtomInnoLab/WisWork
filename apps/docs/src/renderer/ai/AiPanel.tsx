@@ -3,6 +3,7 @@ import type { Editor } from '@tiptap/core'
 import type { Block } from '@wiswork/docx-engine'
 import { composeSkills, type AgentImage } from '@wiswork/agent-core'
 import type { AgentHarness } from '@wiswork/agent-harness'
+import { upsertToolActivity } from '@wiswork/agent-runtime'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
 import type { PmNode } from '../editor/convert'
@@ -41,6 +42,7 @@ import {
 import { createChatBindingCoordinator } from './chat-binding'
 
 interface ToolActivity {
+  callId?: string
   name: string
   summary: string
   /** still executing: rendered as a spinner chip, replaced in place when the tool finishes */
@@ -578,10 +580,12 @@ export function AiPanel({
           onToolStart: (call) => {
             // Live "running" chip: replaced in place by onToolExecuted
             patchLastAssistant((last) => ({
-              tools: [
-                ...(last.tools ?? []),
-                { name: call.name, summary: call.name.replace(/[_-]+/g, ' '), running: true },
-              ],
+              tools: upsertToolActivity(last.tools, {
+                callId: call.invocationId ?? call.id,
+                name: call.name,
+                summary: call.name.replace(/[_-]+/g, ' '),
+                running: true,
+              }),
             }))
           },
           onToolExecuted: ({ call, execution, snapshotBefore }) => {
@@ -602,21 +606,16 @@ export function AiPanel({
                 : undefined,
             })
             patchLastAssistant((last) => {
-              // Swap out the running placeholder pushed by onToolStart (parse-fail calls have none)
-              const tools = [...(last.tools ?? [])]
-              if (tools.at(-1)?.running) tools.pop()
               return {
-                tools: [
-                  ...tools,
-                  {
-                    name: call.name,
-                    summary: execution.summary,
-                    isError: execution.isError,
-                    output: execution.output
-                      ? execution.output.slice(0, TOOL_OUTPUT_MAX_CHARS)
-                      : undefined,
-                  },
-                ],
+                tools: upsertToolActivity(last.tools, {
+                  callId: call.invocationId ?? call.id,
+                  name: call.name,
+                  summary: execution.summary,
+                  isError: execution.isError,
+                  output: execution.output
+                    ? execution.output.slice(0, TOOL_OUTPUT_MAX_CHARS)
+                    : undefined,
+                }),
               }
             })
           },

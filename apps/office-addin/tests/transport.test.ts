@@ -73,6 +73,114 @@ describe('Office Agent transport', () => {
     expect(cb.onError).not.toHaveBeenCalled()
   })
 
+  it.each([33, 1024])(
+    'observes %i semantic attempts within the document-session limit',
+    async (count) => {
+      const cb = callbacks(),
+        observe = vi.fn(),
+        handleToolFrame = vi.fn()
+      const transport = createPcBridgeAgentTransport({
+        snapshot: () => ({ enhanced: { session_generation: 3 } }),
+        handleToolFrame,
+        authenticatedFetch: async () =>
+          sse(
+            Array.from({ length: count }, (_, index) =>
+              ['running', 'complete'].map(
+                (state) =>
+                  `data: ${JSON.stringify(activity(state, { call_id: `call_search_${index}` }))}`,
+              ),
+            ).flat(),
+          ),
+      })
+      transport.setToolActivityHandler?.(observe)
+      transport.stream(searchRequest, cb)
+      await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+      expect(cb.onError).not.toHaveBeenCalled()
+      expect(observe).toHaveBeenCalledTimes(count * 2)
+      expect(cb.onToolCall).not.toHaveBeenCalled()
+      expect(handleToolFrame).not.toHaveBeenCalled()
+    },
+  )
+
+  it('observes allowed non-retrieval router rejection without executing the tool', async () => {
+    const cb = callbacks(),
+      observe = vi.fn(),
+      handleToolFrame = vi.fn()
+    const transport = createPcBridgeAgentTransport({
+      snapshot: () => ({ enhanced: { session_generation: 3 } }),
+      handleToolFrame,
+      authenticatedFetch: async () =>
+        sse(
+          ['running', 'error'].map(
+            (state) =>
+              `data: ${JSON.stringify(activity(state, { type: 'wiswork_tool_lifecycle', tool_name: 'get_document_text', query: undefined }))}`,
+          ),
+        ),
+    })
+    transport.setToolActivityHandler?.(observe)
+    transport.stream(
+      {
+        ...searchRequest,
+        tools: [
+          { name: 'get_document_text', description: 'read', inputSchema: { type: 'object' } },
+        ],
+      },
+      cb,
+    )
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(cb.onError).not.toHaveBeenCalled()
+    expect(observe.mock.calls.map(([event]) => event.state)).toEqual(['running', 'error'])
+    expect(cb.onToolCall).not.toHaveBeenCalled()
+    expect(handleToolFrame).not.toHaveBeenCalled()
+  })
+
+  it('retains the hard 1024-call bound for enhanced observation streams', async () => {
+    const cb = callbacks(),
+      observe = vi.fn()
+    const transport = createPcBridgeAgentTransport({
+      snapshot: () => ({ enhanced: { session_generation: 3 } }),
+      authenticatedFetch: async () =>
+        sse(
+          Array.from({ length: 1025 }, (_, index) =>
+            ['running', 'complete'].map(
+              (state) =>
+                `data: ${JSON.stringify(activity(state, { call_id: `call_search_${index}` }))}`,
+            ),
+          ).flat(),
+        ),
+    })
+    transport.setToolActivityHandler?.(observe)
+    transport.stream(searchRequest, cb)
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(cb.onError).toHaveBeenCalledWith('transport_invalid_stream')
+    expect(observe).toHaveBeenCalledTimes(2048)
+  })
+
+  it('bounds activity metadata by UTF-8 bytes, not JavaScript character count', async () => {
+    const frame = activity('running', {
+      display: {
+        kind: 'images',
+        items: Array.from({ length: 8 }, () => ({
+          url: `https://example.com/${'x'.repeat(1000)}`,
+          title: '图'.repeat(160),
+        })),
+      },
+    })
+    expect(JSON.stringify(frame).length).toBeLessThan(12 * 1024)
+    expect(new TextEncoder().encode(JSON.stringify(frame)).byteLength).toBeGreaterThan(12 * 1024)
+    const cb = callbacks(),
+      observe = vi.fn()
+    const transport = createPcBridgeAgentTransport({
+      snapshot: () => ({ enhanced: { session_generation: 3 } }),
+      authenticatedFetch: async () => sse([`data: ${JSON.stringify(frame)}`]),
+    })
+    transport.setToolActivityHandler?.(observe)
+    transport.stream(searchRequest, cb)
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(cb.onError).toHaveBeenCalledWith('transport_invalid_stream')
+    expect(observe).not.toHaveBeenCalled()
+  })
+
   it('binds the initial enhanced generation negotiated after the request starts', async () => {
     let generation: number | undefined
     const cb = callbacks(),
@@ -311,7 +419,7 @@ describe('Office Agent transport', () => {
     handle.cancel()
     await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
     expect(observe.mock.calls.map(([event]) => event.state)).toEqual(['running', 'error'])
-    expect(observe.mock.calls[1]?.[0].summary).toBe('Retrieval interrupted')
+    expect(observe.mock.calls[1]?.[0].summary).toBe('Tool interrupted')
   })
 
   it('keeps the stream deadline below Relay while allowing long model turns', () => {

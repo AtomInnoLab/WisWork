@@ -11,7 +11,11 @@ import {
   parseEnhancedTelemetryEvent,
   type EnhancedTelemetry,
 } from '@wiswork/agent-runtime'
-import { createDocumentToolManifest, createDocumentToolSession } from '@wiswork/codex-bridge'
+import {
+  createDocumentToolManifest,
+  createDocumentToolSession,
+  safeToolFailureCode,
+} from '@wiswork/codex-bridge'
 import type { ShellCodexRuntime, CodexOwner } from './codex-runtime'
 import { createShellEnhancedPolicyAuthority } from './enhanced-policy-authority'
 
@@ -39,6 +43,14 @@ type PendingProposal = {
   readonly expiresAt: number
   timer?: ReturnType<typeof setTimeout>
 }
+type ToolLifecycle = {
+  call: AgentToolCall
+  readonly turnId?: string
+  gateway: boolean
+  done: boolean
+  execution?: ToolExecution
+  snapshotBefore?: string
+}
 type HostRecord = {
   readonly owner: PcOwner
   readonly documentId: string
@@ -49,6 +61,9 @@ type HostRecord = {
   readonly pending: Map<string, Pending>
   readonly proposals: Map<string, PendingProposal>
   readonly session: ReturnType<typeof createDocumentToolSession>
+  readonly toolNames: ReadonlySet<string>
+  readonly lifecycle: Map<string, ToolLifecycle>
+  readonly retiredTurns: Set<string>
   text: string
   closed: boolean
 }
@@ -284,6 +299,46 @@ export function registerPcCodexHosts(options: {
       record.owner.send(channel, value)
     } catch {}
   }
+  const lifecycleKey = (call: AgentToolCall) => call.invocationId ?? call.id
+  const startTool = (record: HostRecord, call: AgentToolCall, turnId?: string) => {
+    const key = lifecycleKey(call)
+    const existing = record.lifecycle.get(key)
+    if (existing) return existing
+    // The document router admits at most 1,024 calls. Bound legacy event-only callers too.
+    if (record.lifecycle.size >= 1_024) return undefined
+    const lifecycle: ToolLifecycle = { call, turnId, gateway: false, done: false }
+    record.lifecycle.set(key, lifecycle)
+    send(record, PC_HOST_CODEX_CHANNELS.event, { type: 'tool-start', call })
+    return lifecycle
+  }
+  const finishTool = (record: HostRecord, lifecycle: ToolLifecycle, execution: ToolExecution) => {
+    if (lifecycle.done) return
+    lifecycle.done = true
+    send(record, PC_HOST_CODEX_CHANNELS.event, {
+      type: 'tool-executed',
+      event: {
+        call: lifecycle.call,
+        execution,
+        ...(lifecycle.snapshotBefore ? { snapshotBefore: lifecycle.snapshotBefore } : {}),
+      },
+    })
+    lifecycle.execution = undefined
+    lifecycle.snapshotBefore = undefined
+    lifecycle.call = { ...lifecycle.call, input: {} }
+  }
+  const recordExecution = (
+    record: HostRecord,
+    call: AgentToolCall,
+    execution: ToolExecution,
+    snapshotBefore?: string,
+  ) => {
+    const lifecycle = startTool(record, call)
+    if (!lifecycle || lifecycle.done) return
+    lifecycle.call = call
+    lifecycle.execution = execution
+    lifecycle.snapshotBefore = snapshotBefore
+    if (!lifecycle.gateway) finishTool(record, lifecycle, execution)
+  }
   const dispatch = (
     record: HostRecord,
     call: AgentToolCall,
@@ -297,6 +352,7 @@ export function registerPcCodexHosts(options: {
         const pending = record.pending.get(call.id)
         if (!pending) return
         record.pending.delete(call.id)
+        pending.removeAbort?.()
         send(record, PC_HOST_CODEX_CHANNELS.toolCancel, {
           documentId: record.documentId,
           generation: record.generation,
@@ -313,7 +369,8 @@ export function registerPcCodexHosts(options: {
       })
       signal?.addEventListener('abort', onAbort, { once: true })
       if (signal?.aborted) return onAbort()
-      send(record, PC_HOST_CODEX_CHANNELS.event, { type: 'tool-start', call })
+      const lifecycle = startTool(record, call)
+      if (lifecycle) lifecycle.call = call
       send(record, PC_HOST_CODEX_CHANNELS.toolCall, {
         documentId: record.documentId,
         generation: record.generation,
@@ -325,7 +382,10 @@ export function registerPcCodexHosts(options: {
     record.closed = true
     records.delete(record.owner)
     byDocument.delete(record.documentId)
-    for (const pending of record.pending.values()) pending.reject()
+    for (const pending of record.pending.values()) {
+      pending.removeAbort?.()
+      pending.reject()
+    }
     record.pending.clear()
     for (const proposal of record.proposals.values()) {
       if (proposal.timer) clearTimeout(proposal.timer)
@@ -342,6 +402,35 @@ export function registerPcCodexHosts(options: {
     record: HostRecord,
     event: import('./codex-runtime').CodexRuntimeEngineEvent,
   ) => {
+    if (event.type === 'tool-start' || event.type === 'tool-complete') {
+      if (!record.toolNames.has(event.toolName) || !ID.test(event.callId)) return
+      if (event.turnId && record.retiredTurns.has(event.turnId)) return
+      const call: AgentToolCall = {
+        id: event.callId,
+        name: event.toolName,
+        input: {},
+        ...(event.turnId ? { invocationId: `${event.turnId}:${event.callId}` } : {}),
+      }
+      const lifecycle = startTool(record, call, event.turnId)
+      if (!lifecycle) return
+      lifecycle.gateway = true
+      if (event.type === 'tool-complete') {
+        const execution = lifecycle.execution
+        finishTool(
+          record,
+          lifecycle,
+          execution && !!execution.isError === event.isError
+            ? execution
+            : {
+                output: event.isError ? safeToolFailureCode(event.errorCode) : 'tool_completed',
+                summary: event.isError ? 'Tool failed' : event.toolName,
+                isError: event.isError,
+                mutated: false,
+              },
+        )
+      }
+      return
+    }
     if (event.type === 'text') {
       record.text += event.text
       send(record, PC_HOST_CODEX_CHANNELS.event, event)
@@ -356,18 +445,16 @@ export function registerPcCodexHosts(options: {
           const claimed = record.session.mutationAuthority.claimNext(proposal.call.id)
           if (claimed && claimed.request.call.id === proposal.call.id) {
             record.session.mutationAuthority.reject(claimed.claim, 'mutation_expired')
-            send(record, PC_HOST_CODEX_CHANNELS.event, {
-              type: 'tool-executed',
-              event: {
-                call: proposal.call,
-                execution: {
-                  output: 'mutation_expired',
-                  summary: 'Mutation rejected',
-                  isError: true,
-                  mutated: false,
-                },
+            recordExecution(
+              record,
+              { ...proposal.call, input: {} },
+              {
+                output: 'mutation_expired',
+                summary: 'Mutation rejected',
+                isError: true,
+                mutated: false,
               },
-            })
+            )
           } else if (claimed) {
             record.session.mutationAuthority.reject(claimed.claim, 'mutation_binding_mismatch')
           }
@@ -387,6 +474,31 @@ export function registerPcCodexHosts(options: {
       return
     }
     if (event.type !== 'terminal') return
+    // Revoke executor receipts before exposing an idle composer for the next run.
+    for (const [callId, pending] of record.pending) {
+      record.pending.delete(callId)
+      pending.removeAbort?.()
+      send(record, PC_HOST_CODEX_CHANNELS.toolCancel, {
+        documentId: record.documentId,
+        generation: record.generation,
+        callId,
+      })
+      pending.reject()
+    }
+    for (const lifecycle of record.lifecycle.values()) {
+      if (lifecycle.turnId) record.retiredTurns.add(lifecycle.turnId)
+      if (!lifecycle.done)
+        finishTool(record, lifecycle, {
+          output: event.status === 'cancelled' ? 'tool_cancelled' : 'tool_execution_failed',
+          summary: event.status === 'cancelled' ? 'Tool cancelled' : 'Tool failed',
+          isError: true,
+          mutated: false,
+        })
+    }
+    for (const proposal of record.proposals.values()) {
+      if (proposal.timer) clearTimeout(proposal.timer)
+    }
+    record.proposals.clear()
     if (event.status === 'failed')
       send(record, PC_HOST_CODEX_CHANNELS.event, {
         type: 'error',
@@ -494,7 +606,7 @@ export function registerPcCodexHosts(options: {
       },
       manifest,
       isOpen: () => sessionOpen && !event.sender.isDestroyed(),
-      executeRead: (call) => dispatch(record, call),
+      executeRead: (call, signal) => dispatch(record, call, undefined, signal),
       suspendMutation: (result) => {
         return harness.suspendToolExecution(result)
       },
@@ -523,6 +635,9 @@ export function registerPcCodexHosts(options: {
       pending: new Map(),
       proposals: new Map(),
       session,
+      toolNames: new Set(input.tools.map((tool) => tool.name)),
+      lifecycle: new Map(),
+      retiredTurns: new Set(),
       text: '',
       closed: false,
     }
@@ -569,14 +684,7 @@ export function registerPcCodexHosts(options: {
       throw new Error('enhanced_untrusted_request')
     record.pending.delete(result.callId)
     pending.removeAbort?.()
-    send(record, PC_HOST_CODEX_CHANNELS.event, {
-      type: 'tool-executed',
-      event: {
-        call: pending.call,
-        execution,
-        ...(result.snapshotBefore ? { snapshotBefore: result.snapshotBefore } : {}),
-      },
-    })
+    recordExecution(record, pending.call, execution, result.snapshotBefore)
     if (pending.claim) record.session.mutationAuthority.settle(pending.claim as never, execution)
     pending.resolve(execution)
   })
@@ -607,9 +715,19 @@ export function registerPcCodexHosts(options: {
       record.proposals.delete(proposalId)
       if (proposal.timer) clearTimeout(proposal.timer)
       const claimed = record.session.mutationAuthority.claimNext(proposal.call.id)
-      if (claimed && claimed.request.call.id === proposal.call.id)
+      if (claimed && claimed.request.call.id === proposal.call.id) {
         record.session.mutationAuthority.reject(claimed.claim, 'mutation_expired')
-      else if (claimed)
+        recordExecution(
+          record,
+          { ...proposal.call, input: {} },
+          {
+            output: 'mutation_expired',
+            summary: 'Mutation rejected',
+            isError: true,
+            mutated: false,
+          },
+        )
+      } else if (claimed)
         record.session.mutationAuthority.reject(claimed.claim, 'mutation_binding_mismatch')
       throw new Error('enhanced_proposal_expired')
     }
@@ -657,18 +775,16 @@ export function registerPcCodexHosts(options: {
         throw new Error('enhanced_untrusted_request')
       }
       record.session.mutationAuthority.reject(claimed.claim, 'mutation_cancelled')
-      send(record, PC_HOST_CODEX_CHANNELS.event, {
-        type: 'tool-executed',
-        event: {
-          call: proposal.call,
-          execution: {
-            output: 'mutation_cancelled',
-            summary: 'Mutation rejected',
-            isError: true,
-            mutated: false,
-          },
+      recordExecution(
+        record,
+        { ...proposal.call, input: {} },
+        {
+          output: 'mutation_cancelled',
+          summary: 'Mutation rejected',
+          isError: true,
+          mutated: false,
         },
-      })
+      )
     },
   )
   return Object.freeze({

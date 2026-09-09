@@ -11,6 +11,7 @@ import {
   type ToolDisplay,
 } from '@wiswork/agent-core'
 import { createAgentHarness, type AgentHarness } from '@wiswork/agent-harness'
+import { upsertToolActivity } from '@wiswork/agent-runtime'
 import type { RenderSlide } from '@wiswork/pptx-render'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
@@ -76,6 +77,7 @@ import {
 } from './edit-queue'
 
 interface ToolActivity {
+  callId?: string
   name: string
   summary: string
   /** still executing: rendered as a spinner chip, replaced in place when the tool finishes */
@@ -1594,14 +1596,16 @@ export function AiPanel({
           onToolStart: (call) => {
             // Live "running" chip: replaced in place by onToolExecuted
             const activity: ToolActivity = {
+              callId: call.invocationId ?? call.id,
               name: call.name,
               summary: call.name.replace(/[_-]+/g, ' '),
               running: true,
             }
-            patchLastAssistant((last) => ({ tools: [...(last.tools ?? []), activity] }))
+            patchLastAssistant((last) => ({ tools: upsertToolActivity(last.tools, activity) }))
           },
           onToolExecuted: ({ call, execution }) => {
             const activity: ToolActivity = {
+              callId: call.invocationId ?? call.id,
               name: call.name,
               summary: execution.summary,
               isError: execution.isError,
@@ -1623,12 +1627,7 @@ export function AiPanel({
                   : undefined,
               })
             }
-            patchLastAssistant((last) => {
-              // Swap out the running placeholder pushed by onToolStart (parse-fail calls have none)
-              const tools = [...(last.tools ?? [])]
-              if (tools.at(-1)?.running) tools.pop()
-              return { tools: [...tools, activity] }
-            })
+            patchLastAssistant((last) => ({ tools: upsertToolActivity(last.tools, activity) }))
           },
           onTurnEnd: () => {
             lastTurnToolsRef.current = []
