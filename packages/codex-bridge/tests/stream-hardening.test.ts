@@ -186,6 +186,22 @@ describe('bounded Anthropic SSE state machine', () => {
     })
   })
 
+  it('accepts the bounded upstream request identifier added to message_start', async () => {
+    const messageStart = `event: message_start\ndata: ${JSON.stringify({
+      type: 'message_start',
+      message: {
+        id: 'x',
+        model: 'openai/gpt-5.6-sol',
+        request_id: 'req_01H7K8M9N0',
+        usage: { input_tokens: 1 },
+      },
+    })}\n\n`
+    const events = await collect(
+      noToolTurn().messagesStreamToResponses(chunks(messageStart, delta, stop)),
+    )
+    expect(events.at(-1)?.event).toBe('response.completed')
+  })
+
   it.each([
     ['frame bytes', { maxSseFrameBytes: 16 }, [start], 'sse_frame_limit_exceeded'],
     ['buffer bytes', { maxSseBufferBytes: 16 }, [start.slice(0, 20)], 'sse_buffer_limit_exceeded'],

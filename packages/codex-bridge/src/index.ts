@@ -1296,6 +1296,7 @@ async function* convertMessagesStream(
           'content',
           'model',
           'provider',
+          'request_id',
           'stop_details',
           'stop_reason',
           'stop_sequence',
@@ -1317,6 +1318,7 @@ async function* convertMessagesStream(
         fail('invalid_messages_event')
       }
       if (data.message.provider !== undefined) metadataString(data.message.provider)
+      if (data.message.request_id !== undefined) metadataString(data.message.request_id)
       if (data.message.model !== 'openai/gpt-5.6-sol') fail('unsupported_upstream_model')
       strict.responseId = requireString(data.message.id, 'invalid_messages_event')
       if (strict.responseId === '') fail('invalid_messages_event')

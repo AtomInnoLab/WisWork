@@ -97,6 +97,36 @@ describe('structural protocol recording', () => {
     expect(result.events).toContain('response.incomplete')
     expect(result.error).toBeUndefined()
   })
+  it('retains safe reasoning and request-id structure while redacting their values', async () => {
+    const recorder = new ProtocolRecorder()
+    recorder.recordFrame(
+      frame({
+        type: 'message_start',
+        message: { ...start.message, request_id: 'SECRET-REQUEST-ID' },
+      }),
+    )
+    recorder.recordFrame(
+      frame({
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'thinking', thinking: 'SECRET THINKING', signature: null },
+      }),
+    )
+    recorder.recordFrame(
+      frame({
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: 'SECRET DELTA' },
+      }),
+    )
+    const recording = recorder.snapshot()
+    expect(JSON.stringify(recording)).not.toMatch(/SECRET/)
+    expect(recording.frames).toMatchObject([
+      { message: { request_id: '<redacted>' } },
+      { content_block: { type: 'thinking', thinking: '<redacted>', signature: null } },
+      { delta: { type: 'thinking_delta', thinking: '<redacted>' } },
+    ])
+  })
   it('sanitizes unknown nested keys and values without accepting them on import', () => {
     const recorder = new ProtocolRecorder()
     recorder.recordFrame(
