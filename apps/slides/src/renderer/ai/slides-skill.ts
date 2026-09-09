@@ -1974,6 +1974,8 @@ interface SkillState {
   questionnaireAnsweredPendingPlan?: boolean
   /** Reuse a submitted questionnaire result if the remote carrier retries delivery. */
   lastQuestionnaireAnswers?: string
+  /** Coalesce concurrent carrier retries onto the one questionnaire already shown. */
+  activeQuestionnaire?: Promise<{ answers: string; cancelled?: boolean }>
   plannedPages?: ReturnType<typeof parsePresentationDesignPlan>['pages']
   prototypePages?: number[]
   builtPageIndexes?: Set<number>
@@ -2179,6 +2181,7 @@ async function persistDraftResearch(
 ): Promise<boolean> {
   const current = state.designContract
   if (!current || current.status !== 'draft' || images.length === 0) return false
+  const chinese = /(?:中文|Chinese|zh(?:-|_|$))/i.test(current.brief.language)
   const known = new Set(current.assets.flatMap((asset) => [asset.source, asset.localReference]))
   const additions = images
     .filter((image) => /^https:\/\//.test(image.imageUrl) && !known.has(image.imageUrl))
@@ -2187,15 +2190,19 @@ async function persistDraftResearch(
       id: `search-${current.assets.length + index + 1}`,
       slideNumbers: [],
       type: 'image',
-      role: 'candidate',
-      intent: `${query}${image.title ? ` — ${image.title}` : ''}`,
+      role: chinese ? '候选素材' : 'candidate',
+      intent: `${chinese ? '图片检索' : 'Image search'}：${query}${image.title ? ` — ${image.title}` : ''}`,
       source: image.imageUrl,
       crop: '',
-      placement: 'Unassigned candidate; bind to a slide before production',
+      placement: chinese
+        ? '尚未分配；制作前绑定到具体页面'
+        : 'Unassigned candidate; bind to a slide before production',
       status: 'validated' as const,
       localReference: image.imageUrl,
     }))
-  const note = `Image search “${query}”: ${images.length} result${images.length === 1 ? '' : 's'} collected; ${additions.length} new candidate${additions.length === 1 ? '' : 's'} recorded.`
+  const note = chinese
+    ? `图片检索“${query}”：获得 ${images.length} 个结果，新增记录 ${additions.length} 个候选素材。`
+    : `Image search “${query}”: ${images.length} result${images.length === 1 ? '' : 's'} collected; ${additions.length} new candidate${additions.length === 1 ? '' : 's'} recorded.`
   const contract: PresentationDesignContract = {
     ...current,
     discovery: {
@@ -3577,7 +3584,14 @@ async function executeTool(
           t('aiFailClarify'),
           'questions must be non-empty and every question needs options',
         )
-      const r = await access.askClarification(questions)
+      const questionnaire = state?.activeQuestionnaire ?? access.askClarification(questions)
+      if (state) state.activeQuestionnaire = questionnaire
+      let r: { answers: string; cancelled?: boolean }
+      try {
+        r = await questionnaire
+      } finally {
+        if (state?.activeQuestionnaire === questionnaire) state.activeQuestionnaire = undefined
+      }
       signal?.throwIfAborted()
       if (state) state.questionnaireAnsweredPendingPlan = true
       if (r.cancelled) {

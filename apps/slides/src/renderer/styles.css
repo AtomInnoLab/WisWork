@@ -1512,6 +1512,18 @@ body.vib .slide-list {
     monospace;
 }
 
+.ai-design-preview {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
 .ai-design-dialog footer {
   justify-content: flex-end;
 }
