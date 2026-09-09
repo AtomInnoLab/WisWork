@@ -133,6 +133,46 @@ async function startSlidesTurn() {
   }
 }
 
+it.each(['applied', 'tool_error', 'rejected'])(
+  'publishes proposal tool completion before the deferred terminal; outcome=%s',
+  async (outcome) => {
+    const turn = await startSlidesTurn()
+    try {
+      turn.startTool('build_deck')
+      const proposal = turn.propose()
+      turn.completeNativeTurn()
+      if (outcome === 'rejected') proposal.reject(new Error('private execution failure'))
+      else
+        proposal.resolve({
+          output: outcome,
+          summary: outcome,
+          isError: outcome === 'tool_error',
+          mutated: outcome === 'applied',
+        })
+      // The gateway resumes after these proposal promise listeners and then
+      // publishes tool-complete. Native completion must stay deferred until then.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(turn.result).toBe('pending')
+      expect(mock.revoke).not.toHaveBeenCalled()
+      expect(turn.events.some((event) => event.type === 'terminal')).toBe(false)
+      turn.completeTool('build_deck', outcome !== 'applied')
+      await turn.running
+      expect(turn.result).toBe(outcome === 'rejected' ? 'enhanced_proposal_failed' : 'done')
+      expect(turn.events.slice(-2)).toEqual([
+        {
+          type: 'tool-complete',
+          callId: 'build_deck',
+          toolName: 'build_deck',
+          isError: outcome !== 'applied',
+        },
+        { type: 'terminal', status: outcome === 'rejected' ? 'failed' : 'completed' },
+      ])
+    } finally {
+      await turn.engine.close()
+    }
+  },
+)
+
 it.each(
   [
     { output: 'applied', isError: false, mutated: true },
@@ -360,6 +400,8 @@ it.each(['before', 'after'])(
       isError: true,
       mutated: false,
     })
+    await vi.advanceTimersByTimeAsync(0)
+    turn.completeTool('build_deck', true)
     await turn.running
     expect(turn.result).toBe('done')
     expect(mock.startTurn).toHaveBeenCalledTimes(1)
@@ -574,6 +616,13 @@ it.each(['applied', 'tool_failed', 'mutation_expired', 'mutation_cancelled', 'ca
       summary: output,
       isError: output !== 'applied',
       mutated: output === 'applied',
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    mock.document.onToolEvent({
+      type: 'tool-complete',
+      callId: 'proposal-call',
+      toolName: 'replace_blocks',
+      isError: output !== 'applied',
     })
     await running
     expect(result).toBe('done')

@@ -323,6 +323,8 @@ export function createProductionCodexBootstrap(
               options.diagnostics?.('enhanced_proposal_created')
               active.pendingProposals.add(proposal.proposalId)
               active.touch()
+              // These listeners run before the gateway publishes tool-complete.
+              // Let onToolEvent flush a deferred terminal after that receipt is emitted.
               void proposal.settled.then(
                 (execution) => {
                   if (execution.isError) {
@@ -346,8 +348,6 @@ export function createProductionCodexBootstrap(
                   }
                   active.pendingProposals.delete(proposal.proposalId)
                   active.touch()
-                  const deferred = active.deferredTerminal
-                  if (deferred) active.requestSettle(deferred.status, deferred.error)
                 },
                 () => {
                   options.diagnostics?.('enhanced_proposal_execution_failed')
@@ -355,8 +355,6 @@ export function createProductionCodexBootstrap(
                   active.proposalError = new Error('enhanced_proposal_failed')
                   active.pendingProposals.delete(proposal.proposalId)
                   active.touch()
-                  const deferred = active.deferredTerminal
-                  if (deferred) active.requestSettle(deferred.status, deferred.error)
                 },
               )
               const { settled: _settled, ...publicProposal } = proposal
