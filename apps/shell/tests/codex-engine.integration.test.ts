@@ -620,6 +620,154 @@ describe('real 0.147 production engine bridge', () => {
   )
 
   realIt(
+    'keeps buffered tool input alive past both native idle deadlines in Slides',
+    async () => {
+      const diagnostics: string[] = []
+      const events: unknown[] = []
+      const crashed = vi.fn()
+      let providerCalls = 0
+      let argumentChunks = 0
+      let inputCompleted = false
+      let streamStartedAt = 0
+      const callTool = vi.fn(async () => {
+        expect(inputCompleted).toBe(true)
+        expect(Date.now() - streamStartedAt).toBeGreaterThan(60_000)
+        return { output: '{"slideCount":1}', summary: 'Read presentation' }
+      })
+      const upstream = vi.fn(async (request: MessagesRequest) => {
+        providerCalls += 1
+        if (providerCalls > 1) {
+          expect(providerCalls).toBe(2)
+          expect(callTool).toHaveBeenCalledOnce()
+          expect(
+            JSON.stringify(
+              request.messages
+                .flatMap((message) => message.content)
+                .find((block) => block.type === 'tool_result' && block.tool_use_id === 'custom_7'),
+            ),
+          ).toContain('slideCount')
+          return finalResponse()
+        }
+        const capability = turnCapability(request)
+        expect(capability).toBeTruthy()
+        const code = `text(await tools.mcp__wiswork__wiswork_read(${JSON.stringify({ capability, callId: 'buffered-read', toolName: 'read_presentation', input: {} })}))`
+        const frames = (await toolResponse(code).text())
+          .trim()
+          .split('\n\n')
+          .flatMap((frame) => {
+            const data = JSON.parse(frame.slice('data: '.length))
+            if (data.delta?.type !== 'input_json_delta') return [{ frame, delayed: false }]
+            const input = data.delta.partial_json as string
+            return Array.from({ length: 20 }, (_, index) => ({
+              frame: `data: ${JSON.stringify({
+                ...data,
+                delta: {
+                  ...data.delta,
+                  partial_json: input.slice(
+                    Math.floor((index * input.length) / 20),
+                    Math.floor(((index + 1) * input.length) / 20),
+                  ),
+                },
+              })}`,
+              delayed: true,
+            }))
+          })
+        let index = 0
+        let cancelled = false
+        let timer: ReturnType<typeof setTimeout> | undefined
+        let resume: (() => void) | undefined
+        streamStartedAt = Date.now()
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              const next = frames[index++]
+              if (!next) return controller.close()
+              if (next.delayed) {
+                await new Promise<void>((resolve) => {
+                  resume = resolve
+                  timer = setTimeout(resolve, 3_300)
+                })
+                timer = undefined
+                resume = undefined
+                if (cancelled) return
+                expect(callTool).not.toHaveBeenCalled()
+                expect(events).toEqual([])
+                argumentChunks += 1
+                inputCompleted = argumentChunks === 20
+              }
+              controller.enqueue(new TextEncoder().encode(`${next.frame}\n\n`))
+            },
+            cancel() {
+              cancelled = true
+              if (timer) clearTimeout(timer)
+              resume?.()
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        )
+      })
+      const engine = await createProductionCodexBootstrap({
+        fetchWithAuth: upstream,
+        diagnostics: (code) => diagnostics.push(code),
+      }).start({ executablePath: executable!, onCrash: crashed })
+      const session = {
+        identity: {
+          ownerId: 'owner',
+          host: 'slides',
+          documentId: 'buffered-slides',
+          sessionId: 'session',
+          generation: 1,
+        },
+        credentials: { sessionId: 'session', secret: 'secret' },
+        listTools: () => [
+          {
+            name: 'read_presentation',
+            inputSchema: { type: 'object', additionalProperties: false },
+            annotations: { readOnlyHint: true, destructiveHint: false },
+          },
+        ],
+        callTool,
+        cancelAll: vi.fn(() => 0),
+        close: vi.fn(),
+      } as any
+      engine.registerDocument!({
+        ownerId: 'owner',
+        documentId: 'buffered-slides',
+        host: 'slides',
+        generation: 1,
+        session,
+        onEvent: (event) => events.push(event),
+      })
+      try {
+        await engine
+          .startTurn({
+            documentId: 'buffered-slides',
+            host: 'slides',
+            generation: 1,
+            text: 'Read the presentation.',
+          })
+          .catch((error) => {
+            throw new Error(`buffered_turn_failed:${diagnostics.join(',')}`, { cause: error })
+          })
+        expect(argumentChunks).toBe(20)
+        expect(upstream).toHaveBeenCalledTimes(2)
+        expect(callTool).toHaveBeenCalledExactlyOnceWith(
+          session.credentials,
+          expect.objectContaining({ id: 'buffered-read', name: 'read_presentation', input: {} }),
+        )
+        expect(crashed).not.toHaveBeenCalled()
+        expect(events.at(-1)).toEqual({ type: 'terminal', status: 'completed' })
+        expect(diagnostics).toContain('gateway_tool_call_completed')
+        expect(diagnostics.filter((code) => code.startsWith('responses_stream_'))).toEqual([])
+        expect(diagnostics).not.toContain('codex_error')
+      } finally {
+        await engine.close()
+      }
+    },
+    95_000,
+  )
+
+  realIt(
     'generates and verifies a three-page onboarding deck through the real Codex and Slides tool loop',
     async () => {
       const blankSlide = (): RenderSlide => ({
