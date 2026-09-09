@@ -24,6 +24,8 @@ function post(url: URL, secret: string, body: string, headers: Record<string, st
       (res) => {
         const chunks: Buffer[] = []
         res.on('data', (chunk) => chunks.push(Buffer.from(chunk)))
+        res.on('aborted', () => reject(new Error('response_aborted')))
+        res.on('error', reject)
         res.on('end', () =>
           resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString() }),
         )
@@ -206,4 +208,38 @@ describe('local responses bridge', () => {
       }
     },
   )
+
+  it('reports an upstream stream stall as a deterministic turn failure', async () => {
+    const onDeterministicFailure = vi.fn()
+    const bridge = await startResponsesBridge({
+      fetchWithAuth: async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('data: partial\n\n'))
+            },
+          }),
+          { headers: { 'content-type': 'text/event-stream' } },
+        ),
+      prepareTurn: () => ({
+        ...prepared(),
+        turnId: 'turn-stalled',
+        async *messagesStreamToResponses(chunks) {
+          for await (const chunk of chunks)
+            yield typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk)
+        },
+      }),
+      onDeterministicFailure,
+      maxStreamIdleMs: 10,
+    })
+    try {
+      await post(new URL(bridge.responsesUrl), bridge.secret, '{}').catch(() => undefined)
+      expect(onDeterministicFailure).toHaveBeenCalledWith(
+        'upstream_stream_interrupted',
+        'turn-stalled',
+      )
+    } finally {
+      await bridge.close()
+    }
+  })
 })

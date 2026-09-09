@@ -18,6 +18,9 @@ describe('presentation design workflow', () => {
     expect(PRESENTATION_DESIGN_WORKFLOW_PROMPT).toContain('DESIGN.md')
     expect(PRESENTATION_DESIGN_WORKFLOW_PROMPT).toContain('Create and show this draft immediately')
     expect(PRESENTATION_DESIGN_WORKFLOW_PROMPT).toContain('update the same draft')
+    expect(PRESENTATION_DESIGN_WORKFLOW_PROMPT).toContain(
+      'keep the page plan and asset lists empty',
+    )
     expect(PRESENTATION_DESIGN_WORKFLOW_PROMPT).toContain('representative content page')
     expect(PRESENTATION_DESIGN_WORKFLOW_PROMPT).toContain('2–3 slides')
     expect(PRESENTATION_DESIGN_WORKFLOW_PROMPT).toContain('screenshot')

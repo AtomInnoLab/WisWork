@@ -518,6 +518,37 @@ describe('presentation design plan', () => {
     expect(skill.buildContext?.()).toContain('Status: draft')
   })
 
+  it('accepts a lightweight initial draft before expanding the page and asset plans', async () => {
+    const skill = createSlidesSkill({
+      getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] }] as never,
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => undefined,
+      applyDeck: () => undefined,
+      fitWidthPx: 1280,
+    })
+
+    const result = await skill.executeTool({
+      id: 'initial-draft',
+      name: 'plan_deck',
+      input: {
+        contract: {
+          ...modernContract,
+          status: 'draft',
+          brief: { ...modernContract.brief, pageCount: 10 },
+          prototypePages: [],
+          slides: [],
+          assets: [],
+          deckAcceptance: [],
+        },
+      },
+    })
+
+    expect(result.isError).not.toBe(true)
+    expect(result.output).toContain('DESIGN.md · Revision 3 · draft')
+    expect(result.output).toContain('Page Count: 10')
+  })
+
   it('moves a contract to producing on build and verifies only after final verify_slides', async () => {
     let slides = [{ widthPx: 1280, heightPx: 720, nodes: [] }] as never[]
     ;(globalThis as unknown as { window: Record<string, unknown> }).window = {

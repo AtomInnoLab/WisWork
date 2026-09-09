@@ -793,7 +793,7 @@ const ALL_TOOLS: AgentToolDef[] = [
   {
     name: 'plan_deck',
     description:
-      '[When creating a whole new deck, call once with status draft immediately after the brief/questionnaire, update that draft while researching material and images, then call with status ready before production] Outputs the Core Hook, an editable DESIGN.md contract, and a page director plan. Every page should declare its narrative purpose, one focal visual, evidence, layout, assets, and acceptance criteria. The plan is echoed to the user.',
+      '[When creating a whole new deck, first call with a compact status=draft contract immediately after the brief/questionnaire; keep prototypePages, slides, assets, and deckAcceptance empty in this first call. Update that draft while researching material and images, then call with a complete status=ready contract before production] Outputs the Core Hook, an editable DESIGN.md contract, and a page director plan. Every ready page should declare its narrative purpose, one focal visual, evidence, layout, assets, and acceptance criteria. The plan is echoed to the user.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -3556,7 +3556,15 @@ async function executeTool(
                 `DESIGN.md readiness check failed: ${readiness.issues.join('; ')}`,
               )
           }
-          plan = parsePresentationDesignPlan(contractAsLegacyPlan(contract))
+          plan =
+            contract.status === 'draft' && contract.slides.length === 0
+              ? {
+                  core_hook: contract.narrative.coreHook,
+                  style: contract.visualSystem.style,
+                  pages: [],
+                  prototype_pages: [],
+                }
+              : parsePresentationDesignPlan(contractAsLegacyPlan(contract))
         } else {
           plan = parsePresentationDesignPlan(call.input)
           contract = contractFromLegacyPlan(plan)
