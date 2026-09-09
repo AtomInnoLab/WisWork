@@ -209,6 +209,39 @@ describe('local responses bridge', () => {
     },
   )
 
+  it('normalizes a private parser rejection and fails the active turn deterministically', async () => {
+    const diagnostics: string[] = []
+    const onDeterministicFailure = vi.fn()
+    const bridge = await startResponsesBridge({
+      fetchWithAuth: async () =>
+        new Response('data: private\n\n', {
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      prepareTurn: () => ({
+        ...prepared(),
+        turnId: 'turn-private-parser',
+        async *messagesStreamToResponses() {
+          const error = new Error('private_new_parser_code')
+          error.name = 'ProtocolCompatibilityError'
+          throw error
+        },
+      }),
+      diagnostics: (code) => diagnostics.push(code),
+      onDeterministicFailure,
+    })
+    try {
+      await post(new URL(bridge.responsesUrl), bridge.secret, '{}').catch(() => undefined)
+      expect(diagnostics).toContain('responses_stream_invalid_messages_event')
+      expect(onDeterministicFailure).toHaveBeenCalledWith(
+        'invalid_messages_event',
+        'turn-private-parser',
+      )
+      expect(JSON.stringify(diagnostics)).not.toContain('private_new_parser_code')
+    } finally {
+      await bridge.close()
+    }
+  })
+
   it('reports an upstream stream stall as a deterministic turn failure', async () => {
     const onDeterministicFailure = vi.fn()
     const bridge = await startResponsesBridge({

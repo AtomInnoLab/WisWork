@@ -389,12 +389,13 @@ export async function startResponsesBridge(
           }
           response.end()
         } catch (error) {
-          const protocolCode =
-            error instanceof Error &&
-            error.name === 'ProtocolCompatibilityError' &&
-            SAFE_STREAM_PROTOCOL_CODES.has(error.message)
+          const isProtocolError =
+            error instanceof Error && error.name === 'ProtocolCompatibilityError'
+          const protocolCode = isProtocolError
+            ? SAFE_STREAM_PROTOCOL_CODES.has(error.message)
               ? error.message
-              : undefined
+              : 'invalid_messages_event'
+            : undefined
           const deterministicCode =
             protocolCode ??
             (error instanceof UpstreamStreamInterruptedError

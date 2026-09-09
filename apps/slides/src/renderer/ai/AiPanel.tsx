@@ -678,6 +678,7 @@ export function AiPanel({
   } | null>(null)
   const [designEditorOpen, setDesignEditorOpen] = useState(false)
   const [designEditorEditable, setDesignEditorEditable] = useState(false)
+  const [designEditorEditing, setDesignEditorEditing] = useState(false)
   const [designDraft, setDesignDraft] = useState('# DESIGN.md\n\n')
   const [designNotice, setDesignNotice] = useState<string | null>(null)
   useEffect(() => {
@@ -2473,6 +2474,7 @@ export function AiPanel({
         presentationDesignLifecycle(designMd).editable,
     )
     setDesignNotice(null)
+    setDesignEditorEditing(false)
     setDesignEditorOpen(true)
   }
 
@@ -2752,24 +2754,40 @@ export function AiPanel({
                 ×
               </button>
             </header>
-            <p>Controls the visual system used by subsequent generation and screenshot review.</p>
-            <textarea
-              value={designDraft}
-              onChange={(event) => setDesignDraft(event.target.value)}
-              readOnly={!designEditorEditable}
-              spellCheck={false}
-              aria-label="DESIGN.md content"
-            />
+            <p>
+              {lang.startsWith('zh')
+                ? '演示文稿的计划、素材、逐页设计与验收标准。后续制作和验证均以此为准。'
+                : 'The plan, assets, slide direction, and acceptance criteria used for production and review.'}
+            </p>
+            {designEditorEditing ? (
+              <textarea
+                value={designDraft}
+                onChange={(event) => setDesignDraft(event.target.value)}
+                spellCheck={false}
+                aria-label="DESIGN.md content"
+              />
+            ) : (
+              <div className="ai-design-preview" aria-label="DESIGN.md content">
+                <Markdown text={designDraft} />
+              </div>
+            )}
             {designNotice && (
               <div className="ai-design-notice" role="status">
                 {designNotice}
               </div>
             )}
             <footer>
-              <button onClick={() => setDesignEditorOpen(false)}>Close</button>
-              {designEditorEditable && (
+              <button onClick={() => setDesignEditorOpen(false)}>
+                {lang.startsWith('zh') ? '关闭' : 'Close'}
+              </button>
+              {designEditorEditable && !designEditorEditing && (
+                <button className="primary" onClick={() => setDesignEditorEditing(true)}>
+                  {lang.startsWith('zh') ? '编辑' : 'Edit'}
+                </button>
+              )}
+              {designEditorEditable && designEditorEditing && (
                 <button className="primary" onClick={() => void saveDesignEditor()}>
-                  Save
+                  {lang.startsWith('zh') ? '保存' : 'Save'}
                 </button>
               )}
               {!designEditorEditable &&
