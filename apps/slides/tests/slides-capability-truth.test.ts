@@ -156,6 +156,27 @@ describe('Slides capability truth', () => {
     expect(retry.output).toContain('Audience: travellers')
   })
 
+  it('coalesces concurrent Enhanced questionnaire retries onto one visible card', async () => {
+    let submit!: (result: { answers: string; cancelled: false }) => void
+    const answer = new Promise<{ answers: string; cancelled: false }>((resolve) => {
+      submit = resolve
+    })
+    const deck = access()
+    deck.askClarification = vi.fn(() => answer)
+    const skill = createSlidesSkill(deck)
+    const input = {
+      questions: [{ id: 'route', label: 'Route?', options: ['Classic', 'Relaxed'] }],
+    }
+
+    const first = skill.executeTool({ id: 'clarify-a', name: 'ask_clarification', input })
+    const retry = skill.executeTool({ id: 'clarify-b', name: 'ask_clarification', input })
+    submit({ answers: 'Route: Classic', cancelled: false })
+
+    await expect(first).resolves.toMatchObject({ mutated: false })
+    await expect(retry).resolves.toMatchObject({ mutated: false })
+    expect(deck.askClarification).toHaveBeenCalledOnce()
+  })
+
   it('requires the bounded whole-deck builder after planning instead of accumulating blank pages', async () => {
     const skill = createSlidesSkill(access())
     await skill.executeTool({

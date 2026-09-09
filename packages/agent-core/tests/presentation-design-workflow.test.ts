@@ -212,21 +212,32 @@ describe('presentation design workflow', () => {
     expect(contract.brief.sourceConstraints).toEqual(['Use primary sources'])
     expect(contract.prototypePages).toEqual([1])
     expect(renderPresentationDesignContract(contract)).toContain(
-      '## Slide 1 — LLM is a new interface',
+      '## 第 1 页 — LLM is a new interface',
     )
-    expect(renderPresentationDesignContract(contract)).toContain('## Discovery Log')
+    expect(renderPresentationDesignContract(contract)).toContain('## 调研记录')
     expect(renderPresentationDesignContract(contract)).toContain(
       'Official product screenshot selected',
     )
     expect(renderPresentationDesignContract(contract)).toContain('A1.1')
-    expect(renderPresentationDesignContract(contract)).toContain('- Content:')
+    expect(renderPresentationDesignContract(contract)).toContain('- 内容:')
     expect(renderPresentationDesignContract(contract)).toContain('  - Definition')
-    expect(renderPresentationDesignContract(contract)).toContain('- Evidence:')
-    expect(renderPresentationDesignContract(contract)).toContain('- Source: generated')
-    expect(renderPresentationDesignContract(contract)).toContain('- Local Reference: asset://hero')
+    expect(renderPresentationDesignContract(contract)).toContain('- 证据:')
+    expect(renderPresentationDesignContract(contract)).toContain('- 来源: generated')
+    expect(renderPresentationDesignContract(contract)).toContain('- 本地引用: asset://hero')
     expect(extractPresentationDesignContract(renderPresentationDesignContract(contract))).toEqual(
       contract,
     )
+    const chinese = {
+      ...contract,
+      brief: { ...contract.brief, language: '中文' },
+    }
+    const chineseDesign = renderPresentationDesignContract(chinese)
+    expect(chineseDesign).toContain('## 任务定义')
+    expect(chineseDesign).toContain('## 调研记录')
+    expect(chineseDesign).toContain('## 视觉系统')
+    expect(chineseDesign).toContain('## 素材清单')
+    expect(chineseDesign).toContain('## 整套验收标准')
+    expect(extractPresentationDesignContract(chineseDesign)).toEqual(chinese)
     expect(extractPresentationDesignContract('# DESIGN.md\n\nLegacy prose')).toBeUndefined()
   })
 
