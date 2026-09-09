@@ -16,6 +16,8 @@ import {
 describe('presentation design workflow', () => {
   it('defines the shared design, prototype, batch, and review contract', () => {
     expect(PRESENTATION_DESIGN_WORKFLOW_PROMPT).toContain('DESIGN.md')
+    expect(PRESENTATION_DESIGN_WORKFLOW_PROMPT).toContain('Create and show this draft immediately')
+    expect(PRESENTATION_DESIGN_WORKFLOW_PROMPT).toContain('update the same draft')
     expect(PRESENTATION_DESIGN_WORKFLOW_PROMPT).toContain('representative content page')
     expect(PRESENTATION_DESIGN_WORKFLOW_PROMPT).toContain('2–3 slides')
     expect(PRESENTATION_DESIGN_WORKFLOW_PROMPT).toContain('screenshot')
@@ -135,6 +137,11 @@ describe('presentation design workflow', () => {
       revision: 2,
       status: 'ready',
       prototypePages: [1],
+      discovery: {
+        questionnaire: ['Audience: business users'],
+        openQuestions: ['Confirm source licensing'],
+        researchNotes: ['Official product screenshot selected'],
+      },
       brief: {
         topic: 'LLM',
         audience: 'Business users',
@@ -203,6 +210,10 @@ describe('presentation design workflow', () => {
     expect(contract.prototypePages).toEqual([1])
     expect(renderPresentationDesignContract(contract)).toContain(
       '## Slide 1 — LLM is a new interface',
+    )
+    expect(renderPresentationDesignContract(contract)).toContain('## Discovery Log')
+    expect(renderPresentationDesignContract(contract)).toContain(
+      'Official product screenshot selected',
     )
     expect(renderPresentationDesignContract(contract)).toContain('A1.1')
     expect(renderPresentationDesignContract(contract)).toContain('- Content:')

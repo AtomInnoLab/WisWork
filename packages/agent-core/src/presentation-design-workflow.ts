@@ -2,7 +2,7 @@ export const PRESENTATION_DESIGN_WORKFLOW_PROMPT = `
 ## Shared presentation design workflow
 For a whole-deck creation or redesign, work as a presentation director, not a text filler:
 1. Brief: establish audience, occasion, desired decision, page count, source constraints, and one narrative conclusion. Ask only for missing choices that materially change the result.
-2. DESIGN.md contract: before editing, draft a user-editable design contract covering concrete color tokens, typography hierarchy, safe margins/grid, image treatment, density limits, layout families, and composition rules. Treat it as binding for every slide. Do not mark the final contract ready until required fact research, image search, and asset validation are complete.
+2. DESIGN.md contract: immediately after the brief or questionnaire, draft a user-editable design contract covering the confirmed choices, open questions, research plan, concrete color tokens, typography hierarchy, safe margins/grid, image treatment, density limits, layout families, and composition rules. Create and show this draft immediately, before fact or image research. Treat it as binding for every slide. As facts and assets are collected, update the same draft with evidence, provenance, and asset status. Do not mark the final contract ready until required fact research, image search, and asset validation are complete.
 3. Deck plan: give every slide one conclusion-led headline, a narrative role, one focal visual, supporting evidence, a layout family, asset needs/provenance, density, and slide-specific acceptance criteria. Do not use the same layout family on adjacent slides unless continuity requires it.
 4. Asset plan: search real people, products, places, brands, and current facts; validate selected image sources before finalizing DESIGN.md as ready. Generate only abstract/custom illustration when generation exists. Use native editable charts for data. Never invent precise data or image URLs.
 5. Prototype gate: first create or identify the cover, one representative content page, and one complex visual page. Screenshot and review those pages before continuing the remaining production batches. When fewer than three slides are requested, review every slide.
@@ -81,6 +81,11 @@ export interface PresentationDesignContract {
   revision: number
   status: PresentationDesignStatus
   prototypePages: number[]
+  discovery?: {
+    questionnaire: string[]
+    openQuestions: string[]
+    researchNotes: string[]
+  }
   brief: {
     topic: string
     audience: string
@@ -172,6 +177,15 @@ export const PRESENTATION_DESIGN_CONTRACT_SCHEMA: Record<string, unknown> = {
     schemaVersion: { type: 'integer', const: 1 },
     revision: { type: 'integer', minimum: 1 },
     status: { type: 'string', enum: ['draft', 'ready', 'producing', 'verified'] },
+    discovery: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        questionnaire: stringArray(30, 1_000),
+        openQuestions: stringArray(30, 1_000),
+        researchNotes: stringArray(100, 2_000),
+      },
+    },
     prototypePages: {
       type: 'array',
       minItems: 1,
@@ -498,6 +512,7 @@ export function parsePresentationDesignContract(value: unknown): PresentationDes
   const brief = (raw.brief ?? {}) as Record<string, unknown>
   const narrative = (raw.narrative ?? {}) as Record<string, unknown>
   const visual = (raw.visualSystem ?? {}) as Record<string, unknown>
+  const discovery = raw.discovery as Record<string, unknown> | undefined
   const statuses: PresentationDesignStatus[] = ['draft', 'ready', 'producing', 'verified']
   const assetStatuses: PresentationAssetStatus[] = [
     'needed',
@@ -573,6 +588,15 @@ export function parsePresentationDesignContract(value: unknown): PresentationDes
           (number): number is number => Number.isSafeInteger(number) && Number(number) > 0,
         )
       : [],
+    ...(discovery
+      ? {
+          discovery: {
+            questionnaire: texts(discovery.questionnaire ?? [], 30, 1_000, false),
+            openQuestions: texts(discovery.openQuestions ?? [], 30, 1_000, false),
+            researchNotes: texts(discovery.researchNotes ?? [], 100, 2_000, false),
+          },
+        }
+      : {}),
     brief: {
       topic: optionalText(brief.topic, 500),
       audience: optionalText(brief.audience, 500),
@@ -719,6 +743,11 @@ export function extractPresentationDesignContract(
 }
 
 export function renderPresentationDesignContract(contract: PresentationDesignContract): string {
+  const discovery = contract.discovery ?? {
+    questionnaire: [],
+    openQuestions: [],
+    researchNotes: [],
+  }
   const lines = [
     '# DESIGN.md',
     '',
@@ -736,6 +765,21 @@ export function renderPresentationDesignContract(contract: PresentationDesignCon
     `- Aspect Ratio: ${contract.brief.aspectRatio}`,
     `- Source Constraints: ${contract.brief.sourceConstraints.join('; ') || 'none'}`,
     `- Prototype Pages: ${contract.prototypePages.join(', ')}`,
+    '',
+    '## Discovery Log',
+    '',
+    '- Questionnaire Choices:',
+    ...(discovery.questionnaire.length
+      ? discovery.questionnaire.map((item) => `  - ${item}`)
+      : ['  - none']),
+    '- Open Questions:',
+    ...(discovery.openQuestions.length
+      ? discovery.openQuestions.map((item) => `  - ${item}`)
+      : ['  - none']),
+    '- Research Notes:',
+    ...(discovery.researchNotes.length
+      ? discovery.researchNotes.map((item) => `  - ${item}`)
+      : ['  - none']),
     '',
     '## Narrative',
     '',

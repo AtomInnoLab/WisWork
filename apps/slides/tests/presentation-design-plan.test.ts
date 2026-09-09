@@ -478,24 +478,44 @@ describe('presentation design plan', () => {
     expect(skill.buildContext?.()).toContain('Revision: 3')
   })
 
-  it('rejects a structured contract that is not ready for production', async () => {
+  it('persists and exposes a structured draft before asset research is complete', async () => {
+    const saveSidecar = vi.fn(async () => undefined)
     const skill = createSlidesSkill({
       getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] }] as never,
       getCurrent: () => 0,
       getSelectedIds: () => [],
       applySlide: () => undefined,
       applyDeck: () => undefined,
+      saveSidecar,
       fitWidthPx: 1280,
     })
 
     const result = await skill.executeTool({
       id: 'draft-contract',
       name: 'plan_deck',
-      input: { contract: { ...modernContract, status: 'draft' } },
+      input: {
+        contract: {
+          ...modernContract,
+          status: 'draft',
+          discovery: {
+            questionnaire: ['Audience: independent travellers'],
+            openQuestions: ['Confirm image licences'],
+            researchNotes: ['Volcanic route candidates collected'],
+          },
+        },
+      },
     })
 
-    expect(result).toMatchObject({ isError: true, mutated: false })
-    expect(result.output).toContain('status must be ready')
+    expect(result).toMatchObject({ mutated: false })
+    expect(result.isError).not.toBe(true)
+    expect(result.output).toContain('DESIGN.md · Revision 3 · draft')
+    expect(result.output).toContain('NEXT REQUIRED ACTION: run image_search')
+    expect(result.output).toContain('Audience: independent travellers')
+    expect(result.output).toContain('Volcanic route candidates collected')
+    expect(saveSidecar).toHaveBeenCalledWith(
+      expect.objectContaining({ designMd: expect.stringContaining('Status: draft') }),
+    )
+    expect(skill.buildContext?.()).toContain('Status: draft')
   })
 
   it('moves a contract to producing on build and verifies only after final verify_slides', async () => {

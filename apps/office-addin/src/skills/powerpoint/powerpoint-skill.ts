@@ -1599,11 +1599,12 @@ export function createPowerPointSkill(options: {
             return failure(call.name, 'invalid_tool_input')
           }
           const readiness = validatePresentationDesignReadiness(contract)
-          if ('contract' in call.input && (contract.status !== 'ready' || !readiness.ready))
-            return failure(
-              call.name,
-              `design_contract_not_ready: status must be ready${readiness.issues.length ? `; ${readiness.issues.join('; ')}` : ''}`,
-            )
+          if ('contract' in call.input) {
+            if (!['draft', 'ready'].includes(contract.status))
+              return failure(call.name, 'design_contract_invalid_status: expected draft or ready')
+            if (contract.status === 'ready' && !readiness.ready)
+              return failure(call.name, `design_contract_not_ready: ${readiness.issues.join('; ')}`)
+          }
           activeDesignContract = contract
           activeDesignContractIsModern = 'contract' in call.input
           builtDesignSlides.clear()
