@@ -549,6 +549,30 @@ describe('bounded Anthropic SSE state machine', () => {
     expect(events.at(-1)?.event).toBe('response.incomplete')
   })
 
+  it('accepts JSON-stringified output from one authorized document call', async () => {
+    const code =
+      'const result = await tools.mcp__wiswork__wiswork_read_document({}); text(JSON.stringify(result));'
+    const events = await collect(
+      prepareCarrierTurn(structuredClone(captured)).messagesStreamToResponses(
+        chunks(
+          start,
+          'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"exec","input":{}}}\n\n',
+          `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n`,
+          'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+          'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}\n\n',
+          stop,
+        ),
+      ),
+    )
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: 'response.output_item.done',
+        data: expect.objectContaining({ item: expect.objectContaining({ input: code }) }),
+      }),
+    )
+  })
+
   it('rejects an unadvertised tool from the bound turn', async () => {
     await expectStreamCode(
       [
