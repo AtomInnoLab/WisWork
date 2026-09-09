@@ -1366,6 +1366,8 @@ body.vib .slide-list {
 
 .ai-panel {
   position: relative;
+  min-height: 0;
+  overflow: hidden;
   width: 360px;
   flex-shrink: 0;
   display: flex;
@@ -1461,9 +1463,10 @@ body.vib .slide-list {
 .ai-design-backdrop {
   position: absolute;
   inset: 0;
-  z-index: 20;
+  z-index: 40;
   display: grid;
   place-items: center;
+  min-height: 0;
   padding: 18px;
   background: rgb(0 0 0 / 52%);
 }
@@ -1473,6 +1476,7 @@ body.vib .slide-list {
   flex-direction: column;
   gap: 10px;
   width: min(620px, 100%);
+  max-height: calc(100% - 36px);
   height: min(720px, calc(100% - 36px));
   padding: 14px;
   border: 1px solid var(--border);
