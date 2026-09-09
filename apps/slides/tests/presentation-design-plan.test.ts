@@ -91,6 +91,9 @@ describe('presentation design plan', () => {
 
     expect(() => skill.buildContext?.()).not.toThrow()
     expect(skill.buildContext?.()).toContain('Status: draft')
+    expect(
+      skill.reviewFinalResponse?.({ text: '调研完成，下一阶段将生成页面。', mutated: false }),
+    ).toContain('Continue planning in this turn')
   })
 
   it('blocks legacy low-level writes on a blank deck until the design plan exists', async () => {

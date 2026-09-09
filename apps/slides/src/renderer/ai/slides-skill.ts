@@ -1929,6 +1929,8 @@ export function createSlidesSkill(
         return `Continue production: only ${state.builtPageIndexes?.size ?? 0} of ${planned} planned pages have been materialized.`
       if (planned !== undefined && actual < planned)
         return incompleteDeckCorrection(planned, actual)
+      if (state.designContract?.status === 'draft')
+        return 'Continue planning in this turn: finish research, update DESIGN.md to a complete ready contract with plan_deck, then immediately materialize and verify the prototype slides. Do not stop after describing the next stage.'
       return reviewSlidesFinalResponse(context)
     },
     ...(controller ? { presentation: { ...controller.hooks, batchScoped: true } } : {}),
