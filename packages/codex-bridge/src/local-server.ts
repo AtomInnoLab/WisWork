@@ -63,6 +63,7 @@ export interface ResponsesBridge {
 
 class BodyLimitError extends Error {}
 class RequestEndedError extends Error {}
+class UpstreamStreamInterruptedError extends Error {}
 
 function downward(value: number | undefined, maximum: number, code: string): number {
   const result = value ?? maximum
@@ -176,7 +177,7 @@ async function* upstreamChunks(
       if (signal.aborted) throw new RequestEndedError()
       let timer: ReturnType<typeof setTimeout> | undefined
       const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new RequestEndedError()), idleMs)
+        timer = setTimeout(() => reject(new UpstreamStreamInterruptedError()), idleMs)
         timer.unref()
       })
       const item = await Promise.race([reader.read(), timeout]).finally(() => {
@@ -188,7 +189,8 @@ async function* upstreamChunks(
       }
       bytes += item.value.length
       frames += 1
-      if (bytes > MAX_STREAM_BYTES || frames > MAX_STREAM_FRAMES) throw new RequestEndedError()
+      if (bytes > MAX_STREAM_BYTES || frames > MAX_STREAM_FRAMES)
+        throw new UpstreamStreamInterruptedError()
       yield item.value
     }
   } finally {
@@ -393,9 +395,14 @@ export async function startResponsesBridge(
             SAFE_STREAM_PROTOCOL_CODES.has(error.message)
               ? error.message
               : undefined
-          if (protocolCode) {
+          const deterministicCode =
+            protocolCode ??
+            (error instanceof UpstreamStreamInterruptedError
+              ? 'upstream_stream_interrupted'
+              : undefined)
+          if (deterministicCode) {
             try {
-              options.onDeterministicFailure?.(protocolCode, turn.turnId)
+              options.onDeterministicFailure?.(deterministicCode, turn.turnId)
             } catch {
               // Failure reporting must never change bridge settlement.
             }
@@ -404,7 +411,13 @@ export async function startResponsesBridge(
             error instanceof Error && error.name === 'ProtocolCompatibilityError'
               ? 'protocol_rejected'
               : 'interrupted'
-          diagnostic(protocolCode ? `responses_stream_${protocolCode}` : 'responses_stream_invalid')
+          diagnostic(
+            protocolCode
+              ? `responses_stream_${protocolCode}`
+              : error instanceof UpstreamStreamInterruptedError
+                ? 'responses_stream_upstream_interrupted'
+                : 'responses_stream_invalid',
+          )
           cancelResponse(upstream)
           if (!response.destroyed) response.destroy()
         } finally {

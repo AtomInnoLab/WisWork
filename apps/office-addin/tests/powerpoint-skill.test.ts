@@ -295,6 +295,24 @@ describe('PowerPoint compatibility skill', () => {
     await expect(
       skill.executeTool(
         call('plan_deck', {
+          contract: modernContract({
+            status: 'draft',
+            brief: { ...(modernContract().brief as object), pageCount: 10 },
+            prototypePages: [],
+            slides: [],
+            assets: [],
+            deckAcceptance: [],
+          }),
+        }),
+      ),
+    ).resolves.toMatchObject({
+      mutated: false,
+      output: expect.stringContaining('"status":"draft"'),
+    })
+
+    await expect(
+      skill.executeTool(
+        call('plan_deck', {
           core_hook: 'Legacy hook',
           style: 'Legacy style',
           pages: [

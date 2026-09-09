@@ -2,7 +2,7 @@ export const PRESENTATION_DESIGN_WORKFLOW_PROMPT = `
 ## Shared presentation design workflow
 For a whole-deck creation or redesign, work as a presentation director, not a text filler:
 1. Brief: establish audience, occasion, desired decision, page count, source constraints, and one narrative conclusion. Ask only for missing choices that materially change the result.
-2. DESIGN.md contract: immediately after the brief or questionnaire, draft a user-editable design contract covering the confirmed choices, open questions, research plan, concrete color tokens, typography hierarchy, safe margins/grid, image treatment, density limits, layout families, and composition rules. Create and show this draft immediately, before fact or image research. Treat it as binding for every slide. As facts and assets are collected, update the same draft with evidence, provenance, and asset status. Do not mark the final contract ready until required fact research, image search, and asset validation are complete.
+2. DESIGN.md contract: immediately after the brief or questionnaire, draft a user-editable design contract covering the confirmed choices, open questions, research plan, concrete color tokens, typography hierarchy, safe margins/grid, image treatment, density limits, layout families, and composition rules. Create and show this draft immediately, before fact or image research. Keep the first draft compact: record the brief and discovery log, but keep the page plan and asset lists empty until research supplies them. Treat it as binding for every slide. As facts and assets are collected, update the same draft with evidence, provenance, and asset status. Do not mark the final contract ready until required fact research, image search, and asset validation are complete.
 3. Deck plan: give every slide one conclusion-led headline, a narrative role, one focal visual, supporting evidence, a layout family, asset needs/provenance, density, and slide-specific acceptance criteria. Do not use the same layout family on adjacent slides unless continuity requires it.
 4. Asset plan: search real people, products, places, brands, and current facts; validate selected image sources before finalizing DESIGN.md as ready. Generate only abstract/custom illustration when generation exists. Use native editable charts for data. Never invent precise data or image URLs.
 5. Prototype gate: first create or identify the cover, one representative content page, and one complex visual page. Screenshot and review those pages before continuing the remaining production batches. When fewer than three slides are requested, review every slide.
@@ -188,7 +188,7 @@ export const PRESENTATION_DESIGN_CONTRACT_SCHEMA: Record<string, unknown> = {
     },
     prototypePages: {
       type: 'array',
-      minItems: 1,
+      minItems: 0,
       maxItems: 3,
       uniqueItems: true,
       items: { type: 'integer', minimum: 1, maximum: 12 },
@@ -266,7 +266,7 @@ export const PRESENTATION_DESIGN_CONTRACT_SCHEMA: Record<string, unknown> = {
     },
     slides: {
       type: 'array',
-      minItems: 1,
+      minItems: 0,
       maxItems: 12,
       items: {
         type: 'object',
@@ -341,7 +341,7 @@ export const PRESENTATION_DESIGN_CONTRACT_SCHEMA: Record<string, unknown> = {
         },
       },
     },
-    deckAcceptance: { type: 'array', minItems: 1, maxItems: 30, items: acceptanceSchema() },
+    deckAcceptance: { type: 'array', minItems: 0, maxItems: 30, items: acceptanceSchema() },
   },
 }
 
