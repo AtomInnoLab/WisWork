@@ -793,7 +793,7 @@ const ALL_TOOLS: AgentToolDef[] = [
   {
     name: 'plan_deck',
     description:
-      '[When creating a whole new deck, call after researching material and images] Outputs the Core Hook, an editable DESIGN.md contract, and a page director plan. Every page should declare its narrative purpose, one focal visual, evidence, layout, assets, and acceptance criteria. The plan is echoed to the user.',
+      '[When creating a whole new deck, call once with status draft immediately after the brief/questionnaire, update that draft while researching material and images, then call with status ready before production] Outputs the Core Hook, an editable DESIGN.md contract, and a page director plan. Every page should declare its narrative purpose, one focal visual, evidence, layout, assets, and acceptance criteria. The plan is echoed to the user.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -3537,23 +3537,25 @@ async function executeTool(
       try {
         if (call.input.contract !== undefined) {
           contract = parsePresentationDesignContract(call.input.contract)
-          const unverifiedUrls = unverifiedRemoteAssetUrls(contract, state?.searchedImageUrls)
-          if (unverifiedUrls.length)
+          if (!['draft', 'ready'].includes(contract.status))
             return fail(
               t('aiFailPlan'),
-              'DESIGN.md remote assets must come from image_search in this session before they can be ready',
+              'plan_deck only accepts draft or ready DESIGN.md contracts',
             )
-          const readiness = validatePresentationDesignReadiness(contract)
-          if (contract.status !== 'ready')
-            return fail(
-              t('aiFailPlan'),
-              'DESIGN.md contract status must be ready before production',
-            )
-          if (!readiness.ready)
-            return fail(
-              t('aiFailPlan'),
-              `DESIGN.md readiness check failed: ${readiness.issues.join('; ')}`,
-            )
+          if (contract.status === 'ready') {
+            const unverifiedUrls = unverifiedRemoteAssetUrls(contract, state?.searchedImageUrls)
+            if (unverifiedUrls.length)
+              return fail(
+                t('aiFailPlan'),
+                'DESIGN.md remote assets must come from image_search in this session before they can be ready',
+              )
+            const readiness = validatePresentationDesignReadiness(contract)
+            if (!readiness.ready)
+              return fail(
+                t('aiFailPlan'),
+                `DESIGN.md readiness check failed: ${readiness.issues.join('; ')}`,
+              )
+          }
           plan = parsePresentationDesignPlan(contractAsLegacyPlan(contract))
         } else {
           plan = parsePresentationDesignPlan(call.input)

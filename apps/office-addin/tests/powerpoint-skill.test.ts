@@ -259,7 +259,7 @@ describe('PowerPoint compatibility skill', () => {
     expect(skill.buildContext?.()).toContain('"status":"verified"')
   })
 
-  it('rejects an unready structured production contract but preserves legacy planning', async () => {
+  it('records an incomplete structured draft before research and preserves legacy planning', async () => {
     const skill = createPowerPointSkill({
       adapter: adapter(),
       proposals: createStructuredProposalController(),
@@ -274,11 +274,23 @@ describe('PowerPoint compatibility skill', () => {
       output: expect.stringContaining('brief.audience is required'),
     })
     await expect(
-      skill.executeTool(call('plan_deck', { contract: modernContract({ status: 'draft' }) })),
+      skill.executeTool(
+        call('plan_deck', {
+          contract: modernContract({
+            status: 'draft',
+            discovery: {
+              questionnaire: ['Audience: independent travellers'],
+              openQuestions: ['Confirm image licences'],
+              researchNotes: ['Volcanic route candidates collected'],
+            },
+          }),
+        }),
+      ),
     ).resolves.toMatchObject({
-      isError: true,
-      output: expect.stringContaining('status must be ready'),
+      mutated: false,
+      output: expect.stringContaining('Volcanic route candidates collected'),
     })
+    expect(skill.buildContext?.()).toContain('"status":"draft"')
 
     await expect(
       skill.executeTool(
