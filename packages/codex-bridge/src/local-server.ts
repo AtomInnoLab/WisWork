@@ -49,6 +49,8 @@ export interface ResponsesBridgeOptions {
     outcome: ProtocolRecordingOutcome,
   ) => void
   readonly onDeterministicFailure?: (code: string, turnId?: string) => void
+  /** Content-free activity from the authenticated upstream for this already-bound turn. */
+  readonly onStreamActivity?: (turnId?: string) => void
   readonly maxBodyBytes?: number
   readonly maxActiveTurns?: number
   readonly maxTurnDurationMs?: number
@@ -168,6 +170,7 @@ async function* upstreamChunks(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
   idleMs: number,
+  onActivity: () => void,
 ): AsyncGenerator<Uint8Array> {
   const reader = body.getReader()
   let bytes = 0
@@ -192,6 +195,7 @@ async function* upstreamChunks(
       frames += 1
       if (bytes > MAX_STREAM_BYTES || frames > MAX_STREAM_FRAMES)
         throw new UpstreamStreamInterruptedError()
+      if (item.value.length > 0) onActivity()
       yield item.value
     }
   } finally {
@@ -376,7 +380,18 @@ export async function startResponsesBridge(
         let originalOutcome: ProtocolRecordingOutcome = 'interrupted'
         try {
           for await (const frame of turn.messagesStreamToResponses(
-            upstreamChunks(upstream.body, controller.signal, maxStreamIdleMs),
+            upstreamChunks(upstream.body, controller.signal, maxStreamIdleMs, () => {
+              if (controller.signal.aborted || response.destroyed) return
+              // Tool arguments and private reasoning are buffered by the converter.
+              // Active upstream bytes must refresh the socket even when it has no
+              // safe downstream output yet; stalled reads/writes keep the same bound.
+              response.setTimeout(maxStreamIdleMs)
+              try {
+                options.onStreamActivity?.(turn.turnId)
+              } catch {
+                // Activity observers never change transport or document execution.
+              }
+            }),
             recorder,
           )) {
             if (frame.startsWith('event: response.completed\n')) originalOutcome = 'completed'
