@@ -1352,6 +1352,7 @@ export interface SlidesApi {
       height?: number
     }>
     method: string
+    error?: 'config' | 'auth' | 'quota' | 'timeout' | 'parse' | 'upstream'
   }>
   insertImageUrl: (op: {
     slideIndex: number

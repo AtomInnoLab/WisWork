@@ -284,6 +284,46 @@ describe('PC Codex host registrar', () => {
         'P'.repeat(43),
       ),
     ).toThrow('enhanced_untrusted_request')
+    const aborted = registered.session.callTool(registered.session.credentials, {
+      id: 'm-aborted',
+      name: 'replace_blocks',
+      input: {},
+    }) as any
+    registered.onEvent({
+      type: 'proposal',
+      proposalId: 'S'.repeat(43),
+      call: { id: 'm-aborted', name: 'replace_blocks', input: {} },
+      expiresAt: Date.now() + 60_000,
+      summary: { operation: 'replace', target: 'blocks', scope: 'bounded-set', count: 1 },
+    })
+    const abortedConfirmation = handlers.get(PC_HOST_CODEX_CHANNELS.confirmProposal)!(
+      { sender: owner },
+      'doc-1',
+      3,
+      'S'.repeat(43),
+    )
+    await vi.waitFor(() => expect(sent.at(-1)?.[1]).toMatchObject({ call: { id: 'm-aborted' } }))
+    expect(registered.session.cancel(registered.session.credentials, 'm-aborted')).toBe(true)
+    await expect(aborted.result).resolves.toMatchObject({
+      output: 'tool_cancelled',
+      mutated: false,
+    })
+    await expect(abortedConfirmation).resolves.toBeUndefined()
+    expect(sent).toContainEqual([
+      PC_HOST_CODEX_CHANNELS.toolCancel,
+      { documentId: 'doc-1', generation: 3, callId: 'm-aborted' },
+    ])
+    expect(() =>
+      handlers.get(PC_HOST_CODEX_CHANNELS.toolResult)!(
+        { sender: owner },
+        {
+          documentId: 'doc-1',
+          generation: 3,
+          callId: 'm-aborted',
+          execution: { output: 'late mutation', summary: 'late', mutated: true },
+        },
+      ),
+    ).toThrow('enhanced_untrusted_request')
     const cancelled = registered.session.callTool(registered.session.credentials, {
       id: 'm2',
       name: 'replace_blocks',
@@ -328,7 +368,7 @@ describe('PC Codex host registrar', () => {
       isError: true,
       mutated: false,
     })
-    expect(sent.filter(([channel]) => channel === PC_HOST_CODEX_CHANNELS.toolCall)).toHaveLength(4)
+    expect(sent.filter(([channel]) => channel === PC_HOST_CODEX_CHANNELS.toolCall)).toHaveLength(5)
     registered.onEvent({ type: 'terminal', status: 'failed', code: 'enhanced_proposal_expired' })
     expect(sent.at(-1)).toEqual([
       PC_HOST_CODEX_CHANNELS.event,

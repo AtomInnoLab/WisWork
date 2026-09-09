@@ -58,6 +58,7 @@ function createSlidesEnhancedHarness<TSnapshot>(
   let terminalError: string | undefined
   let toolBatchTimer: ReturnType<typeof setTimeout> | null = null
   const executions = new Map<string, ToolExecution>()
+  const toolControllers = new Map<string, AbortController>()
   const registration = api.register(
     createPcHostRegistration({ host: 'slides', documentId, generation, skill: options.skill }),
   )
@@ -96,6 +97,13 @@ function createSlidesEnhancedHarness<TSnapshot>(
       if (!closed && callbacks === batchCallbacks) batchCallbacks.onDone()
     }, toolBatchQuietWindowMs)
   })
+  const unsubscribeToolCancels =
+    api.onToolCancel?.((request) => {
+      if (request.documentId !== documentId || request.generation !== generation) return
+      toolControllers.get(request.callId)?.abort()
+      toolControllers.delete(request.callId)
+      executions.delete(request.callId)
+    }) ?? (() => undefined)
   const transport: AgentTransport = {
     stream(request: AgentStreamRequest, next: AgentStreamCallbacks) {
       callbacks = next
@@ -149,7 +157,19 @@ function createSlidesEnhancedHarness<TSnapshot>(
     presentation: undefined,
     reviewFinalResponse: undefined,
     async executeTool(call: Parameters<typeof options.skill.executeTool>[0], signal?: AbortSignal) {
-      const outcome = await options.skill.executeTool(call, signal)
+      const controller = new AbortController()
+      toolControllers.set(call.id, controller)
+      const abort = () => controller.abort(signal?.reason)
+      signal?.addEventListener('abort', abort, { once: true })
+      if (signal?.aborted) abort()
+      let outcome: Awaited<ReturnType<typeof options.skill.executeTool>>
+      try {
+        outcome = await options.skill.executeTool(call, controller.signal)
+      } finally {
+        signal?.removeEventListener('abort', abort)
+        toolControllers.delete(call.id)
+      }
+      controller.signal.throwIfAborted()
       if ('kind' in outcome && outcome.kind === 'tool-execution-suspension') {
         void outcome.result.then((execution) =>
           executions.set(call.id, hostToolExecution(execution)),
@@ -176,6 +196,9 @@ function createSlidesEnhancedHarness<TSnapshot>(
       harness.dispose()
       unsubscribeEvents()
       unsubscribeTools()
+      unsubscribeToolCancels()
+      for (const controller of toolControllers.values()) controller.abort()
+      toolControllers.clear()
       closePromise = registration
         .catch(() => undefined)
         .then(() => api.cancelTurn(documentId).catch(() => undefined))

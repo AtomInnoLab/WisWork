@@ -382,6 +382,83 @@ describe('document-scoped tool session', () => {
     expect(f.session.mutationAuthority.claimNext()).toBeUndefined()
   })
 
+  it.each([
+    [
+      'suspension mint failure',
+      () => {
+        throw new Error('mint failed')
+      },
+      () => true,
+    ],
+    [
+      'suspension ownership failure',
+      (result: Promise<ToolExecution>) => result as any,
+      () => {
+        throw new Error('ownership failed')
+      },
+    ],
+  ])(
+    'releases the pending mutation gate after %s',
+    async (_label, suspendMutation, ownsSuspension) => {
+      const f = fixture({ suspendMutation: suspendMutation as any, ownsSuspension })
+      await expect(
+        Promise.resolve(
+          f.session.callTool(f.session.credentials, {
+            id: 'broken-suspension',
+            name: writeTool.name,
+            input: {},
+          }),
+        ),
+      ).resolves.toMatchObject({ output: 'tool_authority_denied', isError: true })
+      await expect(
+        f.session.callTool(f.session.credentials, {
+          id: 'read-after-broken-suspension',
+          name: readTool.name,
+          input: {},
+        }),
+      ).resolves.toMatchObject({ output: 'text' })
+      expect(f.session.mutationAuthority.claimNext()).toBeUndefined()
+    },
+  )
+
+  it.each(['success', 'failure', 'timeout', 'cancel'] as const)(
+    'releases the pending mutation gate after terminal %s',
+    async (terminal) => {
+      if (terminal === 'timeout') vi.useFakeTimers()
+      const f = fixture({ maxCallMs: 10 })
+      try {
+        const outcome = f.session.callTool(f.session.credentials, {
+          id: `write-${terminal}`,
+          name: writeTool.name,
+          input: {},
+        }) as any
+        const claimed = f.session.mutationAuthority.claimNext()!
+        if (terminal === 'success')
+          f.session.mutationAuthority.settle(claimed.claim, {
+            output: 'applied',
+            summary: 'applied',
+            mutated: true,
+          })
+        else if (terminal === 'failure')
+          f.session.mutationAuthority.reject(claimed.claim, 'apply_failed')
+        else if (terminal === 'cancel') f.session.cancel(f.session.credentials, `write-${terminal}`)
+        else await vi.advanceTimersByTimeAsync(10)
+        await outcome.result
+        expect(claimed.request.signal.aborted).toBe(terminal === 'timeout' || terminal === 'cancel')
+        await expect(
+          f.session.callTool(f.session.credentials, {
+            id: `read-after-${terminal}`,
+            name: readTool.name,
+            input: {},
+          }),
+        ).resolves.toMatchObject({ output: 'text' })
+      } finally {
+        f.session.close()
+        if (terminal === 'timeout') vi.useRealTimers()
+      }
+    },
+  )
+
   it('cancels queued mutations by call id before an authority can claim them', async () => {
     const f = fixture()
     const outcome = f.session.callTool(f.session.credentials, {

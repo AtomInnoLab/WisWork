@@ -14,13 +14,102 @@ import {
 
 export type { ImageSearchResult, WebSearchResult } from './shared'
 
+let configuredSerpApiKey: (() => string) | undefined
 const SERPER_KEY = () => process.env.SERPER_API_KEY ?? ''
-const SERPAPI_KEY = () => process.env.SERPAPI_API_KEY ?? ''
+const SERPAPI_KEY = () => process.env.SERPAPI_API_KEY || configuredSerpApiKey?.() || ''
 const WISUSAGE_SEARCH_URL = 'https://wisusage.atominnolab.com/v1/xiaosu/search'
 const WISUSAGE_RESPONSE_LIMIT = 1_048_576
 const WISUSAGE_QUERY_LIMIT = 1_000
 const WISUSAGE_TEXT_LIMIT = 8_192
 const WISUSAGE_TIMEOUT_MS = 15_000
+
+export type ImageSearchFailureCode = 'config' | 'auth' | 'quota' | 'timeout' | 'parse' | 'upstream'
+
+export class ImageSearchError extends Error {
+  constructor(
+    readonly code: ImageSearchFailureCode,
+    readonly provider: 'serpapi' | 'serper' | 'duckduckgo',
+    options?: ErrorOptions,
+  ) {
+    super(`image_search_${code}_error`, options)
+    this.name = 'ImageSearchError'
+  }
+}
+
+/** Main-process hook for an encrypted key store. Environment configuration remains authoritative. */
+export function configureImageSearch(options: { serpApiKey?: () => string }): void {
+  configuredSerpApiKey = options.serpApiKey
+}
+
+function imageSearchFailure(
+  provider: ImageSearchError['provider'],
+  error: unknown,
+  status?: number,
+): ImageSearchError {
+  if (error instanceof ImageSearchError) return error
+  const code =
+    status === 401 || status === 403
+      ? 'auth'
+      : status === 429
+        ? 'quota'
+        : error instanceof DOMException && error.name === 'AbortError'
+          ? 'timeout'
+          : error instanceof SyntaxError
+            ? 'parse'
+            : 'upstream'
+  return new ImageSearchError(code, provider, { cause: error })
+}
+
+function publicImageUrl(value: unknown, provider: ImageSearchError['provider']): string {
+  try {
+    if (typeof value !== 'string' || !value) throw new Error('missing_url')
+    const url = new URL(value)
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+    const privateIpv4 =
+      /^(?:127\.|10\.|192\.168\.|169\.254\.|0\.)/.test(host) ||
+      /^172\.(?:1[6-9]|2\d|3[01])\./.test(host)
+    const privateIpv6 =
+      host === '::' ||
+      host === '::1' ||
+      /^f[cd][0-9a-f]{2}:/.test(host) ||
+      /^fe[89ab][0-9a-f]:/.test(host) ||
+      /^::ffff:(?:127\.|10\.|192\.168\.|169\.254\.|0\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(host)
+    if (
+      url.protocol !== 'https:' ||
+      url.username ||
+      url.password ||
+      url.port ||
+      host === 'localhost' ||
+      host.endsWith('.localhost') ||
+      host.endsWith('.local') ||
+      privateIpv4 ||
+      privateIpv6
+    )
+      throw new Error('unsafe_url')
+    return url.href
+  } catch (error) {
+    throw new ImageSearchError('parse', provider, { cause: error })
+  }
+}
+
+function imageRecord(value: unknown, provider: ImageSearchError['provider']) {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new ImageSearchError('parse', provider)
+  return value as Record<string, unknown>
+}
+
+function optionalDimension(value: unknown, provider: ImageSearchError['provider']) {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0)
+    throw new ImageSearchError('parse', provider)
+  return value
+}
+
+function optionalText(value: unknown, provider: ImageSearchError['provider']): string {
+  if (value === undefined || value === null) return ''
+  if (typeof value !== 'string') throw new ImageSearchError('parse', provider)
+  return value
+}
 
 export interface WisUsageSearchOptions {
   readonly fetchWithAuth: (request: (accessToken: string) => Promise<Response>) => Promise<Response>
@@ -215,11 +304,18 @@ export async function webSearch(
 export async function imageSearch(
   query: string,
   maxResults = 8,
+  options: { fallback?: boolean } = {},
 ): Promise<{
   images: ImageSearchResult[]
   method: string
 }> {
-  const serpApiKey = SERPAPI_KEY()
+  let configuredFailure: ImageSearchError | undefined
+  let serpApiKey: string
+  try {
+    serpApiKey = SERPAPI_KEY()
+  } catch (error) {
+    throw new ImageSearchError('config', 'serpapi', { cause: error })
+  }
   if (serpApiKey) {
     try {
       const url = new URL('https://serpapi.com/search')
@@ -231,34 +327,41 @@ export async function imageSearch(
       const resp = await fetchWithTimeout(url.href)
       if (resp.ok) {
         const data = asRecord(await resp.json())
-        const raw: unknown[] = Array.isArray(data.images_results)
+        const raw = Array.isArray(data.images_results)
           ? data.images_results
           : Array.isArray(data.image_results)
             ? data.image_results
-            : []
+            : null
+        if (!raw) throw new ImageSearchError('parse', 'serpapi')
         const images: ImageSearchResult[] = []
         for (const item of raw) {
-          const image = asRecord(item)
-          const imageUrl = String(image.original ?? '')
-          if (!imageUrl || COPYRIGHT_HOSTS.some((host) => imageUrl.toLowerCase().includes(host)))
-            continue
+          const image = imageRecord(item, 'serpapi')
+          const imageUrl = publicImageUrl(image.original, 'serpapi')
+          const sourceUrl = publicImageUrl(image.link, 'serpapi')
+          if (COPYRIGHT_HOSTS.some((host) => imageUrl.toLowerCase().includes(host))) continue
           const entry: ImageSearchResult = {
-            title: String(image.title ?? ''),
+            title: optionalText(image.title, 'serpapi'),
             imageUrl,
-            sourceUrl: String(image.link ?? ''),
-            source: String(image.source ?? safeHost(image.link)),
+            sourceUrl,
+            source:
+              image.source == null ? safeHost(sourceUrl) : optionalText(image.source, 'serpapi'),
           }
-          if (typeof image.original_width === 'number') entry.width = image.original_width
-          if (typeof image.original_height === 'number') entry.height = image.original_height
+          const width = optionalDimension(image.original_width, 'serpapi')
+          const height = optionalDimension(image.original_height, 'serpapi')
+          if (width !== undefined) entry.width = width
+          if (height !== undefined) entry.height = height
           images.push(entry)
           if (images.length >= maxResults) break
         }
         return { images, method: 'serpapi' }
       }
-    } catch {
-      /* fall back to Serper or DuckDuckGo */
+      throw imageSearchFailure('serpapi', undefined, resp.status)
+    } catch (error) {
+      configuredFailure = imageSearchFailure('serpapi', error)
+      if (options.fallback === false) throw configuredFailure
     }
   }
+  if (options.fallback === false && !serpApiKey) throw new ImageSearchError('config', 'serpapi')
   const key = SERPER_KEY()
   if (key) {
     try {
@@ -269,31 +372,41 @@ export async function imageSearch(
       })
       if (resp.ok) {
         const data = asRecord(await resp.json())
-        const raw: unknown[] = Array.isArray(data.images) ? data.images : []
+        if (!Array.isArray(data.images)) throw new ImageSearchError('parse', 'serper')
+        const raw: unknown[] = data.images
         const images: ImageSearchResult[] = []
         for (const item of raw) {
-          const img = asRecord(item)
-          const imageUrl = String(img.imageUrl ?? img.original ?? '')
-          if (!imageUrl) continue
+          const img = imageRecord(item, 'serper')
+          const imageUrl = publicImageUrl(img.imageUrl ?? img.original, 'serper')
+          const sourceUrl = publicImageUrl(img.link, 'serper')
           if (COPYRIGHT_HOSTS.some((d) => imageUrl.toLowerCase().includes(d))) continue
           const entry: ImageSearchResult = {
-            title: String(img.title ?? ''),
+            title: optionalText(img.title, 'serper'),
             imageUrl,
-            sourceUrl: String(img.link ?? ''),
-            source: String(img.source ?? safeHost(img.link)),
+            sourceUrl,
+            source: img.source == null ? safeHost(sourceUrl) : optionalText(img.source, 'serper'),
           }
-          if (typeof img.imageWidth === 'number') entry.width = img.imageWidth
-          if (typeof img.imageHeight === 'number') entry.height = img.imageHeight
+          const width = optionalDimension(img.imageWidth, 'serper')
+          const height = optionalDimension(img.imageHeight, 'serper')
+          if (width !== undefined) entry.width = width
+          if (height !== undefined) entry.height = height
           images.push(entry)
           if (images.length >= maxResults) break
         }
         return { images, method: 'serper' }
       }
-    } catch {
-      /* fall back to DuckDuckGo */
+      throw imageSearchFailure('serper', undefined, resp.status)
+    } catch (error) {
+      configuredFailure ??= imageSearchFailure('serper', error)
     }
   }
-  return { images: await duckImageSearch(query, maxResults), method: 'duckduckgo' }
+  try {
+    const images = await duckImageSearch(query, maxResults)
+    if (!images.length && configuredFailure) throw configuredFailure
+    return { images, method: 'duckduckgo' }
+  } catch (error) {
+    throw configuredFailure ?? imageSearchFailure('duckduckgo', error)
+  }
 }
 
 // ── DuckDuckGo fallback (no key / quota exhausted) ──────────────────
@@ -340,25 +453,29 @@ async function duckImageSearch(query: string, maxResults: number): Promise<Image
     )
     if (!resp.ok) throw new Error('image_search_upstream_error')
     const data = asRecord(await resp.json())
-    const list: unknown[] = Array.isArray(data.results) ? data.results : []
+    if (!Array.isArray(data.results)) throw new ImageSearchError('parse', 'duckduckgo')
+    const list: unknown[] = data.results
     const out: ImageSearchResult[] = []
     for (const item of list.slice(0, maxResults)) {
-      const img = asRecord(item)
-      const imageUrl = String(img.image ?? '')
-      if (!imageUrl || COPYRIGHT_HOSTS.some((d) => imageUrl.toLowerCase().includes(d))) continue
+      const img = imageRecord(item, 'duckduckgo')
+      const imageUrl = publicImageUrl(img.image, 'duckduckgo')
+      const sourceUrl = publicImageUrl(img.url, 'duckduckgo')
+      if (COPYRIGHT_HOSTS.some((d) => imageUrl.toLowerCase().includes(d))) continue
       const entry: ImageSearchResult = {
-        title: String(img.title ?? ''),
+        title: optionalText(img.title, 'duckduckgo'),
         imageUrl,
-        sourceUrl: String(img.url ?? ''),
-        source: safeHost(img.url),
+        sourceUrl,
+        source: safeHost(sourceUrl),
       }
-      if (typeof img.width === 'number') entry.width = img.width
-      if (typeof img.height === 'number') entry.height = img.height
+      const width = optionalDimension(img.width, 'duckduckgo')
+      const height = optionalDimension(img.height, 'duckduckgo')
+      if (width !== undefined) entry.width = width
+      if (height !== undefined) entry.height = height
       out.push(entry)
     }
     return out
   } catch (error) {
-    throw new Error('image_search_upstream_error', { cause: error })
+    throw imageSearchFailure('duckduckgo', error)
   }
 }
 

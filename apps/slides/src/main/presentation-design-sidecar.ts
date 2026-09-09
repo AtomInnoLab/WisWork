@@ -8,7 +8,13 @@ export function savePresentationDesignSidecar(
   deckPath: string | undefined,
   design: string,
 ): boolean {
-  pendingDesigns.set(senderId, design)
+  let normalized: string
+  try {
+    normalized = normalizeDesignDocument(design)
+  } catch {
+    return false
+  }
+  pendingDesigns.set(senderId, normalized)
   if (!deckPath || !/\.pptx$/i.test(deckPath)) return true
   return flushPresentationDesignSidecar(senderId, deckPath)
 }
@@ -41,9 +47,11 @@ export function readPresentationDesignSidecar(
 }
 
 function normalizeDesignDocument(value: string): string {
-  return value.trimStart().startsWith('# DESIGN.md')
-    ? value.trim()
-    : buildPresentationDesignDocument(value)
+  if (!value.trimStart().startsWith('# DESIGN.md')) return buildPresentationDesignDocument(value)
+  const normalized = value.trim()
+  if (!normalized.replace(/^#\s*DESIGN\.md\s*/i, '').trim())
+    throw new Error('empty_presentation_design')
+  return normalized
 }
 
 export function clearPresentationDesignSidecar(senderId: number): void {

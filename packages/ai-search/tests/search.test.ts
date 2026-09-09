@@ -1,22 +1,37 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import * as searchModule from '../src/index'
-import { webSearch, imageSearch, wisUsageWebSearch } from '../src/index'
+import {
+  ImageSearchError,
+  configureImageSearch,
+  webSearch,
+  imageSearch,
+  wisUsageWebSearch,
+} from '../src/index'
 
 const realFetch = globalThis.fetch
 afterEach(() => {
   globalThis.fetch = realFetch
   delete process.env.SERPER_API_KEY
   delete process.env.SERPAPI_API_KEY
+  configureImageSearch({})
 })
 
 function mockFetch(
-  handler: (url: string, init?: RequestInit) => { ok: boolean; json?: any; text?: string },
+  handler: (
+    url: string,
+    init?: RequestInit,
+  ) => {
+    ok: boolean
+    status?: number
+    json?: any
+    text?: string
+  },
 ) {
   globalThis.fetch = vi.fn(async (url: any, init: any) => {
     const r = handler(String(url), init)
     return {
       ok: r.ok,
-      status: r.ok ? 200 : 500,
+      status: r.status ?? (r.ok ? 200 : 500),
       headers: new Map(),
       json: async () => r.json,
       text: async () => r.text ?? '',
@@ -27,6 +42,8 @@ function mockFetch(
 describe('webSearch (Serper)', () => {
   it('exports search only and has no WisWork runtime surface', () => {
     expect(Object.keys(searchModule).sort()).toEqual([
+      'ImageSearchError',
+      'configureImageSearch',
       'imageSearch',
       'webSearch',
       'wisUsageWebSearch',
@@ -223,6 +240,69 @@ describe('imageSearch (Serper)', () => {
 })
 
 describe('imageSearch (SerpApi)', () => {
+  it('uses a main-process key provider when the environment is unset', async () => {
+    configureImageSearch({ serpApiKey: () => 'stored-test-key' })
+    mockFetch((rawUrl) => {
+      expect(new URL(rawUrl).searchParams.get('api_key')).toBe('stored-test-key')
+      return { ok: true, json: { images_results: [] } }
+    })
+
+    await expect(imageSearch('flowers', 3)).resolves.toEqual({
+      images: [],
+      method: 'serpapi',
+    })
+  })
+
+  it('surfaces secure key resolution failure as typed configuration failure', async () => {
+    configureImageSearch({
+      serpApiKey: () => {
+        throw new Error('secure_storage_unavailable')
+      },
+    })
+
+    const failure = await imageSearch('flowers', 3).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(ImageSearchError)
+    expect(failure).toMatchObject({ code: 'config', provider: 'serpapi' })
+  })
+
+  it('keeps the environment key as the override', async () => {
+    process.env.SERPAPI_API_KEY = 'environment-key'
+    configureImageSearch({ serpApiKey: () => 'stored-key' })
+    mockFetch((rawUrl) => {
+      expect(new URL(rawUrl).searchParams.get('api_key')).toBe('environment-key')
+      return { ok: true, json: { images_results: [] } }
+    })
+
+    await imageSearch('flowers', 3)
+  })
+
+  it.each([
+    [401, 'auth'],
+    [429, 'quota'],
+  ] as const)('surfaces SerpApi HTTP %s as a typed %s failure', async (status, code) => {
+    process.env.SERPAPI_API_KEY = 'serpapi-test-key'
+    mockFetch(() => ({ ok: false, status }))
+
+    const failure = await imageSearch('flowers', 3).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(ImageSearchError)
+    expect(failure).toMatchObject({ code, provider: 'serpapi' })
+  })
+
+  it('can test the configured provider without accepting a fallback success', async () => {
+    process.env.SERPAPI_API_KEY = 'invalid-key'
+    let request = 0
+    mockFetch(() => {
+      request += 1
+      return request === 1 ? { ok: false, status: 401 } : { ok: true, json: { images_results: [] } }
+    })
+
+    await expect(imageSearch('configuration test', 1, { fallback: false })).rejects.toMatchObject({
+      code: 'auth',
+      provider: 'serpapi',
+    })
+    expect(request).toBe(1)
+  })
+
   it('uses the SerpApi Google Images contract and parses image_results', async () => {
     process.env.SERPAPI_API_KEY = 'serpapi-test-key'
     mockFetch((rawUrl) => {
@@ -308,6 +388,56 @@ describe('imageSearch (SerpApi)', () => {
     })
   })
 
+  it('rejects a configured provider failure when DuckDuckGo only confirms an empty fallback', async () => {
+    process.env.SERPAPI_API_KEY = 'serpapi-test-key'
+    let request = 0
+    mockFetch(() => {
+      request += 1
+      if (request === 1) return { ok: false, status: 429 }
+      if (request === 2) return { ok: true, text: 'vqd="123-456"' }
+      return { ok: true, json: { results: [] } }
+    })
+
+    await expect(imageSearch('team meeting office', 3)).rejects.toMatchObject({
+      code: 'quota',
+      provider: 'serpapi',
+    })
+  })
+
+  it.each([{}, { images_results: 'invalid' }, { images_results: [null] }])(
+    'rejects malformed SerpApi response schema',
+    async (json) => {
+      process.env.SERPAPI_API_KEY = 'serpapi-test-key'
+      mockFetch(() => ({ ok: true, json }))
+
+      await expect(imageSearch('flowers', 3, { fallback: false })).rejects.toMatchObject({
+        code: 'parse',
+        provider: 'serpapi',
+      })
+    },
+  )
+
+  it.each([
+    ['http://cdn.example.com/image.jpg', 'https://example.com/source'],
+    ['https://localhost/image.jpg', 'https://example.com/source'],
+    ['https://127.0.0.1/image.jpg', 'https://example.com/source'],
+    ['https://10.0.0.4/image.jpg', 'https://example.com/source'],
+    ['https://[::1]/image.jpg', 'https://example.com/source'],
+    ['https://user:password@example.com/image.jpg', 'https://example.com/source'],
+    ['https://cdn.example.com/image.jpg', 'https://192.168.1.2/source'],
+  ])('does not return unsafe image/source URLs', async (original, link) => {
+    process.env.SERPAPI_API_KEY = 'serpapi-test-key'
+    mockFetch(() => ({
+      ok: true,
+      json: { images_results: [{ title: 'unsafe', original, link, source: 'Example' }] },
+    }))
+
+    await expect(imageSearch('flowers', 3, { fallback: false })).rejects.toMatchObject({
+      code: 'parse',
+      provider: 'serpapi',
+    })
+  })
+
   it('does not report an empty success when configured Serper and fallbacks fail', async () => {
     process.env.SERPER_API_KEY = 'serper-test-key'
     mockFetch(() => ({ ok: false }))
@@ -330,5 +460,16 @@ describe('imageSearch (SerpApi)', () => {
     await expect(imageSearch('team meeting office', 3)).rejects.toThrow(
       'image_search_upstream_error',
     )
+  })
+
+  it('preserves DuckDuckGo timeout classification', async () => {
+    mockFetch(() => {
+      throw new DOMException('Aborted', 'AbortError')
+    })
+
+    await expect(imageSearch('team meeting office', 3)).rejects.toMatchObject({
+      code: 'timeout',
+      provider: 'duckduckgo',
+    })
   })
 })

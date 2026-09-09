@@ -9,6 +9,14 @@ import {
 } from '../src/main/presentation-design-sidecar'
 
 describe('presentation design sidecar', () => {
+  it('does not persist a heading-only DESIGN.md artifact', () => {
+    const senderId = 91356
+    const deckPath = join(mkdtempSync(join(tmpdir(), 'wiswork-design-')), 'deck.pptx')
+
+    expect(savePresentationDesignSidecar(senderId, deckPath, '# DESIGN.md\n\n')).toBe(false)
+    expect(readPresentationDesignSidecar(senderId, deckPath)).toBeUndefined()
+  })
+
   it('keeps an untitled design and writes it beside the first saved deck', () => {
     const senderId = 91357
     const deckPath = join(mkdtempSync(join(tmpdir(), 'wiswork-design-')), 'deck.pptx')

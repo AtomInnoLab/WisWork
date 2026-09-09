@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from 'node:path'
 import { AiIpcError, registerWisworkModelIpc, validateAiSearchArgs } from '@wiswork/ai-provider'
 import { AuthError, getElectronAuthRuntimeOrNull } from '@wiswork/auth'
-import { wisUsageWebSearch, imageSearch } from '@wiswork/ai-search'
+import { ImageSearchError, wisUsageWebSearch, imageSearch } from '@wiswork/ai-search'
 import { fetchRemoteImage } from '@wiswork/electron-utils'
 import {
   addPicture,
@@ -182,7 +182,11 @@ export function registerAiIpc(): void {
       const input = validateAiSearchArgs(query, maxResults, 8)
       return await imageSearch(input.query, input.maxResults)
     } catch (err) {
-      return { images: [], method: 'error', error: String(err) }
+      return {
+        images: [],
+        method: 'error',
+        error: err instanceof ImageSearchError ? err.code : 'upstream',
+      }
     }
   })
 }

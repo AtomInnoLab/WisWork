@@ -10,6 +10,7 @@ import type {
   AccountStatus,
   AppTheme,
   HomeApi,
+  ImageSearchConfigStatus,
   LatexRecentProjectEntry,
   OfficePairingRequest,
   ProjectHomeApi,
@@ -132,6 +133,106 @@ export function AccountMenuIdentity({
         </span>
       </span>
     </div>
+  )
+}
+
+export function ImageSearchSettings({ language }: { language: string }) {
+  const chinese = language === 'zh' || language === 'zh-TW'
+  const [status, setStatus] = useState<ImageSearchConfigStatus | null>(null)
+  const [key, setKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => {
+    void window.aiOffice
+      .imageSearchKeyStatus()
+      .then(setStatus)
+      .catch(() => setNotice(chinese ? '无法读取配置状态' : 'Could not read configuration status'))
+  }, [chinese])
+
+  const run = async (action: () => Promise<ImageSearchConfigStatus>) => {
+    setBusy(true)
+    setNotice('')
+    try {
+      setStatus(await action())
+      setKey('')
+    } catch {
+      setNotice(chinese ? '操作失败，请重试' : 'Operation failed; try again')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="image-search-settings" aria-label="SerpApi image search">
+      <div className="image-search-settings-title">
+        <span>SerpApi</span>
+        <span className={status?.configured ? 'diagnostic-ok' : ''}>
+          {status?.configured
+            ? status.source === 'environment'
+              ? chinese
+                ? '已通过环境变量配置'
+                : 'Configured by environment'
+              : chinese
+                ? '已配置'
+                : 'Configured'
+            : chinese
+              ? '未配置'
+              : 'Not configured'}
+        </span>
+      </div>
+      <input
+        type="password"
+        autoComplete="new-password"
+        aria-label={chinese ? 'SerpApi 密钥' : 'SerpApi key'}
+        placeholder={chinese ? '输入新密钥' : 'Enter a new key'}
+        value={key}
+        disabled={busy}
+        onChange={(event) => setKey(event.target.value)}
+      />
+      <div className="image-search-settings-actions">
+        <button
+          data-action="save"
+          disabled={busy || !key.trim()}
+          onClick={() => void run(() => window.aiOffice.saveImageSearchKey(key))}
+        >
+          {chinese ? '保存' : 'Save'}
+        </button>
+        <button
+          data-action="test"
+          disabled={busy || !status?.configured}
+          onClick={() => {
+            setBusy(true)
+            setNotice('')
+            void window.aiOffice
+              .testImageSearchKey()
+              .then((result) =>
+                setNotice(
+                  result.ok
+                    ? chinese
+                      ? '连接成功'
+                      : 'Connection successful'
+                    : chinese
+                      ? '连接失败'
+                      : 'Connection failed',
+                ),
+              )
+              .catch(() => setNotice(chinese ? '连接失败' : 'Connection failed'))
+              .finally(() => setBusy(false))
+          }}
+        >
+          {chinese ? '测试' : 'Test'}
+        </button>
+        <button
+          data-action="clear"
+          disabled={busy || status?.source !== 'stored'}
+          onClick={() => void run(() => window.aiOffice.clearImageSearchKey())}
+        >
+          {chinese ? '清除' : 'Clear'}
+        </button>
+      </div>
+      {notice && <p role="status">{notice}</p>}
+    </section>
   )
 }
 
@@ -1239,6 +1340,7 @@ function AccountEntry() {
                         : 'Enable detailed diagnostics for 30 minutes'}
                   </button>
                   {diagnosticsNotice && <p role="status">{diagnosticsNotice}</p>}
+                  <ImageSearchSettings language={lang} />
                   <p className="diagnostic-privacy-note">
                     {lang === 'zh' || lang === 'zh-TW'
                       ? '报告不包含文档内容、提示词、密钥或本机路径。'
