@@ -30,6 +30,7 @@ import { EMU_PER_PX_96 } from '@wiswork/pptx-render'
 import { PRESENTATION_VERIFICATION_LIMITS } from '@wiswork/presentation-verification'
 import { tm } from './i18n-main'
 import {
+  materializePresentationDesignSidecar,
   readPresentationDesignSidecar,
   savePresentationDesignSidecar,
 } from './presentation-design-sidecar'
@@ -666,12 +667,15 @@ export function registerSlidesOnlyAiIpc(): void {
       assertAiIpcSender(event)
       if (!runtime.openDesignSidecar) return { ok: false, error: 'desktop_unavailable' }
       const session = sessions.get(event.sender.id)
-      if (!session?.path || !/\.pptx$/i.test(session.path))
-        return { ok: false, error: 'presentation_not_saved' }
-      const designMd = readPresentationDesignSidecar(event.sender.id, session.path)
-      if (!designMd || !savePresentationDesignSidecar(event.sender.id, session.path, designMd))
-        return { ok: false, error: 'presentation_not_saved' }
-      runtime.openDesignSidecar(event.sender.id, session.path.replace(/\.pptx$/i, '.design.md'))
+      const temporaryDirectory = join(app.getPath('userData'), 'presentation-designs')
+      mkdirSync(temporaryDirectory, { recursive: true })
+      const designPath = materializePresentationDesignSidecar(
+        event.sender.id,
+        session?.path,
+        join(temporaryDirectory, `untitled-${event.sender.id}.design.md`),
+      )
+      if (!designPath) return { ok: false, error: 'presentation_not_saved' }
+      runtime.openDesignSidecar(event.sender.id, designPath)
       return { ok: true }
     },
   )

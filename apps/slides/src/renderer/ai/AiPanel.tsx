@@ -2510,6 +2510,13 @@ export function AiPanel({
     )
   }
 
+  const openDesignPreferNative = async (designMd: string) => {
+    setDesignDraft(designMd)
+    const result = await window.slidesApi.openDesignSidecar?.()
+    if (result?.ok) return
+    openDesignEditor(designMd)
+  }
+
   const saveDesignEditor = async () => {
     // A user edit invalidates the exact embedded structured snapshot. Remove it
     // so the next turn must normalize the visible contract through plan_deck.
@@ -2738,7 +2745,9 @@ export function AiPanel({
           {presentationDesignContextRef.current?.designMd && (
             <button
               className="ai-header-btn ai-design-header-btn"
-              onClick={() => openDesignEditor(presentationDesignContextRef.current!.designMd)}
+              onClick={() =>
+                void openDesignPreferNative(presentationDesignContextRef.current!.designMd)
+              }
               data-tip="Open DESIGN.md"
               aria-label="Open DESIGN.md"
             >
@@ -2859,7 +2868,10 @@ export function AiPanel({
                     </div>
                   )}
                   {blocks.includes('tools') && entry.tools && (
-                    <ToolChipList tools={entry.tools} onOpenDesign={openDesignEditor} />
+                    <ToolChipList
+                      tools={entry.tools}
+                      onOpenDesign={(designMd) => void openDesignPreferNative(designMd)}
+                    />
                   )}
                 </React.Fragment>
               )
@@ -3040,7 +3052,10 @@ export function AiPanel({
                 </div>
               )}
               {blocks.includes('tools') && entry.tools && (
-                <ToolChipList tools={entry.tools} onOpenDesign={openDesignEditor} />
+                <ToolChipList
+                  tools={entry.tools}
+                  onOpenDesign={(designMd) => void openDesignPreferNative(designMd)}
+                />
               )}
             </React.Fragment>
           )
@@ -3587,6 +3602,12 @@ function ClarifyCard({
             cancelAdvance()
             setOther((p) => ({ ...p, [q.id]: e.target.value }))
           }}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter' || !e.currentTarget.value.trim()) return
+            e.preventDefault()
+            if (isLast) submit()
+            else goTo(qIdx + 1)
+          }}
         />
       </div>
       <div className={`ai-clarify-actions${q.multi ? ' multi' : ''}`}>
@@ -3602,8 +3623,7 @@ function ClarifyCard({
               {t('aiClarifySubmit')}
             </button>
           ) : (
-            /* Only multi-select advances via the filled foot arrow; single-select advances by picking */
-            q.multi && (
+            (q.multi || !!other[q.id]?.trim()) && (
               <button
                 type="button"
                 className="ai-clarify-next"
