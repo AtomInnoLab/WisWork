@@ -80,6 +80,8 @@ export interface AgentSkill {
   buildContext?(): string
   /** Optional host-owned orchestration for presentation mutation runs. */
   presentation?: PresentationTaskHooks
+  /** Allow a bounded retry when the same state-based completion correction remains true. */
+  repeatFinalResponseCorrection?: boolean
   /**
    * Optionally reject one normal tool-free terminal response by returning a
    * static corrective user message. Exceptions fail open in AgentLoop.
@@ -123,6 +125,9 @@ export function composeSkills(id: string, intro: string, skills: AgentSkill[]): 
         .filter(Boolean)
         .join('\n\n'),
     ...(presentations[0] ? { presentation: presentations[0] } : {}),
+    ...(skills.some((skill) => skill.repeatFinalResponseCorrection)
+      ? { repeatFinalResponseCorrection: true }
+      : {}),
     ...(reviewers.length
       ? {
           reviewFinalResponse: (context: FinalResponseReviewContext) => {

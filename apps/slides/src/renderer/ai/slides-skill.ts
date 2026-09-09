@@ -1840,6 +1840,7 @@ export function createSlidesSkill(
   }
   return {
     id: 'slides',
+    repeatFinalResponseCorrection: true,
     systemPrompt: AGENT_SYSTEM_PROMPT,
     get tools() {
       return access.getSelectionScope?.()
