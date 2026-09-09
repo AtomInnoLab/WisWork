@@ -253,6 +253,8 @@ export interface DetachedMutationRequest {
   readonly identity: Readonly<DocumentToolIdentity>
   readonly call: Readonly<AgentToolCall>
   readonly catalogDigest: string
+  /** Aborted when the claim is cancelled, expires, or exceeds its execution bound. */
+  readonly signal: AbortSignal
 }
 export interface MutationAuthority {
   claimNext(
@@ -710,6 +712,7 @@ export function createDocumentToolSession(
         identity,
         call: detachedCall,
         catalogDigest: manifest.digest,
+        signal: controller.signal,
       })
       const mutation: PendingMutation = {
         callId: call.id,
@@ -735,16 +738,20 @@ export function createDocumentToolSession(
         () => finish(stable('tool_cancelled', 'Tool cancelled')),
         { once: true },
       )
-      mutation.timer = setTimeout(
-        () => finish(stable('mutation_expired', 'Proposal expired without applying changes')),
-        MAX_CONSENT_MS,
-      )
+      mutation.timer = setTimeout(() => {
+        finish(stable('mutation_expired', 'Proposal expired without applying changes'))
+        controller.abort()
+      }, MAX_CONSENT_MS)
       mutation.timer.unref()
       pendingMutations.set(call.id, mutation)
       mutationQueue.push(mutation)
       if (controller.signal.aborted) finish(stable('tool_cancelled', 'Tool cancelled'))
-      const suspension = registration.suspendMutation(promise)
-      if (!registration.ownsSuspension(suspension)) {
+      let suspension: ToolExecutionSuspension
+      try {
+        suspension = registration.suspendMutation(promise)
+        if (!registration.ownsSuspension(suspension))
+          throw new ToolRouterError('tool_authority_denied')
+      } catch {
         finish(stable('tool_authority_denied', 'Tool authority denied'))
         return stable('tool_authority_denied', 'Tool authority denied')
       }
@@ -813,10 +820,10 @@ export function createDocumentToolSession(
       if (!mutation) return undefined
       mutation.state = 'claimed'
       if (mutation.timer) clearTimeout(mutation.timer)
-      mutation.timer = setTimeout(
-        () => mutation.finish(stable('tool_timeout', 'Tool timed out')),
-        maxCallMs,
-      )
+      mutation.timer = setTimeout(() => {
+        mutation.finish(stable('tool_timeout', 'Tool timed out'))
+        mutation.controller.abort()
+      }, maxCallMs)
       mutation.timer.unref()
       const claim = Object.freeze(Object.create(null)) as MutationClaim
       mutationClaims.set(claim as object, {

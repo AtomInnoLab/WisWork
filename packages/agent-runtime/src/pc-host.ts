@@ -12,6 +12,7 @@ export const PC_HOST_CODEX_CHANNELS = Object.freeze({
   cancelProposal: 'codex:pc-host:cancel-proposal',
   event: 'codex:pc-host:event',
   toolCall: 'codex:pc-host:tool-call',
+  toolCancel: 'codex:pc-host:tool-cancel',
   proposal: 'codex:pc-host:proposal',
   telemetry: 'codex:pc-host:telemetry',
 })
@@ -31,6 +32,11 @@ export interface PcHostToolRequest {
   readonly documentId: string
   readonly generation: number
   readonly call: AgentToolCall
+}
+export interface PcHostToolCancel {
+  readonly documentId: string
+  readonly generation: number
+  readonly callId: string
 }
 
 export interface PcHostToolResult {
@@ -81,6 +87,7 @@ export interface PcHostCodexApi {
   telemetry(event: EnhancedTelemetryEvent): Promise<void>
   onEvent(listener: (event: EnhancedSessionEvent) => void): () => void
   onToolCall(listener: (request: PcHostToolRequest) => void): () => void
+  onToolCancel?(listener: (request: PcHostToolCancel) => void): () => void
   onProposal(listener: (request: PcHostProposalRequest) => void): () => void
 }
 
@@ -128,6 +135,8 @@ export function createPcHostCodexApi(ipc: PcHostIpcRenderer): PcHostCodexApi {
       listen(PC_HOST_CODEX_CHANNELS.event, listener),
     onToolCall: (listener: (request: PcHostToolRequest) => void) =>
       listen(PC_HOST_CODEX_CHANNELS.toolCall, listener),
+    onToolCancel: (listener: (request: PcHostToolCancel) => void) =>
+      listen(PC_HOST_CODEX_CHANNELS.toolCancel, listener),
     onProposal: (listener: (request: PcHostProposalRequest) => void) =>
       listen(PC_HOST_CODEX_CHANNELS.proposal, listener),
   }

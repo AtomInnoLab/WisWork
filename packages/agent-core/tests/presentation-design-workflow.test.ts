@@ -58,6 +58,7 @@ describe('presentation design workflow', () => {
     expect(buildPresentationDesignDocument('  Background: #0A0A0A  ')).toBe(
       '# DESIGN.md\n\nBackground: #0A0A0A',
     )
+    expect(() => buildPresentationDesignDocument('   ')).toThrow('empty_presentation_design')
   })
 
   it('extracts timeline snapshots from desktop prose and Office JSON', () => {
@@ -71,6 +72,7 @@ describe('presentation design workflow', () => {
         JSON.stringify({ status: 'planned', designMd: '# DESIGN.md\n\nAccent: blue' }),
       ),
     ).toBe('# DESIGN.md\n\nAccent: blue')
+    expect(extractPresentationDesignDocument('# DESIGN.md\n\n   ')).toBeUndefined()
   })
 
   it('normalizes one strict plan shared by every host', () => {

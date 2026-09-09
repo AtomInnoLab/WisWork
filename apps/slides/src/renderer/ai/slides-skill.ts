@@ -1,5 +1,4 @@
 import {
-  buildPresentationDesignDocument,
   extractPresentationDesignContract,
   parsePresentationDesignContract,
   parsePresentationDesignPlan,
@@ -917,6 +916,12 @@ const ALL_TOOLS: AgentToolDef[] = [
                 description:
                   'Content items. cards supports 1-8 items and reflows them automatically; timeline supports at most 5; cover and statement support at most 2.',
               },
+              evidence: {
+                type: 'array',
+                maxItems: 20,
+                items: { type: 'string' },
+                description: 'Evidence items copied from the authoritative DESIGN.md.',
+              },
               imageUrl: {
                 type: 'string',
                 description:
@@ -924,7 +929,7 @@ const ALL_TOOLS: AgentToolDef[] = [
               },
               imageAlt: { type: 'string', description: 'Short accessible description' },
             },
-            required: ['title', 'body'],
+            required: ['title', 'body', 'evidence'],
           },
         },
         phase: { type: 'string', enum: ['prototype', 'batch'] },
@@ -1635,6 +1640,35 @@ export function createSlidesSkill(
   // The HTML pipeline was already used in this conversation → later calls without an explicit mode default to append.
   // Safety net for when the AI ignores the "pass all pages at once" constraint: separate calls no longer overwrite each other (P0-1).
   const state: SkillState = {}
+  const mutationTools = new Set([
+    'set_element_text',
+    'set_element_style',
+    'set_element_transform',
+    'execute_layout_script',
+    'execute_slide_script',
+    'set_element_fill',
+    'set_element_stroke',
+    'insert_web_image',
+    'crop_image',
+    'set_picture_opacity',
+    'replace_image',
+    'build_deck',
+    'delete_slide',
+    'add_slide',
+    'add_text_box',
+    'add_shape',
+    'add_chart',
+    'add_smartart',
+    'add_table',
+    'edit_table_cell',
+    'edit_table_structure',
+    'edit_table_style',
+    'edit_chart',
+    'set_slide_background',
+    'set_speaker_notes',
+    'delete_element',
+    'ungroup_element',
+  ])
   const scopedTools = new Set([
     'screenshot_slide',
     'set_element_text',
@@ -1860,15 +1894,13 @@ export function createSlidesSkill(
               density: slide.density,
             })),
           })
-        } else if (!restored && state.designContract) {
+        } else if (!restored) {
           state.designContract = undefined
           state.plannedPages = undefined
           state.plannedPageCount = undefined
           state.prototypePages = undefined
           state.builtPageIndexes = undefined
           state.pendingReviewIndexes = undefined
-          state.designReplanRequired = true
-        } else if (!restored && /(?:^|\n)(?:Status|Revision):\s*/.test(designDocument)) {
           state.designReplanRequired = true
         }
       }
@@ -1893,11 +1925,35 @@ export function createSlidesSkill(
       return reviewSlidesFinalResponse(context)
     },
     ...(controller ? { presentation: { ...controller.hooks, batchScoped: true } } : {}),
-    executeTool: (call, signal) => executeTool(executionAccess, call, state, signal),
+    executeTool: async (call, signal) => {
+      const isMutation = mutationTools.has(call.name)
+      if (isMutation) state.activeMutations = (state.activeMutations ?? 0) + 1
+      try {
+        const result = await executeTool(executionAccess, call, state, signal)
+        if (isMutation && result.mutated) {
+          state.deckMutationRevision = (state.deckMutationRevision ?? 0) + 1
+          const slideIndex = Number(call.input.slideIndex)
+          if (Number.isSafeInteger(slideIndex) && slideIndex >= 0)
+            state.pendingReviewIndexes?.add(slideIndex)
+          else if (call.name === 'build_deck' && Array.isArray(call.input.page_indexes))
+            for (const index of call.input.page_indexes)
+              if (Number.isSafeInteger(index) && Number(index) >= 0)
+                state.pendingReviewIndexes?.add(Number(index))
+              else
+                for (const index of state.builtPageIndexes ?? [])
+                  state.pendingReviewIndexes?.add(index)
+        }
+        return result
+      } finally {
+        if (isMutation) state.activeMutations = Math.max(0, (state.activeMutations ?? 1) - 1)
+      }
+    },
   }
 }
 
 interface SkillState {
+  deckMutationRevision?: number
+  activeMutations?: number
   fallbackInvocationIds?: WeakMap<AgentToolCall, string>
   /** A web_search ran in this conversation — unlocks dataSource:'search' in the figure gate */
   webSearched?: boolean
@@ -1948,6 +2004,130 @@ function contractAsLegacyPlan(contract: PresentationDesignContract) {
     })),
     prototype_pages: contract.prototypePages.map((number) => number - 1),
   }
+}
+
+function contractFromLegacyPlan(
+  plan: ReturnType<typeof parsePresentationDesignPlan>,
+): PresentationDesignContract {
+  const assets = plan.pages.flatMap((page, pageIndex) =>
+    page.image_queries.map((query, queryIndex) => ({
+      id: `slide-${pageIndex + 1}-asset-${queryIndex + 1}`,
+      slideNumbers: [pageIndex + 1],
+      type: 'image',
+      role: 'substantive',
+      intent: query,
+      source: '',
+      crop: 'layout-dependent',
+      placement: page.layout,
+      status: 'needed' as const,
+    })),
+  )
+  return parsePresentationDesignContract({
+    schemaVersion: 1,
+    revision: 1,
+    status: 'draft',
+    prototypePages: plan.prototype_pages.map((index) => index + 1),
+    brief: {
+      topic: plan.core_hook,
+      audience: 'Audience inferred from the user request',
+      occasion: 'Presentation requested by the user',
+      desiredOutcome: plan.core_hook,
+      language: 'Match the user request',
+      pageCount: plan.pages.length,
+      aspectRatio: '16:9',
+      sourceConstraints: [],
+    },
+    narrative: {
+      coreHook: plan.core_hook,
+      opening: plan.pages[0]!.brief,
+      development: plan.pages.map((page) => page.brief).join(' → '),
+      tension: plan.core_hook,
+      resolution: plan.pages.at(-1)!.brief,
+      closingAction: plan.pages.at(-1)!.purpose,
+    },
+    visualSystem: {
+      style: plan.style,
+      colors: { primary: 'Defined by the ready style contract' },
+      typography: { hierarchy: 'Title, supporting text, and evidence' },
+      safeMargin: 'Keep all content inside the slide safe area',
+      grid: 'Consistent aligned layout grid',
+      imageTreatment: 'Use only validated imagery or the declared native fallback',
+      chartTreatment: 'Native editable charts with direct labels',
+      antiPatterns: ['No repetitive filler cards or placeholder content'],
+    },
+    slides: plan.pages.map((page, index) => ({
+      number: index + 1,
+      title: page.title,
+      role: page.purpose,
+      claim: page.brief,
+      content: [page.brief],
+      evidence: page.evidence,
+      visualRoute: page.visual,
+      layoutFamily: page.layout,
+      focalVisual: page.visual,
+      density: page.density,
+      assetIds: assets.filter((asset) => asset.slideNumbers.includes(index + 1)).map((a) => a.id),
+      acceptance: page.acceptance.map((criterion, acceptanceIndex) => ({
+        id: `A${index + 1}.${acceptanceIndex + 1}`,
+        criterion,
+      })),
+    })),
+    assets,
+    deckAcceptance: [{ id: 'D1', criterion: 'Every slide satisfies its page acceptance rules' }],
+  })
+}
+
+const normalizeContractBinding = (value: string): string =>
+  value
+    .normalize('NFKC')
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+    .replace(/[\u2010-\u2015\u2212]/g, '-')
+    .replace(/\u2026/g, '...')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const contractBindingListMatches = (value: unknown, expected: string[]): boolean =>
+  Array.isArray(value) &&
+  value.length === expected.length &&
+  value.every(
+    (item, index) =>
+      typeof item === 'string' &&
+      normalizeContractBinding(item) === normalizeContractBinding(expected[index]!),
+  )
+
+function unverifiedRemoteAssetUrls(
+  contract: PresentationDesignContract,
+  searchedImageUrls: Set<string> | undefined,
+): string[] {
+  return contract.assets.flatMap((asset) =>
+    asset.type === 'image' &&
+    asset.localReference &&
+    /^https:\/\//.test(asset.localReference) &&
+    !searchedImageUrls?.has(asset.localReference)
+      ? [asset.localReference]
+      : [],
+  )
+}
+
+function contractSlideImageUrls(
+  contract: PresentationDesignContract,
+  slideIndex: number,
+): string[] {
+  const assetIds = new Set(contract.slides[slideIndex]?.assetIds ?? [])
+  return [
+    ...new Set(
+      contract.assets
+        .filter(
+          (asset) =>
+            assetIds.has(asset.id) &&
+            asset.type === 'image' &&
+            (asset.status === 'ready' || asset.status === 'fallback_ready'),
+        )
+        .map((asset) => asset.localReference)
+        .filter((value): value is string => Boolean(value && /^https:\/\//.test(value))),
+    ),
+  ]
 }
 
 function contractReference(contract: PresentationDesignContract, slideIndex?: number): string {
@@ -2015,6 +2195,36 @@ const fail = (summary: string, output: string) => ({
   mutated: false,
   summary,
 })
+
+const SCREENSHOT_CAPTURE_TIMEOUT_MS = 10_000
+
+async function captureScreenshotBounded(
+  capture: () => Promise<AgentImage | null>,
+  signal?: AbortSignal,
+): Promise<AgentImage | null> {
+  signal?.throwIfAborted()
+  return await new Promise<AgentImage | null>((resolve, reject) => {
+    let settled = false
+    const finish = (action: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      action()
+    }
+    const onAbort = () =>
+      finish(() => reject(signal?.reason ?? new DOMException('Aborted', 'AbortError')))
+    const timer = setTimeout(() => finish(() => resolve(null)), SCREENSHOT_CAPTURE_TIMEOUT_MS)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    Promise.resolve()
+      .then(capture)
+      .then(
+        (image) => finish(() => resolve(image)),
+        () => finish(() => resolve(null)),
+      )
+    if (signal?.aborted) onAbort()
+  })
+}
 
 async function refreshAuthoritativeState(
   access: DeckAccess,
@@ -2249,12 +2459,34 @@ async function executeTool(
         return fail('Capture slide screenshot', `slideIndex out of range (0-${slides.length - 1})`)
       if (!access.captureSlideScreenshot)
         return fail('Capture slide screenshot', 'visual_capture_unavailable')
-      const image = await access.captureSlideScreenshot(idx)
-      if (!image) return fail('Capture slide screenshot', 'visual_capture_failed')
+      if ((state?.activeMutations ?? 0) > 0)
+        return fail('Capture slide screenshot', 'visual_capture_stale: retry after editing settles')
+      const captureRevision = state?.deckMutationRevision ?? 0
+      const image = await captureScreenshotBounded(
+        () => access.captureSlideScreenshot!(idx),
+        signal,
+      )
+      signal?.throwIfAborted()
+      if (
+        (state?.activeMutations ?? 0) > 0 ||
+        (state?.deckMutationRevision ?? 0) !== captureRevision
+      )
+        return fail('Capture slide screenshot', 'visual_capture_stale: retry after editing settles')
+      if (!image)
+        return fail(
+          'Capture slide screenshot',
+          'visual_capture_unavailable: slide rendering did not complete; retry screenshot_slide',
+        )
       if (state?.pendingReviewIndexes?.has(idx)) {
         if (!access.reviewPresentationScreenshot)
           return fail('Review slide screenshot', 'visual_review_unavailable')
         const passed = await access.reviewPresentationScreenshot(idx, image, signal)
+        signal?.throwIfAborted()
+        if (
+          (state.activeMutations ?? 0) > 0 ||
+          (state.deckMutationRevision ?? 0) !== captureRevision
+        )
+          return fail('Review slide screenshot', 'visual_review_stale: retry after editing settles')
         if (!passed)
           return fail(
             'Review slide screenshot',
@@ -3112,6 +3344,8 @@ async function executeTool(
       if (!query) return fail(t('aiFailImageSearch'), 'query must not be empty')
       const r = await window.slidesApi.imageSearch(query, Number(call.input.maxResults) || 8)
       signal?.throwIfAborted()
+      if (r.method === 'error')
+        return fail(t('aiFailImageSearch'), `image_search_${r.error ?? 'upstream'}_error`)
       if (state) {
         state.searchedImageUrls ??= new Set()
         for (const image of r.images) {
@@ -3303,6 +3537,12 @@ async function executeTool(
       try {
         if (call.input.contract !== undefined) {
           contract = parsePresentationDesignContract(call.input.contract)
+          const unverifiedUrls = unverifiedRemoteAssetUrls(contract, state?.searchedImageUrls)
+          if (unverifiedUrls.length)
+            return fail(
+              t('aiFailPlan'),
+              'DESIGN.md remote assets must come from image_search in this session before they can be ready',
+            )
           const readiness = validatePresentationDesignReadiness(contract)
           if (contract.status !== 'ready')
             return fail(
@@ -3317,6 +3557,7 @@ async function executeTool(
           plan = parsePresentationDesignPlan(contractAsLegacyPlan(contract))
         } else {
           plan = parsePresentationDesignPlan(call.input)
+          contract = contractFromLegacyPlan(plan)
         }
       } catch {
         return fail(
@@ -3328,7 +3569,7 @@ async function executeTool(
       if (state) {
         state.questionnaireAnsweredPendingPlan = false
         state.plannedPageCount = pages.length
-        state.awaitingBuildDeck = pages.length >= 2
+        state.awaitingBuildDeck = contract.status === 'ready' && pages.length >= 2
         state.lastStyleSkill = style
         state.lastTopic = coreHook
         state.plannedPages = pages
@@ -3339,9 +3580,7 @@ async function executeTool(
         state.designContract = contract
         state.designReplanRequired = false
       }
-      const designMd = contract
-        ? renderPresentationDesignContract(contract)
-        : buildPresentationDesignDocument(style)
+      const designMd = renderPresentationDesignContract(contract)
       await access.saveSidecar?.({
         topic: coreHook,
         styleSkill: style,
@@ -3363,14 +3602,14 @@ async function executeTool(
         return `Page ${i + 1} [${String(p.layout ?? '')}] ${String(p.title ?? '')} — ${String(p.brief ?? '').slice(0, 40)}${visual}${q}`
       })
       const summary = t('aiSumPlan', { count: pages.length, hook: coreHook })
-      if (contract)
+      if (contract.status === 'draft')
         return {
-          output: `${contractReference(contract)} · ready\n\n${designMd}\n\nNEXT REQUIRED ACTION: materialize prototype slides ${contract.prototypePages.join(', ')}. Every build and screenshot result will cite this revision, slide, and acceptance IDs.`,
+          output: `${contractReference(contract)} · draft\n\n${designMd}\n\n# Deck Plan\n${lines.join('\n')}\n\nNEXT REQUIRED ACTION: run image_search and validate the required assets, then submit the completed ready contract with plan_deck. Production remains blocked.`,
           mutated: false,
           summary,
         }
       return {
-        output: `Plan confirmed:\nCore Hook: ${coreHook}\n\n${buildPresentationDesignDocument(style)}\n\n# Deck Plan\n${lines.join('\n')}\nNEXT REQUIRED ACTION: run image_search for the planned visual pages, then call build_deck with phase:"prototype" and page_indexes:${JSON.stringify(plan.prototype_pages)}. Pass the full planned pages array so the host can bind production to this plan. Screenshot and inspect every prototype page before continuing with phase:"batch" calls of 2–3 remaining page indexes. Preserve layout diversity and pass theme plus {layout,kicker,title,body,imageUrl,imageAlt}. Aim for 3-5 visual pages in a typical 8-page deck; never invent image URLs.`,
+        output: `${contractReference(contract)} · ready\n\n${designMd}\n\n# Deck Plan\n${lines.join('\n')}\n\nNEXT REQUIRED ACTION: materialize prototype slides ${contract.prototypePages.join(', ')}. Every build and screenshot result will cite this revision, slide, and acceptance IDs.`,
         mutated: false,
         summary,
       }
@@ -3408,13 +3647,46 @@ async function executeTool(
           if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return true
           const page = raw as Record<string, unknown>
           return (
-            page.title !== plannedPages[index]!.title || page.layout !== plannedPages[index]!.layout
+            typeof page.title !== 'string' ||
+            typeof page.layout !== 'string' ||
+            normalizeContractBinding(page.title) !==
+              normalizeContractBinding(plannedPages[index]!.title) ||
+            normalizeContractBinding(page.layout) !==
+              normalizeContractBinding(plannedPages[index]!.layout)
           )
         })
       )
         return fail(
           t('aiFailPlan'),
           'build_deck title/layout values must match the active page plan',
+        )
+      if (
+        !state.designContract ||
+        rawPages.some((raw, index) => {
+          const page = raw as Record<string, unknown>
+          const slide = state.designContract!.slides[index]!
+          return (
+            !contractBindingListMatches(page.body, slide.content) ||
+            !contractBindingListMatches(page.evidence, slide.evidence)
+          )
+        })
+      )
+        return fail(
+          t('aiFailPlan'),
+          'build_deck body/evidence values must match the authoritative DESIGN.md contract',
+        )
+      if (
+        rawPages.some((raw, index) => {
+          const page = raw as Record<string, unknown>
+          const candidate = typeof page.imageUrl === 'string' ? page.imageUrl.trim() : ''
+          const actual = candidate || undefined
+          const allowed = contractSlideImageUrls(state.designContract!, index)
+          return allowed.length ? !actual || !allowed.includes(actual) : actual !== undefined
+        })
+      )
+        return fail(
+          t('aiFailPlan'),
+          'Each build_deck imageUrl must exactly match a ready asset referenced by that slide contract.assetIds',
         )
       if (state.pendingReviewIndexes?.size)
         return fail(
@@ -3485,8 +3757,9 @@ async function executeTool(
       for (const rawPage of rawPages) {
         if (!rawPage || typeof rawPage !== 'object' || Array.isArray(rawPage))
           return fail(t('aiFailPlan'), 'Each page requires title and body')
-        const title = (rawPage as Record<string, unknown>).title
-        const body = (rawPage as Record<string, unknown>).body
+        const title = plannedPages[pages.length]!.title
+        const contractSlide = state.designContract.slides[pages.length]!
+        const body = [...contractSlide.content, ...contractSlide.evidence]
         if (
           typeof title !== 'string' ||
           title.trim().length < 1 ||
@@ -3498,7 +3771,7 @@ async function executeTool(
         )
           return fail(t('aiFailPlan'), 'Page title or body is invalid')
         const record = rawPage as Record<string, unknown>
-        const layout = record.layout
+        const layout = plannedPages[pages.length]!.layout
         if (designedInput && layout === undefined)
           return fail(t('aiFailPlan'), 'Every designed page requires an explicit layout')
         if (

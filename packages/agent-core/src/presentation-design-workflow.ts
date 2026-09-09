@@ -2,9 +2,9 @@ export const PRESENTATION_DESIGN_WORKFLOW_PROMPT = `
 ## Shared presentation design workflow
 For a whole-deck creation or redesign, work as a presentation director, not a text filler:
 1. Brief: establish audience, occasion, desired decision, page count, source constraints, and one narrative conclusion. Ask only for missing choices that materially change the result.
-2. DESIGN.md contract: before editing, state a user-editable design contract covering concrete color tokens, typography hierarchy, safe margins/grid, image treatment, density limits, layout families, and composition rules. Treat it as binding for every slide.
+2. DESIGN.md contract: before editing, draft a user-editable design contract covering concrete color tokens, typography hierarchy, safe margins/grid, image treatment, density limits, layout families, and composition rules. Treat it as binding for every slide. Do not mark the final contract ready until required fact research, image search, and asset validation are complete.
 3. Deck plan: give every slide one conclusion-led headline, a narrative role, one focal visual, supporting evidence, a layout family, asset needs/provenance, density, and slide-specific acceptance criteria. Do not use the same layout family on adjacent slides unless continuity requires it.
-4. Asset plan: search real people, products, places, brands, and current facts; generate only abstract/custom illustration when generation exists. Use native editable charts for data. Never invent precise data or image URLs.
+4. Asset plan: search real people, products, places, brands, and current facts; validate selected image sources before finalizing DESIGN.md as ready. Generate only abstract/custom illustration when generation exists. Use native editable charts for data. Never invent precise data or image URLs.
 5. Prototype gate: first create or identify the cover, one representative content page, and one complex visual page. Screenshot and review those pages before continuing the remaining production batches. When fewer than three slides are requested, review every slide.
 6. Production loop: complete the remaining work in batches of 2–3 slides. After each batch, inspect screenshots plus geometry, repair concrete defects, and re-screenshot changed slides before continuing.
 7. Quality bar: each slide needs one clear conclusion and one focal visual; readable hierarchy, deliberate whitespace, aligned geometry, sufficient contrast, relevant imagery, and no accidental overflow, overlap, distortion, placeholder content, or repetitive card grids. Review design-system consistency and rhythm across adjacent slides, then run final whole-deck verification.
@@ -12,14 +12,20 @@ Keep all edits native, editable, reversible, and within the host's permission mo
 `.trim()
 
 export function buildPresentationDesignDocument(style: string): string {
-  return `# DESIGN.md\n\n${style.trim()}`
+  const body = style.trim()
+  if (!body) throw new Error('empty_presentation_design')
+  return `# DESIGN.md\n\n${body}`
 }
+
+const hasPresentationDesignBody = (value: string): boolean =>
+  Boolean(value.replace(/^\s*#\s*DESIGN\.md\s*/i, '').trim())
 
 /** Extract a design snapshot from either desktop prose or Office JSON tool output. */
 export function extractPresentationDesignDocument(output: string): string | undefined {
   try {
     const value = JSON.parse(output) as { designMd?: unknown }
-    if (typeof value.designMd === 'string' && value.designMd.trim()) return value.designMd.trim()
+    if (typeof value.designMd === 'string' && hasPresentationDesignBody(value.designMd))
+      return value.designMd.trim()
   } catch {
     // Desktop plan output is intentionally readable prose rather than JSON.
   }
@@ -27,7 +33,8 @@ export function extractPresentationDesignDocument(output: string): string | unde
   if (start < 0) return undefined
   const rest = output.slice(start)
   const end = rest.search(/\n# [^\n]+\n/)
-  return (end < 0 ? rest : rest.slice(0, end)).trim() || undefined
+  const designDocument = (end < 0 ? rest : rest.slice(0, end)).trim()
+  return hasPresentationDesignBody(designDocument) ? designDocument : undefined
 }
 
 export interface PresentationDesignPagePlan {

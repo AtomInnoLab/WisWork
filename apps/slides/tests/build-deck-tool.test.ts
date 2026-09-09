@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { RenderSlide } from '@wiswork/pptx-render'
-import { createSlidesSkill as createRawSlidesSkill } from '../src/renderer/ai/slides-skill'
+import {
+  createSlidesSkill as createRawSlidesSkill,
+  type DeckAccess,
+} from '../src/renderer/ai/slides-skill'
 import { executePreparedGeometryFamilyTransaction } from '../src/renderer/ai/presentation-geometry-transactions'
 
 const blank = (): RenderSlide => ({
@@ -11,12 +14,49 @@ const blank = (): RenderSlide => ({
   nodes: [],
 })
 
+describe('image_search truth', () => {
+  it('reports provider failure as an error while preserving confirmed empty success', async () => {
+    const imageSearch = vi
+      .fn()
+      .mockResolvedValueOnce({ images: [], method: 'error', error: 'auth' })
+      .mockResolvedValueOnce({ images: [], method: 'serpapi' })
+    ;(globalThis as unknown as { window: Record<string, unknown> }).window = {
+      slidesApi: { imageSearch },
+    }
+    const skill = createRawSlidesSkill({
+      getSlides: () => [blank()],
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => undefined,
+      applyDeck: () => undefined,
+      fitWidthPx: 1280,
+    })
+
+    const failed = await skill.executeTool({
+      id: 'failed-search',
+      name: 'image_search',
+      input: { query: 'team' },
+    })
+    const empty = await skill.executeTool({
+      id: 'empty-search',
+      name: 'image_search',
+      input: { query: 'nothing' },
+    })
+
+    expect(failed).toMatchObject({ isError: true, mutated: false })
+    expect(failed.output).toContain('image_search_auth_error')
+    expect(empty).toMatchObject({ output: '(no images)', mutated: false })
+    expect(empty.isError).not.toBe(true)
+  })
+})
+
 /** Keep builder-focused legacy cases on the production plan/batch contract. */
 function createSlidesSkill(...args: Parameters<typeof createRawSlidesSkill>) {
   const skill = createRawSlidesSkill(...args)
   const execute = skill.executeTool.bind(skill)
   let planned = false
   let plannedLayouts: string[] = []
+  let plannedBodies: string[][] = []
   const fallbackLayouts = ['cover', 'cards', 'statement']
   const normalizePlanPages = (pages: unknown[]) =>
     pages.map((raw, index) => {
@@ -41,15 +81,90 @@ function createSlidesSkill(...args: Parameters<typeof createRawSlidesSkill>) {
     if (call.name === 'plan_deck') {
       const input = call.input as Record<string, unknown>
       const pages = Array.isArray(input.pages) ? input.pages : []
+      const normalized = normalizePlanPages(pages)
+      const imageAssets = pages.flatMap((raw, index) => {
+        const imageUrl = (raw as Record<string, unknown>).imageUrl
+        return typeof imageUrl === 'string' && imageUrl.trim()
+          ? [
+              {
+                id: `image-${index + 1}`,
+                slideNumbers: [index + 1],
+                type: 'image',
+                role: 'substantive',
+                intent: 'Builder test image',
+                source: imageUrl.trim(),
+                crop: 'layout crop',
+                placement: 'image panel',
+                status: 'ready',
+                localReference: imageUrl.trim(),
+              },
+            ]
+          : []
+      })
+      plannedLayouts = normalized.map((page) => String(page.layout))
+      plannedBodies = pages.map((raw, index) => {
+        const body = (raw as Record<string, unknown>).body
+        return Array.isArray(body) ? body.map(String) : [normalized[index]!.brief]
+      })
       call = {
         ...call,
         input: {
-          ...input,
-          pages: normalizePlanPages(pages),
-          prototype_pages: input.prototype_pages ?? pages.map((_, index) => index).slice(0, 3),
+          contract: {
+            schemaVersion: 1,
+            revision: 1,
+            status: 'ready',
+            prototypePages: (
+              (input.prototype_pages ?? pages.map((_, index) => index).slice(0, 3)) as number[]
+            ).map((index) => index + 1),
+            brief: {
+              topic: 'Builder test',
+              audience: 'Test audience',
+              occasion: 'Test',
+              desiredOutcome: 'Verify builder',
+              language: 'English',
+              pageCount: pages.length,
+              aspectRatio: '16:9',
+              sourceConstraints: [],
+            },
+            narrative: {
+              coreHook: 'Builder test',
+              opening: 'Open',
+              development: 'Develop',
+              tension: 'Tension',
+              resolution: 'Resolve',
+              closingAction: 'Close',
+            },
+            visualSystem: {
+              style: 'Test style',
+              colors: { primary: '#000000' },
+              typography: { body: '18pt' },
+              safeMargin: '64px',
+              grid: '12 columns',
+              imageTreatment: 'Validated images',
+              chartTreatment: 'Direct labels',
+              antiPatterns: ['No placeholders'],
+            },
+            slides: normalized.map((page, index) => ({
+              number: index + 1,
+              title: page.title,
+              role: page.purpose,
+              claim: page.brief,
+              content: plannedBodies[index],
+              evidence: [],
+              visualRoute: page.visual,
+              layoutFamily: page.layout,
+              focalVisual: page.visual,
+              density: page.density,
+              assetIds: imageAssets
+                .filter((asset) => asset.slideNumbers.includes(index + 1))
+                .map((asset) => asset.id),
+              acceptance: [{ id: `A${index + 1}.1`, criterion: 'Clear hierarchy' }],
+            })),
+            assets: imageAssets,
+            deckAcceptance: [{ id: 'D1', criterion: 'All slides pass' }],
+          },
         },
       }
-      plannedLayouts = normalizePlanPages(pages).map((page) => String(page.layout))
       planned = true
     }
     if (call.name === 'build_deck') {
@@ -66,15 +181,19 @@ function createSlidesSkill(...args: Parameters<typeof createRawSlidesSkill>) {
         ...call,
         input: {
           ...input,
-          pages: input.theme
-            ? pages
-            : pages.map((raw, index) => ({
-                ...(raw as Record<string, unknown>),
-                layout:
-                  (raw as Record<string, unknown>).layout ??
-                  plannedLayouts[index] ??
-                  fallbackLayouts[index % fallbackLayouts.length],
-              })),
+          pages: pages.map((raw, index) => ({
+            ...(raw as Record<string, unknown>),
+            body: plannedBodies[index],
+            evidence: [],
+            ...(!input.theme
+              ? {
+                  layout:
+                    (raw as Record<string, unknown>).layout ??
+                    plannedLayouts[index] ??
+                    fallbackLayouts[index % fallbackLayouts.length],
+                }
+              : {}),
+          })),
           phase: input.phase ?? 'prototype',
           page_indexes: input.page_indexes ?? pages.map((_, index) => index).slice(0, 3),
         },
@@ -191,12 +310,12 @@ async function plannedImageDeck(
       imageAlt: 'Hero',
     },
   ]
+  await skill.executeTool({ id: 'search', name: 'image_search', input: { query: 'team' } })
   await skill.executeTool({
     id: 'plan',
     name: 'plan_deck',
     input: { core_hook: 'Hook', style: 'Dark', pages },
   })
-  await skill.executeTool({ id: 'search', name: 'image_search', input: { query: 'team' } })
   return {
     skill,
     pages,
@@ -816,6 +935,10 @@ describe('build_deck', () => {
         }),
       },
     }
+    const reviewPresentationScreenshot = vi
+      .fn<NonNullable<DeckAccess['reviewPresentationScreenshot']>>()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValue(true)
     const skill = createSlidesSkill({
       getSlides: () => slides,
       getCurrent: () => 0,
@@ -825,13 +948,14 @@ describe('build_deck', () => {
         slides = next
       },
       captureSlideScreenshot: vi.fn(async () => ({ base64: 'AA==', mime: 'image/png' })),
-      reviewPresentationScreenshot: vi.fn(async () => false),
+      reviewPresentationScreenshot,
       executePresentationOperation: vi.fn(async (request) => ({
         receipt: {
           status: 'applied' as const,
           transactionId: request.transactionId,
           resultingDeckRevision: `sha256:${'a'.repeat(64)}`,
-          operationCount: request.operations.length,
+          operationCount:
+            'operations' in request ? request.operations.length : request.backgrounds.length,
         },
         authoritativeState: 'fresh' as const,
       })),
@@ -860,15 +984,66 @@ describe('build_deck', () => {
     })
     const repair = await skill.executeTool({
       id: 'repair',
-      name: 'set_element_text',
-      input: {
-        slideIndex: 0,
-        sourceId: 'deck-title-0',
-        paragraphs: [{ runs: [{ text: 'A shorter title' }] }],
-      },
+      name: 'set_slide_background',
+      input: { slideIndex: 0, color: '#F8FAFC' },
     })
     const prematureBatch = await skill.executeTool({
       id: 'batch',
+      name: 'build_deck',
+      input: { pages, phase: 'batch', page_indexes: [3] },
+    })
+    const rereview = await skill.executeTool({
+      id: 'rereview',
+      name: 'screenshot_slide',
+      input: { slideIndex: 0 },
+    })
+    for (const slideIndex of [1, 2])
+      await skill.executeTool({
+        id: `review-${slideIndex}`,
+        name: 'screenshot_slide',
+        input: { slideIndex },
+      })
+    const secondRepair = await skill.executeTool({
+      id: 'second-repair',
+      name: 'set_slide_background',
+      input: { slideIndex: 0, color: '#FFFFFF' },
+    })
+    expect(secondRepair.mutated, secondRepair.output).toBe(true)
+    const blockedBeforeDeferredReview = await skill.executeTool({
+      id: 'blocked-before-deferred-review',
+      name: 'build_deck',
+      input: { pages, phase: 'batch', page_indexes: [3] },
+    })
+    expect(blockedBeforeDeferredReview.output).toContain('Screenshot and inspect pages 1')
+    let settleLateReview!: (passed: boolean) => void
+    reviewPresentationScreenshot.mockImplementationOnce(
+      async () => await new Promise<boolean>((resolve) => (settleLateReview = resolve)),
+    )
+    const staleReview = skill.executeTool({
+      id: 'stale-review',
+      name: 'screenshot_slide',
+      input: { slideIndex: 0 },
+    })
+    await vi.waitFor(() => expect(reviewPresentationScreenshot).toHaveBeenCalledTimes(5))
+    const concurrentRepair = await skill.executeTool({
+      id: 'concurrent-repair',
+      name: 'set_slide_background',
+      input: { slideIndex: 0, color: '#F1F5F9' },
+    })
+    settleLateReview(true)
+    const staleResult = await staleReview
+    const blockedAfterRepair = await skill.executeTool({
+      id: 'blocked-after-repair',
+      name: 'build_deck',
+      input: { pages, phase: 'batch', page_indexes: [3] },
+    })
+    const freshReview = await skill.executeTool({
+      id: 'fresh-review',
+      name: 'screenshot_slide',
+      input: { slideIndex: 0 },
+    })
+    const admittedBatch = await skill.executeTool({
+      id: 'admitted-batch',
       name: 'build_deck',
       input: { pages, phase: 'batch', page_indexes: [3] },
     })
@@ -876,5 +1051,15 @@ describe('build_deck', () => {
     expect(review.output).toContain('visual_review_failed')
     expect(repair.output).not.toContain('Call build_deck once')
     expect(prematureBatch.output).toContain('Screenshot and inspect pages 1, 2, 3')
+    expect(rereview).toMatchObject({ mutated: false })
+    expect(rereview.isError).toBeFalsy()
+    expect(concurrentRepair).toMatchObject({ mutated: true })
+    expect(staleResult.output).toContain('visual_review_stale')
+    expect(blockedAfterRepair.output).toContain('Screenshot and inspect pages 1')
+    expect(freshReview.isError).toBeFalsy()
+    expect(reviewPresentationScreenshot.mock.calls.map(([index]) => index)).toEqual([
+      0, 0, 1, 2, 0, 0,
+    ])
+    expect(admittedBatch).toMatchObject({ mutated: true })
   })
 })

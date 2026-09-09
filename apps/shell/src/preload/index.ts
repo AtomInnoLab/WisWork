@@ -172,6 +172,20 @@ const homeApi: HomeApi = {
     if (channel !== 'stable' && channel !== 'beta') throw new Error('Invalid update channel.')
     await ipcRenderer.invoke(HOME_CHANNELS.setUpdateChannel, channel)
   },
+  async saveImageSearchKey(key) {
+    if (typeof key !== 'string' || !key.trim() || key.length > 4096)
+      throw new Error('Invalid image search key.')
+    return ipcRenderer.invoke(HOME_CHANNELS.saveImageSearchKey, key)
+  },
+  async clearImageSearchKey() {
+    return ipcRenderer.invoke(HOME_CHANNELS.clearImageSearchKey)
+  },
+  async imageSearchKeyStatus() {
+    return ipcRenderer.invoke(HOME_CHANNELS.imageSearchKeyStatus)
+  },
+  async testImageSearchKey() {
+    return ipcRenderer.invoke(HOME_CHANNELS.testImageSearchKey)
+  },
   async accountStatus() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.accountStatus)
     return (result ?? { loggedIn: false }) as AccountStatus

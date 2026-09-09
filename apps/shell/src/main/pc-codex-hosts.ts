@@ -31,6 +31,7 @@ type Pending = {
   readonly resolve: (execution: ToolExecution) => void
   readonly reject: () => void
   readonly claim?: object
+  readonly removeAbort?: () => void
 }
 type PendingProposal = {
   readonly proposalId: string
@@ -287,16 +288,31 @@ export function registerPcCodexHosts(options: {
     record: HostRecord,
     call: AgentToolCall,
     claim?: object,
+    signal?: AbortSignal,
   ): Promise<ToolExecution> =>
     new Promise((resolve, reject) => {
       if (record.closed || record.pending.has(call.id))
         return reject(new Error('tool_session_closed'))
+      const onAbort = () => {
+        const pending = record.pending.get(call.id)
+        if (!pending) return
+        record.pending.delete(call.id)
+        send(record, PC_HOST_CODEX_CHANNELS.toolCancel, {
+          documentId: record.documentId,
+          generation: record.generation,
+          callId: call.id,
+        })
+        pending.reject()
+      }
       record.pending.set(call.id, {
         call,
         resolve,
         reject: () => reject(new Error('tool_execution_failed')),
         claim,
+        ...(signal ? { removeAbort: () => signal.removeEventListener('abort', onAbort) } : {}),
       })
+      signal?.addEventListener('abort', onAbort, { once: true })
+      if (signal?.aborted) return onAbort()
       send(record, PC_HOST_CODEX_CHANNELS.event, { type: 'tool-start', call })
       send(record, PC_HOST_CODEX_CHANNELS.toolCall, {
         documentId: record.documentId,
@@ -552,6 +568,7 @@ export function registerPcCodexHosts(options: {
     if (result.snapshotBefore !== undefined && !pending.claim)
       throw new Error('enhanced_untrusted_request')
     record.pending.delete(result.callId)
+    pending.removeAbort?.()
     send(record, PC_HOST_CODEX_CHANNELS.event, {
       type: 'tool-executed',
       event: {
@@ -618,10 +635,11 @@ export function registerPcCodexHosts(options: {
           record.session.mutationAuthority.reject(claimed.claim, 'mutation_binding_mismatch')
         throw new Error('enhanced_untrusted_request')
       }
-      return dispatch(record, claimed.request.call, claimed.claim).then(
+      return dispatch(record, claimed.request.call, claimed.claim, claimed.request.signal).then(
         () => undefined,
         () => {
-          record.session.mutationAuthority.reject(claimed.claim, 'tool_execution_failed')
+          if (!claimed.request.signal.aborted)
+            record.session.mutationAuthority.reject(claimed.claim, 'tool_execution_failed')
         },
       )
     },

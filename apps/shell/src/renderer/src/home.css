@@ -770,6 +770,39 @@ body.vib .home {
   line-height: 1.4;
 }
 
+.image-search-settings {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.image-search-settings-title {
+  display: flex;
+  justify-content: space-between;
+}
+
+.image-search-settings input {
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.image-search-settings-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+}
+
+.image-search-settings p {
+  margin: 0;
+}
+
 /* language row in the account menu (hover opens the flyout) */
 .account-menu-item.lang-row {
   display: flex;

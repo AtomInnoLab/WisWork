@@ -59,4 +59,47 @@ describe('Slides main-agent screenshot tool', () => {
     expect(result.isError).toBe(true)
     expect(deck.captureSlideScreenshot).not.toHaveBeenCalled()
   })
+
+  it('bounds an unavailable capture and reports a retryable error', async () => {
+    vi.useFakeTimers()
+    const deck = access()
+    deck.captureSlideScreenshot = vi.fn(async () => await new Promise<never>(() => undefined))
+    try {
+      const pending = createSlidesSkill(deck).executeTool({
+        id: 'shot-timeout',
+        name: 'screenshot_slide',
+        input: { slideIndex: 0 },
+      })
+      await vi.advanceTimersByTimeAsync(15_000)
+      await expect(pending).resolves.toMatchObject({
+        isError: true,
+        mutated: false,
+      })
+      await expect(pending).resolves.toHaveProperty(
+        'output',
+        expect.stringContaining('visual_capture_unavailable'),
+      )
+      await expect(pending).resolves.toHaveProperty('output', expect.stringContaining('retry'))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('normalizes a rejected capture as retryable instead of throwing', async () => {
+    const deck = access()
+    deck.captureSlideScreenshot = vi.fn(async () => {
+      throw new Error('renderer detached')
+    })
+    await expect(
+      createSlidesSkill(deck).executeTool({
+        id: 'shot-rejected',
+        name: 'screenshot_slide',
+        input: { slideIndex: 0 },
+      }),
+    ).resolves.toMatchObject({
+      isError: true,
+      mutated: false,
+      output: expect.stringContaining('visual_capture_unavailable'),
+    })
+  })
 })

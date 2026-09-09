@@ -170,7 +170,7 @@ describe('Slides capability truth', () => {
       input: { sourceIndex: 0 },
     })
     expect(result).toMatchObject({ isError: true, mutated: false })
-    expect(result.output).toContain('build_deck')
+    expect(result.output).toContain('ready structured contract with plan_deck')
   })
 
   it.each([

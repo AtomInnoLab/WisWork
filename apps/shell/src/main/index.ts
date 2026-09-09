@@ -38,6 +38,7 @@ import {
 } from '@wiswork/auth'
 import { createOfficeBridge, type OfficeBridge } from '@wiswork/office-bridge'
 import { EnhancedModeComponentManager } from '@wiswork/codex-bridge'
+import { configureImageSearch, imageSearch } from '@wiswork/ai-search'
 import type { MessagesRequest } from '@wiswork/codex-bridge'
 import { WISWORK_MESSAGES_URL, WISWORK_REQUEST_LOCATION } from '@wiswork/ai-provider'
 import { createI18n, isLang, normalizeLang, setUiLang, type Lang } from '@wiswork/i18n'
@@ -173,6 +174,7 @@ import { registerPcCodexHosts } from './pc-codex-hosts'
 import { createProductionCodexBootstrap } from './codex-engine'
 import { createOfficeCodexProxy } from './office-codex-proxy'
 import { createShellEnhancedPolicyAuthority } from './enhanced-policy-authority'
+import { createImageSearchSecretStore } from './image-search-secret-store'
 import { migrateLegacyUserData } from './user-data-migration'
 import { createAuthDeepLinkQueue } from './auth-deep-link-queue'
 import { createBeforeQuitBarrier } from './before-quit-barrier'
@@ -384,6 +386,11 @@ configureMarkdownRuntime({
 // same file when they pick up i18n later. WISWORK_LANG overrides for tests.
 
 const APP_SETTINGS_PATH = () => join(app.getPath('userData'), 'app-settings.json')
+const imageSearchSecrets = () =>
+  createImageSearchSecretStore({
+    path: join(app.getPath('userData'), 'image-search-key.enc'),
+    safeStorage,
+  })
 
 let uiLang: Lang | null = null
 
@@ -2092,6 +2099,38 @@ function registerHomeIpc(): void {
     if (!iterationIdentity) applyUpdateChannel(channel)
   })
 
+  const assertImageSearchSettingsIpc = (event: Electron.IpcMainInvokeEvent) => {
+    if (!shellWindow || event.sender !== shellWindow.webContents)
+      throw new Error('Untrusted IPC sender.')
+  }
+  ipcMain.handle(HOME_CHANNELS.saveImageSearchKey, (event, key: unknown) => {
+    assertImageSearchSettingsIpc(event)
+    if (typeof key !== 'string') throw new Error('invalid_image_search_key')
+    imageSearchSecrets().save(key)
+    return imageSearchSecrets().status()
+  })
+  ipcMain.handle(HOME_CHANNELS.clearImageSearchKey, (event, ...args: unknown[]) => {
+    assertImageSearchSettingsIpc(event)
+    if (args.length) throw new Error('Invalid image search settings IPC payload.')
+    imageSearchSecrets().clear()
+    return imageSearchSecrets().status()
+  })
+  ipcMain.handle(HOME_CHANNELS.imageSearchKeyStatus, (event, ...args: unknown[]) => {
+    assertImageSearchSettingsIpc(event)
+    if (args.length) throw new Error('Invalid image search settings IPC payload.')
+    return imageSearchSecrets().status()
+  })
+  ipcMain.handle(HOME_CHANNELS.testImageSearchKey, async (event, ...args: unknown[]) => {
+    assertImageSearchSettingsIpc(event)
+    if (args.length) throw new Error('Invalid image search settings IPC payload.')
+    try {
+      const result = await imageSearch('WisWork presentation', 1, { fallback: false })
+      return { ok: true, resultCount: result.images.length }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'image_search_error' }
+    }
+  })
+
   ipcMain.handle(
     HOME_CHANNELS.onboardingSeen,
     (): boolean => readAppSettings(APP_SETTINGS_PATH()).onboardingSeen === true,
@@ -2598,6 +2637,7 @@ app.whenReady().then(async () => {
   // auth/session/settings consumers and before any BrowserWindow is created.
   if (app.isPackaged && !iterationIdentity)
     migrateLegacyUserData(app.getPath('appData'), app.getPath('userData'))
+  configureImageSearch({ serpApiKey: () => imageSearchSecrets().load() })
   const themeController = createThemeController({
     settingsPath: APP_SETTINGS_PATH(),
     nativeTheme,

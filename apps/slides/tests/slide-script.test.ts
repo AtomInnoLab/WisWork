@@ -706,6 +706,22 @@ describe('execute_slide_script tool', () => {
     expect((globalThis as any).window.slidesApi.editText).not.toHaveBeenCalled()
   })
 
+  it('malformed script returns an actionable syntax error without opening a transaction', async () => {
+    const deckAccess = access()
+    const result = await createSlidesSkill(deckAccess).executeTool({
+      id: 'malformed-script',
+      name: 'execute_slide_script',
+      input: { slideIndex: 0, code: `setText('t1', 'unterminated);` },
+    } as any)
+
+    expect(result).toMatchObject({ isError: true, mutated: false })
+    expect(result.output).toContain('Script execution error')
+    expect(result.output).toContain('fix the script and retry')
+    expect(deckAccess.executePresentationOperation).not.toHaveBeenCalled()
+    expect((globalThis as any).window.slidesApi.beginHistoryBatch).not.toHaveBeenCalled()
+    expect((globalThis as any).window.slidesApi.editText).not.toHaveBeenCalled()
+  })
+
   it('group child: geometry and text share one durable canonical transaction', async () => {
     slide = slideOf([
       groupNode('g1', box(200, 100, 400, 300), [textNode('c1', box(10, 20, 50, 30), 'Member')]),

@@ -93,7 +93,8 @@ describe('unsupported cloud features', () => {
           paragraphs: [{ text }],
         },
       } as AgentToolCall)
-      expect(addition.isError).toBeUndefined()
+      expect(addition).toMatchObject({ isError: true, mutated: false })
+      expect(addition.output).toContain('ready structured contract with plan_deck')
     }
     const contexts = [skill.buildContext?.() ?? '', skill.buildContext?.() ?? '']
     for (const context of contexts) {
