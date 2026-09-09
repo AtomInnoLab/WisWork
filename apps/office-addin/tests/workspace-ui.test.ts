@@ -13,6 +13,7 @@ import {
   createOfficeWorkspaceUi,
   focusWorkspacePanel,
   isTimelineNearBottom,
+  presentationDesignLifecycle,
   type OfficeWorkspaceUi,
   type WorkspacePanelName,
 } from '../src/App.js'
@@ -466,6 +467,45 @@ describe('Office Agent workspace UI', () => {
     )
     expect(html).toContain('先整理页面结构。')
     expect(html).not.toContain('继续处理中')
+  })
+
+  it.each([
+    ['draft', 1, 'DESIGN.md · 已创建'],
+    ['ready', 1, 'DESIGN.md · 已锁定'],
+    ['draft', 2, 'DESIGN.md · 已修订'],
+    ['verified', 2, 'DESIGN.md · 已验证'],
+  ])('renders the %s revision lifecycle in the timeline', (status, revision, label) => {
+    const output = JSON.stringify({
+      status,
+      revision,
+      designMd: `# DESIGN.md\n\nStatus: ${status}\nRevision: ${revision}`,
+    })
+    const html = workspaceMarkup(
+      {
+        timeline: Object.freeze([
+          Object.freeze({ id: 'u1', kind: 'user' as const, text: '制作 PPT' }),
+          Object.freeze({
+            id: 't1',
+            kind: 'tool' as const,
+            callId: 'tool-1',
+            name: 'plan_deck',
+            summary: '规划演示文稿完成',
+            state: 'complete' as const,
+            output,
+          }),
+        ]),
+      },
+      undefined,
+      'powerpoint',
+    )
+    expect(html).toContain(label)
+  })
+
+  it('opens only draft and ready design lifecycle states as editable', () => {
+    expect(presentationDesignLifecycle('{"status":"draft","revision":2}')?.editable).toBe(true)
+    expect(presentationDesignLifecycle('{"status":"ready","revision":2}')?.editable).toBe(true)
+    expect(presentationDesignLifecycle('{"status":"producing","revision":2}')?.editable).toBe(false)
+    expect(presentationDesignLifecycle('{"status":"verified","revision":2}')?.editable).toBe(false)
   })
 
   it('exposes bounded attachment and skill management panels without permanent vertical chrome', () => {

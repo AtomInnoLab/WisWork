@@ -68,6 +68,60 @@ function adapter(overrides: Partial<PowerPointAdapter> = {}): PowerPointAdapter 
 
 const call = (name: string, input: Record<string, unknown> = {}) => ({ id: 'call-1', name, input })
 
+const modernContract = (overrides: Record<string, unknown> = {}) => ({
+  schemaVersion: 1,
+  revision: 2,
+  status: 'ready',
+  prototypePages: [1],
+  brief: {
+    topic: 'AI onboarding',
+    audience: 'New hires',
+    occasion: 'Orientation',
+    desiredOutcome: 'Adopt the workflow',
+    language: 'English',
+    pageCount: 1,
+    aspectRatio: '16:9',
+    sourceConstraints: [],
+  },
+  narrative: {
+    coreHook: 'Reach useful output in seven days',
+    opening: 'Start with the goal',
+    development: 'Show the workflow',
+    tension: 'Avoid common failure modes',
+    resolution: 'Use a guided first week',
+    closingAction: 'Start today',
+  },
+  visualSystem: {
+    style: 'Editorial blue system',
+    colors: { accent: '#2367E8' },
+    typography: { title: 'Aptos Display 32pt' },
+    safeMargin: '48pt',
+    grid: '12 columns',
+    imageTreatment: 'Natural documentary photography',
+    chartTreatment: 'Direct labels',
+    antiPatterns: ['repetitive cards'],
+  },
+  slides: [
+    {
+      number: 1,
+      title: 'First useful result',
+      role: 'Open',
+      claim: 'New hires can contribute in seven days',
+      content: ['A guided sequence'],
+      evidence: [],
+      visualRoute: 'Hero statement',
+      layoutFamily: 'cover',
+      focalVisual: 'One strong headline',
+      density: 'low',
+      assetIds: [],
+      acceptance: [{ id: 'A1.1', criterion: 'Headline is dominant' }],
+    },
+  ],
+  assets: [],
+  deckAcceptance: [{ id: 'D1', criterion: 'The story is coherent' }],
+  ...overrides,
+})
+
 describe('PowerPoint compatibility skill', () => {
   it('shares the design prototype and batch verification workflow with desktop Slides', () => {
     const skill = createPowerPointSkill({
@@ -148,6 +202,260 @@ describe('PowerPoint compatibility skill', () => {
       }),
     )
     expect(result.output).toContain('# DESIGN.md')
+  })
+
+  it('accepts a ready structured contract, renders its full snapshot, and keeps it in context', async () => {
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({
+      adapter: adapter(),
+      proposals,
+    })
+    const schema = skill.tools.find((tool) => tool.name === 'plan_deck')!.inputSchema as any
+    expect(schema.properties.contract).toBeDefined()
+    expect(schema.anyOf).toEqual(
+      expect.arrayContaining([
+        { required: ['contract'] },
+        { required: ['core_hook', 'style', 'pages', 'prototype_pages'] },
+      ]),
+    )
+
+    const result = await skill.executeTool(call('plan_deck', { contract: modernContract() }))
+    const output = JSON.parse(result.output)
+    expect(output).toMatchObject({ status: 'ready', revision: 2 })
+    expect(output.designMd).toContain('## Deck Acceptance')
+    expect(output.designMd).toContain('A1.1')
+    expect(skill.buildContext?.()).toContain('"revision":2')
+    expect(skill.buildContext?.()).toContain('"status":"ready"')
+
+    await expect(skill.executeTool(call('verify_slides'))).resolves.toMatchObject({
+      isError: true,
+      output: 'design_contract_production_incomplete',
+    })
+    await skill.executeTool(
+      call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' }),
+    )
+    expect(skill.buildContext?.()).toContain('"status":"ready"')
+    await proposals.confirm(proposals.pending()!.id)
+    expect(skill.buildContext?.()).toContain('"status":"producing"')
+    const screenshot = JSON.parse(
+      (await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))).output,
+    )
+    expect(screenshot).toMatchObject({
+      designRevision: 2,
+      designStatus: 'producing',
+      acceptanceIds: ['A1.1'],
+    })
+    const review = await skill.executeTool(
+      call('review_slide_screenshot', {
+        slide_index: 0,
+        acceptance_ids: ['A1.1'],
+        passed: true,
+      }),
+    )
+    expect(review.isError).not.toBe(true)
+    const verification = JSON.parse((await skill.executeTool(call('verify_slides'))).output)
+    expect(verification).toMatchObject({ status: 'verified', revision: 2 })
+    expect(verification.designMd).toContain('Status: verified')
+    expect(skill.buildContext?.()).toContain('"status":"verified"')
+  })
+
+  it('rejects an unready structured production contract but preserves legacy planning', async () => {
+    const skill = createPowerPointSkill({
+      adapter: adapter(),
+      proposals: createStructuredProposalController(),
+    })
+    const invalid = modernContract({
+      brief: { ...(modernContract().brief as object), audience: '' },
+    })
+    await expect(
+      skill.executeTool(call('plan_deck', { contract: invalid })),
+    ).resolves.toMatchObject({
+      isError: true,
+      output: expect.stringContaining('brief.audience is required'),
+    })
+    await expect(
+      skill.executeTool(call('plan_deck', { contract: modernContract({ status: 'draft' }) })),
+    ).resolves.toMatchObject({
+      isError: true,
+      output: expect.stringContaining('status must be ready'),
+    })
+
+    await expect(
+      skill.executeTool(
+        call('plan_deck', {
+          core_hook: 'Legacy hook',
+          style: 'Legacy style',
+          pages: [
+            {
+              title: 'Legacy page',
+              brief: 'Legacy brief',
+              layout: 'cover',
+              purpose: 'Open',
+              visual: 'Headline',
+              acceptance: ['Readable'],
+              density: 'low',
+            },
+          ],
+          prototype_pages: [0],
+        }),
+      ),
+    ).resolves.toMatchObject({ mutated: false, output: expect.stringContaining('# DESIGN.md') })
+  })
+
+  it('enforces prototype-first production and rejects host verification defects', async () => {
+    const base = modernContract()
+    const first = (base.slides as Array<Record<string, unknown>>)[0]!
+    const slides = [1, 2, 3, 4].map((number) => ({
+      ...first,
+      number,
+      title: `Slide ${number}`,
+      acceptance: [{ id: `A${number}.1`, criterion: 'Readable' }],
+    }))
+    const contract = modernContract({
+      prototypePages: [1, 2, 3],
+      brief: { ...(base.brief as object), pageCount: 4 },
+      slides,
+    })
+    const proposals = createStructuredProposalController()
+    const fake = adapter({
+      getPresentationState: vi.fn().mockResolvedValue({
+        slideCount: 4,
+        selectedSlideIndexes: [0],
+        api: { v12: true },
+      }),
+      verifySlides: vi.fn().mockResolvedValue({
+        slideWidth: 960,
+        slideHeight: 540,
+        slides: [
+          {
+            slideId: 'slide-1',
+            slideIndex: 0,
+            shapes: [],
+            shapesTruncated: false,
+            overflows: [],
+            overlaps: [{ shapeAId: '1', shapeBId: '2', overlapX: 10, overlapY: 10 }],
+            overlapsTruncated: false,
+          },
+        ],
+      }),
+    })
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await skill.executeTool(call('plan_deck', { contract }))
+    await skill.executeTool(call('get_presentation_state'))
+
+    await expect(
+      skill.executeTool(call('edit_slide_text', { slide_index: 3, shape_id: '2', text: 'Hello' })),
+    ).resolves.toMatchObject({
+      isError: true,
+      output: 'design_contract_prototype_required',
+    })
+    expect(proposals.pending()).toBeUndefined()
+
+    await skill.executeTool(
+      call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' }),
+    )
+    await proposals.confirm(proposals.pending()!.id)
+    await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+    await skill.executeTool(
+      call('review_slide_screenshot', {
+        slide_index: 0,
+        acceptance_ids: ['A1.1'],
+        passed: true,
+      }),
+    )
+    await expect(skill.executeTool(call('verify_slides'))).resolves.toMatchObject({
+      isError: true,
+      output: 'design_contract_production_incomplete',
+    })
+    expect(skill.buildContext?.()).toContain('"status":"producing"')
+  })
+
+  it('does not verify a complete contract when the host reports overlap', async () => {
+    const proposals = createStructuredProposalController()
+    const fake = adapter({
+      verifySlides: vi.fn().mockResolvedValue({
+        slideWidth: 960,
+        slideHeight: 540,
+        slides: [
+          {
+            slideId: 'slide-1',
+            slideIndex: 0,
+            shapes: [],
+            shapesTruncated: false,
+            overflows: [],
+            overlaps: [{ shapeAId: '1', shapeBId: '2', overlapX: 10, overlapY: 10 }],
+            overlapsTruncated: false,
+          },
+        ],
+      }),
+    })
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await skill.executeTool(call('plan_deck', { contract: modernContract() }))
+    await skill.executeTool(
+      call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' }),
+    )
+    await proposals.confirm(proposals.pending()!.id)
+    await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+    await skill.executeTool(
+      call('review_slide_screenshot', {
+        slide_index: 0,
+        acceptance_ids: ['A1.1'],
+        passed: true,
+      }),
+    )
+
+    await expect(skill.executeTool(call('verify_slides'))).resolves.toMatchObject({
+      isError: true,
+      output: 'design_contract_verification_failed',
+    })
+    expect(skill.buildContext?.()).toContain('"status":"producing"')
+  })
+
+  it('counts only the inserted page as produced when duplicating a slide', async () => {
+    const base = modernContract()
+    const first = (base.slides as Array<Record<string, unknown>>)[0]!
+    const contract = modernContract({
+      prototypePages: [1, 2],
+      brief: { ...(base.brief as object), pageCount: 2 },
+      slides: [
+        first,
+        {
+          ...first,
+          number: 2,
+          title: 'Second page',
+          acceptance: [{ id: 'A2.1', criterion: 'Readable' }],
+        },
+      ],
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({
+      adapter: adapter({
+        duplicateSlide: vi.fn().mockResolvedValue({ slideId: 'copy' }),
+        listSlideShapes: vi.fn().mockResolvedValue({
+          slideId: 'copy',
+          slideIndex: 1,
+          shapes: [],
+        }),
+      }),
+      proposals,
+    })
+    await skill.executeTool(call('plan_deck', { contract }))
+
+    await skill.executeTool(call('duplicate_slide', { slide_index: 0 }))
+    await proposals.confirm(proposals.pending()!.id)
+    await skill.executeTool(call('screenshot_slide', { slide_index: 1 }))
+    await skill.executeTool(
+      call('review_slide_screenshot', {
+        slide_index: 1,
+        acceptance_ids: ['A2.1'],
+        passed: true,
+      }),
+    )
+
+    await expect(skill.executeTool(call('verify_slides'))).resolves.toMatchObject({
+      isError: true,
+      output: 'design_contract_production_incomplete',
+    })
   })
 
   it('keeps the agent in the screenshot and verification loop after each mutation batch', async () => {
@@ -364,6 +672,7 @@ describe('PowerPoint compatibility skill', () => {
       'get_presentation_state',
       'inspect_slide_masters',
       'screenshot_slide',
+      'review_slide_screenshot',
       'list_slide_shapes',
       'read_slide_text',
       'verify_slides',

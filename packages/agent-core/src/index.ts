@@ -44,11 +44,24 @@ export { createIpcTransport, IPC_STREAM_SILENCE_TIMEOUT_MS } from './electron-tr
 export type { IpcStreamChunk, IpcStreamStart, IpcTransportOptions } from './electron-transport'
 export {
   buildPresentationDesignDocument,
+  extractPresentationDesignContract,
   extractPresentationDesignDocument,
+  parsePresentationDesignContract,
   parsePresentationDesignPlan,
+  PRESENTATION_DESIGN_CONTRACT_SCHEMA,
   PRESENTATION_DESIGN_WORKFLOW_PROMPT,
+  revisePresentationDesignContract,
+  renderPresentationDesignContract,
+  transitionPresentationDesignContract,
+  validatePresentationDesignReadiness,
 } from './presentation-design-workflow'
 export type {
+  PresentationAssetStatus,
+  PresentationDesignAcceptanceRule,
+  PresentationDesignContract,
+  PresentationDesignInvalidation,
+  PresentationDesignInvalidationScope,
   PresentationDesignPagePlan,
   PresentationDesignPlan,
+  PresentationDesignStatus,
 } from './presentation-design-workflow'

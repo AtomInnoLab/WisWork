@@ -1,11 +1,18 @@
 import {
   buildPresentationDesignDocument,
+  extractPresentationDesignContract,
+  parsePresentationDesignContract,
   parsePresentationDesignPlan,
+  PRESENTATION_DESIGN_CONTRACT_SCHEMA,
   PRESENTATION_DESIGN_WORKFLOW_PROMPT,
+  renderPresentationDesignContract,
+  transitionPresentationDesignContract,
+  validatePresentationDesignReadiness,
   type AgentImage,
   type AgentSkill,
   type FinalResponseReviewContext,
   type ToolDisplay,
+  type PresentationDesignContract,
 } from '@wiswork/agent-core'
 import type {
   GroupRenderNode,
@@ -157,7 +164,12 @@ export interface DeckAccess {
    * Persist the current draft's editable design contract next to the draft as .design.md.
    * fail-open: failure doesn't block the main path.
    */
-  saveSidecar?(data: { topic: string; styleSkill: string; createdAt: string }): Promise<void>
+  saveSidecar?(data: {
+    topic: string
+    styleSkill: string
+    designMd?: string
+    createdAt: string
+  }): Promise<void>
   /**
    * Save styleSkill into userData/style-templates/<name>.json for later reuse.
    */
@@ -853,8 +865,16 @@ const ALL_TOOLS: AgentToolDef[] = [
           description:
             'Zero-based indexes of the cover, representative content page, and most complex visual page; use every page when the deck has fewer than three',
         },
+        contract: {
+          ...PRESENTATION_DESIGN_CONTRACT_SCHEMA,
+          description:
+            'Preferred structured PresentationDesignContract. Must use schemaVersion 1 and status ready; legacy core_hook/style/pages/prototype_pages remain supported.',
+        },
       },
-      required: ['core_hook', 'style', 'pages', 'prototype_pages'],
+      anyOf: [
+        { required: ['contract'] },
+        { required: ['core_hook', 'style', 'pages', 'prototype_pages'] },
+      ],
     },
   },
   {
@@ -918,6 +938,12 @@ const ALL_TOOLS: AgentToolDef[] = [
       },
       required: ['pages', 'phase', 'page_indexes'],
     },
+  },
+  {
+    name: 'verify_slides',
+    description:
+      'Final DESIGN.md-bound whole-deck verification. Run only after every planned page has been built and its latest screenshot review passed.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
   },
   {
     name: 'delete_slide',
@@ -1794,7 +1820,58 @@ export function createSlidesSkill(
         slides.length === 1 &&
         slides[0]!.nodes.length === 0 &&
         !state.plannedPages
-      const designDocument = access.getPresentationDesignDocument?.()?.trim()
+      const designDocument =
+        access.getPresentationDesignDocument?.()?.trim() ??
+        (state.designContract ? renderPresentationDesignContract(state.designContract) : undefined)
+      if (designDocument) {
+        const restored = extractPresentationDesignContract(designDocument)
+        if (
+          restored &&
+          (state.designContract?.revision !== restored.revision ||
+            state.designContract.status !== restored.status)
+        ) {
+          const restoredPlan = parsePresentationDesignPlan(contractAsLegacyPlan(restored))
+          state.designContract = restored
+          state.plannedPages = restoredPlan.pages
+          state.plannedPageCount = restoredPlan.pages.length
+          state.prototypePages = restoredPlan.prototype_pages
+          state.productionTheme = undefined
+          if (restored.status === 'producing' || restored.status === 'verified') {
+            const progress = restoreDesignCheckpoint(designDocument)
+            state.builtPageIndexes = new Set(
+              restored.status === 'verified'
+                ? restoredPlan.pages.map((_, index) => index)
+                : (progress?.built ?? []),
+            )
+            state.pendingReviewIndexes = new Set(
+              restored.status === 'producing' ? (progress?.pending ?? []) : [],
+            )
+          } else {
+            state.builtPageIndexes = new Set()
+            state.pendingReviewIndexes = new Set()
+            state.awaitingBuildDeck = restoredPlan.pages.length >= 2
+          }
+          state.blankDeckPlanRequired = false
+          access.setPresentationDesignContext?.({
+            designMd: renderPresentationDesignContract(restored),
+            pages: restored.slides.map((slide) => ({
+              visual: slide.visualRoute,
+              acceptance: slide.acceptance.map((rule) => `${rule.id}: ${rule.criterion}`),
+              density: slide.density,
+            })),
+          })
+        } else if (!restored && state.designContract) {
+          state.designContract = undefined
+          state.plannedPages = undefined
+          state.plannedPageCount = undefined
+          state.prototypePages = undefined
+          state.builtPageIndexes = undefined
+          state.pendingReviewIndexes = undefined
+          state.designReplanRequired = true
+        } else if (!restored && /(?:^|\n)(?:Status|Revision):\s*/.test(designDocument)) {
+          state.designReplanRequired = true
+        }
+      }
       const documentContext = selectionScope
         ? `<selection scope>\n${selectionScopeSummary(selectionScope)}. This scope is immutable and enforced by the host.\n</selection scope>`
         : `<deck outline>\n${buildDeckOutline(slides, access.getCurrent(), access.getSelectedIds())}\n</deck outline>`
@@ -1845,6 +1922,91 @@ interface SkillState {
   builtPageIndexes?: Set<number>
   pendingReviewIndexes?: Set<number>
   productionTheme?: string
+  /** Active structured production contract. Legacy plans intentionally leave this undefined. */
+  designContract?: PresentationDesignContract
+  /** Visible DESIGN.md changed without a matching structured snapshot. */
+  designReplanRequired?: boolean
+}
+
+function contractAsLegacyPlan(contract: PresentationDesignContract) {
+  return {
+    core_hook: contract.narrative.coreHook,
+    style: contract.visualSystem.style,
+    pages: contract.slides.map((slide) => ({
+      title: slide.title,
+      brief: slide.claim,
+      layout: slide.layoutFamily,
+      purpose: slide.role,
+      visual: slide.visualRoute,
+      evidence: slide.evidence,
+      acceptance: slide.acceptance.map((rule) => `${rule.id}: ${rule.criterion}`),
+      density: slide.density,
+      image_queries: slide.assetIds.flatMap((id) => {
+        const asset = contract.assets.find((candidate) => candidate.id === id)
+        return asset?.intent ? [asset.intent] : []
+      }),
+    })),
+    prototype_pages: contract.prototypePages.map((number) => number - 1),
+  }
+}
+
+function contractReference(contract: PresentationDesignContract, slideIndex?: number): string {
+  if (slideIndex === undefined) return `DESIGN.md · Revision ${contract.revision}`
+  const slide = contract.slides[slideIndex]
+  const ids = slide?.acceptance.map((rule) => rule.id).join(', ') || 'no acceptance ids'
+  return `DESIGN.md · Revision ${contract.revision} · Slide ${slideIndex + 1} · ${ids}`
+}
+
+async function persistContract(
+  access: DeckAccess,
+  state: SkillState,
+  status: 'producing' | 'verified',
+): Promise<void> {
+  const current = state.designContract
+  if (!current) return
+  const contract =
+    current.status === status ? current : transitionPresentationDesignContract(current, status)
+  state.designContract = contract
+  const progress = encodeURIComponent(
+    JSON.stringify({
+      built: [...(state.builtPageIndexes ?? [])],
+      pending: [...(state.pendingReviewIndexes ?? [])],
+    }),
+  )
+  const designMd = `${renderPresentationDesignContract(contract)}\n\n<!-- WISWORK_PRESENTATION_PROGRESS:${progress} -->`
+  await access.saveSidecar?.({
+    topic: contract.brief.topic || contract.narrative.coreHook,
+    styleSkill: contract.visualSystem.style,
+    designMd,
+    createdAt: new Date().toISOString(),
+  })
+  access.setPresentationDesignContext?.({
+    designMd,
+    pages: contract.slides.map((slide) => ({
+      visual: slide.visualRoute,
+      acceptance: slide.acceptance.map((rule) => `${rule.id}: ${rule.criterion}`),
+      density: slide.density,
+    })),
+  })
+}
+
+function restoreDesignCheckpoint(designDocument: string): {
+  built: number[]
+  pending: number[]
+} | null {
+  const match = designDocument.match(/<!-- WISWORK_PRESENTATION_PROGRESS:([^\s]+) -->/)
+  if (!match?.[1] || match[1].length > 10_000) return null
+  try {
+    const value = JSON.parse(decodeURIComponent(match[1])) as {
+      built?: unknown
+      pending?: unknown
+    }
+    const indexes = (items: unknown) =>
+      Array.isArray(items) ? items.filter((item): item is number => Number.isSafeInteger(item)) : []
+    return { built: indexes(value.built), pending: indexes(value.pending) }
+  } catch {
+    return null
+  }
 }
 
 const fail = (summary: string, output: string) => ({
@@ -2013,6 +2175,38 @@ async function executeTool(
       'A blank presentation must start with plan_deck before any slide write. Establish the DESIGN.md and prototype pages, then use build_deck.',
     )
   if (
+    state?.designReplanRequired &&
+    !new Set([
+      'get_deck_context',
+      'read_slide',
+      'screenshot_slide',
+      'web_search',
+      'image_search',
+      'list_style_templates',
+      'plan_deck',
+    ]).has(call.name)
+  )
+    return fail(
+      call.name,
+      'The visible DESIGN.md changed. Normalize it into a ready structured contract with plan_deck before further production.',
+    )
+  if (
+    state?.designContract?.status === 'draft' &&
+    !new Set([
+      'get_deck_context',
+      'read_slide',
+      'screenshot_slide',
+      'web_search',
+      'image_search',
+      'list_style_templates',
+      'plan_deck',
+    ]).has(call.name)
+  )
+    return fail(
+      call.name,
+      'The revised DESIGN.md is a draft. Submit a ready structured contract with plan_deck before further production.',
+    )
+  if (
     state?.awaitingBuildDeck &&
     !new Set([
       'get_deck_context',
@@ -2064,15 +2258,48 @@ async function executeTool(
         if (!passed)
           return fail(
             'Review slide screenshot',
-            'visual_review_failed: repair this page and screenshot it again before continuing',
+            `${state.designContract ? `${contractReference(state.designContract, idx)} · ` : ''}visual_review_failed: repair this page with low-level editing tools and screenshot it again before continuing; production batches remain blocked`,
           )
         state.pendingReviewIndexes.delete(idx)
       }
       return {
-        output: `Rendered slide ${idx + 1}. Inspect the attached PNG for clipping, overlap, hierarchy, spacing, contrast, and visual balance.`,
+        output: `${state?.designContract ? `${contractReference(state.designContract, idx)} · ` : ''}Rendered slide ${idx + 1}. Inspect the attached PNG for clipping, overlap, hierarchy, spacing, contrast, and visual balance.`,
         mutated: false,
         summary: `Captured slide ${idx + 1}`,
         modelContent: [{ type: 'image' as const, image }],
+      }
+    }
+
+    case 'verify_slides': {
+      if (!state?.designContract)
+        return fail(
+          'Verify slides',
+          'verify_slides requires an active structured DESIGN.md contract',
+        )
+      if (state.pendingReviewIndexes?.size)
+        return fail(
+          'Verify slides',
+          `Screenshot review is incomplete for slides ${[...state.pendingReviewIndexes].map((index) => index + 1).join(', ')}`,
+        )
+      if (state.builtPageIndexes?.size !== state.plannedPageCount)
+        return fail(
+          'Verify slides',
+          `Only ${state.builtPageIndexes?.size ?? 0} of ${state.plannedPageCount ?? 0} planned slides have been built`,
+        )
+      const failures = slides.flatMap((slide, index) =>
+        auditSlideLayout(slide).map((issue) => `Slide ${index + 1}: ${issue}`),
+      )
+      if (failures.length)
+        return fail(
+          'Verify slides',
+          `${contractReference(state.designContract)} · final verification failed:\n${failures.join('\n')}`,
+        )
+      await persistContract(access, state, 'verified')
+      const designMd = renderPresentationDesignContract(state.designContract)
+      return {
+        output: `${contractReference(state.designContract)} · verified\nAll planned slides were built, screenshot-reviewed, and passed deterministic geometry verification.\n\n${designMd}`,
+        mutated: false,
+        summary: `DESIGN.md · Revision ${state.designContract.revision} · verified`,
       }
     }
 
@@ -3072,8 +3299,25 @@ async function executeTool(
 
     case 'plan_deck': {
       let plan: ReturnType<typeof parsePresentationDesignPlan>
+      let contract: PresentationDesignContract | undefined
       try {
-        plan = parsePresentationDesignPlan(call.input)
+        if (call.input.contract !== undefined) {
+          contract = parsePresentationDesignContract(call.input.contract)
+          const readiness = validatePresentationDesignReadiness(contract)
+          if (contract.status !== 'ready')
+            return fail(
+              t('aiFailPlan'),
+              'DESIGN.md contract status must be ready before production',
+            )
+          if (!readiness.ready)
+            return fail(
+              t('aiFailPlan'),
+              `DESIGN.md readiness check failed: ${readiness.issues.join('; ')}`,
+            )
+          plan = parsePresentationDesignPlan(contractAsLegacyPlan(contract))
+        } else {
+          plan = parsePresentationDesignPlan(call.input)
+        }
       } catch {
         return fail(
           t('aiFailPlan'),
@@ -3092,14 +3336,20 @@ async function executeTool(
         state.builtPageIndexes = new Set()
         state.pendingReviewIndexes = new Set()
         state.productionTheme = undefined
+        state.designContract = contract
+        state.designReplanRequired = false
       }
+      const designMd = contract
+        ? renderPresentationDesignContract(contract)
+        : buildPresentationDesignDocument(style)
       await access.saveSidecar?.({
         topic: coreHook,
         styleSkill: style,
+        designMd,
         createdAt: new Date().toISOString(),
       })
       access.setPresentationDesignContext?.({
-        designMd: buildPresentationDesignDocument(style),
+        designMd,
         pages: pages.map(({ visual, acceptance, density }) => ({ visual, acceptance, density })),
       })
       signal?.throwIfAborted()
@@ -3113,6 +3363,12 @@ async function executeTool(
         return `Page ${i + 1} [${String(p.layout ?? '')}] ${String(p.title ?? '')} — ${String(p.brief ?? '').slice(0, 40)}${visual}${q}`
       })
       const summary = t('aiSumPlan', { count: pages.length, hook: coreHook })
+      if (contract)
+        return {
+          output: `${contractReference(contract)} · ready\n\n${designMd}\n\nNEXT REQUIRED ACTION: materialize prototype slides ${contract.prototypePages.join(', ')}. Every build and screenshot result will cite this revision, slide, and acceptance IDs.`,
+          mutated: false,
+          summary,
+        }
       return {
         output: `Plan confirmed:\nCore Hook: ${coreHook}\n\n${buildPresentationDesignDocument(style)}\n\n# Deck Plan\n${lines.join('\n')}\nNEXT REQUIRED ACTION: run image_search for the planned visual pages, then call build_deck with phase:"prototype" and page_indexes:${JSON.stringify(plan.prototype_pages)}. Pass the full planned pages array so the host can bind production to this plan. Screenshot and inspect every prototype page before continuing with phase:"batch" calls of 2–3 remaining page indexes. Preserve layout diversity and pass theme plus {layout,kicker,title,body,imageUrl,imageAlt}. Aim for 3-5 visual pages in a typical 8-page deck; never invent image URLs.`,
         mutated: false,
@@ -3374,6 +3630,7 @@ async function executeTool(
         workingSlides = created.slides
         access.applyDeck(created.slides, created.index)
         deckMutated = true
+        if (state) await persistContract(access, state, 'producing')
       }
       for (const slideIndex of pageIndexes) {
         const page = pages[slideIndex]!
@@ -3634,6 +3891,11 @@ async function executeTool(
         )
         const outcome = textFamilyReceiptOutcome(execution.receipt)
         deckMutated ||= outcome.mutated
+        if (outcome.mutated && state) {
+          state.builtPageIndexes?.add(slideIndex)
+          state.pendingReviewIndexes?.add(slideIndex)
+          await persistContract(access, state, 'producing')
+        }
         if (!outcome.ok) {
           if (state) state.awaitingBuildDeck = false
           return {
@@ -3702,11 +3964,18 @@ async function executeTool(
         // production batches are allowed. Unlock refinement as soon as the first planned
         // batch exists; pendingReviewIndexes still prevents expansion until it passes.
         state.awaitingBuildDeck = false
+        await persistContract(access, state, 'producing')
       }
+      const references = state?.designContract
+        ? `${pageIndexes.map((index) => contractReference(state.designContract!, index)).join('\n')}\n`
+        : ''
+      const lifecycleSnapshot = state?.designContract
+        ? `\n\n${renderPresentationDesignContract(state.designContract)}`
+        : ''
       return {
         output: designed
-          ? `Materialized ${phase} pages ${pageIndexes.map((index) => index + 1).join(', ')} with the planned theme, layouts, and ${pageIndexes.filter((index) => pages[index]?.imageUrl).length} placed images. Screenshot and inspect every page in this batch before continuing.`
-          : `Materialized ${phase} pages ${pageIndexes.map((index) => index + 1).join(', ')}. Screenshot and inspect every page in this batch before continuing.`,
+          ? `${references}Materialized ${phase} pages ${pageIndexes.map((index) => index + 1).join(', ')} with the planned theme, layouts, and ${pageIndexes.filter((index) => pages[index]?.imageUrl).length} placed images. Screenshot and inspect every page in this batch before continuing.${lifecycleSnapshot}`
+          : `${references}Materialized ${phase} pages ${pageIndexes.map((index) => index + 1).join(', ')}. Screenshot and inspect every page in this batch before continuing.${lifecycleSnapshot}`,
         mutated: true,
         summary: `Created ${pageIndexes.length} planned pages`,
       }

@@ -1374,6 +1374,7 @@ export interface SlidesApi {
   saveStyleSidecar: (data: {
     topic: string
     styleSkill: string
+    designMd?: string
     createdAt: string
   }) => Promise<{ ok: boolean }>
   /** Read the current persisted or pending DESIGN.md contract. */

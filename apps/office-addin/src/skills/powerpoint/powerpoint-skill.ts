@@ -1,8 +1,12 @@
 import {
-  buildPresentationDesignDocument,
-  parsePresentationDesignPlan,
+  parsePresentationDesignContract,
+  PRESENTATION_DESIGN_CONTRACT_SCHEMA,
   PRESENTATION_DESIGN_WORKFLOW_PROMPT,
+  renderPresentationDesignContract,
+  transitionPresentationDesignContract,
+  validatePresentationDesignReadiness,
   type AgentSkill,
+  type PresentationDesignContract,
   type ToolExecution,
 } from '@wiswork/agent-core'
 import type { PresentationVerificationFlags } from '@wiswork/presentation-verification'
@@ -39,6 +43,11 @@ const MAX_SLIDE_INDEX = 100_000
 const MAX_CODE = 32 * 1024
 const MAX_SCREENSHOT_BYTES = 4 * 1024 * 1024
 const POWERPOINT_GEOMETRY_EPSILON = 0.01
+const visibleDesignDocument = (contract: PresentationDesignContract): string =>
+  renderPresentationDesignContract(contract).replace(
+    /\n?<!-- WISWORK_PRESENTATION_DESIGN_CONTRACT:[^\n]* -->/g,
+    '',
+  )
 
 const MASTER_PATTERN_TYPES = [
   'Percent5',
@@ -381,6 +390,31 @@ const tools = [
     },
   },
   {
+    name: 'review_slide_screenshot',
+    description:
+      'After visually inspecting the latest screenshot, record the result against every DESIGN.md acceptance ID for that slide. A failed review keeps production blocked for repair.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...slideProperties,
+        acceptance_ids: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 20,
+          items: { type: 'string', minLength: 1, maxLength: 80 },
+        },
+        passed: { type: 'boolean' },
+        issues: {
+          type: 'array',
+          maxItems: 20,
+          items: { type: 'string', minLength: 1, maxLength: 500 },
+        },
+      },
+      required: ['slide_index', 'acceptance_ids', 'passed'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'list_slide_shapes',
     description: 'List stable shape IDs, types, and geometry on one slide.',
     inputSchema: {
@@ -531,8 +565,16 @@ const tools = [
           description:
             'Zero-based indexes of the cover, representative content page, and most complex visual page; use every page when fewer than three',
         },
+        contract: {
+          ...PRESENTATION_DESIGN_CONTRACT_SCHEMA,
+          description:
+            'Versioned PresentationDesignContract. Unknown future fields are ignored for mixed-version compatibility.',
+        },
       },
-      required: ['core_hook', 'style', 'pages', 'prototype_pages'],
+      anyOf: [
+        { required: ['contract'] },
+        { required: ['core_hook', 'style', 'pages', 'prototype_pages'] },
+      ],
       additionalProperties: false,
     },
   },
@@ -1331,8 +1373,13 @@ export function createPowerPointSkill(options: {
   let verificationRevision = 0
   let knownSlideCount = 0
   let unknownMutationPages = false
-  let activeDesignPlan: ReturnType<typeof parsePresentationDesignPlan> | undefined
+  let activeDesignContract: PresentationDesignContract | undefined
+  let activeDesignContractIsModern = false
   const dirtySlideIndexes = new Set<number>()
+  const builtDesignSlides = new Set<number>()
+  const pendingDesignReviews = new Set<number>()
+  const proposalDesignSlides = new Map<string, number[]>()
+  let proposingDesignSlides: number[] | undefined
   const mutationSlideIndexes = (call: { name: string; input: Record<string, unknown> }) => {
     if (['edit_slide_master', 'edit_slide_master_xml'].includes(call.name))
       return Array.from({ length: knownSlideCount }, (_, index) => index)
@@ -1349,9 +1396,10 @@ export function createPowerPointSkill(options: {
     }
     const index = call.input.slide_index
     if (!Number.isSafeInteger(index)) return []
-    return call.name === 'duplicate_slide'
-      ? [index as number, (index as number) + 1]
-      : [index as number]
+    // Duplicating reads the source but only materializes the newly inserted slide.
+    // Counting the source as produced deadlocks the next batch and can report a
+    // contract complete before all planned pages exist.
+    return call.name === 'duplicate_slide' ? [(index as number) + 1] : [index as number]
   }
   const isMac = options.platform?.toLowerCase() === 'mac'
   const masterXmlEditingSupported = !isMac
@@ -1371,7 +1419,47 @@ export function createPowerPointSkill(options: {
           batchScoped: true,
         }
       : undefined
+  const recordDesignMutation = (indexes: readonly number[]) => {
+    if (!activeDesignContractIsModern || !activeDesignContract) return
+    if (activeDesignContract.status === 'ready')
+      activeDesignContract = transitionPresentationDesignContract(activeDesignContract, 'producing')
+    for (const index of indexes) {
+      builtDesignSlides.add(index)
+      pendingDesignReviews.add(index)
+      dirtySlideIndexes.add(index)
+    }
+    mutationRevision++
+  }
+  const designProductionError = (indexes: readonly number[]): string | undefined => {
+    if (!activeDesignContractIsModern || !activeDesignContract) return
+    const targets = [...new Set(indexes)]
+    if (
+      targets.length === 0 ||
+      targets.some((index) => index < 0 || index >= activeDesignContract!.slides.length)
+    )
+      return 'design_contract_scope_mismatch'
+    if (targets.every((index) => pendingDesignReviews.has(index))) return
+    if (targets.some((index) => builtDesignSlides.has(index)))
+      return 'design_contract_batch_mismatch'
+    const prototypes = new Set(activeDesignContract.prototypePages.map((number) => number - 1))
+    if (![...prototypes].every((index) => builtDesignSlides.has(index)))
+      return targets.every((index) => prototypes.has(index))
+        ? undefined
+        : 'design_contract_prototype_required'
+    if (pendingDesignReviews.size >= 3) return 'design_contract_review_required'
+    // Office exposes slide creation as one confirmed duplicate proposal at a time.
+    // Permit those sequential writes; pendingDesignReviews still caps expansion and
+    // forces screenshot review before the agent can move beyond the current batch.
+    if (targets.length > 3) return 'design_contract_batch_size'
+  }
   options.proposals.subscribeAudit?.((event) => {
+    if (event.kind === 'proposed' && proposingDesignSlides)
+      proposalDesignSlides.set(event.id, [...proposingDesignSlides])
+    if (event.kind === 'settled') {
+      const indexes = proposalDesignSlides.get(event.id)
+      proposalDesignSlides.delete(event.id)
+      if (event.status === 'confirmed' && indexes) recordDesignMutation(indexes)
+    }
     if (!presentation) return
     if (event.kind === 'proposed') presentation.recordProposal(event)
     else if (event.kind === 'settled') presentation.recordSettlement(event)
@@ -1464,8 +1552,8 @@ export function createPowerPointSkill(options: {
           !['inspect_slide_masters', 'edit_slide_master'].includes(tool.name)),
     ),
     buildContext: () =>
-      activeDesignPlan
-        ? `<active presentation design plan>\n${boundedJson(activeDesignPlan)}\n</active presentation design plan>`
+      activeDesignContract
+        ? `<active presentation design contract>\n${boundedJson(activeDesignContract)}\n</active presentation design contract>`
         : '',
     reviewFinalResponse(context) {
       if (!context.mutated) return undefined
@@ -1504,35 +1592,50 @@ export function createPowerPointSkill(options: {
           }
         }
         if (call.name === 'plan_deck') {
-          let plan: ReturnType<typeof parsePresentationDesignPlan>
+          let contract: PresentationDesignContract
           try {
-            plan = parsePresentationDesignPlan(call.input)
+            contract = parsePresentationDesignContract(call.input.contract ?? call.input)
           } catch {
             return failure(call.name, 'invalid_tool_input')
           }
-          activeDesignPlan = plan
+          const readiness = validatePresentationDesignReadiness(contract)
+          if ('contract' in call.input && (contract.status !== 'ready' || !readiness.ready))
+            return failure(
+              call.name,
+              `design_contract_not_ready: status must be ready${readiness.issues.length ? `; ${readiness.issues.join('; ')}` : ''}`,
+            )
+          activeDesignContract = contract
+          activeDesignContractIsModern = 'contract' in call.input
+          builtDesignSlides.clear()
+          pendingDesignReviews.clear()
+          proposalDesignSlides.clear()
           return {
             output: boundedJson({
-              status: 'planned',
-              coreHook: plan.core_hook,
-              designMd: buildPresentationDesignDocument(plan.style),
-              prototypePages: plan.prototype_pages,
-              pages: plan.pages.map((page, index) => ({
-                page: index + 1,
-                title: page.title,
-                type: page.type ?? 'content',
-                brief: page.brief,
-                layout: page.layout,
-                purpose: page.purpose,
-                visual: page.visual,
-                evidence: page.evidence ?? [],
-                acceptance: page.acceptance ?? [],
-                density: page.density,
-                imageQueries: page.image_queries ?? [],
-              })),
+              status: contract.status,
+              revision: contract.revision,
+              designMd: activeDesignContractIsModern
+                ? visibleDesignDocument(contract)
+                : renderPresentationDesignContract(contract),
+              coreHook: contract.narrative.coreHook,
+              prototypePages: contract.prototypePages.map((number) => number - 1),
+              ...(activeDesignContractIsModern
+                ? {}
+                : {
+                    pages: contract.slides.map((slide) => ({
+                      page: slide.number,
+                      title: slide.title,
+                      brief: slide.claim,
+                      layout: slide.layoutFamily,
+                      purpose: slide.role,
+                      visual: slide.visualRoute,
+                      evidence: slide.evidence,
+                      acceptance: slide.acceptance.map((rule) => rule.criterion),
+                      density: slide.density,
+                    })),
+                  }),
             }),
             mutated: false,
-            summary: `Planned ${plan.pages.length} slides`,
+            summary: `Planned ${contract.slides.length} slides`,
           }
         }
         if (presentation?.shouldSkip(call))
@@ -1543,14 +1646,20 @@ export function createPowerPointSkill(options: {
           }
         if (mutationTools.has(call.name)) {
           const indexes = mutationSlideIndexes(call)
-          const inputIndexes = call.name === 'duplicate_slide' ? indexes.slice(0, 1) : indexes
+          const inputIndexes =
+            call.name === 'duplicate_slide' ? [Number(call.input.slide_index)] : indexes
           if (
             knownSlideCount > 0 &&
             inputIndexes.some((index) => index < 0 || index >= knownSlideCount)
           )
             return failure(call.name, 'invalid_tool_input')
-          mutationRevision++
-          for (const index of indexes) dirtySlideIndexes.add(index)
+          const productionError = designProductionError(indexes)
+          if (productionError) return failure(call.name, productionError)
+          proposingDesignSlides = indexes
+          if (!activeDesignContractIsModern) {
+            mutationRevision++
+            for (const index of indexes) dirtySlideIndexes.add(index)
+          }
           if (!indexes.length && ['edit_slide_master', 'edit_slide_master_xml'].includes(call.name))
             unknownMutationPages = true
         }
@@ -1575,6 +1684,17 @@ export function createPowerPointSkill(options: {
               bytes: base64Bytes(result.base64),
               fingerprint: fingerprint(result.base64),
               visualAvailableToModel: true,
+              ...(activeDesignContractIsModern && activeDesignContract
+                ? {
+                    designRevision: activeDesignContract.revision,
+                    designStatus: activeDesignContract.status,
+                    acceptanceIds:
+                      activeDesignContract.slides[input.slide_index]?.acceptance.map(
+                        (rule) => rule.id,
+                      ) ?? [],
+                    designMd: visibleDesignDocument(activeDesignContract),
+                  }
+                : {}),
             }),
             modelContent: [{ type: 'image', image: { mime: result.mime, base64: result.base64 } }],
             display: {
@@ -1582,7 +1702,46 @@ export function createPowerPointSkill(options: {
               items: [{ url: `data:${result.mime};base64,${result.base64}` }],
             },
             mutated: false,
-            summary: 'Rendered PowerPoint slide',
+            summary:
+              activeDesignContractIsModern && activeDesignContract
+                ? `Rendered PowerPoint slide · DESIGN r${activeDesignContract.revision} ${activeDesignContract.status}`
+                : 'Rendered PowerPoint slide',
+          }
+        }
+        if (call.name === 'review_slide_screenshot') {
+          const slideIndex = Number(call.input.slide_index)
+          if (!Number.isSafeInteger(slideIndex) || slideIndex < 0)
+            return failure(call.name, 'invalid_tool_input')
+          const input = { slide_index: slideIndex }
+          if (!activeDesignContractIsModern || !activeDesignContract)
+            return failure(call.name, 'design_contract_required')
+          if (!pendingDesignReviews.has(input.slide_index))
+            return failure(call.name, 'design_contract_review_not_pending')
+          const expected =
+            activeDesignContract.slides[input.slide_index]?.acceptance.map((rule) => rule.id) ?? []
+          const supplied = Array.isArray(call.input.acceptance_ids)
+            ? call.input.acceptance_ids.map(String)
+            : []
+          if (
+            supplied.length !== expected.length ||
+            supplied.some((id, index) => id !== expected[index])
+          )
+            return failure(call.name, 'design_contract_acceptance_mismatch')
+          if (call.input.passed !== true)
+            return failure(
+              call.name,
+              `design_contract_visual_review_failed: ${Array.isArray(call.input.issues) ? call.input.issues.map(String).join('; ') : 'repair and re-screenshot this slide'}`,
+            )
+          pendingDesignReviews.delete(input.slide_index)
+          return {
+            output: boundedJson({
+              status: 'passed',
+              slide: input.slide_index + 1,
+              revision: activeDesignContract.revision,
+              acceptanceIds: expected,
+            }),
+            mutated: false,
+            summary: `Reviewed PowerPoint slide · DESIGN r${activeDesignContract.revision}`,
           }
         }
         if (call.name === 'list_slide_shapes') {
@@ -1606,10 +1765,51 @@ export function createPowerPointSkill(options: {
         if (call.name === 'verify_slides') {
           verifyInput(call.input)
           const verified = await options.adapter.verifySlides(signal)
-          if (dirtySlideIndexes.size === 0 && screenshotRevision === mutationRevision)
+          const designClean =
+            !verified.truncated &&
+            verified.slides.every(
+              (slide) =>
+                !slide.shapesTruncated &&
+                !slide.overlapsTruncated &&
+                slide.overflows.length === 0 &&
+                slide.overlaps.length === 0,
+            )
+          const designComplete =
+            !activeDesignContractIsModern ||
+            (activeDesignContract !== undefined &&
+              builtDesignSlides.size === activeDesignContract.slides.length &&
+              pendingDesignReviews.size === 0)
+          if (activeDesignContractIsModern && (!designClean || !designComplete))
+            return failure(
+              call.name,
+              !designComplete
+                ? 'design_contract_production_incomplete'
+                : 'design_contract_verification_failed',
+            )
+          if (
+            dirtySlideIndexes.size === 0 &&
+            screenshotRevision === mutationRevision &&
+            designClean &&
+            designComplete
+          ) {
             verificationRevision = mutationRevision
+            if (activeDesignContractIsModern && activeDesignContract?.status === 'producing')
+              activeDesignContract = transitionPresentationDesignContract(
+                activeDesignContract,
+                'verified',
+              )
+          }
           return {
-            output: boundedJson(verified),
+            output: boundedJson(
+              activeDesignContractIsModern && activeDesignContract?.status === 'verified'
+                ? {
+                    verification: verified,
+                    status: activeDesignContract.status,
+                    revision: activeDesignContract.revision,
+                    designMd: visibleDesignDocument(activeDesignContract),
+                  }
+                : verified,
+            ),
             mutated: false,
             summary: 'Verified PowerPoint slides',
           }
