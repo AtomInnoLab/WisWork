@@ -681,6 +681,13 @@ export function AiPanel({
   const [designEditorEditing, setDesignEditorEditing] = useState(false)
   const [designDraft, setDesignDraft] = useState('# DESIGN.md\n\n')
   const [designNotice, setDesignNotice] = useState<string | null>(null)
+  const refreshDesignSidecar = async () => {
+    const result = await (window.slidesApi?.getDesignSidecar?.() ??
+      Promise.resolve<{ ok: boolean; designMd?: string }>({ ok: true }))
+    if (!result.designMd) return
+    presentationDesignContextRef.current = { designMd: result.designMd, pages: [] }
+    setDesignDraft(result.designMd)
+  }
   useEffect(() => {
     let cancelled = false
     qcAbortRef.current?.abort()
@@ -700,6 +707,13 @@ export function AiPanel({
       cancelled = true
     }
   }, [currentFilePath])
+  useEffect(
+    () =>
+      window.slidesApi.onDesignSidecarChanged?.(() => {
+        void refreshDesignSidecar()
+      }),
+    [],
+  )
   const publishQualityReceipt = (receipt: PresentationQualityReceipt) => {
     qualityReceiptsRef.current = [...qualityReceiptsRef.current, receipt].slice(-100)
     setQualityTimeline((previous) =>
@@ -1842,7 +1856,8 @@ export function AiPanel({
     // `open` dep: re-measure after expand restores a draft
   }, [input, open])
 
-  const run = () => {
+  const run = async () => {
+    await refreshDesignSidecar().catch(() => undefined)
     const instruction = input.trim()
     if (!selectionScopeEnabled || selectedRef.current.length === 0) {
       runWith(instruction)
@@ -2478,6 +2493,23 @@ export function AiPanel({
     setDesignEditorOpen(true)
   }
 
+  const openDesignInWisWork = async () => {
+    const result = await window.slidesApi.openDesignSidecar?.()
+    if (result?.ok) {
+      setDesignEditorOpen(false)
+      return
+    }
+    setDesignNotice(
+      lang.startsWith('zh')
+        ? result?.error === 'presentation_not_saved'
+          ? '请先保存演示文稿，再使用 WisWork Markdown 编辑器打开。'
+          : '当前环境不支持 WisWork Markdown 编辑器，请在此处编辑。'
+        : result?.error === 'presentation_not_saved'
+          ? 'Save the presentation before opening it in WisWork Markdown.'
+          : 'WisWork Markdown is unavailable here. Edit the file in this panel.',
+    )
+  }
+
   const saveDesignEditor = async () => {
     // A user edit invalidates the exact embedded structured snapshot. Remove it
     // so the next turn must normalize the visible contract through plan_deck.
@@ -2777,6 +2809,11 @@ export function AiPanel({
               </div>
             )}
             <footer>
+              {window.slidesApi.openDesignSidecar && (
+                <button onClick={() => void openDesignInWisWork()}>
+                  {lang.startsWith('zh') ? '在 WisWork 中打开' : 'Open in WisWork'}
+                </button>
+              )}
               <button onClick={() => setDesignEditorOpen(false)}>
                 {lang.startsWith('zh') ? '关闭' : 'Close'}
               </button>

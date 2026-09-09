@@ -319,6 +319,11 @@ const api: SlidesApi = {
     createdAt: string
   }) => ipcRenderer.invoke('ai:save-sidecar', data),
   getDesignSidecar: () => ipcRenderer.invoke('ai:get-design-sidecar'),
+  openDesignSidecar: () => ipcRenderer.invoke('ai:open-design-sidecar'),
+  onDesignSidecarChanged: (handler: () => void) => {
+    ipcRenderer.on('ai:design-sidecar-changed', handler)
+    return () => ipcRenderer.removeListener('ai:design-sidecar-changed', handler)
+  },
   saveStyleTemplate: (
     name: string,
     data: { topic: string; styleSkill: string; createdAt: string },

@@ -39,6 +39,7 @@ import {
   ensureSessionInstanceIds,
   pushHistory,
   rebuildSlide,
+  runtime,
   scheduleHistoryNotify,
   sessions,
   SlidesSessionBusyError,
@@ -658,6 +659,22 @@ export function registerSlidesOnlyAiIpc(): void {
     const designMd = readPresentationDesignSidecar(event.sender.id, session?.path)
     return designMd ? { ok: true, designMd } : { ok: true }
   })
+
+  ipcMain.handle(
+    'ai:open-design-sidecar',
+    (event): { ok: boolean; error?: 'desktop_unavailable' | 'presentation_not_saved' } => {
+      assertAiIpcSender(event)
+      if (!runtime.openDesignSidecar) return { ok: false, error: 'desktop_unavailable' }
+      const session = sessions.get(event.sender.id)
+      if (!session?.path || !/\.pptx$/i.test(session.path))
+        return { ok: false, error: 'presentation_not_saved' }
+      const designMd = readPresentationDesignSidecar(event.sender.id, session.path)
+      if (!designMd || !savePresentationDesignSidecar(event.sender.id, session.path, designMd))
+        return { ok: false, error: 'presentation_not_saved' }
+      runtime.openDesignSidecar(event.sender.id, session.path.replace(/\.pptx$/i, '.design.md'))
+      return { ok: true }
+    },
+  )
 
   // Download an image from a URL and insert it into the given page (image search -> insert in one step; download in the main process avoids CORS)
   ipcMain.handle(

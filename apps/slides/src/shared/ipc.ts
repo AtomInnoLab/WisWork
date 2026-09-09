@@ -1380,6 +1380,12 @@ export interface SlidesApi {
   }) => Promise<{ ok: boolean }>
   /** Read the current persisted or pending DESIGN.md contract. */
   getDesignSidecar?: () => Promise<{ ok: boolean; designMd?: string }>
+  /** Open the persisted contract in WisWork's native Markdown editor when hosted by PC. */
+  openDesignSidecar?: () => Promise<{
+    ok: boolean
+    error?: 'desktop_unavailable' | 'presentation_not_saved'
+  }>
+  onDesignSidecarChanged?: (handler: () => void) => () => void
   /** Store styleSkill in userData/style-templates/<name>.json */
   saveStyleTemplate: (
     name: string,
