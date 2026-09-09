@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   createSlidesSkill,
   reviewSlidesFinalResponse,
@@ -131,6 +131,29 @@ describe('Slides capability truth', () => {
         mutated: true,
       }),
     ).toContain('questionnaire answers are already available')
+  })
+
+  it('reuses submitted questionnaire answers when Enhanced transport retries the tool call', async () => {
+    const deck = access()
+    deck.askClarification = vi.fn(async () => ({
+      answers: 'Audience: travellers\nLength: 10 pages',
+      cancelled: false,
+    }))
+    const skill = createSlidesSkill(deck)
+    const call = {
+      id: 'clarify-1',
+      name: 'ask_clarification',
+      input: {
+        questions: [{ id: 'audience', label: 'Audience?', options: ['Travellers', 'Teams'] }],
+      },
+    }
+
+    await skill.executeTool(call)
+    const retry = await skill.executeTool({ ...call, id: 'clarify-2' })
+
+    expect(deck.askClarification).toHaveBeenCalledOnce()
+    expect(retry.output).toContain('already submitted')
+    expect(retry.output).toContain('Audience: travellers')
   })
 
   it('requires the bounded whole-deck builder after planning instead of accumulating blank pages', async () => {

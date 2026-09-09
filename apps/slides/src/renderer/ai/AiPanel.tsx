@@ -2701,6 +2701,16 @@ export function AiPanel({
           {t('aiPanelTitle')}
         </span>
         <div className="ai-panel-header-actions">
+          {presentationDesignContextRef.current?.designMd && (
+            <button
+              className="ai-header-btn ai-design-header-btn"
+              onClick={() => openDesignEditor(presentationDesignContextRef.current!.designMd)}
+              data-tip="Open DESIGN.md"
+              aria-label="Open DESIGN.md"
+            >
+              DESIGN
+            </button>
+          )}
           {chat.length > 0 && (
             <button
               className="ai-header-btn"

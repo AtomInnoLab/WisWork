@@ -518,6 +518,56 @@ describe('presentation design plan', () => {
     expect(skill.buildContext?.()).toContain('Status: draft')
   })
 
+  it('records successful image research and candidate assets in the active DESIGN.md draft', async () => {
+    ;(globalThis as unknown as { window: Record<string, unknown> }).window = {
+      slidesApi: {
+        imageSearch: vi.fn(async () => ({
+          images: [
+            {
+              imageUrl: 'https://images.example/borobudur.jpg',
+              title: 'Borobudur sunrise',
+            },
+          ],
+          method: 'test',
+        })),
+      },
+    }
+    const saveSidecar = vi.fn(async () => undefined)
+    const setPresentationDesignContext = vi.fn()
+    const skill = createSlidesSkill({
+      getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] }] as never,
+      getCurrent: () => 0,
+      getSelectedIds: () => [],
+      applySlide: () => undefined,
+      applyDeck: () => undefined,
+      saveSidecar,
+      setPresentationDesignContext,
+      fitWidthPx: 1280,
+    })
+    await skill.executeTool({
+      id: 'draft-before-search',
+      name: 'plan_deck',
+      input: { contract: { ...modernContract, status: 'draft' } },
+    })
+
+    const result = await skill.executeTool({
+      id: 'search-and-record',
+      name: 'image_search',
+      input: { query: 'Borobudur sunrise' },
+    })
+
+    expect(result.summary).toContain('DESIGN.md updated')
+    expect(saveSidecar).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        designMd: expect.stringContaining('https://images.example/borobudur.jpg'),
+      }),
+    )
+    expect(setPresentationDesignContext).toHaveBeenLastCalledWith(
+      expect.objectContaining({ designMd: expect.stringContaining('Image search') }),
+    )
+    expect(skill.buildContext?.()).toContain('Borobudur sunrise')
+  })
+
   it('accepts a lightweight initial draft before expanding the page and asset plans', async () => {
     const skill = createSlidesSkill({
       getSlides: () => [{ widthPx: 1280, heightPx: 720, nodes: [] }] as never,
