@@ -129,6 +129,7 @@ export function createProductionCodexBootstrap(
     async start({ executablePath, onCrash }): Promise<CodexRuntimeEngine> {
       const resolver = new CodexTurnResolver(options.diagnostics)
       let rejectDeterministicFailure: (code: string, turnId?: string) => void = () => undefined
+      let touchStreamActivity: (turnId?: string) => void = () => undefined
       let bridge: Awaited<ReturnType<typeof startResponsesBridge>> | undefined
       let gateway: Awaited<ReturnType<typeof startDynamicMcpGateway>> | undefined
       let manager: CodexProcessManager | undefined
@@ -140,6 +141,7 @@ export function createProductionCodexBootstrap(
           diagnostics: options.diagnostics,
           onProtocolRecording: options.onProtocolRecording,
           onDeterministicFailure: (code, turnId) => rejectDeterministicFailure(code, turnId),
+          onStreamActivity: (turnId) => touchStreamActivity(turnId),
         })
         gateway = await startDynamicMcpGateway(options.diagnostics)
         manager = new CodexProcessManager({
@@ -189,6 +191,13 @@ export function createProductionCodexBootstrap(
           active?: ActiveTurn
         }
       >()
+      touchStreamActivity = (turnId) => {
+        if (!turnId) return
+        const active = [...documents.values()].find(
+          (document) => document.active?.turnId === turnId,
+        )?.active
+        if (active && !active.cancelled) active.touch()
+      }
       rejectDeterministicFailure = (_code, turnId) => {
         const document = selectDeterministicFailureDocument(
           [...documents.values()].filter((candidate) => candidate.active),
