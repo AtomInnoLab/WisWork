@@ -933,7 +933,8 @@ export class AgentLoop<TSnapshot = unknown> {
       const safeCorrection = safeFinalResponseCorrection(correction)
       if (
         safeCorrection &&
-        safeCorrection !== this.lastCompletionReviewCorrection &&
+        (skill.repeatFinalResponseCorrection ||
+          safeCorrection !== this.lastCompletionReviewCorrection) &&
         !this.cancelled
       ) {
         this.completionReviewRetries++

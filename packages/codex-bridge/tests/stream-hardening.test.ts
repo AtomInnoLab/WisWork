@@ -186,6 +186,22 @@ describe('bounded Anthropic SSE state machine', () => {
     })
   })
 
+  it('accepts the bounded upstream request identifier added to message_start', async () => {
+    const messageStart = `event: message_start\ndata: ${JSON.stringify({
+      type: 'message_start',
+      message: {
+        id: 'x',
+        model: 'openai/gpt-5.6-sol',
+        request_id: 'req_01H7K8M9N0',
+        usage: { input_tokens: 1 },
+      },
+    })}\n\n`
+    const events = await collect(
+      noToolTurn().messagesStreamToResponses(chunks(messageStart, delta, stop)),
+    )
+    expect(events.at(-1)?.event).toBe('response.completed')
+  })
+
   it.each([
     ['frame bytes', { maxSseFrameBytes: 16 }, [start], 'sse_frame_limit_exceeded'],
     ['buffer bytes', { maxSseBufferBytes: 16 }, [start.slice(0, 20)], 'sse_buffer_limit_exceeded'],
@@ -531,6 +547,30 @@ describe('bounded Anthropic SSE state machine', () => {
 
     expect(events.some((event) => event.data.item?.type === 'custom_tool_call')).toBe(false)
     expect(events.at(-1)?.event).toBe('response.incomplete')
+  })
+
+  it('accepts JSON-stringified output from one authorized document call', async () => {
+    const code =
+      'const result = await tools.mcp__wiswork__wiswork_read_document({}); text(JSON.stringify(result));'
+    const events = await collect(
+      prepareCarrierTurn(structuredClone(captured)).messagesStreamToResponses(
+        chunks(
+          start,
+          'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"c","name":"exec","input":{}}}\n\n',
+          `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ code }) } })}\n\n`,
+          'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+          'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}\n\n',
+          stop,
+        ),
+      ),
+    )
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: 'response.output_item.done',
+        data: expect.objectContaining({ item: expect.objectContaining({ input: code }) }),
+      }),
+    )
   })
 
   it('rejects an unadvertised tool from the bound turn', async () => {

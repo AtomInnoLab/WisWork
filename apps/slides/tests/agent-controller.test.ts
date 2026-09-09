@@ -92,8 +92,12 @@ describe('Slides interactive agent controller', () => {
   it('continues an Enhanced turn when the Slides completion policy rejects a premature stop', async () => {
     let documentId: string | null = null
     let finishFirst!: () => void
+    let finishSecond!: () => void
     const first = new Promise<void>((resolve) => {
       finishFirst = resolve
+    })
+    const second = new Promise<void>((resolve) => {
+      finishSecond = resolve
     })
     const api: any = {
       status: vi.fn(async () => ({ activeAgentRuntime: 'enhanced', documentId })),
@@ -104,20 +108,18 @@ describe('Slides interactive agent controller', () => {
       startTurn: vi
         .fn()
         .mockReturnValueOnce(first)
+        .mockReturnValueOnce(second)
         .mockImplementation(() => new Promise<void>(() => undefined)),
       cancelTurn: vi.fn(async () => undefined),
       toolResult: vi.fn(async () => undefined),
       onEvent: vi.fn(() => () => undefined),
       onToolCall: vi.fn(() => () => undefined),
     }
-    const reviewFinalResponse = vi
-      .fn()
-      .mockReturnValueOnce('[System correction] Continue with plan_deck now.')
-      .mockReturnValue(undefined)
+    const reviewFinalResponse = vi.fn(() => '[System correction] Continue with plan_deck now.')
     const controller = createAgentController(
       {
         transport: manualTransport(),
-        skill: { ...skill, reviewFinalResponse },
+        skill: { ...skill, repeatFinalResponseCorrection: true, reviewFinalResponse },
       },
       { host: 'slides', api },
     )
@@ -135,6 +137,11 @@ describe('Slides interactive agent controller', () => {
       documentId,
       text: '[System correction] Continue with plan_deck now.',
     })
+    finishSecond()
+    await flush()
+    await flush()
+    expect(reviewFinalResponse).toHaveBeenCalledTimes(2)
+    expect(api.startTurn).toHaveBeenCalledTimes(3)
     controller.dispose()
   })
   it('replaces an Enhanced deck registration and rejects callbacks from the old generation', async () => {

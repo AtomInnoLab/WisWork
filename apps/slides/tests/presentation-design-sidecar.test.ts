@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   flushPresentationDesignSidecar,
+  materializePresentationDesignSidecar,
   readPresentationDesignSidecar,
   savePresentationDesignSidecar,
 } from '../src/main/presentation-design-sidecar'
@@ -25,6 +26,24 @@ describe('presentation design sidecar', () => {
     expect(flushPresentationDesignSidecar(senderId, deckPath)).toBe(true)
     expect(readFileSync(deckPath.replace(/\.pptx$/, '.design.md'), 'utf8')).toContain(
       'Background: #0A0A0A',
+    )
+  })
+
+  it('opens an untitled design through a temporary sidecar and preserves external edits on save', () => {
+    const senderId = 91361
+    const dir = mkdtempSync(join(tmpdir(), 'wiswork-design-'))
+    const temporaryPath = join(dir, 'untitled.design.md')
+    const deckPath = join(dir, 'deck.pptx')
+    expect(savePresentationDesignSidecar(senderId, undefined, 'Accent: #10B981')).toBe(true)
+
+    expect(materializePresentationDesignSidecar(senderId, undefined, temporaryPath)).toBe(
+      temporaryPath,
+    )
+    writeFileSync(temporaryPath, '# DESIGN.md\n\nAccent: #3B82F6')
+    expect(readPresentationDesignSidecar(senderId, undefined)).toContain('Accent: #3B82F6')
+    expect(flushPresentationDesignSidecar(senderId, deckPath)).toBe(true)
+    expect(readFileSync(deckPath.replace(/\.pptx$/, '.design.md'), 'utf8')).toContain(
+      'Accent: #3B82F6',
     )
   })
 
