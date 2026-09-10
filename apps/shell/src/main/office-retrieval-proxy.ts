@@ -3,6 +3,7 @@ import type { LookupAddress } from 'node:dns'
 import { lookup } from 'node:dns/promises'
 import { request as httpsRequest } from 'node:https'
 import type { LookupFunction, TcpNetConnectOpts } from 'node:net'
+import { MAX_OFFICE_IMAGE_SOURCE_BYTES } from './office-image-handoff'
 const MAX_RESPONSE_BYTES = 512 * 1024
 const MAX_QUERY_CHARS = 4_096
 const MAX_FETCH_CONTENT_CHARS = 256 * 1024
@@ -91,6 +92,7 @@ async function downloadPublicImage(
   lookupAddresses: LookupAddresses = (hostname) => lookup(hostname, { all: true, verbatim: true }),
   timeoutMs = REQUEST_TIMEOUT_MS,
   redirectsRemaining = 3,
+  maximumBytes = 2 * 1024 * 1024,
 ): Promise<DownloadedImage> {
   const startedAt = Date.now()
   const parsed = new URL(url)
@@ -164,7 +166,14 @@ async function downloadPublicImage(
           settled = true
           response.destroy()
           resolve(
-            downloadPublicImage(next, signal, lookupAddresses, timeoutMs, redirectsRemaining - 1),
+            downloadPublicImage(
+              next,
+              signal,
+              lookupAddresses,
+              timeoutMs,
+              redirectsRemaining - 1,
+              maximumBytes,
+            ),
           )
           return
         }
@@ -175,7 +184,7 @@ async function downloadPublicImage(
           fail()
           return
         }
-        if (declared > 2 * 1024 * 1024) {
+        if (declared > maximumBytes) {
           response.destroy()
           fail('image_limit')
           return
@@ -185,7 +194,7 @@ async function downloadPublicImage(
           fail('image_mime_unsupported')
           return
         }
-        void collectBoundedImageBytes(response)
+        void collectBoundedImageBytes(response, maximumBytes)
           .then((bytes) => {
             if (settled) return
             settled = true
@@ -228,10 +237,21 @@ export function createOfficeLocalSearchProxy(options: {
 }): OfficeRetrievalProxy {
   const searchWeb = options.webSearch ?? wisUsageWebSearch
   const searchImages = options.searchImages ?? imageSearch
+  // Only a local normalizer may consume a larger source. Never send it over Relay.
+  const maximumSourceBytes = options.normalizeImage
+    ? MAX_OFFICE_IMAGE_SOURCE_BYTES
+    : 2 * 1024 * 1024
   const downloadImage =
     options.downloadImage ??
     ((url: string, signal?: AbortSignal) =>
-      downloadPublicImage(url, signal, options.lookupAddresses, options.imageTimeoutMs))
+      downloadPublicImage(
+        url,
+        signal,
+        options.lookupAddresses,
+        options.imageTimeoutMs,
+        3,
+        maximumSourceBytes,
+      ))
   const allowedImages = new Map<string, { expiresAt: number; query: string; maxResults: number }>()
   let generation = 0
   const proxy: OfficeRetrievalProxy = async (capability, body, signal) => {
@@ -289,7 +309,7 @@ export function createOfficeLocalSearchProxy(options: {
       const downloaded = await downloadImage(url, signal)
       checkCurrent()
       if (!supportedImageMime(downloaded.mime)) throw new Error('image_mime_unsupported')
-      if (downloaded.bytes.byteLength > 2 * 1024 * 1024) throw new Error('image_limit')
+      if (downloaded.bytes.byteLength > maximumSourceBytes) throw new Error('image_limit')
       const { mime, bytes } = options.normalizeImage
         ? await options.normalizeImage(downloaded)
         : downloaded

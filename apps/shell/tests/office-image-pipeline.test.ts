@@ -116,41 +116,44 @@ describe('Office downloaded image → production normalization → handoff', () 
     expect(bindings).toEqual(['createRetrievalProxy()'])
   })
 
-  it('shrinks a bounded source before full-size re-encoding expansion can reject it', async () => {
-    // NativeImage mock matching the measured 2800×2100, 1.9 MB JPEG expansion.
-    const source = new Uint8Array(1_912_613)
-    const bounded = new Uint8Array(90_640)
-    const original = decoded({
-      getSize: () => ({ width: 2800, height: 2100 }),
-      toPNG: vi.fn(() => new Uint8Array(19_860_520)),
-      toJPEG: vi.fn(() => new Uint8Array(2_977_581)),
-      resize: vi.fn(({ width, height }) =>
-        decoded({
-          getSize: () => ({ width, height }),
-          toJPEG: () => (width <= 1024 ? bounded : new Uint8Array(HANDOFF_LIMIT + 1)),
-        }),
-      ),
-    })
-    const nativeImage: NativeImage = {
-      createFromBuffer: (bytes) =>
-        bytes.byteLength === bounded.byteLength
-          ? decoded({ getSize: () => ({ width: 1024, height: 768 }) })
-          : original,
-    }
-    serveImage('image/jpeg', source)
-    const proxy = retrieval(productionNormalizer(nativeImage))
-    await proxy('image-search.v1', { query: 'cover', max_results: 1 })
-    const response = await proxy('image-fetch.v1', { url: 'https://images.example/cover.jpg' })
-    const payload = JSON.parse(new TextDecoder().decode(response))
-    const result = await createOfficeImageHandoff(nativeImage)({
-      mime: payload.mime,
-      bytes: Buffer.from(payload.data_base64, 'base64'),
-    })
-    expect(result.mime).toBe('image/jpeg')
-    expect(new Uint8Array(result.bytes)).toEqual(bounded)
-    expect(original.resize).toHaveBeenCalled()
-    expect(Buffer.byteLength(payload.data_base64)).toBeLessThan(256 * 1024)
-  })
+  it.each([1_912_613, 4 * 1024 * 1024])(
+    'shrinks a bounded %i-byte source before transport',
+    async (sourceBytes) => {
+      // NativeImage mock matching the measured 2800×2100, 1.9 MB JPEG expansion.
+      const source = new Uint8Array(sourceBytes)
+      const bounded = new Uint8Array(90_640)
+      const original = decoded({
+        getSize: () => ({ width: 2800, height: 2100 }),
+        toPNG: vi.fn(() => new Uint8Array(19_860_520)),
+        toJPEG: vi.fn(() => new Uint8Array(2_977_581)),
+        resize: vi.fn(({ width, height }) =>
+          decoded({
+            getSize: () => ({ width, height }),
+            toJPEG: () => (width <= 1024 ? bounded : new Uint8Array(HANDOFF_LIMIT + 1)),
+          }),
+        ),
+      })
+      const nativeImage: NativeImage = {
+        createFromBuffer: (bytes) =>
+          bytes.byteLength === bounded.byteLength
+            ? decoded({ getSize: () => ({ width: 1024, height: 768 }) })
+            : original,
+      }
+      serveImage('image/jpeg', source)
+      const proxy = retrieval(productionNormalizer(nativeImage))
+      await proxy('image-search.v1', { query: 'cover', max_results: 1 })
+      const response = await proxy('image-fetch.v1', { url: 'https://images.example/cover.jpg' })
+      const payload = JSON.parse(new TextDecoder().decode(response))
+      const result = await createOfficeImageHandoff(nativeImage)({
+        mime: payload.mime,
+        bytes: Buffer.from(payload.data_base64, 'base64'),
+      })
+      expect(result.mime).toBe('image/jpeg')
+      expect(new Uint8Array(result.bytes)).toEqual(bounded)
+      expect(original.resize).toHaveBeenCalled()
+      expect(Buffer.byteLength(payload.data_base64)).toBeLessThan(256 * 1024)
+    },
+  )
 
   it('normalizes even a fitting source instead of forwarding its original encoding', async () => {
     const canonical = new Uint8Array(80)
@@ -188,9 +191,9 @@ describe('Office downloaded image → production normalization → handoff', () 
   )
 
   it.each(['declared', 'chunked'])(
-    'keeps the 2 MiB %s source limit before decoding or shrinking',
+    'keeps the 10 MiB %s source limit before decoding or shrinking',
     async (mode) => {
-      const bytes = new Uint8Array(2 * 1024 * 1024 + 1)
+      const bytes = new Uint8Array(10 * 1024 * 1024 + 1)
       serveImage('image/jpeg', bytes, mode === 'chunked' ? null : bytes.byteLength)
       const createFromBuffer = vi.fn(() => decoded())
       const proxy = retrieval(productionNormalizer({ createFromBuffer }))

@@ -61,7 +61,7 @@ describe('private Office image handoff', () => {
     })
     const result = await createOfficeImageHandoff({ createFromBuffer: () => image })({
       mime: 'image/jpeg',
-      bytes: new Uint8Array(2 * 1024 * 1024),
+      bytes: new Uint8Array(4 * 1024 * 1024),
     })
     expect(result).toEqual({ mime: 'image/jpeg', bytes })
     expect(Buffer.byteLength(Buffer.from(result.bytes).toString('base64'))).toBeLessThan(256 * 1024)
@@ -86,7 +86,7 @@ describe('private Office image handoff', () => {
     const createFromBuffer = vi.fn(() => decoded())
     const prepare = createOfficeImageHandoff({ createFromBuffer })
     await expect(
-      prepare({ mime: 'image/png', bytes: new Uint8Array(2 * 1024 * 1024 + 1) }),
+      prepare({ mime: 'image/png', bytes: new Uint8Array(10 * 1024 * 1024 + 1) }),
     ).rejects.toThrow('image_limit')
     expect(createFromBuffer).not.toHaveBeenCalled()
   })

@@ -1,5 +1,7 @@
 type HandoffImage = { mime: 'image/png' | 'image/jpeg'; bytes: Uint8Array }
 const MAX_HANDOFF_BYTES = 180 * 1024
+// Source download budget is independent of the much smaller Relay payload budget.
+export const MAX_OFFICE_IMAGE_SOURCE_BYTES = 10 * 1024 * 1024
 
 interface DecodedImage {
   isEmpty(): boolean
@@ -14,7 +16,7 @@ export function createOfficeImageHandoff(
   options: { reencode?: boolean } = {},
 ): (image: HandoffImage) => Promise<HandoffImage> {
   return async (image) => {
-    if (image.bytes.byteLength > 2 * 1024 * 1024) throw new Error('image_limit')
+    if (image.bytes.byteLength > MAX_OFFICE_IMAGE_SOURCE_BYTES) throw new Error('image_limit')
     if (!image.bytes.byteLength) throw new Error('invalid_image')
     if (image.mime !== 'image/png' && image.mime !== 'image/jpeg')
       throw new Error('image_mime_unsupported')

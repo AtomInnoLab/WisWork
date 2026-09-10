@@ -17,6 +17,7 @@ const ERROR_CODES = new Set([
   'design_contract_prototype_required',
   'design_contract_production_incomplete',
   'design_contract_verification_failed',
+  'design_contract_visual_review_failed',
   'design_contract_invalid_status',
   'design_contract_review_not_pending',
   'design_contract_acceptance_mismatch',
@@ -172,7 +173,7 @@ function officeIdentifier(value: unknown): string {
   return /^[A-Za-z_][A-Za-z0-9_.()-]*$/.test(normalized) ? normalized : ''
 }
 
-function officeIdentifiers(error: unknown): OfficeDiagnosticMetadata {
+export function officeIdentifiers(error: unknown): OfficeDiagnosticMetadata {
   const result: OfficeDiagnosticMetadata = {}
   const seen = new Set<unknown>()
   let current = error

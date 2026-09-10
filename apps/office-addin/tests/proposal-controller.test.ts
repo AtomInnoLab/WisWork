@@ -147,6 +147,30 @@ describe('proposal controller', () => {
     })
   })
 
+  it.each([
+    'https://private.example/token',
+    '/Users/alice/private.docx',
+    'PowerPoint.operations.0.set_shape_text_style.secret',
+    'PowerPoint.operations.1234.set_shape_text_style.fontFamily',
+  ])('does not forward an unrecognized verification location: %s', async (errorLocation) => {
+    const controller = createStructuredProposalController()
+    const proposal = controller.propose({
+      operation: 'execute_office_js',
+      title: 'Edit',
+      preview: {},
+      impact: { host: 'powerpoint', targets: ['slide'], count: 1 },
+      fingerprint: 'v1',
+      validate: () => true,
+      execute: () => undefined,
+      verify: () => {
+        throw Object.assign(new Error('office_verify_failed'), { debugInfo: { errorLocation } })
+      },
+    })
+    const decision = controller.waitForDecision(proposal.id)
+    await expect(controller.confirm(proposal.id)).rejects.toThrow('office_verify_failed')
+    expect(await decision).toEqual({ status: 'failed', error: 'office_verify_failed' })
+  })
+
   it('diagnoses validation and verification at their exact safe phases', async () => {
     const record = vi.fn()
     const validation = createStructuredProposalController({ setTool: vi.fn(), record })

@@ -279,9 +279,12 @@ describe('Office fixed retrieval proxy', () => {
   })
 
   it('normalizes downloaded search images before returning them to Office', async () => {
-    const source = new Uint8Array([0xff, 0xd8, 0xff, 0xd9])
+    const source = new Uint8Array(4 * 1024 * 1024)
     const normalized = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
-    const normalizeImage = vi.fn(async () => ({ mime: 'image/png' as const, bytes: normalized }))
+    const normalizeImage = vi.fn(async (_image: { mime: string; bytes: Uint8Array }) => ({
+      mime: 'image/png' as const,
+      bytes: normalized,
+    }))
     const proxy = createOfficeLocalSearchProxy({
       fetchWithAuth: vi.fn(),
       downloadImage: vi.fn(async () => ({ mime: 'image/jpeg' as const, bytes: source })),
@@ -300,12 +303,56 @@ describe('Office fixed retrieval proxy', () => {
     })
     await proxy('image-search.v1', { query: 'llm', max_results: 1 })
     const result = await proxy('image-fetch.v1', { url: 'https://images.example/llm.jpg' })
-    expect(normalizeImage).toHaveBeenCalledWith({ mime: 'image/jpeg', bytes: source })
+    expect(normalizeImage).toHaveBeenCalledOnce()
+    expect(normalizeImage.mock.calls[0]![0].mime).toBe('image/jpeg')
+    expect(normalizeImage.mock.calls[0]![0].bytes).toBe(source)
     expect(JSON.parse(new TextDecoder().decode(result))).toEqual({
       mime: 'image/png',
       data_base64: Buffer.from(normalized).toString('base64'),
     })
   })
+
+  it.each([
+    { sourceBytes: 2 * 1024 * 1024 + 1, normalizedBytes: undefined, error: 'image_limit' },
+    { sourceBytes: 10 * 1024 * 1024 + 1, normalizedBytes: 4, error: 'image_limit' },
+    {
+      sourceBytes: 4 * 1024 * 1024,
+      normalizedBytes: 2 * 1024 * 1024 + 1,
+      error: 'retrieval_upstream_error',
+    },
+  ])(
+    'preserves source and transport boundaries: %o',
+    async ({ sourceBytes, normalizedBytes, error }) => {
+      const normalizeImage =
+        normalizedBytes === undefined
+          ? undefined
+          : vi.fn(async () => ({
+              mime: 'image/png' as const,
+              bytes: new Uint8Array(normalizedBytes),
+            }))
+      const proxy = createOfficeLocalSearchProxy({
+        fetchWithAuth: vi.fn(),
+        normalizeImage,
+        downloadImage: async () => ({ mime: 'image/jpeg', bytes: new Uint8Array(sourceBytes) }),
+        searchImages: async () => ({
+          images: [
+            {
+              title: 'Image',
+              imageUrl: 'https://images.example/image.jpg',
+              sourceUrl: 'https://example.com/',
+              source: 'example',
+            },
+          ],
+          method: 'test',
+        }),
+      })
+      await proxy('image-search.v1', { query: 'image', max_results: 1 })
+      await expect(
+        proxy('image-fetch.v1', { url: 'https://images.example/image.jpg' }),
+      ).rejects.toThrow(error)
+      if (sourceBytes > 10 * 1024 * 1024) expect(normalizeImage).not.toHaveBeenCalled()
+    },
+  )
 
   it('rejects an image-search hostname that resolves to a private address', async () => {
     const proxy = createOfficeLocalSearchProxy({

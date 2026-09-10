@@ -186,9 +186,16 @@ it.each([
         },
       },
     })
-    await expect(fixture.proposals.confirm(fixture.proposals.pending()!.id)).rejects.toMatchObject({
+    const proposalId = fixture.proposals.pending()!.id
+    const decision = fixture.proposals.waitForDecision(proposalId)
+    await expect(fixture.proposals.confirm(proposalId)).rejects.toMatchObject({
       message: 'office_verify_failed',
       debugInfo: { errorLocation: `PowerPoint.operations.0.set_shape_text_style.${property}` },
+    })
+    expect(await decision).toMatchObject({
+      status: 'failed',
+      error: 'office_verify_failed',
+      errorLocation: `PowerPoint.operations.0.set_shape_text_style.${property}`,
     })
     expect(readback).toHaveBeenCalledTimes(3)
     expect(execute).toHaveBeenCalledTimes(1)

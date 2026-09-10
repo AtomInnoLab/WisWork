@@ -1455,20 +1455,29 @@ export function createPowerPointSkill(options: {
           batchScoped: true,
         }
       : undefined
-  const recordDesignMutation = (indexes: readonly number[], scaffold: boolean) => {
+  const recordDesignMutation = (
+    indexes: readonly number[],
+    scaffold: boolean,
+    confirmed = true,
+  ) => {
     if (!activeDesignContractIsModern || !activeDesignContract) return
-    if (activeDesignContract.status === 'ready')
+    if (confirmed && activeDesignContract.status === 'ready')
       activeDesignContract = transitionPresentationDesignContract(activeDesignContract, 'producing')
+    else if (activeDesignContract.status === 'verified')
+      activeDesignContract = { ...activeDesignContract, status: 'producing' }
     for (const index of indexes) {
       if (!scaffold) {
-        builtDesignSlides.add(index)
+        if (confirmed) builtDesignSlides.add(index)
         pendingDesignReviews.add(index)
       }
       dirtySlideIndexes.add(index)
     }
     mutationRevision++
   }
-  const designProductionError = (indexes: readonly number[]): string | undefined => {
+  const designProductionError = (
+    indexes: readonly number[],
+    inserting: boolean,
+  ): string | undefined => {
     if (!activeDesignContractIsModern || !activeDesignContract) return
     const targets = [...new Set(indexes)]
     if (
@@ -1476,15 +1485,20 @@ export function createPowerPointSkill(options: {
       targets.some((index) => index < 0 || index >= activeDesignContract!.slides.length)
     )
       return 'design_contract_scope_mismatch'
-    if (targets.every((index) => pendingDesignReviews.has(index))) return
-    if (targets.some((index) => builtDesignSlides.has(index)))
+    // Repair is not expansion. Previously reviewed pages must be writable again;
+    // confirmation invalidates their screenshot/review just like any other write.
+    if (!inserting && targets.every((index) => builtDesignSlides.has(index))) return
+    if (inserting && targets.some((index) => builtDesignSlides.has(index)))
       return 'design_contract_batch_mismatch'
+    if (targets.every((index) => pendingDesignReviews.has(index))) return
+    const newTargets = targets.filter((index) => !builtDesignSlides.has(index))
     const prototypes = new Set(activeDesignContract.prototypePages.map((number) => number - 1))
     if (![...prototypes].every((index) => builtDesignSlides.has(index)))
-      return targets.every((index) => prototypes.has(index))
+      return newTargets.every((index) => prototypes.has(index))
         ? undefined
         : 'design_contract_prototype_required'
-    if (pendingDesignReviews.size >= 3) return 'design_contract_review_required'
+    if (new Set([...pendingDesignReviews, ...targets]).size > 3)
+      return 'design_contract_review_required'
     // Office exposes slide creation as one confirmed duplicate proposal at a time.
     // Permit those sequential writes; pendingDesignReviews still caps expansion and
     // forces screenshot review before the agent can move beyond the current batch.
@@ -1501,6 +1515,10 @@ export function createPowerPointSkill(options: {
       proposalDesignSlides.delete(event.id)
       if (event.status === 'confirmed' && mutation)
         recordDesignMutation(mutation.indexes, mutation.scaffold)
+      else if (mutation && ['failed', 'applied_unverified'].includes(event.status))
+        // Verification can fail after Office has applied some or all operations.
+        // Do not count an unconfirmed page as built, or keep an older review valid.
+        recordDesignMutation(mutation.indexes, mutation.scaffold, false)
     }
     if (!presentation) return
     if (event.kind === 'proposed') presentation.recordProposal(event)
@@ -1735,7 +1753,7 @@ export function createPowerPointSkill(options: {
             inputIndexes.some((index) => index < 0 || index >= knownSlideCount)
           )
             return failure(call.name, 'invalid_tool_input')
-          const productionError = designProductionError(indexes)
+          const productionError = designProductionError(indexes, call.name === 'duplicate_slide')
           const contract = activeDesignContract
           // Append only the unbuilt placeholders needed to reach a later prototype.
           scaffolding =
@@ -1897,9 +1915,29 @@ export function createPowerPointSkill(options: {
           if (activeDesignContractIsModern && (!designClean || !designComplete))
             return failure(
               call.name,
-              !designComplete
-                ? 'design_contract_production_incomplete'
-                : 'design_contract_verification_failed',
+              boundedJson({
+                error: !designComplete
+                  ? 'design_contract_production_incomplete'
+                  : 'design_contract_verification_failed',
+                ...reviewRecovery(),
+                ...(!designClean
+                  ? {
+                      nextTool: 'list_slide_shapes',
+                      instruction:
+                        'Repair the reported slide/shape geometry, then screenshot and review each changed page again. Use real slide backgrounds instead of overlapping background rectangles. Do not repeat verification without fixing the reported defects.',
+                    }
+                  : {}),
+                // Omit unrelated shape inventories; preserve bounded, actionable failures.
+                verification: {
+                  slideWidth: verified.slideWidth,
+                  slideHeight: verified.slideHeight,
+                  truncated: verified.truncated,
+                  slides: verified.slides.map(({ shapes: _shapes, ...slide }) => slide),
+                },
+                unbuiltSlideIndexes: activeDesignContract?.slides.flatMap((_, index) =>
+                  builtDesignSlides.has(index) ? [] : [index],
+                ),
+              }),
             )
           if (
             dirtySlideIndexes.size === 0 &&
