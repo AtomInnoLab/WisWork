@@ -2908,6 +2908,39 @@ describe('browser PowerPoint adapter', () => {
     expect(run).toHaveBeenCalledTimes(2)
   })
 
+  it('switches between documented rendering shapes when Mac rejects sized screenshots', async () => {
+    const getImageAsBase64 = vi.fn((options?: { width?: number; height?: number }) => {
+      if (options !== undefined) throw new Error('GeneralException')
+      return { value: png }
+    })
+    const slide = { id: 's1', load: vi.fn(), getImageAsBase64 }
+    const slides = {
+      getCount: vi.fn(() => ({ value: 1 })),
+      getItemAt: vi.fn(() => slide),
+    }
+    const context = { presentation: { slides }, sync: vi.fn().mockResolvedValue(undefined) }
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          platform: 'Mac',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (value: typeof context) => unknown) => callback(context),
+      },
+    })
+
+    await expect(new BrowserPowerPointAdapter().screenshotSlide(0)).resolves.toEqual({
+      base64: png,
+      mime: 'image/png',
+    })
+    expect(getImageAsBase64).toHaveBeenNthCalledWith(1, { width: 960 })
+    expect(getImageAsBase64).toHaveBeenNthCalledWith(2, { height: 540 })
+    expect(getImageAsBase64).toHaveBeenNthCalledWith(3, undefined)
+  })
+
   it('maps native master operations to PowerPointApi 1.10 objects', async () => {
     const setSolidFill = vi.fn()
     const setThemeColor = vi.fn()
