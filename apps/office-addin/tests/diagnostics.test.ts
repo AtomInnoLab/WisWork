@@ -5,6 +5,17 @@ import {
 } from '../src/diagnostics/office-diagnostics.js'
 
 describe('Office safe diagnostics', () => {
+  it.each([720_123, 1_800_000, 86_400_001])(
+    'retains long-run elapsed time within the existing Relay bound: %i',
+    (durationMs) => {
+      const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'test' })
+      diagnostics.record({ phase: 'transport', errorCode: 'network_error', durationMs })
+      expect(diagnostics.snapshot().events.at(-1)?.duration_ms).toBe(
+        Math.min(86_400_000, durationMs),
+      )
+    },
+  )
+
   it.each([
     'https://private.example/document',
     '//private.example/document',
@@ -24,7 +35,13 @@ describe('Office safe diagnostics', () => {
     expect(diagnostics.exportJson()).not.toContain('private')
   })
 
-  it.each(['image_fetch_unavailable', 'image_limit', 'image_mime_unsupported', 'invalid_image'])(
+  it.each([
+    'image_fetch_unavailable',
+    'image_limit',
+    'image_mime_unsupported',
+    'invalid_image',
+    'office_screenshot_unavailable',
+  ])(
     'preserves %s instead of misdiagnosing image preparation as an Office write failure',
     (errorCode) => {
       const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'test' })

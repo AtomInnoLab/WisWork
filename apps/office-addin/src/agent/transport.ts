@@ -189,6 +189,17 @@ function messagesForProvider(messages: AgentMessage[]): unknown[] {
 }
 
 function safeError(error: unknown): string {
+  if (error instanceof Error) {
+    const known: Readonly<Record<string, string>> = {
+      relay_session_expired: 'session_expired',
+      relay_auth_required: 'auth_required',
+      relay_request_timeout: 'request_timeout',
+      relay_timeout: 'request_timeout',
+      relay_upstream_error: 'provider_unavailable',
+      relay_disconnected: 'network_error',
+    }
+    if (Object.hasOwn(known, error.message)) return known[error.message]!
+  }
   if (error && typeof error === 'object' && 'code' in error) {
     const code = Reflect.get(error, 'code')
     if (code === 'unauthenticated' || code === 'refresh_failed' || code === 'unauthorized') {

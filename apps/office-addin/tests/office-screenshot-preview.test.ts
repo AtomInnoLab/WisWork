@@ -65,7 +65,7 @@ describe('Office model screenshot previews', () => {
       })
       expect(diagnostics.snapshot().events.at(-1)).toMatchObject({
         tool: 'screenshot_slide',
-        error_code: 'office_read_failed',
+        error_code: 'office_screenshot_unavailable',
       })
     } finally {
       session.dispose()

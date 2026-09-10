@@ -1355,6 +1355,7 @@ export function ConfiguredApp(
               'image-search.v1',
               'image-fetch.v1',
               'design-document.v1',
+              'enhanced-lease.v1',
             ],
             persistentPairing: __WISWORK_OFFICE_PAIRING_RESUME__,
           })),

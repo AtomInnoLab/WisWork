@@ -17,6 +17,7 @@ export const MAX_POWERPOINT_VERIFY_SLIDES = 20
 export const MAX_POWERPOINT_VERIFY_SHAPES = 100
 export const MAX_POWERPOINT_VERIFY_OVERFLOWS = 2_000
 const MAX_POWERPOINT_DOCUMENT_BYTES = 64 * 1024 * 1024
+const POWERPOINT_SCREENSHOT_READ_TIMEOUT_MS = 15_000
 const NON_TEXT_SHAPE_TYPES = new Set([
   'Image',
   'Group',
@@ -881,42 +882,83 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
 
   async screenshotSlide(
     slideIndex: number,
-    signal?: AbortSignal,
+    outerSignal?: AbortSignal,
   ): Promise<{ base64: string; mime: 'image/png' }> {
-    cancelled(signal)
-    let lastError: unknown
-    for (const options of [{ width: 960 }, { height: 540 }, undefined]) {
-      try {
-        return await this.run('1.8', async (context) => {
-          const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
-          const slide = await getSlide(context, slides, slideIndex, signal)
-          if (typeof slide.getImageAsBase64 !== 'function')
-            throw new Error('office_api_unsupported')
-          const image = (
-            slide.getImageAsBase64 as (options?: {
-              width?: number
-              height?: number
-            }) => RuntimeRecord
-          )(options)
-          await sync(context, signal)
-          if (typeof image.value !== 'string') throw new Error('office_read_failed')
-          officeScreenshotBytes(
-            { base64: image.value, mime: 'image/png' },
-            OFFICE_SCREENSHOT_SOURCE_BYTES,
-          )
-          return { base64: image.value, mime: 'image/png' }
-        })
-      } catch (error) {
-        if (
-          signal?.aborted ||
-          (error instanceof Error &&
-            ['cancelled', 'invalid_tool_input', 'office_api_unsupported'].includes(error.message))
-        )
-          throw error
-        lastError = error
+    cancelled(outerSignal)
+    const controller = new AbortController()
+    const signal = controller.signal
+    const deadline = Date.now() + POWERPOINT_SCREENSHOT_READ_TIMEOUT_MS
+    let rejectStopped!: (error: Error) => void
+    const stopped = new Promise<never>((_resolve, reject) => {
+      rejectStopped = reject
+    })
+    const stop = (code: string) => {
+      controller.abort()
+      rejectStopped(new Error(code))
+    }
+    const checkRead = () => {
+      cancelled(signal)
+      if (Date.now() >= deadline) {
+        stop('office_screenshot_unavailable')
+        throw new Error('office_screenshot_unavailable')
       }
     }
-    throw new Error('office_screenshot_unavailable', { cause: lastError })
+    const abort = () => stop('cancelled')
+    outerSignal?.addEventListener('abort', abort, { once: true })
+    // Bound the whole read, including Office run admission/cleanup and all rendering alternatives.
+    // Abandoning a hung read must not queue another native attempt or accept its late result.
+    const timer = setTimeout(
+      () => stop('office_screenshot_unavailable'),
+      POWERPOINT_SCREENSHOT_READ_TIMEOUT_MS,
+    )
+    const capture = async (): Promise<{ base64: string; mime: 'image/png' }> => {
+      let lastError: unknown
+      for (const options of [{ width: 960 }, { height: 540 }, undefined]) {
+        checkRead()
+        try {
+          const result = await this.run('1.8', async (context) => {
+            checkRead()
+            const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+            const slide = await getSlide(context, slides, slideIndex, signal)
+            checkRead()
+            if (typeof slide.getImageAsBase64 !== 'function')
+              throw new Error('office_api_unsupported')
+            const image = (
+              slide.getImageAsBase64 as (options?: {
+                width?: number
+                height?: number
+              }) => RuntimeRecord
+            )(options)
+            await sync(context, signal)
+            checkRead()
+            if (typeof image.value !== 'string') throw new Error('office_read_failed')
+            officeScreenshotBytes(
+              { base64: image.value, mime: 'image/png' },
+              OFFICE_SCREENSHOT_SOURCE_BYTES,
+            )
+            return { base64: image.value, mime: 'image/png' as const }
+          })
+          checkRead()
+          return result
+        } catch (error) {
+          if (
+            signal.aborted ||
+            (error instanceof Error &&
+              ['cancelled', 'invalid_tool_input', 'office_api_unsupported'].includes(error.message))
+          )
+            throw error
+          lastError = error
+        }
+      }
+      throw new Error('office_screenshot_unavailable', { cause: lastError })
+    }
+    try {
+      return await Promise.race([capture(), stopped])
+    } finally {
+      clearTimeout(timer)
+      outerSignal?.removeEventListener('abort', abort)
+      controller.abort()
+    }
   }
 
   async readSlideText(

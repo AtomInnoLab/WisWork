@@ -3109,6 +3109,194 @@ describe('browser PowerPoint adapter', () => {
     expect(getImageAsBase64).toHaveBeenCalledTimes(3)
   })
 
+  describe('native screenshot lifetime', () => {
+    const stages = [
+      'run admission',
+      'slide count sync',
+      'slide lookup sync',
+      'image export sync',
+      'run cleanup',
+    ] as const
+
+    function stallScreenshot(stage: (typeof stages)[number]) {
+      let release!: () => void
+      const blocked = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const getImageAsBase64 = vi.fn(() => ({ value: png }))
+      const slide = { id: 'slide-1', load: vi.fn(), getImageAsBase64 }
+      let syncCount = 0
+      const context = {
+        presentation: {
+          slides: { getCount: () => ({ value: 1 }), getItemAt: () => slide },
+        },
+        sync: vi.fn(async () => {
+          syncCount += 1
+          if (
+            (stage === 'slide count sync' && syncCount === 1) ||
+            (stage === 'slide lookup sync' && syncCount === 2) ||
+            (stage === 'image export sync' && syncCount === 3)
+          )
+            await blocked
+        }),
+      }
+      const run = vi.fn(async (callback: (value: typeof context) => Promise<unknown>) => {
+        if (stage === 'run admission') await blocked
+        const result = await callback(context)
+        if (stage === 'run cleanup') await blocked
+        return result
+      })
+      vi.stubGlobal('Office', {
+        context: { host: 'PowerPoint', requirements: { isSetSupported: () => true } },
+      })
+      vi.stubGlobal('PowerPoint', { run })
+      return { release, run, getImageAsBase64 }
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals()
+      vi.useRealTimers()
+    })
+
+    it.each(stages)('bounds a stalled %s within the native read budget', async (stage) => {
+      vi.useFakeTimers()
+      const native = stallScreenshot(stage)
+      let outcome: string | undefined
+      const pending = new BrowserPowerPointAdapter().screenshotSlide(0).then(
+        () => {
+          outcome = 'success'
+        },
+        (error: Error) => {
+          outcome = error.message
+        },
+      )
+      try {
+        // Native capture must leave room for the existing 10s preview inside the PC tool limit.
+        await vi.advanceTimersByTimeAsync(15_000)
+        expect(outcome).toBe('office_screenshot_unavailable')
+        expect(native.run).toHaveBeenCalledOnce()
+        expect(vi.getTimerCount()).toBe(0)
+        const exportsBeforeRelease = native.getImageAsBase64.mock.calls.length
+        native.release()
+        await pending
+        await vi.advanceTimersByTimeAsync(0)
+        expect(native.getImageAsBase64).toHaveBeenCalledTimes(exportsBeforeRelease)
+        expect(native.run).toHaveBeenCalledOnce()
+      } finally {
+        native.release()
+        await pending
+      }
+    })
+
+    it.each(stages)('settles user cancellation while %s is still stalled', async (stage) => {
+      vi.useFakeTimers()
+      const native = stallScreenshot(stage)
+      const controller = new AbortController()
+      let outcome: string | undefined
+      const pending = new BrowserPowerPointAdapter().screenshotSlide(0, controller.signal).then(
+        () => {
+          outcome = 'success'
+        },
+        (error: Error) => {
+          outcome = error.message
+        },
+      )
+      try {
+        await vi.advanceTimersByTimeAsync(0)
+        controller.abort()
+        await vi.advanceTimersByTimeAsync(0)
+        expect(outcome).toBe('cancelled')
+        expect(native.run).toHaveBeenCalledOnce()
+        expect(vi.getTimerCount()).toBe(0)
+      } finally {
+        native.release()
+        await pending
+      }
+    })
+
+    it('shares one native read deadline across concrete rendering failures', async () => {
+      vi.useFakeTimers()
+      const native = stallScreenshot('image export sync')
+      native.run.mockImplementationOnce(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10_000))
+        throw new Error('GeneralException')
+      })
+      let outcome: string | undefined
+      const pending = new BrowserPowerPointAdapter().screenshotSlide(0).then(
+        () => {
+          outcome = 'success'
+        },
+        (error: Error) => {
+          outcome = error.message
+        },
+      )
+      try {
+        await vi.advanceTimersByTimeAsync(14_999)
+        expect(native.run).toHaveBeenCalledTimes(2)
+        expect(outcome).toBeUndefined()
+        await vi.advanceTimersByTimeAsync(1)
+        expect(outcome).toBe('office_screenshot_unavailable')
+        expect(native.run).toHaveBeenCalledTimes(2)
+      } finally {
+        native.release()
+        await pending
+      }
+    })
+
+    it('rejects an overdue native result even when the deadline timer has not run yet', async () => {
+      vi.useFakeTimers()
+      const native = stallScreenshot('run cleanup')
+      const pending = new BrowserPowerPointAdapter().screenshotSlide(0).then(
+        () => 'success',
+        (error: Error) => error.message,
+      )
+      try {
+        await vi.advanceTimersByTimeAsync(0)
+        vi.setSystemTime(Date.now() + 15_001)
+        native.release()
+        expect(await pending).toBe('office_screenshot_unavailable')
+      } finally {
+        native.release()
+        await pending
+      }
+    })
+
+    it('does not let a late timed-out native screenshot unlock visual review', async () => {
+      vi.useFakeTimers()
+      const native = stallScreenshot('image export sync')
+      const browser = new BrowserPowerPointAdapter()
+      const proposals = createStructuredProposalController()
+      const skill = createPowerPointSkill({
+        adapter: adapter({ screenshotSlide: browser.screenshotSlide.bind(browser) }),
+        proposals,
+      })
+      await skill.executeTool(call('plan_deck', { contract: modernContract() }))
+      await skill.executeTool(
+        call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' }),
+      )
+      await proposals.confirm(proposals.pending()!.id)
+      const pending = skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+      try {
+        await vi.advanceTimersByTimeAsync(15_000)
+        native.release()
+        const screenshot = await pending
+        expect.soft(screenshot).toMatchObject({ isError: true })
+        await expect(
+          skill.executeTool(
+            call('review_slide_screenshot', {
+              slide_index: 0,
+              acceptance_ids: ['A1.1'],
+              passed: true,
+            }),
+          ),
+        ).resolves.toMatchObject({ isError: true, output: 'design_contract_screenshot_required' })
+      } finally {
+        native.release()
+        await pending
+      }
+    })
+  })
+
   it('maps native master operations to PowerPointApi 1.10 objects', async () => {
     const setSolidFill = vi.fn()
     const setThemeColor = vi.fn()

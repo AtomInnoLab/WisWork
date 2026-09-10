@@ -53,6 +53,29 @@ const inventories = {
 } as const
 
 describe('host runtime composition', () => {
+  it('keeps a pending semantic proposal when already-disabled elevated tools are disabled again', async () => {
+    const runtime = createOfficeHostRuntime('powerpoint')
+    runtime.disableElevatedOffice()
+    const proposals = runtime.proposals as StructuredProposalController
+    const execute = vi.fn()
+    const proposal = proposals.propose({
+      operation: 'edit_slide_text',
+      title: 'Update slide title',
+      preview: { text: 'Renewed title' },
+      impact: { host: 'powerpoint', targets: ['slide_1'], count: 1 },
+      fingerprint: 'slide_1_revision',
+      validate: () => true,
+      execute,
+    })
+    const decision = proposals.waitForDecision(proposal.id)
+    runtime.disableElevatedOffice()
+    expect(proposals.pending()?.id).toBe(proposal.id)
+    await proposals.confirm(proposal.id)
+    await expect(decision).resolves.toEqual({ status: 'confirmed' })
+    expect(execute).toHaveBeenCalledOnce()
+    runtime.dispose()
+  })
+
   it('advertises the distinct raw tool only when an Enhanced adapter is supplied', () => {
     const standard = createOfficeHostRuntime('word')
     expect(standard.skill.tools.map((tool) => tool.name)).not.toContain('propose_raw_office_edit')
@@ -84,8 +107,12 @@ describe('host runtime composition', () => {
     expect(names).toContain('propose_raw_office_edit')
     standard.enableElevatedOffice(adapter.captureAuthority)
     expect(standard.skill.tools.map((tool) => tool.name)).toContain('propose_raw_office_edit')
+    const logout = vi.spyOn(standard.proposals, 'logout')
     standard.disableElevatedOffice()
     expect(standard.skill.tools.map((tool) => tool.name)).not.toContain('propose_raw_office_edit')
+    expect(logout).toHaveBeenCalledOnce()
+    standard.disableElevatedOffice()
+    expect(logout).toHaveBeenCalledOnce()
   })
   it.each(Object.entries(inventories))(
     'composes shared tools with only the %s host skill',

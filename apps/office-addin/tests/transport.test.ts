@@ -33,6 +33,23 @@ function callbacks() {
 }
 
 describe('Office Agent transport', () => {
+  it.each([
+    ['relay_session_expired', 'session_expired'],
+    ['relay_request_timeout', 'request_timeout'],
+    ['relay_auth_required', 'auth_required'],
+    ['relay_upstream_error', 'provider_unavailable'],
+    ['relay_disconnected', 'network_error'],
+  ])('preserves the safe category for %s', async (message, code) => {
+    const cb = callbacks()
+    createTestTransport({
+      authenticatedFetch: async () => {
+        throw new Error(message)
+      },
+    }).stream({ system: '', messages: [], tools: [] }, cb)
+    await vi.waitFor(() => expect(cb.onDone).toHaveBeenCalledOnce())
+    expect(cb.onError).toHaveBeenCalledWith(code)
+  })
+
   const activity = (state = 'running', extra: Record<string, unknown> = {}) => ({
     type: 'wiswork_tool_activity',
     generation: 3,

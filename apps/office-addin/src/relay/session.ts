@@ -26,6 +26,9 @@ const REQUEST_TIMEOUT_MS = 290_000
 // agent.v1 can carry a whole Enhanced tool loop. Transport owns its progress
 // timeout and 30-minute cap; this watchdog also covers a lost cancellation.
 const AGENT_REQUEST_TIMEOUT_MS = 30 * 60_000 + 10_000
+// PC issues 15-minute leases. Allow bounded clock skew only when validating
+// the upper bound; the previous authority still expires without any grace.
+const MAX_ENHANCED_LEASE_MS = 15 * 60_000 + 30_000
 const MAX_OPAQUE_LENGTH = 512
 const MAX_DIAGNOSTIC_EVENT_BYTES = 4 * 1024
 const MAX_PENDING_DIAGNOSTICS = 16
@@ -102,6 +105,7 @@ export type OfficeRelayToolHandler = (
 
 export type OfficeRelayCapability =
   | 'agent.v1'
+  | 'enhanced-lease.v1'
   | 'web-search.v1'
   | 'web-fetch.v1'
   | 'image-search.v1'
@@ -338,7 +342,12 @@ export function createOfficeRelaySession(
       }
     } else active.reject(new Error(error ?? 'relay_disconnected'))
   }
-  const revoke = (status: OfficeRelayStatus = 'offline', close = true, settle = true) => {
+  const revoke = (
+    status: OfficeRelayStatus = 'offline',
+    close = true,
+    settle = true,
+    requestError = 'relay_disconnected',
+  ) => {
     if (request && sessionId && capability) {
       try {
         send({
@@ -353,7 +362,7 @@ export function createOfficeRelaySession(
       }
     }
     generation += 1
-    finishRequest('relay_disconnected')
+    finishRequest(requestError)
     for (const activeTool of activeTools.values()) activeTool.controller.abort()
     activeTools.clear()
     requestToolCallIds.clear()
@@ -454,9 +463,10 @@ export function createOfficeRelaySession(
     socket.send(encoded)
   }
 
-  const scheduleResume = () => {
-    if (explicitlyDisconnected || !storedBinding || !host) return revoke('offline')
-    revoke('reconnecting', true, false)
+  const scheduleResume = (requestError = 'relay_disconnected') => {
+    if (explicitlyDisconnected || !storedBinding || !host)
+      return revoke('offline', true, true, requestError)
+    revoke('reconnecting', true, false, requestError)
     cancelRetry()
     const base = Math.min(30_000, 500 * 2 ** Math.min(retryAttempt, 6))
     const delay = Math.min(30_000, Math.round(base * (0.75 + 0.5 * random())))
@@ -476,11 +486,11 @@ export function createOfficeRelaySession(
     if (abandoned) void bindingStore?.abort(abandoned, abandonedBindingId).catch(() => undefined)
   }
 
-  const fallbackToLegacy = () => {
+  const fallbackToLegacy = (requestError = 'relay_disconnected') => {
     if (enhancedFallbackUsed || explicitlyDisconnected || !host) return revoke('offline')
     enhancedFallbackUsed = true
     abandonEnrollment()
-    startAttempt('legacy')
+    startAttempt('legacy', requestError)
   }
 
   const fallbackStoredBindingToLegacy = () => {
@@ -496,9 +506,17 @@ export function createOfficeRelaySession(
     revoke('offline', false)
   }
 
-  const startAttempt = (mode: 'legacy' | 'enroll' | 'resume') => {
+  const startAttempt = (
+    mode: 'legacy' | 'enroll' | 'resume',
+    requestError = 'relay_disconnected',
+  ) => {
     if (!host || explicitlyDisconnected) return
-    revoke(state.status === 'reconnecting' ? 'reconnecting' : 'connecting', true, false)
+    revoke(
+      state.status === 'reconnecting' ? 'reconnecting' : 'connecting',
+      true,
+      false,
+      requestError,
+    )
     connectionMode = mode
     if (mode === 'resume') resumeRecognized = false
     const epoch = generation
@@ -521,7 +539,7 @@ export function createOfficeRelaySession(
             type: 'office.resume',
             binding_id: storedBinding.bindingId,
             host: hostLabels[host],
-            capabilities: requestedCapabilities,
+            capabilities: storedBinding.capabilities,
           })
         } else if (mode === 'enroll' && enrollment) {
           send({
@@ -630,10 +648,10 @@ export function createOfficeRelaySession(
       })
   }
 
-  const protocolFailure = () => {
-    if (connectionMode === 'enroll') fallbackToLegacy()
-    else if (connectionMode === 'resume' && storedBinding) scheduleResume()
-    else revoke('offline')
+  const protocolFailure = (requestError = 'relay_disconnected') => {
+    if (connectionMode === 'enroll') fallbackToLegacy(requestError)
+    else if (connectionMode === 'resume' && storedBinding) scheduleResume(requestError)
+    else revoke('offline', true, true, requestError)
   }
 
   const subscribeInvalidation = () => {
@@ -790,8 +808,8 @@ export function createOfficeRelaySession(
       exactKeys(frame, ['version', 'type', 'code']) &&
       frame.code === 'session_expired'
     ) {
-      if (connectionMode === 'resume' && storedBinding) scheduleResume()
-      else revoke('expired')
+      if (connectionMode === 'resume' && storedBinding) scheduleResume('relay_session_expired')
+      else revoke('expired', true, true, 'relay_session_expired')
       return
     }
 
@@ -1034,6 +1052,12 @@ export function createOfficeRelaySession(
         !opaque(frame.capability) ||
         !expiry(frame.expires_in, 1800) ||
         !approvedCapabilities ||
+        (connectionMode === 'resume' &&
+          (!storedBinding ||
+            approvedCapabilities.length !== storedBinding.capabilities.length ||
+            approvedCapabilities.some(
+              (value, index) => value !== storedBinding!.capabilities[index],
+            ))) ||
         (enhancedApproval && !storedBinding) ||
         (committedOffer &&
           enhancedApproval &&
@@ -1074,7 +1098,7 @@ export function createOfficeRelaySession(
         !exactKeys(frame, ['version', 'type', 'session_id', 'generation', 'enhanced']) ||
         frame.session_id !== sessionId ||
         !Number.isSafeInteger(frame.generation) ||
-        Number(frame.generation) <= runtimeGeneration
+        Number(frame.generation) < runtimeGeneration
       )
         return protocolFailure()
       let parsed: OfficeEnhancedStatement | undefined
@@ -1092,13 +1116,32 @@ export function createOfficeRelaySession(
         )
           return protocolFailure()
       } else if (frame.generation !== 0) return protocolFailure()
+      const renewal = frame.generation === runtimeGeneration
+      if (
+        renewal &&
+        (!negotiatedCapabilities.includes('enhanced-lease.v1') ||
+          !enhancedStatement ||
+          !parsed ||
+          enhancedStatement.expires_at <= Date.now() ||
+          parsed.expires_at <= enhancedStatement.expires_at ||
+          parsed.expires_at > Date.now() + MAX_ENHANCED_LEASE_MS ||
+          (Object.keys(parsed) as (keyof OfficeEnhancedStatement)[]).some(
+            (key) => key !== 'expires_at' && parsed[key] !== enhancedStatement![key],
+          ))
+      )
+        return protocolFailure()
       runtimeGeneration = Number(frame.generation)
-      for (const activeTool of activeTools.values()) activeTool.controller.abort()
-      activeTools.clear()
+      if (!renewal) {
+        for (const activeTool of activeTools.values()) activeTool.controller.abort()
+        activeTools.clear()
+      }
       enhancedStatement = parsed
       if (runtimeExpiryTimer !== undefined) clearTimeout(runtimeExpiryTimer)
       runtimeExpiryTimer = parsed
-        ? setTimeout(() => protocolFailure(), Math.max(0, parsed.expires_at - Date.now()))
+        ? setTimeout(
+            () => protocolFailure('relay_session_expired'),
+            Math.max(0, parsed.expires_at - Date.now()),
+          )
         : undefined
       publish({ ...state, ...(parsed ? { enhanced: parsed } : {}) })
       return
@@ -1341,7 +1384,12 @@ export function createOfficeRelaySession(
         !opaque(frame.code)
       )
         return protocolFailure()
-      finishRequest('relay_error')
+      const code = ['request_timeout', 'auth_required', 'upstream_error'].includes(
+        String(frame.code),
+      )
+        ? `relay_${frame.code}`
+        : 'relay_error'
+      finishRequest(code)
       return
     }
     protocolFailure()
@@ -1467,6 +1515,7 @@ export function createOfficeRelaySession(
     },
     async capabilityFetch(capabilityName, parsedBody, signal) {
       if (
+        capabilityName === 'enhanced-lease.v1' ||
         !socket ||
         !sessionId ||
         !capability ||
@@ -1583,32 +1632,37 @@ export function createOfficeRelaySession(
         phase: event.phase,
         outcome: event.outcome,
         error_code:
-          // Keep precise image failures locally; older Relay v2 accepts only these wire codes.
-          event.error_code === 'invalid_tool_input' ||
-          event.error_code === 'invalid_image' ||
-          event.error_code === 'image_limit' ||
-          event.error_code === 'image_mime_unsupported' ||
-          [
-            'design_contract_review_required',
-            'design_contract_prototype_required',
-            'design_contract_production_incomplete',
-            'design_contract_verification_failed',
-            'design_contract_visual_review_failed',
-            'design_contract_invalid_status',
-            'design_contract_review_not_pending',
-            'design_contract_acceptance_mismatch',
-            'design_contract_screenshot_required',
-          ].includes(event.error_code)
-            ? 'agent_run_failed'
-            : event.error_code === 'image_fetch_unavailable'
-              ? 'network_error'
-              : event.error_code === 'office_concurrent_change' ||
-                  event.error_code === 'office_state_uncertain'
-                ? // Relay v2 does not yet advertise the local transaction-detail vocabulary.
-                  'office_verify_failed'
-                : event.error_code.startsWith('office_recovery_failed:word_')
-                  ? 'office_recovery_failed'
-                  : event.error_code,
+          event.error_code === 'session_expired'
+            ? 'auth_required'
+            : event.error_code === 'office_screenshot_unavailable'
+              ? 'office_read_failed'
+              : // Keep precise image failures locally; older Relay v2 accepts only these wire codes.
+                event.error_code === 'transport_stream_budget_exceeded' ||
+                  event.error_code === 'invalid_tool_input' ||
+                  event.error_code === 'invalid_image' ||
+                  event.error_code === 'image_limit' ||
+                  event.error_code === 'image_mime_unsupported' ||
+                  [
+                    'design_contract_review_required',
+                    'design_contract_prototype_required',
+                    'design_contract_production_incomplete',
+                    'design_contract_verification_failed',
+                    'design_contract_visual_review_failed',
+                    'design_contract_invalid_status',
+                    'design_contract_review_not_pending',
+                    'design_contract_acceptance_mismatch',
+                    'design_contract_screenshot_required',
+                  ].includes(event.error_code)
+                ? 'agent_run_failed'
+                : event.error_code === 'image_fetch_unavailable'
+                  ? 'network_error'
+                  : event.error_code === 'office_concurrent_change' ||
+                      event.error_code === 'office_state_uncertain'
+                    ? // Relay v2 does not yet advertise the local transaction-detail vocabulary.
+                      'office_verify_failed'
+                    : event.error_code.startsWith('office_recovery_failed:word_')
+                      ? 'office_recovery_failed'
+                      : event.error_code,
         ...(event.office_error_code ? { office_error_code: event.office_error_code } : {}),
         ...(event.office_error_name ? { office_error_name: event.office_error_name } : {}),
         ...(event.office_error_location

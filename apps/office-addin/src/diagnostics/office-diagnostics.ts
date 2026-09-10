@@ -31,6 +31,7 @@ const ERROR_CODES = new Set([
   'network_error',
   'office_api_unsupported',
   'office_read_failed',
+  'office_screenshot_unavailable',
   'office_overwrite_required',
   'office_recovery_failed',
   'office_concurrent_change',
@@ -42,6 +43,8 @@ const ERROR_CODES = new Set([
   'proposal_stale',
   'provider_unavailable',
   'request_timeout',
+  'session_expired',
+  'transport_stream_budget_exceeded',
 ])
 
 export interface OfficeDiagnosticEvent {
@@ -304,7 +307,8 @@ export function createOfficeDiagnostics(options: DiagnosticOptions): OfficeDiagn
         ...officeIdentifiers(input.error),
         duration_ms:
           Number.isFinite(input.durationMs) && input.durationMs! >= 0
-            ? Math.min(600_000, Math.trunc(input.durationMs!))
+            ? // Match the existing Relay diagnostic bound, not a fictitious 10-minute run cap.
+              Math.min(86_400_000, Math.trunc(input.durationMs!))
             : 0,
         requirement_sets: requirements,
       })

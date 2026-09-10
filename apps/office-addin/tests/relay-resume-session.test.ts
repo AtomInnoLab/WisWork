@@ -208,6 +208,91 @@ describe('Office binding invalidation channel', () => {
 })
 
 describe('Office persistent relay session', () => {
+  it('resumes an older binding with only its stored grants despite a broader current offer', async () => {
+    const store = new FakeBindingStore(binding)
+    const socket = new FakeSocket()
+    const session = createOfficeRelaySession({
+      capabilities: ['agent.v1', 'enhanced-lease.v1'],
+      bindingStore: store,
+      createSocket: () => socket,
+    })
+    try {
+      const connecting = session.connect('word')
+      await flush()
+      socket.open()
+      expect(sent(socket)).toEqual({
+        version: 2,
+        type: 'office.resume',
+        binding_id: binding.bindingId,
+        host: 'Word',
+        capabilities: ['agent.v1'],
+      })
+      socket.receive({
+        version: 2,
+        type: 'office.challenge',
+        binding_id: binding.bindingId,
+        challenge: 'challenge_12345678',
+        expires_in: 30,
+      })
+      await flush()
+      expect(sent(socket, 1).type).toBe('office.prove')
+      socket.receive({
+        version: 2,
+        type: 'office.approved',
+        session_id: 'session_12345678',
+        capability: 'session_capability_12345678',
+        expires_in: 1800,
+        capabilities: ['agent.v1'],
+      })
+      await connecting
+      expect(session.snapshot()).toEqual({ status: 'connected', capabilities: ['agent.v1'] })
+      expect(store.current).toBe(binding)
+      expect(store.forgets).toBe(0)
+      expect(store.enrollments).toBe(0)
+    } finally {
+      session.disconnect()
+    }
+  })
+
+  it.each([
+    ['broadened', ['agent.v1', 'web-search.v1', 'enhanced-lease.v1']],
+    ['reduced', ['agent.v1']],
+    ['reordered', ['web-search.v1', 'agent.v1']],
+  ])(
+    'rejects %s grants in a resumed approval without overwriting the binding',
+    async (_label, capabilities) => {
+      const stored = { ...binding, capabilities: ['agent.v1', 'web-search.v1'] }
+      const store = new FakeBindingStore(stored)
+      const socket = new FakeSocket()
+      const session = createOfficeRelaySession({
+        capabilities: ['agent.v1', 'web-search.v1', 'enhanced-lease.v1'],
+        bindingStore: store,
+        createSocket: () => socket,
+        schedule: vi.fn(),
+      })
+      try {
+        void session.connect('word')
+        await flush()
+        socket.open()
+        socket.receive({
+          version: 2,
+          type: 'office.approved',
+          session_id: 'session_12345678',
+          capability: 'session_capability_12345678',
+          expires_in: 1800,
+          capabilities,
+        })
+        await flush()
+        expect(session.snapshot()).toEqual({ status: 'reconnecting' })
+        expect(store.current).toBe(stored)
+        expect(store.forgets).toBe(0)
+        expect(store.enrollments).toBe(0)
+      } finally {
+        session.disconnect()
+      }
+    },
+  )
+
   it('uses untouched ordinary v2 pairing when persistence is explicitly disabled', async () => {
     const store = new FakeBindingStore(binding)
     const channel = new FakeInvalidationChannel()
@@ -1870,4 +1955,163 @@ describe('Office persistent relay session', () => {
       capabilities: ['agent.v1'],
     })
   })
+
+  it.each(['local statement expiry', 'server session_expired'])(
+    'preserves expiry diagnostics and resumes the binding without replay after %s',
+    async (source) => {
+      vi.useFakeTimers()
+      const store = new FakeBindingStore({ ...binding, host: 'powerpoint' })
+      const sockets: FakeSocket[] = []
+      const scheduled: Array<() => void> = []
+      const session = createOfficeRelaySession({
+        capabilities: ['agent.v1'],
+        bindingStore: store,
+        randomUUID: () => 'request_12345678',
+        createSocket: () => {
+          const socket = new FakeSocket()
+          sockets.push(socket)
+          return socket
+        },
+        schedule: (callback) => {
+          scheduled.push(callback)
+          return scheduled.length
+        },
+        cancelSchedule: () => undefined,
+        random: () => 0.5,
+      })
+      let releaseTool: (() => void) | undefined
+      let toolSignal: AbortSignal | undefined
+      const toolAborted = vi.fn()
+      session.setToolHandler?.((call) => {
+        toolSignal = call.signal
+        call.signal.addEventListener('abort', toolAborted, { once: true })
+        return new Promise((resolve) => {
+          releaseTool = () => resolve({ output: 'late native screenshot' })
+        })
+      })
+      try {
+        const connecting = session.connect('powerpoint')
+        await flush()
+        const socket = sockets[0]!
+        socket.open()
+        socket.receive({
+          version: 2,
+          type: 'office.challenge',
+          binding_id: binding.bindingId,
+          challenge: 'challenge_12345678',
+          expires_in: 30,
+        })
+        await flush()
+        socket.receive({
+          version: 2,
+          type: 'office.approved',
+          session_id: 'session_12345678',
+          capability: 'session_capability_12345678',
+          expires_in: 1800,
+          capabilities: ['agent.v1'],
+        })
+        await connecting
+        socket.receive({
+          version: 2,
+          type: 'relay.session_state',
+          session_id: 'session_12345678',
+          generation: 1,
+          enhanced: {
+            version: 1,
+            runtime_mode: 'enhanced',
+            runtime_instance: 'runtime_0123456789abcdef',
+            component_version: '0.147.0',
+            host: 'office-powerpoint',
+            raw_office: false,
+            expires_at: Date.now() + 1_000,
+            policy_generation: 1,
+            session_generation: 1,
+          },
+        })
+        const request = session
+          .capabilityFetch('agent.v1', { messages: [] })
+          .then((response) => response.text())
+          .catch((error: Error) => error.message)
+        socket.receive({
+          version: 2,
+          type: 'relay.start',
+          session_id: 'session_12345678',
+          request_id: 'request_12345678',
+          status: 200,
+          content_type: 'text/event-stream',
+        })
+        socket.receive({
+          version: 2,
+          type: 'relay.tool_call',
+          session_id: 'session_12345678',
+          request_id: 'request_12345678',
+          turn_id: 'turn_12345678',
+          call_id: 'call_12345678',
+          generation: 1,
+          tool_name: 'screenshot_slide',
+          input: { slide_index: 0 },
+        })
+        await flush()
+        expect(toolSignal?.aborted).toBe(false)
+
+        if (source === 'local statement expiry') await vi.advanceTimersByTimeAsync(1_000)
+        else socket.receive({ version: 2, type: 'relay.error', code: 'session_expired' })
+        await flush()
+
+        expect.soft(await request).toBe('relay_session_expired')
+        expect.soft(session.snapshot()).toEqual({ status: 'reconnecting' })
+        expect(toolAborted).toHaveBeenCalledOnce()
+        expect(store.forgets).toBe(0)
+        expect(socket.sent.map((value) => JSON.parse(value).type)).toEqual([
+          'office.resume',
+          'office.prove',
+          'office.request',
+          'office.cancel',
+        ])
+        expect(scheduled).toHaveLength(1)
+        scheduled[0]!()
+        await flush()
+        sockets[1]!.open()
+        sockets[1]!.receive({
+          version: 2,
+          type: 'office.challenge',
+          binding_id: binding.bindingId,
+          challenge: 'challenge_87654321',
+          expires_in: 30,
+        })
+        await flush()
+        sockets[1]!.receive({
+          version: 2,
+          type: 'office.approved',
+          session_id: 'session_87654321',
+          capability: 'session_capability_87654321',
+          expires_in: 1800,
+          capabilities: ['agent.v1'],
+        })
+        await flush()
+        expect(session.snapshot()).toEqual({ status: 'connected', capabilities: ['agent.v1'] })
+        releaseTool!()
+        await flush()
+        expect(toolAborted).toHaveBeenCalledOnce()
+        expect(sockets[1]!.sent.map((value) => JSON.parse(value).type)).toEqual([
+          'office.resume',
+          'office.prove',
+        ])
+        expect(sent(sockets[1]!)).toEqual({
+          version: 2,
+          type: 'office.resume',
+          binding_id: binding.bindingId,
+          host: 'PowerPoint',
+          capabilities: ['agent.v1'],
+        })
+        expect(socket.sent.map((value) => JSON.parse(value).type)).not.toContain(
+          'office.tool_result',
+        )
+      } finally {
+        releaseTool?.()
+        session.disconnect()
+        vi.useRealTimers()
+      }
+    },
+  )
 })
