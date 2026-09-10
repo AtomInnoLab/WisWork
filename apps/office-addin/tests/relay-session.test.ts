@@ -4,6 +4,7 @@ import {
   createOfficeRelaySession,
   officeTransportMode,
   type RelayWebSocket,
+  type OfficeRelayCapability,
 } from '../src/relay/session.js'
 import type { OfficeDiagnosticEvent } from '../src/diagnostics/office-diagnostics.js'
 
@@ -37,13 +38,20 @@ const flushFrames = async () => {
   for (let turn = 0; turn < 4; turn += 1) await Promise.resolve()
 }
 
-async function connectedEnhancedSession(lifetimeMs = 60_000) {
+async function connectedEnhancedSession(
+  lifetimeMs = 60_000,
+  capabilities: OfficeRelayCapability[] = ['agent.v1'],
+) {
   const socket = new FakeSocket()
+  let requestSequence = 0
   const session = createOfficeRelaySession({
     createSocket: () => socket,
     persistentPairing: false,
-    capabilities: ['agent.v1'],
-    randomUUID: () => 'request_12345678',
+    capabilities,
+    randomUUID: () =>
+      capabilities.includes('design-document.v1')
+        ? `request_design_${++requestSequence}`
+        : 'request_12345678',
   })
   const toolHandler = vi.fn(async () => ({ output: 'ok' }))
   session.setToolHandler?.(toolHandler)
@@ -65,7 +73,7 @@ async function connectedEnhancedSession(lifetimeMs = 60_000) {
       session_id: 'session_12345678',
       capability: 'capability_12345678',
       expires_in: 1800,
-      capabilities: ['agent.v1'],
+      capabilities,
     }),
   )
   await connecting
@@ -93,6 +101,32 @@ async function connectedEnhancedSession(lifetimeMs = 60_000) {
 }
 
 describe('Office cloud relay session', () => {
+  it('lets a new model turn preempt a background DESIGN.md read without breaking pairing', async () => {
+    const { session, socket } = await connectedEnhancedSession(60_000, [
+      'agent.v1',
+      'design-document.v1',
+    ])
+    try {
+      const read = session
+        .capabilityFetch('design-document.v1', { action: 'read', documentId: 'document_12345678' })
+        .catch((error: Error) => error.message)
+      const stop = new AbortController()
+      const run = session
+        .capabilityFetch('agent.v1', { messages: [] }, stop.signal)
+        .catch((error: Error) => error.message)
+      await flushFrames()
+      const frames = socket.sent.map((raw) => JSON.parse(raw))
+      expect(
+        frames.filter((item) => item.type === 'office.request').map((item) => item.capability_name),
+      ).toEqual(['design-document.v1', 'agent.v1'])
+      expect(await read).toBe('relay_cancelled')
+      expect(session.snapshot().status).toBe('connected')
+      stop.abort()
+      await run
+    } finally {
+      session.disconnect()
+    }
+  })
   it('keeps a multi-step agent request past five minutes and cancels at its own total deadline', async () => {
     vi.useFakeTimers()
     try {

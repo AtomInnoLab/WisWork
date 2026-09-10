@@ -101,7 +101,12 @@ export type OfficeRelayToolHandler = (
 ) => Promise<{ output: string; isError?: boolean }>
 
 export type OfficeRelayCapability =
-  'agent.v1' | 'web-search.v1' | 'web-fetch.v1' | 'image-search.v1' | 'image-fetch.v1'
+  | 'agent.v1'
+  | 'web-search.v1'
+  | 'web-fetch.v1'
+  | 'image-search.v1'
+  | 'image-fetch.v1'
+  | 'design-document.v1'
 
 export interface OfficeBindingInvalidation {
   readonly origin: typeof OFFICE_RELAY_ORIGIN
@@ -128,6 +133,7 @@ export interface OfficeRelaySessionDependencies {
 
 interface ActiveRequest {
   id: string
+  backgroundDesignRead?: boolean
   sequence: number
   bytes: number
   controller?: ReadableStreamDefaultController<Uint8Array>
@@ -1444,7 +1450,7 @@ export function createOfficeRelaySession(
         state.status !== 'connected'
       )
         throw new Error('relay_disconnected')
-      if (request) throw new Error('relay_busy')
+      if (request && !request.backgroundDesignRead) throw new Error('relay_busy')
       if (init.method !== 'POST' || typeof init.body !== 'string')
         throw new Error('relay_invalid_request')
       if (encoder.encode(init.body).byteLength > MAX_REQUEST_BYTES)
@@ -1468,6 +1474,16 @@ export function createOfficeRelaySession(
         !negotiatedCapabilities.includes(capabilityName)
       )
         throw new Error('relay_capability_unavailable')
+      if (capabilityName === 'agent.v1' && request?.backgroundDesignRead) {
+        send({
+          version: protocolVersion,
+          type: 'office.cancel',
+          session_id: sessionId,
+          capability,
+          request_id: request.id,
+        })
+        finishRequest('relay_cancelled')
+      }
       if (request) throw new Error('relay_busy')
       if (!parsedBody || typeof parsedBody !== 'object' || Array.isArray(parsedBody))
         throw new Error('relay_invalid_request')
@@ -1495,7 +1511,18 @@ export function createOfficeRelaySession(
             ? AGENT_REQUEST_TIMEOUT_MS
             : REQUEST_TIMEOUT_MS,
         )
-        request = { id, sequence: 0, bytes: 0, responseResolved: false, resolve, reject, timer }
+        request = {
+          id,
+          sequence: 0,
+          bytes: 0,
+          responseResolved: false,
+          resolve,
+          reject,
+          timer,
+          backgroundDesignRead:
+            capabilityName === 'design-document.v1' &&
+            (parsedBody as Record<string, unknown>).action === 'read',
+        }
         if (signal) {
           const abort = () => {
             if (request?.id !== id) return

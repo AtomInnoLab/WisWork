@@ -53,6 +53,8 @@ import {
 } from './relay/session.js'
 import type { PresentationVerificationStringKey } from '@wiswork/i18n'
 import { rawOfficeCapabilities } from './agent/enhanced-session.js'
+import { OfficeDesignPanel, type OfficeDesignRequest } from './OfficeDesignPanel.js'
+import { createOfficeDesignRequest } from './relay/design-document.js'
 
 export const officePresentationText = (
   locale: string | null | undefined,
@@ -751,6 +753,7 @@ export function AgentWorkspace(props: {
   connectionNotice?: string
   runtimeMode?: 'standard' | 'enhanced'
   connectionAvailable?: boolean
+  designRequest?: OfficeDesignRequest
 }) {
   const { session, ui, disconnect, host } = props
   const state = useOfficeAgent(session)
@@ -760,10 +763,14 @@ export function AgentWorkspace(props: {
   const [uploadError, setUploadError] = useState('')
   const [diagnosticStatus, setDiagnosticStatus] = useState('')
   const [designEditor, setDesignEditor] = useState<{
-    designMd: string
+    markdown: string
     editable: boolean
   }>()
-  const [designDraft, setDesignDraft] = useState('')
+  const [designConversation, setDesignConversation] = useState<{
+    session: OfficeAgentSession
+    generation: number
+    current?: { markdown: string; sourceId: string }
+  }>({ session, generation: 0 })
   const [panel, setPanel] = useState<WorkspacePanelName | undefined>(props.initialPanel)
   const mounted = useRef(true)
   const panelHeading = useRef<HTMLHeadingElement>(null)
@@ -809,6 +816,39 @@ export function AgentWorkspace(props: {
   }
 
   const proposal = state.proposal
+  const latestDesign = [...state.timeline]
+    .reverse()
+    .find(
+      (event) =>
+        event.kind === 'tool' && Boolean(extractPresentationDesignDocument(event.output ?? '')),
+    )
+  const latestDesignDocument =
+    latestDesign?.kind === 'tool'
+      ? {
+          markdown: extractPresentationDesignDocument(latestDesign.output ?? '')!,
+          sourceId: latestDesign.id,
+        }
+      : undefined
+  // The timeline is a rolling activity window, not the lifetime of DESIGN.md.
+  // Reset synchronously on session replacement so a previous PC draft cannot
+  // appear in the new session even when its timeline reuses the same event IDs.
+  if (designConversation.session !== session) {
+    setDesignConversation({
+      session,
+      generation: designConversation.generation + 1,
+      current: latestDesignDocument,
+    })
+    setDesignEditor(undefined)
+  } else if (
+    latestDesignDocument &&
+    (latestDesignDocument.sourceId !== designConversation.current?.sourceId ||
+      latestDesignDocument.markdown !== designConversation.current?.markdown)
+  ) {
+    setDesignConversation({ ...designConversation, current: latestDesignDocument })
+  }
+  const currentDesign =
+    latestDesignDocument ??
+    (designConversation.session === session ? designConversation.current : undefined)
   const hasTimeline = state.timeline.length > 0
   const showConversationChrome =
     hasTimeline || state.busy || state.applying || Boolean(state.error) || Boolean(proposal)
@@ -846,6 +886,11 @@ export function AgentWorkspace(props: {
                 setSkills([])
                 setPanel(undefined)
                 setUploadError('')
+                setDesignEditor(undefined)
+                setDesignConversation((current) => ({
+                  session,
+                  generation: current.generation + 1,
+                }))
               }}
             >
               新对话
@@ -914,6 +959,17 @@ export function AgentWorkspace(props: {
         </section>
       )}
 
+      {host === 'powerpoint' && (
+        <OfficeDesignPanel
+          key={designConversation.generation}
+          current={currentDesign}
+          selection={designEditor}
+          busy={state.busy || state.applying || props.connectionAvailable === false}
+          request={props.designRequest}
+          onApply={(markdown) => session.reviseDesignContract?.(markdown)}
+        />
+      )}
+
       <section
         ref={timeline}
         className="agent-timeline"
@@ -963,8 +1019,7 @@ export function AgentWorkspace(props: {
             confirm={(id) => void session.confirm(id)}
             reject={() => session.reject()}
             onOpenDesign={(designMd, editable) => {
-              setDesignDraft(designMd)
-              setDesignEditor({ designMd, editable })
+              setDesignEditor({ markdown: designMd, editable })
             }}
           />
         ) : (
@@ -1023,55 +1078,6 @@ export function AgentWorkspace(props: {
           </div>
         )}
       </section>
-
-      {designEditor && (
-        <div className="design-dialog-backdrop" role="presentation">
-          <section className="design-dialog" role="dialog" aria-modal="true" aria-label="DESIGN.md">
-            <header>
-              <strong>DESIGN.md</strong>
-              <button type="button" className="quiet" onClick={() => setDesignEditor(undefined)}>
-                ×
-              </button>
-            </header>
-            <p>
-              {designEditor.editable
-                ? '修改后将生成新的设计合同节点，并用于后续制作。'
-                : '这是历史设计合同快照，仅供查看。'}
-            </p>
-            <textarea
-              value={designDraft}
-              readOnly={!designEditor.editable}
-              spellCheck={false}
-              aria-label="DESIGN.md 内容"
-              onChange={(event) => setDesignDraft(event.target.value)}
-            />
-            <footer>
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => setDesignEditor(undefined)}
-              >
-                关闭
-              </button>
-              {designEditor.editable && (
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={state.busy || state.applying || !session.reviseDesignContract}
-                  onClick={() => {
-                    const body = designDraft.replace(/^\s*#\s*DESIGN\.md\s*/i, '').trim()
-                    if (!body) return
-                    session.reviseDesignContract?.(`# DESIGN.md\n\n${body}`)
-                    setDesignEditor(undefined)
-                  }}
-                >
-                  保存并应用
-                </button>
-              )}
-            </footer>
-          </section>
-        </div>
-      )}
 
       {panel && (
         <section
@@ -1343,7 +1349,13 @@ export function ConfiguredApp(
       (transportMode === 'loopback'
         ? createPcBridgeSession()
         : createOfficeRelaySession({
-            capabilities: ['agent.v1', 'web-search.v1', 'image-search.v1', 'image-fetch.v1'],
+            capabilities: [
+              'agent.v1',
+              'web-search.v1',
+              'image-search.v1',
+              'image-fetch.v1',
+              'design-document.v1',
+            ],
             persistentPairing: __WISWORK_OFFICE_PAIRING_RESUME__,
           })),
     [props.connectionBridge, transportMode],
@@ -1352,6 +1364,10 @@ export function ConfiguredApp(
     (listener) => bridge.subscribe(listener),
     () => bridge.snapshot(),
     () => bridge.snapshot(),
+  )
+  const designRequest = useMemo(
+    () => ('capabilityFetch' in bridge ? createOfficeDesignRequest(bridge) : undefined),
+    [bridge],
   )
   const [workspace, setWorkspace] = useState<
     { runtime: OfficeHostRuntime; session: OfficeAgentSession; ui: OfficeWorkspaceUi } | undefined
@@ -1615,6 +1631,11 @@ export function ConfiguredApp(
       connectionNotice={connectionNotice}
       runtimeMode={officeRuntimeModeForTaskpane(host, bridgeState)}
       connectionAvailable={bridgeState.status === 'connected'}
+      designRequest={
+        'capabilities' in bridgeState && bridgeState.capabilities?.includes('design-document.v1')
+          ? designRequest
+          : undefined
+      }
     />
   )
 }

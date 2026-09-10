@@ -14,6 +14,7 @@ const DATA_CAPABILITIES = new Set([
   'web-fetch.v1',
   'image-search.v1',
   'image-fetch.v1',
+  'design-document.v1',
 ])
 
 export const OFFICE_BINDING_DATABASE_SCHEMA = Object.freeze({

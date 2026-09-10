@@ -7,6 +7,7 @@ import WebSocket from 'ws'
 import type { OfficePairingRequest, OfficeRelayStatus } from '../shared/home-api'
 import type { OfficeRelayBinding } from './office-relay-binding-store'
 import type { OfficeRetrievalProxy, OfficeWebCapability } from './office-retrieval-proxy'
+import type { OfficeDesignDocumentHandler } from './office-design-document'
 export type { OfficeRelayStatus } from '../shared/home-api'
 
 const MAX_CONTROL_BYTES = 16 * 1024
@@ -23,6 +24,10 @@ const SESSION_ABSOLUTE_MAX_MS = 8 * 60 * 60 * 1_000
 const IDENTIFIER = /^[A-Za-z0-9_-]{8,128}$/
 const HOSTS = new Set(['Word', 'Excel', 'PowerPoint'])
 const MAX_REQUEST_IDS = 2_048
+// A visible DESIGN reader can poll every 5s for the full 8h session. Reserve
+// those IDs plus the existing interactive budget; retain every ID for replay
+// detection rather than evicting old requests to make room for polling.
+const MAX_DESIGN_REQUEST_IDS = Math.ceil(SESSION_ABSOLUTE_MAX_MS / 5_000) + MAX_REQUEST_IDS
 const MAX_PENDING_TOOLS = 8
 const RELAY_ERROR_CODES = new Set([
   'already_claimed',
@@ -67,6 +72,7 @@ const V2_CAPABILITIES = [
   'web-fetch.v1',
   'image-search.v1',
   'image-fetch.v1',
+  'design-document.v1',
 ] as const
 const PAIRING_RESUME_FEATURE = 'pairing-resume.v1'
 
@@ -148,6 +154,7 @@ export function createOfficeRelayClient(options: {
     host: OfficePairingRequest['hostLabel'],
   ) => Readonly<OfficeEnhancedSessionStatement> | undefined
   retrievalProxy?: OfficeRetrievalProxy
+  designDocument?: OfficeDesignDocumentHandler
   retrievalCapabilities?: readonly OfficeWebCapability[]
   negotiateCapabilities?: boolean
   persistentPairing?: boolean | (() => boolean)
@@ -172,12 +179,14 @@ export function createOfficeRelayClient(options: {
     typeof options.persistentPairing === 'function'
       ? options.persistentPairing() === true
       : options.persistentPairing === true
-  const offeredCapabilities = options.retrievalProxy
-    ? [
-        'agent.v1',
-        ...(options.retrievalCapabilities ?? V2_CAPABILITIES.filter((name) => name !== 'agent.v1')),
-      ]
-    : ['agent.v1']
+  const offeredCapabilities = [
+    'agent.v1',
+    ...(options.retrievalProxy
+      ? (options.retrievalCapabilities ??
+        V2_CAPABILITIES.filter((name) => name !== 'agent.v1' && name !== 'design-document.v1'))
+      : []),
+    ...(options.designDocument ? ['design-document.v1'] : []),
+  ]
   let pending: (OfficePairingRequest & { capabilities?: string[]; features?: string[] }) | null =
     null
   let session: {
@@ -323,7 +332,11 @@ export function createOfficeRelayClient(options: {
     if (
       active ||
       requestIds.has(frame.request_id) ||
-      requestIds.size >= (options.maxRequestIds ?? MAX_REQUEST_IDS)
+      requestIds.size >=
+        (options.maxRequestIds ??
+          (session.capabilities.includes('design-document.v1')
+            ? MAX_DESIGN_REQUEST_IDS
+            : MAX_REQUEST_IDS))
     )
       return clear('protocol_violation', true)
     if (!jsonObject(frame.body)) return clear('protocol_violation', true)
@@ -380,7 +393,9 @@ export function createOfficeRelayClient(options: {
       if (
         typeof capabilityName !== 'string' ||
         !session.capabilities.includes(capabilityName) ||
-        (capabilityName !== 'agent.v1' && !options.retrievalProxy)
+        (capabilityName === 'design-document.v1'
+          ? !options.designDocument
+          : capabilityName !== 'agent.v1' && !options.retrievalProxy)
       )
         return clear('protocol_violation', true)
       const dispatchNext = () => {
@@ -477,11 +492,26 @@ export function createOfficeRelayClient(options: {
                   throw new Error('enhanced_proxy_unavailable')
                 })()
             : await options.proxy({ body: frame.body, signal: controller.signal })
-          : {
-              status: 200,
-              contentType: 'application/json',
-              body: await options.retrievalProxy!(capabilityName, frame.body, controller.signal),
-            }
+          : capabilityName === 'design-document.v1'
+            ? {
+                status: 200,
+                contentType: 'application/json',
+                body: new TextEncoder().encode(
+                  JSON.stringify(
+                    await options.designDocument!({
+                      sessionId: session.sessionId,
+                      host: session.host,
+                      body: frame.body,
+                      signal: controller.signal,
+                    }),
+                  ),
+                ),
+              }
+            : {
+                status: 200,
+                contentType: 'application/json',
+                body: await options.retrievalProxy!(capabilityName, frame.body, controller.signal),
+              }
       if (
         !Number.isSafeInteger(response.status) ||
         response.status < 200 ||
