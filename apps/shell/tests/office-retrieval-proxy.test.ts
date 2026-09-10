@@ -49,6 +49,12 @@ describe('Office fixed retrieval proxy', () => {
 
   it.each([
     [new Response('no', { status: 503 }), 'image_fetch_unavailable'],
+    [new Response('large', { status: 413 }), 'image_limit'],
+    [new Response('webp', { status: 415 }), 'image_mime_unsupported'],
+    [
+      new Response('partial', { status: 206, headers: { 'content-type': 'image/jpeg' } }),
+      'image_fetch_unavailable',
+    ],
     [new Response('no', { headers: { 'content-type': 'text/plain' } }), 'image_mime_unsupported'],
     [
       new Response('x', {
@@ -68,6 +74,23 @@ describe('Office fixed retrieval proxy', () => {
       fetchWithAuth: (request) => request('token'),
     })
     await expect(download('https://images.example/cover.jpg')).rejects.toThrow(error)
+  })
+
+  it('cancels the remote response stream when its bytes exceed the limit', async () => {
+    const cancel = vi.fn()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(10 * 1024 * 1024))
+        controller.enqueue(new Uint8Array([1]))
+      },
+      cancel,
+    })
+    const download = createOfficeRemoteImageDownloader({
+      fetch: vi.fn(async () => new Response(body, { headers: { 'content-type': 'image/png' } })),
+      fetchWithAuth: (request) => request('token'),
+    })
+    await expect(download('https://images.example/large.png')).rejects.toThrow('image_limit')
+    expect(cancel).toHaveBeenCalledOnce()
   })
 
   it('distinguishes caller cancellation from remote unavailability', async () => {
@@ -144,6 +167,75 @@ describe('Office fixed retrieval proxy', () => {
       await expect(
         proxy('image-fetch.v1', { url: 'https://images.example/cover.jpg' }),
       ).rejects.toThrow(code)
+      expect(downloadImage).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each([
+    [413, 'image_limit'],
+    [415, 'image_mime_unsupported'],
+  ])('does not locally retry Relay semantic status %i', async (status, error) => {
+    const downloadImage = vi.fn()
+    const proxy = createOfficeLocalSearchProxy({
+      fetchWithAuth: vi.fn(),
+      remoteDownloadImage: createOfficeRemoteImageDownloader({
+        fetch: vi.fn(async () => new Response('rejected', { status })),
+        fetchWithAuth: (request) => request('token'),
+      }),
+      downloadImage,
+      searchImages: async () => ({
+        images: [
+          {
+            title: 'Cover',
+            imageUrl: 'https://images.example/cover.jpg',
+            sourceUrl: 'https://example.com',
+            source: 'example',
+          },
+        ],
+        method: 'test',
+      }),
+    })
+    await proxy('image-search.v1', { query: 'cover', max_results: 1 })
+    await expect(
+      proxy('image-fetch.v1', { url: 'https://images.example/cover.jpg' }),
+    ).rejects.toThrow(error)
+    expect(downloadImage).not.toHaveBeenCalled()
+  })
+
+  it.each(['image_limit', 'image_mime_unsupported'])(
+    'advances from a semantic original failure to its authorized fallback: %s',
+    async (code) => {
+      const remoteDownloadImage = vi.fn(async (url: string) => {
+        if (url.endsWith('/original.webp')) throw new Error(code)
+        return { mime: 'image/jpeg' as const, bytes: new Uint8Array([0xff, 0xd8]) }
+      })
+      const downloadImage = vi.fn()
+      const proxy = createOfficeLocalSearchProxy({
+        fetchWithAuth: vi.fn(),
+        remoteDownloadImage,
+        downloadImage,
+        searchImages: async () => ({
+          images: [
+            {
+              title: 'Cover',
+              imageUrl: 'https://images.example/original.webp',
+              fallbackImageUrl: 'https://images.example/thumbnail.jpg',
+              sourceUrl: 'https://example.com',
+              source: 'example',
+            },
+          ],
+          method: 'test',
+        }),
+      })
+      await proxy('image-search.v1', { query: 'cover', max_results: 1 })
+      await expect(
+        proxy('image-fetch.v1', { url: 'https://images.example/original.webp' }),
+      ).resolves.toBeInstanceOf(Uint8Array)
+      expect(remoteDownloadImage).toHaveBeenNthCalledWith(
+        2,
+        'https://images.example/thumbnail.jpg',
+        expect.any(AbortSignal),
+      )
       expect(downloadImage).not.toHaveBeenCalled()
     },
   )

@@ -65,13 +65,18 @@ export async function collectBoundedImageBytes(
 
 async function* responseChunks(stream: ReadableStream<Uint8Array>) {
   const reader = stream.getReader()
+  let complete = false
   try {
     while (true) {
       const next = await reader.read()
-      if (next.done) return
+      if (next.done) {
+        complete = true
+        return
+      }
       yield next.value
     }
   } finally {
+    if (!complete) await reader.cancel().catch(() => undefined)
     reader.releaseLock()
   }
 }
@@ -270,7 +275,9 @@ export function createOfficeRemoteImageDownloader(options: {
           signal: controller.signal,
         }),
       )
-      if (!response.ok || response.redirected) throw new Error('image_fetch_unavailable')
+      if (response.status === 413) throw new Error('image_limit')
+      if (response.status === 415) throw new Error('image_mime_unsupported')
+      if (response.status !== 200 || response.redirected) throw new Error('image_fetch_unavailable')
       const mime = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
       if (!supportedImageMime(mime)) throw new Error('image_mime_unsupported')
       if (Number(response.headers.get('content-length') ?? 0) > MAX_OFFICE_IMAGE_SOURCE_BYTES)
@@ -423,7 +430,8 @@ export function createOfficeLocalSearchProxy(options: {
       try {
         downloaded = await fetchCandidate(url)
       } catch (error) {
-        if (signal?.aborted || semanticImageError(error)) throw error
+        if (signal?.aborted || (error instanceof Error && error.message === 'search_cancelled'))
+          throw error
         if (deadline?.signal.aborted) throw new Error('retrieval_upstream_error', { cause: error })
         checkCurrent()
         if (!source.fallbackImageUrl) throw error
