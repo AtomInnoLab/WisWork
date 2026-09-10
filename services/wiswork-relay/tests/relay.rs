@@ -68,6 +68,19 @@ fn deployment_bounds_diagnostic_journal_retention() {
     assert!(journal.contains("SystemMaxUse=64M"));
 }
 
+#[test]
+fn deployment_bounds_image_fetch_before_proxying() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let locations = std::fs::read_to_string(root.join("deploy/nginx-location.conf")).unwrap();
+    let limits = std::fs::read_to_string(root.join("deploy/nginx-http-limits.conf")).unwrap();
+    assert!(locations.contains("location = /office-image-fetch"));
+    assert!(locations.contains("client_max_body_size 4k"));
+    assert!(locations.contains("limit_conn wiswork_relay_connections 16"));
+    assert!(locations.contains("limit_req zone=wiswork_image_fetch burst=16 nodelay"));
+    assert!(locations.contains("access_log off"));
+    assert!(limits.contains("zone=wiswork_image_fetch:10m rate=120r/m"));
+}
+
 async fn server_with_all_limits(
     session_ttls: Option<(Duration, Duration)>,
     max_global_claims: Option<u32>,
@@ -229,6 +242,89 @@ async fn server_with_session_ttls(session_ttls: Option<(Duration, Duration)>) ->
 
 async fn server() -> String {
     server_with_session_ttls(None).await
+}
+
+fn image_fetch_url(relay_url: &str) -> String {
+    relay_url
+        .replacen("ws://", "http://", 1)
+        .replace("/office-relay", "/office-image-fetch")
+}
+
+#[tokio::test]
+async fn image_fetch_requires_pc_auth_and_forbids_browser_origins() {
+    let url = image_fetch_url(&server().await);
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let unauthenticated = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .body(r#"{"url":"https://example.com/image.png"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let browser = client
+        .post(&url)
+        .header("authorization", "Bearer valid-test-token")
+        .header("origin", ORIGIN)
+        .header("content-type", "application/json")
+        .body(r#"{"url":"https://example.com/image.png"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(browser.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn image_fetch_bounds_and_exactly_validates_requests() {
+    let url = image_fetch_url(&server().await);
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let extra_field = client
+        .post(&url)
+        .header("authorization", "Bearer valid-test-token")
+        .header("content-type", "application/json")
+        .body(r#"{"url":"https://example.com/image.png","extra":true}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        extra_field.status(),
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    let oversized = client
+        .post(&url)
+        .header("authorization", "Bearer valid-test-token")
+        .header("content-type", "application/json")
+        .body(format!(
+            r#"{{"url":"https://example.com/{}"}}"#,
+            "a".repeat(4096)
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(oversized.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn image_fetch_rejects_private_dns_answers() {
+    let url = image_fetch_url(&server().await);
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .post(url)
+        .header("authorization", "Bearer valid-test-token")
+        .header("content-type", "application/json")
+        .body(r#"{"url":"https://localhost/image.png"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        response.text().await.unwrap(),
+        r#"{"error":"image_fetch_unavailable"}"#
+    );
 }
 
 async fn socket(
