@@ -114,30 +114,42 @@ describe('Office fixed retrieval proxy', () => {
   it('bounds authentication and token refresh within the same remote image deadline', async () => {
     vi.useFakeTimers()
     try {
+      let rejectAuth: ((reason: Error) => void) | undefined
       const download = createOfficeRemoteImageDownloader({
         fetch: vi.fn(),
-        fetchWithAuth: () => new Promise<Response>(() => undefined),
+        fetchWithAuth: () =>
+          new Promise<Response>((_resolve, reject) => {
+            rejectAuth = reject
+          }),
         timeoutMs: 25,
       })
       const pending = download('https://images.example/cover.jpg')
       const assertion = expect(pending).rejects.toThrow('image_fetch_unavailable')
       await vi.advanceTimersByTimeAsync(25)
       await assertion
+      rejectAuth?.(new Error('late auth failure'))
+      await Promise.resolve()
     } finally {
       vi.useRealTimers()
     }
   })
 
   it('ends while authentication is pending when the caller cancels', async () => {
+    let rejectAuth: ((reason: Error) => void) | undefined
     const download = createOfficeRemoteImageDownloader({
       fetch: vi.fn(),
-      fetchWithAuth: () => new Promise<Response>(() => undefined),
+      fetchWithAuth: () =>
+        new Promise<Response>((_resolve, reject) => {
+          rejectAuth = reject
+        }),
     })
     const controller = new AbortController()
     const pending = download('https://images.example/cover.jpg', controller.signal)
     const assertion = expect(pending).rejects.toThrow('search_cancelled')
     controller.abort()
     await assertion
+    rejectAuth?.(new Error('late auth failure'))
+    await Promise.resolve()
   })
 
   it('uses remote first and reserves strict local download for remote unavailability', async () => {

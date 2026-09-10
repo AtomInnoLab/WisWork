@@ -306,7 +306,14 @@ async fn image_fetch(
     headers: HeaderMap,
     Json(request): Json<ImageFetchRequest>,
 ) -> Response {
-    tokio::time::timeout(IMAGE_TIMEOUT, image_fetch_with_auth(app, headers, request))
+    finish_image_fetch(IMAGE_TIMEOUT, image_fetch_with_auth(app, headers, request)).await
+}
+
+async fn finish_image_fetch<F>(timeout: Duration, operation: F) -> Response
+where
+    F: std::future::Future<Output = Response>,
+{
+    tokio::time::timeout(timeout, operation)
         .await
         .unwrap_or_else(|_| image_error(StatusCode::BAD_GATEWAY, "image_fetch_unavailable"))
 }
@@ -3937,6 +3944,10 @@ mod tests {
 
     #[tokio::test]
     async fn downloader_whole_operation_timeout_and_global_concurrency_are_enforced() {
+        let timed =
+            finish_image_fetch(Duration::from_millis(1), std::future::pending::<Response>()).await;
+        assert_eq!(timed.status(), StatusCode::BAD_GATEWAY);
+
         let app = test_app();
         let network = MockImageNetwork::default()
             .resolving("images.example", &["8.8.8.8:443"])
@@ -4004,7 +4015,19 @@ mod tests {
         .unwrap();
         let response = image_success_response(mime, body, permit);
         assert_eq!(app.inner.image_slots.available_permits(), 0);
-        drop(response);
+        let mut stream = response.into_body().into_data_stream();
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            Bytes::from_static(&[1])
+        );
+        assert_eq!(app.inner.image_slots.available_permits(), 0);
+        drop(stream);
+        assert_eq!(app.inner.image_slots.available_permits(), 1);
+
+        let permit = app.inner.image_slots.clone().try_acquire_owned().unwrap();
+        let response = image_success_response("image/png", vec![1], permit);
+        let mut stream = response.into_body().into_data_stream();
+        while stream.next().await.is_some() {}
         assert_eq!(app.inner.image_slots.available_permits(), 1);
     }
 
