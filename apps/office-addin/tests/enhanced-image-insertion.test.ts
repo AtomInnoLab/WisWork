@@ -63,10 +63,10 @@ describe('Enhanced PowerPoint image insertion', () => {
           session_generation: 1,
         },
       })
-      const image = new PNG({ width: 1, height: 1 })
+      const image = new PNG({ width: 3, height: 4 })
       image.data.fill(0)
       const base64 = PNG.sync.write(image).toString('base64')
-      vi.stubGlobal('createImageBitmap', async () => ({ width: 1, height: 1, close() {} }))
+      vi.stubGlobal('createImageBitmap', async () => ({ width: 3, height: 4, close() {} }))
       const adapter = {
         snapshotSlide: vi.fn(async () => ({ slideId: 's1', fingerprint: 'fp' })),
         insertImage: vi.fn(async () => ({ id: 'image-1' })),

@@ -438,29 +438,54 @@ export function createOfficeLocalSearchProxy(options: {
           return downloadImage(candidateUrl, candidateSignal)
         }
       }
+      const normalizeCandidate = async (candidateUrl: string) => {
+        const downloaded = await fetchCandidate(candidateUrl)
+        checkCurrent()
+        if (!supportedImageMime(downloaded.mime)) throw new Error('image_mime_unsupported')
+        if (downloaded.bytes.byteLength > maximumSourceBytes) throw new Error('image_limit')
+        // Decoding is part of selecting a usable candidate, not a later transport step.
+        const prepared = options.normalizeImage
+          ? await options.normalizeImage(downloaded)
+          : downloaded
+        checkCurrent()
+        if (candidateSignal?.aborted) throw new Error('retrieval_upstream_error')
+        if (!supportedImageMime(prepared.mime)) throw new Error('image_mime_unsupported')
+        if (prepared.bytes.byteLength > 2 * 1024 * 1024) throw new Error('retrieval_upstream_error')
+        return prepared
+      }
+      const prepareCandidate = async (candidateUrl: string) => {
+        if (!candidateSignal) return normalizeCandidate(candidateUrl)
+        if (candidateSignal.aborted)
+          throw new Error(signal?.aborted ? 'search_cancelled' : 'retrieval_upstream_error')
+        let abort: (() => void) | undefined
+        const cancelled = new Promise<never>((_resolve, reject) => {
+          abort = () =>
+            reject(new Error(signal?.aborted ? 'search_cancelled' : 'retrieval_upstream_error'))
+          candidateSignal.addEventListener('abort', abort, { once: true })
+          if (candidateSignal.aborted) abort()
+        })
+        try {
+          return await Promise.race([normalizeCandidate(candidateUrl), cancelled])
+        } finally {
+          if (abort) candidateSignal.removeEventListener('abort', abort)
+        }
+      }
       let downloaded: DownloadedImage
       try {
-        downloaded = await fetchCandidate(url)
+        downloaded = await prepareCandidate(url)
       } catch (error) {
         if (signal?.aborted || (error instanceof Error && error.message === 'search_cancelled'))
           throw error
         if (deadline?.signal.aborted) throw new Error('retrieval_upstream_error', { cause: error })
         checkCurrent()
         if (!source.fallbackImageUrl) throw error
-        downloaded = await fetchCandidate(source.fallbackImageUrl)
+        downloaded = await prepareCandidate(source.fallbackImageUrl)
       } finally {
         clearTimeout(deadlineTimer)
         signal?.removeEventListener('abort', cancelDeadline)
       }
       checkCurrent()
-      if (!supportedImageMime(downloaded.mime)) throw new Error('image_mime_unsupported')
-      if (downloaded.bytes.byteLength > maximumSourceBytes) throw new Error('image_limit')
-      const { mime, bytes } = options.normalizeImage
-        ? await options.normalizeImage(downloaded)
-        : downloaded
-      checkCurrent()
-      if (!supportedImageMime(mime)) throw new Error('image_mime_unsupported')
-      if (bytes.byteLength > 2 * 1024 * 1024) throw new Error('retrieval_upstream_error')
+      const { mime, bytes } = downloaded
       return new TextEncoder().encode(
         JSON.stringify({ mime, data_base64: Buffer.from(bytes).toString('base64') }),
       )

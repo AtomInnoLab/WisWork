@@ -3,6 +3,7 @@ import type { StructuredProposalController } from '../../agent/proposal-controll
 import { exactObject, integerField, optionalField, stringField } from '../../agent/tool-schema.js'
 import { readBoundedImage, validateBoundedImageBytes } from '../shared/import-media.js'
 import type { InMemoryVfs } from '../shared/vfs.js'
+import { preparePowerPointImage, type PowerPointImageFit } from './powerpoint-image-fit.js'
 
 const prefetchedImage = Symbol('PC-prefetched PowerPoint image')
 
@@ -58,6 +59,10 @@ const point = (value: unknown) => {
     throw new Error('invalid_tool_input')
   return value
 }
+const imageFit = (value: unknown): PowerPointImageFit => {
+  if (value !== 'cover' && value !== 'contain') throw new Error('invalid_tool_input')
+  return value
+}
 const input = exactObject({
   path: stringField({ minLength: 1, maxLength: 512 }),
   slide_index: integerField({ min: 0, max: 100_000 }),
@@ -65,6 +70,7 @@ const input = exactObject({
   top: point,
   width: point,
   height: point,
+  fit: optionalField(imageFit),
   explanation: optionalField(stringField({ maxLength: 100 })),
 })
 const webInput = exactObject({
@@ -74,12 +80,13 @@ const webInput = exactObject({
   top: point,
   width: point,
   height: point,
+  fit: optionalField(imageFit),
   explanation: optionalField(stringField({ maxLength: 100 })),
 })
 const tool = {
   name: 'insert-image',
   description:
-    'Propose inserting a bounded VFS PNG or JPEG on a slide. Geometry is in points; use the actual canvas dimensions from get_presentation_state, not screenshot pixels.',
+    'Propose inserting a bounded VFS PNG or JPEG on a slide. Geometry is in points; use the actual canvas dimensions from get_presentation_state, not screenshot pixels. fit defaults to cover (center-crop without distortion); use contain to keep the entire image with transparent padding.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -89,6 +96,7 @@ const tool = {
       top: { type: 'number', minimum: 0, maximum: 2_000 },
       width: { type: 'number', minimum: 0, maximum: 2_000 },
       height: { type: 'number', minimum: 0, maximum: 2_000 },
+      fit: { type: 'string', enum: ['cover', 'contain'] },
       explanation: { type: 'string', maxLength: 100 },
     },
     required: ['path', 'slide_index', 'left', 'top', 'width', 'height'],
@@ -98,7 +106,7 @@ const tool = {
 const webTool = {
   name: 'insert_web_image',
   description:
-    'Fetch and propose inserting a bounded PNG or JPEG URL returned by image_search. Geometry is in points; use the actual canvas dimensions from get_presentation_state, not screenshot pixels. Preserve the source aspect ratio and compose text in clear space.',
+    'Fetch and propose inserting a bounded PNG or JPEG URL returned by image_search. Geometry is in points; use the actual canvas dimensions from get_presentation_state, not screenshot pixels. fit defaults to cover (center-crop without distortion); use contain to keep the entire image with transparent padding. Compose text in clear space.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -108,6 +116,7 @@ const webTool = {
       top: { type: 'number', minimum: 0, maximum: 2_000 },
       width: { type: 'number', minimum: 0, maximum: 2_000 },
       height: { type: 'number', minimum: 0, maximum: 2_000 },
+      fit: { type: 'string', enum: ['cover', 'contain'] },
       explanation: { type: 'string', maxLength: 100 },
     },
     required: ['url', 'slide_index', 'left', 'top', 'width', 'height'],
@@ -159,7 +168,7 @@ export function createPowerPointImportMediaSkill(options: {
   return {
     id: 'office-powerpoint-import-media',
     systemPrompt:
-      'When insert_web_image is available, use it for an HTTPS image_url returned by image_search; use insert-image only for an attached VFS path. Image insertions use bounded media, the PC-managed PowerPoint session policy, stale-state checks, and semantic verification. If a web image fails, do not retry the same URL; try at most one different image URL, then continue with a text or vector layout.',
+      'When insert_web_image is available, use it for an HTTPS image_url returned by image_search; use insert-image only for an attached VFS path. Images default to fit cover, which center-crops to fill the requested rectangle without distortion; use fit contain for uncropped images with transparent padding. Image insertions use bounded media, the PC-managed PowerPoint session policy, stale-state checks, and semantic verification. If a web image fails, do not retry the same URL; try at most one different image URL, then continue with a text or vector layout.',
     tools: options.fetchImage ? [tool, webTool] : [tool],
     async executeTool(call, signal) {
       if (call.inputError || call.truncated)
@@ -175,7 +184,7 @@ export function createPowerPointImportMediaSkill(options: {
         const designError = options.validateMutation?.(value.slide_index)
         if (designError)
           return { output: designError, isError: true, mutated: false, summary: call.name }
-        const image =
+        const sourceImage =
           local !== undefined
             ? await readBoundedImage(options.vfs, local.path)
             : prefetchedImage in call
@@ -189,6 +198,8 @@ export function createPowerPointImportMediaSkill(options: {
           width: value.width,
           height: value.height,
         }
+        const fit = value.fit ?? 'cover'
+        const image = await preparePowerPointImage(sourceImage, geometry, fit, signal)
         const before = await options.adapter.snapshotSlide(value.slide_index, signal)
         let id: string | undefined
         const recover = async () => {
@@ -210,8 +221,11 @@ export function createPowerPointImportMediaSkill(options: {
             source: local?.path ?? remote!.url,
             mime: image.mime,
             bytes: image.bytes,
-            sourceWidth: image.width,
-            sourceHeight: image.height,
+            sourceWidth: sourceImage.width,
+            sourceHeight: sourceImage.height,
+            preparedWidth: image.width,
+            preparedHeight: image.height,
+            fit,
             ...geometry,
           },
           impact: { host: 'powerpoint', targets: [before.slideId], count: 1 },

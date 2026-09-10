@@ -6,6 +6,7 @@ import { createStructuredProposalController } from '../src/agent/proposal-contro
 import { createExcelImportMediaSkill } from '../src/skills/excel/excel-import-media.js'
 import { createPowerPointImportMediaSkill } from '../src/skills/powerpoint/powerpoint-import-media.js'
 import { BrowserPowerPointImportMediaAdapter } from '../src/skills/powerpoint/browser-powerpoint-import-media-adapter.js'
+import { preparePowerPointImage } from '../src/skills/powerpoint/powerpoint-image-fit.js'
 import {
   exportSafeCsv,
   MAX_IMAGE_IMPORT_BYTES,
@@ -63,8 +64,25 @@ const png = (width = 1, height = 1) => {
   return result
 }
 const call = (name: string, input: Record<string, unknown>) => ({ id: 'c1', name, input })
+let drawImage: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
+  drawImage = vi.fn()
+  ;(globalThis as Record<string, unknown>).document = {
+    createElement: () => {
+      const canvas = {
+        width: 0,
+        height: 0,
+        getContext: () => ({ drawImage }),
+        toBlob: (done: (blob: Blob) => void) => {
+          const output = new PNG({ width: canvas.width, height: canvas.height })
+          output.data.fill(0)
+          done(new Blob([new Uint8Array(PNG.sync.write(output)).buffer], { type: 'image/png' }))
+        },
+      }
+      return canvas
+    },
+  }
   ;(globalThis as Record<string, unknown>).createImageBitmap = vi.fn(async (blob: Blob) => {
     const bytes = new Uint8Array(await blob.arrayBuffer())
     const dimensions =
@@ -78,6 +96,7 @@ afterEach(() => {
   delete (globalThis as Record<string, unknown>).Excel
   delete (globalThis as Record<string, unknown>).PowerPoint
   delete (globalThis as Record<string, unknown>).createImageBitmap
+  delete (globalThis as Record<string, unknown>).document
 })
 
 describe('host capability advertisement', () => {
@@ -379,6 +398,118 @@ describe('Excel import/export proposals', () => {
 })
 
 describe('PowerPoint image proposal', () => {
+  it('crops a portrait photo to a landscape rectangle without stretching', async () => {
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/photo.png', png(20, 40))
+    const image = await readBoundedImage(vfs, '/home/user/photo.png')
+    const prepared = await preparePowerPointImage(image, { width: 40, height: 20 }, 'cover')
+    expect(prepared).toMatchObject({ width: 20, height: 10 })
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 15, 20, 10, 0, 0, 20, 10)
+  })
+
+  it('cancels a pending image decoder and closes a late bitmap without preparing a write', async () => {
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/photo.png', png(40, 20))
+    const image = await readBoundedImage(vfs, '/home/user/photo.png')
+    const lateBitmap = { width: 40, height: 20, close: vi.fn() }
+    let finish: ((bitmap: typeof lateBitmap) => void) | undefined
+    ;(globalThis as Record<string, unknown>).createImageBitmap = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        }),
+    )
+    const controller = new AbortController()
+    const pending = preparePowerPointImage(
+      image,
+      { width: 20, height: 20 },
+      'cover',
+      controller.signal,
+    )
+    controller.abort()
+    await expect(pending).rejects.toThrow('cancelled')
+    finish?.(lateBitmap)
+    await vi.waitFor(() => expect(lateBitmap.close).toHaveBeenCalledOnce())
+    expect(drawImage).not.toHaveBeenCalled()
+  })
+
+  it('bounds a stalled Canvas encoder and rejects an over-budget result', async () => {
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/photo.png', png(40, 20))
+    const image = await readBoundedImage(vfs, '/home/user/photo.png')
+    const canvas = { width: 0, height: 0, getContext: () => ({ drawImage }), toBlob: vi.fn() }
+    ;(globalThis as Record<string, unknown>).document = { createElement: () => canvas }
+    vi.useFakeTimers()
+    try {
+      const pending = preparePowerPointImage(image, { width: 20, height: 20 }, 'cover')
+      const rejected = expect(pending).rejects.toThrow('image_fetch_unavailable')
+      await vi.advanceTimersByTimeAsync(10_000)
+      await rejected
+      expect(canvas.width).toBe(0)
+      canvas.toBlob.mock.calls[0]![0](new Blob([], { type: 'image/png' }))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(canvas.width).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+    canvas.toBlob.mockImplementation((done) =>
+      done(new Blob([new Uint8Array(MAX_IMAGE_IMPORT_BYTES + 1)], { type: 'image/png' })),
+    )
+    await expect(preparePowerPointImage(image, { width: 20, height: 20 }, 'cover')).rejects.toThrow(
+      'image_limit',
+    )
+    expect(canvas.width).toBe(0)
+  })
+
+  it.each([
+    ['insert-image', undefined],
+    ['insert_web_image', undefined],
+    ['insert-image', 'contain'],
+    ['insert_web_image', 'contain'],
+  ] as const)('preserves image proportions for %s with fit %s', async (name, fit) => {
+    const original = png(40, 20)
+    const vfs = new InMemoryVfs()
+    vfs.writeFile('/home/user/photo.png', original)
+    const adapter = {
+      snapshotSlide: vi.fn().mockResolvedValue({ slideId: 's1', fingerprint: 'fp' }),
+      insertImage: vi.fn().mockResolvedValue({ id: 'pic1' }),
+      verifyImage: vi.fn().mockResolvedValue(true),
+      removeImage: vi.fn(),
+      verifyImageAbsent: vi.fn().mockResolvedValue(true),
+    }
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointImportMediaSkill({
+      adapter,
+      proposals,
+      vfs,
+      fetchImage: vi.fn().mockResolvedValue(original),
+    })
+    const result = await skill.executeTool(
+      call(name, {
+        ...(name === 'insert-image'
+          ? { path: '/home/user/photo.png' }
+          : { url: 'https://images.example/photo.png' }),
+        slide_index: 0,
+        left: 10,
+        top: 20,
+        width: 20,
+        height: 20,
+        ...(fit ? { fit } : {}),
+      }),
+    )
+    expect(result.isError).not.toBe(true)
+    await proposals.confirm(proposals.pending()!.id)
+    const [slideIndex, base64, geometry] = adapter.insertImage.mock.calls[0]!
+    const inserted = PNG.sync.read(Buffer.from(base64, 'base64'))
+    expect(slideIndex).toBe(0)
+    expect(geometry).toEqual({ left: 10, top: 20, width: 20, height: 20 })
+    expect(inserted.width).toBe(inserted.height)
+    expect(drawImage).toHaveBeenCalledWith(
+      expect.anything(),
+      ...(fit === 'contain' ? [0, 0, 40, 20, 0, 10, 40, 20] : [10, 0, 20, 20, 0, 0, 20, 20]),
+    )
+  })
+
   function imageReadbackFixture(widthAtRead: (read: number) => number) {
     let reads = 0
     const geometry = { left: 10, top: 20, width: 300, height: 180 }

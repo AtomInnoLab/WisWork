@@ -168,6 +168,115 @@ describe('Office downloaded image → production normalization → handoff', () 
     expect(image.toPNG).toHaveBeenCalled()
   })
 
+  it.each(['invalid_image', 'image_limit'])(
+    'uses the searched fallback when the original downloads but normalization fails: %s',
+    async (error) => {
+      const normalized = new Uint8Array(80)
+      const normalizeImage = createOfficeImageHandoff(
+        {
+          createFromBuffer: (bytes) =>
+            bytes[0] === 1
+              ? decoded({
+                  isEmpty: () => error === 'invalid_image',
+                  getSize: () => ({ width: 5000, height: 5000 }),
+                })
+              : decoded({ toPNG: () => normalized }),
+        },
+        { reencode: true },
+      )
+      const original = 'https://images.example/original.jpg'
+      const fallback = 'https://images.example/thumbnail.jpg'
+      const downloadImage = vi.fn(async (url: string) => ({
+        mime: 'image/jpeg' as const,
+        bytes: new Uint8Array([url === original ? 1 : 2]),
+      }))
+      const proxy = createOfficeLocalSearchProxy({
+        fetchWithAuth: vi.fn(),
+        downloadImage,
+        normalizeImage,
+        searchImages: async () => ({
+          method: 'test',
+          images: [
+            {
+              title: 'Cover',
+              imageUrl: original,
+              fallbackImageUrl: fallback,
+              sourceUrl: 'https://example.com',
+              source: 'example',
+            },
+          ],
+        }),
+      })
+      await proxy('image-search.v1', { query: 'cover', max_results: 1 })
+      const result = JSON.parse(
+        new TextDecoder().decode(await proxy('image-fetch.v1', { url: original })),
+      )
+      expect(Buffer.from(result.data_base64, 'base64')).toEqual(Buffer.from(normalized))
+      expect(downloadImage.mock.calls.map(([url]) => url)).toEqual([original, fallback])
+    },
+  )
+
+  it.each(['deadline', 'cancel'])(
+    'ends a pending normalizer on %s without starting the backup download',
+    async (ending) => {
+      vi.useFakeTimers()
+      let complete: ((value: { mime: 'image/png'; bytes: Uint8Array }) => void) | undefined
+      try {
+        const normalizeImage = vi.fn(
+          () =>
+            new Promise<{ mime: 'image/png'; bytes: Uint8Array }>((resolve) => {
+              complete = resolve
+            }),
+        )
+        const remoteDownloadImage = vi.fn(async () => ({
+          mime: 'image/png' as const,
+          bytes: new Uint8Array([1]),
+        }))
+        const controller = new AbortController()
+        const url = 'https://images.example/original.png'
+        const proxy = createOfficeLocalSearchProxy({
+          fetchWithAuth: vi.fn(),
+          normalizeImage,
+          remoteDownloadImage,
+          imageTimeoutMs: 10,
+          searchImages: async () => ({
+            method: 'test',
+            images: [
+              {
+                title: 'Cover',
+                imageUrl: url,
+                fallbackImageUrl: 'https://images.example/thumbnail.png',
+                sourceUrl: 'https://example.com',
+                source: 'example',
+              },
+            ],
+          }),
+        })
+        await proxy('image-search.v1', { query: 'cover', max_results: 1 })
+        let outcome = 'pending'
+        const pending = proxy('image-fetch.v1', { url }, controller.signal).then(
+          () => {
+            outcome = 'success'
+          },
+          (error: Error) => {
+            outcome = error.message
+          },
+        )
+        await vi.advanceTimersByTimeAsync(0)
+        expect(normalizeImage).toHaveBeenCalledOnce()
+        if (ending === 'cancel') controller.abort()
+        await vi.advanceTimersByTimeAsync(10)
+        expect(outcome).toBe(ending === 'cancel' ? 'search_cancelled' : 'retrieval_upstream_error')
+        expect(remoteDownloadImage).toHaveBeenCalledOnce()
+        await pending
+      } finally {
+        complete?.({ mime: 'image/png', bytes: new Uint8Array([2]) })
+        await vi.advanceTimersByTimeAsync(0)
+        vi.useRealTimers()
+      }
+    },
+  )
+
   it.each(['image/webp', 'image/avif', 'image/gif'])(
     'advertises only PNG/JPEG and rejects unexpected %s before normalization',
     async (mime) => {

@@ -42,7 +42,8 @@ export function createOfficeImageHandoff(
 
     // This private 256 KiB tool envelope is separate from the 2 MiB retrieval output.
     // Keep room for base64 expansion and provenance; never truncate encoded bytes.
-    for (const edge of [1536, 1024, 768, 512, 256]) {
+    // A large slide photo must not silently become a 256px thumbnail to fit Relay.
+    for (const edge of [1536, 1024, 960]) {
       const scale = Math.min(1, edge / Math.max(width, height))
       try {
         const resized =
