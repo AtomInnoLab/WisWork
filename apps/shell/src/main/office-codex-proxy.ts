@@ -505,11 +505,21 @@ export function createOfficeCodexProxy(options: {
         }
       }
       telemetry('verify', result.isError ? 'failed' : mutation ? 'applied_unverified' : 'verified')
+      let appliedBeforeFailure = false
+      if (mutation && result.isError) {
+        try {
+          const decision = JSON.parse(result.output)
+          appliedBeforeFailure =
+            decision?.status === 'failed' && decision.error === 'office_verify_failed'
+        } catch {
+          // Unknown failures are not evidence of a completed write.
+        }
+      }
       return {
         output: result.output,
         isError: result.isError,
         summary: result.isError ? 'Office tool failed' : 'Office tool complete',
-        mutated: parsed.policy[call.name] === 'mutate' && !result.isError,
+        mutated: mutation && (!result.isError || appliedBeforeFailure),
       }
     }
     const documentId = `office_${createHash('sha256').update(`${request.statement.runtime_instance}:${request.sessionId}`).digest('base64url').slice(0, 32)}`

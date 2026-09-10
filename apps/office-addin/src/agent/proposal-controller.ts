@@ -1,5 +1,5 @@
 import type { OfficeDocumentClient } from '../office-document.js'
-import type { OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
+import { officeIdentifiers, type OfficeDiagnostics } from '../diagnostics/office-diagnostics.js'
 
 export type ProposalOperation = 'replace' | 'append'
 export const MAX_PROPOSAL_SELECTION_LENGTH = 12_000
@@ -43,7 +43,7 @@ export type ProposalDecision =
       safeCode?: 'office_write_pending'
     }
   | { status: 'rejected' | 'cancelled' }
-  | { status: 'failed'; error: string }
+  | { status: 'failed'; error: string; errorLocation?: string }
 
 interface ProposalDecisionLifecycle {
   id: string
@@ -325,7 +325,23 @@ export function createStructuredProposalController(
             ...(code === 'office_write_pending' ? { safeCode: code } : {}),
           })
         } else {
-          settle(proposal.decision, { status: 'failed', error: code })
+          const location =
+            code === 'office_verify_failed'
+              ? officeIdentifiers(error).office_error_location
+              : undefined
+          // Forward only our declarative verifier's bounded coordinates, never native messages.
+          const errorLocation =
+            location &&
+            /^PowerPoint\.operations\.\d{1,3}\.(?:set_shape_text|set_shape_text_style|set_shape_geometry|add_text_box|delete_shape)\.(?:color|fontFamily|fontSize|bold|italic|text|left|top|width|height|shape_id|exists|readback)$/.test(
+              location,
+            )
+              ? location
+              : undefined
+          settle(proposal.decision, {
+            status: 'failed',
+            error: code,
+            ...(errorLocation ? { errorLocation } : {}),
+          })
           throw error
         }
       } finally {

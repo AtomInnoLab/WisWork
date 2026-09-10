@@ -306,7 +306,7 @@ describe('PowerPoint compatibility skill', () => {
 
     await expect(skill.executeTool(call('verify_slides'))).resolves.toMatchObject({
       isError: true,
-      output: 'design_contract_production_incomplete',
+      output: expect.stringContaining('"error":"design_contract_production_incomplete"'),
     })
     await skill.executeTool(
       call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' }),
@@ -475,6 +475,106 @@ describe('PowerPoint compatibility skill', () => {
     expect(skill.buildContext?.()).toContain('"localReference":"https://images.example/3.jpg"')
   })
 
+  it('allows background repair of a reviewed page even while three other pages await review', async () => {
+    const base = modernContract()
+    const contract = modernContract({
+      prototypePages: [1, 2, 3],
+      brief: { ...base.brief, pageCount: 4 },
+      slides: [1, 2, 3, 4].map((number) => ({
+        ...base.slides[0],
+        number,
+        acceptance: [{ id: `A${number}.1`, criterion: 'Readable' }],
+      })),
+    })
+    const proposals = createStructuredProposalController()
+    let color = '#FFFFFF'
+    const fake = adapter({
+      getPresentationState: vi
+        .fn()
+        .mockResolvedValue({ slideCount: 4, selectedSlideIndexes: [0], api: {} }),
+      readSlideBackground: vi.fn(async () => ({
+        slideId: 'slide-1',
+        type: 'Solid',
+        backgroundColor: color,
+        transparency: 0,
+      })),
+      setSlideBackground: vi.fn(async (_index, next) => {
+        color = next
+      }),
+    })
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await skill.executeTool(call('plan_deck', { contract }))
+    await skill.executeTool(call('get_presentation_state'))
+    for (const slide_index of [0, 1, 2, 3]) {
+      expect(
+        (
+          await skill.executeTool(
+            call('edit_slide_text', { slide_index, shape_id: '2', text: 'Hello' }),
+          )
+        ).isError,
+      ).not.toBe(true)
+      await proposals.confirm(proposals.pending()!.id)
+      if (slide_index === 0) {
+        await skill.executeTool(call('screenshot_slide', { slide_index }))
+        await skill.executeTool(
+          call('review_slide_screenshot', { slide_index, acceptance_ids: ['A1.1'], passed: true }),
+        )
+      }
+    }
+    expect(
+      (await skill.executeTool(call('set_slide_background', { slide_index: 0, color: '#111111' })))
+        .isError,
+    ).not.toBe(true)
+    await proposals.confirm(proposals.pending()!.id)
+    expect(color).toBe('#111111')
+    expect(
+      await skill.executeTool(
+        call('review_slide_screenshot', { slide_index: 0, acceptance_ids: ['A1.1'], passed: true }),
+      ),
+    ).toMatchObject({ isError: true, output: 'design_contract_screenshot_required' })
+  })
+
+  it.each([true, false])(
+    'invalidates completed review after a repair (confirmed: %s)',
+    async (confirmed) => {
+      const proposals = createStructuredProposalController()
+      const fake = adapter()
+      const skill = createPowerPointSkill({ adapter: fake, proposals })
+      await skill.executeTool(call('plan_deck', { contract: modernContract() }))
+      await skill.executeTool(
+        call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' }),
+      )
+      await proposals.confirm(proposals.pending()!.id)
+      await skill.executeTool(call('screenshot_slide', { slide_index: 0 }))
+      await skill.executeTool(
+        call('review_slide_screenshot', { slide_index: 0, acceptance_ids: ['A1.1'], passed: true }),
+      )
+      await skill.executeTool(call('verify_slides'))
+      expect(skill.buildContext?.()).toContain('"status":"verified"')
+      await skill.executeTool(
+        call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' }),
+      )
+      if (!confirmed)
+        vi.mocked(fake.editSlideText).mockImplementationOnce(async () => {
+          vi.mocked(fake.readSlideText).mockResolvedValue({
+            slideId: 'slide-1',
+            shapeId: '2',
+            text: 'Different',
+            paragraphs: ['Different'],
+          })
+        })
+      const confirmation = proposals.confirm(proposals.pending()!.id)
+      if (confirmed) await confirmation
+      else await expect(confirmation).rejects.toThrow('office_verify_failed')
+      expect(skill.buildContext?.()).toContain('"status":"producing"')
+      expect(skill.buildContext?.()).toContain('"needsScreenshot":true')
+      expect(skill.reviewFinalResponse?.({ text: 'Done', mutated: true })).toContain(
+        'screenshot_slide',
+      )
+      expect((await skill.executeTool(call('verify_slides'))).isError).toBe(true)
+    },
+  )
+
   it('enforces prototype-first production and rejects host verification defects', async () => {
     const base = modernContract()
     const first = (base.slides as Array<Record<string, unknown>>)[0]!
@@ -538,7 +638,7 @@ describe('PowerPoint compatibility skill', () => {
     )
     await expect(skill.executeTool(call('verify_slides'))).resolves.toMatchObject({
       isError: true,
-      output: 'design_contract_production_incomplete',
+      output: expect.stringContaining('"error":"design_contract_production_incomplete"'),
     })
     expect(skill.buildContext?.()).toContain('"status":"producing"')
   })
@@ -577,10 +677,30 @@ describe('PowerPoint compatibility skill', () => {
       }),
     )
 
-    await expect(skill.executeTool(call('verify_slides'))).resolves.toMatchObject({
-      isError: true,
-      output: 'design_contract_verification_failed',
+    const failed = await skill.executeTool(call('verify_slides'))
+    expect(failed.isError).toBe(true)
+    expect(JSON.parse(failed.output)).toMatchObject({
+      error: 'design_contract_verification_failed',
+      nextTool: 'list_slide_shapes',
+      verification: {
+        slides: [{ slideIndex: 0, overlaps: [{ shapeAId: '1', shapeBId: '2' }] }],
+      },
     })
+    // A page that already passed visual review must remain editable to repair geometry.
+    const repair = await skill.executeTool(
+      call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Hello' }),
+    )
+    expect(repair.isError).not.toBe(true)
+    await proposals.confirm(proposals.pending()!.id)
+    expect(
+      await skill.executeTool(
+        call('review_slide_screenshot', {
+          slide_index: 0,
+          acceptance_ids: ['A1.1'],
+          passed: true,
+        }),
+      ),
+    ).toMatchObject({ isError: true, output: 'design_contract_screenshot_required' })
     expect(skill.buildContext?.()).toContain('"status":"producing"')
   })
 
@@ -627,7 +747,7 @@ describe('PowerPoint compatibility skill', () => {
 
     await expect(skill.executeTool(call('verify_slides'))).resolves.toMatchObject({
       isError: true,
-      output: 'design_contract_production_incomplete',
+      output: expect.stringContaining('"error":"design_contract_production_incomplete"'),
     })
   })
 
@@ -2055,7 +2175,7 @@ describe('PowerPoint compatibility skill', () => {
       for (const index of [0, 2, 3]) await review(index)
       await expect(skill.executeTool(call('verify_slides'))).resolves.toMatchObject({
         isError: true,
-        output: 'design_contract_production_incomplete',
+        output: expect.stringContaining('"error":"design_contract_production_incomplete"'),
       })
       await write('edit_slide_text', { slide_index: 1, shape_id: '2', text: 'Hello' })
       await review(1)
@@ -2134,7 +2254,7 @@ describe('PowerPoint compatibility skill', () => {
       ).resolves.toMatchObject({ isError: true, output: 'invalid_tool_input' })
       await expect(skill.executeTool(call('verify_slides'))).resolves.toMatchObject({
         isError: true,
-        output: 'design_contract_production_incomplete',
+        output: expect.stringContaining('"error":"design_contract_production_incomplete"'),
       })
     })
 

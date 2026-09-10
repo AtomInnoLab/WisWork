@@ -43,6 +43,50 @@ const statement = {
 } as const
 
 describe('Office Codex proxy', () => {
+  it.each(['office_verify_failed', 'proposal_stale'])(
+    'preserves the mutation signal for a failed remote proposal: %s',
+    async (error) => {
+      let receipt!: ToolExecution
+      const proxy = createOfficeCodexProxy({
+        runtime: {
+          async runOfficeTurn(input: any) {
+            const result = input.toolSession.callTool(input.toolSession.credentials, {
+              id: 'repair_call',
+              name: 'edit_slide_text',
+              input: { slide_index: 0, shape_id: 'title', text: 'Title' },
+            })
+            receipt = await (isToolExecutionSuspension(result) ? result.result : result)
+            input.onEvent({ type: 'terminal', status: 'completed' })
+          },
+        } as any,
+        rollout,
+        policyAuthority: createShellEnhancedPolicyAuthority(() => 0),
+      })
+      const response = await proxy({
+        body: {
+          system: '',
+          messages: [],
+          tools: [
+            { name: 'edit_slide_text', description: 'edit', input_schema: { type: 'object' } },
+          ],
+        },
+        signal: new AbortController().signal,
+        host: 'PowerPoint',
+        sessionId: 'session_12345678',
+        requestId: 'request_12345678',
+        statement: { ...statement, host: 'office-powerpoint' },
+        executeTool: async () => ({
+          output: JSON.stringify({ proposalId: 'p1', status: 'failed', error }),
+          isError: true,
+        }),
+      })
+      for await (const _chunk of response.body as AsyncIterable<Uint8Array>) {
+        /* drain */
+      }
+      expect(receipt).toMatchObject({ isError: true, mutated: error === 'office_verify_failed' })
+    },
+  )
+
   it.each([
     'success',
     'normalized',

@@ -202,6 +202,7 @@ const DIAGNOSTIC_TOOL_ERRORS = new Set([
   'design_contract_prototype_required',
   'design_contract_production_incomplete',
   'design_contract_verification_failed',
+  'design_contract_visual_review_failed',
   'design_contract_invalid_status',
   'design_contract_review_not_pending',
   'design_contract_acceptance_mismatch',
@@ -246,6 +247,8 @@ const AUTOMATIC_POWERPOINT_MUTATION_TOOLS = new Set([
 ])
 
 function diagnosticToolError(output: string): string {
+  if (output.startsWith('design_contract_visual_review_failed:'))
+    return 'design_contract_visual_review_failed'
   if (output === 'raw_office_program_invalid') return 'invalid_tool_input'
   if (output === 'office_screenshot_unavailable') return 'office_read_failed'
   const safe = (value: string) =>
@@ -508,13 +511,18 @@ export function createOfficeAgentSession(dependencies: {
           proposalId,
           status: 'failed',
           error: decision.error,
+          ...(decision.errorLocation ? { errorLocation: decision.errorLocation } : {}),
           instruction:
             decision.error === 'proposal_stale'
               ? 'Do not retry this write in the current turn.'
-              : undefined,
+              : decision.error === 'office_verify_failed'
+                ? 'Some operations may already have been applied. Read the current slide and shapes before making a small corrective edit; do not repeat the whole batch. If fontFamily failed, Office did not confirm that font: preserve the current family and apply size/color separately, then screenshot and review the result.'
+                : undefined,
         }),
         isError: true,
-        mutated: false,
+        // Verification is after execute: keep the repair/final-review loop active
+        // even when this was the only write attempted in the turn.
+        mutated: decision.error === 'office_verify_failed',
         summary: 'Approved change failed',
         stopToolBatch: decision.error === 'proposal_stale',
       }

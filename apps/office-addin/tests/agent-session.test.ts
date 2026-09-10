@@ -101,6 +101,7 @@ describe('Office agent session', () => {
     'prototype_required',
     'production_incomplete',
     'verification_failed',
+    'visual_review_failed',
     'invalid_status',
     'review_not_pending',
     'acceptance_mismatch',
@@ -117,9 +118,15 @@ describe('Office agent session', () => {
         systemPrompt: '',
         tools: [{ name: 'plan_deck', description: 'plan', inputSchema: { type: 'object' } }],
         executeTool: vi.fn(async () => ({
-          output: ['review_required', 'invalid_status', 'unknown_private'].includes(suffix)
-            ? JSON.stringify({ error: code, contract: 'private contract https://secret.example' })
-            : code,
+          output:
+            suffix === 'visual_review_failed'
+              ? `${code}: private contract https://secret.example`
+              : ['review_required', 'invalid_status', 'unknown_private'].includes(suffix)
+                ? JSON.stringify({
+                    error: code,
+                    contract: 'private contract https://secret.example',
+                  })
+                : code,
           isError: true,
           summary: 'plan',
         })),
@@ -420,6 +427,62 @@ describe('Office agent session', () => {
     )
     session.answerQuestionnaire?.('面向谁？: 客户')
     await expect(result).resolves.toMatchObject({ output: expect.stringContaining('客户') })
+  })
+
+  it('returns the safe verification location and repair guidance to the paired PC model', async () => {
+    let handler: ((call: any) => Promise<{ output: string; isError?: boolean }>) | undefined
+    const proposals = createStructuredProposalController()
+    const errorLocation = 'PowerPoint.operations.1.set_shape_text_style.fontFamily'
+    createOfficeAgentSession({
+      transport: transportHarness().transport,
+      skill: {
+        id: 'test',
+        systemPrompt: '',
+        tools: [
+          { name: 'execute_office_js', description: 'write', inputSchema: { type: 'object' } },
+        ],
+        executeTool: async () => {
+          const proposal = proposals.propose({
+            operation: 'execute_office_js',
+            title: 'Style',
+            preview: {},
+            impact: { host: 'powerpoint', targets: ['slide'], count: 1 },
+            fingerprint: 'v1',
+            validate: () => true,
+            execute: () => undefined,
+            verify: () => {
+              throw Object.assign(new Error('office_verify_failed'), {
+                debugInfo: { errorLocation },
+              })
+            },
+          })
+          return { output: JSON.stringify({ proposalId: proposal.id }), summary: 'prepared' }
+        },
+      },
+      proposals,
+      remoteTools: {
+        setToolHandler: (next) => {
+          handler = next
+        },
+      },
+    })
+    const result = handler!({
+      turnId: 'turn_12345678',
+      callId: 'call_12345678',
+      generation: 1,
+      toolName: 'execute_office_js',
+      input: {},
+      signal: new AbortController().signal,
+    })
+    await vi.waitFor(() => expect(proposals.pending()).toBeDefined())
+    await expect(proposals.confirm(proposals.pending()!.id)).rejects.toThrow('office_verify_failed')
+    const failure = await result
+    expect(failure.isError).toBe(true)
+    expect(JSON.parse(failure.output)).toMatchObject({
+      error: 'office_verify_failed',
+      errorLocation,
+      instruction: expect.stringContaining('preserve the current family'),
+    })
   })
 
   it('invalidates a suspended remote proposal when cancelled before confirmation', async () => {
