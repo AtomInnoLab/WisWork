@@ -2,6 +2,7 @@ mod binding_store;
 
 use axum::{
     Json, Router,
+    body::{Body, Bytes},
     extract::{
         ConnectInfo, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -305,6 +306,16 @@ async fn image_fetch(
     headers: HeaderMap,
     Json(request): Json<ImageFetchRequest>,
 ) -> Response {
+    tokio::time::timeout(IMAGE_TIMEOUT, image_fetch_with_auth(app, headers, request))
+        .await
+        .unwrap_or_else(|_| image_error(StatusCode::BAD_GATEWAY, "image_fetch_unavailable"))
+}
+
+async fn image_fetch_with_auth(
+    app: App,
+    headers: HeaderMap,
+    request: ImageFetchRequest,
+) -> Response {
     if headers.contains_key(header::ORIGIN) {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -327,7 +338,7 @@ async fn image_fetch(
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
     match guarded_fetch_image(&app, &request.url).await {
-        Ok((mime, body)) => (StatusCode::OK, [(header::CONTENT_TYPE, mime)], body).into_response(),
+        Ok((mime, body, permit)) => image_success_response(mime, body, permit),
         Err(ImageFetchError::Busy) => StatusCode::TOO_MANY_REQUESTS.into_response(),
         Err(ImageFetchError::Limit) => image_error(StatusCode::PAYLOAD_TOO_LARGE, "image_limit"),
         Err(ImageFetchError::Mime) => {
@@ -337,6 +348,33 @@ async fn image_fetch(
             image_error(StatusCode::BAD_GATEWAY, "image_fetch_unavailable")
         }
     }
+}
+
+fn image_success_response(
+    mime: &'static str,
+    body: Vec<u8>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> Response {
+    let bytes = Bytes::from(body);
+    let stream = futures_util::stream::unfold(
+        (bytes, 0usize, permit),
+        |(bytes, offset, permit)| async move {
+            if offset >= bytes.len() {
+                return None;
+            }
+            let end = (offset + CHUNK_MAX).min(bytes.len());
+            Some((
+                Ok::<_, std::convert::Infallible>(bytes.slice(offset..end)),
+                (bytes, end, permit),
+            ))
+        },
+    );
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, mime)],
+        Body::from_stream(stream),
+    )
+        .into_response()
 }
 
 async fn allow_image_fetch(app: &App) -> bool {
@@ -452,7 +490,7 @@ impl ImageNetwork for ReqwestImageNetwork {
 async fn guarded_fetch_image(
     app: &App,
     input: &str,
-) -> Result<(&'static str, Vec<u8>), ImageFetchError> {
+) -> Result<(&'static str, Vec<u8>, tokio::sync::OwnedSemaphorePermit), ImageFetchError> {
     guarded_fetch_image_with(app, input, &ReqwestImageNetwork, IMAGE_TIMEOUT).await
 }
 
@@ -461,16 +499,17 @@ async fn guarded_fetch_image_with(
     input: &str,
     network: &dyn ImageNetwork,
     timeout: Duration,
-) -> Result<(&'static str, Vec<u8>), ImageFetchError> {
-    let _permit = app
+) -> Result<(&'static str, Vec<u8>, tokio::sync::OwnedSemaphorePermit), ImageFetchError> {
+    let permit = app
         .inner
         .image_slots
         .clone()
         .try_acquire_owned()
         .map_err(|_| ImageFetchError::Busy)?;
-    tokio::time::timeout(timeout, fetch_image_with_network(input, network))
+    let (mime, body) = tokio::time::timeout(timeout, fetch_image_with_network(input, network))
         .await
-        .map_err(|_| ImageFetchError::Unavailable)?
+        .map_err(|_| ImageFetchError::Unavailable)??;
+    Ok((mime, body, permit))
 }
 
 async fn fetch_image_with_network(
@@ -499,7 +538,7 @@ async fn fetch_image_with_network(
             )?;
             continue;
         }
-        if !response.status.is_success() {
+        if response.status != StatusCode::OK {
             return Err(ImageFetchError::Unavailable);
         }
         let mime = accepted_image_mime(response.mime.as_deref().ok_or(ImageFetchError::Mime)?)?;
@@ -3849,6 +3888,14 @@ mod tests {
     #[tokio::test]
     async fn downloader_enforces_mime_declared_and_streaming_limits() {
         let response_cases = [
+            mock_response(StatusCode::NO_CONTENT, None, None, None, vec![]),
+            mock_response(
+                StatusCode::PARTIAL_CONTENT,
+                None,
+                Some("image/jpeg"),
+                Some(1),
+                vec![Ok(vec![1])],
+            ),
             mock_response(
                 StatusCode::OK,
                 None,
@@ -3872,6 +3919,8 @@ mod tests {
             ),
         ];
         for (response, expected) in response_cases.into_iter().zip([
+            ImageFetchError::Unavailable,
+            ImageFetchError::Unavailable,
             ImageFetchError::Mime,
             ImageFetchError::Limit,
             ImageFetchError::Limit,
@@ -3903,7 +3952,7 @@ mod tests {
         )
         .await
         .expect("downloader's whole-operation timeout was not enforced");
-        assert_eq!(timed, Err(ImageFetchError::Unavailable));
+        assert!(matches!(timed, Err(ImageFetchError::Unavailable)));
 
         let app = test_app();
         let network = Arc::new(
@@ -3923,7 +3972,7 @@ mod tests {
             .await
         });
         network.requested.notified().await;
-        assert_eq!(
+        assert!(matches!(
             guarded_fetch_image_with(
                 &app,
                 "https://images.example/b",
@@ -3932,8 +3981,31 @@ mod tests {
             )
             .await,
             Err(ImageFetchError::Busy)
-        );
+        ));
         first.abort();
+
+        let app = test_app();
+        let network = MockImageNetwork::default()
+            .resolving("images.example", &["8.8.8.8:443"])
+            .responding(mock_response(
+                StatusCode::OK,
+                None,
+                Some("image/png"),
+                Some(1),
+                vec![Ok(vec![1])],
+            ));
+        let (mime, body, permit) = guarded_fetch_image_with(
+            &app,
+            "https://images.example/a",
+            &network,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        let response = image_success_response(mime, body, permit);
+        assert_eq!(app.inner.image_slots.available_permits(), 0);
+        drop(response);
+        assert_eq!(app.inner.image_slots.available_permits(), 1);
     }
 
     fn test_app() -> App {

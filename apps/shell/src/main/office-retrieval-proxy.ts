@@ -260,21 +260,33 @@ export function createOfficeRemoteImageDownloader(options: {
   return async (url, signal) => {
     const controller = new AbortController()
     const cancel = () => controller.abort()
+    let rejectDeadline: ((reason: Error) => void) | undefined
+    const deadline = new Promise<never>((_resolve, reject) => {
+      rejectDeadline = reject
+    })
     signal?.addEventListener('abort', cancel, { once: true })
+    controller.signal.addEventListener(
+      'abort',
+      () => rejectDeadline?.(new Error('image_fetch_unavailable')),
+      { once: true },
+    )
     const timer = setTimeout(cancel, options.timeoutMs ?? REQUEST_TIMEOUT_MS)
     try {
-      const response = await options.fetchWithAuth((accessToken) =>
-        doFetch(OFFICE_IMAGE_FETCH_ENDPOINT, {
-          method: 'POST',
-          redirect: 'error',
-          headers: {
-            authorization: `Bearer ${accessToken}`,
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({ url: safeHttpsUrl(url) }),
-          signal: controller.signal,
-        }),
-      )
+      const response = await Promise.race([
+        options.fetchWithAuth((accessToken) =>
+          doFetch(OFFICE_IMAGE_FETCH_ENDPOINT, {
+            method: 'POST',
+            redirect: 'error',
+            headers: {
+              authorization: `Bearer ${accessToken}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({ url: safeHttpsUrl(url) }),
+            signal: controller.signal,
+          }),
+        ),
+        deadline,
+      ])
       if (response.status === 413) throw new Error('image_limit')
       if (response.status === 415) throw new Error('image_mime_unsupported')
       if (response.status !== 200 || response.redirected) throw new Error('image_fetch_unavailable')

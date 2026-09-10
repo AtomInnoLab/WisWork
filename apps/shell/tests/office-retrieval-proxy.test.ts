@@ -111,6 +111,35 @@ describe('Office fixed retrieval proxy', () => {
     await expect(pending).rejects.toThrow('search_cancelled')
   })
 
+  it('bounds authentication and token refresh within the same remote image deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      const download = createOfficeRemoteImageDownloader({
+        fetch: vi.fn(),
+        fetchWithAuth: () => new Promise<Response>(() => undefined),
+        timeoutMs: 25,
+      })
+      const pending = download('https://images.example/cover.jpg')
+      const assertion = expect(pending).rejects.toThrow('image_fetch_unavailable')
+      await vi.advanceTimersByTimeAsync(25)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ends while authentication is pending when the caller cancels', async () => {
+    const download = createOfficeRemoteImageDownloader({
+      fetch: vi.fn(),
+      fetchWithAuth: () => new Promise<Response>(() => undefined),
+    })
+    const controller = new AbortController()
+    const pending = download('https://images.example/cover.jpg', controller.signal)
+    const assertion = expect(pending).rejects.toThrow('search_cancelled')
+    controller.abort()
+    await assertion
+  })
+
   it('uses remote first and reserves strict local download for remote unavailability', async () => {
     const bytes = new Uint8Array([0xff, 0xd8])
     const remoteDownloadImage = vi.fn(async () => ({ mime: 'image/jpeg' as const, bytes }))
