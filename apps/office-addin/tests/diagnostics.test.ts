@@ -5,6 +5,25 @@ import {
 } from '../src/diagnostics/office-diagnostics.js'
 
 describe('Office safe diagnostics', () => {
+  it.each([
+    'https://private.example/document',
+    '//private.example/document',
+    'file:/private/document',
+    '192.0.2.42',
+  ])('does not export URL or path values disguised as Office identifiers: %s', (value) => {
+    const diagnostics = createOfficeDiagnostics({ host: 'powerpoint', build: 'test' })
+    diagnostics.record({
+      phase: 'tool',
+      errorCode: 'office_read_failed',
+      error: { code: value, name: value, debugInfo: { errorLocation: value } },
+    })
+    const event = diagnostics.snapshot().events.at(-1)
+    expect(event).not.toHaveProperty('office_error_code')
+    expect(event).not.toHaveProperty('office_error_name')
+    expect(event).not.toHaveProperty('office_error_location')
+    expect(diagnostics.exportJson()).not.toContain('private')
+  })
+
   it.each(['image_fetch_unavailable', 'image_limit', 'image_mime_unsupported', 'invalid_image'])(
     'preserves %s instead of misdiagnosing image preparation as an Office write failure',
     (errorCode) => {

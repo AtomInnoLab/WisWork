@@ -3546,6 +3546,147 @@ describe('browser PowerPoint adapter', () => {
     await expect(subject.snapshotSlide(0)).resolves.not.toEqual(first)
   })
 
+  describe('mixed-shape snapshots', () => {
+    function fixture(safeFrames: boolean) {
+      let pendingTextError: Error | undefined
+      let requestedNullFrame = false
+      let loadedNullFrame = false
+      const font = {
+        load: vi.fn(),
+        color: '#FFFFFF',
+        name: 'Aptos',
+        size: 32,
+        bold: true,
+        italic: false,
+      }
+      const textRange = { text: 'Readable title', font, load: vi.fn() }
+      const textFrame = { isNullObject: false, hasText: true, load: vi.fn(), textRange }
+      const nullFrame = {
+        get isNullObject() {
+          if (!loadedNullFrame) throw new Error('PropertyNotLoaded')
+          return true
+        },
+        load: vi.fn(() => {
+          throw new Error('null_text_frame_load')
+        }),
+        get hasText(): never {
+          throw new Error('null_text_frame_access')
+        },
+      }
+      const unsupportedFrame = () => {
+        throw new Error('office_api_unsupported')
+      }
+      const title = {
+        id: 'title',
+        name: 'Title',
+        type: 'TextBox',
+        left: 40,
+        top: 40,
+        width: 600,
+        height: 80,
+        textFrame,
+        getTextFrameOrNullObject: safeFrames ? () => textFrame : unsupportedFrame,
+      }
+      const image = {
+        id: 'image',
+        name: 'Cover image',
+        type: 'Image',
+        left: 0,
+        top: 0,
+        width: 960,
+        height: 540,
+        get textFrame(): never {
+          throw Object.assign(new Error('InvalidArgument'), {
+            code: 'InvalidArgument',
+            debugInfo: { errorLocation: 'Shape.textFrame' },
+          })
+        },
+        getTextFrameOrNullObject: safeFrames
+          ? () => {
+              requestedNullFrame = true
+              return nullFrame
+            }
+          : unsupportedFrame,
+      }
+      const items: Array<typeof title | typeof image> = [title, image]
+      const slide = { id: 's1', load: vi.fn(), shapes: { load: vi.fn(), items } }
+      const context = {
+        presentation: {
+          slides: { getCount: () => ({ value: 1 }), getItemAt: () => slide },
+        },
+        sync: vi.fn(async () => {
+          if (pendingTextError) throw pendingTextError
+          if (requestedNullFrame) loadedNullFrame = true
+        }),
+      }
+      Object.assign(globalThis, {
+        Office: {
+          context: {
+            host: 'PowerPoint',
+            platform: 'Mac',
+            requirements: {
+              isSetSupported: (_name: string, version: string) => version !== '1.10' || safeFrames,
+            },
+          },
+        },
+        PowerPoint: { run: (callback: (value: typeof context) => unknown) => callback(context) },
+      })
+      return {
+        subject: new BrowserPowerPointAdapter(),
+        textRange,
+        font,
+        image,
+        items,
+        failTextRead(error: Error) {
+          textFrame.load.mockImplementation(() => {
+            pendingTextError = error
+          })
+        },
+      }
+    }
+
+    it.each([false, true])(
+      'snapshots text and images without unsafe textFrame access (API 1.10: %s)',
+      async (safeFrames) => {
+        const { subject, textRange, font, image, items } = fixture(safeFrames)
+        const before = await subject.snapshotSlide(0)
+        await expect(subject.snapshotSlide(0)).resolves.toEqual(before)
+        textRange.text = 'Changed title'
+        const changedText = await subject.snapshotSlide(0)
+        expect(changedText.fingerprint).not.toBe(before.fingerprint)
+        font.size = 40
+        const changedStyle = await subject.snapshotSlide(0)
+        expect(changedStyle.fingerprint).not.toBe(changedText.fingerprint)
+        image.left = 20
+        const movedImage = await subject.snapshotSlide(0)
+        expect(movedImage.fingerprint).not.toBe(changedStyle.fingerprint)
+        items.pop()
+        const removedImage = await subject.snapshotSlide(0)
+        expect(removedImage.fingerprint).not.toBe(movedImage.fingerprint)
+      },
+    )
+
+    it('does not skip an unknown legacy shape type when its text read fails', async () => {
+      const { subject, image } = fixture(false)
+      image.type = 'FutureShape'
+      await expect(subject.snapshotSlide(0)).rejects.toMatchObject({
+        code: 'InvalidArgument',
+        debugInfo: { errorLocation: 'Shape.textFrame' },
+      })
+    })
+
+    it.each([false, true])(
+      'does not suppress actual text read failures (API 1.10: %s)',
+      async (safeFrames) => {
+        const { subject, items, failTextRead } = fixture(safeFrames)
+        items.pop()
+        const hostError = Object.assign(new Error('GeneralException'), { code: 'GeneralException' })
+        failTextRead(hostError)
+        await expect(subject.snapshotSlide(0)).rejects.toBe(hostError)
+      },
+    )
+  })
+
   it('rejects empty or oversized duplicate exports before insertion', async () => {
     const sync = vi.fn().mockResolvedValue(undefined)
     const slide = {

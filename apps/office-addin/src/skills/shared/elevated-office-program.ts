@@ -530,7 +530,20 @@ function elevatedProgramSchema(host: ElevatedOfficeHost): Record<string, unknown
           type: 'object',
           properties: {
             call: { type: 'string', enum: [...JS_CALLS[host]] },
-            args: { type: 'object' },
+            args: {
+              type: 'object',
+              ...(host === 'powerpoint'
+                ? {
+                    description:
+                      'Exact keys only. shape.setText: slideIndex, shapeId, text. ' +
+                      'shape.setGeometry: slideIndex, shapeId, left, top, width, height (no style). ' +
+                      'shape.delete: slideIndex, shapeId. ' +
+                      'slide.addTextBox: slideIndex, text, left, top, width, height, style. ' +
+                      'style requires exactly color (#RRGGBB), fontFamily, fontSize (integer 1–400), bold and italic (booleans). ' +
+                      'slideIndex is zero-based; shapeId must come from a current shape read. Geometry uses points, with positive width/height.',
+                  }
+                : {}),
+            },
           },
           required: ['call', 'args'],
           additionalProperties: false,
@@ -610,7 +623,13 @@ export function createElevatedOfficeSkill(options: {
         if (!exact(call.input, ['program'])) invalid()
         program = parseElevatedOfficeProgram(options.host, call.input.program)
       } catch {
-        return safeFailure('raw_office_program_invalid')
+        return {
+          ...safeFailure('raw_office_program_invalid'),
+          diagnosticError: {
+            code: 'RawOfficeProgramInvalid',
+            debugInfo: { errorLocation: 'program' },
+          },
+        }
       }
       if (!permitsProgram(initial, program)) return safeFailure('raw_office_denied')
       if (options.proposals.pending()) return safeFailure('proposal_confirmation_in_progress')

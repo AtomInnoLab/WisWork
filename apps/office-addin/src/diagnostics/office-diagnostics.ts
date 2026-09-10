@@ -167,6 +167,11 @@ function safeProperty(value: Record<string, unknown>, property: string): unknown
   }
 }
 
+function officeIdentifier(value: unknown): string {
+  const normalized = identifier(value, '')
+  return /^[A-Za-z_][A-Za-z0-9_.()-]*$/.test(normalized) ? normalized : ''
+}
+
 function officeIdentifiers(error: unknown): OfficeDiagnosticMetadata {
   const result: OfficeDiagnosticMetadata = {}
   const seen = new Set<unknown>()
@@ -181,11 +186,10 @@ function officeIdentifiers(error: unknown): OfficeDiagnosticMetadata {
       debugInfoValue && typeof debugInfoValue === 'object'
         ? (debugInfoValue as Record<string, unknown>)
         : undefined
-    const code = identifier(safeProperty(value, 'code'), '')
-    const name = identifier(safeProperty(value, 'name'), '')
-    const location = identifier(
+    const code = officeIdentifier(safeProperty(value, 'code'))
+    const name = officeIdentifier(safeProperty(value, 'name'))
+    const location = officeIdentifier(
       debugInfo ? safeProperty(debugInfo, 'errorLocation') : undefined,
-      '',
     )
     if (code && !result.office_error_code) result.office_error_code = code
     if (

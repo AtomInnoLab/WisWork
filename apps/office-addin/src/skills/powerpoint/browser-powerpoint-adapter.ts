@@ -16,6 +16,21 @@ export const MAX_POWERPOINT_VERIFY_SLIDES = 20
 export const MAX_POWERPOINT_VERIFY_SHAPES = 100
 export const MAX_POWERPOINT_VERIFY_OVERFLOWS = 2_000
 const MAX_POWERPOINT_DOCUMENT_BYTES = 64 * 1024 * 1024
+const NON_TEXT_SHAPE_TYPES = new Set([
+  'Image',
+  'Group',
+  'Line',
+  'Table',
+  'Chart',
+  'ContentApp',
+  'Diagram',
+  'Graphic',
+  'Ink',
+  'Media',
+  'Model3D',
+  'Ole',
+  'SmartArt',
+])
 
 function uncertainPowerPointState(errorLocation: string, cause?: unknown): Error {
   return Object.assign(
@@ -964,26 +979,46 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
       const items = shapes.items as RuntimeRecord[]
       if (!Array.isArray(items) || items.length > MAX_POWERPOINT_SHAPES)
         throw new Error('office_read_failed')
+      const supportsNullFrames = Office.context.requirements.isSetSupported('PowerPointApi', '1.10')
+      const textFrames = new Map<RuntimeRecord, RuntimeRecord>()
+      const nullableFrames = new Set<RuntimeRecord>()
       for (const shape of items) {
-        const textFrame = shape.textFrame as RuntimeRecord | undefined
-        if (textFrame && typeof textFrame.load === 'function')
-          (textFrame.load as (properties: string) => void)('hasText')
+        const useNullFrame =
+          supportsNullFrames && typeof shape.getTextFrameOrNullObject === 'function'
+        // Unknown legacy types still take the normal read path and fail closed.
+        if (!useNullFrame && NON_TEXT_SHAPE_TYPES.has(string(shape.type))) continue
+        const textFrame = useNullFrame
+          ? (shape.getTextFrameOrNullObject as () => RuntimeRecord)()
+          : (shape.textFrame as RuntimeRecord | undefined)
+        if (textFrame && typeof textFrame.load === 'function') {
+          textFrames.set(shape, textFrame)
+          if (useNullFrame) nullableFrames.add(textFrame)
+          else (textFrame.load as (properties: string) => void)('hasText')
+        }
       }
+      // OrNullObject resolves isNullObject on sync without a property load.
       await sync(context, signal)
-      for (const shape of items) {
-        const textFrame = shape.textFrame as RuntimeRecord | undefined
-        const textRange = textFrame?.textRange as RuntimeRecord | undefined
-        if (textFrame?.hasText === true && textRange && typeof textRange.load === 'function')
+      for (const [shape, textFrame] of textFrames) {
+        if (!nullableFrames.has(textFrame)) continue
+        if (textFrame.isNullObject === true) textFrames.delete(shape)
+        else if (textFrame.isNullObject === false)
+          (textFrame.load as (properties: string) => void)('hasText')
+        else throw new Error('office_read_failed')
+      }
+      if (nullableFrames.size > 0) await sync(context, signal)
+      for (const textFrame of textFrames.values()) {
+        const textRange = textFrame.textRange as RuntimeRecord | undefined
+        if (textFrame.hasText === true && textRange && typeof textRange.load === 'function')
           (textRange.load as (properties: string) => void)('text')
         const font = textRange?.font as RuntimeRecord | undefined
-        if (textFrame?.hasText === true && font && typeof font.load === 'function')
+        if (textFrame.hasText === true && font && typeof font.load === 'function')
           (font.load as (properties: string) => void)('color,name,size,bold,italic')
       }
       await sync(context, signal)
       const slideId = string(slide.id)
       const semanticShapes = items
         .map((shape) => {
-          const textFrame = shape.textFrame as RuntimeRecord | undefined
+          const textFrame = textFrames.get(shape)
           const textRange = textFrame?.textRange as RuntimeRecord | undefined
           return {
             ...shapeInfo(shape),

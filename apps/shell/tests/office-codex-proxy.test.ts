@@ -1,9 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ENHANCED_HOSTS, type EnhancedRolloutPolicy } from '@wiswork/agent-runtime'
-import { isToolExecutionSuspension, type ToolExecution } from '@wiswork/agent-core'
+import {
+  encodeOfficeScreenshotResult,
+  isToolExecutionSuspension,
+  type ToolExecution,
+} from '@wiswork/agent-core'
 import type { DocumentToolSession } from '@wiswork/codex-bridge'
 import { OFFICE_PROXY_KEEPALIVE_MS, createOfficeCodexProxy } from '../src/main/office-codex-proxy'
 import { createShellEnhancedPolicyAuthority } from '../src/main/enhanced-policy-authority'
+import { createStructuredProposalController } from '../../office-addin/src/agent/proposal-controller'
+import type { PowerPointAdapter } from '../../office-addin/src/skills/powerpoint/browser-powerpoint-adapter'
+import { createPowerPointSkill } from '../../office-addin/src/skills/powerpoint/powerpoint-skill'
 
 // Legacy gateway event shape (without turnId) remains supported.
 async function semanticCall(input: any, call: any) {
@@ -537,6 +544,189 @@ describe('Office Codex proxy', () => {
       /* drain */
     }
   })
+
+  it.each(['Mac', 'PC'])(
+    'preserves the real PowerPoint %s tool inventory and dispatches screenshot reviews',
+    async (platform) => {
+      const skill = createPowerPointSkill({
+        adapter: {} as PowerPointAdapter,
+        proposals: createStructuredProposalController(),
+        platform,
+        nativeMasterEditingSupported: true,
+      })
+      let registered: ReturnType<DocumentToolSession['listTools']> = []
+      let review: ToolExecution | undefined
+      const reviewInput = { slide_index: 0, acceptance_ids: ['A1.1'], passed: true }
+      const executeTool = vi.fn(async () => ({
+        output: 'design_contract_screenshot_required',
+        isError: true,
+      }))
+      const proxy = createOfficeCodexProxy({
+        runtime: {
+          async runOfficeTurn(input: any) {
+            const session: DocumentToolSession = input.toolSession
+            registered = session.listTools(session.credentials)
+            const result = session.callTool(session.credentials, {
+              id: 'review01',
+              name: 'review_slide_screenshot',
+              input: reviewInput,
+            })
+            review = await (isToolExecutionSuspension(result) ? result.result : result)
+            input.onEvent({ type: 'terminal', status: 'completed' })
+          },
+        } as any,
+        rollout,
+        policyAuthority: createShellEnhancedPolicyAuthority(() => 0),
+      })
+      const response = await proxy({
+        // Match the actual request wire: shared schema references become detached JSON values.
+        body: JSON.parse(
+          JSON.stringify({
+            system: skill.systemPrompt,
+            messages: [],
+            tools: skill.tools.map((tool) => ({
+              name: tool.name,
+              description: tool.description,
+              input_schema: tool.inputSchema,
+            })),
+          }),
+        ),
+        signal: new AbortController().signal,
+        host: 'PowerPoint',
+        sessionId: 'session_12345678',
+        requestId: 'request_12345678',
+        statement: { ...statement, host: 'office-powerpoint' },
+        executeTool,
+      })
+      for await (const _chunk of response.body as AsyncIterable<Uint8Array>) {
+        /* drain */
+      }
+
+      expect(registered.map((tool) => tool.name)).toEqual(skill.tools.map((tool) => tool.name))
+      expect(registered.find((tool) => tool.name === 'review_slide_screenshot')).toMatchObject({
+        ...skill.tools.find((tool) => tool.name === 'review_slide_screenshot'),
+        annotations: { readOnlyHint: true, destructiveHint: false },
+      })
+      expect(executeTool).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ toolName: 'review_slide_screenshot', input: reviewInput }),
+      )
+      expect(review).toMatchObject({
+        output: 'design_contract_screenshot_required',
+        isError: true,
+        mutated: false,
+      })
+    },
+  )
+
+  it('does not claim a legacy metadata-only screenshot was delivered to the model', async () => {
+    let screenshot: ToolExecution | undefined
+    const proxy = createOfficeCodexProxy({
+      runtime: {
+        async runOfficeTurn(input: any) {
+          screenshot = await input.toolSession.callTool(input.toolSession.credentials, {
+            id: 'screenshot01',
+            name: 'screenshot_slide',
+            input: { slide_index: 0 },
+          })
+          input.onEvent({ type: 'terminal', status: 'completed' })
+        },
+      } as any,
+      rollout,
+      policyAuthority: createShellEnhancedPolicyAuthority(() => 0),
+    })
+    const response = await proxy({
+      body: {
+        system: '',
+        messages: [],
+        tools: [{ name: 'screenshot_slide', description: '', input_schema: { type: 'object' } }],
+      },
+      signal: new AbortController().signal,
+      host: 'PowerPoint',
+      sessionId: 'session_12345678',
+      requestId: 'request_12345678',
+      statement: { ...statement, host: 'office-powerpoint' },
+      executeTool: async () => ({
+        output: JSON.stringify({ mime: 'image/png', bytes: 100, visualAvailableToModel: true }),
+        isError: false,
+      }),
+    })
+    for await (const _chunk of response.body as AsyncIterable<Uint8Array>) {
+      /* drain */
+    }
+    expect(screenshot).toMatchObject({
+      output: 'office_screenshot_unavailable',
+      isError: true,
+      mutated: false,
+    })
+    expect(screenshot?.modelContent).toBeUndefined()
+  })
+
+  it.each(['unavailable', 'decoder failed', 'changed bytes', 'changed MIME', 'cancelled'])(
+    'refuses to promote a screenshot when native validation is %s',
+    async (scenario) => {
+      const image = {
+        mime: 'image/png',
+        base64:
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4AWP4DwQACfsD/c8LaHIAAAAASUVORK5CYII=',
+      }
+      const controller = new AbortController()
+      let screenshot: ToolExecution | undefined
+      const proxy = createOfficeCodexProxy({
+        rollout,
+        policyAuthority: createShellEnhancedPolicyAuthority(() => 0),
+        ...(scenario === 'unavailable'
+          ? {}
+          : {
+              prepareImageHandoff: async (value: {
+                bytes: Uint8Array
+                mime: 'image/png' | 'image/jpeg'
+              }) => {
+                if (scenario === 'decoder failed') throw new Error('private native decoder error')
+                if (scenario === 'cancelled') controller.abort()
+                return {
+                  bytes: scenario === 'changed bytes' ? new Uint8Array() : value.bytes,
+                  mime: scenario === 'changed MIME' ? ('image/jpeg' as const) : value.mime,
+                }
+              },
+            }),
+        runtime: {
+          async runOfficeTurn(input: any) {
+            screenshot = await input.toolSession.callTool(input.toolSession.credentials, {
+              id: 'screenshot01',
+              name: 'screenshot_slide',
+              input: { slide_index: 0 },
+            })
+            input.onEvent({ type: 'terminal', status: 'completed' })
+          },
+        } as any,
+      })
+      const response = await proxy({
+        body: {
+          system: '',
+          messages: [],
+          tools: [{ name: 'screenshot_slide', description: '', input_schema: { type: 'object' } }],
+        },
+        signal: controller.signal,
+        host: 'PowerPoint',
+        sessionId: 'session_12345678',
+        requestId: 'request_12345678',
+        statement: { ...statement, host: 'office-powerpoint' },
+        executeTool: async () => ({
+          output: encodeOfficeScreenshotResult('{}', [{ type: 'image', image }]),
+          isError: false,
+        }),
+      })
+      for await (const _chunk of response.body as AsyncIterable<Uint8Array>) {
+        /* drain */
+      }
+      expect(screenshot).toMatchObject({
+        isError: true,
+        mutated: false,
+        output: scenario === 'cancelled' ? 'tool_cancelled' : 'office_screenshot_unavailable',
+      })
+      expect(screenshot?.modelContent).toBeUndefined()
+    },
+  )
 
   it('executes the Enhanced PowerPoint state, feedback, and planning sequence', async () => {
     const executeTool = vi.fn(async (call: { toolName: string; callId: string }) => {
