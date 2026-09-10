@@ -306,14 +306,16 @@ async fn image_fetch(
     headers: HeaderMap,
     Json(request): Json<ImageFetchRequest>,
 ) -> Response {
-    finish_image_fetch(IMAGE_TIMEOUT, image_fetch_with_auth(app, headers, request)).await
+    image_fetch_with_timeout(app, headers, request, IMAGE_TIMEOUT).await
 }
 
-async fn finish_image_fetch<F>(timeout: Duration, operation: F) -> Response
-where
-    F: std::future::Future<Output = Response>,
-{
-    tokio::time::timeout(timeout, operation)
+async fn image_fetch_with_timeout(
+    app: App,
+    headers: HeaderMap,
+    request: ImageFetchRequest,
+    timeout: Duration,
+) -> Response {
+    tokio::time::timeout(timeout, image_fetch_with_auth(app, headers, request))
         .await
         .unwrap_or_else(|_| image_error(StatusCode::BAD_GATEWAY, "image_fetch_unavailable"))
 }
@@ -3944,9 +3946,35 @@ mod tests {
 
     #[tokio::test]
     async fn downloader_whole_operation_timeout_and_global_concurrency_are_enforced() {
-        let timed =
-            finish_image_fetch(Duration::from_millis(1), std::future::pending::<Response>()).await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let auth = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let config = Config {
+            auth_url: format!("http://127.0.0.1:{}/oidc/me", address.port()),
+            ..Config::default()
+        };
+        let app = test_app_with_config(config);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer opaque-token".parse().unwrap(),
+        );
+        let timed = image_fetch_with_timeout(
+            app.clone(),
+            headers,
+            ImageFetchRequest {
+                url: "https://images.example/a".to_owned(),
+            },
+            Duration::from_millis(10),
+        )
+        .await;
         assert_eq!(timed.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(app.inner.auth_slots.available_permits(), 1);
+        assert_eq!(app.inner.image_slots.available_permits(), 1);
+        auth.abort();
 
         let app = test_app();
         let network = MockImageNetwork::default()
