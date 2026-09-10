@@ -315,6 +315,19 @@ function shapeInfo(value: RuntimeRecord): PowerPointShape {
   }
 }
 
+function isContainedImageTextOverlay(a: PowerPointShape, b: PowerPointShape): boolean {
+  const image =
+    a.type.toLowerCase() === 'image' ? a : b.type.toLowerCase() === 'image' ? b : undefined
+  const text = image === a ? b : image === b ? a : undefined
+  if (!image || text?.type.toLowerCase() !== 'textbox') return false
+  return (
+    text.left >= image.left &&
+    text.top >= image.top &&
+    text.left + text.width <= image.left + image.width &&
+    text.top + text.height <= image.top + image.height
+  )
+}
+
 function loadSlides(slides: RuntimeRecord): void {
   // PowerPoint for Mac is more reliable with the documented collection path than
   // with OfficeExtension load options such as $top. Bound the loaded result after sync.
@@ -870,17 +883,32 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     signal?: AbortSignal,
   ): Promise<{ base64: string; mime: 'image/png' }> {
     cancelled(signal)
-    return this.run('1.8', async (context) => {
-      const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
-      const slide = await getSlide(context, slides, slideIndex, signal)
-      if (typeof slide.getImageAsBase64 !== 'function') throw new Error('office_api_unsupported')
-      const image = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
-        width: 960,
-      })
-      await sync(context, signal)
-      if (typeof image.value !== 'string') throw new Error('office_read_failed')
-      return { base64: image.value, mime: 'image/png' }
-    })
+    let lastError: unknown
+    for (const width of [960, 720, 480]) {
+      try {
+        return await this.run('1.8', async (context) => {
+          const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+          const slide = await getSlide(context, slides, slideIndex, signal)
+          if (typeof slide.getImageAsBase64 !== 'function')
+            throw new Error('office_api_unsupported')
+          const image = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
+            width,
+          })
+          await sync(context, signal)
+          if (typeof image.value !== 'string') throw new Error('office_read_failed')
+          return { base64: image.value, mime: 'image/png' }
+        })
+      } catch (error) {
+        if (
+          signal?.aborted ||
+          (error instanceof Error &&
+            ['cancelled', 'invalid_tool_input', 'office_api_unsupported'].includes(error.message))
+        )
+          throw error
+        lastError = error
+      }
+    }
+    throw new Error('office_screenshot_unavailable', { cause: lastError })
   }
 
   async readSlideText(
@@ -959,6 +987,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             }
             const a = shapes[first]
             const b = shapes[second]
+            if (isContainedImageTextOverlay(a, b)) continue
             const overlapX = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left)
             const overlapY = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top)
             if (overlapX > 0 && overlapY > 0) {

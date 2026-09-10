@@ -1389,6 +1389,7 @@ export function createPowerPointSkill(options: {
   let activeDesignContractIsModern = false
   const dirtySlideIndexes = new Set<number>()
   const builtDesignSlides = new Set<number>()
+  const appliedUnverifiedDesignSlides = new Set<number>()
   const pendingDesignReviews = new Set<number>()
   const repairRequiredDesignReviews = new Set<number>()
   const reviewRecovery = () => ({
@@ -1474,6 +1475,7 @@ export function createPowerPointSkill(options: {
       if (!scaffold) {
         if (confirmed) {
           builtDesignSlides.add(index)
+          appliedUnverifiedDesignSlides.delete(index)
           repairRequiredDesignReviews.delete(index)
         }
         pendingDesignReviews.add(index)
@@ -1523,10 +1525,13 @@ export function createPowerPointSkill(options: {
       proposalDesignSlides.delete(event.id)
       if (event.status === 'confirmed' && mutation)
         recordDesignMutation(mutation.indexes, mutation.scaffold)
-      else if (mutation && ['failed', 'applied_unverified'].includes(event.status))
-        // Verification can fail after Office has applied some or all operations.
-        // Do not count an unconfirmed page as built, or keep an older review valid.
+      else if (mutation && ['failed', 'applied_unverified'].includes(event.status)) {
+        // Verification can fail after Office has applied some or all operations. Keep the
+        // page unbuilt until a fresh screenshot review confirms an applied-unverified write.
         recordDesignMutation(mutation.indexes, mutation.scaffold, false)
+        if (event.status === 'applied_unverified' && !mutation.scaffold)
+          for (const index of mutation.indexes) appliedUnverifiedDesignSlides.add(index)
+      }
     }
     if (!presentation) return
     if (event.kind === 'proposed') presentation.recordProposal(event)
@@ -1728,6 +1733,7 @@ export function createPowerPointSkill(options: {
             activeDesignContract = contract
             activeDesignContractIsModern = 'contract' in call.input
             builtDesignSlides.clear()
+            appliedUnverifiedDesignSlides.clear()
             pendingDesignReviews.clear()
             repairRequiredDesignReviews.clear()
             proposalDesignSlides.clear()
@@ -1882,10 +1888,6 @@ export function createPowerPointSkill(options: {
           const input = { slide_index: slideIndex }
           if (!activeDesignContractIsModern || !activeDesignContract)
             return failure(call.name, 'design_contract_required')
-          if (!pendingDesignReviews.has(input.slide_index))
-            return failure(call.name, 'design_contract_review_not_pending')
-          if (dirtySlideIndexes.has(input.slide_index))
-            return failure(call.name, 'design_contract_screenshot_required')
           const expected =
             activeDesignContract.slides[input.slide_index]?.acceptance.map((rule) => rule.id) ?? []
           const supplied = Array.isArray(call.input.acceptance_ids)
@@ -1896,6 +1898,24 @@ export function createPowerPointSkill(options: {
             supplied.some((id, index) => id !== expected[index])
           )
             return failure(call.name, 'design_contract_acceptance_mismatch')
+          if (
+            !pendingDesignReviews.has(input.slide_index) &&
+            builtDesignSlides.has(input.slide_index) &&
+            !dirtySlideIndexes.has(input.slide_index)
+          )
+            return {
+              output: boundedJson({
+                status: 'already_reviewed',
+                slide: input.slide_index + 1,
+                revision: activeDesignContract.revision,
+              }),
+              mutated: false,
+              summary: `PowerPoint slide already reviewed · DESIGN r${activeDesignContract.revision}`,
+            }
+          if (!pendingDesignReviews.has(input.slide_index))
+            return failure(call.name, 'design_contract_review_not_pending')
+          if (dirtySlideIndexes.has(input.slide_index))
+            return failure(call.name, 'design_contract_screenshot_required')
           if (call.input.passed !== true) {
             const issues = Array.isArray(call.input.issues)
               ? call.input.issues.map(String)
@@ -1931,6 +1951,8 @@ export function createPowerPointSkill(options: {
               summary: `PowerPoint slide still needs repair · DESIGN r${activeDesignContract.revision}`,
             }
           pendingDesignReviews.delete(input.slide_index)
+          if (appliedUnverifiedDesignSlides.delete(input.slide_index))
+            builtDesignSlides.add(input.slide_index)
           return {
             output: boundedJson({
               status: 'passed',

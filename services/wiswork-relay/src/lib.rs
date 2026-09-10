@@ -1,21 +1,22 @@
 mod binding_store;
 
 use axum::{
-    Router,
+    Json, Router,
+    body::{Body, Bytes},
     extract::{
         ConnectInfo, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderMap, StatusCode},
-    response::IntoResponse,
-    routing::get,
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
+    routing::{get, post},
 };
 use base64::{
     Engine as _,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use binding_store::{Binding, BindingStore};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 use rand::{Rng, distr::Alphanumeric};
@@ -33,6 +34,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{Mutex, Notify, Semaphore, mpsc};
+use tower_http::limit::RequestBodyLimitLayer;
 
 pub use binding_store::BindingStoreError;
 
@@ -47,6 +49,12 @@ const DIAGNOSTIC_SESSION_MAX: u16 = 100;
 const PROTOCOL_V2: u64 = 2;
 const PAIRING_RESUME: &str = "pairing-resume.v1";
 const RESUME_CHALLENGE_MAX: Duration = Duration::from_secs(30);
+const IMAGE_REQUEST_MAX: usize = 4 * 1024;
+const IMAGE_RESPONSE_MAX: usize = 10 * 1024 * 1024;
+const IMAGE_TIMEOUT: Duration = Duration::from_secs(15);
+const IMAGE_REDIRECT_MAX: usize = 3;
+const IMAGE_RATE_MAX: usize = 120;
+const IMAGE_RATE_WINDOW: Duration = Duration::from_secs(60);
 const MAX_TRACKED_RESUME_IPS: usize = 10_000;
 const SUPPORTED_CAPABILITIES: &[&str] = &[
     "agent.v1",
@@ -110,6 +118,8 @@ struct Inner {
     config: Config,
     http: reqwest::Client,
     auth_slots: Arc<Semaphore>,
+    image_slots: Arc<Semaphore>,
+    image_attempts: Mutex<VecDeque<Instant>>,
     bindings: BindingStore,
     #[cfg(test)]
     fail_approval_delivery: std::sync::atomic::AtomicBool,
@@ -267,6 +277,8 @@ pub fn try_app(config: Config) -> Result<Router, BindingStoreError> {
                 .build()
                 .expect("fixed HTTP client"),
             auth_slots: Arc::new(Semaphore::new(32)),
+            image_slots: Arc::new(Semaphore::new(16)),
+            image_attempts: Mutex::new(VecDeque::new()),
             bindings,
             #[cfg(test)]
             fail_approval_delivery: std::sync::atomic::AtomicBool::new(false),
@@ -276,7 +288,398 @@ pub fn try_app(config: Config) -> Result<Router, BindingStoreError> {
     Ok(Router::new()
         .route("/office-relay", get(upgrade))
         .route("/office-relay/health", get(|| async { "ok" }))
+        .route(
+            "/office-image-fetch",
+            post(image_fetch).layer(RequestBodyLimitLayer::new(IMAGE_REQUEST_MAX)),
+        )
         .with_state(state))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImageFetchRequest {
+    url: String,
+}
+
+async fn image_fetch(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(request): Json<ImageFetchRequest>,
+) -> Response {
+    image_fetch_with_timeout(app, headers, request, IMAGE_TIMEOUT).await
+}
+
+async fn image_fetch_with_timeout(
+    app: App,
+    headers: HeaderMap,
+    request: ImageFetchRequest,
+    timeout: Duration,
+) -> Response {
+    tokio::time::timeout(timeout, image_fetch_with_auth(app, headers, request))
+        .await
+        .unwrap_or_else(|_| image_error(StatusCode::BAD_GATEWAY, "image_fetch_unavailable"))
+}
+
+async fn image_fetch_with_auth(
+    app: App,
+    headers: HeaderMap,
+    request: ImageFetchRequest,
+) -> Response {
+    if headers.contains_key(header::ORIGIN) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(token) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| !value.is_empty() && value.len() <= 4096)
+    else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Ok(_auth_permit) = app.inner.auth_slots.clone().try_acquire_owned() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    if authenticate_pc(&app, token).await.is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    drop(_auth_permit);
+    if !allow_image_fetch(&app).await {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+    match guarded_fetch_image(&app, &request.url).await {
+        Ok((mime, body, permit)) => image_success_response(mime, body, permit),
+        Err(ImageFetchError::Busy) => StatusCode::TOO_MANY_REQUESTS.into_response(),
+        Err(ImageFetchError::Limit) => image_error(StatusCode::PAYLOAD_TOO_LARGE, "image_limit"),
+        Err(ImageFetchError::Mime) => {
+            image_error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "image_mime_unsupported")
+        }
+        Err(ImageFetchError::Unavailable) => {
+            image_error(StatusCode::BAD_GATEWAY, "image_fetch_unavailable")
+        }
+    }
+}
+
+fn image_success_response(
+    mime: &'static str,
+    body: Vec<u8>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) -> Response {
+    let bytes = Bytes::from(body);
+    let stream = futures_util::stream::unfold(
+        (bytes, 0usize, permit),
+        |(bytes, offset, permit)| async move {
+            if offset >= bytes.len() {
+                return None;
+            }
+            let end = (offset + CHUNK_MAX).min(bytes.len());
+            Some((
+                Ok::<_, std::convert::Infallible>(bytes.slice(offset..end)),
+                (bytes, end, permit),
+            ))
+        },
+    );
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, mime)],
+        Body::from_stream(stream),
+    )
+        .into_response()
+}
+
+async fn allow_image_fetch(app: &App) -> bool {
+    let now = Instant::now();
+    let mut attempts = app.inner.image_attempts.lock().await;
+    while attempts
+        .front()
+        .is_some_and(|then| now.duration_since(*then) >= IMAGE_RATE_WINDOW)
+    {
+        attempts.pop_front();
+    }
+    if attempts.len() >= IMAGE_RATE_MAX {
+        return false;
+    }
+    attempts.push_back(now);
+    true
+}
+
+fn image_error(status: StatusCode, code: &'static str) -> Response {
+    (status, Json(json!({"error": code}))).into_response()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ImageFetchError {
+    Unavailable,
+    Limit,
+    Mime,
+    Busy,
+}
+
+struct ImageResponse {
+    status: StatusCode,
+    location: Option<String>,
+    mime: Option<String>,
+    declared_size: Option<u64>,
+    chunks: BoxStream<'static, Result<Vec<u8>, ImageFetchError>>,
+}
+
+trait ImageNetwork: Send + Sync {
+    fn resolve(&self, host: String)
+    -> BoxFuture<'static, Result<Vec<SocketAddr>, ImageFetchError>>;
+    fn request(
+        &self,
+        url: reqwest::Url,
+        host: String,
+        addresses: Vec<SocketAddr>,
+    ) -> BoxFuture<'static, Result<ImageResponse, ImageFetchError>>;
+}
+
+struct ReqwestImageNetwork;
+
+impl ImageNetwork for ReqwestImageNetwork {
+    fn resolve(
+        &self,
+        host: String,
+    ) -> BoxFuture<'static, Result<Vec<SocketAddr>, ImageFetchError>> {
+        Box::pin(async move {
+            Ok(tokio::net::lookup_host((host.as_str(), 443))
+                .await
+                .map_err(|_| ImageFetchError::Unavailable)?
+                .collect())
+        })
+    }
+
+    fn request(
+        &self,
+        url: reqwest::Url,
+        host: String,
+        addresses: Vec<SocketAddr>,
+    ) -> BoxFuture<'static, Result<ImageResponse, ImageFetchError>> {
+        Box::pin(async move {
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .resolve_to_addrs(&host, &addresses)
+                .build()
+                .map_err(|_| ImageFetchError::Unavailable)?;
+            let response = client
+                .get(url)
+                .send()
+                .await
+                .map_err(|_| ImageFetchError::Unavailable)?;
+            let status = response.status();
+            let location = response
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let mime = response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let declared_size = response.content_length();
+            let chunks = futures_util::stream::try_unfold(response, |mut response| async move {
+                Ok(response
+                    .chunk()
+                    .await
+                    .map_err(|_| ImageFetchError::Unavailable)?
+                    .map(|chunk| (chunk.to_vec(), response)))
+            });
+            Ok(ImageResponse {
+                status,
+                location,
+                mime,
+                declared_size,
+                chunks: Box::pin(chunks),
+            })
+        })
+    }
+}
+
+async fn guarded_fetch_image(
+    app: &App,
+    input: &str,
+) -> Result<(&'static str, Vec<u8>, tokio::sync::OwnedSemaphorePermit), ImageFetchError> {
+    guarded_fetch_image_with(app, input, &ReqwestImageNetwork, IMAGE_TIMEOUT).await
+}
+
+async fn guarded_fetch_image_with(
+    app: &App,
+    input: &str,
+    network: &dyn ImageNetwork,
+    timeout: Duration,
+) -> Result<(&'static str, Vec<u8>, tokio::sync::OwnedSemaphorePermit), ImageFetchError> {
+    let permit = app
+        .inner
+        .image_slots
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ImageFetchError::Busy)?;
+    let (mime, body) = tokio::time::timeout(timeout, fetch_image_with_network(input, network))
+        .await
+        .map_err(|_| ImageFetchError::Unavailable)??;
+    Ok((mime, body, permit))
+}
+
+async fn fetch_image_with_network(
+    input: &str,
+    network: &dyn ImageNetwork,
+) -> Result<(&'static str, Vec<u8>), ImageFetchError> {
+    let mut url = validate_image_url(input)?;
+    for redirects in 0..=IMAGE_REDIRECT_MAX {
+        let host = url
+            .host_str()
+            .ok_or(ImageFetchError::Unavailable)?
+            .trim_matches(['[', ']'])
+            .to_owned();
+        let addresses = network.resolve(host.clone()).await?;
+        validate_resolved_addresses(&addresses)?;
+        let mut response = network.request(url.clone(), host, addresses).await?;
+        if response.status.is_redirection() {
+            if redirects == IMAGE_REDIRECT_MAX {
+                return Err(ImageFetchError::Unavailable);
+            }
+            let location = response.location.ok_or(ImageFetchError::Unavailable)?;
+            url = validate_image_url(
+                url.join(&location)
+                    .map_err(|_| ImageFetchError::Unavailable)?
+                    .as_str(),
+            )?;
+            continue;
+        }
+        if response.status != StatusCode::OK {
+            return Err(ImageFetchError::Unavailable);
+        }
+        let mime = accepted_image_mime(response.mime.as_deref().ok_or(ImageFetchError::Mime)?)?;
+        validate_declared_image_size(response.declared_size)?;
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunks.next().await {
+            append_image_chunk(&mut body, &chunk?)?;
+        }
+        return Ok((mime, body));
+    }
+    Err(ImageFetchError::Unavailable)
+}
+
+fn validate_resolved_addresses(addresses: &[SocketAddr]) -> Result<(), ImageFetchError> {
+    if addresses.is_empty() || addresses.iter().any(|address| !is_public_ip(address.ip())) {
+        return Err(ImageFetchError::Unavailable);
+    }
+    Ok(())
+}
+
+fn accepted_image_mime(value: &str) -> Result<&'static str, ImageFetchError> {
+    let value = value.split(';').next().map(str::trim).unwrap_or_default();
+    if value.eq_ignore_ascii_case("image/png") {
+        Ok("image/png")
+    } else if value.eq_ignore_ascii_case("image/jpeg") {
+        Ok("image/jpeg")
+    } else {
+        Err(ImageFetchError::Mime)
+    }
+}
+
+fn validate_declared_image_size(size: Option<u64>) -> Result<(), ImageFetchError> {
+    if size.is_some_and(|size| size > IMAGE_RESPONSE_MAX as u64) {
+        return Err(ImageFetchError::Limit);
+    }
+    Ok(())
+}
+
+fn append_image_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), ImageFetchError> {
+    if body
+        .len()
+        .checked_add(chunk.len())
+        .is_none_or(|size| size > IMAGE_RESPONSE_MAX)
+    {
+        return Err(ImageFetchError::Limit);
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
+}
+
+fn validate_image_url(input: &str) -> Result<reqwest::Url, ImageFetchError> {
+    let url = reqwest::Url::parse(input).map_err(|_| ImageFetchError::Unavailable)?;
+    if url.scheme() != "https"
+        || url.port().is_some_and(|port| port != 443)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || url.host_str().is_none()
+    {
+        return Err(ImageFetchError::Unavailable);
+    }
+    Ok(url)
+}
+
+fn is_public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let value = u32::from(ip);
+            [
+                ("0.0.0.0", 8),
+                ("10.0.0.0", 8),
+                ("100.64.0.0", 10),
+                ("127.0.0.0", 8),
+                ("169.254.0.0", 16),
+                ("172.16.0.0", 12),
+                ("192.0.0.0", 24),
+                ("192.0.2.0", 24),
+                ("192.88.99.0", 24),
+                ("192.168.0.0", 16),
+                ("198.18.0.0", 15),
+                ("198.51.100.0", 24),
+                ("203.0.113.0", 24),
+                ("224.0.0.0", 4),
+                ("240.0.0.0", 4),
+            ]
+            .iter()
+            .all(|(network, prefix)| {
+                let network = u32::from(
+                    network
+                        .parse::<std::net::Ipv4Addr>()
+                        .expect("constant IPv4"),
+                );
+                let mask = u32::MAX << (32 - prefix);
+                (value & mask) != (network & mask)
+            })
+        }
+        IpAddr::V6(ip) => {
+            let value = u128::from(ip);
+            ip.to_ipv4_mapped().is_none()
+                && [
+                    (0_u128, 3_u32),
+                    (
+                        u128::from_be_bytes([0x20, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                        23,
+                    ),
+                    (
+                        u128::from_be_bytes([
+                            0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        ]),
+                        32,
+                    ),
+                    (
+                        u128::from_be_bytes([0x20, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                        16,
+                    ),
+                    (
+                        u128::from_be_bytes([0x3f, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                        20,
+                    ),
+                    (
+                        u128::from_be_bytes([0x5f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                        16,
+                    ),
+                ]
+                .iter()
+                .all(|(network, prefix)| {
+                    let mask = u128::MAX << (128 - prefix);
+                    (value & mask) != (network & mask)
+                })
+                && value >> 125 == 0b001
+        }
+    }
 }
 
 fn spawn_sweeper(state: &App) -> tokio::task::JoinHandle<()> {
@@ -3219,6 +3622,442 @@ async fn cleanup(app: &App, conn: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{future::pending, sync::Mutex as StdMutex};
+
+    type MockRequests = Arc<StdMutex<Vec<(String, Vec<SocketAddr>)>>>;
+
+    #[derive(Clone, Default)]
+    struct MockImageNetwork {
+        resolutions: Arc<StdMutex<HashMap<String, Vec<SocketAddr>>>>,
+        responses: Arc<StdMutex<VecDeque<ImageResponse>>>,
+        requests: MockRequests,
+        hang: bool,
+        requested: Arc<Notify>,
+    }
+
+    impl MockImageNetwork {
+        fn resolving(self, host: &str, addresses: &[&str]) -> Self {
+            self.resolutions.lock().unwrap().insert(
+                host.to_owned(),
+                addresses
+                    .iter()
+                    .map(|address| address.parse().unwrap())
+                    .collect(),
+            );
+            self
+        }
+
+        fn responding(self, response: ImageResponse) -> Self {
+            self.responses.lock().unwrap().push_back(response);
+            self
+        }
+
+        fn hanging(mut self) -> Self {
+            self.hang = true;
+            self
+        }
+    }
+
+    impl ImageNetwork for MockImageNetwork {
+        fn resolve(
+            &self,
+            host: String,
+        ) -> BoxFuture<'static, Result<Vec<SocketAddr>, ImageFetchError>> {
+            let result = self.resolutions.lock().unwrap().get(&host).cloned();
+            Box::pin(async move { result.ok_or(ImageFetchError::Unavailable) })
+        }
+
+        fn request(
+            &self,
+            url: reqwest::Url,
+            _host: String,
+            addresses: Vec<SocketAddr>,
+        ) -> BoxFuture<'static, Result<ImageResponse, ImageFetchError>> {
+            self.requests
+                .lock()
+                .unwrap()
+                .push((url.to_string(), addresses));
+            self.requested.notify_one();
+            if self.hang {
+                return Box::pin(pending());
+            }
+            let response = self.responses.lock().unwrap().pop_front();
+            Box::pin(async move { response.ok_or(ImageFetchError::Unavailable) })
+        }
+    }
+
+    fn mock_response(
+        status: StatusCode,
+        location: Option<&str>,
+        mime: Option<&str>,
+        declared_size: Option<u64>,
+        chunks: Vec<Result<Vec<u8>, ImageFetchError>>,
+    ) -> ImageResponse {
+        ImageResponse {
+            status,
+            location: location.map(str::to_owned),
+            mime: mime.map(str::to_owned),
+            declared_size,
+            chunks: Box::pin(futures_util::stream::iter(chunks)),
+        }
+    }
+
+    #[test]
+    fn image_fetch_rejects_unsafe_urls_and_non_public_addresses() {
+        for url in [
+            "http://example.com/a.png",
+            "https://user@example.com/a.png",
+            "https://example.com:444/a.png",
+            "https://example.com/a.png#fragment",
+        ] {
+            assert_eq!(validate_image_url(url), Err(ImageFetchError::Unavailable));
+        }
+        for address in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "100.64.0.1",
+            "169.254.1.1",
+            "192.0.2.1",
+            "198.18.0.1",
+            "203.0.113.1",
+            "::1",
+            "::ffff:8.8.8.8",
+            "2001:db8::1",
+            "2001:20::1",
+            "2002:7f00:1::1",
+            "2002:a00:1::1",
+            "2002:a9fe:101::1",
+            "64:ff9b::7f00:1",
+        ] {
+            assert!(
+                !is_public_ip(address.parse().unwrap()),
+                "accepted {address}"
+            );
+        }
+        assert!(is_public_ip("8.8.8.8".parse().unwrap()));
+        assert!(is_public_ip("2606:4700:4700::1111".parse().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn image_fetch_global_rate_limit_is_bounded() {
+        let app = test_app();
+        for _ in 0..IMAGE_RATE_MAX {
+            assert!(allow_image_fetch(&app).await);
+        }
+        assert!(!allow_image_fetch(&app).await);
+        assert_eq!(app.inner.image_slots.available_permits(), 1);
+        assert_eq!(IMAGE_TIMEOUT, Duration::from_secs(15));
+        assert_eq!(IMAGE_RESPONSE_MAX, 10 * 1024 * 1024);
+        assert_eq!(IMAGE_REDIRECT_MAX, 3);
+    }
+
+    #[test]
+    fn image_fetch_validates_every_dns_answer_mime_and_both_size_limits() {
+        let public: SocketAddr = "8.8.8.8:443".parse().unwrap();
+        let private: SocketAddr = "127.0.0.1:443".parse().unwrap();
+        assert_eq!(
+            validate_resolved_addresses(&[]),
+            Err(ImageFetchError::Unavailable)
+        );
+        assert_eq!(
+            validate_resolved_addresses(&[public, private]),
+            Err(ImageFetchError::Unavailable)
+        );
+        assert_eq!(validate_resolved_addresses(&[public]), Ok(()));
+
+        assert_eq!(accepted_image_mime("image/png"), Ok("image/png"));
+        assert_eq!(
+            accepted_image_mime("image/jpeg; charset=binary"),
+            Ok("image/jpeg")
+        );
+        assert_eq!(accepted_image_mime("IMAGE/PNG"), Ok("image/png"));
+        assert_eq!(accepted_image_mime("Image/Jpeg"), Ok("image/jpeg"));
+        assert_eq!(
+            accepted_image_mime("image/svg+xml"),
+            Err(ImageFetchError::Mime)
+        );
+        assert_eq!(
+            validate_declared_image_size(Some(IMAGE_RESPONSE_MAX as u64 + 1)),
+            Err(ImageFetchError::Limit)
+        );
+
+        let mut body = vec![0; IMAGE_RESPONSE_MAX];
+        assert_eq!(
+            append_image_chunk(&mut body, &[1]),
+            Err(ImageFetchError::Limit)
+        );
+    }
+
+    #[tokio::test]
+    async fn downloader_pins_validated_addresses_and_returns_png_and_jpeg() {
+        for (mime, expected_mime, bytes) in [
+            ("IMAGE/PNG", "image/png", vec![137, 80, 78, 71]),
+            ("image/jpeg", "image/jpeg", vec![255, 216, 255]),
+        ] {
+            let network = MockImageNetwork::default()
+                .resolving("images.example", &["8.8.8.8:443", "1.1.1.1:443"])
+                .responding(mock_response(
+                    StatusCode::OK,
+                    None,
+                    Some(mime),
+                    Some(bytes.len() as u64),
+                    vec![Ok(bytes.clone())],
+                ));
+            assert_eq!(
+                fetch_image_with_network("https://images.example/a", &network).await,
+                Ok((expected_mime, bytes))
+            );
+            assert_eq!(
+                network.requests.lock().unwrap().as_slice(),
+                &[(
+                    ("https://images.example/a").to_owned(),
+                    vec![
+                        "8.8.8.8:443".parse().unwrap(),
+                        "1.1.1.1:443".parse().unwrap(),
+                    ]
+                )]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn reqwest_transport_uses_pinned_addresses_and_disables_auto_redirects() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let final_hits = Arc::new(AtomicU64::new(0));
+        let hits = final_hits.clone();
+        let router = Router::new()
+            .route(
+                "/start",
+                get(|| async { axum::response::Redirect::temporary("/final") }),
+            )
+            .route(
+                "/final",
+                get(move || {
+                    let hits = hits.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::Relaxed);
+                        "unexpected"
+                    }
+                }),
+            );
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let response = ReqwestImageNetwork
+            .request(
+                reqwest::Url::parse(&format!("http://pinned.invalid:{}/start", address.port()))
+                    .unwrap(),
+                "pinned.invalid".to_owned(),
+                vec![address],
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status, StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(final_hits.load(Ordering::Relaxed), 0);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn downloader_revalidates_redirect_dns_before_requesting_target() {
+        let network = MockImageNetwork::default()
+            .resolving("first.example", &["8.8.8.8:443"])
+            .resolving("rebound.example", &["1.1.1.1:443", "127.0.0.1:443"])
+            .responding(mock_response(
+                StatusCode::FOUND,
+                Some("https://rebound.example/private"),
+                None,
+                None,
+                vec![],
+            ));
+        assert_eq!(
+            fetch_image_with_network("https://first.example/start", &network).await,
+            Err(ImageFetchError::Unavailable)
+        );
+        assert_eq!(network.requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn downloader_stops_after_three_manual_redirects() {
+        let mut network = MockImageNetwork::default().resolving("images.example", &["8.8.8.8:443"]);
+        for target in ["/one", "/two", "/three", "/four"] {
+            network = network.responding(mock_response(
+                StatusCode::FOUND,
+                Some(target),
+                None,
+                None,
+                vec![],
+            ));
+        }
+        assert_eq!(
+            fetch_image_with_network("https://images.example/start", &network).await,
+            Err(ImageFetchError::Unavailable)
+        );
+        assert_eq!(network.requests.lock().unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn downloader_enforces_mime_declared_and_streaming_limits() {
+        let response_cases = [
+            mock_response(StatusCode::NO_CONTENT, None, None, None, vec![]),
+            mock_response(
+                StatusCode::PARTIAL_CONTENT,
+                None,
+                Some("image/jpeg"),
+                Some(1),
+                vec![Ok(vec![1])],
+            ),
+            mock_response(
+                StatusCode::OK,
+                None,
+                Some("text/plain"),
+                Some(1),
+                vec![Ok(vec![1])],
+            ),
+            mock_response(
+                StatusCode::OK,
+                None,
+                Some("image/png"),
+                Some(IMAGE_RESPONSE_MAX as u64 + 1),
+                vec![],
+            ),
+            mock_response(
+                StatusCode::OK,
+                None,
+                Some("image/jpeg"),
+                None,
+                vec![Ok(vec![0; IMAGE_RESPONSE_MAX]), Ok(vec![1])],
+            ),
+        ];
+        for (response, expected) in response_cases.into_iter().zip([
+            ImageFetchError::Unavailable,
+            ImageFetchError::Unavailable,
+            ImageFetchError::Mime,
+            ImageFetchError::Limit,
+            ImageFetchError::Limit,
+        ]) {
+            let network = MockImageNetwork::default()
+                .resolving("images.example", &["8.8.8.8:443"])
+                .responding(response);
+            assert_eq!(
+                fetch_image_with_network("https://images.example/a", &network).await,
+                Err(expected)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn downloader_whole_operation_timeout_and_global_concurrency_are_enforced() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let auth = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let config = Config {
+            auth_url: format!("http://127.0.0.1:{}/oidc/me", address.port()),
+            ..Config::default()
+        };
+        let app = test_app_with_config(config);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer opaque-token".parse().unwrap(),
+        );
+        let timed = image_fetch_with_timeout(
+            app.clone(),
+            headers,
+            ImageFetchRequest {
+                url: "https://images.example/a".to_owned(),
+            },
+            Duration::from_millis(10),
+        )
+        .await;
+        assert_eq!(timed.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(app.inner.auth_slots.available_permits(), 1);
+        assert_eq!(app.inner.image_slots.available_permits(), 1);
+        auth.abort();
+
+        let app = test_app();
+        let network = MockImageNetwork::default()
+            .resolving("images.example", &["8.8.8.8:443"])
+            .hanging();
+        let timed = tokio::time::timeout(
+            Duration::from_millis(100),
+            guarded_fetch_image_with(
+                &app,
+                "https://images.example/a",
+                &network,
+                Duration::from_millis(1),
+            ),
+        )
+        .await
+        .expect("downloader's whole-operation timeout was not enforced");
+        assert!(matches!(timed, Err(ImageFetchError::Unavailable)));
+
+        let app = test_app();
+        let network = Arc::new(
+            MockImageNetwork::default()
+                .resolving("images.example", &["8.8.8.8:443"])
+                .hanging(),
+        );
+        let first_app = app.clone();
+        let first_network = network.clone();
+        let first = tokio::spawn(async move {
+            guarded_fetch_image_with(
+                &first_app,
+                "https://images.example/a",
+                first_network.as_ref(),
+                Duration::from_secs(60),
+            )
+            .await
+        });
+        network.requested.notified().await;
+        assert!(matches!(
+            guarded_fetch_image_with(
+                &app,
+                "https://images.example/b",
+                network.as_ref(),
+                Duration::from_millis(1),
+            )
+            .await,
+            Err(ImageFetchError::Busy)
+        ));
+        first.abort();
+
+        let app = test_app();
+        let network = MockImageNetwork::default()
+            .resolving("images.example", &["8.8.8.8:443"])
+            .responding(mock_response(
+                StatusCode::OK,
+                None,
+                Some("image/png"),
+                Some(1),
+                vec![Ok(vec![1])],
+            ));
+        let (mime, body, permit) = guarded_fetch_image_with(
+            &app,
+            "https://images.example/a",
+            &network,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        let response = image_success_response(mime, body, permit);
+        assert_eq!(app.inner.image_slots.available_permits(), 0);
+        let mut stream = response.into_body().into_data_stream();
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            Bytes::from_static(&[1])
+        );
+        assert_eq!(app.inner.image_slots.available_permits(), 0);
+        drop(stream);
+        assert_eq!(app.inner.image_slots.available_permits(), 1);
+
+        let permit = app.inner.image_slots.clone().try_acquire_owned().unwrap();
+        let response = image_success_response("image/png", vec![1], permit);
+        let mut stream = response.into_body().into_data_stream();
+        while stream.next().await.is_some() {}
+        assert_eq!(app.inner.image_slots.available_permits(), 1);
+    }
 
     fn test_app() -> App {
         test_app_with_config(Config::default())
@@ -3239,6 +4078,8 @@ mod tests {
                     .build()
                     .expect("test HTTP client"),
                 auth_slots: Arc::new(Semaphore::new(1)),
+                image_slots: Arc::new(Semaphore::new(1)),
+                image_attempts: Mutex::new(VecDeque::new()),
                 bindings,
                 fail_approval_delivery: std::sync::atomic::AtomicBool::new(false),
             }),

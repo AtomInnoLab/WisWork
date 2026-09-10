@@ -9,6 +9,7 @@ const MAX_QUERY_CHARS = 4_096
 const MAX_FETCH_CONTENT_CHARS = 256 * 1024
 const MAX_RESULTS = 20
 const REQUEST_TIMEOUT_MS = 15_000
+const OFFICE_IMAGE_FETCH_ENDPOINT = 'https://office.8-216-134-194.sslip.io/office-image-fetch'
 // Intentionally empty until the service owner publishes both the canonical URL and this contract.
 // The service—not this client—must resolve DNS safely on every connection, reject DNS rebinding,
 // and validate every redirect hop before fetching. Runtime configuration cannot widen this map.
@@ -60,6 +61,24 @@ export async function collectBoundedImageBytes(
     offset += chunk.byteLength
   }
   return bytes
+}
+
+async function* responseChunks(stream: ReadableStream<Uint8Array>) {
+  const reader = stream.getReader()
+  let complete = false
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) {
+        complete = true
+        return
+      }
+      yield next.value
+    }
+  } finally {
+    if (!complete) await reader.cancel().catch(() => undefined)
+    reader.releaseLock()
+  }
 }
 
 export function createPinnedLookup(
@@ -232,11 +251,78 @@ async function downloadPublicImage(
   })
 }
 
+export function createOfficeRemoteImageDownloader(options: {
+  fetchWithAuth(request: (accessToken: string) => Promise<Response>): Promise<Response>
+  fetch?: typeof fetch
+  timeoutMs?: number
+}): (url: string, signal?: AbortSignal) => Promise<DownloadedImage> {
+  const doFetch = options.fetch ?? fetch
+  return async (url, signal) => {
+    const controller = new AbortController()
+    const cancel = () => controller.abort()
+    let rejectDeadline: ((reason: Error) => void) | undefined
+    const deadline = new Promise<never>((_resolve, reject) => {
+      rejectDeadline = reject
+    })
+    signal?.addEventListener('abort', cancel, { once: true })
+    controller.signal.addEventListener(
+      'abort',
+      () => rejectDeadline?.(new Error('image_fetch_unavailable')),
+      { once: true },
+    )
+    const timer = setTimeout(cancel, options.timeoutMs ?? REQUEST_TIMEOUT_MS)
+    try {
+      const response = await Promise.race([
+        options.fetchWithAuth((accessToken) =>
+          doFetch(OFFICE_IMAGE_FETCH_ENDPOINT, {
+            method: 'POST',
+            redirect: 'error',
+            headers: {
+              authorization: `Bearer ${accessToken}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({ url: safeHttpsUrl(url) }),
+            signal: controller.signal,
+          }),
+        ),
+        deadline,
+      ])
+      if (response.status === 413) throw new Error('image_limit')
+      if (response.status === 415) throw new Error('image_mime_unsupported')
+      if (response.status !== 200 || response.redirected) throw new Error('image_fetch_unavailable')
+      const mime = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
+      if (!supportedImageMime(mime)) throw new Error('image_mime_unsupported')
+      if (Number(response.headers.get('content-length') ?? 0) > MAX_OFFICE_IMAGE_SOURCE_BYTES)
+        throw new Error('image_limit')
+      if (!response.body) throw new Error('image_fetch_unavailable')
+      return {
+        mime,
+        bytes: await collectBoundedImageBytes(
+          responseChunks(response.body),
+          MAX_OFFICE_IMAGE_SOURCE_BYTES,
+        ),
+      }
+    } catch (error) {
+      if (signal?.aborted) throw new Error('search_cancelled', { cause: error })
+      if (
+        error instanceof Error &&
+        (error.message === 'image_limit' || error.message === 'image_mime_unsupported')
+      )
+        throw error
+      throw new Error('image_fetch_unavailable', { cause: error })
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', cancel)
+    }
+  }
+}
+
 export function createOfficeLocalSearchProxy(options: {
   fetchWithAuth(request: (accessToken: string) => Promise<Response>): Promise<Response>
   webSearch?: typeof wisUsageWebSearch
   searchImages?: typeof imageSearch
   downloadImage?: (url: string, signal?: AbortSignal) => Promise<DownloadedImage>
+  remoteDownloadImage?: (url: string, signal?: AbortSignal) => Promise<DownloadedImage>
   normalizeImage?: (image: DownloadedImage) => Promise<DownloadedImage>
   lookupAddresses?: LookupAddresses
   imageTimeoutMs?: number
@@ -258,6 +344,11 @@ export function createOfficeLocalSearchProxy(options: {
         3,
         maximumSourceBytes,
       ))
+  const semanticImageError = (error: unknown) =>
+    error instanceof Error &&
+    (error.message === 'image_limit' ||
+      error.message === 'image_mime_unsupported' ||
+      error.message === 'search_cancelled')
   const allowedImages = new Map<
     string,
     { expiresAt: number; query: string; maxResults: number; fallbackImageUrl?: string }
@@ -327,14 +418,39 @@ export function createOfficeLocalSearchProxy(options: {
         else delete source.fallbackImageUrl
         source.expiresAt = Date.now() + 15 * 60_000
       }
+      const deadline = options.remoteDownloadImage ? new AbortController() : undefined
+      const cancelDeadline = () => deadline?.abort()
+      signal?.addEventListener('abort', cancelDeadline, { once: true })
+      const deadlineTimer = deadline
+        ? setTimeout(cancelDeadline, options.imageTimeoutMs ?? REQUEST_TIMEOUT_MS)
+        : undefined
+      const candidateSignal = deadline?.signal ?? signal
+      const fetchCandidate = async (candidateUrl: string) => {
+        if (!options.remoteDownloadImage) return downloadImage(candidateUrl, candidateSignal)
+        try {
+          return await options.remoteDownloadImage(candidateUrl, candidateSignal)
+        } catch (error) {
+          if (signal?.aborted) throw error
+          if (deadline?.signal.aborted)
+            throw new Error('retrieval_upstream_error', { cause: error })
+          if (semanticImageError(error)) throw error
+          if (!(error instanceof Error) || error.message !== 'image_fetch_unavailable') throw error
+          return downloadImage(candidateUrl, candidateSignal)
+        }
+      }
       let downloaded: DownloadedImage
       try {
-        downloaded = await downloadImage(url, signal)
+        downloaded = await fetchCandidate(url)
       } catch (error) {
-        if (signal?.aborted) throw error
+        if (signal?.aborted || (error instanceof Error && error.message === 'search_cancelled'))
+          throw error
+        if (deadline?.signal.aborted) throw new Error('retrieval_upstream_error', { cause: error })
         checkCurrent()
         if (!source.fallbackImageUrl) throw error
-        downloaded = await downloadImage(source.fallbackImageUrl, signal)
+        downloaded = await fetchCandidate(source.fallbackImageUrl)
+      } finally {
+        clearTimeout(deadlineTimer)
+        signal?.removeEventListener('abort', cancelDeadline)
       }
       checkCurrent()
       if (!supportedImageMime(downloaded.mime)) throw new Error('image_mime_unsupported')

@@ -40,6 +40,14 @@ The SQLite schema stores binding ids, Relay-computed OIDC subject hashes, public
 
 The public endpoint is `wss://office.8-216-134-194.sslip.io/office-relay`; the health check is `/office-relay/health`. The service validates PC Bearer tokens only against the fixed Wispaper OIDC userinfo endpoint, immediately discards them, and must never log credentials or relay payloads.
 
+Authenticated WisWork PCs can `POST /office-image-fetch` with the exact JSON body
+`{"url":"https://..."}`. Browser/Office origins are forbidden. Relay accepts only credential-free,
+fragment-free HTTPS URLs on port 443, validates every resolved address and pins those addresses for
+each redirect hop, follows at most three redirects, and returns only raw `image/png` or `image/jpeg`.
+The complete operation is capped at 15 seconds and 10 MiB; both Relay and nginx independently bound
+request size, concurrency, and rate. This route has nginx access logging disabled and the service must
+not log authorization, request bodies, source URLs, response bodies, or image digests.
+
 Before an upgrade, stop Relay and copy `bindings.sqlite` to protected backup storage. Start the new binary against a staging copy first; startup transactionally creates schema v1 and refuses unknown future schema versions without mutation. Test one enrollment, process restart, resume, and revocation before production cutover. For rollback, first set `WISWORK_RELAY_PAIRING_RESUME=0`; keep the database untouched. A previous binary can then be restored only if it does not open or modify this file. Re-enable after schema compatibility is confirmed.
 
 Coordinate the persistent-pairing rollout in the order Relay, WisWork PC, then taskpane. Roll back

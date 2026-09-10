@@ -220,6 +220,7 @@ import {
 } from './office-relay-runtime'
 import {
   createOfficeLocalSearchProxy,
+  createOfficeRemoteImageDownloader,
   createOfficeRetrievalProxy,
   officeRetrievalEndpointFromEnv,
 } from './office-retrieval-proxy'
@@ -2975,6 +2976,9 @@ app.whenReady().then(async () => {
           })
         : createOfficeLocalSearchProxy({
             fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+            remoteDownloadImage: createOfficeRemoteImageDownloader({
+              fetchWithAuth: (request) => requireAuthRuntime().client.fetchWithAuth(request),
+            }),
             normalizeImage: createOfficeImageHandoff(nativeImage, { reencode: true }),
           })
     const retrievalCapabilities = retrievalEndpoint

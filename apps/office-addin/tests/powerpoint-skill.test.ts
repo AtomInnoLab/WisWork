@@ -669,6 +669,42 @@ describe('PowerPoint compatibility skill', () => {
     },
   )
 
+  it('promotes an applied-unverified prototype after screenshot review and makes repeat review idempotent', async () => {
+    const contract = modernContract()
+    const fake = adapter({
+      editSlideText: vi.fn().mockRejectedValueOnce(new Error('office_applied_unverified')),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await skill.executeTool(call('plan_deck', { contract }))
+    await skill.executeTool(
+      call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Prototype' }),
+    )
+    await proposals.confirm(proposals.pending()!.id)
+    expect(
+      await skill.executeTool(call('screenshot_slide', { slide_index: 0 })),
+    ).not.toHaveProperty('isError', true)
+    const reviewInput = {
+      slide_index: 0,
+      acceptance_ids: ['A1.1'],
+      passed: true,
+    }
+    const firstReview = await skill.executeTool(call('review_slide_screenshot', reviewInput))
+    expect(firstReview).not.toHaveProperty('isError', true)
+    expect(
+      await skill.executeTool(
+        call('review_slide_screenshot', { ...reviewInput, acceptance_ids: ['wrong'] }),
+      ),
+    ).toMatchObject({ isError: true, output: 'design_contract_acceptance_mismatch' })
+    expect(await skill.executeTool(call('review_slide_screenshot', reviewInput))).toMatchObject({
+      output: expect.stringContaining('"status":"already_reviewed"'),
+    })
+    await expect(skill.executeTool(call('verify_slides'))).resolves.not.toHaveProperty(
+      'isError',
+      true,
+    )
+  })
+
   it('enforces prototype-first production and rejects host verification defects', async () => {
     const base = modernContract()
     const first = (base.slides as Array<Record<string, unknown>>)[0]!
@@ -2843,6 +2879,35 @@ describe('browser PowerPoint adapter', () => {
     expect(supports).toHaveBeenCalledWith('PowerPointApi', '1.10')
   })
 
+  it('retries a transient native screenshot failure inside one tool call', async () => {
+    const image = { value: png }
+    const slide = { id: 's1', load: vi.fn(), getImageAsBase64: vi.fn(() => image) }
+    const slides = {
+      getCount: vi.fn(() => ({ value: 1 })),
+      getItemAt: vi.fn(() => slide),
+    }
+    const context = { presentation: { slides }, sync: vi.fn().mockResolvedValue(undefined) }
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('GeneralException'))
+      .mockImplementation((callback: (value: typeof context) => unknown) => callback(context))
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: { run },
+    })
+
+    await expect(new BrowserPowerPointAdapter().screenshotSlide(0)).resolves.toEqual({
+      base64: png,
+      mime: 'image/png',
+    })
+    expect(run).toHaveBeenCalledTimes(2)
+  })
+
   it('maps native master operations to PowerPointApi 1.10 objects', async () => {
     const setSolidFill = vi.fn()
     const setThemeColor = vi.fn()
@@ -3065,6 +3130,47 @@ describe('browser PowerPoint adapter', () => {
       ],
     })
     expect(sync).toHaveBeenCalled()
+  })
+
+  it('does not report text intentionally placed inside a full-bleed image as an overlap', async () => {
+    const sync = vi.fn().mockResolvedValue(undefined)
+    const shapes = {
+      load: vi.fn(),
+      items: [
+        { id: '4', name: 'Cover', type: 'Image', left: 0, top: 0, width: 960, height: 540 },
+        { id: '5', name: 'Title', type: 'TextBox', left: 80, top: 70, width: 330, height: 24 },
+        { id: '6', name: 'Body', type: 'TextBox', left: 80, top: 120, width: 380, height: 132 },
+        { id: '7', name: 'Clipped', type: 'TextBox', left: 930, top: 300, width: 60, height: 30 },
+      ],
+    }
+    const slides = { load: vi.fn(), items: [{ id: 's1', shapes, load: vi.fn() }] }
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({
+            presentation: {
+              slides,
+              pageSetup: { slideWidth: 960, slideHeight: 540, load: vi.fn() },
+            },
+            sync,
+          }),
+      },
+    })
+
+    await expect(new BrowserPowerPointAdapter().verifySlides()).resolves.toMatchObject({
+      slides: [
+        {
+          overlaps: [{ shapeAId: '4', shapeBId: '7', overlapX: 30, overlapY: 30 }],
+          overflows: [expect.objectContaining({ shapeId: '7', edge: 'right' })],
+        },
+      ],
+    })
   })
 
   it('retries shape inventory with basic fields when Mac rejects rich geometry loading', async () => {

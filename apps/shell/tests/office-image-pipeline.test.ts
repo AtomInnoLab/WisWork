@@ -114,6 +114,8 @@ describe('Office downloaded image → production normalization → handoff', () 
     }
     visit(ast)
     expect(bindings).toEqual(['createRetrievalProxy()'])
+    expect(source).toContain('createOfficeRemoteImageDownloader({')
+    expect(source).toContain('remoteDownloadImage')
   })
 
   it.each([1_912_613, 4 * 1024 * 1024])(
