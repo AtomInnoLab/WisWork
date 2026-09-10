@@ -669,6 +669,42 @@ describe('PowerPoint compatibility skill', () => {
     },
   )
 
+  it('promotes an applied-unverified prototype after screenshot review and makes repeat review idempotent', async () => {
+    const contract = modernContract()
+    const fake = adapter({
+      editSlideText: vi.fn().mockRejectedValueOnce(new Error('office_applied_unverified')),
+    })
+    const proposals = createStructuredProposalController()
+    const skill = createPowerPointSkill({ adapter: fake, proposals })
+    await skill.executeTool(call('plan_deck', { contract }))
+    await skill.executeTool(
+      call('edit_slide_text', { slide_index: 0, shape_id: '2', text: 'Prototype' }),
+    )
+    await proposals.confirm(proposals.pending()!.id)
+    expect(
+      await skill.executeTool(call('screenshot_slide', { slide_index: 0 })),
+    ).not.toHaveProperty('isError', true)
+    const reviewInput = {
+      slide_index: 0,
+      acceptance_ids: ['A1.1'],
+      passed: true,
+    }
+    const firstReview = await skill.executeTool(call('review_slide_screenshot', reviewInput))
+    expect(firstReview).not.toHaveProperty('isError', true)
+    expect(
+      await skill.executeTool(
+        call('review_slide_screenshot', { ...reviewInput, acceptance_ids: ['wrong'] }),
+      ),
+    ).toMatchObject({ isError: true, output: 'design_contract_acceptance_mismatch' })
+    expect(await skill.executeTool(call('review_slide_screenshot', reviewInput))).toMatchObject({
+      output: expect.stringContaining('"status":"already_reviewed"'),
+    })
+    await expect(skill.executeTool(call('verify_slides'))).resolves.not.toHaveProperty(
+      'isError',
+      true,
+    )
+  })
+
   it('enforces prototype-first production and rejects host verification defects', async () => {
     const base = modernContract()
     const first = (base.slides as Array<Record<string, unknown>>)[0]!
@@ -2841,6 +2877,35 @@ describe('browser PowerPoint adapter', () => {
     expect(run).not.toHaveBeenCalled()
     expect(supports).toHaveBeenCalledWith('PowerPointApi', '1.8')
     expect(supports).toHaveBeenCalledWith('PowerPointApi', '1.10')
+  })
+
+  it('retries a transient native screenshot failure inside one tool call', async () => {
+    const image = { value: png }
+    const slide = { id: 's1', load: vi.fn(), getImageAsBase64: vi.fn(() => image) }
+    const slides = {
+      getCount: vi.fn(() => ({ value: 1 })),
+      getItemAt: vi.fn(() => slide),
+    }
+    const context = { presentation: { slides }, sync: vi.fn().mockResolvedValue(undefined) }
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('GeneralException'))
+      .mockImplementation((callback: (value: typeof context) => unknown) => callback(context))
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: { run },
+    })
+
+    await expect(new BrowserPowerPointAdapter().screenshotSlide(0)).resolves.toEqual({
+      base64: png,
+      mime: 'image/png',
+    })
+    expect(run).toHaveBeenCalledTimes(2)
   })
 
   it('maps native master operations to PowerPointApi 1.10 objects', async () => {

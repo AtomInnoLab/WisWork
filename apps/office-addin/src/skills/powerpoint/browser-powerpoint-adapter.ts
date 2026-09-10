@@ -883,17 +883,32 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
     signal?: AbortSignal,
   ): Promise<{ base64: string; mime: 'image/png' }> {
     cancelled(signal)
-    return this.run('1.8', async (context) => {
-      const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
-      const slide = await getSlide(context, slides, slideIndex, signal)
-      if (typeof slide.getImageAsBase64 !== 'function') throw new Error('office_api_unsupported')
-      const image = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
-        width: 960,
-      })
-      await sync(context, signal)
-      if (typeof image.value !== 'string') throw new Error('office_read_failed')
-      return { base64: image.value, mime: 'image/png' }
-    })
+    let lastError: unknown
+    for (const width of [960, 720, 480]) {
+      try {
+        return await this.run('1.8', async (context) => {
+          const slides = (context.presentation as RuntimeRecord).slides as RuntimeRecord
+          const slide = await getSlide(context, slides, slideIndex, signal)
+          if (typeof slide.getImageAsBase64 !== 'function')
+            throw new Error('office_api_unsupported')
+          const image = (slide.getImageAsBase64 as (options: { width: number }) => RuntimeRecord)({
+            width,
+          })
+          await sync(context, signal)
+          if (typeof image.value !== 'string') throw new Error('office_read_failed')
+          return { base64: image.value, mime: 'image/png' }
+        })
+      } catch (error) {
+        if (
+          signal?.aborted ||
+          (error instanceof Error &&
+            ['cancelled', 'invalid_tool_input', 'office_api_unsupported'].includes(error.message))
+        )
+          throw error
+        lastError = error
+      }
+    }
+    throw new Error('office_screenshot_unavailable', { cause: lastError })
   }
 
   async readSlideText(
