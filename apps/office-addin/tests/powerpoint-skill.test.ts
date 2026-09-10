@@ -3067,6 +3067,47 @@ describe('browser PowerPoint adapter', () => {
     expect(sync).toHaveBeenCalled()
   })
 
+  it('does not report text intentionally placed inside a full-bleed image as an overlap', async () => {
+    const sync = vi.fn().mockResolvedValue(undefined)
+    const shapes = {
+      load: vi.fn(),
+      items: [
+        { id: '4', name: 'Cover', type: 'Image', left: 0, top: 0, width: 960, height: 540 },
+        { id: '5', name: 'Title', type: 'TextBox', left: 80, top: 70, width: 330, height: 24 },
+        { id: '6', name: 'Body', type: 'TextBox', left: 80, top: 120, width: 380, height: 132 },
+        { id: '7', name: 'Clipped', type: 'TextBox', left: 930, top: 300, width: 60, height: 30 },
+      ],
+    }
+    const slides = { load: vi.fn(), items: [{ id: 's1', shapes, load: vi.fn() }] }
+    Object.assign(globalThis, {
+      Office: {
+        context: {
+          host: 'PowerPoint',
+          requirements: { isSetSupported: vi.fn().mockReturnValue(true) },
+        },
+      },
+      PowerPoint: {
+        run: (callback: (context: unknown) => unknown) =>
+          callback({
+            presentation: {
+              slides,
+              pageSetup: { slideWidth: 960, slideHeight: 540, load: vi.fn() },
+            },
+            sync,
+          }),
+      },
+    })
+
+    await expect(new BrowserPowerPointAdapter().verifySlides()).resolves.toMatchObject({
+      slides: [
+        {
+          overlaps: [{ shapeAId: '4', shapeBId: '7', overlapX: 30, overlapY: 30 }],
+          overflows: [expect.objectContaining({ shapeId: '7', edge: 'right' })],
+        },
+      ],
+    })
+  })
+
   it('retries shape inventory with basic fields when Mac rejects rich geometry loading', async () => {
     const sync = vi
       .fn()

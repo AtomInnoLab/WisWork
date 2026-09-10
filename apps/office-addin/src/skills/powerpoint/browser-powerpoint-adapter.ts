@@ -315,6 +315,19 @@ function shapeInfo(value: RuntimeRecord): PowerPointShape {
   }
 }
 
+function isContainedImageTextOverlay(a: PowerPointShape, b: PowerPointShape): boolean {
+  const image =
+    a.type.toLowerCase() === 'image' ? a : b.type.toLowerCase() === 'image' ? b : undefined
+  const text = image === a ? b : image === b ? a : undefined
+  if (!image || text?.type.toLowerCase() !== 'textbox') return false
+  return (
+    text.left >= image.left &&
+    text.top >= image.top &&
+    text.left + text.width <= image.left + image.width &&
+    text.top + text.height <= image.top + image.height
+  )
+}
+
 function loadSlides(slides: RuntimeRecord): void {
   // PowerPoint for Mac is more reliable with the documented collection path than
   // with OfficeExtension load options such as $top. Bound the loaded result after sync.
@@ -959,6 +972,7 @@ export class BrowserPowerPointAdapter implements PowerPointAdapter {
             }
             const a = shapes[first]
             const b = shapes[second]
+            if (isContainedImageTextOverlay(a, b)) continue
             const overlapX = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left)
             const overlapY = Math.min(a.top + a.height, b.top + b.height) - Math.max(a.top, b.top)
             if (overlapX > 0 && overlapY > 0) {
